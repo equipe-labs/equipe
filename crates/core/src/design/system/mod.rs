@@ -271,38 +271,61 @@ pub fn detect_quick(root: &Path) -> Detected {
             found.tokens.push(t);
         }
     }
-    let ui = found.components_json.as_ref().and_then(|c| c.alias("ui").map(str::to_owned).or_else(|| c.alias("components").map(|a| format!("{a}/ui"))));
-    let candidates: Vec<PathBuf> = ui.iter().map(|a| alias_dir(&root, a)).chain(["components/ui", "src/components/ui", "registry/ui", "src/registry/ui"].iter().map(|p| root.join(p))).collect();
-    found.components_dir = candidates.into_iter().find(|d| d.is_dir());
+    found.components_dir = components_dir(&root, found.components_json.as_ref());
     let mut names: Vec<String> = Vec::new();
     let mut add = |n: String| {
-        let n = catalog::catalog().get(&n).map_or(n, |c| c.name.clone());
         if !names.contains(&n) {
             names.push(n);
         }
     };
     if let Some(reg) = &found.registry {
         for item in reg.items.iter().filter(|i| i.kind == "registry:ui" || i.kind == "registry:component") {
-            add(catalog::normal(&item.name));
+            add(known_name(&item.name));
         }
     }
-    if let Some(dir) = &found.components_dir
-        && let Ok(entries) = std::fs::read_dir(dir)
-    {
-        let mut files: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
-        files.sort();
-        for p in files {
-            let ext = p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-            if ["tsx", "jsx", "vue", "svelte", "ts", "js"].contains(&ext.as_str()) {
-                add(catalog::normal(&p.file_stem().unwrap_or_default().to_string_lossy()));
-            } else if p.is_dir() {
-                // A component in a folder of its own (`button/index.ts`, Vue's and Svelte's way).
-                add(catalog::normal(&p.file_name().unwrap_or_default().to_string_lossy()));
-            }
-        }
+    for (name, _) in found.components_dir.as_deref().map(names_in).unwrap_or_default() {
+        add(name);
     }
     found.components = names;
     found
+}
+
+/// A component's name as the catalog knows it, else as written, normalised.
+pub fn known_name(name: &str) -> String {
+    let n = catalog::normal(name);
+    catalog::catalog().get(&n).map_or(n, |c| c.name.clone())
+}
+
+/// Where the project at `root` keeps its components: `components.json`'s
+/// `ui` alias, else the usual folders.
+pub fn components_dir(root: &Path, components_json: Option<&ComponentsJson>) -> Option<PathBuf> {
+    let ui = components_json.and_then(|c| c.alias("ui").map(str::to_owned).or_else(|| c.alias("components").map(|a| format!("{a}/ui"))));
+    let candidates: Vec<PathBuf> = ui.iter().map(|a| alias_dir(root, a)).chain(["components/ui", "src/components/ui", "registry/ui", "src/registry/ui"].iter().map(|p| root.join(p))).collect();
+    candidates.into_iter().find(|d| d.is_dir())
+}
+
+/// The components in a components' folder, in order: each name and its file
+/// (or its folder, for one kept in a folder of its own).
+pub fn names_in(dir: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut files: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+    files.sort();
+    let mut out: Vec<(String, PathBuf)> = Vec::new();
+    for p in files {
+        let ext = p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        let name = if ["tsx", "jsx", "vue", "svelte", "ts", "js"].contains(&ext.as_str()) {
+            known_name(&p.file_stem().unwrap_or_default().to_string_lossy())
+        } else if p.is_dir() {
+            // A component in a folder of its own (`button/index.ts`, Vue's and Svelte's way).
+            known_name(&p.file_name().unwrap_or_default().to_string_lossy())
+        } else {
+            continue;
+        };
+        if !out.iter().any(|(n, _)| *n == name) {
+            out.push((name, p));
+        }
+    }
+    out
 }
 
 /// The design system of the project at `root`: its usual places, then the

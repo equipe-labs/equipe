@@ -75,7 +75,9 @@ proposes it to the person."
                         squad: Some(squad.to_owned()),
                     };
                     // What `/add` sends.
+                    self.dispatch_deferred.insert(session);
                     Box::pin(self.handle(Command::Start { session, spec })).await;
+                    self.dispatch_deferred.remove(&session);
                     let Some(name) = self.sessions.get(&session).and_then(|s| s.name().map(str::to_owned)) else { continue };
                     if change.effort.is_some() {
                         Box::pin(self.handle(Command::SetEffort { session, effort: change.effort.clone() })).await;
@@ -91,19 +93,24 @@ proposes it to the person."
                 }
             }
         }
-        // An approved add that explicitly unblocks stalled work is also the
-        // person's approval to hand that same ticket to the new member and
-        // requeue it. Both changes are one journal transaction.
-        if change.change == Change::Add
-            && let Some(owner) = members.first()
-            && let Some(journal) = self.journal(squad)
-        {
-            for ticket in &change.unblocks {
-                let operation = format!("team-change:{}:{ticket}", change.id);
-                let _ = journal.reserve_requeue(*ticket, &operation, Some(owner), now_secs());
+        if change.change == Change::Add {
+            // An approved add that explicitly unblocks stalled work is also the
+            // person's approval to hand that same ticket to the new member and
+            // requeue it. Both changes are one journal transaction.
+            if let Some(owner) = members.first()
+                && let Some(journal) = self.journal(squad)
+            {
+                for ticket in &change.unblocks {
+                    let operation = format!("team-change:{}:{ticket}", change.id);
+                    let _ = journal.reserve_requeue(*ticket, &operation, Some(owner), now_secs());
+                }
             }
-            self.dispatch(squad).await;
+            self.dispatch_to(squad, &members, &change.unblocks).await;
         }
+        // The preferred pass only considers the new members. Everyone still
+        // free afterwards gets the ordinary board ordering; after a removal,
+        // this also hands back the work the departing member returned.
+        self.dispatch(squad).await;
         self.publish(Event::TeamChangeClosed { squad: squad.to_owned(), id, approved: true, members: members.clone() });
         let names = members.join(", ");
         let (line, shown) = match (change.change, members.is_empty()) {

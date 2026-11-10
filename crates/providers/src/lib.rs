@@ -9,6 +9,7 @@ pub mod codex_app;
 pub mod credentials;
 pub mod error;
 pub mod openai;
+pub mod platform;
 pub mod pkce;
 pub mod relay;
 pub mod tools_path;

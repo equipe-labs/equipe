@@ -5,7 +5,9 @@
 //! daemon's way (`equipe_core::design`), pictures and all.
 //!
 //! - `1`: the squad's, and the web project's own (the site's older palette),
-//!   with its UI map (`fake_daemon/flows.rs`).
+//!   with its UI map (`fake_daemon/flows.rs`) and its components — a
+//!   registry, previews and matrices, one component in review on T-170 and
+//!   one still being made on T-412 (`fake_daemon/components.rs`).
 //! - `draft`: the squad's as the desktop has it now (steel blue), and T-144
 //!   in review with its draft (signal blue) — the "In review" pill.
 //! - `working`: the squad's, its setup at the UI map, and T-378 still at work
@@ -55,6 +57,9 @@ fn places() -> Vec<Place> {
             out.push(Place { project: Some("web".into()), draft: None, dir: base().join("web/design"), live: None, installed: None });
             // T-170 in review: the site's refresh, its UI map shot again where it changed.
             out.push(Place { project: Some("web".into()), draft: Some(DraftOf { ticket: 170, title: REFRESH_TITLE.into(), working: false }), dir: base().join("t170/design"), live: None, installed: None });
+            // T-412 still at work on a component: shown on it, the draft in review beside it on screen.
+            let (ticket, title) = (super::components::WORKING_TICKET, super::components::WORKING_TITLE);
+            out.push(Place { project: Some("web".into()), draft: Some(DraftOf { ticket, title: title.into(), working: true }), dir: base().join("t412/design"), live: None, installed: None });
         }
     }
     out
@@ -138,6 +143,10 @@ pub fn seed() {
         super::flows::seed(&base().join("web/design"));
         write_system(&base().join("t170/design"), &tokens(&REFRESH), GUIDELINES_WEB);
         super::flows::seed_draft(&base().join("t170/design"), &base().join("web/design"));
+        write_system(&base().join("t412/design"), &tokens(&SITE), GUIDELINES_WEB);
+        super::components::seed(&base().join("web"), None);
+        super::components::seed(&base().join("t170"), Some("question-step"));
+        super::components::seed(&base().join("t412"), Some("source-chip"));
         write_decisions(&squad, &base().join("web/design"));
     }
 }
@@ -589,7 +598,8 @@ pub fn read_image(ask: &ReadImage) -> Result<ImageRead, String> {
     let (mut systems, _) = folder::catalog_of(&places, Lang::En);
     super::flows::dress(&mut systems);
     let decided = places.iter().flat_map(|p| store::pictures(&p.dir)).any(|p| p == ask.path);
-    if !decided && !systems.iter().any(|s| s.assets.iter().any(|a| a.path == ask.path)) && !super::flows::pictures(&systems).contains(&ask.path) {
+    let component = systems.iter().flat_map(|s| &s.components).flat_map(|c| &c.previews).any(|p| p.path == ask.path);
+    if !decided && !component && !systems.iter().any(|s| s.assets.iter().any(|a| a.path == ask.path)) && !super::flows::pictures(&systems).contains(&ask.path) {
         return Err(format!("{} isn't a picture {} shows", ask.path, ask.squad));
     }
     let roots: Vec<PathBuf> = places.into_iter().map(|p| p.dir).collect();

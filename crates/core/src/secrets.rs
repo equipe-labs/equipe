@@ -127,7 +127,6 @@ pub fn place(given: &str, home: &Path) -> Result<(PathBuf, String), String> {
 /// line replaced or added, the file's other lines kept; the file readable by
 /// its owner alone, its new folders too.
 pub fn write(path: &Path, fields: &[SecretField], values: &[SecretValue]) -> Result<(), String> {
-    use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
     if values.len() != fields.len() {
         return Err(format!("{} values for {} fields", values.len(), fields.len()));
     }
@@ -135,7 +134,10 @@ pub fn write(path: &Path, fields: &[SecretField], values: &[SecretValue]) -> Res
         return Err("a value can't hold a line break".into());
     }
     if let Some(dir) = path.parent() {
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(|e| e.to_string())?;
+        let mut builder = std::fs::DirBuilder::new(); builder.recursive(true);
+        #[cfg(unix)]
+        { use std::os::unix::fs::DirBuilderExt as _; builder.mode(0o700); }
+        builder.create(dir).map_err(|e| e.to_string())?;
     }
     let before = std::fs::read_to_string(path).unwrap_or_default();
     let ours = |line: &str| fields.iter().any(|f| line.trim_start().strip_prefix("export ").unwrap_or(line.trim_start()).starts_with(&format!("{}=", f.key)));
@@ -148,10 +150,14 @@ pub fn write(path: &Path, fields: &[SecretField], values: &[SecretValue]) -> Res
     let draft = path.with_extension("equipe-draft");
     {
         use std::io::Write as _;
-        let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&draft).map_err(|e| e.to_string())?;
+        let mut options = std::fs::OpenOptions::new(); options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        { use std::os::unix::fs::OpenOptionsExt as _; options.mode(0o600); }
+        let mut file = options.open(&draft).map_err(|e| e.to_string())?;
         file.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
     }
-    std::fs::set_permissions(&draft, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    { use std::os::unix::fs::PermissionsExt as _; std::fs::set_permissions(&draft, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?; }
     std::fs::rename(&draft, path).map_err(|e| e.to_string())
 }
 

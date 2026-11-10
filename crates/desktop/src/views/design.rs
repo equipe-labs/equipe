@@ -8,8 +8,10 @@
 //! (swatches by group, light and dark side by side, contrast graded; a click
 //! copies), Typography (live text in each style, a word when the font isn't
 //! here), Spacing · Radius · Shadow · Motion (specimens; a curve plays under the
-//! pointer), Assets (pictures on a checkerboard, big in a lightbox) and
-//! Guidelines (guidelines.md with its contents). With none yet, what one is
+//! pointer), Components (each component the system has — its pictures, its
+//! variants and states, what its matrix found, whether a ticket is still at
+//! it — opened live from its docs page), Assets (pictures on a checkerboard,
+//! big in a lightbox) and Guidelines (guidelines.md with its contents). With none yet, what one is
 //! and a way to ask the designer. Each colour, type style and picture has
 //! "Talk" on hover: it goes, as a chip, to the designer's conversation
 //! docked at the right (`views/design_talk.rs`). ←/→ or 1–9 move between
@@ -23,7 +25,7 @@ use std::time::{Duration, Instant};
 use equipe_core::design::contrast::{self, Grade};
 use equipe_core::design::diff::Change;
 use equipe_core::design::values::{self, Color};
-use equipe_core::protocol::design::{AssetKind, DesignSystem, Taste, Token};
+use equipe_core::protocol::design::{AssetKind, Component, DesignSystem, Preview, Taste, Token};
 use equipe_core::protocol::Command;
 use equipe_core::t;
 use gpui_kit::component::*;
@@ -651,6 +653,7 @@ fn page(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyEle
         Section::Radius => radius(shell, system, cx),
         Section::Shadow => shadows(shell, system, cx),
         Section::Motion => motion_section(shell, system, cx),
+        Section::Components => components(shell, system, cx),
         Section::Assets => assets(shell, system, cx),
         Section::Guidelines | Section::Taste => unreachable!(),
     };
@@ -1467,7 +1470,7 @@ fn assets(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyE
                             let reveal = path.clone();
                             b.child(action("design-reveal", Icon::Folder, t!("design.reveal").into()).on_click(move |_, _, cx| {
                                 cx.stop_propagation();
-                                let _ = std::process::Command::new("open").arg("-R").arg(&reveal).spawn();
+                                let _ = equipe_providers::platform::reveal(&reveal);
                             }))
                         }),
                 )
@@ -1501,6 +1504,253 @@ fn assets(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyE
     col.into_any_element()
 }
 
+// ── Components ──
+
+/// A component's card, and its picture's stage.
+const CARD_W: f32 = 260.;
+const STAGE_H: f32 = 172.;
+/// Its other pictures' thumbnails, and how many before "+n".
+const THUMB_W: f32 = 46.;
+const THUMB_H: f32 = 32.;
+const THUMBS_MAX: usize = 4;
+
+/// A component as the person points at it, with the picture on show.
+fn component_context(c: &Component, picture: Option<&Preview>) -> DesignContext {
+    DesignContext::Component { name: c.name.clone(), title: c.title.clone(), picture: picture.or(c.previews.first()).map(|p| p.path.clone()) }
+}
+
+/// What a component's picture shows, in words: its label, a contact sheet's width, or its title.
+fn preview_label(c: &Component, preview: &Preview) -> String {
+    match (preview.sheet, &preview.label) {
+        (Some(width), _) => t!("design.component_sheet", width = width),
+        (None, Some(label)) => label.clone(),
+        (None, None) => c.title.clone(),
+    }
+}
+
+/// A variant as the matrix names it, shorter: `variant=outline,size=sm` → `outline · sm`.
+fn variant_words(v: &str) -> String {
+    v.split(',').map(|part| part.split_once('=').map_or(part, |(_, value)| value).trim()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" · ")
+}
+
+/// Whether this window can open a component's page: an address anywhere,
+/// a file only on the daemon's own Mac.
+fn can_open(page: &str, remote: bool) -> bool {
+    page.starts_with("http://") || page.starts_with("https://") || !remote
+}
+
+fn components(shell: &Shell, system: &DesignSystem, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let mut col = v_flex().child(heading(p, t!("design.section_components").into(), Some(t!("design.components_note").into())));
+    if system.components.is_empty() {
+        return col.child(components_empty(shell, cx)).into_any_element();
+    }
+    let remote = shell.endpoint.is_remote();
+    let mut grid = h_flex().gap_4().flex_wrap().items_start();
+    for (ix, c) in system.components.iter().enumerate() {
+        grid = grid.child(component_card(shell, ix, c, remote, cx));
+    }
+    col = col.child(grid);
+    col.into_any_element()
+}
+
+/// None yet: what the section will show, and a way to ask for it.
+fn components_empty(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let has_designer = shell.model.members.iter().any(|m| m.role == "designer");
+    v_flex()
+        .id("design-components-empty")
+        .mt_2()
+        .max_w(px(560.))
+        .p_6()
+        .gap_3()
+        .rounded(px(R_LG))
+        .border_1()
+        .border_color(p.hair)
+        .bg(p.raised)
+        .child(
+            div()
+                .size(px(40.))
+                .rounded(px(R_MD))
+                .bg(p.bg)
+                .border_1()
+                .border_color(p.hair)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon(Icon::PenTool, 20., p.text2)),
+        )
+        .child(div().text_size(px(UI)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("design.components_empty_title")))
+        .child(div().text_size(px(SMALL)).line_height(px(21.)).text_color(p.text2).child(t!("design.components_empty_text")))
+        .child(
+            h_flex().pt_1().child(
+                ui::button(p, "design-components-ask", ui::Kind::Primary, if has_designer { t!("design.components_ask") } else { t!("design.ask_pm") })
+                    .icon(Icon::Message)
+                    .on_click(cx.listener(|this, _, window, cx| this.design_ask_with(t!("design.components_ask_message").into(), t!("design.components_ask_pm_message").into(), window, cx))),
+            ),
+        )
+        .into_any_element()
+}
+
+/// Where a component stands: a ticket at work on it (in review, or still
+/// being made — its ticket a click away), else done; and what its matrix found.
+fn component_status(shell: &Shell, ix: usize, c: &Component, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+    let p = shell.palette;
+    let chip = |id: String| h_flex().id(SharedString::from(id)).flex_none().h(px(22.)).px_2().gap_1p5().items_center().rounded(px(11.)).border_1().border_color(p.hair).text_size(px(META)).text_color(p.text2);
+    let dot = |c: Rgba| div().size(px(6.)).flex_none().rounded_full().bg(c);
+    let status = match &c.work {
+        Some(work) => {
+            let ticket = work.ticket;
+            let words = if work.review { t!("design.in_review", id = ticket) } else { t!("design.working_chip", id = ticket) };
+            chip(format!("design-comp-work-{ix}"))
+                .cursor_pointer()
+                .hover(move |s| s.bg(p.bg))
+                .child(dot(if work.review { p.amber } else { p.accent }))
+                .child(div().text_color(p.text).child(words))
+                .tip(p, t!("design.component_work_tip", title = work.title.clone()), None)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.open_ticket(ticket, cx);
+                }))
+                .into_any_element()
+        }
+        None => chip(format!("design-comp-done-{ix}")).child(icon(Icon::Check, 12., p.text2)).child(t!("design.component_done")).into_any_element(),
+    };
+    let check = c.check.as_ref().map(|check| {
+        if check.fails == 0 {
+            chip(format!("design-comp-check-{ix}")).child(icon(Icon::Done, 12., p.text2)).child(t!("design.component_checked")).tip(p, t!("design.component_checked_tip"), None).into_any_element()
+        } else {
+            chip(format!("design-comp-check-{ix}"))
+                .child(icon(Icon::Alert, 12., p.red))
+                .child(div().text_color(p.text).child(t!("design.component_to_fix", count = check.fails)))
+                .tip(p, t!("design.component_to_fix_tip"), None)
+                .into_any_element()
+        }
+    });
+    h_flex().gap_1p5().flex_wrap().child(status).children(check)
+}
+
+fn component_card(shell: &Shell, ix: usize, c: &Component, remote: bool, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let group = SharedString::from(format!("comp-{ix}"));
+    let first = c.previews.first();
+    let stage = div()
+        .id(SharedString::from(format!("design-comp-{ix}")))
+        .group(group.clone())
+        .relative()
+        .w_full()
+        .h(px(STAGE_H))
+        .rounded_t(px(R_LG))
+        .overflow_hidden()
+        .child(img(checkerboard(p.is_dark())).absolute().inset_0().size_full().object_fit(ObjectFit::Cover))
+        .child(div().absolute().inset_0().p_4().flex().flex_col().gap_2().items_center().justify_center().map(|d| match first {
+            Some(preview) => d.child(picture(shell, &preview.path, p.muted)),
+            None => d.child(icon(Icon::File, ICON, p.muted)).child(div().text_size(px(META)).text_color(p.muted).child(t!("design.component_no_preview"))),
+        }))
+        .child(div().absolute().top(px(8.)).left(px(8.)).child(super::design_talk::say(p, SharedString::from(format!("design-say-comp-{ix}")), group.clone(), component_context(c, None), cx)))
+        .children(c.page.clone().filter(|page| can_open(page, remote)).map(|page| {
+            let tip = t!("design.component_open_tip", page = page.clone());
+            h_flex()
+                .id(SharedString::from(format!("design-comp-open-{ix}")))
+                .absolute()
+                .top(px(8.))
+                .right(px(8.))
+                .h(px(22.))
+                .px_2()
+                .gap_1()
+                .items_center()
+                .rounded(px(6.))
+                .bg(p.popover())
+                .border_1()
+                .border_color(p.hair)
+                .shadow_sm()
+                .text_size(px(META))
+                .text_color(p.text)
+                .cursor_pointer()
+                .invisible()
+                .group_hover(group.clone(), |s| s.visible())
+                .hover(move |s| s.bg(p.raised))
+                .child(icon(Icon::External, 12., p.text2))
+                .child(t!("design.component_open"))
+                .tip(p, tip, None)
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    if page.starts_with("http://") || page.starts_with("https://") {
+                        cx.open_url(&page);
+                    } else {
+                        let _ = equipe_providers::platform::open(&page);
+                    }
+                })
+        }))
+        .when(first.is_some(), |d| d.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| this.design_component_shot(Some((ix, 0)), cx))));
+    let mut thumbs = h_flex().gap_1p5();
+    if c.previews.len() > 1 {
+        for (k, preview) in c.previews.iter().enumerate().skip(1).take(THUMBS_MAX) {
+            thumbs = thumbs.child(
+                div()
+                    .id(SharedString::from(format!("design-comp-{ix}-{k}")))
+                    .w(px(THUMB_W))
+                    .h(px(THUMB_H))
+                    .flex_none()
+                    .p_0p5()
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(p.hair)
+                    .bg(p.bg)
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(move |s| s.border_color(p.muted))
+                    .child(picture(shell, &preview.path, p.muted))
+                    .tip(p, preview_label(c, preview), None)
+                    .on_click(cx.listener(move |this, _, _, cx| this.design_component_shot(Some((ix, k)), cx))),
+            );
+        }
+        let more = c.previews.len().saturating_sub(1 + THUMBS_MAX);
+        if more > 0 {
+            thumbs = thumbs.child(div().text_size(px(META)).text_color(p.muted).child(format!("+{more}")));
+        }
+    }
+    let variants: Vec<String> = c.variants.iter().map(|v| variant_words(v)).filter(|v| !v.is_empty()).collect();
+    let facts: Vec<String> = [(t!("design.component_variants"), variants), (t!("design.component_states"), c.states.clone())]
+        .into_iter()
+        .filter(|(_, list)| !list.is_empty())
+        .map(|(label, list)| format!("{label}: {}", list.join(", ")))
+        .collect();
+    v_flex()
+        .id(SharedString::from(format!("design-comp-card-{ix}")))
+        .w(px(CARD_W))
+        .rounded(px(R_LG))
+        .border_1()
+        .border_color(p.hair)
+        .bg(p.raised)
+        .child(stage)
+        .child(
+            v_flex()
+                .px_3()
+                .pt_2p5()
+                .pb_3()
+                .gap_1p5()
+                .border_t_1()
+                .border_color(p.hair)
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(div().min_w_0().flex_1().truncate().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(c.title.clone()))
+                        .when(c.block, |r| r.child(div().flex_none().px_1p5().rounded(px(4.)).bg(p.bg).text_size(px(META)).text_color(p.muted).child(t!("design.component_block")))),
+                )
+                .child(component_status(shell, ix, c, cx))
+                .children(c.description.clone().map(|d| div().text_size(px(META)).line_height(px(17.)).text_color(p.text2).line_clamp(2).text_ellipsis().child(d)))
+                .when(c.previews.len() > 1, |d| d.child(thumbs))
+                .children((!facts.is_empty()).then(|| div().text_size(px(META)).line_height(px(17.)).text_color(p.muted).line_clamp(2).text_ellipsis().child(facts.join(" · "))))
+                .children(c.source.clone().map(|s| div().font_family(MONO).text_size(px(META)).text_color(p.muted).truncate().child(s))),
+        )
+        .into_any_element()
+}
+
 /// An asset shown big over the window — or, in the UI map, the state on show:
 /// ←/→ through the others, Esc closes.
 pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
@@ -1510,6 +1760,14 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
     let (path, name, said, many, dark_stage) = match super::flows::zoomed(shell) {
         Some((path, name, said, many)) => (path, name, said, many, p.is_dark()),
+        None if shell.design.component_shot.is_some() => {
+            let (c, k) = shell.design.component_shot?;
+            let component = shell.design.current()?.components.get(c)?;
+            let preview = component.previews.get(k)?;
+            let n = component.previews.len();
+            let name = if preview.sheet.is_some() || preview.label.is_some() { format!("{} · {}", component.title, preview_label(component, preview)) } else { component.title.clone() };
+            (preview.path.clone(), name, format!("{}/{n} · {}", k + 1, human_size(preview.size)), n > 1, p.is_dark())
+        }
         None => {
             let at = shell.design.lightbox?;
             let system = shell.design.current()?;
@@ -1577,7 +1835,7 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 .when(!remote, |b| {
                     b.child(round(
                         div().id("design-lb-reveal").on_click(move |_, _, _| {
-                            let _ = std::process::Command::new("open").arg("-R").arg(&reveal).spawn();
+                            let _ = equipe_providers::platform::reveal(&reveal);
                         }),
                         Icon::Folder,
                         t!("design.reveal").into(),
@@ -1741,6 +1999,7 @@ impl Shell {
             } else {
                 self.design_end_look();
                 self.design.lightbox = None;
+                self.design.component_shot = None;
                 self.design.map.zoomed = false;
                 self.design.changes_open = false;
                 self.design.versions_open = false;
@@ -1806,10 +2065,18 @@ impl Shell {
         let decided = self.design_taste_pictures();
         let system = self.design.current();
         let big = self.design.lightbox.and_then(|at| system?.assets.get(at)).map(|a| a.path.clone());
+        let big_component = self.design.component_shot.and_then(|(c, k)| system?.components.get(c)?.previews.get(k)).map(|p| p.path.clone());
+        // A component's pictures only while its section is on show: a big
+        // registry's sheets are many.
+        let components = system.filter(|_| self.design.section == Section::Components).map(|s| s.components.as_slice()).unwrap_or_default();
         let wanted = {
             let mut shots = self.shots.borrow_mut();
-            for path in system.iter().flat_map(|s| s.assets.iter().map(|a| &a.path)).chain(&decided) {
+            let previews = components.iter().flat_map(|c| c.previews.iter().take(1 + THUMBS_MAX).map(|p| &p.path));
+            for path in system.iter().flat_map(|s| s.assets.iter().map(|a| &a.path)).chain(&decided).chain(previews) {
                 let _: Shown = shots.look(path, Size::Thumb);
+            }
+            if let Some(path) = &big_component {
+                let _ = shots.look(path, Size::Full);
             }
             if let Some(path) = &big {
                 let _ = shots.look(path, Size::Full);
@@ -1880,6 +2147,16 @@ impl Shell {
 
     pub fn design_lightbox(&mut self, at: Option<usize>, cx: &mut Context<Self>) {
         self.design.lightbox = at;
+        self.design.component_shot = None;
+        self.design.map.zoomed = false;
+        cx.notify();
+    }
+
+    /// A component's picture big — its place in the system's components,
+    /// the picture's in its previews — or closed.
+    pub fn design_component_shot(&mut self, at: Option<(usize, usize)>, cx: &mut Context<Self>) {
+        self.design.component_shot = at.filter(|(c, k)| self.design.current().and_then(|s| s.components.get(*c)).is_some_and(|c| *k < c.previews.len()));
+        self.design.lightbox = None;
         self.design.map.zoomed = false;
         cx.notify();
     }
@@ -1887,6 +2164,15 @@ impl Shell {
     fn design_step(&mut self, forward: bool, cx: &mut Context<Self>) {
         if super::flows::zoomed(self).is_some() {
             return self.flows_step_state(forward, cx);
+        }
+        // A component's pictures: its variants, states and sheets in turn.
+        if let Some((c, k)) = self.design.component_shot {
+            let n = self.design.current().and_then(|s| s.components.get(c)).map_or(0, |c| c.previews.len());
+            if n > 0 {
+                self.design.component_shot = Some((c, if forward { (k + 1) % n } else { (k + n - 1) % n }));
+            }
+            cx.notify();
+            return;
         }
         let n = self.design.current().map_or(0, |s| s.assets.len());
         if let Some(at) = self.design.lightbox.filter(|_| n > 0) {
@@ -1901,9 +2187,9 @@ impl Shell {
             cx.write_to_clipboard(ClipboardItem::new_string(dir.to_owned()));
             self.composer.flash = Some(t!("design.folder_copied", path = dir));
         } else if std::path::Path::new(dir).is_dir() {
-            let _ = std::process::Command::new("open").arg(dir).spawn();
+            let _ = equipe_providers::platform::open(dir);
         } else if let Some(parent) = std::path::Path::new(dir).parent() {
-            let _ = std::process::Command::new("open").arg(parent).spawn();
+            let _ = equipe_providers::platform::open(parent);
         }
         cx.notify();
     }
@@ -1931,7 +2217,7 @@ impl Shell {
             });
             let _ = notices.send(match saved {
                 Ok(target) => {
-                    let _ = std::process::Command::new("open").arg("-R").arg(&target).spawn();
+                    let _ = equipe_providers::platform::reveal(&target);
                     t!("design.downloaded", name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
                 }
                 Err(why) => t!("design.download_failed", why = why),
@@ -1967,7 +2253,7 @@ impl Shell {
         if self.screen != Screen::Design || m.platform || m.control || m.alt || m.function {
             return false;
         }
-        if self.design.lightbox.is_some() || self.design.map.zoomed {
+        if self.design.lightbox.is_some() || self.design.component_shot.is_some() || self.design.map.zoomed {
             match key {
                 "left" => self.design_step(false, cx),
                 "right" => self.design_step(true, cx),
@@ -2030,12 +2316,13 @@ impl Shell {
     }
 
     /// Dev tool (`snapshot.rs`): "Talk" on a colour or type style by its
-    /// name, or on asset `asset:<n>`.
+    /// name, on asset `asset:<n>` or component `component:<n>`.
     #[cfg(feature = "snapshot")]
     pub fn design_point_named(&mut self, what: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(system) = self.design.current() else { return };
         let ctx = match what.strip_prefix("asset:") {
             Some(n) => n.parse::<usize>().ok().and_then(|n| system.assets.get(n)).map(asset_context),
+            None if what.starts_with("component:") => what["component:".len()..].parse::<usize>().ok().and_then(|n| system.components.get(n)).map(|c| component_context(c, None)),
             None => system.tokens.iter().find(|t| t.name == what).map(|t| if t.kind == "color" { token_context(system, t) } else { type_context(t) }),
         };
         if let Some(ctx) = ctx {

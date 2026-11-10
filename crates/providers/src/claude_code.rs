@@ -18,7 +18,6 @@ use std::process::Stdio;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
 
 use crate::error::{Error, Result};
 use crate::turn::{TurnResult, TurnUsage};
@@ -40,6 +39,9 @@ pub struct AuthStatus {
     /// e.g. `pro` or `max`.
     #[serde(default)]
     pub subscription_type: Option<String>,
+    /// The account's email, as Claude Code prints it about itself.
+    #[serde(default)]
+    pub email: Option<String>,
 }
 
 impl AuthStatus {
@@ -60,7 +62,7 @@ const AUTH_STATUS_WAIT: std::time::Duration = std::time::Duration::from_secs(20)
 /// Ask the installed Claude Code whether it is signed in.
 /// `Ok(None)` means the binary isn't installed (or not on PATH).
 pub async fn auth_status(binary: &str) -> Result<Option<AuthStatus>> {
-    let asked = Command::new(binary).args(["auth", "status", "--json"]).stdin(Stdio::null()).kill_on_drop(true).output();
+    let asked = crate::tools_path::command(binary).args(["auth", "status", "--json"]).stdin(Stdio::null()).kill_on_drop(true).output();
     // A sign-in check that never answers must not hold up whoever asked (the daemon's loop).
     let Ok(output) = tokio::time::timeout(AUTH_STATUS_WAIT, asked).await else {
         let secs = AUTH_STATUS_WAIT.as_secs();
@@ -79,6 +81,7 @@ pub async fn auth_status(binary: &str) -> Result<Option<AuthStatus>> {
             auth_method: None,
             api_provider: None,
             subscription_type: None,
+            email: None,
         }));
     }
     parse_auth_status(&stdout).map(Some)
@@ -922,7 +925,7 @@ pub async fn run_turn(
     mut steering: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
     mut on_activity: impl FnMut(Activity),
 ) -> Result<Turn> {
-    let mut command = Command::new(binary);
+    let mut command = crate::tools_path::command(binary);
     // A directory added for reading brings its own CLAUDE.md, so the project's
     // conventions are known from wherever the turn runs.
     if !request.add_dirs.is_empty() {
@@ -1069,7 +1072,7 @@ pub fn parse_suggestion(json: &str) -> Option<String> {
 /// Guess the person's next message from `conversation` with their own Claude
 /// Code, in `cwd`. Any failure is no guess.
 pub async fn suggest(binary: &str, cwd: &Path, conversation: &str) -> Option<String> {
-    let output = Command::new(binary)
+    let output = crate::tools_path::command(binary)
         .args(suggest_args(conversation))
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -1171,7 +1174,7 @@ mod tests {
     // ── auth status ──
 
     #[test]
-    fn parses_a_subscription_login_and_ignores_identifying_fields() {
+    fn parses_a_subscription_login_with_its_email_and_ignores_the_rest() {
         let status = parse_auth_status(
             r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty",
                 "email":"someone@example.com","orgId":"o","subscriptionType":"max"}"#,
@@ -1179,6 +1182,8 @@ mod tests {
         .unwrap();
         assert!(status.uses_subscription());
         assert_eq!(status.subscription_type.as_deref(), Some("max"));
+        // The account's email shows on its card, as Codex's does; the organisation isn't kept.
+        assert_eq!(status.email.as_deref(), Some("someone@example.com"));
     }
 
     #[test]

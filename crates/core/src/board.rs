@@ -34,14 +34,28 @@ fn knows_where(ticket: &Ticket, single_project: bool) -> bool {
 /// priority decides only between equals; a member takes one ticket at a
 /// time; an owner naming a member wins over one naming a role.
 pub fn assignments(tickets: &[Ticket], members: &[Candidate<'_>], single_project: bool) -> Vec<(TicketId, String)> {
+    assignments_prioritizing(tickets, members, single_project, &[])
+}
+
+/// The same board assignment rules, with named ready tickets considered first
+/// in the order given. Missing, held, finished, unowned, misplaced, dependent,
+/// or role-mismatched tickets still fall through the ordinary rules.
+pub fn assignments_prioritizing(
+    tickets: &[Ticket],
+    members: &[Candidate<'_>],
+    single_project: bool,
+    first: &[TicketId],
+) -> Vec<(TicketId, String)> {
     let finished = |id: &TicketId| tickets.iter().any(|t| t.id == *id && t.status.is_closed());
     let mut busy: Vec<&str> = members.iter().filter(|m| !m.free).map(|m| m.name).collect();
     let mut out = Vec::new();
     // As the person ordered the board — each owner's queue is its tickets in
-    // that order — the more pressing first only between equals.
+    // that order — the more pressing first only between equals. Work that
+    // came back to its member (sent back from review, design QA, a wait)
+    // goes ahead of what it hasn't started: its branch and context wait.
     // A started idea the PM is still thinking through with the person waits.
     let mut ready: Vec<&Ticket> = tickets.iter().filter(|t| t.status == TicketStatus::Todo && !t.office_hours_first()).collect();
-    ready.sort_by_key(|t| (t.order_key(), t.priority, t.id));
+    ready.sort_by_key(|t| (first.iter().position(|id| *id == t.id).unwrap_or(usize::MAX), !came_back(t), t.order_key(), t.priority, t.id));
     for ticket in ready {
         let Some(owner) = ticket.owner.as_deref() else {
             continue;
@@ -66,6 +80,13 @@ pub fn assignments(tickets: &[Ticket], members: &[Candidate<'_>], single_project
         }
     }
     out
+}
+
+/// Started work back on the board for its member to go on with: sent back
+/// from review or design QA, or resumed after a wait — the notes
+/// `begin_work` reads as its reopen envelope.
+fn came_back(ticket: &Ticket) -> bool {
+    ticket.branch.is_some() && ticket.note.as_deref().is_some_and(|n| n.starts_with("Reopened") || n.starts_with("Resumed") || n.starts_with("Design QA by "))
 }
 
 /// The role a numbered member's name stands for: `frontend-3` → `frontend`.
@@ -206,6 +227,13 @@ pub fn render(tickets: &[Ticket]) -> String {
         }
         if let Some(qa) = t.design_qa {
             facts.push(format!("design QA on T-{qa} first"));
+        }
+        // How long handed-in work has waited: the longest waiting is reviewed first.
+        if t.status == TicketStatus::Review
+            && let Some(at) = t.updated_at
+        {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(at, |d| d.as_secs());
+            facts.push(format!("in review {}", crate::accept::waited(now.saturating_sub(at))));
         }
         if !facts.is_empty() {
             out.push_str(&format!(" — {}", facts.join(", ")));
@@ -547,10 +575,15 @@ It waits on the board as a proposal until the PM or the person accepts it."
         }),
         json!({
             "name": COMMENT,
-            "description": "Add a note to a ticket's record.",
+            "description": "Add a note to a ticket's record. The PM, on a ticket in review, says `review` too: `changes` \
+sends it back to its member with this text as what to change; `note` only notes it.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "id": { "type": "integer" }, "text": { "type": "string" } },
+                "properties": {
+                    "id": { "type": "integer" },
+                    "text": { "type": "string" },
+                    "review": { "type": "string", "enum": ["changes", "note"], "description": "The PM, on a ticket in review: `changes` sends it back to its member with `text` as what to change (it is told now); `note` leaves it waiting for review." },
+                },
                 "required": ["id", "text"],
             },
         }),
@@ -1202,6 +1235,29 @@ mod tests {
     }
 
     #[test]
+    fn work_sent_back_goes_to_its_member_before_what_it_has_not_started() {
+        // frontend-3's queue: two fresh tickets, then one its design QA sent back (T-640's case).
+        let mut back = ticket(640, "frontend-3");
+        back.branch = Some("equipe/t640".into());
+        back.note = Some("Design QA by designer (T-660): the button is cut off at 760px".into());
+        let mut by_pm = ticket(650, "frontend-3");
+        by_pm.branch = Some("equipe/t650".into());
+        by_pm.note = Some(format!("{}the empty state is missing", crate::accept::PM_SENT_BACK));
+        let tickets = [ticket(609, "frontend-3"), ticket(634, "frontend-3"), back.clone(), by_pm];
+        let members = [free("frontend-3", "frontend")];
+        assert_eq!(assignments(&tickets, &members, true), [(640, "frontend-3".into())]);
+        assert_eq!(assignments(&tickets[..2], &members, true), [(609, "frontend-3".into())], "fresh work keeps the board's order");
+        // A note alone, without work under way, is no head start.
+        back.branch = None;
+        assert_eq!(assignments(&[ticket(609, "frontend-3"), back], &members, true), [(609, "frontend-3".into())]);
+        // A member that left: the work goes to its role, still first.
+        let mut left = ticket(700, "frontend-9");
+        left.branch = Some("equipe/t700".into());
+        left.note = Some("Reopened: wrong order".into());
+        assert_eq!(assignments(&[ticket(609, "frontend"), left], &[free("frontend", "frontend")], true), [(700, "frontend".into())]);
+    }
+
+    #[test]
     fn a_started_idea_held_for_office_hours_goes_to_nobody_until_the_pm_releases_it() {
         let held = Ticket { note: Some(crate::protocol::OFFICE_HOURS_FIRST.into()), ..ticket(1, "frontend") };
         assert!(held.office_hours_first());
@@ -1217,6 +1273,31 @@ mod tests {
         let members = [free("frontend", "frontend"), free("frontend-2", "frontend")];
         assert_eq!(assignments(&tickets, &members, true), [(1, "frontend".into()), (2, "frontend-2".into())]);
         assert_eq!(assignments(&tickets, &members[..1], true), [(1, "frontend".into())]);
+    }
+
+    #[test]
+    fn named_ready_tickets_go_first_in_the_given_order_without_bypassing_readiness_or_roles() {
+        let old = ticket(1, "frontend");
+        let backend = ticket(2, "backend");
+        let preferred = ticket(3, "frontend");
+        let mut waiting = ticket(4, "frontend");
+        waiting.depends_on = vec![9];
+        let members = [free("frontend-2", "frontend"), free("frontend-3", "frontend")];
+        let tickets = [old, backend, preferred, waiting];
+        assert_eq!(
+            assignments_prioritizing(&tickets, &members, true, &[4, 2, 3]),
+            [(3, "frontend-2".into()), (1, "frontend-3".into())],
+        );
+    }
+
+    #[test]
+    fn several_named_tickets_are_assigned_once_each_in_order() {
+        let tickets = [ticket(1, "frontend"), ticket(2, "frontend"), ticket(3, "frontend")];
+        let members = [free("frontend-2", "frontend"), free("frontend-3", "frontend")];
+        assert_eq!(
+            assignments_prioritizing(&tickets, &members, true, &[3, 2, 3]),
+            [(3, "frontend-2".into()), (2, "frontend-3".into())],
+        );
     }
 
     #[test]

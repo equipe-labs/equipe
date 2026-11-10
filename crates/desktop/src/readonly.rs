@@ -101,6 +101,10 @@ pub fn reads(command: &Command) -> bool {
         | C::SideChatSubmit { .. }
         | C::CloseSideChat { .. }
         | C::Say { .. }
+        // A call starts and steers the squad; snapshots must never do either.
+        | C::CallStart { .. }
+        | C::CallUtterance { .. }
+        | C::CallEnd { .. }
         | C::UndoWords { .. }
         | C::ClearWordsLog { .. }
         | C::SetWordsAll { .. }
@@ -137,6 +141,7 @@ pub fn reads(command: &Command) -> bool {
         | C::AddProject { .. }
         | C::RemoveProject { .. }
         | C::SetHq { .. }
+        | C::DeleteSquad { .. }
         | C::SaveRoutine { .. }
         | C::DeleteRoutine { .. }
         | C::RunRoutine { .. }
@@ -327,6 +332,7 @@ const ASK_WAIT: Duration = Duration::from_secs(5);
 /// The look of the screen the person used last, asked of the daemon at
 /// `socket` (`person_look`, which reads): `None` when no screen ever told one
 /// — or the daemon can't say (one older than this).
+#[cfg(unix)]
 pub fn person_look(socket: &Path) -> Option<SeenLook> {
     use std::io::{BufRead as _, Write as _};
     if !lets_method(rpc::PERSON_LOOK) {
@@ -342,6 +348,11 @@ pub fn person_look(socket: &Path) -> Option<SeenLook> {
             return message.result_as::<PersonLook>()?.look;
         }
     }
+    None
+}
+
+#[cfg(windows)]
+pub fn person_look(_socket: &Path) -> Option<SeenLook> {
     None
 }
 
@@ -520,6 +531,7 @@ mod tests {
             Command::AddProject { squad: s(), path: "/p".into() },
             Command::RemoveProject { squad: s(), path: "/p".into() },
             Command::SetHq { squad: s(), path: None },
+            Command::DeleteSquad { squad: s() },
             Command::SaveRoutine { squad: s(), routine },
             Command::DeleteRoutine { squad: s(), id: 1 },
             Command::RunRoutine { squad: s(), id: 1 },
@@ -562,6 +574,9 @@ mod tests {
             Command::DiskScan,
             Command::PlanUse { engine: Engine::Claude, span: equipe_core::protocol::plan_use::Span::Week },
             Command::Say { squad: s(), session: 1, text: "x".into(), via: Default::default(), all: false, later: false, pasted: false, about: None, device: None },
+            Command::CallStart { squad: s() },
+            Command::CallUtterance { squad: s(), call: "c".into(), text: "x".into(), via: Default::default() },
+            Command::CallEnd { squad: s(), call: "c".into() },
             Command::UndoWords { squad: s(), id: 1 },
             Command::WordsLog { squad: s() },
             Command::ClearWordsLog { squad: s() },

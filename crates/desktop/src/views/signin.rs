@@ -59,11 +59,6 @@ pub fn live(blocks: &[Block]) -> Option<(usize, Engine)> {
     (!blocks[ix + 1..].iter().any(|b| matches!(b, Block::User(_)))).then_some((ix, engine))
 }
 
-/// Whether the member has answered since the error: the work went on.
-fn went_on(blocks: &[Block], ix: usize) -> bool {
-    blocks[ix + 1..].iter().any(|b| matches!(b, Block::Reply { .. }))
-}
-
 /// What the card shows, as things stand.
 #[derive(Clone)]
 pub struct Card {
@@ -87,7 +82,7 @@ pub struct Card {
 }
 
 impl Card {
-    pub fn of(shell: &Shell, blocks: &[Block], ix: usize, engine: Engine) -> Self {
+    pub fn of(shell: &Shell, blocks: &[Block], ix: usize, engine: Engine, went_on: bool) -> Self {
         let auth = shell.engines.auth.get(&engine);
         let viewed = shell.model.viewed();
         let said = match &blocks[ix] {
@@ -102,7 +97,7 @@ impl Card {
             sign_in: shell.engines.card(engine).clone(),
             remote: shell.endpoint.is_remote(),
             place: shell.daemon_view().place,
-            went_on: went_on(blocks, ix),
+            went_on,
             installing: matches!(shell.engines.installing(engine), Some(engines::Install::Running)),
             said,
             code: shell.signin_code.clone(),

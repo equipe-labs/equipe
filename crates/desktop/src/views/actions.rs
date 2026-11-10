@@ -98,7 +98,7 @@ impl Shell {
     fn open_home(&mut self) {
         let dir = self.squad_folder();
         if !self.endpoint.is_remote() {
-            let _ = std::process::Command::new("open").arg(&dir).spawn();
+            let _ = equipe_providers::platform::open(&dir);
             self.composer.flash = Some(t!("actions.home_flash", path = dir.display()));
             return;
         }
@@ -119,7 +119,7 @@ impl Shell {
         let dir = equipe_core::squad_memory::dir(&self.squad_folder());
         if !self.endpoint.is_remote() {
             let _ = std::fs::create_dir_all(&dir);
-            let _ = std::process::Command::new("open").arg(&dir).spawn();
+            let _ = equipe_providers::platform::open(&dir);
         }
         let squad = self.model.squad.clone();
         self.run_job(Job::Memory { squad, words: Vec::new() }, After::Memory, cx);
@@ -205,6 +205,10 @@ impl Shell {
                         if let equipe_core::protocol::Command::RestoreDesign { .. } = &command {
                             self.composer.flash = Some(equipe_core::t!("design.versions_sent").into());
                         }
+                        // A squad to delete: said while its daemon works on it.
+                        if let equipe_core::protocol::Command::DeleteSquad { squad } = &command {
+                            self.deleting(squad, window, cx);
+                        }
                         self.send_command(command);
                     }
                 }
@@ -243,7 +247,7 @@ impl Shell {
         let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
         self.composer.flash = Some(match export::save(&export::folder(&home), &self.model.squad, &member, convo.transcript.entries()) {
             Ok(path) => {
-                let _ = std::process::Command::new("open").arg(&path).spawn();
+                let _ = equipe_providers::platform::open(&path);
                 t!("actions.exported", path = path.display())
             }
             Err(err) => t!("actions.export_failed", err = err),

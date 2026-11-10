@@ -26,6 +26,9 @@ pub enum DesignContext {
     /// `error`), the title as the person reads it (`Onboarding › Log in › Error`)
     /// and the picture on show, if it has one.
     Screen { flow: String, screen: String, state: String, title: String, picture: Option<String> },
+    /// A component of the system: its name (`evidence-card`), its title as
+    /// the person reads it, and the picture of it on show, if it has one.
+    Component { name: String, title: String, picture: Option<String> },
 }
 
 /// The most chips one message carries.
@@ -64,6 +67,7 @@ impl DesignContext {
                 format!("{kind} · {}", leaf_file(name))
             }
             Self::Screen { title, .. } => title.clone(),
+            Self::Component { title, .. } => format!("{} · {title}", t!("design.talk_kind_component")),
         }
     }
 
@@ -73,6 +77,7 @@ impl DesignContext {
             Self::Token { name, .. } | Self::TypeStyle { name, .. } => format!("token:{name}"),
             Self::Asset { path, .. } => format!("asset:{path}"),
             Self::Screen { flow, screen, state, .. } => format!("screen:{flow}/{screen}/{state}"),
+            Self::Component { name, .. } => format!("component:{name}"),
         }
     }
 
@@ -86,6 +91,11 @@ impl DesignContext {
                 out.extend(picture.as_ref().map(|p| format!("picture: {p}")));
                 out
             }
+            Self::Component { name, picture, .. } => {
+                let mut out = vec![format!("component: {name}")];
+                out.extend(picture.as_ref().map(|p| format!("picture: {p}")));
+                out
+            }
         }
     }
 
@@ -94,7 +104,7 @@ impl DesignContext {
     pub fn picture(&self) -> Option<&str> {
         match self {
             Self::Asset { path, .. } => Some(path),
-            Self::Screen { picture, .. } => picture.as_deref(),
+            Self::Screen { picture, .. } | Self::Component { picture, .. } => picture.as_deref(),
             _ => None,
         }
     }
@@ -229,6 +239,11 @@ mod tests {
         assert_eq!(logo().label(), "로고 · mark.svg");
         assert_eq!(DesignContext::Asset { name: "assets/icons/search.png".into(), path: "/x/search.png".into() }.label(), "에셋 · search.png");
         assert_eq!(login_error().label(), "온보딩 › 로그인 › 오류");
+        let card = DesignContext::Component { name: "evidence-card".into(), title: "Evidence Card".into(), picture: Some("/sq/design/components/evidence-card.png".into()) };
+        assert_eq!(card.label(), "컴포넌트 · Evidence Card");
+        assert_eq!(card.key(), "component:evidence-card");
+        assert!(block(std::slice::from_ref(&card)).contains("  component: evidence-card\n  picture: /sq/design/components/evidence-card.png"));
+        assert_eq!(card.picture(), Some("/sq/design/components/evidence-card.png"));
     }
 
     #[test]

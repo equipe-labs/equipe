@@ -184,10 +184,8 @@ pub fn part_key(part: DesignPart) -> &'static str {
 
 /// `2026-11-02 14:30`, in the Mac's time zone.
 pub fn local_date(unix: u64) -> String {
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let secs = unix as libc::time_t;
-    unsafe { libc::localtime_r(&secs, &mut tm) };
-    format!("{:04}-{:02}-{:02} {:02}:{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min)
+    let Some(tm) = equipe_providers::platform::local_time(unix) else { return unix.to_string() };
+    format!("{:04}-{:02}-{:02} {:02}:{:02}", tm.year, tm.month, tm.day, tm.hour, tm.minute)
 }
 
 /// The short name of a version: its commit's first seven.

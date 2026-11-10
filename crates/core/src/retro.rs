@@ -293,7 +293,7 @@ pub fn gather(week: &Week<'_>) -> Facts {
         let (snag, why) = match e.kind.as_str() {
             "reopened" => (Snag::SentBack, format!("sent back by you{}", quoted(said.trim_start_matches("Reopened").trim_start_matches(':').trim()))),
             "design QA: changes" => (Snag::SentBack, format!("sent back by design QA ({}){}", e.by, quoted(&said))),
-            "sent back" => (Snag::SentBack, format!("sent back by equipe{}", quoted(&said))),
+            "sent back" => (Snag::SentBack, format!("sent back by {}{}", e.by, quoted(&said))),
             "not merged" => (Snag::Failed, format!("merging failed{}", quoted(&said))),
             "blocked" if e.by == "equipe" => (Snag::Stuck, format!("couldn't go on{}", quoted(&said))),
             _ => continue,

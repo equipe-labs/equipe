@@ -55,9 +55,14 @@ struct Proc(Child);
 
 impl Running for Proc {
     fn finish(&mut self, wait: Duration) -> bool {
-        let pid = self.0.id() as libc::pid_t;
-        // SAFETY: a signal to our own child, by its pid.
-        unsafe { libc::kill(pid, libc::SIGINT) };
+        #[cfg(unix)]
+        {
+            let pid = self.0.id() as libc::pid_t;
+            // SAFETY: a signal to our own child, by its pid.
+            unsafe { libc::kill(pid, libc::SIGINT) };
+        }
+        #[cfg(windows)]
+        let _ = self.0.kill();
         let until = Instant::now() + wait;
         while Instant::now() < until {
             if matches!(self.0.try_wait(), Ok(Some(_))) {
@@ -143,11 +148,14 @@ impl Exec for Real {
     }
 
     fn detach(&self, program: &str, args: &[String]) -> Result<(), String> {
-        use std::os::unix::process::CommandExt as _;
         let mut command = Command::new(program);
         command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         // Its own process group: a member's turn ending doesn't take it down.
-        command.process_group(0);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            command.process_group(0);
+        }
         let mut child = command.spawn().map_err(|e| format!("{program} couldn't be started: {e}"))?;
         // Reaped on its own thread whenever it ends, never left a zombie.
         std::thread::spawn(move || {

@@ -34,7 +34,10 @@ design/
     logo/              mark.svg, wordmark.svg, mark-on-dark.svg …
     icons/
     illustrations/
-  components/          a rendered preview (PNG or SVG) of each key component
+  components/          a rendered preview (PNG or SVG) of each key component:
+                       button.png, its variants and states as button/outline.png
+                       (or button.hover.png); button.md says what it is for
+  checks/components/   each component's matrix (`equipe design matrix`), its sheets beside
 ```
 
 equipe's own is [`design/`](../design/README.md) at the top of this
@@ -148,6 +151,23 @@ shown only on dark, `…-light` only on light, any other on both.
   says so and names the one it is shown in.
 - **Spacing · Radius · Shadow · Motion**: specimens at real size; a motion token
   plays its duration and curve under the pointer.
+- **Components**: every component the system has, always there (with none
+  yet, what it will show and a button that asks the designer — or the PM —
+  for previews). Each is listed from what is already kept, never a fixed
+  list (`crates/core/src/design/gallery.rs`): a project's `registry.json`
+  items (`registry:ui`, `registry:component`, `registry:block` — title,
+  description, first file, and `meta.docs` as the page to open), its
+  components' folder, the previews in `components/` named as the component,
+  and its matrix (`checks/components/<name>.json`: what to fix, the variants
+  its docs page shows, the contact sheet at each width — found by name beside
+  the record, so a record made in a worktree reads the same once merged).
+  A card shows the first preview on a checkerboard, the title, where it
+  stands — "In review · T-n" or "In the works · T-n" when a ticket's draft
+  adds or changes it (its ticket a click away), else Done — "Checked" or
+  "To fix: n" from its matrix, its description, its other pictures, its
+  variants and states, and its source file. A click shows its pictures big
+  (←/→ through them); "Open live" opens its page (an address anywhere, a file
+  on the daemon's own Mac only); "Talk" points the designer at it.
 - **Assets**: pictures on a checkerboard, big in a lightbox (←/→, Esc), saved
   to Downloads (from any Mac) or shown in Finder (this Mac).
 - **Guidelines**: `guidelines.md`, with its `##`/`###` headings as contents.
@@ -163,11 +183,15 @@ shown only on dark, `…-light` only on light, any other on both.
   (`crates/protocol/src/design.rs`): each system with its `project`
   (absent: the squad's), `dir`, `draft` (`{ ticket, title }`), `modes`,
   resolved `tokens` (`{ name, type, value, modes?, description?, alias? }`),
-  `problems`, `guidelines`, `assets` (`{ path, name, kind, size }`) and a
-  `stamp`.
+  `problems`, `guidelines`, `assets` (`{ path, name, kind, size }`),
+  `components` (`{ name, title, description?, block?, previews: [{ path,
+  label?, sheet?, size }], variants, states, page?, source?, check?: { at,
+  fails, notes }, work?: { ticket, title, review? } }`, left out when there are
+  none) and a `stamp`.
 - While any screen follows the squad, the daemon looks at the folders every
-  1.5 s — their files' sizes and times only — and sends the event again when
-  one changed, so the screen follows what the designer saves.
+  1.5 s — their files' sizes and times only, and a project's `registry.json`,
+  `components.json`, components' folder and matrix records — and sends the
+  event again when one changed, so the screen follows what the designer saves.
 - `read_image` `{ squad, path, max? }` for each asset.
 - The designer studio (below) asks `design_studio` `{ squad, ticket }` →
   `Studio` (`crates/protocol/src/studio.rs`) every 2 s while it is open: what

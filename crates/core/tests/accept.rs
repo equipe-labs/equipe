@@ -5,8 +5,6 @@
 //! buttons send. No tool accepts or merges, and nothing in the daemon does but
 //! the person's commands.
 
-#![cfg(unix)]
-
 use std::path::{Path, PathBuf};
 use std::process::Command as Process;
 use std::time::Duration;
@@ -27,10 +25,16 @@ fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("equipe-accept-{name}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    // Windows canonicalization adds the verbatim `\\?\` prefix, which Git for
+    // Windows does not accept as a `worktree add` destination.
+    #[cfg(windows)]
+    return dir;
+    #[cfg(not(windows))]
     dir.canonicalize().unwrap()
 }
 
 /// Write an executable script without holding it open for writing (see tests/runtime.rs).
+#[cfg(unix)]
 fn write_script(path: &Path, script: &str) {
     use std::os::unix::fs::PermissionsExt as _;
     let draft = path.with_extension("draft");
@@ -42,7 +46,12 @@ fn write_script(path: &Path, script: &str) {
 /// A stand-in `claude`, signed in: a ticket's turn takes a moment and writes
 /// `HERO.md` where it runs; every turn answers in a line.
 fn claude() -> PathBuf {
+    #[cfg(unix)]
     let bin = scratch("bin").join("claude");
+    #[cfg(windows)]
+    let bin = scratch("bin").join("claude.exe");
+    #[cfg(unix)]
+    {
     let answer = r#"cat <<EOF
 {"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}
 {"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}}
@@ -52,6 +61,33 @@ EOF"#;
         "#!/bin/sh\nif [ \"$1\" = \"auth\" ]; then echo '{{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}}'; exit 0; fi\nif [ \"$2\" = --input-format ] && IFS= read -r line; then set -- -p \"$(printf '%s' \"$line\" | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"message\"][\"content\"], end=\"\")')\" \"$@\"; fi\ncase \"$*\" in *\"You're on T-\"*) sleep 1; echo \"made by the squad\" > HERO.md;; esac\n{answer}\n"
     );
     write_script(&bin, &script);
+    }
+    #[cfg(windows)]
+    {
+        // A native fake keeps TP-5 independent of cmd.exe quoting. The real
+        // npm `.cmd` launchers are exercised separately by the Windows job.
+        let source = bin.with_extension("rs");
+        std::fs::write(
+            &source,
+            r##"fn main() {
+    if std::env::args().nth(1).as_deref() == Some("auth") {
+        println!(r#"{{"loggedIn":true,"authMethod":"claude.ai"}}"#);
+        return;
+    }
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    if std::fs::metadata(".git").is_ok_and(|m| m.is_file()) {
+        std::fs::write("HERO.md", "made by the squad\n").unwrap();
+    }
+    println!(r#"{{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}}"#);
+    println!(r#"{{"type":"stream_event","event":{{"type":"content_block_delta","delta":{{"type":"text_delta","text":"ok"}}}}}}"#);
+    println!(r#"{{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{{"input_tokens":3,"output_tokens":1}}}}"#);
+}
+"##,
+        )
+        .unwrap();
+        let built = Process::new("rustc").args(["--edition=2024", "-o"]).arg(&bin).arg(&source).status().unwrap();
+        assert!(built.success(), "build the Windows fake engine");
+    }
     bin
 }
 
@@ -79,7 +115,7 @@ fn config(claude: &Path, home: &Path) -> Config {
         client_version: "test".into(),
         claude_binary: claude.to_string_lossy().into_owned(),
         // No Codex CLI either: the person's own must never run in a test.
-        codex_binary: "/nonexistent/codex".into(),
+        codex_binary: scratch("missing").join("codex-does-not-exist").to_string_lossy().into_owned(),
         persist: false,
         retention_days: 90,
         equipe_binary: None,

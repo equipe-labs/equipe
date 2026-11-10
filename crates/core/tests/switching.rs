@@ -336,3 +336,45 @@ async fn signed_in_to_both_with_the_team_on_one_the_setup_is_proposed_once_and_a
     let seen = until(&mut events, |e| matches!(e, Event::EngineProposed { .. })).await;
     assert_eq!(proposed(&seen).why, Why::Setup);
 }
+
+#[tokio::test]
+async fn a_ticket_an_engine_out_of_its_plan_keeps_waiting_is_told_once_never_silent() {
+    let (bin, _dir) = claude(ANSWERS);
+    let (home, project) = home();
+    let (handle, mut events) = runtime::start(config(&bin, &home));
+    add(&handle, &mut events, 1, member(&project, "pm", None)).await;
+    add(&handle, &mut events, 2, member(&project, "qa", Some(Engine::Claude))).await;
+    // Claude's five hours are out and start over within the hour: waited for, nothing new starts on it.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let out = PlanUsage { five_hour: Some(PlanWindow { used_percent: 100, resets_at: now + 40 * 60 }), seven_day: Some(PlanWindow { used_percent: 40, resets_at: now + 3 * 24 * 3600 }) };
+    handle.usage_read(Engine::Codex, usage(5, 5));
+    handle.usage_read(Engine::Claude, out);
+    let _ = within(&mut events, Duration::from_millis(300)).await;
+    create_ticket(&handle, "qa").await;
+    let told = |e: &Event| format!("{e:?}").contains("T-1 대기 중이에요");
+    let seen = until(&mut events, told).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::WorkStarted { session: 2, .. })), "held, not started");
+    // Once per hold, however often the board is looked at again.
+    create_ticket(&handle, "qa").await;
+    let later = within(&mut events, Duration::from_millis(1200)).await;
+    assert!(!later.iter().any(|e| told(e) || format!("{e:?}").contains("T-2 대기 중")), "{later:#?}");
+}
+
+#[tokio::test]
+async fn the_conversations_the_person_opened_with_the_pm_move_with_it_to_its_new_session() {
+    let (bin, _dir) = claude(ANSWERS);
+    let (home, project) = home();
+    let (handle, mut events) = runtime::start(config(&bin, &home));
+    add(&handle, &mut events, 1, member(&project, "pm", None)).await;
+    handle.send(Command::NewConversation { squad: "acme".into(), session: 77, project: None });
+    until(&mut events, |e| matches!(e, Event::SessionStarted { session: 77, .. })).await;
+    // Moved by the person; there is no Codex here, so it starts again on Claude — a new session either way.
+    handle.send(Command::MoveEngine { squad: "acme".into(), members: vec!["pm".into()], engine: Engine::Codex, model: None, effort: None, now: true });
+    let seen = until(&mut events, |e| matches!(e, Event::SessionStarted { member: Some(m), .. } if m.name == "pm")).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::SessionClosed { session: 1 })), "the old session closed");
+    assert!(!seen.iter().any(|e| matches!(e, Event::SessionClosed { session: 77 })), "the conversation stayed: {seen:#?}");
+    let snapshot = handle.snapshot("acme").await;
+    let pm = snapshot.sessions.iter().find(|s| s.lane.is_none() && s.member.as_ref().is_some_and(|m| m.name == "pm")).expect("the pm").session;
+    let talk = snapshot.sessions.iter().find(|s| s.session == 77).expect("the conversation is still listed");
+    assert_eq!(talk.lane.as_ref().map(|l| (l.of, l.kept)), Some((pm, true)), "it belongs to the new session");
+}

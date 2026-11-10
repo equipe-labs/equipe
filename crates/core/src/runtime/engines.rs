@@ -82,6 +82,8 @@ struct SquadEngines {
     due: Vec<Due>,
     /// Engines that take no new tickets for now.
     holds: Vec<Hold>,
+    /// Holds the person was told keep tickets waiting, as (engine, until).
+    told_held: Vec<(Engine, i64)>,
 }
 
 struct Due {
@@ -170,8 +172,13 @@ impl Engines {
 
     /// Whether members on `engine` take no new ticket now.
     pub(super) fn held(&self, squad: &str, engine: Engine) -> bool {
+        self.hold_on(squad, engine).is_some()
+    }
+
+    /// The hold on `engine`, if any: until when.
+    fn hold_on(&self, squad: &str, engine: Engine) -> Option<i64> {
         let now = unix_now();
-        self.squads.get(squad).is_some_and(|s| s.holds.iter().any(|h| h.engine == engine && h.until > now))
+        self.squads.get(squad)?.holds.iter().filter(|h| h.engine == engine && h.until > now).map(|h| h.until).max()
     }
 
     /// The engines as just looked at.
@@ -375,6 +382,38 @@ impl Runtime {
         }
     }
 
+    /// Tickets a member would have started wait for `engine`'s hold: the
+    /// person and the PM are told, once per hold, which and until when — work
+    /// that stops is never silent.
+    pub(super) fn tell_held(&mut self, squad: &str, engine: Engine, tickets: &[TicketId]) {
+        let Some(until) = self.engines.hold_on(squad, engine) else { return };
+        let told = &mut self.engines_of(squad).told_held;
+        if tickets.is_empty() || told.contains(&(engine, until)) {
+            return;
+        }
+        told.push((engine, until));
+        let name = engine_name(engine);
+        let list = tickets.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
+        let span = self.span(until - unix_now());
+        // A card already offers to move them: the person is pointed at it, one tap away.
+        let offered = self.engines.proposals(squad).iter().any(|p| !p.applied && p.engine == Some(engine) && !p.moves.is_empty());
+        let text = if offered {
+            say!(self, "engines.news_held_offer", tickets = list, engine = name, span = span)
+        } else {
+            say!(self, "engines.news_held", tickets = list, engine = name, span = span)
+        };
+        self.log_engines(squad, format!("held: {list} wait for {name} ({span})"));
+        let next = if offered {
+            "A card on their screen already offers to move those members to the other engine: tell them it is one tap."
+        } else {
+            "They may top up or reset the plan, or move members to another engine."
+        };
+        let line = format!(
+            "equipe: {list} are waiting and won't start: {name} reached its plan's limit, and equipe starts nothing new on it until it resets in {span}. Tell the person plainly; don't requeue them or change models to get around it. {next}"
+        );
+        self.brief_pm(squad, line, Some(text));
+    }
+
     /// The person is told, once, where an engine's plan stands.
     fn tell_level(&mut self, squad: &str, n: rules::Notice) {
         let engine = engine_name(n.engine);
@@ -429,7 +468,8 @@ impl Runtime {
             Some((id, _)) => self.close_proposal(squad, id, false),
             None => {}
         }
-        let auto = mode == Switching::Auto;
+        // A lighter model trades quality for room: only the person makes that call.
+        let auto = mode == Switching::Auto && batch.why != Why::StepDown;
         let proposal = Proposal {
             id: equipe_protocol::new_session_id(),
             why: batch.why,
@@ -911,6 +951,10 @@ impl Runtime {
         let fresh = equipe_protocol::new_session_id();
         self.engines.names.insert(fresh, name.clone());
         self.engines.briefs.insert(fresh, brief);
+        // The conversations the person opened with it go with it, not with
+        // the session it leaves: parked on the new one so `/close` spares them.
+        let kept: Vec<SessionId> = self.sessions.iter().filter(|(_, s)| s.kept && s.lane.as_ref().is_some_and(|(of, _)| *of == id)).map(|(&l, _)| l).collect();
+        self.repoint_lanes(&kept, fresh, None);
         // What `/close` sends, then what `/add` does — under the same name.
         Box::pin(self.handle(Command::Close { session: id })).await;
         let spec = SessionSpec { engine: Some(mv.to), model, access, cwd: squad_home::path(&self.config.home, squad), role: Some(role.clone()), squad: Some(squad.to_owned()) };
@@ -937,6 +981,8 @@ impl Runtime {
         if let Some(session) = self.sessions.get_mut(&now_id) {
             session.briefing = briefing;
         }
+        let member = self.sessions.get(&now_id).map(|s| (s.engine, s.model.clone()));
+        self.repoint_lanes(&kept, now_id, member);
         if self.sessions.contains_key(&now_id) {
             let to = if moved { mv.to } else { mv.from };
             let hand_over = HandOver { member: name.clone(), from_session: id, to_session: now_id, from: mv.from, to, why: due.why, at: unix_now(), ticket };
@@ -954,6 +1000,43 @@ impl Runtime {
             self.set_mode(squad, Some(name), mode);
         }
         moved
+    }
+
+    /// Conversations the person opened with a member now belong to `to`. Given
+    /// its engine and model, each one not mid-turn takes them too: it goes on
+    /// in a new conversation there, opening with its lines so far.
+    fn repoint_lanes(&mut self, lanes: &[SessionId], to: SessionId, member: Option<(Engine, Option<String>)>) {
+        for lane in lanes {
+            let Some(s) = self.sessions.get_mut(lane) else { continue };
+            if let Some((of, _)) = s.lane.as_mut() {
+                *of = to;
+            }
+            let Some((engine, model)) = member.clone() else { continue };
+            if s.engine == engine || s.is_working() {
+                continue;
+            }
+            let said: Vec<String> = s
+                .transcript
+                .entries()
+                .iter()
+                .filter_map(|e| match e {
+                    Entry::User { text, .. } => Some(format!("Person: {}", clip(text, 600))),
+                    Entry::Reply { text } => Some(format!("You: {}", clip(text, 600))),
+                    _ => None,
+                })
+                .collect();
+            let recent = said[said.len().saturating_sub(16)..].join("\n");
+            s.engine = engine;
+            s.model = model;
+            s.claude_session = None;
+            s.history.clear();
+            if !recent.is_empty() {
+                s.briefing.push(format!(
+                    "equipe: this conversation moved to {} with the PM; the engine starts afresh, so here is how it went so far (latest last):\n{recent}",
+                    engine_name(engine)
+                ));
+            }
+        }
     }
 
     /// The model for Codex: `hint` as the account's catalog has it.

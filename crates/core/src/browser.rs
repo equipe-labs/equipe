@@ -38,8 +38,10 @@ fn ensure_state(home: &Path) -> PathBuf {
     let state = state_file(home);
     if !state.is_file() {
         let _ = std::fs::create_dir_all(&dir);
+        #[cfg(unix)]
         let _ = std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700));
         let _ = std::fs::write(&state, r#"{"cookies":[],"origins":[]}"#);
+        #[cfg(unix)]
         let _ = std::fs::set_permissions(&state, std::os::unix::fs::PermissionsExt::from_mode(0o600));
     }
     state
@@ -91,6 +93,14 @@ fn max_file(home: &Path) -> PathBuf {
 }
 
 fn memory_gb() -> usize {
+    #[cfg(windows)]
+    let bytes = std::process::Command::new("powershell.exe")
+        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().parse::<u64>().ok());
+    #[cfg(not(windows))]
     let bytes = std::process::Command::new("sysctl")
         .args(["-n", "hw.memsize"])
         .output()
@@ -120,6 +130,7 @@ pub struct Running {
     pub last_used: std::time::Instant,
 }
 
+#[cfg_attr(windows, allow(clippy::large_enum_variant))]
 enum Kind {
     /// A Chrome of its own, with a profile of its own.
     Own(tokio::process::Child),
@@ -135,7 +146,7 @@ impl Drop for Running {
         match &self.kind {
             Kind::Own(child) => {
                 if let Some(pid) = child.id() {
-                    crate::group::end(pid, libc::SIGTERM);
+                    crate::group::end(pid, crate::group::Signal::Terminate);
                 }
             }
             Kind::Lane { id, host } => {
@@ -413,7 +424,6 @@ impl Host {
     /// the sign-ins members' own browsers kept. What it says comes on
     /// `events`; its pictures go to `hub`.
     pub fn start(npx: &Path, home: &Path, hub: &std::sync::Arc<Hub>, events: tokio::sync::mpsc::UnboundedSender<HostEvent>) -> std::io::Result<SharedHost> {
-        use std::os::unix::process::CommandExt as _;
         let state = ensure_state(home);
         let script = home.join("browser").join("browser-host.cjs");
         let text = HOST.replace("__DRIVING__", DRIVING).replace("__GATE__", GATE);
@@ -423,17 +433,23 @@ impl Host {
         let profile = host_profile(home);
         std::fs::create_dir_all(&profile)?;
         let log = std::fs::OpenOptions::new().create(true).append(true).open(home.join("browser").join("host.log"))?;
-        let mut child = std::process::Command::new(npx)
+        let mut command = std::process::Command::new(npx);
+        command
             .args(["-y", "-p", PLAYWRIGHT_PACKAGE, "node"])
             .arg(&script)
             .arg(&profile)
             .arg(&state)
+            .env("EQUIPE_BROWSER_CHANNEL", browser_channel())
             .env("EQUIPE_FIRST_PAGE", first_page_id(std::time::SystemTime::now()).to_string())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(log)
-            .process_group(0)
-            .spawn()?;
+            .stderr(log);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            command.process_group(0);
+        }
+        let mut child = command.spawn()?;
         let stdin = child.stdin.take().expect("stdin is piped");
         let stdout = child.stdout.take().expect("stdout is piped");
         let hub = hub.clone();
@@ -530,7 +546,7 @@ fn read_host(mut out: impl std::io::Read, hub: &Hub, events: &tokio::sync::mpsc:
 
 impl Drop for Host {
     fn drop(&mut self) {
-        crate::group::end(self.child.id(), libc::SIGTERM);
+        crate::group::end(self.child.id(), crate::group::Signal::Terminate);
     }
 }
 
@@ -942,14 +958,11 @@ pub fn launch(npx: &Path, home: &Path, profile: &Path, output: &Path, shown: boo
         .collect();
     // Every turn's connection shares the one browser — its tabs and sign-ins.
     args.extend(["--port".into(), port.to_string(), "--host".into(), "localhost".into(), "--shared-browser-context".into()]);
-    let child = tokio::process::Command::new(npx)
-        .args(&args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .process_group(0)
-        .kill_on_drop(true)
-        .spawn()?;
+    let mut command = tokio::process::Command::new(npx);
+    command.args(&args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    command.process_group(0);
+    let child = command.kill_on_drop(true).spawn()?;
     Ok(Running { kind: Kind::Own(child), port, shown, last_used: std::time::Instant::now() })
 }
 
@@ -1100,12 +1113,70 @@ pub fn server(npx: &Path, home: &Path, profile: &Path, output: &Path, shown: boo
 /// automation switch and with automation hidden from pages, which Google
 /// otherwise answers by refusing to sign anyone in; `--test-type` keeps Chrome
 /// from warning about that flag in a bar across every window.
-const MCP_CONFIG: &str = r#"{"browser":{"browserName":"chromium","launchOptions":{"channel":"chrome","ignoreDefaultArgs":["--enable-automation"],"args":["--disable-blink-features=AutomationControlled","--test-type"]}}}"#;
+fn browser_channel() -> &'static str {
+    if std::env::var("EQUIPE_BROWSER_CHANNEL").is_ok_and(|v| v.eq_ignore_ascii_case("msedge")) {
+        return "msedge";
+    }
+    #[cfg(windows)]
+    if installed_browsers().iter().all(|(channel, _)| *channel != "chrome")
+        && installed_browsers().iter().any(|(channel, _)| *channel == "msedge")
+    {
+        return "msedge";
+    }
+    "chrome"
+}
+
+/// Chrome and Edge executables in Windows' per-machine and per-user install
+/// locations. Playwright receives the channel name; these paths let equipe
+/// choose Edge when Chrome is absent without borrowing either browser's live
+/// profile.
+pub fn installed_browsers() -> Vec<(&'static str, PathBuf)> {
+    #[cfg(windows)]
+    {
+        let mut roots = Vec::new();
+        for key in ["PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"] {
+            if let Some(root) = std::env::var_os(key).filter(|p| !p.is_empty()) {
+                roots.push(PathBuf::from(root));
+            }
+        }
+        let mut found = Vec::new();
+        for root in roots {
+            for (channel, suffix) in [
+                ("chrome", "Google/Chrome/Application/chrome.exe"),
+                ("msedge", "Microsoft/Edge/Application/msedge.exe"),
+            ] {
+                let path = root.join(suffix);
+                if path.is_file() && !found.iter().any(|(_, p)| p == &path) {
+                    found.push((channel, path));
+                }
+            }
+        }
+        found
+    }
+    #[cfg(not(windows))]
+    Vec::new()
+}
+
+/// The browsers' normal Windows profile roots. equipe deliberately uses its
+/// own profile below `EQUIPE_HOME/browser`: opening a browser's live Default
+/// profile concurrently can corrupt it and would bypass equipe's sign-in gate.
+#[cfg(windows)]
+pub fn windows_profile_roots() -> Vec<(&'static str, PathBuf)> {
+    let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|p| !p.is_empty()).map(PathBuf::from) else { return Vec::new() };
+    vec![
+        ("chrome", local.join("Google/Chrome/User Data")),
+        ("msedge", local.join("Microsoft/Edge/User Data")),
+    ]
+}
 
 fn mcp_config(home: &Path) -> PathBuf {
     let path = home.join("browser").join("mcp-config.json");
-    if std::fs::read_to_string(&path).ok().as_deref() != Some(MCP_CONFIG) {
-        let _ = std::fs::write(&path, MCP_CONFIG);
+    let config = format!(
+        r#"{{"browser":{{"browserName":"chromium","launchOptions":{{"channel":"{}","ignoreDefaultArgs":["--enable-automation"],"args":["--disable-blink-features=AutomationControlled","--test-type"]}}}}}}"#,
+        browser_channel()
+    );
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(config.as_str()) {
+        let _ = std::fs::write(&path, config);
     }
     path
 }
@@ -1124,8 +1195,7 @@ pub fn sign_in_script(home: &Path) -> PathBuf {
 
 /// `npx` on PATH: the browser needs Node.js.
 pub fn find_npx() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|dir| dir.join("npx")).find(|p| p.is_file())
+    equipe_providers::tools_path::find("npx")
 }
 
 /// The sites in a storage state the person is signed in to, by domain.

@@ -90,7 +90,7 @@
 //!
 //! `FAKE_STUDIO=1`: the designer at T-205 with references, two directions, a failing then
 //! passing check, a refused hand-in and a second look's fixes then pass, for the designer
-//! studio (`fake_daemon/studio.rs`; `waiting`, `failing`, `handed`, `codex`; `qa`: a design QA
+//! studio (`fake_daemon/studio.rs`; `waiting`, `blocked`, `failing`, `handed`, `codex`; `qa`: a design QA
 //! of T-42 on the phone, with screenshots, recordings and a report; `qa_ask`: the same while
 //! the designer asks the person something on T-60).
 //! `FAKE_CHECKS=1`: the designer's conversation checks a screen in code and has a
@@ -1101,6 +1101,8 @@ mod switching;
 
 #[path = "fake_daemon/design.rs"]
 mod design;
+#[path = "fake_daemon/components.rs"]
+mod components;
 
 #[path = "fake_daemon/briefs.rs"]
 mod briefs;

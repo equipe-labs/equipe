@@ -805,7 +805,9 @@
           ],
           "expects": [
             "default",
-            "error"
+            "error",
+            "long",
+            "success"
           ],
           "states": [
             {
@@ -819,6 +821,48 @@
               "label": "Error",
               "kind": "error",
               "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=both_low; script `settings:engines`"
+            },
+            {
+              "id": "confirm",
+              "label": "Claude Code: sign-out asked first, naming who is working",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=healthy; script `settings:engines;eng:signout:claude`"
+            },
+            {
+              "id": "signedout",
+              "label": "Claude Code signed out",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=healthy; script `settings:engines;eng:signout:claude;eng:sure:claude;wait:1500`"
+            },
+            {
+              "id": "waiting",
+              "label": "Claude Code: another account's sign-in under way",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=healthy; script `settings:engines;eng:switch:claude;wait:900`"
+            },
+            {
+              "id": "failed",
+              "label": "Claude Code: another account's sign-in refused",
+              "kind": "error",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=healthy FAKE_ENGINES=failed; script `settings:engines;eng:switch:claude;wait:900;signin:paste:bad-code;wait:1200`"
+            },
+            {
+              "id": "success",
+              "label": "Claude Code signed in as another account: said a moment, its email shown",
+              "kind": "success",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=healthy; script `settings:engines;eng:switch:claude;wait:900;signin:paste:abc#def;wait:1200`"
+            },
+            {
+              "id": "cancelled",
+              "label": "Claude Code: another account's sign-in cancelled, the card as before",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=healthy; script `settings:engines;eng:switch:claude;wait:900;eng:cancel:claude;wait:800`"
+            },
+            {
+              "id": "long",
+              "label": "Long text (German)",
+              "kind": "long",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=healthy; script `settings:engines;eng:signout:claude`; EQUIPE_LANG=de"
             }
           ]
         },
@@ -882,7 +926,7 @@
               "id": "default",
               "label": "Default",
               "kind": "default",
-              "note": "shot by design/flows/shoot-desktop.py: script `settings:permissions`"
+              "note": "shot by design/flows/shoot-desktop.py: script `settings:permissions`; EQUIPE_LANG=ko"
             }
           ]
         },
@@ -1027,7 +1071,7 @@
               "id": "handover",
               "label": "Browser handed to the person",
               "kind": "default",
-              "note": "shot by design/flows/shoot-desktop.py: FAKE_BROWSER=handover; script `chat`"
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_BROWSER=handover; script `chat`; EQUIPE_LANG=ko"
             }
           ]
         },
@@ -1053,20 +1097,90 @@
         },
         {
           "id": "document",
-          "title": "Document panel",
+          "title": "Document panel · focus view",
+          "note": "T-617 mockups until the GPUI state is implemented. The default panel exposes Focus view; focus reuses the same document surface across the full content area and returns to the recorded conversation or board origin.",
           "source": [
             "crates/desktop/src/views/doc.rs",
-            "crates/desktop/src/doc.rs"
+            "crates/desktop/src/doc.rs",
+            "design/specs/document-focus/prototype.html",
+            "design/specs/document-focus/spec.md"
           ],
           "expects": [
-            "default"
+            "default",
+            "long"
           ],
           "states": [
             {
               "id": "default",
-              "label": "Default",
+              "label": "Default panel · focus entry",
               "kind": "default",
-              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{ROOT}/design/guidelines.md`"
+              "note": "T-617 mockup: conversation + document panel, long Korean title, Focus view and Close document remain distinct. Replaces the old shot until implementation."
+            },
+            {
+              "id": "default-board",
+              "label": "Default panel · board origin",
+              "kind": "default",
+              "note": "T-617 mockup: board + document panel before focus; selected ticket T-617 and its keyboard focus are the restoration baseline."
+            },
+            {
+              "id": "default-board-scrolled",
+              "label": "Board origin · document scrolled",
+              "kind": "default",
+              "note": "T-617 mockup: the same board baseline with the document at a recorded middle scroll position before entering focus."
+            },
+            {
+              "id": "focus",
+              "label": "Focus view · conversation origin",
+              "kind": "default",
+              "note": "T-617 mockup: selected B Return-first header, Korean, 100%; 760/1200pt and light/dark."
+            },
+            {
+              "id": "focus-board",
+              "label": "Focus view · board origin",
+              "kind": "default",
+              "note": "T-617 mockup: the same focused document records Board as its origin and exposes an explicit return action; 760/1200pt and light/dark."
+            },
+            {
+              "id": "focus-large",
+              "label": "Focus view · long English · 150%",
+              "kind": "long",
+              "note": "T-617 mockup: long English filename, 150% text, compact tools; 760/1200pt and light/dark."
+            },
+            {
+              "id": "focus-menu",
+              "label": "Focus view · More open",
+              "kind": "default",
+              "note": "T-617 mockup: the first Esc closes More and returns keyboard focus to its trigger; 760/1200pt and light/dark."
+            },
+            {
+              "id": "focus-menu-board",
+              "label": "Board focus · More open",
+              "kind": "default",
+              "note": "T-617 mockup: Board-origin sequence, before the first Esc closes More; 760/1200pt and light/dark."
+            },
+            {
+              "id": "focus-after-menu-board",
+              "label": "Board focus · first Esc complete",
+              "kind": "default",
+              "note": "T-617 mockup: More is closed, focus is visibly restored to its trigger, and focus view remains active until the second Esc."
+            },
+            {
+              "id": "focus-restored",
+              "label": "Restored origin · entry focus",
+              "kind": "default",
+              "note": "T-617 mockup: the next Esc exits focus, restores the conversation split, document scroll and selection, then returns keyboard focus to Focus view; 760/1200pt and light/dark."
+            },
+            {
+              "id": "focus-restored-board",
+              "label": "Restored board · selected ticket focus",
+              "kind": "default",
+              "note": "T-617 mockup: after the second Esc, the board split and document return and keyboard focus is visibly restored to selected ticket T-617; 760/1200pt and light/dark."
+            },
+            {
+              "id": "focus-restored-board-scrolled",
+              "label": "Restored board · scroll and focus",
+              "kind": "default",
+              "note": "T-617 mockup: the board split, selected ticket focus and the recorded middle document scroll position are all restored after the second Esc."
             }
           ]
         },
@@ -1137,6 +1251,33 @@
               "label": "Default",
               "kind": "default",
               "note": "shot by design/flows/shoot-desktop.py: script `bell:sheet`"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "studio",
+      "title": "Designer studio",
+      "summary": "A live view of design work: what it is waiting on, its steps, current picture, findings and timeline.",
+      "screens": [
+        {
+          "id": "designer",
+          "title": "Designer studio",
+          "note": "The waiting state shows work paused for the person's answer.",
+          "source": [
+            "crates/desktop/src/views/studio.rs",
+            "crates/desktop/src/studio.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "waiting",
+              "label": "Waiting for the person",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_STUDIO=blocked; script `studio:205`; EQUIPE_LANG=ko"
             }
           ]
         }

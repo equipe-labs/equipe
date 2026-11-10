@@ -2223,6 +2223,48 @@ async fn the_pm_changes_what_the_person_asks_and_only_their_tap_widens_what_the_
 }
 
 #[tokio::test]
+async fn the_pm_reads_and_changes_subagents_at_once_with_a_card_only_for_an_increase() {
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+
+    let read = tool(&handle, "pm", "settings", serde_json::json!({})).await;
+    assert!(read.text.contains("subagents_at_once): default — Claude 20, Codex 6"), "{}", read.text);
+
+    let refused = tool(&handle, "frontend", "change_setting", serde_json::json!({ "setting": "subagents_at_once", "value": "5" })).await;
+    assert!(refused.is_error && refused.text.contains("Only the PM"), "{}", refused.text);
+    let out_of_range = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "subagents_at_once", "value": "51" })).await;
+    assert!(out_of_range.is_error && out_of_range.text.contains("1 through 50"), "{}", out_of_range.text);
+
+    // Five narrows both engine defaults, so it applies immediately and emits
+    // the same event as the desktop setting.
+    let narrowed = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "subagents_at_once", "value": "5" })).await;
+    assert!(!narrowed.is_error && narrowed.text.starts_with("Done:"), "{}", narrowed.text);
+    until(&mut events, |e| matches!(e, Event::SubagentsAtOnceChanged { at_once: Some(5), .. })).await;
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().subagents_at_once(), Some(5));
+    let read = tool(&handle, "pm", "settings", serde_json::json!({})).await;
+    assert!(read.text.contains("subagents_at_once): 5"), "{}", read.text);
+
+    // Raising it waits on the person's card; the command is only applied on yes.
+    let handle2 = handle.clone();
+    let asking = tokio::spawn(async move {
+        tool(&handle2, "pm", "change_setting", serde_json::json!({ "setting": "subagents_at_once", "value": "50", "why": "run more work in parallel" })).await
+    });
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    assert_eq!(approval.tool, "Change setting");
+    assert!(approval.action.contains("50 subagents"), "{}", approval.action);
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().subagents_at_once(), Some(5), "not before the tap");
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None, said: None });
+    until(&mut events, |e| matches!(e, Event::SubagentsAtOnceChanged { at_once: Some(50), .. })).await;
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().subagents_at_once(), Some(50));
+    assert!(asking.await.unwrap().text.starts_with("The person said yes"));
+}
+
+#[tokio::test]
 async fn the_pm_moves_members_to_another_engine_only_on_the_persons_tap_and_never_through_their_model() {
     use equipe_core::protocol::Engine;
     use equipe_core::protocol::engines::Why;
@@ -5014,6 +5056,112 @@ async fn a_project_taken_off_the_squad_leaves_its_list_and_its_folder_stays() {
     handle.send(Command::RemoveProject { squad: "acme".into(), path: app.clone() });
     let failed = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
     assert!(matches!(failed.last(), Some(Event::Error { message, .. }) if message.contains("wasn't removed")), "{failed:#?}");
+}
+
+/// A ticket of `squad`'s at work in `worktree`.
+fn ticket_in(home: &Path, squad: &str, project: &Path, worktree: &Path) {
+    let journal = Journal::for_squad(home, squad).unwrap();
+    let id = journal
+        .create_ticket(&Ticket {
+            id: 0,
+            title: "Piece".into(),
+            body: "-".into(),
+            status: TicketStatus::InProgress,
+            owner: Some("frontend".into()),
+            assignee: Some("frontend".into()),
+            project: Some(project.to_owned()),
+            depends_on: Vec::new(),
+            branch: None,
+            worktree: None,
+            merged: None,
+            off_main: None,
+            design_qa: None,
+            plan: None,
+            kind: equipe_core::protocol::TicketKind::Code,
+            created_by: "pm".into(),
+            note: None,
+            asks: vec![],
+            remaining: Vec::new(),
+            images: Vec::new(),
+            updated_at: None,
+            priority: Default::default(),
+            rank: 0,
+        })
+        .unwrap();
+    journal.set_ticket_work(id, &journal::TicketWork { base: None, worktree: Some(worktree.to_owned()), engine_session: None }).unwrap();
+}
+
+#[tokio::test]
+async fn a_deleted_squad_stops_its_members_and_its_folder_moves_whole_leaving_projects_and_other_squads_be() {
+    let (site, shop) = (repo(), repo());
+    let home = squad_home(&[&site]);
+    squads::create(&home, "beta", &shop).unwrap();
+    squads::remember_last(&home, "acme").unwrap();
+    // acme's ticket in a worktree of its project, and one in a folder beta's ticket uses too.
+    let own = equipe_core::worktree::worktrees_of(&site, &home).join("t1-a");
+    std::fs::create_dir_all(own.parent().unwrap()).unwrap();
+    git(&site, &["worktree", "add", "-q", "-b", "equipe/dev-t1-a", &own.to_string_lossy()]);
+    std::fs::write(own.join("WIP.md"), "half done\n").unwrap();
+    let shared = home.join("worktrees").join("shared").join("t2-b");
+    std::fs::create_dir_all(&shared).unwrap();
+    ticket_in(&home, "acme", &site, &own);
+    ticket_in(&home, "acme", &site, &shared);
+    ticket_in(&home, "beta", &shop, &shared);
+    let site_head = git(&site, &["rev-parse", "HEAD"]);
+
+    let claude = fake_claude(true, &answering("ok"));
+    let (handle, mut events) = runtime::start(config(&claude, &home, true));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    handle.send(Command::DeleteSquad { squad: "acme".into() });
+    let seen = until(&mut events, |e| matches!(e, Event::SquadDeleted { .. } | Event::SquadNotDeleted { .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::SessionClosed { session: 1 })), "its member stopped: {seen:#?}");
+    let Some(Event::SquadDeleted { squad, moved_to, next }) = seen.last() else { panic!("{seen:#?}") };
+    assert_eq!((squad.as_str(), next.as_deref()), ("acme", Some("beta")), "beta opens next");
+
+    // The folder moved whole, its journal closed with its member still on it: moved back, the squad is as it was.
+    assert!(moved_to.starts_with(squads::deleted_dir(&home)) && moved_to.file_name().unwrap().to_string_lossy().starts_with("acme-"), "{moved_to:?}");
+    assert!(moved_to.join("squad.db").is_file() && moved_to.join("home").join(".git").exists());
+    assert!(!home.join("squads").join("acme").exists());
+    let kept = Journal::open(&moved_to.join("squad.db")).unwrap();
+    assert!(kept.open_sessions().unwrap().iter().any(|s| s.member.is_some()), "the roster stays in the journal");
+    assert_eq!(kept.tickets().unwrap().len(), 2, "and the board");
+    drop(kept);
+    assert_eq!(squads::list(&home).iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["beta"], "the other squad untouched");
+    assert_eq!(squads::last_squad(&home).as_deref(), Some("beta"));
+
+    // Its own worktree removed, its branch kept; the one beta uses left; the project as it was.
+    assert!(!own.exists(), "its worktree went");
+    assert!(!git(&site, &["branch", "--list", "equipe/dev-t1-a"]).is_empty(), "its branch stays");
+    assert!(shared.is_dir(), "another squad's ticket uses it");
+    assert_eq!(git(&site, &["rev-parse", "HEAD"]), site_head);
+    assert!(site.join("README.md").is_file() && git(&site, &["status", "--porcelain"]).is_empty(), "the project untouched");
+
+    // A screen still on it doesn't make it anew; deleting it again is refused.
+    let _ = handle.snapshot("acme").await;
+    assert!(!home.join("squads").join("acme").exists(), "not made anew by a late look");
+    handle.send(Command::DeleteSquad { squad: "acme".into() });
+    let again = until(&mut events, |e| matches!(e, Event::SquadNotDeleted { .. })).await;
+    assert!(matches!(again.last(), Some(Event::SquadNotDeleted { squad, .. }) if squad == "acme"));
+    handle.shutdown().await;
+
+    // Brought back by hand, it is whole again.
+    std::fs::rename(moved_to, home.join("squads").join("acme")).unwrap();
+    assert!(squads::exists(&home, "acme") && !squads::is_gone(&home, "acme"));
+}
+
+#[tokio::test]
+async fn the_last_squad_may_be_deleted_and_nothing_is_left_to_open() {
+    let site = repo();
+    let home = squad_home(&[&site]);
+    squads::remember_last(&home, "acme").unwrap();
+    let claude = fake_claude(true, &answering("ok"));
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    handle.send(Command::DeleteSquad { squad: "acme".into() });
+    let seen = until(&mut events, |e| matches!(e, Event::SquadDeleted { .. } | Event::SquadNotDeleted { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::SquadDeleted { next: None, .. })), "{seen:#?}");
+    assert!(squads::list(&home).is_empty() && squads::last_squad(&home).is_none() && squads::default_squad(&home).is_none());
+    assert!(site.join(".git").exists());
+    handle.shutdown().await;
 }
 
 // ── Nemotron reviews (against a mock Token Factory on localhost: no network, no key) ──

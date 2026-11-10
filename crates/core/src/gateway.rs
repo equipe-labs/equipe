@@ -15,8 +15,14 @@ use std::time::Duration;
 use equipe_protocol::rpc::{self, Hello, HelloParams, Message, ToolCall, ToolResult};
 use equipe_protocol::{Command, Event};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(unix)]
 use tokio::net::unix::OwnedWriteHalf;
+#[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
+#[cfg(windows)]
+use tokio::net::tcp::OwnedWriteHalf;
+#[cfg(windows)]
+use tokio::net::{TcpListener as UnixListener, TcpStream as UnixStream};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 
@@ -197,9 +203,10 @@ const WRITE_STALL: Duration = Duration::from_secs(30);
 const QUEUED_MAX: usize = 20_000;
 
 /// Bind the socket, replacing a stale file left by a daemon that died.
+#[cfg(unix)]
 async fn bind(socket: &Path) -> io::Result<UnixListener> {
     if socket.exists() {
-        if UnixStream::connect(socket).await.is_ok() {
+        if connect(socket).await.is_ok() {
             return Err(io::Error::new(io::ErrorKind::AddrInUse, "a daemon is already running"));
         }
         std::fs::remove_file(socket)?;
@@ -213,10 +220,29 @@ async fn bind(socket: &Path) -> io::Result<UnixListener> {
     Ok(listener)
 }
 
+#[cfg(windows)]
+async fn bind(_socket: &Path) -> io::Result<UnixListener> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "daemon IPC is unsupported on Windows yet"))
+}
+
+#[cfg(unix)]
+async fn connect(socket: &Path) -> io::Result<UnixStream> {
+    UnixStream::connect(socket).await
+}
+
+#[cfg(windows)]
+async fn connect(_socket: &Path) -> io::Result<UnixStream> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "daemon IPC is unsupported on Windows yet"))
+}
+
+#[cfg(unix)]
 fn restrict(path: &Path, mode: u32) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
+
+#[cfg(windows)]
+fn restrict(_path: &Path, _mode: u32) -> io::Result<()> { Ok(()) }
 
 async fn write_line(writer: &mut OwnedWriteHalf, message: &Message) -> io::Result<()> {
     writer.write_all(message.to_line().as_bytes()).await
@@ -261,7 +287,7 @@ async fn serve_client(
     // (phone relay, Telegram), or a member's process reaching in. Read once,
     // before the stream is split, from the peer's credentials. Person-only
     // commands from a member are refused below ([`crate::origin`]).
-    let peer = stream.peer_cred().ok().and_then(|cred| cred.pid()).and_then(|pid| u32::try_from(pid).ok());
+    let peer = peer_pid(&stream);
     let origin = crate::origin::of(peer);
     let (reader, writer) = stream.into_split();
     // Replies and events share the write half; a task owns it.
@@ -811,7 +837,6 @@ pub fn sweep_uploads(home: &Path, now: std::time::SystemTime) -> usize {
 /// named by equipe — `<stamp>-<stem>.<ext>`, never a folder of the screen's
 /// choosing — and old drafts swept while there ([`sweep_uploads`]).
 pub fn create_upload(home: &Path, name: &str, kind: Option<rpc::UploadKind>) -> Result<(std::fs::File, PathBuf), String> {
-    use std::os::unix::fs::OpenOptionsExt as _;
     let (stem, ext) = upload_name(name, kind)?;
     let dir = uploads_dir(home);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -822,7 +847,11 @@ pub fn create_upload(home: &Path, name: &str, kind: Option<rpc::UploadKind>) -> 
     for n in 0.. {
         let again = if n == 0 { String::new() } else { format!("-{n}") };
         let path = dir.join(format!("{stamp}-{stem}{again}{dot}"));
-        match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path) {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        { use std::os::unix::fs::OpenOptionsExt as _; options.mode(0o600); }
+        match options.open(&path) {
             Ok(file) => return Ok((file, path)),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e.to_string()),
@@ -953,7 +982,7 @@ impl Client {
     }
 
     async fn attach(socket: &Path, params: HelloParams) -> io::Result<(Self, Hello)> {
-        let stream = UnixStream::connect(socket).await?;
+        let stream = connect(socket).await?;
         let (reader, mut writer) = stream.into_split();
         let hello = Message::request(1, rpc::HELLO, params);
         write_line(&mut writer, &hello).await?;
@@ -1018,7 +1047,7 @@ impl Client {
 /// Ask the daemon at `socket` to stop. Its open sessions stay journaled and
 /// resume when it starts again. `Ok(false)` when no daemon was running.
 pub async fn shutdown(socket: &Path) -> io::Result<bool> {
-    let Ok(stream) = UnixStream::connect(socket).await else {
+    let Ok(stream) = connect(socket).await else {
         return Ok(false);
     };
     let (reader, mut writer) = stream.into_split();
@@ -1034,7 +1063,7 @@ pub async fn shutdown(socket: &Path) -> io::Result<bool> {
 
 /// What the daemon at `socket` is in the middle of; `None` when none answers.
 pub async fn busy(socket: &Path) -> io::Result<Option<rpc::Busy>> {
-    let Ok(stream) = UnixStream::connect(socket).await else {
+    let Ok(stream) = connect(socket).await else {
         return Ok(None);
     };
     let (reader, mut writer) = stream.into_split();
@@ -1070,7 +1099,7 @@ pub async fn disk_clean(socket: &Path, ids: Vec<String>) -> io::Result<Option<cr
 
 /// One request to the daemon at `socket`, and its answer.
 async fn ask_once<P: serde::Serialize, R: serde::de::DeserializeOwned>(socket: &Path, method: &str, params: P) -> io::Result<Option<R>> {
-    let Ok(stream) = UnixStream::connect(socket).await else {
+    let Ok(stream) = connect(socket).await else {
         return Ok(None);
     };
     let (reader, mut writer) = stream.into_split();
@@ -1107,7 +1136,7 @@ pub async fn call_phone(socket: &Path, call: &ToolCall) -> io::Result<ToolResult
 }
 
 async fn call_on(socket: &Path, method: &str, call: &ToolCall) -> io::Result<ToolResult> {
-    let stream = UnixStream::connect(socket).await?;
+    let stream = connect(socket).await?;
     let (reader, mut writer) = stream.into_split();
     write_line(&mut writer, &Message::request(1, method, call)).await?;
     let mut lines = BufReader::new(reader).lines();
@@ -1129,7 +1158,7 @@ async fn call_on(socket: &Path, method: &str, call: &ToolCall) -> io::Result<Too
 /// Open a window for the person in the members' shared Chrome, at `url`.
 /// `Ok(false)` when no daemon answers or members use a Chrome each.
 pub async fn person_window(socket: &Path, url: &str) -> io::Result<bool> {
-    let Ok(stream) = UnixStream::connect(socket).await else {
+    let Ok(stream) = connect(socket).await else {
         return Ok(false);
     };
     let (reader, mut writer) = stream.into_split();
@@ -1149,7 +1178,7 @@ pub async fn person_window(socket: &Path, url: &str) -> io::Result<bool> {
 /// Which daemon answers at `socket`: `Ok(None)` when it is older than the
 /// `version` method.
 pub async fn version(socket: &Path) -> io::Result<Option<rpc::Version>> {
-    let stream = UnixStream::connect(socket).await?;
+    let stream = connect(socket).await?;
     let (reader, mut writer) = stream.into_split();
     write_line(&mut writer, &Message::request(1, rpc::VERSION, ())).await?;
     let mut lines = BufReader::new(reader).lines();
@@ -1166,15 +1195,27 @@ pub async fn version(socket: &Path) -> io::Result<Option<rpc::Version>> {
 
 /// Whether a daemon answers at `socket`.
 pub async fn is_running(socket: &Path) -> bool {
-    UnixStream::connect(socket).await.is_ok()
+    connect(socket).await.is_ok()
 }
 
 /// The process listening at `socket`, as the system tells it — to stop a
 /// daemon that no longer answers.
 pub async fn daemon_pid(socket: &Path) -> Option<u32> {
-    let stream = UnixStream::connect(socket).await.ok()?;
+    let stream = connect(socket).await.ok()?;
+    peer_pid(&stream).filter(|pid| *pid > 1)
+}
+
+#[cfg(unix)]
+fn peer_pid(stream: &UnixStream) -> Option<u32> {
     let pid = stream.peer_cred().ok()?.pid()?;
-    u32::try_from(pid).ok().filter(|p| *p > 1)
+    u32::try_from(pid).ok()
+}
+
+// The TCP compatibility listener is only a compile-time bridge. T-514
+// replaces it with named pipes and their client-process identity.
+#[cfg(windows)]
+fn peer_pid(_stream: &UnixStream) -> Option<u32> {
+    None
 }
 
 #[cfg(test)]

@@ -28,10 +28,11 @@ pub struct Clock {
 
 impl Clock {
     pub fn now() -> Self {
-        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-        let secs = unsafe { libc::time(std::ptr::null_mut()) };
-        unsafe { libc::localtime_r(&secs, &mut tm) };
-        Self { hour: tm.tm_hour as u8, minute: tm.tm_min as u8, second: tm.tm_sec as u8 }
+        let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let tm = equipe_providers::platform::local_time(unix).unwrap_or(equipe_providers::platform::CalendarTime {
+            year: 1970, month: 1, day: 1, weekday: 4, hour: 0, minute: 0, second: 0,
+        });
+        Self { hour: tm.hour as u8, minute: tm.minute as u8, second: tm.second as u8 }
     }
 
     /// "14:02", for what is stamped per event: it changes once a minute.
@@ -2174,39 +2175,28 @@ pub fn moved_line(h: &HandOver, now: u64) -> String {
 
 /// `14:30` in local time.
 pub fn local_hm(unix: u64) -> String {
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let secs = unix as libc::time_t;
-    unsafe { libc::localtime_r(&secs, &mut tm) };
-    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
+    let Some(tm) = equipe_providers::platform::local_time(unix) else { return format!("{unix}") };
+    format!("{:02}:{:02}", tm.hour, tm.minute)
 }
 
 /// The start of the local day `unix` falls in (midnight, as the Mac's clock
 /// and time zone have it), in unix seconds.
 pub fn local_midnight(unix: u64) -> u64 {
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let secs = unix as libc::time_t;
-    unsafe { libc::localtime_r(&secs, &mut tm) };
-    tm.tm_hour = 0;
-    tm.tm_min = 0;
-    tm.tm_sec = 0;
-    // Daylight saving as that day has it.
-    tm.tm_isdst = -1;
-    let midnight = unsafe { libc::mktime(&mut tm) };
-    if midnight < 0 || midnight as u64 > unix { unix - unix % 86_400 } else { midnight as u64 }
+    equipe_providers::platform::local_midnight(unix).filter(|midnight| *midnight <= unix).unwrap_or(unix - unix % 86_400)
 }
 
 /// What `unix` reads on the Mac's clock, in its time zone.
 pub fn local_time(unix: u64) -> crate::activity::Local {
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let secs = unix as libc::time_t;
-    unsafe { libc::localtime_r(&secs, &mut tm) };
+    let tm = equipe_providers::platform::local_time(unix).unwrap_or(equipe_providers::platform::CalendarTime {
+        year: 1970, month: 1, day: 1, weekday: 4, hour: 0, minute: 0, second: 0,
+    });
     crate::activity::Local {
-        year: i64::from(tm.tm_year) + 1900,
-        month: (tm.tm_mon + 1) as u32,
-        day: tm.tm_mday as u32,
-        weekday: tm.tm_wday as u32,
-        hour: tm.tm_hour as u32,
-        minute: tm.tm_min as u32,
+        year: i64::from(tm.year),
+        month: tm.month,
+        day: tm.day,
+        weekday: tm.weekday,
+        hour: tm.hour,
+        minute: tm.minute,
     }
 }
 

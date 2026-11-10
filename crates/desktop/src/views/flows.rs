@@ -735,6 +735,7 @@ impl Shell {
         }
         self.design.map.zoomed = false;
         self.design.lightbox = None;
+        self.design.component_shot = None;
         cx.notify();
     }
 

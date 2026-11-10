@@ -91,7 +91,71 @@ pub fn squad(home: &Path, cwd: &Path, current: Option<String>, words: &[&str], d
             }
             Ok(vec![folder.path.display().to_string(), folder.describe()])
         }
-        _ => Err("equipe squad new <name> [folder] · add <folder> · remove <project>".into()),
+        _ => Err("equipe squad new <name> [folder] · add <folder> · remove <project> · delete <name>".into()),
+    }
+}
+
+/// `equipe squad delete <name>`: asked first at a terminal (`yes` doesn't
+/// ask; with no terminal to ask at, `--yes` is needed). Through the daemon at
+/// `socket` when it runs — it stops the squad's members first, and its
+/// screens move on — else right here, with no member running. What to tell
+/// the person.
+pub async fn delete_squad(home: &Path, socket: &Path, name: &str, yes: bool) -> Result<Vec<String>, String> {
+    use equipe_core::t;
+    if !equipe_core::squads::exists(home, name) {
+        return Err(t!("squad.delete_no_squad", name = name));
+    }
+    let place = shown(&equipe_core::squads::deleted_dir(home));
+    if !yes {
+        if !crate::ui::interactive() {
+            return Err(t!("squad.delete_needs_yes", name = name));
+        }
+        eprintln!("{}", t!("squad.delete_what", name = name, path = place));
+        let go = dialoguer::Confirm::new().with_prompt(t!("squad.delete_confirm", name = name)).default(false).interact().map_err(|e| e.to_string())?;
+        if !go {
+            return Ok(vec![t!("squad.delete_cancelled").to_owned()]);
+        }
+    }
+    let (moved_to, next) = if equipe_core::gateway::is_running(socket).await {
+        through_daemon(socket, name).await?
+    } else {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default();
+        let deleted = equipe_core::squads::delete(home, name, now)?;
+        (deleted.moved_to, deleted.next)
+    };
+    let mut lines = vec![t!("squad.delete_done", name = name, path = shown(&moved_to))];
+    lines.push(match next {
+        Some(next) => t!("squad.delete_next", next = next),
+        None => t!("squad.delete_none_left").to_owned(),
+    });
+    Ok(lines)
+}
+
+/// Ask the daemon to delete `name`, and wait for its answer.
+async fn through_daemon(socket: &Path, name: &str) -> Result<(std::path::PathBuf, Option<String>), String> {
+    use equipe_core::protocol::{Command, Event};
+    use equipe_core::t;
+    let (mut client, _) = equipe_core::gateway::Client::connect(socket, &crate::daemon::build_id(), name).await.map_err(|e| e.to_string())?;
+    client.send(Command::DeleteSquad { squad: name.to_owned() });
+    let answer = async {
+        while let Some(event) = client.next_event().await {
+            match event {
+                Event::SquadDeleted { squad, moved_to, next } if squad == name => return Ok((moved_to, next)),
+                Event::SquadNotDeleted { squad, why } if squad == name => return Err(why),
+                _ => {}
+            }
+        }
+        Err(t!("squad.delete_daemon_gone").to_owned())
+    };
+    // Removing big worktrees takes a while; a daemon too old to know the command never answers.
+    tokio::time::timeout(std::time::Duration::from_secs(300), answer).await.map_err(|_| t!("squad.delete_no_answer", name = name))?
+}
+
+/// `path` with the home folder as `~`.
+fn shown(path: &Path) -> String {
+    match dirs::home_dir().and_then(|h| path.strip_prefix(h).ok().map(Path::to_owned)) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
     }
 }
 
@@ -138,6 +202,29 @@ mod tests {
         assert!(words(&["remove", "nope"], false).is_err());
         words(&["remove", "site"], false).unwrap();
         assert_eq!(equipe_core::squads::list(&home)[0].projects.len(), 1);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[tokio::test]
+    async fn with_no_daemon_a_squad_is_deleted_right_here_into_the_deleted_folder() {
+        let home = scratch("delete");
+        let socket = home.join("equipe.sock");
+        equipe_core::squads::create_without_project(&home, "acme").unwrap();
+        equipe_core::squads::create_without_project(&home, "beta").unwrap();
+        equipe_core::squads::remember_last(&home, "acme").unwrap();
+        let err = delete_squad(&home, &socket, "nope", true).await.unwrap_err();
+        assert!(err.contains("nope"), "{err}");
+        let lines = delete_squad(&home, &socket, "acme", true).await.unwrap();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].contains("acme") && lines[0].contains("deleted"), "{lines:?}");
+        assert!(lines[1].contains("beta"), "what opens next: {lines:?}");
+        assert!(!equipe_core::squads::exists(&home, "acme"));
+        assert_eq!(equipe_core::squads::last_squad(&home).as_deref(), Some("beta"));
+        let moved: Vec<_> = std::fs::read_dir(equipe_core::squads::deleted_dir(&home)).unwrap().flatten().collect();
+        assert_eq!(moved.len(), 1);
+        assert!(moved[0].path().join("squad.db").exists(), "the folder, whole");
+        let lines = delete_squad(&home, &socket, "beta", true).await.unwrap();
+        assert!(lines[1].contains("equipe"), "none left: how to start one: {lines:?}");
         let _ = std::fs::remove_dir_all(&home);
     }
 }

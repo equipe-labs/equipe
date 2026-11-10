@@ -17,7 +17,6 @@ equipe-protocol = { path = "../protocol" }
 equipe-providers = { path = "../providers" }
 futures-util = "0.3.34"
 hpke = { version = "0.14.1", default-features = false, features = ["alloc", "getrandom", "x25519", "chacha"] }
-libc = "0.2.190"
 qrcode = { version = "0.14.1", default-features = false }
 pulldown-cmark = { version = "0.13.4", default-features = false }
 ratatui = "0.30.2"
@@ -33,6 +32,9 @@ terminal_size = "0.4.4"
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "io-std", "io-util", "net", "process", "sync", "time"] }
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 unicode-width = "0.2.2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.190"
 
 [dev-dependencies]
 # As a workspace build has it (the desktop app brings ring): the TLS test

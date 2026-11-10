@@ -241,3 +241,11 @@ Note: this table is a **list** of where values change. Each change is a screen c
 6. The zh-Hant sample sentence is a new translation, not yet reviewed.
 7. The mismatch in language lists (pt-BR ↔ zh-Hant) is a product decision, handed to the PM.
 8. Tidying the register of the site·app's Korean strings, replacing the store screenshots with real screens, and the iOS home name `Equipe`→`equipe` are proposed as **separate tickets**.
+
+## Component · document focus view
+
+- A long Markdown document may move from its right panel into the full app content area. It is the same document surface and scroll handle, not a second viewer or macOS full screen.
+- The focus header is return-first: origin-specific back action plus `Esc` on the left, document tools on the right, then full filename and path on a second row. Never truncate the filename; let the header grow.
+- At 760pt or 150% text, keep back and More document actions visible and move secondary tools into More. The reading measure stays `layout.measure`; diagrams reflow vertically before they overflow horizontally.
+- Exiting by Back, `Esc`, or `⇧⌘F` restores the exact origin, split widths, selected ticket/document, scroll position, and keyboard focus. `Esc` closes an open menu before it exits focus view.
+- Full interaction, copy, accessibility and QA contract: `design/specs/document-focus/spec.md` (T-617).

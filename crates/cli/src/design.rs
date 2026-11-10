@@ -761,11 +761,8 @@ fn prune(flow_dir: &Path, mode: &str, width: u32, keep: usize) -> std::io::Resul
 
 /// `secs` in local time as history names it: `20261104-051200`.
 fn stamp(secs: u64) -> String {
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let at = secs as libc::time_t;
-    // SAFETY: localtime_r only writes the tm it is given.
-    unsafe { libc::localtime_r(&at, &mut tm) };
-    format!("{:04}{:02}{:02}-{:02}{:02}{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec)
+    let Some(tm) = equipe_providers::platform::local_time(secs) else { return secs.to_string() };
+    format!("{:04}{:02}{:02}-{:02}{:02}{:02}", tm.year, tm.month, tm.day, tm.hour, tm.minute, tm.second)
 }
 
 /// A video's length as a person reads it: `0:42`, `1:05`.

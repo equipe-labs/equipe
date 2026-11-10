@@ -58,3 +58,12 @@ Example sources: "frontend is waiting…" comes from a desktop screen (`desktop-
 ## 4. The visual language in a line (details in `guidelines.md`)
 
 **One blue dot on warm neutrals (bone·void).** Colour is barely used; the colours used are meaning (status) and the one brand blue. Space and hierarchy instead of ornament.
+
+## T-617 binding brief — document focus view
+
+- **Problem:** A long Markdown report is trapped in the right panel, especially at the 760pt minimum window width. The person must be able to read it across the app content area and return to the exact conversation/board state.
+- **Success:** Focus entry is discoverable from the document header; the focused header makes the document and return action unambiguous; `Esc`, the header action, and one toggle command all restore layout, document, scroll, and keyboard focus. Korean and English long titles remain available at 760/1200pt and 100/150% text.
+- **Reference:** Linear Peek for opening detail without losing list context; Raycast navigation for one consistent `Esc` meaning. Take the reversible context transition and keyboard visibility, not either product's brand or copy.
+- **Locked:** existing warm-neutral palette, system typography, current Markdown/Mermaid renderer, 760/1200pt support, light/dark, quiet tool density, no decorative AI effects, no macOS fullscreen change.
+- **Free:** focus header structure, entry/exit placement and labels, body measure and responsive header wrapping.
+- **Visual thesis:** A reading surface that feels like the same document gently taking the room, with the way back always clearer than the mode itself.

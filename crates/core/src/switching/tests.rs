@@ -218,7 +218,7 @@ fn the_engine_moved_to_needs_thirty_points_more_room() {
 }
 
 #[test]
-fn both_engines_low_step_down_on_the_same_engine_and_hold_new_tickets() {
+fn both_engines_low_offer_a_step_down_on_the_same_engine_and_keep_working() {
     let mut mates = team(Engine::Claude);
     for m in &mut mates {
         m.model = Some(if m.role == "frontend" { "claude-sonnet-5-5".into() } else { "claude-opus-5-5".into() });
@@ -234,10 +234,11 @@ fn both_engines_low_step_down_on_the_same_engine_and_hold_new_tickets() {
     assert_eq!((frontend.model.as_deref(), frontend.effort.as_deref()), (Some("claude-sonnet-5-5"), Some("medium")), "already on Sonnet: less thinking");
     let backend = batch.moves.iter().find(|m| m.member == "backend").unwrap();
     assert_eq!(backend.model.as_deref(), Some("sonnet"));
-    assert!(d.hold.contains(&Hold { engine: Engine::Claude, until: NOW + 2 * H }));
-    // Once per window: not stepped down again, still held.
+    // Low isn't out: new tickets still start.
+    assert!(d.hold.is_empty());
+    // Once per window: not offered again.
     let again = decide_at(&r, &mates, &reach(), Switching::Auto, NOW + M, &mut memory);
-    assert!(again.batch.is_none() && !again.hold.is_empty());
+    assert!(again.batch.is_none() && again.hold.is_empty());
     // As light as it goes.
     assert_eq!(step_down(Engine::Claude, "backend", Some("sonnet"), Some("low")), None);
     assert_eq!(step_down(Engine::Claude, "backend", Some("sonnet"), None), Some((Some("sonnet".into()), Some("low".into()))), "the default is medium");

@@ -6,6 +6,10 @@
 //! see docs/DESKTOP.md. `EQUIPE_LOG_RENDER=1` prints a line per frame, to see that.
 
 mod asklist;
+#[cfg(unix)]
+mod askpass;
+#[cfg(windows)]
+#[path = "askpass_windows.rs"]
 mod askpass;
 mod attach;
 mod beat;
@@ -348,6 +352,9 @@ pub struct Shell {
     /// A sheet over the window (usage, help, changes, memory) and a question asked first.
     pub sheet: Option<sheet::Sheet>,
     pub confirm: Option<sheet::Ask>,
+    /// The squad this window asked its daemon to delete, until it answers
+    /// (`views/delete_squad.rs`).
+    pub deleting_squad: Option<String>,
     /// The roles a squad just started joins with, once it is open and empty.
     pending_team: Option<Vec<String>>,
     /// A squad just made on another machine, and how much it does alone: set
@@ -506,6 +513,7 @@ impl Shell {
             jobs,
             sheet: None,
             confirm: None,
+            deleting_squad: None,
             pending_team: None,
             pending_mode: None,
             connecting_shown: false,
@@ -1011,6 +1019,15 @@ impl Shell {
                                 changed |= this.doc_copy_kept(squad, kept, removed, undo);
                                 continue;
                             }
+                            // A squad deleted, here or from another screen: the switcher's, and the window's if it was on it.
+                            daemon::Update::Event(Event::SquadDeleted { squad, moved_to, next }) => {
+                                changed |= this.squad_deleted(&squad, &moved_to, next, window, cx);
+                                continue;
+                            }
+                            daemon::Update::Event(Event::SquadNotDeleted { squad, why }) => {
+                                changed |= this.squad_not_deleted(&squad, &why);
+                                continue;
+                            }
                             other => other,
                         };
                         // The shared Chrome's tabs and hands: the browser panel's.
@@ -1069,6 +1086,10 @@ impl Shell {
                                 && !cfg!(feature = "snapshot")
                             {
                                 cx.open_url(&url);
+                            }
+                            // A note that goes (a sign-in just finished): drawn again once it has.
+                            if let Some(wait) = effect.later {
+                                this.engines_later(wait, cx);
                             }
                             // Installed as the person asked: straight on to its sign-in.
                             if let Some(engine) = effect.sign_in
@@ -1631,7 +1652,7 @@ impl Shell {
     pub fn open_file(&self, path: &str) {
         match &self.endpoint {
             Endpoint::Local { .. } => {
-                let _ = std::process::Command::new("open").arg(path).spawn();
+                let _ = equipe_providers::platform::open(path);
             }
             Endpoint::Ssh(host) => {
                 let (host, path, notices) = (host.clone(), path.to_owned(), self.notices.clone());
@@ -1642,7 +1663,7 @@ impl Shell {
                         Ok(bytes) => {
                             let local = ssh::scratch_dir().join(format!("{}-{}", std::process::id(), ssh::safe_name(std::path::Path::new(&path))));
                             match std::fs::write(&local, bytes) {
-                                Ok(()) => drop(std::process::Command::new("open").arg(&local).spawn()),
+                                Ok(()) => drop(equipe_providers::platform::open(&local)),
                                 Err(e) => drop(notices.send(t!("main.preview_save_failed", e = e))),
                             }
                         }

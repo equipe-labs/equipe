@@ -27,7 +27,7 @@ use futures_util::StreamExt as _;
 use futures_util::stream::FuturesUnordered;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::claude_code::{Access, cap_diff, tool_target};
@@ -53,11 +53,7 @@ const HEARD_EVERY: Duration = Duration::from_secs(5);
 
 /// Where `binary` is: itself when it names a path, else the first on `PATH`.
 pub fn find(binary: &str) -> Option<PathBuf> {
-    if binary.contains('/') {
-        let path = PathBuf::from(binary);
-        return path.is_file().then_some(path);
-    }
-    std::env::split_paths(&std::env::var_os("PATH")?).map(|dir| dir.join(binary)).find(|p| p.is_file())
+    crate::tools_path::find(binary)
 }
 
 /// How the person's Codex CLI is signed in.
@@ -93,7 +89,7 @@ pub fn parse_login_status(success: bool, said: &str) -> SignIn {
 
 /// Ask the installed Codex CLI whether it is signed in. `Ok(None)`: it isn't installed.
 pub async fn login_status(binary: &str) -> Result<Option<SignIn>> {
-    let asked = Command::new(binary).args(["login", "status"]).stdin(Stdio::null()).kill_on_drop(true).output();
+    let asked = crate::tools_path::command(binary).args(["login", "status"]).stdin(Stdio::null()).kill_on_drop(true).output();
     let Ok(output) = tokio::time::timeout(ANSWER_WAIT, asked).await else {
         return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("`{binary} login status` didn't answer")).into());
     };
@@ -1229,7 +1225,7 @@ struct Server {
 impl Server {
     /// Start it in `cwd` and introduce equipe.
     async fn start(binary: &str, cwd: &Path, args: &[String], env: &[(String, String)]) -> Result<Self> {
-        let mut child = Command::new(binary)
+        let mut child = crate::tools_path::command(binary)
             .arg("app-server")
             .args(args)
             .current_dir(cwd)

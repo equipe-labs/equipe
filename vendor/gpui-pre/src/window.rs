@@ -3562,6 +3562,15 @@ impl Window {
 
     /// Produces a new frame and assigns it to `rendered_frame`. To actually show
     /// the contents of the new [`Scene`], use [`Self::present`].
+    ///
+    /// Hidden snapshot windows have no platform presentation loop to wrap the
+    /// draw, so they use this entry point to share its performance timing.
+    pub fn draw_profiled(&mut self, cx: &mut App) -> ArenaClearNeeded {
+        equipe_perf::frame(|| self.draw(cx))
+    }
+
+    /// Produces a new frame and assigns it to `rendered_frame`. To actually show
+    /// the contents of the new [`Scene`], use [`Self::present`].
     #[profiling::function]
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
         // Drain every draw in profiler builds so a previous frame's

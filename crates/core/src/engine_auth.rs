@@ -190,9 +190,14 @@ pub fn by_service(env: &dyn Fn(&str) -> Option<String>, pid: u32) -> bool {
 
 /// Start [`relaunch_script`] on its own, outliving this daemon.
 pub fn move_into_login(exe: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    { let _ = exe; Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "login service is unsupported on Windows yet")) }
+    #[cfg(unix)]
+    {
     use std::os::unix::process::CommandExt as _;
     let script = relaunch_script(exe, std::process::id());
     std::process::Command::new("/bin/sh").arg("-c").arg(script).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().map(drop)
+    }
 }
 
 /// A turn its engine's lost sign-in stopped, kept to be carried on once it is

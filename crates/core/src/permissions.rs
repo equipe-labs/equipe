@@ -97,6 +97,7 @@ pub fn person_only(command: &Command) -> bool {
         C::AddProject { .. }
         | C::RemoveProject { .. }
         | C::SetHq { .. }
+        | C::DeleteSquad { .. }
         | C::SaveRoutine { .. }
         | C::DeleteRoutine { .. }
         | C::RunRoutine { .. } => true,

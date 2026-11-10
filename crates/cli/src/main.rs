@@ -155,7 +155,7 @@ enum Command {
         #[arg(long)]
         squad: Option<String>,
     },
-    /// Start a squad, or change the folders one works on: `new <name> [folder]`, `add <folder>`, `remove <project>`
+    /// Start a squad, change the folders one works on, or delete one: `new <name> [folder]`, `add <folder>`, `remove <project>`, `delete <name>`
     Squad {
         words: Vec<String>,
         /// The squad to change (default: the one this folder belongs to, else your first)
@@ -164,6 +164,9 @@ enum Command {
         /// Only check the folder and say what would happen
         #[arg(long)]
         dry_run: bool,
+        /// Delete without asking (`delete`)
+        #[arg(long, short)]
+        yes: bool,
     },
     /// Apps where a member's send waits for your yes: `add|remove <app>`, `reset`
     SendApps {
@@ -652,7 +655,20 @@ async fn run(cli: Cli) -> ExitCode {
             Err(why) => Err(Failure::new(why)),
         },
         Command::Browser { url, forget, .. } => sign_in(url, forget).await,
-        Command::Squad { words, squad, dry_run } => {
+        // `delete <name>`: asked first at a terminal; through the daemon when it runs.
+        Command::Squad { words, yes, .. } if words.first().is_some_and(|w| w == "delete") => match words.as_slice() {
+            [_, name] => match settings::delete_squad(&equipe_providers::credentials::equipe_home(), &daemon::socket(), name, yes).await {
+                Ok(lines) => {
+                    for line in lines {
+                        println!("  {line}");
+                    }
+                    Ok(())
+                }
+                Err(why) => Err(Failure::new(why)),
+            },
+            _ => Err(Failure::new(t!("squad.delete_usage"))),
+        },
+        Command::Squad { words, squad, dry_run, .. } => {
             let home = equipe_providers::credentials::equipe_home();
             let cwd = std::env::current_dir().unwrap_or_default();
             let current = home::squad_for(&home, &cwd, squad);
@@ -1668,6 +1684,8 @@ impl App {
                 | Event::MemberMoved { .. }
                 | Event::HandOver { .. }
                 | Event::ProjectsChanged { .. }
+                | Event::SquadDeleted { .. }
+                | Event::SquadNotDeleted { .. }
                 | Event::RoutinesChanged { .. }
                 | Event::RoutineProposed { .. }
                 | Event::RoutineProposalClosed { .. }
@@ -1889,6 +1907,18 @@ fn tool_verb(name: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn squad_delete_takes_a_name_and_yes_for_scripts() {
+        let parsed = |args: &[&str]| match Cli::try_parse_from(args).map(|c| c.command) {
+            Ok(Some(Command::Squad { words, yes, dry_run, .. })) => Some((words, yes, dry_run)),
+            _ => None,
+        };
+        assert_eq!(parsed(&["equipe", "squad", "delete", "acme"]), Some((vec!["delete".to_owned(), "acme".to_owned()], false, false)), "asked first");
+        assert_eq!(parsed(&["equipe", "squad", "delete", "acme", "--yes"]), Some((vec!["delete".to_owned(), "acme".to_owned()], true, false)));
+        assert_eq!(parsed(&["equipe", "squad", "delete", "acme", "-y"]).map(|p| p.1), Some(true));
+        assert_eq!(parsed(&["equipe", "squad", "new", "acme"]).map(|p| p.1), Some(false), "the other words as ever");
+    }
 
     #[test]
     fn homebrew_installs_update_through_homebrew() {

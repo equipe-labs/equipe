@@ -60,6 +60,7 @@ pub mod tickets;
 pub mod visuals;
 pub mod watch;
 pub mod new_squad;
+pub mod delete_squad;
 pub mod welcome;
 pub mod words;
 pub mod yourturn;

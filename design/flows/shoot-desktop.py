@@ -108,10 +108,19 @@ state("settings/general/default", "settings:general")
 state("settings/general/long", "settings:general", lang="de")
 state("settings/engines/default", "settings:engines", {"FAKE_USAGE": "healthy"})
 state("settings/engines/error", "settings:engines", {"FAKE_USAGE": "both_low"})
+# Claude Code's card: signed in (above), the sign-out question, signed out, another account's sign-in
+# under way, refused, done; German (the longest) stands in for large text — the app has no text-size setting.
+state("settings/engines/confirm", "settings:engines;eng:signout:claude", {"FAKE_USAGE": "healthy"}, label="Claude Code: sign-out asked first, naming who is working")
+state("settings/engines/signedout", "settings:engines;eng:signout:claude;eng:sure:claude;wait:1500", {"FAKE_USAGE": "healthy"}, label="Claude Code signed out")
+state("settings/engines/waiting", "settings:engines;eng:switch:claude;wait:900", {"FAKE_USAGE": "healthy"}, label="Claude Code: another account's sign-in under way")
+state("settings/engines/failed", "settings:engines;eng:switch:claude;wait:900;signin:paste:bad-code;wait:1200", {"FAKE_USAGE": "healthy", "FAKE_ENGINES": "failed"}, label="Claude Code: another account's sign-in refused", kind="error")
+state("settings/engines/success", "settings:engines;eng:switch:claude;wait:900;signin:paste:abc#def;wait:1200", {"FAKE_USAGE": "healthy"}, label="Claude Code signed in as another account: said a moment, its email shown", kind="success")
+state("settings/engines/cancelled", "settings:engines;eng:switch:claude;wait:900;eng:cancel:claude;wait:800", {"FAKE_USAGE": "healthy"}, label="Claude Code: another account's sign-in cancelled, the card as before")
+state("settings/engines/long", "settings:engines;eng:signout:claude", {"FAKE_USAGE": "healthy"}, lang="de")
 state("settings/squad/default", "settings:squad")
 state("settings/team/default", "settings:team")
 state("settings/team/empty", "settings:team", {"FAKE_SIGNALS": "0"})
-state("settings/permissions/default", "settings:permissions")
+state("settings/permissions/default", "settings:permissions", lang="ko")
 state("settings/projects/default", "settings:projects")
 state("settings/browser/default", "settings:browser")
 state("settings/accounts/default", "settings:accounts;lseed")
@@ -143,7 +152,7 @@ state("overview/routines/form", "overview;rseed;rnew:weekly", wait=1200)
 # ── Panels and sheets over the work ────────────────────────────────────────
 state("tools/browser/default", "chat", {"FAKE_BROWSER": "1"}, wait=3000)
 state("tools/browser/empty", "chat;browser", {"FAKE_BROWSER": "empty"}, wait=1500)
-state("tools/browser/handover", "chat", {"FAKE_BROWSER": "handover"}, wait=3000)
+state("tools/browser/handover", "chat", {"FAKE_BROWSER": "handover"}, wait=3000, lang="ko")
 state("tools/terminal/default", "chat;term;wait:3000;tkeys:ls -la~", wait=1500)
 state("tools/document/default", "chat;doc:{ROOT}/design/guidelines.md", wait=1500)
 state("tools/subagent/default", "chat;subagent:frontend", {"FAKE_SUBAGENTS": "1"}, wait=2000)
@@ -151,6 +160,9 @@ state("tools/pair-phone/default", "pair", wait=1200)
 state("tools/pair-phone/permission", "pair", {"FAKE_PAIR": "ask"}, wait=2500)
 state("tools/pair-phone/error", "pair", {"FAKE_PAIR": "relay"}, wait=2500)
 state("tools/notifications/default", "bell:sheet", wait=600)
+
+# ── Designer studio ───────────────────────────────────────────────────────
+state("studio/designer/waiting", "studio:205", {"FAKE_STUDIO": "blocked"}, wait=2500, lang="ko", label="Waiting for the person")
 
 
 # ── Daemon disconnected ────────────────────────────────────────────────────
@@ -176,6 +188,7 @@ FLOWS = [
     ("overview", "Squad views: Overview · Roadmap · Routines · Metrics · Design system", "The sidebar's views of the whole squad: its projects side by side, the roadmap, the regular work the PM is handed, the numbers (metrics) and the design system."),
     ("settings", "Settings", "General (with privacy: anonymous usage data), AI platforms, squad and devices, team and signals, permissions, projects, browser, accounts, keys, about."),
     ("tools", "Panels and sheets", "The browser panel, terminal, a document beside the conversation, a subagent, pairing a phone, the notifications sheet."),
+    ("studio", "Designer studio", "A live view of design work: what it is waiting on, its steps, current picture, findings and timeline."),
     ("disk", "Disk", "The disk panel when space runs short, a fix's sheet and its result."),
     ("connection", "Daemon and machine", "Attaching to the daemon: the daemon gone (under a banner, or with nothing to show yet), equipe not installed, the machine chooser."),
 ]
@@ -218,6 +231,7 @@ SCREENS = {
     "tools/subagent": ("A subagent", ["views/subagent.rs"], None),
     "tools/pair-phone": ("Pair a phone", ["views/pair.rs", "pair.rs"], None),
     "tools/notifications": ("Notifications sheet", ["views/bell.rs", "notify.rs"], None),
+    "studio/designer": ("Designer studio", ["views/studio.rs", "studio.rs"], "The waiting state shows work paused for the person's answer."),
     "disk/panel": ("Disk panel", ["views/disk.rs", "disk.rs"], None),
     "disk/fix": ("A fix's sheet", ["views/disk.rs", "disk.rs"], None),
     "connection/daemon": ("Daemon", ["views/connect.rs", "daemon.rs", "views/header.rs"], None),

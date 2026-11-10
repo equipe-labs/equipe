@@ -187,6 +187,11 @@ pub fn stamp(places: &[Place]) -> u64 {
             // A link's target counts too: retargeted, it shows something else.
             std::fs::metadata(&path).ok().map(|m| (m.len(), m.modified().ok())).hash(&mut h);
         }
+        // The components' records, and the repository's registry and folders.
+        for path in super::gallery::watched(&place.dir, repo_of(place)) {
+            path.hash(&mut h);
+            std::fs::metadata(&path).ok().map(|m| (m.len(), m.modified().ok())).hash(&mut h);
+        }
         // The person's real-data pictures, shot again or taken away.
         for (path, meta) in place.live.as_deref().map(super::flows::live_files).unwrap_or_default() {
             path.hash(&mut h);
@@ -195,6 +200,11 @@ pub fn stamp(places: &[Place]) -> u64 {
         }
     }
     h.finish()
+}
+
+/// The repository a project's design folder is in, where its code is.
+fn repo_of(place: &Place) -> Option<&Path> {
+    place.project.as_ref().and_then(|_| place.dir.parent())
 }
 
 /// Where file `name` in `dir` really is, when it is one and stays in `dir`.
@@ -300,7 +310,8 @@ pub fn read(place: &Place, lang: Lang) -> DesignSystem {
     }
     system.assets = assets(&place.dir);
     // A project's folder is in its repository, where the screens' code is.
-    let repo = place.project.as_ref().and_then(|_| place.dir.parent());
+    let repo = repo_of(place);
+    system.components = super::gallery::read(&place.dir, repo, &system.assets);
     // Held to the app the person uses — on their own screen's Mac, which is
     // often not this one — else to the one installed here.
     let installed = |app: &str| match &place.installed {
@@ -404,6 +415,8 @@ pub fn catalog_of(places: &[Place], lang: Lang) -> (Vec<DesignSystem>, String) {
     let folder = places.first().map(|p| p.dir.to_string_lossy().into_owned()).unwrap_or_default();
     let mut read: Vec<DesignSystem> = places.iter().filter(|p| is_design_dir(&p.dir)).map(|p| read(p, lang)).collect();
     fingerprint(&mut read);
+    // The components a ticket is making or changing, said on the accepted system.
+    super::gallery::mark_work(&mut read);
     let systems: Vec<DesignSystem> = read
         .iter()
         .filter(|s| match &s.draft {
@@ -431,6 +444,7 @@ pub fn shown(home: &Path, squad: &str) -> (Vec<String>, Vec<PathBuf>) {
             continue;
         }
         paths.extend(assets(&place.dir).into_iter().map(|a| a.path));
+        paths.extend(super::gallery::pictures(&place.dir));
         let map = super::flows::read_with(&place.dir, None, place.live.as_deref(), Lang::En, &|_| None).unwrap_or_default();
         let states = map.flows.into_iter().flat_map(|f| f.screens).flat_map(|s| s.states);
         let pictures: Vec<_> = states.flat_map(|s| s.pictures).collect();

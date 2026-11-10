@@ -325,7 +325,7 @@ fn yourself_button(shell: &Shell, id: (&'static str, usize), item: &DiskItem, cx
             let path = item.path.clone();
             ui::button(p, id, Kind::Secondary, t!("disk.reveal"))
                 .icon(Icon::Folder)
-                .on_click(move |_, _, _| drop(std::process::Command::new("open").arg("-R").arg(&path).spawn()))
+                .on_click(move |_, _, _| drop(equipe_providers::platform::reveal(&path)))
                 .into_any_element()
         }
         (None, true) => {

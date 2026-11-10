@@ -275,13 +275,8 @@ fn sample_into(file: &std::path::Path) {
 
 /// A time of day as the machine's clock reads it: `13:21:05`.
 pub fn clock(unix: u64) -> String {
-    // SAFETY: localtime_r only writes the tm it is given.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let secs = unix as libc::time_t;
-    if unsafe { libc::localtime_r(&secs, &mut tm) }.is_null() {
-        return format!("{unix}");
-    }
-    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
+    let Some(tm) = equipe_providers::platform::local_time(unix) else { return format!("{unix}") };
+    format!("{:02}:{:02}:{:02}", tm.hour, tm.minute, tm.second)
 }
 
 #[cfg(test)]

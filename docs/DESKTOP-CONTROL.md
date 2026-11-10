@@ -1,5 +1,12 @@
 # Desktop control
 
+> **Windows:** the same tools use Windows Graphics Capture for display/window
+> images and UI Automation for the element tree, focus checks, Invoke actions,
+> and window targeting. Text goes through Unicode `SendInput` (including Korean
+> and surrogate pairs). The helper uses a local, remote-rejecting named pipe;
+> calls still pass through the daemon's one-member screen lease, send gate, and
+> `_scene` recheck before input is posted.
+
 Members working desktop apps (Microsoft Teams, say) the way they work the
 browser: see the screen, click and type, open apps. This is the T-20 spike
 (ROADMAP principle 2): before building the tools, learn whether equipe's daemon,

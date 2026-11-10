@@ -148,7 +148,7 @@ let wheel = null;
 const startProfile = async (name, profile, STATE) => {
   const PERSON = name ? `#${name}` : '';
   const context = await chromium.launchPersistentContext(profile, {
-    channel: 'chrome',
+    channel: process.env.EQUIPE_BROWSER_CHANNEL || 'chrome',
     headless: false,
     viewport: null,
     // An ordinary browser, as far as sites can tell: Google refuses to sign
