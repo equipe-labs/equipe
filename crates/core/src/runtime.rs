@@ -599,6 +599,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         engines: Default::default(),
         design_watch: HashMap::new(),
         design_busy: std::collections::HashSet::new(),
+        review_nudged: HashMap::new(),
     };
     let mut memos = Vec::new();
     // What waited on the person in words when the daemon stopped: logged as dropped.
@@ -608,6 +609,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         runtime.prune();
         memos = runtime.resume_work();
         runtime.restore_stopped();
+        // Change requests the PM once left as plain comments: to their members, once.
+        runtime.recover_change_requests();
         // Chrome's first start, off the loop, before a reply's card waits on it.
         let _ = crate::visuals::card::warm_up(&runtime.config.home);
     }
@@ -1138,6 +1141,8 @@ struct Runtime {
     /// What the screens are told of them, as last kept.
     logins: Vec<crate::protocol::vault::Login>,
     design_busy: std::collections::HashSet<String>,
+    /// Handed-in work the PM was reminded of, by squad: when (`heartbeat`).
+    review_nudged: HashMap<String, HashMap<TicketId, u64>>,
     /// Secrets members asked the person for (`ask_secret`), by squad — read
     /// from its journal when first wanted.
     secret_asks: HashMap<String, Vec<crate::protocol::secrets::SecretAsk>>,
@@ -5429,8 +5434,9 @@ todo); or drop it if it's no longer wanted.]"
             {
                 let prompt = format!(
                     "[equipe: T-{ready} is handed in and ready for you. Check it and accept it with `accept_work` (with \
-`push` when the person asked for it to go live), send it back with `comment`, or — if it needs the person — put it to \
-them with `propose_accept`. Then carry on with what else waits.]"
+`push` when the person asked for it to go live), send it back with `comment` and `review: changes`, or — if it needs the \
+person — put it to them with `propose_accept`. A branch only behind main is no reason to send it back. Then carry on \
+with what else waits.]"
                 );
                 let _ = self.internal.send(Internal::Wake { session: pm, prompt });
             }
@@ -6903,8 +6909,12 @@ there, end your turn, and carry on when they say they're done."
     async fn set_going(&mut self, id: SessionId, prompt: String) {
         let Some(session) = self.sessions.get(&id) else { return };
         if session.is_working() {
-            if let Some(steer) = session.steer.clone() {
-                let _ = steer.send(prompt);
+            // An engine that can't take it mid-turn gets it after: never dropped.
+            match session.steer.clone() {
+                Some(steer) => {
+                    let _ = steer.send(prompt);
+                }
+                None => self.leave_memo(id, prompt),
             }
             return;
         }
@@ -7177,9 +7187,14 @@ there, end your turn, and carry on when they say they're done."
             board::COMMENT => {
                 let ticket_id = board::arg_id(&args, "id").ok_or("Which ticket? Give its id.")?;
                 let text = board::arg_str(&args, "text").ok_or("Say something.")?;
+                let word = crate::accept::review_word(&args)?;
                 let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
-                journal.ticket(ticket_id).ok().flatten().ok_or_else(|| format!("There is no T-{ticket_id}."))?;
-                journal.ticket_event(ticket_id, &member, "comment", text).map_err(|e| e.to_string())?;
+                let ticket = journal.ticket(ticket_id).ok().flatten().ok_or_else(|| format!("There is no T-{ticket_id}."))?;
+                // The PM's word on work in review sends it back or only notes it: said which.
+                if is_pm {
+                    return self.pm_comment(&squad, &member, &ticket, text, word);
+                }
+                journal.ticket_event(ticket_id, &member, board::COMMENT, text).map_err(|e| e.to_string())?;
                 Ok(format!("Noted on T-{ticket_id}."))
             }
             board::SUBMIT_FOR_REVIEW => {
@@ -8101,6 +8116,11 @@ check what is already done in your worktree first.\n"
         out.push_str(&format!(
             "The squad's designer checked its screens and sent it back. {note}\nFix each difference it lists in your \
 worktree, then hand in again with fresh screenshots of the screens you changed.\n"
+        ));
+    } else if let Some(note) = reopened.and_then(|n| n.strip_prefix(crate::accept::PM_SENT_BACK)) {
+        out.push_str(&format!(
+            "The PM reviewed your hand-in and sent it back: {note}\nFix each point in your worktree, on the same branch, \
+then hand in again.\n"
         ));
     } else if let Some(note) = reopened {
         out.push_str(&format!(
