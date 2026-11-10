@@ -940,6 +940,10 @@ impl Runtime {
         let fresh = equipe_protocol::new_session_id();
         self.engines.names.insert(fresh, name.clone());
         self.engines.briefs.insert(fresh, brief);
+        // The conversations the person opened with it go with it, not with
+        // the session it leaves: parked on the new one so `/close` spares them.
+        let kept: Vec<SessionId> = self.sessions.iter().filter(|(_, s)| s.kept && s.lane.as_ref().is_some_and(|(of, _)| *of == id)).map(|(&l, _)| l).collect();
+        self.repoint_lanes(&kept, fresh, None);
         // What `/close` sends, then what `/add` does — under the same name.
         Box::pin(self.handle(Command::Close { session: id })).await;
         let spec = SessionSpec { engine: Some(mv.to), model, access, cwd: squad_home::path(&self.config.home, squad), role: Some(role.clone()), squad: Some(squad.to_owned()) };
@@ -966,6 +970,8 @@ impl Runtime {
         if let Some(session) = self.sessions.get_mut(&now_id) {
             session.briefing = briefing;
         }
+        let member = self.sessions.get(&now_id).map(|s| (s.engine, s.model.clone()));
+        self.repoint_lanes(&kept, now_id, member);
         if self.sessions.contains_key(&now_id) {
             let to = if moved { mv.to } else { mv.from };
             let hand_over = HandOver { member: name.clone(), from_session: id, to_session: now_id, from: mv.from, to, why: due.why, at: unix_now(), ticket };
@@ -983,6 +989,43 @@ impl Runtime {
             self.set_mode(squad, Some(name), mode);
         }
         moved
+    }
+
+    /// Conversations the person opened with a member now belong to `to`. Given
+    /// its engine and model, each one not mid-turn takes them too: it goes on
+    /// in a new conversation there, opening with its lines so far.
+    fn repoint_lanes(&mut self, lanes: &[SessionId], to: SessionId, member: Option<(Engine, Option<String>)>) {
+        for lane in lanes {
+            let Some(s) = self.sessions.get_mut(lane) else { continue };
+            if let Some((of, _)) = s.lane.as_mut() {
+                *of = to;
+            }
+            let Some((engine, model)) = member.clone() else { continue };
+            if s.engine == engine || s.is_working() {
+                continue;
+            }
+            let said: Vec<String> = s
+                .transcript
+                .entries()
+                .iter()
+                .filter_map(|e| match e {
+                    Entry::User { text, .. } => Some(format!("Person: {}", clip(text, 600))),
+                    Entry::Reply { text } => Some(format!("You: {}", clip(text, 600))),
+                    _ => None,
+                })
+                .collect();
+            let recent = said[said.len().saturating_sub(16)..].join("\n");
+            s.engine = engine;
+            s.model = model;
+            s.claude_session = None;
+            s.history.clear();
+            if !recent.is_empty() {
+                s.briefing.push(format!(
+                    "equipe: this conversation moved to {} with the PM; the engine starts afresh, so here is how it went so far (latest last):\n{recent}",
+                    engine_name(engine)
+                ));
+            }
+        }
     }
 
     /// The model for Codex: `hint` as the account's catalog has it.
