@@ -3,7 +3,7 @@
 //! saved, and Save / Not now. What is typed goes to the daemon's machine, into
 //! that file, and nowhere else: never into a conversation, never to a member.
 //! Over the composer in the conversation — folded to one line until the
-//! person opens it, so the work on screen isn't pushed aside — and in 나에게.
+//! person opens it, so the work on screen isn't pushed aside — and in the Inbox.
 
 use std::collections::HashMap;
 
@@ -85,7 +85,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// "입력": the folded ask opens over the composer, its first box ready.
+    /// "Enter": the folded ask opens over the composer, its first box ready.
     pub fn open_secret_card(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         self.secrets.open.insert(id);
         if let Some(first) = self.secrets.inputs.get(&(id, 0)) {
@@ -103,12 +103,12 @@ impl Shell {
     }
 }
 
-/// The lock that marks a secret's ask in 나에게.
+/// The lock that marks a secret's ask in the Inbox.
 pub fn mark(p: Palette) -> AnyElement {
     tip(div().id("secret-mark").size(px(14.)).flex_none().flex().items_center().justify_center().child(icon(Icon::Lock, 13., p.accent)), p, t!("secrets.title"), None).into_any_element()
 }
 
-/// 나에게's row for an ask: what it is for, who asks.
+/// The Inbox's row for an ask: what it is for, who asks.
 pub fn row_text(shell: &Shell, id: u64) -> Option<(String, String, Rgba)> {
     let ask = shell.model.secret_asks.iter().find(|a| a.id == id)?;
     let (_, color) = who(shell, ask);
@@ -117,8 +117,8 @@ pub fn row_text(shell: &Shell, id: u64) -> Option<(String, String, Rgba)> {
 
 fn who(shell: &Shell, ask: &SecretAsk) -> (String, Rgba) {
     let role = shell.model.members.iter().find(|m| m.session == ask.session).map_or("", |m| m.role.as_str());
-    let (mark, hue) = look(role, &ask.member);
-    (format!("{mark} {}", ask.member), shell.palette.member(hue))
+    let (_, hue) = look(role, &ask.member);
+    (ask.member.clone(), shell.palette.member(hue))
 }
 
 /// The card for ask `id`.
@@ -179,7 +179,7 @@ pub fn docked(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let ask = shell.model.secret_asks.first()?.clone();
     let id = ask.id;
     let p = shell.palette;
-    // Folded: who asks, for how many values, and why — in one line, with 입력 and 나중에.
+    // Folded: who asks, for how many values, and why — in one line, with Enter and Later.
     if !shell.secrets.open.contains(&id) {
         let (name, color) = who(shell, &ask);
         let open = ui::button(p, ("secret-open", id), Kind::Secondary, t!("secrets.open")).icon(Icon::Lock).on_click(cx.listener(move |this, _, window, cx| this.open_secret_card(id, window, cx)));
@@ -202,7 +202,7 @@ pub fn docked(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     Some(motion::rise(div().w_full().mb_3().p_3().rounded(px(R_LG)).bg(p.raised).border_1().border_color(p.hair).shadow_sm().child(body), ("secret-in", id)).into_any_element())
 }
 
-/// The card in 나에게's peek.
+/// The card in the Inbox's peek.
 pub fn peek(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     v_flex()

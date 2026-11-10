@@ -1,6 +1,6 @@
-# 지표 화면 시안 (T-311)
-`connect`(연결하기), `dash`(대시보드), `state`(빈 상태·오류), `ph`(폰 요약 카드) × 라이트·다크, 1280 폭. 값은 `build/css/tokens.css`만 쓴다. 숫자는 예시 값이다.
-- 숫자마다 출처 서비스와 갱신 시각(`.src`), 지난 기간 대비는 ▲▼ + 부호(색은 보조).
-- 상승 `color.ok`, 하락 `color.wait`(오류색 아님). 별도 `color.metric.*` 토큰은 아직 없음 — 승인되면 추가 제안.
-- 방문은 '페이지 로드' 수(PostHog가 페이지 로드마다 새 ID를 줌). GitHub는 최근 14일만 제공.
-- 다시 만들기: `node gen.mjs` 후 `equipe design render <file>.html --widths 1280 --dark`.
+# Metrics screen mockups (T-311)
+`connect` (Connect), `dash` (Dashboard), `state` (empty state·errors), `ph` (phone summary card) × light·dark, 1280 wide. Values come only from `build/css/tokens.css`. The numbers are sample values.
+- Every number carries its source service and refresh time (`.src`); change against the previous period is ▲▼ + a sign (colour only supports).
+- A rise is `color.ok`, a fall `color.wait` (not the error colour). There are no separate `color.metric.*` tokens yet — to be proposed once approved.
+- Visits are counted as 'page loads' (PostHog gives every page load a new ID). GitHub only provides the last 14 days.
+- To regenerate: `node gen.mjs`, then `equipe design render <file>.html --widths 1280 --dark`.

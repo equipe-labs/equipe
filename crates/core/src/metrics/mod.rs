@@ -36,6 +36,10 @@ pub const DAILY_HOUR: u8 = 7;
 const RETRY: u64 = 60 * 60;
 /// How long one fetch may take.
 const FETCH_WAIT: Duration = Duration::from_secs(90);
+/// How long an ask of the Keychain may take, its turn included. A build of
+/// equipe it doesn't know yet is asked about on the Mac, and that ask waits
+/// for the person for as long as it takes.
+const KEYCHAIN_WAIT: Duration = Duration::from_secs(30);
 /// Days asked for on a connection's first fetch, and on later ones.
 const FIRST_DAYS: u32 = 400;
 const LATER_DAYS: u32 = 14;
@@ -208,18 +212,22 @@ pub fn connections(home: &Path) -> Vec<Connection> {
 }
 
 fn private_write(path: &Path, text: &str) -> Result<(), String> {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
+    #[cfg(unix)]
     let _ = std::fs::set_permissions(dir_root(path), std::fs::Permissions::from_mode(0o700));
     let partial = path.with_extension("json.partial");
     std::fs::write(&partial, text).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
     let _ = std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o600));
     std::fs::rename(&partial, path).map_err(|e| e.to_string())
 }
 
 /// The `metrics` folder a path is in.
+#[cfg(unix)]
 fn dir_root(path: &Path) -> &Path {
     path.ancestors().find(|a| a.file_name().is_some_and(|n| n == "metrics")).unwrap_or(path)
 }
@@ -264,7 +272,12 @@ fn merged(snapshots: &[Snapshot]) -> BTreeMap<(String, i64), Point> {
 /// screen's connection and the daily fetch.
 pub struct Metrics {
     home: PathBuf,
-    keys: Mutex<Box<dyn Keys>>,
+    /// Asked on the blocking pool, one at a time ([`Metrics::ask_keychain`]):
+    /// the Keychain's calls block, for good while it waits on the person.
+    keys: Arc<Mutex<Box<dyn Keys>>>,
+    /// The turn to ask the Keychain, held until the ask comes back.
+    keychain_turn: Arc<tokio::sync::Semaphore>,
+    keychain_wait: Duration,
     client: reqwest::Client,
     /// connections.json is read, changed and written by one at a time.
     file: Mutex<()>,
@@ -278,7 +291,9 @@ impl Metrics {
     pub fn new(home: &Path, keys: Box<dyn Keys>) -> Self {
         Self {
             home: home.to_owned(),
-            keys: Mutex::new(keys),
+            keys: Arc::new(Mutex::new(keys)),
+            keychain_turn: Arc::new(tokio::sync::Semaphore::new(1)),
+            keychain_wait: KEYCHAIN_WAIT,
             client: reqwest::Client::new(),
             file: Mutex::new(()),
             fetching: Mutex::new(HashSet::new()),
@@ -304,7 +319,7 @@ impl Metrics {
     }
 
     /// A JSON-RPC request: its method and params → its result.
-    pub async fn call(&self, method: &str, params: serde_json::Value, now: u64) -> Result<serde_json::Value, Refused> {
+    pub async fn call(self: &Arc<Self>, method: &str, params: serde_json::Value, now: u64) -> Result<serde_json::Value, Refused> {
         use crate::protocol::metrics as m;
         fn parse<T: serde::de::DeserializeOwned>(method: &str, params: serde_json::Value) -> Result<T, Refused> {
             serde_json::from_value(params).map_err(|e| refuse(BAD_PARAMS, format!("{method}: {e}")))
@@ -315,8 +330,14 @@ impl Metrics {
         let today = day_of(&crate::routines::Local, now);
         match method {
             m::SOURCES => answer(self.sources(&parse(method, params)?)?),
-            m::CONNECT => answer(self.connect(parse(method, params)?, now)?),
-            m::DISCONNECT => answer(self.disconnect(&parse(method, params)?)?),
+            m::CONNECT => {
+                let p = parse(method, params)?;
+                answer(self.keyed(move |me| me.connect(p, now)).await?)
+            }
+            m::DISCONNECT => {
+                let p = parse(method, params)?;
+                answer(self.keyed(move |me| me.disconnect(&p)).await?)
+            }
             m::REFRESH => answer(self.refresh(&parse(method, params)?, now, today).await?),
             m::QUERY => answer(query(&self.home, &parse(method, params)?, today)?),
             m::SUMMARY => answer(summary(&self.home, &parse(method, params)?, today)?),
@@ -426,6 +447,37 @@ impl Metrics {
         Ok(Disconnected { id: gone.id })
     }
 
+    /// `ask`, which touches the Keychain, on the blocking pool in its turn —
+    /// never on a worker of the runtime. Asked on one, a Keychain that waited
+    /// on the person held up every screen, and the timers and sockets with
+    /// them, for good (the daemon of 2026-11-04). `Err` when it doesn't come
+    /// back within [`KEYCHAIN_WAIT`]: it is left to come back on its own, its
+    /// turn held till then, so no other ask piles up behind it.
+    async fn ask_keychain<T: Send + 'static>(&self, ask: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+        let deadline = tokio::time::Instant::now() + self.keychain_wait;
+        let silent = || format!("the Keychain didn't answer in {}s: it may be waiting for you to allow equipe on this Mac", self.keychain_wait.as_secs());
+        let turn = match tokio::time::timeout_at(deadline, self.keychain_turn.clone().acquire_owned()).await {
+            Ok(Ok(turn)) => turn,
+            Ok(Err(e)) => return Err(e.to_string()),
+            Err(_) => return Err(silent()),
+        };
+        let asked = tokio::task::spawn_blocking(move || {
+            let _turn = turn;
+            ask()
+        });
+        match tokio::time::timeout_at(deadline, asked).await {
+            Ok(Ok(answer)) => Ok(answer),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err(silent()),
+        }
+    }
+
+    /// A change that keeps or drops keys, asked as [`Metrics::ask_keychain`].
+    async fn keyed<T: Send + 'static>(self: &Arc<Self>, change: impl FnOnce(&Self) -> Result<T, Refused> + Send + 'static) -> Result<T, Refused> {
+        let me = self.clone();
+        self.ask_keychain(move || change(&me)).await.unwrap_or_else(|e| Err(refuse(KEYCHAIN, e)))
+    }
+
     fn lock_keys(&self) -> std::sync::MutexGuard<'_, Box<dyn Keys>> {
         self.keys.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -464,7 +516,10 @@ impl Metrics {
     async fn fetch(&self, id: &str, now: u64, today: i64) {
         let Some(connection) = connections(&self.home).into_iter().find(|c| c.id == id) else { return };
         let fail = |code, message: &str| FetchError { code, message: message.to_owned(), retry_at: None };
-        let keys = self.lock_keys().get(id);
+        let keys = {
+            let (keys, id) = (self.keys.clone(), id.to_owned());
+            self.ask_keychain(move || keys.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id)).await.and_then(|got| got)
+        };
         let got = match (adapters::adapter(connection.kind), keys) {
             (None, _) => Err(fail(ErrorCode::Other, "this kind of source can't be read yet")),
             (_, Err(e)) => Err(fail(ErrorCode::Keychain, &format!("the key couldn't be read from the Keychain ({e})"))),

@@ -1,4 +1,23 @@
 {
+  "match.accept": "接受|批准|通過",
+  "match.all_starts": "全部|所有|都",
+  "match.all_words": "",
+  "match.allow": "允許|批准",
+  "match.always": "總是|以後都|一直|每次",
   "match.answers": "？|告訴|決定|選擇|提供|哪|什麼|誰",
-  "match.confirms": "確認|沒問題"
+  "match.branch": "留在分支|分支上",
+  "match.cancel": "取消|停|別|等等|算了",
+  "match.confirms": "確認|沒問題",
+  "match.idea": "想法|點子",
+  "match.merge": "合併",
+  "match.no": "不|別|沒|等等|等一下|稍後|以後|暫緩|取消|停|算了|否|錯",
+  "match.number": "號|個",
+  "match.push": "推送",
+  "match.recommended": "推薦",
+  "match.run": "運行|執行|跑一下",
+  "match.take_on": "開始做|著手|採納",
+  "match.undo": "撤銷|撤回|還原|恢復|取消",
+  "match.unsure": "不|別|沒|等等|等一下|稍後|以後|暫緩|如果|要是",
+  "match.yes": "是|是的|好|好的|好啊|好吧|行|可以|對|對的|嗯|嗯嗯|確認|同意|批准|去吧|開始吧|沒問題|就這樣|執行|繼續|衝",
+  "match.yes_with": "吧|啊|呀|了|就|那|現在|馬上|全部|都|請|謝謝"
 }

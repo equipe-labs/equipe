@@ -8,6 +8,14 @@ pub struct TurnUsage {
     /// Input read from the prompt cache or written to it: most of what a
     /// long conversation sends.
     pub cache_tokens: Option<u64>,
+    /// Of `cache_tokens`, what was read from the cache (cheap) …
+    pub cache_read_tokens: Option<u64>,
+    /// … and what was written to it (dearer than plain input).
+    pub cache_write_tokens: Option<u64>,
+    /// Of `cache_write_tokens`, what was written to be kept an hour (dearer still).
+    pub cache_write_long_tokens: Option<u64>,
+    /// How many requests the turn made of the model, subagents' included.
+    pub calls: Option<u64>,
     /// How full the conversation's context was at the turn's last request.
     pub context_tokens: Option<u64>,
     /// The model's context window.
@@ -47,6 +55,9 @@ pub enum Activity {
     Thinking(String),
     /// The model the engine is running, reported at startup.
     Model(String),
+    /// The engine's process started, with this id: what runs under it is the
+    /// turn's — its commands among them.
+    Engine { pid: u32 },
     /// The Claude plan's usage windows: five-hour and seven-day, each as the
     /// share used (0–1) and when it resets (Unix seconds).
     Plan { five_hour: Option<(f64, i64)>, seven_day: Option<(f64, i64)> },
@@ -54,6 +65,10 @@ pub enum Activity {
     Limits(Limits),
     /// Output the turn has produced so far, in tokens.
     Output(u64),
+    /// Every token the turn's requests processed so far, summed — input not
+    /// cached, cached input and output: what a budget on the turn counts.
+    /// Codex says it with each request's usage.
+    Spent(u64),
     /// The member handed `what` to a subagent (Claude Code's Agent tool);
     /// `brief`, the whole of what it was asked.
     SubagentStarted { id: String, what: String, brief: String },
@@ -65,6 +80,10 @@ pub enum Activity {
     SubagentText { id: String, text: String },
     /// A subagent finished and handed back what it found (`result`), or failed.
     SubagentEnded { id: String, result: Option<String>, failed: bool },
+    /// A subagent of the engine's own was heard from on its own thread —
+    /// anything it did or said — so it isn't stalled. Said at most every few
+    /// seconds a subagent, never its words: those are its own.
+    SubagentHeard { id: String },
     /// A message sent while the turn ran was read, at this point of it.
     Steered(String),
     /// The engine began compacting the conversation — summarizing it to make

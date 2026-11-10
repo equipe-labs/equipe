@@ -13,8 +13,12 @@ What a reviewer's phone gets, on its own copy:
 - a **request for permission** waiting (frontend asks to run `npm run build`). Allowed, the
   member goes on and hands the landing page in; denied, it says so. Another request follows
   20 seconds after each answer — one waits at a time;
-- the **PM answers** what it's told (in Korean when written to in Korean); asked for work
-  ("add a FAQ page"), it puts a ticket on the board. Other members answer briefly.
+- the **PM answers** what it's told (in the language it is written to, when equipe speaks it; else the screen's); asked for work
+  ("add a FAQ page"), it puts a ticket on the board. Other members answer briefly;
+- **attachments**: `hello` offers `uploads` and the phone's files come in pieces like a real
+  daemon's ([Attachments](remote-protocol.md#attachments)). A message with a photo or a file
+  gets "Got your photo." from the PM (and then the answer to its words, if any). The files
+  are kept in the demo's home (`uploads/`) only until `reset` or the next start.
 
 No agent, engine or model runs: nothing costs anything and nothing a phone sends goes anywhere
 but its own copy of the script. At most 200 phones are kept (the oldest goes first).
@@ -30,7 +34,8 @@ equipe demo reset --new-code        # …and a new code: the old one stops worki
 
 `--home` defaults to `$EQUIPE_HOME/demo` (`~/.equipe/demo`). It holds `remote.json` (its relay
 registration and keys, 0600), `demo.json` (the code's secret, 0600), `pairing-url.txt` and
-`pairing-qr.svg` (the code, for the review forms), and `demo.sock` (for `reset`). The first
+`pairing-qr.svg` (the code, for the review forms), `demo.sock` (for `reset`) and `uploads/`
+(what phones attached, emptied by `reset`). The first
 `serve` registers with the relay (`EQUIPE_RELAY`, else `https://relay.equipe.im`).
 
 The code survives restarts and upgrades; only `reset --new-code` or deleting `demo.json`
@@ -54,6 +59,8 @@ runs as a service:
      <key>ProgramArguments</key><array>
        <string>/opt/homebrew/bin/equipe</string><string>demo</string><string>serve</string>
      </array>
+     <!-- Reviewers write English: answer in it whatever the Mac's language. -->
+     <key>EnvironmentVariables</key><dict><key>EQUIPE_LANG</key><string>en</string></dict>
      <key>RunAtLoad</key><true/>
      <key>KeepAlive</key><true/>
      <key>StandardOutPath</key><string>/tmp/equipe-demo.log</string>
@@ -62,7 +69,9 @@ runs as a service:
    ```
 
    `launchctl load ~/Library/LaunchAgents/im.equipe.demo.plist`; stop with `launchctl unload …`.
-   (Point `ProgramArguments` at wherever `which equipe` says.)
+   (Point `ProgramArguments` at wherever `which equipe` says — or, as on the Mac mini, at a
+   copy of its own in `~/.equipe/demo/bin/equipe`, so upgrading the person's equipe doesn't
+   change what reviewers see mid-review. Replace it with `rm` then `cp`, not over it.)
 
 2. **A small Linux VM** (any VPS or Fly.io machine; 256 MB is plenty) when it should be off the
    person's machine altogether. A systemd unit:

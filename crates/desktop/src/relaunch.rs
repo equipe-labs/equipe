@@ -1,7 +1,7 @@
 //! Where an update stands, for the sidebar's pill, settings and the update
-//! notices: found and being downloaded ("새 버전 0.49.0 받는 중…"), downloaded
-//! and waiting to go in ("다시 시작해 업데이트", as Claude's "Relaunch to
-//! update"), or failed ("업데이트 받기 실패 · 다시 시도", the reason in plain
+//! notices: found and being downloaded ("Downloading 0.49.0…"), downloaded
+//! and waiting to go in ("Restart to Update", as Claude's "Relaunch to
+//! update"), or failed ("Update failed · Try Again", the reason in plain
 //! words and the whole error in ~/Library/Logs/equipe/updates.log). On a Mac
 //! Sparkle does the work and its delegate says each step (src/update.rs); a
 //! click installs the waiting update and starts the app again, and quitting
@@ -272,6 +272,9 @@ pub fn chaining() -> bool {
 
 /// At launch: a note from a restart into the newest — keep at it, or let it go.
 pub fn begin_chain() {
+    if crate::readonly::blocked("the update's note") {
+        return;
+    }
     let Some(chain) = std::fs::read_to_string(chain_path()).ok().and_then(|t| Chain::parse(&t)) else { return };
     match chain_step(env!("CARGO_PKG_VERSION"), &chain, unix_now()) {
         ChainStep::Go => {
@@ -285,9 +288,12 @@ pub fn begin_chain() {
     }
 }
 
-/// "다시 시작해 업데이트" with a newer release than the one downloaded: leave
+/// "Restart to Update" with a newer release than the one downloaded: leave
 /// the note for the app starting again.
 pub fn chain_if_newer() {
+    if crate::readonly::blocked("the update's note") {
+        return;
+    }
     let shown = current().ready().map(str::to_owned);
     let staged = staged().lock().ok().and_then(|s| s.clone());
     if let (Some(shown), Some(staged)) = (shown, staged)
@@ -373,7 +379,7 @@ pub enum DaemonUpdate {
 /// The daemon the app talks to, as the update pill needs it.
 #[derive(Debug, Clone, Default)]
 pub struct Daemon {
-    /// Where it runs, as the person knows it: "이 Mac", `tinums-mac-mini`.
+    /// Where it runs, as the person knows it: "This Mac", `tinums-mac-mini`.
     pub place: String,
     /// Its release (`0.86.4`), and whether that is older than this app's.
     pub theirs: String,
@@ -501,12 +507,12 @@ pub fn misplaced() -> Option<Misplaced> {
     })
 }
 
-/// "Finder에서 보기": the app in its folder — or, translocated (where it
+/// "Show in Finder": the app in its folder — or, translocated (where it
 /// runs is a copy), the Applications folder to move it to.
 pub fn reveal() {
     let _ = match (misplaced(), bundle()) {
-        (Some(Misplaced::Translocated) | None, _) | (_, None) => std::process::Command::new("open").arg("/Applications").spawn(),
-        (_, Some(bundle)) => std::process::Command::new("open").arg("-R").arg(bundle).spawn(),
+        (Some(Misplaced::Translocated) | None, _) | (_, None) => equipe_providers::platform::open("/Applications"),
+        (_, Some(bundle)) => equipe_providers::platform::reveal(bundle),
     };
 }
 
@@ -547,13 +553,13 @@ pub fn stamp(secs: u64) -> String {
     format!("{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}Z", rest / 3600, rest % 3600 / 60, rest % 60)
 }
 
-/// "로그 보기".
+/// "Show Log".
 pub fn open_log() {
     if let Some(path) = log_path() {
         if !path.exists() {
             log("(opened from settings)");
         }
-        let _ = std::process::Command::new("open").arg(path).spawn();
+        let _ = equipe_providers::platform::open(path);
     }
 }
 
@@ -594,7 +600,7 @@ pub fn set_automatic(on: bool, cx: &gpui_kit::App) {
     let _ = (on, cx);
 }
 
-/// "지금 확인" (and the app menu's "업데이트 확인…"): an update waiting goes
+/// "Check now" (and the app menu's "Check for Updates…"): an update waiting goes
 /// in now; otherwise Sparkle looks, in its own window.
 pub fn check_now(cx: &gpui_kit::App) {
     #[cfg(target_os = "macos")]

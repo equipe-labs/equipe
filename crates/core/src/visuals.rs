@@ -20,6 +20,7 @@
 //! still shows its hand-in: the pictures are read from its branch, or from
 //! main once merged, by the paths the ticket recorded and no others.
 
+pub mod cache;
 pub mod card;
 pub mod diagram;
 pub mod markdown;
@@ -313,7 +314,10 @@ pub fn shown(home: &Path, squad: &str) -> Shown {
     for set in journal.questions() {
         out.paths.extend(set.images().map(str::to_owned));
     }
-    for ticket in journal.tickets().unwrap_or_default() {
+    let tickets = journal.tickets().unwrap_or_default();
+    // What a ticket still at work keeps in its design folder: the designer studio's pictures.
+    out.paths.extend(crate::design::studio::shown(&tickets));
+    for ticket in tickets {
         out.paths.extend(ticket.images.iter().cloned());
         out.kept.extend(kept_of(&ticket, home, squad));
         out.roots.extend(ticket.worktree);
@@ -332,7 +336,7 @@ fn said(journal: &crate::journal::Journal, home: &Path, squad: &str, out: &mut S
     let folder = crate::squad_home::path(home, squad);
     let mut cwds: HashSet<PathBuf> = HashSet::new();
     for (cwd, entry) in journal.said_with_paths(SAID).unwrap_or_default() {
-        let (Entry::User { text } | Entry::Reply { text } | Entry::Note { text }) = &entry else { continue };
+        let (Entry::User { text, .. } | Entry::Reply { text } | Entry::Note { text, .. }) = &entry else { continue };
         for image in markdown::local_images(text) {
             for base in [&cwd, &folder] {
                 if let Some(path) = markdown::lexical(&image.path, base) {
@@ -400,7 +404,8 @@ pub fn serve(home: &Path, ask: &ReadImage, cap: Option<u32>) -> Result<ImageRead
     serve_with(home, ask, cap, &scratch_folders())
 }
 
-/// A kept card page, as it is: `text/html`, its CSP inside (docs/VISUALS.md).
+/// A kept card page, as it is: `text/html`, its CSP inside (docs/VISUALS.md),
+/// while its card keeps the contract ([`card::kept_fragment`]).
 fn card_page(path: &Path) -> Result<ImageRead, String> {
     use base64::Engine as _;
     let meta = std::fs::symlink_metadata(path).map_err(|_| refused(path, "no such file"))?;
@@ -408,6 +413,8 @@ fn card_page(path: &Path) -> Result<ImageRead, String> {
         return Err(refused(path, "not a card's page"));
     }
     let bytes = std::fs::read(path).map_err(|_| refused(path, "couldn't be read"))?;
+    let html = std::str::from_utf8(&bytes).map_err(|_| refused(path, "not a card's page"))?;
+    card::kept_fragment(html).map_err(|why| refused(path, &format!("no longer keeps the card contract ({why})")))?;
     let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
     Ok(ImageRead { mime: "text/html".into(), size: bytes.len() as u64, width: None, height: None, data, scaled: false })
 }
@@ -426,13 +433,22 @@ pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[Pat
     };
     // A card's page the daemon kept, for a screen that opens the card itself.
     if card::is_page(home, &ask.squad, Path::new(&ask.path)) {
+        cache::touch(Path::new(&ask.path));
         return card_page(Path::new(&ask.path));
     }
     // A diagram the daemon drew for the squad (`visuals_rendered`).
     if diagram::is_drawn(home, &ask.squad, Path::new(&ask.path)) {
+        cache::touch(Path::new(&ask.path));
         return read(Path::new(&ask.path), &[diagram::dir(home, &ask.squad)], max);
     }
     let mut shown = shown(home, &ask.squad);
+    // A picture of a ticket's work the designer studio named lately (`crate::design::studio`).
+    if crate::design::studio::given(home, &ask.squad, &ask.path) {
+        shown.paths.insert(ask.path.clone());
+        if let Some(dir) = Path::new(&ask.path).parent() {
+            shown.roots.push(dir.to_path_buf());
+        }
+    }
     // A line that embeds a picture by its name alone, read against another
     // folder than the screen's: the same name said counts as said.
     let named = file_name(&ask.path).is_some_and(|name| shown.said.iter().any(|s| file_name(s) == Some(name)));
@@ -816,6 +832,8 @@ mod tests {
             ticket: None,
             questions: vec![Question { question: "Which logo?".into(), options: vec![choice, Choice { label: "B".into(), ..Default::default() }], ..Default::default() }],
             asked_at: 0,
+            review: false,
+            retro: None,
         };
         journal.set_questions(&[set]).unwrap();
         let ask = |path: &str, max| ReadImage { squad: "acme".into(), path: path.into(), max };
@@ -887,7 +905,7 @@ mod tests {
             "시안입니다.\n\n![평면도]({abs})\n![배치도](outputs/T-2 갤러리 디자인/images/배치도.png \"A안\")\n![x]({}/secret.png)\n![l](outputs/T-2 갤러리 디자인/images/link.png)\n![t](outputs/T-2 갤러리 디자인/images/notes.txt)\n![up](../t2-6ad338ba/outputs/T-2 갤러리 디자인/images/단면.png)",
             outside.display()
         );
-        conversation(&journal, 1, &worktree, &[Entry::User { text: "보여 주세요".into() }, reply(&text)]);
+        conversation(&journal, 1, &worktree, &[Entry::User { text: "보여 주세요".into(), kept: Vec::new() }, reply(&text)]);
         let ask = |path: &Path| ReadImage { squad: "acme".into(), path: path.to_string_lossy().into_owned(), max: Some(64) };
         // Absolute, and relative to where the member works: given.
         assert_eq!(serve(&home, &ask(&images.join("평면도.png")), None).unwrap().width, Some(40));
@@ -962,7 +980,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],
@@ -1100,7 +1118,7 @@ mod tests {
             worktree: None,
             merged,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],

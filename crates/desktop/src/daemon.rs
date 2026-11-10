@@ -229,6 +229,18 @@ impl Link {
         Uploader(self.asking.clone())
     }
 
+    /// Tell the daemon the look this screen shows (`screen_look.rs`):
+    /// `false` while not attached — the next hello carries it.
+    pub fn tell_look(&self, look: &equipe_core::protocol::look::ScreenLook) -> bool {
+        match self.asking.lock().unwrap().as_ref() {
+            Some(door) => {
+                door.tell(equipe_core::protocol::rpc::SCREEN_LOOK, look);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Try again now (after the person fixed what was wrong).
     pub fn retry(&self) {
         self.retry.notify_one();
@@ -320,7 +332,7 @@ enum Followed {
 
 /// Connect, follow, reconnect — until the window goes away.
 async fn run(
-    target: Target,
+    mut target: Target,
     backoff: Backoff,
     mut commands: UnboundedReceiver<Command>,
     updates: UnboundedSender<Update>,
@@ -348,6 +360,9 @@ async fn run(
         let failure = match attach(&target, side.as_ref(), &updates).await {
             Ok(mut conn) => {
                 wait = backoff.min;
+                // Back after a drop, on the squad it was on: never the one
+                // another window (or the terminal) opened last meanwhile.
+                target.prefer = Some(conn.greeting.squad.clone());
                 if let Some(bridge) = conn.greeting.bridge.clone()
                     && updates.send(Update::Bridge(bridge)).is_err()
                 {
@@ -816,6 +831,88 @@ mod tests {
         let _ = std::fs::remove_file(&socket);
     }
 
+    /// A daemon with two squads whose "opened last" is `last` — what another
+    /// window or the terminal may change at any time — answering `hello` with
+    /// the squad asked for, and closing each connection after `hello` when
+    /// `drop_after_hello`.
+    fn two_squads(socket: &Path, last: Arc<std::sync::Mutex<String>>, drop_after_hello: bool) -> JoinHandle<()> {
+        let listener = UnixListener::bind(socket).unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let last = last.clone();
+                // Each screen's connection on its own, as the daemon serves them.
+                tokio::spawn(async move {
+                let (reader, mut writer) = stream.into_split();
+                let mut lines = BufReader::new(reader).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let message = Message::from_line(&line).unwrap();
+                    match (message.method.as_deref(), message.id) {
+                        (Some(rpc::SQUADS), Some(id)) => {
+                            let entry = |name: &str| SquadEntry { name: name.into(), projects: vec![], home: format!("/h/{name}").into() };
+                            let squads = Squads { squads: vec![entry("acme"), entry("beta")], last: Some(last.lock().unwrap().clone()) };
+                            writer.write_all(Message::response(id, squads).to_line().as_bytes()).await.unwrap();
+                        }
+                        (Some(rpc::HELLO), Some(id)) => {
+                            let asked: rpc::HelloParams = message.params_as().unwrap();
+                            let hello = Hello { version: "d".into(), snapshot: Snapshot { squad: asked.squad, ..Default::default() } };
+                            writer.write_all(Message::response(id, hello).to_line().as_bytes()).await.unwrap();
+                            if drop_after_hello {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                });
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn a_reconnect_keeps_the_squad_the_window_was_on() {
+        let socket = socket();
+        let last = Arc::new(std::sync::Mutex::new("acme".to_owned()));
+        let fake = two_squads(&socket, last.clone(), true);
+        // No squad asked for: the daemon's "opened last".
+        let mut spawned = spawn(Target { prefer: None, ..target(&socket) }, FAST);
+        let squad = |update: Update| match update {
+            Update::Attached(hello) => hello.snapshot.squad,
+            other => panic!("expected Attached, got {other:?}"),
+        };
+        assert_eq!(squad(next_main(&mut spawned.updates).await), "acme");
+        // Another window opened beta meanwhile; this one's connection drops.
+        *last.lock().unwrap() = "beta".into();
+        let mut update = next_main(&mut spawned.updates).await;
+        while matches!(update, Update::Down(_)) {
+            update = next_main(&mut spawned.updates).await;
+        }
+        assert_eq!(squad(update), "acme", "back on its own squad, not the one opened last elsewhere");
+        fake.abort();
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    #[tokio::test]
+    async fn two_windows_on_one_daemon_follow_their_own_squads() {
+        let socket = socket();
+        let last = Arc::new(std::sync::Mutex::new("acme".to_owned()));
+        let fake = two_squads(&socket, last, false);
+        let mut a = spawn(Target { prefer: None, ..target(&socket) }, FAST);
+        let mut b = spawn(Target { prefer: Some("beta".into()), ..target(&socket) }, FAST);
+        let squad = |update: Update| match update {
+            Update::Attached(hello) => hello.snapshot.squad,
+            other => panic!("expected Attached, got {other:?}"),
+        };
+        assert_eq!(squad(next_main(&mut b.updates).await), "beta");
+        assert_eq!(squad(next_main(&mut a.updates).await), "acme", "one window's squad is never another's");
+        // One window closes: the other's line is untouched.
+        drop(b);
+        a.link.send(Command::Focus { squad: "acme".into(), project: None });
+        assert!(tokio::time::timeout(Duration::from_millis(300), a.updates.recv()).await.is_err(), "nothing dropped, nothing re-sent");
+        fake.abort();
+        let _ = std::fs::remove_file(&socket);
+    }
+
     #[test]
     fn a_long_gap_between_ticks_means_the_mac_slept() {
         let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
@@ -912,15 +1009,17 @@ mod tests {
         // Commands go down the same line, as JSON-RPC lines.
         spawned.link.send(Command::Interrupt { session: 7 });
         let received = fake.dir.join("received");
+        // (The screen's look may go first: `screen_look.rs`.)
+        let command = |text: &str| text.lines().filter_map(|l| Message::from_line(l).ok()).find(|m| m.method.as_deref() == Some(rpc::COMMAND));
         let mut text = String::new();
         for _ in 0..100 {
             text = std::fs::read_to_string(&received).unwrap_or_default();
-            if !text.is_empty() {
+            if command(&text).is_some() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let message = Message::from_line(text.lines().next().expect("a line reached the far end")).unwrap();
+        let message = command(&text).expect("a command reached the far end");
         assert_eq!(message.params_as::<Command>(), Some(Command::Interrupt { session: 7 }));
     }
 

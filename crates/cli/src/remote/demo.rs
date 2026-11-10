@@ -119,7 +119,7 @@ fn ticket(id: TicketId, title: &str, status: TicketStatus, who: Option<&str>, no
         worktree: None,
         merged: (status == TicketStatus::Done).then_some(true),
         off_main: None,
-        design_qa: None,
+        design_qa: None, plan: None,
         created_by: "pm".into(),
         note: note.map(str::to_owned),
         asks: vec![],
@@ -136,6 +136,7 @@ fn session(id: SessionId, role: &str, project: &str, recent: Vec<Entry>, work: O
         member: Some(Member { role: role.into(), name: role.into() }),
         engine: Engine::Claude,
         model: Some("demo".into()),
+        asked_model: None,
         access: if role == "pm" { Access::ReadOnly } else { Access::EditFiles },
         workspace: None,
         state: SessionState::Ready,
@@ -143,6 +144,7 @@ fn session(id: SessionId, role: &str, project: &str, recent: Vec<Entry>, work: O
         tokens: 0,
         context: None,
         recent,
+        recent_at: Vec::new(),
         queued: vec![],
         queued_project: None,
         queued_in: vec![],
@@ -159,11 +161,6 @@ fn session(id: SessionId, role: &str, project: &str, recent: Vec<Entry>, work: O
     }
 }
 
-/// Whether the person wrote in Korean: the members answer in it.
-fn korean(text: &str) -> bool {
-    text.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c) || ('\u{3131}'..='\u{318E}').contains(&c))
-}
-
 impl Scene {
     fn new() -> Self {
         let pm = session(
@@ -171,7 +168,7 @@ impl Scene {
             "pm",
             PROJECTS[0],
             vec![
-                Entry::User { text: "We launch the website this month. What's left?".into() },
+                Entry::User { text: "We launch the website this month. What's left?".into(), kept: Vec::new() },
                 Entry::Reply {
                     text: "Here's the plan: the sign-up API (T-2) is handed in for your review, the landing page (T-3) is in progress, \
                            and the pricing page (T-5) follows it. The payment provider (T-4) waits on an API key only you can create."
@@ -257,8 +254,8 @@ impl Scene {
                 self.state(approval.session, SessionState::Working);
             }
             Event::ApprovalResolved { approval, .. } => self.approvals.retain(|a| a.id != *approval),
-            Event::UserMessage { session, text } => {
-                self.entry(*session, Entry::User { text: text.clone() });
+            Event::UserMessage { session, text, .. } => {
+                self.entry(*session, Entry::User { text: text.clone(), kept: Vec::new() });
                 self.state(*session, SessionState::Working);
             }
             Event::TextDelta { session, text } => {
@@ -346,11 +343,19 @@ impl Scene {
             Command::Submit { session, text, .. } => {
                 let Some(member) = self.member(session).map(str::to_owned).filter(|_| self.later.len() < LATER) else { return vec![] };
                 let text: String = text.chars().take(MESSAGE).collect();
-                let lang = reply_lang(&text);
+                let (words, attached) = attachments(&text);
+                // A path tells nothing of the language: the words do.
+                let lang = reply_lang(if words.is_empty() { &text } else { &words });
                 let start = self.free_at(session, now) + 800;
-                let reply = if member == "pm" { self.pm_reply(&text, lang, start) } else { member_reply(&member, lang) };
+                let reply = match (member == "pm", attached.is_empty(), words.is_empty()) {
+                    (true, false, true) => attached_reply(&attached, lang, true),
+                    (true, false, false) => format!("{} {}", attached_reply(&attached, lang, false), self.pm_reply(&words, lang, start)),
+                    (true, true, _) => self.pm_reply(&words, lang, start),
+                    (false, false, _) => format!("{member}: {}", attached_reply(&attached, lang, false)),
+                    (false, true, _) => member_reply(&member, lang),
+                };
                 self.say(session, start, &reply);
-                vec![Event::UserMessage { session, text }]
+                vec![Event::UserMessage { session, text, kept: Vec::new() }]
             }
             Command::Interrupt { session } => {
                 if self.sessions.iter().all(|s| s.session != session || s.state != SessionState::Working) {
@@ -420,14 +425,58 @@ impl Scene {
     }
 }
 
+/// What a phone's message attached — `[image: …]` and the like, which the
+/// phone puts first — and its words without them.
+fn attachments(text: &str) -> (String, Vec<&'static str>) {
+    const KINDS: [&str; 5] = ["image", "video", "audio", "pdf", "file"];
+    let mut words = String::new();
+    let mut attached = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let tag = &rest[open + 1..];
+        let kind = KINDS.iter().find(|k| tag.strip_prefix(**k).is_some_and(|t| t.starts_with(": ")));
+        match (kind, tag.find(']')) {
+            (Some(kind), Some(close)) => {
+                words.push_str(&rest[..open]);
+                // A sound's or a video's transcript comes as a file beside it: not one more.
+                if !(*kind == "file" && matches!(attached.last(), Some(&"audio" | &"video"))) {
+                    attached.push(*kind);
+                }
+                rest = &tag[close + 1..];
+            }
+            _ => {
+                words.push_str(&rest[..=open]);
+                rest = tag;
+            }
+        }
+    }
+    words.push_str(rest);
+    (words.split_whitespace().collect::<Vec<_>>().join(" "), attached)
+}
+
+/// The answer to what was attached; `alone`, when nothing was said with it.
+fn attached_reply(attached: &[&str], lang: Lang, alone: bool) -> String {
+    let words = crate::i18n::of(lang);
+    let n = attached.len();
+    let kind = if attached.iter().all(|k| *k == "image") {
+        "photo"
+    } else if attached.iter().all(|k| *k == "video") {
+        "video"
+    } else {
+        "file"
+    };
+    let got = if n == 1 { words.get(&format!("demo.got_{kind}")).to_owned() } else { words.fill(&format!("demo.got_{kind}s"), &[("count", n.to_string())]) };
+    if alone { format!("{got} {}", words.get("demo.got_pass_on")) } else { got }
+}
+
 fn member_reply(member: &str, lang: Lang) -> String {
     crate::i18n::of(lang).fill("demo.member_noted", &[("member", member.to_owned())])
 }
 
-/// The language the members answer in: Korean when the person wrote it,
-/// else the screen's.
+/// The language the members answer in: the one the person wrote in, when
+/// equipe speaks it, else the screen's.
 fn reply_lang(text: &str) -> Lang {
-    if korean(text) { Lang::Ko } else { crate::i18n::lang() }
+    equipe_core::language::detect(text).and_then(Lang::from_english_name).unwrap_or_else(crate::i18n::lang)
 }
 
 /// The demo's own place: its relay registration, its code, its devices.
@@ -501,11 +550,11 @@ mod tests {
     fn allowing_the_request_lets_the_member_go_on_and_another_comes_later() {
         let mut demo = Demo::default();
         let id = hello(&mut demo, "a").approvals[0].id;
-        let out = demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Allow, words: None }, 1000);
+        let out = demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Allow, words: None, said: None }, 1000);
         assert_eq!(out, vec![Event::ApprovalResolved { squad: SQUAD.into(), approval: id, decision: Decision::Allow }]);
         assert!(hello(&mut demo, "a").approvals.is_empty());
         // The same answer again does nothing.
-        assert!(demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Allow, words: None }, 1000).is_empty());
+        assert!(demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Allow, words: None, said: None }, 1000).is_empty());
         let later: Vec<Event> = demo.due(1000 + 60_000).into_iter().map(|(_, e)| e).collect();
         assert!(later.iter().any(|e| matches!(e, Event::ToolUse { tool, .. } if tool == "Bash")));
         assert!(later.iter().any(|e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 3 && ticket.status == TicketStatus::Review)));
@@ -520,7 +569,7 @@ mod tests {
         let mut demo = Demo::default();
         hello(&mut demo, "a");
         let out = demo.command("a", Command::Submit { session: PM, text: "What's the status?".into(), about: None }, 0);
-        assert_eq!(out, vec![Event::UserMessage { session: PM, text: "What's the status?".into() }]);
+        assert_eq!(out, vec![Event::UserMessage { session: PM, text: "What's the status?".into(), kept: Vec::new() }]);
         let later: Vec<Event> = demo.due(30_000).into_iter().map(|(_, e)| e).collect();
         let said: String = later.iter().filter_map(|e| match e { Event::TextDelta { session: PM, text } => Some(text.as_str()), _ => None }).collect();
         assert!(said.contains("T-2"), "{said}");
@@ -530,9 +579,41 @@ mod tests {
         let later: Vec<Event> = demo.due(80_000).into_iter().map(|(_, e)| e).collect();
         assert!(later.iter().any(|e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 7 && ticket.title == "FAQ 페이지 추가해줘")));
         let said: String = later.iter().filter_map(|e| match e { Event::TextDelta { text, .. } => Some(text.as_str()), _ => None }).collect();
-        assert!(said.contains("T-7") && korean(&said), "{said}");
+        assert!(said.contains("T-7") && equipe_core::language::detect(&said) == Some("Korean"), "{said}");
         let s = hello(&mut demo, "a");
         assert!(matches!(s.sessions[0].recent.last(), Some(Entry::Reply { text }) if text.contains("T-7")));
+    }
+
+    #[test]
+    fn the_members_answer_in_the_language_the_person_wrote_in() {
+        assert_eq!(reply_lang("What's the status?"), crate::i18n::lang(), "too short to tell: the screen's");
+        assert_eq!(reply_lang("FAQ 페이지 추가해줘"), Lang::Ko);
+        assert_eq!(reply_lang("FAQページを追加してください"), Lang::Ja);
+        assert_eq!(reply_lang("Ajoute une page FAQ au site, s'il te plaît"), Lang::Fr);
+        assert_eq!(reply_lang("Füge bitte eine FAQ-Seite zur Website hinzu"), Lang::De);
+        assert_eq!(reply_lang("Adicione uma página de perguntas frequentes ao site"), crate::i18n::lang(), "one equipe doesn't speak: the screen's");
+    }
+
+    #[test]
+    fn the_pm_says_it_got_what_was_attached() {
+        let (words, attached) = attachments("[image: /u/1-a.png] [image: /u/2-b.jpg] see [x] these");
+        assert_eq!((words.as_str(), attached), ("see [x] these", vec!["image", "image"]));
+        let (_, attached) = attachments("[audio: /u/a.m4a · 0:31] [file: /u/a-transcript.txt · 2 lines] ");
+        assert_eq!(attached, vec!["audio"]);
+        let mut demo = Demo::default();
+        hello(&mut demo, "a");
+        let said = |demo: &mut Demo, text: &str, at: u64| -> String {
+            demo.command("a", Command::Submit { session: PM, text: text.into(), about: None }, at);
+            demo.due(at + 30_000).into_iter().filter_map(|(_, e)| match e { Event::TextDelta { text, .. } => Some(text), _ => None }).collect()
+        };
+        let alone = said(&mut demo, "[image: /u/1-IMG_0001.jpg] ", 0);
+        assert!(alone.contains("Got your photo") && alone.contains("T-3"), "{alone}");
+        // Asked for work with a picture: the ticket's title is the words, not the path.
+        let both = said(&mut demo, "[image: /u/1-a.png] [image: /u/2-b.png] 이걸로 FAQ 페이지 만들어줘", 40_000);
+        assert!(both.starts_with("사진 2장 잘 받았어요.") && both.contains("T-7"), "{both}");
+        assert_eq!(demo.scenes["a"].tickets.iter().find(|t| t.id == 7).map(|t| t.title.as_str()), Some("이걸로 FAQ 페이지 만들어줘"));
+        let file = said(&mut demo, "[pdf: /u/spec.pdf · 3 pages]", 80_000);
+        assert!(file.contains("Got your file"), "{file}");
     }
 
     #[test]
@@ -541,7 +622,7 @@ mod tests {
         let id = hello(&mut demo, "a").approvals[0].id;
         hello(&mut demo, "b");
         demo.command("a", Command::Accept { squad: SQUAD.into(), ticket: 2 }, 0);
-        demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Deny, words: None }, 0);
+        demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Deny, words: None, said: None }, 0);
         assert!(demo.command("nobody", Command::Accept { squad: SQUAD.into(), ticket: 2 }, 0).is_empty());
         let (a, b) = (hello(&mut demo, "a"), hello(&mut demo, "b"));
         assert_eq!(a.tickets[1].status, TicketStatus::Done);
@@ -633,9 +714,19 @@ mod tests {
                 if rpc["id"] == 1 {
                     let approval = &rpc["result"]["snapshot"]["approvals"][0];
                     assert_eq!(approval["member"], "frontend", "{rpc}");
+                    // It takes the phone's files.
+                    assert!(rpc["result"]["uploads"]["chunk"].as_u64().is_some_and(|c| c > 0), "{rpc}");
                     let decide = json!({ "type": "decide", "squad": SQUAD, "approval": approval["id"], "decision": "allow" });
                     ws.send(ask(&mut phone, json!({ "jsonrpc": "2.0", "method": "command", "params": decide }))).await.unwrap();
-                    let submit = json!({ "type": "submit", "session": PM, "text": "What's left before launch?" });
+                    let png = super::super::b64(b"\x89PNG\r\n\x1a\n a reviewer's photo");
+                    let piece = json!({ "upload_id": format!("e2e-photo-{n}"), "name": "IMG_0001.png", "kind": "image", "total": 27, "offset": 0, "data": png });
+                    ws.send(ask(&mut phone, json!({ "jsonrpc": "2.0", "id": 2, "method": "upload", "params": piece }))).await.unwrap();
+                    continue;
+                }
+                if rpc["id"] == 2 {
+                    let tag = rpc["result"]["tag"].as_str().unwrap_or_else(|| panic!("{rpc}"));
+                    assert!(tag.starts_with("[image: ") && tag.contains("uploads"), "{tag}");
+                    let submit = json!({ "type": "submit", "session": PM, "text": format!("{tag} What's left before launch?") });
                     ws.send(ask(&mut phone, json!({ "jsonrpc": "2.0", "method": "command", "params": submit }))).await.unwrap();
                     continue;
                 }
@@ -647,7 +738,7 @@ mod tests {
                     _ => {}
                 }
             }
-            assert!(said.contains("T-2"), "{said}");
+            assert!(said.contains("Got your photo") && said.contains("T-2"), "{said}");
         }
     }
 

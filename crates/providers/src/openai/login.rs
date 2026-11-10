@@ -205,40 +205,14 @@ fn escape_html(text: &str) -> String {
 /// fail when there is no desktop session to hand the URL to (SSH, some embedded
 /// terminals). Their exit status is the only honest signal.
 async fn open_in_browser(url: &str) -> std::result::Result<(), String> {
-    use std::process::Stdio;
-    use tokio::process::Command;
-
-    let mut cmd = if cfg!(target_os = "macos") {
-        let mut c = Command::new("open");
-        c.arg(url);
-        c
-    } else if cfg!(windows) {
-        let mut c = Command::new("cmd");
-        c.args(["/c", "start", "", url]);
-        c
-    } else {
-        let mut c = Command::new("xdg-open");
-        c.arg(url);
-        c
-    };
-    let run = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .output();
+    let url = url.to_owned();
+    let run = tokio::task::spawn_blocking(move || crate::platform::open_url_status(&url));
     match tokio::time::timeout(Duration::from_secs(10), run).await {
         Err(_) => Err("the browser opener didn't answer".into()),
-        Ok(Err(err)) => Err(format!("couldn't start a browser opener: {err}")),
-        Ok(Ok(out)) if out.status.success() => Ok(()),
-        Ok(Ok(out)) => {
-            let reason = String::from_utf8_lossy(&out.stderr).trim().to_owned();
-            Err(if reason.is_empty() {
-                format!("the browser opener failed ({})", out.status)
-            } else {
-                reason
-            })
-        }
+        Ok(Err(err)) => Err(format!("the browser opener task failed: {err}")),
+        Ok(Ok(Err(err))) => Err(format!("couldn't start a browser opener: {err}")),
+        Ok(Ok(Ok(status))) if status.success() => Ok(()),
+        Ok(Ok(Ok(status))) => Err(format!("the browser opener failed ({status})")),
     }
 }
 

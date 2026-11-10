@@ -28,6 +28,19 @@ pub enum Job {
 }
 
 impl Job {
+    /// Whether it only reads: the real view (`readonly.rs`) runs no other.
+    pub fn reads(&self) -> bool {
+        match self {
+            Job::Home { words, .. } => words.first().is_none_or(|w| w == "changes"),
+            Job::Memory { .. } => true,
+            Job::Squad { dry_run, .. } => *dry_run,
+            Job::SendApps { words, .. } => words.is_empty(),
+            Job::BrowserMax(n) => n.is_none(),
+            // A window for signing in to sites.
+            Job::BrowserSignin => false,
+        }
+    }
+
     pub fn args(&self) -> Vec<String> {
         let words = |head: &[&str], squad: &str, words: &[String]| -> Vec<String> {
             let named = (!squad.is_empty()).then(|| ["--squad".to_owned(), squad.to_owned()]).into_iter().flatten();
@@ -119,6 +132,9 @@ fn reason(job: &Job, output: &str, code: i32) -> String {
 
 /// Run `job` on the daemon's machine: its lines, or why not. Blocks — run it off the UI thread.
 pub fn run(endpoint: &Endpoint, job: &Job) -> Result<Vec<String>, String> {
+    if !job.reads() && crate::readonly::blocked(job.name()) {
+        return Err(equipe_core::t!("readonly.kept_back").to_owned());
+    }
     let args = job.args();
     let (output, code) = match endpoint {
         Endpoint::Local { .. } => {
@@ -164,6 +180,17 @@ mod tests {
         assert_eq!(Job::BrowserMax(Some("6".into())).args(), s(&["browser", "--max", "6"]));
         assert_eq!(Job::BrowserMax(None).args(), s(&["browser", "--max"]));
         assert_eq!(Job::BrowserSignin.args(), s(&["browser"]));
+    }
+
+    #[test]
+    fn the_real_view_runs_only_the_jobs_that_read() {
+        assert!(Job::Home { squad: "acme".into(), words: s(&["changes"]) }.reads());
+        assert!(!Job::Home { squad: "acme".into(), words: s(&["undo", "1"]) }.reads());
+        assert!(Job::Memory { squad: "acme".into(), words: s(&["changes"]) }.reads());
+        assert!(Job::Squad { squad: "acme".into(), words: s(&["add", "/p"]), dry_run: true }.reads());
+        assert!(!Job::Squad { squad: "acme".into(), words: s(&["add", "/p"]), dry_run: false }.reads());
+        assert!(Job::SendApps { squad: "acme".into(), words: vec![] }.reads() && !Job::SendApps { squad: "acme".into(), words: s(&["reset"]) }.reads());
+        assert!(Job::BrowserMax(None).reads() && !Job::BrowserMax(Some("3".into())).reads() && !Job::BrowserSignin.reads());
     }
 
     #[test]

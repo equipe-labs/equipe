@@ -95,7 +95,13 @@ impl SubPanel {
 fn state_line(shell: &Shell, sub: &Sub, cx: &mut Context<Shell>) -> (AnyElement, String) {
     let p = shell.palette;
     match &sub.ended {
-        None => (motion::spinner(12., p.muted), t!("subagent.working", time = shell.counting(sub.since.elapsed(), cx))),
+        None => match sub.stuck {
+            Some(quiet) => {
+                let warning = crate::render::tones(&p).warning;
+                (icon(Icon::Warning, 12., warning).into_any_element(), t!("subagent.stuck", time = shell.counting(quiet.elapsed(), cx)))
+            }
+            None => (motion::spinner(12., p.muted), t!("subagent.working", time = shell.counting(sub.since.elapsed(), cx))),
+        },
         Some(end) => {
             let took = crate::render::tools::duration(u64::try_from(end.took.as_millis()).unwrap_or(u64::MAX));
             if end.failed {
@@ -204,7 +210,7 @@ pub fn panel(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 .gap_1p5()
                 .items_center()
                 .text_size(px(SMALL))
-                .child(div().flex_none().text_color(p.muted).child(member))
+                .child(div().flex_none().text_color(p.muted).child(member.clone()))
                 .child(div().flex_none().text_color(p.muted).child("›"))
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(sub.what.clone())),
         )
@@ -216,6 +222,7 @@ pub fn panel(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         })));
     let (mark, said) = state_line(shell, &sub, cx);
     let status = h_flex().px_4().pt_3().gap_2().items_center().text_size(px(SMALL)).text_color(p.text2).child(mark).child(said);
+    let stuck = stuck_card(shell, &open, &sub, &member, cx);
 
     // What it was asked: the whole brief, else what the member called it.
     let brief = if sub.brief.trim().is_empty() { sub.what.clone() } else { sub.brief.clone() };
@@ -285,15 +292,59 @@ pub fn panel(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     if let Some(focus) = &shell.chat.sub.focus {
         panel = panel.track_focus(focus);
     }
-    Some(motion::fade(panel.child(head).child(status).child(body), "sub-panel-in", motion::BASE).into_any_element())
+    Some(motion::fade(panel.child(head).child(status).children(stuck).child(body), "sub-panel-in", motion::BASE).into_any_element())
+}
+
+/// A subagent the daemon watches that looks stuck: an amber card that says
+/// so in a sentence and offers to stop it alone — the command watch's card,
+/// for a subagent. Never stopped without the person.
+fn stuck_card(shell: &Shell, open: &Open, sub: &Sub, member: &str, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let quiet = sub.stuck.filter(|_| sub.ended.is_none())?;
+    let p = shell.palette;
+    let tones = crate::render::tones(&p);
+    let label = if sub.stopping { t!("subagent.stopping") } else { t!("subagent.stop") };
+    let (session, id) = (open.session, open.id.clone());
+    let stop = crate::ui::button(p, "sub-stop", crate::ui::Kind::Primary, label).disabled(sub.stopping).on_click(cx.listener(move |this, _, _, cx| this.stop_subagent(session, &id, cx)));
+    let says = t!("subagent.stuck_says", quiet = shell.counting(quiet.elapsed(), cx));
+    Some(
+        v_flex()
+            .mx_4()
+            .mt_3()
+            .p(px(14.))
+            .gap_2()
+            .rounded(px(crate::theme::R_LG))
+            .border_1()
+            .border_color(Rgba { a: 0.45, ..tones.warning })
+            .bg(Rgba { a: 0.04, ..tones.warning })
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(icon(Icon::Warning, 14., tones.warning))
+                    .child(div().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("subagent.stuck_title"))),
+            )
+            .child(div().text_size(px(SMALL)).line_height(px(SMALL_LINE)).text_color(p.text2).child(says))
+            .child(div().text_size(px(SMALL)).line_height(px(SMALL_LINE)).text_color(p.muted).child(t!("subagent.stuck_hint", name = member)))
+            .child(h_flex().child(stop))
+            .into_any_element(),
+    )
 }
 
 // ── what the panel does ──
 
 impl Shell {
+    /// Stop one subagent the daemon watches, alone: its member works on.
+    pub fn stop_subagent(&mut self, session: SessionId, id: &str, cx: &mut Context<Self>) {
+        let Some(sub) = self.model.convos.get_mut(&session).and_then(|c| c.subagent_mut(id)).filter(|s| !s.stopping) else { return };
+        sub.stopping = true;
+        self.send_command(equipe_core::protocol::Command::StopSubagent { session, id: id.to_owned() });
+        cx.notify();
+    }
+
     /// A subagent's row clicked: a look inside it, beside its member's conversation.
     pub fn open_subagent_panel(&mut self, member: SessionId, session: SessionId, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.chat.side.clear();
+        self.side_chat.open = None;
         self.chat.sub.show(Open { member, session, id: id.to_owned() });
         let focus = self.chat.sub.focus.get_or_insert_with(|| cx.focus_handle()).clone();
         window.focus(&focus, cx);

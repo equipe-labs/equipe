@@ -1,0 +1,14 @@
+# Actions are pinned to full commit SHAs (a tag can be moved; a commit can't).
+# Dependabot proposes the bumps as pull requests — new SHA and its version in
+# the comment — so each update is reviewed before it runs with our secrets.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci

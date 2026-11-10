@@ -56,6 +56,7 @@ fn config(claude: &Path, home: &Path) -> Config {
         person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::Ko,
         nemotron: None,
+        watch_disk: false,
     }
 }
 
@@ -99,7 +100,7 @@ fn signal_wakes(events: &[Event]) -> Vec<String> {
     events
         .iter()
         .filter_map(|e| match e {
-            Event::UserMessage { session: 1, text } | Event::MessageQueued { session: 1, text, .. } | Event::SteerQueued { session: 1, text, .. } => Some(text.clone()),
+            Event::UserMessage { session: 1, text, .. } | Event::MessageQueued { session: 1, text, .. } | Event::SteerQueued { session: 1, text, .. } => Some(text.clone()),
             _ => None,
         })
         .filter(|t| t.starts_with("[Signal · "))
@@ -113,7 +114,7 @@ async fn propose(handle: &Handle, events: &mut UnboundedReceiver<Event>, args: s
     let mut seen = Vec::new();
     until(events, &mut seen, |s| s.iter().any(|e| matches!(e, Event::ApprovalRequested { .. }))).await;
     let approval = seen.iter().find_map(|e| if let Event::ApprovalRequested { approval, .. } = e { Some(approval.clone()) } else { None }).unwrap();
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision, words: None });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision, words: None, said: None });
     let said = waiting.await.unwrap();
     assert!(!said.is_error, "{said:?}");
     (approval.action, said.text)

@@ -24,14 +24,14 @@ const STRIP: usize = 12;
 /// The trend's column, one width for every row so the switches line up.
 const TREND_W: f32 = SPARK_W + 8. + 48.;
 
-/// "신호": one row a signal, or a line saying where they come from.
+/// "Signals": one row a signal, or a line saying where they come from.
 pub(super) fn section(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Section {
     let p = shell.palette;
     let now = crate::state::now_unix();
     let mut lines: Vec<Line> = Vec::new();
     for s in &shell.model.signals {
         let (project, name) = (s.project.clone(), s.name.clone());
-        let flip = switch(shell, &format!("signal-{}-{}", s.project, s.name), s.on, connected, move |this, on, _, _| {
+        let flip = switch(shell, &format!("signal-{}-{}", s.project, s.name), &s.name, s.on, connected, move |this, on, _, _| {
             let squad = this.model.squad.clone();
             this.send_command(Command::SetSignalOn { squad, project: project.clone(), name: name.clone(), on });
         }, cx);

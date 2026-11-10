@@ -135,6 +135,11 @@ impl MessageScrollerState {
         true
     }
 
+    /// The row at the top of the view.
+    pub fn top_item(&self) -> usize {
+        self.list_state.logical_scroll_top().item_ix
+    }
+
     /// Scroll to the row at `index`, if it exists.
     pub fn scroll_to_item(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
         if index >= self.list_state.item_count() {
@@ -175,6 +180,7 @@ pub struct MessageScroller {
     jump_button_renderer: Option<Box<dyn FnOnce(Button) -> Button>>,
     jump_button_transition: Duration,
     bottom_fade: Option<Hsla>,
+    label: Option<SharedString>,
     scrollbar: bool,
     jump_button: bool,
     jump_button_label: SharedString,
@@ -205,6 +211,7 @@ impl MessageScroller {
             jump_button_renderer: None,
             jump_button_transition: JUMP_BUTTON_TRANSITION,
             bottom_fade: None,
+            label: None,
             scrollbar: true,
             jump_button: true,
             jump_button_label: "Jump to latest".into(),
@@ -283,6 +290,12 @@ impl MessageScroller {
     /// jump button.
     pub fn with_bottom_fade(mut self, color: impl Into<Hsla>) -> Self {
         self.bottom_fade = Some(color.into());
+        self
+    }
+
+    /// equipe: what a screen reader calls the transcript.
+    pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = Some(label.into());
         self
     }
 }
@@ -366,6 +379,7 @@ impl RenderOnce for MessageScroller {
             // Announce appended rows as a log region, like shadcn's
             // `role="log"` transcript content.
             .role(Role::Log)
+            .when_some(self.label.clone(), |viewport, label| viewport.aria_label(label))
             .size_full()
             .min_h_0()
             .min_w_0()

@@ -82,7 +82,7 @@ pub enum Hit {
 }
 
 /// A line of the side list: what can be opened on the right — the PM (the
-/// one conversation to talk to), a menu of the board (나에게, 작업 중, 모든 일),
+/// one conversation to talk to), a menu of the board (Inbox, In progress, All work),
 /// a project (its line puts it in focus), a ticket's work, the rest of a
 /// project's live work, what finished lately, someone on the team — and the
 /// headings between.
@@ -96,7 +96,7 @@ pub enum Side {
     Ticket(TicketId),
     /// "+N more": the board on that project.
     More(Option<usize>),
-    /// "최근 끝남 N": the board, its finished last.
+    /// "Recently done N": the board, its finished last.
     Done,
     Member(usize),
 }
@@ -125,15 +125,7 @@ pub struct SideGroup {
 
 /// The start of the local day `unix` falls in, in unix seconds.
 pub fn local_midnight(unix: u64) -> u64 {
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let secs = unix as libc::time_t;
-    unsafe { libc::localtime_r(&secs, &mut tm) };
-    tm.tm_hour = 0;
-    tm.tm_min = 0;
-    tm.tm_sec = 0;
-    tm.tm_isdst = -1;
-    let midnight = unsafe { libc::mktime(&mut tm) };
-    if midnight < 0 || midnight as u64 > unix { unix - unix % 86_400 } else { midnight as u64 }
+    equipe_providers::platform::local_midnight(unix).filter(|midnight| *midnight <= unix).unwrap_or(unix - unix % 86_400)
 }
 
 /// The side list's groups.
@@ -207,6 +199,7 @@ pub fn status_word(status: TicketStatus) -> &'static str {
         TicketStatus::Waiting => t!("app.status_waiting"),
         TicketStatus::Review => t!("app.status_review"),
         TicketStatus::Proposed => t!("app.status_proposed"),
+        TicketStatus::Idea => t!("app.status_idea"),
         TicketStatus::Todo => t!("app.status_todo"),
         TicketStatus::InProgress => t!("app.status_in_progress"),
         TicketStatus::Done => t!("app.status_done"),
@@ -416,7 +409,7 @@ impl Agent {
             match part {
                 Part::Here(range) => out.extend(lines[range].iter().map(|(entry, _)| entry.clone())),
                 Part::Elsewhere { said, kept, .. } => {
-                    out.push(Cow::Owned(Entry::Note { text: format!("{FOLDED}{said}") }));
+                    out.push(Cow::Owned(Entry::Note { undo: None, text: format!("{FOLDED}{said}") }));
                     // The project's own news within it, after the fold.
                     for range in kept {
                         out.extend(lines[range].iter().map(|(entry, _)| entry.clone()));
@@ -442,7 +435,7 @@ impl Agent {
                     on = None;
                     continue;
                 }
-                Entry::Note { text } if text.starts_with("── T-") => {
+                Entry::Note { text, .. } if text.starts_with("── T-") => {
                     on = text["── T-".len()..].split(|c: char| !c.is_ascii_digit()).next().and_then(|n| n.parse().ok());
                 }
                 _ => {}
@@ -543,7 +536,7 @@ impl Agent {
     /// What the person said last to it.
     pub fn last_said(&self) -> Option<String> {
         self.transcript.entries().iter().rev().find_map(|e| match e {
-            Entry::User { text } => Some(super::view::attachments_named(text).lines().next().unwrap_or_default().trim().to_owned()),
+            Entry::User { text, .. } => Some(super::view::attachments_named(text).lines().next().unwrap_or_default().trim().to_owned()),
             _ => None,
         })
     }
@@ -613,7 +606,7 @@ impl Agent {
             let took = since.elapsed();
             if took >= Duration::from_secs(1) {
                 let at = clock_time();
-                self.transcript.push_local(Entry::Note { text: t!("app.worked", took = elapsed(took), at = at) });
+                self.transcript.push_local(Entry::Note { undo: None, text: t!("app.worked", took = elapsed(took), at = at) });
             }
         }
     }
@@ -692,7 +685,7 @@ pub struct App {
     pub pane: Pane,
     /// Lines the board is scrolled up from its top.
     pub board_scroll: usize,
-    /// What the board lists: 나에게, 작업 중, 모든 일.
+    /// What the board lists: Inbox, In progress, All work.
     pub board_menu: BoardMenu,
     /// The picked ticket's detail shows under the list (Space).
     pub board_detail_open: bool,
@@ -976,8 +969,8 @@ impl App {
         Some(self.lane_of(selected).unwrap_or(selected))
     }
 
-    /// The side list, in order: the PM, the board's menu (나에게, 작업 중,
-    /// 모든 일), the live work by project (never what finished: one line for
+    /// The side list, in order: the PM, the board's menu (Inbox, In progress,
+    /// All work), the live work by project (never what finished: one line for
     /// that), then the rest of the team — drawn pinned at the foot.
     pub fn side(&self) -> Vec<Side> {
         let mut out = vec![Side::Pm, Side::Menu(BoardMenu::Inbox), Side::Menu(BoardMenu::Working), Side::Menu(BoardMenu::All)];
@@ -1052,7 +1045,7 @@ impl App {
     /// Everything waiting for the person, in one list, by section: requests
     /// for permission, tickets put down for them, work handed in (what it
     /// unblocks first), proposals, work accepted but not on main. The same
-    /// definition as the desktop's: the menu's count, 나에게 and the card read it.
+    /// definition as the desktop's: the menu's count, the Inbox and the card read it.
     pub fn needs_you(&self) -> Vec<(Section, Need)> {
         let mut out: Vec<(Section, Need)> = self.approvals.iter().map(|a| (Section::Permission, Need::Permission(a.id))).collect();
         for section in &Section::ALL[1..] {
@@ -1432,14 +1425,14 @@ impl App {
             BoardMenu::All => {
                 // Work not yet started folds past a screenful, unless shown whole (e).
                 let fold = |mut ids: Vec<TicketId>, status: TicketStatus| -> Vec<TicketId> {
-                    if !self.board_expanded && matches!(status, TicketStatus::Todo | TicketStatus::Proposed) {
+                    if !self.board_expanded && matches!(status, TicketStatus::Todo | TicketStatus::Proposed | TicketStatus::Idea) {
                         ids.truncate(SECTION_ROWS);
                     }
                     ids
                 };
                 let group = |statuses: &[TicketStatus]| -> Vec<TicketId> { self.tickets.iter().filter(|t| statuses.contains(&t.status) && self.in_focus(t)).map(|t| t.id).collect() };
                 let mut order = Vec::new();
-                for status in [TicketStatus::Review, TicketStatus::Waiting, TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed] {
+                for status in [TicketStatus::Review, TicketStatus::Waiting, TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed, TicketStatus::Idea] {
                     order.extend(fold(group(&[status]), status));
                 }
                 if self.board_expanded {
@@ -1553,7 +1546,7 @@ impl App {
     /// The board's keys, while nothing is typed — the same as the desktop's:
     /// a yes (accept and land it the project's way, "done", take a proposal),
     /// A how, r in words, n no, d the diff, c talk, m merge; j/k move, Space
-    /// folds the ticket below, g i / g l / g b go to 나에게 / 작업 중 / 모든 일.
+    /// folds the ticket below, g i / g l / g b go to Inbox / In progress / All work.
     fn on_board_key(&mut self, code: KeyCode, shift: bool) -> Option<Vec<Command>> {
         let ticket = self.selected_ticket().cloned();
         if std::mem::take(&mut self.chord) {
@@ -1613,7 +1606,7 @@ impl App {
             }
             KeyCode::Char('n') => {
                 let ticket = ticket.filter(|t| !t.status.is_closed())?;
-                if ticket.status == TicketStatus::Proposed {
+                if matches!(ticket.status, TicketStatus::Proposed | TicketStatus::Idea) {
                     self.flash = Some(t!("app.dropped", id = ticket.id));
                     self.next_after(ticket.id);
                     return Some(vec![Command::Cancel { squad: self.squad.clone(), ticket: ticket.id }]);
@@ -1705,7 +1698,7 @@ impl App {
     pub fn on_event(&mut self, event: Event) -> Vec<Command> {
         match event {
             // The design system: a line of what it holds, when `/design` asked.
-            Event::Design { squad, systems, folder } if squad == self.squad => {
+            Event::Design { squad, systems, folder, .. } if squad == self.squad => {
                 if std::mem::take(&mut self.design_asked) {
                     self.flash = Some(design_summary(&systems, &folder));
                 }
@@ -2434,13 +2427,13 @@ impl App {
                 _ => None,
             };
             if let Some(decision) = decision {
-                return vec![Command::Decide { squad: self.squad.clone(), approval: approval.id, decision, words: None }];
+                return vec![Command::Decide { squad: self.squad.clone(), approval: approval.id, decision, words: None, said: None }];
             }
             // The screen a send would go from, in Preview.
             if key.code == KeyCode::Char('o')
                 && let Some(preview) = &approval.preview
             {
-                let _ = std::process::Command::new("open").arg(preview).spawn();
+                let _ = equipe_providers::platform::open(preview);
                 return Vec::new();
             }
         }
@@ -3510,7 +3503,7 @@ pub fn needs_way(t: &Ticket) -> bool {
 
 /// The order statuses are listed in, the person's calls first.
 pub fn status_rank(s: TicketStatus) -> usize {
-    [TicketStatus::Review, TicketStatus::Waiting, TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed, TicketStatus::Done, TicketStatus::Cancelled].iter().position(|x| *x == s).unwrap_or(6)
+    [TicketStatus::Review, TicketStatus::Waiting, TicketStatus::InProgress, TicketStatus::Todo, TicketStatus::Proposed, TicketStatus::Idea, TicketStatus::Done, TicketStatus::Cancelled].iter().position(|x| *x == s).unwrap_or(7)
 }
 
 /// The files the latest reply or note that embeds pictures shows, where they
@@ -3521,7 +3514,7 @@ pub fn latest_images(entries: &[Entry], base: &std::path::Path) -> Vec<String> {
         .iter()
         .rev()
         .filter_map(|e| match e {
-            Entry::Reply { text } | Entry::Note { text } => Some(text),
+            Entry::Reply { text } | Entry::Note { text, .. } => Some(text),
             _ => None,
         })
         .map(|text| markdown::local_images(text).iter().filter_map(|i| markdown::lexical(&i.path, base)).map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>())
@@ -3533,12 +3526,12 @@ pub fn transcript_markdown(agent: &Agent, squad: &str) -> String {
     let mut out = format!("# {} · {squad}\n\n", agent.label());
     for entry in agent.transcript.entries() {
         match entry {
-            Entry::User { text } => out.push_str(&format!("**{}:** {text}\n\n", t!("app.md_you"))),
+            Entry::User { text, .. } => out.push_str(&format!("**{}:** {text}\n\n", t!("app.md_you"))),
             Entry::Reply { text } => out.push_str(&format!("{text}\n\n")),
             Entry::Tool { tool, target, .. } => {
                 out.push_str(&format!("- {} {}\n", super::view::verb_word(tool_verb(tool)), target.as_deref().unwrap_or("")));
             }
-            Entry::Note { text } => out.push_str(&format!("_{text}_\n\n")),
+            Entry::Note { text, .. } => out.push_str(&format!("_{text}_\n\n")),
             Entry::Thread { project } => out.push_str(&format!("## {}\n\n", project.as_deref().unwrap_or(t!("app.md_whole_squad")))),
             Entry::Error { message, next } => {
                 out.push_str(&format!("> ✗ {message}{}\n\n", next.as_ref().map(|n| format!(" → `{n}`")).unwrap_or_default()))
@@ -3600,11 +3593,13 @@ pub fn image_path(text: &str) -> Option<PathBuf> {
     (is_image(&path) && path.is_absolute() && path.is_file()).then_some(path)
 }
 
-/// The models a member's engine takes, for completion: Claude Code's aliases;
-/// for other engines, what it runs now (any name the engine knows works).
+/// The models a member's engine takes, for completion: Claude Code's
+/// families' latest, then its models by id (`equipe_core::models`); for
+/// other engines, what it runs now (any name the engine knows works).
 fn engine_models(agent: &Agent) -> Vec<String> {
+    use equipe_core::models::{CLAUDE_FAMILIES, CLAUDE_MODELS};
     let mut models: Vec<String> = match agent.engine {
-        Some(Engine::Claude) => ["opus", "sonnet", "haiku"].iter().map(|m| (*m).to_owned()).collect(),
+        Some(Engine::Claude) => CLAUDE_FAMILIES.iter().map(|f| f.alias).chain(CLAUDE_MODELS.iter().map(|p| p.id)).map(str::to_owned).collect(),
         _ => Vec::new(),
     };
     if let Some(current) = agent.model.as_ref().filter(|m| !models.contains(m)) {
@@ -3767,7 +3762,7 @@ pub fn design_summary(systems: &[equipe_core::protocol::design::DesignSystem], f
     if !main.assets.is_empty() {
         parts.push(t!("app.design_assets", count = main.assets.len()));
     }
-    let drafts: Vec<String> = systems.iter().filter_map(|s| s.draft.as_ref()).map(|d| t!("app.design_draft", id = d.ticket)).collect();
+    let drafts: Vec<String> = systems.iter().filter_map(|s| s.draft.as_ref()).filter(|d| !d.working).map(|d| t!("app.design_draft", id = d.ticket)).collect();
     parts.extend(drafts);
     if !main.problems.is_empty() {
         parts.push(t!("app.design_problems", count = main.problems.len()));
@@ -3826,6 +3821,7 @@ mod tests {
             member,
             engine: Engine::Claude,
             model: None,
+            asked_model: None,
             access: Access::ReadOnly,
             workspace: None,
             state: SessionState::Ready,
@@ -3833,6 +3829,7 @@ mod tests {
             tokens: 0,
             context: None,
             recent: Vec::new(),
+            recent_at: Vec::new(),
             queued: Vec::new(),
             queued_project: None,
             queued_in: Vec::new(),
@@ -3863,7 +3860,7 @@ mod tests {
             worktree: None,
             merged: None,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: None,
@@ -3926,7 +3923,7 @@ mod tests {
             project: "/repo".into(),
             workspace: Some(Workspace { branch: "equipe/frontend-t3".into(), base: "abc".into(), path: "/w/3".into() }),
         });
-        busy.recent = vec![Entry::User { text: "fix it".into() }];
+        busy.recent = vec![Entry::User { text: "fix it".into(), kept: Vec::new() }];
         busy.tokens = 40;
         let snapshot = Snapshot { sessions: vec![busy, info(1, member("pm", "pm"))], tickets: vec![ticket(3, TicketStatus::InProgress)], ..empty() };
         let (app, commands) = App::from_snapshot("/repo".into(), snapshot, &[]);
@@ -3944,9 +3941,9 @@ mod tests {
         let (mut app, id) = ready();
         type_text(&mut app, "hello");
         assert_eq!(enter(&mut app), vec![Command::Submit { session: id, text: "hello".into(), about: Some(None) }]);
-        app.on_event(Event::UserMessage { session: id, text: "hello".into() });
+        app.on_event(Event::UserMessage { session: id, text: "hello".into(), kept: Vec::new() });
         assert_eq!(app.agents[0].state, AgentState::Working);
-        assert_eq!(app.agents[0].transcript.entries(), &[Entry::User { text: "hello".into() }]);
+        assert_eq!(app.agents[0].transcript.entries(), &[Entry::User { text: "hello".into(), kept: Vec::new() }]);
     }
 
     #[test]
@@ -3999,14 +3996,14 @@ mod tests {
     fn esc_stops_only_a_working_member() {
         let (mut app, id) = ready();
         assert!(app.on_key(key(KeyCode::Esc), Instant::now()).is_empty());
-        app.on_event(Event::UserMessage { session: id, text: "go".into() });
+        app.on_event(Event::UserMessage { session: id, text: "go".into(), kept: Vec::new() });
         assert_eq!(app.on_key(key(KeyCode::Esc), Instant::now()), vec![Command::Interrupt { session: id }]);
     }
 
     #[test]
     fn a_finished_turn_frees_the_member_and_counts_tokens() {
         let (mut app, id) = ready();
-        app.on_event(Event::UserMessage { session: id, text: "go".into() });
+        app.on_event(Event::UserMessage { session: id, text: "go".into(), kept: Vec::new() });
         app.on_event(Event::TurnEnded {
             session: id,
             outcome: TurnOutcome::Completed,
@@ -4059,7 +4056,7 @@ mod tests {
     #[test]
     fn model_names_shorten_for_the_team_list() {
         let (mut app, id) = ready();
-        app.on_event(Event::ModelKnown { session: id, model: "claude-opus-5-5[1m]".into() });
+        app.on_event(Event::ModelKnown { session: id, model: "claude-opus-5-5[1m]".into(), asked: None });
         assert_eq!(app.agents[0].short_model().as_deref(), Some("opus-5-5"));
     }
 
@@ -4131,14 +4128,14 @@ mod tests {
     #[test]
     fn a_message_to_a_working_member_is_left_as_a_memo() {
         let (mut app, pm, _) = team();
-        app.on_event(Event::UserMessage { session: pm, text: "plan it".into() });
+        app.on_event(Event::UserMessage { session: pm, text: "plan it".into(), kept: Vec::new() });
         type_text(&mut app, "also the pricing page");
         assert_eq!(enter(&mut app), vec![Command::Submit { session: pm, text: "also the pricing page".into(), about: Some(None) }]);
         assert!(app.flash.as_deref().unwrap().contains("memo"));
         app.on_event(Event::MessageQueued { session: pm, text: "also the pricing page".into(), project: None });
         assert_eq!(app.agents[0].queued, ["also the pricing page"]);
         // Delivered when the turn ends: the memo becomes the next message.
-        app.on_event(Event::UserMessage { session: pm, text: "also the pricing page".into() });
+        app.on_event(Event::UserMessage { session: pm, text: "also the pricing page".into(), kept: Vec::new() });
         assert!(app.agents[0].queued.is_empty());
     }
 
@@ -4237,7 +4234,7 @@ mod tests {
     #[test]
     fn a_guess_at_the_next_message_waits_greyed_and_right_takes_it() {
         let (mut app, pm, _) = team();
-        app.on_event(Event::UserMessage { session: pm, text: "fix the button".into() });
+        app.on_event(Event::UserMessage { session: pm, text: "fix the button".into(), kept: Vec::new() });
         app.on_event(Event::TurnEnded { session: pm, outcome: TurnOutcome::Completed, usage: None });
         app.on_event(Event::Suggestion { session: pm, text: "다른 페이지도 정리해줘".into() });
         assert_eq!(app.hint().as_deref(), Some("다른 페이지도 정리해줘"));
@@ -4245,7 +4242,7 @@ mod tests {
         assert_eq!(app.composer.text(), "다른 페이지도 정리해줘");
         // Sent, it's gone.
         app.composer.clear();
-        app.on_event(Event::UserMessage { session: pm, text: "다른 페이지도 정리해줘".into() });
+        app.on_event(Event::UserMessage { session: pm, text: "다른 페이지도 정리해줘".into(), kept: Vec::new() });
         assert_eq!(app.hint(), None);
         // One arriving after the member got back to work is too late.
         app.on_event(Event::Suggestion { session: pm, text: "late".into() });
@@ -4466,20 +4463,20 @@ mod tests {
         let mut app = two_projects();
         let pm = app.agents.iter().find(|a| a.is_pm()).unwrap().id;
         for event in [
-            Event::UserMessage { session: pm, text: "hello".into() },
+            Event::UserMessage { session: pm, text: "hello".into(), kept: Vec::new() },
             Event::Thread { session: pm, project: Some("app".into()) },
-            Event::UserMessage { session: pm, text: "about the app".into() },
+            Event::UserMessage { session: pm, text: "about the app".into(), kept: Vec::new() },
             Event::Thread { session: pm, project: Some("site".into()) },
-            Event::Notice { session: pm, text: "── T-1 · Research — on branch b".into() },
-            Event::UserMessage { session: pm, text: "ticket work".into() },
+            Event::Notice { undo: None, session: pm, text: "── T-1 · Research — on branch b".into() },
+            Event::UserMessage { session: pm, text: "ticket work".into(), kept: Vec::new() },
             Event::Thread { session: pm, project: None },
-            Event::UserMessage { session: pm, text: "after".into() },
+            Event::UserMessage { session: pm, text: "after".into(), kept: Vec::new() },
         ] {
             app.on_event(event);
         }
         let said = |app: &App| -> Vec<String> {
             app.viewed().unwrap().shown().iter().filter_map(|e| match e.as_ref() {
-                Entry::User { text } => Some(text.clone()),
+                Entry::User { text, .. } => Some(text.clone()),
                 _ => None,
             }).collect()
         };
@@ -4502,20 +4499,20 @@ mod tests {
         let pm = app.agents.iter().find(|a| a.is_pm()).unwrap().id;
         for event in [
             Event::Thread { session: pm, project: Some("app".into()) },
-            Event::UserMessage { session: pm, text: "app one".into() },
+            Event::UserMessage { session: pm, text: "app one".into(), kept: Vec::new() },
             Event::TextDelta { session: pm, text: "app answer".into() },
             Event::Thread { session: pm, project: Some("site".into()) },
-            Event::UserMessage { session: pm, text: "site one".into() },
+            Event::UserMessage { session: pm, text: "site one".into(), kept: Vec::new() },
             Event::TextDelta { session: pm, text: "site answer".into() },
             Event::Thread { session: pm, project: Some("app".into()) },
-            Event::UserMessage { session: pm, text: "app two".into() },
+            Event::UserMessage { session: pm, text: "app two".into(), kept: Vec::new() },
         ] {
             app.on_event(event);
         }
         let drawn = |app: &App| -> Vec<String> {
             app.viewed().unwrap().drawn().iter().filter_map(|e| match e.as_ref() {
-                Entry::User { text } => Some(text.clone()),
-                Entry::Note { text } if text.starts_with(FOLDED) => Some(format!("folded {}", &text[FOLDED.len_utf8()..])),
+                Entry::User { text, .. } => Some(text.clone()),
+                Entry::Note { text, .. } if text.starts_with(FOLDED) => Some(format!("folded {}", &text[FOLDED.len_utf8()..])),
                 _ => None,
             }).collect()
         };
@@ -4791,9 +4788,9 @@ mod tests {
         let base = Path::new("/w/t2");
         let entries = [
             Entry::Reply { text: "![old](/w/old.png)".into() },
-            Entry::Note { text: "![배치도](images/site plan.png)\n![평면도](/w/T-2 갤러리/plan.png)".into() },
+            Entry::Note { undo: None, text: "![배치도](images/site plan.png)\n![평면도](/w/T-2 갤러리/plan.png)".into() },
             Entry::Reply { text: "no pictures here".into() },
-            Entry::User { text: "![mine](/w/mine.png)".into() },
+            Entry::User { text: "![mine](/w/mine.png)".into(), kept: Vec::new() },
         ];
         assert_eq!(latest_images(&entries, base), ["/w/t2/images/site plan.png", "/w/T-2 갤러리/plan.png"], "the latest that has any, relative ones from where it works");
         assert!(latest_images(&entries[2..], base).is_empty(), "the person's own pictures are theirs already");
@@ -5198,15 +5195,15 @@ mod tests {
         // As every need: a is yes (once), A always, n no.
         assert_eq!(
             app.on_key(key(KeyCode::Char('a')), Instant::now()),
-            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Allow, words: None }]
+            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Allow, words: None, said: None }]
         );
         assert_eq!(
             app.on_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT), Instant::now()),
-            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Always, words: None }]
+            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Always, words: None, said: None }]
         );
         assert_eq!(
             app.on_key(key(KeyCode::Char('n')), Instant::now()),
-            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Deny, words: None }]
+            vec![Command::Decide { squad: "acme".into(), approval: 7, decision: Decision::Deny, words: None, said: None }]
         );
         // Mid-sentence, letters are letters.
         type_text(&mut app, "hey");
@@ -5239,18 +5236,18 @@ mod tests {
         assert_eq!(elapsed(Duration::from_secs(65)), "1m 05s");
         assert_eq!(elapsed(Duration::from_secs(3720)), "1h 02m");
         let (mut app, id) = ready();
-        app.on_event(Event::UserMessage { session: id, text: "go".into() });
+        app.on_event(Event::UserMessage { session: id, text: "go".into(), kept: Vec::new() });
         assert!(app.agents[0].working_since.is_some());
         app.agents[0].working_since = Some(Instant::now() - Duration::from_secs(125));
         app.on_event(Event::TurnEnded { session: id, outcome: TurnOutcome::Completed, usage: None });
         assert!(app.agents[0].working_since.is_none());
-        assert!(matches!(app.agents[0].transcript.entries().last(), Some(Entry::Note { text }) if text.starts_with("─ worked 2m 05s")));
+        assert!(matches!(app.agents[0].transcript.entries().last(), Some(Entry::Note { text, .. }) if text.starts_with("─ worked 2m 05s")));
     }
 
     #[test]
     fn whoever_needs_the_person_is_listed_first_and_tab_follows_the_list() {
         let (mut app, pm, frontend) = team();
-        app.on_event(Event::UserMessage { session: frontend, text: "go".into() });
+        app.on_event(Event::UserMessage { session: frontend, text: "go".into(), kept: Vec::new() });
         assert_eq!(app.display_order(), [1, 0], "working before ready");
         app.on_event(Event::ApprovalRequested { squad: "acme".into(), approval: approval(1) });
         assert_eq!(app.display_order(), [1, 0]);
@@ -5315,7 +5312,7 @@ mod tests {
     #[test]
     fn export_asks_for_the_conversation_as_markdown() {
         let (mut app, pm, _) = team();
-        app.on_event(Event::UserMessage { session: pm, text: "plan it".into() });
+        app.on_event(Event::UserMessage { session: pm, text: "plan it".into(), kept: Vec::new() });
         app.on_event(Event::TextDelta { session: pm, text: "**Done.**".into() });
         app.on_event(Event::ToolUse { session: pm, tool: "Read".into(), target: Some("a.rs".into()), label: None, background: false });
         type_text(&mut app, "/export");

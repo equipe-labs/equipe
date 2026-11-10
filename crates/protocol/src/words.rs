@@ -7,14 +7,14 @@ use std::sync::OnceLock;
 
 /// Every language's words, as compiled in.
 const FILES: &[(&str, &str)] = &[
-    ("ko", include_str!("../locales/ko.json")),
     ("en", include_str!("../locales/en.json")),
-    ("ja", include_str!("../locales/ja.json")),
-    ("zh-Hans", include_str!("../locales/zh-Hans.json")),
-    ("zh-Hant", include_str!("../locales/zh-Hant.json")),
+    ("de", include_str!("../locales/de.json")),
     ("es", include_str!("../locales/es.json")),
     ("fr", include_str!("../locales/fr.json")),
-    ("de", include_str!("../locales/de.json")),
+    ("ja", include_str!("../locales/ja.json")),
+    ("ko", include_str!("../locales/ko.json")),
+    ("zh-Hans", include_str!("../locales/zh-Hans.json")),
+    ("zh-Hant", include_str!("../locales/zh-Hant.json")),
 ];
 
 /// Each key's words in every language, read once.
@@ -45,9 +45,45 @@ fn lists() -> &'static BTreeMap<String, &'static [&'static str]> {
     })
 }
 
+/// Each language's own words, by language code and key, read once.
+fn own() -> &'static BTreeMap<(String, String), &'static [&'static str]> {
+    static OWN: OnceLock<BTreeMap<(String, String), &'static [&'static str]>> = OnceLock::new();
+    OWN.get_or_init(|| {
+        let mut out = BTreeMap::new();
+        for (code, text) in FILES {
+            let file: BTreeMap<String, String> = serde_json::from_str(text).unwrap_or_else(|e| panic!("protocol locales/{code}.json: {e}"));
+            for (key, list) in file {
+                let list: &'static str = String::leak(list);
+                let words: &'static [&'static str] = Vec::leak(list.split('|').filter(|w| !w.is_empty()).collect());
+                out.insert(((*code).to_owned(), key), words);
+            }
+        }
+        out
+    })
+}
+
+/// The languages words can be read in, by code.
+pub const CODES: [&str; 8] = ["en", "de", "es", "fr", "ja", "ko", "zh-Hans", "zh-Hant"];
+
+/// `key`'s words in language `code` only (none for one it hasn't).
+pub fn of(code: &str, key: &str) -> &'static [&'static str] {
+    own().get(&(code.to_owned(), key.to_owned())).copied().unwrap_or_default()
+}
+
 /// `key`'s words in every language (none for a key no file has).
 pub fn every(key: &str) -> &'static [&'static str] {
     lists().get(key).copied().unwrap_or_default()
+}
+
+/// A letter beyond ASCII of a script that puts spaces between its words —
+/// Hangul, Cyrillic, Greek, Arabic, accented Latin — so a word in it starts
+/// where no such letter comes before. Not Han, kana, Thai, Lao, Khmer or
+/// Myanmar, written without spaces: a word in them may start anywhere.
+pub fn spaced_letter(c: char) -> bool {
+    let unspaced = matches!(c as u32,
+        0x0E00..=0x0EFF | 0x1000..=0x109F | 0x1780..=0x17FF | 0x3040..=0x30FF | 0x31F0..=0x31FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF
+        | 0xF900..=0xFAFF | 0xFF66..=0xFF9F | 0x20000..=0x3FFFF);
+    !c.is_ascii() && c.is_alphabetic() && !unspaced
 }
 
 #[cfg(test)]
@@ -75,5 +111,15 @@ mod tests {
             assert!(answers.contains(&word), "{word}");
         }
         assert!(every("match.nothing").is_empty());
+    }
+
+    #[test]
+    fn a_spaced_letter_is_by_script_not_by_language() {
+        for c in ['한', 'д', 'λ', 'ب', 'é', 'ß'] {
+            assert!(spaced_letter(c), "{c}");
+        }
+        for c in ['a', 'Z', '7', ' ', '?', '漢', 'か', 'カ', 'ก', '。'] {
+            assert!(!spaced_letter(c), "{c}");
+        }
     }
 }

@@ -34,10 +34,13 @@
   --eq-color-wait-bg: #A046101F;
   --eq-color-err: #AD2E27;
   --eq-color-err-bg: #AD2E271F;
+  --eq-color-err-fill: #EEE0DE;
+  --eq-color-err-fill-hover: #EBD9D7;
+  --eq-color-err-fill-pressed: #E9D2CF;
   --eq-color-on-err: #FFFFFF;
 
   /* font */
-  --eq-font-family-sans: 'Inter Variable', Inter, 'Pretendard Variable', system-ui, sans-serif;
+  --eq-font-family-sans: 'Inter Variable', Inter, 'Pretendard Variable', 'Noto Sans JP', 'Noto Sans SC', system-ui, sans-serif;
   --eq-font-family-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, Menlo, monospace;
 
   /* space */
@@ -157,6 +160,10 @@
   --eq-button-ghost-fg: var(--eq-color-accent);
   --eq-button-danger-bg: var(--eq-color-err);
   --eq-button-danger-fg: var(--eq-color-on-err);
+  --eq-button-danger-soft-bg: var(--eq-color-err-fill);
+  --eq-button-danger-soft-bg-hover: var(--eq-color-err-fill-hover);
+  --eq-button-danger-soft-bg-pressed: var(--eq-color-err-fill-pressed);
+  --eq-button-danger-soft-fg: var(--eq-color-err);
   --eq-button-hover-overlay: var(--eq-color-hover);
   --eq-button-pressed-overlay: var(--eq-color-pressed);
   --eq-button-focus-ring: var(--eq-color-focus);
@@ -323,6 +330,9 @@
     --eq-color-wait-bg: #EC9A621F;
     --eq-color-err: #EE7B74;
     --eq-color-err-bg: #EE7B741F;
+    --eq-color-err-fill: #352728;
+    --eq-color-err-fill-hover: #3C2A2B;
+    --eq-color-err-fill-pressed: #442E2E;
     --eq-color-on-err: #0A0A0C;
   }
 }
@@ -359,8 +369,17 @@
   --eq-color-wait-bg: #EC9A621F;
   --eq-color-err: #EE7B74;
   --eq-color-err-bg: #EE7B741F;
+  --eq-color-err-fill: #352728;
+  --eq-color-err-fill-hover: #3C2A2B;
+  --eq-color-err-fill-pressed: #442E2E;
   --eq-color-on-err: #0A0A0C;
 }
+
+/* Type in the document's language (<html lang>): its script's face before the others. */
+:lang(ko) { --eq-font-family-sans: 'Inter Variable', Inter, 'Pretendard Variable', system-ui, sans-serif; }
+:lang(ja) { --eq-font-family-sans: 'Inter Variable', Inter, 'Hiragino Sans', 'Noto Sans JP', system-ui, sans-serif; }
+:lang(zh), :lang(zh-Hans) { --eq-font-family-sans: 'Inter Variable', Inter, 'PingFang SC', 'Noto Sans SC', system-ui, sans-serif; }
+:lang(zh-Hant), :lang(zh-TW), :lang(zh-HK) { --eq-font-family-sans: 'Inter Variable', Inter, 'PingFang TC', 'Noto Sans TC', system-ui, sans-serif; }
 
 @media (max-width: 640px) {
   :root {

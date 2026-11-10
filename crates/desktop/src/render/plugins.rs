@@ -48,11 +48,24 @@ impl MarkdownPlugin for FileChips {
         let text = node.data::<String>()?.clone();
         let id = ("file-chip", hash_of((&text, node.source_range().map(|r| r.start))));
         let size = context.font_size() * 0.88;
-        let base = cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade()).map(|s| base_dir(s.read(cx))).unwrap_or_default();
+        let found = cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade()).map(|s| locate(s.read(cx), links::path_and_line(&text).0));
         // A document opens in the panel wherever the daemon is.
-        let openable = crate::doc::is_doc(&text) || exists(&links::resolve(links::path_and_line(&text).0, &base));
+        let openable = crate::doc::is_doc(&text) || found.is_some_and(|path| exists(&path));
         Some(InlineElement::new(file_chip(self.p, id, &text, openable, size)))
     }
+}
+
+/// Where a path written in the conversation is: from where the conversation
+/// works, else in the worktree of a ticket not merged yet — the one it names
+/// first (`outputs/T-287 …/a.txt`) — as the document panel looks.
+pub fn locate(shell: &crate::Shell, written: &str) -> PathBuf {
+    let base = base_dir(shell);
+    let path = links::resolve(written, &base);
+    if exists(&path) {
+        return path;
+    }
+    let places = crate::doc::places(&path, &shell.ticket_places());
+    crate::doc::elsewhere(&path, &base, &places).paths.into_iter().find(|p| exists(p)).unwrap_or(path)
 }
 
 /// Whether `path` is on this Mac, asked at most every few seconds: a reply
@@ -80,13 +93,33 @@ fn exists(path: &std::path::Path) -> bool {
     })
 }
 
+/// A path as a chip shows it: whole when short; else its last folder and
+/// name, or its name alone (`…/A linkedin paste.txt`). A chip is one
+/// piece on its line — it can't wrap — so a long one would run past the
+/// words' edge in a narrow window. The whole path is on hover.
+pub fn shown_path(written: &str) -> String {
+    const MOST: usize = 34;
+    let trimmed = written.trim_end_matches('/');
+    if written.chars().count() <= MOST || !trimmed.contains('/') {
+        return written.to_owned();
+    }
+    let slash = if written.ends_with('/') { "/" } else { "" };
+    let mut parts = trimmed.rsplit('/');
+    let name = parts.next().unwrap_or(trimmed);
+    match parts.next() {
+        Some(folder) if folder.chars().count() + name.chars().count() + 3 <= MOST => format!("…/{folder}/{name}{slash}"),
+        _ => format!("…/{name}{slash}"),
+    }
+}
+
 /// A path in a reply, as written, like any inline code: a quiet fill, no
 /// mark. One on this Mac (`openable`) underlines under the pointer — a click
 /// looks at it, ⌘-click opens it, ⌥-click shows it in Finder — and its menu
 /// also copies its path. A document (Markdown) opens in the panel at the
 /// right instead, from this Mac or another.
 pub fn file_chip(p: Palette, id: (&'static str, u64), written: &str, openable: bool, size: Pixels) -> impl IntoElement + use<> {
-    let label = written.to_owned();
+    let label = shown_path(written);
+    let whole = (label != written).then(|| written.to_owned());
     let written = written.to_owned();
     // No kind of file at its end: a folder.
     let folder = {
@@ -95,8 +128,8 @@ pub fn file_chip(p: Palette, id: (&'static str, u64), written: &str, openable: b
         path.contains('/') && !name.contains('.')
     };
     let resolve = move |cx: &mut App| -> PathBuf {
-        let base = cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade()).map(|s| base_dir(s.read(cx))).unwrap_or_default();
-        links::resolve(links::path_and_line(&written).0, &base)
+        let path = links::path_and_line(&written).0;
+        cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade()).map_or_else(|| PathBuf::from(path), |s| locate(s.read(cx), path))
     };
     let (click, locate, add_locate) = (resolve.clone(), resolve.clone(), resolve);
     let accent = p.accent;
@@ -123,6 +156,8 @@ pub fn file_chip(p: Palette, id: (&'static str, u64), written: &str, openable: b
                 open_file(&path, how, cx);
             })
         })
+        // Shown short: the whole of it on hover.
+        .when_some(whole, |chip, whole| crate::tips::tip(chip, p, whole, None))
         .context_menu(move |menu, _, _| {
             let item = |label: &'static str, how: Option<Open>| {
                 let locate = locate.clone();
@@ -583,7 +618,17 @@ impl MarkdownPlugin for Alerts {
 
 #[cfg(test)]
 mod tests {
-    use super::{Alert, alert_of, looks_like_math};
+    use super::{Alert, alert_of, looks_like_math, shown_path};
+
+    #[test]
+    fn a_long_path_is_shown_short_as_one_piece_that_fits_a_narrow_line() {
+        assert_eq!(shown_path("notes/plan.md"), "notes/plan.md");
+        assert_eq!(shown_path("outputs/T-287 홍보 글 올리기/A linkedin 붙여넣기.txt"), "…/A linkedin 붙여넣기.txt");
+        assert_eq!(shown_path("crates/desktop/src/views/settings_signals.rs"), "…/views/settings_signals.rs");
+        assert_eq!(shown_path("outputs/T-117 앱스토어 제출/shots/"), "outputs/T-117 앱스토어 제출/shots/", "short enough: whole");
+        assert_eq!(shown_path("outputs/T-117 앱스토어 제출 자료 모음/screenshots/"), "…/T-117 앱스토어 제출 자료 모음/screenshots/");
+        assert_eq!(shown_path("a_very_long_file_name_without_any_folder_at_all.txt"), "a_very_long_file_name_without_any_folder_at_all.txt");
+    }
 
     #[test]
     fn callouts_are_read_from_their_marker() {

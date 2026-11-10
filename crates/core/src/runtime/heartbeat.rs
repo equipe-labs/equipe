@@ -85,12 +85,77 @@ don't ask them in words meanwhile."
         self.publish(Event::IdleWakeChanged { squad: squad.to_owned(), hours });
     }
 
-    /// Each minute: every squad whose board lies empty and quiet wakes its PM.
+    /// Each minute: every squad whose board lies empty and quiet wakes its PM;
+    /// one whose board is light and whose person kept ideas asks it about them.
     pub(super) async fn wake_idle_pms(&mut self) {
         let squads: Vec<String> = self.journals.keys().cloned().collect();
         for squad in squads {
-            self.wake_if_idle(&squad).await;
+            self.remind_of_reviews(&squad).await;
+            if !self.wake_if_idle(&squad).await {
+                self.ask_about_ideas(&squad).await;
+            }
         }
+    }
+
+    /// Where the PM accepts, handed-in work it left waiting past a couple of
+    /// hours is brought up to it — in one message, each ticket at most every
+    /// few hours, as a routine is handed to it (after its turn if one runs).
+    /// A hand-in's own wake can be missed mid-turn; work shouldn't wait days.
+    async fn remind_of_reviews(&mut self, squad: &str) {
+        if !self.journal(squad).is_some_and(Journal::pm_accepts) {
+            return;
+        }
+        let Some(pm) = self.pm_of(squad) else { return };
+        let pm_name = self.sessions.get(&pm).and_then(|s| s.name().map(str::to_owned)).unwrap_or_default();
+        let tickets = self.tickets(squad);
+        let on_cards: Vec<TicketId> = self.accepts.get(squad).map(|cards| cards.iter().flat_map(|p| p.tickets.iter().copied()).collect()).unwrap_or_default();
+        let now = now_secs();
+        let nudged = self.review_nudged.entry(squad.to_owned()).or_default();
+        nudged.retain(|id, _| tickets.iter().any(|t| t.id == *id && t.status == TicketStatus::Review));
+        let due = crate::accept::stale_reviews(&tickets, &pm_name, &on_cards, nudged, now);
+        if due.is_empty() {
+            return;
+        }
+        for (id, _) in &due {
+            nudged.insert(*id, now);
+        }
+        crate::daemon_log!("equipe: {squad}: {} handed-in tickets wait past {}h; the PM is reminded", due.len(), crate::accept::REVIEW_NUDGE_AFTER / 3600);
+        self.hand_to_pm(squad, pm, crate::accept::stale_review_message(&due)).await;
+    }
+
+    /// The PM asked, at most every few days, whether one of the person's
+    /// ideas has its time now — as a routine is handed to it. `true`: it was.
+    async fn ask_about_ideas(&mut self, squad: &str) -> bool {
+        let Some((hours, woken_at)) = self.journal(squad).map(|j| (j.idle_wake_hours(), j.ideas_woken_at())) else {
+            return false;
+        };
+        let tickets = self.tickets(squad);
+        let now = now_secs();
+        let ideas = rules::kept_ideas(&tickets, now);
+        let open = rules::open_tickets(&tickets);
+        if !rules::ideas_due(hours, ideas.len(), open, rules::waiting_proposals(&tickets), woken_at, now) {
+            return false;
+        }
+        let Some(pm) = self.pm_of(squad) else { return false };
+        if let Some(Err(err)) = self.journal(squad).map(|j| j.set_ideas_woken_at(now)) {
+            crate::daemon_log!("equipe: {squad}: the ideas' look wasn't kept: {err}");
+            return false;
+        }
+        crate::daemon_log!("equipe: {squad}: the board is light and {} ideas wait; the PM is asked about them", ideas.len());
+        let text = rules::ideas_message(&ideas, open);
+        self.hand_to_pm(squad, pm, text).await;
+        true
+    }
+
+    /// `text` to the PM as a routine's would be: now, or after its turn.
+    async fn hand_to_pm(&mut self, squad: &str, pm: SessionId, text: String) {
+        let about = self.hq(squad).map(|hq| board::project_name(&hq));
+        self.said_about = Some(about);
+        match self.sessions.get(&pm) {
+            Some(s) if s.is_working() => self.leave_memo(pm, text),
+            _ => self.submit(pm, text).await,
+        }
+        self.said_about = None;
     }
 
     /// The PM woken once over an empty, quiet board — as a routine is handed
@@ -113,14 +178,13 @@ don't ask them in words meanwhile."
             return false;
         }
         crate::daemon_log!("equipe: {squad}: the board lay empty for {hours}h; the PM is woken");
-        let text = rules::idle_message(hours, self.routines(squad).len());
-        let about = self.hq(squad).map(|hq| board::project_name(&hq));
-        self.said_about = Some(about);
-        match self.sessions.get(&pm) {
-            Some(s) if s.is_working() => self.leave_memo(pm, text),
-            _ => self.submit(pm, text).await,
+        let ideas = rules::kept_ideas(&tickets, now);
+        // The ideas are looked at in this wake: not asked about again for a while.
+        if !ideas.is_empty() {
+            let _ = self.journal(squad).map(|j| j.set_ideas_woken_at(now));
         }
-        self.said_about = None;
+        let text = rules::idle_message(hours, self.routines(squad).len(), &ideas);
+        self.hand_to_pm(squad, pm, text).await;
         true
     }
 }

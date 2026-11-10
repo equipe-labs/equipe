@@ -1,5 +1,5 @@
 //! Handed-in work the person said in words they accept, merge or send back
-//! ("전부 수락", "T-1이랑 T-3 수락해줘", "머지까지 해줘") — put in front of
+//! ("accept them all", "accept T-1 and T-3", "merge it too", in any language) — put in front of
 //! them as a card to confirm. The PM proposes it (`propose_accept`), or a
 //! screen does from the person's own unambiguous words
 //! ([`crate::Command::ProposeAccept`]); either way it only waits. Their words

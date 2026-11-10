@@ -1,46 +1,48 @@
-# GPUI 한국어 IME·글리프 선명도 검증 (T-53)
+# GPUI Korean IME and glyph sharpness check (T-53)
 
-상태: **예제와 체크리스트까지 완료, 실기 검증은 미완.** 이 세션에는 화면 캡처 권한과 UI 자동화(키 입력·IME 전환) 권한이 없어 (`screencapture`: "could not create image from display", `osascript` System Events 응답 없음) 시나리오를 직접 돌리지 못했다. 아래 표의 결과 칸은 모두 **미확인**이며, 추정치를 사실처럼 적지 않았다.
+Status: **the example and the checklist are done; the check on a real machine is not.** This session had no screen-capture permission and no UI automation permission (key input, IME switching) (`screencapture`: "could not create image from display", `osascript` System Events did not answer), so the scenarios were not run. Every result cell below is **unchecked**; no guess is written down as fact.
 
-## 실행
+## Running it
 
 ```
 cargo run --release -p equipe-desktop --example ime_probe
-PROBE_FONT="Apple SD Gothic Neo" # 기본값. 다른 폰트로 바꿔 볼 때만 지정
+PROBE_FONT="Apple SD Gothic Neo" # the default; set it only to try another font
 ```
 
-창에는 한 줄 입력(`Input`), 여러 줄 입력(`Textarea`, 3~8행 자동 확장), 같은 문장 13/14/16pt, 그리고 하단 이벤트 로그(change / ENTER / focus / blur)가 있다. 로그의 `ENTER(send?)` 줄이 찍히는 시점으로 "조합 중 Enter가 전송으로 새는지"를 눈으로 확인할 수 있다.
+The window has a one-line input (`Input`), a multi-line input (`Textarea`, growing from 3 to 8 rows), the same sentence at 13/14/16 pt, and an event log at the bottom (change / ENTER / focus / blur). When the log's `ENTER(send?)` line appears shows by eye whether "an Enter during composition leaks out as a send".
 
-## 시나리오 (macOS 두벌식)
+## Scenarios (macOS Korean 2-Set)
 
-| # | 시나리오 | 확인 방법 | 결과 |
+The inputs below are Korean, typed with the Korean 2-Set input source.
+
+| # | Scenario | How to check | Result |
 |---|---|---|---|
-| 1 | 조합 밑줄 표시 | "한" 입력 중 마지막 글자에 밑줄(조합 중 표시) | 미확인 |
-| 2 | 후보창 위치(한자 키 / ⌥Enter) | "한" 입력 후 ⌥Enter → 후보창이 캐럿 근처에 뜨는가 | 미확인 |
-| 3 | 조합 중 Backspace | "한" → ⌫ → "하" → ⌫ → "ㅎ" → ⌫ → 빈칸 | 미확인 |
-| 4 | 조합 중 마우스 클릭 / 포커스 이동 | "한" 조합 중 다른 입력창·빈 곳 클릭 → 글자 확정·유실·중복 여부 | 미확인 |
-| 5 | 조합 중 ⌘C / ⌘A | 패닉(프로세스 종료) 없이 동작하는가 | 미확인 |
-| 6 | Enter: 조합 확정 vs 전송 | "안녕" 조합 중 Enter → 로그에 확정만, 두 번째 Enter에서 `ENTER` | 미확인 |
-| 7 | 영↔한 전환 직후 첫 글자 | 영문 입력 → Caps/⌃Space로 전환 → 첫 자음이 유실·중복 없이 | 미확인 |
-| 8 | 긴 문장 빠른 입력 | 40자 이상 빠르게 → 글자 누락·순서 뒤바뀜 | 미확인 |
-| 9 | 한영 혼합 커서 이동 | "abc한글def"에서 ←/→/⌥←/⌥→ | 미확인 |
+| 1 | Composition underline | While typing Korean *han* (h → ha → han), the last character is underlined (being composed) | unchecked |
+| 2 | Candidate window position (Hanja key / ⌥Enter) | After typing Korean *han*, ⌥Enter → does the candidate window open near the caret? | unchecked |
+| 3 | Backspace during composition | Korean *han* → ⌫ → *ha* → ⌫ → *h* (the lone consonant) → ⌫ → empty | unchecked |
+| 4 | Mouse click / focus change during composition | While composing Korean *han*, click another input or an empty spot → is the character committed, lost or doubled? | unchecked |
+| 5 | ⌘C / ⌘A during composition | Works without a panic (the process ending)? | unchecked |
+| 6 | Enter: commit vs send | Enter while composing Korean *annyeong* → only a commit in the log; `ENTER` on the second Enter | unchecked |
+| 7 | First character right after switching English ↔ Korean | Type English → switch with Caps/⌃Space → the first consonant is neither lost nor doubled | unchecked |
+| 8 | A long sentence typed fast | 40+ characters, fast → no characters dropped or out of order | unchecked |
+| 9 | Cursor movement in mixed Korean and English | ←/→/⌥←/⌥→ in "abc", two Korean syllables, "def" (Korean in the middle) | unchecked |
 
-## 렌더링 비교 (미실시)
+## Rendering comparison (not done)
 
-- 13/14/16pt × 1x/2x를 TextEdit의 같은 문장(Apple SD Gothic Neo)과 나란히 캡처해 이 폴더에 `render-*.png`로 둔다.
-- 1x는 외장 모니터 또는 시스템 설정의 해상도 "Low resolution" 모드가 필요하다.
+- Capture 13/14/16 pt × 1x/2x beside the same sentence in TextEdit (Apple SD Gothic Neo), and keep them in this folder as `render-*.png`.
+- 1x needs an external display, or the "Low resolution" mode in System Settings' display resolution.
 
-## 소스 읽기로 얻은 단서 (gpui-pre-macos 0.3.8, 실행 검증 아님)
+## Clues from reading the source (gpui-pre-macos 0.3.8, not checked by running)
 
-- 렌더링: `text_system.rs`의 `recommended_rendering_mode`가 항상 `Grayscale`이다. 서브픽셀(LCD) AA는 쓰지 않는다. macOS 10.14 이후의 시스템 텍스트도 같은 방식이므로 그 자체가 흐림의 원인은 아닌 것으로 보인다. 다만 `glyph_dilation_for_color`로 글자 두께(Core Graphics 스머징)를 따라 하는데, 이는 `AppleFontSmoothing=0`이면 꺼진다. TextEdit와 굵기가 달라 보이면 이 값을 먼저 확인할 것. 글리프는 가로 서브픽셀 위치별(`SUBPIXEL_VARIANTS_X`)로 아틀라스에 따로 래스터화되므로, 흐림이 보이면 이 변형 수를 1로 줄이는(위치 스냅) 패치가 우회책 후보다. 아직 시도하지 않았다.
-- IME: `handle_key_event`는 조합 중(`marked_text_range` 존재)이면 키를 먼저 `inputContext`로 보낸다. 한국어 입력원이 켜져 있으면 인쇄 가능 키도 IME 우선(`is_ime_printable_key`)이라 #7 유형의 문제는 구조상 줄어 있다.
-- 후보창 위치(#2)는 `first_rect_for_character_range`가 입력 핸들러의 `bounds_for_range`에서 받은 사각형을 화면 좌표로 바꿔 주는 것에 달려 있다. 이 변환은 `NSFullSizeContentViewWindowMask` 창과 아닌 창에서 다르게 계산하므로, Root가 만드는 창(gpui-kit `open_window`)에서 실제 위치를 봐야 한다. zed #64850과 같은 증상일 가능성이 있다.
-- 알려진 이슈(zed #65453 밑줄, #64389 조합 중 복사 패닉, #46319 한자 키, #57777 CJK 흐림)가 gpui-pre 0.3.8에 남아 있는지는 위 표로 확인해야 한다.
+- Rendering: `recommended_rendering_mode` in `text_system.rs` is always `Grayscale`; subpixel (LCD) antialiasing is not used. The system's own text has done the same since macOS 10.14, so that alone does not seem to cause blur. It does imitate stroke weight (Core Graphics smoothing) with `glyph_dilation_for_color`, which turns off with `AppleFontSmoothing=0`: if the weight looks different from TextEdit's, check that value first. Glyphs are rasterized into the atlas separately per horizontal subpixel position (`SUBPIXEL_VARIANTS_X`), so if blur shows, a patch cutting those variants to 1 (snapping the position) is a candidate workaround. Not tried yet.
+- IME: `handle_key_event` sends a key to `inputContext` first while composing (when `marked_text_range` exists). With the Korean input source on, printable keys also go to the IME first (`is_ime_printable_key`), so problems like #7 are reduced by design.
+- The candidate window's position (#2) depends on `first_rect_for_character_range` turning the rectangle it gets from the input handler's `bounds_for_range` into screen coordinates. That conversion is computed differently for `NSFullSizeContentViewWindowMask` windows and others, so the real position has to be seen in the window Root makes (gpui-kit `open_window`). It may be the same symptom as zed #64850.
+- Whether the known issues (zed #65453 underline, #64389 panic copying during composition, #46319 Hanja key, #57777 CJK blur) remain in gpui-pre 0.3.8 is for the table above to find out.
 
-## 우회한 것 / 못 한 것
+## Worked around / not done
 
-아직 없음 (검증 전).
+Nothing yet (not checked).
 
-## 결론
+## Conclusion
 
-**① GPUI 그대로 진행 (사람의 결정, 2026-10-14)** — 실기 검증은 하지 못한 채로 정했다. 한글 문제가 나오면 GPUI Kit/gpui-pre를 우리가 패치해 해결한다. 위 표는 `ime_probe`로 문제를 만났을 때 채우는 체크리스트로 남긴다. Tauri 대조는 하지 않았다.
+**① Go on with GPUI as it is (the person's decision, 2026-10-14)** — decided without the check on a real machine. If Korean (Hangul) input problems come up, we fix them by patching GPUI Kit/gpui-pre. The table above stays as the checklist to fill in with `ime_probe` when a problem is met. No comparison with Tauri was made.

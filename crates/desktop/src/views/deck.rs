@@ -3,10 +3,11 @@
 //! away (the document stays open beside the conversation). `deck.rs` reads it.
 
 use equipe_core::t;
-use gpui_kit::component::h_flex;
+use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::*;
 
 use crate::Shell;
+use crate::deck::Part;
 use crate::icons::{Icon, icon};
 use crate::motion;
 use crate::render::view::Look;
@@ -71,9 +72,41 @@ pub fn presentation(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> 
                 .flex()
                 .flex_col()
                 .justify_center()
+                .gap(px(size * 0.8))
                 .px(px(w * 0.07))
                 .py(px(h * 0.08))
-                .child(crate::render::view::document(p, ("deck", crate::render::hash_of((&doc.path, doc.read, at))), &slides[at], look)),
+                .children(crate::deck::parts(&slides[at]).into_iter().enumerate().map(|(i, part)| {
+                    let key = crate::render::hash_of((&doc.path, doc.read, at, i));
+                    match part {
+                        Part::Words(words) => div().flex_none().child(crate::render::view::document(p, ("deck", key), &words, look)).into_any_element(),
+                        // As big as the slide leaves room for, side by side.
+                        Part::Pictures(sources) => h_flex()
+                            .flex_1()
+                            .min_h(px(h * 0.25))
+                            .gap(px(size))
+                            .justify_center()
+                            .children(sources.iter().map(|src| {
+                                let at = crate::deck::picture_at(&doc.path, src);
+                                let source = if at.contains("://") { ImageSource::Resource(Resource::Uri(at.into())) } else { ImageSource::from(std::path::PathBuf::from(at)) };
+                                div().flex_1().h_full().min_w_0().flex().items_center().justify_center().child(img(source).max_w_full().max_h_full().object_fit(ObjectFit::Contain).rounded(px(10.)))
+                            }))
+                            .into_any_element(),
+                        Part::Columns(columns) => h_flex()
+                            .flex_none()
+                            .gap(px(size * 2.))
+                            .justify_center()
+                            .children(columns.into_iter().map(|lines| {
+                                let mut lines = lines.into_iter();
+                                v_flex()
+                                    .flex_1()
+                                    .items_center()
+                                    .gap(px(size * 0.3))
+                                    .children(lines.next().map(|first| div().text_size(px(size * 2.6)).line_height(px(size * 2.9)).font_weight(FontWeight::EXTRA_BOLD).text_color(p.text).child(first)))
+                                    .children(lines.map(|line| div().text_size(px(size * 0.8)).text_color(p.muted).text_center().child(line)))
+                            }))
+                            .into_any_element(),
+                    }
+                })),
         )
         // How far through: a hairline of the accent along the bottom.
         .child(div().absolute().left_0().bottom_0().h(px(3.)).w(px(w * (at + 1) as f32 / n as f32)).bg(p.accent));

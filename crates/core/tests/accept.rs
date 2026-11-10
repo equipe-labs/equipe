@@ -5,8 +5,6 @@
 //! buttons send. No tool accepts or merges, and nothing in the daemon does but
 //! the person's commands.
 
-#![cfg(unix)]
-
 use std::path::{Path, PathBuf};
 use std::process::Command as Process;
 use std::time::Duration;
@@ -27,10 +25,16 @@ fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("equipe-accept-{name}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    // Windows canonicalization adds the verbatim `\\?\` prefix, which Git for
+    // Windows does not accept as a `worktree add` destination.
+    #[cfg(windows)]
+    return dir;
+    #[cfg(not(windows))]
     dir.canonicalize().unwrap()
 }
 
 /// Write an executable script without holding it open for writing (see tests/runtime.rs).
+#[cfg(unix)]
 fn write_script(path: &Path, script: &str) {
     use std::os::unix::fs::PermissionsExt as _;
     let draft = path.with_extension("draft");
@@ -42,7 +46,12 @@ fn write_script(path: &Path, script: &str) {
 /// A stand-in `claude`, signed in: a ticket's turn takes a moment and writes
 /// `HERO.md` where it runs; every turn answers in a line.
 fn claude() -> PathBuf {
+    #[cfg(unix)]
     let bin = scratch("bin").join("claude");
+    #[cfg(windows)]
+    let bin = scratch("bin").join("claude.exe");
+    #[cfg(unix)]
+    {
     let answer = r#"cat <<EOF
 {"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}
 {"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}}
@@ -52,6 +61,33 @@ EOF"#;
         "#!/bin/sh\nif [ \"$1\" = \"auth\" ]; then echo '{{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}}'; exit 0; fi\nif [ \"$2\" = --input-format ] && IFS= read -r line; then set -- -p \"$(printf '%s' \"$line\" | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"message\"][\"content\"], end=\"\")')\" \"$@\"; fi\ncase \"$*\" in *\"You're on T-\"*) sleep 1; echo \"made by the squad\" > HERO.md;; esac\n{answer}\n"
     );
     write_script(&bin, &script);
+    }
+    #[cfg(windows)]
+    {
+        // A native fake keeps TP-5 independent of cmd.exe quoting. The real
+        // npm `.cmd` launchers are exercised separately by the Windows job.
+        let source = bin.with_extension("rs");
+        std::fs::write(
+            &source,
+            r##"fn main() {
+    if std::env::args().nth(1).as_deref() == Some("auth") {
+        println!(r#"{{"loggedIn":true,"authMethod":"claude.ai"}}"#);
+        return;
+    }
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    if std::fs::metadata(".git").is_ok_and(|m| m.is_file()) {
+        std::fs::write("HERO.md", "made by the squad\n").unwrap();
+    }
+    println!(r#"{{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}}"#);
+    println!(r#"{{"type":"stream_event","event":{{"type":"content_block_delta","delta":{{"type":"text_delta","text":"ok"}}}}}}"#);
+    println!(r#"{{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{{"input_tokens":3,"output_tokens":1}}}}"#);
+}
+"##,
+        )
+        .unwrap();
+        let built = Process::new("rustc").args(["--edition=2024", "-o"]).arg(&bin).arg(&source).status().unwrap();
+        assert!(built.success(), "build the Windows fake engine");
+    }
     bin
 }
 
@@ -79,7 +115,7 @@ fn config(claude: &Path, home: &Path) -> Config {
         client_version: "test".into(),
         claude_binary: claude.to_string_lossy().into_owned(),
         // No Codex CLI either: the person's own must never run in a test.
-        codex_binary: "/nonexistent/codex".into(),
+        codex_binary: scratch("missing").join("codex-does-not-exist").to_string_lossy().into_owned(),
         persist: false,
         retention_days: 90,
         equipe_binary: None,
@@ -91,6 +127,7 @@ fn config(claude: &Path, home: &Path) -> Config {
         person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
         nemotron: None,
+        watch_disk: false,
     }
 }
 
@@ -144,7 +181,7 @@ async fn handed_in() -> (Handle, UnboundedReceiver<Event>, PathBuf) {
     tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
     tool(&handle, "pm", "create_ticket", json!({ "title": "Pricing", "body": "-", "owner": "frontend", "depends_on": [1] })).await;
     until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
-    let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Hero done." })).await;
+    let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Hero done.", "changes_screens": false })).await;
     assert!(!handed.is_error, "{handed:?}");
     until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Review)).await;
     (handle, events, repo)
@@ -178,7 +215,7 @@ async fn the_pm_puts_it_on_a_card_and_only_the_persons_confirmation_accepts_and_
     assert_eq!(handle.snapshot("acme").await.accepts.len(), 1);
 
     // The person confirms, merging as their screen's way says: what A and the merge send.
-    handle.send(Command::ConfirmAccept { squad: "acme".into(), id: card.id, tickets: vec![Confirmed { ticket: 1, merge: Some(Land::Merge) }] });
+    handle.send(Command::ConfirmAccept { squad: "acme".into(), id: card.id, tickets: vec![Confirmed { ticket: 1, merge: Some(Land::Merge) }], said: None });
     let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
     assert!(seen.iter().any(|e| matches!(e, Event::AcceptClosed { id, confirmed: true, tickets, .. } if *id == card.id && tickets == &[1])), "{seen:#?}");
     assert_eq!(git(&repo, &["show", "main:HERO.md"]), "made by the squad", "on main");
@@ -186,7 +223,7 @@ async fn the_pm_puts_it_on_a_card_and_only_the_persons_confirmation_accepts_and_
     assert!(seen.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })), "{seen:#?}");
     assert!(handle.snapshot("acme").await.accepts.is_empty());
     // Confirmed again from another screen: nothing more.
-    handle.send(Command::ConfirmAccept { squad: "acme".into(), id: card.id, tickets: vec![Confirmed::only(1)] });
+    handle.send(Command::ConfirmAccept { squad: "acme".into(), id: card.id, tickets: vec![Confirmed::only(1)], said: None });
     handle.send(Command::DeclineAccept { squad: "acme".into(), id: card.id });
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(status(&handle, 1).await, TicketStatus::Done);
@@ -223,7 +260,7 @@ async fn the_pm_accepts_its_teams_work_itself_unless_the_person_keeps_that_for_t
     // The person keeps acceptance for themselves: the PM only puts it on a card.
     handle.send(Command::SetPmAccepts { squad: "acme".into(), on: false });
     until(&mut events, |e| matches!(e, Event::PmAcceptsChanged { on: false, .. })).await;
-    let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Pricing done." })).await;
+    let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Pricing done.", "changes_screens": false })).await;
     assert!(!handed.is_error, "{handed:?}");
     until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.status == TicketStatus::Review)).await;
     let kept = tool(&handle, "pm", "accept_work", json!({ "tickets": [2], "checked": "fine" })).await;
@@ -262,7 +299,7 @@ async fn the_persons_words_raise_the_card_a_no_keeps_it_as_it_is_and_the_board_s
     let seen = until(&mut events, |e| matches!(e, Event::AcceptClosed { .. })).await;
     assert!(matches!(seen.last(), Some(Event::AcceptClosed { id, confirmed: false, .. }) if *id == back.id), "{seen:#?}");
     // Confirmed late, from a screen that hadn't heard: nothing is sent back.
-    handle.send(Command::ConfirmAccept { squad: "acme".into(), id: back.id, tickets: vec![Confirmed::only(1)] });
+    handle.send(Command::ConfirmAccept { squad: "acme".into(), id: back.id, tickets: vec![Confirmed::only(1)], said: None });
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(status(&handle, 1).await, TicketStatus::Done);
     handle.shutdown().await;
@@ -271,13 +308,15 @@ async fn the_persons_words_raise_the_card_a_no_keeps_it_as_it_is_and_the_board_s
 /// The guarantee, in the code itself: the daemon accepts a ticket only for
 /// [`Command::Accept`] (or the person's own move to done on the board), merges
 /// only for [`Command::Merge`], sends back only for [`Command::Reopen`] (or
-/// their move back) — and the only other place those commands are sent is the
-/// person's [`Command::ConfirmAccept`]. No tool, and no reading of anyone's
-/// words, reaches any of it.
+/// their move back) — and the only other places those commands are sent are
+/// the person's [`Command::ConfirmAccept`] and the person's own words in a
+/// [`Command::Say`] (`by_words`: low risk after its undo window, the rest only
+/// read back and confirmed by their next own message, in "all by words"). No
+/// tool, and no reading of a member's words, reaches any of it.
 #[test]
 fn nothing_accepts_or_merges_but_the_persons_commands() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut files = vec![src.join("runtime.rs")];
+    let mut files = vec![src.join("runtime.rs"), src.join("by_words.rs")];
     files.extend(std::fs::read_dir(src.join("runtime")).unwrap().flatten().map(|e| e.path()));
     files.sort();
     let watched = ["self.accept(", "self.merge(", "self.reopen(", "end_work(id, WorkEnd::Accepted)", "TicketStatus::Done)", "Command::Accept {", "Command::Merge {", "Command::Reopen {", "confirm_accept("];
@@ -302,18 +341,24 @@ fn nothing_accepts_or_merges_but_the_persons_commands() {
             // The PM's `accept_work`, only while the person lets the PM accept (`SetPmAccepts`).
             "accept.rs: Box::pin(self.accept(squad, ticket, crate::telemetry::Accepter::Pm)).await;",
             "accept.rs: self.merge(squad, ticket, push);",
-            "accept.rs: pub(super) async fn confirm_accept(&mut self, squad: &str, id: u64, picked: Vec<Confirmed>) {",
+            "accept.rs: pub(super) async fn confirm_accept(&mut self, squad: &str, id: u64, picked: Vec<Confirmed>, said: Option<equipe_protocol::by_words::Said>) {",
             "accept.rs: Box::pin(self.handle(Command::Reopen { squad, ticket, note: proposal.note.clone() })).await;",
             "accept.rs: Box::pin(self.handle(Command::Accept { squad: squad.clone(), ticket })).await;",
             "accept.rs: Box::pin(self.handle(Command::Merge { squad, ticket, push: land == Land::Push })).await;",
+            // The PM's `change_setting` merge: always on a card, done by the daemon on the person's tap.
+            "controls.rs: Change::Merge { ticket, push } => Command::Merge { squad: squad_name, ticket, push },",
             "runtime.rs: Command::Accept { squad, ticket } => self.accept(&squad, ticket, crate::telemetry::Accepter::Person).await,",
             "runtime.rs: Command::Merge { squad, ticket, push } => self.merge(&squad, ticket, push),",
             "runtime.rs: Command::Reopen { squad, ticket, note } => self.reopen(&squad, ticket, note).await,",
-            "runtime.rs: Command::ConfirmAccept { squad, id, tickets } => self.confirm_accept(&squad, id, tickets).await,",
+            "runtime.rs: Command::ConfirmAccept { squad, id, tickets, said } => self.confirm_accept(&squad, id, tickets, said).await,",
             "runtime.rs: self.end_work(id, WorkEnd::Accepted);",
             "runtime.rs: None => self.close_ticket(squad, found, TicketStatus::Done),",
             "tickets.rs: board::Move::Accept => self.accept(squad, id, crate::telemetry::Accepter::Person).await,",
             "tickets.rs: board::Move::SendBack => self.reopen(squad, id, String::new()).await,",
+            // The person's own words (`Say`), as their card's buttons would: run by `runtime/words.rs` only.
+            "by_words.rs: Verb::Accept => vec![Command::Accept { squad, ticket }],",
+            "by_words.rs: out.push(Command::Accept { squad: squad.clone(), ticket });",
+            "by_words.rs: out.push(Command::Merge { squad, ticket, push });",
     ];
     expected.sort();
     assert_eq!(found, expected, "accepting, merging and sending back run only on the person's commands — and the PM's accept_work they allow");

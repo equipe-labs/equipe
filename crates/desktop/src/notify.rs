@@ -11,13 +11,17 @@
 //!   cards say it. The delegate keeps the rule too (`willPresent`). But a
 //!   browser waiting for the person's hands (a sign-in, a handed browser) is
 //!   told in sight too, unless that page is on screen.
-//! - Only the kinds the person wants (settings ▸ 일반 ▸ 알림).
+//! - Only the kinds the person wants (settings ▸ General ▸ Notifications).
 //! - Permission is asked when it is first useful — the first thing worth
 //!   telling, or a switch turned on — with a sheet saying why first, then
 //!   macOS's own question.
 //! - Driven by what the window hears from the daemon, so a window onto another
 //!   Mac's daemon over SSH tells the person on *this* Mac; the daemon never
 //!   shows a notification itself.
+//! - With several windows, each machine's squad is told once, by the first
+//!   window on it (`windows.rs`); the notice carries that squad's *route*, so
+//!   a click goes back to its window, and "in sight" means a window showing
+//!   that very squad is in front.
 
 use std::cell::Cell;
 
@@ -64,6 +68,11 @@ pub enum Alert {
 }
 
 impl Alert {
+    /// The app's own, not a squad's (an update): told once, by the app's first window.
+    pub fn is_the_apps(&self) -> bool {
+        matches!(self, Alert::UpdateFound { .. } | Alert::Update { .. })
+    }
+
     /// News rather than something waiting: told one by one, never folded into
     /// "n things wait for you".
     fn is_news(&self) -> bool {
@@ -71,7 +80,7 @@ impl Alert {
     }
 }
 
-/// What the person wants to be told of (settings → 알림), kept with the
+/// What the person wants to be told of (settings → Notifications), kept with the
 /// window's other choices in `target.rs`.
 pub use crate::target::{Ping, Pings};
 
@@ -104,7 +113,7 @@ pub enum Go {
     /// The update's notice: with the update downloaded, a restart into it;
     /// before, the window, where the sidebar's pill follows the download.
     Update,
-    /// The update notice's "다시 시작": install the downloaded update now.
+    /// The update notice's "Restart": install the downloaded update now.
     Relaunch,
 }
 
@@ -140,12 +149,53 @@ impl Go {
 pub const ACTION_RELAUNCH: &str = "relaunch";
 /// Every other notice's button.
 pub const ACTION_OPEN: &str = "open";
-/// The notices that carry "열기", and the update's that carries "다시 시작".
+/// The notices that carry "Open", and the update's that carries "Restart".
 pub const CATEGORY_OPEN: &str = "equipe.open";
 pub const CATEGORY_UPDATE: &str = "equipe.update";
 
 /// Where a click goes: `id`, the notice's identifier; `action`, which of its
 /// buttons (or the notice itself, or a dismissal).
+/// A click on a notice: where it goes, and the route of the squad it came
+/// from (none: the app's own, or one from before routes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Click {
+    pub go: Go,
+    pub route: Option<u64>,
+}
+
+/// The route a notice's identifier carries (`member:4|7|r1f…`).
+pub fn route_of(id: &str) -> Option<u64> {
+    id.split('|').find_map(|part| part.strip_prefix('r')).and_then(|hex| u64::from_str_radix(hex, 16).ok())
+}
+
+/// The window in front shows the squad of `route` (0: no window in front).
+static IN_SIGHT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A window showing `route`'s squad came to the front (or left it).
+pub fn set_in_sight(route: u64, active: bool) {
+    use std::sync::atomic::Ordering;
+    if active {
+        IN_SIGHT.store(route, Ordering::Relaxed);
+    } else {
+        // Only its own: the window coming forward may have said so first.
+        let _ = IN_SIGHT.compare_exchange(route, 0, Ordering::Relaxed, Ordering::Relaxed);
+    }
+}
+
+/// Whether a notice from `route` (none: the app's own) would tell what is
+/// in sight already.
+pub fn in_sight(route: Option<u64>) -> bool {
+    let front = IN_SIGHT.load(std::sync::atomic::Ordering::Relaxed);
+    front != 0 && route.is_none_or(|r| r == front)
+}
+
+/// Whether macOS should show notice `id` as a banner when it arrives with
+/// the app in front: not when a window shows what it says already — but a
+/// browser waiting for the person's hands always.
+pub fn shows_banner(id: &str) -> bool {
+    id.starts_with("browser:") || !in_sight(route_of(id))
+}
+
 pub fn clicked(id: &str, action: &str) -> Option<Go> {
     if action == ACTION_RELAUNCH {
         return Some(Go::Relaunch);
@@ -173,6 +223,14 @@ impl Toast {
         match self.go {
             Go::Update => "update|0".into(),
             go => format!("{}|{n}", go.code()),
+        }
+    }
+
+    /// The identifier, with the route of the squad it is from.
+    pub fn routed_id(&self, n: u64, route: Option<u64>) -> String {
+        match route {
+            Some(route) => format!("{}|r{route:x}", self.request_id(n)),
+            None => self.request_id(n),
         }
     }
 
@@ -284,7 +342,8 @@ pub fn reply_line(entries: &[Entry]) -> Option<String> {
                     return Some(line);
                 }
             }
-            Entry::User { .. } => return None,
+            // A background task ending is the engine's word, not the person's.
+            Entry::User { text, .. } if !equipe_core::protocol::harness::only_harness(text) => return None,
             _ => {}
         }
     }
@@ -378,7 +437,7 @@ impl Permission {
 
 /// Whether to show the sheet that says why equipe asks to notify, now that
 /// there is something worth telling: never asked, and the person didn't say
-/// "나중에" already.
+/// "Not Now" already.
 pub fn explain_now(permission: Permission, later: bool) -> bool {
     permission == Permission::NotAsked && !later
 }
@@ -396,8 +455,6 @@ pub struct Bell {
     pub sheet: bool,
     /// The conversation the person last wrote in, until its answer is told.
     pub awaiting: Cell<Option<SessionId>>,
-    /// What the Dock shows now (`None`: no number), once set.
-    pub badge: Option<Option<usize>>,
 }
 
 /// A line to say when the daemon runs an older release than this app, else `None`.
@@ -446,15 +503,20 @@ pub fn ask() {
 
 /// Show `toast`, with the system's sound or silently. Nothing when macOS
 /// doesn't allow it — the badge and the window's cards still say it.
-pub fn send(toast: &Toast, sound: bool) {
+/// `route`: the squad it is from, for the click to come back to its window.
+pub fn send(toast: &Toast, route: Option<u64>, sound: bool) {
+    // The real view tells nobody anything: the person's own app does.
+    if crate::readonly::on() {
+        return;
+    }
     #[cfg(target_os = "macos")]
-    system::send(toast, sound);
+    system::send(toast, route, sound);
     #[cfg(not(target_os = "macos"))]
-    let _ = (toast, sound);
+    let _ = (toast, route, sound);
 }
 
 /// Where clicks go: sent to `to`, from now on (and those that came before, at once).
-pub fn follow_clicks(to: tokio::sync::mpsc::UnboundedSender<Go>) {
+pub fn follow_clicks(to: tokio::sync::mpsc::UnboundedSender<Click>) {
     #[cfg(target_os = "macos")]
     system::follow_clicks(to);
     #[cfg(not(target_os = "macos"))]
@@ -480,17 +542,11 @@ pub fn update_alert(now: &crate::relaunch::Update, told: &mut Vec<String>) -> Op
     Some(alert)
 }
 
-/// Whether the window is in front of the person now: then a notice that
-/// arrives anyway (a race) isn't shown as a banner.
-pub fn set_in_sight(in_sight: bool) {
-    #[cfg(target_os = "macos")]
-    system::set_in_sight(in_sight);
-    #[cfg(not(target_os = "macos"))]
-    let _ = in_sight;
-}
-
 /// The number on the Dock's icon; `None` takes it off.
 pub fn set_badge(count: Option<usize>) {
+    if crate::readonly::on() {
+        return;
+    }
     #[cfg(target_os = "macos")]
     system::set_badge(count);
     #[cfg(not(target_os = "macos"))]
@@ -535,7 +591,7 @@ mod tests {
     #[test]
     fn a_decision_says_who_asks_and_how_many_and_opens_their_conversation() {
         let t = toasts(&[Alert::Decision { session: 3, member: "backend".into(), count: 2 }], "acme", true);
-        assert_eq!((t[0].title.as_str(), t[0].body.as_str(), t[0].go), ("backend이(가) 2가지 결정을 기다려요", "acme", Go::Member(3)));
+        assert_eq!((t[0].title.as_str(), t[0].body.as_str(), t[0].go), ("backend가 2가지 결정을 기다려요", "acme", Go::Member(3)));
     }
 
     #[test]
@@ -560,7 +616,7 @@ mod tests {
         let alerts = vec![ask("Bash", "a"), ask("Bash", "b"), Alert::Waiting { ticket: 3, by: None }, Alert::Review { ticket: 4, title: "t".into(), by: None, project: None }];
         let t = toasts(&alerts, "acme", true);
         assert_eq!(t.len(), 1);
-        assert_eq!(t[0].title, "acme에서 4건이 당신을 기다려요");
+        assert_eq!(t[0].title, "acme에서 4건이 내 답을 기다려요");
         assert_eq!(t[0].body, "승인 2 · 리뷰 1 · 사람 대기 1");
         assert_eq!(t[0].go, Go::Board);
         assert_eq!(t[0].thread, "squad/acme");
@@ -596,11 +652,11 @@ mod tests {
         let why = "Umbriles Inc. 계정 소유자 Apple ID로 로그인해 주세요";
         let handed = |check| Alert::Browser { page: 7, session: Some(1), member: "pm".into(), site: "idmsa.apple.com".into(), check, why: Some(why.into()) };
         let t = toasts(&[handed(Some(HumanCheck::SignIn))], "acme", true);
-        assert_eq!(t[0].title, "pm이(가) 브라우저에서 로그인을 기다려요");
+        assert_eq!(t[0].title, "pm이 브라우저에서 로그인을 기다려요");
         assert_eq!(t[0].body, "idmsa.apple.com · 눌러서 앱의 브라우저 패널에서 해 주세요 · acme");
         assert_eq!(t[0].go, Go::Browser(7), "a click opens the panel on that tab");
         let t = toasts(&[handed(None)], "acme", true);
-        assert_eq!(t[0].title, "pm이(가) 브라우저에서 기다려요");
+        assert_eq!(t[0].title, "pm이 브라우저에서 기다려요");
         assert!(!t[0].body.contains("Umbriles"));
     }
 
@@ -658,19 +714,48 @@ mod tests {
     }
 
     #[test]
+    fn a_notice_carries_its_squads_route_back_and_is_quiet_only_where_that_squad_shows() {
+        let toast = Toast { title: String::new(), body: String::new(), go: Go::Member(4), thread: String::new() };
+        let id = toast.routed_id(7, Some(0xab12));
+        assert_eq!(id, "member:4|7|rab12");
+        assert_eq!((clicked(&id, ACTION_OPEN), route_of(&id)), (Some(Go::Member(4)), Some(0xab12)));
+        assert_eq!(route_of(&toast.request_id(7)), None, "one from before routes");
+        let update = Toast { go: Go::Update, ..toast };
+        assert_eq!(update.routed_id(1, None), "update|0", "the app's own replaces the older, whichever window");
+
+        // No window in front: every notice shows.
+        set_in_sight(0xab12, false);
+        assert!(shows_banner(&id) && shows_banner("update|0"));
+        // A window on that squad in front: its notice would say what shows.
+        set_in_sight(0xab12, true);
+        assert!(!shows_banner(&id) && !shows_banner("update|0"));
+        // A window on another machine's squad in front: this one's still shows.
+        set_in_sight(0xcd34, true);
+        assert!(shows_banner(&id), "the person is looking at another squad");
+        set_in_sight(0xab12, false);
+        assert!(in_sight(Some(0xcd34)), "the window going back said nothing about the one in front");
+        assert!(shows_banner("browser:9|1|rcd34"), "hands wanted: always shown");
+        set_in_sight(0xcd34, false);
+        assert!(!in_sight(None));
+        assert!(Alert::Update { version: "1".into() }.is_the_apps() && !Alert::Waiting { ticket: 1, by: None }.is_the_apps());
+    }
+
+    #[test]
     fn a_reply_is_its_first_line_of_prose_cut_short() {
-        let said = |text: &str| vec![Entry::User { text: "고쳐 줘".into() }, Entry::Reply { text: text.into() }];
+        let said = |text: &str| vec![Entry::User { text: "고쳐 줘".into(), kept: Vec::new() }, Entry::Reply { text: text.into() }];
         assert_eq!(reply_line(&said("## **끝났어요.** 테스트도 통과\n자세히는…")), Some("끝났어요. 테스트도 통과".into()));
         assert_eq!(reply_line(&said("```sh\nrm -rf /tmp/x\n```\n\n- `main`에 올렸어요")), Some("main에 올렸어요".into()), "never a code block");
         let long = "가".repeat(300);
         let line = reply_line(&said(&long)).unwrap();
         assert_eq!(line.chars().count(), LINE_MAX);
         assert!(line.ends_with('…'));
-        assert_eq!(reply_line(&[Entry::Reply { text: "old".into() }, Entry::User { text: "new".into() }]), None, "the person spoke last");
+        assert_eq!(reply_line(&[Entry::Reply { text: "old".into() }, Entry::User { text: "new".into(), kept: Vec::new() }]), None, "the person spoke last");
+        let ended = Entry::User { text: "<task-notification><task-id>b1</task-id><status>completed</status></task-notification>".into(), kept: Vec::new() };
+        assert_eq!(reply_line(&[Entry::Reply { text: "Built it.".into() }, ended]), Some("Built it.".into()), "the engine's word, not the person's");
         // A turn's last answer is the one told; an empty one falls back.
-        let turn = vec![Entry::User { text: "q".into() }, Entry::Reply { text: "살펴볼게요".into() }, Entry::Reply { text: "다 됐어요".into() }];
+        let turn = vec![Entry::User { text: "q".into(), kept: Vec::new() }, Entry::Reply { text: "살펴볼게요".into() }, Entry::Reply { text: "다 됐어요".into() }];
         assert_eq!(reply_line(&turn), Some("다 됐어요".into()));
-        let turn = vec![Entry::User { text: "q".into() }, Entry::Reply { text: "살펴볼게요".into() }, Entry::Reply { text: "```\nx\n```".into() }];
+        let turn = vec![Entry::User { text: "q".into(), kept: Vec::new() }, Entry::Reply { text: "살펴볼게요".into() }, Entry::Reply { text: "```\nx\n```".into() }];
         assert_eq!(reply_line(&turn), Some("살펴볼게요".into()));
     }
 

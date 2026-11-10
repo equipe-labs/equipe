@@ -36,7 +36,7 @@ fn waiting() -> &'static std::sync::Mutex<Vec<TeamChange>> {
             engine: None,
             model: None,
             effort: None,
-            reason: "frontend가 T-47 갤러리에 몇 시간 더 걸려서, 앱 쪽 T-61이 계속 밀리고 있어요. 한 명 더 있으면 바로 시작할 수 있어요.".into(),
+            reason: "frontend needs a few more hours on the T-47 gallery, so T-61 on the app keeps slipping. One more person could start on it now.".into(),
             unblocks: vec![61],
             by: "pm".into(),
             session: PM,
@@ -49,7 +49,7 @@ fn waiting() -> &'static std::sync::Mutex<Vec<TeamChange>> {
                 change: Change::Remove,
                 role: "designer".into(),
                 member: Some("designer".into()),
-                reason: "온보딩 시안이 끝나면 디자인 일이 당분간 없어요.".into(),
+                reason: "Once the onboarding drafts are done there's no design work for a while.".into(),
                 unblocks: vec![],
                 busy_on: Some(60),
                 ..add
@@ -104,17 +104,17 @@ fn decide(id: u64, approve: bool, events: &broadcast::Sender<Event>) {
                 squad: Some(squad()),
             });
             members.push(name.clone());
-            format!("팀에 {name}을(를) 추가했어요")
+            format!("Added {name} to the team")
         }
         (true, Change::Remove) => {
             let name = change.member.clone().unwrap_or_default();
             let _ = events.send(Event::SessionClosed { session: 4 });
             members.push(name.clone());
-            format!("{name}을(를) 팀에서 내보냈어요")
+            format!("Removed {name} from the team")
         }
-        (false, Change::Add) => format!("팀 변경 제안을 거절했어요 · {} {}명 추가", change.role, change.count),
-        (false, Change::Remove) => format!("팀 변경 제안을 거절했어요 · {} 내보내기", change.member.clone().unwrap_or_default()),
+        (false, Change::Add) => format!("Declined the team change · add {} {}", change.count, change.role),
+        (false, Change::Remove) => format!("Declined the team change · remove {}", change.member.clone().unwrap_or_default()),
     };
     let _ = events.send(Event::TeamChangeClosed { squad: squad(), id, approved: approve, members });
-    let _ = events.send(Event::Notice { session: PM, text });
+    let _ = events.send(Event::Notice { undo: None, session: PM, text });
 }

@@ -1,4 +1,23 @@
 {
+  "match.accept": "accept|approuv|valide|validé|valider",
+  "match.all_starts": "",
+  "match.all_words": "tout|tous|toutes",
+  "match.allow": "autorise|autoriser|approuve|approuver|permets",
+  "match.always": "toujours|désormais|à chaque fois|dorénavant",
   "match.answers": "dites|indiquez|choisissez|donnez|quel|quand",
-  "match.confirms": "vérifi|confirme|valide|c'est bon"
+  "match.branch": "sur sa branche|sur la branche",
+  "match.cancel": "annule|annuler|arrête|attends",
+  "match.confirms": "vérifi|confirme|valide|c'est bon",
+  "match.idea": "idée",
+  "match.merge": "fusion",
+  "match.no": "non|pas|ne|n'|jamais|attends|attendez|arrête|arrêtez|annule|annuler|plus tard",
+  "match.number": "",
+  "match.push": "pousse|pousser",
+  "match.recommended": "recommandé|recommandée",
+  "match.run": "lance|exécute|lancer|exécuter",
+  "match.take_on": "prends|prendre en charge|commence",
+  "match.undo": "défais|défaire|reviens en arrière|annule",
+  "match.unsure": " pas|n'|attends|attendez|plus tard|si |sauf",
+  "match.yes": "oui|ouais|d'accord|daccord|vas-y|allez|allez-y|parfait|confirme|confirmé|bien|entendu|valide|validé|carrément",
+  "match.yes_with": "s'il|te|vous|plaît|plait|merci|c'est|bon|maintenant|alors|tout|les|deux|sûr"
 }

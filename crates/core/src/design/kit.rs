@@ -15,7 +15,7 @@ use crate::protocol::design::Token;
 const BRAND: &str = include_str!("../../assets/design/brand.md");
 const GUIDELINES: &str = include_str!("../../assets/design/guidelines.md");
 const TOKENS: &str = include_str!("../../assets/design/tokens.json");
-const TASTE: &str = include_str!("../../assets/design/taste.md");
+const TASTE: &str = crate::taste::store::TEMPLATE;
 
 /// Lay out `dir` to fill in: only what isn't there yet. What was written.
 pub fn init(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
@@ -97,7 +97,9 @@ fn font_links(tokens: &[Token]) -> String {
             names.push(first);
         }
     }
-    let system = ["system-ui", "-apple-system", "sans-serif", "serif", "monospace", "apple sd gothic neo", "sf pro", "helvetica", "arial", "menlo"];
+    let system = [
+        "system-ui", "-apple-system", "sans-serif", "serif", "monospace", "sf pro", "helvetica", "arial", "menlo", "segoe ui", "apple sd gothic neo", "hiragino", "pingfang", "yu gothic", "meiryo", "malgun", "microsoft yahei",
+    ];
     let mut links = String::new();
     for name in names {
         let lower = name.to_ascii_lowercase();
@@ -370,8 +372,9 @@ mod tests {
         assert!(html.contains("<h1>Atinum &lt;draft&gt;</h1>"), "the title escaped");
         assert!(html.contains("--color-text-primary:"), "every token a CSS variable");
         assert!(html.contains(&format!(">{}</div>", words.get("kit.dark"))), "dark beside light");
-        assert!(html.contains("pretendard"), "Pretendard's web font linked");
-        assert!(html.contains("<html lang=\"ko\">") && html.contains(words.get("kit.type_sample")), "type set in Korean");
+        assert!(html.contains("family=Noto+Sans:"), "Noto Sans's web font linked");
+        assert!(!html.contains("system-ui:wght"), "a system family needs none");
+        assert!(html.contains("<html lang=\"ko\">") && html.contains(words.get("kit.type_sample")), "type set in the language asked for");
         assert!(specimen(&parsed.tokens, &parsed.modes, "Atinum", Lang::En).contains("<html lang=\"en\">"));
         // The page's roles, not a component's: the button's white text isn't the page's text.
         assert!(html.contains("--s-text:#16161A;"), "{}", &html[html.find("--s-bg").unwrap()..][..400]);

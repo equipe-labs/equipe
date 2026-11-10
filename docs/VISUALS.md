@@ -75,7 +75,14 @@ where a card doesn't draw, a screen shows the block as code, like any other.
   them (`color: var(--fg)`); a card may also use `@media (prefers-color-scheme: dark)`.
 - As wide as the column (at most 640 CSS pixels), as tall as its content; a screen may cut it
   off past 1200 pixels with a "more" that shows the source.
-- Links are shown as text; a screen never follows one from inside a card.
+- Links are shown as text; a screen never follows one from inside a card. An `<a>` or
+  `<area>` (HTML's or SVG's) has no `href`, or one that is a place in the card (`#…`): anything
+  else — `http(s):`, `//`, `file:`, `javascript:`, `data:`, a relative path, an empty `href`,
+  one spelled with entities (`&#104;ttp…`) or whatever a browser strips around a URL — and any
+  `target` or `download` fails the check (T-357). The check reads every `<` and a letter as a
+  tag, inside a comment, a `<style>` or an attribute's value too, so a tag a browser finds where
+  an eye wouldn't (after `--!>`, past a `</style>` a quote seemed to hold) is read as well. The
+  card's page opened in the browser panel goes nowhere by click or key.
 
 ## Who draws what
 
@@ -98,6 +105,15 @@ Chinese labels draw).
 
 Drawn files are kept in the squad's folder of the daemon's: `~/.equipe/squads/<squad>/visuals/
 <key>-light.png` and `<key>-dark.png`. A key drawn before is read back, not drawn again.
+
+**The cache has a quota**: at most 1000 keys and 256 MiB in a squad's `visuals/`. After each
+reply's drawing the daemon brings it back within both, the keys used longest ago first — a key's
+PNGs and its card page go together, never half of one. "Used" is a file's modified time: set as
+it is drawn, again as it is read back for a later reply and as a screen reads it (`read_image`).
+Never cleaned: a key in the last 200 lines of any open conversation of the squad (what a snapshot
+lists) or just drawn — these stay even past the quota. A `.part` left by a drawing that never
+finished goes after a minute; files not named like ours are left alone. A screen that asks for a
+file that went gets `no such file` and shows the source ([Showing it](#showing-it-and-when-it-fails), 3).
 
 Then every screen following the squad gets one event per reply that had a block drawn:
 
@@ -155,8 +171,21 @@ picture** — Google Chrome, Chrome for Testing or Chromium where they are insta
   `@import`, fonts, `fetch`, frames and a refresh from a server of their own reaches neither it
   nor the proxy, and a page without the CSP doesn't either.
 - **Bounded.** 10 seconds per picture, then Chrome and all it started are killed (its process
-  group) and nothing is drawn. A window of 640×1200 CSS pixels at 2×: the PNG is cut to the
+  group) and nothing is drawn. **At most 2 Chromes at once in the whole daemon**, whatever the
+  number of sessions and replies: a drawing waits for one. **A reply** draws at most 4 new cards
+  (cards drawn before are read back and not counted), all in at most **30 seconds**, waiting for a
+  Chrome included: nothing is started past it, a Chrome running then is killed at it. If 8
+  replies are waiting for a Chrome already, the next draws no card. Whatever is past these shows
+  its source, like any card that didn't draw (the daemon's log says how many). A window of 640×1200 CSS pixels at 2×: the PNG is cut to the
   card's height, and what is below 1200 pixels is cut off.
+- **Chrome's first start.** On a machine just booted, Chrome's first start reads its few hundred
+  megabytes cold and can take far past 10 seconds (28 s against 0.3 s warm, measured on Ubuntu
+  24.04). So while cards are on and a Chrome is found, the daemon draws one throwaway card as it
+  starts, on a thread of its own (never on its loop), with one of the 2 Chromes and up to
+  **120 seconds**, the same way as any card: its own throwaway profile, no network, its process
+  group killed after. Until a Chrome has drawn once — that warm-up still going, or none run — a
+  drawing gets 120 seconds instead of 10, and a reply 30 + 120 seconds. On every platform: on
+  one already warm it costs a fraction of a second.
 - Light and dark: the page is set to `data-theme="light"`/`"dark"` (the tokens' own switch) and,
   for dark, Chrome's `--force-dark-mode`, so a card's `prefers-color-scheme: dark` holds too. The
   ground around the card's rounded corners is transparent.
@@ -175,6 +204,12 @@ same frame and CSP, without a fixed tone (it follows the screen's). A screen get
 The desktop shows the card's PNG; clicking it opens the page in equipe's browser panel as a
 `data:text/html;base64,<data>` URL (the panel opens `data:` URLs but not `file://` ones, and
 the desktop may be on another Mac). The CSP inside still holds there: nothing runs or loads.
+And nothing in it leads elsewhere: its links only go to a place in it (the check), and a page
+kept under an older, looser contract isn't given out (`read_image` refuses it) or listed in a
+snapshot. A test opens a kept page in a real Chrome, as a `data:` URL and as its file, clicks
+everything in it — plain, ⌘, ⇧, middle — and Tabs through it pressing Enter and Space: its top
+frame never asks for another URL, no tab opens elsewhere, nothing reaches the network, while the
+same page with a link out, past the check, is seen to go (`card/tests/panel.rs`).
 
 ### Limits
 
@@ -183,7 +218,10 @@ the desktop may be on another Mac). The CSP inside still holds there: nothing ru
 | Source of one block | Mermaid: at most 20 000 bytes; a card: 32 KB; longer shows as source |
 | Blocks drawn per reply | the first 8 (by key, repeats once) |
 | Drawn size | 2×, at most 2048 pixels on the longer side; a card 1280 wide, at most 2400 high |
-| Drawing a card | 10 s, then Chrome is killed |
+| Drawing a card | 10 s, then Chrome is killed (120 s until a Chrome has drawn once since the daemon started) |
+| Chromes at once | 2, the whole daemon; 8 replies waiting at most, the next draws no card |
+| New cards per reply | 4, in 30 s all together (waiting included); the rest show their source |
+| A squad's `visuals/` | 1000 keys and 256 MiB, used longest ago go first; what an open conversation shows stays |
 | One PNG | at most 4 MiB, else not kept and not told |
 | To a phone | ≤ 720 px a side, and one relay frame |
 
@@ -218,8 +256,12 @@ visuals, as before.
 - `crates/core/src/visuals/diagram.rs` — finding blocks, keys, the themes, Mermaid → SVG → PNG,
   the cache, what a snapshot lists.
 - `crates/core/src/visuals/card.rs` — HTML cards: finding them, the check, the page, Chrome,
-  the cache, `enabled`. Its tests draw the three templates and try to reach out.
-- `crates/core/src/runtime.rs` — `draw_visuals`: drawn off the loop as a reply line closes.
+  the cache, `enabled`, the Chromes at once and a reply's `Budget`. Its tests draw the three
+  templates, try to reach out, and end many sessions' replies of new cards at once against a
+  stand-in Chrome (Chromes at once, each reply's time, the cache after).
+- `crates/core/src/visuals/cache.rs` — a squad's `visuals/` within its quota (`prune`, `touch`).
+- `crates/core/src/runtime.rs` — `draw_visuals`: drawn off the loop as a reply line closes,
+  then the cache pruned, keeping what the squad's open conversations show.
 - `crates/core/src/visuals.rs` — `serve_with`: a drawn diagram or card given by its path, a
   card's page as `text/html`.
 - `crates/protocol/src/lib.rs` — `Event::VisualsRendered`, `Rendered`, `RenderedImage`,

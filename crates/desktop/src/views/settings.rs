@@ -1,5 +1,5 @@
 //! Settings (⌘,, or the gear at the sidebar's foot): a page in the window,
-//! as Linear's and Codex's. Its own list takes the sidebar's place — 돌아가기,
+//! as Linear's and Codex's. Its own list takes the sidebar's place — Back,
 //! a search that filters every row, the categories — and the page shows the
 //! one picked. Rows are a label and a muted line on the left and the control
 //! on the right, in rounded cards under short headers. A change applies at
@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use equipe_core::i18n::{Front, Lang};
-use equipe_core::protocol::{Command, Mode, SessionId};
+use equipe_core::protocol::{Command, Engine, EngineState, Mode, RoleModel, SessionId};
 use equipe_core::t;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{h_flex, v_flex};
@@ -28,7 +28,7 @@ use crate::notify::{Permission, Ping};
 use crate::settings::{self as rules, Category};
 use crate::state::Conn;
 use crate::target::{Endpoint, Start};
-use crate::theme::{Appearance, CONTROL, ICON, ICON_SM, MONO, Palette, R_LG, R_MD, R_SM, ROW, SMALL, Sans, UI, look};
+use crate::theme::{Appearance, CONTROL, ICON, ICON_SM, MONO, Palette, R_LG, R_MD, R_SM, ROW, SMALL, Sans, UI};
 use crate::tips::TipExt as _;
 use crate::ui::{self, Kind};
 use crate::{Screen, Shell};
@@ -50,6 +50,13 @@ pub enum Pop {
     Model(SessionId),
     Effort(SessionId),
     Mode(SessionId),
+    /// What new members of a role start with: its model, its effort.
+    RoleModel(&'static str),
+    RoleEffort(&'static str),
+    /// How many subagents each member runs at once.
+    Subagents,
+    /// The model providers to connect (Settings › AI platforms).
+    AddProvider,
 }
 
 /// What a pop-up's row does.
@@ -61,6 +68,13 @@ enum Act {
     Model(SessionId, String),
     Effort(SessionId, Option<String>),
     Mode(SessionId, Option<Mode>),
+    /// A role's default on an engine (`None`: the recommendation again).
+    RoleModel(&'static str, Engine, Option<String>),
+    RoleEffort(&'static str, Engine, Option<String>),
+    /// Subagents at once (`None`: each engine's own).
+    Subagents(Option<u32>),
+    /// A provider's form opened, by its preset.
+    AddProvider(&'static str),
 }
 
 pub struct SettingsUi {
@@ -76,15 +90,22 @@ pub struct SettingsUi {
     pub scroll: ScrollHandle,
     /// The AI platforms' buttons, for Tab (`super::engines::KEYS` a card).
     pub engine_keys: Vec<FocusHandle>,
-    /// 계정's form and second clicks.
+    /// Accounts' form and second clicks.
     pub accounts: super::accounts::AccountsUi,
-    /// The Nebius card's key box (masked; emptied once sent), what's wrong
-    /// with what was pasted, and the second click to remove the key.
+    /// A provider's key box (masked; emptied once sent): Nebius's before
+    /// there was a list, its name kept for the snapshot's `nebiuskey:`.
     pub nebius_key: Entity<InputState>,
-    pub nebius_problem: Option<String>,
-    pub nebius_forgetting: bool,
+    /// The provider being connected (its preset), its form's base URL box
+    /// (the key's is `nebius_key`), what's wrong with what was typed, and
+    /// the provider a second click removes.
+    pub adding: Option<&'static str>,
+    pub provider_url: Entity<InputState>,
+    pub provider_problem: Option<String>,
+    pub provider_removing: Option<String>,
     /// Apple's servers for dictation, asked about: what goes where, and a yes.
     pub dictation_consent: bool,
+    /// "All by words", asked about before it is on: what changes, and a yes.
+    pub words_consent: bool,
 }
 
 impl SettingsUi {
@@ -100,9 +121,12 @@ impl SettingsUi {
             engine_keys: (0..crate::engines::PLATFORMS.len() * super::engines::KEYS).map(|_| cx.focus_handle().tab_stop(true)).collect(),
             accounts: super::accounts::AccountsUi::new(window, cx),
             nebius_key: cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("engines.nebius_key_placeholder"))),
-            nebius_problem: None,
-            nebius_forgetting: false,
+            adding: None,
+            provider_url: cx.new(|cx| InputState::new(window, cx).placeholder(t!("engines.provider_url_placeholder"))),
+            provider_problem: None,
+            provider_removing: None,
             dictation_consent: false,
+            words_consent: false,
         }
     }
 
@@ -137,6 +161,12 @@ impl Line {
     pub(super) fn control(mut self, control: impl IntoElement) -> Self {
         self.control = Some(control.into_any_element());
         self
+    }
+
+    /// Its control a switch, called by the row's words.
+    pub(super) fn switch(self, shell: &Shell, id: &str, on: bool, enabled: bool, flip: impl Fn(&mut Shell, bool, &mut Window, &mut Context<Shell>) + 'static, cx: &mut Context<Shell>) -> Self {
+        let control = switch(shell, id, &self.text, on, enabled, flip, cx);
+        self.control(control)
     }
 
     pub(super) fn words(mut self, words: impl Into<String>) -> Self {
@@ -190,10 +220,12 @@ impl Section {
 
 // ── controls, on the app's tokens ──
 
-/// On or off: the app's switch (`ui::switch`), flipping a setting of the shell's.
-fn switch(shell: &Shell, id: &str, on: bool, enabled: bool, flip: impl Fn(&mut Shell, bool, &mut Window, &mut Context<Shell>) + 'static, cx: &mut Context<Shell>) -> AnyElement {
+/// On or off: the app's switch (`ui::switch`), flipping a setting of the
+/// shell's; `name` is what a screen reader calls it.
+pub(super) fn switch(shell: &Shell, id: &str, name: &str, on: bool, enabled: bool, flip: impl Fn(&mut Shell, bool, &mut Window, &mut Context<Shell>) + 'static, cx: &mut Context<Shell>) -> AnyElement {
     let handle = cx.entity().downgrade();
     ui::switch(shell.palette, format!("switch-{id}"), on)
+        .name(name.to_owned())
         .disabled(!enabled)
         .on_flip(move |on, window, cx| {
             handle
@@ -206,45 +238,112 @@ fn switch(shell: &Shell, id: &str, on: bool, enabled: bool, flip: impl Fn(&mut S
         .into_any_element()
 }
 
-/// A few fixed choices side by side, the one in use raised.
+/// A few fixed choices side by side, the one in use raised. One Tab stop (the
+/// one in use); ←/→ move the focus among the choices, Space/Enter pick it.
 pub(crate) fn segmented<T: Copy + PartialEq + 'static>(shell: &Shell, id: &str, options: Vec<(T, String)>, now: T, set: impl Fn(&mut Shell, T, &mut Window, &mut Context<Shell>) + 'static, cx: &mut Context<Shell>) -> AnyElement {
-    let p = shell.palette;
-    let set = Rc::new(set);
-    let raised = if p.is_dark() { p.side_sel } else { p.raised };
-    h_flex()
-        .flex_none()
-        .h(px(CONTROL))
-        .p(px(2.))
-        .gap(px(2.))
-        .rounded(px(R_MD))
-        .bg(if p.is_dark() { p.wash } else { p.code_bg })
-        .children(options.into_iter().enumerate().map(|(ix, (value, label))| {
-            let on = value == now;
-            let set = set.clone();
-            let seg = h_flex()
-                .id(SharedString::from(format!("{id}-{ix}")))
-                .h_full()
-                .px_3()
-                .items_center()
-                .rounded(px(R_SM))
-                .text_size(px(SMALL))
-                .whitespace_nowrap()
-                .text_color(if on { p.text } else { p.text2 })
-                .when(on, |s| s.bg(raised).shadow(motion::float_shadow(0.18)))
-                .when(!on, |s| s.cursor_pointer())
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    set(this, value, window, cx);
-                    cx.notify();
-                }))
-                // As wide picked as not: the pill doesn't shift under the pointer.
-                .child(ui::steady(label, FontWeight::MEDIUM, on, false));
-            if on { seg.into_any_element() } else { motion::hover_fill(seg, SharedString::from(format!("{id}-{ix}-fill")), p.wash, false).into_any_element() }
-        }))
-        .into_any_element()
+    let handle = cx.entity().downgrade();
+    let values: Vec<T> = options.iter().map(|(v, _)| *v).collect();
+    let on = values.iter().position(|v| *v == now);
+    let pick: Rc<dyn Fn(usize, &mut Window, &mut App)> = Rc::new(move |ix, window, cx| {
+        let Some(value) = values.get(ix).copied() else { return };
+        handle
+            .update(cx, |this, cx| {
+                set(this, value, window, cx);
+                cx.notify();
+            })
+            .ok();
+    });
+    Segmented { p: shell.palette, id: SharedString::from(id.to_owned()), labels: options.into_iter().map(|(_, l)| l).collect(), on, pick }.into_any_element()
+}
+
+#[derive(IntoElement)]
+struct Segmented {
+    p: Palette,
+    id: SharedString,
+    labels: Vec<String>,
+    on: Option<usize>,
+    pick: Rc<dyn Fn(usize, &mut Window, &mut App)>,
+}
+
+impl RenderOnce for Segmented {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = self.p;
+        let id = self.id;
+        let n = self.labels.len();
+        // The one in use is the Tab stop; with none in use, the first.
+        let stop = self.on.unwrap_or(0);
+        let handles: Vec<FocusHandle> = (0..n)
+            .map(|ix| window.use_keyed_state(SharedString::from(format!("{id}-{ix}-focus")), cx, |_, cx| cx.focus_handle()).read(cx).clone().tab_stop(ix == stop))
+            .collect();
+        let raised = if p.is_dark() { p.side_sel } else { p.raised };
+        let ring = Rgba { a: 0.55, ..p.accent };
+        // Under the ring's shadow the choice needs a fill of its own, or it shows through.
+        let track = if p.is_dark() { p.wash } else { p.code_bg };
+        let on_ix = self.on;
+        let pick = self.pick;
+        h_flex()
+            .id(SharedString::from(format!("{id}-group")))
+            .role(Role::RadioGroup)
+            .flex_none()
+            .h(px(CONTROL))
+            .p(px(2.))
+            .gap(px(2.))
+            .rounded(px(R_MD))
+            .bg(if p.is_dark() { p.wash } else { p.code_bg })
+            .children(self.labels.into_iter().enumerate().map(|(ix, label)| {
+                let on = on_ix == Some(ix);
+                let (click, keys) = (pick.clone(), pick.clone());
+                let (clicked, siblings) = (handles[ix].clone(), handles.clone());
+                let seg = h_flex()
+                    .id(SharedString::from(format!("{id}-{ix}")))
+                    .role(Role::RadioButton)
+                    .aria_label(label.clone())
+                    .aria_toggled(if on { Toggled::True } else { Toggled::False })
+                    .track_focus(&handles[ix])
+                    // The ring only when the keys moved here, as the web's :focus-visible.
+                    .focus_visible(move |s| s.shadow(vec![BoxShadow { color: ring.into(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(2.), inset: false }]))
+                    .h_full()
+                    .px_3()
+                    .items_center()
+                    .rounded(px(R_SM))
+                    .text_size(px(SMALL))
+                    .whitespace_nowrap()
+                    .text_color(if on { p.text } else { p.text2 })
+                    .when(on, |s| s.bg(raised).shadow(motion::float_shadow(0.18)))
+                    .when(!on, |s| s.bg(track).cursor_pointer())
+                    .on_click(move |_, window, cx| {
+                        clicked.focus(window, cx);
+                        click(ix, window, cx);
+                    })
+                    .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                        let k = &event.keystroke;
+                        if k.modifiers.modified() && !k.modifiers.shift {
+                            return;
+                        }
+                        match k.key.as_str() {
+                            "space" | "enter" if !k.modifiers.shift => keys(ix, window, cx),
+                            "left" | "up" if !k.modifiers.shift => siblings[(ix + n - 1) % n].focus(window, cx),
+                            "right" | "down" if !k.modifiers.shift => siblings[(ix + 1) % n].focus(window, cx),
+                            "home" => siblings[0].focus(window, cx),
+                            "end" => siblings[n - 1].focus(window, cx),
+                            // Leave the group from its one stop, not from a sibling.
+                            "tab" => {
+                                siblings[stop].focus(window, cx);
+                                if k.modifiers.shift { window.focus_prev(cx) } else { window.focus_next(cx) }
+                            }
+                            _ => return,
+                        }
+                        cx.stop_propagation();
+                    })
+                    // As wide picked as not: the pill doesn't shift under the pointer.
+                    .child(ui::steady(label, FontWeight::MEDIUM, on, false));
+                if on { seg.into_any_element() } else { motion::hover_fill(seg, SharedString::from(format!("{id}-{ix}-fill")), p.wash, false).into_any_element() }
+            }))
+    }
 }
 
 /// The window's size: − and + either side of it, as the segmented control's
-/// pill, and "실제 크기" beside it when it isn't (⌘+ / ⌘- / ⌘0 do the same).
+/// pill, and "Actual Size" beside it when it isn't (⌘+ / ⌘- / ⌘0 do the same).
 fn zoom_stepper(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     use crate::zoom::{self, Step};
     let p = shell.palette;
@@ -289,8 +388,20 @@ fn zoom_stepper(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .into_any_element()
 }
 
+/// The numbers "Subagents at once" offers besides each engine's own: one at
+/// a time near the bottom, where each makes a difference, wider above.
+const SUBAGENT_CHOICES: [u32; 15] = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50];
+
+/// "Engine default — Claude Code 20, Codex 6": what members run when the
+/// person hasn't set a number.
+fn subagents_engine_default() -> String {
+    use equipe_core::protocol::{CLAUDE_SUBAGENTS_AT_ONCE, CODEX_SUBAGENTS_AT_ONCE};
+    t!("settings.subagents_engine_default", claude = CLAUDE_SUBAGENTS_AT_ONCE, codex = CODEX_SUBAGENTS_AT_ONCE)
+}
+
 /// A pop-up button: what is chosen and ⌄; a click opens the list under it.
-fn picker(shell: &Shell, pop: Pop, label: String, min: f32, cx: &mut Context<Shell>) -> AnyElement {
+/// `name` is what it chooses, as a screen reader says it.
+pub(super) fn picker(shell: &Shell, pop: Pop, name: &str, label: String, min: f32, cx: &mut Context<Shell>) -> AnyElement {
     use gpui_kit::base::ElementExt as _;
     let p = shell.palette;
     let open = shell.settings.pop == Some(pop);
@@ -298,6 +409,10 @@ fn picker(shell: &Shell, pop: Pop, label: String, min: f32, cx: &mut Context<She
     let id = SharedString::from(format!("picker-{pop:?}"));
     let el = h_flex()
         .id(id.clone())
+        .role(Role::ComboBox)
+        .aria_label(name.to_owned())
+        .aria_value(label.clone())
+        .aria_expanded(open)
         .flex_none()
         .h(px(CONTROL))
         .min_w(px(min))
@@ -383,8 +498,8 @@ fn dictation_rows(shell: &Shell, language: Line, dictation: Line, appearance: Li
     let p = shell.palette;
     let on = shell.remembered.dictation_servers;
     let servers = Line::new(t!("settings.dictation_servers"), if on { t!("settings.dictation_servers_on") } else { t!("settings.dictation_servers_desc") })
-        .words("dictation voice speech apple server accuracy korean")
-        .control(switch(shell, "dictation-servers", on || shell.settings.dictation_consent, true, |this, on, window, cx| {
+        .words("dictation voice speech apple server accuracy mixed languages")
+        .switch(shell, "dictation-servers", on || shell.settings.dictation_consent, true, |this, on, window, cx| {
             if on {
                 this.settings.dictation_consent = true;
                 cx.notify();
@@ -392,7 +507,7 @@ fn dictation_rows(shell: &Shell, language: Line, dictation: Line, appearance: Li
                 this.settings.dictation_consent = false;
                 this.set_dictation_servers(false, window, cx);
             }
-        }, cx));
+        }, cx);
     let mut rows = vec![language, dictation, servers];
     // Asked before it is on: what leaves the Mac, and the person's yes.
     if shell.settings.dictation_consent && !on {
@@ -426,7 +541,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let p = shell.palette;
     let mut language = Line::new(t!("sidebar.language"), t!("settings.language_desc"))
         .words(Lang::ALL.iter().map(|l| l.native_name()).collect::<Vec<_>>().join(" ") + " language");
-    language.control = Some(picker(shell, Pop::Language, language_label(shell), 0., cx));
+    language.control = Some(picker(shell, Pop::Language, t!("sidebar.language"), language_label(shell), 0., cx));
     // Dictation's language, apart from the app's: what this Mac can hear on the device.
     let listening = shell.composer.listening;
     let dictation_label = match shell.remembered.dictation.as_deref().and_then(Lang::parse) {
@@ -442,7 +557,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             .gap_2()
             .items_center()
             .child(ui::button(p, "dictation-add", Kind::Ghost, t!("settings.dictation_add")).icon(Icon::External).on_click(|_, _, cx| cx.open_url(crate::dictation::SETTINGS_URL)))
-            .child(picker(shell, Pop::Dictation, dictation_label, 0., cx))
+            .child(picker(shell, Pop::Dictation, t!("settings.dictation"), dictation_label, 0., cx))
             .into_any_element(),
     );
     let looks = Appearance::ALL.into_iter().map(|a| (a, appearance_word(a).to_owned())).collect();
@@ -454,11 +569,11 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let start = Line::new(t!("settings.start"), t!("settings.start_desc")).words("launch").control(segmented(shell, "start", starts, shell.remembered.start, |this, s, _, _| this.set_start(s), cx));
     let follow = Line::new(t!("settings.follow_project"), t!("settings.follow_project_desc"))
         .words("project conversation slice filter")
-        .control(switch(shell, "follow-project", shell.chat.follow, true, |this, on, _, cx| this.set_follow_project(on, cx), cx));
+        .switch(shell, "follow-project", shell.chat.follow, true, |this, on, _, cx| this.set_follow_project(on, cx), cx);
 
     let pings = shell.remembered.pings;
     let ping = |ping: Ping, label: &'static str, desc: &'static str, cx: &mut Context<Shell>| {
-        Line::new(label, desc).words("notification").control(switch(shell, ping.code(), pings.get(ping), true, move |this, on, _, cx| this.set_ping(ping, on, cx), cx))
+        Line::new(label, desc).words("notification").switch(shell, ping.code(), pings.get(ping), true, move |this, on, _, cx| this.set_ping(ping, on, cx), cx)
     };
     // What macOS allows, first: nothing else here matters while it allows nothing.
     let permission = shell.bell.permission;
@@ -486,7 +601,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         ping(Ping::Sound, t!("settings.ping_sound"), t!("settings.ping_sound_desc"), cx),
         Line::new(t!("settings.ping_badge"), t!("settings.ping_badge_desc"))
             .words("dock badge count notification")
-            .control(switch(shell, Ping::Badge.code(), pings.badge, true, |this, on, _, _| this.set_badge_shown(on), cx)),
+            .switch(shell, Ping::Badge.code(), pings.badge, true, |this, on, _, _| this.set_badge_shown(on), cx),
     ];
     let telemetry = telemetry_line(shell, cx);
     vec![
@@ -498,7 +613,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     ]
 }
 
-/// "익명 사용 데이터": the switch (the daemon keeps it) and the page that lists every event.
+/// Anonymous usage data: the switch (the daemon keeps it) and the page that lists every event.
 fn telemetry_line(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Line> {
     let p = shell.palette;
     let status = shell.telemetry.status.as_ref();
@@ -508,8 +623,8 @@ fn telemetry_line(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Line> {
         None => t!("settings.telemetry_desc").to_owned(),
     };
     let send = Line::new(t!("settings.telemetry"), desc)
-        .words("telemetry analytics usage data anonymous 익명 사용 데이터")
-        .control(switch(shell, "telemetry", shell.telemetry.on(), connected && status.is_some() && !shell.telemetry.saving, |this, on, _, cx| this.telemetry_answer(on, cx), cx));
+        .words(t!("settings.telemetry_words"))
+        .control(switch(shell, "telemetry", t!("settings.telemetry"), shell.telemetry.on(), connected && status.is_some() && !shell.telemetry.saving, |this, on, _, cx| this.telemetry_answer(on, cx), cx));
     let list = Line::new(t!("settings.telemetry_list"), t!("settings.telemetry_list_desc"))
         .words("telemetry events list sent never")
         .control(ui::button(p, "telemetry-doc", Kind::Secondary, t!("settings.telemetry_open")).icon(Icon::External).on_click(|_, _, cx| cx.open_url(super::telemetry::DOC)));
@@ -543,7 +658,7 @@ fn squad(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         Conn::Down { .. } => t!("sidebar.disconnected").to_owned(),
     };
     let squad_name = if model.squad.is_empty() { t!("settings.none").to_owned() } else { model.squad.clone() };
-    let squad = Line::new(t!("sidebar.squads"), t!("settings.squad_desc")).words(shell.squads.join(" ")).control(if shell.squads.len() > 1 { picker(shell, Pop::Squad, squad_name, 0., cx) } else { value(p, squad_name) });
+    let squad = Line::new(t!("sidebar.squads"), t!("settings.squad_desc")).words(shell.squads.join(" ")).control(if shell.squads.len() > 1 { picker(shell, Pop::Squad, t!("sidebar.squads"), squad_name, 0., cx) } else { value(p, squad_name) });
     let machine_desc = match &shell.endpoint {
         Endpoint::Local { .. } => t!("settings.machine_local_desc").to_owned(),
         Endpoint::Ssh(host) => t!("settings.machine_ssh_desc", host = host.spec()),
@@ -568,18 +683,22 @@ fn squad(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         .words(t!("settings.disk_words"))
         .control(ui::button(p, "open-disk", Kind::Secondary, t!("settings.disk_open")).icon(Icon::Server).disabled(!connected).on_click(cx.listener(|this, _, window, cx| this.open_disk(window, cx))));
 
-    let suggestions = Line::new(t!("settings.suggestions"), t!("settings.suggestions_desc")).words("suggest").control(switch(shell, "suggestions", !model.suggestions_off, connected, |this, on, _, _| this.set_suggestions(on), cx));
-    let screen = Line::new(t!("settings.mac_screen"), t!("settings.mac_screen_desc")).words("desktop computer use /desktop").control(switch(shell, "desktop", !model.desktop_stopped, connected, |this, on, _, _| this.set_desktop_open(on), cx));
+    let suggestions = Line::new(t!("settings.suggestions"), t!("settings.suggestions_desc")).words("suggest").switch(shell, "suggestions", !model.suggestions_off, connected, |this, on, _, _| this.set_suggestions(on), cx);
+    let screen = Line::new(t!("settings.mac_screen"), t!("settings.mac_screen_desc")).words("desktop computer use /desktop").switch(shell, "desktop", !model.desktop_stopped, connected, |this, on, _, _| this.set_desktop_open(on), cx);
+    // The squad itself, deleted: asked first (`views/delete_squad.rs`).
+    let delete = Line::new(t!("settings.delete_squad"), t!("settings.delete_squad_desc", name = model.squad)).words(t!("settings.delete_squad_words")).control(
+        ui::button(p, "delete-squad", Kind::Danger, t!("settings.delete_squad_button")).icon(Icon::Trash).disabled(!shell.can_delete_squad()).on_click(cx.listener(|this, _, _, cx| this.open_delete_squad(cx))),
+    );
     vec![
         Section::new(t!("settings.section_connection"), vec![squad, machine, connection]).foot(t!("settings.connection_foot")),
         phones(shell, connected, cx),
         Section::new(t!("settings.section_daemon"), vec![daemon_version, restart, disk]),
-        Section::new(t!("settings.section_squad"), vec![suggestions, screen]).foot(t!("settings.squad_foot")),
+        Section::new(t!("settings.section_squad"), vec![suggestions, screen, delete]).foot(t!("settings.squad_foot")),
     ]
 }
 
-/// 휴대폰: pair one by QR code (the sheet), and the ones paired, each with
-/// when it was last there and "연결 끊기" — asked twice.
+/// Phones: pair one by QR code (the sheet), and the ones paired, each with
+/// when it was last there and "Disconnect" — asked twice.
 fn phones(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Section {
     let p = shell.palette;
     let words = t!("settings.phone_words");
@@ -636,51 +755,138 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         .ordered()
         .into_iter()
         .map(|m| {
-            let (mark, hue) = look(&m.role, &m.name);
             let engine = match m.engine {
                 Some(equipe_core::protocol::Engine::Codex) => "Codex",
                 Some(_) => "Claude Code",
                 None => "",
             };
             let desc = [Some(m.role.clone()).filter(|r| !r.is_empty() && *r != m.name), Some(engine.to_owned()).filter(|e| !e.is_empty())].into_iter().flatten().collect::<Vec<_>>().join(" · ");
-            let label = h_flex().gap_2().items_center().child(div().text_size(px(12.)).text_color(p.member(hue)).child(mark)).child(m.name.clone());
-            let model_name = m.model.as_deref().map(super::composer::short_model).unwrap_or_else(|| t!("settings.engine_default").to_owned());
+            let label = h_flex().gap_2().items_center().child(crate::theme::avatar(p, &m.role, &m.name, 18.)).child(m.name.clone());
+            let listed = model.listed(m.engine);
+            let asked = m.asked.as_deref().or(m.model.as_deref());
+            let model_name = asked.map(|a| crate::models::label(a, listed)).unwrap_or_else(|| t!("settings.engine_default").to_owned());
+            // What runs isn't what it is set to: said in its place, in the warning colour.
+            let gap = crate::models::gap_line(m.engine, asked, m.model.as_deref(), listed).map(|(line, _)| line);
+            let warned = gap.is_some();
+            let desc = gap.unwrap_or(desc);
             let effort = model.efforts.get(&m.session).cloned().unwrap_or_else(|| t!("settings.engine_default").to_owned());
             let mode = model.member_modes.get(&m.session).map(|m| mode_label(*m).to_owned()).unwrap_or_else(|| t!("settings.mode_follows").to_owned());
             let controls = h_flex()
                 .gap_2()
                 .when(connected, |c| {
                     let s = m.session;
-                    c.child(with_tip(picker(shell, Pop::Model(s), model_name.clone(), 112., cx), format!("tip-model-{s}"), p, t!("composer.tip_model")))
-                        .child(with_tip(picker(shell, Pop::Effort(s), effort.clone(), 96., cx), format!("tip-effort-{s}"), p, t!("composer.tip_effort")))
-                        .child(with_tip(picker(shell, Pop::Mode(s), mode.clone(), 124., cx), format!("tip-mode-{s}"), p, t!("composer.tip_mode")))
+                    c.child(with_tip(picker(shell, Pop::Model(s), t!("composer.tip_model"), model_name.clone(), 112., cx), format!("tip-model-{s}"), p, t!("composer.tip_model")))
+                        .child(with_tip(picker(shell, Pop::Effort(s), t!("composer.tip_effort"), effort.clone(), 96., cx), format!("tip-effort-{s}"), p, t!("composer.tip_effort")))
+                        .child(with_tip(picker(shell, Pop::Mode(s), t!("composer.tip_mode"), mode.clone(), 124., cx), format!("tip-mode-{s}"), p, t!("composer.tip_mode")))
                 });
-            Line::new(m.name.clone(), desc).label_el(label).words(format!("{} {model_name} {effort} {mode}", m.role)).control(controls)
+            Line::new(m.name.clone(), desc).warn(warned).label_el(label).words(format!("{} {model_name} {effort} {mode}", m.role)).control(controls)
         })
         .collect();
     let lines = if lines.is_empty() { vec![Line::new(t!("settings.no_members"), t!("settings.no_members_desc"))] } else { lines };
     // Who accepts the team's work: the PM (only what needs the person comes to them), or the person, all of it.
     let pm_accepts = Line::new(t!("settings.pm_accepts"), t!("settings.pm_accepts_desc"))
         .words(t!("settings.accept_words"))
-        .control(switch(shell, "pm-accepts", model.pm_accepts, connected, |this, on, _, _| {
+        .switch(shell, "pm-accepts", model.pm_accepts, connected, |this, on, _, _| {
             let squad = this.model.squad.clone();
             this.send_command(equipe_core::protocol::Command::SetPmAccepts { squad, on });
-        }, cx));
+        }, cx);
     // An empty board wakes the PM after a day to look for what comes next; off, it waits for the person.
     let idle_wake = Line::new(t!("settings.idle_wake"), t!("settings.idle_wake_desc"))
         .words("idle wake empty board pm quiet")
-        .control(switch(shell, "idle-wake", model.idle_wake_hours > 0, connected, |this, on, _, _| {
+        .switch(shell, "idle-wake", model.idle_wake_hours > 0, connected, |this, on, _, _| {
             let squad = this.model.squad.clone();
             let hours = if on { equipe_core::protocol::routines::IDLE_WAKE_HOURS } else { 0 };
             this.send_command(equipe_core::protocol::Command::SetIdleWake { squad, hours });
-        }, cx));
+        }, cx);
+    // How many helpers each member starts at a time for big work, where its
+    // engine has them: each engine's own, said plainly, or the person's number.
+    let set = model.subagents_at_once;
+    let (desc, now) = match set {
+        None => (subagents_engine_default(), t!("settings.engine_default").to_owned()),
+        Some(n) => (t!("settings.subagents_at_once_desc").to_owned(), n.to_string()),
+    };
+    let subagents = Line::new(t!("settings.subagents_at_once"), desc)
+        .words(t!("settings.subagents_words"))
+        .control(if connected { picker(shell, Pop::Subagents, t!("settings.subagents_at_once"), now, 96., cx) } else { value(p, now) });
     vec![
         Section::new(t!("settings.section_work"), vec![pm_accepts]).foot(t!("settings.pm_accepts_foot")),
         // Its own card, so the footnote above reads as the PM's accepting alone.
         Section::new("", vec![idle_wake]),
+        Section::new("", vec![subagents]).foot(t!("settings.subagents_at_once_foot")),
         signals::section(shell, connected, cx),
+        role_models(shell, connected, cx),
         Section::new(t!("settings.section_members"), lines).foot(t!("settings.team_foot")),
     ]
+}
+
+/// The roles a squad's new members are given models for, in the order a
+/// squad is put together.
+const ROLE_ORDER: [&str; 9] = [equipe_core::roles::PM, "designer", "frontend", "backend", "mobile", "qa", "security", "marketing", "data"];
+
+/// A role as the page names it.
+fn role_name(id: &str) -> &'static str {
+    match id {
+        "pm" => t!("welcome.role_pm"),
+        "designer" => t!("welcome.role_designer"),
+        "frontend" => t!("welcome.role_frontend"),
+        "backend" => t!("welcome.role_backend"),
+        "mobile" => t!("settings.role_mobile"),
+        "qa" => t!("welcome.role_qa"),
+        "security" => t!("welcome.role_security"),
+        "marketing" => t!("welcome.role_marketing"),
+        _ => t!("welcome.role_data"),
+    }
+}
+
+/// The engine a new member of `role` starts on: its first, unless only the
+/// other is signed in.
+fn role_engine(shell: &Shell, role: &str) -> Engine {
+    let ready = |e: Engine| shell.engines.statuses.iter().flatten().any(|s| s.engine == e && s.state == EngineState::SignedIn);
+    let [first, second] = equipe_core::roles::engine_preference(equipe_core::roles::role_or_custom(role));
+    if !ready(first) && ready(second) { second } else { first }
+}
+
+/// What the person set for `role` on `engine`, if anything.
+fn role_default<'a>(shell: &'a Shell, role: &str, engine: Engine) -> Option<&'a RoleModel> {
+    shell.model.role_models.iter().find(|d| d.role == role && d.engine == engine)
+}
+
+/// The model equipe recommends a new member of `role` on `engine`, when it
+/// can say without the engine's list.
+fn recommended(shell: &Shell, role: &str, engine: Engine) -> Option<String> {
+    let ids: Vec<String> = shell.model.listed(Some(engine)).iter().map(|m| m.id.clone()).collect();
+    equipe_core::roles::recommended_model_for(equipe_core::roles::role_or_custom(role), engine, &ids)
+}
+
+/// New members: the model and effort each role starts with, the
+/// recommendation until the person picks.
+fn role_models(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Section {
+    let p = shell.palette;
+    let lines = ROLE_ORDER
+        .iter()
+        .map(|&role| {
+            let engine = role_engine(shell, role);
+            let set = role_default(shell, role, engine);
+            let listed = shell.model.listed(Some(engine));
+            // Unset, the recommendation shows in the control and is said so beside the engine.
+            let chosen = set.is_some_and(|d| d.model.is_some() || d.effort.is_some());
+            let model_name = match set.and_then(|d| d.model.as_deref()) {
+                Some(m) => crate::models::label(m, listed),
+                None => recommended(shell, role, engine).map_or_else(|| t!("settings.engine_default").to_owned(), |m| crate::models::label(&m, listed)),
+            };
+            let effort = set.and_then(|d| d.effort.clone()).unwrap_or_else(|| equipe_core::roles::default_effort(role).map_or_else(|| t!("settings.engine_default").to_owned(), str::to_owned));
+            let controls = h_flex().gap_2().when(connected, |c| {
+                c.child(with_tip(picker(shell, Pop::RoleModel(role), t!("composer.tip_model"), model_name.clone(), 150., cx), format!("tip-role-model-{role}"), p, t!("composer.tip_model")))
+                    .child(with_tip(picker(shell, Pop::RoleEffort(role), t!("composer.tip_effort"), effort.clone(), 96., cx), format!("tip-role-effort-{role}"), p, t!("composer.tip_effort")))
+            });
+            let name = role_name(role);
+            let label = h_flex().gap_2().items_center().child(crate::theme::avatar(p, role, role, 18.)).child(name);
+            let platform = crate::engines::platform(engine).name;
+            let desc = if chosen { platform.to_owned() } else { format!("{platform} · {}", t!("settings.role_recommended")) };
+            Line::new(name, desc).label_el(label).words(format!("{role} {model_name} {effort}")).control(controls)
+        })
+        .collect();
+    Section::new(t!("settings.section_role_models"), lines).foot(t!("settings.role_models_foot"))
 }
 
 /// `el` with a tooltip, in a box of its own that can be hovered.
@@ -726,9 +932,46 @@ fn permissions(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         .control(ui::button(p, "to-browser", Kind::Ghost, t!("settings.cat_browser")).icon(Icon::ArrowRight).on_click(cx.listener(|this, _, _, cx| this.settings_go(Category::Browser, cx))));
     vec![
         Section::new(t!("settings.section_mode"), first).foot(t!("settings.mode_foot")),
+        Section::new(t!("settings.words_section"), words_rows(shell, cx)).foot(t!("settings.words_foot")),
         Section::new(t!("settings.section_rules"), rules).foot(t!("settings.rules_foot")),
         Section::new(t!("settings.section_never"), vec![blocked, sign_in]),
     ]
+}
+
+/// Deciding in words: "All by words" — asked about before it is on, with
+/// what changes — and the log of where words went wrong.
+fn words_rows(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Line> {
+    let p = shell.palette;
+    let on = shell.model.words.all;
+    let can = matches!(shell.model.conn, Conn::Connected { .. }) && shell.model.words.read;
+    let all = Line::new(t!("settings.words_all"), if on { t!("settings.words_all_on") } else { t!("settings.words_all_desc") })
+        .words("words voice dictation approve yes all by words risk")
+        .switch(shell, "all-by-words", on || shell.settings.words_consent, can, |this, on, _, cx| {
+            if on {
+                this.settings.words_consent = true;
+                cx.notify();
+            } else {
+                this.set_all_by_words(false, cx);
+            }
+        }, cx);
+    let mut rows = vec![all];
+    if shell.settings.words_consent && !on {
+        let buttons = h_flex()
+            .gap_2()
+            .child(ui::button(p, "all-by-words-no", Kind::Ghost, t!("settings.words_cancel")).on_click(cx.listener(|this, _, _, cx| {
+                this.settings.words_consent = false;
+                cx.notify();
+            })))
+            .child(ui::button(p, "all-by-words-yes", Kind::Primary, t!("settings.words_agree")).on_click(cx.listener(|this, _, _, cx| this.set_all_by_words(true, cx))))
+            .into_any_element();
+        rows.push(Line::new(t!("settings.words_ask"), t!("settings.words_ask_desc")).words("words all by words risk read back cancel").control(buttons));
+    }
+    rows.push(
+        Line::new(t!("settings.words_log"), t!("settings.words_log_desc"))
+            .words("words log flags undone cancelled")
+            .control(ui::button(p, "words-log", Kind::Secondary, t!("settings.words_log_open")).disabled(!can).on_click(cx.listener(|this, _, _, cx| this.open_words_log(cx)))),
+    );
+    rows
 }
 
 fn projects(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
@@ -770,7 +1013,7 @@ pub fn short_path(path: &std::path::Path) -> String {
 fn browser(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let p = shell.palette;
     let connected = matches!(shell.model.conn, Conn::Connected { .. });
-    let shown = Line::new(t!("settings.browsers_shown"), t!("settings.browsers_shown_desc")).words("headless window").control(switch(shell, "browsers", shell.model.browsers_shown, connected, |this, on, _, _| this.set_browsers_shown(on), cx));
+    let shown = Line::new(t!("settings.browsers_shown"), t!("settings.browsers_shown_desc")).words("headless window").switch(shell, "browsers", shell.model.browsers_shown, connected, |this, on, _, _| this.set_browsers_shown(on), cx);
     let panel = Line::new(t!("settings.browser_panel"), t!("settings.browser_panel_desc"))
         .words("panel ⌘⇧B")
         .control(ui::button(p, "open-panel", Kind::Secondary, t!("settings.open_panel")).key("⌘⇧B").on_click(cx.listener(|this, _, window, cx| this.toggle_browser(window, cx))));
@@ -842,7 +1085,7 @@ fn about(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     updates.push(
         Line::new(t!("settings.auto_update"), t!("settings.auto_update_desc"))
             .words("update automatic")
-            .control(switch(shell, "auto-update", can && crate::relaunch::automatic(cx), can, |_, on, _, cx| crate::relaunch::set_automatic(on, cx), cx)),
+            .switch(shell, "auto-update", can && crate::relaunch::automatic(cx), can, |_, on, _, cx| crate::relaunch::set_automatic(on, cx), cx),
     );
     let link = |id: &'static str, label: &'static str, desc: &'static str, url: &'static str| {
         Line::new(label, desc).words(url).control(ui::button(p, id, Kind::Ghost, t!("settings.open")).icon(Icon::External).on_click(move |_, _, cx| cx.open_url(url)))
@@ -948,6 +1191,7 @@ fn nav(shell: &Shell, found: &[(Category, usize)], searching: bool, cx: &mut Con
     };
     let back = row("settings-back".into(), false)
         .tip_at(p, t!("settings.back_tip"), Some("Esc"), gpui_kit::base::Placement::Right)
+        .aria_label(t!("settings.back"))
         .on_click(cx.listener(|this, _, window, cx| this.close_settings(window, cx)))
         .child(icon(Icon::ArrowLeft, ICON, p.text2))
         .child(div().text_color(p.text2).child(t!("settings.back")));
@@ -971,6 +1215,9 @@ fn nav(shell: &Shell, found: &[(Category, usize)], searching: bool, cx: &mut Con
         let on = !searching && c == at;
         let dim = searching && count.is_none();
         row(SharedString::from(format!("settings-cat-{}", c.code())), on)
+            .role(Role::Tab)
+            .aria_label(c.label())
+            .aria_selected(on)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.settings.search.update(cx, |s, cx| s.set_value(String::new(), window, cx));
                 this.settings_go(c, cx);
@@ -1103,20 +1350,61 @@ fn choices(shell: &Shell, pop: Pop) -> (f32, Vec<(String, String, bool, Act)>) {
         Pop::Squad => (240., shell.squads.iter().map(|s| (s.clone(), String::new(), *s == model.squad, Act::Squad(s.clone()))).collect()),
         Pop::Model(session) => {
             let Some(m) = member(session) else { return (0., Vec::new()) };
-            let mut models = crate::compose::engine_models(m.engine, m.model.as_deref());
-            if models.is_empty() {
-                models.extend(m.model.clone());
-            }
-            let now = m.model.clone().unwrap_or_default();
-            let exact = models.contains(&now);
-            (260., models.into_iter().map(|x| (super::composer::short_model(&x), x.clone(), now == x || (!exact && now.contains(&x)), Act::Model(session, x))).collect())
+            let asked = m.asked.as_deref().or(m.model.as_deref());
+            let choices = crate::models::choices(m.engine, asked, m.model.as_deref(), model.listed(m.engine));
+            let mut rows: Vec<_> = choices.into_iter().map(|c| (c.label, c.hint, c.on, Act::Model(session, c.model))).collect();
+            rows.extend(provider_rows(shell, asked, |m| Act::Model(session, m)));
+            (280., rows)
         }
         Pop::Effort(session) => {
             let Some(m) = member(session) else { return (0., Vec::new()) };
             let now = model.efforts.get(&session).cloned();
             let mut rows = vec![(t!("settings.engine_default").to_owned(), String::new(), now.is_none(), Act::Effort(session, None))];
-            rows.extend(super::composer::efforts(m.engine).iter().map(|e| ((*e).to_owned(), String::new(), now.as_deref() == Some(*e), Act::Effort(session, Some((*e).to_owned())))));
+            let levels = crate::models::efforts(m.engine, m.asked.as_deref().or(m.model.as_deref()), model.listed(m.engine));
+            rows.extend(effort_rows(levels, now.as_deref(), |e| Act::Effort(session, e)));
             (200., rows)
+        }
+        Pop::RoleModel(role) => {
+            let engine = role_engine(shell, role);
+            let set = role_default(shell, role, engine).and_then(|d| d.model.clone());
+            let listed = model.listed(Some(engine));
+            let recommended = recommended(shell, role, engine).map_or_else(|| t!("settings.engine_default").to_owned(), |m| crate::models::label(&m, listed));
+            let mut rows = vec![(t!("models.recommended", model = recommended), String::new(), set.is_none(), Act::RoleModel(role, engine, None))];
+            // Codex's own list, once the daemon has sent it; else only what is set.
+            let choices = crate::models::choices(Some(engine), set.as_deref(), None, listed);
+            rows.extend(choices.into_iter().map(|c| (c.label, c.hint, c.on && set.is_some(), Act::RoleModel(role, engine, Some(c.model)))));
+            rows.extend(provider_rows(shell, set.as_deref(), |m| Act::RoleModel(role, engine, Some(m))));
+            (280., rows)
+        }
+        Pop::RoleEffort(role) => {
+            let engine = role_engine(shell, role);
+            let set = role_default(shell, role, engine);
+            let now = set.and_then(|d| d.effort.clone());
+            let recommended = equipe_core::roles::default_effort(role).map_or_else(|| t!("settings.engine_default").to_owned(), |e| t!("models.recommended", model = e));
+            let mut rows = vec![(recommended, String::new(), now.is_none(), Act::RoleEffort(role, engine, None))];
+            let model_now = set.and_then(|d| d.model.clone()).or_else(|| self::recommended(shell, role, engine));
+            let levels = crate::models::efforts(Some(engine), model_now.as_deref(), model.listed(Some(engine)));
+            rows.extend(effort_rows(levels, now.as_deref(), |e| Act::RoleEffort(role, engine, e)));
+            (200., rows)
+        }
+        Pop::Subagents => {
+            let now = model.subagents_at_once;
+            let mut rows = vec![(subagents_engine_default(), String::new(), now.is_none(), Act::Subagents(None))];
+            rows.extend(SUBAGENT_CHOICES.into_iter().map(|n| (n.to_string(), String::new(), now == Some(n), Act::Subagents(Some(n)))));
+            (420., rows)
+        }
+        Pop::AddProvider => {
+            let connected: Vec<&str> = shell.engines.providers.iter().flatten().map(|p| p.id.as_str()).collect();
+            let rows = equipe_core::model_providers::PRESETS
+                .iter()
+                .filter(|p| p.id == equipe_core::model_providers::OTHER || !connected.contains(&p.id))
+                .map(|p| {
+                    let name = if p.id == equipe_core::model_providers::OTHER { t!("engines.provider_other").to_owned() } else { p.name.to_owned() };
+                    let hint = if p.local { t!("engines.provider_local").to_owned() } else { String::new() };
+                    (name, hint, false, Act::AddProvider(p.id))
+                })
+                .collect();
+            (280., rows)
         }
         Pop::Mode(session) => {
             let now = model.member_modes.get(&session).copied();
@@ -1125,6 +1413,30 @@ fn choices(shell: &Shell, pop: Pop) -> (f32, Vec<(String, String, bool, Act)>) {
             (240., rows)
         }
     }
+}
+
+/// The providers' models as pop-up rows, each beside its provider's name
+/// (the first few of each; `/model` reaches the rest), `asked` checked.
+fn provider_rows(shell: &Shell, asked: Option<&str>, act: impl Fn(String) -> Act) -> Vec<(String, String, bool, Act)> {
+    crate::models::provider_groups(shell.engines.providers.as_deref().unwrap_or_default(), asked)
+        .into_iter()
+        .flat_map(|g| g.choices.into_iter().map(move |c| (c.label, g.provider.clone(), c.on, c.model)))
+        .map(|(label, provider, on, model)| (label, provider, on, act(model)))
+        .collect()
+}
+
+/// The efforts a model takes as pop-up rows, `now` checked — and listed,
+/// though the model doesn't take it, so what is set is never hidden.
+fn effort_rows(mut levels: Vec<String>, now: Option<&str>, act: impl Fn(Option<String>) -> Act) -> Vec<(String, String, bool, Act)> {
+    let stray = now.filter(|n| !levels.iter().any(|l| l == n)).map(str::to_owned);
+    levels.extend(stray.clone());
+    levels
+        .into_iter()
+        .map(|e| {
+            let hint = if stray.as_ref() == Some(&e) { t!("models.effort_not_taken").to_owned() } else { String::new() };
+            (e.clone(), hint, now == Some(e.as_str()), act(Some(e)))
+        })
+        .collect()
 }
 
 fn pop_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
@@ -1138,6 +1450,9 @@ fn pop_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let rows = rows.into_iter().enumerate().map(|(ix, (label, hint, on, act))| {
         let row = h_flex()
             .id(("settings-pop-row", ix))
+            .role(Role::MenuItemRadio)
+            .aria_label(if hint.is_empty() { label.clone() } else { format!("{label}, {hint}") })
+            .aria_toggled(if on { Toggled::True } else { Toggled::False })
             .min_h(px(ROW))
             .px_2()
             .gap_2()
@@ -1152,6 +1467,7 @@ fn pop_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     });
     let surface = v_flex()
         .id("settings-pop")
+        .role(Role::Menu)
         .w(px(width))
         .max_h(px(360.))
         .overflow_y_scroll()
@@ -1178,9 +1494,15 @@ fn pop_number(pop: Pop) -> u64 {
         Pop::Language => 1,
         Pop::Squad => 2,
         Pop::Dictation => 6,
+        Pop::Subagents => 0,
         Pop::Model(s) => 3 + s * 8,
         Pop::Effort(s) => 4 + s * 8,
         Pop::Mode(s) => 5 + s * 8,
+        // Between the members' numbers: theirs are 3 to 5 apart from a multiple of 8.
+        Pop::RoleModel(role) => 7 + 8 * ROLE_ORDER.iter().position(|r| *r == role).unwrap_or(0) as u64,
+        Pop::RoleEffort(role) => 8 * (ROLE_ORDER.len() + ROLE_ORDER.iter().position(|r| *r == role).unwrap_or(0)) as u64,
+        // Past every role's.
+        Pop::AddProvider => 8 * (2 * ROLE_ORDER.len() as u64 + 1),
     }
 }
 
@@ -1290,17 +1612,33 @@ impl Shell {
             Act::Dictation(lang) => self.set_dictation(lang, window, cx),
             Act::Squad(name) => self.select_squad(&name, window, cx),
             Act::Model(session, model) => {
-                if let Some(m) = self.model.members.iter_mut().find(|m| m.session == session) {
+                // A provider's model on Claude Code: it moves at its next ticket, and shows then.
+                let moves = equipe_core::model_providers::split_ref(&model).is_some();
+                if let Some(m) = self.model.members.iter_mut().find(|m| m.session == session).filter(|m| !moves || m.engine == Some(Engine::Codex)) {
                     m.model = Some(model.clone());
+                    m.asked = None;
                 }
                 self.send_command(Command::SetModel { session, model });
             }
+            Act::RoleModel(role, engine, model) => {
+                let effort = self.model.role_models.iter().find(|d| d.role == role && d.engine == engine).and_then(|d| d.effort.clone());
+                self.set_role_model(RoleModel { role: role.to_owned(), engine, model, effort });
+            }
+            Act::RoleEffort(role, engine, effort) => {
+                let model = self.model.role_models.iter().find(|d| d.role == role && d.engine == engine).and_then(|d| d.model.clone());
+                self.set_role_model(RoleModel { role: role.to_owned(), engine, model, effort });
+            }
+            Act::AddProvider(preset) => self.open_provider_form(preset, window, cx),
             Act::Effort(session, effort) => {
                 self.send_command(Command::SetEffort { session, effort: effort.clone() });
                 match effort {
                     Some(effort) => self.model.efforts.insert(session, effort),
                     None => self.model.efforts.remove(&session),
                 };
+            }
+            Act::Subagents(at_once) => {
+                let squad = self.model.squad.clone();
+                self.send_command(Command::SetSubagentsAtOnce { squad, at_once });
             }
             Act::Mode(session, mode) => {
                 if let Some(name) = self.model.members.iter().find(|m| m.session == session).map(|m| m.name.clone()) {
@@ -1311,13 +1649,26 @@ impl Shell {
         cx.notify();
     }
 
+    /// What new members of a role start with, kept for the squad; shown at
+    /// once, as the daemon will tell every screen.
+    fn set_role_model(&mut self, default: RoleModel) {
+        let squad = self.model.squad.clone();
+        self.model.role_models.retain(|d| (d.role.as_str(), d.engine) != (default.role.as_str(), default.engine));
+        if default.model.is_some() || default.effort.is_some() {
+            self.model.role_models.push(default.clone());
+        }
+        self.send_command(Command::SetRoleModel { squad, default });
+    }
+
     /// The language picked in settings (`None`: System, the Mac's — the
     /// language set for equipe alone in System Settings included): kept for
     /// every screen, the console's too, and shown at once, menus included.
     /// What equipe says in the conversations follows.
     pub fn set_language(&mut self, choice: Option<Lang>, cx: &mut Context<Self>) {
         let home = equipe_providers::credentials::equipe_home();
-        if let Err(why) = equipe_core::i18n::save(&home, choice) {
+        if !crate::readonly::blocked("the language picked")
+            && let Err(why) = equipe_core::i18n::save(&home, choice)
+        {
             eprintln!("equipe: the language wasn't kept: {why}");
         }
         self.board.language = choice;
@@ -1357,7 +1708,7 @@ impl Shell {
         }
     }
 
-    /// "Dock 아이콘에 숫자 표시": the number goes, or comes back, at once.
+    /// "Show a number on the Dock icon": the number goes, or comes back, at once.
     pub fn set_badge_shown(&mut self, on: bool) {
         self.remembered.pings.set(Ping::Badge, on);
         self.remembered.save(&equipe_providers::credentials::equipe_home());
@@ -1410,7 +1761,18 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mode, mode_label, mode_summary, rule_words, short_path};
+    use super::{Mode, SUBAGENT_CHOICES, mode_label, mode_summary, rule_words, short_path, subagents_engine_default};
+
+    #[test]
+    fn subagents_at_once_offers_each_engines_own_said_plainly_and_numbers_engines_take() {
+        use equipe_core::protocol::{CLAUDE_SUBAGENTS_AT_ONCE, CODEX_SUBAGENTS_AT_ONCE, MOST_SUBAGENTS_AT_ONCE, subagents_at_once};
+        let default = subagents_engine_default();
+        assert!(default.contains(&format!("Claude Code {CLAUDE_SUBAGENTS_AT_ONCE}")) && default.contains(&format!("Codex {CODEX_SUBAGENTS_AT_ONCE}")), "{default}");
+        // Each engine's own number can be picked too, and every number is one the daemon keeps as it is.
+        assert!(SUBAGENT_CHOICES.contains(&CLAUDE_SUBAGENTS_AT_ONCE) && SUBAGENT_CHOICES.contains(&CODEX_SUBAGENTS_AT_ONCE));
+        assert!(SUBAGENT_CHOICES.iter().all(|&n| subagents_at_once(n) == n) && SUBAGENT_CHOICES.last() == Some(&MOST_SUBAGENTS_AT_ONCE));
+        assert!(SUBAGENT_CHOICES.windows(2).all(|w| w[0] < w[1]));
+    }
 
     #[test]
     fn a_rule_reads_as_what_it_lets_through() {

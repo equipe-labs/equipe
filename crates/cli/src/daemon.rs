@@ -6,13 +6,15 @@
 //! `~/.equipe/daemon.log`.
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use equipe_core::gateway::{self, Client};
 use equipe_core::protocol::rpc::Hello;
 use equipe_core::runtime;
 use equipe_providers::credentials::equipe_home;
+
+use crate::launchd;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -46,7 +48,63 @@ pub async fn run_foreground() -> io::Result<()> {
     tokio::spawn(crate::telegram::serve_forever(equipe_home(), socket(), build_id()));
     // Phones paired with this machine, through the relay.
     tokio::spawn(crate::remote::link::serve_forever(equipe_home(), socket(), build_id()));
-    left_for(gateway::serve(config, &socket(), &build_id()).await)
+    let idle = std::env::var("EQUIPE_TRIAL_IDLE_SECS").ok().and_then(|secs| secs.parse().ok()).map(Duration::from_secs);
+    let leave = leave_for(&settled(&equipe_home()), &temp_roots(), idle);
+    left_for(gateway::serve_leaving(config, &socket(), &build_id(), leave).await)
+}
+
+/// How long a daemon in a temporary home waits, with no screen and no member
+/// at work, before it leaves.
+pub const TRIAL_IDLE: Duration = Duration::from_secs(15 * 60);
+
+/// Whether this daemon's home is a temporary folder — a test's or a check's —
+/// whose daemon leaves on its own (see [`TRIAL_IDLE`]).
+pub fn trial() -> bool {
+    is_temporary(&settled(&equipe_home()), &temp_roots())
+}
+
+/// When the daemon serving `home` leaves on its own: one in a temporary home
+/// once the home is gone, or after `idle` (else [`TRIAL_IDLE`]) alone; the
+/// person's own, never. Started detached, a test's or a check's daemon
+/// outlives them — sixteen once piled up, each keeping its squads. Either
+/// leaves once hung, for the login service or the next screen to start it
+/// again: the one of 0.103.30 answered nothing until restarted by hand.
+fn leave_for(home: &Path, temps: &[PathBuf], idle: Option<Duration>) -> gateway::Leave {
+    let hung = gateway::Leave { hung: Some(equipe_core::watchdog::HUNG_AFTER), ..gateway::Leave::NEVER };
+    if !is_temporary(home, temps) {
+        return hung;
+    }
+    gateway::Leave { home_gone: true, idle: Some(idle.unwrap_or(TRIAL_IDLE)), ..hung }
+}
+
+/// Where temporary folders are made: this process's, and the system's.
+fn temp_roots() -> Vec<PathBuf> {
+    let mut roots = vec![std::env::temp_dir()];
+    roots.extend(["/tmp", "/var/tmp", "/var/folders", "/dev/shm"].map(PathBuf::from));
+    roots
+}
+
+/// `home` as it really is, symbolic links followed, when it is there.
+fn settled(home: &Path) -> PathBuf {
+    home.canonicalize().unwrap_or_else(|_| home.to_owned())
+}
+
+fn is_temporary(home: &Path, temps: &[PathBuf]) -> bool {
+    use std::path::Component;
+    // `..` could lead back out of a temporary folder: such a home isn't taken for one.
+    if home.components().any(|c| c == Component::ParentDir) {
+        return false;
+    }
+    let home = unprivate(home);
+    temps.iter().any(|root| home.starts_with(unprivate(root)))
+}
+
+/// On a Mac `/tmp` and `/var` are `/private/tmp` and `/private/var`.
+fn unprivate(path: &Path) -> PathBuf {
+    match path.strip_prefix("/private") {
+        Ok(rest) if rest.starts_with("tmp") || rest.starts_with("var") => Path::new("/").join(rest),
+        _ => path.to_owned(),
+    }
 }
 
 /// A daemon that finds another already answering leaves cleanly: an exit the
@@ -64,98 +122,226 @@ fn left_for(served: io::Result<()>) -> io::Result<()> {
 
 /// Start a daemon in the background unless one is answering. `Ok(true)` when
 /// this call started it.
+///
+/// With the login service installed, only the service starts it — in place,
+/// or loaded afresh when launchd refuses this build — and never this process
+/// on its own beside it: started from an SSH connection (the desktop app
+/// restarts a Mac's daemon so), that one would run in the connection's
+/// session, the login Keychain closed to it, every Claude member "signed
+/// out". When the service can't, it is said why, and how to fix it.
 pub async fn ensure_running() -> io::Result<bool> {
     let socket = socket();
     if gateway::is_running(&socket).await {
         return Ok(false);
     }
-    let take = |way| match way {
-        Way::Service => service::start(),
-        Way::Reload => std::env::current_exe().is_ok_and(|exe| service::install(&exe, &log_path()).is_ok()),
-        Way::Alone => spawn_detached().is_ok(),
-    };
-    match start_with(ways(service::installed()), take, || gateway::is_running(&socket)).await {
-        Some(way) => {
-            if let Some(line) = way.log_line() {
-                note_in_log(line);
-            }
+    match start_way(service::installed(), own_home()) {
+        StartWay::Service => {
+            let up = service::bring_up(launchd::Kick::Start, false).await?;
+            note_reload(&up);
             Ok(true)
         }
-        None => Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            equipe_core::t!("daemon.didnt_start", log = log_path().display()),
-        )),
+        StartWay::Alone => {
+            spawn_detached()?;
+            if answers_within(&socket, Duration::from_secs(20)).await {
+                Ok(true)
+            } else {
+                Err(io::Error::new(io::ErrorKind::TimedOut, equipe_core::t!("daemon.didnt_start", log = log_path().display())))
+            }
+        }
     }
 }
 
-/// One way to start a daemon, tried while none answers.
+/// Who starts the daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Way {
-    /// Ask the login service to run it, so it stays looked after.
+enum StartWay {
+    /// Its login service, and nothing else.
     Service,
-    /// Load the service afresh: launchd won't run an executable whose signature
-    /// changed since the service was loaded — a build replaced in place exits 78
-    /// (EX_CONFIG) on every try — until it is loaded again.
-    Reload,
-    /// Run it ourselves, detached, without the service.
+    /// This process, detached: only where there is no login service — or it
+    /// is another home's (`EQUIPE_HOME` set elsewhere), which never touches it.
     Alone,
 }
 
-impl Way {
-    /// What the daemon's log says when this way, not the first, started it.
-    fn log_line(self) -> Option<&'static str> {
-        match self {
-            Way::Service => None,
-            Way::Reload => Some("equipe: the login service wouldn't start this build, so it was loaded afresh"),
-            Way::Alone => Some(
-                "equipe: the login service didn't start the daemon: it runs on its own until `equipe daemon install`",
-            ),
+fn start_way(installed: bool, own_home: bool) -> StartWay {
+    if installed && own_home { StartWay::Service } else { StartWay::Alone }
+}
+
+async fn answers_within(socket: &Path, wait: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + wait;
+    while tokio::time::Instant::now() < deadline {
+        if gateway::is_running(socket).await {
+            return true;
         }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    false
+}
+
+/// The daemon's log says when the service had to be loaded afresh, and why.
+fn note_reload(up: &launchd::Up) {
+    if let Some(line) = reload_line(up.reloaded) {
+        note_in_log(line);
     }
 }
 
-/// The ways to try, in order, each with how long it waits for an answer.
-fn ways(installed: bool) -> &'static [(Way, Duration)] {
-    const SERVICE: &[(Way, Duration)] = &[
-        (Way::Service, Duration::from_secs(10)),
-        (Way::Reload, Duration::from_secs(10)),
-        (Way::Alone, Duration::from_secs(20)),
-    ];
-    const ALONE: &[(Way, Duration)] = &[(Way::Alone, Duration::from_secs(20))];
-    if installed { SERVICE } else { ALONE }
+fn reload_line(why: Option<launchd::Why>) -> Option<&'static str> {
+    use launchd::Why;
+    Some(match why? {
+        Why::Changed => "equipe: the login service runs another executable now, so it was loaded afresh",
+        Why::NotLoaded => "equipe: launchd didn't hold the login service, so it was loaded",
+        Why::Elsewhere => "equipe: the login service moved from the user domain into the person's graphical session",
+        Why::Refused => "equipe: launchd wouldn't run this build (exit 78, EX_CONFIG), so the login service was loaded afresh",
+    })
 }
 
-/// Take each way in turn until a daemon answers; which one did, or `None`.
-/// A way that can't even be taken gives way to the next at once — but a reload
-/// that fails is still waited for: another start racing this one may have
-/// loaded the service first (this bootstrap then fails, error 5), and the
-/// daemon that brings beats a second one alone beside it.
-async fn start_with<F: Future<Output = bool>>(
-    ways: &[(Way, Duration)],
-    mut take: impl FnMut(Way) -> bool,
-    answering: impl Fn() -> F,
-) -> Option<Way> {
-    for &(way, wait) in ways {
-        if !take(way) && way != Way::Reload {
-            continue;
+/// How a restart went.
+pub enum Restarted {
+    /// Under its login service.
+    Service(launchd::Up),
+    /// On its own: there is no login service here (or this home isn't the
+    /// person's own).
+    Alone,
+}
+
+/// `equipe daemon restart`: the daemon stopped as `equipe daemon stop` asks
+/// (its work journaled; `ended` when it had to be ended), and started again.
+/// Under the login service that is `launchctl kickstart -k`, in place —
+/// the plist loaded afresh only when it changed or launchd refuses the build
+/// — and nothing else ever starts it.
+pub async fn restart(ended: impl FnOnce(u32)) -> io::Result<Restarted> {
+    let socket = socket();
+    if start_way(service::installed(), own_home()) == StartWay::Alone {
+        if let Ok(Stopped::Ended(pid)) = stop().await {
+            ended(pid);
         }
-        let deadline = tokio::time::Instant::now() + wait;
-        let mut asked = tokio::time::Instant::now();
-        while tokio::time::Instant::now() < deadline {
-            if answering().await {
-                return Some(way);
-            }
-            // A daemon just told to stop may still be winding down: the service, seeing
-            // it alive, ignores the start, then leaves it stopped once it exits cleanly.
-            // Ask again each second.
-            if way == Way::Service && asked.elapsed() >= Duration::from_secs(1) {
-                take(way);
-                asked = tokio::time::Instant::now();
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        ensure_running().await?;
+        return Ok(Restarted::Alone);
     }
-    None
+    let exe = std::env::current_exe()?;
+    let changed = service::changed(&exe, &log_path());
+    // Before the running daemon is stopped: a file that can't be written leaves it running.
+    if changed {
+        service::write(&exe, &log_path())?;
+    }
+    let old = gateway::daemon_pid(&socket).await;
+    if let Ok(Stopped::Ended(pid)) = stop().await {
+        ended(pid);
+    }
+    // Gone before it is started again: `kickstart -k` would cut its last writes short.
+    if let Some(pid) = old {
+        gone_within(pid, STOP_WAIT).await;
+    }
+    let up = service::bring_up(launchd::Kick::Restart, changed).await?;
+    note_reload(&up);
+    Ok(Restarted::Service(up))
+}
+
+/// Wait for process `pid` to have exited, `wait` at most.
+async fn gone_within(pid: u32, wait: Duration) {
+    let deadline = tokio::time::Instant::now() + wait;
+    // SAFETY: kill with signal 0 only asks; `pid` is a single process (> 1).
+    while unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// What the person is told when the login service couldn't bring the
+/// daemon up: what failed, that none was started on its own, and the command
+/// for the Mac's own screen.
+pub fn down_message(down: &launchd::Down, over_ssh: bool) -> String {
+    use launchd::Down;
+    let what = match down {
+        Down::Bootstrap { tries, ran } => {
+            let said = ran.text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").to_owned();
+            equipe_core::t!("daemon.service_bootstrap_failed", tries = tries, said = format!("{}: {said}", ran.code))
+        }
+        Down::Refused { job } => equipe_core::t!("daemon.service_refused", code = job.last_exit.unwrap_or(launchd::EX_CONFIG)),
+        Down::NoAnswer { job: Some(job) } => equipe_core::t!(
+            "daemon.service_no_answer",
+            state = if job.state.is_empty() { "?" } else { &job.state },
+            exit = job.last_exit.map_or("-".to_owned(), |c| c.to_string())
+        ),
+        Down::NoAnswer { job: None } => equipe_core::t!("daemon.service_gone").to_owned(),
+    };
+    format!("{what} {}", not_alone(over_ssh))
+}
+
+/// That no daemon was started on its own beside the login service, and the
+/// command that fixes the service — at the Mac's own screen, from SSH.
+fn not_alone(over_ssh: bool) -> String {
+    if over_ssh {
+        equipe_core::t!("daemon.not_alone_ssh").to_owned()
+    } else {
+        equipe_core::t!("daemon.not_alone", log = log_path().display())
+    }
+}
+
+/// Whether this process runs from an SSH connection.
+pub fn over_ssh() -> bool {
+    equipe_core::engine_auth::ssh_bound(&|name| std::env::var(name).ok())
+}
+
+/// How the daemon that answers runs, for `equipe daemon status`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HowRuns {
+    /// In a temporary home: leaves on its own.
+    Trial,
+    /// Its login service runs it.
+    Service,
+    /// On its own: started from an SSH connection (`ssh`), beside an
+    /// installed login service (`beside`).
+    Alone { ssh: bool, beside: bool },
+}
+
+/// The daemon as `equipe daemon status` tells it.
+pub struct Whereabouts {
+    pub how: HowRuns,
+    /// As it tells it; `None` from a daemon older than `runs`.
+    pub runs: Option<equipe_core::protocol::rpc::Runs>,
+    /// The login service's job's last exit, when it wasn't a clean one.
+    pub last_exit: Option<i32>,
+}
+
+pub async fn whereabouts() -> Whereabouts {
+    let socket = socket();
+    let runs = tokio::time::timeout(ANSWER_WAIT, gateway::runs(&socket)).await.ok().flatten();
+    let pid = gateway::daemon_pid(&socket).await;
+    let installed = service::installed() && own_home();
+    let job = if installed { service::job() } else { None };
+    Whereabouts {
+        how: how_runs(trial(), installed, job.as_ref().and_then(|j| j.pid), pid, runs.as_ref()),
+        runs,
+        last_exit: job.and_then(|j| j.abnormal_exit()),
+    }
+}
+
+/// How the daemon runs: the login service's when the process it runs is the
+/// one answering (else as the daemon says), on its own otherwise.
+fn how_runs(trial: bool, installed: bool, service_pid: Option<u32>, pid: Option<u32>, runs: Option<&equipe_core::protocol::rpc::Runs>) -> HowRuns {
+    if trial {
+        return HowRuns::Trial;
+    }
+    let by_service = match (service_pid, pid) {
+        (Some(service), Some(pid)) => service == pid,
+        _ => runs.map_or(installed, |r| r.service),
+    };
+    if installed && by_service {
+        HowRuns::Service
+    } else {
+        HowRuns::Alone { ssh: runs.is_some_and(|r| r.ssh), beside: installed }
+    }
+}
+
+/// Whether this is the person's own home (`~/.equipe`), the one the login
+/// service runs. Another (`EQUIPE_HOME` set elsewhere: a test, a second
+/// squad's trial) never touches the service: starting it there reloaded the
+/// person's own daemon in the middle of its work and pointed its log at a
+/// temporary folder.
+pub fn own_home() -> bool {
+    is_own_home(&equipe_home(), dirs::home_dir().as_deref())
+}
+
+fn is_own_home(home: &Path, user: Option<&Path>) -> bool {
+    user.is_some_and(|u| home == u.join(".equipe"))
 }
 
 fn note_in_log(line: &str) {
@@ -294,7 +480,7 @@ pub mod service {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
-    const LABEL: &str = "im.equipe.daemon";
+    use crate::launchd::LABEL;
 
     fn home() -> PathBuf {
         dirs::home_dir().unwrap_or_default()
@@ -369,42 +555,114 @@ pub mod service {
 
     fn run(program: &str, args: &[&str]) -> bool {
         // Nothing on our standard output: `equipe attach --stdio` carries the protocol there.
-        Command::new(program).args(args).stdout(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
+        // Nor launchctl's own words on standard error: a service is looked for
+        // in both domains, and the one it isn't in says so ("Could not find
+        // service…", "Boot-out failed: 3") though nothing went wrong; what did
+        // is told in our words, from the status.
+        Command::new(program).args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
     }
 
     fn domains() -> [String; 2] {
-        // SAFETY: getuid has no preconditions and cannot fail.
-        let uid = unsafe { libc::getuid() };
-        [format!("gui/{uid}"), format!("user/{uid}")]
+        let (gui, user) = crate::launchd::domains(crate::launchd::uid());
+        [gui, user]
     }
 
-    /// Write the service and start it. The running daemon must be stopped first.
-    pub fn install(exe: &Path, log: &Path) -> io::Result<()> {
+    /// What the service runs, and where it writes, as `program` and `log`
+    /// would have it: the executable as the system resolves it, so a link
+    /// to the same build (Homebrew's `bin/equipe`, an app's) is the same.
+    fn runs(text: &str) -> Option<(PathBuf, Vec<String>, String)> {
+        let unescape = |s: &str| s.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&");
+        let strings = |within: &str| -> Vec<String> {
+            within.split("<string>").skip(1).filter_map(|s| s.split_once("</string>")).map(|(s, _)| unescape(s)).collect()
+        };
+        let after = |key: &str| text.split_once(&format!("<key>{key}</key>")).map(|(_, rest)| rest);
+        let array = after("ProgramArguments")?.split_once("</array>")?.0;
+        let mut args = strings(array);
+        if args.is_empty() {
+            return None;
+        }
+        let exe = PathBuf::from(args.remove(0));
+        let log = after("StandardOutPath").and_then(|rest| strings(rest).into_iter().next()).unwrap_or_default();
+        Some((exe, args, log))
+    }
+
+    fn same_file(a: &Path, b: &Path) -> bool {
+        a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+    }
+
+    /// Whether the installed service would run something else than this
+    /// build would install: another executable, other arguments, another
+    /// log. Its PATH isn't asked: the one it was installed from stays.
+    pub fn changed(exe: &Path, log: &Path) -> bool {
+        if !cfg!(target_os = "macos") {
+            return false;
+        }
+        let Ok(text) = std::fs::read_to_string(plist_path()) else { return true };
+        is_changed(&text, &stable_exe(exe), log)
+    }
+
+    fn is_changed(text: &str, exe: &Path, log: &Path) -> bool {
+        match runs(text) {
+            Some((installed, args, logged)) => !(same_file(&installed, exe) && args == ["daemon", "run"] && logged == log.to_string_lossy()),
+            None => true,
+        }
+    }
+
+    /// Write the service's file for this build.
+    pub fn write(exe: &Path, log: &Path) -> io::Result<()> {
         let exe = stable_exe(exe);
         let path = service_path(std::env::var("PATH").unwrap_or_default(), dirs::home_dir());
+        let (file, text) = if cfg!(target_os = "macos") { (plist_path(), plist(&exe, &path, log)) } else { (unit_path(), unit(&exe, &path, log)) };
+        std::fs::create_dir_all(file.parent().expect("the service's folder has a parent"))?;
+        std::fs::write(&file, text)
+    }
+
+    /// Write the service and load it afresh, until its daemon answers. The
+    /// running daemon must be stopped first.
+    pub async fn install(exe: &Path, log: &Path) -> io::Result<()> {
+        write(exe, log)?;
         if cfg!(target_os = "macos") {
-            let file = plist_path();
-            std::fs::create_dir_all(file.parent().expect("LaunchAgents has a parent"))?;
-            std::fs::write(&file, plist(&exe, &path, log))?;
-            let file = file.to_string_lossy().into_owned();
-            // The person's graphical session when there is one, else their user domain.
-            for domain in domains() {
-                let _ = run("launchctl", &["bootout", &format!("{domain}/{LABEL}")]);
-                if run("launchctl", &["bootstrap", &domain, &file]) {
-                    return Ok(());
-                }
-            }
-            Err(io::Error::other(equipe_core::t!("daemon.launchctl_failed")))
+            bring_up(crate::launchd::Kick::Restart, true).await.map(drop)
+        } else if run("systemctl", &["--user", "daemon-reload"]) && run("systemctl", &["--user", "enable", "--now", "equipe"]) {
+            Ok(())
         } else {
-            let file = unit_path();
-            std::fs::create_dir_all(file.parent().expect("systemd/user has a parent"))?;
-            std::fs::write(&file, unit(&exe, &path, log))?;
-            if run("systemctl", &["--user", "daemon-reload"]) && run("systemctl", &["--user", "enable", "--now", "equipe"]) {
-                Ok(())
-            } else {
-                Err(io::Error::other(equipe_core::t!("daemon.systemctl_failed")))
-            }
+            Err(io::Error::other(equipe_core::t!("daemon.systemctl_failed")))
         }
+    }
+
+    /// Have the service bring the daemon up ([`crate::launchd::bring_up`]),
+    /// `changed` when its file was just written; what failed, in words, when
+    /// it couldn't. It never starts one on its own.
+    pub async fn bring_up(kick: crate::launchd::Kick, changed: bool) -> io::Result<crate::launchd::Up> {
+        let socket = super::socket();
+        if !cfg!(target_os = "macos") {
+            let verb = if kick == crate::launchd::Kick::Restart { "restart" } else { "start" };
+            if run("systemctl", &["--user", verb, "equipe"]) && super::answers_within(&socket, std::time::Duration::from_secs(15)).await {
+                let pid = equipe_core::gateway::daemon_pid(&socket).await.unwrap_or_default();
+                return Ok(crate::launchd::Up { pid, reloaded: None, domain: "systemd".into() });
+            }
+            return Err(io::Error::other(format!("{} {}", equipe_core::t!("daemon.systemctl_failed"), super::not_alone(super::over_ssh()))));
+        }
+        let mut launchd = crate::launchd::Launchd { socket };
+        let plist = plist_path().to_string_lossy().into_owned();
+        crate::launchd::bring_up(&mut launchd, crate::launchd::uid(), LABEL, &plist, kick, changed)
+            .await
+            .map_err(|down| {
+                // A restart the app left running over SSH has no screen: the log is where it is read.
+                super::note_in_log(&format!("equipe: the login service didn't bring the daemon up, and none was started on its own: {down:?}"));
+                io::Error::other(super::down_message(&down, super::over_ssh()))
+            })
+    }
+
+    /// The service's job as its manager tells it, when it holds it.
+    pub fn job() -> Option<crate::launchd::Job> {
+        if cfg!(target_os = "macos") {
+            let mut launchd = crate::launchd::Launchd { socket: super::socket() };
+            return crate::launchd::find(&mut launchd, crate::launchd::uid(), LABEL).map(|(_, job)| job);
+        }
+        let out = Command::new("systemctl").args(["--user", "show", "-p", "MainPID", "--value", "equipe"]).stderr(std::process::Stdio::null()).output().ok()?;
+        let pid: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().ok().filter(|p| *p > 0)?;
+        Some(crate::launchd::Job { state: "running".into(), pid: Some(pid), ..Default::default() })
     }
 
     /// Stop the service and remove it. `Ok(false)` when there was none.
@@ -423,15 +681,6 @@ pub mod service {
             let _ = run("systemctl", &["--user", "daemon-reload"]);
         }
         Ok(true)
-    }
-
-    /// Start the installed service's daemon.
-    pub fn start() -> bool {
-        if cfg!(target_os = "macos") {
-            domains().iter().any(|domain| run("launchctl", &["kickstart", &format!("{domain}/{LABEL}")]))
-        } else {
-            run("systemctl", &["--user", "start", "equipe"])
-        }
     }
 
     #[cfg(test)]
@@ -461,89 +710,88 @@ pub mod service {
             let unit = unit(Path::new("/x/equipe"), "/usr/bin", Path::new("/h/daemon.log"));
             assert!(unit.contains("ExecStart=/x/equipe daemon run") && unit.contains("Restart=on-failure"));
         }
+
+        #[test]
+        fn a_restart_reloads_the_plist_only_when_it_runs_something_else() {
+            let log = Path::new("/h/.equipe/daemon.log");
+            let installed = plist(Path::new("/x/a&b/equipe"), "/usr/bin", log);
+            assert_eq!(runs(&installed), Some((PathBuf::from("/x/a&b/equipe"), vec!["daemon".to_owned(), "run".to_owned()], log.display().to_string())));
+            assert!(!is_changed(&installed, Path::new("/x/a&b/equipe"), log), "the same: started again in place");
+            assert!(!is_changed(&plist(Path::new("/x/a&b/equipe"), "/opt/homebrew/bin:/usr/bin", log), Path::new("/x/a&b/equipe"), log), "another PATH isn't another program");
+            assert!(is_changed(&installed, Path::new("/y/equipe"), log), "another executable");
+            assert!(is_changed(&installed, Path::new("/x/a&b/equipe"), Path::new("/elsewhere/daemon.log")), "another log");
+            assert!(is_changed(&installed.replace("<string>run</string>", "<string>serve</string>"), Path::new("/x/a&b/equipe"), log), "other arguments");
+            assert!(is_changed("not a plist", Path::new("/x/a&b/equipe"), log));
+        }
+
+        #[test]
+        fn a_link_to_the_same_build_is_the_same_program() {
+            let dir = std::env::temp_dir().join(format!("eq-svc-link-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let (exe, link) = (dir.join("equipe"), dir.join("bin-equipe"));
+            std::fs::write(&exe, "").unwrap();
+            std::os::unix::fs::symlink(&exe, &link).unwrap();
+            let log = Path::new("/h/daemon.log");
+            assert!(!is_changed(&plist(&link, "/usr/bin", log), &exe, log));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use equipe_core::protocol::rpc::Runs;
 
-    /// Ways as the real ones, with waits short enough for a test.
-    const QUICK: &[(Way, Duration)] = &[
-        (Way::Service, Duration::from_millis(200)),
-        (Way::Reload, Duration::from_millis(200)),
-        (Way::Alone, Duration::from_millis(200)),
-    ];
-
-    /// Start where only `works` brings a daemon up and only `takeable` ways can
-    /// be taken: the ways taken, in order, and the one that started it.
-    async fn start(works: Option<Way>, takeable: impl Fn(Way) -> bool) -> (Vec<Way>, Option<Way>) {
-        let taken = RefCell::new(Vec::new());
-        let up = RefCell::new(false);
-        let started = start_with(
-            QUICK,
-            |way| {
-                taken.borrow_mut().push(way);
-                if Some(way) == works {
-                    *up.borrow_mut() = true;
-                }
-                takeable(way)
-            },
-            || std::future::ready(*up.borrow()),
-        )
-        .await;
-        let mut taken = taken.into_inner();
-        taken.dedup();
-        (taken, started)
+    #[test]
+    fn with_its_login_service_installed_the_daemon_never_starts_on_its_own() {
+        assert_eq!(start_way(true, true), StartWay::Service, "only the service starts it: never one bound to an SSH connection beside it");
+        assert_eq!(start_way(false, true), StartWay::Alone, "no login service here: on its own");
+        assert_eq!(start_way(true, false), StartWay::Alone, "another home never touches the person's service");
+        assert!(is_own_home(Path::new("/Users/a/.equipe"), Some(Path::new("/Users/a"))));
+        assert!(!is_own_home(Path::new("/var/folders/x/T/tmp.V/"), Some(Path::new("/Users/a"))), "a home elsewhere starts alone, never through the person's service");
+        assert!(!is_own_home(Path::new("/Users/a/.equipe"), None));
     }
 
-    #[tokio::test]
-    async fn a_service_that_starts_the_daemon_is_all_it_takes() {
-        assert_eq!(start(Some(Way::Service), |_| true).await, (vec![Way::Service], Some(Way::Service)));
+    #[test]
+    fn a_service_that_couldnt_bring_it_up_says_what_failed_and_what_to_run_at_the_macs_screen() {
+        use launchd::{Down, Job, Ran};
+        let refused = Down::Refused { job: Job { state: "spawn scheduled".into(), pid: None, last_exit: Some(78), lwcr: true } };
+        let said = down_message(&refused, true);
+        assert!(said.contains("78"), "{said}");
+        assert!(said.contains("SSH") && said.contains("equipe daemon install") && said.contains("own screen"), "{said}");
+        let bootstrap = Down::Bootstrap { tries: 8, ran: Ran { code: 5, text: "Bootstrap failed: 5: Input/output error\nTry re-running the command as root for richer errors.\n".into() } };
+        let said = down_message(&bootstrap, false);
+        assert!(said.contains("8") && said.contains("5: Bootstrap failed: 5: Input/output error") && !said.contains("root"), "{said}");
+        assert!(said.contains("equipe daemon install") && said.contains("daemon.log"), "{said}");
+        let silent = down_message(&Down::NoAnswer { job: Some(Job { state: "running".into(), pid: Some(7), last_exit: None, lwcr: false }) }, false);
+        assert!(silent.contains("running"), "{silent}");
+        assert!(!down_message(&Down::NoAnswer { job: None }, false).is_empty());
     }
 
-    #[tokio::test]
-    async fn a_service_that_refuses_a_replaced_build_is_loaded_afresh() {
-        // launchd takes the start and runs nothing: exit 78 on a re-signed executable.
-        assert_eq!(start(Some(Way::Reload), |_| true).await, (vec![Way::Service, Way::Reload], Some(Way::Reload)));
+    #[test]
+    fn the_log_says_why_the_service_was_loaded_afresh() {
+        use launchd::Why;
+        assert_eq!(reload_line(None), None, "started again in place: nothing to say");
+        for why in [Why::Changed, Why::NotLoaded, Why::Elsewhere, Why::Refused] {
+            assert!(reload_line(Some(why)).is_some_and(|l| l.starts_with("equipe: ")), "{why:?}");
+        }
+        assert!(reload_line(Some(Why::Refused)).unwrap().contains("78"));
     }
 
-    #[tokio::test]
-    async fn when_the_service_never_starts_it_the_daemon_runs_on_its_own() {
-        assert_eq!(
-            start(Some(Way::Alone), |way| way == Way::Alone).await,
-            (vec![Way::Service, Way::Reload, Way::Alone], Some(Way::Alone))
-        );
-    }
-
-    #[tokio::test]
-    async fn a_daemon_nothing_starts_is_said_so() {
-        assert_eq!(start(None, |_| true).await.1, None);
-    }
-
-    #[tokio::test]
-    async fn a_reload_another_start_got_to_first_is_waited_for_not_doubled() {
-        // This start's bootstrap fails, but the service the other loaded brings
-        // the daemon up a moment later.
-        let taken = RefCell::new(Vec::new());
-        let looks = std::cell::Cell::new(0);
-        let started = start_with(
-            QUICK,
-            |way| {
-                taken.borrow_mut().push(way);
-                way == Way::Alone
-            },
-            || {
-                if taken.borrow().contains(&Way::Reload) {
-                    looks.set(looks.get() + 1);
-                }
-                std::future::ready(looks.get() > 2)
-            },
-        )
-        .await;
-        assert_eq!(started, Some(Way::Reload));
-        assert!(!taken.borrow().contains(&Way::Alone), "no second daemon beside it");
+    #[test]
+    fn status_tells_a_daemon_its_service_runs_from_one_on_its_own_over_ssh() {
+        let runs = |ssh, service| Runs { pid: 7, ssh, service, login_session: Some(!ssh), keychain: Some(!ssh) };
+        assert_eq!(how_runs(true, true, Some(7), Some(7), None), HowRuns::Trial);
+        assert_eq!(how_runs(false, true, Some(7), Some(7), Some(&runs(false, true))), HowRuns::Service);
+        // The Mac mini after the update: the service installed, the daemon one an SSH restart started.
+        assert_eq!(how_runs(false, true, None, Some(9), Some(&runs(true, false))), HowRuns::Alone { ssh: true, beside: true });
+        assert_eq!(how_runs(false, true, Some(7), Some(9), Some(&runs(false, false))), HowRuns::Alone { ssh: false, beside: true }, "the pids decide");
+        assert_eq!(how_runs(false, false, None, Some(9), Some(&runs(true, false))), HowRuns::Alone { ssh: true, beside: false });
+        assert_eq!(how_runs(false, false, None, Some(9), None), HowRuns::Alone { ssh: false, beside: false });
+        // A daemon older than `runs`, its service's pid unknown: as before, the service's.
+        assert_eq!(how_runs(false, true, None, Some(9), None), HowRuns::Service);
     }
 
     #[test]
@@ -554,10 +802,27 @@ mod tests {
     }
 
     #[test]
-    fn without_the_service_it_runs_on_its_own_and_the_log_says_how_it_started() {
-        assert_eq!(ways(false).iter().map(|w| w.0).collect::<Vec<_>>(), [Way::Alone]);
-        assert_eq!(ways(true).iter().map(|w| w.0).collect::<Vec<_>>(), [Way::Service, Way::Reload, Way::Alone]);
-        assert_eq!(Way::Service.log_line(), None);
-        assert!(Way::Reload.log_line().is_some() && Way::Alone.log_line().is_some());
+    fn a_daemon_in_a_temporary_home_leaves_on_its_own_and_the_persons_never_does() {
+        let temps = [PathBuf::from("/tmp"), PathBuf::from("/var/folders/hy/x/T/")];
+        // Homes T-355's and T-362's checks left their daemons in.
+        assert!(is_temporary(Path::new("/tmp/t355home"), &temps));
+        assert!(is_temporary(Path::new("/private/tmp/t362home.38E6"), &temps), "/tmp is /private/tmp on a Mac");
+        assert!(is_temporary(Path::new("/private/var/folders/hy/x/T/tmp.Pwnyv1UVsb"), &temps));
+        assert!(!is_temporary(Path::new("/Users/a/.equipe"), &temps));
+        assert!(!is_temporary(Path::new("/tmpfiles/home"), &temps), "a folder named like it isn't one");
+        assert!(!is_temporary(Path::new("/tmp/../Users/a/.equipe"), &temps), "a way through /tmp back to the person's home isn't one");
+
+        let hung = gateway::Leave { hung: Some(equipe_core::watchdog::HUNG_AFTER), ..gateway::Leave::NEVER };
+        assert_eq!(leave_for(Path::new("/Users/a/.equipe"), &temps, None), hung, "the person's own leaves only when hung");
+        assert_eq!(
+            leave_for(Path::new("/Users/a/.equipe"), &temps, Some(Duration::from_secs(1))),
+            hung,
+            "no setting makes the person's own daemon leave"
+        );
+        let trial = leave_for(Path::new("/tmp/t355home"), &temps, None);
+        assert!(trial.home_gone);
+        assert_eq!(trial.idle, Some(TRIAL_IDLE));
+        assert_eq!(trial.hung, Some(equipe_core::watchdog::HUNG_AFTER));
+        assert_eq!(leave_for(Path::new("/tmp/t355home"), &temps, Some(Duration::from_secs(2))).idle, Some(Duration::from_secs(2)));
     }
 }

@@ -14,6 +14,8 @@ use crate::disk::{self, DiskCleaned, DiskLevel, DiskReport, DiskStatus};
 const NO_ROOM_HOLD: Duration = Duration::from_secs(5 * 60);
 /// The build caches are trimmed on a short disk at most this often.
 const TRIM_EVERY: Duration = Duration::from_secs(10 * 60);
+/// …and this often once the disk is full.
+const TRIM_EVERY_FULL: Duration = Duration::from_secs(60);
 /// With room to spare, what's certain to be unneeded is given back this often
 /// (kept across restarts by a stamp's time, `cache/auto-clean`).
 const AUTO_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
@@ -67,7 +69,7 @@ impl Runtime {
 
     /// How much room there is, looked at off the loop; one look at a time.
     pub(super) fn look_at_disk(&mut self) {
-        if self.disk.looking {
+        if self.disk.looking || !self.config.watch_disk {
             return;
         }
         self.disk.looking = true;
@@ -157,13 +159,15 @@ impl Runtime {
     /// Rebuilt when wanted, so nobody is asked; logged.
     fn trim_if_short(&mut self) {
         let level = self.disk.status.level;
-        if !level.is_warning() || self.disk.trimming || self.disk.trimmed.is_some_and(|at| at.elapsed() < TRIM_EVERY) {
+        // Full, every minute counts: not the usual wait between trims.
+        let every = if level == DiskLevel::Full { TRIM_EVERY_FULL } else { TRIM_EVERY };
+        if !level.is_warning() || self.disk.trimming || self.disk.trimmed.is_some_and(|at| at.elapsed() < every) {
             return;
         }
         (self.disk.trimming, self.disk.trimmed) = (true, Some(std::time::Instant::now()));
-        let (home, internal, deeper) = (self.config.home.clone(), self.internal.clone(), level.holds_builds());
+        let (home, internal) = (self.config.home.clone(), self.internal.clone());
         tokio::task::spawn_blocking(move || {
-            let (freed, lines) = disk::trim_builds(&home, deeper);
+            let (freed, lines) = disk::trim_builds(&home, level);
             let _ = internal.send(Internal::DiskTrimmed(freed, lines));
         });
     }
@@ -188,6 +192,8 @@ impl Runtime {
         if before != DiskLevel::Full {
             self.disk.status.level = DiskLevel::Full;
             self.disk_level_changed(before);
+            // Room at once, not at the next look.
+            self.trim_if_short();
         }
     }
 
@@ -250,7 +256,7 @@ impl Runtime {
     }
 
     /// Every member of `squad`, lanes left out.
-    fn squad_members(&self, squad: &str) -> Vec<SessionId> {
+    pub(super) fn squad_members(&self, squad: &str) -> Vec<SessionId> {
         self.sessions.iter().filter(|(_, s)| s.squad.as_deref() == Some(squad) && s.lane.is_none() && s.member.is_some()).map(|(&id, _)| id).collect()
     }
 
@@ -263,7 +269,7 @@ impl Runtime {
         }
         let Some(name) = self.sessions.get(&id).and_then(|s| s.name().map(str::to_owned)) else { return };
         let text = say!(self, "news.disk_build_failed", name = name);
-        self.publish(Event::Notice { session: id, text });
+        self.publish(Event::Notice { undo: None, session: id, text });
         if let Some(session) = self.sessions.get_mut(&id) {
             session.briefing.push(
                 "Your last build failed because the disk is full (No space left on device). Don't retry it: tell the person, who frees space in equipe's Disk panel (/disk), then carry on."
@@ -392,6 +398,7 @@ impl Runtime {
     /// (one whose removal failed, or kept) goes now, off the loop — rebuilt
     /// when wanted; the worktree and its branch stay. Logged.
     pub(super) fn clear_finished_builds(&mut self, squad: &str, ticket: &Ticket) {
+        self.clear_finished_phones(squad, ticket.id);
         let folder = if ticket.kind.in_home() {
             format!("{squad}.home")
         } else {

@@ -1,6 +1,7 @@
 //! Two plans, one squad: equipe watches what is left of each engine's plan
-//! ([`crate::EnginePlan`]) and moves members between engines at their ticket
-//! boundaries — never mid-turn. How it does is the squad's choice
+//! ([`crate::EnginePlan`]) and moves members between engines — between
+//! tickets, or at the end of a turn mid-ticket with the ticket handed over
+//! ([`Move::now`]); never mid-turn. How it does is the squad's choice
 //! ([`Switching`]): only showing, proposing on a card the person answers, or
 //! moving on its own and saying so, with one click to undo. A move is never
 //! paid for: equipe doesn't spend credits or overage on its own.
@@ -98,6 +99,12 @@ pub struct Move {
     /// Made: the member runs as it says now.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub done: bool,
+    /// At the end of the member's current turn, even mid-ticket: its ticket
+    /// is handed over (same branch and worktree, a brief of what was done and
+    /// what is next) and carried on on the other engine. Otherwise a member on
+    /// a ticket finishes it where it is and moves before its next one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub now: bool,
 }
 
 impl Move {
@@ -105,6 +112,66 @@ impl Move {
     pub fn in_place(&self) -> bool {
         self.from == self.to
     }
+}
+
+/// How much of the conversation before a move a screen is sent with its
+/// hand-over ([`crate::Event::HandOver`]): its latest lines, at most this many.
+pub const EARLIER_LINES: usize = 600;
+/// A hand-over packet is kept to this many bytes at most.
+pub const PACKET_MOST: usize = 64 * 1024;
+
+/// A member moved to the other engine: the session it was closed, and one
+/// under the same name carries on, opening with the hand-over packet equipe
+/// wrote. Its memory, worktree and tickets stay; the conversation before is
+/// the journal's, read back with [`crate::Command::HandOver`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandOver {
+    pub member: String,
+    /// The session that closed.
+    pub from_session: crate::SessionId,
+    /// The one that carries on.
+    pub to_session: crate::SessionId,
+    pub from: Engine,
+    /// Where it carries on: the other engine — or the same one, when the
+    /// other couldn't start it.
+    pub to: Engine,
+    pub why: Why,
+    /// When, in unix seconds.
+    pub at: i64,
+    /// The ticket it was in the middle of, handed over with it; `None`: it
+    /// moved between tickets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<crate::TicketId>,
+}
+
+impl HandOver {
+    /// The moves session `session` carries on from, newest first: the one
+    /// into it, then the one into that, and so on.
+    pub fn chain(all: &[HandOver], session: crate::SessionId) -> Vec<&HandOver> {
+        let mut out: Vec<&HandOver> = Vec::new();
+        let mut at = session;
+        while let Some(h) = all.iter().rev().find(|h| h.to_session == at && !out.iter().any(|o| o.to_session == h.to_session)) {
+            out.push(h);
+            at = h.from_session;
+        }
+        out
+    }
+}
+
+/// Why a plan's moves are worth it, as the Usage screen's forecast says:
+/// when the plan runs out at the pace of late, against when it starts over,
+/// and how much of its week the members moving used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Forecast {
+    /// When it runs out at this pace (unix seconds); `None`: it lasts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runs_out_at: Option<i64>,
+    /// When the window starts over (unix seconds).
+    pub resets_at: i64,
+    /// Of the engine's load this week, what the members moving used, in
+    /// basis points (10 000 = 100 %); `None`: not known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_bp: Option<u32>,
 }
 
 /// Moves equipe proposes — or, in [`Switching::Auto`], made and tells of.
@@ -129,6 +196,9 @@ pub struct Proposal {
     /// When, in unix seconds.
     #[serde(default)]
     pub proposed_at: u64,
+    /// The forecast behind it, when the plan's pace is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forecast: Option<Forecast>,
 }
 
 impl Proposal {
@@ -136,12 +206,140 @@ impl Proposal {
     pub fn to(&self) -> Option<Engine> {
         self.moves.iter().find(|m| !m.in_place()).map(|m| m.to)
     }
+
+    /// Whether any of its moves still waits for its member.
+    pub fn waiting(&self) -> bool {
+        self.moves.iter().any(|m| !m.done)
+    }
+}
+
+/// Which engine reviews a designer's work — `equipe design critique` and
+/// `second-look`. What matters is a reviewer that saw none of the work being
+/// made; the other engine adds a second model's eyes when it can take it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reviewer {
+    /// The other engine when it is installed, signed in and its plan has
+    /// room; else the member's own engine, in a fresh session.
+    #[default]
+    Auto,
+    /// Always the member's own engine, in a fresh session.
+    Same,
+    /// Always the other engine — the member's own only when the other can't run.
+    Other,
+}
+
+impl Reviewer {
+    pub const ALL: [Reviewer; 3] = [Reviewer::Auto, Reviewer::Same, Reviewer::Other];
+
+    pub fn code(self) -> &'static str {
+        match self {
+            Reviewer::Auto => "auto",
+            Reviewer::Same => "same",
+            Reviewer::Other => "other",
+        }
+    }
+
+    /// `auto`, `same`, `other` — as typed in a command or kept in a journal.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim().to_ascii_lowercase().replace(['-', ' '], "_").as_str() {
+            "auto" | "default" => Some(Reviewer::Auto),
+            "same" | "same_engine" | "same_as_member" | "own" => Some(Reviewer::Same),
+            "other" | "other_engine" | "cross" => Some(Reviewer::Other),
+            _ => None,
+        }
+    }
+
+    pub fn is_default(&self) -> bool {
+        *self == Reviewer::default()
+    }
+}
+
+/// Who reviewed a designer's work, and why that engine: kept with the
+/// critique and on the second look's verdict, so the person can see it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reviewed {
+    pub engine: Engine,
+    /// The engine the designer works on, when known: the same one means a
+    /// fresh session of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member: Option<Engine>,
+    pub why: ReviewWhy,
+}
+
+/// Why the reviewer is the engine it is. The reasons about the other engine
+/// speak of the one the member isn't on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReviewWhy {
+    /// Named on the command (`--engine`).
+    Named,
+    /// The squad's setting ([`Reviewer::Same`] or [`Reviewer::Other`]).
+    Setting,
+    /// The other engine is signed in with room: its week this used, when read.
+    Room {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        used: Option<u8>,
+    },
+    /// The other engine isn't installed.
+    NotInstalled,
+    /// The other engine isn't signed in.
+    SignedOut,
+    /// The other engine's limit is used up.
+    UsedUp { window: Window },
+    /// The other engine's limit is nearly used.
+    NearLimit { window: Window, used: u8 },
+    /// At its pace, the other engine's limit runs out before it starts over.
+    RunsOut { window: Window, used: u8 },
+    /// The other engine was tried and couldn't run (signed out, out of usage).
+    Failed,
+}
+
+/// The engine `engine` isn't.
+fn across(engine: Engine) -> Engine {
+    match engine {
+        Engine::Claude => Engine::Codex,
+        Engine::Codex => Engine::Claude,
+    }
+}
+
+impl Reviewed {
+    /// The member's own engine, in a fresh session.
+    pub fn fresh(&self) -> bool {
+        self.member == Some(self.engine)
+    }
+
+    /// The engine the reasons speak of: the one the member isn't on.
+    pub fn other(&self) -> Engine {
+        across(self.member.unwrap_or_else(|| across(self.engine)))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn who_reviewed_and_why_travel_as_plain_words() {
+        for r in Reviewer::ALL {
+            assert_eq!(Reviewer::parse(r.code()), Some(r));
+        }
+        assert_eq!(Reviewer::parse("Same as member"), Some(Reviewer::Same));
+        assert_eq!(Reviewer::parse("other-engine"), Some(Reviewer::Other));
+        assert_eq!(Reviewer::parse("codex"), None);
+        assert!(Reviewer::default().is_default() && Reviewer::default() == Reviewer::Auto);
+        let near = Reviewed { engine: Engine::Claude, member: Some(Engine::Claude), why: ReviewWhy::NearLimit { window: Window::Weekly, used: 93 } };
+        let wire = serde_json::to_value(near).unwrap();
+        assert_eq!(wire, json!({ "engine": "claude", "member": "claude", "why": { "kind": "near_limit", "window": "weekly", "used": 93 } }));
+        assert_eq!(serde_json::from_value::<Reviewed>(wire).unwrap(), near);
+        assert!(near.fresh() && near.other() == Engine::Codex);
+        let room = Reviewed { engine: Engine::Codex, member: Some(Engine::Claude), why: ReviewWhy::Room { used: None } };
+        assert!(!room.fresh() && room.other() == Engine::Codex);
+        assert_eq!(serde_json::to_value(room).unwrap()["why"], json!({ "kind": "room" }));
+        let named = Reviewed { engine: Engine::Claude, member: None, why: ReviewWhy::Named };
+        assert_eq!(named.other(), Engine::Claude, "nobody's engine known: the reviewer is taken for the other one");
+    }
 
     fn shift() -> Proposal {
         Proposal {
@@ -151,9 +349,10 @@ mod tests {
             window: Some(Window::FiveHour),
             used_percent: 86,
             resets_at: 1_760_007_200,
-            moves: vec![Move { member: "backend".into(), role: "backend".into(), from: Engine::Claude, to: Engine::Codex, model: None, effort: None, was_model: Some("opus".into()), done: false }],
+            moves: vec![Move { member: "backend".into(), role: "backend".into(), from: Engine::Claude, to: Engine::Codex, model: None, effort: None, was_model: Some("opus".into()), done: false, now: false }],
             applied: false,
             proposed_at: 1_760_000_000,
+            forecast: None,
         }
     }
 
@@ -169,6 +368,36 @@ mod tests {
         let setup: Proposal = serde_json::from_value(json!({ "id": 1, "why": "setup", "moves": [] })).unwrap();
         assert_eq!((setup.engine, setup.window, setup.applied, setup.to()), (None, None, false, None));
         assert_eq!(shift().to(), Some(Engine::Codex));
+        // A move now and its forecast, as a newer daemon sends them; an older screen reads neither.
+        let mut now = shift();
+        now.moves[0].now = true;
+        now.forecast = Some(Forecast { runs_out_at: Some(1_760_100_000), resets_at: 1_760_300_000, load_bp: Some(6_400) });
+        let wire = serde_json::to_value(&now).unwrap();
+        assert_eq!(wire["moves"][0]["now"], json!(true));
+        assert_eq!(wire["forecast"], json!({ "runs_out_at": 1_760_100_000i64, "resets_at": 1_760_300_000i64, "load_bp": 6_400 }));
+        assert_eq!(serde_json::from_value::<Proposal>(wire).unwrap(), now);
+        assert!(now.waiting());
+    }
+
+    fn moved(from: u64, to: u64, engine: (Engine, Engine)) -> HandOver {
+        HandOver { member: "backend".into(), from_session: from, to_session: to, from: engine.0, to: engine.1, why: Why::Person, at: 1_760_000_000 + to as i64, ticket: None }
+    }
+
+    #[test]
+    fn a_member_carries_on_from_every_session_before_it_newest_first_and_says_so_on_the_wire() {
+        let all = vec![moved(1, 2, (Engine::Claude, Engine::Codex)), moved(7, 8, (Engine::Claude, Engine::Codex)), moved(2, 3, (Engine::Codex, Engine::Claude))];
+        let chain: Vec<(u64, u64)> = HandOver::chain(&all, 3).iter().map(|h| (h.from_session, h.to_session)).collect();
+        assert_eq!(chain, [(2, 3), (1, 2)], "Claude to Codex and back: both moves, the latest first");
+        assert!(HandOver::chain(&all, 1).is_empty(), "where it began: nothing before");
+        assert_eq!(HandOver::chain(&all, 8).len(), 1, "another member's move is its own");
+        // A record that loops is read once, not forever.
+        let looped = vec![moved(1, 2, (Engine::Claude, Engine::Codex)), moved(2, 1, (Engine::Codex, Engine::Claude))];
+        assert_eq!(HandOver::chain(&looped, 2).len(), 2);
+        let mid = HandOver { ticket: Some(42), why: Why::Exhausted, ..moved(1, 2, (Engine::Claude, Engine::Codex)) };
+        let wire = serde_json::to_value(&mid).unwrap();
+        assert_eq!(wire, json!({ "member": "backend", "from_session": 1, "to_session": 2, "from": "claude", "to": "codex", "why": "exhausted", "at": 1_760_000_002i64, "ticket": 42 }));
+        assert_eq!(serde_json::from_value::<HandOver>(wire).unwrap(), mid);
+        assert_eq!(serde_json::to_value(moved(1, 2, (Engine::Claude, Engine::Codex))).unwrap().get("ticket"), None, "between tickets: no ticket on the wire");
     }
 
     #[test]

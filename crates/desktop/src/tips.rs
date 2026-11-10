@@ -88,6 +88,18 @@ pub fn tip_at<E: StatefulInteractiveElement + ParentElement + 'static>(el: E, p:
     let keys: Option<SharedString> = keys.map(|k| SharedString::from(k.to_owned()));
     let bounds = Rc::new(Cell::new(Bounds::default()));
     let seen = bounds.clone();
+    // The tooltip is the control's name to a screen reader too, unless what
+    // it's on names itself after this.
+    let said = Spoken::of(&label, keys.as_deref());
+    let el = el.aria_label(said.name);
+    let el = match said.more {
+        Some(more) => el.aria_description(more),
+        None => el,
+    };
+    let el = match said.keys {
+        Some(keys) => el.aria_keyshortcuts(keys),
+        None => el,
+    };
     el.on_prepaint(move |b, _, _| seen.set(b))
         .on_hover(move |hovered, window, cx| {
             let Some(overlay) = cx.try_global::<Tips>().map(|t| t.0.clone()) else { return };
@@ -100,6 +112,31 @@ pub fn tip_at<E: StatefulInteractiveElement + ParentElement + 'static>(el: E, p:
             }
         })
         .on_mouse_down(MouseButton::Left, |_, _, cx| hide(cx))
+}
+
+/// A tooltip as a screen reader says it: a name, what more it tells, and
+/// the keys that do the same — "Search ⌘K" is Search with ⌘K, "web\nSwitch to
+/// this project" is web, then the rest.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Spoken {
+    pub name: String,
+    pub more: Option<String>,
+    pub keys: Option<String>,
+}
+
+impl Spoken {
+    pub fn of(label: &str, keys: Option<&str>) -> Spoken {
+        let mut parts = label.split('\n').flat_map(|line| line.split(" · ")).map(str::trim).filter(|part| !part.is_empty());
+        let first = parts.next().unwrap_or_default();
+        let more: Vec<&str> = parts.collect();
+        // A shortcut written after the name: the words before its last space
+        // when what follows starts with a modifier's mark.
+        let (name, written) = match first.rsplit_once(' ') {
+            Some((name, last)) if last.starts_with(['⌘', '⇧', '⌥', '⌃']) => (name.trim_end(), Some(last)),
+            _ => (first, None),
+        };
+        Spoken { name: name.to_owned(), more: (!more.is_empty()).then(|| more.join(". ")), keys: keys.or(written).map(str::to_owned) }
+    }
 }
 
 /// The same, as a method: `.tip(p, "Search", Some("⌘K"))`, `.tip_at(…, Placement::Right)`.
@@ -119,5 +156,22 @@ impl<E: StatefulInteractiveElement + ParentElement + 'static> TipExt for E {}
 pub fn hide(cx: &mut App) {
     if let Some(overlay) = cx.try_global::<Tips>().map(|t| t.0.clone()) {
         overlay.update(cx, |o, cx| o.hide(cx));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Spoken;
+
+    #[test]
+    fn a_tooltip_is_said_as_a_name_with_its_keys_and_the_rest_after() {
+        assert_eq!(Spoken::of("찾기 ⌘K", None), Spoken { name: "찾기".into(), more: None, keys: Some("⌘K".into()) });
+        assert_eq!(
+            Spoken::of("사이드바 숨기기 ⌘\\ · 가장자리를 끌어 너비 조절", None),
+            Spoken { name: "사이드바 숨기기".into(), more: Some("가장자리를 끌어 너비 조절".into()), keys: Some("⌘\\".into()) }
+        );
+        assert_eq!(Spoken::of("web\n이 프로젝트로 전환\n~/web", None), Spoken { name: "web".into(), more: Some("이 프로젝트로 전환. ~/web".into()), keys: None });
+        // Keys given beside the words are the ones said; a plain name stays whole.
+        assert_eq!(Spoken::of("Close the panel", Some("Esc")), Spoken { name: "Close the panel".into(), more: None, keys: Some("Esc".into()) });
     }
 }

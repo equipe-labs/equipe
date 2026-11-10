@@ -6,7 +6,7 @@ hung for minutes on `~/.equipe/equipe.sock`. The agents kept working: two
 `claude -p` member turns and the browser host were still running. But no
 screen could attach, and no member's board tool call got an answer.
 
-## Timeline (KST)
+## Timeline (KST, UTC+9)
 
 | When | What |
 |---|---|
@@ -155,7 +155,7 @@ in a similar situation:
   answer, the reply carries `stalled { doing, since, secs }` (a new optional
   field in `rpc::Busy`).
 * `equipe daemon status` never waits longer than 5 s.
-  * A stalled core shows as `응답 없음  13:21:05부터 — minute tick 처리 중 (95초째)`
+  * A stalled core shows as `No answer  since 13:21:05 — handling the minute tick (95 s)` (in the screen's language)
     with the restart hint.
   * A daemon that answers nothing at all says so and suggests
     `equipe daemon restart`.

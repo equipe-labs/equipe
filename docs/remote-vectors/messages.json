@@ -13,7 +13,7 @@
             "type": "accept"
           }
         },
-        "seq": 39,
+        "seq": 40,
         "squad": "home",
         "ts": 1760000000000
       }
@@ -30,7 +30,7 @@
             "type": "accept"
           }
         },
-        "seq": 38,
+        "seq": 39,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -405,6 +405,40 @@
         "ts": 1760000000000
       }
     },
+    "decide: by voice, made sure of on the phone": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "approval": 17,
+            "decision": "allow",
+            "squad": "acme",
+            "type": "decide",
+            "utterance": "응 해",
+            "via": "voice"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "approval": 17,
+            "decision": "allow",
+            "squad": "acme",
+            "type": "decide",
+            "utterance": "응 해",
+            "via": "voice"
+          }
+        },
+        "seq": 46,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "decide: deny": {
       "daemon": {
         "command": {
@@ -628,7 +662,7 @@
             "type": "sign_in"
           }
         },
-        "seq": 35,
+        "seq": 36,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -644,7 +678,7 @@
             "type": "sign_out"
           }
         },
-        "seq": 36,
+        "seq": 37,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -668,7 +702,7 @@
             "type": "engines"
           }
         },
-        "seq": 34,
+        "seq": 35,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -806,7 +840,7 @@
             "type": "branch_landed"
           }
         },
-        "seq": 60,
+        "seq": 62,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -857,7 +891,7 @@
             "type": "compact_failed"
           }
         },
-        "seq": 65,
+        "seq": 67,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -876,7 +910,7 @@
             "type": "compacted"
           }
         },
-        "seq": 63,
+        "seq": 65,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -896,7 +930,7 @@
             "type": "compacting"
           }
         },
-        "seq": 62,
+        "seq": 64,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -915,7 +949,7 @@
             "type": "compacting"
           }
         },
-        "seq": 64,
+        "seq": 66,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1124,7 +1158,7 @@
             "type": "disk_level"
           }
         },
-        "seq": 58,
+        "seq": 60,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1275,7 +1309,7 @@
             "type": "engines"
           }
         },
-        "seq": 59,
+        "seq": 61,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1292,7 +1326,7 @@
             "type": "error"
           }
         },
-        "seq": 51,
+        "seq": 53,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1325,7 +1359,7 @@
             "type": "model_known"
           }
         },
-        "seq": 56,
+        "seq": 58,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1340,7 +1374,7 @@
             "type": "nothing_changed"
           }
         },
-        "seq": 61,
+        "seq": 63,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1357,6 +1391,40 @@
           }
         },
         "seq": 50,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: notice of a change taken back": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "session": 1001,
+            "text": "Taken back: saved notes/tax-deadline.md · you can take this back too",
+            "type": "notice",
+            "undo": "9a8b7c6d5e4f30211203f4e5d6c7b8a9f0e1d2c3"
+          }
+        },
+        "seq": 52,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: notice of a change to the squad's folder": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "session": 1001,
+            "text": "✎ pm saved notes/tax-deadline.md in the squad's folder · /home undo takes it back",
+            "type": "notice",
+            "undo": "3f1c2a9b7e5d4c6a8b0f1e2d3c4b5a6978877665"
+          }
+        },
+        "seq": 51,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1547,7 +1615,7 @@
             "type": "queue_sent"
           }
         },
-        "seq": 57,
+        "seq": 59,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1632,7 +1700,7 @@
             "type": "steer_queued"
           }
         },
-        "seq": 52,
+        "seq": 54,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1648,7 +1716,7 @@
             "type": "steered"
           }
         },
-        "seq": 53,
+        "seq": 55,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1794,7 +1862,7 @@
             "type": "thread"
           }
         },
-        "seq": 54,
+        "seq": 56,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1810,7 +1878,7 @@
             "type": "thread"
           }
         },
-        "seq": 55,
+        "seq": 57,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2052,7 +2120,85 @@
             ]
           }
         },
-        "seq": 70,
+        "seq": 72,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: words closed": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "id": 12000001,
+            "outcome": "undone",
+            "squad": "acme",
+            "text": "Undone — nothing happened: Accept T-38",
+            "type": "words_closed"
+          }
+        },
+        "seq": 75,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: words live, read back": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "live": {
+              "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+              "id": 12000001,
+              "items": [
+                "T-38 “로그인 API 에러 메시지”"
+              ],
+              "kind": "merge",
+              "read_back": "Merge T-38 into main, on this Mac",
+              "said": "T-38 수락",
+              "session": 1000001,
+              "stage": "read_back",
+              "tier": "high",
+              "until": 1760000005000,
+              "via": "voice"
+            },
+            "squad": "acme",
+            "type": "words_live"
+          }
+        },
+        "seq": 74,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: words live, undo window": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "live": {
+              "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+              "id": 12000001,
+              "items": [
+                "T-38 “로그인 API 에러 메시지”"
+              ],
+              "kind": "accept_task",
+              "read_back": "Accept T-38",
+              "said": "T-38 수락",
+              "session": 1000001,
+              "stage": "undo",
+              "tier": "low",
+              "until": 1760000005000,
+              "via": "voice"
+            },
+            "squad": "acme",
+            "type": "words_live"
+          }
+        },
+        "seq": 73,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2402,7 +2548,8 @@
                     "title": "로그인 API",
                     "worktree": "/Users/you/.equipe/worktrees/api/t38-1a2b3c4d"
                   }
-                ]
+                ],
+                "words": []
               },
               "uploads": {
                 "chunk": 393216,
@@ -2609,7 +2756,7 @@
             "type": "merge"
           }
         },
-        "seq": 37,
+        "seq": 38,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2667,7 +2814,7 @@
               "updated_at": 1793520000
             }
           },
-          "seq": 66,
+          "seq": 68,
           "squad": "acme",
           "ts": 1760000000000
         },
@@ -2687,7 +2834,7 @@
             "squad": "acme"
           }
         },
-        "seq": 40,
+        "seq": 41,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2703,7 +2850,7 @@
             "id": 28,
             "jsonrpc": "2.0"
           },
-          "seq": 68,
+          "seq": 70,
           "squad": "acme",
           "ts": 1760000000000
         }
@@ -2718,7 +2865,7 @@
             "squad": "home"
           }
         },
-        "seq": 41,
+        "seq": 42,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2736,7 +2883,7 @@
             "to": "2026-11-02"
           }
         },
-        "seq": 67,
+        "seq": 69,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2752,7 +2899,7 @@
             "id": 29,
             "jsonrpc": "2.0"
           },
-          "seq": 69,
+          "seq": 71,
           "squad": "acme",
           "ts": 1760000000000
         }
@@ -2767,7 +2914,7 @@
             "squad": "acme"
           }
         },
-        "seq": 42,
+        "seq": 43,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -3258,6 +3405,40 @@
         "ts": 1760000000000
       }
     },
+    "say": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+            "session": 1000001,
+            "squad": "acme",
+            "text": "T-38 수락",
+            "type": "say",
+            "via": "voice"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "all": true,
+            "session": 1000001,
+            "squad": "acme",
+            "text": "T-38 수락",
+            "type": "say",
+            "via": "voice"
+          }
+        },
+        "seq": 44,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "send now": {
       "daemon": {
         "command": {
@@ -3287,7 +3468,7 @@
             "type": "send_now"
           }
         },
-        "seq": 33,
+        "seq": 34,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -3379,7 +3560,7 @@
             "type": "submit"
           }
         },
-        "seq": 31,
+        "seq": 32,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -3409,7 +3590,7 @@
             "type": "submit"
           }
         },
-        "seq": 32,
+        "seq": 33,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -3438,6 +3619,64 @@
           }
         },
         "seq": 26,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "undo home change": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "change": "3f1c2a9b7e5d4c6a8b0f1e2d3c4b5a6978877665",
+            "session": 1001,
+            "squad": "acme",
+            "type": "undo_home_change"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "change": "3f1c2a9b7e5d4c6a8b0f1e2d3c4b5a6978877665",
+            "session": 1001,
+            "squad": "acme",
+            "type": "undo_home_change"
+          }
+        },
+        "seq": 31,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "undo words": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 12000001,
+            "squad": "acme",
+            "type": "undo_words"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 12000001,
+            "squad": "acme",
+            "type": "undo_words"
+          }
+        },
+        "seq": 45,
         "squad": "acme",
         "ts": 1760000000000
       }

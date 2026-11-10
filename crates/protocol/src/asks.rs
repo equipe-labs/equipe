@@ -179,7 +179,7 @@ fn said(reply: &Reply) -> String {
 ///
 /// ```text
 /// Answers to what you asked for:
-/// 1) Tell me the review contact → +82 10 1234 5678
+/// 1) Tell me the review contact → +1 415 555 0134
 /// 2) Set the EU DSA status to trader → do it yourself — the person handed this back to you
 ///    Note: the 2FA code comes to my phone
 /// From the person: do this one yourself
@@ -368,15 +368,15 @@ fn answer_words() -> &'static [&'static str] {
 pub fn want_of(ask: &str) -> Want {
     // A link's `?` and words aren't the ask's: `…/new?plan=free` asks nothing.
     let lower: String = ask.to_lowercase().split_whitespace().filter(|w| !w.contains("://")).collect::<Vec<_>>().join(" ");
-    // A Korean word counts at a word's start only: "set it up, please" ends
-    // in the word for "decide, please" and is a thing to do, not an answer.
+    // A word in a script that spaces its words, ASCII aside, counts at a
+    // word's start only: in Korean, "set it up, please" ends in the word for
+    // "decide, please" and is a thing to do, not an answer.
     let has = |words: &[&str]| {
         words.iter().any(|w| {
-            let hangul = |c: char| ('\u{AC00}'..='\u{D7A3}').contains(&c);
-            if !w.starts_with(hangul) {
+            if !w.starts_with(crate::words::spaced_letter) {
                 return lower.contains(w);
             }
-            lower.match_indices(w).any(|(at, _)| !lower[..at].chars().next_back().is_some_and(hangul))
+            lower.match_indices(w).any(|(at, _)| !lower[..at].chars().next_back().is_some_and(crate::words::spaced_letter))
         })
     };
     if has(confirm_words()) {

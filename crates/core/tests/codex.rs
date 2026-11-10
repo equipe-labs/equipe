@@ -65,6 +65,7 @@ fn config(codex: &Path, home: &Path) -> Config {
         person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::En,
         nemotron: None,
+        watch_disk: false,
     }
 }
 
@@ -195,7 +196,7 @@ async fn codex_asks_the_person_and_an_always_becomes_the_squads_rule() {
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
     assert_eq!((approval.tool.as_str(), approval.action.as_str()), ("Bash", "git push origin main"));
     assert!(approval.reason.as_deref().is_some_and(|r| r.contains("Pushing needs the network")), "{:?}", approval.reason);
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Always, words: None });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Always, words: None, said: None });
     let turn = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(text_of(&turn).contains("Pushed."), "{turn:#?}");
     assert_eq!(sent(&log).iter().find(|m| m["id"] == "srv-1").unwrap()["result"]["decision"], "accept");
@@ -217,7 +218,37 @@ async fn codex_asks_the_person_and_an_always_becomes_the_squads_rule() {
     assert_eq!(start["config"]["mcp_servers"]["node_repl"]["enabled"], false);
     assert_eq!(start["config"]["plugins"]["unified-computer-use@openai-bundled"]["enabled"], false);
     assert_eq!(start["config"]["features"]["apps"], false);
-    assert!(start["developerInstructions"].as_str().unwrap().starts_with("You are qa, the QA engineer"));
+    let instructions = start["developerInstructions"].as_str().unwrap();
+    assert!(instructions.starts_with("You are qa, the QA engineer"));
+    // Its own subagents, by Codex's tool: unset, Codex is given nothing and runs its own 6, as its charter says.
+    assert!(start["config"].get("agents").is_none(), "{start}");
+    let flat = instructions.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.contains("(your `spawn_agent` tool)") && flat.contains("at most 6 subagents at once: for more, start up to 6") && !flat.contains("Agent tool"), "{flat}");
+    // Its skills: an index of absolute paths it reads by, never Codex's own skill folders.
+    let review = home.join("skills").join("test");
+    let path = instructions.split('`').find(|p| p.ends_with("/plan-review/SKILL.md")).unwrap_or_else(|| panic!("{instructions}"));
+    assert!(Path::new(path).is_absolute() && Path::new(path).starts_with(&review), "{path}");
+    let text = std::fs::read_to_string(path).unwrap();
+    assert!(text.starts_with("---\nname: plan-review\n") && text.contains("say whether it can be tested"), "{text}");
+    assert!(instructions.contains("read the matching skill's `SKILL.md` at its path") && !instructions.contains("say whether it can be tested"), "{instructions}");
+}
+
+#[tokio::test]
+async fn a_codex_member_runs_the_squads_number_of_subagents_once_the_person_sets_one() {
+    let (codex, log) = fake_codex("");
+    let cwd = scratch("site");
+    let home = scratch("home");
+    squads::create(&home, "acme", &cwd).unwrap();
+    let (handle, mut events) = runtime::start(config(&codex, &home));
+    add(&handle, &mut events, 1, on_codex(&cwd, "qa")).await;
+    handle.send(Command::SetSubagentsAtOnce { squad: "acme".into(), at_once: Some(4) });
+    until(&mut events, |e| matches!(e, Event::SubagentsAtOnceChanged { .. })).await;
+    handle.send(Command::Submit { session: 1, text: "survey it".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let start = &params_of(&log, "thread/start")[0];
+    assert_eq!(start["config"]["agents"]["max_concurrent_threads_per_session"], 4, "{start}");
+    let flat = start["developerInstructions"].as_str().unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.contains("Your engine runs at most 4 subagents at once: for more, start up to 4"), "{flat}");
 }
 
 #[tokio::test]
@@ -231,7 +262,7 @@ async fn a_declined_command_is_not_run() {
     handle.send(Command::Submit { session: 1, text: "approve the push".into(), about: None });
     let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
     let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None, said: None });
     let turn = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     assert!(text_of(&turn).contains("declined"), "{turn:#?}");
 }

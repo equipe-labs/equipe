@@ -1,7 +1,7 @@
 //! Which language dictation listens for. It recognizes on this Mac only
 //! (never on Apple's servers), and a Mac has an on-device model only for the
-//! languages its dictation was given — Korean and English often, the rest
-//! not until added. So the person may pick the language apart from the app's,
+//! languages its dictation was given — often only one or two, the rest not
+//! until added. So the person may pick the language apart from the app's,
 //! and with none picked equipe takes the first that can be heard here: the
 //! app's, then the Mac's preferred languages in order.
 
@@ -36,7 +36,7 @@ pub fn heard_here(lang: Lang) -> bool {
     crate::transcribe::on_device(locale(lang))
 }
 
-/// The language of the keyboard being typed with now (한글 → Korean, ABC →
+/// The language of the keyboard being typed with now (a Korean input source → Korean, ABC →
 /// English), if equipe speaks it: what the person likely speaks next.
 pub fn typing_lang() -> Option<Lang> {
     #[cfg(target_os = "macos")]

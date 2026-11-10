@@ -69,6 +69,11 @@ pub fn facts(folder: &Path) -> Vec<Fact> {
         .collect()
 }
 
+/// A fact's file, read: its frontmatter and its body.
+pub fn parse_fact(file: &str, text: &str) -> Fact {
+    parse(file, text)
+}
+
 fn parse(file: &str, text: &str) -> Fact {
     let stem = file.trim_end_matches(".md").to_owned();
     let mut fact = Fact { file: file.to_owned(), name: stem, description: String::new(), kind: "other".into(), updated: String::new(), body: String::new() };
@@ -151,7 +156,7 @@ pub struct Remember<'a> {
 }
 
 /// A fact's file name: its name, lowercased, with anything that isn't a letter
-/// or a digit made a dash. Korean names stay Korean.
+/// or a digit made a dash. A name in any script stays in it.
 pub fn slug(name: &str) -> String {
     let dashed: String = name.trim().to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
     let slug = dashed.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-");

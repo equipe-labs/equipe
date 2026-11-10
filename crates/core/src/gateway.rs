@@ -15,8 +15,14 @@ use std::time::Duration;
 use equipe_protocol::rpc::{self, Hello, HelloParams, Message, ToolCall, ToolResult};
 use equipe_protocol::{Command, Event};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(unix)]
 use tokio::net::unix::OwnedWriteHalf;
+#[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
+#[cfg(windows)]
+use tokio::net::tcp::OwnedWriteHalf;
+#[cfg(windows)]
+use tokio::net::{TcpListener as UnixListener, TcpStream as UnixStream};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 
@@ -37,6 +43,99 @@ pub async fn serve(config: runtime::Config, socket: &Path, version: &str) -> io:
 /// [`serve`], with the product's numbers kept by `metrics` (its keys in
 /// memory, for tests).
 pub async fn serve_with(config: runtime::Config, socket: &Path, version: &str, metrics: std::sync::Arc<crate::metrics::Metrics>) -> io::Result<()> {
+    serve_until(config, socket, version, metrics, Leave::NEVER).await
+}
+
+/// [`serve`] until a client asks it to shut down or `leave` says it is time.
+pub async fn serve_leaving(config: runtime::Config, socket: &Path, version: &str, leave: Leave) -> io::Result<()> {
+    let metrics = std::sync::Arc::new(crate::metrics::Metrics::open(&config.home));
+    serve_until(config, socket, version, metrics, leave).await
+}
+
+/// When a daemon leaves on its own, with no one asking it to stop. The
+/// person's own never does — it keeps the squad between screens; one a test or
+/// a check started in a temporary home does, or it would outlive them for good.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Leave {
+    /// Once its home folder is gone.
+    pub home_gone: bool,
+    /// After this long with no connection and no member mid-turn.
+    pub idle: Option<Duration>,
+    /// How often it looks.
+    pub every: Duration,
+    /// Once it hasn't answered its own `status` for this long, with its loop
+    /// on no step: hung, it exits, for the login service to start it again
+    /// ([`crate::watchdog::hung`]). The daemon's; a test's runtime stays.
+    pub hung: Option<Duration>,
+}
+
+impl Leave {
+    pub const NEVER: Leave = Leave { home_gone: false, idle: None, every: Duration::from_secs(5), hung: None };
+
+    fn watches(&self) -> bool {
+        self.home_gone || self.idle.is_some()
+    }
+}
+
+/// The connections open now, and when the last one opened or closed.
+struct Screens {
+    open: std::sync::atomic::AtomicUsize,
+    since: std::sync::Mutex<tokio::time::Instant>,
+}
+
+impl Screens {
+    fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self { open: Default::default(), since: std::sync::Mutex::new(tokio::time::Instant::now()) })
+    }
+
+    /// A connection, counted until the guard is dropped.
+    fn enter(self: &std::sync::Arc<Self>) -> ScreenGuard {
+        self.open.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.touch();
+        ScreenGuard(self.clone())
+    }
+
+    fn touch(&self) {
+        *self.since.lock().unwrap_or_else(|e| e.into_inner()) = tokio::time::Instant::now();
+    }
+
+    /// How long since a connection was last open; `None` while one is.
+    fn alone_for(&self) -> Option<Duration> {
+        let since = *self.since.lock().unwrap_or_else(|e| e.into_inner());
+        (self.open.load(std::sync::atomic::Ordering::SeqCst) == 0).then(|| since.elapsed())
+    }
+}
+
+struct ScreenGuard(std::sync::Arc<Screens>);
+
+impl Drop for ScreenGuard {
+    fn drop(&mut self) {
+        self.0.touch();
+        self.0.open.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Why a daemon leaves now by `leave`, or `None` while it stays.
+async fn time_to_leave(leave: &Leave, home: &Path, screens: &Screens, core: &Handle) -> Option<String> {
+    if leave.home_gone && !home.is_dir() {
+        return Some(format!("its home {} is gone", home.display()));
+    }
+    let idle = leave.idle?;
+    if screens.alone_for().is_none_or(|alone| alone < idle) {
+        return None;
+    }
+    // Asked only once alone long enough: a stuck core counts as one at work.
+    let busy = core.busy().await;
+    (busy.working.is_empty() && busy.stalled.is_none()).then(|| format!("no screen for {}s and no one at work", idle.as_secs()))
+}
+
+async fn serve_until(
+    config: runtime::Config,
+    socket: &Path,
+    version: &str,
+    metrics: std::sync::Arc<crate::metrics::Metrics>,
+    leave: Leave,
+) -> io::Result<()> {
     let listener = bind(socket).await?;
     let home = config.home.clone();
     // Each connection's numbers, once a day.
@@ -44,13 +143,22 @@ pub async fn serve_with(config: runtime::Config, socket: &Path, version: &str, m
     let (core, own_events) = runtime::start(config);
     // Screens subscribe for themselves; an unread receiver would only pile up events.
     drop(own_events);
+    let healing = leave.hung.map(|after| core.heal_when_hung(after, Some(home.join("daemon-hang.txt"))));
     let (stop_tx, mut stop_rx) = mpsc::unbounded_channel::<oneshot::Sender<()>>();
+    let screens = Screens::new();
+    let mut look = tokio::time::interval(leave.every);
+    look.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-    loop {
+    let ack = loop {
         tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
-                    tokio::spawn(serve_client(stream, core.clone(), home.clone(), version.to_owned(), stop_tx.clone(), metrics.clone()));
+                    let screen = screens.enter();
+                    let client = serve_client(stream, core.clone(), home.clone(), version.to_owned(), stop_tx.clone(), metrics.clone());
+                    tokio::spawn(async move {
+                        client.await;
+                        drop(screen);
+                    });
                 }
                 // Out of file descriptors, say: the next screen may find one. The
                 // daemon — and the agents it runs — stays.
@@ -59,19 +167,29 @@ pub async fn serve_with(config: runtime::Config, socket: &Path, version: &str, m
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 }
             },
-            Some(ack) = stop_rx.recv() => {
-                // A core that doesn't stop in time is left behind: the process ends anyway.
-                if tokio::time::timeout(SHUTDOWN_WAIT, core.shutdown()).await.is_err() {
-                    let doing = core.stall().map_or_else(|| "?".to_owned(), |s| s.doing);
-                    crate::daemon_log!("equipe: stopping without the core, which is still on {doing}");
+            Some(ack) = stop_rx.recv() => break Some(ack),
+            _ = look.tick(), if leave.watches() => {
+                if let Some(why) = time_to_leave(&leave, &home, &screens, &core).await {
+                    crate::daemon_log!("equipe: {why}, so this daemon leaves");
+                    break None;
                 }
-                daily.abort();
-                let _ = std::fs::remove_file(socket);
-                let _ = ack.send(());
-                return Ok(());
             }
         }
+    };
+    // A core that doesn't stop in time is left behind: the process ends anyway.
+    if tokio::time::timeout(SHUTDOWN_WAIT, core.shutdown()).await.is_err() {
+        let doing = core.stall().map_or_else(|| "?".to_owned(), |s| s.doing);
+        crate::daemon_log!("equipe: stopping without the core, which is still on {doing}");
     }
+    daily.abort();
+    if let Some(healing) = healing {
+        healing.abort();
+    }
+    let _ = std::fs::remove_file(socket);
+    if let Some(ack) = ack {
+        let _ = ack.send(());
+    }
+    Ok(())
 }
 
 /// How long a stop waits for the core to put its turns down.
@@ -85,9 +203,10 @@ const WRITE_STALL: Duration = Duration::from_secs(30);
 const QUEUED_MAX: usize = 20_000;
 
 /// Bind the socket, replacing a stale file left by a daemon that died.
+#[cfg(unix)]
 async fn bind(socket: &Path) -> io::Result<UnixListener> {
     if socket.exists() {
-        if UnixStream::connect(socket).await.is_ok() {
+        if connect(socket).await.is_ok() {
             return Err(io::Error::new(io::ErrorKind::AddrInUse, "a daemon is already running"));
         }
         std::fs::remove_file(socket)?;
@@ -101,10 +220,29 @@ async fn bind(socket: &Path) -> io::Result<UnixListener> {
     Ok(listener)
 }
 
+#[cfg(windows)]
+async fn bind(_socket: &Path) -> io::Result<UnixListener> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "daemon IPC is unsupported on Windows yet"))
+}
+
+#[cfg(unix)]
+async fn connect(socket: &Path) -> io::Result<UnixStream> {
+    UnixStream::connect(socket).await
+}
+
+#[cfg(windows)]
+async fn connect(_socket: &Path) -> io::Result<UnixStream> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "daemon IPC is unsupported on Windows yet"))
+}
+
+#[cfg(unix)]
 fn restrict(path: &Path, mode: u32) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
+
+#[cfg(windows)]
+fn restrict(_path: &Path, _mode: u32) -> io::Result<()> { Ok(()) }
 
 async fn write_line(writer: &mut OwnedWriteHalf, message: &Message) -> io::Result<()> {
     writer.write_all(message.to_line().as_bytes()).await
@@ -145,6 +283,12 @@ async fn serve_client(
     stop: UnboundedSender<oneshot::Sender<()>>,
     metrics: std::sync::Arc<crate::metrics::Metrics>,
 ) {
+    // Who is on the other end: the person's own screen, a self-connection
+    // (phone relay, Telegram), or a member's process reaching in. Read once,
+    // before the stream is split, from the peer's credentials. Person-only
+    // commands from a member are refused below ([`crate::origin`]).
+    let peer = peer_pid(&stream);
+    let origin = crate::origin::of(peer);
     let (reader, writer) = stream.into_split();
     // Replies and events share the write half; a task owns it.
     let (out_tx, out_rx) = mpsc::unbounded_channel::<Message>();
@@ -159,6 +303,8 @@ async fn serve_client(
     // Pairing a phone: this screen's line to the phone link, opened when it asks.
     let mut pairing: Option<crate::pairing::Bridge> = None;
     let mut lang: Option<crate::i18n::Lang> = None;
+    // A phone: what the person sends from it is read there.
+    let mut phone = false;
     // A screen with a browser panel, counted while it is attached.
     let mut panel_screen: Option<std::sync::Arc<crate::browser::Hub>> = None;
     loop {
@@ -182,6 +328,7 @@ async fn serve_client(
                     lang = crate::i18n::Lang::parse(&code);
                     core.send(Command::Language { lang: code });
                 }
+                phone = params.phone;
                 if params.browser_panel
                     && panel_screen.is_none()
                     && let Some(hub) = core.browser_hub().await
@@ -223,8 +370,20 @@ async fn serve_client(
                             bridge.lang = now;
                         }
                     }
+                    // The floor: a person-only command (an approval, an
+                    // acceptance, a settings change, pairing) is refused when it
+                    // comes from a member's own process rather than the person's
+                    // screen — an agent never decides its own approvals. Reads
+                    // and the person's own messages are untouched.
+                    if crate::permissions::person_only(&command) && !origin.person_may() {
+                        let squad = serde_json::to_value(&command).ok().and_then(|v| v["squad"].as_str().map(str::to_owned));
+                        core.refused_person_only(squad);
+                        continue;
+                    }
                     if crate::pairing::is_pairing(&command) {
                         pairing.get_or_insert_with(|| crate::pairing::Bridge::new(&home, lang)).send(&command, &out_tx).await;
+                    } else if phone && matches!(command, Command::Submit { .. } | Command::SubmitLater { .. } | Command::SendNow { .. } | Command::AnswerQuestions { .. }) {
+                        core.send(Command::OnPhone { command: Box::new(command) });
                     } else {
                         core.send(command);
                     }
@@ -345,6 +504,27 @@ async fn serve_client(
                     });
                 });
             }
+            (Some(rpc::DESIGN_STUDIO), Some(id)) => {
+                // A ticket's design work, of the squad this screen follows: read from its design folder only.
+                let Some(ask) = message.params_as::<equipe_protocol::studio::StudioAsk>() else {
+                    let _ = out_tx.send(Message::failure(id, -32602, "design_studio needs { squad, ticket }"));
+                    continue;
+                };
+                if followed.as_deref() != Some(ask.squad.as_str()) {
+                    let _ = out_tx.send(Message::failure(id, -32002, "say hello to that squad first"));
+                    continue;
+                }
+                let home = home.clone();
+                let out = out_tx.clone();
+                tokio::spawn(async move {
+                    let read = tokio::task::spawn_blocking(move || crate::design::studio::of_ticket(&home, &ask.squad, ask.ticket)).await;
+                    let _ = out.send(match read {
+                        Ok(Ok(studio)) => Message::response(id, studio),
+                        Ok(Err(why)) => Message::failure(id, -32000, why),
+                        Err(_) => Message::failure(id, -32000, "the design folder couldn't be read"),
+                    });
+                });
+            }
             (Some(rpc::DESKTOP), Some(id)) => {
                 let Some(call) = message.params_as::<ToolCall>() else {
                     let _ = out_tx.send(Message::failure(id, -32602, "desktop needs { squad, member, name, arguments }"));
@@ -357,8 +537,48 @@ async fn serve_client(
                     let _ = out.send(Message::response(id, result));
                 });
             }
+            (Some(rpc::PHONE), Some(id)) => {
+                let Some(call) = message.params_as::<ToolCall>() else {
+                    let _ = out_tx.send(Message::failure(id, -32602, "phone needs { squad, member, name, arguments }"));
+                    continue;
+                };
+                let core = core.clone();
+                let out = out_tx.clone();
+                tokio::spawn(async move {
+                    let result = core.phone(call).await;
+                    let _ = out.send(Message::response(id, result));
+                });
+            }
             (Some(rpc::BUSY), Some(id)) => {
                 let _ = out_tx.send(Message::response(id, core.busy().await));
+            }
+            // How it runs: asked of the process, not the core loop, so a stuck loop still answers.
+            (Some(rpc::RUNS), Some(id)) => {
+                let out = out_tx.clone();
+                tokio::spawn(async move {
+                    let runs = tokio::task::spawn_blocking(crate::engine_auth::runs_here).await.unwrap_or_default();
+                    let _ = out.send(Message::response(id, runs));
+                });
+            }
+            // The look this screen shows (`crate::looks`): kept for the squad it follows.
+            (Some(rpc::SCREEN_LOOK), None) => {
+                if let (Some(squad), Some(look)) = (followed.clone(), message.params_as::<equipe_protocol::look::ScreenLook>()) {
+                    let home = home.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                        if let Err(why) = crate::looks::report(&home, &squad, look, now) {
+                            crate::daemon_log!("equipe: a screen's look wasn't kept: {why}");
+                        }
+                    });
+                }
+            }
+            // The look of the screen the person used last: what the UI map's real view is shot in.
+            (Some(rpc::PERSON_LOOK), Some(id)) => {
+                let (home, out) = (home.clone(), out_tx.clone());
+                tokio::spawn(async move {
+                    let look = tokio::task::spawn_blocking(move || crate::looks::person(&home)).await.ok().flatten();
+                    let _ = out.send(Message::response(id, equipe_protocol::look::PersonLook { look }));
+                });
             }
             // A look at the disk, and a clean: their own task, a look takes seconds.
             (Some(rpc::DISK), Some(id)) => {
@@ -558,8 +778,9 @@ fn squads(home: &Path) -> rpc::Squads {
 const UPLOAD_MAX: usize = 40 << 20;
 /// What `equipe receive` takes at most.
 pub const RECEIVE_MAX: u64 = 2 << 30;
-/// Uploads older than this are swept when another arrives.
-const UPLOAD_KEEP: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+/// Uploads no sent message keeps are swept this long after they came, when
+/// another arrives.
+pub const UPLOAD_KEEP: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
 const IMAGE_KINDS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
 
 /// Where uploads are kept on this machine.
@@ -595,29 +816,42 @@ pub fn upload_name(name: &str, kind: Option<rpc::UploadKind>) -> Result<(String,
     Ok((if stem.is_empty() { "upload".into() } else { stem }, ext))
 }
 
+/// Sweep, as of `now`, the uploads no sent message keeps (a draft given up)
+/// that are older than [`UPLOAD_KEEP`]: what a sent message attached stays
+/// until the person removes it (`crate::kept`). How many went.
+pub fn sweep_uploads(home: &Path, now: std::time::SystemTime) -> usize {
+    let Ok(entries) = std::fs::read_dir(uploads_dir(home)) else { return 0 };
+    let kept = crate::kept::names(home);
+    let mut swept = 0;
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        let old = meta.modified().ok().and_then(|t| now.duration_since(t).ok()).is_some_and(|age| age > UPLOAD_KEEP);
+        if old && !meta.is_dir() && !kept.contains(entry.file_name().to_string_lossy().as_ref()) && std::fs::remove_file(entry.path()).is_ok() {
+            swept += 1;
+        }
+    }
+    swept
+}
+
 /// A new file under `<home>/uploads` (0600 in a 0700 folder) for `name`,
 /// named by equipe — `<stamp>-<stem>.<ext>`, never a folder of the screen's
-/// choosing — and old uploads swept while there.
+/// choosing — and old drafts swept while there ([`sweep_uploads`]).
 pub fn create_upload(home: &Path, name: &str, kind: Option<rpc::UploadKind>) -> Result<(std::fs::File, PathBuf), String> {
-    use std::os::unix::fs::OpenOptionsExt as _;
     let (stem, ext) = upload_name(name, kind)?;
     let dir = uploads_dir(home);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     restrict(&dir, 0o700).map_err(|e| e.to_string())?;
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let old = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > UPLOAD_KEEP);
-            if old {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-    }
+    sweep_uploads(home, std::time::SystemTime::now());
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
     let dot = if ext.is_empty() { String::new() } else { format!(".{ext}") };
     for n in 0.. {
         let again = if n == 0 { String::new() } else { format!("-{n}") };
         let path = dir.join(format!("{stamp}-{stem}{again}{dot}"));
-        match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path) {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        { use std::os::unix::fs::OpenOptionsExt as _; options.mode(0o600); }
+        match options.open(&path) {
             Ok(file) => return Ok((file, path)),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e.to_string()),
@@ -738,9 +972,18 @@ impl Client {
     /// [`Client::connect`], saying the screen speaks `lang`: what the daemon
     /// says to the person is in it from now on.
     pub async fn connect_in(socket: &Path, version: &str, squad: &str, lang: Option<crate::i18n::Lang>) -> io::Result<(Self, Hello)> {
-        let stream = UnixStream::connect(socket).await?;
+        Self::attach(socket, HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: lang.map(|l| l.code().to_owned()), browser_panel: false, phone: false }).await
+    }
+
+    /// [`Client::connect`] for a phone, through the relay: what the person
+    /// sends from it reaches members marked as sent from a phone.
+    pub async fn connect_phone(socket: &Path, version: &str, squad: &str) -> io::Result<(Self, Hello)> {
+        Self::attach(socket, HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: None, browser_panel: false, phone: true }).await
+    }
+
+    async fn attach(socket: &Path, params: HelloParams) -> io::Result<(Self, Hello)> {
+        let stream = connect(socket).await?;
         let (reader, mut writer) = stream.into_split();
-        let params = HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: lang.map(|l| l.code().to_owned()), browser_panel: false };
         let hello = Message::request(1, rpc::HELLO, params);
         write_line(&mut writer, &hello).await?;
 
@@ -804,7 +1047,7 @@ impl Client {
 /// Ask the daemon at `socket` to stop. Its open sessions stay journaled and
 /// resume when it starts again. `Ok(false)` when no daemon was running.
 pub async fn shutdown(socket: &Path) -> io::Result<bool> {
-    let Ok(stream) = UnixStream::connect(socket).await else {
+    let Ok(stream) = connect(socket).await else {
         return Ok(false);
     };
     let (reader, mut writer) = stream.into_split();
@@ -820,7 +1063,7 @@ pub async fn shutdown(socket: &Path) -> io::Result<bool> {
 
 /// What the daemon at `socket` is in the middle of; `None` when none answers.
 pub async fn busy(socket: &Path) -> io::Result<Option<rpc::Busy>> {
-    let Ok(stream) = UnixStream::connect(socket).await else {
+    let Ok(stream) = connect(socket).await else {
         return Ok(None);
     };
     let (reader, mut writer) = stream.into_split();
@@ -837,6 +1080,12 @@ pub async fn busy(socket: &Path) -> io::Result<Option<rpc::Busy>> {
     Ok(None)
 }
 
+/// How the daemon at `socket` runs, as it tells it; `None` when none answers
+/// (or it is older than `runs`).
+pub async fn runs(socket: &Path) -> Option<rpc::Runs> {
+    ask_once(socket, rpc::RUNS, ()).await.ok().flatten()
+}
+
 /// What uses the disk, as the daemon at `socket` looks at it; `None` when
 /// none answers.
 pub async fn disk_report(socket: &Path) -> io::Result<Option<crate::disk::DiskReport>> {
@@ -850,7 +1099,7 @@ pub async fn disk_clean(socket: &Path, ids: Vec<String>) -> io::Result<Option<cr
 
 /// One request to the daemon at `socket`, and its answer.
 async fn ask_once<P: serde::Serialize, R: serde::de::DeserializeOwned>(socket: &Path, method: &str, params: P) -> io::Result<Option<R>> {
-    let Ok(stream) = UnixStream::connect(socket).await else {
+    let Ok(stream) = connect(socket).await else {
         return Ok(None);
     };
     let (reader, mut writer) = stream.into_split();
@@ -881,8 +1130,13 @@ pub async fn call_desktop(socket: &Path, call: &ToolCall) -> io::Result<ToolResu
     call_on(socket, rpc::DESKTOP, call).await
 }
 
+/// Call a member's phone tool through the daemon at `socket`.
+pub async fn call_phone(socket: &Path, call: &ToolCall) -> io::Result<ToolResult> {
+    call_on(socket, rpc::PHONE, call).await
+}
+
 async fn call_on(socket: &Path, method: &str, call: &ToolCall) -> io::Result<ToolResult> {
-    let stream = UnixStream::connect(socket).await?;
+    let stream = connect(socket).await?;
     let (reader, mut writer) = stream.into_split();
     write_line(&mut writer, &Message::request(1, method, call)).await?;
     let mut lines = BufReader::new(reader).lines();
@@ -904,7 +1158,7 @@ async fn call_on(socket: &Path, method: &str, call: &ToolCall) -> io::Result<Too
 /// Open a window for the person in the members' shared Chrome, at `url`.
 /// `Ok(false)` when no daemon answers or members use a Chrome each.
 pub async fn person_window(socket: &Path, url: &str) -> io::Result<bool> {
-    let Ok(stream) = UnixStream::connect(socket).await else {
+    let Ok(stream) = connect(socket).await else {
         return Ok(false);
     };
     let (reader, mut writer) = stream.into_split();
@@ -924,7 +1178,7 @@ pub async fn person_window(socket: &Path, url: &str) -> io::Result<bool> {
 /// Which daemon answers at `socket`: `Ok(None)` when it is older than the
 /// `version` method.
 pub async fn version(socket: &Path) -> io::Result<Option<rpc::Version>> {
-    let stream = UnixStream::connect(socket).await?;
+    let stream = connect(socket).await?;
     let (reader, mut writer) = stream.into_split();
     write_line(&mut writer, &Message::request(1, rpc::VERSION, ())).await?;
     let mut lines = BufReader::new(reader).lines();
@@ -941,15 +1195,27 @@ pub async fn version(socket: &Path) -> io::Result<Option<rpc::Version>> {
 
 /// Whether a daemon answers at `socket`.
 pub async fn is_running(socket: &Path) -> bool {
-    UnixStream::connect(socket).await.is_ok()
+    connect(socket).await.is_ok()
 }
 
 /// The process listening at `socket`, as the system tells it — to stop a
 /// daemon that no longer answers.
 pub async fn daemon_pid(socket: &Path) -> Option<u32> {
-    let stream = UnixStream::connect(socket).await.ok()?;
+    let stream = connect(socket).await.ok()?;
+    peer_pid(&stream).filter(|pid| *pid > 1)
+}
+
+#[cfg(unix)]
+fn peer_pid(stream: &UnixStream) -> Option<u32> {
     let pid = stream.peer_cred().ok()?.pid()?;
-    u32::try_from(pid).ok().filter(|p| *p > 1)
+    u32::try_from(pid).ok()
+}
+
+// The TCP compatibility listener is only a compile-time bridge. T-514
+// replaces it with named pipes and their client-process identity.
+#[cfg(windows)]
+fn peer_pid(_stream: &UnixStream) -> Option<u32> {
+    None
 }
 
 #[cfg(test)]

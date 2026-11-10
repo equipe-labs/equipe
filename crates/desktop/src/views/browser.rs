@@ -1,12 +1,12 @@
 //! The browser panel: the shared Chrome the members browse in, live, beside
-//! the conversation (⌘⇧B, or the header's 브라우저 button). Like Claude
+//! the conversation (⌘⇧B, or the header's Browser button). Like Claude
 //! Code's browser pane, but the browser is equipe's own — one Chrome on the
 //! daemon's machine, signed in once — so what shows here is exactly what the
 //! members see, sign-ins and all.
 //!
 //! A row of tabs grouped by whose they are (each member a dot and its name,
-//! then its tabs; the person's own, 내 탭, last); back, forward, reload, the
-//! address, 따라가기, and "Chrome에서 열기" for what a picture can't do (a
+//! then its tabs; the person's own, My tabs, last); back, forward, reload, the
+//! address, Follow, and "Open in Chrome" for what a picture can't do (a
 //! passkey, a permission prompt); the page itself; and a control bar saying
 //! who has it in hand, with one button to take it or give it back. It follows
 //! the conversation on screen — that member's browser, the tab it last worked
@@ -18,10 +18,10 @@
 //! (the daemon takes the largest of the panels watching it, and waits for a
 //! member's step under way); a frame of another size is fitted, its shape kept.
 //! The person's mouse and keys go back to the page, mapped through the
-//! picture's frame. Touching a member's page (or 직접 하기) takes it into the
-//! person's hands (its tools wait); 돌려주기, Esc, or two idle minutes give it
+//! picture's frame. Touching a member's page (or Take over) takes it into the
+//! person's hands (its tools wait); Give back, Esc, or two idle minutes give it
 //! back. A page that waits for a person — a "verify you are human" check, a
-//! sign-in, a code — says so over the picture, with 직접 하기 (`browse::Hand`).
+//! sign-in, a code — says so over the picture, with Take over (`browse::Hand`).
 //! The rules are `crate::browse`, tested without a window.
 
 use std::cell::RefCell;
@@ -59,12 +59,25 @@ pub const WIDTH: f32 = 560.;
 const MIN_WIDTH: f32 = 360.;
 /// Room the conversation keeps beside it.
 const CHAT_MIN: f32 = 420.;
+/// What the window needs beside the sidebar for the conversation and the panel at its least.
+pub const SQUEEZE_REST: f32 = CHAT_MIN + MIN_WIDTH;
 /// Mouse moves go no more often than this (60 a second).
 const MOVE_EVERY: Duration = Duration::from_millis(16);
 /// How long the word that the person took or gave back a browser stays; and
 /// the hint for a wheel over a page they don't drive.
 const TOAST_FOR: Duration = Duration::from_secs(4);
 const HINT_FOR: Duration = Duration::from_millis(1800);
+
+/// The widest the panel may be in a window this wide: the conversation and
+/// the sidebar keep their room.
+fn widest(window: f32) -> f32 {
+    (window - CHAT_MIN - 220.).max(MIN_WIDTH)
+}
+
+/// The width the panel is drawn at: the one kept, held within the window.
+fn fit_width(kept: f32, window: f32) -> f32 {
+    kept.clamp(MIN_WIDTH, widest(window))
+}
 
 fn hash_text(text: &str) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
@@ -121,6 +134,7 @@ struct Gone {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Who {
     pub name: String,
+    pub role: String,
     pub hue: usize,
     pub working: bool,
 }
@@ -142,6 +156,8 @@ pub struct BrowserPanel {
     talk: Entity<InputState>,
     /// Whom the words box's hint names now.
     talk_to: Option<String>,
+    /// The handed-over card's words opened past their first lines.
+    handed_open: bool,
     lanes: BTreeMap<String, Lane>,
     /// Who has each member's browser in hand.
     hands: HashMap<String, Hand>,
@@ -156,9 +172,9 @@ pub struct BrowserPanel {
     /// The person closed this tab: its going is no news.
     closing: Option<u64>,
     gone: Option<Gone>,
-    /// The page's keys go to it at the next draw (the person chose 직접 하기).
+    /// The page's keys go to it at the next draw (the person chose Take over).
     focus_next: bool,
-    /// A page picked from 나에게 or a notification, shown at the next draw.
+    /// A page picked from the Inbox or a notification, shown at the next draw.
     pending_reveal: Option<(String, u64)>,
     /// Members' browsers handed to the person, opened for once each.
     handovers: browse::Handovers,
@@ -214,6 +230,9 @@ pub struct BrowserPanel {
 }
 
 impl EventEmitter<PanelEvent> for BrowserPanel {}
+
+/// An ask longer than this shows its first two lines until opened.
+const LONG_ASK: usize = 110;
 
 impl BrowserPanel {
     /// Whether page `page` is on screen now: the panel open on it.
@@ -279,6 +298,7 @@ impl BrowserPanel {
             prompt,
             talk,
             talk_to: None,
+            handed_open: false,
             lanes: BTreeMap::new(),
             hands: HashMap::new(),
             dialogs: Vec::new(),
@@ -629,7 +649,7 @@ impl BrowserPanel {
         self.rewatch(window, cx);
     }
 
-    /// 다시 시도: the line again, from nothing.
+    /// Try again: the line again, from nothing.
     fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.link = None;
         self._pump = None;
@@ -754,7 +774,7 @@ impl BrowserPanel {
         }
     }
 
-    /// 다시 시도 on a page whose pictures stopped: asked for from nothing.
+    /// Try again on a page whose pictures stopped: asked for from nothing.
     fn rewatch_fresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(link) = &self.link {
             link.send(StreamIn::Unwatch);
@@ -787,7 +807,7 @@ impl BrowserPanel {
         }
     }
 
-    /// 직접 하기: the member's browser into the person's hands, its keys to the page.
+    /// Take over: the member's browser into the person's hands, its keys to the page.
     fn take(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(lane) = self.lane_of_selected().filter(|l| !l.is_empty()).map(str::to_owned) {
             self.took(&lane);
@@ -915,7 +935,7 @@ impl BrowserPanel {
         };
         self.pointer_on_selected();
         // Moves never take a member's page: they go only once the person has
-        // it (직접 하기, a click, a key) — before that, the page never saw the
+        // it (Take over, a click, a key) — before that, the page never saw the
         // pointer, and the press that takes it moves it there first.
         if !self.drives_selected() {
             self.pointer.left();
@@ -1181,7 +1201,7 @@ impl BrowserPanel {
     /// On `page` of `lane`, the person driving.
     fn drive(&mut self, lane: String, page: u64, window: &mut Window, cx: &mut Context<Self>) {
         // Handed over by its member: the person drives it, the strip says what for.
-        // A page that waits for a person keeps its banner (직접 하기) until they act:
+        // A page that waits for a person keeps its banner (Take over) until they act:
         // a hold that came from detection alone never stops its member.
         let hand = self.hands.entry(lane.clone()).or_default();
         if hand.asked.is_some() {
@@ -1218,7 +1238,7 @@ impl BrowserPanel {
     }
 
     /// Close `pages` of `lane` — the person's own at once; a member's at work,
-    /// asked once first ("pm이 쓰는 중이에요. 닫을까요?"), its member told.
+    /// asked once first ("pm is using it. Close it?"), its member told.
     fn close_tabs(&mut self, lane: &str, pages: Vec<u64>, cx: &mut Context<Self>) {
         if pages.is_empty() {
             return;
@@ -1243,7 +1263,7 @@ impl BrowserPanel {
         cx.notify();
     }
 
-    /// The tab picked, closed (⌘W, 확인 그만하고 탭 닫기).
+    /// The tab picked, closed (⌘W, Stop the check and close the tab).
     fn close_selected(&mut self, cx: &mut Context<Self>) {
         if let Some((lane, page)) = self.selected.clone() {
             self.close_tabs(&lane, vec![page], cx);
@@ -1256,7 +1276,7 @@ impl BrowserPanel {
         self.close_tabs(lane, others, cx);
     }
 
-    /// 돌려주기 from outside the panel (the conversation's row): back to its member.
+    /// Give back from outside the panel (the conversation's row): back to its member.
     pub fn give_back_lane(&mut self, lane: &str, cx: &mut Context<Self>) {
         self.toast_next = Some((t!("browser.gave_toast", name = self.member_name(lane)), TOAST_FOR));
         self.hands.entry(lane.to_owned()).or_default().give_back();
@@ -1265,7 +1285,7 @@ impl BrowserPanel {
         cx.notify();
     }
 
-    /// A page waiting for a person, from 나에게 or a notification: the panel
+    /// A page waiting for a person, from the Inbox or a notification: the panel
     /// opens on it, in the person's hands, its keys to the page.
     pub fn reveal(&mut self, page: u64, cx: &mut Context<Self>) {
         let Some(lane) = self.lanes.iter().find(|(_, l)| l.pages.iter().any(|p| p.id == page)).map(|(lane, _)| lane.clone()) else { return };
@@ -1373,6 +1393,7 @@ impl BrowserPanel {
                 .flex_none()
                 .px_3()
                 .pt_2()
+                .pb_2()
                 .child(
                     div()
                         .flex_1()
@@ -1424,7 +1445,11 @@ impl BrowserPanel {
                     .text_size(px(12.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(p.text2)
-                    .child(div().size(px(7.)).flex_none().rounded_full().bg(dot))
+                    .child(match l.session.and_then(|s| self.who.get(&s)) {
+                        // A member's: its avatar, as everywhere else.
+                        Some(who) => crate::theme::avatar(p, &who.role, &who.name, 16.),
+                        None => div().size(px(7.)).flex_none().rounded_full().bg(dot),
+                    })
                     .child(div().whitespace_nowrap().child(label)),
             );
             for page in &l.pages {
@@ -1547,8 +1572,9 @@ impl BrowserPanel {
         let none = page.is_none();
         let typing = self.url.read(cx).focus_handle(cx).is_focused(window);
         let shown = page.as_ref().and_then(|pg| browse::address(&pg.url)).filter(|_| !typing);
-        // Room for the words beside the icons: 따라가기 from 420 points, Chrome에서 열기 from 640.
-        let (wide, wider) = (self.width >= 420., self.width >= 640.);
+        // Room for the words beside the icons: Follow from 420 points, Open in Chrome from 640.
+        let shown_width = fit_width(self.width, f32::from(window.viewport_size().width) / window.content_zoom().max(0.01));
+        let (wide, wider) = (shown_width >= 420., shown_width >= 640.);
         h_flex()
             .px_2()
             .pb_2()
@@ -1985,58 +2011,57 @@ impl BrowserPanel {
         let lane = self.lane_of_selected()?.to_owned();
         let name = self.member_name(&lane);
         let hue = self.lane_color(&lane);
-        // A card over the page: a stripe in the member's colour, who and what
-        // it asks in its own words (as a quote), then the one button.
+        // Small, so the page keeps the room: who, and the one button, on one
+        // line; what it asks under it in two lines, the rest a click away.
+        let done = ui::button(p, "browser-handed-done", Kind::Primary, t!("browser.done_give_back_short"))
+            .icon(Icon::Check)
+            .tip(t!("browser.handed_then", name = name), Some("Esc"))
+            .on_click(cx.listener(|this, _, _, cx| this.give_back(cx)));
         let head = h_flex()
             .gap_2()
             .items_center()
             .child(div().size(px(8.)).flex_none().rounded_full().bg(hue))
-            .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(hue).child(name.clone()))
-            .child(div().text_size(px(12.)).text_color(p.muted).child("·"))
+            .child(div().flex_none().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(hue).child(name.clone()))
             .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(p.text2).child(t!("browser.handed_title")))
-            .child(
-                h_flex()
-                    .flex_none()
-                    .h(px(20.))
-                    .px(px(8.))
-                    .gap(px(5.))
-                    .items_center()
-                    .rounded_full()
-                    .bg(p.amber.alpha(0.14))
-                    .text_size(px(11.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(p.amber)
-                    .child(div().size(px(6.)).rounded_full().bg(p.amber))
-                    .child(t!("browser.handed_badge")),
-            );
+            .child(div().flex_none().child(done));
+        let long = why.chars().count() > LONG_ASK;
+        let open = self.handed_open;
         let ask = div()
-            .pl(px(12.))
-            .border_l_2()
-            .border_color(hue.alpha(0.5))
-            .text_size(px(14.))
-            .line_height(px(21.))
+            .text_size(px(13.))
+            .line_height(px(19.))
             .text_color(p.text)
+            .when(long && !open, |d| d.line_clamp(2).text_ellipsis())
             .child(why);
-        let actions = h_flex()
-            .gap_3()
-            .items_center()
-            .flex_wrap()
-            .child(ui::button(p, "browser-handed-done", Kind::Primary, t!("browser.done_give_back", name = name)).icon(Icon::Check).field().on_click(cx.listener(|this, _, _, cx| this.give_back(cx))))
-            .child(div().text_size(px(12.)).text_color(p.muted).child(t!("browser.handed_then", name = name)));
+        let more = long.then(|| {
+            div()
+                .id("browser-handed-more")
+                .text_size(px(12.))
+                .text_color(p.muted)
+                .cursor_pointer()
+                .hover(move |s| s.text_color(p.text))
+                .child(if open { t!("browser.handed_less") } else { t!("browser.handed_more") })
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.handed_open = !this.handed_open;
+                    cx.notify();
+                }))
+        });
         Some(
             motion::rise(
-                h_flex()
+                v_flex()
                     .id("browser-handed")
                     .mx_2()
                     .mb_2()
+                    .px_3()
+                    .py_2p5()
+                    .gap_1p5()
                     .rounded(px(R_LG))
-                    .overflow_hidden()
                     .bg(p.popover())
                     .border_1()
                     .border_color(p.hair)
                     .shadow_lg()
-                    .child(div().w(px(3.)).flex_none().h_full().bg(hue))
-                    .child(v_flex().flex_1().min_w_0().px_4().py_3().gap(px(10.)).child(head).child(ask).child(actions)),
+                    .child(head)
+                    .child(ask)
+                    .children(more),
                 "browser-handed-rise",
             )
             .into_any_element(),
@@ -2117,10 +2142,8 @@ impl BrowserPanel {
                 .child(dot(p.accent))
                 .child(line(t!("browser.bar_mine_hand").to_owned(), p.accent))
                 .child(back(Kind::Secondary, t!("browser.give_back", name = name))),
-            Mode::Asked(why) => bar
-                .child(dot(color))
-                .child(line(t!("browser.status_asked", name = name, why = why), p.text))
-                .child(back(Kind::Secondary, t!("browser.give_back", name = name))),
+            // The card over the page has the ask and the button: here, only where things stand.
+            Mode::Asked(_) => bar.child(dot(color)).child(line(t!("browser.bar_asked", name = name), p.text2)),
             Mode::Waiting { touched, .. } => {
                 let b = bar
                     .child(dot(p.amber))
@@ -2181,7 +2204,7 @@ impl Render for BrowserPanel {
                 });
             }));
         }
-        // A page waiting for the person, picked from 나에게: on screen, in their hands.
+        // A page waiting for the person, picked from the Inbox: on screen, in their hands.
         if let Some((lane, page)) = self.pending_reveal.take() {
             self.ensure_link(window, cx);
             self.select(lane, page, window, cx);
@@ -2194,9 +2217,12 @@ impl Render for BrowserPanel {
         self.rewatch(window, cx);
         let p = self.palette;
         let dragging = self.drag.is_some();
+        // A window narrower than the width kept (or dragged wide before it
+        // shrank) holds the panel to what it can give: never past the edge.
+        let fit = fit_width(self.width, f32::from(window.viewport_size().width) / window.content_zoom().max(0.01));
         h_flex()
             .h_full()
-            .w(px(self.width))
+            .w(px(fit))
             .flex_none()
             .sans()
             .child(
@@ -2266,13 +2292,13 @@ impl BrowserPanel {
         self.scroll(&e, cx);
     }
 
-    /// 직접 하기, or 돌려주기, as the bar's button.
+    /// Take over, or Give back, as the bar's button.
     pub fn hand(&mut self, take: bool, window: &mut Window, cx: &mut Context<Self>) {
         if take { self.take(window, cx) } else { self.give_back(cx) }
     }
 
 
-    /// Compose each of `steps` in turn (`ㅎ`, `하`, `한`), then commit the last.
+    /// Compose each of `steps` in turn (an IME building a character in steps), then commit the last.
     pub fn compose(&mut self, steps: &[&str], window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
         for step in steps {
@@ -2293,8 +2319,7 @@ impl BrowserPanel {
             self.drag = None;
             cx.emit(PanelEvent::Resized(self.width));
         } else {
-            let max = (f32::from(window.viewport_size().width) - CHAT_MIN - 220.).max(MIN_WIDTH);
-            self.width = (w0 + x0 - x).clamp(MIN_WIDTH, max);
+            self.width = (w0 + x0 - x).clamp(MIN_WIDTH, widest(f32::from(window.viewport_size().width) / window.content_zoom().max(0.01)));
         }
         cx.notify();
         true
@@ -2360,7 +2385,7 @@ impl EntityInputHandler for BrowserPanel {
     }
 }
 
-// ── in 나에게: a member's page waiting for the person ──
+// ── in the Inbox: a member's page waiting for the person ──
 
 /// The row's words: what waits, the member's name and colour.
 pub fn need_row(shell: &crate::Shell, page: u64) -> Option<(String, String, Rgba)> {
@@ -2417,7 +2442,7 @@ pub fn need_peek(shell: &crate::Shell, page: u64, cx: &mut Context<crate::Shell>
 }
 
 impl crate::Shell {
-    /// A member's page waiting for the person (from 나에게, a notification):
+    /// A member's page waiting for the person (from the Inbox, a notification):
     /// the conversation with the browser panel beside it, on that page, in
     /// their hands.
     pub fn reveal_browser(&mut self, page: u64, cx: &mut Context<Self>) {
@@ -2426,7 +2451,7 @@ impl crate::Shell {
         cx.notify();
     }
 
-    /// 브라우저 열기 on a conversation's hand-over row: the panel beside it,
+    /// Open the browser on a conversation's hand-over row: the panel beside it,
     /// on that member's browser, in the person's hands.
     pub fn reveal_handed(&mut self, lane: &str, cx: &mut Context<Self>) {
         self.show(crate::Screen::Chat, cx);
@@ -2434,7 +2459,7 @@ impl crate::Shell {
         cx.notify();
     }
 
-    /// 돌려주기 on a conversation's hand-over row: back to its member, which
+    /// Give back on a conversation's hand-over row: back to its member, which
     /// carries on.
     pub fn give_back_handed(&mut self, lane: &str, cx: &mut Context<Self>) {
         self.browser.update(cx, |b, cx| b.give_back_lane(lane, cx));
@@ -2615,6 +2640,14 @@ pub mod keys {
 
     #[cfg(test)]
     mod tests {
+        use super::super::{MIN_WIDTH, fit_width};
+
+        #[test]
+        fn a_narrow_window_holds_the_panel_inside_it() {
+            assert_eq!(fit_width(560., 1200.), 560.);
+            assert_eq!(fit_width(560., 760.), MIN_WIDTH);
+            assert_eq!(fit_width(300., 1200.), MIN_WIDTH);
+        }
         use super::*;
 
         fn stroke(key: &str, key_char: Option<&str>, m: Modifiers) -> Keystroke {

@@ -95,6 +95,8 @@ pub enum DiskKind {
     Journals,
     /// Files the person attached.
     Uploads,
+    /// What messages the person sent attached, kept until they remove it.
+    Attachments,
     /// Xcode's DerivedData.
     DerivedData,
     /// The Mac's simulators.
@@ -111,6 +113,8 @@ pub enum DiskKind {
     Yarn,
     /// Docker's disk image.
     Docker,
+    /// A ticket's phone recordings and their frames, in its squad's folder.
+    Recordings,
 }
 
 /// Why an item may, or may not, be given back.
@@ -141,6 +145,19 @@ pub enum DiskWhy {
     Needed,
     /// Not equipe's: the person clears it if they want, with `command`.
     NotEquipes,
+    /// A sent message attached it: kept with the conversation.
+    Sent,
+    /// A message sent over 30 days ago attached it: the person may remove
+    /// it (only by hand; the words of a text file stay in the conversation).
+    SentLongAgo,
+}
+
+impl DiskWhy {
+    /// What only the person's own pick removes: never part of "everything
+    /// equipe may give back".
+    pub fn picked_alone(self) -> bool {
+        self == DiskWhy::SentLongAgo
+    }
 }
 
 /// One thing that takes space.
@@ -153,6 +170,10 @@ pub struct DiskItem {
     /// Short words for it: `T-24 · target/`, `frontend`, `daemon.log`.
     pub label: String,
     pub path: PathBuf,
+    /// Its blocks on disk. A copy-on-write clone (a worktree's `node_modules`
+    /// cloned from the project's checkout) counts in full, though it shares
+    /// its blocks with its source until changed: removing it may give back
+    /// far less than this.
     pub bytes: u64,
     /// The measuring stopped at its time budget: at least `bytes`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -184,9 +205,10 @@ pub struct DiskReport {
 }
 
 impl DiskReport {
-    /// What equipe may give back, in all.
+    /// What equipe may give back, in all — without what the person removes
+    /// only on its own ([`DiskWhy::picked_alone`]).
     pub fn reclaimable(&self) -> u64 {
-        self.items.iter().filter(|i| i.safe).map(|i| i.bytes).sum()
+        self.items.iter().filter(|i| i.safe && !i.why.picked_alone()).map(|i| i.bytes).sum()
     }
 }
 

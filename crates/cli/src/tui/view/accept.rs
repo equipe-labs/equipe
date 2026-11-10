@@ -95,6 +95,7 @@ mod tests {
             member: Some(Member { role: role.into(), name: role.into() }),
             engine: Engine::Claude,
             model: None,
+            asked_model: None,
             access: Access::ReadOnly,
             workspace: None,
             state: SessionState::Ready,
@@ -102,6 +103,7 @@ mod tests {
             tokens: 0,
             context: None,
             recent: Vec::new(),
+            recent_at: Vec::new(),
             queued: Vec::new(),
             queued_project: None,
             queued_in: Vec::new(),
@@ -152,7 +154,7 @@ mod tests {
         // Merged the way this terminal was told for the project, as A would.
         app.merge_ways.insert("repo".into(), crate::tui::app::MergeWay::Push);
         let sent = press(&mut app, KeyCode::Char('y'));
-        assert_eq!(sent, vec![Command::ConfirmAccept { squad: "acme".into(), id: 9, tickets: vec![Confirmed { ticket: 42, merge: Some(Land::Push) }, Confirmed { ticket: 71, merge: Some(Land::Push) }] }]);
+        assert_eq!(sent, vec![Command::ConfirmAccept { squad: "acme".into(), id: 9, tickets: vec![Confirmed { ticket: 42, merge: Some(Land::Push) }, Confirmed { ticket: 71, merge: Some(Land::Push) }], said: None }]);
         assert!(!screen(&app, 110, 32).contains("Accept T-42, T-71?"), "gone at once");
     }
 
@@ -165,7 +167,7 @@ mod tests {
         // No way set for the project: to merge, it merges (no push).
         let mut other = self::app();
         other.on_event(Event::AcceptProposed { squad: "acme".into(), proposal: words });
-        assert_eq!(press(&mut other, KeyCode::Char('y')), vec![Command::ConfirmAccept { squad: "acme".into(), id: 9, tickets: vec![Confirmed { ticket: 42, merge: Some(Land::Merge) }, Confirmed { ticket: 71, merge: Some(Land::Merge) }] }]);
+        assert_eq!(press(&mut other, KeyCode::Char('y')), vec![Command::ConfirmAccept { squad: "acme".into(), id: 9, tickets: vec![Confirmed { ticket: 42, merge: Some(Land::Merge) }, Confirmed { ticket: 71, merge: Some(Land::Merge) }], said: None }]);
         app.selected = 1;
         assert!(!screen(&app, 110, 32).contains("merge T-42, T-71?"), "only where it was said");
         assert!(press(&mut app, KeyCode::Char('n')).iter().all(|c| !matches!(c, Command::DeclineAccept { .. })));

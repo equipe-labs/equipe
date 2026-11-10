@@ -8,14 +8,20 @@
 //!   never sees Claude credentials (see `equipe_providers::claude_code`).
 
 mod attach;
+mod brief;
+mod call_sim;
 mod clip;
 mod daemon;
 mod design;
+mod design_lint;
+mod design_taste;
+mod design_system;
 mod desktop;
 mod disk;
 mod home;
 mod i18n;
 mod lang;
+mod launchd;
 mod onboard;
 mod remote;
 mod review;
@@ -149,7 +155,7 @@ enum Command {
         #[arg(long)]
         squad: Option<String>,
     },
-    /// Start a squad, or change the folders one works on: `new <name> [folder]`, `add <folder>`, `remove <project>`
+    /// Start a squad, change the folders one works on, or delete one: `new <name> [folder]`, `add <folder>`, `remove <project>`, `delete <name>`
     Squad {
         words: Vec<String>,
         /// The squad to change (default: the one this folder belongs to, else your first)
@@ -158,6 +164,9 @@ enum Command {
         /// Only check the folder and say what would happen
         #[arg(long)]
         dry_run: bool,
+        /// Delete without asking (`delete`)
+        #[arg(long, short)]
+        yes: bool,
     },
     /// Apps where a member's send waits for your yes: `add|remove <app>`, `reset`
     SendApps {
@@ -166,10 +175,24 @@ enum Command {
         #[arg(long)]
         squad: Option<String>,
     },
+    /// Check a member's tool call before its engine runs it: Claude Code's
+    /// hook, the call's JSON on stdin (equipe sets this up for its members)
+    #[command(hide = true)]
+    Hook {
+        /// The member's working directory: never refused
+        #[arg(long, required_unless_present = "side_chat")]
+        work: Option<std::path::PathBuf>,
+        /// A folder the member only reads in this work
+        #[arg(long = "read-only")]
+        read_only: Vec<std::path::PathBuf>,
+        /// A side chat's call: refused unless it only reads files or the web
+        #[arg(long = "side-chat")]
+        side_chat: bool,
+    },
     /// Serve a member's board tools over MCP (equipe starts this for its engines)
     #[command(hide = true)]
     Mcp {
-        /// `equipe` (the board) or `desktop`
+        /// `equipe` (the board), `desktop` or `phone`
         #[arg(long, default_value = "equipe")]
         server: String,
         #[arg(long)]
@@ -180,6 +203,12 @@ enum Command {
         role: String,
         #[arg(long)]
         home: std::path::PathBuf,
+        /// The member's engine has no subagents of its own: equipe's helpers too
+        #[arg(long)]
+        helpers: bool,
+        /// A designer on brand work: its reference tools (`design_tools`) too
+        #[arg(long)]
+        branding: bool,
     },
     /// Sign in to sites in a browser, for the squad to work in as you
     Browser {
@@ -254,7 +283,7 @@ enum Command {
     /// Update equipe to the latest release
     Update,
     /// Show the language equipe speaks to you, or pick one for every screen:
-    /// ko, en, ja, zh-Hans, zh-Hant, es, fr, de — or auto, the system's
+    /// en, de, es, fr, ja, ko, zh-Hans, zh-Hant — or auto, the system's
     Lang {
         /// A language's code, or `auto`
         lang: Option<String>,
@@ -283,10 +312,24 @@ enum Command {
         #[command(subcommand)]
         action: DaemonAction,
     },
-    /// The designer's tools: init, check, specimen, render, audit
+    /// The PM's briefs: a second opinion on one from the other engine
+    Brief {
+        #[command(subcommand)]
+        action: brief::BriefAction,
+    },
+    /// The designer's tools: init, check, lint, second-look, specimen, render, shoot, diff, critique, audit, direction, kept, flows, refs, palette, type, component
     Design {
         #[command(subcommand)]
         action: design::DesignAction,
+    },
+    /// A call (voice radio) without a daemon: type what you'd say, see where it goes
+    CallSim {
+        /// The squad's name, only as a label
+        #[arg(long, default_value = "demo")]
+        squad: String,
+        /// Route by word rules only, without the model
+        #[arg(long)]
+        no_llm: bool,
     },
 }
 
@@ -400,10 +443,36 @@ fn install_tls() {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // Asked before each of a member's calls: answered at once, nothing else started.
+    if let Some(Command::Hook { work, read_only, side_chat }) = &cli.command {
+        return hook(work.as_deref(), read_only, *side_chat);
+    }
     // Before any thread: opened from Finder, the app's equipe (and the daemon
     // it starts) has launchd's bare PATH, where no member's tool is found.
     equipe_providers::tools_path::widen(runs_long(&cli));
     tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("start the async runtime").block_on(run(cli))
+}
+
+/// Claude Code's `PreToolUse` hook for a member: equipe's guard's answer to
+/// the call on stdin — a refusal, or nothing for the engine's own rules to
+/// decide. A call it can't read is let through: the guard only refuses.
+fn hook(work: Option<&std::path::Path>, read_only: &[std::path::PathBuf], side_chat: bool) -> ExitCode {
+    let mut input = String::new();
+    if std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).is_err() {
+        return ExitCode::SUCCESS;
+    }
+    let Ok(call) = serde_json::from_str::<serde_json::Value>(&input) else {
+        return ExitCode::SUCCESS;
+    };
+    let answer = match work {
+        _ if side_chat => equipe_core::guard::side_chat_answer(&call),
+        Some(work) => equipe_core::guard::answer(&call, work, read_only),
+        None => None,
+    };
+    if let Some(answer) = answer {
+        println!("{answer}");
+    }
+    ExitCode::SUCCESS
 }
 
 /// Whether this command is, or sets up, the daemon: worth asking the login
@@ -474,6 +543,8 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Review { base, models, goal } => review::command(base, models, goal).await,
         Command::Daemon { action } => daemon_command(action).await,
         Command::Design { action } => design::command(action).await.map_err(Failure::new),
+        Command::Brief { action } => brief::command(action).await.map_err(Failure::new),
+        Command::CallSim { squad, no_llm } => call_sim::run(squad, no_llm).await.map_err(Failure::new),
         Command::Disk { words, squad, yes } => disk::command(&words, squad, yes).await.map_err(Failure::new),
         Command::Update => update().await,
         Command::Lang { lang } => match lang::command(&equipe_providers::credentials::equipe_home(), lang.as_deref()) {
@@ -571,6 +642,11 @@ async fn run(cli: Cli) -> ExitCode {
                 Err(why) => Err(Failure::new(why)),
             }
         }
+        // A member's command: the window would hold its turn until closed.
+        Command::Browser { .. } if equipe_core::guard::run_by_member(std::env::var_os(equipe_core::guard::MEMBER_ENV)) => {
+            eprintln!("{}", equipe_core::guard::BROWSER_REFUSED);
+            return ExitCode::FAILURE;
+        }
         Command::Browser { max: Some(n), .. } => match settings::browser_max(&equipe_providers::credentials::equipe_home(), n.as_deref()) {
             Ok(line) => {
                 println!("  {line}");
@@ -579,7 +655,20 @@ async fn run(cli: Cli) -> ExitCode {
             Err(why) => Err(Failure::new(why)),
         },
         Command::Browser { url, forget, .. } => sign_in(url, forget).await,
-        Command::Squad { words, squad, dry_run } => {
+        // `delete <name>`: asked first at a terminal; through the daemon when it runs.
+        Command::Squad { words, yes, .. } if words.first().is_some_and(|w| w == "delete") => match words.as_slice() {
+            [_, name] => match settings::delete_squad(&equipe_providers::credentials::equipe_home(), &daemon::socket(), name, yes).await {
+                Ok(lines) => {
+                    for line in lines {
+                        println!("  {line}");
+                    }
+                    Ok(())
+                }
+                Err(why) => Err(Failure::new(why)),
+            },
+            _ => Err(Failure::new(t!("squad.delete_usage"))),
+        },
+        Command::Squad { words, squad, dry_run, .. } => {
             let home = equipe_providers::credentials::equipe_home();
             let cwd = std::env::current_dir().unwrap_or_default();
             let current = home::squad_for(&home, &cwd, squad);
@@ -608,7 +697,9 @@ async fn run(cli: Cli) -> ExitCode {
                 },
             }
         }
-        Command::Mcp { server, squad, member, role, home } => serve_mcp(&server, squad, member, role, home).await,
+        Command::Mcp { server, squad, member, role, home, helpers, branding } => serve_mcp(&server, squad, member, role, home, helpers, branding).await,
+        // Answered in `main`, before anything starts.
+        Command::Hook { .. } => Ok(()),
         Command::Desktop { action } => desktop::run(action.map(|a| match a {
             DesktopAction::Setup { sign } => desktop::Action::Setup { sign },
             DesktopAction::Status => desktop::Action::Status,
@@ -710,26 +801,43 @@ async fn run(cli: Cli) -> ExitCode {
 
 /// `equipe mcp`: a member's board tools, as a stdio MCP server. Every call goes
 /// to the daemon, which decides; stdout carries only the protocol.
-async fn serve_mcp(server: &str, squad: String, member: String, role: String, home: std::path::PathBuf) -> CmdResult {
+async fn serve_mcp(server: &str, squad: String, member: String, role: String, home: std::path::PathBuf, helpers: bool, branding: bool) -> CmdResult {
     use equipe_core::mcp::{self, Step};
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
     let socket = equipe_core::gateway::socket_path(&home);
     let desktop = server == equipe_core::runtime::DESKTOP_SERVER;
+    let phone = server == equipe_core::phone::SERVER;
     let (info, tools) = if desktop {
         (mcp::DESKTOP, equipe_desktop_control::tools::tools())
+    } else if phone {
+        (mcp::PHONE, equipe_core::phone::tools())
     } else {
-        (mcp::BOARD, equipe_core::board::tools(role == equipe_core::roles::PM))
+        let mut tools = equipe_core::helpers::with_board(&role, helpers);
+        if branding && role == "designer" {
+            tools.push(equipe_core::board::design_tools_tool());
+        }
+        (mcp::BOARD, tools)
     };
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     let mut out = tokio::io::stdout();
     while let Ok(Some(line)) = lines.next_line().await {
         let reply = match mcp::handle_for(&info, &line, &tools, VERSION) {
             Step::Reply(reply) => reply,
+            // A designer's reference tools run here, outside its engine's sandbox.
+            Step::Call { id, name, arguments } if !desktop && !phone && name == equipe_core::board::DESIGN_TOOLS => {
+                mcp::call_reply(id, &design_taste::from_board(&socket, &home, &squad, &member, &arguments).await)
+            }
+            // The design system's checks run here, outside the member's engine's sandbox.
+            Step::Call { id, name, arguments } if !desktop && !phone && name == equipe_core::board::SYSTEM_TOOLS => {
+                mcp::call_reply(id, &design_system::from_board(&socket, &home, &squad, &member, &arguments).await)
+            }
             Step::Call { id, name, arguments } => {
                 let call = protocol::rpc::ToolCall { squad: squad.clone(), member: member.clone(), name, arguments };
                 let result = if desktop {
                     equipe_core::gateway::call_desktop(&socket, &call).await
+                } else if phone {
+                    equipe_core::gateway::call_phone(&socket, &call).await
                 } else {
                     equipe_core::gateway::call_tool(&socket, &call).await
                 };
@@ -949,19 +1057,37 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             if when_idle {
                 wait_until_idle(&p).await?;
             }
-            if let Ok(daemon::Stopped::Ended(pid)) = daemon::stop().await {
-                println!("{}", p.note(0, &t!("main.daemon_ended", pid = pid)));
-            }
-            daemon::ensure_running().await.map_err(|err| Failure::new(err.to_string()))?;
+            let restarted = daemon::restart(|pid| println!("{}", p.note(0, &t!("main.daemon_ended", pid = pid))))
+                .await
+                .map_err(|err| Failure::new(err.to_string()))?;
             println!("{}", p.ok_line(t!("main.daemon_restarted")));
+            match restarted {
+                daemon::Restarted::Service(up) => {
+                    let reloaded = match up.reloaded {
+                        None => None,
+                        Some(launchd::Why::Changed) => Some(t!("main.service_reloaded_changed")),
+                        Some(launchd::Why::Refused) => Some(t!("main.service_reloaded_refused")),
+                        Some(launchd::Why::NotLoaded | launchd::Why::Elsewhere) => Some(t!("main.service_reloaded")),
+                    };
+                    if let Some(words) = reloaded {
+                        println!("{}", p.note(2, words));
+                    }
+                }
+                daemon::Restarted::Alone => println!("{}", p.note(2, t!("main.restarted_alone"))),
+            }
+            // What the new daemon says of itself: bound to an SSH connection, or the Keychain closed to it.
+            show_whereabouts(&p, &daemon::whereabouts().await);
             Ok(())
         }
         DaemonAction::Install => {
+            if !daemon::own_home() {
+                return Err(Failure::new(t!("main.service_own_home_only")));
+            }
             let exe = std::env::current_exe().map_err(|err| Failure::new(err.to_string()))?;
             // The service takes over from a daemon already running — between turns.
             wait_until_idle(&p).await?;
             let _ = daemon::stop().await;
-            daemon::service::install(&exe, &daemon::log_path()).map_err(|err| Failure::new(err.to_string()))?;
+            daemon::service::install(&exe, &daemon::log_path()).await.map_err(|err| Failure::new(err.to_string()))?;
             for _ in 0..100 {
                 if equipe_core::gateway::is_running(&daemon::socket()).await {
                     println!("{}", p.ok_line(t!("main.service_installed")));
@@ -973,6 +1099,9 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             Err(Failure::new(t!("main.service_no_answer")).next(format!("tail {}", daemon::log_path().display())))
         }
         DaemonAction::Uninstall => {
+            if !daemon::own_home() {
+                return Err(Failure::new(t!("main.service_own_home_only")));
+            }
             if daemon::service::uninstall().map_err(|err| Failure::new(err.to_string()))? {
                 println!("{}", p.ok_line(t!("main.service_removed")));
             } else {
@@ -997,8 +1126,7 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             };
             println!("{}", p.ok_line(t!("main.daemon_running")));
             println!("{}", p.row(t!("main.row_socket"), &daemon::socket().display().to_string()));
-            let how = if daemon::service::installed() { t!("main.runs_as_service") } else { t!("main.runs_on_demand") };
-            println!("{}", p.row(t!("main.row_runs_as"), how));
+            show_whereabouts(&p, &daemon::whereabouts().await);
             if let Some(stall) = &busy.stalled {
                 let since = equipe_core::watchdog::clock(stall.since);
                 println!("{}", p.row(t!("main.row_stalled"), &t!("main.stalled_since", since = since, doing = stall.doing, secs = stall.secs)));
@@ -1010,6 +1138,46 @@ async fn daemon_command(action: DaemonAction) -> CmdResult {
             println!("{}", p.row(t!("main.row_screen"), &equipe_core::i18n::label::desktop(crate::i18n::lang(), &busy.desktop, None).unwrap_or_else(|| t!("main.screen_free").into())));
             Ok(())
         }
+    }
+}
+
+/// How the daemon runs — its login service's, or on its own (from an SSH
+/// connection, which the Keychain is closed to) — the login service's last
+/// exit when it wasn't clean, and the session it runs in, as it tells it;
+/// and what to do when Claude members couldn't sign in so.
+fn show_whereabouts(p: &ui::Painter, w: &daemon::Whereabouts) {
+    use daemon::HowRuns;
+    let how = match w.how {
+        HowRuns::Trial => t!("main.runs_as_trial", mins = daemon::TRIAL_IDLE.as_secs() / 60),
+        HowRuns::Service => t!("main.runs_as_service").to_owned(),
+        HowRuns::Alone { ssh: true, .. } => t!("main.runs_alone_ssh").to_owned(),
+        HowRuns::Alone { ssh: false, beside: true } => t!("main.runs_alone_beside").to_owned(),
+        HowRuns::Alone { ssh: false, beside: false } => t!("main.runs_on_demand").to_owned(),
+    };
+    println!("{}", p.row(t!("main.row_runs_as"), &how));
+    if let Some(code) = w.last_exit {
+        let exit = if code == launchd::EX_CONFIG { t!("main.last_exit_refused").to_owned() } else { code.to_string() };
+        println!("{}", p.row(t!("main.row_last_exit"), &exit));
+    }
+    let runs = w.runs.as_ref();
+    if let Some(inside) = runs.and_then(|r| r.login_session) {
+        let mut session = vec![if inside { t!("main.session_inside") } else { t!("main.session_outside") }];
+        match runs.and_then(|r| r.keychain) {
+            Some(true) => session.push(t!("main.keychain_open")),
+            Some(false) => session.push(t!("main.keychain_locked")),
+            None => {}
+        }
+        println!("{}", p.row(t!("main.row_session"), &session.join(" · ")));
+    }
+    let note = match w.how {
+        HowRuns::Alone { ssh: true, beside: true } => Some(t!("main.alone_ssh_restart")),
+        HowRuns::Alone { ssh: true, beside: false } => Some(t!("main.alone_ssh_install")),
+        _ if runs.and_then(|r| r.login_session) == Some(false) => Some(t!("main.outside_login")),
+        _ if runs.and_then(|r| r.keychain) == Some(false) => Some(t!("main.keychain_locked_note")),
+        _ => None,
+    };
+    if let Some(note) = note {
+        println!("{}", p.note(2, note));
     }
 }
 
@@ -1462,13 +1630,14 @@ impl App {
                 // Work handed to a subagent shows as it starts and as it hands back.
                 Event::SubagentStarted { what, .. } => eprintln!("{}", e.dim(&format!("  ↳ {what}"))),
                 Event::SubagentEnded { .. } => eprintln!("{}", e.dim(&format!("  ↳ {}", t!("main.handed_back")))),
-                Event::SubagentStep { .. } | Event::SubagentEntry { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::LaneMoved { .. } | Event::Estimated { .. } | Event::MemoWithdrawn { .. } | Event::QueueSent { .. } | Event::VisualsRendered { .. } => {}
+                Event::SubagentStep { .. } | Event::SubagentEntry { .. } | Event::SubagentStuck { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::LaneMoved { .. } | Event::ConversationBack { .. } | Event::ConversationTitle { .. } | Event::PutAwayChanged { .. } | Event::Estimated { .. } | Event::MemoWithdrawn { .. } | Event::QueueSent { .. } | Event::VisualsRendered { .. } => {}
                 Event::Compacting { .. } | Event::Compacted { .. } | Event::CompactFailed { .. } => {}
-                Event::ToolResult { .. } | Event::Thinking { .. } => {}
+                Event::ToolResult { .. } | Event::Thinking { .. } | Event::CommandWatch { .. } => {}
                 Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. }
                 | Event::BrowserWants { .. }
                 | Event::PairOffer { .. } | Event::PairAsked { .. } | Event::Paired { .. } | Event::PairEnded { .. } | Event::Devices { .. }
-                | Event::DiskLevel { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. }  | Event::Engines { .. } | Event::Nebius { .. } | Event::SignIn { .. } | Event::EngineInstall { .. } => {}
+                | Event::DiskLevel { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. } | Event::PlanUse { .. } | Event::PlanBurn { .. } | Event::Engines { .. } | Event::Nebius { .. } | Event::Providers { .. } | Event::ProviderTested { .. } | Event::SignIn { .. } | Event::EngineAuth { .. } | Event::EngineInstall { .. } => {}
+                Event::SideChatOpened { .. } | Event::SideChat { .. } | Event::SideChatClosed { .. } => {}
                 Event::TurnEnded { outcome, usage, .. } => {
                     printer.end(outcome, usage);
                     core.send(Cmd::Close { session: ID });
@@ -1505,10 +1674,18 @@ impl App {
                 | Event::TeamChangeClosed { .. }
                 | Event::AcceptProposed { .. }
                 | Event::AcceptClosed { .. }
+                | Event::WordsLive { .. }
+                | Event::WordsClosed { .. }
+                | Event::WordsLog { .. }
+                | Event::WordsAllChanged { .. }
                 | Event::EngineProposed { .. }
                 | Event::EngineProposalClosed { .. }
                 | Event::EngineSwitchingChanged { .. }
+                | Event::MemberMoved { .. }
+                | Event::HandOver { .. }
                 | Event::ProjectsChanged { .. }
+                | Event::SquadDeleted { .. }
+                | Event::SquadNotDeleted { .. }
                 | Event::RoutinesChanged { .. }
                 | Event::RoutineProposed { .. }
                 | Event::RoutineProposalClosed { .. }
@@ -1517,10 +1694,22 @@ impl App {
                 | Event::Logins { .. }
                 | Event::BrowserProfiles { .. }
                 | Event::PmAcceptsChanged { .. }
+                | Event::SubagentsAtOnceChanged { .. }
+                | Event::DesignReviewerChanged { .. }
+                | Event::RoleModelsChanged { .. }
+                | Event::Models { .. }
                 | Event::SecretAsked { .. }
                 | Event::SecretClosed { .. }
                 | Event::Allowed { .. }
-                | Event::Design { .. } => {}
+                | Event::Design { .. }
+                | Event::ProjectDocs { .. }
+                | Event::DocsFound { .. }
+                | Event::CallStarted { .. }
+                | Event::CallSay { .. }
+                | Event::CallRoute { .. }
+                | Event::CallSummary { .. }
+                | Event::DocCopyKept { .. }
+                | Event::DesignVersions { .. } => {}
                 Event::Error { message, next, .. } => {
                     failure.get_or_insert(Failure { message, next });
                     // A session that never opened won't send anything more.
@@ -1718,6 +1907,18 @@ fn tool_verb(name: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn squad_delete_takes_a_name_and_yes_for_scripts() {
+        let parsed = |args: &[&str]| match Cli::try_parse_from(args).map(|c| c.command) {
+            Ok(Some(Command::Squad { words, yes, dry_run, .. })) => Some((words, yes, dry_run)),
+            _ => None,
+        };
+        assert_eq!(parsed(&["equipe", "squad", "delete", "acme"]), Some((vec!["delete".to_owned(), "acme".to_owned()], false, false)), "asked first");
+        assert_eq!(parsed(&["equipe", "squad", "delete", "acme", "--yes"]), Some((vec!["delete".to_owned(), "acme".to_owned()], true, false)));
+        assert_eq!(parsed(&["equipe", "squad", "delete", "acme", "-y"]).map(|p| p.1), Some(true));
+        assert_eq!(parsed(&["equipe", "squad", "new", "acme"]).map(|p| p.1), Some(false), "the other words as ever");
+    }
 
     #[test]
     fn homebrew_installs_update_through_homebrew() {

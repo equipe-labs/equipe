@@ -1,4 +1,4 @@
-//! 지표: a product's numbers, read from the daemon (`metrics.*`, docs/METRICS.md).
+//! Metrics: a product's numbers, read from the daemon (`metrics.*`, docs/METRICS.md).
 //! This is the screen's model — what the daemon said, turned into what is drawn
 //! (cards, banners, sparklines) — and none of its drawing (`views/metrics.rs`).
 //!
@@ -112,7 +112,7 @@ pub fn month_day(day: &str) -> Option<(u32, u32)> {
     ((1..=12).contains(&month) && (1..=31).contains(&day)).then_some((month, day))
 }
 
-/// A day in words, in the person's language order (`11월 2일`).
+/// A day in words, in the person's language order (`Nov 2`, Japanese `11月2日`).
 pub fn day_words(day: &str) -> String {
     match month_day(day) {
         Some((month, day)) => equipe_core::t!("metrics.date", month = month, day = day),
@@ -122,10 +122,8 @@ pub fn day_words(day: &str) -> String {
 
 /// The local `YYYY-MM-DD` and `HH:MM` of unix seconds.
 pub fn local_day_time(unix: u64) -> (String, String) {
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let secs = unix as libc::time_t;
-    unsafe { libc::localtime_r(&secs, &mut tm) };
-    (format!("{:04}-{:02}-{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday), format!("{:02}:{:02}", tm.tm_hour, tm.tm_min))
+    let Some(tm) = equipe_providers::platform::local_time(unix) else { return (unix.to_string(), String::new()) };
+    (format!("{:04}-{:02}-{:02}", tm.year, tm.month, tm.day), format!("{:02}:{:02}", tm.hour, tm.minute))
 }
 
 /// A moment: just the time when it is today, else the day and the time.
@@ -262,7 +260,7 @@ pub fn needs_key(code: ErrorCode) -> bool {
     matches!(code, ErrorCode::Auth | ErrorCode::Keychain)
 }
 
-/// The days of a period, as the screen words them: `10월 27일 ~ 11월 2일`.
+/// The days of a period, as the screen words them: `Oct 27 – Nov 2`.
 pub fn range_words(query: &QueryResult) -> String {
     equipe_core::t!("metrics.range", from = day_words(&query.from), to = day_words(&query.to), previous_from = day_words(&query.previous_from), previous_to = day_words(&query.previous_to))
 }
@@ -347,7 +345,7 @@ pub fn bar_height(value: f64, top: f64, h: f32) -> f32 {
 }
 
 /// The source's words in a card's title line, in the three forms the screen
-/// uses: `오늘 07:00 갱신` (today), `11월 1일 기준` (an earlier day) — the
+/// uses: `updated today 07:00` (today), `as of Nov 1` (an earlier day) — the
 /// bare time is for a card with no room.
 pub fn updated(at: u64, now: u64) -> Updated {
     let (day, time) = local_day_time(at);
@@ -362,12 +360,15 @@ pub enum Updated {
 
 // ---- sparkline ----
 
+/// A line's points in its box, a gap where a day isn't known.
+pub type Points = Vec<Option<(f32, f32)>>;
+
 /// The points of two lines in a box `w` × `h`, scaled together (so the period
 /// and the one before compare) and with gaps kept: `None` is a day not known.
-pub fn spark(series: &[Option<f64>], previous: &[Option<f64>], w: f32, h: f32) -> (Vec<Option<(f32, f32)>>, Vec<Option<(f32, f32)>>) {
+pub fn spark(series: &[Option<f64>], previous: &[Option<f64>], w: f32, h: f32) -> (Points, Points) {
     let all = || series.iter().chain(previous).flatten().copied();
     let (lo, hi) = all().fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
-    let place = |line: &[Option<f64>]| -> Vec<Option<(f32, f32)>> {
+    let place = |line: &[Option<f64>]| -> Points {
         let last = line.len().saturating_sub(1).max(1) as f32;
         line.iter()
             .enumerate()
@@ -444,7 +445,7 @@ pub mod demo {
     }
 
     fn languages(connection: &str) -> MetricValue {
-        MetricValue { metric: "languages".into(), label: "Languages".into(), shape: Shape::Breakdown, value: Some(1284.), previous: Some(1187.), change: None, change_pct: None, series: vec![], previous_series: vec![], breakdown: vec![share("English", 742., 700.), share("한국어", 283., 240.), share("日本語", 112., 100.), share("Español", 64., 60.), share("기타", 83., 87.)], ..visits(connection) }
+        MetricValue { metric: "languages".into(), label: "Languages".into(), shape: Shape::Breakdown, value: Some(1284.), previous: Some(1187.), change: None, change_pct: None, series: vec![], previous_series: vec![], breakdown: vec![share("English", 742., 700.), share("Korean", 283., 240.), share("日本語", 112., 100.), share("Español", 64., 60.), share("Other", 83., 87.)], ..visits(connection) }
     }
 
     fn spots(connection: &str, metric: &str, label: &str, unit: &str, rows: &[(&str, f64)]) -> MetricValue {
@@ -482,8 +483,8 @@ pub mod demo {
         let values = vec![
             visits("m1"),
             languages("m1"),
-            spots("m1", "referrers", "Referrers", "page_loads", &[("직접", 514.), ("X", 308.), ("GitHub", 231.), ("LinkedIn", 128.), ("기타", 103.)]),
-            spots("m1", "download_clicks", "Download click spots", "clicks", &[("첫 화면 버튼", 96.), ("상단 메뉴", 34.), ("설치 안내", 19.), ("맨 아래", 7.)]),
+            spots("m1", "referrers", "Referrers", "page_loads", &[("Direct", 514.), ("X", 308.), ("GitHub", 231.), ("LinkedIn", 128.), ("Other", 103.)]),
+            spots("m1", "download_clicks", "Download click spots", "clicks", &[("Hero button", 96.), ("Top menu", 34.), ("Install guide", 19.), ("Footer", 7.)]),
             github("m2", "views", "Views", "views", Shape::Count, 2310., 5.1),
             github("m2", "clones", "Clones", "clones", Shape::Count, 418., -2.3),
             github("m2", "stars", "Stars", "stars", Shape::Total, 25., 19.0),

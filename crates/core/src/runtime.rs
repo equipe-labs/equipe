@@ -17,11 +17,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use equipe_protocol::harness;
+use equipe_protocol::tags;
 use equipe_protocol::rpc::{ToolCall, ToolResult};
 use equipe_protocol::transcript::scope;
 use equipe_protocol::{
-    Access, Approval, BrowserNavAction, Command, CompactTrigger, Decision, Engine, Entry, Event, Member, MemberRef, Mode, SessionId, SessionInfo,
-    Estimate, OffMain, SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
+    Access, Approval, AuthState, BrowserNavAction, Command, CompactTrigger, Decision, Engine, Entry, Event, Member, MemberRef, Mode, SessionId, SessionInfo,
+    Estimate, ModelChoice, OffMain, RoleModel, SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
 };
 use equipe_providers::claude_code::{self, Activity};
 use equipe_providers::codex_app;
@@ -39,10 +41,12 @@ use crate::browser;
 use crate::desktop_gate::{self, Act, Verdict};
 use crate::desktop;
 use crate::eta;
+use crate::guard;
 use crate::journal::{self, Journal, SessionRecord, TicketWork};
 use crate::permissions;
 use crate::roles::{self, Teammate};
 use crate::routines;
+use crate::skills;
 use crate::vault;
 use equipe_protocol::routines::Routine;
 use crate::squad_home;
@@ -66,6 +70,8 @@ mod decide;
 mod room;
 mod engines;
 mod design;
+mod briefs;
+mod plans;
 mod accept;
 mod secrets;
 mod design_qa;
@@ -74,6 +80,17 @@ mod heartbeat;
 mod signals;
 mod tickets;
 mod compact;
+mod controls;
+mod review;
+mod retro;
+mod watch;
+mod words;
+mod plan_use;
+mod helping;
+mod side_chat;
+mod providers;
+mod phone;
+mod call;
 
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
@@ -83,6 +100,8 @@ const BRIEF_REPLY_CHARS: usize = 400;
 
 /// Closed tickets a snapshot still shows, newest first.
 const CLOSED_TICKETS_SHOWN: usize = 20;
+/// Conversations put away a screen lists, the latest first.
+const PUT_AWAY_SHOWN: usize = 50;
 /// The routines one squad may keep.
 const MAX_ROUTINES: usize = 20;
 
@@ -95,9 +114,9 @@ pub const DESKTOP_SERVER: &str = "desktop";
 /// equipe-design's extraction and remix tools, for designers (`equipe-design mcp`).
 pub const DESIGN_SERVER: &str = "design";
 /// The tool name a member's own question shows under, among approvals.
-const CONFIRM: &str = "Confirm";
+pub(crate) const CONFIRM: &str = "Confirm";
 /// An approval to sign a member in with a kept login (`vault`).
-const SIGN_IN_TOOL: &str = "Sign in";
+pub(crate) const SIGN_IN_TOOL: &str = "Sign in";
 
 /// How long `busy` waits for the loop before it answers with what the loop is on.
 pub const ANSWER_WAIT: Duration = Duration::from_secs(3);
@@ -165,6 +184,11 @@ pub struct Config {
     /// An NVIDIA Nemotron model on Nebius Token Factory reviews each code
     /// ticket handed in (`nemotron`); `None`: no `NEBIUS_API_KEY`, no review.
     pub nemotron: Option<crate::nemotron::Config>,
+    /// Look at the free space of the disk now and then, and on a short disk
+    /// hold code work back and trim build caches (the daemon). Off, the disk's
+    /// room is only what a write that failed or a screen's look says: a test's
+    /// runtime doesn't stall on the Mac's real disk running short.
+    pub watch_disk: bool,
 }
 
 impl Config {
@@ -187,6 +211,7 @@ impl Config {
             person_home: None,
             lang: crate::i18n::Lang::resolve(crate::i18n::Front::Terminal),
             nemotron: crate::nemotron::Config::from_env_or_saved(&equipe_home()).ok(),
+            watch_disk: true,
         }
     }
 
@@ -209,6 +234,10 @@ enum DesktopRequest {
 
 enum Request {
     Command(Command),
+    /// A person-only command came from a member's own process and was refused
+    /// at the door ([`crate::gateway`], [`crate::origin`]); the person is told.
+    /// `squad` is the command's, when it named one.
+    MemberRefused(Option<String>),
     Snapshot(String, oneshot::Sender<Snapshot>),
     Subscribe(String, oneshot::Sender<Subscription>),
     Tool(ToolCall, oneshot::Sender<ToolResult>),
@@ -224,6 +253,8 @@ enum Request {
     PersonWindow(String, oneshot::Sender<bool>),
     BrowserHub(oneshot::Sender<std::sync::Arc<browser::Hub>>),
     Desktop(DesktopRequest),
+    /// A member's phone tools ([`crate::phone`]).
+    Phone(phone::PhoneRequest),
     /// An engine's plan, read outside a turn.
     Usage(Engine, equipe_protocol::PlanUsage),
     Shutdown(oneshot::Sender<()>),
@@ -240,6 +271,13 @@ pub struct Handle {
 impl Handle {
     pub fn send(&self, command: Command) {
         let _ = self.requests.send(Request::Command(command));
+    }
+
+    /// A person-only command reached the socket from a member's own process and
+    /// was refused ([`crate::gateway`]); the person is told, in their language.
+    /// `squad` is the command's, when it named one.
+    pub fn refused_person_only(&self, squad: Option<String>) {
+        let _ = self.requests.send(Request::MemberRefused(squad));
     }
 
     /// Everything `squad` has going, for a screen that attaches now.
@@ -432,6 +470,26 @@ impl Handle {
         self.pulse.stall(Duration::ZERO)
     }
 
+    /// The daemon's own: ask the loop what `status` asks every
+    /// [`watchdog::PROBE_EVERY`], and once nothing has answered for `after`
+    /// with the loop on no step ([`watchdog::hung`]), the watchdog ends the
+    /// process — its threads dumped to `dump` first — for the login service
+    /// to start it again. The asking stops with the loop.
+    pub fn heal_when_hung(&self, after: Duration, dump: Option<PathBuf>) -> tokio::task::JoinHandle<()> {
+        self.pulse.heal_after(after, dump);
+        let (requests, pulse) = (self.requests.clone(), self.pulse.clone());
+        tokio::spawn(async move {
+            loop {
+                let (tx, rx) = oneshot::channel();
+                if requests.send(Request::Busy(tx)).is_err() || rx.await.is_err() {
+                    return;
+                }
+                pulse.answered();
+                tokio::time::sleep(watchdog::PROBE_EVERY).await;
+            }
+        })
+    }
+
     /// An engine's plan usage read outside a turn (a poll of Codex's limits,
     /// say): told every screen as [`Event::PlanUsage`], and weighed for
     /// moving members between engines at once.
@@ -469,6 +527,9 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         vault: std::sync::Arc::new(std::sync::Mutex::new(vault)),
         logins,
         secret_asks: HashMap::new(),
+        calls: HashMap::new(),
+        call_llm: crate::call::judge::LlmConfig::from_env(),
+        calls_ended_at: HashMap::new(),
         desktop: desktop::Desktop::new(mac),
         config,
         // A server that never answers a connection must not hold anything up.
@@ -476,12 +537,14 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         subscribers: vec![(None, evt_tx)],
         internal: internal_tx,
         sessions: HashMap::new(),
+        dispatch_deferred: std::collections::HashSet::new(),
         journals: HashMap::new(),
         next_join: 1,
         pending: HashMap::new(),
         next_approval: 1,
         focus: HashMap::new(),
         said_about: None,
+        on_phone: false,
         builds_trimmed: None,
         compactions: compact::CompactTimes::default(),
         browsers: HashMap::new(),
@@ -505,9 +568,14 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         codex_read: None,
         codex_reading: false,
         codex_models: None,
+        codex_listing: false,
+        providers: HashMap::new(),
         questions: HashMap::new(),
         team_changes: HashMap::new(),
         routine_proposals: HashMap::new(),
+        design_reviews: HashMap::new(),
+        retros: HashMap::new(),
+        approvals_asked: HashMap::new(),
         signals_running: std::collections::HashSet::new(),
         accepts: HashMap::new(),
         accepts_declined: HashMap::new(),
@@ -516,20 +584,35 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         settled_at: None,
         merging: std::collections::HashSet::new(),
         disk: Default::default(),
+        plan_use: Default::default(),
+        commands: Default::default(),
+        words: Default::default(),
+        helping: HashMap::new(),
+        side_chats: HashMap::new(),
         awake: Default::default(),
         sign_ins: HashMap::new(),
         next_sign_in: 1,
+        sign_in_codes: HashMap::new(),
+        auth: HashMap::new(),
         installs: std::collections::HashSet::new(),
         codex_binary: crate::engines::codex_binary(),
         engines: Default::default(),
         design_watch: HashMap::new(),
         design_busy: std::collections::HashSet::new(),
+        review_nudged: HashMap::new(),
     };
     let mut memos = Vec::new();
+    // What waited on the person in words when the daemon stopped: logged as dropped.
+    runtime.words_dropped_everywhere();
     if runtime.config.persist {
         runtime.restore();
         runtime.prune();
         memos = runtime.resume_work();
+        runtime.restore_stopped();
+        // Change requests the PM once left as plain comments: to their members, once.
+        runtime.recover_change_requests();
+        // Chrome's first start, off the loop, before a reply's card waits on it.
+        let _ = crate::visuals::card::warm_up(&runtime.config.home);
     }
     let pulse = watchdog::Pulse::new();
     watchdog::watch(&pulse);
@@ -585,6 +668,9 @@ struct Work {
     screens: bool,
     /// Set by `design_qa` on a design QA ticket: the designer's word.
     verdict: Option<design_qa::Verdict>,
+    /// What a designer's last hand-in was refused for: the same again goes
+    /// in with it marked, rather than round and round.
+    refused: Option<Vec<String>>,
 }
 
 /// One of the PM's conversations at its desk, while another is the current one.
@@ -604,7 +690,11 @@ struct Session {
     /// When it joined, for a stable team order (ids are random).
     joined: u64,
     engine: Engine,
+    /// The model it is set to, as its engine is asked for it: an alias
+    /// (`opus`) or an id.
     model: Option<String>,
+    /// The model its engine named when it last started a turn, if it did.
+    ran: Option<String>,
     access: Access,
     /// Where desk turns run — and, for a plain editing session, its worktree.
     cwd: PathBuf,
@@ -620,6 +710,8 @@ struct Session {
     work: Option<Work>,
     prompts: Vec<String>,
     title: Option<String>,
+    /// A first-exchange title side turn is already in flight (or finished).
+    title_started: bool,
     tokens: u64,
     /// How full its latest conversation's context was, and the window.
     context: Option<(u64, u64)>,
@@ -648,6 +740,9 @@ struct Session {
     /// Stops the turn running now through its engine, which then winds it
     /// down (Codex's `turn/interrupt`). `None`: stopping kills it.
     stop: Option<oneshot::Sender<()>>,
+    /// Stops one subagent of the turn running now, by its thread, through
+    /// its engine (Codex's `turn/interrupt` on the subagent's own turn).
+    stop_subagent: Option<mpsc::UnboundedSender<String>>,
     /// For each of those, the project the person was looking at (`None`: the whole squad).
     steer_threads: Vec<Option<String>>,
     /// Steers taken back after they went into the turn: not shown when the
@@ -688,6 +783,9 @@ struct Session {
     /// The turn running answers the person (not the board, not the team), so
     /// a guess at what they say next may follow it.
     answers_person: bool,
+    /// The person last spoke to it from their phone: what it answers is read
+    /// there, and its messages say so ([`crate::roles::PHONE_MARK`]).
+    on_phone: bool,
     /// How hard it thinks (`--effort` for Claude Code, reasoning effort for
     /// Codex); `None`: the engine's default.
     effort: Option<String>,
@@ -733,6 +831,12 @@ impl Session {
         self.member.is_some() && self.access == Access::EditFiles
     }
 
+    /// Whether it changes a project's files on a code ticket it works, in that
+    /// ticket's worktree: as it edits — and the PM, on a code ticket of its own.
+    fn edits_on_code_tickets(&self) -> bool {
+        self.member.as_ref().is_some_and(|m| roles::edits_on_code_tickets(&m.role, self.edits()))
+    }
+
     /// Free for a new ticket: not on one, not mid-turn.
     fn is_free(&self) -> bool {
         self.work.is_none() && !self.is_working()
@@ -749,15 +853,31 @@ struct TurnDone {
     ticket: Option<TicketId>,
 }
 
+struct ConversationTitleDone {
+    session: SessionId,
+    squad: String,
+    title: String,
+}
+
 /// How a merge went off the loop: main's name and, when a push was asked
 /// for, how that went — or why nothing was merged.
 type MergeResult = Result<(String, Option<Result<(), String>>), String>;
 
 enum Internal {
     Event(Box<Event>),
+    /// A turn's engine started, as this process.
+    EngineStarted { session: SessionId, pid: u32 },
+    /// Every process, as a look at members' commands found them (`None`: `ps` couldn't say).
+    Processes(Option<Vec<crate::command_watch::Proc>>),
     Done(TurnDone),
+    /// A tool-less side turn named a conversation (or its local fallback did).
+    ConversationTitle(ConversationTitleDone),
     /// Nobody answered a request for permission in time.
     ApprovalTimedOut(u64),
+    /// A decision in words: its undo or cancel window, or its read-back's wait, is over.
+    WordsDue(u64),
+    /// What the person said yes to on a card, done as their screen would ask.
+    Apply(Box<Command>),
     /// Codex asks before it acts, as Claude Code does through `approve`.
     Ask(ToolCall, oneshot::Sender<ToolResult>),
     /// The Codex plan's limits, as just read or reported; `None`: they couldn't be read.
@@ -772,6 +892,8 @@ enum Internal {
     Merged { squad: String, ticket: TicketId, result: MergeResult },
     /// The free space on equipe's disk, as a look begun then found it.
     Disk(Option<crate::disk::DiskStatus>, std::time::Instant),
+    /// A pass over the engines' transcripts ended: the burns going on now.
+    PlanUsePassed(Vec<equipe_protocol::plan_use::Burn>, Vec<(Engine, crate::plan_use::Load)>),
     /// What uses the disk, as a look begun then found it.
     DiskReport(Box<crate::disk::DiskReport>, std::time::Instant),
     /// What a clean gave back, the free space after it, and who asked.
@@ -780,6 +902,8 @@ enum Internal {
     DiskTrimmed(u64, Vec<String>),
     /// A project the person added, or why it wasn't.
     ProjectAdded { squad: String, result: Result<PathBuf, String> },
+    /// A squad deleted off the loop, or why it wasn't.
+    SquadDeleted { squad: String, result: Result<crate::squads::Deleted, String> },
     /// The logins changed (or couldn't): what screens see of them now.
     Logins(Result<Vec<crate::protocol::vault::Login>, String>),
     /// Something waits for a conversation to act on — work handed in for the
@@ -787,6 +911,12 @@ enum Internal {
     Wake { session: SessionId, prompt: String },
     /// Hand ready work out in every squad again (the disk has room once more).
     Dispatch,
+    /// A turn failed for want of `engine`'s sign-in: kept to carry on.
+    SignInLost { engine: Engine, session: SessionId, prompt: String },
+    /// Why `engine` can't serve members here, as just looked at.
+    AuthChecked(Engine, equipe_protocol::AuthState, String),
+    /// Time to look at `engine` again while its turns wait.
+    AuthRecheck(Engine),
     /// A signal's command ran off the loop: its reading.
     SignalRead { squad: String, key: String, reading: crate::signals::Reading },
     /// Where the engines stand, as just looked at off the loop.
@@ -795,13 +925,54 @@ enum Internal {
     SignInEnded(Engine, u64),
     /// Installing an engine's tool ended.
     InstallEnded(Engine),
+    /// The Codex CLI's models, as just listed off the loop for the screens;
+    /// `None`: they couldn't be.
+    CodexModels(Option<Vec<codex_app::ModelInfo>>),
+    /// A model provider's models, as just listed off the loop, or why not.
+    ProviderListed { id: String, result: Result<Vec<String>, crate::nemotron::ReviewError> },
     /// Whether Claude is signed in, as just looked at off the loop.
     ClaudeReady(bool),
     /// A squad's design systems looked at off the loop: their stamp, and —
     /// when they changed or were asked for — what they are.
     Design(String, u64, Option<design::Catalog>),
+    /// A squad's briefs and plans, read off the loop.
+    Docs(String, crate::briefs::Catalog),
+    /// What a search of a squad's briefs and plans found, off the loop: the
+    /// squad, the words, the paths.
+    DocsFound(String, String, Vec<String>),
+    /// One copy of a brief or plan kept off the loop, the others removed from
+    /// the squad's folder: the squad, the session told, and how it went.
+    DocCopyKept(String, SessionId, Result<crate::briefs::Kept, String>),
+    /// A plan written off the loop (`write_plan`): what follows, and the answer.
+    PlanWritten(Box<plans::Written>),
+    /// A plan read off the loop for a ticket cut from it (`create_ticket` with `plan`).
+    PlanCut(Box<plans::Cut>),
+    /// A ticket listed in its plan, off the loop: why not, if it wasn't.
+    PlanListed(String, Option<String>),
+    /// A design system's accepted versions, read off the loop.
+    DesignVersions { squad: String, project: Option<String>, versions: Vec<equipe_protocol::design::DesignVersion> },
+    /// The version the person asked to go back to, looked up off the loop (`None`: not one).
+    DesignRestore { squad: String, project: Option<String>, commit: String, version: Option<equipe_protocol::design::DesignVersion> },
     /// Nemotron's review of a code ticket handed in by `member`, or why there is none.
     Reviewed { squad: String, ticket: TicketId, member: SessionId, result: Result<Box<crate::nemotron::Reviewed>, crate::nemotron::ReviewError> },
+    /// A subagent of a turn's engine was heard from on its own thread.
+    SubagentHeard { session: SessionId, id: String },
+    /// A member's helper did something ([`crate::helpers`]).
+    Helper { session: SessionId, id: String, activity: Activity },
+    /// A member's helper's turn ended: what it wrote, or why it failed.
+    HelperEnded { session: SessionId, id: String, outcome: Result<equipe_providers::turn::TurnResult, String> },
+    /// A helper's time is up.
+    HelperTimeUp { session: SessionId, id: String },
+    /// A `helper_result` has waited as long as it does.
+    HelperWaitOver(u64),
+    /// Something happened in a side chat ([`crate::side_chat`]).
+    SideChat { side: equipe_protocol::SideChatId, event: Box<Event> },
+    /// A side chat's turn ended.
+    SideDone(side_chat::SideDone),
+    /// The judge read an utterance of call `call` (`call.rs`).
+    CallJudged { call: String, judged: Box<crate::call::judge::Judged> },
+    /// Words about the board for a call (`call::status`).
+    CallTold { call: String, text: String },
 }
 
 /// A request for permission waiting for the person, and the engine waiting on it.
@@ -844,6 +1015,9 @@ struct Runtime {
     subscribers: Vec<(Option<String>, UnboundedSender<Event>)>,
     internal: UnboundedSender<Internal>,
     sessions: HashMap<SessionId, Session>,
+    /// Starts made as one approved team change wait for its preferred-ticket
+    /// pass instead of taking ordinary work one member at a time.
+    dispatch_deferred: std::collections::HashSet<SessionId>,
     /// One journal per squad, opened on first use.
     journals: HashMap<String, Journal>,
     /// The next session's place in its team.
@@ -857,6 +1031,8 @@ struct Runtime {
     /// that sent it shows (`Some(None)`: the whole squad) — it, not the
     /// focus another screen set last, says what the message is about.
     said_about: Option<Option<String>>,
+    /// While a command the person sent from their phone is handled ([`Command::OnPhone`]).
+    on_phone: bool,
     /// When members' build caches were last looked at.
     builds_trimmed: Option<std::time::Instant>,
     /// How long members' conversations took to compact, for the next one's guess.
@@ -904,7 +1080,11 @@ struct Runtime {
     codex_read: Option<std::time::Instant>,
     codex_reading: bool,
     /// The models the Codex CLI offers, as last listed.
-    codex_models: Option<(std::time::Instant, Vec<String>)>,
+    codex_models: Option<(std::time::Instant, Vec<codex_app::ModelInfo>)>,
+    /// A listing for the screens is under way.
+    codex_listing: bool,
+    /// What each model provider connected here listed, by its id.
+    providers: HashMap<String, providers::Listed>,
     /// The Mac's screen, one member at a time, across squads.
     desktop: desktop::Desktop,
     /// Members' questions waiting for the person, by squad (`decide`).
@@ -913,8 +1093,19 @@ struct Runtime {
     team_changes: HashMap<String, Vec<equipe_protocol::team::TeamChange>>,
     /// Routines the PM proposed, waiting for the person, by squad (`heartbeat`).
     routine_proposals: HashMap<String, Vec<equipe_protocol::routines::RoutineProposal>>,
+    /// Designers handed their weekly review, and when (`review`): the
+    /// decision each puts next is the review's proposal.
+    design_reviews: HashMap<SessionId, u64>,
+    /// PMs handed their weekly retro, and when (`retro`): the decision each
+    /// puts next is the retro's changes.
+    retros: HashMap<SessionId, u64>,
+    /// When each permission waiting for the person was asked, by its id: how
+    /// long it waited goes to the retro once answered.
+    approvals_asked: HashMap<u64, u64>,
     /// Signals whose command runs now, by squad and key (`signals`).
     signals_running: std::collections::HashSet<(String, String)>,
+    /// Decisions in the person's words waiting on them (`words`).
+    words: words::Words,
     /// Handed-in work put to the person to confirm, by squad (`accept`).
     accepts: HashMap<String, Vec<equipe_protocol::accept::AcceptProposal>>,
     /// Cards the person said no to lately, by squad: not put up again soon.
@@ -929,11 +1120,24 @@ struct Runtime {
     merging: std::collections::HashSet<(String, TicketId)>,
     /// The disk's room, as last looked at or as a write said (`room.rs`).
     disk: room::DiskWatch,
+    /// Where the plans went, as followed (`plan_use.rs`).
+    plan_use: plan_use::PlanUseWatch,
+    /// Members' commands under way, as watched running (`watch.rs`).
+    commands: watch::Commands,
+    /// Members' helpers, by the conversation they work for (`helping.rs`).
+    helping: HashMap<SessionId, helping::Helping>,
+    /// Side chats the person opened, by their id (`side_chat.rs`).
+    side_chats: HashMap<equipe_protocol::SideChatId, side_chat::SideChat>,
     /// The Mac held awake while members work or a screen is attached.
     awake: crate::awake::Awake,
     /// Sign-ins under way on this machine, by engine: which one, and its task.
     sign_ins: HashMap<Engine, (u64, JoinHandle<()>)>,
     next_sign_in: u64,
+    /// The code each sign-in under way waits for (Claude Code's, pasted on a screen).
+    sign_in_codes: HashMap<Engine, mpsc::UnboundedSender<String>>,
+    /// Engines whose lost sign-in stopped turns here: why, as last looked
+    /// at, and the turns to carry on once it is signed in again.
+    auth: HashMap<Engine, AuthFix>,
     /// Engines whose tool is being installed on this machine.
     installs: std::collections::HashSet<Engine>,
     /// The `codex` the person's Codex sign-in runs.
@@ -949,9 +1153,18 @@ struct Runtime {
     /// What the screens are told of them, as last kept.
     logins: Vec<crate::protocol::vault::Login>,
     design_busy: std::collections::HashSet<String>,
+    /// Handed-in work the PM was reminded of, by squad: when (`heartbeat`).
+    review_nudged: HashMap<String, HashMap<TicketId, u64>>,
     /// Secrets members asked the person for (`ask_secret`), by squad — read
     /// from its journal when first wanted.
     secret_asks: HashMap<String, Vec<crate::protocol::secrets::SecretAsk>>,
+    /// Calls under way, by id (`call.rs`).
+    calls: HashMap<String, crate::call::Call>,
+    /// The model a call's judge asks.
+    call_llm: crate::call::judge::LlmConfig,
+    /// When each squad's last call ended (unix ms), for the next one's briefing;
+    /// kept in memory only.
+    calls_ended_at: HashMap<String, i64>,
 }
 
 /// What woke the loop.
@@ -975,6 +1188,7 @@ impl Wake {
                 let name = serde_json::to_value(command).ok().and_then(|v| v["type"].as_str().map(str::to_owned));
                 Owned(format!("command {}", name.unwrap_or_else(|| "?".into())))
             }
+            Wake::Request(Some(Request::MemberRefused(_))) => Borrowed("a member's refused command"),
             Wake::Request(Some(Request::Tool(call, _))) => Owned(format!("tool {} for {}/{}", call.name, call.squad, call.member)),
             Wake::Request(Some(Request::Snapshot(..))) => Borrowed("snapshot"),
             Wake::Request(Some(Request::Subscribe(..))) => Borrowed("hello (a screen's snapshot)"),
@@ -984,11 +1198,17 @@ impl Wake {
             Wake::Request(Some(Request::PersonWindow(..))) => Borrowed("person's browser window"),
             Wake::Request(Some(Request::BrowserHub(_))) => Borrowed("browser panel"),
             Wake::Request(Some(Request::Desktop(_))) => Borrowed("desktop lease"),
+            Wake::Request(Some(Request::Phone(_))) => Borrowed("phone tool"),
             Wake::Request(Some(Request::Usage(..))) => Borrowed("an engine's plan usage"),
             Wake::Request(Some(Request::Shutdown(_))) | Wake::Request(None) => Borrowed("shutdown"),
             Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
+            Wake::Internal(Internal::EngineStarted { .. }) => Borrowed("an engine's start"),
+            Wake::Internal(Internal::Processes(_)) => Borrowed("what members' commands run"),
             Wake::Internal(Internal::Done(_)) => Borrowed("a turn's end"),
+            Wake::Internal(Internal::ConversationTitle(_)) => Borrowed("a conversation's title"),
             Wake::Internal(Internal::ApprovalTimedOut(_)) => Borrowed("an approval timing out"),
+            Wake::Internal(Internal::WordsDue(_)) => Borrowed("a decision in words coming due"),
+            Wake::Internal(Internal::Apply(_)) => Borrowed("a change the person said yes to"),
             Wake::Internal(Internal::Ask(..)) => Borrowed("codex asking for approval"),
             Wake::Internal(Internal::CodexLimits(_)) => Borrowed("codex's plan usage"),
             Wake::Internal(Internal::Frame(..)) => Borrowed("a browser picture"),
@@ -996,21 +1216,45 @@ impl Wake {
             Wake::Internal(Internal::Merged { .. }) => Borrowed("a merge's end"),
             Wake::Internal(Internal::Disk(..)) => Borrowed("the disk's free space"),
             Wake::Internal(Internal::DiskReport(..)) => Borrowed("what uses the disk"),
+            Wake::Internal(Internal::PlanUsePassed(..)) => Borrowed("where the plans went"),
             Wake::Internal(Internal::DiskCleaned(..)) => Borrowed("a clean of the disk"),
             Wake::Internal(Internal::ProjectAdded { .. }) => Borrowed("a project added"),
+            Wake::Internal(Internal::SquadDeleted { .. }) => Borrowed("a squad deleted"),
             Wake::Internal(Internal::Logins(_)) => Borrowed("the logins changed"),
             Wake::Internal(Internal::Wake { .. }) => Borrowed("work waits for a conversation"),
             Wake::Internal(Internal::DiskTrimmed(..)) => Borrowed("a trim of the build caches"),
             Wake::Internal(Internal::Dispatch) => Borrowed("handing out work again"),
+            Wake::Internal(Internal::SignInLost { .. }) => Borrowed("a turn stopped by a lost sign-in"),
+            Wake::Internal(Internal::AuthChecked(..)) => Borrowed("why an engine can't sign in"),
+            Wake::Internal(Internal::AuthRecheck(_)) => Borrowed("an engine's sign-in looked at again"),
             Wake::Internal(Internal::SignalRead { .. }) => Borrowed("a signal's reading"),
             Wake::Request(Some(Request::Disk(_))) => Borrowed("a look at the disk"),
             Wake::Request(Some(Request::DiskClean(..))) => Borrowed("a clean of the disk"),
             Wake::Internal(Internal::Engines(_)) => Borrowed("where the engines stand"),
             Wake::Internal(Internal::SignInEnded(..)) => Borrowed("a sign-in's end"),
             Wake::Internal(Internal::InstallEnded(..)) => Borrowed("an engine's install's end"),
+            Wake::Internal(Internal::CodexModels(_)) => Borrowed("the Codex models listed"),
+            Wake::Internal(Internal::ProviderListed { .. }) => Borrowed("a provider's models listed"),
             Wake::Internal(Internal::ClaudeReady(_)) => Borrowed("whether Claude is signed in"),
             Wake::Internal(Internal::Design(..)) => Borrowed("a design system's look"),
+            Wake::Internal(Internal::Docs(..)) => Borrowed("the briefs and plans"),
+            Wake::Internal(Internal::DocsFound(..)) => Borrowed("a search of the briefs and plans"),
+            Wake::Internal(Internal::DocCopyKept(..)) => Borrowed("one copy of a brief or plan kept"),
+            Wake::Internal(Internal::PlanWritten(..)) => Borrowed("a plan written"),
+            Wake::Internal(Internal::PlanCut(..)) => Borrowed("a plan read for a ticket"),
+            Wake::Internal(Internal::PlanListed(..)) => Borrowed("a ticket listed in its plan"),
+            Wake::Internal(Internal::DesignVersions { .. }) => Borrowed("a design system's versions"),
+            Wake::Internal(Internal::DesignRestore { .. }) => Borrowed("a design version to go back to"),
             Wake::Internal(Internal::Reviewed { .. }) => Borrowed("a Nemotron review"),
+            Wake::Internal(Internal::SubagentHeard { .. }) => Borrowed("a subagent heard from"),
+            Wake::Internal(Internal::Helper { .. }) => Borrowed("a helper's step"),
+            Wake::Internal(Internal::HelperEnded { .. }) => Borrowed("a helper's end"),
+            Wake::Internal(Internal::HelperTimeUp { .. }) => Borrowed("a helper's time up"),
+            Wake::Internal(Internal::HelperWaitOver(_)) => Borrowed("a wait for helpers over"),
+            Wake::Internal(Internal::SideChat { .. }) => Borrowed("a side chat's step"),
+            Wake::Internal(Internal::SideDone(_)) => Borrowed("a side chat's turn ended"),
+            Wake::Internal(Internal::CallJudged { .. }) => Borrowed("a call's utterance judged"),
+            Wake::Internal(Internal::CallTold { .. }) => Borrowed("a call's words about the board"),
             Wake::Host(_) => Borrowed("the browser host's news"),
             Wake::Daily => Borrowed("daily prune"),
             Wake::DesktopTick => Borrowed("desktop tick"),
@@ -1057,6 +1301,7 @@ async fn run(
         let go_on = rt.wake(wake, &pulse).await;
         pulse.end();
         if !go_on {
+            pulse.stop_healing();
             return;
         }
     }
@@ -1068,6 +1313,7 @@ impl Runtime {
         match wake {
             Wake::Request(request) => match request {
                 Some(Request::Command(command)) => self.handle(command).await,
+                Some(Request::MemberRefused(squad)) => self.member_refused(squad.as_deref()),
                 Some(Request::Snapshot(squad, reply)) => {
                     let _ = reply.send(self.snapshot(&squad));
                 }
@@ -1089,6 +1335,14 @@ impl Runtime {
                     // A disk found full is told to each screen as it comes.
                     if self.disk.status.level == crate::disk::DiskLevel::Full {
                         let _ = tx.send(Event::Error { session: None, message: say!(self, "error.disk_full"), next: None });
+                    }
+                    // Why an engine can't sign in, as last looked at.
+                    for (engine, fix) in &self.auth {
+                        let _ = tx.send(fix.event(*engine));
+                    }
+                    // A plan burning fast, lately.
+                    for burn in self.recent_burns() {
+                        let _ = tx.send(Event::PlanBurn { burn });
                     }
                     self.subscribers.push((Some(squad.clone()), tx));
                     self.keep_awake();
@@ -1119,6 +1373,7 @@ impl Runtime {
                     let _ = reply.send(busy);
                 }
                 Some(Request::Desktop(request)) => self.on_desktop(request),
+                Some(Request::Phone(request)) => self.on_phone(request),
                 Some(Request::Disk(reply)) => self.disk_report(Some(reply), false),
                 Some(Request::DiskClean(ids, reply)) => self.disk_clean(ids, Some(reply)),
                 Some(Request::Usage(engine, usage)) => {
@@ -1138,21 +1393,32 @@ impl Runtime {
                 }
             },
             Wake::Internal(message) => match message {
-                Internal::Event(event) => match *event {
-                    // What the engine echoes as it reads the person's steers: each said as it was.
-                    Event::Steered { session, text } => self.steered(session, &text),
-                    event @ (Event::Compacting { .. } | Event::Compacted { .. } | Event::CompactFailed { .. }) => self.on_engine_compaction(event),
-                    event => {
-                        // A build that failed for want of room says so plainly.
-                        let no_room = room::says_no_room(&event).then(|| event.session()).flatten();
-                        self.publish(event);
-                        if let Some(id) = no_room {
-                            self.member_out_of_room(id);
+                Internal::Event(event) => {
+                    // The engine said something: it isn't silent, whatever it runs.
+                    if let Some(id) = event.session() {
+                        self.engine_heard(id);
+                    }
+                    match *event {
+                        // What the engine echoes as it reads the person's steers: each said as it was.
+                        Event::Steered { session, text, .. } => self.steered(session, &text),
+                        event @ (Event::Compacting { .. } | Event::Compacted { .. } | Event::CompactFailed { .. }) => self.on_engine_compaction(event),
+                        event => {
+                            // A build that failed for want of room says so plainly.
+                            let no_room = room::says_no_room(&event).then(|| event.session()).flatten();
+                            self.publish(event);
+                            if let Some(id) = no_room {
+                                self.member_out_of_room(id);
+                            }
                         }
                     }
-                },
+                }
+                Internal::EngineStarted { session, pid } => self.engine_started(session, pid),
+                Internal::Processes(procs) => self.on_processes(procs),
                 Internal::Done(done) => self.on_turn_done(done).await,
+                Internal::ConversationTitle(done) => self.on_conversation_title(done),
                 Internal::ApprovalTimedOut(id) => self.answer(id, Decision::Deny, "Nobody answered in time."),
+                Internal::WordsDue(id) => self.words_due(id).await,
+                Internal::Apply(command) => Box::pin(self.handle(*command)).await,
                 Internal::Ask(call, reply) => self.ask_permission(call, reply),
                 Internal::CodexLimits(limits) => self.on_codex_limits(limits),
                 Internal::Frame(session, frame) => {
@@ -1167,8 +1433,10 @@ impl Runtime {
                 Internal::Merged { squad, ticket, result } => self.on_merged(&squad, ticket, result),
                 Internal::Disk(status, asked) => self.on_disk(status, asked),
                 Internal::DiskReport(report, asked) => self.on_disk_report(*report, asked),
+                Internal::PlanUsePassed(burns, loads) => self.on_plan_use_passed(burns, loads),
                 Internal::DiskCleaned(cleaned, status, asked, reply) => self.on_disk_cleaned(*cleaned, status, asked, reply),
                 Internal::ProjectAdded { squad, result } => self.project_added(&squad, result),
+                Internal::SquadDeleted { squad, result } => self.squad_deleted(&squad, result),
                 Internal::Logins(result) => self.logins_changed(result),
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
@@ -1180,14 +1448,33 @@ impl Runtime {
                     }
                 }
                 Internal::Engines(engines) => self.publish_engines(engines),
+                Internal::SignInLost { engine, session, prompt } => self.sign_in_lost(engine, session, prompt),
+                Internal::AuthChecked(engine, state, detail) => self.auth_checked(engine, state, detail).await,
+                Internal::AuthRecheck(engine) => self.check_engine(engine),
                 Internal::ClaudeReady(ok) => self.claude_ready(ok),
+                Internal::CodexModels(listed) => {
+                    self.codex_listing = false;
+                    if let Some(models) = listed.filter(|m| !m.is_empty()) {
+                        let choices = models.iter().map(model_choice).collect();
+                        self.codex_models = Some((std::time::Instant::now(), models));
+                        self.publish(Event::Models { engine: Engine::Codex, models: choices });
+                    }
+                }
+                Internal::ProviderListed { id, result } => self.provider_listed(id, result),
                 Internal::InstallEnded(engine) => {
                     self.installs.remove(&engine);
                     self.publish_nebius();
+                    self.publish_providers();
                 }
                 Internal::SignInEnded(engine, id) => {
                     if self.sign_ins.get(&engine).is_some_and(|(at, _)| *at == id) {
                         self.sign_ins.remove(&engine);
+                        self.sign_in_codes.remove(&engine);
+                    }
+                    // Signed in (or not): looked at again, and what it stopped carried on.
+                    if let Some(fix) = self.auth.get_mut(&engine) {
+                        fix.carried_on_at = None;
+                        self.check_engine(engine);
                     }
                     // Maybe another account now: its plan and usage read afresh.
                     if engine == Engine::Codex {
@@ -1196,7 +1483,24 @@ impl Runtime {
                     }
                 }
                 Internal::Design(squad, stamp, catalog) => self.on_design(squad, stamp, catalog),
+                Internal::Docs(squad, catalog) => self.on_docs(squad, catalog),
+                Internal::DocsFound(squad, query, paths) => self.publish(Event::DocsFound { squad, query, paths }),
+                Internal::DocCopyKept(squad, session, kept) => self.on_doc_copy_kept(squad, session, kept),
+                Internal::PlanWritten(written) => self.plan_written(*written),
+                Internal::PlanCut(cut) => self.plan_cut(*cut).await,
+                Internal::PlanListed(squad, error) => self.plan_listed(&squad, error),
+                Internal::DesignVersions { squad, project, versions } => self.on_design_versions(squad, project, versions),
+                Internal::DesignRestore { squad, project, commit, version } => self.on_design_restore(squad, project, commit, version).await,
                 Internal::Reviewed { squad, ticket, member, result } => self.on_reviewed(&squad, ticket, member, result),
+                Internal::SubagentHeard { session, id } => self.subagent_heard(session, &id),
+                Internal::Helper { session, id, activity } => self.helper_did(session, &id, activity),
+                Internal::HelperEnded { session, id, outcome } => self.helper_ended(session, &id, outcome),
+                Internal::HelperTimeUp { session, id } => self.stop_helper(session, &id, crate::helpers::Ended::TimeLimit),
+                Internal::HelperWaitOver(key) => self.helper_wait_over(key),
+                Internal::SideChat { side, event } => self.side_event(side, *event),
+                Internal::SideDone(done) => self.side_done(done),
+                Internal::CallJudged { call, judged } => self.call_judged(call, *judged).await,
+                Internal::CallTold { call, text } => self.call_told(call, text).await,
             },
             Wake::Host(said) => self.on_host(said).await,
             Wake::Daily => self.prune(),
@@ -1204,11 +1508,14 @@ impl Runtime {
                 if self.desktop.expire() {
                     self.publish_desktop();
                 }
+                self.look_at_commands();
+                self.watch_subagents();
             }
             Wake::Frames => self.take_frames(),
             Wake::DesignTick => self.design_tick(),
             Wake::Minute => {
                 self.keep_awake();
+                self.plan_use_pass();
                 pulse.step("minute tick: idle lanes");
                 self.fold_idle_lanes();
                 self.trim_builds();
@@ -1217,6 +1524,7 @@ impl Runtime {
                 self.close_idle_browsers();
                 pulse.step("minute tick: helpers");
                 self.let_helpers_go().await;
+                self.let_side_chats_go();
                 pulse.step("minute tick: stale tickets");
                 self.tidy_check();
                 pulse.step("minute tick: routines");
@@ -1227,6 +1535,7 @@ impl Runtime {
                 self.run_due_signals();
                 pulse.step("minute tick: engines");
                 self.engines_tick().await;
+                self.calls_tick().await;
                 // Work that reached main outside equipe: every ten minutes is soon
                 // enough (a merge or an accept looks at once), and off the loop.
                 if self.settled_at.is_none_or(|at| at.elapsed() >= SETTLE_EVERY) {
@@ -1248,6 +1557,10 @@ impl Runtime {
             Event::TicketChanged { squad, ticket } => Some((squad.clone(), ticket.id)),
             _ => None,
         };
+        // A permission put to the person: from now it waits on them.
+        if let Event::ApprovalRequested { approval, .. } = &event {
+            self.approvals_asked.insert(approval.id, now_secs());
+        }
         self.publish_in(None, event);
         // A card to confirm about it may have nothing left to confirm.
         if let Some((squad, ticket)) = changed {
@@ -1259,6 +1572,10 @@ impl Runtime {
     /// the screens following its squad. `squad` names the squad of an event that
     /// has no session to say it (a failed start, a board error).
     fn publish_in(&mut self, squad: Option<&str>, mut event: Event) {
+        // A turn's end, a member gone, the person's word: its helpers follow.
+        self.follow_helpers(&mut event);
+        // A command step starting or answered, a turn's end: its watch follows.
+        self.follow_commands(&event);
         // A turn that ends mid-compaction cuts it short: said first.
         if let Event::TurnEnded { session, .. } = &event
             && self.sessions.get(session).is_some_and(|s| s.compacting.is_some())
@@ -1273,6 +1590,20 @@ impl Runtime {
             // It changed now: the screens know when it finished.
             ticket.updated_at = Some(now_secs());
         }
+        // The model the engine named, beside the one the member is set to.
+        if let Event::ModelKnown { session, asked: asked @ None, .. } = &mut event
+            && let Some(s) = self.sessions.get(session)
+        {
+            asked.clone_from(&s.model);
+        }
+        // The person's message: what it attached is kept from now on, and
+        // the words of its text files go with it into the conversation.
+        if let Event::UserMessage { text, kept, .. } | Event::Steered { text, kept, .. } = &mut event
+            && kept.is_empty()
+        {
+            crate::kept::keep(&self.config.home, text);
+            *kept = crate::kept::words(&self.config.home, text);
+        }
         // Where a member's browser goes, to bring it back there on screen.
         if let Event::ToolUse { session, tool, target: Some(url), .. } = &event
             && tool.ends_with("browser_navigate")
@@ -1282,20 +1613,39 @@ impl Runtime {
         }
         let mut squad = squad.map(str::to_owned);
         let mut no_room = false;
+        let mut to_draw = None;
         if let Some(id) = event.session()
             && let Some(session) = self.sessions.get_mut(&id)
         {
             squad = session.squad.clone();
             let finished = session.transcript.apply(&event);
             // A reply's diagrams, drawn off the loop for the screens that can't.
-            if let Some(name) = &squad {
-                draw_visuals(&self.config.home, &self.internal, id, name, &finished);
+            if let Some(name) = &squad
+                && finished.iter().any(|line| matches!(line, Entry::Reply { text } if has_visuals(text)))
+            {
+                to_draw = Some((id, name.clone(), finished.clone()));
             }
+            // A member's turn, kept for the week's retro: who, on what, how long, how it ended.
+            let turn = match (&event, &session.member, session.turn_began) {
+                (Event::TurnEnded { outcome, usage, .. }, Some(member), Some(began)) => Some(crate::retro::Turn {
+                    member: member.name.clone(),
+                    role: member.role.clone(),
+                    ticket: session.work.as_ref().map(|w| w.ticket),
+                    began,
+                    ended: now_secs().max(began),
+                    outcome: serde_json::to_value(outcome).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default(),
+                    tokens: usage.as_ref().map_or(0, |u| u.total()),
+                }),
+                _ => None,
+            };
+            // …and what it used, by kind, for where the plans went.
+            let turn_use = match (&event, &turn) {
+                (Event::TurnEnded { usage: Some(u), .. }, Some(_)) => Some(journal::TurnUse::of(session.engine, session.ran.clone().or_else(|| session.model.clone()), session.claude_session.clone(), u)),
+                _ => None,
+            };
             match &event {
-                Event::UserMessage { text, .. } if session.title.is_none() => {
-                    session.title = text.lines().next().map(str::to_owned);
-                }
-                Event::ModelKnown { model, .. } => session.model = Some(model.clone()),
+                // What runs; what it is set to stays (an alias is asked for again each turn).
+                Event::ModelKnown { model, .. } => session.ran = Some(model.clone()),
                 Event::Steered { text, .. } => {
                     if let Some(at) = session.steering.iter().position(|t| t == text) {
                         session.steering.remove(at);
@@ -1311,15 +1661,20 @@ impl Runtime {
                     step: None,
                     since: std::time::Instant::now(),
                     entries: std::collections::VecDeque::new(),
+                    heard: std::time::Instant::now(),
+                    watched: session.engine == Engine::Codex,
+                    stuck: false,
                 }),
                 Event::SubagentStep { id, step, .. } => {
                     if let Some(sub) = session.subagents.iter_mut().find(|s| s.id == *id) {
                         sub.step = Some(step.clone());
+                        sub.heard = std::time::Instant::now();
                     }
                 }
                 Event::SubagentEntry { id, entry, .. } => {
                     if let Some(sub) = session.subagents.iter_mut().find(|s| s.id == *id) {
                         sub.keep(entry.clone());
+                        sub.heard = std::time::Instant::now();
                     }
                 }
                 Event::SubagentEnded { id, .. } => session.subagents.retain(|s| s.id != *id),
@@ -1342,11 +1697,16 @@ impl Runtime {
             if self.config.persist
                 && let Some(name) = squad.clone()
             {
-                let title = session.title.clone();
                 if let Some(journal) = journal_for(&mut self.journals, &self.config.home, &name) {
-                    no_room = !record(journal, id, &event, &finished, title.as_deref());
+                    no_room = !record(journal, id, &event, &finished);
+                    if let Some(turn) = &turn {
+                        let _ = journal.record_turn_use(turn, turn_use.as_ref());
+                    }
                 }
             }
+        }
+        if let Some((id, name, finished)) = to_draw {
+            self.draw_visuals(id, &name, &finished);
         }
         if let Some(name) = event.squad() {
             squad = Some(name.to_owned());
@@ -1435,17 +1795,56 @@ impl Runtime {
         if let Some((at, models)) = &self.codex_models
             && at.elapsed() < CODEX_MODELS_KEPT
         {
-            return Ok(models.clone());
+            return Ok(models.iter().map(|m| m.id.clone()).collect());
         }
         let cwd = if self.config.home.is_dir() { self.config.home.clone() } else { std::env::temp_dir() };
-        let listed = tokio::time::timeout(SERVER_WAIT, codex_app::list_models(&self.config.codex_binary, &cwd)).await;
+        let listed = tokio::time::timeout(SERVER_WAIT, codex_app::list_model_infos(&self.config.codex_binary, &cwd)).await;
         let models = match listed {
             Ok(Ok(models)) => models,
             Ok(Err(err)) => return Err(err.to_string()),
             Err(_) => return Err(format!("Codex didn't answer in {}s", SERVER_WAIT.as_secs())),
         };
-        self.codex_models = Some((std::time::Instant::now(), models.clone()));
-        Ok(models)
+        let ids = models.iter().map(|m| m.id.clone()).collect();
+        self.codex_models = Some((std::time::Instant::now(), models));
+        Ok(ids)
+    }
+
+    /// The models `engine` offers, for the screens ([`Command::Models`]):
+    /// Claude Code's from the catalog; the Codex CLI's as it lists them, off
+    /// the loop, kept a while. Nothing when the Codex CLI isn't here.
+    fn models_asked(&mut self, engine: Engine) {
+        match engine {
+            Engine::Claude => {
+                let aliases = crate::models::CLAUDE_FAMILIES.iter().map(|f| f.alias);
+                let ids = crate::models::CLAUDE_MODELS.iter().map(|p| p.id);
+                let models = aliases
+                    .chain(ids)
+                    .map(|id| {
+                        let efforts = crate::models::efforts(Engine::Claude, Some(id)).iter().map(|e| (*e).to_owned()).collect();
+                        ModelChoice { id: id.to_owned(), name: crate::models::name(id), efforts, ..Default::default() }
+                    })
+                    .collect();
+                self.publish(Event::Models { engine, models });
+            }
+            Engine::Codex => {
+                if let Some((at, models)) = &self.codex_models
+                    && at.elapsed() < CODEX_MODELS_KEPT
+                {
+                    let models = models.iter().map(model_choice).collect();
+                    return self.publish(Event::Models { engine, models });
+                }
+                if self.codex_listing || codex_app::find(&self.config.codex_binary).is_none() {
+                    return;
+                }
+                self.codex_listing = true;
+                let (binary, internal) = (self.config.codex_binary.clone(), self.internal.clone());
+                let cwd = if self.config.home.is_dir() { self.config.home.clone() } else { std::env::temp_dir() };
+                tokio::spawn(async move {
+                    let listed = tokio::time::timeout(SERVER_WAIT, codex_app::list_model_infos(&binary, &cwd)).await;
+                    let _ = internal.send(Internal::CodexModels(listed.ok().and_then(Result::ok)));
+                });
+            }
+        }
     }
 
     /// The squads screens follow now, and those with a journal open.
@@ -1497,14 +1896,48 @@ impl Runtime {
         self.publish_in(Some(squad), Event::Error { session: None, message: message.into(), next: None });
     }
 
+    /// A person-only command came from a member's own process and was refused at
+    /// the door: logged as a security event, and told to the person — to the
+    /// squad it named, or to every screen when it named none.
+    fn member_refused(&mut self, squad: Option<&str>) {
+        crate::daemon_log!("equipe: refused a person-only command from a member's own process (not the person's screen)");
+        let text = say!(self, "security.member_refused");
+        match squad {
+            Some(squad) => self.squad_error(squad, text),
+            None => self.publish(Event::Error { session: None, message: text, next: None }),
+        }
+    }
+
     async fn handle(&mut self, command: Command) {
+        // What the person sends keeps its attachments from the moment it is
+        // sent, even while it waits for a member (`crate::kept`).
+        match &command {
+            Command::Submit { text, .. } | Command::SubmitLater { text, .. } | Command::SideChatSubmit { text, .. } => {
+                crate::kept::keep(&self.config.home, text);
+            }
+            Command::SendNow { texts, .. } => {
+                for text in texts {
+                    crate::kept::keep(&self.config.home, text);
+                }
+            }
+            _ => {}
+        }
         match command {
             Command::Start { session, spec } => self.start(session, spec).await,
+            Command::OnPhone { command } => {
+                self.on_phone = true;
+                Box::pin(self.handle(*command)).await;
+                self.on_phone = false;
+            }
+            Command::CallStart { squad } => self.call_start(squad).await,
+            Command::CallUtterance { squad, call, text, via: _ } => self.call_utterance(squad, call, text).await,
+            Command::CallEnd { squad, call } => self.call_end(squad, call).await,
             Command::Submit { session, text, about } => {
                 // A conversation the person opened is about its own project, whatever the screen shows.
                 self.said_about = self.conversation_about(session).or(about);
                 let session = self.route(session);
                 self.note_person_active(session);
+                self.note_screen(session);
                 self.submit(session, text).await;
                 self.said_about = None;
             }
@@ -1512,6 +1945,7 @@ impl Runtime {
                 self.said_about = self.conversation_about(session).or(about);
                 let session = self.route(session);
                 self.note_person_active(session);
+                self.note_screen(session);
                 match self.sessions.get(&session) {
                     Some(s) if s.is_working() => self.leave_memo(session, text),
                     _ => self.submit(session, text).await,
@@ -1600,24 +2034,61 @@ impl Runtime {
                 if let Some(s) = self.sessions.get_mut(&session) {
                     s.refresh = Some(summary);
                     let text = if summary { say!(self, "notice.refresh_summary") } else { say!(self, "notice.refresh_clean") };
-                    self.publish(Event::Notice { session, text });
+                    self.publish(Event::Notice { undo: None, session, text });
                 }
             }
             Command::SetModel { session, model } => {
                 let model = model.trim().to_owned();
+                // A provider's model runs on Codex's agent: a member on Claude Code moves there.
+                if crate::model_providers::split_ref(&model).is_some()
+                    && let Some(s) = self.sessions.get(&session).filter(|s| s.engine != Engine::Codex)
+                {
+                    match (s.squad.clone(), s.name().map(str::to_owned)) {
+                        (Some(squad), Some(name)) => self.move_to_model(&squad, name, session, model).await,
+                        _ => {
+                            let provider = self.on_provider(&model).map(|(_, p)| p).unwrap_or_default();
+                            self.error(Some(session), say!(self, "error.provider_model_codex", provider = provider), None);
+                        }
+                    }
+                    return;
+                }
                 if let Some(s) = self.sessions.get_mut(&session).filter(|_| !model.is_empty()) {
                     s.model = Some(model.clone());
+                    // Its engine names what this runs as at its next turn.
+                    s.ran = None;
                     let squad = s.squad.clone();
                     if let Some(journal) = squad.as_deref().and_then(|q| journal_for(&mut self.journals, &self.config.home, q)) {
                         let _ = journal.set_model(session, &model);
                     }
-                    self.publish(Event::ModelKnown { session, model: model.clone() });
+                    self.publish(Event::ModelKnown { session, model: model.clone(), asked: Some(model.clone()) });
                     let text = say!(self, "notice.model", model = model);
-                    self.publish(Event::Notice { session, text });
+                    self.publish(Event::Notice { undo: None, session, text });
+                }
+            }
+            Command::Models { engine } => self.models_asked(engine),
+            Command::SetRoleModel { squad, default } => {
+                let default = RoleModel {
+                    model: default.model.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty()),
+                    effort: default.effort.map(|e| e.trim().to_ascii_lowercase()).filter(|e| !e.is_empty()),
+                    ..default
+                };
+                if let Some(journal) = self.journal(&squad) {
+                    match journal.set_role_model(default) {
+                        Ok(defaults) => self.publish(Event::RoleModelsChanged { squad, defaults }),
+                        Err(err) => self.error(None, err.to_string(), None),
+                    }
                 }
             }
             Command::Unqueue { session, text } => self.unqueue(session, &text),
-            Command::SendNow { session, texts } => self.send_now(session, texts).await,
+            Command::SendNow { session, texts } => {
+                self.note_screen(session);
+                self.send_now(session, texts).await
+            }
+            Command::StopCommand { session } => self.stop_command(session),
+            Command::StopSubagent { session, id } => self.stop_subagent(session, &id),
+            Command::StartSideChat { session, side, passage } => self.start_side_chat(session, side, passage),
+            Command::SideChatSubmit { session, side, passage, text } => self.side_chat_submit(session, side, passage, text),
+            Command::CloseSideChat { side } => self.close_side_chat(side),
             Command::SetEffort { session, effort } => {
                 let effort = effort.map(|e| e.trim().to_ascii_lowercase()).filter(|e| !e.is_empty());
                 if let Some(s) = self.sessions.get_mut(&session) {
@@ -1626,12 +2097,13 @@ impl Runtime {
                         Some(effort) => say!(self, "notice.effort", effort = effort),
                         None => say!(self, "notice.effort_default"),
                     };
-                    self.publish(Event::Notice { session, text });
+                    self.publish(Event::Notice { undo: None, session, text });
                 }
             }
             Command::AddProject { squad, path } => self.add_project(squad, path),
             Command::RemoveProject { squad, path } => self.remove_project(&squad, &path),
             Command::SetHq { squad, path } => self.set_hq(&squad, path),
+            Command::DeleteSquad { squad } => self.delete_squad(&squad),
             Command::SaveLogin { draft } => self.with_vault(move |vault| vault.save(draft, now_secs()).map(|_| ())),
             Command::DeleteLogin { id } => self.with_vault(move |vault| vault.delete(id)),
             Command::ForgetLoginAllowance { id, who } => self.with_vault(move |vault| vault.forget(id, &who)),
@@ -1671,6 +2143,7 @@ impl Runtime {
             Command::NewConversation { squad, session, project } => self.new_conversation(&squad, session, project),
             Command::MoveConversation { session, project } => self.move_conversation(session, project),
             Command::CloseConversation { session } => self.close_conversation(session).await,
+            Command::ReopenConversation { squad, session } => self.reopen_conversation(&squad, session),
             Command::Focus { squad, project } => match project {
                 Some(name) => {
                     self.focus.insert(squad, name);
@@ -1679,7 +2152,8 @@ impl Runtime {
                     self.focus.remove(&squad);
                 }
             },
-            Command::Decide { squad, approval, decision, words } => {
+            Command::Decide { squad, approval, decision, words, said } => {
+                self.words_decide_said(&squad, approval, decision, said.as_ref());
                 let words = words.map(|w| w.trim().to_owned()).filter(|w| !w.is_empty());
                 if let Some(pending) = self.pending.get(&approval).filter(|p| p.squad == squad) {
                     let (session, tool) = (pending.approval.session, pending.approval.tool.clone());
@@ -1701,8 +2175,13 @@ impl Runtime {
             Command::ApproveTeamChange { squad, id } => self.approve_team_change(&squad, id).await,
             Command::DeclineTeamChange { squad, id } => self.decline_team_change(&squad, id),
             Command::ProposeAccept { squad, session, verdict, tickets, note } => self.propose_accept_from_words(&squad, session, verdict, &tickets, &note),
-            Command::ConfirmAccept { squad, id, tickets } => self.confirm_accept(&squad, id, tickets).await,
+            Command::ConfirmAccept { squad, id, tickets, said } => self.confirm_accept(&squad, id, tickets, said).await,
             Command::DeclineAccept { squad, id } => self.decline_accept(&squad, id),
+            Command::Say { squad, session, text, via, all, later, pasted, about, device } => self.say(squad, session, text, via, all, later, pasted, about, device).await,
+            Command::UndoWords { squad, id } => self.undo_words(&squad, id),
+            Command::WordsLog { squad } => self.words_log(squad),
+            Command::ClearWordsLog { squad } => self.clear_words_log(squad),
+            Command::SetWordsAll { squad, on } => self.set_words_all(squad, on),
             Command::Disallow { squad, rule } => {
                 let taken = self.journals.get(&squad).and_then(|j| j.disallow(&rule).ok()).unwrap_or(false);
                 if taken {
@@ -1713,6 +2192,7 @@ impl Runtime {
             // phone link (`crate::pairing`); they never reach the runtime.
             Command::PairStart | Command::PairAnswer { .. } | Command::PairCancel | Command::Devices | Command::Unpair { .. } => {}
             Command::DiskScan => self.disk_report(None, true),
+            Command::PlanUse { engine, span } => self.plan_use_look(engine, span),
             Command::DiskClean { ids } => self.disk_clean(ids, None),
             Command::DiskRun { id } => self.disk_run(id),
             Command::Engines => {
@@ -1721,6 +2201,10 @@ impl Runtime {
                 self.publish_nebius();
             }
             Command::SetNebiusKey { key } => self.set_nebius_key(key),
+            Command::Providers => self.providers_asked(),
+            Command::AddProvider { preset, base_url, key } => self.add_provider(preset, base_url, key.map(|k| k.0)),
+            Command::TestProvider { id } => self.test_provider(id),
+            Command::RemoveProvider { id } => self.remove_provider(id),
             Command::SignIn { engine, device } => self.sign_in(engine, device),
             Command::SignInCancel { engine } => {
                 if let Some((_, task)) = self.sign_ins.remove(&engine) {
@@ -1729,6 +2213,18 @@ impl Runtime {
                     self.look_at_engines();
                 }
             }
+            Command::SignInCode { engine, code } => {
+                // Straight to the tool's prompt: never kept, never logged.
+                if let (Some(tx), Some(code)) = (self.sign_in_codes.get(&engine), crate::engine_auth::pasted(&code)) {
+                    let _ = tx.send(code);
+                }
+            }
+            Command::CheckEngine { engine } => {
+                // The person says they did something: what was carried on before counts no more.
+                self.auth.entry(engine).or_default().carried_on_at = None;
+                self.check_engine(engine);
+            }
+            Command::MoveIntoLogin => self.move_into_login(),
             Command::SignOut { engine } => self.sign_out(engine),
             Command::InstallEngine { engine } => self.install_engine(engine),
             Command::SetEngineSwitching { squad, mode } => self.set_engine_switching(&squad, mode).await,
@@ -1738,12 +2234,35 @@ impl Runtime {
                 }
                 self.publish(Event::PmAcceptsChanged { squad, on });
             }
-            Command::ApplyEngineProposal { squad, id } => self.apply_engine_proposal(&squad, id).await,
+            // Each member's next turn runs it and is told it.
+            Command::SetSubagentsAtOnce { squad, at_once } => {
+                let at_once = at_once.map(crate::protocol::subagents_at_once);
+                if let Some(Err(err)) = self.journal(&squad).map(|j| j.set_subagents_at_once(at_once)) {
+                    crate::daemon_log!("equipe: {squad}: subagents at once wasn't kept: {err}");
+                }
+                self.publish(Event::SubagentsAtOnceChanged { squad, at_once });
+            }
+            // Each member's next turn is told the reviewer it gets (`Runtime::design_reviewer`).
+            Command::SetDesignReviewer { squad, reviewer } => {
+                if let Some(Err(err)) = self.journal(&squad).map(|j| j.set_design_reviewer(reviewer)) {
+                    crate::daemon_log!("equipe: {squad}: the design reviewer wasn't kept: {err}");
+                }
+                self.publish(Event::DesignReviewerChanged { squad, reviewer });
+            }
+            Command::ApplyEngineProposal { squad, id, now } => self.apply_engine_proposal(&squad, id, now).await,
             Command::DismissEngineProposal { squad, id } => self.dismiss_engine_proposal(&squad, id),
             Command::UndoEngineProposal { squad, id } => self.undo_engine_proposal(&squad, id).await,
+            Command::UndoHomeChange { squad, session, change } => self.undo_home_change(&squad, session, &change),
             Command::ShowEngineSetup { squad } => self.show_engine_setup(&squad),
-            Command::MoveEngine { squad, members, engine } => self.move_engine(&squad, members, engine).await,
+            Command::HandOver { squad, session } => self.send_hand_over(&squad, session),
+            Command::MoveEngine { squad, members, engine, model, effort, now } => self.move_engine(&squad, members, engine, model, effort, now).await,
             Command::Design { squad } => self.design_asked(squad),
+            Command::ProjectDocs { squad } => self.docs_asked(squad),
+            Command::SearchDocs { squad, query } => self.docs_searched(squad, query),
+            Command::KeepDocCopy { squad, session, keep } => self.keep_doc_copy(squad, session, keep),
+            Command::DesignVersions { squad, project } => self.design_versions_asked(squad, project),
+            Command::RestoreDesign { squad, project, commit } => self.restore_design_asked(squad, project, commit),
+            Command::Taste { squad, project, change } => self.taste_changed(squad, project, change),
         }
     }
 
@@ -1780,18 +2299,22 @@ impl Runtime {
         let done = match key {
             Some(key) if !crate::nemotron::key_is_plausible(&key) => Err(say!(self, "error.nebius_key_invalid")),
             Some(key) => crate::nemotron::save_key(&home, &key).map_err(|err| say!(self, "error.nebius_key_not_saved", why = err)),
-            None => crate::nemotron::forget_key(&home).map(|_| ()).map_err(|err| say!(self, "error.nebius_key_not_saved", why = err)),
+            // Off the providers' list too, where it is Nebius's entry.
+            None => crate::model_providers::remove(&home, crate::model_providers::NEBIUS).map(|_| ()).map_err(|err| say!(self, "error.nebius_key_not_saved", why = err)),
         };
         if let Err(why) = done {
             self.error(None, why, None);
         }
+        self.providers.remove(crate::model_providers::NEBIUS);
         self.config.nemotron = crate::nemotron::Config::from_env_or_saved(&home).ok();
         self.publish_nebius();
+        self.publish_providers();
     }
 
     /// The engines as just looked at, with who is on each and the sign-ins
     /// under way, for every screen.
     fn publish_engines(&mut self, mut engines: Vec<equipe_protocol::EngineStatus>) {
+        self.engines.saw(&engines);
         for status in &mut engines {
             let mut members: Vec<MemberRef> = self.sessions.values().filter(|s| s.engine == status.engine).filter_map(session_member).collect();
             members.sort_by(|a, b| (&a.squad, &a.member).cmp(&(&b.squad, &b.member)));
@@ -1799,27 +2322,49 @@ impl Runtime {
             status.members = members;
             status.signing_in = self.sign_ins.contains_key(&status.engine);
         }
+        // Signed in by whatever means — a terminal at the Mac's own screen —
+        // while turns wait: they are looked at again, and carried on.
+        let back: Vec<Engine> = engines
+            .iter()
+            .filter(|s| s.state == equipe_protocol::EngineState::SignedIn && self.auth.get(&s.engine).is_some_and(|f| !f.stopped.is_empty() && !f.checking && f.carried_on_at.is_none()))
+            .map(|s| s.engine)
+            .collect();
         self.publish(Event::Engines { engines });
+        for engine in back {
+            self.check_engine(engine);
+        }
     }
 
-    /// Sign Codex in with its own tool, here on the daemon's machine; every
-    /// screen hears each step (the code to enter, when `device`), then where
-    /// the engines stand. A new sign-in stops the one under way.
+    /// Sign an engine in with its own tool, here on the daemon's machine;
+    /// every screen hears each step (the code to enter, when `device`; for
+    /// Claude Code, the page whose code is pasted back), then where the
+    /// engines stand. A new sign-in stops the one under way. Claude Code
+    /// isn't signed in from outside the Mac's login session: its login would
+    /// land where the members never read it.
     fn sign_in(&mut self, engine: Engine, device: bool) {
         use equipe_protocol::{SignInFailure, SignInStep};
-        if engine != Engine::Codex {
-            self.publish(Event::SignIn { engine, step: SignInStep::Failed { why: SignInFailure::Unsupported, detail: String::new() } });
-            return;
-        }
         if let Some((_, old)) = self.sign_ins.remove(&engine) {
             old.abort();
         }
+        self.sign_in_codes.remove(&engine);
         let id = self.next_sign_in;
         self.next_sign_in += 1;
         let (claude, codex, store, internal) = (self.config.claude_binary.clone(), self.codex_binary.clone(), self.config.store.clone(), self.internal.clone());
+        let codes = (engine == Engine::Claude).then(|| {
+            let (tx, rx) = mpsc::unbounded_channel();
+            self.sign_in_codes.insert(engine, tx);
+            rx
+        });
         let task = tokio::spawn(async move {
             let tell = |step| drop(internal.send(Internal::Event(Box::new(Event::SignIn { engine, step }))));
-            let end = crate::engines::codex_login(&codex, device, tell).await;
+            let end = match codes {
+                None => crate::engines::codex_login(&codex, device, tell).await,
+                Some(_) if crate::engine_auth::in_login_session() == Some(false) => {
+                    let _ = internal.send(Internal::AuthRecheck(engine));
+                    SignInStep::Failed { why: SignInFailure::Unsupported, detail: String::new() }
+                }
+                Some(codes) => crate::engine_auth::claude_login(&claude, codes, tell).await,
+            };
             tell(end);
             let _ = internal.send(Internal::SignInEnded(engine, id));
             let _ = internal.send(Internal::Engines(crate::engines::statuses(&claude, &codex, &store).await));
@@ -1837,7 +2382,7 @@ impl Runtime {
         self.publish(Event::EngineInstall { engine, step: InstallStep::Running });
         let (claude, codex, store, internal) = (self.config.claude_binary.clone(), self.codex_binary.clone(), self.config.store.clone(), self.internal.clone());
         tokio::spawn(async move {
-            let step = crate::engines::install(engine).await;
+            let step = crate::engines::install_or_update(engine, &claude).await;
             let _ = internal.send(Internal::Event(Box::new(Event::EngineInstall { engine, step })));
             let _ = internal.send(Internal::Engines(crate::engines::statuses(&claude, &codex, &store).await));
             let _ = internal.send(Internal::InstallEnded(engine));
@@ -1854,20 +2399,194 @@ impl Runtime {
         self.codex_models = None;
     }
 
-    /// Sign `engine` out with its own tool. Claude Code's login is the
-    /// person's: equipe never touches it.
+    /// Sign `engine` out with its own tool, when the person asks on its card.
     fn sign_out(&mut self, engine: Engine) {
-        if engine != Engine::Codex {
-            return;
+        if engine == Engine::Codex {
+            self.forget_codex_plan();
         }
-        self.forget_codex_plan();
         let (claude, codex, store, internal) = (self.config.claude_binary.clone(), self.codex_binary.clone(), self.config.store.clone(), self.internal.clone());
         tokio::spawn(async move {
-            if let Err(why) = crate::engines::codex_logout(&codex).await {
-                crate::daemon_log!("equipe: `codex logout` failed: {why}");
+            let out = match engine {
+                Engine::Codex => crate::engines::codex_logout(&codex).await.map_err(|why| ("codex logout", why)),
+                _ => crate::engines::claude_logout(&claude).await.map_err(|why| ("claude auth logout", why)),
+            };
+            if let Err((tool, why)) = out {
+                crate::daemon_log!("equipe: `{tool}` failed: {why}");
             }
             let _ = internal.send(Internal::Engines(crate::engines::statuses(&claude, &codex, &store).await));
         });
+    }
+
+    // ── a lost sign-in ──
+
+    /// A turn failed for want of `engine`'s sign-in: kept (with what it was
+    /// asked) to carry on once it is signed in again, and why looked at.
+    fn sign_in_lost(&mut self, engine: Engine, session: SessionId, prompt: String) {
+        let member = self.sessions.get(&session).filter(|s| s.lane.is_none()).and_then(session_member);
+        let fix = self.auth.entry(engine).or_default();
+        match fix.stopped.iter_mut().find(|s| s.session == session) {
+            Some(stopped) if !stopped.prompts.contains(&prompt) => stopped.prompts.push(prompt),
+            Some(_) => {}
+            None => fix.stopped.push(crate::engine_auth::Stopped { engine, session, member, prompts: vec![prompt], at: now_secs() }),
+        }
+        fix.since.get_or_insert(now_secs());
+        self.save_stopped();
+        self.check_engine(engine);
+    }
+
+    /// Look at why `engine` can't serve members here, off the loop; every
+    /// screen hears it's being looked at the first time, and what was found.
+    fn check_engine(&mut self, engine: Engine) {
+        let fix = self.auth.entry(engine).or_default();
+        if fix.checking || fix.state == AuthState::Moving {
+            return;
+        }
+        fix.checking = true;
+        // Looked at again while the card says why: it keeps saying it until something changes.
+        if matches!(fix.state, AuthState::Checking | AuthState::SignedIn { .. } | AuthState::Unknown) && fix.detail.is_empty() {
+            fix.state = AuthState::Checking;
+            let event = fix.event(engine);
+            self.publish(event);
+        }
+        let (claude, codex, store, internal) = (self.config.claude_binary.clone(), self.codex_binary.clone(), self.config.store.clone(), self.internal.clone());
+        tokio::spawn(async move {
+            let (state, detail) = crate::engine_auth::check(engine, &claude, &codex, &store).await;
+            let _ = internal.send(Internal::AuthChecked(engine, state, detail));
+        });
+    }
+
+    /// What a look at `engine` found. Signed in: the turns it stopped carry
+    /// on — unless they just did and failed again, when the sign-in its
+    /// tool still lists no longer works and only signing in again will do.
+    /// Anything else is told, and looked at again while turns wait, so an
+    /// unlocked Keychain or a sign-in made at the Mac's own screen is
+    /// noticed without anyone asking.
+    async fn auth_checked(&mut self, engine: Engine, state: AuthState, detail: String) {
+        let now = now_secs();
+        let Some(fix) = self.auth.get_mut(&engine) else { return };
+        fix.checking = false;
+        if fix.state == AuthState::Moving {
+            return;
+        }
+        let state = match state {
+            AuthState::SignedIn { .. } if fix.carried_on_at.is_some_and(|at| now.saturating_sub(at) < CARRIED_ON_FOR) && !fix.stopped.is_empty() => AuthState::SignedOut,
+            state => state,
+        };
+        if let AuthState::SignedIn { .. } = state {
+            let stopped = std::mem::take(&mut fix.stopped);
+            fix.carried_on_at = (!stopped.is_empty()).then_some(now);
+            fix.since = None;
+            let mut resumed = 0;
+            for stopped in stopped {
+                if self.carry_on_signed_in(&stopped).await {
+                    resumed += 1;
+                }
+            }
+            let Some(fix) = self.auth.get_mut(&engine) else { return };
+            (fix.state, fix.detail) = (AuthState::SignedIn { resumed }, String::new());
+            let event = fix.event(engine);
+            self.save_stopped();
+            self.publish(event);
+            return;
+        }
+        (fix.state, fix.detail) = (state, detail);
+        let event = fix.event(engine);
+        let again = !fix.stopped.is_empty()
+            && matches!(state, AuthState::KeychainLocked | AuthState::SignedOut | AuthState::Unknown)
+            && fix.since.is_some_and(|since| now.saturating_sub(since) < AUTH_WATCH.as_secs());
+        self.publish(event);
+        if again {
+            let internal = self.internal.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(AUTH_RECHECK).await;
+                let _ = internal.send(Internal::AuthRecheck(engine));
+            });
+        }
+    }
+
+    /// One stopped turn carried on, as its member is told why it stopped:
+    /// its own session, or the member's as this daemon knows it. Not when
+    /// it works again already, or is gone.
+    async fn carry_on_signed_in(&mut self, stopped: &crate::engine_auth::Stopped) -> bool {
+        let found = self
+            .sessions
+            .get(&stopped.session)
+            .filter(|s| stopped.member.is_none() || session_member(s) == stopped.member)
+            .map(|_| stopped.session)
+            .or_else(|| self.sessions.iter().find(|(_, s)| s.lane.is_none() && stopped.member.is_some() && session_member(s) == stopped.member).map(|(id, _)| *id));
+        let Some(id) = found.filter(|id| self.sessions.get(id).is_some_and(|s| !s.is_working())) else {
+            return false;
+        };
+        let text = say!(self, "news.sign_in_carried_on", engine = engine_name(stopped.engine));
+        self.publish(Event::Notice { undo: None, session: id, text });
+        self.set_going(id, crate::engine_auth::carry_on_prompt(stopped.engine, &stopped.prompts)).await;
+        true
+    }
+
+    /// A turn of `session`'s answered: nothing of it waits on a sign-in.
+    fn no_longer_stopped(&mut self, session: SessionId) {
+        let mut changed = false;
+        for fix in self.auth.values_mut() {
+            let before = fix.stopped.len();
+            fix.stopped.retain(|s| s.session != session);
+            changed |= fix.stopped.len() != before;
+        }
+        if changed {
+            self.save_stopped();
+        }
+    }
+
+    /// The members' stopped turns, for the daemon that comes after this one.
+    fn save_stopped(&self) {
+        if !self.config.persist {
+            return;
+        }
+        let all: Vec<crate::engine_auth::Stopped> = self.auth.values().flat_map(|f| f.stopped.iter().cloned()).collect();
+        crate::engine_auth::save_stopped(&self.config.home, &all);
+    }
+
+    /// What an earlier daemon kept of its members' stopped turns, matched to
+    /// their sessions here, then looked at: signed in, they carry on.
+    fn restore_stopped(&mut self) {
+        for mut stopped in crate::engine_auth::load_stopped(&self.config.home, now_secs()) {
+            let Some(id) = self.sessions.iter().find(|(_, s)| s.lane.is_none() && session_member(s) == stopped.member).map(|(id, _)| *id) else { continue };
+            stopped.session = id;
+            let engine = stopped.engine;
+            let fix = self.auth.entry(engine).or_default();
+            fix.since.get_or_insert(stopped.at);
+            fix.stopped.push(stopped);
+        }
+        for engine in self.auth.keys() {
+            let _ = self.internal.send(Internal::AuthRecheck(*engine));
+        }
+    }
+
+    /// The daemon, started outside the Mac's login session, starts again
+    /// inside it through its login service, as the person asked: its
+    /// members' stopped turns kept for the one that comes next.
+    fn move_into_login(&mut self) {
+        if crate::engine_auth::in_login_session() != Some(false) {
+            // Inside already: nothing to move; what's wrong is looked at.
+            return self.check_engine(Engine::Claude);
+        }
+        let exe = std::env::current_exe();
+        let (Some(_), Ok(exe)) = (crate::engine_auth::service_plist(), exe) else {
+            let fix = self.auth.entry(Engine::Claude).or_default();
+            fix.state = AuthState::OutsideLogin { movable: false };
+            let event = fix.event(Engine::Claude);
+            return self.publish(event);
+        };
+        self.save_stopped();
+        let fix = self.auth.entry(Engine::Claude).or_default();
+        match crate::engine_auth::move_into_login(&exe) {
+            Ok(()) => {
+                crate::daemon_log!("equipe: started outside the Mac's login session, the daemon starts again inside it, as the person asked");
+                (fix.state, fix.detail) = (AuthState::Moving, String::new());
+            }
+            Err(err) => (fix.state, fix.detail) = (AuthState::Unknown, err.to_string()),
+        }
+        let event = fix.event(Engine::Claude);
+        self.publish(event);
     }
 
     // ── squads ──
@@ -1925,6 +2644,86 @@ impl Runtime {
         }
     }
 
+    /// The person deletes `squad`. Its members stop as they do when the daemon
+    /// stops: their turns, browsers, side chats and helpers end, and every
+    /// screen hears they closed. What the journal holds of them stays as it
+    /// was, so a squad whose folder is moved back is whole again. Its journal
+    /// closes, nothing opens it again meanwhile, and off the loop its tickets'
+    /// worktrees go and its folder moves ([`crate::squads::delete`]).
+    fn delete_squad(&mut self, squad: &str) {
+        let home = self.config.home.clone();
+        if !crate::squads::exists(&home, squad) || crate::squads::is_gone(&home, squad) {
+            let why = say!(self, "error.no_squad", squad = squad);
+            return self.publish(Event::SquadNotDeleted { squad: squad.to_owned(), why });
+        }
+        crate::daemon_log!("equipe: deleting the squad {squad}");
+        crate::squads::mark_going(&home, squad, true);
+        // Closed first: what the members' ends say isn't written into it.
+        self.journals.remove(squad);
+        // Lanes before the members they belong to.
+        let mut ids: Vec<(bool, SessionId)> = self.sessions.iter().filter(|(_, s)| s.squad.as_deref() == Some(squad)).map(|(&id, s)| (s.lane.is_none(), id)).collect();
+        ids.sort();
+        let mut desktop_changed = false;
+        for (_, id) in ids {
+            self.stop_turn(id);
+            self.close_side_chats_of(id);
+            self.publish(Event::SessionClosed { session: id });
+            self.dispatch_deferred.remove(&id);
+            if let Some(who) = self.sessions.remove(&id).as_ref().and_then(session_member) {
+                desktop_changed |= self.desktop.leave(&who);
+            }
+        }
+        if desktop_changed {
+            self.publish_desktop();
+        }
+        // What waited on the person there waits no more.
+        self.pending.retain(|_, p| p.squad != squad);
+        self.browsers.retain(|(q, _), _| q != squad);
+        self.last_url.retain(|(q, _), _| q != squad);
+        self.show_url.retain(|(q, _), _| q != squad);
+        let of_squad = |lane: &String| lane.split_once('/').is_some_and(|(q, _)| q == squad);
+        self.held.retain(|lane, _| !of_squad(lane));
+        self.checking.retain(|lane, _| !of_squad(lane));
+        self.asked_in.retain(|lane, _| !of_squad(lane));
+        self.focus.remove(squad);
+        self.watching.remove(squad);
+        self.frame_watchers.remove(squad);
+        self.questions.remove(squad);
+        self.team_changes.remove(squad);
+        self.routine_proposals.remove(squad);
+        self.accepts.remove(squad);
+        self.accepts_declined.remove(squad);
+        self.design_watch.remove(squad);
+        self.signals_running.retain(|(q, _)| q != squad);
+        let (name, internal) = (squad.to_owned(), self.internal.clone());
+        // Worktrees and folders: off the loop.
+        std::thread::spawn(move || {
+            let result = crate::squads::delete(&home, &name, now_secs());
+            crate::squads::mark_going(&home, &name, false);
+            let _ = internal.send(Internal::SquadDeleted { squad: name, result });
+        });
+    }
+
+    /// A squad deleted, or not: every screen hears it.
+    fn squad_deleted(&mut self, squad: &str, result: Result<crate::squads::Deleted, String>) {
+        match result {
+            Ok(deleted) => {
+                crate::daemon_log!(
+                    "equipe: deleted the squad {squad}: its folder is now {}; {} worktrees removed, {} kept for other squads",
+                    deleted.moved_to.display(),
+                    deleted.worktrees_removed.len(),
+                    deleted.worktrees_kept.len()
+                );
+                self.publish(Event::SquadDeleted { squad: squad.to_owned(), moved_to: deleted.moved_to, next: deleted.next });
+            }
+            Err(why) => {
+                crate::daemon_log!("equipe: the squad {squad} wasn't deleted: {why}");
+                let why = say!(self, "error.squad_not_deleted", why = why);
+                self.publish(Event::SquadNotDeleted { squad: squad.to_owned(), why });
+            }
+        }
+    }
+
     /// A project added: every screen of the squad has the list again, and the
     /// PM knows where it is.
     fn project_added(&mut self, squad: &str, result: Result<PathBuf, String>) {
@@ -1955,6 +2754,12 @@ impl Runtime {
 
     fn journal(&mut self, squad: &str) -> Option<&Journal> {
         journal_for(&mut self.journals, &self.config.home, squad)
+    }
+
+    /// How many subagents a member of `squad` runs at once, where the person
+    /// set it (`Journal::subagents_at_once`); `None`, each engine's own.
+    fn subagents_at_once(&self, squad: Option<&str>) -> Option<u32> {
+        squad.and_then(|s| self.journals.get(s)).and_then(Journal::subagents_at_once)
     }
 
     /// An anonymous usage event of `squad`'s, with its team's size and engines;
@@ -2039,6 +2844,16 @@ runbooks and reports live there, and work across the projects or on running them
         if let Err(err) = journal.set_role_routine_added(role) {
             crate::daemon_log!("equipe: {squad}: {role}'s routine wasn't marked added: {err}");
         }
+        if role == crate::design::review::ROLE
+            && let Err(err) = journal.set_design_review_routine(Some(id))
+        {
+            crate::daemon_log!("equipe: {squad}: the design review wasn't marked: {err}");
+        }
+        if role == crate::retro::ROLE
+            && let Err(err) = journal.set_retro_routine(Some(id))
+        {
+            crate::daemon_log!("equipe: {squad}: the weekly retro wasn't marked: {err}");
+        }
         self.keep_routines(squad, all);
     }
 
@@ -2076,33 +2891,51 @@ runbooks and reports live there, and work across the projects or on running them
         let before = all.len();
         all.retain(|r| r.id != id);
         if all.len() != before {
+            // The review deleted: a routine numbered as it was, later, is no review.
+            if let Some(journal) = self.journal(squad).filter(|j| j.design_review_routine() == Some(id)) {
+                let _ = journal.set_design_review_routine(None);
+            }
+            // So with the retro.
+            if let Some(journal) = self.journal(squad).filter(|j| j.retro_routine() == Some(id)) {
+                let _ = journal.set_retro_routine(None);
+            }
             self.keep_routines(squad, all);
         }
     }
 
     /// A routine handed to the PM as the person's message — after its turn
-    /// if one runs — about the HQ when the squad has one. `false`: no PM to hand it to.
+    /// if one runs — about the HQ when the squad has one; the weekly retro
+    /// with the week's facts (`retro`); the design review, to the designer
+    /// instead (`review`). `false`: no PM to hand it to.
     async fn run_routine(&mut self, squad: &str, id: u32, now: u64) -> bool {
         let mut all = self.routines(squad);
         let Some(routine) = all.iter().find(|r| r.id == id).cloned() else {
             return false;
         };
-        let Some(pm) = self.pm_of(squad) else {
-            return false;
-        };
-        crate::daemon_log!("equipe: {squad}: routine {} ({}) handed to the PM", routine.id, routine.title);
-        let about = self.hq(squad).map(|hq| board::project_name(&hq));
-        let mut text = routines::message(&routine);
-        let signals = self.journal(squad).map_or(0, |j| j.signals().len());
-        if signals > 0 {
-            text.push_str(&format!("\n\n(The squad keeps {signals} signal(s): read them with `signals` — what fails, what moved.)"));
+        if self.journal(squad).and_then(|j| j.design_review_routine()) == Some(id) {
+            self.run_design_review(squad, &routine, now).await;
+        } else {
+            let Some(pm) = self.pm_of(squad) else {
+                return false;
+            };
+            crate::daemon_log!("equipe: {squad}: routine {} ({}) handed to the PM", routine.id, routine.title);
+            let about = self.hq(squad).map(|hq| board::project_name(&hq));
+            let retro = self.journal(squad).and_then(|j| j.retro_routine()) == Some(id);
+            let mut text = if retro { self.retro_message(squad, &routine, now) } else { routines::message(&routine) };
+            if retro {
+                self.retros.insert(pm, now);
+            }
+            let signals = self.journal(squad).map_or(0, |j| j.signals().len());
+            if signals > 0 {
+                text.push_str(&format!("\n\n(The squad keeps {signals} signal(s): read them with `signals` — what fails, what moved.)"));
+            }
+            self.said_about = Some(about);
+            match self.sessions.get(&pm) {
+                Some(s) if s.is_working() => self.leave_memo(pm, text),
+                _ => self.submit(pm, text).await,
+            }
+            self.said_about = None;
         }
-        self.said_about = Some(about);
-        match self.sessions.get(&pm) {
-            Some(s) if s.is_working() => self.leave_memo(pm, text),
-            _ => self.submit(pm, text).await,
-        }
-        self.said_about = None;
         if let Some(r) = all.iter_mut().find(|r| r.id == id) {
             r.last_run = Some(now);
             r.next_run = Some(routines::next_run(r.when, now, &routines::Local));
@@ -2207,14 +3040,14 @@ runbooks and reports live there, and work across the projects or on running them
         let at = self.sessions.iter().find(|(_, s)| !s.kept && s.lane.as_ref().is_some_and(|(of, _)| *of == pm)).map_or(pm, |(&lane, _)| lane);
         let desk = self.sessions.get(&at).filter(|s| s.work.is_none()).map(|s| (scope::current(s.transcript.entries()).flatten(), s.is_working(), s.squad.clone()));
         let Some((now, working, Some(squad))) = desk else {
-            return self.publish(Event::Notice { session: at, text });
+            return self.publish(Event::Notice { undo: None, session: at, text });
         };
         let about = self.news_project(&squad, &text);
         if about == now {
-            return self.publish(Event::Notice { session: at, text });
+            return self.publish(Event::Notice { undo: None, session: at, text });
         }
         self.publish(Event::Thread { session: at, project: about });
-        self.publish(Event::Notice { session: at, text });
+        self.publish(Event::Notice { undo: None, session: at, text });
         if working {
             self.publish(Event::Thread { session: at, project: now });
         }
@@ -2283,8 +3116,16 @@ runbooks and reports live there, and work across the projects or on running them
             (None, None) => {}
         }
 
-        // NVIDIA's models on Nebius Token Factory run on Codex's agent (`nemotron`).
-        let mut on_nebius = spec.model.as_deref().is_some_and(crate::nemotron::is_agent_model);
+        // The role set to a provider's model (`@openrouter/…`): on it, whichever
+        // engine the screen set it for — it runs on Codex's agent either way.
+        let role_open = match (&squad, role, &spec.model, spec.engine) {
+            (Some(squad), Some(role), None, None) => self
+                .journal(squad)
+                .and_then(|j| j.role_models().into_iter().find(|d| d.role == role.id && d.model.as_deref().and_then(crate::model_providers::split_ref).is_some())),
+            _ => None,
+        };
+        // NVIDIA's models on Nebius Token Factory, and every provider's, run on Codex's agent (`nemotron`).
+        let mut on_nebius = spec.model.as_deref().or(role_open.as_ref().and_then(|d| d.model.as_deref())).is_some_and(crate::nemotron::is_agent_model);
         let engine = match spec.engine {
             // Named, but nothing at all is signed in: Nemotron, rather than failing.
             Some(_) if !on_nebius && self.nebius_ready() && self.nothing_signed_in().await => {
@@ -2321,13 +3162,24 @@ runbooks and reports live there, and work across the projects or on running them
         let codex_cli = engine == Engine::Codex && codex_app::find(&self.config.codex_binary).is_some();
         on_nebius &= engine == Engine::Codex;
         if on_nebius && !codex_cli {
-            return fail(self, say!(self, "error.nebius_needs_codex"), Some(crate::engines::installer(Engine::Codex)));
+            let message = match spec.model.as_deref().or(role_open.as_ref().and_then(|d| d.model.as_deref())).and_then(|m| self.on_provider(m)) {
+                Some((_, provider)) => say!(self, "error.provider_needs_codex", provider = provider),
+                None => say!(self, "error.nebius_needs_codex"),
+            };
+            return fail(self, message, Some(crate::engines::installer(Engine::Codex)));
         }
         if spec.access == Access::EditFiles && engine == Engine::Codex && !codex_cli {
             return fail(self, say!(self, "error.codex_edits"), Some("codex login"));
         }
 
-        let mut model = spec.model.clone();
+        // What the person set for the role on this engine, if anything.
+        let role_default = match (&squad, role) {
+            _ if role_open.is_some() && engine == Engine::Codex => role_open,
+            (Some(squad), Some(role)) => self.journal(squad).and_then(|j| j.role_models().into_iter().find(|d| d.role == role.id && d.engine == engine)),
+            _ => None,
+        };
+        let mut model = spec.model.clone().or_else(|| role_default.as_ref().and_then(|d| d.model.clone()));
+        let role_effort = role_default.and_then(|d| d.effort);
         let mut codex_cred = None;
         match engine {
             Engine::Codex if codex_cli => {
@@ -2341,8 +3193,10 @@ runbooks and reports live there, and work across the projects or on running them
                     }
                 }
                 if on_nebius {
-                    let Some(cfg) = self.config.nemotron.clone() else {
-                        return fail(self, say!(self, "error.nebius_no_key"), Some("equipe login nebius"));
+                    let cfg = match self.open_config(model.as_deref()) {
+                        Ok(Some(cfg)) => cfg,
+                        Ok(None) => return fail(self, say!(self, "error.nebius_no_key"), Some("equipe login nebius")),
+                        Err(message) => return fail(self, message, None),
                     };
                     if !model.as_deref().is_some_and(crate::nemotron::is_agent_model) {
                         let picked = match tokio::time::timeout(SERVER_WAIT, crate::nemotron::agent_model(&cfg)).await {
@@ -2496,6 +3350,7 @@ runbooks and reports live there, and work across the projects or on running them
                 joined,
                 engine,
                 model: model.clone(),
+                ran: None,
                 access,
                 cwd,
                 sandbox,
@@ -2505,6 +3360,7 @@ runbooks and reports live there, and work across the projects or on running them
                 work: None,
                 prompts: Vec::new(),
                 title: None,
+                title_started: false,
                 tokens: 0,
                 context: None,
                 desk_context: None,
@@ -2519,12 +3375,14 @@ runbooks and reports live there, and work across the projects or on running them
                 steering: Vec::new(),
                 steer_threads: Vec::new(),
                 stop: None,
+                stop_subagent: None,
                 taken_back: Vec::new(),
                 send_now_prompt: None,
                 subagents: Vec::new(),
                 compacting: None,
                 answers_person: false,
-                effort: None,
+                on_phone: false,
+                effort: role_effort,
                 briefing: Vec::new(),
                 memory,
                 mode: None,
@@ -2539,16 +3397,29 @@ runbooks and reports live there, and work across the projects or on running them
         self.publish(Event::SessionStarted { session: id, project, engine, model: model.clone(), workspace, member, squad: squad.clone() });
         if on_nebius {
             let model = model.unwrap_or_default();
+            let named = self.on_provider(&model);
             let text = match &self.config.nemotron {
+                // A provider the person connected, by name.
+                _ if named.is_some() => {
+                    let (shown, provider) = named.clone().unwrap_or_default();
+                    let nemotron = crate::model_providers::split_ref(&model).is_some_and(|(p, m)| p == crate::model_providers::NEBIUS && m.to_ascii_lowercase().starts_with("nvidia/"));
+                    if nemotron { say!(self, "notice.on_nebius", model = shown) } else { say!(self, "notice.on_open_model", model = shown, provider = provider) }
+                }
                 // Token Factory and one of NVIDIA's: Nemotron, said as such.
                 Some(cfg) if cfg.provider == crate::nemotron::CODEX_PROVIDER && model.to_ascii_lowercase().starts_with("nvidia/") => say!(self, "notice.on_nebius", model = model),
                 Some(cfg) => say!(self, "notice.on_open_model", model = model, provider = cfg.provider_name.clone()),
                 None => say!(self, "notice.on_nebius", model = model),
             };
-            self.publish(Event::Notice { session: id, text });
+            self.publish(Event::Notice { undo: None, session: id, text });
+            // What it can't do there yet, so the person isn't surprised.
+            let provider = named.map(|(_, p)| p).or_else(|| self.config.nemotron.as_ref().map(|c| c.provider_name.clone())).unwrap_or_else(|| crate::nemotron::PROVIDER_NAME.to_owned());
+            let text = say!(self, "notice.provider_limits", provider = provider);
+            self.publish(Event::Notice { undo: None, session: id, text });
         }
         // A new member may be just who a waiting ticket needs.
-        if let Some(squad) = squad {
+        if let Some(squad) = squad
+            && !self.dispatch_deferred.remove(&id)
+        {
             self.dispatch(&squad).await;
         }
     }
@@ -2638,7 +3509,17 @@ runbooks and reports live there, and work across the projects or on running them
     fn steer_words(&mut self, id: SessionId, text: &str, project: Option<&str>) -> String {
         let desk = self.sessions.get(&id).filter(|s| s.is_pm() && s.work.is_none()).and_then(|s| s.squad.clone());
         let whole = project.is_none() && desk.is_some_and(|squad| self.projects(&squad).len() > 1);
-        steers::words(text, project, whole)
+        let phone = self.sessions.get(&id).is_some_and(|s| s.on_phone);
+        steers::words(text, project, whole, phone)
+    }
+
+    /// The person's word to `id` came from the screen it came from: their
+    /// phone ([`Command::OnPhone`]) or not. Its answers are for that screen.
+    pub(super) fn note_screen(&mut self, id: SessionId) {
+        let phone = self.on_phone;
+        if let Some(session) = self.sessions.get_mut(&id) {
+            session.on_phone = phone;
+        }
     }
 
     /// The engine read what the person said while it works: `raw` as it
@@ -2672,7 +3553,7 @@ runbooks and reports live there, and work across the projects or on running them
             if elsewhere {
                 self.publish(Event::Thread { session: id, project: about });
             }
-            self.publish(Event::Steered { session: id, text });
+            self.publish(Event::Steered { session: id, text, kept: Vec::new() });
             if elsewhere {
                 self.publish(Event::Thread { session: id, project: now });
             }
@@ -2688,15 +3569,57 @@ runbooks and reports live there, and work across the projects or on running them
         }
     }
 
-    /// Send what waits for `id` now ([`Command::SendNow`]): its turn stops
-    /// and the steers not read and the memos — `first` in its order, then
-    /// the rest — go to it together, as one message about their project
-    /// (each part with its own, when they are about several).
+    /// Have what waits for `id` read now ([`Command::SendNow`]) — never by
+    /// stopping the work: a message is for the member to weigh, not the end
+    /// of what it does. At work, the memos go in as steers, read at its next
+    /// step with those already sent; a command it runs now is stopped (just
+    /// it), so that step comes at once. An engine that can't read mid-turn
+    /// keeps them for the turn's end, as memos are. With no turn under way,
+    /// what waits goes to it now as one message.
     async fn send_now(&mut self, id: SessionId, first: Vec<String>) {
         let waits = |s: &Session| !s.steering.is_empty() || !s.queued.is_empty();
         let Some(id) = self.holder(id, waits) else {
             return;
         };
+        if self.sessions.get(&id).is_some_and(Session::is_working) {
+            self.memos_to_steers(id, &first);
+            if self.command_running(id) {
+                self.stop_command(id);
+            }
+            return;
+        }
+        self.deliver_waiting(id, first).await;
+    }
+
+    /// The memos waiting for `id`, at work, sent into its turn as steers —
+    /// `first` in its order, then the rest — each with its project. Where the
+    /// engine can't take one, it stays a memo.
+    fn memos_to_steers(&mut self, id: SessionId, first: &[String]) {
+        let Some(session) = self.sessions.get_mut(&id) else { return };
+        let Some(steer) = session.steer.clone() else { return };
+        let memos: Vec<(String, Option<String>)> =
+            std::mem::take(&mut session.queued).into_iter().zip(std::mem::take(&mut session.memo_threads).into_iter().chain(std::iter::repeat(None))).collect();
+        for (text, project) in steers::order(memos, first) {
+            let said = self.steer_words(id, &text, project.as_deref());
+            let Some(session) = self.sessions.get_mut(&id) else { return };
+            if steer.send(said).is_ok() {
+                session.steering.push(text.clone());
+                session.steer_threads.push(project.clone());
+                self.publish(Event::MemoWithdrawn { session: id, text: text.clone() });
+                self.publish(Event::SteerQueued { session: id, text, project });
+            } else {
+                session.queued.push(text);
+                session.memo_threads.push(project);
+            }
+        }
+        self.save_waiting(id);
+    }
+
+    /// What waits for `id`, with no turn under way: the steers not read and
+    /// the memos — `first` in its order, then the rest — go to it together,
+    /// as one message about their project (each part with its own, when they
+    /// are about several).
+    async fn deliver_waiting(&mut self, id: SessionId, first: Vec<String>) {
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -2724,7 +3647,6 @@ runbooks and reports live there, and work across the projects or on running them
         self.save_waiting(id);
         self.publish(Event::QueueSent { session: id, texts: texts.clone() });
         let project = if one { about[0].clone() } else { None };
-        let stopped = self.stop_turn(id);
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -2732,13 +3654,12 @@ runbooks and reports live there, and work across the projects or on running them
         session.memo_threads.insert(0, project);
         session.send_now_prompt = prompt;
         // A turn that finished already ends as it lands, delivering this first.
-        let landing = !stopped && session.turn.is_some();
+        let landing = session.turn.is_some();
         if !landing {
-            // The turn's end, as Esc's: its work handed in, what waits delivered —
-            // this message first.
+            // What waits delivered — this message first.
             self.after_turn(id).await;
         }
-        // What went into the stopped turn unread is in the message now: an
+        // What went into the finished turn unread is in the message now: an
         // echo of it still on its way is not shown twice.
         if let Some(session) = self.sessions.get_mut(&id) {
             session.taken_back.extend(texts);
@@ -2805,7 +3726,7 @@ runbooks and reports live there, and work across the projects or on running them
         {
             self.publish(Event::Thread { session: id, project: about.clone() });
         }
-        self.publish(Event::UserMessage { session: id, text: text.clone() });
+        self.publish(Event::UserMessage { session: id, text: text.clone(), kept: Vec::new() });
         // What the person writes in is what the squad writes for them.
         if let (Some(squad), Some(language)) = (self.sessions.get(&id).and_then(|s| s.squad.clone()), crate::language::detect(&text))
             && let Some(journal) = self.journal(&squad)
@@ -2836,6 +3757,11 @@ runbooks and reports live there, and work across the projects or on running them
                 briefing.iter().map(|line| format!("- {line}")).collect::<Vec<_>>().join("\n")
             ),
         };
+        // Read on the phone: the member answers for its screen. Before the
+        // project's word, which opens the message as the conversation reads it.
+        if session.on_phone {
+            prompt = format!("{}\n\n{prompt}", crate::roles::PHONE_MARK);
+        }
         // With several projects, which one the person is looking at.
         if let Some(project) = about {
             prompt = format!("[equipe: the person is looking at the project {project} — new work is for it unless they say otherwise]\n\n{prompt}");
@@ -3031,6 +3957,38 @@ for one project goes to it as tickets for its owners, with that project — and 
             let _ = journal.close_conversation(id);
         }
         self.close(id).await;
+        if let Some(squad) = squad {
+            self.publish_put_away(&squad);
+        }
+    }
+
+    /// A conversation put away is taken up again, its lines as they were left.
+    fn reopen_conversation(&mut self, squad: &str, id: SessionId) {
+        if self.sessions.contains_key(&id) {
+            return;
+        }
+        let Some(pm) = self.pm_of(squad) else {
+            return self.squad_error(squad, say!(self, "error.no_member", name = roles::PM));
+        };
+        let Some(journal) = journal_for(&mut self.journals, &self.config.home, squad) else { return };
+        let Ok(Some(c)) = journal.reopen_conversation(id) else { return };
+        let (lines, lines_at) = journal.conversation_at(id).unwrap_or_default();
+        let Some(m) = self.sessions.get(&pm) else { return };
+        let thread = DeskThread { claude_session: c.engine_session, ..DeskThread::default() };
+        let mut lane = lane_of(pm, m, c.project.clone(), thread, true);
+        let title = c.title;
+        lane.title = title.clone();
+        lane.transcript = Transcript::with_times(lines.clone(), lines_at.clone());
+        self.publish_lane(id, lane, pm, c.project, true);
+        self.publish(Event::ConversationBack { session: id, title, lines, lines_at });
+        self.publish_put_away(squad);
+    }
+
+    /// The conversations put away, told to the screens again.
+    fn publish_put_away(&mut self, squad: &str) {
+        let Some(journal) = journal_for(&mut self.journals, &self.config.home, squad) else { return };
+        let list = journal.put_away(PUT_AWAY_SHOWN).unwrap_or_default();
+        self.publish(Event::PutAwayChanged { squad: squad.to_owned(), list });
     }
 
     /// The project a conversation the person opened is about, if `id` is one.
@@ -3131,6 +4089,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         let board_tools = session.member.is_some() && has_tools(session) && self.config.equipe_binary.is_some();
         let language = squad.as_deref().and_then(|s| self.journals.get(s)).and_then(Journal::language);
         let edits = session.edits();
+        let edits_code = session.edits_on_code_tickets();
         let mode = session.mode.or_else(|| squad.as_deref().and_then(|s| self.journals.get(s)).map(Journal::mode)).unwrap_or_default();
         // A browser in any mode that may change things — signed in wherever the
         // person (or a teammate) signed in, if anywhere yet. In Auto and Full
@@ -3140,6 +4099,8 @@ for one project goes to it as tickets for its owners, with that project — and 
         let desktop = wants_browser
             && cfg!(target_os = "macos")
             && squad.as_deref().zip(session.member.as_ref()).is_some_and(|(s, m)| self.journals.get(s).is_some_and(|j| j.desktop_enabled(&m.name)));
+        // A squad's mobile app: its QA and mobile members test it on the ticket's own phone.
+        let phone = board_tools && squad.as_deref().zip(session.member.as_ref()).is_some_and(|(s, m)| self.phone_offered(s, &m.role, mode));
         // A designer's `design` tools, when equipe-design is installed: never installed for it.
         let design = (board_tools && session.member.as_ref().is_some_and(|m| m.role == "designer"))
             .then(|| self.config.design_path.as_deref().and_then(|path| std::env::split_paths(path).map(|d| d.join("equipe-design")).find(|p| p.is_file())))
@@ -3167,6 +4128,12 @@ for one project goes to it as tickets for its owners, with that project — and 
                 .collect(),
             _ => Vec::new(),
         };
+        // A designer on brand work gets its reference tools too (`board::design_tools_tool`).
+        let on_ticket = self.sessions.get(&id).filter(|s| s.member.as_ref().is_some_and(|m| m.role == design_qa::DESIGNER)).and_then(|s| s.work.as_ref().map(|w| w.ticket));
+        let branding = match (on_ticket, squad.clone()) {
+            (Some(on), Some(sq)) => self.tickets(&sq).into_iter().find(|t| t.id == on).is_some_and(|t| crate::design::brand::is_branding(&t.title, &t.body)),
+            _ => false,
+        };
         let Some(session) = self.sessions.get(&id) else {
             return;
         };
@@ -3188,6 +4155,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                     "command": binary,
                     "args": ["mcp", "--squad", squad, "--member", m.name, "--role", m.role, "--home", self.config.home],
                 }});
+                if branding && let Some(args) = servers[MCP_SERVER]["args"].as_array_mut() {
+                    args.push(json!("--branding"));
+                }
                 if let Some(port) = browser {
                     servers[browser::SERVER] = browser::entry(port);
                 }
@@ -3204,12 +4174,34 @@ for one project goes to it as tickets for its owners, with that project — and 
                 if let Some(design) = &design {
                     servers[DESIGN_SERVER] = json!({ "type": "stdio", "command": design, "args": ["mcp"] });
                 }
+                if phone {
+                    servers[crate::phone::SERVER] = json!({
+                        "type": "stdio",
+                        "command": binary,
+                        "args": ["mcp", "--server", crate::phone::SERVER, "--squad", squad, "--member", m.name, "--role", m.role, "--home", self.config.home],
+                    });
+                }
                 Some(json!({ "mcpServers": servers }).to_string())
             }
             _ => None,
         };
         let home = squad.as_deref().map(|s| squad_home::path(&self.config.home, s));
         let memory = squad_memory::for_charter(&facts);
+        // A member's skills: written as a plugin for Claude Code, as files for
+        // Codex's CLI to read by path; Codex over the API reads nothing, so it
+        // gets them inline — as it does when they can't be written.
+        let reads_files = has_tools(session);
+        // A member on Claude Code has equipe's guard asked before each of its
+        // calls (`guard`): what it refuses, the charter needn't ask for.
+        let guarded = session.member.is_some() && session.engine == Engine::Claude && self.config.equipe_binary.is_some();
+        // The subagents its engine runs, as many at once as the squad says —
+        // given to the engine below — or as the engine runs on its own; said
+        // in the charter either way.
+        let set_at_once = self.subagents_at_once(squad.as_deref());
+        let subagents = session.member.as_ref().and_then(|_| subagents_of(session, set_at_once));
+        // With none, and the board's tools: equipe's helpers stand in.
+        let helped = board_tools && subagents.is_none() && self.helpers_offered(session);
+        let mut skill_plugin: Option<(PathBuf, Vec<skills::Skill>)> = None;
         let charter = session.member.as_ref().map(|m| {
             let team = squad.as_deref().map(|s| self.team(s)).unwrap_or_default();
             let mates: Vec<Teammate> = team.iter().map(|(_, name, role)| Teammate { name, role }).collect();
@@ -3228,12 +4220,33 @@ for one project goes to it as tickets for its owners, with that project — and 
                 pm_accepts: squad.as_deref().and_then(|s| self.journals.get(s)).is_none_or(Journal::pm_accepts),
                 desktop,
                 design: design.is_some(),
+                phone,
                 home: home.as_deref(),
                 memory: memory.as_deref(),
                 facts: facts.len(),
                 edits,
+                skills: skills::Delivery::Inline,
+                guard: guarded,
+                subagents,
+                helpers: helped,
             };
-            roles::charter(roles::role_or_custom(&m.role), &m.name, &ctx)
+            let role = roles::role_or_custom(&m.role);
+            let offered = skills::offered(role, &ctx);
+            let written = (reads_files && !offered.is_empty())
+                .then(|| {
+                    // On Claude Code, a designer's and a frontend engineer's edits are checked as they make them.
+                    let hooks = self.config.equipe_binary.as_deref().filter(|_| session.engine == Engine::Claude).and_then(|bin| skills::hooks(role.id, bin));
+                    skills::materialise(&self.config.home, &self.config.client_version, role.id, &offered, hooks.as_deref())
+                })
+                .and_then(|written| written.map_err(|err| crate::daemon_log!("{}'s skills weren't written: {err}", m.name)).ok());
+            let Some(dir) = written else {
+                return roles::charter(role, &m.name, &ctx);
+            };
+            let at = dir.to_string_lossy().into_owned();
+            let delivery = if session.engine == Engine::Claude { skills::Delivery::Plugin(&at) } else { skills::Delivery::Files(&at) };
+            let charter = roles::charter(role, &m.name, &roles::Context { skills: delivery, ..ctx });
+            skill_plugin = Some((dir, offered));
+            charter
         });
         let (cwd, access, resume, history, ticket, add_dirs) = match &session.work {
             Some(work) => {
@@ -3244,7 +4257,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                     Some(_) => home.iter().cloned().collect(),
                     None => Vec::new(),
                 };
-                let writes = (edits || work.kind.in_home()) && work.sandbox.is_some();
+                let writes = (edits_code || work.kind.in_home()) && work.sandbox.is_some();
                 (work.cwd.clone(), access_for(mode, writes), work.claude_session.clone(), work.history.clone(), Some(work.ticket), read)
             }
             None => {
@@ -3269,27 +4282,56 @@ for one project goes to it as tickets for its owners, with that project — and 
             let _ = std::fs::create_dir_all(dir);
         }
         let mut env: Vec<(String, String)> = builds.iter().map(|d| ("CARGO_TARGET_DIR".to_owned(), d.to_string_lossy().into_owned())).collect();
+        // No incremental state: it was most of a member's build folder (up to
+        // 11 GB of one), for faster rebuilds of what it changes, and the disk
+        // ran out for it.
+        if builds.is_some() {
+            env.push(("CARGO_INCREMENTAL".to_owned(), "0".to_owned()));
+        }
         // Leaner Rust builds unless the squad says otherwise: debug info is most of a target's size.
         if builds.is_some()
             && let Some(debug) = squad.as_deref().and_then(|s| self.journals.get(s)).map(Journal::build_debug).and_then(|d| d.cargo_value())
         {
             env.push(("CARGO_PROFILE_DEV_DEBUG".to_owned(), debug.to_owned()));
         }
+        // A member's commands know they are a member's: `equipe browser` refuses there.
+        if let Some(m) = &session.member {
+            env.push((guard::MEMBER_ENV.to_owned(), m.name.to_string()));
+            // And on which engine, for what they run outside its sandbox (`equipe design second-look`).
+            env.push((crate::design::critique::MEMBER_ENGINE_ENV.to_owned(), crate::design::critique::member_engine_value(session.engine).to_owned()));
+            // And who reviews its design work this turn, and why (`equipe design critique`, `second-look`).
+            if let Some(squad) = squad.as_deref() {
+                let reviewer = self.design_reviewer(squad, session.engine);
+                env.push((crate::design::reviewer::REVIEWER_ENV.to_owned(), serde_json::to_string(&reviewer).unwrap_or_default()));
+            }
+        }
+        // Claude Code's cap on subagents at once, where the squad set it;
+        // Codex's goes in its thread's config (`codex_app::TurnRequest::subagents`).
+        if let (Some(sub), Some(at_once)) = (subagents.filter(|s| s.engine == Engine::Claude), set_at_once) {
+            debug_assert_eq!(sub.at_once, at_once);
+            env.push((CLAUDE_SUBAGENTS_ENV.to_owned(), at_once.to_string()));
+        }
         let writable: Vec<String> = builds.iter().map(|d| d.to_string_lossy().into_owned()).collect();
         let fenced = member_rules && access == claude_code::Access::EditFiles && mode == Mode::Auto;
         // Directories added for reading stay read-only in every mode, and no other
-        // squad's home is read at all.
+        // squad's home is read at all. Where the guard is asked, it keeps the
+        // directories read only — the file tools out, and a command's writes,
+        // with the operating system's fence besides — and copying out of one
+        // is reading it: Claude Code's own rule for a directory takes `cp`'s
+        // source for a write, and refused it.
         let other_homes = squad.as_deref().map(|s| squad_home::others(&self.config.home, s)).unwrap_or_default();
         let deny: Vec<String> = if member_rules {
             let rule = |tool: &str, dir: &Path| format!("{tool}(/{}/**)", dir.display());
             add_dirs
                 .iter()
+                .filter(|_| !guarded)
                 .flat_map(|d| [rule("Edit", d), rule("Write", d)])
                 .chain(other_homes.iter().flat_map(|d| [rule("Read", d), rule("Edit", d)]))
                 .collect()
         } else {
             Vec::new()
         };
+        let hooks = guarded.then(|| self.config.equipe_binary.as_deref().map(|binary| guard::hooks(binary, &cwd, &add_dirs))).flatten();
         let read_only: Vec<String> = add_dirs.iter().map(|p| p.to_string_lossy().into_owned()).collect();
         let prompt_tool = (mcp_config.is_some() && matches!(access, claude_code::Access::EditFiles | claude_code::Access::Ask))
             .then(|| format!("mcp__{MCP_SERVER}__{}", permissions::APPROVE_TOOL));
@@ -3298,24 +4340,30 @@ for one project goes to it as tickets for its owners, with that project — and 
         // What the person says while this turn runs goes into it (Claude Code only).
         let mut steer = None;
         let mut stop = None;
+        let mut stop_subagent = None;
         let turn = match session.engine {
             // The person's own Codex CLI: an agent with tools, in the worktree.
             Engine::Codex if session.codex.is_none() => {
                 let binary = self.config.codex_binary.clone();
                 let lang = self.config.lang;
-                let model = session.model.clone();
-                let mut effort = session.effort.clone();
-                // NVIDIA's models: Codex's agent with Token Factory as its provider.
-                let nebius = model.as_deref().is_some_and(crate::nemotron::is_agent_model);
-                let provider = match (&self.config.nemotron, nebius) {
-                    (Some(cfg), true) => {
+                let mut effort = effort_of(session);
+                // NVIDIA's models, and every provider's: Codex's agent with
+                // Token Factory — or the provider the model names — as its provider.
+                let nebius = session.model.as_deref().is_some_and(crate::nemotron::is_agent_model);
+                let open = if nebius { self.open_config(session.model.as_deref()) } else { Ok(None) };
+                // The provider is asked for the model by its own id.
+                let model = session.model.as_deref().map(|m| crate::model_providers::bare_model(m).to_owned());
+                let provider = match (open, nebius) {
+                    (Ok(Some(cfg)), true) => {
                         env.push(cfg.codex_env());
                         effort = crate::nemotron::agent_effort(effort.as_deref()).map(str::to_owned);
                         Some(cfg.codex_provider())
                     }
-                    (None, true) => return self.error(Some(id), say!(self, "error.nebius_no_key"), Some("equipe login nebius")),
+                    (Ok(None), true) => return self.error(Some(id), say!(self, "error.nebius_no_key"), Some("equipe login nebius")),
+                    (Err(message), true) => return self.error(Some(id), message, None),
                     (_, false) => None,
                 };
+                let provider_name = provider.as_ref().filter(|p| p.id != crate::nemotron::CODEX_PROVIDER).map(|p| p.name.clone());
                 // equipe's servers only, as Claude Code gets them: the board's tools
                 // never ask; the browser's and the desktop's ask unless the mode lets them.
                 let servers = match (&squad, &session.member, &self.config.equipe_binary) {
@@ -3330,6 +4378,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                             args
                         };
                         let mut servers = json!({ MCP_SERVER: codex_app::mcp_server(binary, &args(None), true) });
+                        // No subagents of its own: equipe's helpers, on the board's server.
+                        if helped {
+                            helping::offer(&mut servers[MCP_SERVER]);
+                        }
                         if let Some(port) = browser {
                             servers[browser::SERVER] = codex_app::mcp_http_server(&format!("http://localhost:{port}/mcp"), browses_freely);
                         }
@@ -3342,6 +4394,13 @@ for one project goes to it as tickets for its owners, with that project — and 
                         if let Some(design) = &design {
                             servers[DESIGN_SERVER] = codex_app::mcp_server(design, &["mcp".to_owned()], matches!(mode, Mode::Auto | Mode::Full));
                         }
+                        // Only the ticket's own device: approved in every mode it is offered in.
+                        // Booting one takes a minute or two, past Codex's default wait.
+                        if phone {
+                            let mut server = codex_app::mcp_server(binary, &args(Some(crate::phone::SERVER)), true);
+                            server["tool_timeout_sec"] = json!(600);
+                            servers[crate::phone::SERVER] = server;
+                        }
                         Some(servers)
                     }
                     _ => None,
@@ -3351,6 +4410,8 @@ for one project goes to it as tickets for its owners, with that project — and 
                 steer = Some(steer_tx);
                 let (stop_tx, stop_rx) = oneshot::channel::<()>();
                 stop = Some(stop_tx);
+                let (stop_sub_tx, stop_sub_rx) = mpsc::unbounded_channel::<String>();
+                stop_subagent = Some(stop_sub_tx);
                 // What Codex asks goes to the person as Claude Code's permission prompts do.
                 let (ask_tx, mut ask_rx) = mpsc::unbounded_channel::<codex_app::Ask>();
                 let asker = session_member(session);
@@ -3383,16 +4444,21 @@ for one project goes to it as tickets for its owners, with that project — and 
                         effort: effort.as_deref(),
                         access,
                         resume: resume.as_deref(),
+                        fork: false,
+                        fresh_prompt: None,
+                        web_search: false,
                         instructions: charter.as_deref(),
                         mcp_servers: servers.as_ref(),
                         writable: &writable,
                         env: &env,
                         provider: provider.as_ref(),
+                        subagents: subagents.and(set_at_once),
                     };
                     if let Some(port) = browser {
                         browser::ready(port, Duration::from_secs(90)).await;
                     }
-                    let outcome = codex_app::run_turn(&binary, &cwd, request, Some(steer_rx), Some(ask_tx), Some(stop_rx), |activity| {
+                    let controls = codex_app::Controls { steering: Some(steer_rx), asks: Some(ask_tx), stop: Some(stop_rx), stop_subagent: Some(stop_sub_rx) };
+                    let outcome = codex_app::run_turn_with(&binary, &cwd, request, controls, |activity| {
                         if matches!(activity, Activity::Text(_)) {
                             streamed = true;
                         }
@@ -3401,6 +4467,12 @@ for one project goes to it as tickets for its owners, with that project — and 
                             Activity::Limits(_) if nebius => {}
                             Activity::Limits(limits) => {
                                 let _ = internal.send(Internal::CodexLimits(Some(limits)));
+                            }
+                            Activity::Engine { pid } => {
+                                let _ = internal.send(Internal::EngineStarted { session: id, pid });
+                            }
+                            Activity::SubagentHeard { id: sub } => {
+                                let _ = internal.send(Internal::SubagentHeard { session: id, id: sub });
                             }
                             activity => {
                                 if let Some(event) = activity_event(id, activity) {
@@ -3419,8 +4491,12 @@ for one project goes to it as tickets for its owners, with that project — and 
                         return;
                     }
                     let thread = outcome.as_ref().ok().and_then(|turn| turn.thread_id.clone());
-                    let result = outcome.map(|turn| turn.result).map_err(|err| if nebius { nebius_failure(err, lang) } else { codex_cli_failure(err, lang) });
+                    let result = outcome.map(|turn| turn.result).map_err(|err| if nebius { nebius_failure(err, provider_name.as_deref(), lang) } else { codex_cli_failure(err, lang) });
+                    let lost = !nebius && matches!(&result, Err((_, next)) if crate::engine_auth::lost_by(*next) == Some(Engine::Codex));
                     let reply = finish_turn(&emit, id, result, streamed);
+                    if lost {
+                        let _ = internal.send(Internal::SignInLost { engine: Engine::Codex, session: id, prompt: prompt.clone() });
+                    }
                     let _ = internal.send(Internal::Done(TurnDone { session: id, prompt, reply, claude_session: thread, ticket }));
                 })
             }
@@ -3430,7 +4506,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                     return self.error(Some(id), say!(self, "error.codex_signed_out"), Some("equipe login codex"));
                 };
                 let model = session.model.clone().unwrap_or_default();
-                let effort = session.effort.clone();
+                let effort = effort_of(session);
                 let version = self.config.client_version.clone();
                 // Codex gets no conversation of its own: equipe sends the recent
                 // part of it each turn, never more than fits.
@@ -3459,7 +4535,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             Engine::Claude => {
                 let binary = self.config.claude_binary.clone();
                 let model = session.model.clone();
-                let effort = session.effort.clone();
+                let effort = effort_of(session);
                 let memory = session.memory.clone();
                 let mut allowed: Vec<String> = mcp_config.iter().map(|_| format!("mcp__{MCP_SERVER}")).collect();
                 if browses_freely {
@@ -3472,6 +4548,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                 if design.is_some() && matches!(mode, Mode::Auto | Mode::Full) {
                     allowed.push(format!("mcp__{DESIGN_SERVER}"));
                 }
+                // The ticket's own simulator or emulator, nothing else: no asking.
+                if phone {
+                    allowed.push(format!("mcp__{}", crate::phone::SERVER));
+                }
                 // What the person always allows no longer asks, and reaches its service from inside the fence.
                 let outward = permissions::still_asks(&squad_rules);
                 let mut domains: Vec<String> = permissions::ALLOWED_DOMAINS.iter().map(|d| (*d).to_owned()).collect();
@@ -3479,12 +4559,21 @@ for one project goes to it as tickets for its owners, with that project — and 
                 if member_rules {
                     allowed.extend(squad_rules);
                 }
+                // Its skills, as a plugin: each opened, and its files read, without asking.
+                let plugin_dirs: Vec<PathBuf> = skill_plugin.iter().map(|(dir, _)| dir.clone()).collect();
+                if let Some((dir, offered)) = &skill_plugin {
+                    allowed.extend(skills::allowed_tools(dir, offered));
+                }
                 let mut blocked: Vec<String> =
                     if member_rules { permissions::BLOCKED.iter().map(|r| (*r).to_owned()).collect() } else { Vec::new() };
                 // Claude Code's own question tool asks a terminal nobody watches:
                 // a member with equipe's tools puts decisions with `ask_decision`.
                 if member_rules && mcp_config.is_some() {
                     blocked.push(ENGINE_QUESTION_TOOL.to_owned());
+                }
+                // A window that holds the turn until it is closed: the guard says why first.
+                if member_rules {
+                    blocked.extend(guard::deny_rules(self.config.equipe_binary.as_deref()));
                 }
                 // The person's browser sign-ins and equipe's logins: no fenced command reads them.
                 // Nor other squads' homes.
@@ -3507,7 +4596,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                         model: model.as_deref(),
                         access,
                         resume: resume.as_deref(),
+                        fork: false,
+                        tools: &[],
                         charter: charter.as_deref(),
+                        plugin_dirs: &plugin_dirs,
                         memory: memory.as_deref(),
                         add_dirs: &add_dirs,
                         mcp_config: mcp_config.as_deref(),
@@ -3525,6 +4617,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         prompt_tool: prompt_tool.as_deref(),
                         env: &env,
                         effort: effort.as_deref(),
+                        hooks: hooks.as_ref(),
                     };
                     // A browser just started may still be loading.
                     if let Some(port) = browser {
@@ -3534,6 +4627,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                         if matches!(activity, Activity::Text(_)) {
                             streamed = true;
                         }
+                        if let Activity::Engine { pid } = activity {
+                            let _ = internal.send(Internal::EngineStarted { session: id, pid });
+                            return;
+                        }
                         if let Some(event) = activity_event(id, activity) {
                             emit(event);
                         }
@@ -3541,7 +4638,12 @@ for one project goes to it as tickets for its owners, with that project — and 
                     .await;
                     let claude_session = outcome.as_ref().ok().and_then(|turn| turn.session_id.clone());
                     let result = outcome.map(|turn| turn.result).map_err(claude_failure);
+                    let lost = matches!(&result, Err((_, next)) if crate::engine_auth::lost_by(*next) == Some(Engine::Claude));
                     let reply = finish_turn(&emit, id, result, streamed);
+                    // After the error is told: the screens hear what it was, then why.
+                    if lost {
+                        let _ = internal.send(Internal::SignInLost { engine: Engine::Claude, session: id, prompt: prompt.clone() });
+                    }
                     let _ = internal.send(Internal::Done(TurnDone { session: id, prompt, reply, claude_session, ticket }));
                 })
             }
@@ -3550,6 +4652,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             session.turn = Some(turn);
             session.steer = steer;
             session.stop = stop;
+            session.stop_subagent = stop_subagent;
         }
     }
 
@@ -3594,10 +4697,31 @@ for one project goes to it as tickets for its owners, with that project — and 
         match squad_home::save(&dir, &name, &asked_for(prompt)) {
             Ok(Some(change)) => {
                 let text = say!(self, "news.desk_saved", name = name, what = change.said(self.config.lang));
-                self.publish(Event::Notice { session: id, text });
+                self.publish(Event::Notice { undo: Some(change.id), session: id, text });
             }
             Ok(None) => {}
             Err(err) => self.error(Some(id), say!(self, "error.folder_not_saved", err = err), None),
+        }
+    }
+
+    /// The person takes back `change` to `squad`'s folder or memory, as
+    /// `/home undo` does, and hears it in `session`'s conversation — a change
+    /// equipe told of, only (one of its latest): never an arbitrary revision.
+    fn undo_home_change(&mut self, squad: &str, session: SessionId, change: &str) {
+        if self.sessions.get(&session).is_none_or(|s| s.squad.as_deref() != Some(squad)) {
+            return;
+        }
+        let dir = squad_home::path(&self.config.home, squad);
+        match squad_home::undo_change(&dir, change) {
+            Ok((taken, undo)) => {
+                let text = say!(self, "notice.taken_back", what = taken.said(self.config.lang));
+                self.publish(Event::Notice { session, text, undo: Some(undo.id) });
+                // A brief or plan back, or gone again: the screens' lists follow.
+                if taken.files.iter().any(|(_, file)| file.starts_with(&format!("{}/", crate::briefs::DOCS))) {
+                    self.docs_changed(squad);
+                }
+            }
+            Err(err) => self.error(Some(session), say!(self, "error.undo_failed", err = err), None),
         }
     }
 
@@ -3645,6 +4769,10 @@ for one project goes to it as tickets for its owners, with that project — and 
     }
 
     async fn on_turn_done(&mut self, done: TurnDone) {
+        // A turn that answered: whatever its engine's sign-in stopped of it is over.
+        if done.reply.is_some() {
+            self.no_longer_stopped(done.session);
+        }
         // A browser asked onto the screen during the turn comes up now.
         if let Some(session) = self.sessions.get_mut(&done.session) {
             session.turn = None;
@@ -3710,6 +4838,9 @@ for one project goes to it as tickets for its owners, with that project — and 
         if done.ticket.is_none() {
             self.save_desk_changes(done.session, &done.prompt);
         }
+        // The answer is already on every screen. Naming it is a separate,
+        // tool-less side turn and can never hold up or fail that answer.
+        self.start_conversation_title(done.session);
         if let Some(reply) = done.reply.filter(|r| !r.trim().is_empty()) {
             let short: String = reply.chars().take(BRIEF_REPLY_CHARS).collect();
             let more = if short.len() < reply.len() { "…" } else { "" };
@@ -3718,6 +4849,81 @@ for one project goes to it as tickets for its owners, with that project — and 
         self.after_turn(done.session).await;
         if answered_person {
             self.suggest_next(done.session);
+        }
+    }
+
+    fn start_conversation_title(&mut self, id: SessionId) {
+        let Some(session) = self.sessions.get_mut(&id).filter(|s| s.kept && s.title.is_none() && !s.title_started) else { return };
+        let Some((user, reply)) = first_exchange(session.transcript.entries()) else { return };
+        let (engine, model, codex, squad) = (session.engine, session.model.clone(), session.codex.clone(), session.squad.clone());
+        let Some(squad) = squad else { return };
+        session.title_started = true;
+        let prompt = crate::conversation_title::prompt(&user, &reply);
+        let fallback = crate::conversation_title::fallback(&user);
+        let internal = self.internal.clone();
+        let cwd = self.config.home.join("title");
+
+        match engine {
+            Engine::Claude => {
+                let binary = self.config.claude_binary.clone();
+                tokio::spawn(async move {
+                    let _ = std::fs::create_dir_all(&cwd);
+                    let generated = claude_code::conversation_title(&binary, &cwd, &prompt).await;
+                    let title = crate::conversation_title::resolve(generated.as_deref(), &fallback);
+                    let _ = internal.send(Internal::ConversationTitle(ConversationTitleDone { session: id, squad, title }));
+                });
+            }
+            Engine::Codex if codex.is_none() => {
+                let binary = self.config.codex_binary.clone();
+                let nebius = model.as_deref().is_some_and(crate::nemotron::is_agent_model);
+                let configured = if nebius { self.open_config(model.as_deref()).ok().flatten() } else { None };
+                let mut env = Vec::new();
+                let provider = configured.map(|cfg| {
+                    env.push(cfg.codex_env());
+                    cfg.codex_provider()
+                });
+                let model = model.as_deref().map(crate::model_providers::bare_model).map(str::to_owned);
+                tokio::spawn(async move {
+                    let _ = std::fs::create_dir_all(&cwd);
+                    let none = json!({});
+                    let request = codex_app::TurnRequest { prompt: &prompt, model: model.as_deref(), effort: Some("low"), access: claude_code::Access::ReadOnly, mcp_servers: Some(&none), env: &env, provider: provider.as_ref(), ..Default::default() };
+                    let generated = codex_app::run_turn(&binary, &cwd, request, None, None, None, |_| {}).await.ok().map(|turn| turn.result.text);
+                    let title = crate::conversation_title::resolve(generated.as_deref(), &fallback);
+                    let _ = internal.send(Internal::ConversationTitle(ConversationTitleDone { session: id, squad, title }));
+                });
+            }
+            Engine::Codex => {
+                let client = self.client.clone();
+                let version = self.config.client_version.clone();
+                let model = model.unwrap_or_default();
+                let Some(cred) = codex else { return };
+                tokio::spawn(async move {
+                    let request = responses::TurnRequest { prompt: &prompt, model: &model, instructions: None, history: &[], effort: Some("low") };
+                    let generated = responses::run_turn(&client, &cred, &version, request, |_| {}).await.ok().map(|turn| turn.text);
+                    let title = crate::conversation_title::resolve(generated.as_deref(), &fallback);
+                    let _ = internal.send(Internal::ConversationTitle(ConversationTitleDone { session: id, squad, title }));
+                });
+            }
+        }
+    }
+
+    fn on_conversation_title(&mut self, done: ConversationTitleDone) {
+        if self.sessions.get(&done.session).is_some_and(|s| s.title.is_some()) {
+            return;
+        }
+        if self.config.persist
+            && let Some(journal) = journal_for(&mut self.journals, &self.config.home, &done.squad)
+        {
+            let _ = journal.set_title_if_empty(done.session, &done.title);
+        }
+        if let Some(session) = self.sessions.get_mut(&done.session) {
+            if session.title.is_none() {
+                session.title = Some(done.title.clone());
+                self.publish(Event::ConversationTitle { session: done.session, title: done.title });
+            }
+        } else {
+            // It may have been put away while the small side turn ran.
+            self.publish_put_away(&done.squad);
         }
     }
 
@@ -3882,6 +5088,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         if let Some(sandbox) = self.sessions.get(&id).and_then(|s| s.sandbox.clone()) {
             self.land_plain_session(id, &sandbox);
         }
+        self.close_side_chats_of(id);
         self.publish(Event::SessionClosed { session: id });
         if let Some(who) = self.sessions.remove(&id).as_ref().and_then(session_member)
             && self.desktop.leave(&who)
@@ -3935,26 +5142,52 @@ for one project goes to it as tickets for its owners, with that project — and 
 
     /// Hand every ready ticket to a free member who owns it.
     async fn dispatch(&mut self, squad: &str) {
+        self.dispatch_to(squad, &[], &[]).await;
+    }
+
+    /// Hand ready tickets to `only` (or every member when empty), considering
+    /// `first` before the board's normal order. Readiness stays in `board`;
+    /// runtime-only engine and room holds are applied here as usual.
+    async fn dispatch_to(&mut self, squad: &str, only: &[String], first: &[TicketId]) {
         // A member moving engines moves before it picks up its next ticket.
         self.apply_engine_moves(squad).await;
-        let tickets = self.tickets(squad);
+        let mut tickets = self.tickets(squad);
+        tickets.retain(|ticket| !self.held_for_room(ticket.kind));
         let single_project = self.projects(squad).len() == 1;
         // Members equipe once brought in for a rush finish what they hold and take nothing new.
         let helpers = self.journals.get(squad).map(Journal::helpers).unwrap_or_default();
-        let members: Vec<(String, String, bool)> = self
+        let members: Vec<(String, String, bool, Option<Engine>)> = self
             .sessions
             .iter()
             .filter(|(id, s)| s.squad.as_deref() == Some(squad) && s.lane.is_none() && !helpers.contains(id))
+            .filter(|(_, s)| only.is_empty() || s.name().is_some_and(|name| only.iter().any(|only| only == name)))
             // An engine out of its plan, or waited for, takes no new ticket.
-            .filter_map(|(_, s)| s.member.as_ref().map(|m| (m.name.clone(), m.role.clone(), s.is_free() && !self.engines.held(squad, s.engine))))
+            .filter_map(|(_, s)| {
+                s.member.as_ref().map(|m| {
+                    let held = s.is_free() && self.engines.held(squad, s.engine);
+                    (m.name.clone(), m.role.clone(), s.is_free() && !held, held.then_some(s.engine))
+                })
+            })
             .collect();
         let candidates: Vec<Candidate> =
-            members.iter().map(|(name, role, free)| Candidate { name, role, free: *free }).collect();
-        for (ticket, name) in board::assignments(&tickets, &candidates, single_project) {
-            // Short of room: code work, which builds, waits; the PM was told.
-            if tickets.iter().find(|t| t.id == ticket).is_some_and(|t| self.held_for_room(t.kind)) {
-                continue;
+            members.iter().map(|(name, role, free, _)| Candidate { name, role, free: *free }).collect();
+        let assigned = board::assignments_prioritizing(&tickets, &candidates, single_project, first);
+        // What a hold keeps from starting: what free members would take but for it.
+        if members.iter().any(|m| m.3.is_some()) {
+            let unheld: Vec<Candidate> =
+                members.iter().map(|(name, role, free, held)| Candidate { name, role, free: *free || held.is_some() }).collect();
+            let mut waiting: Vec<(Engine, TicketId)> = board::assignments_prioritizing(&tickets, &unheld, single_project, first)
+                .into_iter()
+                .filter(|(t, _)| !assigned.iter().any(|(a, _)| a == t))
+                .filter_map(|(t, name)| members.iter().find(|m| m.0 == name).and_then(|m| m.3).map(|e| (e, t)))
+                .collect();
+            waiting.sort_by_key(|(_, t)| *t);
+            for engine in [Engine::Claude, Engine::Codex] {
+                let ids: Vec<TicketId> = waiting.iter().filter(|(e, _)| *e == engine).map(|(_, t)| *t).collect();
+                self.tell_held(squad, engine, &ids);
             }
+        }
+        for (ticket, name) in assigned {
             if let Some(id) = self.member_id(squad, &name) {
                 self.begin_work(id, ticket);
             }
@@ -3985,7 +5218,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 Box::pin(self.close(*id)).await;
                 if let Some(pm) = self.pm_of(&squad) {
                     let text = say!(self, "news.helper_left", name = name);
-                    self.publish(Event::Notice { session: pm, text });
+                    self.publish(Event::Notice { undo: None, session: pm, text });
                 }
             }
             // Gone or let go: no longer helpers.
@@ -4007,6 +5240,8 @@ for one project goes to it as tickets for its owners, with that project — and 
             return;
         };
         let role_edits = session.edits();
+        // The PM, which delegates first, on a code ticket of its own.
+        let pm_codes = !role_edits && session.edits_on_code_tickets();
         let board_tools = has_tools(session) && self.config.equipe_binary.is_some();
         let projects = self.projects(&squad);
         let home_dir = squad_home::path(&home, &squad);
@@ -4026,10 +5261,19 @@ for one project goes to it as tickets for its owners, with that project — and 
             return;
         };
         let workplace = if kind.in_home() { home_dir.clone() } else { project.clone() };
-        // In the squad home every role writes, in its own worktree.
-        let edits = role_edits || kind.in_home();
+        // In the squad home every role writes, in its own worktree; on a code
+        // ticket a role that edits does — and the PM, when the project is a
+        // repository: on a plain folder it reads, as it always did.
+        let edits = role_edits || kind.in_home() || (pm_codes && worktree::repo_root(&workplace).is_ok());
 
         let sandbox = if edits {
+            // A squad home's copy leaves out other tickets' outputs: gigabytes in a home that has done much work.
+            let only = if kind.in_home() {
+                worktree::home_patterns(&std::iter::once(&ticket_id).chain(&ticket.depends_on).collect::<Vec<_>>())
+            } else {
+                Vec::new()
+            };
+            let mut made = false;
             let checkout = worktree::repo_root(&workplace).and_then(|repo| {
                 let id_part = format!("t{ticket_id}-{:x}", now_secs());
                 match (&saved.worktree, &ticket.branch, &saved.base) {
@@ -4038,13 +5282,25 @@ for one project goes to it as tickets for its owners, with that project — and 
                         Ok(Sandbox { repo, path: path.clone(), branch: branch.clone(), base: base.clone() })
                     }
                     // Its worktree went away: check its branch out again.
-                    (_, Some(branch), Some(base)) => worktree::resume(&repo, &home, &id_part, branch, base),
+                    (_, Some(branch), Some(base)) => {
+                        made = true;
+                        worktree::resume(&repo, &home, &id_part, branch, base, &only)
+                    }
                     // New: from HEAD, with the finished work it depends on.
-                    _ => worktree::create_after(&repo, &home, &id_part, &name, &after),
+                    _ => {
+                        made = true;
+                        worktree::create_after(&repo, &home, &id_part, &name, &after, &only)
+                    }
                 }
             });
             match checkout {
-                Ok(sandbox) => Some(sandbox),
+                Ok(sandbox) => {
+                    // Its dependencies cloned from a checkout that has them installed, off the loop.
+                    if made {
+                        worktree::seed_in_background(sandbox.path.clone());
+                    }
+                    Some(sandbox)
+                }
                 Err(err) => return self.cannot_start(&squad, ticket, &name, &err),
             }
         } else {
@@ -4087,6 +5343,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 waiting: None,
                 screens: false,
                 verdict: None,
+                refused: None,
             });
         }
         self.publish(Event::TicketChanged { squad: squad.clone(), ticket: ticket.clone() });
@@ -4104,6 +5361,17 @@ for one project goes to it as tickets for its owners, with that project — and 
         let mut prompt = work_prompt(&ticket, &project, sandbox.as_ref(), reopened.as_deref(), board_tools, language.as_deref());
         if let Some(checked) = self.checked_by(&squad, ticket_id) {
             prompt.push_str(&design_qa::qa_prompt(ticket_id, &checked));
+        }
+        // Brand work, and only it, takes the designer's full reference pass.
+        let designer = self.sessions.get(&id).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role == design_qa::DESIGNER);
+        if designer && crate::design::brand::is_branding(&ticket.title, &ticket.body) {
+            prompt.push_str(&crate::design::brand::note(board_tools));
+        }
+        if let Some(plan) = &ticket.plan {
+            let repo = ticket.project.as_deref().filter(|_| !Path::new(plan).is_absolute());
+            // One quick look, beside the worktree this start already made.
+            let main = repo.and_then(|r| worktree::main_branch(r).ok());
+            prompt.push_str(&crate::plan::work_note(plan, repo.zip(main.as_deref())));
         }
         if sandbox.is_some() && !after.is_empty() && fresh {
             let ids: Vec<&str> = after.iter().map(|(what, _)| what.as_str()).collect();
@@ -4304,13 +5572,16 @@ todo); or drop it if it's no longer wanted.]"
             let _ = journal.ticket_event(ticket.id, &by, event, summary.as_deref().unwrap_or(""));
         }
         // Work now ready for review — this ticket handed in, or the one a
-        // designer's QA just passed — when the PM accepts it.
+        // designer's QA just passed — when the PM accepts it. Code the PM
+        // changed itself isn't: it waits for the person.
+        let pm_name = self.pm_of(&squad).and_then(|pm| self.sessions.get(&pm)).and_then(|s| s.name().map(str::to_owned)).unwrap_or_default();
+        let the_pms = |t: &Ticket| crate::accept::own_code(t, &pm_name).is_some();
         let ready_for_pm = if !self.journal(&squad).is_some_and(|j| j.pm_accepts()) {
             None
         } else if ticket.ready_for_review() {
-            Some(ticket.id)
+            (!the_pms(&ticket)).then_some(ticket.id)
         } else {
-            about.as_ref().map(|(id, _)| *id).filter(|id| self.journal(&squad).and_then(|j| j.ticket(*id).ok().flatten()).is_some_and(|t| t.ready_for_review()))
+            about.as_ref().map(|(id, _)| *id).filter(|id| self.journal(&squad).and_then(|j| j.ticket(*id).ok().flatten()).is_some_and(|t| t.ready_for_review() && !the_pms(&t)))
         };
         let ticket_id = ticket.id;
         let (about_id, about_title) = about.unwrap_or_else(|| (ticket.id, ticket.title.clone()));
@@ -4321,7 +5592,7 @@ todo); or drop it if it's no longer wanted.]"
         // Back at its desk: the thread it was in there.
         let desk = self.sessions.get(&id).and_then(|s| s.thread.clone());
         self.publish(Event::Thread { session: id, project: desk });
-        self.publish(Event::Notice { session: id, text: shown.clone() });
+        self.publish(Event::Notice { undo: None, session: id, text: shown.clone() });
         let briefing = match &summary {
             Some(summary) => format!("{line}: {summary}"),
             None => format!("{line}."),
@@ -4335,8 +5606,9 @@ todo); or drop it if it's no longer wanted.]"
             {
                 let prompt = format!(
                     "[equipe: T-{ready} is handed in and ready for you. Check it and accept it with `accept_work` (with \
-`push` when the person asked for it to go live), send it back with `comment`, or — if it needs the person — put it to \
-them with `propose_accept`. Then carry on with what else waits.]"
+`push` when the person asked for it to go live), send it back with `comment` and `review: changes`, or — if it needs the \
+person — put it to them with `propose_accept`. A branch only behind main is no reason to send it back. Then carry on \
+with what else waits.]"
                 );
                 let _ = self.internal.send(Internal::Wake { session: pm, prompt });
             }
@@ -4404,7 +5676,7 @@ them with `propose_accept`. Then carry on with what else waits.]"
                 // In the conversation of the member who handed it in, else the PM's.
                 let session = Some(member).filter(|id| self.sessions.contains_key(id)).or_else(|| self.pm_of(squad));
                 if let Some(session) = session {
-                    self.publish(Event::Notice { session, text });
+                    self.publish(Event::Notice { undo: None, session, text });
                 }
             }
         }
@@ -4806,6 +6078,11 @@ them with `propose_accept`. Then carry on with what else waits.]"
             return self.squad_error(squad, message);
         }
         let said = note.clone();
+        // Design work sent back with a reason: the person's taste, in their words.
+        let by_designer = [found.assignee.as_deref(), found.owner.as_deref()].into_iter().flatten().any(|who| who == "designer" || self.member_id(squad, who).and_then(|id| self.sessions.get(&id)).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role == "designer"));
+        if let Some(entry) = by_designer.then(|| crate::taste::sent_back(found.id, &found.title, &said, &squad_memory::date(now_secs()))).flatten() {
+            self.learn_taste(squad, &entry);
+        }
         let note = if note.trim().is_empty() { "Reopened.".to_owned() } else { format!("Reopened: {}", note.trim()) };
         found.owner = found.assignee.take().or(found.owner);
         found.status = TicketStatus::Todo;
@@ -4899,11 +6176,23 @@ them with `propose_accept`. Then carry on with what else waits.]"
         if call.name == board::ASK_PERSON {
             return self.ask_person(call, reply);
         }
+        if call.name == crate::controls::CHANGE_SETTING {
+            return self.change_setting(call, reply).await;
+        }
         if call.name == crate::signals::PROPOSE_SIGNAL {
             return self.propose_signal(call, reply);
         }
         if call.name == board::SIGN_IN {
             return self.ask_sign_in(call, reply);
+        }
+        if call.name == crate::helpers::SPAWN_HELPER {
+            return self.spawn_helper(call, reply);
+        }
+        if call.name == crate::plan_use::TOOL {
+            return self.plan_use_answer(&call, reply);
+        }
+        if call.name == crate::helpers::HELPER_RESULT {
+            return self.helper_result(call, reply);
         }
         if call.name == board::SHOW_BROWSER {
             let url = call.arguments["url"].as_str().map(str::to_owned);
@@ -4911,7 +6200,7 @@ them with `propose_accept`. Then carry on with what else waits.]"
             if self.ask_in_panel(&call.squad, &call.member, url.as_deref(), &why) {
                 if let Some(id) = self.member_id(&call.squad, &call.member) {
                     let text = say!(self, "notice.browser_in_panel", name = call.member, why = why);
-                    self.publish(Event::Notice { session: id, text });
+                    self.publish(Event::Notice { undo: None, session: id, text });
                 }
                 let _ = reply.send(ToolResult {
                     text: "Your browser is open in the person's browser panel, at that page, in their hands, with your `why` \
@@ -4929,7 +6218,7 @@ and hand it back you get a message and carry on by yourself — don't ask them t
             self.show_browser(&call.squad, Some(call.member.clone()), true);
             if let Some(id) = self.member_id(&call.squad, &call.member) {
                 let text = say!(self, "notice.browser_on_screen", name = call.member, why = why);
-                self.publish(Event::Notice { session: id, text });
+                self.publish(Event::Notice { undo: None, session: id, text });
             }
             let _ = reply.send(ToolResult {
                 text: "Your browser comes up on the person's screen when this turn ends, at that page. Tell them what to do \
@@ -4939,6 +6228,17 @@ there, end your turn, and carry on when they say they're done."
                 image: None,
             });
             return;
+        }
+        // A brief, committed off the loop: answered once it is in.
+        if call.name == crate::briefs::WRITE_BRIEF {
+            return self.write_brief(&call, reply);
+        }
+        // A plan, committed off the loop; a ticket cut from one reads it first.
+        if call.name == board::WRITE_PLAN {
+            return self.write_plan(&call, reply);
+        }
+        if call.name == board::CREATE_TICKET && board::arg_str(&call.arguments, "plan").is_some_and(|p| !p.trim().is_empty()) {
+            return self.cut_from_plan(call, reply);
         }
         let squad = call.squad.clone();
         // The PM accepting its team's work: it waits for the acceptance itself.
@@ -4980,14 +6280,14 @@ there, end your turn, and carry on when they say they're done."
         if permissions::blocked(&tool, &action) {
             let _ = reply.send(verdict(Decision::Deny, &input, "equipe never allows this, in any mode."));
             let text = say!(self, "notice.blocked", action = action);
-            self.publish(Event::Notice { session: id, text });
+            self.publish(Event::Notice { undo: None, session: id, text });
             self.audit(&call.squad, ticket, "equipe", "blocked", &action);
             return;
         }
         if let Some(why) = self.off_limits(id, &call.squad, &tool, &action, &input) {
             let _ = reply.send(verdict(Decision::Deny, &input, why));
             let text = say!(self, "notice.refused", why = why, action = action);
-            self.publish(Event::Notice { session: id, text });
+            self.publish(Event::Notice { undo: None, session: id, text });
             self.audit(&call.squad, ticket, "equipe", "refused", &action);
             return;
         }
@@ -5121,7 +6421,7 @@ there, end your turn, and carry on when they say they're done."
             Verdict::Blocked(why) => {
                 let _ = reply.send(refuse(format!("{why} Ask the person to do it.")));
                 let text = say!(self, "notice.blocked", action = first_line(&action));
-                self.publish(Event::Notice { session: id, text });
+                self.publish(Event::Notice { undo: None, session: id, text });
                 self.audit(&check.squad, ticket, "equipe", "blocked", &action);
                 return;
             }
@@ -5171,9 +6471,26 @@ there, end your turn, and carry on when they say they're done."
             return;
         };
         let Pending { squad, approval, input, reply } = pending;
+        // How long it waited on the person, for the week's retro.
+        if let Some(asked) = self.approvals_asked.remove(&approval_id) {
+            let outcome = match decision {
+                _ if why == "Nobody answered in time." => "timed out",
+                Decision::Allow => "allowed",
+                Decision::Always => "always allowed",
+                Decision::Deny => "declined",
+            };
+            let wait = crate::retro::Wait { kind: "permission".into(), member: approval.member.clone(), ticket: approval.ticket, what: approval.action.clone(), asked, answered: Some(now_secs()), outcome: outcome.into() };
+            if let Some(journal) = self.journal(&squad) {
+                let _ = journal.record_wait(&wait);
+            }
+        }
         if approval.tool == SIGN_IN_TOOL {
             self.publish(Event::ApprovalResolved { squad: squad.clone(), approval: approval_id, decision });
             return self.sign_in_answered(squad, approval, input, decision, reply);
+        }
+        if approval.tool == crate::controls::SETTING_TOOL || approval.tool == crate::controls::ENGINE_TOOL {
+            self.publish(Event::ApprovalResolved { squad: squad.clone(), approval: approval_id, decision });
+            return self.setting_answered(squad, approval, input, decision, reply);
         }
         let mut decision = decision;
         let rule = (decision == Decision::Always).then(|| permissions::rule_for(&approval.tool, &approval.action)).flatten();
@@ -5202,6 +6519,9 @@ there, end your turn, and carry on when they say they're done."
         let signal = if approval.tool == CONFIRM { self.signal_answered(&squad, &input, decision != Decision::Deny) } else { None };
         let _ = reply.send(if let Some(text) = signal {
             ToolResult { text, is_error: false, image: None }
+        } else if approval.tool == crate::phone::INSTALL {
+            // The phone tool waits on this: AXe is installed only on a yes.
+            Self::phone_install_answered(decision, why)
         } else if approval.tool == desktop_gate::SEND {
             // The desktop tool waits on this: nothing reaches the screen on a no.
             match decision {
@@ -5228,7 +6548,7 @@ there, end your turn, and carry on when they say they're done."
             (Decision::Deny, _, _) if why == "The person declined." => say!(self, "notice.declined", action = approval.action),
             (Decision::Deny, _, _) => say!(self, "notice.declined_why", why = why, action = approval.action),
         };
-        self.publish(Event::Notice { session: approval.session, text: line });
+        self.publish(Event::Notice { undo: None, session: approval.session, text: line });
         let verb = match decision {
             Decision::Allow => "allowed",
             Decision::Always => "always allowed",
@@ -5652,7 +6972,7 @@ there, end your turn, and carry on when they say they're done."
                         self.carry_on(session, text, "[equipe: the person handled the page that needed them in your browser (a human check or a sign-in) and handed it back. Carry on where you were.]".into()).await;
                     } else if working {
                         let text = say!(self, "notice.browser_given_back");
-                        self.publish(Event::Notice { session, text });
+                        self.publish(Event::Notice { undo: None, session, text });
                     }
                     return;
                 }
@@ -5663,7 +6983,7 @@ there, end your turn, and carry on when they say they're done."
                     // Only a turn under way needs telling: between turns nothing waits on it.
                     (true, _) if working => {
                         let text = say!(self, "notice.browser_taken");
-                        self.publish(Event::Notice { session, text });
+                        self.publish(Event::Notice { undo: None, session, text });
                     }
                     // Done with what it asked of them: it carries on.
                     (false, true) => {
@@ -5673,7 +6993,7 @@ there, end your turn, and carry on when they say they're done."
                     }
                     (false, false) if working => {
                         let text = say!(self, "notice.browser_given_back");
-                        self.publish(Event::Notice { session, text });
+                        self.publish(Event::Notice { undo: None, session, text });
                     }
                     _ => {}
                 }
@@ -5717,7 +7037,7 @@ there, end your turn, and carry on when they say they're done."
                 if let Some(session) = session {
                     let site = browser::site_of(&url).to_owned();
                     let text = say!(self, "notice.browser_check", site = site);
-                    self.publish(Event::Notice { session, text });
+                    self.publish(Event::Notice { undo: None, session, text });
                 }
                 self.checking.insert(lane.to_owned(), (page, url, check));
             }
@@ -5742,7 +7062,7 @@ there, end your turn, and carry on when they say they're done."
             let prompt = format!("[equipe: the person closed your browser tab {url}. Don't open it again unless they ask; carry on without it.]");
             self.carry_on(session, text, prompt).await;
         } else {
-            self.publish(Event::Notice { session, text });
+            self.publish(Event::Notice { undo: None, session, text });
         }
     }
 
@@ -5752,7 +7072,7 @@ there, end your turn, and carry on when they say they're done."
     /// `prompt` to the member — read at its next step if it is at work, else
     /// starting a turn of its own.
     async fn carry_on(&mut self, id: SessionId, notice: String, prompt: String) {
-        self.publish(Event::Notice { session: id, text: notice });
+        self.publish(Event::Notice { undo: None, session: id, text: notice });
         self.set_going(id, prompt).await;
     }
 
@@ -5761,8 +7081,12 @@ there, end your turn, and carry on when they say they're done."
     async fn set_going(&mut self, id: SessionId, prompt: String) {
         let Some(session) = self.sessions.get(&id) else { return };
         if session.is_working() {
-            if let Some(steer) = session.steer.clone() {
-                let _ = steer.send(prompt);
+            // An engine that can't take it mid-turn gets it after: never dropped.
+            match session.steer.clone() {
+                Some(steer) => {
+                    let _ = steer.send(prompt);
+                }
+                None => self.leave_memo(id, prompt),
             }
             return;
         }
@@ -5879,6 +7203,7 @@ there, end your turn, and carry on when they say they're done."
                     return Err(format!("There is no T-{missing} to depend on."));
                 }
                 let proposal = args.get("proposal").and_then(Value::as_bool).unwrap_or(false);
+                let idea = args.get("idea").and_then(Value::as_bool).unwrap_or(false);
                 // Where the PM runs the work, a member's proposal is simply done:
                 // on the board, its own unless it names someone else.
                 let just_do = !is_pm && self.journal(&squad).is_some_and(|j| j.pm_accepts());
@@ -5888,7 +7213,13 @@ there, end your turn, and carry on when they say they're done."
                     title: title.to_owned(),
                     body: body.to_owned(),
                     // The PM's are ready, unless it puts one up for the person to take on.
-                    status: if (is_pm && !proposal) || just_do { TicketStatus::Todo } else { TicketStatus::Proposed },
+                    status: if idea {
+                        TicketStatus::Idea
+                    } else if (is_pm && !proposal) || just_do {
+                        TicketStatus::Todo
+                    } else {
+                        TicketStatus::Proposed
+                    },
                     kind,
                     owner: owner.clone(),
                     assignee: None,
@@ -5899,6 +7230,8 @@ there, end your turn, and carry on when they say they're done."
                     merged: None,
                     off_main: None,
                     design_qa: None,
+                    // Read and checked off the loop before it gets here (`cut_from_plan`).
+                    plan: board::arg_str(&args, "plan").map(str::to_owned),
                     created_by: member.clone(),
                     note: None,
                     asks: vec![],
@@ -5916,7 +7249,13 @@ there, end your turn, and carry on when they say they're done."
                 if kind.in_home() {
                     reply = format!("Created T-{new_id} ({}).", kind.label());
                 }
-                if is_pm && proposal {
+                if idea {
+                    reply = format!("Kept T-{new_id} as an idea — nothing starts it. Tell the person in one line it's kept; when the board is light you'll be asked to look at the ideas again.");
+                    if !is_pm {
+                        let line = format!("{member} kept the person's idea T-{new_id}: {title}");
+                        self.brief_pm(&squad, line, None);
+                    }
+                } else if is_pm && proposal {
                     reply = format!("Proposed T-{new_id} — it waits for the person to take it on.");
                 } else if just_do {
                     reply = format!("T-{new_id} is on the board and starts as soon as its owner is free; the PM is told.");
@@ -5952,7 +7291,7 @@ there, end your turn, and carry on when they say they're done."
                     .collect();
                 let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
                 let mut ticket = journal.ticket(ticket_id).ok().flatten().ok_or_else(|| format!("There is no T-{ticket_id}."))?;
-                if !matches!(ticket.status, TicketStatus::Proposed | TicketStatus::Todo | TicketStatus::Waiting) {
+                if !matches!(ticket.status, TicketStatus::Proposed | TicketStatus::Idea | TicketStatus::Todo | TicketStatus::Waiting) {
                     let status = ticket.status.label();
                     return Err(format!("T-{ticket_id} is {status} — from here it's the person's to change."));
                 }
@@ -5982,7 +7321,20 @@ there, end your turn, and carry on when they say they're done."
                     ticket.depends_on = ids;
                 }
                 let waiting = ticket.status == TicketStatus::Waiting;
+                let was_idea = ticket.status == TicketStatus::Idea;
                 match board::arg_str(&args, "status") {
+                    // An idea's time has come: the person is asked, on its card.
+                    Some("proposed") if was_idea => {
+                        let why = board::arg_str(&args, "why").map(str::trim).filter(|w| !w.is_empty()).ok_or("Say `why` now — what makes this idea timely — in the person's language; it shows on the card that asks them.")?;
+                        ticket.status = TicketStatus::Proposed;
+                        ticket.note = Some(format!("{}{why}", equipe_protocol::WHY_NOW));
+                    }
+                    Some("proposed") => return Err("Only an idea is put up as a proposal; a ready ticket goes back to one by the person's hand.".into()),
+                    Some("idea") if waiting => return Err(format!("T-{ticket_id} waits on the person; it can't be kept for later until that's settled.")),
+                    Some("idea") => {
+                        ticket.status = TicketStatus::Idea;
+                        ticket.note = None;
+                    }
                     // Back to the member that put it down, where it left off.
                     Some("todo") if waiting => {
                         back_to_its_member(&mut ticket, &present, "Resumed: the PM says what you were waiting for is done.");
@@ -5992,20 +7344,29 @@ there, end your turn, and carry on when they say they're done."
                         ticket.note = None;
                     }
                     Some("cancelled") => ticket.status = TicketStatus::Cancelled,
-                    Some(other) => return Err(format!("A ticket's status can be set to todo or cancelled, not {other}.")),
+                    Some(other) => return Err(format!("A ticket's status can be set to todo, cancelled, proposed (an idea) or idea, not {other}.")),
                     None => {}
                 }
                 journal.save_ticket(&ticket).map_err(|e| e.to_string())?;
                 let _ = journal.ticket_event(ticket_id, &member, "updated", &args.to_string());
+                let pitched = was_idea && ticket.status == TicketStatus::Proposed;
                 self.publish(Event::TicketChanged { squad: squad.clone(), ticket });
+                if pitched {
+                    return Ok(format!("Put idea T-{ticket_id} to the person: its card asks whether to start it now. Tell them in a line or two why now; their click starts it."));
+                }
                 Ok(format!("Updated T-{ticket_id}."))
             }
             board::COMMENT => {
                 let ticket_id = board::arg_id(&args, "id").ok_or("Which ticket? Give its id.")?;
                 let text = board::arg_str(&args, "text").ok_or("Say something.")?;
+                let word = crate::accept::review_word(&args)?;
                 let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
-                journal.ticket(ticket_id).ok().flatten().ok_or_else(|| format!("There is no T-{ticket_id}."))?;
-                journal.ticket_event(ticket_id, &member, "comment", text).map_err(|e| e.to_string())?;
+                let ticket = journal.ticket(ticket_id).ok().flatten().ok_or_else(|| format!("There is no T-{ticket_id}."))?;
+                // The PM's word on work in review sends it back or only notes it: said which.
+                if is_pm {
+                    return self.pm_comment(&squad, &member, &ticket, text, word);
+                }
+                journal.ticket_event(ticket_id, &member, board::COMMENT, text).map_err(|e| e.to_string())?;
                 Ok(format!("Noted on T-{ticket_id}."))
             }
             board::SUBMIT_FOR_REVIEW => {
@@ -6015,12 +7376,27 @@ there, end your turn, and carry on when they say they're done."
                 let shown = crate::visuals::resolve_all(&board::arg_strs(&args, "images"), &cwd, &roots, crate::visuals::HAND_IN)
                     .map_err(|e| format!("{e}. Save the pictures in your worktree and give their paths, then hand in again."))?;
                 let screens = self.screens_handed_in(&squad, id, &args, shown.len())?;
+                let gap = self.designer_hand_in(id)?;
                 let session = self.sessions.get_mut(&id).ok_or("You're not on the squad.")?;
                 let work = session.work.as_mut().ok_or("You're not on a ticket — there is nothing to hand in.")?;
+                let ticket = work.ticket;
+                let summary = match &gap {
+                    Some(gap) => format!("{summary}\n\nNot cleared before hand-in — for the person to see (the design checks couldn't be cleared by going round again):\n{}", gap.iter().map(|g| format!("- {g}")).collect::<Vec<_>>().join("\n")),
+                    None => summary,
+                };
                 work.handed_in = Some(summary);
                 work.shown = shown;
                 work.waiting = None;
                 work.screens = screens;
+                if let Some(gap) = &gap {
+                    let n = gap.len();
+                    let line = move |name: &str| format!("{name} handed in T-{ticket} with {n} design check(s) it couldn't clear, marked in its hand-in for the person: look at why before they review it.");
+                    let shown = format!("T-{ticket}: handed in with {n} design check(s) not cleared, marked for the person.");
+                    self.tell_the_pm(id, line, Some(&shown));
+                    return Ok(format!(
+                        "Handed in T-{ticket}, with the {n} check(s) it couldn't clear marked for the person; the PM is told. Your changes are committed when this turn ends. End your turn now with a short summary."
+                    ));
+                }
                 Ok(if screens {
                     format!(
                         "Handed in T-{}. Your changes are committed when this turn ends; the squad's designer checks \
@@ -6066,9 +7442,35 @@ it back there once they have done it.{again} End your turn now with a short line
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
             crate::secrets::ASK_SECRET => self.ask_secret(&squad, &member, id, &args),
             board::DESIGN_QA => self.finish_design_qa(&squad, id, &args),
+            // Asked by a designer's or frontend engineer's board server, which runs `system_tools` itself, in this folder.
+            board::WORKDIR => {
+                let session = self.sessions.get(&id).ok_or("You're not on the squad.")?;
+                if session.member.as_ref().is_none_or(|m| !board::builds_from_system(&m.role)) {
+                    return Err("Only a designer's or a frontend engineer's board server asks where it works.".into());
+                }
+                Ok(session.work.as_ref().map_or_else(|| session.cwd.clone(), |w| w.cwd.clone()).to_string_lossy().into_owned())
+            }
+            board::SYSTEM_TOOLS => Err("system_tools is run by your board server; this equipe's server is older than its daemon — restart your conversation.".into()),
+            board::DESIGN_TOOLS => Err("design_tools is run by your board server; this equipe's server is older than its daemon — restart your conversation.".into()),
             crate::team::PROPOSE_TEAM_CHANGE => self.propose_team_change(&squad, &member, id, &args),
             crate::heartbeat::PROPOSE_ROUTINE => self.propose_routine(&squad, &member, id, &args),
+            board::ADD_PROJECT => {
+                if !is_pm {
+                    return Err("Only the PM adds projects; tell the PM which folder the person wants added.".into());
+                }
+                let typed = board::arg_str(&args, "path").ok_or("Which folder? Give its `path`.")?;
+                let user_home = std::env::var_os("HOME").map(PathBuf::from);
+                let path = crate::squads::add_folder_asked(&self.config.home, &squad, typed, user_home.as_deref())?;
+                let name = board::project_name(&path);
+                crate::daemon_log!("equipe: {squad} has a new project the PM added, {name} ({})", path.display());
+                self.publish_projects(&squad);
+                let shown = say!(self, "news.project_added", name = name, path = path.display().to_string());
+                self.show_news(id, shown);
+                Ok(format!("Added {name} at {} — tickets can name it now. Tell the person in one line; they can take it off from the sidebar.", path.display()))
+            }
             crate::signals::SIGNALS => self.read_signals(&squad, id, &args),
+            crate::controls::SETTINGS if is_pm => Ok(self.settings_text(&squad)),
+            crate::controls::SETTINGS => Err("Only the PM reads the squad's settings; ask the PM.".into()),
             crate::metrics::tool::METRICS => {
                 let today = crate::metrics::day_of(&crate::routines::Local, now_secs());
                 crate::metrics::tool::answer(&self.config.home, &squad, &args, today)
@@ -6090,6 +7492,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         .find(|(_, s)| s.lane.as_ref().is_some_and(|(of, _)| *of == id) && s.is_working())
                         .map_or(id, |(&lane, _)| lane)
                 };
+                let at_once = self.subagents_at_once(Some(&squad));
                 let session = self.sessions.get_mut(&id).ok_or("You're not on the squad.")?;
                 let mut estimate = session.estimate.clone().unwrap_or_default();
                 if let Some(m) = done {
@@ -6104,7 +7507,12 @@ it back there once they have done it.{again} End your turn now with a short line
                 }
                 let estimate = Some(estimate).filter(|e| !e.is_empty());
                 session.estimate = estimate.clone();
-                let reply = board::estimate_reply(done, !session.subagents.is_empty(), session.engine == Engine::Claude);
+                let reply = board::estimate_reply(done, !session.subagents.is_empty(), subagents_of(session, at_once));
+                // When it said a ticket would be done, on the ticket's record: the retro tells a miss.
+                let said = session.work.as_ref().map(|w| w.ticket).zip(done.and(estimate.as_ref().and_then(|e| e.done_at)));
+                if let (Some((ticket, at)), Some(journal)) = (said, self.journal(&squad)) {
+                    let _ = journal.ticket_event(ticket, &member, crate::retro::ESTIMATED, &at.to_string());
+                }
                 self.publish(Event::Estimated { session: id, estimate });
                 Ok(reply)
             }
@@ -6133,7 +7541,7 @@ it back there once they have done it.{again} End your turn now with a short line
                     let change = squad_memory::forget(&folder, &member, fact, language.as_deref())?;
                     (change, say!(self, "notice.forgot", name = member, fact = fact))
                 };
-                self.publish(Event::Notice { session: id, text });
+                self.publish(Event::Notice { undo: Some(change.id.clone()), session: id, text });
                 Ok(format!("Saved in the squad's memory ({}). Every member has it from their next turn.", change.what()))
             }
             other => Err(format!("equipe has no tool called {other}.")),
@@ -6141,6 +7549,43 @@ it back there once they have done it.{again} End your turn now with a short line
     }
 
     // ── attach and restart ──
+
+    /// The Mermaid blocks and HTML cards of replies just ended, drawn as PNGs
+    /// off the loop and told as `visuals_rendered` (docs/VISUALS.md); one that
+    /// won't draw is not told. Cards only while they are on
+    /// (`visuals::card::enabled`), each reply within its own budget. Then the
+    /// squad's `visuals/` is brought within its quota, keeping what its open
+    /// conversations show (what a snapshot would list) and what was just drawn.
+    fn draw_visuals(&self, session: SessionId, squad: &str, finished: &[Entry]) {
+        let texts: Vec<String> = finished.iter().filter_map(|line| match line {
+            Entry::Reply { text } if has_visuals(text) => Some(text.clone()),
+            _ => None,
+        }).collect();
+        if texts.is_empty() {
+            return;
+        }
+        let mut shown: std::collections::HashSet<String> = self
+            .sessions
+            .values()
+            .filter(|s| s.squad.as_deref() == Some(squad))
+            .flat_map(|s| {
+                let entries = s.transcript.entries();
+                visual_keys(&entries[entries.len().saturating_sub(SNAPSHOT_LINES)..]).collect::<Vec<_>>()
+            })
+            .collect();
+        let (home, squad, internal) = (self.config.home.clone(), squad.to_owned(), self.internal.clone());
+        tokio::task::spawn_blocking(move || {
+            for text in texts {
+                let mut visuals = crate::visuals::diagram::draw(&home, &squad, &text);
+                visuals.extend(crate::visuals::card::draw(&home, &squad, &text));
+                shown.extend(visuals.iter().map(|v| v.key.clone()));
+                if !visuals.is_empty() {
+                    let _ = internal.send(Internal::Event(Box::new(Event::VisualsRendered { session, visuals })));
+                }
+            }
+            crate::visuals::cache::prune(&crate::visuals::diagram::dir(&home, &squad), &shown, crate::visuals::cache::Quota::default());
+        });
+    }
 
     fn snapshot(&mut self, squad: &str) -> Snapshot {
         let projects = self.projects(squad);
@@ -6155,7 +7600,7 @@ it back there once they have done it.{again} End your turn now with a short line
             .filter(|(_, s)| s.squad.as_deref() == Some(squad))
             .map(|(&id, s)| {
                 let entries = s.transcript.entries();
-                let recent = scope::from(entries, entries.len().saturating_sub(SNAPSHOT_LINES));
+                let (recent, recent_at) = scope::from_at(entries, s.transcript.times(), entries.len().saturating_sub(SNAPSHOT_LINES));
                 let mut visuals = crate::visuals::diagram::kept(&self.config.home, squad, &recent);
                 visuals.extend(crate::visuals::card::kept(&self.config.home, squad, &recent));
                 SessionInfo {
@@ -6163,7 +7608,8 @@ it back there once they have done it.{again} End your turn now with a short line
                     project: s.project.clone(),
                     member: s.member.clone(),
                     engine: s.engine,
-                    model: s.model.clone(),
+                    model: s.ran.clone().or_else(|| s.model.clone()),
+                    asked_model: s.model.clone().filter(|m| s.ran.as_ref().is_some_and(|r| r != m)),
                     access: s.access,
                     workspace: s.sandbox.as_ref().map(workspace_of),
                     state: if s.is_working() { SessionState::Working } else { SessionState::Ready },
@@ -6171,6 +7617,7 @@ it back there once they have done it.{again} End your turn now with a short line
                     tokens: s.tokens,
                     context: s.context,
                     recent,
+                    recent_at,
                     queued: s.queued.clone(),
                     queued_project: s.memo_threads.first().cloned().flatten(),
                     queued_in: s.memo_threads.clone(),
@@ -6195,6 +7642,7 @@ it back there once they have done it.{again} End your turn now with a short line
                             secs: s.since.elapsed().as_secs(),
                             brief: s.brief.clone(),
                             entries: s.entries.iter().cloned().collect(),
+                            stuck_secs: s.stuck.then(|| s.heard.elapsed().as_secs()),
                         })
                         .collect(),
                     compacting: s.compacting.as_ref().map(|(info, ..)| info.clone()),
@@ -6222,16 +7670,23 @@ it back there once they have done it.{again} End your turn now with a short line
         let routines = self.routines(squad);
         let routine_proposals = self.routine_proposals(squad).clone();
         let idle_wake_hours = self.journals.get(squad).map(Journal::idle_wake_hours);
+        let subagents_at_once = self.subagents_at_once(Some(squad));
         let signals = self.signal_views(squad);
         // Nemotron's reviews of the tickets shown.
         let shown: Vec<TicketId> = tickets.iter().map(|t| t.id).collect();
         let reviews = self.journals.get(squad).and_then(|j| j.reviews(&shown).ok()).unwrap_or_default();
+        let put_away = self.journals.get(squad).and_then(|j| j.put_away(PUT_AWAY_SHOWN).ok()).unwrap_or_default();
+        // Which closed session each open member carries on from: its moves on record.
+        let hand_overs = self.hand_overs(squad);
         Snapshot {
             signals,
             reviews,
+            put_away,
             routines,
             routine_proposals,
             idle_wake_hours,
+            subagents_at_once,
+            design_reviewer: self.journals.get(squad).map(Journal::design_reviewer).unwrap_or_default(),
             team_changes,
             accepts,
             squad: squad.to_owned(),
@@ -6248,12 +7703,16 @@ it back there once they have done it.{again} End your turn now with a short line
             plans: self.plans.clone(),
             engine_switching: self.journals.get(squad).map(Journal::engine_switching).unwrap_or_default(),
             pm_accepts: self.journals.get(squad).is_none_or(Journal::pm_accepts),
+            role_models: self.journals.get(squad).map(Journal::role_models).unwrap_or_default(),
             secret_asks: self.secret_asks(squad).clone(),
             engine_proposals: self.engines.proposals(squad),
+            hand_overs,
             desktop: self.desktop.state(),
             allowed,
             browsers_shown,
             disk: self.disk_for_snapshot(),
+            words: Some(self.words_live(squad)),
+            words_all: self.journals.get(squad).is_some_and(Journal::words_all),
         }
     }
 
@@ -6278,7 +7737,19 @@ it back there once they have done it.{again} End your turn now with a short line
             if let Err(err) = journal::fold_member_memories(&self.config.home, &squad) {
                 crate::daemon_log!("equipe: {squad}'s members' memories couldn't be gathered: {err}");
             }
+            // Attachments sent before they were kept: what is still there stays, with its words.
+            match crate::kept::rescue(&self.config.home, &journal) {
+                Ok(Some(r)) if r != crate::kept::Rescued::default() => crate::daemon_log!(
+                    "equipe: {squad}: sent attachments rescued: {} files kept, the words of {} text files kept with their messages, {} gone already",
+                    r.kept,
+                    r.words,
+                    r.gone
+                ),
+                Ok(_) => {}
+                Err(err) => crate::daemon_log!("equipe: {squad}'s sent attachments couldn't be looked through: {err}"),
+            }
             let projects = journal.projects().unwrap_or_default();
+            keep_docs_from_repos(&dir.path(), &home, &projects);
             let tickets = journal.tickets().unwrap_or_default();
             for mut record in journal.open_sessions().unwrap_or_default() {
                 let Some(member) = record.member.clone() else {
@@ -6286,11 +7757,11 @@ it back there once they have done it.{again} End your turn now with a short line
                     let _ = journal.close_session(record.id);
                     continue;
                 };
-                let conversation = journal.conversation(record.id).unwrap_or_default();
+                let (conversation, said_at) = journal.conversation_at(record.id).unwrap_or_default();
                 let history = conversation
                     .iter()
                     .filter_map(|entry| match entry {
-                        Entry::User { text } => Some(responses::Message { role: responses::Role::User, text: text.clone() }),
+                        Entry::User { text, kept } => harness::words(text).map(|text| responses::Message { role: responses::Role::User, text: tags::read_back(&text, kept).into_owned() }),
                         Entry::Reply { text } => {
                             Some(responses::Message { role: responses::Role::Assistant, text: text.clone() })
                         }
@@ -6365,6 +7836,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         joined,
                         engine: record.engine,
                         model: record.model,
+                        ran: None,
                         access: record.access,
                         cwd: record.cwd,
                         sandbox: None,
@@ -6374,12 +7846,13 @@ it back there once they have done it.{again} End your turn now with a short line
                         work,
                         prompts: Vec::new(),
                         title: record.title,
+                        title_started: false,
                         tokens: record.tokens,
                         context: None,
                         desk_context: None,
                         last_turn: None,
                         refresh,
-                        transcript: Transcript::from_entries(conversation),
+                        transcript: Transcript::with_times(conversation, said_at),
                         turn: None,
                         queued,
                         memo_threads,
@@ -6388,6 +7861,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         steering: Vec::new(),
                         steer_threads: Vec::new(),
                         stop: None,
+                        stop_subagent: None,
                         taken_back: Vec::new(),
                         send_now_prompt: None,
                         subagents: Vec::new(),
@@ -6402,6 +7876,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         lane: None,
                         kept: false,
                         answers_person: false,
+                        on_phone: false,
                         effort: None,
                     },
                 );
@@ -6412,13 +7887,17 @@ it back there once they have done it.{again} End your turn now with a short line
                 for c in journal.conversations().unwrap_or_default() {
                     let thread = DeskThread { claude_session: c.engine_session, ..DeskThread::default() };
                     let mut lane = lane_of(pm, &self.sessions[&pm], c.project, thread, true);
-                    let lines = journal.conversation(c.id).unwrap_or_default();
-                    lane.title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text } = e { text.lines().next().map(str::to_owned) } else { None }));
-                    lane.transcript = Transcript::from_entries(lines);
+                    let (lines, lines_at) = journal.conversation_at(c.id).unwrap_or_default();
+                    lane.title = c.title;
+                    lane.transcript = Transcript::with_times(lines, lines_at);
                     self.sessions.insert(c.id, lane);
                 }
             }
-            self.journals.insert(squad, journal);
+            self.journals.insert(squad.clone(), journal);
+            // A squad whose PM joined before the weekly retro was: it comes now, once.
+            if pm.is_some() && self.config.persist {
+                self.add_joining_routine(&squad, crate::retro::ROLE);
+            }
         }
     }
 
@@ -6451,7 +7930,7 @@ it back there once they have done it.{again} End your turn now with a short line
         }
         for (id, ticket) in on_tickets {
             let text = say!(self, "notice.restarted", id = ticket);
-            self.publish(Event::Notice { session: id, text });
+            self.publish(Event::Notice { undo: None, session: id, text });
             self.start_turn(
                 id,
                 format!(
@@ -6498,7 +7977,7 @@ check what is already done in your worktree first."
             .entries()
             .iter()
             .filter_map(|e| match e {
-                Entry::User { text } => Some(format!("- the person: {}", clip(text, 600))),
+                Entry::User { text, kept } => harness::words(text).map(|text| format!("- the person: {}", clip(&tags::read_back(&text, kept), 600))),
                 Entry::Reply { text } => Some(format!("- you: {}", clip(text, 600))),
                 _ => None,
             })
@@ -6520,7 +7999,7 @@ check what is already done in your worktree first."
         if let Some(journal) = squad.as_deref().and_then(|s| journal_for(&mut self.journals, &self.config.home, s)) {
             let _ = journal.clear_engine_session(id);
         }
-        self.publish(Event::Notice { session: id, text: shown });
+        self.publish(Event::Notice { undo: None, session: id, text: shown });
         self.compaction_ended(id, None);
         Some(if summary && !tail.is_empty() {
             format!(
@@ -6551,7 +8030,7 @@ check what is already done in your worktree first."
             .collect();
         let home = self.config.home.clone();
         std::thread::spawn(move || {
-            for line in worktree::trim_builds(&home, &busy, BUILD_CAP) {
+            for line in worktree::trim_builds(&home, &busy, BUILD_CAP, BUILDS_BUDGET) {
                 crate::daemon_log!("equipe: {line}");
             }
         });
@@ -6625,6 +8104,31 @@ check what is already done in your worktree first."
 /// was removed in the meantime goes back on the board instead.
 /// Where in a worktree `project` is: the worktree itself for a repository,
 /// the same folder in it for a folder of a repository.
+/// Marks a squad whose projects' repositories were looked through once for
+/// the briefs and plans equipe used to commit into them.
+const DOCS_KEPT: &str = ".docs-kept";
+
+/// Once per squad, off the loop: the briefs and plans equipe once committed
+/// into its `projects`' repositories copied into its folder `home`, where
+/// they are kept now, so the PM's history stays. The repositories are only
+/// read; a copy the person later deletes isn't brought back.
+fn keep_docs_from_repos(squad_dir: &Path, home: &Path, projects: &[PathBuf]) {
+    let mark = squad_dir.join(DOCS_KEPT);
+    if mark.exists() || projects.is_empty() {
+        return;
+    }
+    let (home, projects) = (home.to_owned(), projects.to_vec());
+    std::thread::spawn(move || match crate::briefs::keep_from_repos(&home, &projects) {
+        Ok(copied) => {
+            if !copied.is_empty() {
+                crate::daemon_log!("equipe: kept {} briefs and plans from the projects' repositories in {}", copied.len(), home.display());
+            }
+            let _ = std::fs::write(&mark, format!("{}\n", copied.len()));
+        }
+        Err(why) => crate::daemon_log!("equipe: the briefs and plans in the projects' repositories weren't kept in {}: {why}", home.display()),
+    });
+}
+
 fn within(sandbox: &Sandbox, project: &Path) -> PathBuf {
     let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
     match canon(project).strip_prefix(canon(&sandbox.repo)) {
@@ -6672,6 +8176,7 @@ fn restore_work(journal: &Journal, ticket: &Ticket, projects: &[PathBuf], home: 
         waiting: None,
         screens: false,
         verdict: None,
+        refused: None,
     })
 }
 
@@ -6738,6 +8243,12 @@ fn work_prompt(
                 sandbox.path.display(),
                 ticket.id
             ));
+            if worktree::is_sparse(&sandbox.path) {
+                out.push_str(&format!(
+                    " Other tickets' outputs aren't in this copy: read them in the squad's folder, {}.",
+                    sandbox.repo.join("outputs").display()
+                ));
+            }
         }
         if ticket.kind == TicketKind::Task {
             out.push_str(
@@ -6778,6 +8289,11 @@ check what is already done in your worktree first.\n"
         out.push_str(&format!(
             "The squad's designer checked its screens and sent it back. {note}\nFix each difference it lists in your \
 worktree, then hand in again with fresh screenshots of the screens you changed.\n"
+        ));
+    } else if let Some(note) = reopened.and_then(|n| n.strip_prefix(crate::accept::PM_SENT_BACK)) {
+        out.push_str(&format!(
+            "The PM reviewed your hand-in and sent it back: {note}\nFix each point in your worktree, on the same branch, \
+then hand in again.\n"
         ));
     } else if let Some(note) = reopened {
         out.push_str(&format!(
@@ -7036,32 +8552,26 @@ async fn codex_credentials(client: &reqwest::Client, store: &CredentialStore, la
     }
 }
 
-/// The journal of `squad`, opened on first use.
-/// The Mermaid blocks and HTML cards of replies just ended, drawn as PNGs off
-/// the loop and told as `visuals_rendered` (docs/VISUALS.md); one that won't
-/// draw is not told. Cards only while they are on (`visuals::card::enabled`).
-fn draw_visuals(home: &Path, internal: &UnboundedSender<Internal>, session: SessionId, squad: &str, finished: &[Entry]) {
-    let texts: Vec<String> = finished.iter().filter_map(|line| match line {
-        Entry::Reply { text } if crate::visuals::diagram::has_blocks(text) || crate::visuals::card::has_blocks(text) => Some(text.clone()),
-        _ => None,
-    }).collect();
-    if texts.is_empty() {
-        return;
-    }
-    let (home, squad, internal) = (home.to_owned(), squad.to_owned(), internal.clone());
-    tokio::task::spawn_blocking(move || {
-        for text in texts {
-            let mut visuals = crate::visuals::diagram::draw(&home, &squad, &text);
-            visuals.extend(crate::visuals::card::draw(&home, &squad, &text));
-            if !visuals.is_empty() {
-                let _ = internal.send(Internal::Event(Box::new(Event::VisualsRendered { session, visuals })));
-            }
-        }
-    });
+/// Whether a reply has a Mermaid block or an HTML card in it.
+fn has_visuals(text: &str) -> bool {
+    crate::visuals::diagram::has_blocks(text) || crate::visuals::card::has_blocks(text)
 }
 
+/// The keys of the blocks in these lines' replies, Mermaid and cards.
+fn visual_keys(lines: &[Entry]) -> impl Iterator<Item = String> + '_ {
+    lines.iter().filter_map(|line| match line {
+        Entry::Reply { text } if has_visuals(text) => Some(text),
+        _ => None,
+    }).flat_map(|text| crate::visuals::diagram::blocks(text).into_iter().chain(crate::visuals::card::blocks(text))).map(|source| crate::visuals::diagram::key(&source))
+}
+
+/// The journal of `squad`, opened on first use.
 fn journal_for<'a>(journals: &'a mut HashMap<String, Journal>, home: &Path, squad: &str) -> Option<&'a Journal> {
     if !journals.contains_key(squad) {
+        // Opening a deleted squad's journal would make the squad anew.
+        if crate::squads::is_gone(home, squad) {
+            return None;
+        }
         let journal = Journal::for_squad(home, squad).ok()?;
         journals.insert(squad.to_owned(), journal);
     }
@@ -7079,6 +8589,7 @@ fn lane_of(main: SessionId, m: &Session, project: Option<String>, thread: DeskTh
         joined: m.joined,
         engine: m.engine,
         model: m.model.clone(),
+        ran: m.ran.clone(),
         access: m.access,
         cwd: m.cwd.clone(),
         sandbox: None,
@@ -7088,6 +8599,7 @@ fn lane_of(main: SessionId, m: &Session, project: Option<String>, thread: DeskTh
         work: None,
         prompts: Vec::new(),
         title: None,
+        title_started: false,
         tokens: 0,
         context: thread.desk_context,
         desk_context: thread.desk_context,
@@ -7102,11 +8614,13 @@ fn lane_of(main: SessionId, m: &Session, project: Option<String>, thread: DeskTh
         steering: Vec::new(),
         steer_threads: Vec::new(),
         stop: None,
+        stop_subagent: None,
         taken_back: Vec::new(),
         send_now_prompt: None,
         subagents: Vec::new(),
         compacting: None,
         answers_person: false,
+        on_phone: false,
         effort: None,
         briefing: Vec::new(),
         memory: m.memory.clone(),
@@ -7122,7 +8636,7 @@ fn lane_of(main: SessionId, m: &Session, project: Option<String>, thread: DeskTh
 
 /// `false` when the disk had no room for it. Nothing else stops for a write
 /// that failed: the screens still get the event.
-fn record(journal: &Journal, id: SessionId, event: &Event, finished: &[Entry], title: Option<&str>) -> bool {
+fn record(journal: &Journal, id: SessionId, event: &Event, finished: &[Entry]) -> bool {
     let mut room = true;
     let mut saw = |result: journal::Result<()>| {
         if let Err(err) = result
@@ -7135,12 +8649,9 @@ fn record(journal: &Journal, id: SessionId, event: &Event, finished: &[Entry], t
         saw(journal.append(id, entry));
     }
     match event {
-        Event::UserMessage { .. } => {
-            if let Some(title) = title {
-                saw(journal.set_title_if_empty(id, title));
-            }
-        }
-        Event::ModelKnown { model, .. } => saw(journal.set_model(id, model)),
+        Event::UserMessage { .. } => {}
+        // What the member is set to, so an alias stays one; what runs when nothing was asked.
+        Event::ModelKnown { model, asked, .. } => saw(journal.set_model(id, asked.as_deref().unwrap_or(model))),
         Event::TurnEnded { usage: Some(u), .. } => saw(journal.add_tokens(id, u.total())),
         Event::BranchLanded { branch, .. } => saw(journal.set_outcome(id, &format!("landed {branch}"))),
         Event::NothingChanged { .. } => saw(journal.set_outcome(id, "no changes")),
@@ -7158,11 +8669,26 @@ fn workspace_of(sandbox: &Sandbox) -> Workspace {
 /// The end of a conversation, as the guess at the person's next message reads
 /// it: the last few exchanges, each cut short, the member's last answer most
 /// fully. `None` when it doesn't end with the member answering.
+fn first_exchange(entries: &[Entry]) -> Option<(String, String)> {
+    let (at, user) = entries.iter().enumerate().find_map(|(at, entry)| match entry {
+        Entry::User { text, .. } if !text.trim().is_empty() && !harness::only_harness(text) => Some((at, text.clone())),
+        _ => None,
+    })?;
+    let reply = entries[at + 1..]
+        .iter()
+        .take_while(|entry| !matches!(entry, Entry::User { .. }))
+        .find_map(|entry| match entry {
+            Entry::Reply { text } if !text.trim().is_empty() => Some(text.clone()),
+            _ => None,
+        })?;
+    Some((user, reply))
+}
+
 fn suggestion_context(member: &str, entries: &[Entry]) -> Option<String> {
     let said: Vec<(bool, &str)> = entries
         .iter()
         .filter_map(|e| match e {
-            Entry::User { text } => Some((true, text.as_str())),
+            Entry::User { text, .. } if !harness::only_harness(text) => Some((true, text.as_str())),
             Entry::Reply { text } if !text.trim().is_empty() => Some((false, text.as_str())),
             _ => None,
         })
@@ -7205,6 +8731,10 @@ fn finish_turn(
                 input_tokens: u.input_tokens,
                 output_tokens: u.output_tokens,
                 cache_tokens: u.cache_tokens,
+                cache_read_tokens: u.cache_read_tokens,
+                cache_write_tokens: u.cache_write_tokens,
+                cache_write_long_tokens: u.cache_write_long_tokens,
+                calls: u.calls,
                 context_tokens: u.context_tokens,
                 context_window: u.context_window,
             });
@@ -7225,6 +8755,17 @@ fn has_tools(session: &Session) -> bool {
     session.engine == Engine::Claude || session.codex.is_none()
 }
 
+/// The environment variable Claude Code reads its cap on subagents running at once from.
+const CLAUDE_SUBAGENTS_ENV: &str = "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS";
+
+/// The subagents a session's engine runs, `set` at a time (`None`: as many
+/// as it runs on its own): none for Codex on Token Factory, whose turns go
+/// to another provider.
+fn subagents_of(session: &Session, set: Option<u32>) -> Option<roles::Subagents> {
+    let other_provider = session.model.as_deref().is_some_and(crate::nemotron::is_agent_model);
+    roles::Subagents::of(session.engine, has_tools(session), other_provider, set)
+}
+
 /// A subagent at work for a member: what it was handed, its latest step,
 /// since when, and its latest steps and words, kept for a screen that
 /// attaches while it works.
@@ -7235,6 +8776,13 @@ struct SubRun {
     step: Option<String>,
     since: std::time::Instant,
     entries: std::collections::VecDeque<Entry>,
+    /// When it was last heard from: a step, a word, its engine telling of it.
+    heard: std::time::Instant,
+    /// Watched for going quiet ([`crate::subagent_watch`]): Codex's own, and
+    /// equipe's helpers — those the person can stop alone.
+    watched: bool,
+    /// The screens were told it looks stuck, and not yet that it moves.
+    stuck: bool,
 }
 
 impl SubRun {
@@ -7271,7 +8819,7 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
             Event::ToolResult { session: id, tool: done.name, target: done.target, outcome }
         }
         Activity::Thinking(text) => Event::Thinking { session: id, text },
-        Activity::Model(model) => Event::ModelKnown { session: id, model },
+        Activity::Model(model) => Event::ModelKnown { session: id, model, asked: None },
         Activity::Output(tokens) => Event::Output { session: id, tokens },
         Activity::SubagentStarted { id: sub, what, brief } => Event::SubagentStarted { session: id, id: sub, what, brief },
         Activity::SubagentStep { id: sub, step } => Event::SubagentStep { session: id, id: sub, step },
@@ -7284,7 +8832,7 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
         }
         Activity::SubagentText { id: sub, text } => Event::SubagentEntry { session: id, id: sub, entry: Entry::Reply { text } },
         Activity::SubagentEnded { id: sub, result, failed } => Event::SubagentEnded { session: id, id: sub, result, failed },
-        Activity::Steered(text) => Event::Steered { session: id, text },
+        Activity::Steered(text) => Event::Steered { session: id, text, kept: Vec::new() },
         // Filled in on the loop, which knows who it is and how long the last ones took.
         Activity::Compacting => {
             Event::Compacting { session: id, member: None, project: None, trigger: CompactTrigger::Auto, started_at: 0, estimate_ms: 0 }
@@ -7298,6 +8846,8 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
             Event::PlanUsage { usage: equipe_protocol::PlanUsage { five_hour: window(five_hour), seven_day: window(seven_day) }, engine: Engine::Claude }
         }
         Activity::Limits(_) => return None,
+        // The loop's to know, never a screen's: sent apart by the turn.
+        Activity::Engine { .. } | Activity::Spent(_) | Activity::SubagentHeard { .. } => return None,
     })
 }
 
@@ -7317,7 +8867,7 @@ fn codex_plan(limits: &equipe_providers::turn::Limits) -> equipe_protocol::PlanU
 /// A Codex CLI turn's failure, and what to do about it.
 fn codex_cli_failure(err: equipe_providers::Error, lang: crate::i18n::Lang) -> (String, Option<&'static str>) {
     match &err {
-        equipe_providers::Error::CodexSignedOut => (crate::i18n::core(lang).get("error.codex_cli_signed_out").to_owned(), Some("equipe login codex")),
+        equipe_providers::Error::CodexSignedOut => (crate::i18n::core(lang).get("error.codex_cli_signed_out").to_owned(), Some(crate::engine_auth::CODEX_HINT)),
         equipe_providers::Error::Login(_) => (err.to_string(), Some("equipe status")),
         _ => (err.to_string(), None),
     }
@@ -7344,16 +8894,63 @@ fn nebius_log(model: &str, turn: &codex_app::Turn) -> String {
     )
 }
 
-/// A turn on Token Factory that failed: a refused key is Token Factory's, not Codex's sign-in.
-fn nebius_failure(err: equipe_providers::Error, lang: crate::i18n::Lang) -> (String, Option<&'static str>) {
+/// A turn on Token Factory — or another provider, by its name — that failed:
+/// a refused key is the provider's, not Codex's sign-in.
+fn nebius_failure(err: equipe_providers::Error, provider: Option<&str>, lang: crate::i18n::Lang) -> (String, Option<&'static str>) {
     let words = crate::i18n::core(lang);
     let message = err.to_string();
     let lower = message.to_ascii_lowercase();
     let refused = matches!(err, equipe_providers::Error::CodexSignedOut) || lower.contains("401") || lower.contains("403") || lower.contains("unauthorized");
-    if refused {
-        return (words.get("error.nebius_unauthorized").to_owned(), Some("https://tokenfactory.nebius.com"));
+    match provider {
+        Some(provider) if refused => return (words.fill("error.provider_unauthorized", &[("provider", provider.to_owned())]), None),
+        None if refused => return (words.get("error.nebius_unauthorized").to_owned(), Some("https://tokenfactory.nebius.com")),
+        _ => {}
     }
     codex_cli_failure(err, lang)
+}
+
+/// An engine whose lost sign-in stopped turns here, and its fix.
+#[derive(Debug)]
+struct AuthFix {
+    /// Why it can't serve members, as last looked at.
+    state: AuthState,
+    detail: String,
+    /// The turns to carry on once it is signed in again.
+    stopped: Vec<crate::engine_auth::Stopped>,
+    /// A look under way.
+    checking: bool,
+    /// When stopped turns were last carried on (unix seconds): failing again
+    /// soon after, the sign-in its tool lists doesn't work.
+    carried_on_at: Option<u64>,
+    /// Since when turns have waited (unix seconds): looked at again for [`AUTH_WATCH`].
+    since: Option<u64>,
+}
+
+impl Default for AuthFix {
+    fn default() -> Self {
+        Self { state: AuthState::Checking, detail: String::new(), stopped: Vec::new(), checking: false, carried_on_at: None, since: None }
+    }
+}
+
+impl AuthFix {
+    fn event(&self, engine: Engine) -> Event {
+        Event::EngineAuth { engine, state: self.state, detail: self.detail.clone(), stopped: self.stopped.iter().map(|s| s.session).collect() }
+    }
+}
+
+/// While turns wait on a sign-in, it is looked at again this often…
+const AUTH_RECHECK: Duration = Duration::from_secs(15);
+/// …for this long.
+const AUTH_WATCH: Duration = Duration::from_secs(2 * 60 * 60);
+/// Turns carried on that fail again within this long (seconds) mean the sign-in doesn't work.
+const CARRIED_ON_FOR: u64 = 15 * 60;
+
+/// An engine's name, as the person knows it.
+fn engine_name(engine: Engine) -> &'static str {
+    match engine {
+        Engine::Claude => "Claude Code",
+        Engine::Codex => "Codex",
+    }
 }
 
 fn codex_failure(err: equipe_providers::Error) -> (String, Option<&'static str>) {
@@ -7367,16 +8964,32 @@ fn claude_failure(err: equipe_providers::Error) -> (String, Option<&'static str>
     let next = if lower.contains("not installed") {
         Some("see https://code.claude.com/docs/en/setup")
     } else if lower.contains("failed to authenticate") || lower.contains("oauth") {
-        // The sign-in Claude Code has expired. Signed in again over SSH, it
-        // lands in a file; a daemon run as a login service reads the Keychain,
-        // which only a sign-in at the Mac's own screen updates.
-        Some("claude auth login — in Terminal on this Mac's own screen (Screen Sharing is fine), not over SSH")
+        // The sign-in Claude Code reads no longer works here: expired, kept
+        // in a Keychain that is locked, or out of reach of a daemon started
+        // over SSH. equipe looks at which (`engine_auth`); the hint is what an
+        // older screen shows.
+        Some(crate::engine_auth::CLAUDE_HINT)
     } else if lower.contains("login") || lower.contains("logged in") {
         Some("equipe login claude")
+    } else if refuses_the_model(&lower) {
+        // A pinned model this Claude Code is older than.
+        Some("claude update")
     } else {
         None
     };
     (message, next)
+}
+
+/// Whether an engine's error says it can't run the model asked for (Claude
+/// Code: "There's an issue with the selected model … It may not exist").
+fn refuses_the_model(lower: &str) -> bool {
+    lower.contains("model")
+        && ["selected model", "not exist", "not found", "not_found", "invalid model", "unknown model", "not available", "not supported"].iter().any(|w| lower.contains(w))
+}
+
+/// A model the Codex CLI listed, as screens are told of it.
+fn model_choice(m: &codex_app::ModelInfo) -> ModelChoice {
+    ModelChoice { id: m.id.clone(), name: m.name.clone(), efforts: m.efforts.clone(), default_effort: m.default_effort.clone(), description: m.description.clone(), default: m.default }
 }
 
 /// How often a squad's stale work is looked at, and how long work sits
@@ -7406,10 +9019,19 @@ const SHOWN_IDLE: Duration = Duration::from_secs(10 * 60);
 /// to guess from.
 const GUESSED_AFTER: Duration = Duration::from_secs(60);
 
-/// How big a member's build cache may grow before it is trimmed, and how often
+/// The effort a member's turn runs at: the person's choice, else its role's
+/// ([`roles::default_effort`]), else its engine's default.
+fn effort_of(session: &Session) -> Option<String> {
+    session.effort.clone().or_else(|| session.member.as_ref().and_then(|m| roles::default_effort(&m.role)).map(str::to_owned))
+}
+
+/// How big a member's build cache may grow before it is trimmed; how big all
+/// of them together, every squad's — each member building on its own made it
+/// members × the cap, and filled the disk within the hour; and how often
 /// that is looked at.
 const BUILD_CAP: u64 = 10 * 1024 * 1024 * 1024;
-const BUILDS_TRIM_EVERY: Duration = Duration::from_secs(30 * 60);
+const BUILDS_BUDGET: u64 = 20 * 1024 * 1024 * 1024;
+const BUILDS_TRIM_EVERY: Duration = Duration::from_secs(5 * 60);
 
 /// How long past its expected time something to go live is still waited for.
 const LIVE_STALE: Duration = Duration::from_secs(30 * 60);
@@ -7491,9 +9113,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_the_first_completed_exchange_can_name_a_conversation() {
+        let first = [
+            Entry::User { text: "첫 질문 원문".into(), kept: Vec::new() },
+            Entry::Reply { text: "첫 답변".into() },
+            Entry::User { text: "둘째 질문".into(), kept: Vec::new() },
+            Entry::Reply { text: "둘째 답변".into() },
+        ];
+        assert_eq!(first_exchange(&first), Some(("첫 질문 원문".into(), "첫 답변".into())));
+
+        let unanswered = [
+            Entry::User { text: "답하지 못한 첫 질문".into(), kept: Vec::new() },
+            Entry::User { text: "둘째 질문".into(), kept: Vec::new() },
+            Entry::Reply { text: "둘째 답변".into() },
+        ];
+        assert_eq!(first_exchange(&unanswered), None);
+    }
+
+    #[test]
+    fn a_background_task_ending_is_never_the_persons_last_word() {
+        let done = "<task-notification><task-id>b1</task-id><status>completed</status><summary>built</summary></task-notification>";
+        let talk = [Entry::User { text: "go".into(), kept: Vec::new() }, Entry::Reply { text: "Started the build.".into() }, Entry::User { text: done.into(), kept: Vec::new() }];
+        let context = suggestion_context("frontend", &talk).expect("the member answered last");
+        assert!(!context.contains("task-notification"), "{context}");
+    }
+
+    #[test]
     fn a_turn_on_token_factory_logs_its_requests_never_its_text() {
         let turn = codex_app::Turn {
-            result: TurnResult { text: "secret answer".into(), status: "completed".into(), usage: Some(equipe_providers::turn::TurnUsage { input_tokens: Some(1200), output_tokens: Some(40), cache_tokens: None, context_tokens: None, context_window: None }) },
+            result: TurnResult { text: "secret answer".into(), status: "completed".into(), usage: Some(equipe_providers::turn::TurnUsage { input_tokens: Some(1200), output_tokens: Some(40), ..Default::default() }) },
             thread_id: None,
             provider_requests: vec![
                 equipe_providers::relay::Exchange { path: "/responses".into(), status: 200, request_id: Some("req-1".into()), ms: 900 },
@@ -7509,13 +9157,17 @@ mod tests {
     fn a_turn_on_token_factory_with_its_key_refused_says_whose_key() {
         let lang = crate::i18n::Lang::En;
         // As codex 0.154 reports a 401 from the provider (mock-verified).
-        let refused = equipe_providers::Error::Backend { message: "unexpected status 401 Unauthorized: Invalid API key, url: http://127.0.0.1:1/responses".into(), code: Some("other".into()) };
-        let (said, next) = nebius_failure(refused, lang);
+        let refused = || equipe_providers::Error::Backend { message: "unexpected status 401 Unauthorized: Invalid API key, url: http://127.0.0.1:1/responses".into(), code: Some("other".into()) };
+        let (said, next) = nebius_failure(refused(), None, lang);
         assert!(said.contains("Nebius Token Factory refused the key"), "{said}");
         assert_eq!(next, Some("https://tokenfactory.nebius.com"));
-        assert!(nebius_failure(equipe_providers::Error::CodexSignedOut, lang).0.contains("NEBIUS_API_KEY"));
-        let other = nebius_failure(equipe_providers::Error::Protocol("stream ended".into()), lang);
+        assert!(nebius_failure(equipe_providers::Error::CodexSignedOut, None, lang).0.contains("NEBIUS_API_KEY"));
+        let other = nebius_failure(equipe_providers::Error::Protocol("stream ended".into()), None, lang);
         assert_eq!(other, ("stream ended".to_owned(), None));
+        // Another provider's key: its own name, and where to replace it.
+        let (said, next) = nebius_failure(refused(), Some("OpenRouter"), lang);
+        assert!(said.contains("OpenRouter refused the key") && said.contains("Settings") && !said.contains("NEBIUS"), "{said}");
+        assert_eq!(next, None);
     }
 
     #[cfg(debug_assertions)]

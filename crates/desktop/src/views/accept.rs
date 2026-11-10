@@ -1,10 +1,10 @@
 //! Handed-in work the person said in words to accept, drawn: the card docked
-//! above the composer in the conversation it was said in — "T-1, T-3 수락할까요?",
+//! above the composer in the conversation it was said in — "Accept T-1, T-3?",
 //! each ticket with its size (rest on its number for the ticket's own card),
 //! a box to leave one out when there are several, what starts after, how code
-//! lands, and [모두 수락하기 ⌘↵] [아니요] — and the same card in 나에게's peek,
-//! under "결정 필요". Confirmed, it leaves everywhere; the daemon's notices in
-//! the PM's conversation ("T-42을(를) 수락했습니다") are what remains. The
+//! lands, and [Accept all ⌘↵] [No] — and the same card in the Inbox's peek,
+//! under "Decisions". Confirmed, it leaves everywhere; the daemon's notices in
+//! the PM's conversation ("Accepted T-42") are what remains. The
 //! rules are `crate::accept`'s.
 
 use equipe_core::protocol::accept::{AcceptProposal, Verdict};
@@ -70,7 +70,7 @@ impl Shell {
     }
 
     /// ⌘⏎ confirms the card on show: above an empty composer when no other
-    /// card has the keys, or picked in 나에게's peek. True when taken.
+    /// card has the keys, or picked in the Inbox's peek. True when taken.
     pub fn on_accept_key(&mut self, key: &str, m: &Modifiers, cx: &mut Context<Self>) -> bool {
         if key != "enter" || !m.platform || m.shift || m.control || m.alt || !self.can_act() {
             return false;
@@ -111,7 +111,7 @@ impl Shell {
     }
 }
 
-/// What a card does, in a few words: "T-42, T-71 수락".
+/// What a card does, in a few words: "Accept T-42, T-71".
 fn what(card: &AcceptProposal) -> String {
     let tickets = rules::list(&card.tickets);
     match card.verdict {
@@ -131,7 +131,7 @@ pub fn docked(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     Some(motion::rise(div().w_full().mb_3().child(body), ("accept-in", id)).into_any_element())
 }
 
-/// The card in 나에게's peek.
+/// The card in the Inbox's peek.
 pub fn peek(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     v_flex()
@@ -145,14 +145,14 @@ pub fn peek(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> AnyElement {
         .into_any_element()
 }
 
-/// 나에게's row for a card: its question, who raised it.
+/// The Inbox's row for a card: its question, who raised it.
 pub fn row_text(shell: &Shell, id: u64) -> Option<(String, String, Rgba)> {
     let card = shell.model.accepts.get(id)?;
     let (name, color) = who(shell, card);
     Some((rules::title(card), name, color))
 }
 
-/// The mark 나에게 shows a card to confirm with.
+/// The mark the Inbox shows a card to confirm with.
 pub fn mark(p: Palette) -> AnyElement {
     tip(div().id("accept-mark").size(px(14.)).flex_none().flex().items_center().justify_center().child(icon(Icon::Check, 13., p.accent)), p, t!("accept.title"), None).into_any_element()
 }
@@ -287,7 +287,9 @@ fn card(shell: &Shell, id: u64, place: Place, cx: &mut Context<Shell>) -> Option
         .child(div().flex_1().min_w_0().child(t!("accept.only_click")));
 
     let more = model.accepts.ids().len().saturating_sub(1);
-    let mut said = vec![h_flex().gap(px(5.)).items_center().child(div().size(px(6.)).rounded_full().bg(color)).child(name).into_any_element()];
+    // The member who raised it, by their avatar; the person's own words, by a dot.
+    let by = if card.from_words() { div().size(px(6.)).rounded_full().bg(color) } else { crate::theme::member_mark(shell.palette, &shell.model, &card.by, 15.) };
+    let mut said = vec![h_flex().gap(px(5.)).items_center().child(by).child(name).into_any_element()];
     if more > 0 && place == Place::Docked {
         said.push(div().child(format!("· {}", t!("accept.more", n = more))).into_any_element());
     }

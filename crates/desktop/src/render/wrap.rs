@@ -1,6 +1,7 @@
 //! How a paragraph breaks into lines: Korean at the spaces between words
 //! (CSS `word-break: keep-all`, patched into GPUI — see `vendor/gpui-pre`),
-//! English as before, Japanese and Chinese between any two characters, and a
+//! English as before, Japanese and Chinese between any two characters but
+//! never after an opening bracket nor before closing punctuation, and a
 //! word longer than the line where it must. Tests only: the wrapping is
 //! GPUI's, run here through its own layout with a text system of fixed
 //! advances (the Mac's needs the main thread).
@@ -155,6 +156,31 @@ mod tests {
             assert!(rows.len() > 2, "{rows:#?}");
             assert!(rows[..rows.len() - 1].iter().all(|r| r.chars().count() == 13), "{rows:#?}");
             assert_eq!(rows.concat(), text);
+        }
+    }
+
+    /// Kinsoku: an opening bracket never ends a row, closing punctuation never
+    /// starts one — `以外（` / `ネットワーク` is not a break.
+    #[test]
+    fn japanese_and_chinese_keep_brackets_with_their_words() {
+        let opens = ['（', '「', '『', '【', '〈', '《'];
+        let closes = ['）', '」', '』', '】', '〉', '》', '、', '。', '，', '；', '：', '！', '？'];
+        for text in [
+            "自分のワークツリーのサンドボックス内で編集・インストール・ビルド・テストを自分で行い、それ以外（ネットワーク、プッシュ、あなたのアカウント）は先に確認します",
+            "在自己工作树的沙盒里自行编辑、安装、构建和测试；超出范围的事（网络、推送、你的账号）先询问",
+            "在自己工作樹的沙盒裡自行編輯、安裝、建置和測試；超出範圍的事（網路、推送、你的帳號）先詢問",
+            "「はい」と言った。『いいえ』とも【言った】。",
+        ] {
+            for width in [90., 120., 150., 180., 200., 225., 240., 255., 270., 300., 330., 360., 420.] {
+                let rows = rows(text, width);
+                assert_eq!(rows.concat(), text);
+                for row in &rows[1..] {
+                    assert!(!closes.contains(&row.chars().next().unwrap()), "at {width}, a row starts with a closing mark: {rows:#?}");
+                }
+                for row in &rows[..rows.len() - 1] {
+                    assert!(!opens.contains(&row.chars().last().unwrap()), "at {width}, a row ends with an opening bracket: {rows:#?}");
+                }
+            }
         }
     }
 

@@ -2,7 +2,8 @@
 //! `design/` in its folder (`~/.equipe/squads/<squad>/home/design`), which
 //! the designer's tasks land in when the person accepts them; a project with
 //! a look of its own keeps one in its repository (`<repo>/design`); a ticket
-//! in review whose worktree changed one shows it as a draft.
+//! in review whose worktree changed one shows it as a draft, and a ticket
+//! still at work on one shows what it has made so far (a draft `working`).
 //!
 //! A folder counts when it holds `tokens.json` or `guidelines.md`. Files are
 //! read only inside it — links resolved, nothing bigger than a limit — and
@@ -13,7 +14,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-use equipe_protocol::design::{Asset, AssetKind, DesignSystem, DraftOf};
+use equipe_protocol::design::{Asset, AssetKind, DesignSystem, DraftOf, FlowMap};
 use equipe_protocol::{TicketKind, TicketStatus};
 
 use super::tokens::{self, Problem};
@@ -24,14 +25,23 @@ use crate::visuals;
 pub const DIR: &str = "design";
 pub const TOKENS: &str = "tokens.json";
 pub const GUIDELINES: &str = "guidelines.md";
+/// The designer's brief, and the folder design QA's reports land in.
+pub const BRIEF: &str = "brand.md";
+pub const QA: &str = "qa";
 const PICTURE_DIRS: [&str; 2] = ["assets", "components"];
+/// Every folder the stamp follows: the pictures', then the UI map's and
+/// design QA's and the decisions' — walked last, so a big map never crowds
+/// the pictures out.
+const WATCHED_DIRS: [&str; 5] = [crate::taste::store::DECISIONS_DIR, QA, super::flows::DIR, "assets", "components"];
+/// The files right in the folder the stamp follows.
+const WATCHED_FILES: [&str; 5] = [TOKENS, GUIDELINES, BRIEF, crate::taste::store::NOTES_FILE, crate::taste::store::DECISIONS_FILE];
 /// The biggest `tokens.json` read.
 pub const TOKENS_MAX: u64 = 1 << 20;
 /// How much of `guidelines.md` is sent: past it, cut with a word.
 pub const GUIDELINES_MAX: usize = 256 << 10;
 /// How many pictures, and how many files looked at to find them.
 pub const ASSETS_MAX: usize = 240;
-const FILES_MAX: usize = 2000;
+const FILES_MAX: usize = 5000;
 const DEPTH_MAX: usize = 5;
 
 /// One place a design system may be.
@@ -40,6 +50,14 @@ pub struct Place {
     pub project: Option<String>,
     pub draft: Option<DraftOf>,
     pub dir: PathBuf,
+    /// Where the pictures of its map with the person's real data are
+    /// (`flows::live_dir`): an accepted system's only — a draft shows the
+    /// repository's.
+    pub live: Option<PathBuf>,
+    /// The desktop app the person uses, as the screen they used last told
+    /// it (`crate::looks`): what the map's pictures are held to. None: the
+    /// one installed on this machine.
+    pub installed: Option<crate::looks::PersonApp>,
 }
 
 /// Whether `dir` is a design system: a folder (not a link to one) with
@@ -49,41 +67,86 @@ pub fn is_design_dir(dir: &Path) -> bool {
 }
 
 /// Where `squad`'s design systems are, or may be: its own (always, there or
-/// not), each project's that has one, each draft a ticket in review has.
+/// not), each project's that has one, each draft a ticket in review has —
+/// and the work a ticket in progress (or waiting on the person) is making in
+/// its worktree, marked `working`, so the screen fills in as it lands.
 pub fn places(home: &Path, squad: &str) -> Vec<Place> {
-    let mut out = vec![Place { project: None, draft: None, dir: crate::squad_home::path(home, squad).join(DIR) }];
+    let valid = crate::squads::valid_name(squad);
+    let live = |project: Option<&str>| valid.then(|| super::flows::live_dir(home, squad, project));
+    let installed = person_app(home);
+    let mut out = vec![Place { project: None, draft: None, dir: crate::squad_home::path(home, squad).join(DIR), live: live(None), installed: installed.clone() }];
     let db = crate::journal::squad_dir(home, squad).join("squad.db");
-    if !crate::squads::valid_name(squad) || !db.exists() {
+    if !valid || !db.exists() {
         return out;
     }
     let Ok(journal) = crate::journal::Journal::open(&db) else { return out };
     for project in journal.projects().unwrap_or_default() {
         let dir = project.join(DIR);
         if is_design_dir(&dir) {
-            out.push(Place { project: Some(crate::board::project_name(&project)), draft: None, dir });
+            let name = crate::board::project_name(&project);
+            out.push(Place { live: live(Some(&name)), project: Some(name), draft: None, dir, installed: installed.clone() });
         }
     }
     for ticket in journal.tickets().unwrap_or_default() {
-        let Some(worktree) = ticket.worktree.as_ref().filter(|_| ticket.status == TicketStatus::Review) else { continue };
+        let working = match ticket.status {
+            TicketStatus::Review => false,
+            TicketStatus::InProgress | TicketStatus::Waiting => true,
+            _ => continue,
+        };
+        let Some(worktree) = ticket.worktree.as_ref() else { continue };
         let dir = worktree.join(DIR);
         if is_design_dir(&dir) {
             let project = if ticket.kind == TicketKind::Code { ticket.project.as_deref().map(crate::board::project_name) } else { None };
-            out.push(Place { project, draft: Some(DraftOf { ticket: ticket.id, title: ticket.title.clone() }), dir });
+            out.push(Place { project, draft: Some(DraftOf { ticket: ticket.id, title: ticket.title.clone(), working }), dir, live: None, installed: None });
         }
     }
     out
 }
 
-/// The files under `dir`'s picture folders, and its two files: path and
-/// what the disk says of each. Links are listed, not followed.
+/// The version of the desktop app the person uses (`crate::looks`), read
+/// again once a screen told this process something new, or after
+/// [`PERSON_EVERY`]: the folders are looked at far more often, and it asks
+/// every squad's journal.
+fn person_app(home: &Path) -> Option<crate::looks::PersonApp> {
+    use std::sync::Mutex;
+    use std::time::Instant;
+    /// For which home, after how many looks told, when, and what was read.
+    type Kept = (PathBuf, u64, Instant, Option<crate::looks::PersonApp>);
+    static KEPT: Mutex<Option<Kept>> = Mutex::new(None);
+    let told = crate::looks::told();
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, then, when, version)) = kept.as_ref()
+        && at == home
+        && *then == told
+        && when.elapsed() < PERSON_EVERY
+    {
+        return version.clone();
+    }
+    let version = crate::looks::person_app(home, super::flows::DESKTOP_APP);
+    *kept = Some((home.to_owned(), told, Instant::now(), version.clone()));
+    version
+}
+
+/// How long the person's app is taken as read.
+const PERSON_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Where `squad`'s accepted design system of `project` is (`None`: the
+/// squad's own, there or not) — not a draft's.
+pub fn accepted_dir(home: &Path, squad: &str, project: Option<&str>) -> Option<PathBuf> {
+    places(home, squad).into_iter().find(|p| p.draft.is_none() && p.project.as_deref() == project).map(|p| p.dir)
+}
+
+/// The files under `dir`'s picture folders, its UI map's and design QA's, and
+/// its own three files: path and what the disk says of each. Links are
+/// listed, not followed.
 fn files(dir: &Path) -> Vec<(PathBuf, std::fs::Metadata)> {
     let mut out = Vec::new();
-    for name in [TOKENS, GUIDELINES] {
+    for name in WATCHED_FILES {
         if let Ok(meta) = std::fs::symlink_metadata(dir.join(name)) {
             out.push((dir.join(name), meta));
         }
     }
-    let mut stack: Vec<(PathBuf, usize)> = PICTURE_DIRS.iter().map(|d| (dir.join(d), 0)).collect();
+    let mut stack: Vec<(PathBuf, usize)> = WATCHED_DIRS.iter().map(|d| (dir.join(d), 0)).collect();
     while let Some((at, depth)) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&at) else { continue };
         let mut entries: Vec<_> = entries.flatten().filter(|e| !e.file_name().to_string_lossy().starts_with('.')).collect();
@@ -113,8 +176,10 @@ pub fn stamp(places: &[Place]) -> u64 {
     for place in places {
         place.dir.hash(&mut h);
         place.project.hash(&mut h);
-        place.draft.as_ref().map(|d| (d.ticket, &d.title)).hash(&mut h);
+        place.draft.as_ref().map(|d| (d.ticket, &d.title, d.working)).hash(&mut h);
         is_design_dir(&place.dir).hash(&mut h);
+        // The person's app updated: their pictures may have gone stale.
+        place.installed.hash(&mut h);
         for (path, meta) in files(&place.dir) {
             path.hash(&mut h);
             meta.len().hash(&mut h);
@@ -122,26 +187,44 @@ pub fn stamp(places: &[Place]) -> u64 {
             // A link's target counts too: retargeted, it shows something else.
             std::fs::metadata(&path).ok().map(|m| (m.len(), m.modified().ok())).hash(&mut h);
         }
+        // The components' records, and the repository's registry and folders.
+        for path in super::gallery::watched(&place.dir, repo_of(place)) {
+            path.hash(&mut h);
+            std::fs::metadata(&path).ok().map(|m| (m.len(), m.modified().ok())).hash(&mut h);
+        }
+        // The person's real-data pictures, shot again or taken away.
+        for (path, meta) in place.live.as_deref().map(super::flows::live_files).unwrap_or_default() {
+            path.hash(&mut h);
+            meta.len().hash(&mut h);
+            meta.modified().ok().hash(&mut h);
+        }
     }
     h.finish()
 }
 
-/// A file inside `dir`, no bigger than `max` — a link only when it stays in `dir`.
-fn inside(dir: &Path, name: &str, max: u64) -> Option<Vec<u8>> {
-    use std::io::Read as _;
+/// The repository a project's design folder is in, where its code is.
+fn repo_of(place: &Place) -> Option<&Path> {
+    place.project.as_ref().and_then(|_| place.dir.parent())
+}
+
+/// Where file `name` in `dir` really is, when it is one and stays in `dir`.
+pub(crate) fn within(dir: &Path, name: &str) -> Option<PathBuf> {
     let root = std::fs::canonicalize(dir).ok()?;
     let real = std::fs::canonicalize(dir.join(name)).ok()?;
-    let meta = std::fs::metadata(&real).ok()?;
-    if !real.starts_with(&root) || !meta.is_file() {
-        return None;
-    }
+    (real.starts_with(&root) && std::fs::metadata(&real).is_ok_and(|m| m.is_file())).then_some(real)
+}
+
+/// A file inside `dir`, no bigger than `max` — a link only when it stays in `dir`.
+pub(crate) fn inside(dir: &Path, name: &str, max: u64) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let real = within(dir, name)?;
     let mut bytes = Vec::new();
     std::fs::File::open(&real).ok()?.take(max + 1).read_to_end(&mut bytes).ok()?;
     Some(bytes)
 }
 
 /// What a picture is, by where it is and what it is called.
-fn kind_of(name: &str) -> AssetKind {
+pub(super) fn kind_of(name: &str) -> AssetKind {
     let lower = name.to_ascii_lowercase();
     let mut parts = lower.split('/');
     let top = parts.next().unwrap_or_default();
@@ -226,14 +309,100 @@ pub fn read(place: &Place, lang: Lang) -> DesignSystem {
         system.guidelines = Some(text);
     }
     system.assets = assets(&place.dir);
+    // A project's folder is in its repository, where the screens' code is.
+    let repo = repo_of(place);
+    system.components = super::gallery::read(&place.dir, repo, &system.assets);
+    // Held to the app the person uses — on their own screen's Mac, which is
+    // often not this one — else to the one installed here.
+    let installed = |app: &str| match &place.installed {
+        Some(person) if app == super::flows::DESKTOP_APP => Some(person.version.clone()),
+        _ => super::flows::installed(app),
+    };
+    system.flows = super::flows::read_with(&place.dir, repo, place.live.as_deref(), lang, &installed);
+    if let (Some(map), Some(person)) = (system.flows.as_mut(), &place.installed)
+        && map.installed.as_ref() == Some(&person.version)
+    {
+        map.installed_on = Some(person.machine.clone());
+    }
+    system.setup = super::flows::setup(&place.dir);
     system.stamp = stamp(std::slice::from_ref(place));
     system
+}
+
+/// The biggest picture a hash is worked out for; past it, none.
+const HASH_MAX: u64 = 32 << 20;
+/// How many pictures' hashes are kept before the list starts again.
+const HASHES_KEPT: usize = 20_000;
+
+/// What a picture holds, as a short hex digest of its bytes — read once
+/// while its length and time stay the same. `None`: not a file, or too big.
+pub fn picture_hash(path: &Path) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    type Kept = HashMap<PathBuf, (u64, Option<std::time::SystemTime>, String)>;
+    static KEPT: Mutex<Option<Kept>> = Mutex::new(None);
+    let meta = std::fs::metadata(path).ok().filter(|m| m.is_file() && m.len() <= HASH_MAX)?;
+    let (len, modified) = (meta.len(), meta.modified().ok());
+    if let Some((_, _, hash)) = KEPT.lock().ok()?.get_or_insert_with(HashMap::new).get(path).filter(|(l, m, _)| *l == len && *m == modified) {
+        return Some(hash.clone());
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let mut h = DefaultHasher::new();
+    bytes.hash(&mut h);
+    let hash = format!("{:016x}", h.finish());
+    let mut kept = KEPT.lock().ok()?;
+    let kept = kept.get_or_insert_with(HashMap::new);
+    if kept.len() >= HASHES_KEPT {
+        kept.clear();
+    }
+    kept.insert(path.to_owned(), (len, modified, hash.clone()));
+    Some(hash)
+}
+
+/// Each UI map picture's hash, in the systems that have a draft in review
+/// and in their drafts — so a screen can tell what a draft changed from the
+/// copies its worktree only kept. Nothing is read when there is no draft.
+pub fn fingerprint(systems: &mut [DesignSystem]) {
+    let drafted: Vec<Option<String>> = systems.iter().filter(|s| s.draft.is_some()).map(|s| s.project.clone()).collect();
+    for system in systems.iter_mut().filter(|s| drafted.contains(&s.project)) {
+        let Some(map) = system.flows.as_mut() else { continue };
+        for picture in map.flows.iter_mut().flat_map(|f| &mut f.screens).flat_map(|s| &mut s.states).flat_map(|s| &mut s.pictures) {
+            picture.hash = picture_hash(Path::new(&picture.path));
+        }
+    }
+}
+
+/// A UI map as what it shows: where its pictures are, when they were taken
+/// and its recordings left out, so a worktree's copy reads as the same.
+fn map_shown(map: Option<&FlowMap>) -> Option<FlowMap> {
+    let mut map = map.cloned()?;
+    map.installed = None;
+    map.installed_on = None;
+    for flow in &mut map.flows {
+        flow.videos.clear();
+        for screen in &mut flow.screens {
+            screen.stale = false;
+            screen.live_stale = false;
+            // The person's real data is the accepted system's alone: a draft is held to the repository's.
+            for state in &mut screen.states {
+                state.pictures.retain(|p| !p.live);
+                if state.pictures.is_empty() && !screen.missing.contains(&state.id) {
+                    screen.missing.push(state.id.clone());
+                }
+            }
+            for picture in screen.states.iter_mut().flat_map(|s| &mut s.pictures) {
+                picture.path.clear();
+                picture.taken = 0;
+            }
+        }
+    }
+    Some(map)
 }
 
 /// Whether two systems hold the same: a draft that changed nothing isn't one.
 fn same_content(a: &DesignSystem, b: &DesignSystem) -> bool {
     let pictures = |s: &DesignSystem| s.assets.iter().map(|a| (a.name.clone(), a.size)).collect::<Vec<_>>();
-    a.tokens == b.tokens && a.guidelines == b.guidelines && a.problems == b.problems && pictures(a) == pictures(b)
+    a.tokens == b.tokens && a.guidelines == b.guidelines && a.problems == b.problems && pictures(a) == pictures(b) && map_shown(a.flows.as_ref()) == map_shown(b.flows.as_ref())
 }
 
 /// `squad`'s design systems as screens show them, and where its own would be.
@@ -244,8 +413,11 @@ pub fn catalog(home: &Path, squad: &str, lang: Lang) -> (Vec<DesignSystem>, Stri
 /// The same, of places already found.
 pub fn catalog_of(places: &[Place], lang: Lang) -> (Vec<DesignSystem>, String) {
     let folder = places.first().map(|p| p.dir.to_string_lossy().into_owned()).unwrap_or_default();
-    let read: Vec<DesignSystem> = places.iter().filter(|p| is_design_dir(&p.dir)).map(|p| read(p, lang)).collect();
-    let systems = read
+    let mut read: Vec<DesignSystem> = places.iter().filter(|p| is_design_dir(&p.dir)).map(|p| read(p, lang)).collect();
+    fingerprint(&mut read);
+    // The components a ticket is making or changing, said on the accepted system.
+    super::gallery::mark_work(&mut read);
+    let systems: Vec<DesignSystem> = read
         .iter()
         .filter(|s| match &s.draft {
             // A ticket's worktree holds a copy of the accepted folder: a draft only where it differs.
@@ -254,16 +426,35 @@ pub fn catalog_of(places: &[Place], lang: Lang) -> (Vec<DesignSystem>, String) {
         })
         .cloned()
         .collect();
+    // Work under way beside a draft in review of the same system: the one in review is shown.
+    let reviewed: Vec<Option<String>> = systems.iter().filter(|s| s.draft.as_ref().is_some_and(|d| !d.working)).map(|s| s.project.clone()).collect();
+    let systems = systems.into_iter().filter(|s| !(s.draft.as_ref().is_some_and(|d| d.working) && reviewed.contains(&s.project))).collect();
     (systems, folder)
 }
 
-/// The pictures `squad`'s design systems show, and where they may be — for
-/// `read_image`.
+/// The pictures `squad`'s design systems show, their UI maps' included, and
+/// where they may be — for `read_image`.
 pub fn shown(home: &Path, squad: &str) -> (Vec<String>, Vec<PathBuf>) {
     let mut paths = Vec::new();
     let mut roots = Vec::new();
-    for place in places(home, squad).into_iter().filter(|p| is_design_dir(&p.dir)) {
+    for place in places(home, squad) {
+        // Decisions' pictures: the squad's own folder's too, before it holds a system.
+        paths.extend(crate::taste::store::pictures(&place.dir));
+        if !is_design_dir(&place.dir) {
+            continue;
+        }
         paths.extend(assets(&place.dir).into_iter().map(|a| a.path));
+        paths.extend(super::gallery::pictures(&place.dir));
+        let map = super::flows::read_with(&place.dir, None, place.live.as_deref(), Lang::En, &|_| None).unwrap_or_default();
+        let states = map.flows.into_iter().flat_map(|f| f.screens).flat_map(|s| s.states);
+        let pictures: Vec<_> = states.flat_map(|s| s.pictures).collect();
+        // The real data's folder only while one of its pictures is shown.
+        if pictures.iter().any(|p| p.live)
+            && let Some(live) = place.live
+        {
+            roots.push(live);
+        }
+        paths.extend(pictures.into_iter().map(|p| p.path));
         roots.push(place.dir);
     }
     (paths, roots)
@@ -332,7 +523,7 @@ mod tests {
         std::fs::write(root.join("elsewhere.json"), TOKENS_JSON).unwrap();
         symlink(root.join("elsewhere.json"), design.join(TOKENS)).unwrap();
         std::fs::write(design.join(GUIDELINES), "가".repeat(GUIDELINES_MAX)).unwrap();
-        let place = Place { project: None, draft: None, dir: design.clone() };
+        let place = Place { project: None, draft: None, dir: design.clone(), live: None, installed: None };
         let system = read(&place, Lang::En);
         assert!(system.tokens.is_empty(), "a tokens.json that is a link out of the folder isn't read");
         let text = system.guidelines.unwrap();
@@ -349,7 +540,7 @@ mod tests {
     fn the_stamp_moves_when_anything_in_the_folder_does() {
         let root = dir("stamp");
         let design = root.join("design");
-        let place = [Place { project: None, draft: None, dir: design.clone() }];
+        let place = [Place { project: None, draft: None, dir: design.clone(), live: None, installed: None }];
         let missing = stamp(&place);
         std::fs::create_dir_all(&design).unwrap();
         std::fs::write(design.join(TOKENS), TOKENS_JSON).unwrap();
@@ -364,7 +555,59 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(design.join(TOKENS), r##"{ "color": { "$type": "color", "bg": { "$value": "#0A0A0C" } } }"##).unwrap();
         assert_ne!(with_logo, stamp(&place), "the same size, saved again");
+        // The UI map, its pictures deep in it, the brief and design QA count too.
+        let mut last = stamp(&place);
+        let moved = |last: &mut u64, what: &str| {
+            let now = stamp(&place);
+            assert_ne!(*last, now, "{what}");
+            *last = now;
+        };
+        std::fs::create_dir_all(design.join("flows")).unwrap();
+        std::fs::write(design.join("flows/flows.json"), r#"{ "flows": [] }"#).unwrap();
+        moved(&mut last, "flows.json");
+        png(&design.join("flows/onboarding/login/default.light.390.png"));
+        moved(&mut last, "a screen's picture");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        png(&design.join("flows/onboarding/login/default.light.390.png"));
+        moved(&mut last, "a picture shot again");
+        std::fs::write(design.join("brand.md"), "# Brief").unwrap();
+        moved(&mut last, "the brief");
+        std::fs::create_dir_all(design.join("qa/2026-11-04")).unwrap();
+        std::fs::write(design.join("qa/2026-11-04/report.md"), "# QA").unwrap();
+        moved(&mut last, "a QA report");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_persons_pictures_are_held_to_the_app_on_the_screen_they_use_not_the_one_installed_here() {
+        use equipe_protocol::look::ScreenLook;
+        let home = dir("person-version");
+        crate::journal::Journal::for_squad(&home, "acme").unwrap();
+        let folder = crate::squad_home::path(&home, "acme").join(DIR);
+        std::fs::create_dir_all(folder.join("flows")).unwrap();
+        std::fs::write(folder.join(TOKENS), TOKENS_JSON).unwrap();
+        std::fs::write(folder.join("flows/flows.json"), r#"{ "flows": [ { "id": "app", "title": "App", "screens": [ { "id": "home", "title": "Home", "states": [ { "id": "default", "label": "Default", "kind": "default" } ] } ] } ] }"#).unwrap();
+        let shot = super::super::flows::live_dir(&home, "acme", None).join("app/home/default.light.1200.png");
+        png(&shot);
+        std::fs::write(shot.with_extension("json"), r#"{ "app": "equipe-desktop", "version": "0.103.25", "live": true }"#).unwrap();
+        let map = || catalog(&home, "acme", Lang::En).0.into_iter().find(|s| s.project.is_none()).and_then(|s| s.flows).unwrap();
+        let stamp = || super::stamp(&places(&home, "acme"));
+        // No screen ever said: the app installed on this machine, as before.
+        assert_eq!((map().installed, map().installed_on), (super::super::flows::installed(super::super::flows::DESKTOP_APP), None));
+        let before = stamp();
+        // The person's own Mac says what it runs; the old app installed here is nobody's.
+        let screen = |version: &str| ScreenLook { machine: "MacBook".into(), app: "equipe-desktop".into(), version: version.into(), lang: "en".into(), width: 1200, height: 760, zoom: 100, idle: Some(0), ..ScreenLook::default() };
+        crate::looks::report(&home, "acme", screen("0.103.25"), 100).unwrap();
+        let now = map();
+        assert_eq!((now.installed.as_deref(), now.installed_on.as_deref()), (Some("0.103.25"), Some("MacBook")), "the screen's version, not this machine's");
+        assert!(!now.flows[0].screens[0].live_stale, "shot with what the person runs");
+        assert_ne!(stamp(), before, "the map is sent again when the person's app changes");
+        // Their app updated: the pictures shot with the one before are stale.
+        crate::looks::report(&home, "acme", screen("0.103.26"), 200).unwrap();
+        let now = map();
+        assert_eq!(now.installed.as_deref(), Some("0.103.26"));
+        assert!(now.flows[0].screens[0].live_stale);
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
@@ -378,6 +621,10 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join(TOKENS), TOKENS_JSON).unwrap();
         png(&folder.join("assets/logo/mark.png"));
+        std::fs::create_dir_all(folder.join("flows")).unwrap();
+        std::fs::write(folder.join("flows/flows.json"), r#"{ "flows": [ { "id": "app", "title": "App", "screens": [ { "id": "home", "title": "Home", "states": [ { "id": "default", "label": "Default", "kind": "default" } ] } ] } ] }"#).unwrap();
+        png(&folder.join("flows/app/home/default.light.390.png"));
+        png(&folder.join("flows/app/home/stray.light.390.png"));
         // A project with its own.
         let app = home.join("code/app");
         std::fs::create_dir_all(app.join(DIR)).unwrap();
@@ -389,6 +636,11 @@ mod tests {
             std::fs::create_dir_all(w.join(DIR)).unwrap();
             std::fs::write(w.join(DIR).join(TOKENS), tokens).unwrap();
             png(&w.join(DIR).join("assets/logo/mark.png"));
+            // Its copy of the UI map too, as a worktree has.
+            std::fs::create_dir_all(w.join(DIR).join("flows")).unwrap();
+            std::fs::copy(folder.join("flows/flows.json"), w.join(DIR).join("flows/flows.json")).unwrap();
+            png(&w.join(DIR).join("flows/app/home/default.light.390.png"));
+            png(&w.join(DIR).join("flows/app/home/stray.light.390.png"));
             w
         };
         let changed = worktree(144, r##"{ "color": { "$type": "color", "bg": { "$value": "#0A0A0C" } } }"##);
@@ -396,7 +648,7 @@ mod tests {
         for (n, w) in [(144, changed), (150, copy)] {
             let ticket = equipe_protocol::Ticket {
                 id: 0, title: format!("T{n}"), body: String::new(), status: TicketStatus::Review, kind: TicketKind::Task, owner: Some("designer".into()), assignee: None,
-                project: None, depends_on: vec![], branch: None, worktree: None, merged: None, off_main: None, design_qa: None, created_by: "pm".into(), note: None,
+                project: None, depends_on: vec![], branch: None, worktree: None, merged: None, off_main: None, design_qa: None, plan: None, created_by: "pm".into(), note: None,
                 asks: vec![], remaining: vec![], images: vec![], priority: Default::default(), rank: 0, updated_at: None,
             };
             let id = journal.create_ticket(&ticket).unwrap();
@@ -412,6 +664,121 @@ mod tests {
         let (paths, roots) = shown(&home, "acme");
         assert_eq!(roots.len(), 4, "{roots:?}");
         assert!(paths.iter().any(|p| p.ends_with("home/design/assets/logo/mark.png")));
+        assert!(paths.iter().any(|p| p.ends_with("home/design/flows/app/home/default.light.390.png")), "the UI map's pictures too");
+        assert!(!paths.iter().any(|p| p.ends_with("stray.light.390.png")), "not one of no state");
+        assert_eq!(systems[0].flows.as_ref().unwrap().flows[0].screens[0].states[0].pictures.len(), 1);
+        // The person's real data, shot into the squad's folder: the accepted
+        // system shows it, its stamp moves, read_image may give it — and the
+        // draft that only copied the folder is still no draft.
+        let before = stamp(&places(&home, "acme"));
+        let live = super::super::flows::live_dir(&home, "acme", None);
+        png(&live.join("app/home/default.dark.1200.png"));
+        assert_ne!(stamp(&places(&home, "acme")), before);
+        let (systems, _) = catalog(&home, "acme", Lang::En);
+        assert_eq!(systems.iter().map(|s| s.key()).collect::<Vec<_>>(), keys);
+        let pictures = &systems[0].flows.as_ref().unwrap().flows[0].screens[0].states[0].pictures;
+        assert_eq!(pictures.iter().map(|p| p.live).collect::<Vec<_>>(), [false, true]);
+        assert!(systems[2].flows.as_ref().unwrap().flows[0].screens[0].states[0].pictures.iter().all(|p| !p.live), "a draft shows the repository's");
+        let (paths, roots) = shown(&home, "acme");
+        assert!(paths.iter().any(|p| p.ends_with("ui-map/_squad/app/home/default.dark.1200.png")) && roots.contains(&live));
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn work_in_progress_is_shown_as_it_lands_and_a_draft_in_review_comes_first() {
+        let home = dir("working");
+        let journal = crate::journal::Journal::for_squad(&home, "acme").unwrap();
+        let folder = crate::squad_home::path(&home, "acme").join(DIR);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(TOKENS), TOKENS_JSON).unwrap();
+        // Each ticket's worktree starts as a copy of the squad's folder.
+        let worktree = |n: u32| {
+            let w = home.join(format!("worktrees/t{n}"));
+            std::fs::create_dir_all(w.join(DIR)).unwrap();
+            std::fs::write(w.join(DIR).join(TOKENS), TOKENS_JSON).unwrap();
+            w
+        };
+        let ticket = |status: TicketStatus, title: &str, w: PathBuf| {
+            let t = equipe_protocol::Ticket {
+                id: 0, title: title.into(), body: String::new(), status, kind: TicketKind::Task, owner: Some("designer".into()), assignee: None,
+                project: None, depends_on: vec![], branch: None, worktree: None, merged: None, off_main: None, design_qa: None, plan: None, created_by: "pm".into(), note: None,
+                asks: vec![], remaining: vec![], images: vec![], priority: Default::default(), rank: 0, updated_at: None,
+            };
+            let id = journal.create_ticket(&t).unwrap();
+            journal.set_ticket_work(id, &crate::journal::TicketWork { worktree: Some(w.clone()), ..Default::default() }).unwrap();
+            (id, w.join(DIR))
+        };
+        let (map_id, map) = ticket(TicketStatus::InProgress, "화면 지도", worktree(378));
+        let (waits_id, _) = ticket(TicketStatus::Waiting, "로고", worktree(379));
+        ticket(TicketStatus::Todo, "아직", worktree(380));
+        ticket(TicketStatus::Done, "끝난 것", worktree(381));
+        let found = places(&home, "acme");
+        let mut drafts: Vec<(u32, bool)> = found.iter().filter_map(|p| p.draft.as_ref()).map(|d| (d.ticket, d.working)).collect();
+        drafts.sort();
+        assert_eq!(drafts, [(map_id, true), (waits_id, true)],"in progress and waiting: work under way; not one to do or done");
+        // Nothing made yet: its worktree is the squad's folder, and nothing shows.
+        let keys = |home: &Path| catalog(home, "acme", Lang::En).0.iter().map(|s| s.key()).collect::<Vec<_>>();
+        assert_eq!(keys(&home), ["squad"]);
+        // The map lands, a picture at a time: the folder's watch follows it, and the work shows.
+        let before = stamp(&places(&home, "acme"));
+        std::fs::create_dir_all(map.join("flows")).unwrap();
+        std::fs::write(map.join("flows/flows.json"), r#"{ "flows": [ { "id": "app", "title": "App", "screens": [ { "id": "home", "title": "Home", "states": [ { "id": "default" } ] } ] } ] }"#).unwrap();
+        let listed = stamp(&places(&home, "acme"));
+        assert_ne!(before, listed, "flows.json in the worktree of a ticket in progress");
+        png(&map.join("flows/app/home/default.light.390.png"));
+        assert_ne!(listed, stamp(&places(&home, "acme")), "its first picture");
+        let (systems, _) = catalog(&home, "acme", Lang::En);
+        let work = systems.iter().find(|s| s.draft.is_some()).unwrap();
+        assert_eq!(work.key(), format!("squad#T-{map_id}"));
+        assert!(work.draft.as_ref().unwrap().working);
+        assert_eq!(work.flows.as_ref().unwrap().flows[0].screens[0].states[0].pictures.len(), 1);
+        let (paths, _) = shown(&home, "acme");
+        assert!(paths.iter().any(|p| p.ends_with("t378/design/flows/app/home/default.light.390.png")), "its pictures can be read");
+        // Handed in, it is in review; a ticket still at work on the same system waits behind it.
+        let mut handed_in = journal.ticket(map_id).unwrap().unwrap();
+        handed_in.status = TicketStatus::Review;
+        journal.save_ticket(&handed_in).unwrap();
+        std::fs::write(home.join("worktrees/t379/design").join(GUIDELINES), "# 로고").unwrap();
+        let (systems, _) = catalog(&home, "acme", Lang::En);
+        let drafts: Vec<(u32, bool)> = systems.iter().filter_map(|s| s.draft.as_ref()).map(|d| (d.ticket, d.working)).collect();
+        assert_eq!(drafts, [(map_id, false)], "the one in review is shown");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_draft_that_only_shot_its_screens_again_is_one_and_its_pictures_say_what_they_hold() {
+        const MAP: &str = r#"{ "flows": [ { "id": "app", "title": "App", "screens": [ { "id": "home", "title": "Home", "states": [ { "id": "default" } ] }, { "id": "pay", "title": "Pay", "states": [ { "id": "default" } ] } ] } ] }"#;
+        let root = dir("draft-map");
+        let folder = |name: &str, home_colour: [u8; 4]| {
+            let design = root.join(name).join(DIR);
+            std::fs::create_dir_all(design.join("flows")).unwrap();
+            std::fs::write(design.join(TOKENS), TOKENS_JSON).unwrap();
+            std::fs::write(design.join("flows/flows.json"), MAP).unwrap();
+            let shot = |path: PathBuf, c: [u8; 4]| image::RgbaImage::from_pixel(4, 4, image::Rgba(c)).save(path).unwrap();
+            for screen in ["home", "pay"] {
+                std::fs::create_dir_all(design.join(format!("flows/app/{screen}"))).unwrap();
+            }
+            shot(design.join("flows/app/home/default.light.390.png"), home_colour);
+            shot(design.join("flows/app/pay/default.light.390.png"), [9, 9, 9, 255]);
+            design
+        };
+        let accepted = folder("main", [20, 90, 250, 255]);
+        let reshot = folder("t170", [250, 90, 20, 255]);
+        let copy = folder("t171", [20, 90, 250, 255]);
+        let draft = |n: u32, dir: PathBuf| Place { project: None, draft: Some(DraftOf { ticket: n, title: format!("T{n}"), working: false }), dir, live: None, installed: None };
+        let alone = [Place { project: None, draft: None, dir: accepted.clone(), live: None, installed: None }];
+        let (systems, _) = catalog_of(&alone, Lang::En);
+        let pictures = |s: &DesignSystem| s.flows.as_ref().unwrap().flows[0].screens.iter().map(|sc| sc.states[0].pictures[0].hash.clone()).collect::<Vec<_>>();
+        assert!(pictures(&systems[0]).iter().all(Option::is_none), "no draft: nothing read for it");
+        let places = [alone[0].clone(), draft(170, reshot), draft(171, copy)];
+        let (systems, _) = catalog_of(&places, Lang::En);
+        assert_eq!(systems.iter().map(|s| s.key()).collect::<Vec<_>>(), ["squad", "squad#T-170"], "the copy that changed nothing isn't a draft");
+        let (now, after) = (pictures(&systems[0]), pictures(&systems[1]));
+        assert!(now.iter().chain(&after).all(|h| h.as_ref().is_some_and(|h| h.len() == 16)), "{now:?} {after:?}");
+        assert_ne!(now[0], after[0], "home was shot again");
+        assert_eq!(now[1], after[1], "pay is the same picture, in another folder");
+        assert_eq!(picture_hash(&accepted.join("flows/app/home/default.light.390.png")), now[0], "kept, and the same when asked again");
+        assert!(picture_hash(&accepted.join("nowhere.png")).is_none());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

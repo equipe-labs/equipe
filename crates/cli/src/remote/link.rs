@@ -112,6 +112,14 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                     .into_iter()
                     .map(|s| (s.name, s.projects.iter().map(|p| equipe_core::board::project_name(p)).collect()))
                     .collect();
+                // A squad deleted since: followed no more.
+                followed.retain(|squad, task| {
+                    let listed = core.squads.iter().any(|(s, _)| s == squad);
+                    if !listed {
+                        task.abort();
+                    }
+                    listed
+                });
                 // With devices to reach, every squad is followed for pushes.
                 if core.has_devices() {
                     for (squad, _) in core.squads.clone() {
@@ -252,7 +260,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                     let socket = socket.clone();
                     let version = version.clone();
                     let task = tokio::spawn(async move {
-                        match Client::connect(&socket, &version, &squad).await {
+                        match Client::connect_phone(&socket, &version, &squad).await {
                             Ok((client, hello)) => {
                                 let (commands, mut events) = client.split();
                                 let _ = tx.send(Input::Opened(device.clone(), squad.clone(), id, Ok((commands, Box::new(hello)))));
@@ -391,8 +399,10 @@ pub async fn serve_demo(home: PathBuf, version: String) -> Result<(), String> {
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Input>();
     listen_demo(&home, input_tx.clone()).map_err(|err| t!("link.couldnt_open", path = home.join("demo.sock").display(), err = err))?;
     let mut demo = super::demo::Demo::default();
-    // A reviewer may attach a file too: kept in the demo's own home, swept like any.
+    // A reviewer may attach a file too: kept in the demo's own home until
+    // the next start or `equipe demo reset`.
     let mut uploads = super::upload::Uploads::new(&home);
+    uploads.clear();
     let mut relay: Option<UnboundedSender<Ws>> = None;
     let mut retry_at = tokio::time::Instant::now();
     let mut backoff = Duration::from_secs(2);
@@ -410,6 +420,7 @@ pub async fn serve_demo(home: PathBuf, version: String) -> Result<(), String> {
             None => {
                 actions.extend(core.tick(now));
                 events.extend(demo.due(now));
+                uploads.sweep(now);
             }
             Some(Input::Relay(frame)) => actions.extend(core.on_relay(&frame, now)),
             Some(Input::RelayGone) => {
@@ -423,6 +434,7 @@ pub async fn serve_demo(home: PathBuf, version: String) -> Result<(), String> {
                     actions.extend(core.remove_device(id).unwrap_or_default());
                 }
                 demo.reset();
+                uploads.clear();
                 let mut said = json!({ "forgot": names.len(), "told_relay": relay.is_some() });
                 if new_code {
                     actions.extend(core.close_standing());

@@ -7,13 +7,36 @@ const TEMPLATES: [(&str, &str); 3] =
     [("board", include_str!("examples/board.html")), ("compare", include_str!("examples/compare.html")), ("figure", include_str!("examples/figure.html"))];
 
 /// The Chrome that draws, or `None` (with a word) where there is none: the
-/// tests that need one have nothing to try then.
+/// tests that need one have nothing to try then. Started once first ([`warm`]).
 fn chrome_here() -> Option<PathBuf> {
     let found = chrome();
-    if found.is_none() {
-        eprintln!("no Chrome here: skipped");
+    match &found {
+        Some(chrome) => warm(chrome),
+        None => eprintln!("no Chrome here: skipped"),
     }
     found
+}
+
+/// The longest Chrome's first start in a test run may take.
+const WARMING: Duration = Duration::from_secs(120);
+
+/// Chrome started and drawing once, before any test times a drawing. The
+/// first Chrome on a machine whose disk has never read it — a CI runner just
+/// booted — reads its few hundred megabytes cold, and every Chrome started
+/// meanwhile waits on the same reads: on GitHub's Ubuntu runners the first
+/// Chromes of a run all went past [`Limits::time`], while those started a few
+/// seconds later drew in about one. What the tests time is a drawing, not
+/// that. The other tests wait here until it is done.
+fn warm(chrome: &Path) {
+    static WARM: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    WARM.get_or_init(|| {
+        let started = Instant::now();
+        let limits = Limits { time: WARMING, ..Limits::default() };
+        match render(chrome, &page("<p>warm</p>", Some(false)), false, &limits) {
+            Ok(_) => eprintln!("Chrome's first drawing took {:?}", started.elapsed()),
+            Err(e) => eprintln!("Chrome's first drawing failed after {:?}: {e}", started.elapsed()),
+        }
+    });
 }
 
 fn png_size(png: &[u8]) -> (u32, u32) {
@@ -42,7 +65,7 @@ fn the_templates_keep_the_contract() {
     for (name, html) in TEMPLATES {
         assert_eq!(check(html), Ok(()), "{name}");
     }
-    assert_eq!(check("<p>see <a href=\"https://equipe.im\">equipe.im</a></p><img src=\"data:image/png;base64,AAAA\" alt=\"\"><div style=\"background:url('data:image/png;base64,AA')\"></div><a href=\"#x\">x</a>"), Ok(()));
+    assert_eq!(check("<p>see <a>equipe.im</a></p><img src=\"data:image/png;base64,AAAA\" alt=\"\"><div style=\"background:url('data:image/png;base64,AA')\"></div><a href=\"#x\">x</a>"), Ok(()));
 }
 
 #[test]
@@ -80,6 +103,91 @@ fn what_runs_or_loads_or_is_too_big_is_refused() {
     assert!(check(&big).is_err());
 }
 
+/// Links a click or a key would follow out of the page (T-357), every way
+/// HTML lets them be written.
+const LINKS_OUT: [&str; 34] = [
+    "<a href=\"https://equipe.im\">equipe.im</a>",
+    "<a href=\"http://127.0.0.1:9/\">x</a>",
+    "<a href=\"//evil.test/\">x</a>",
+    "<a href=\"file:///etc/passwd\">x</a>",
+    "<a href=\"FILE:///Users/\">x</a>",
+    "<a href=\"javascript:alert(1)\">x</a>",
+    "<a href=\"data:text/html,<p>x\">x</a>",
+    "<a href=\"data:image/svg+xml,<svg/>\">x</a>",
+    "<a href=\"other.html\">x</a>",
+    "<a href=\"\">x</a>",
+    "<a href>x</a>",
+    "<A HREF=\"https://x\">x</A>",
+    "<a href=https://x>x</a>",
+    "<a href = 'https://x'>x</a>",
+    "<a\nhref=\"https://x\">x</a>",
+    "<a\x0chref=https://x>x</a>",
+    "<a/href=https://x>x</a>",
+    "<a title=\"#\" href=\"https://x\">x</a>",
+    "<a href=\"#\" href=\"https://x\">x</a>",
+    "<a href=\"\tjava\nscript:alert(1)\">x</a>",
+    "<a href=\" \u{3000}#x\">x</a>",
+    "<a href=\"&#35;x\">x</a>",
+    "<a href=\"&#104;ttps://x\">x</a>",
+    "<a href=\"https:&#47;&#47;x\">x</a>",
+    "<svg><a href=\"https://x\"><text>x</text></a></svg>",
+    "<svg><a xlink:href=\"https://x\"><text>x</text></a></svg>",
+    "<map name=m><area href=\"https://x\" shape=default></map>",
+    "<a href=\"#x\" target=\"_blank\">x</a>",
+    "<a href=\"#x\" download>x</a>",
+    // Where a tag sits that a browser reads but an eye might not: after a
+    // comment `--!>` closes, past a `<style>` an attribute's quote seemed to hold.
+    "<!-- <p title=\" --!> <a href=https://x>x</a> \" -->",
+    "<!-- <p title=\" --> <a href=https://x>x</a> \" -->",
+    "<style><p title=\"</style><a href=https://x>x</a>\"</style>",
+    "<textarea><p title=\"</textarea><a href=https://x>x</a>\"",
+    "<p title=\"<a href=https://x>\">x</p><math href=\"https://x\">x</math>",
+];
+
+#[test]
+fn a_link_may_only_go_to_a_place_in_the_card() {
+    for html in LINKS_OUT {
+        assert!(check(html).is_err(), "let through: {html:?}");
+    }
+    for html in ["<a href=\"#x\">x</a>", "<a href='#'>top</a>", "<a href=#x>x</a>", "<a href=\" #x \">x</a>", "<a>plain</a>", "<svg><a href=\"#x\"><text>x</text></a></svg>"] {
+        assert_eq!(check(html), Ok(()), "{html}");
+    }
+}
+
+#[test]
+fn reading_every_tag_start_stays_quick() {
+    // Quotes that never close: each `<` is read to the end, no more.
+    let worst = "<a title=\"".repeat(SOURCE_MAX / 10);
+    let started = Instant::now();
+    let _ = check(&worst);
+    assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+}
+
+#[test]
+fn a_page_kept_under_the_old_contract_is_not_given_out() {
+    let home = temp_home("oldpage");
+    let old = "<p>see <a href=\"https://evil.test/\">this</a></p>";
+    let key = diagram::key(old);
+    let page_path = page_file(&home, "acme", &key);
+    keep(&page_path, page(old, None).as_bytes()).unwrap();
+    for dark in [false, true] {
+        keep(&diagram::file(&home, "acme", &key, dark), &tiny_png()).unwrap();
+    }
+    let text = format!("```html card\n{old}\n```");
+    assert!(kept(&home, "acme", &[Entry::Reply { text }]).is_empty());
+    let ask = crate::protocol::rpc::ReadImage { squad: "acme".into(), path: page_path.to_string_lossy().into_owned(), max: None };
+    let err = crate::visuals::serve_with(&home, &ask, None, &[]).unwrap_err();
+    assert!(err.contains("contract"), "{err}");
+    assert_eq!(kept_fragment(&page(TEMPLATES[0].1, None)), Ok(TEMPLATES[0].1));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+fn tiny_png() -> Vec<u8> {
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(2, 2).unwrap();
+    pixmap.fill(resvg::tiny_skia::Color::BLACK);
+    pixmap.encode_png().unwrap()
+}
+
 #[test]
 fn the_page_holds_the_card_in_the_design_system_and_its_csp_first() {
     let page = page("<p>hi</p>", Some(true));
@@ -89,7 +197,12 @@ fn the_page_holds_the_card_in_the_design_system_and_its_csp_first() {
     assert!(page.contains("data-theme=\"dark\""));
     assert!(page.contains("--eq-color-text") && page.contains(".vc-card"));
     assert!(page.contains("<article class=\"vc-card\"><p>hi</p></article>"));
-    assert!(super::page("<p>hi</p>", None).contains("<html lang=\"ko\"><head>"));
+    // The page says the language the card is written in, so its type is that
+    // script's: English when it can't tell, never one built in.
+    assert!(super::page("<p>hi</p>", None).contains("<html lang=\"en\"><head>"));
+    for (card, lang) in [("<h2 class=\"vc-title\">이번 주 스쿼드 숫자</h2>", "ko"), ("<p>今週の数字を<b>確認</b>する</p>", "ja"), ("<p>本周的数字</p>", "zh"), ("<p>Les chiffres de la semaine, revus avec toute l'équipe</p>", "fr")] {
+        assert!(super::page(card, Some(false)).contains(&format!("<html lang=\"{lang}\" data-theme=\"light\">")), "{card}: {lang}");
+    }
 }
 
 #[test]
@@ -234,3 +347,142 @@ fn a_huge_card_is_refused_and_a_tall_one_is_cut_at_the_window() {
     assert_eq!(png_size(&png), (width, height));
     assert!(started.elapsed() < Limits::default().time);
 }
+
+/// A stand-in for Chrome: writes `picture` where it is told after `wait`
+/// seconds, and notes in `<dir>/log` how many of it were running then
+/// (itself included), counting only those still alive.
+fn fake_chrome(dir: &Path, wait: f32) -> PathBuf {
+    use resvg::tiny_skia::{Color, Pixmap};
+    let run = dir.join("run");
+    std::fs::create_dir_all(&run).unwrap();
+    let mut pixmap = Pixmap::new(8, 8).unwrap();
+    pixmap.fill(Color::from_rgba8(10, 20, 30, 255));
+    std::fs::write(dir.join("picture.png"), pixmap.encode_png().unwrap()).unwrap();
+    let script = dir.join("chrome");
+    let body = format!(
+        "#!/bin/sh\nfor a; do case \"$a\" in --screenshot=*) out=\"${{a#--screenshot=}}\";; esac; done\n\
+touch '{run}/'$$\nn=0; for f in '{run}'/*; do kill -0 \"${{f##*/}}\" 2>/dev/null && n=$((n+1)); done\necho $n >> '{dir}/log'\n\
+sleep {wait}\nrm -f '{run}/'$$\ncp '{dir}/picture.png' \"$out\"\n",
+        run = run.display(),
+        dir = dir.display(),
+    );
+    std::fs::write(&script, body).unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+fn cards(prefix: &str, n: usize) -> String {
+    (0..n).map(|i| format!("```html card\n<p>{prefix} {i}</p>\n```\n")).collect()
+}
+
+#[test]
+fn a_reply_draws_its_first_cards_in_its_time_and_the_rest_show_their_source() {
+    let home = temp_home("budget");
+    let chrome = fake_chrome(&home, 0.05);
+    let text = cards("budget", PER_REPLY + 2);
+    let drawn = draw_within(&home, "acme", &text, &chrome, Budget::reply());
+    assert_eq!(drawn.len(), PER_REPLY, "past {PER_REPLY}, the source shows");
+    // Drawn before: read back, not counted, even with nothing left to spend.
+    let spent = Budget { cards: 0, ..Budget::reply() };
+    assert_eq!(draw_within(&home, "acme", &text, &chrome, spent.clone()), drawn);
+    // Out of time: nothing new is started.
+    let late = Budget { until: Instant::now(), ..Budget::reply() };
+    assert!(draw_within(&home, "acme", &cards("late", 2), &chrome, late).is_empty());
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Until a Chrome has drawn once since the daemon started, a drawing gets
+/// Chrome's cold first start's time and a reply room for it; after, the
+/// usual ten seconds and thirty.
+#[test]
+fn chromes_first_start_gets_its_allowance_and_every_drawing_after_the_usual_time() {
+    let usual = Limits::default().time;
+    assert_eq!(usual, Duration::from_secs(10));
+    assert_eq!(allowance(false, usual), FIRST_START, "the first start, cold");
+    assert_eq!(allowance(true, usual), usual, "warm: ten seconds, as ever");
+    assert_eq!(allowance(true, Duration::from_millis(50)), Duration::from_millis(50), "a shorter limit holds once warm");
+    assert_eq!(allowance(false, Duration::from_secs(300)), Duration::from_secs(300), "never less than asked");
+    assert_eq!(reply_time(true), REPLY_TIME);
+    assert_eq!(reply_time(false), REPLY_TIME + FIRST_START, "the first start doesn't eat the reply's other cards");
+    assert!(allowance(false, usual) < reply_time(false));
+}
+
+/// A drawing that ends well leaves Chrome warm; with cards off there is
+/// nothing to warm, and no Chrome is started.
+#[test]
+fn a_drawing_warms_chrome_and_cards_off_start_none() {
+    let home = temp_home("warm");
+    assert!(warm_up(&home).is_none(), "cards are off");
+    let chrome = fake_chrome(&home, 0.0);
+    render(&chrome, &page("<p>warm</p>", Some(false)), false, &Limits::default()).expect("drawn");
+    assert!(is_warm());
+    std::fs::write(home.join("visuals.json"), r#"{"html_cards": true}"#).unwrap();
+    assert!(warm_up(&home).is_none(), "warm already: nothing to do");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Many sessions' replies, each full of cards never drawn before, ending at
+/// once: never more than [`CHROMES`] Chromes, no reply past its time, and the
+/// squad's `visuals/` within its quota, what is shown kept.
+#[test]
+fn many_replies_of_new_cards_at_once_stay_within_chromes_time_and_cache() {
+    use crate::visuals::cache;
+    use std::collections::HashSet;
+    let home = temp_home("stress");
+    let chrome = fake_chrome(&home, 0.15);
+    let (sessions, replies, time) = (6, 3, Duration::from_millis(1500));
+    let quota = cache::Quota { keys: 10, bytes: u64::MAX };
+    // What each session shows, as the daemon prunes with what all of the
+    // squad's open conversations show — not one session's alone, or another
+    // session's prune takes away what this one shows ("<key> went"). A
+    // reply's keys are known before its cards are drawn; read and pruned with
+    // under one lock, so none of a reply shown meanwhile is drawn mid-prune.
+    let showing = std::sync::Arc::new(Mutex::new(std::collections::HashMap::<usize, HashSet<String>>::new()));
+    let started = Instant::now();
+    let threads: Vec<_> = (0..sessions)
+        .map(|s| {
+            let (home, chrome, showing) = (home.clone(), chrome.clone(), showing.clone());
+            std::thread::spawn(move || {
+                let mut last = HashSet::new();
+                for r in 0..replies {
+                    let text = cards(&format!("s{s} r{r}"), 6);
+                    showing.lock().unwrap().insert(s, blocks(&text).iter().map(|b| diagram::key(b)).collect());
+                    let at = Instant::now();
+                    let budget = Budget { until: at + time, ..Budget::reply() };
+                    let drawn = draw_within(&home, "acme", &text, &chrome, budget);
+                    let took = at.elapsed();
+                    assert!(drawn.len() <= PER_REPLY, "{} drawn", drawn.len());
+                    assert!(took < time + Duration::from_millis(700), "a reply took {took:?}");
+                    last = drawn.iter().map(|d| d.key.clone()).collect();
+                    let showing = showing.lock().unwrap();
+                    let all: HashSet<String> = showing.values().flatten().cloned().collect();
+                    let held = cache::prune(&diagram::dir(&home, "acme"), &all, quota);
+                    assert!(held.keys <= quota.keys + all.len(), "{held:?}");
+                }
+                last
+            })
+        })
+        .collect();
+    let shown: HashSet<String> = threads.into_iter().flat_map(|t| t.join().unwrap()).collect();
+    assert!(started.elapsed() < (time + Duration::from_millis(700)) * replies, "{:?}", started.elapsed());
+    assert!(most_at_once() <= CHROMES, "{} at once", most_at_once());
+    let seen: Vec<usize> = std::fs::read_to_string(home.join("log")).unwrap().lines().map(|l| l.trim().parse().unwrap()).collect();
+    assert!(!seen.is_empty(), "nothing drawn at all");
+    assert!(seen.iter().all(|&n| n <= CHROMES), "Chromes at once: {seen:?}");
+    // What the last replies show stays; the rest within the quota.
+    let dir = diagram::dir(&home, "acme");
+    let held = cache::prune(&dir, &shown, quota);
+    assert!(held.keys <= quota.keys.max(shown.len()), "{held:?}");
+    for key in &shown {
+        assert!(dir.join(format!("{key}-dark.png")).is_file() && dir.join(format!("{key}.html")).is_file(), "{key} went");
+    }
+    let held = cache::prune(&dir, &HashSet::new(), quota);
+    assert!(held.keys <= quota.keys, "{held:?}");
+    let on_disk = std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".png")).count();
+    // A key whose dark tone ran out of time keeps its light one, read back next time.
+    assert!(on_disk <= held.keys * 2, "{on_disk} PNGs for {held:?}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+mod panel;

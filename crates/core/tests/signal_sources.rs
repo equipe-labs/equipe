@@ -66,6 +66,7 @@ fn config(claude: &Path, home: &Path) -> Config {
         person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::Ko,
         nemotron: None,
+        watch_disk: false,
     }
 }
 
@@ -163,7 +164,7 @@ async fn propose_yes(handle: &Handle, events: &mut UnboundedReceiver<Event>, see
     let from = seen.len();
     until(events, seen, |s| s[from..].iter().any(|e| matches!(e, Event::ApprovalRequested { .. }))).await;
     let approval = seen[from..].iter().find_map(|e| if let Event::ApprovalRequested { approval, .. } = e { Some(approval.clone()) } else { None }).unwrap();
-    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None });
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None, said: None });
     let said = waiting.await.unwrap();
     assert!(!said.is_error, "{said:?}");
     approval.action
@@ -285,7 +286,7 @@ APPLE\tequipe\t4\t1\t6740000000\nAPPLE\tequipe\t9\t7\t6740000000\nAPPLE\tequipe\
     let r = reading(&journal, "site/pageviews-wrong").await;
     assert_eq!((r.ok, r.note.as_deref()), (false, Some("PostHog said 401: Invalid personal API key.")));
     until(&mut events, &mut seen, |s| {
-        s.iter().any(|e| matches!(e, Event::UserMessage { session: 1, text } | Event::MessageQueued { session: 1, text, .. } | Event::SteerQueued { session: 1, text, .. } if text.starts_with("[Signal · pageviews-wrong · failing]")))
+        s.iter().any(|e| matches!(e, Event::UserMessage { session: 1, text, .. } | Event::MessageQueued { session: 1, text, .. } | Event::SteerQueued { session: 1, text, .. } if text.starts_with("[Signal · pageviews-wrong · failing]")))
     })
     .await;
 

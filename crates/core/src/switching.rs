@@ -1,35 +1,55 @@
 //! When to move members between engines, and which — the rules, without a
 //! clock or a daemon: what each engine's plan says, the time, the team, and
 //! the squad's choice go in; what to tell the person, what to hold and which
-//! members to move come out. The runtime (`runtime/engines.rs`) makes it so,
-//! at ticket boundaries only. The numbers are docs/research/claude-codex-together.md §6.
+//! members to move come out. The runtime (`runtime/engines.rs`) makes it so:
+//! between tickets, or — a move marked [`Move::now`] — at the end of the
+//! member's turn, its ticket handed over. The numbers are
+//! docs/research/claude-codex-together.md §6.
 //!
+//! - **The week's pace** is the Usage screen's forecast ([`Reading::pace`]):
+//!   when, at the burn of the last day, the week runs out — before it starts
+//!   over, or not.
 //! - **Watch** (a window ≥ 70%, or the burn so far runs it out before it
 //!   starts over): told once; nothing moves.
 //! - **Shift** (five hours ≥ 85% with more than 30 minutes left, a week ≥ 85%
-//!   — or ≥ 75% with two days left and the burn running it out — or the
-//!   engine's own warning): the implementation roles move, one batch.
+//!   — or ≥ 75% with two days left and the burn running it out, or ≥ 70%
+//!   with the pace running it out at least 12 hours before it starts over —
+//!   or the engine's own warning): the heaviest members move, one batch — as
+//!   many, heaviest first, as it takes for the week to last at its pace;
+//!   members that used little stay put. With nobody's use known, the
+//!   implementation roles move. A week at 85–91% whose pace lasts until it
+//!   starts over is only watched.
 //! - **Drain** (five hours ≥ 95%, a week ≥ 92%): every role that can move does,
-//!   the PM last.
+//!   the heaviest first and the PM last — at the end of each one's turn,
+//!   a ticket in progress handed over. So does a Shift for a member whose
+//!   ticket, as it estimated it, would outlast the plan.
 //! - **Exhausted** (100%, or refused): no new turns. A reset within the hour is
 //!   waited for; one further off hands the work over.
 //! - Five hours nearly gone with 30 minutes or less to its reset and a week
 //!   under 75%: waited for rather than moved — a new engine reads everything
 //!   again, which costs more than half an hour.
 //! - The other engine must be no worse than Watch and have 30 points more room;
-//!   when both run low, nothing moves: a lighter model or less thinking on the
-//!   same engine, and no new tickets.
+//!   when both run low, nothing moves, and the work goes on: a lighter model or
+//!   less thinking on the same engine is offered on a card, never made on its
+//!   own (quality is the person's call), and tickets keep starting until the
+//!   engine is actually out.
 //! - Back when the original engine's five hours are under 50% and its week
 //!   under 75% for ten minutes.
 //! - A member stays at least an hour, moves at most once in three; batches
 //!   are 15 minutes apart.
+//! - A member the person put on an engine themselves ([`Mate::pinned`])
+//!   stays there — unless that engine runs out, when its work is handed over,
+//!   and it goes back once the engine has room again. Nobody moves to an
+//!   engine the person isn't signed in to.
+//! - A reviewer stepped down keeps its tier's floor: never under medium effort.
 //! - A reading older than 30 minutes is a floor (usage only grows until a
 //!   reset), so it may still move members away — never toward its engine,
 //!   and back only once its limits have started over.
 
 use std::collections::HashMap;
 
-use equipe_protocol::engines::{Move, Switching, Why, Window};
+use equipe_protocol::engines::{Forecast, Move, Switching, Why, Window};
+use equipe_protocol::plan_use::Pace;
 use equipe_protocol::{Engine, EnginePlan, PlanWindow};
 
 const MINUTE: i64 = 60;
@@ -59,6 +79,17 @@ pub const MIN_STAY: i64 = HOUR;
 pub const COOLDOWN: i64 = 3 * HOUR;
 pub const BATCH_GAP: i64 = 15 * MINUTE;
 pub const STALE_AFTER: i64 = 30 * MINUTE;
+/// A week this used, with its pace running it out at least [`PACE_EARLY`]
+/// before it starts over, shifts.
+pub const PACE_SHIFT_AT: u8 = 70;
+pub const PACE_EARLY: i64 = 12 * HOUR;
+/// A member that used less of its engine's week than this (basis points)
+/// stays put on a Shift.
+pub const LIGHT_BP: u32 = 500;
+/// What a Shift takes off an engine when its pace says nothing: half its burn.
+pub const NEED_BP: u32 = 5_000;
+/// On top of what the pace says must go, to be sure.
+pub const NEED_MARGIN_BP: u32 = 1_000;
 /// The burn rate's half-life, in seconds.
 const RATE_HALF_LIFE: f64 = 20. * 60.;
 
@@ -84,11 +115,14 @@ pub struct Reading {
     pub warning: bool,
     /// The engine refuses turns until a reset.
     pub rejected: bool,
+    /// The week at the pace of late, as the Usage screen forecasts it
+    /// (`crate::plan_use::report::pace`); `None`: not known.
+    pub pace: Option<Pace>,
 }
 
 impl Reading {
     pub fn of(plan: &EnginePlan) -> Self {
-        Reading { engine: plan.engine, five_hour: plan.usage.five_hour, weekly: plan.usage.seven_day, at: plan.at, warning: false, rejected: false }
+        Reading { engine: plan.engine, five_hour: plan.usage.five_hour, weekly: plan.usage.seven_day, at: plan.at, warning: false, rejected: false, pace: None }
     }
 
     fn windows(&self) -> impl Iterator<Item = (Window, PlanWindow)> {
@@ -118,11 +152,21 @@ pub struct Assessment {
     pub runs_out_at: Option<i64>,
     /// The most any live window is used: its room is 100 less.
     pub worst: u8,
+    /// The week's pace says it lasts until it starts over.
+    pub lasts: bool,
 }
 
 impl Assessment {
     fn room(&self) -> u8 {
         100u8.saturating_sub(self.worst)
+    }
+
+    /// Of the engine's burn, what must go for the window to last until it
+    /// starts over, in basis points: what the forecast says, and a margin.
+    pub fn need_bp(&self, now: i64) -> u32 {
+        let Some(out) = self.runs_out_at.filter(|at| *at > now && self.resets_at > now) else { return NEED_BP };
+        let lasts = (out - now) as f64 / (self.resets_at - now) as f64;
+        (((1. - lasts).clamp(0., 1.) * 10_000.) as u32 + NEED_MARGIN_BP).min(10_000)
     }
 }
 
@@ -223,12 +267,19 @@ fn back_since(r: &Reading, memory: &Memory, now: i64) -> Option<i64> {
     if r.rejected { None } else { since }
 }
 
-/// One window's level, and when it runs out at `rate` (points a second).
-fn window_level(kind: Window, w: PlanWindow, now: i64, rate: Option<f64>) -> (Level, Option<i64>) {
+/// One window's level, when it runs out — at `rate` (points a second), or
+/// for the week at its `pace` — and whether that pace says it lasts.
+fn window_level(kind: Window, w: PlanWindow, now: i64, rate: Option<f64>, pace: Option<Pace>) -> (Level, Option<i64>, bool) {
     let left = w.resets_at - now;
     let u = w.used_percent;
-    let runs_out = rate.filter(|r| *r > 0.).map(|r| now + ((100. - f64::from(u)).max(0.) / r) as i64).filter(|at| *at < w.resets_at);
+    let by_rate = rate.filter(|r| *r > 0.).map(|r| now + ((100. - f64::from(u)).max(0.) / r) as i64).filter(|at| *at < w.resets_at);
+    // The week's forecast, as the Usage screen says it, over the last minutes' burn.
+    let pace = pace.filter(|_| kind == Window::Weekly);
+    let by_pace = pace.map(|p| p.runs_out_at).filter(|at| *at < w.resets_at);
+    let runs_out = if pace.is_some() { by_pace.or(by_rate.filter(|at| *at < now + HOUR)) } else { by_rate };
     let out = runs_out.is_some();
+    let lasts = pace.is_some() && runs_out.is_none();
+    let early = by_pace.is_some_and(|at| w.resets_at - at >= PACE_EARLY);
     let level = if u >= EXHAUSTED_AT {
         Level::Exhausted
     } else {
@@ -236,25 +287,41 @@ fn window_level(kind: Window, w: PlanWindow, now: i64, rate: Option<f64>) -> (Le
             Window::FiveHour if u >= DRAIN_FIVE_HOUR_AT => Level::Drain,
             Window::FiveHour if u >= SHIFT_AT && left > WAIT_FOR_RESET => Level::Shift,
             Window::Weekly if u >= DRAIN_WEEKLY_AT => Level::Drain,
-            Window::Weekly if u >= SHIFT_AT || (u >= LONG_WEEK_AT && left > LONG_WEEK_LEFT && out) => Level::Shift,
+            // At its pace it lasts until it starts over: watched, not moved.
+            Window::Weekly if u >= SHIFT_AT && lasts => Level::Watch,
+            Window::Weekly if u >= SHIFT_AT || (u >= LONG_WEEK_AT && left > LONG_WEEK_LEFT && out) || (u >= PACE_SHIFT_AT && early) => Level::Shift,
             _ if u >= WATCH_AT || out => Level::Watch,
             _ => Level::Ok,
         }
     };
-    (level, runs_out)
+    (level, runs_out, lasts)
+}
+
+/// Each of `r`'s windows that hasn't started over by `now`: how used, and
+/// whether at the burn so far — or the week at its pace — it runs out before
+/// it does (a stale reading's burn is unknown: never).
+pub fn windows_at(r: &Reading, memory: &Memory, now: i64) -> Vec<(Window, u8, bool)> {
+    let stale = now - r.at > STALE_AFTER;
+    r.live(now)
+        .map(|(kind, w)| {
+            let rate = if stale { None } else { memory.rate(r.engine, kind, w) };
+            let (_, runs_out, _) = window_level(kind, w, now, rate, if stale { None } else { r.pace });
+            (kind, w.used_percent.min(100), runs_out.is_some())
+        })
+        .collect()
 }
 
 /// Where `r`'s engine stands at `now`.
 pub fn assess(r: &Reading, memory: &Memory, now: i64) -> Assessment {
     let stale = now - r.at > STALE_AFTER;
-    let mut out = Assessment { engine: r.engine, level: Level::Ok, window: None, used: 0, resets_at: 0, wait: false, stale, runs_out_at: None, worst: 0 };
+    let mut out = Assessment { engine: r.engine, level: Level::Ok, window: None, used: 0, resets_at: 0, wait: false, stale, runs_out_at: None, worst: 0, lasts: false };
     for (kind, w) in r.live(now) {
         // A stale reading's burn is unknown: no projection.
         let rate = if stale { None } else { memory.rate(r.engine, kind, w) };
-        let (level, runs_out) = window_level(kind, w, now, rate);
+        let (level, runs_out, lasts) = window_level(kind, w, now, rate, if stale { None } else { r.pace });
         out.worst = out.worst.max(w.used_percent.min(100));
         if (level, w.used_percent) > (out.level, out.used) {
-            (out.level, out.window, out.used, out.resets_at, out.runs_out_at) = (level, Some(kind), w.used_percent, w.resets_at, runs_out);
+            (out.level, out.window, out.used, out.resets_at, out.runs_out_at, out.lasts) = (level, Some(kind), w.used_percent, w.resets_at, runs_out, lasts);
         }
     }
     // The engine's own word: refused is exhausted, a warning at least a shift.
@@ -284,19 +351,32 @@ pub struct Mate {
     pub effort: Option<String>,
     /// It changes a project's files on its tickets.
     pub edits: bool,
-    /// The person fixed its engine: never moved.
+    /// The person put it on its engine themselves (its `home`): equipe moves
+    /// it only off an engine that ran out, and back.
     pub pinned: bool,
     /// When it moved between engines, oldest first (unix seconds).
     pub switched: Vec<i64>,
     /// A move already waits for it.
     pub waiting: bool,
+    /// Of its engine's load this week, its share in basis points (the Usage
+    /// screen's member rows); `None`: not known.
+    pub load_bp: Option<u32>,
+    /// On a ticket, how long it said is left of it (seconds), if it said.
+    pub ticket_left: Option<i64>,
 }
 
 impl Mate {
-    /// It may move now: not pinned, not waiting, an hour since it last moved and no move in three.
-    fn may_move(&self, now: i64) -> bool {
+    /// It may move now for `why`: not waiting, an hour since it last moved and
+    /// no move in three; a member the person pinned, only off an engine that
+    /// ran out, or back to its own.
+    fn may_move(&self, now: i64, why: Why) -> bool {
         let last = self.switched.iter().max().copied();
-        !self.pinned && !self.waiting && last.is_none_or(|t| now - t >= MIN_STAY.max(COOLDOWN))
+        let pin_ok = !self.pinned || matches!(why, Why::Exhausted | Why::Return);
+        pin_ok && !self.waiting && last.is_none_or(|t| now - t >= MIN_STAY.max(COOLDOWN))
+    }
+
+    fn load(&self) -> u32 {
+        self.load_bp.unwrap_or(0)
     }
 }
 
@@ -341,8 +421,9 @@ fn shifts(to: Engine, role: &str) -> bool {
 }
 
 /// One step lighter on the same engine: Claude's Opus to Sonnet, Codex's Astra
-/// to Sol, else one notch less thinking. `None`: as light as it goes.
-pub fn step_down(engine: Engine, model: Option<&str>, effort: Option<&str>) -> Option<(Option<String>, Option<String>)> {
+/// to Sol, else one notch less thinking — a reviewer (`role`) never under
+/// medium, its tier's floor. `None`: as light as it goes.
+pub fn step_down(engine: Engine, role: &str, model: Option<&str>, effort: Option<&str>) -> Option<(Option<String>, Option<String>)> {
     let model_down = match (engine, model) {
         (Engine::Claude, Some(m)) if m.contains("opus") => Some("sonnet"),
         (Engine::Codex, Some(m)) if m.contains("astra") => Some("gpt-6.1-sol"),
@@ -352,7 +433,13 @@ pub fn step_down(engine: Engine, model: Option<&str>, effort: Option<&str>) -> O
         return Some((Some(lighter.to_owned()), effort.map(str::to_owned)));
     }
     const LEVELS: [&str; 7] = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
-    let floor = if engine == Engine::Claude { 1 } else { 0 };
+    let floor = if crate::roles::REVIEWERS.contains(&role) {
+        2
+    } else if engine == Engine::Claude {
+        1
+    } else {
+        0
+    };
     let now = LEVELS.iter().position(|l| Some(*l) == effort).unwrap_or(2);
     (now > floor).then(|| (model.map(str::to_owned), Some(LEVELS[now - 1].to_owned())))
 }
@@ -379,6 +466,8 @@ pub struct Batch {
     pub used: u8,
     pub resets_at: i64,
     pub moves: Vec<Move>,
+    /// The pace behind it, and what the members moving used.
+    pub forecast: Option<Forecast>,
 }
 
 /// No new tickets for members on `engine` until `until`.
@@ -475,8 +564,8 @@ pub fn decide(squad: &Squad<'_>, memory: &mut Memory) -> Decision {
             continue;
         }
         if !fits {
-            // Both run low: lighter on the same engine, and nothing new to start.
-            out.hold.push(Hold { engine: source.engine, until: source.resets_at });
+            // Both run low: the work goes on (holding it would idle the squad
+            // for days on a plan with room left); a lighter setting is offered.
             if memory.stepped.contains(&(source.engine, source.resets_at)) {
                 continue;
             }
@@ -485,32 +574,30 @@ pub fn decide(squad: &Squad<'_>, memory: &mut Memory) -> Decision {
                 .iter()
                 .filter(|m| m.engine == source.engine && !m.pinned && !m.waiting)
                 .filter_map(|m| {
-                    let (model, effort) = step_down(m.engine, m.model.as_deref(), m.effort.as_deref())?;
-                    Some(Move { member: m.name.clone(), role: m.role.clone(), from: m.engine, to: m.engine, model, effort, was_model: m.model.clone(), done: false })
+                    let (model, effort) = step_down(m.engine, &m.role, m.model.as_deref(), m.effort.as_deref())?;
+                    Some(Move { member: m.name.clone(), role: m.role.clone(), from: m.engine, to: m.engine, model, effort, was_model: m.model.clone(), done: false, now: false })
                 })
                 .collect();
             if !moves.is_empty() && memory.declined.iter().all(|d| d != &(source.engine, Why::StepDown, source.resets_at)) {
                 memory.stepped.push((source.engine, source.resets_at));
-                out.batch = Some(Batch { why: Why::StepDown, engine: source.engine, window: source.window, used: source.used, resets_at: source.resets_at, moves });
+                out.batch = Some(Batch { why: Why::StepDown, engine: source.engine, window: source.window, used: source.used, resets_at: source.resets_at, moves, forecast: None });
             }
             continue;
         }
-        let mut movers: Vec<&Mate> = squad
-            .mates
-            .iter()
-            .filter(|m| m.engine == source.engine && m.may_move(now) && squad.reach.takes(to, m))
-            .filter(|m| why != Why::Shift || shifts(to, &m.role))
-            .collect();
-        movers.sort_by_key(|m| (rank(to, &m.role), m.name.clone()));
+        let candidates: Vec<&Mate> = squad.mates.iter().filter(|m| m.engine == source.engine && m.may_move(now, why) && squad.reach.takes(to, m)).collect();
+        let movers = choose(why, to, candidates, source, now);
         if movers.is_empty() {
             continue;
         }
+        let known = movers.iter().any(|m| m.load_bp.is_some());
+        let load_bp = known.then(|| movers.iter().map(|m| m.load()).sum::<u32>().min(10_000));
+        let forecast = (source.window == Some(Window::Weekly) && (source.runs_out_at.is_some() || source.lasts) || load_bp.is_some()).then_some(Forecast { runs_out_at: source.runs_out_at, resets_at: source.resets_at, load_bp });
         let moves = movers
             .into_iter()
-            .map(|m| Move { member: m.name.clone(), role: m.role.clone(), from: m.engine, to, model: None, effort: None, was_model: m.model.clone(), done: false })
+            .map(|m| Move { member: m.name.clone(), role: m.role.clone(), from: m.engine, to, model: None, effort: None, was_model: m.model.clone(), done: false, now: at_turn_end(why, source, m, now) })
             .collect();
         memory.last_batch = Some(now);
-        out.batch = Some(Batch { why, engine: source.engine, window: source.window, used: source.used, resets_at: source.resets_at, moves });
+        out.batch = Some(Batch { why, engine: source.engine, window: source.window, used: source.used, resets_at: source.resets_at, moves, forecast });
     }
     if out.batch.is_none() && gap_ok {
         out.batch = back_home(squad, memory);
@@ -519,6 +606,48 @@ pub fn decide(squad: &Squad<'_>, memory: &mut Memory) -> Decision {
         }
     }
     out
+}
+
+/// Who of `candidates` moves off `source`'s engine to `to`, in the order
+/// they do. A Shift with members' use known: the heaviest first, as many as
+/// it takes for the plan to last at its pace ([`Assessment::need_bp`]) —
+/// those that used little stay, and so does the PM; with nobody's use known,
+/// the implementation roles. A Drain or a hand-over: everyone, the heaviest
+/// first, the PM last.
+pub fn choose<'a>(why: Why, to: Engine, mut candidates: Vec<&'a Mate>, source: &Assessment, now: i64) -> Vec<&'a Mate> {
+    let pm = |m: &Mate| m.role == crate::roles::PM;
+    candidates.sort_by_key(|m| (pm(m), std::cmp::Reverse(m.load()), rank(to, &m.role), m.name.clone()));
+    if why != Why::Shift {
+        return candidates;
+    }
+    if !candidates.iter().any(|m| m.load() >= LIGHT_BP) {
+        candidates.retain(|m| shifts(to, &m.role));
+        candidates.sort_by_key(|m| (rank(to, &m.role), m.name.clone()));
+        return candidates;
+    }
+    let need = source.need_bp(now);
+    let mut taken = 0;
+    let mut out = Vec::new();
+    for m in candidates.into_iter().filter(|m| !pm(m) && m.load() >= LIGHT_BP) {
+        if taken >= need {
+            break;
+        }
+        taken += m.load();
+        out.push(m);
+    }
+    out
+}
+
+/// Whether `m` moves at the end of its turn, its ticket handed over, rather
+/// than before its next ticket: off an engine draining or out, and on a
+/// Shift when the plan would run out before the ticket ends, as its member
+/// estimated it.
+fn at_turn_end(why: Why, source: &Assessment, m: &Mate, now: i64) -> bool {
+    match why {
+        Why::Drain | Why::Exhausted => true,
+        Why::Shift => source.runs_out_at.zip(m.ticket_left).is_some_and(|(out, left)| out - now <= left),
+        _ => false,
+    }
 }
 
 /// Members away from their engine go back once it has recovered for ten minutes.
@@ -530,7 +659,7 @@ fn back_home(squad: &Squad<'_>, memory: &Memory) -> Option<Batch> {
         if now - since < BACK_AFTER {
             continue;
         }
-        let mut movers: Vec<&Mate> = squad.mates.iter().filter(|m| m.home == home && m.engine != home && m.may_move(now) && squad.reach.takes(home, m)).collect();
+        let mut movers: Vec<&Mate> = squad.mates.iter().filter(|m| m.home == home && m.engine != home && m.may_move(now, Why::Return) && squad.reach.takes(home, m)).collect();
         movers.sort_by_key(|m| (rank(home, &m.role), m.name.clone()));
         if movers.is_empty() {
             continue;
@@ -538,11 +667,11 @@ fn back_home(squad: &Squad<'_>, memory: &Memory) -> Option<Batch> {
         let a = assess(reading, memory, now);
         let moves = movers
             .into_iter()
-            .map(|m| Move { member: m.name.clone(), role: m.role.clone(), from: m.engine, to: home, model: m.home_model.clone(), effort: None, was_model: m.model.clone(), done: false })
+            .map(|m| Move { member: m.name.clone(), role: m.role.clone(), from: m.engine, to: home, model: m.home_model.clone(), effort: None, was_model: m.model.clone(), done: false, now: false })
             .collect();
         let window = reading.five_hour.map(|_| Window::FiveHour).or(reading.weekly.map(|_| Window::Weekly));
         let used = reading.five_hour.or(reading.weekly).filter(|w| w.resets_at > now).map_or(0, |w| w.used_percent);
-        return Some(Batch { why: Why::Return, engine: home, window, used, resets_at: a.resets_at.max(reading.five_hour.map_or(0, |w| w.resets_at)), moves });
+        return Some(Batch { why: Why::Return, engine: home, window, used, resets_at: a.resets_at.max(reading.five_hour.map_or(0, |w| w.resets_at)), moves, forecast: None });
     }
     None
 }
@@ -587,7 +716,7 @@ pub fn setup(mates: &[Mate], reach: &Reach) -> Vec<Move> {
             if !reach.takes(seat.engine, m) || (m.engine == seat.engine && same_model(m.model.as_deref(), seat.model)) {
                 return None;
             }
-            Some(Move { member: m.name.clone(), role: m.role.clone(), from: m.engine, to: seat.engine, model: Some(seat.model.to_owned()), effort: Some(seat.effort.to_owned()), was_model: m.model.clone(), done: false })
+            Some(Move { member: m.name.clone(), role: m.role.clone(), from: m.engine, to: seat.engine, model: Some(seat.model.to_owned()), effort: Some(seat.effort.to_owned()), was_model: m.model.clone(), done: false, now: false })
         })
         .collect();
     moves.sort_by_key(|m| (rank(m.to, &m.role), m.member.clone()));

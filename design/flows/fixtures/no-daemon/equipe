@@ -1,0 +1,3 @@
+#!/bin/sh
+# A stand-in `equipe` that can't start a daemon: the window's "daemon off".
+exit 1

@@ -5,9 +5,10 @@
 use equipe_core::t;
 use std::collections::HashMap;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use equipe_core::protocol::engines::HandOver;
 use equipe_core::protocol::rpc::{Hello, SquadEntry};
 use equipe_core::protocol::{DesktopState, Engine, Entry, Estimate, Event, HumanCheck, Mode, OffMain, PlanUsage, SessionId, SessionState, Ticket, TicketEntry, TicketId, TicketKind, TicketStatus, TurnOutcome};
 
@@ -27,10 +28,11 @@ pub struct Clock {
 
 impl Clock {
     pub fn now() -> Self {
-        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-        let secs = unsafe { libc::time(std::ptr::null_mut()) };
-        unsafe { libc::localtime_r(&secs, &mut tm) };
-        Self { hour: tm.tm_hour as u8, minute: tm.tm_min as u8, second: tm.tm_sec as u8 }
+        let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let tm = equipe_providers::platform::local_time(unix).unwrap_or(equipe_providers::platform::CalendarTime {
+            year: 1970, month: 1, day: 1, weekday: 4, hour: 0, minute: 0, second: 0,
+        });
+        Self { hour: tm.hour as u8, minute: tm.minute as u8, second: tm.second as u8 }
     }
 
     /// "14:02", for what is stamped per event: it changes once a minute.
@@ -96,7 +98,11 @@ pub struct Member {
     pub memos: usize,
     /// How full its context is, in percent, once known.
     pub context: Option<u8>,
+    /// The model it runs, as its engine named it — else what it is set to.
     pub model: Option<String>,
+    /// What it is set to, when that differs from `model`: an alias its
+    /// engine resolved (`opus`, running as `claude-opus-4-8`).
+    pub asked: Option<String>,
     pub engine: Option<Engine>,
     /// When it expects what it is doing done, as it said (or equipe guessed).
     pub estimate: Option<Estimate>,
@@ -144,16 +150,16 @@ pub enum Side {
 pub enum Section {
     /// A member asks for permission.
     Permission,
-    /// A member puts a decision to the person: questions with options. 결정 필요.
+    /// A member puts a decision to the person: questions with options. Decisions.
     Decide,
-    /// A ticket put down until the person does their part: 내 차례.
+    /// A ticket put down until the person does their part: Your turn.
     Waiting,
-    /// Work handed in: 검토.
+    /// Work handed in: Review.
     Review,
-    /// Suggested work to take on or drop: 제안.
+    /// Suggested work to take on or drop: Proposed.
     Proposed,
     /// Accepted, but not on main yet — and not left on its branch by the
-    /// person's choice: 수락했지만 아직 main에 안 합쳐짐.
+    /// person's choice: Accepted, not in main yet.
     NotOnMain,
 }
 
@@ -211,6 +217,7 @@ pub fn status_word(status: TicketStatus) -> &'static str {
         TicketStatus::Waiting => t!("state.status_waiting"),
         TicketStatus::Review => t!("state.status_review"),
         TicketStatus::Proposed => t!("state.status_proposed"),
+        TicketStatus::Idea => t!("state.status_idea"),
         TicketStatus::Todo => t!("state.status_todo"),
         TicketStatus::InProgress => t!("state.status_in_progress"),
         TicketStatus::Done => t!("state.status_done"),
@@ -304,10 +311,22 @@ pub struct Model {
     /// The PM accepts the team's handed-in work itself: the person's inbox
     /// keeps only what is theirs.
     pub pm_accepts: bool,
+    /// What new members of a role start with, where the person set it.
+    pub role_models: Vec<equipe_core::protocol::RoleModel>,
+    /// The models each engine offers on the daemon's machine, as last listed
+    /// ([`Event::Models`]); none yet: what this app knows of them.
+    pub catalogs: HashMap<Engine, Vec<equipe_core::protocol::ModelChoice>>,
     /// Hours an empty board waits before the PM is woken; 0: never.
     pub idle_wake_hours: u32,
+    /// How many subagents each member runs at once, where its engine has
+    /// them, as the person set it; `None`: each engine's own.
+    pub subagents_at_once: Option<u32>,
+    /// Which engine reviews the designer's work, as the squad set it.
+    pub design_reviewer: equipe_core::protocol::engines::Reviewer,
     /// The squad's signals, each with its latest readings.
     pub signals: Vec<equipe_core::protocol::signals::SignalView>,
+    /// Conversations with the PM the person put away, the latest first.
+    pub put_away: Vec<equipe_core::protocol::PutAway>,
     /// Secrets members asked the person to type, oldest first.
     pub secret_asks: Vec<equipe_core::protocol::secrets::SecretAsk>,
     /// The browser profiles besides the main one (other people's accounts).
@@ -334,6 +353,8 @@ pub struct Model {
     pub routine_asks: crate::routine::Proposals,
     /// Handed-in work put to the person to confirm, oldest first.
     pub accepts: crate::accept::Cards,
+    /// What waits on the person in their own words, and whether the daemon reads them.
+    pub words: crate::words::Words,
     /// Both engines' plans, the squad's switching and its cards (`engines`).
     pub engines: crate::switching::Engines,
     /// Things that need the person and have not been announced yet: the shell
@@ -353,7 +374,7 @@ pub struct Model {
     /// The conversation with the PM open, when one the person opened is
     /// (`Side::Conversation`): it is what shows and what is said goes to.
     pub talk: Option<SessionId>,
-    /// A conversation with the PM about to start ("새 대화"), and its project
+    /// A conversation with the PM about to start ("New conversation"), and its project
     /// (`None`: the whole squad): it is made with its first message, so none
     /// is left empty.
     pub draft_talk: Option<(SessionId, Option<String>)>,
@@ -364,10 +385,15 @@ pub struct Model {
     /// Bumped whenever the selected conversation shows something new, so a
     /// screen can tell it must draw again.
     pub revision: u64,
-    /// Now, in unix seconds: set by the shell before each update (never read here).
+    /// The side chats opened from this window, by their id (`crate::side_chat`).
+    pub side_chats: HashMap<equipe_core::protocol::SideChatId, crate::side_chat::SideConvo>,
+    /// Now, in unix seconds: set by the shell before each update.
     pub unix: u64,
     /// When each ticket came to the state it is in, as seen from here.
     pub since: HashMap<TicketId, u64>,
+    /// When the person last said something in each conversation, as seen
+    /// from here (unix seconds): what a member asked since is its reply.
+    pub said_at: HashMap<SessionId, u64>,
     /// Tickets the person just acted on, as they looked then: out of what
     /// waits for them until the daemon says they changed.
     pub acted: HashMap<TicketId, Look>,
@@ -393,7 +419,7 @@ pub struct Model {
     /// another screen (`crate::yourturn`), for the cards that asked.
     pub answers: HashMap<TicketId, crate::yourturn::Answered>,
     /// Members' browser pages waiting for the person — a "verify you are
-    /// human" check, a sign-in, a code: in 나에게 until they pass or the
+    /// human" check, a sign-in, a code: in Needs you until they pass or the
     /// browser is handed back.
     pub browser_waits: Vec<BrowserWait>,
     /// Members' browsers handed to the person (`show_my_browser`), by lane,
@@ -410,6 +436,23 @@ pub struct Model {
     pub board_rev: u64,
     /// Bumped on every error the daemon says about the squad (a refused edit).
     pub squad_errors: u64,
+    /// The squad's moves to the other engine, oldest first: which closed
+    /// session each member carries on from, so it shows as one member.
+    pub hand_overs: Vec<HandOver>,
+    /// What each session that took over was handed, by that session, as the
+    /// daemon read it back ([`Event::HandOver`]).
+    pub handed: HashMap<SessionId, Handed>,
+    /// Hand-overs asked of the daemon and not answered yet.
+    handed_asked: std::collections::HashSet<SessionId>,
+}
+
+/// What a session that took over from another on the other engine was
+/// handed: the packet it opened with, and the conversation before it.
+#[derive(Debug, Clone)]
+pub struct Handed {
+    /// Empty when the daemon didn't keep it.
+    pub packet: String,
+    pub before: Convo,
 }
 
 /// A member's browser page that waits for the person. No member decides it,
@@ -466,8 +509,13 @@ impl Model {
             routines: Vec::new(),
             logins: Vec::new(),
             pm_accepts: false,
+            role_models: Vec::new(),
+            catalogs: HashMap::new(),
             idle_wake_hours: equipe_core::protocol::routines::IDLE_WAKE_HOURS,
+            subagents_at_once: None,
+            design_reviewer: Default::default(),
             signals: Vec::new(),
+            put_away: Vec::new(),
             secret_asks: Vec::new(),
             browser_profiles: Vec::new(),
             mode: Mode::default(),
@@ -481,6 +529,7 @@ impl Model {
             team: Default::default(),
             routine_asks: Default::default(),
             accepts: Default::default(),
+            words: Default::default(),
             engines: Default::default(),
             alerts: Vec::new(),
             flash: None,
@@ -493,8 +542,10 @@ impl Model {
             focus: None,
             opened: None,
             revision: 0,
+            side_chats: HashMap::new(),
             unix: 0,
             since: HashMap::new(),
+            said_at: HashMap::new(),
             acted: HashMap::new(),
             news: Default::default(),
             daemon_version: String::new(),
@@ -513,7 +564,16 @@ impl Model {
             reviews: HashMap::new(),
             board_rev: 0,
             squad_errors: 0,
+            hand_overs: Vec::new(),
+            handed: HashMap::new(),
+            handed_asked: Default::default(),
         }
+    }
+
+    /// The models `engine` offers, as the daemon last listed them (none yet:
+    /// the menus offer what this app knows).
+    pub fn listed(&self, engine: Option<Engine>) -> &[equipe_core::protocol::ModelChoice] {
+        engine.and_then(|e| self.catalogs.get(&e)).map_or(&[], Vec::as_slice)
     }
 
     /// The member on screen.
@@ -571,6 +631,12 @@ impl Model {
     }
 
     /// The conversation open now, if it is one the person opened.
+    /// On screen, a conversation with the PM: one the person opened (or is
+    /// starting), or the PM's own — no ticket open over it.
+    pub fn with_pm(&self) -> bool {
+        self.talk_project().is_some() || (self.side_open() == Some(Side::Pm) && self.opened.is_none())
+    }
+
     pub fn talking(&self) -> Option<&Lane> {
         self.talk.and_then(|t| self.lanes.iter().find(|l| l.session == t))
     }
@@ -579,12 +645,22 @@ impl Model {
     /// the person, who works, who rests, who left.
     pub fn team(&self) -> Vec<SessionId> {
         let pm = self.pm();
-        pm.into_iter().chain(self.ordered().into_iter().map(|m| m.session).filter(|s| Some(*s) != pm)).collect()
+        pm.into_iter().chain(self.ordered().into_iter().filter(|m| !self.moved_on(m)).map(|m| m.session).filter(|s| Some(*s) != pm)).collect()
+    }
+
+    /// A closed session whose member carries on in an open one under the same
+    /// name — what a move to the other engine leaves behind. Its work went
+    /// with the hand-over, so the team doesn't list it twice.
+    pub fn moved_on(&self, member: &Member) -> bool {
+        self.status(member) == Status::Closed && self.members.iter().any(|o| o.session != member.session && o.name == member.name && self.status(o) != Status::Closed)
     }
 
     /// The PM's session, or whoever came first without one.
     pub fn pm(&self) -> Option<SessionId> {
-        self.members.iter().find(|m| Self::is_pm(m)).or(self.members.first()).map(|m| m.session)
+        // The PM on duty: a closed one (left behind by a move to the other
+        // engine) only when no PM is open.
+        let open = |m: &&Member| self.status(m) != Status::Closed;
+        self.members.iter().filter(|m| Self::is_pm(m)).find(open).or(self.members.iter().find(|m| Self::is_pm(m))).or(self.members.first()).map(|m| m.session)
     }
 
     /// Whether a ticket shows under the project in focus.
@@ -735,13 +811,75 @@ impl Model {
     /// project in focus, its thread and the squad's — never another project's.
     pub fn conversation(&self, follow: bool) -> crate::convo::Sliced {
         let Some(convo) = self.convo() else { return Default::default() };
-        match self.chat_slice(follow) {
-            Some(slice) => convo.sliced(slice.as_deref()),
-            None => {
-                let blocks = convo.blocks();
-                crate::convo::Sliced { about: vec![None; blocks.len()], blocks }
+        let slice = self.chat_slice(follow);
+        let now = shown_of(convo, slice.as_ref().map(Option::as_deref));
+        // A member's own conversation, after a move to the other engine: the
+        // one before above it, each move a line between — one member, one thread.
+        match self.viewed().filter(|s| self.shows_own(*s)) {
+            Some(session) => self.stitched(session, slice.as_ref().map(Option::as_deref), now),
+            None => now,
+        }
+    }
+
+    /// The moves member session `session` carries on from, oldest first.
+    pub fn moves_into(&self, session: SessionId) -> Vec<&HandOver> {
+        let mut chain = HandOver::chain(&self.hand_overs, session);
+        chain.reverse();
+        chain
+    }
+
+    /// `now`, the conversation of member session `session`, with every one it
+    /// carries on from above it, oldest first, each followed by its move's
+    /// divider. What was said before shows as the daemon read it back, else
+    /// as this window saw it, if it did.
+    fn stitched(&self, session: SessionId, slice: Option<Option<&str>>, now: crate::convo::Sliced) -> crate::convo::Sliced {
+        let moves = self.moves_into(session);
+        if moves.is_empty() {
+            return now;
+        }
+        let mut out = crate::convo::Sliced::default();
+        for h in moves {
+            let before = self.handed.get(&h.to_session).map(|x| &x.before).or_else(|| self.convos.get(&h.from_session));
+            if let Some(before) = before {
+                let part = shown_of(before, slice);
+                // What waited for the old session went with the hand-over.
+                let said = part.blocks.iter().rposition(|b| !matches!(b, crate::convo::Block::Pending { .. })).map_or(0, |at| at + 1);
+                out.blocks.extend(part.blocks.into_iter().take(said));
+                out.about.extend(part.about.into_iter().take(said));
+                out.at.extend(part.at.into_iter().take(said));
+            }
+            let at = u64::try_from(h.at).unwrap_or(0);
+            out.blocks.push(crate::convo::Block::Moved { from: h.from, to: h.to, at, session: h.to_session });
+            out.about.push(None);
+            out.at.push(Some(at));
+        }
+        out.blocks.extend(now.blocks);
+        out.about.extend(now.about);
+        out.at.extend(now.at);
+        // One member speaks throughout: named over its first reply only.
+        let mut named = false;
+        for block in &mut out.blocks {
+            if let crate::convo::Block::Reply { first, .. } = block {
+                *first = !named;
+                named = true;
             }
         }
+        out
+    }
+
+    /// The hand-overs the member in view carries on from that the daemon
+    /// hasn't sent yet, nor been asked for: asked now ([`Command::HandOver`]).
+    pub fn hand_overs_wanted(&mut self) -> Vec<SessionId> {
+        let Some(session) = self.selected else { return Vec::new() };
+        let wanted: Vec<SessionId> = self.moves_into(session).iter().map(|h| h.to_session).filter(|s| !self.handed.contains_key(s) && !self.handed_asked.contains(s)).collect();
+        self.handed_asked.extend(wanted.iter().copied());
+        wanted
+    }
+
+    /// A member's moves between engines, as its header tells them: each
+    /// one's engines, when, why, and whether it was mid-ticket — oldest first.
+    pub fn engine_history(&self, session: SessionId) -> Vec<String> {
+        self.moves_into(session).iter().map(|h| moved_line(h, self.unix)).collect()
     }
 
     pub fn convo_mut(&mut self) -> Option<&mut Convo> {
@@ -758,18 +896,34 @@ impl Model {
         self.members.iter().find(|m| m.name == name && m.presence != Presence::Closed)
     }
 
-    /// Show a member's conversation. True when that changed what is on screen.
+    /// Show a member's conversation — its own: not a ticket's work, nor a
+    /// conversation the person opened with the PM, which would otherwise stay
+    /// in view and take what is said. True when that changed what is on screen.
     pub fn select(&mut self, session: SessionId) -> bool {
-        if (self.selected == Some(session) && self.opened.is_none()) || !self.members.iter().any(|m| m.session == session) {
+        if self.shows_own(session) || !self.members.iter().any(|m| m.session == session) {
             return false;
         }
         for convo in self.convos.values_mut() {
             convo.showing = None;
         }
         self.opened = None;
+        self.talk = None;
+        self.draft_talk = None;
         self.selected = Some(session);
         self.revision += 1;
         true
+    }
+
+    /// Whom the design screen talks to and asks: the designer — at work or
+    /// not, while on the team — else the PM (`true`).
+    pub fn design_talker(&self) -> Option<(&Member, bool)> {
+        let designer = self.members.iter().find(|m| m.role == "designer" && m.presence != Presence::Closed);
+        designer.map(|d| (d, false)).or_else(|| self.members.iter().find(|m| Self::is_pm(m)).map(|pm| (pm, true)))
+    }
+
+    /// Whether member `session`'s own conversation is the one in view.
+    pub fn shows_own(&self, session: SessionId) -> bool {
+        self.selected == Some(session) && self.opened.is_none() && self.talk.is_none() && self.draft_talk.is_none()
     }
 
     /// The names of the squad's projects, as chips show them.
@@ -819,6 +973,15 @@ impl Model {
     fn keep_selection(&mut self) {
         let valid = self.selected.is_some_and(|id| self.members.iter().any(|m| m.session == id));
         if !valid {
+            // A member that moved to the other engine meanwhile: where it carries on.
+            let mut at = self.selected;
+            for _ in 0..self.hand_overs.len() {
+                at = at.and_then(|s| self.hand_overs.iter().rev().find(|h| h.from_session == s).map(|h| h.to_session));
+                if let Some(heir) = at.filter(|s| self.members.iter().any(|m| m.session == *s)) {
+                    self.selected = Some(heir);
+                    return;
+                }
+            }
             self.selected = self.members.iter().find(|m| Self::is_pm(m)).or(self.members.first()).map(|m| m.session);
         }
     }
@@ -862,8 +1025,12 @@ impl Model {
             Update::Bridge(_) | Update::Leg(_) | Update::Door(_) => false,
             Update::Event(event) => {
                 let before = (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint(), self.compact_hint());
+                // What waits in words is drawn over the composer: always a redraw.
+                let words = matches!(event, Event::WordsLive { .. } | Event::WordsClosed { .. } | Event::WordsLog { .. } | Event::WordsAllChanged { .. });
+                // So is a side chat, beside the conversation.
+                let words = words || matches!(event, Event::SideChatOpened { .. } | Event::SideChat { .. } | Event::SideChatClosed { .. });
                 self.on_event(event, now);
-                let mut changed = before != (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint(), self.compact_hint());
+                let mut changed = words || before != (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint(), self.compact_hint());
                 // The footer's "last event" moves when the minute does.
                 if let Conn::Connected { last_event } = &mut self.conn {
                     let stamp = Some(now);
@@ -906,6 +1073,9 @@ impl Model {
         let version = hello.version;
         let snapshot = hello.snapshot;
         self.engines.load(&snapshot, self.unix as i64);
+        // What came before a move is kept as read; asked again only if lost on the way.
+        self.hand_overs = snapshot.hand_overs.clone();
+        self.handed_asked.clear();
         self.squad = snapshot.squad;
         // When each came to where it stands: what the journal says, unless it
         // was seen here already in that state.
@@ -919,9 +1089,13 @@ impl Model {
         self.projects = snapshot.projects.clone();
         self.hq = snapshot.hq.clone();
         self.pm_accepts = snapshot.pm_accepts;
+        self.role_models = snapshot.role_models.clone();
         // An older daemon says nothing: it wakes nobody, but the setting shows its default.
         self.idle_wake_hours = snapshot.idle_wake_hours.unwrap_or(equipe_core::protocol::routines::IDLE_WAKE_HOURS);
+        self.subagents_at_once = snapshot.subagents_at_once;
+        self.design_reviewer = snapshot.design_reviewer;
         self.signals = snapshot.signals.clone();
+        self.put_away = snapshot.put_away.clone();
         self.secret_asks = snapshot.secret_asks.clone();
         self.routines = snapshot.routines.clone();
         self.reviews = snapshot.reviews.iter().map(|r| (r.ticket, r.clone())).collect();
@@ -940,6 +1114,7 @@ impl Model {
         self.team.load(snapshot.team_changes.clone());
         self.routine_asks.load(snapshot.routine_proposals.clone());
         self.accepts.load(snapshot.accepts.clone());
+        self.words.load(snapshot.words.clone(), snapshot.words_all);
         // An older daemon: the banner over the conversation says so, with its button.
         self.daemon_version = version;
         self.member_modes = snapshot.sessions.iter().filter_map(|s| Some((s.session, s.mode?))).collect();
@@ -984,6 +1159,7 @@ impl Model {
                     memos: s.queued.len(),
                     context: s.context.and_then(percent),
                     model: s.model.clone(),
+                    asked: s.asked_model.clone(),
                     engine: Some(s.engine),
                     estimate: s.estimate.clone(),
                     target: s.recent.iter().rev().find_map(|e| match e {
@@ -1022,6 +1198,25 @@ impl Model {
             }
             Event::EngineProposalClosed { squad, id, .. } if *squad == self.squad => self.engines.close(*id),
             Event::EngineSwitchingChanged { squad, mode } if *squad == self.squad => self.engines.mode = *mode,
+            Event::MemberMoved { squad, hand_over } if *squad == self.squad => {
+                if !self.hand_overs.iter().any(|h| h.to_session == hand_over.to_session) {
+                    self.hand_overs.push(hand_over.clone());
+                }
+                self.retire_moved();
+                self.revision += 1;
+            }
+            Event::HandOver { squad, session, packet, lines, lines_at } if *squad == self.squad => {
+                self.handed_asked.remove(session);
+                let Some(h) = self.hand_overs.iter().find(|h| h.to_session == *session) else { return };
+                // Drawn as its member's conversation was: from where it worked, the PM's sliced.
+                let old = self.convos.get(&h.from_session);
+                let base = old.map_or_else(|| self.convos.get(session).map(|c| c.base.clone()).unwrap_or_default(), |c| c.base.clone());
+                let is_pm = old.or(self.convos.get(session)).is_some_and(|c| c.is_pm);
+                let mut before = Convo::new(base, is_pm);
+                before.transcript = equipe_core::protocol::Transcript::with_times(lines.clone(), lines_at.clone());
+                self.handed.insert(*session, Handed { packet: packet.clone(), before });
+                self.revision += 1;
+            }
             Event::SecretAsked { squad, ask } if *squad == self.squad => {
                 if !self.secret_asks.iter().any(|a| a.id == ask.id) {
                     self.secret_asks.push(ask.clone());
@@ -1036,12 +1231,32 @@ impl Model {
                 self.pm_accepts = *on;
                 self.revision += 1;
             }
+            Event::RoleModelsChanged { squad, defaults } if *squad == self.squad => {
+                self.role_models = defaults.clone();
+                self.revision += 1;
+            }
+            Event::Models { engine, models } => {
+                self.catalogs.insert(*engine, models.clone());
+                self.revision += 1;
+            }
             Event::IdleWakeChanged { squad, hours } if *squad == self.squad => {
                 self.idle_wake_hours = *hours;
                 self.revision += 1;
             }
+            Event::SubagentsAtOnceChanged { squad, at_once } if *squad == self.squad => {
+                self.subagents_at_once = *at_once;
+                self.revision += 1;
+            }
+            Event::DesignReviewerChanged { squad, reviewer } if *squad == self.squad => {
+                self.design_reviewer = *reviewer;
+                self.revision += 1;
+            }
             Event::SignalsChanged { squad, signals } if *squad == self.squad => {
                 self.signals = signals.clone();
+                self.revision += 1;
+            }
+            Event::PutAwayChanged { squad, list } if *squad == self.squad => {
+                self.put_away = list.clone();
                 self.revision += 1;
             }
             Event::RoutinesChanged { squad, routines } if *squad == self.squad => self.routines = routines.clone(),
@@ -1055,6 +1270,31 @@ impl Model {
                 }
                 self.projects = projects.clone();
                 self.order_projects();
+            }
+            // A side chat's: its own words, and what it used counted as its member's.
+            Event::SideChatOpened { squad, side, search, .. } if squad.as_ref().is_none_or(|s| *s == self.squad) => {
+                if let Some(chat) = self.side_chats.get_mut(side) {
+                    chat.search = Some(*search);
+                    chat.gone = false;
+                }
+            }
+            Event::SideChat { side, session, event: inner, .. } => {
+                if let Some(chat) = self.side_chats.get_mut(side) {
+                    chat.on_event(inner);
+                }
+                if let Event::TurnEnded { usage: Some(u), .. } = &**inner {
+                    let member = self.lanes.iter().find(|l| l.session == *session).map_or(*session, |l| l.of);
+                    let spent = self.spent.entry(member).or_default();
+                    spent.tokens += u.total();
+                    spent.seen.0 += u.total();
+                    spent.seen.1 += u.cache_tokens.unwrap_or(0);
+                }
+            }
+            Event::SideChatClosed { side, .. } => {
+                if let Some(chat) = self.side_chats.get_mut(side) {
+                    chat.gone = true;
+                    chat.working = false;
+                }
             }
             Event::TurnEnded { session, usage: Some(u), .. } if !self.lanes.iter().any(|l| l.session == *session) => {
                 let spent = self.spent.entry(*session).or_default();
@@ -1109,6 +1349,8 @@ impl Model {
     }
 
     fn on_member_event(&mut self, event: Event) {
+        // A member starting or leaving may be a move to the other engine.
+        let comes_or_goes = matches!(event, Event::SessionStarted { .. } | Event::SessionClosed { .. });
         match event {
             Event::TicketChanged { ticket, .. } => self.on_ticket(&ticket),
             Event::TicketHistory { squad, ticket, entries } if squad == self.squad => {
@@ -1164,6 +1406,16 @@ impl Model {
                 }
             }
             Event::AcceptClosed { squad, id, .. } if squad == self.squad => self.accepts.close(id),
+            Event::WordsLive { squad, live } if squad == self.squad => self.words.live(live),
+            // Its card goes; its line shows under the composer — never inside a member's reply.
+            Event::WordsClosed { squad, id, text, .. } if squad == self.squad => {
+                self.words.close(id);
+                if !text.is_empty() {
+                    self.flash = Some(text);
+                }
+            }
+            Event::WordsAllChanged { squad, on } if squad == self.squad => self.words.all = on,
+            Event::WordsLog { squad, entries } if squad == self.squad => self.words.got_log(entries),
             Event::ModeChanged { squad, member, mode } if squad == self.squad => match member {
                 None => self.mode = mode.unwrap_or_default(),
                 Some(name) => {
@@ -1181,6 +1433,24 @@ impl Model {
                 self.desktop = desktop;
             }
             Event::LaneOpened { session, of, project, kept } => self.open_lane(session, of, project, kept),
+            // Taken up again: its name and what was said, as it was left.
+            Event::ConversationBack { session, title, lines, lines_at } => {
+                if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == session) {
+                    lane.title = title;
+                }
+                if let Some(convo) = self.convos.get_mut(&session) {
+                    convo.transcript = equipe_core::protocol::Transcript::with_times(lines, lines_at);
+                }
+                self.revision += 1;
+            }
+            Event::ConversationTitle { session, title } => {
+                if let Some(lane) = self.lanes.iter_mut().find(|lane| lane.session == session)
+                    && lane.title.is_none()
+                {
+                    lane.title = Some(title.clone());
+                    self.revision += 1;
+                }
+            }
             Event::LaneMoved { session, project } => {
                 if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == session) {
                     lane.project = project;
@@ -1220,6 +1490,7 @@ impl Model {
                     memos: 0,
                     context: None,
                     model,
+                    asked: None,
                     engine: Some(engine),
                     estimate: None,
                     target: None,
@@ -1230,14 +1501,12 @@ impl Model {
             other => {
                 let Some(id) = other.session() else { return };
                 let unix = self.unix;
+                if matches!(other, Event::UserMessage { .. }) {
+                    self.said_at.insert(id, unix);
+                }
                 if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == id) {
                     if matches!(other, Event::UserMessage { .. } | Event::TurnEnded { .. }) {
                         lane.active = unix;
-                    }
-                    if let Event::UserMessage { text, .. } = &other
-                        && lane.title.is_none()
-                    {
-                        lane.title = text.lines().next().map(str::to_owned);
                     }
                     match other {
                         Event::UserMessage { .. } => (lane.presence, lane.verb) = (Presence::Working, Verb::Thinking),
@@ -1279,7 +1548,11 @@ impl Model {
                         member.presence = Presence::Working;
                         member.verb = Verb::Writing;
                     }
-                    Event::ModelKnown { model, .. } => member.model = Some(model),
+                    Event::ModelKnown { model, asked, .. } => {
+                        // What it is set to, kept apart only while it differs.
+                        member.asked = asked.filter(|a| *a != model);
+                        member.model = Some(model);
+                    }
                     Event::TurnEnded { usage, outcome, .. } => {
                         member.failed = outcome == TurnOutcome::Failed;
                         if member.failed {
@@ -1298,6 +1571,34 @@ impl Model {
                     _ => {}
                 }
             }
+        }
+        if comes_or_goes {
+            self.retire_moved();
+        }
+    }
+
+    /// A member's closed session that an open one under the same name carries
+    /// on from — what a move to the other engine leaves — leaves the team:
+    /// every list shows the member once, as the session that is open. Its
+    /// conversation stays, to show above the new one's; whoever looked at
+    /// it looks at the new one.
+    fn retire_moved(&mut self) {
+        let gone: Vec<(SessionId, SessionId)> = self
+            .members
+            .iter()
+            .filter(|m| self.moved_on(m))
+            .filter_map(|m| Some((m.session, self.members.iter().find(|o| o.name == m.name && self.status(o) != Status::Closed)?.session)))
+            .collect();
+        for (old, heir) in gone {
+            // The member keeps its place in the team: the open session takes the closed one's.
+            if let (Some(at), Some(from)) = (self.members.iter().position(|m| m.session == old), self.members.iter().position(|m| m.session == heir)) {
+                self.members.swap(at, from);
+            }
+            self.members.retain(|m| m.session != old);
+            if self.selected == Some(old) {
+                self.selected = Some(heir);
+            }
+            self.revision += 1;
         }
     }
 
@@ -1437,7 +1738,7 @@ impl Model {
 
     /// One of the daemon's browser events (the panel's, told here too): a
     /// member's page that starts waiting for the person, or a browser its
-    /// member hands them, goes into 나에게 and is announced; one that passed,
+    /// member hands them, goes into Needs you and is announced; one that passed,
     /// or a browser handed back, leaves.
     pub fn on_browser(&mut self, event: &Event) -> bool {
         let before = self.browser_waits.clone();
@@ -1482,7 +1783,7 @@ impl Model {
         before != self.browser_waits
     }
 
-    /// The browsers handed to the person whose tabs are known: in 나에게, on
+    /// The browsers handed to the person whose tabs are known: in Needs you, on
     /// the tab its member works in, announced the first time.
     fn settle_handed(&mut self) {
         let mut asked: Vec<(String, String)> = self.browser_asked.iter().map(|(l, w)| (l.clone(), w.clone())).collect();
@@ -1548,6 +1849,16 @@ impl Model {
         ticket.project.clone().or_else(|| self.projects.first().cloned())
     }
 
+    /// The plan a ticket was cut from, or reviews, on the daemon's machine:
+    /// its path in the ticket's project, or one of its own in the squad's folder.
+    pub fn ticket_plan(&self, ticket: &Ticket) -> Option<PathBuf> {
+        let plan = Path::new(ticket.plan.as_deref().map(str::trim).filter(|p| !p.is_empty())?);
+        if plan.is_absolute() {
+            return Some(plan.to_owned());
+        }
+        self.ticket_project(ticket).map(|project| project.join(plan))
+    }
+
     pub fn ticket_project_name(&self, ticket: &Ticket) -> Option<String> {
         self.ticket_project(ticket).map(|p| equipe_core::board::project_name(&p))
     }
@@ -1555,11 +1866,11 @@ impl Model {
     /// Everything waiting for the person, in one list, by section: requests
     /// for permission, tickets put down for them, work handed in, proposals,
     /// work accepted but not on main. The one definition the sidebar's count,
-    /// 나에게 and notifications all read. Tickets follow the project in focus
+    /// Needs you and notifications all read. Tickets follow the project in focus
     /// and leave once the person acted on them; requests always show.
     pub fn needs_you(&self) -> Vec<(Section, Need)> {
         let mut out: Vec<(Section, Need)> = self.approvals.open_items().map(|a| (Section::Permission, Need::Permission(a.id))).collect();
-        out.extend(self.asked.open().map(|s| (Section::Decide, Need::Questions(s.id))));
+        out.extend(self.questions_waiting().into_iter().map(|(s, _)| (Section::Decide, Need::Questions(s.id))));
         out.extend(self.team.open().map(|c| (Section::Decide, Need::Team(c.id))));
         out.extend(self.routine_asks.open().map(|r| (Section::Decide, Need::Routine(r.id))));
         out.extend(self.accepts.open().map(|c| (Section::Decide, Need::Accept(c.id))));
@@ -1580,9 +1891,59 @@ impl Model {
         out
     }
 
+    /// Whether a question set holds work up: it is about a ticket still open.
+    pub fn question_blocks(&self, set: &equipe_core::protocol::decide::QuestionSet) -> bool {
+        set.ticket.is_some_and(|id| self.tickets.iter().any(|t| t.id == id && !t.status.is_closed()))
+    }
+
+    /// Every question set waiting, in the order they are offered away from
+    /// any one conversation (Needs you): those that hold work up first, then
+    /// the newest; the older ones last.
+    pub fn questions_waiting(&self) -> Vec<(&equipe_core::protocol::decide::QuestionSet, crate::decide::Rank)> {
+        crate::decide::order(self.asked.open().collect(), None, self.unix, |s| self.question_blocks(s))
+    }
+
+    /// The question sets the conversation on screen offers, in order: what
+    /// its member asked since the person last spoke there first
+    /// ([`crate::decide::order`]). None with no member on screen.
+    pub fn questions_here(&self) -> Vec<(&equipe_core::protocol::decide::QuestionSet, crate::decide::Rank)> {
+        let Some(member) = self.selected_member() else { return Vec::new() };
+        let mut sessions = vec![member.session];
+        sessions.extend(self.viewed().filter(|v| *v != member.session));
+        let said_at = sessions.iter().filter_map(|s| self.said_at.get(s)).max().copied();
+        let here = crate::decide::Here { member: &member.name, sessions, said_at };
+        crate::decide::order(self.asked.in_conversation(&member.name, Self::is_pm(member)), Some(&here), self.unix, |s| self.question_blocks(s))
+    }
+
     /// How many things wait for the person.
     pub fn needs_you_count(&self) -> usize {
         self.needs_you().len()
+    }
+
+    /// The project each thing waiting for the person is about: its ticket's,
+    /// else the conversation it was asked in; None for the squad's own.
+    pub fn need_project(&self, need: &Need) -> Option<String> {
+        let ticket = |id: TicketId| self.tickets.iter().find(|t| t.id == id).and_then(|t| self.ticket_project_name(t));
+        let asked_in = |session: SessionId| self.lanes.iter().find(|l| l.session == session).and_then(|l| l.project.clone());
+        let by = |ticket_id: Option<TicketId>, session: SessionId| ticket_id.and_then(ticket).or_else(|| asked_in(session));
+        match *need {
+            Need::Permission(id) => self.approvals.open_items().find(|a| a.id == id).and_then(|a| by(a.ticket, a.session)),
+            Need::Questions(id) => self.asked.open().find(|s| s.id == id).and_then(|s| by(s.ticket, s.session)),
+            Need::Accept(id) => self.accepts.open().find(|c| c.id == id).and_then(|c| c.tickets.first().copied()).and_then(ticket),
+            Need::Secret(id) => self.secret_asks.iter().find(|a| a.id == id).and_then(|a| by(a.ticket, a.session)),
+            Need::Ticket(id) => ticket(id),
+            _ => None,
+        }
+    }
+
+    /// What waits for the person, counted by project (None: the squad's own):
+    /// the counts add up to [`Model::needs_you_count`].
+    pub fn needs_by_project(&self) -> std::collections::BTreeMap<Option<String>, usize> {
+        let mut out = std::collections::BTreeMap::new();
+        for (_, need) in self.needs_you() {
+            *out.entry(self.need_project(&need)).or_insert(0) += 1;
+        }
+        out
     }
 
     /// Whether a ticket waits for the person, and under which section.
@@ -1592,17 +1953,24 @@ impl Model {
             // A designer checks its screens first.
             TicketStatus::Review if t.in_design_qa() => None,
             // Where the PM accepts, handed-in work is the PM's: the person sees
-            // only what it puts to them, on a card.
-            TicketStatus::Review if self.pm_accepts => None,
+            // only what it puts to them, on a card — and code the PM changed
+            // itself, which is never its own to accept.
+            TicketStatus::Review if self.pm_accepts && !self.pm_coded(t) => None,
             TicketStatus::Review => Some(Section::Review),
-            // …and so are members' proposals; the PM's own are for the person.
-            TicketStatus::Proposed if self.pm_accepts && (!self.is_pm_name(&t.created_by) || t.could_not_start()) => None,
+            // …and so are members' proposals; the PM's own are for the person,
+            // as is an idea of theirs the PM brings back, whoever kept it.
+            TicketStatus::Proposed if self.pm_accepts && t.why_now().is_none() && (!self.is_pm_name(&t.created_by) || t.could_not_start()) => None,
             TicketStatus::Proposed => Some(Section::Proposed),
             // A conflict its owner is resolving comes back through the PM.
             TicketStatus::Done if self.pm_accepts && matches!(t.off_main, Some(equipe_core::protocol::OffMain::Conflict { .. })) => None,
             TicketStatus::Done if t.waits_to_merge() => Some(Section::NotOnMain),
             _ => None,
         }
+    }
+
+    /// Whether `t` is code the PM changed itself, on a ticket of its own.
+    fn pm_coded(&self, t: &Ticket) -> bool {
+        t.kind == equipe_core::protocol::TicketKind::Code && t.assignee.as_deref().is_some_and(|a| self.is_pm_name(a))
     }
 
     /// Whether `name` is the squad's PM (or one of them).
@@ -1741,11 +2109,11 @@ impl Model {
     /// is working, who is resting, and who has left — each in the order they joined.
     pub fn ordered(&self) -> Vec<&Member> {
         let rank = |m: &Member| match self.status(m) {
+            Status::Closed => 4,
             _ if m.role == "pm" => 0,
             Status::NeedsYou(_) => 1,
             Status::Working { .. } => 2,
             Status::Ready { .. } => 3,
-            Status::Closed => 4,
         };
         let mut list: Vec<&Member> = self.members.iter().collect();
         list.sort_by_key(|m| rank(m));
@@ -1760,27 +2128,132 @@ pub struct Eta {
     pub guessed: bool,
 }
 
+/// A conversation as it shows: whole (`None`), or a slice of the PM's (see
+/// [`Convo::sliced`]).
+fn shown_of(convo: &Convo, slice: Option<Option<&str>>) -> crate::convo::Sliced {
+    match slice {
+        Some(slice) => convo.sliced(slice),
+        None => {
+            let (blocks, at) = convo.blocks_at();
+            crate::convo::Sliced { about: vec![None; blocks.len()], blocks, at }
+        }
+    }
+}
+
+/// The line between a member's conversations where it moved: "Moved from
+/// Claude to Codex" — or, the other engine not starting it, "Started again on Claude".
+pub fn moved_words(from: Engine, to: Engine) -> String {
+    let name = crate::switching::engine_name;
+    if from == to { t!("moved.divider_same", engine = name(to)) } else { t!("moved.divider", from = name(from), to = name(to)) }
+}
+
+/// What the document panel calls a hand-over packet: "backend — hand-over to Codex".
+pub fn packet_name(h: &HandOver) -> String {
+    // A name, never a path: nothing in it reads as a folder.
+    t!("moved.packet_name", name = h.member, engine = crate::switching::engine_name(h.to)).replace(['/', '\\'], "-")
+}
+
+/// Why a member moved, as its engine history says it.
+pub fn moved_why(h: &HandOver) -> String {
+    use equipe_core::protocol::engines::Why;
+    let name = crate::switching::engine_name;
+    match h.why {
+        Why::Person | Why::Setup => t!("moved.why_person").to_owned(),
+        Why::Exhausted => t!("moved.why_out", engine = name(h.from)),
+        Why::Return => t!("moved.why_back", engine = name(h.to)),
+        Why::Shift | Why::Drain | Why::StepDown => t!("moved.why_pace", engine = name(h.from)),
+    }
+}
+
+/// One move, as a member's engine history lists it: "Claude → Codex · 14:05
+/// · Claude's plan ran out · mid-ticket, T-42 handed over".
+pub fn moved_line(h: &HandOver, now: u64) -> String {
+    let name = crate::switching::engine_name;
+    let place = match h.ticket {
+        Some(id) => t!("moved.mid_ticket", id = id),
+        None => t!("moved.between").to_owned(),
+    };
+    t!("moved.line", from = name(h.from), to = name(h.to), when = crate::metrics::moment(u64::try_from(h.at).unwrap_or(0), now), why = moved_why(h), place = place)
+}
+
 /// `14:30` in local time.
 pub fn local_hm(unix: u64) -> String {
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let secs = unix as libc::time_t;
-    unsafe { libc::localtime_r(&secs, &mut tm) };
-    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
+    let Some(tm) = equipe_providers::platform::local_time(unix) else { return format!("{unix}") };
+    format!("{:02}:{:02}", tm.hour, tm.minute)
 }
 
 /// The start of the local day `unix` falls in (midnight, as the Mac's clock
 /// and time zone have it), in unix seconds.
 pub fn local_midnight(unix: u64) -> u64 {
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let secs = unix as libc::time_t;
-    unsafe { libc::localtime_r(&secs, &mut tm) };
-    tm.tm_hour = 0;
-    tm.tm_min = 0;
-    tm.tm_sec = 0;
-    // Daylight saving as that day has it.
-    tm.tm_isdst = -1;
-    let midnight = unsafe { libc::mktime(&mut tm) };
-    if midnight < 0 || midnight as u64 > unix { unix - unix % 86_400 } else { midnight as u64 }
+    equipe_providers::platform::local_midnight(unix).filter(|midnight| *midnight <= unix).unwrap_or(unix - unix % 86_400)
+}
+
+/// What `unix` reads on the Mac's clock, in its time zone.
+pub fn local_time(unix: u64) -> crate::activity::Local {
+    let tm = equipe_providers::platform::local_time(unix).unwrap_or(equipe_providers::platform::CalendarTime {
+        year: 1970, month: 1, day: 1, weekday: 4, hour: 0, minute: 0, second: 0,
+    });
+    crate::activity::Local {
+        year: i64::from(tm.year),
+        month: tm.month,
+        day: tm.day,
+        weekday: tm.weekday,
+        hour: tm.hour,
+        minute: tm.minute,
+    }
+}
+
+/// How this Mac's clock tells the hour — as its region does, or as the
+/// person set it (System Settings › General › Date & Time) — if it says.
+pub fn system_hours() -> Option<crate::activity::Hours> {
+    static HOURS: std::sync::OnceLock<Option<crate::activity::Hours>> = std::sync::OnceLock::new();
+    *HOURS.get_or_init(mac_hours)
+}
+
+/// The hour in the Mac's own short time format (`h:mm a`, `HH:mm`).
+#[cfg(target_os = "macos")]
+fn mac_hours() -> Option<crate::activity::Hours> {
+    use objc2_core_foundation::{CFRetained, CFString};
+    use std::ffi::c_void;
+    use std::ptr::NonNull;
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFLocaleCopyCurrent() -> *const c_void;
+        fn CFDateFormatterCreateDateFormatFromTemplate(allocator: *const c_void, template: &CFString, options: usize, locale: *const c_void) -> Option<NonNull<CFString>>;
+        fn CFRelease(cf: *const c_void);
+    }
+    // `j`: the hour as the locale tells it, its 12- or 24-hour clock and all.
+    let template = CFString::from_str("j");
+    let format = unsafe {
+        let locale = CFLocaleCopyCurrent();
+        if locale.is_null() {
+            return None;
+        }
+        let format = CFDateFormatterCreateDateFormatFromTemplate(std::ptr::null(), &template, 0, locale);
+        CFRelease(locale);
+        CFRetained::from_raw(format?)
+    };
+    hours_of_format(&format.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mac_hours() -> Option<crate::activity::Hours> {
+    None
+}
+
+/// The clock a date format tells the hour on: `h` and `K` 12-hour, `H` and
+/// `k` 24-hour (words in quotes aside).
+fn hours_of_format(format: &str) -> Option<crate::activity::Hours> {
+    let mut quoted = false;
+    for c in format.chars() {
+        match c {
+            '\'' => quoted = !quoted,
+            'h' | 'K' if !quoted => return Some(crate::activity::Hours::Twelve),
+            'H' | 'k' if !quoted => return Some(crate::activity::Hours::TwentyFour),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Now, in unix seconds: for the shell to hand the model.
@@ -1833,6 +2306,24 @@ mod tests {
         model.apply(Update::Event(failed), T0);
         assert_eq!(model.take_problem().as_deref(), Some("No engine is ready."), "no conversation to show it in: the squad's problem");
         assert_eq!(model.squad_errors, 1);
+    }
+
+    #[test]
+    fn a_side_chats_words_stay_in_it_and_what_it_used_counts_as_its_members() {
+        let mut model = Model::new("acme");
+        model.side_chats.insert(9, crate::side_chat::SideConvo::new(2, "the header"));
+        let inside = |event: Event| Update::Event(Event::SideChat { squad: Some("acme".into()), session: 2, side: 9, event: Box::new(event) });
+        assert!(model.apply(Update::Event(Event::SideChatOpened { squad: Some("acme".into()), session: 2, side: 9, search: false }), T0), "drawn again");
+        assert_eq!(model.side_chats[&9].search, Some(false));
+        model.apply(inside(Event::UserMessage { session: 9, text: "why?".into(), kept: Vec::new() }), T0);
+        model.apply(inside(Event::TextDelta { session: 9, text: "Because.".into() }), T0);
+        let usage = equipe_core::protocol::Usage { input_tokens: Some(10), output_tokens: Some(5), cache_tokens: Some(100), ..Default::default() };
+        model.apply(inside(Event::TurnEnded { session: 9, outcome: TurnOutcome::Completed, usage: Some(usage) }), T0);
+        assert_eq!(model.side_chats[&9].last_answer().as_deref(), Some("Because."));
+        assert!(model.convos.get(&2).is_none_or(|c| c.transcript.is_empty()), "nothing of it in the member's conversation");
+        assert_eq!(model.spent.get(&2).map(|s| (s.tokens, s.seen.1)), Some((115, 100)), "its usage counts as the member's");
+        model.apply(Update::Event(Event::SideChatClosed { squad: Some("acme".into()), side: 9 }), T0);
+        assert!(model.side_chats[&9].gone, "let go, its words kept");
     }
 
     #[test]
@@ -1948,6 +2439,7 @@ mod tests {
             member: Some(Who { role: role.into(), name: name.into() }),
             engine: Engine::Claude,
             model: Some("opus".into()),
+            asked_model: None,
             access: Access::EditFiles,
             workspace: None,
             state,
@@ -1955,6 +2447,7 @@ mod tests {
             tokens: 0,
             context: None,
             recent: vec![],
+            recent_at: Vec::new(),
             queued: vec![],
             queued_project: None,
             queued_in: vec![],
@@ -1988,7 +2481,7 @@ mod tests {
         let mut model = Model::new("acme");
         let mut pm = session(1, "pm", "pm", SessionState::Ready);
         let about = |p: &str| Entry::Thread { project: Some(p.into()) };
-        let said = |t: &str| Entry::User { text: t.into() };
+        let said = |t: &str| Entry::User { text: t.into(), kept: Vec::new() };
         let reply = |t: &str| Entry::Reply { text: t.into() };
         pm.recent = vec![about("app"), said("app q"), reply("app a"), about("site"), said("site q"), reply("site a")];
         model.apply(hello(vec![pm, session(2, "frontend", "frontend", SessionState::Ready)]), T0);
@@ -2023,11 +2516,45 @@ mod tests {
     }
 
     #[test]
+    fn when_each_message_was_said_comes_with_the_snapshot_and_with_a_conversation_taken_up_again() {
+        use crate::convo::Block;
+        let at = |sliced: &crate::convo::Sliced| -> Vec<Option<u64>> { sliced.blocks.iter().zip(&sliced.at).filter(|(b, _)| matches!(b, Block::User(_) | Block::Reply { .. })).map(|(_, at)| *at).collect() };
+        let mut model = pm_in_two_projects();
+        assert_eq!(at(&model.conversation(true)), [None; 4], "an older daemon's snapshot: no times");
+        let mut pm = session(1, "pm", "pm", SessionState::Ready);
+        pm.recent = vec![Entry::Thread { project: Some("app".into()) }, Entry::User { text: "app q".into(), kept: Vec::new() }, Entry::Reply { text: "app a".into() }];
+        pm.recent_at = vec![None, Some(1_762_300_000), Some(1_762_300_090)];
+        model.apply(hello(vec![pm]), T0);
+        assert_eq!(at(&model.conversation(true)), [Some(1_762_300_000), Some(1_762_300_090)]);
+        assert_eq!(at(&model.conversation(false)), [Some(1_762_300_000), Some(1_762_300_090)], "the whole conversation too");
+        // A conversation put away, taken up again: as it was left, times and all.
+        model.apply(Update::Event(Event::SessionStarted { session: 51, project: "/p".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Who { role: "pm".into(), name: "pm".into() }), squad: Some("acme".into()) }), T0);
+        model.apply(Update::Event(Event::LaneOpened { session: 51, of: 1, project: Some("app".into()), kept: true }), T0);
+        let lines = vec![Entry::User { text: "what next?".into(), kept: Vec::new() }, Entry::Reply { text: "this".into() }];
+        model.apply(Update::Event(Event::ConversationBack { session: 51, title: None, lines, lines_at: vec![Some(10), Some(20)] }), T0);
+        assert_eq!(model.convos[&51].transcript.times(), &[Some(10), Some(20)]);
+    }
+
+    #[test]
+    fn a_new_conversation_stays_new_until_its_saved_topic_arrives_and_never_renames() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        model.apply(Update::Event(Event::SessionStarted { session: 60, project: "/p".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Who { role: "pm".into(), name: "pm".into() }), squad: Some("acme".into()) }), T0);
+        model.apply(Update::Event(Event::LaneOpened { session: 60, of: 1, project: Some("desktop".into()), kept: true }), T0);
+        model.apply(Update::Event(Event::UserMessage { session: 60, text: "질문 원문 전체가 제목이면 안 돼".into(), kept: Vec::new() }), T0);
+        assert_eq!(model.lanes.iter().find(|lane| lane.session == 60).and_then(|lane| lane.title.as_deref()), None, "the sidebar and header still read New conversation");
+        model.apply(Update::Event(Event::ConversationTitle { session: 60, title: "세션 주제 제목".into() }), T0);
+        assert_eq!(model.lanes.iter().find(|lane| lane.session == 60).and_then(|lane| lane.title.as_deref()), Some("세션 주제 제목"));
+        model.apply(Update::Event(Event::ConversationTitle { session: 60, title: "두 번째 제목".into() }), T0);
+        assert_eq!(model.lanes.iter().find(|lane| lane.session == 60).and_then(|lane| lane.title.as_deref()), Some("세션 주제 제목"));
+    }
+
+    #[test]
     fn what_was_said_to_the_whole_squad_shows_in_every_project() {
         let mut model = Model::new("acme");
         let mut pm = session(1, "pm", "pm", SessionState::Ready);
         let about = |p: Option<&str>| Entry::Thread { project: p.map(Into::into) };
-        let said = |t: &str| Entry::User { text: t.into() };
+        let said = |t: &str| Entry::User { text: t.into(), kept: Vec::new() };
         let reply = |t: &str| Entry::Reply { text: t.into() };
         pm.recent = vec![about(None), said("plan the week"), reply("ok"), about(Some("site")), said("site q"), reply("site a"), about(Some("app")), said("app q"), reply("app a")];
         model.apply(hello(vec![pm]), T0);
@@ -2054,6 +2581,29 @@ mod tests {
         model.set_focus(Some("app".into()));
         model.select(2);
         assert_eq!(model.chat_slice(true), None);
+    }
+
+    #[test]
+    fn a_member_keeps_what_it_is_set_to_apart_from_what_its_engine_runs() {
+        let mut model = Model::new("acme");
+        let mut pm = session(1, "pm", "pm", SessionState::Ready);
+        pm.model = Some("claude-opus-4-8".into());
+        pm.asked_model = Some("opus".into());
+        let mut snapshot = Snapshot { squad: "acme".into(), sessions: vec![pm], ..Default::default() };
+        snapshot.role_models = vec![equipe_core::protocol::RoleModel { role: "qa".into(), engine: Engine::Claude, model: Some("claude-opus-5-5".into()), effort: None }];
+        model.apply(Update::Attached(Hello { version: "x".into(), snapshot }), T0);
+        assert_eq!((model.members[0].model.as_deref(), model.members[0].asked.as_deref()), (Some("claude-opus-4-8"), Some("opus")));
+        assert_eq!(model.role_models.len(), 1);
+        // Set to the newest by its id: once it runs as that, nothing is kept apart.
+        model.apply(Update::Event(Event::ModelKnown { session: 1, model: "claude-opus-5-5".into(), asked: Some("claude-opus-5-5".into()) }), T0);
+        assert_eq!((model.members[0].model.as_deref(), model.members[0].asked.as_deref()), (Some("claude-opus-5-5"), None));
+        // The daemon's lists, for the menus; and what a role starts with, changed.
+        let listed = vec![equipe_core::protocol::ModelChoice { id: "gpt-6.1-sol".into(), ..Default::default() }];
+        model.apply(Update::Event(Event::Models { engine: Engine::Codex, models: listed.clone() }), T0);
+        assert_eq!(model.listed(Some(Engine::Codex)), listed.as_slice());
+        assert!(model.listed(Some(Engine::Claude)).is_empty() && model.listed(None).is_empty());
+        model.apply(Update::Event(Event::RoleModelsChanged { squad: "acme".into(), defaults: vec![] }), T0);
+        assert!(model.role_models.is_empty());
     }
 
     #[test]
@@ -2120,12 +2670,12 @@ mod tests {
         let mut model = Model::new("acme");
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
         let event = |e: Event| Update::Event(e);
-        model.apply(event(Event::UserMessage { session: 1, text: "어떻게 됐어?".into() }), T0);
+        model.apply(event(Event::UserMessage { session: 1, text: "어떻게 됐어?".into(), kept: Vec::new() }), T0);
         model.apply(event(Event::TextDelta { session: 1, text: "**다 됐어요.** 테스트도\n통과".into() }), T0);
         assert!(model.take_alerts().is_empty(), "not before the turn ends");
         model.apply(event(Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }), T0);
         assert_eq!(model.take_alerts(), vec![Alert::Reply { session: 1, member: "pm".into(), line: "다 됐어요. 테스트도".into() }]);
-        model.apply(event(Event::UserMessage { session: 1, text: "멈춰".into() }), T0);
+        model.apply(event(Event::UserMessage { session: 1, text: "멈춰".into(), kept: Vec::new() }), T0);
         model.apply(event(Event::TurnEnded { session: 1, outcome: TurnOutcome::Interrupted, usage: None }), T0);
         assert!(model.take_alerts().is_empty(), "stopped, and nothing said since the person spoke");
 
@@ -2138,6 +2688,135 @@ mod tests {
         model.take_alerts();
         model.apply(event(Event::TicketChanged { squad: "acme".into(), ticket: code("done", Some(true)) }), T0);
         assert!(matches!(&model.take_alerts()[..], [Alert::Merged { ticket: 4, .. }]));
+    }
+
+    #[test]
+    fn a_move_to_the_other_engine_leaves_no_closed_double_in_the_team() {
+        let mut model = Model::new("acme");
+        // The PM and backend moved: their old sessions closed, new ones open under the same names.
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "backend", "backend", SessionState::Ready), session(3, "qa", "qa", SessionState::Ready), session(11, "pm", "pm", SessionState::Ready), session(12, "backend", "backend", SessionState::Ready)]), T0);
+        for gone in [1, 2, 3] {
+            model.apply(Update::Event(Event::SessionClosed { session: gone }), T0);
+        }
+        assert_eq!(model.pm(), Some(11), "the open PM, not the closed one");
+        let team = model.team();
+        assert_eq!(team.first(), Some(&11));
+        assert!(!team.contains(&1) && !team.contains(&2), "the moved members' old sessions aren't listed twice: {team:?}");
+        assert!(team.contains(&3), "someone who left, with no open session, still shows as closed");
+        assert_eq!(team.last(), Some(&3), "closed last");
+    }
+
+    fn moved(from: SessionId, to: SessionId, engines: (Engine, Engine), ticket: Option<TicketId>) -> HandOver {
+        use equipe_core::protocol::engines::Why;
+        HandOver { member: "backend".into(), from_session: from, to_session: to, from: engines.0, to: engines.1, why: if ticket.is_some() { Why::Exhausted } else { Why::Person }, at: 1_762_300_000 + to as i64, ticket }
+    }
+
+    fn person(text: &str) -> Entry {
+        Entry::User { text: text.into(), kept: Vec::new() }
+    }
+
+    fn reply(text: &str) -> Entry {
+        Entry::Reply { text: text.into() }
+    }
+
+    #[test]
+    fn a_member_that_moves_engines_mid_ticket_is_one_member_in_every_list_and_whoever_looked_follows() {
+        let mut model = Model::new("acme");
+        let mut backend = session(2, "backend", "backend", SessionState::Ready);
+        backend.recent = vec![person("로그인 횟수 제한해 줘"), reply("T-42 시작할게요")];
+        backend.work = Some(equipe_core::protocol::WorkInfo { ticket: 42, project: "/p".into(), workspace: None });
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), backend, session(3, "qa", "qa", SessionState::Ready)]), T0);
+        model.select(2);
+        // The move, as the daemon makes it: the old session closed, the new one
+        // started under the same name, then the move told.
+        model.apply(Update::Event(Event::SessionClosed { session: 2 }), T0);
+        model.apply(Update::Event(Event::SessionStarted { session: 12, project: "/p".into(), engine: Engine::Codex, model: Some("gpt-5.5-codex".into()), workspace: None, member: Some(Who { role: "backend".into(), name: "backend".into() }), squad: Some("acme".into()) }), T0);
+        model.apply(Update::Event(Event::MemberMoved { squad: "acme".into(), hand_over: moved(2, 12, (Engine::Claude, Engine::Codex), Some(42)) }), T0);
+        let backends: Vec<(SessionId, Option<Engine>)> = model.members.iter().filter(|m| m.name == "backend").map(|m| (m.session, m.engine)).collect();
+        assert_eq!(backends, [(12, Some(Engine::Codex))], "one backend, the open one, on Codex");
+        assert_eq!(model.team(), [1, 12, 3], "the sidebar and the header's list");
+        assert_eq!(model.selected, Some(12), "looking at it, the person looks at it still");
+        assert_eq!(model.viewed(), Some(12), "what is said goes to the open session");
+        assert_eq!(model.open_member("backend").map(|m| m.session), Some(12), "@backend");
+        let lanes: Vec<String> = crate::orchestra::overview(&model, Instant::now()).lanes.into_iter().map(|l| l.name).collect();
+        assert_eq!(lanes.iter().filter(|n| *n == "backend").count(), 1, "orchestration: {lanes:?}");
+        // A question it asks waits under the member that is there.
+        let set: equipe_core::protocol::decide::QuestionSet = serde_json::from_value(serde_json::json!({ "id": 5, "session": 2, "member": "backend", "ticket": 42, "questions": [] })).unwrap();
+        model.apply(Update::Event(Event::QuestionsAsked { squad: "acme".into(), questions: set }), T0);
+        assert!(matches!(&model.take_alerts()[..], [.., Alert::Decision { session: 12, .. }]));
+        // Its conversation so far stays above the new one's, until the daemon's comes.
+        let blocks = model.conversation(false).blocks;
+        assert!(matches!(&blocks[..], [crate::convo::Block::User(t), crate::convo::Block::Reply { .. }, crate::convo::Block::Moved { from: Engine::Claude, to: Engine::Codex, session: 12, .. }] if t == "로그인 횟수 제한해 줘"), "{blocks:#?}");
+        // Seen again after a restart: only the open session, its move in the snapshot.
+        let mut again = Model::new("acme");
+        again.selected = Some(2);
+        let snapshot = Snapshot { squad: "acme".into(), sessions: vec![session(1, "pm", "pm", SessionState::Ready), session(12, "backend", "backend", SessionState::Ready)], hand_overs: vec![moved(2, 12, (Engine::Claude, Engine::Codex), Some(42))], ..Default::default() };
+        again.apply(Update::Attached(Hello { version: "x".into(), snapshot }), T0);
+        assert_eq!(again.team(), [1, 12]);
+        assert_eq!(again.moves_into(12).len(), 1);
+        assert_eq!(again.selected, Some(12), "the window was on its old session: on the one it carries on in, not the PM");
+    }
+
+    #[test]
+    fn the_conversations_before_moves_stack_above_in_order_each_move_a_line_and_search_reaches_them() {
+        use crate::convo::Block;
+        let mut model = Model::new("acme");
+        let mut backend = session(3, "backend", "backend", SessionState::Ready);
+        backend.recent = vec![person("세 번째: 다시 Claude"), reply("이어서 할게요")];
+        // Claude, then Codex, then Claude again.
+        let moves = vec![moved(29, 30, (Engine::Claude, Engine::Codex), None), moved(30, 3, (Engine::Codex, Engine::Claude), Some(42))];
+        let snapshot = Snapshot { squad: "acme".into(), sessions: vec![session(1, "pm", "pm", SessionState::Ready), backend], hand_overs: moves, ..Default::default() };
+        model.apply(Update::Attached(Hello { version: "x".into(), snapshot }), T0);
+        model.select(3);
+        // Asked of the daemon once each, oldest first.
+        assert_eq!(model.hand_overs_wanted(), [30, 3]);
+        assert!(model.hand_overs_wanted().is_empty(), "not asked twice");
+        // Before they come: the lines, where they will be.
+        let kinds = |m: &Model| m.conversation(false).blocks.iter().map(|b| match b { Block::User(t) => format!("you: {t}"), Block::Reply { text, first, .. } => format!("reply{}: {text}", if *first { " (named)" } else { "" }), Block::Moved { from, to, .. } => format!("{from:?}→{to:?}"), other => format!("{other:?}") }).collect::<Vec<_>>();
+        assert_eq!(kinds(&model), ["Claude→Codex", "Codex→Claude", "you: 세 번째: 다시 Claude", "reply (named): 이어서 할게요"]);
+        let back = |session: SessionId, lines: Vec<Entry>| Update::Event(Event::HandOver { squad: "acme".into(), session, packet: format!("[equipe] You are backend ({session})"), lines_at: vec![None; lines.len()], lines });
+        // Answered in any order: shown in the order they were said.
+        model.apply(back(3, vec![person("두 번째: Codex에서"), reply("Codex에서 했어요")]), T0);
+        model.apply(back(30, vec![person("첫 번째: Claude에서"), reply("Claude에서 했어요")]), T0);
+        assert_eq!(
+            kinds(&model),
+            ["you: 첫 번째: Claude에서", "reply (named): Claude에서 했어요", "Claude→Codex", "you: 두 번째: Codex에서", "reply: Codex에서 했어요", "Codex→Claude", "you: 세 번째: 다시 Claude", "reply: 이어서 할게요"],
+            "one member speaking throughout, named once"
+        );
+        // ⌘F finds words of every part, the lines between them too.
+        let found: Vec<String> = model.conversation(false).blocks.iter().filter_map(Block::searchable).collect();
+        assert!(found.iter().any(|t| t.contains("첫 번째")) && found.iter().any(|t| t.contains("두 번째")), "{found:?}");
+        assert!(found.iter().any(|t| t == "Claude에서 Codex로 옮겼어요"), "{found:?}");
+        // The packet each one opened with, kept to show.
+        assert_eq!(model.handed[&3].packet, "[equipe] You are backend (3)");
+        // The header's engine history: when, why, and whether mid-ticket.
+        let history = model.engine_history(3);
+        assert_eq!(history.len(), 2);
+        assert!(history[0].starts_with("Claude → Codex · ") && history[0].ends_with(" · 직접 요청함 · 작업 사이"), "{history:?}");
+        assert!(history[1].starts_with("Codex → Claude · ") && history[1].ends_with(" · Codex 사용량을 다 씀 · 작업 중, T-42 넘김"), "{history:?}");
+        // A ticket's work, a conversation with the PM: their own, not stitched.
+        assert!(model.engine_history(1).is_empty());
+        model.select(1);
+        assert!(!model.conversation(false).blocks.iter().any(|b| matches!(b, Block::Moved { .. })));
+    }
+
+    #[test]
+    fn the_line_where_a_member_moved_and_its_history_read_in_every_language() {
+        use equipe_core::i18n::Lang;
+        let keys = ["moved.divider", "moved.divider_same", "moved.see", "moved.packet_name", "moved.packet_gone", "moved.history", "moved.line", "moved.why_person", "moved.why_pace", "moved.why_out", "moved.why_back", "moved.mid_ticket", "moved.between", "moved.packet_note"];
+        for lang in Lang::ALL {
+            for key in keys {
+                assert!(crate::i18n::of(lang).own(key).is_some_and(|w| !w.trim().is_empty()), "{lang:?} {key}");
+            }
+            let line = crate::i18n::of(lang).fill("moved.divider", &[("from", "Claude".into()), ("to", "Codex".into())]);
+            assert!(line.contains("Claude") && line.contains("Codex") && !line.contains('{'), "{lang:?}: {line}");
+        }
+        let en = crate::i18n::of(Lang::En);
+        assert_eq!(en.fill("moved.divider", &[("from", "Claude".into()), ("to", "Codex".into())]), "Moved from Claude to Codex");
+        assert_eq!(en.get("moved.see"), "See what was handed over");
+        assert_eq!(moved_words(Engine::Claude, Engine::Codex), "Claude에서 Codex로 옮겼어요");
+        assert_eq!(moved_words(Engine::Claude, Engine::Claude), "Claude에서 새로 이어 가요", "the other engine couldn't start it");
+        assert_eq!(packet_name(&moved(2, 12, (Engine::Claude, Engine::Codex), None)), "backend — Codex로 넘긴 내용");
     }
 
     #[test]
@@ -2200,6 +2879,30 @@ mod tests {
     }
 
     #[test]
+    fn what_waits_is_counted_by_its_project_and_the_counts_add_up() {
+        let mut model = Model::new("acme");
+        model.projects = vec!["/r/web".into(), "/r/app".into()];
+        let in_project = |id, project: &str| Ticket { project: Some(format!("/r/{project}").into()), ..ticket(id, "waiting", None) };
+        model.tickets = vec![in_project(3, "web"), in_project(4, "web"), in_project(5, "app")];
+        // Asked about T-3 (web); asked in a conversation about app; asked in the PM's own.
+        let mut on_web = approval(7, 2);
+        on_web.ticket = Some(3);
+        let mut in_talk = approval(8, 40);
+        in_talk.ticket = None;
+        let mut squad_wide = approval(9, 1);
+        squad_wide.ticket = None;
+        model.lanes.push(Lane { session: 40, of: 1, project: Some("app".into()), presence: Presence::Ready, verb: Verb::Thinking, kept: true, title: None, active: 0 });
+        for a in [on_web, in_talk, squad_wide] {
+            model.apply(Update::Event(Event::ApprovalRequested { squad: "acme".into(), approval: a }), T0);
+        }
+        let counts = model.needs_by_project();
+        assert_eq!(counts.get(&Some("web".to_owned())), Some(&3), "two tickets and the request on one: {counts:?}");
+        assert_eq!(counts.get(&Some("app".to_owned())), Some(&2), "its ticket, and the request in its conversation");
+        assert_eq!(counts.get(&None), Some(&1), "the squad's own");
+        assert_eq!(counts.values().sum::<usize>(), model.needs_you_count(), "the sidebar's numbers add up to 확인 필요");
+    }
+
+    #[test]
     fn a_new_request_or_a_ticket_turning_to_review_or_waiting_is_announced_once() {
         let mut model = Model::new("acme");
         model.apply(hello(vec![session(2, "backend", "backend", SessionState::Working)]), T0);
@@ -2234,7 +2937,7 @@ mod tests {
         };
         model.apply(tick("in_progress", None), T0);
         model.apply(tick("waiting", Some("Waiting on you:\n- [ ] 토큰을 알려 주세요.\n- [ ] 일정을 정해 주세요.")), T0);
-        assert_eq!(model.take_flash().as_deref(), Some("T-3 내 차례 — backend이(가) 2가지를 물어요"), "no asks run together, no keys to learn");
+        assert_eq!(model.take_flash().as_deref(), Some("T-3 내 차례 — backend가 2가지를 물어요"), "no asks run together, no keys to learn");
         // Answered on another screen: the card learns it as the ticket moves.
         let revision = model.revision;
         model.unix = 1_000;
@@ -2375,8 +3078,8 @@ mod tests {
         working.assignee = Some("frontend".into());
         model.tickets = vec![working, ticket(8, "todo", None)];
         model.members[1].ticket = Some(7);
-        model.apply(Update::Event(Event::Notice { session: 2, text: "── T-7 · Hero — on branch b".into() }), T0);
-        model.apply(Update::Event(Event::UserMessage { session: 2, text: "hero work".into() }), T0);
+        model.apply(Update::Event(Event::Notice { undo: None, session: 2, text: "── T-7 · Hero — on branch b".into() }), T0);
+        model.apply(Update::Event(Event::UserMessage { session: 2, text: "hero work".into(), kept: Vec::new() }), T0);
         assert_eq!(model.team(), [1, 2], "the PM heads the team");
         // A ticket at work: its member's work on it, and what is typed steers it.
         assert!(model.open(Side::Ticket(7)));
@@ -2406,7 +3109,7 @@ mod tests {
         let mut model = Model::new("acme");
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "frontend", "frontend", SessionState::Ready)]), T0);
         model.projects = vec!["/code/site".into(), "/code/app".into()];
-        model.apply(Update::Event(Event::UserMessage { session: 1, text: "사이트는?".into() }), T0);
+        model.apply(Update::Event(Event::UserMessage { session: 1, text: "사이트는?".into(), kept: Vec::new() }), T0);
         model.members[0].ticket = Some(9);
         model.apply(Update::Event(Event::SessionStarted { session: 77, project: "/p".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Who { role: "pm".into(), name: "pm".into() }), squad: Some("acme".into()) }), T0);
         model.apply(Update::Event(Event::LaneOpened { session: 77, of: 1, project: None, kept: false }), T0);
@@ -2420,7 +3123,7 @@ mod tests {
         assert_eq!(model.lanes.len(), 1);
         assert_eq!(model.selected, Some(1));
         assert_eq!(model.viewed(), Some(77));
-        model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into() }), T0);
+        model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into(), kept: Vec::new() }), T0);
         model.apply(Update::Event(Event::TextDelta { session: 77, text: "앱은 괜찮습니다.".into() }), T0);
         // What the member said before, then the lane's own.
         assert_eq!(model.convo().unwrap().blocks().len(), 3);
@@ -2446,7 +3149,7 @@ mod tests {
             let before = model.revision;
             // As the daemon says it: the PM's desk marks the project the message is about.
             model.apply(Update::Event(Event::Thread { session: 77, project: focus.clone() }), T0);
-            assert!(model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into() }), T0), "the person's message in the lane is a redraw");
+            assert!(model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into(), kept: Vec::new() }), T0), "the person's message in the lane is a redraw");
             assert!(model.revision > before, "the chat pane syncs only on a new revision");
             assert!(on_screen(&model).iter().any(|b| matches!(b, crate::convo::Block::User(t) if t == "앱은?")), "their bubble shows at once ({focus:?})");
             let before = model.revision;
@@ -2459,7 +3162,7 @@ mod tests {
             );
             // Read at its next step: the bubble is the conversation's.
             let before = model.revision;
-            model.apply(Update::Event(Event::Steered { session: 77, text: "그리고 웹도".into() }), T0);
+            model.apply(Update::Event(Event::Steered { session: 77, text: "그리고 웹도".into(), kept: Vec::new() }), T0);
             assert!(model.revision > before);
             assert!(!on_screen(&model).iter().any(|b| matches!(b, crate::convo::Block::Pending { .. })));
             // And the lane's reply streams in as it comes.
@@ -2482,7 +3185,7 @@ mod tests {
     fn the_member_row_reads_how_many_conversations_work_at_once() {
         let mut model = with_lane();
         // The lane is at work (the PM too, in site): two at once.
-        model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into() }), T0);
+        model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into(), kept: Vec::new() }), T0);
         assert_eq!(model.at_once(&model.members[0]), 2);
         // Only the lane at work: the member counts as working too.
         model.apply(Update::Event(Event::TurnEnded { session: 1, outcome: equipe_core::protocol::TurnOutcome::Completed, usage: None }), T0);
@@ -2495,7 +3198,7 @@ mod tests {
     #[test]
     fn stopping_reaches_only_the_conversation_in_view() {
         let mut model = with_lane();
-        model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into() }), T0);
+        model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into(), kept: Vec::new() }), T0);
         assert_eq!((model.viewed(), model.viewed_presence()), (Some(77), Some(Presence::Working)));
         // Without its conversation beside, the PM at work on its ticket is free to talk: one would open.
         model.apply(Update::Event(Event::SessionClosed { session: 77 }), T0);
@@ -2506,7 +3209,7 @@ mod tests {
     #[test]
     fn a_lane_that_closes_goes_back_into_its_member() {
         let mut model = with_lane();
-        model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into() }), T0);
+        model.apply(Update::Event(Event::UserMessage { session: 77, text: "앱은?".into(), kept: Vec::new() }), T0);
         model.apply(Update::Event(Event::TextDelta { session: 77, text: "괜찮습니다.".into() }), T0);
         model.apply(Update::Event(Event::TurnEnded { session: 77, outcome: equipe_core::protocol::TurnOutcome::Completed, usage: None }), T0);
         model.apply(Update::Event(Event::SessionClosed { session: 77 }), T0);
@@ -2517,8 +3220,8 @@ mod tests {
         // What was said in it stays, in the member's one conversation.
         assert_eq!(model.viewed(), Some(1));
         let shown = model.convo().unwrap().shown();
-        assert!(shown.iter().any(|e| matches!(e.as_ref(), Entry::User { text } if text == "앱은?")), "{shown:?}");
-        assert!(shown.iter().any(|e| matches!(e.as_ref(), Entry::User { text } if text == "사이트는?")));
+        assert!(shown.iter().any(|e| matches!(e.as_ref(), Entry::User { text, .. } if text == "앱은?")), "{shown:?}");
+        assert!(shown.iter().any(|e| matches!(e.as_ref(), Entry::User { text, .. } if text == "사이트는?")));
     }
 
     #[test]
@@ -2616,7 +3319,7 @@ mod tests {
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "backend", "backend", SessionState::Working)]), T0);
         model.take_alerts();
         let q = Question { question: "Which?".into(), header: String::new(), options: vec![Choice { label: "a".into(), description: String::new(), ..Choice::default() }, Choice { label: "b".into(), description: String::new(), ..Choice::default() }], multi_select: false, ..Question::default() };
-        let set = QuestionSet { id: 40, session: 2, member: "backend".into(), ticket: None, questions: vec![q.clone(), q], asked_at: 1 };
+        let set = QuestionSet { id: 40, session: 2, member: "backend".into(), ticket: None, questions: vec![q.clone(), q], asked_at: 1, review: false, retro: None };
         assert!(model.apply(Update::Event(Event::QuestionsAsked { squad: "acme".into(), questions: set.clone() }), T0), "the card shows: a redraw");
         assert_eq!(model.take_alerts(), vec![Alert::Decision { session: 2, member: "backend".into(), count: 2 }]);
         // Another squad's, or the same again: nothing.
@@ -2634,6 +3337,36 @@ mod tests {
         assert!(model.apply(Update::Event(Event::QuestionsClosed { squad: "acme".into(), id: 40, answers: None }), T0), "answered on another screen: it goes, live");
         assert!(model.asked.ids().is_empty());
         assert!(matches!(model.status(&model.members[1]), Status::Working { .. }));
+    }
+
+    #[test]
+    fn the_question_the_pm_just_asked_in_reply_comes_first_in_its_conversation_and_needs_you_puts_blocked_work_first() {
+        use equipe_core::protocol::decide::{Choice, Question, QuestionSet};
+        // The PM and backend at work; ticket 2 in progress, ticket 1 done.
+        let mut model = needs_model();
+        let day = 86_400;
+        let now = 40 * day;
+        model.unix = now;
+        let q = Question { question: "Which?".into(), options: vec![Choice { label: "a".into(), ..Choice::default() }, Choice { label: "b".into(), ..Choice::default() }], ..Question::default() };
+        let set = |id: u64, member: &str, session: SessionId, ticket: Option<u32>, ago: u64| QuestionSet { id, session, member: member.into(), ticket, questions: vec![q.clone()], asked_at: now - ago, review: false, retro: None };
+        // backend's two first, as asked: one on ticket 2 (in progress), one on 1 (done) — then the PM's, nine days back to now.
+        model.asked.load(vec![set(50, "backend", 2, Some(1), 5 * day), set(51, "backend", 2, Some(2), 2 * day), set(52, "pm", 1, None, 9 * day), set(53, "pm", 1, None, day), set(54, "backend", 2, Some(1), 3600)]);
+        // The person speaks to the PM; the PM asks in reply.
+        model.select(1);
+        model.unix = now + 10;
+        model.apply(Update::Event(Event::UserMessage { session: 1, text: "Let's do office hours".into(), kept: Vec::new() }), T0);
+        model.unix = now + 20;
+        model.apply(Update::Event(Event::QuestionsAsked { squad: "acme".into(), questions: QuestionSet { asked_at: now + 20, ..set(55, "pm", 1, None, 0) } }), T0);
+        let here: Vec<u64> = model.questions_here().iter().map(|(s, _)| s.id).collect();
+        assert_eq!(here, [55, 53, 51, 54, 50, 52], "the reply on top, the PM's own, the team's (work held up first), the older ones last");
+        assert_eq!(model.questions_here()[0].1, crate::decide::Rank::Reply);
+        // In backend's conversation, only its own: the newest it asked there first.
+        model.select(2);
+        let here: Vec<u64> = model.questions_here().iter().map(|(s, _)| s.id).collect();
+        assert_eq!(here, [54, 51, 50], "its newest there stands for the reply: nothing heard from the person here");
+        // Needs you: the one holding work up (ticket 2 in progress) first, then the newest; the older last.
+        let decide: Vec<Need> = model.needs_you().into_iter().filter(|(s, _)| *s == Section::Decide).map(|(_, n)| n).collect();
+        assert_eq!(decide, [51, 55, 54, 53, 50, 52].map(Need::Questions));
     }
 
     #[test]
@@ -2713,6 +3446,31 @@ mod tests {
     }
 
     #[test]
+    fn how_many_subagents_a_member_runs_at_once_shows_and_follows_the_daemon() {
+        let mut model = needs_model();
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        assert_eq!(model.subagents_at_once, None, "an older daemon says nothing: each engine's own");
+        assert!(model.apply(Update::Event(Event::SubagentsAtOnceChanged { squad: "acme".into(), at_once: Some(4) }), T0));
+        assert_eq!(model.subagents_at_once, Some(4));
+        model.apply(Update::Event(Event::SubagentsAtOnceChanged { squad: "other".into(), at_once: Some(40) }), T0);
+        assert_eq!(model.subagents_at_once, Some(4), "another squad's");
+        assert!(model.apply(Update::Event(Event::SubagentsAtOnceChanged { squad: "acme".into(), at_once: None }), T0));
+        assert_eq!(model.subagents_at_once, None, "back to each engine's own");
+    }
+
+    #[test]
+    fn who_reviews_the_designers_work_shows_and_follows_the_daemon() {
+        use equipe_core::protocol::engines::Reviewer;
+        let mut model = needs_model();
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        assert_eq!(model.design_reviewer, Reviewer::Auto, "an older daemon says nothing: auto");
+        assert!(model.apply(Update::Event(Event::DesignReviewerChanged { squad: "acme".into(), reviewer: Reviewer::Same }), T0));
+        assert_eq!(model.design_reviewer, Reviewer::Same);
+        model.apply(Update::Event(Event::DesignReviewerChanged { squad: "other".into(), reviewer: Reviewer::Other }), T0);
+        assert_eq!(model.design_reviewer, Reviewer::Same, "another squad's");
+    }
+
+    #[test]
     fn the_squads_signals_come_with_the_snapshot_and_are_replaced_when_they_change() {
         use equipe_core::protocol::signals::{SignalReading, SignalSource, SignalView};
         let mut model = needs_model();
@@ -2759,6 +3517,21 @@ mod tests {
         model.accepts.forget_sent();
         assert!(model.apply(Update::Event(Event::AcceptClosed { squad: "acme".into(), id: 80, confirmed: true, tickets: vec![7] }), T0));
         assert_eq!(model.accepts.ids(), [81]);
+    }
+
+    #[test]
+    fn a_tickets_plan_is_found_in_its_project_or_where_its_own_path_says() {
+        let mut model = needs_model();
+        model.projects = vec![PathBuf::from("/p/site")];
+        let mut cut = ticket(20, "todo", None);
+        assert_eq!(model.ticket_plan(&cut), None, "no plan, no link");
+        cut.plan = Some("docs/plans/2026-11-04-sign-in.md".into());
+        assert_eq!(model.ticket_plan(&cut), Some(PathBuf::from("/p/site/docs/plans/2026-11-04-sign-in.md")));
+        cut.kind = TicketKind::Task;
+        cut.project = Some(PathBuf::from("/p/app"));
+        assert_eq!(model.ticket_plan(&cut), Some(PathBuf::from("/p/app/docs/plans/2026-11-04-sign-in.md")), "a review is about its plan's project");
+        cut.plan = Some("/h/squads/acme/home/docs/plans/2026-11-04-trip.md".into());
+        assert_eq!(model.ticket_plan(&cut), Some(PathBuf::from("/h/squads/acme/home/docs/plans/2026-11-04-trip.md")));
     }
 
     #[test]
@@ -2932,4 +3705,21 @@ mod tests {
         assert!(screen_line(&stopped, "acme").is_some());
     }
 
+    #[test]
+    fn the_macs_clock_reads_as_its_time_format_says() {
+        use crate::activity::Hours;
+        assert_eq!(hours_of_format("h:mm a"), Some(Hours::Twelve));
+        assert_eq!(hours_of_format("a h:mm"), Some(Hours::Twelve));
+        assert_eq!(hours_of_format("K:mm a"), Some(Hours::Twelve));
+        assert_eq!(hours_of_format("HH:mm"), Some(Hours::TwentyFour));
+        assert_eq!(hours_of_format("H 'h' mm"), Some(Hours::TwentyFour), "the h in quotes is a word");
+        assert_eq!(hours_of_format("mm"), None);
+        // This Mac's own, whatever it is: a clock either way, and what it reads agrees with the rest.
+        let now = now_unix();
+        let local = local_time(now);
+        assert_eq!(format!("{:02}:{:02}", local.hour, local.minute), local_hm(now));
+        let midnight = local_midnight(now);
+        assert_eq!((local_time(midnight).hour, local_time(midnight).minute), (0, 0));
+        assert_eq!(local_time(midnight).day, local.day);
+    }
 }

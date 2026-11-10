@@ -237,12 +237,15 @@ it (T-143, 2026-10-16): required for every change users see, skipped when the
 squad has no designer. `equipe_core::runtime::design_qa`.
 
 - **What counts as a screen change is the engineer's word**, not a guess from
-  file names: in a squad with a designer, `submit_for_review` on a `code` ticket
-  by anyone but a designer must say `changes_screens` — true when users see a
-  change (a screen, page, layout, style, visible copy, an icon), false otherwise.
-  Left out, the hand-in is refused with why; true without a screenshot in
-  `images` is refused too, since the designer checks from pictures. A designer's
-  own code ticket, a `task` or an `action` skips the step.
+  file names: `submit_for_review` on every `code` ticket by anyone but a
+  designer must say `changes_screens` — true when users see a change (a screen,
+  page, layout, style, visible copy, an icon), false otherwise. Left out, the
+  hand-in is refused with why. True requires fresh screenshots in `images` and
+  all four `screen_checks`: relevant languages, supported widths, light and
+  dark, and large text. The runtime refuses the hand-in and names any missing
+  proof. This self-check applies even without a designer; with one, the complete
+  hand-in continues to design QA. A designer's own code ticket (checked through
+  its design ledger), a `task` or an `action` skips this step.
 - **The hand-in waits in `review` on a design QA ticket.** At the end of the
   turn the ticket goes to `review` as ever, with `design_qa: <id>` set, and
   equipe creates that ticket: a `task` owned by `designer`, created by `equipe`,
@@ -265,6 +268,13 @@ squad has no designer. `equipe_core::runtime::design_qa`.
   accepting the design QA ticket itself releases the ticket to their review.
   An older screen, which doesn't know `design_qa`, shows the ticket as an
   ordinary review.
+- **Engineers finish on current main.** Immediately before hand-in they refresh
+  main, rebase the ticket branch onto it, resolve to zero conflicts and run the
+  relevant tests on the rebased tree. After a merge the PM pushes main at once
+  and verifies that its upstream ahead/behind counts are both zero.
+- **A designer's own code ticket** has no design QA, and changes only the
+  repository's `design/`: its hand-in is refused while the worktree changes
+  anything else (`Sandbox::touched_files`, committed or not).
 - **What a designer counts as a defect**: differences from the spec, the
   design system's tokens and accessibility — not taste. New ideas are proposed
   tickets.
@@ -343,6 +353,26 @@ daemon ──~/.equipe/desktop/helper.sock + token──▶ equipe Desktop Helpe
   password or Touch ID to switch on), sending input, the display. `equipe
   desktop status` checks without changing anything; members without the
   permissions are told to ask the person for `equipe desktop setup`.
+
+### Phone tools (mobile QA)
+
+QA and mobile members of a squad whose projects include an iOS or Android app test it on the
+ticket's own simulator or emulator — start, look, act, record, frames, report, stop — through
+`mcp__phone__…`. Details, setup and what gets installed: [mobile-qa.md](./mobile-qa.md).
+
+```
+member's engine ──stdio──▶ equipe mcp --server phone ──socket: phone──▶ daemon
+   (is this a QA or mobile member, on a ticket, of a squad with a mobile app?)
+daemon, off its loop ──▶ xcrun simctl + AXe (iOS) · adb + emulator (Android)
+```
+
+- The runtime only says yes or no and where files go (`runtime/phone.rs`); the device work runs
+  off its loop (`crate::phone`), as a desktop call does. Devices and running recordings are held
+  per member in the daemon (`phone::PHONES`).
+- Installing AXe is the person's call, on an approval card (`phone::INSTALL`); a report reaches
+  the ticket's record and the member's conversation as a note the desktop draws as a card.
+- Offered nowhere else: a squad without a mobile app, and every other role, get exactly what they
+  got before (`tests/members_without_phone.rs` pins it).
 
 ### Plans are notes; tickets are commitments
 
@@ -508,6 +538,23 @@ squad and records it as the last; `/squad new <name> [folder]` starts one, the
 folder now optional; `equipe squads` lists them with their homes. A squad with no
 project is valid everywhere: `/squad remove` may take its last project away.
 
+**Deleting** (`Command::DeleteSquad`; `equipe squad delete <name>`, the desktop's
+squad switcher and Settings › Squad & machine): the daemon stops the squad's
+members the way it does when it stops — turns, browsers, side chats and helpers
+end, every screen hears `SessionClosed` — but writes nothing about them into the
+journal, then closes the journal. Off the loop (`squads::delete`) the worktrees
+its tickets used are removed unless another squad's ticket uses them (branches
+stay; the projects' repositories are otherwise never touched), its members'
+build caches go, and the folder `~/.equipe/squads/<name>/` moves whole to
+`~/.equipe/deleted/<name>-<YYYYMMDD-HHMMSS>`: a rename on the same disk, never a
+copy, on the machine the squad lived on. Moving it back with the daemon stopped
+restores the squad — board, history, members, home. While it goes, and after,
+nothing opens its journal again (which would make an empty squad of the same
+name): `squads::is_gone`, until a squad of that name is made again. If it was
+`last_squad` in `state.json`, the next squad by name takes its place, or none.
+Every screen hears `SquadDeleted { next }`: a window on it opens `next`, or —
+the last squad deleted, which is allowed — the screen that starts a new one.
+
 ### The squad home
 
 Every squad has a **home**, `~/.equipe/squads/<squad>/home`: a git repository
@@ -540,7 +587,7 @@ reports, the things a task produces.
   happen, so a short thing asked at the desk — save a note, tidy material, make
   one table — is written straight into the home, with no ticket. Each change is
   **saved as soon as the turn ends** (`squad_home::save`), one line saying who and
-  why: `pm: 세금 마감일 메모해줘` — the member's name and the person's words. The
+  why: `pm: note down the tax deadline` — the member's name and the person's words. The
   member's conversation shows *"✎ pm saved notes/tax-deadline.md in the squad's
   folder · /home undo takes it back"*.
 - **Every change can be taken back.** `/home changes` (and `equipe home changes`)
@@ -693,6 +740,22 @@ owns it or suggests `/add`.
   `--append-system-prompt` for Claude Code, `instructions` for Codex. A charter names
   the member, its teammates and who keeps the plan, and is rebuilt every turn, so it
   follows the team as members come and go.
+- **Skills** (`equipe_core::skills`, sources in `crates/core/skills/<name>/`) hold
+  what only some work needs — office hours, planning, plan reviews, the designer's
+  setup, process, tools, UI map and design QA, a security review, reports, the
+  browser — so the charter carries only what every turn needs and an index: each
+  skill's name and a line on when to open it. A skill's `SKILL.md` (front matter
+  `name`, `description`; at most 500 lines) is read when the work matches, its
+  `references/` only when it says so. Each is offered to the roles, and squads,
+  whose charter it came out of, rendered for them (`{{tools_at}}`, `{{hq_in}}`,
+  `{{#if <flag>}}` blocks). Claude Code gets them as a plugin, `--plugin-dir`
+  `~/.equipe/skills/<version>/<role>-<hash>/` — written once per content, so the
+  prompt stays the same turn to turn — with `Skill(equipe:<name>)` and a `Read` of
+  that folder allowed; Codex's CLI gets the index with each `SKILL.md`'s absolute
+  path; Codex over the API, which reads no file, gets every skill inline.
+  `crates/core/charter-coverage.txt` lists every sentence the charters said before
+  skills, and a test checks each still reaches its member (`EQUIPE_BLESS_CHARTERS=1`
+  rewrites it after a deliberate change).
 - **Names** are unique per team — `frontend`, `frontend-2` — and editing members
   work on `equipe/<name>-<id>` branches.
 - **The designer** works like a company's product designer (T-142's playbook,
@@ -704,8 +767,16 @@ owns it or suggests `/add`.
   through a `data:` URL, since the members' browser opens neither `file://` nor
   a server started on the Mac — and contrast is computed, not judged. A
   project's design assets live in its own repository's `design/`, versioned
-  with its code; the squad home's `design/` holds only principles every project
-  shares.
+  with its code, made there from the start on a `code` ticket that changes only
+  `design/` (`submit_for_review` refuses a designer's hand-in that changes
+  anything else); the squad home's `design/` holds only principles every
+  project shares. Learned from T-145/T-152 (2026-10-26): design system work is
+  done only when it is on a real screen of one platform, with before and after
+  screenshots, or a code ticket per platform applies it; colours and sizes are
+  judged on real screens; components become each platform's code and design QA
+  compares with it; each unconfirmed item goes up as a proposal; copies of
+  generated token files are listed in `design/copies.json` and checked against
+  their source ([DESIGN-SYSTEM.md](./DESIGN-SYSTEM.md)).
 
 ### Talking to the team
 
@@ -1031,6 +1102,38 @@ should know, so there are two layers:
 
 Members are told they run inside equipe without a screen, so they never ask the
 person to press keys or change Claude Code's permission mode — equipe sets it.
+
+### Where the plans went
+
+A person's Claude and Codex plans are shared by everything signed in to them: equipe's
+members, and the person's own Claude Code and Codex sessions. `equipe_core::plan_use` shows
+where each went.
+
+- **What is read.** Every Claude Code transcript (`$CLAUDE_CONFIG_DIR/projects` or
+  `~/.claude/projects`, `**/*.jsonl`: each request's `usage`, once per message id, its output
+  as last written) and Codex rollout (`$CODEX_HOME/sessions` or `~/.codex/sessions`,
+  `rollout-*.jsonl`: each `token_usage_record` by response id, else the growth of
+  `token_count` totals). Only lines that can hold usage are parsed, into the few fields
+  needed; the conversation is skipped as it is parsed and never kept. Nothing else in those
+  folders is opened — never `auth.json` — and nothing leaves the machine.
+- **Incrementally.** Each file is read on from where it was left (a byte offset per file
+  in `<home>/plan-use.db`); a line still being written waits. The ledger keeps ten days of
+  hours: tokens by kind and requests, by engine, model, the engine's session and folder. A
+  pass runs every minute off the loop; a first pass reads only files written in those ten
+  days. Only the person's own equipe home reads transcripts (`EQUIPE_PLAN_USE=on|off`
+  overrides).
+- **Members' turns.** Each turn's tokens by kind, model, engine and the engine's session
+  are kept with it in the squad's `turns` table: they place a session's hours with its
+  member and ticket, and stand in for an engine that leaves no transcript here.
+- **Whose.** A session a squad's journal knows is its member's (and ticket's); a folder
+  under `<home>/worktrees/<project>/t<N>-…` is ticket N's; anything else under equipe's
+  home is equipe's; the rest is the person's own, by folder.
+- **Load, not tokens.** Raw totals are mostly cheap cache reads. Each kind of token is
+  weighed by the model family's published API prices (`plan_use::weights`, one table kept
+  by hand, never fetched): a share is of that load, and of the plan's week — its share of
+  the week's load times the week's used percent.
+- **Telling.** One ticket, or the use outside equipe, taking 5% of a week in three hours is
+  told to every screen once (`plan_burn`). The Usage screen asks with `plan_use`.
 
 ## Desktop
 
