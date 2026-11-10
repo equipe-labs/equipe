@@ -210,7 +210,7 @@ async fn add(handle: &Handle, events: &mut UnboundedReceiver<Event>, id: u64, sp
 }
 
 async fn tool(handle: &Handle, member: &str, name: &str, arguments: serde_json::Value) -> ToolResult {
-    handle.tool(ToolCall { squad: "acme".into(), member: member.into(), name: name.into(), arguments }).await
+    handle.tool(ToolCall { run: None, squad: "acme".into(), member: member.into(), name: name.into(), arguments }).await
 }
 
 async fn ticket(handle: &Handle, id: u32) -> Ticket {
@@ -224,12 +224,12 @@ fn ids(snapshot: &Snapshot) -> Vec<u32> {
     ids
 }
 
-/// Wait until session `id` is idle with its ticket still in hand: its turn
-/// ended without a hand-in or a wait.
+/// Wait until member `id`'s run is idle with its ticket still in hand: its
+/// turn ended without a hand-in or a wait.
 async fn idle_on_its_ticket(handle: &Handle, id: u64) {
     for _ in 0..200 {
         let snapshot = handle.snapshot("acme").await;
-        if snapshot.sessions.iter().any(|s| s.session == id && s.state == SessionState::Ready && s.work.is_some()) {
+        if snapshot.sessions.iter().any(|s| s.run.is_some_and(|r| r.of == id) && s.state == SessionState::Ready && s.work.is_some()) {
             return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -260,11 +260,11 @@ fn checkout(worktree: &Path) -> (String, Vec<(String, Vec<u8>)>) {
 /// computation the board uses.
 fn run_seen(snapshot: &Snapshot, id: u32) -> Option<RunView> {
     let t = snapshot.tickets.iter().find(|t| t.id == id)?;
-    let working = t
-        .assignee
-        .as_deref()
-        .and_then(|name| snapshot.sessions.iter().find(|s| s.member.as_ref().is_some_and(|m| m.name == name)))
-        .map(|s| s.state == SessionState::Working && s.work.as_ref().is_some_and(|w| w.ticket == id));
+    let working = t.assignee.as_deref().filter(|name| snapshot.sessions.iter().any(|s| s.member.as_ref().is_some_and(|m| m.name == *name))).map(|name| {
+        snapshot.sessions.iter().any(|s| {
+            s.run.is_some_and(|r| r.ticket == id) && s.member.as_ref().is_some_and(|m| m.name == name) && s.state == SessionState::Working && s.work.as_ref().is_some_and(|w| w.ticket == id)
+        })
+    });
     t.run_view(now(), working)
 }
 
@@ -276,7 +276,7 @@ async fn idle_frontend(engine: &Engine0, home: &Path, repo: &Path) -> (Handle, U
     add(&handle, &mut events, 2, member(repo, "frontend", Some(Engine::Claude))).await;
     let made = tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "Build the hero.", "owner": "frontend" })).await;
     assert!(!made.is_error, "{made:?}");
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
     idle_on_its_ticket(&handle, 2).await;
     let worktree = ticket(&handle, 1).await.worktree.expect("its own worktree");
     std::fs::write(worktree.join("README.md"), "hello\nhalf-done change\n").unwrap();
@@ -305,7 +305,7 @@ async fn a_run_that_ended_without_a_hand_in_stalls_after_its_lease_and_the_perso
     // Past it, with no turn running it: stalled — and only that.
     handle.check_leases_at(now() + 1_000).await;
     let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.execution.as_ref().is_some_and(|x| x.state == ExecutionState::Stalled && x.dirty.is_some()))).await;
-    assert!(seen.iter().any(|e| matches!(e, Event::WorkEnded { session: 2, ticket: 1 })), "its member lets go: {seen:#?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::WorkEnded { of: Some(2), ticket: 1, .. })), "its member lets go: {seen:#?}");
     let stalled = ticket(&handle, 1).await;
     let run = execution(&stalled);
     assert_eq!((stalled.status, stalled.assignee.as_deref()), (TicketStatus::InProgress, Some("frontend")), "the same ticket, in progress");
@@ -315,6 +315,7 @@ async fn a_run_that_ended_without_a_hand_in_stalls_after_its_lease_and_the_perso
     let after_stall = handle.snapshot("acme").await;
     assert_eq!(run_seen(&after_stall, 1), Some(RunView::Stalled), "board and sidebar agree");
     assert!(after_stall.sessions.iter().any(|s| s.session == 2 && s.work.is_none()), "the sidebar shows it free");
+    assert!(!after_stall.sessions.iter().any(|s| s.run.is_some_and(|r| r.of == 2)), "its run is over");
     assert_eq!(checkout(&worktree), disk, "nothing committed, reset or cleaned by the stall");
     let told = |e: &Event| matches!(e, Event::Notice { text, .. } if text.contains("T-1's run stopped without a hand-in"));
     if !seen.iter().any(told) {
@@ -324,7 +325,7 @@ async fn a_run_that_ended_without_a_hand_in_stalls_after_its_lease_and_the_perso
     // The person resumes it: the same member, a fresh runtime session, at once.
     let runs_before = engine.runs().len();
     handle.send(Command::Requeue { squad: "acme".into(), ticket: 1, operation: "card:1:a".into(), how: Recovery::Resume });
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
     let prompt = engine.prompt_with("brought it back").await;
     assert!(prompt.contains("Same branch and worktree, nothing reset, committed or cleaned"), "{prompt}");
     for _ in 0..100 {
@@ -363,7 +364,7 @@ async fn a_turn_still_running_is_never_stalled_however_late_the_check() {
     add(&handle, &mut events, 1, member(&repo, "pm", None)).await;
     add(&handle, &mut events, 2, member(&repo, "frontend", Some(Engine::Claude))).await;
     tool(&handle, "pm", "create_ticket", json!({ "title": "Long build", "body": "-", "owner": "frontend" })).await;
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
     engine.prompt_with("You're on T-1").await;
     handle.check_leases_at(now() + 100_000).await;
     let later = within(&mut events, Duration::from_millis(500)).await;
@@ -409,13 +410,13 @@ async fn a_requeue_after_a_review_send_back_leads_with_the_latest_reason_and_blo
     add(&handle, &mut events, 1, member(&repo, "pm", None)).await;
     add(&handle, &mut events, 2, member(&repo, "frontend", Some(Engine::Claude))).await;
     tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "Build the hero.", "owner": "frontend" })).await;
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
     let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Hero done and complete.", "changes_screens": false })).await;
     assert!(!handed.is_error, "{handed:?}");
     until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Review)).await;
     let back = tool(&handle, "pm", "comment", json!({ "id": 1, "text": "The header overlaps the logo at 760px.", "review": "changes" })).await;
     assert!(!back.is_error, "{back:?}");
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
     idle_on_its_ticket(&handle, 2).await;
     // A blocker the person left open, still on the ticket.
     let journal = Journal::for_squad(&home, "acme").unwrap();
@@ -429,7 +430,7 @@ async fn a_requeue_after_a_review_send_back_leads_with_the_latest_reason_and_blo
     until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.execution.as_ref().is_some_and(|x| x.state == ExecutionState::Stalled))).await;
     let prompts_before = engine.prompts().len();
     handle.send(Command::Requeue { squad: "acme".into(), ticket: 1, operation: "card:1:b".into(), how: Recovery::Requeue });
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
     let prompt = engine.prompt_with("brought it back").await;
     assert!(engine.prompts().len() > prompts_before);
     let reason = prompt.find("The PM reviewed your hand-in and sent it back: The header overlaps the logo at 760px.").expect(&prompt);
@@ -478,7 +479,7 @@ async fn an_approved_add_hands_its_roles_stalled_ticket_to_the_new_member_but_ne
             _ => None,
         })
         .expect("frontend-3 joined");
-    assert!(seen.iter().any(|e| matches!(e, Event::WorkStarted { session, ticket: 1, .. } if *session == joined)), "it takes T-1 at once: {seen:#?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::WorkStarted { of: Some(session), ticket: 1, .. } if *session == joined)), "it takes T-1 at once: {seen:#?}");
     let handed = ticket(&handle, 1).await;
     assert_eq!((handed.owner.as_deref(), handed.assignee.as_deref()), (Some("frontend-3"), Some("frontend-3")));
     assert_eq!((handed.branch.clone(), handed.worktree.clone()), (stalled.branch.clone(), stalled.worktree.clone()), "the same branch and worktree");
@@ -502,7 +503,7 @@ async fn a_restart_carries_on_what_it_can_and_stalls_only_what_nothing_runs() {
     add(&handle, &mut events, 3, member(&repo, "qa", Some(Engine::Codex))).await;
     tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
     tool(&handle, "pm", "create_ticket", json!({ "title": "Check the release", "body": "-", "owner": "qa" })).await;
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
     idle_on_its_ticket(&handle, 2).await;
     idle_on_its_ticket(&handle, 3).await;
     let before = handle.snapshot("acme").await;
@@ -520,9 +521,8 @@ async fn a_restart_carries_on_what_it_can_and_stalls_only_what_nothing_runs() {
     assert_eq!((execution(carried).state, execution(carried).generation), (ExecutionState::Active, 2), "carried on under a new generation");
     assert_eq!((execution(dead).state, execution(dead).reason.as_deref()), (ExecutionState::Stalled, Some(stall_reason::NOT_RESUMED)));
     assert_eq!((dead.status, dead.assignee.as_deref()), (TicketStatus::InProgress, Some("qa")), "the same ticket, kept");
-    let qa = after.sessions.iter().find(|s| s.member.as_ref().is_some_and(|m| m.name == "qa")).unwrap();
-    let frontend = after.sessions.iter().find(|s| s.member.as_ref().is_some_and(|m| m.name == "frontend")).unwrap();
-    assert_eq!((frontend.work.as_ref().map(|w| w.ticket), qa.work.as_ref().map(|w| w.ticket)), (Some(1), None));
+    let runs_of = |name: &str| -> Vec<u32> { after.sessions.iter().filter(|s| s.run.is_some() && s.member.as_ref().is_some_and(|m| m.name == name)).filter_map(|s| s.work.as_ref().map(|w| w.ticket)).collect() };
+    assert_eq!((runs_of("frontend"), runs_of("qa")), (vec![1], vec![]));
     assert_eq!(run_seen(&after, 2), Some(RunView::Stalled));
     assert_eq!(ids(&after), ids(&before), "no recovery ticket");
 
@@ -557,10 +557,13 @@ async fn an_approved_recovery_waiting_across_a_restart_starts_exactly_once() {
     let disk = checkout(&worktree);
     handle.check_leases_at(now() + 1_000).await;
     until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.execution.as_ref().is_some_and(|x| x.state == ExecutionState::Stalled))).await;
-    // Free again, the member takes its next ticket and is busy with it.
+    // Free again, the member takes its next tickets — as many as it runs at
+    // once ([`equipe_core::lanes::LANES_PER_MEMBER`]) — and is busy with them.
     engine.hang(true);
-    tool(&handle, "pm", "create_ticket", json!({ "title": "Footer", "body": "-", "owner": "frontend" })).await;
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 2, .. })).await;
+    for title in ["Footer", "Header", "Sidebar"] {
+        tool(&handle, "pm", "create_ticket", json!({ "title": title, "body": "-", "owner": "frontend" })).await;
+    }
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 4, .. })).await;
     tool(&handle, "pm", "create_ticket", json!({ "title": "Later", "body": "-", "owner": "frontend" })).await;
     // Resumed for it while it's busy: queued.
     handle.send(Command::Requeue { squad: "acme".into(), ticket: 1, operation: "card:1:c".into(), how: Recovery::Resume });
@@ -572,8 +575,8 @@ async fn an_approved_recovery_waiting_across_a_restart_starts_exactly_once() {
     handle.shutdown().await;
     drop(events);
 
-    // The restart carries T-2 on; once its run stalls, the member is free and
-    // takes the recovery first — before T-3, which it hasn't started.
+    // The restart carries T-2 to T-4 on; once their runs stall, the member
+    // has room and takes the recovery first — before T-5, which it hasn't started.
     engine.hang(false);
     let (handle, _events) = runtime::start(config(&engine.bin, &home));
     engine.prompt_with("equipe restarted while you worked on T-2").await;
@@ -581,7 +584,7 @@ async fn an_approved_recovery_waiting_across_a_restart_starts_exactly_once() {
     let mut screen = handle_events(&handle).await;
     handle.check_leases_at(now() + 1_000).await;
     let seen = until(&mut screen, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
-    assert!(!seen.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 3, .. })), "the recovery goes first: {seen:#?}");
+    assert!(!seen.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 5, .. })), "the recovery goes first: {seen:#?}");
     let run = execution(&ticket(&handle, 1).await);
     assert_eq!((run.state, run.generation, run.operation.as_str()), (ExecutionState::Active, queued.generation, "card:1:c"), "the run it reserved, once");
     assert_eq!(checkout(&worktree), disk);

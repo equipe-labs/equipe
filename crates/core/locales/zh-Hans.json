@@ -616,5 +616,6 @@
   "error.recovery_not_stalled": "T-{id} 已不再停滞，所以没有做任何更改。",
   "error.recovery_member_gone": "{name} 已不在小队中：请把 T-{id} 重新排队给同一角色，或改派给其他人。",
   "error.recovery_failed": "无法恢复 T-{id}：{err}",
-  "error.recovery_no_operation": "恢复 T-{id} 需要卡片的标识；请从卡片上重试。"
+  "error.recovery_no_operation": "恢复 T-{id} 需要卡片的标识；请从卡片上重试。",
+  "notice.runs_update": "正在同时处理 {count} 个工单——请在此屏幕上更新 equipe 以查看它们。"
 }

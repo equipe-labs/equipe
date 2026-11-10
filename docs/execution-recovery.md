@@ -121,3 +121,60 @@ but its member is idle, or its lease ran out), `Stalled` or `Queued`. A
 stalled ticket's card offers Resume, Requeue and Reassign, each with a confirm
 card showing the ticket, branch, worktree, commit, uncommitted file count and
 latest blocker, and saying all of them are kept.
+
+## Several runs under one member
+
+A member is one identity — role, memory, settings, its conversation with the
+person — however many tickets it works. Each ticket it takes runs in a session
+of its own beside that conversation (`SessionInfo::run`, `Event::RunOpened`):
+its own worktree, engine conversation, turn, steering, stop, requests to the
+person and estimate. The run's session is the ticket's runtime session
+(`TicketExecution::session`), so the run and its generation are one thing; a
+single ticket goes the same way. The team lists the member once, its runs
+under it. The PM's conversation lanes (`Session::lane`) are something else and
+are never used for runs.
+
+**Dispatch.** One pass hands out every ready ticket a member has room for
+(`lanes::assign`): in the board's order, each to the member of its role with
+the fewest tickets in hand (runs at work plus tickets waiting on the person),
+ties to whoever joined first. A ticket owned by a member by name goes to that
+member only, and waits for it while it can't take new work (its engine held,
+a move to the other engine pending, a member brought in for a rush). Queued
+work never adds a member: `propose_team_change` refuses an unasked add of a
+role the team already holds; adding stays possible for a role nobody holds, or
+when the person asks.
+
+**Lane policy.** How many runs go at once comes from the plans and the disk,
+never from the number of members (`lanes::member_limit`,
+`lanes::engine_limit`): 3 runs per member and 8 per engine across the squad by
+default; 4 and 10 under 25% of the tightest plan window used; 2 and 4 from
+70%; 1 and 2 from 90%. With the disk low every member runs one at a time; from
+critical, new code work waits altogether while tasks and actions still start.
+
+**Tool calls.** Every run's board, desktop and phone servers are started with
+`--run session:ticket:generation`, and each call carries it
+(`ToolCall::run`). A call that changes something — a ticket, a question or a
+permission to the person, an estimate, a hand-in, a fact remembered — is taken
+only from the run that still holds its ticket's current generation (in memory
+and in `ticket_executions`); from any other it is refused with nothing
+changed, and the refusal goes on the ticket's record (`stale call`). Reading
+the board still works. A call naming no run is the member's own conversation;
+from an older board server with the member's conversation idle, it stands for
+the member's one run when it has exactly one, and for none when it has
+several.
+
+**Ending.** A run closes when its ticket is put down — handed in, waiting,
+accepted, cancelled, reassigned, handed over, stalled. What it still asked the
+person is answered no; memos left for it go to its member's conversation.
+Waiting, failing or being stopped touches only that run. The person stopping a
+run (`Interrupt`, or `Close` on the run) stops its turn; the member stays.
+
+**Restart.** Every ticket a member was running comes back as a run of its own,
+each exactly once under a new generation, with what was said in it before.
+
+**Screens.** A screen that says `runs` in its hello gets runs as they are. One
+that doesn't (an older desktop or terminal, the phone) gets the squad
+projected through `protocol::runs::Legacy`: runs are never listed as members;
+a member with one run shows that ticket as its work; with several it shows
+none and a line saying the screen must be updated to follow them — never one
+run standing for the others.

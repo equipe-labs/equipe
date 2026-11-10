@@ -3619,5 +3619,7 @@
   "recover.kept": "La rama, el worktree, el commit y los archivos sin confirmar se quedan como están. No se crea ningún ticket nuevo.",
   "recover.toast_resume": "T-{id} sigue con {who}",
   "recover.toast_requeue": "T-{id} en cola para {role}",
-  "recover.toast_reassign": "T-{id} pasa a {who}"
+  "recover.toast_reassign": "T-{id} pasa a {who}",
+  "sidebar.runs": "{n} tickets",
+  "sidebar.run_failed": "Falló"
 }

@@ -77,7 +77,7 @@ async fn until(rx: &mut UnboundedReceiver<Event>, done: impl Fn(&Event) -> bool)
 }
 
 async fn sign_in(handle: &Handle, site: &str) -> equipe_core::protocol::rpc::ToolResult {
-    handle.tool(ToolCall { squad: "acme".into(), member: "frontend".into(), name: "sign_in".into(), arguments: json!({ "site": site, "why": "Add the DNS record" }) }).await
+    handle.tool(ToolCall { run: None, squad: "acme".into(), member: "frontend".into(), name: "sign_in".into(), arguments: json!({ "site": site, "why": "Add the DNS record" }) }).await
 }
 
 #[tokio::test]
@@ -142,7 +142,7 @@ async fn a_secret_the_person_types_goes_to_its_file_and_never_to_the_member() {
         handle.send(Command::Start { session: id, spec });
         until(&mut events, |e| matches!(e, Event::SessionStarted { session, .. } if *session == id)).await;
     }
-    let ask = |args: serde_json::Value| handle.tool(ToolCall { squad: "acme".into(), member: "backend".into(), name: "ask_secret".into(), arguments: args });
+    let ask = |args: serde_json::Value| handle.tool(ToolCall { run: None, squad: "acme".into(), member: "backend".into(), name: "ask_secret".into(), arguments: args });
 
     // Somewhere keys already live: refused, said why.
     let ssh = ask(json!({ "why": "NAS", "save_to": "~/.ssh/nas", "fields": [{ "key": "NAS_PASSWORD", "label": "비밀번호", "secret": true }] })).await;

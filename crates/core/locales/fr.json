@@ -620,5 +620,6 @@
   "error.recovery_not_stalled": "T-{id} n'est plus bloqué, donc rien n'a changé.",
   "error.recovery_member_gone": "{name} ne fait plus partie de l'équipe : relancez T-{id} pour son rôle, ou réattribuez-le.",
   "error.recovery_failed": "Impossible de reprendre T-{id} : {err}",
-  "error.recovery_no_operation": "Reprendre T-{id} demande la clé de la carte ; réessayez depuis sa carte."
+  "error.recovery_no_operation": "Reprendre T-{id} demande la clé de la carte ; réessayez depuis sa carte.",
+  "notice.runs_update": "Travaille sur {count} tickets à la fois — mettez equipe à jour sur cet écran pour les suivre."
 }

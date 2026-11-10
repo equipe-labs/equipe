@@ -83,7 +83,7 @@ impl Runtime {
 
     fn phone_allowed(&self, call: &ToolCall) -> Result<phone::Call, ToolResult> {
         let refuse = |why: &str| Err(ToolResult::error(why));
-        let Some(id) = self.member_id(&call.squad, &call.member) else { return refuse("You're not on the squad.") };
+        let Some(id) = self.caller_id(call) else { return refuse("You're not on the squad.") };
         let Some(session) = self.sessions.get(&id) else { return refuse("You're not on the squad.") };
         let Some(member) = session.member.as_ref() else { return refuse("You're not on the squad.") };
         let mode = session.mode.or_else(|| self.journals.get(&call.squad).map(Journal::mode)).unwrap_or_default();
@@ -116,7 +116,7 @@ impl Runtime {
             let _ = reply.send(ToolResult::error("The person is being asked to let equipe install AXe. Wait for their answer, then try again."));
             return;
         }
-        let Some(id) = self.member_id(&call.squad, &call.member) else {
+        let Some(id) = self.caller_id(&call) else {
             let _ = reply.send(ToolResult::error("You're not on the squad."));
             return;
         };
@@ -187,7 +187,7 @@ impl Runtime {
         if let Some(journal) = self.journal(&call.squad) {
             let _ = journal.ticket_event(report.ticket, &call.member, "qa report", &text);
         }
-        if let Some(id) = self.member_id(&call.squad, &call.member) {
+        if let Some(id) = self.caller_id(call) {
             self.publish(Event::Notice { session: id, text, undo: None });
         }
     }

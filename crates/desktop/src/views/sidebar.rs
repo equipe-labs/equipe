@@ -24,7 +24,7 @@ use gpui_kit::*;
 
 use super::board::dot;
 use crate::board::{HeadClick, Menu, SideGroup, ideas_view, recent_done_view, side_groups};
-use crate::state::{Conn, Member, Model, Side, Status};
+use crate::state::{Conn, Member, Model, Presence, Side, Status};
 use crate::side_split::Divider;
 use crate::theme::{Palette, Sans, UI, key_face};
 use crate::{Screen, Shell, motion};
@@ -1202,11 +1202,20 @@ fn team_block(shell: &Shell, height: Option<f32>, cx: &mut Context<Shell>) -> Op
         motion.note(&shown, &live, now, !cx.reduce_motion());
         (motion.arriving(now), motion.leaving(now))
     };
-    let child_rows = subs.iter().map(|s| sub_rows(s.len(), cap)).sum::<usize>() + leaving.len();
+    let run_rows: usize = members.iter().map(|m| run_rows(model.runs_of(m.session).len())).sum();
+    let child_rows = subs.iter().map(|s| sub_rows(s.len(), cap)).sum::<usize>() + leaving.len() + run_rows;
     let mut rows: Vec<AnyElement> = Vec::new();
     for (m, subs) in members.iter().zip(&subs) {
         let folded = (cap == 0).then_some(subs.len()).filter(|n| *n > 0);
         rows.push(member_row(shell, m, folded, cx));
+        // Its tickets, each run under it: one row each, opened like the ticket.
+        let runs = model.runs_of(m.session);
+        for run in runs.iter().take(RUNS_SHOWN) {
+            rows.push(run_row(shell, run, cx));
+        }
+        if runs.len() > RUNS_SHOWN {
+            rows.push(runs_more_row(shell, m.session, runs[RUNS_SHOWN].ticket, runs.len() - RUNS_SHOWN, cx));
+        }
         for (session, sub) in subs.iter().take(cap) {
             rows.push(sub_row(shell, m.session, *session, sub, arriving.contains(&sub.id), cx));
         }
@@ -1402,6 +1411,63 @@ fn child_room(members: usize) -> f32 {
     (TEAM_SHOWN.saturating_sub(members) as f32 * TEAM_ROW).max(SUB_ROOM as f32 * SUB_ROW)
 }
 
+/// How many of a member's runs show as rows under it; the rest behind "+N more".
+pub const RUNS_SHOWN: usize = 4;
+
+/// How many rows `n` runs take: those shown, and "+N more" for the rest.
+pub fn run_rows(n: usize) -> usize {
+    n.min(RUNS_SHOWN) + usize::from(n > RUNS_SHOWN)
+}
+
+/// One ticket a member runs, under the member: its mark (a spinner at
+/// work, the wait dot when it asks the person), its number and title, and
+/// where it stands. A click opens it as the ticket — its conversation,
+/// steering, stop and requests all that run's.
+fn run_row(shell: &Shell, run: &crate::state::Run, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let model = &shell.model;
+    let ticket = run.ticket;
+    let title = model.tickets.iter().find(|t| t.id == ticket).map(|t| t.title.clone()).unwrap_or_default();
+    let asks = model.approvals.first_for(run.session).is_some();
+    let on = shell.screen == Screen::Chat && model.opened == Some(ticket);
+    let (mark, words) = if asks {
+        (div().w(px(12.)).h(px(12.)).flex_none().flex().items_center().justify_center().child(dot(p.orange, SIGN_DOT)).into_any_element(), t!("state.section_permission").to_owned())
+    } else if run.presence == Presence::Working {
+        (sub_mark(p, shell.spin(cx)), t!("sidebar.working").to_owned())
+    } else if run.failed {
+        (div().w(px(12.)).h(px(12.)).flex_none().flex().items_center().justify_center().child(crate::icons::icon(crate::icons::Icon::Warning, 10., crate::render::tones(&p).warning)).into_any_element(), t!("sidebar.run_failed").to_owned())
+    } else {
+        (div().w(px(12.)).h(px(12.)).flex_none().flex().items_center().justify_center().child(dot(p.muted, SIGN_DOT)).into_any_element(), t!("sidebar.idle").to_owned())
+    };
+    let label = format!("T-{ticket} {title}");
+    sub_shell(p, SharedString::from(format!("run-{}", run.session)))
+        .cursor_pointer()
+        .when(on, |r| r.bg(p.side_sel))
+        .hover(move |s| s.bg(p.side_hover))
+        .aria_label(format!("{label}, {words}"))
+        .aria_selected(on)
+        .tip_at(p, label.clone(), Some(&words), gpui_kit::base::Placement::Right)
+        .on_click(cx.listener(move |this, _, window, cx| this.open_side(Side::Ticket(ticket), window, cx)))
+        .child(mark)
+        .child(div().flex_none().text_size(px(12.)).text_color(p.muted).child(format!("T-{ticket}")))
+        .child(row_title(p, title, on, false).text_size(px(12.)))
+        .child(div().flex_none().text_size(px(11.)).text_color(if asks { p.text2 } else { p.muted }).child(words))
+        .into_any_element()
+}
+
+/// "+N more": the rest of a member's runs; a click opens the first of them.
+fn runs_more_row(shell: &Shell, member: SessionId, next: TicketId, more: usize, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    sub_shell(p, SharedString::from(format!("runs-more-{member}")))
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.side_hover))
+        .on_click(cx.listener(move |this, _, window, cx| this.open_side(Side::Ticket(next), window, cx)))
+        .child(div().w(px(12.)).flex_none())
+        .child(div().text_size(px(11.5)).text_color(p.muted).child(t!("sidebar.more", n = more)))
+        .child(icon(IconName::ChevronRight, 10., p.muted))
+        .into_any_element()
+}
+
 /// How many rows `n` subagents take with `cap` shown: those, and "+N more"
 /// for the rest. At `cap` 0 none: the member's row counts them.
 pub fn sub_rows(n: usize, cap: usize) -> usize {
@@ -1508,6 +1574,8 @@ fn sub_more_row(p: Palette, member: SessionId, more: usize, cx: &mut Context<She
 pub enum TeamState {
     /// At work — on a ticket, when it is on one.
     Working(Option<TicketId>),
+    /// Running this many tickets at once (two or more): "3 tickets".
+    Runs(usize),
     /// Its conversation is being summarized, for this many seconds.
     Compacting(u64),
     /// It asks the person's permission.
@@ -1524,6 +1592,7 @@ impl TeamState {
             Status::NeedsYou(_) if model.approvals.first_for(member.session).is_some() => TeamState::Asks,
             Status::NeedsYou(_) => TeamState::YourTurn,
             Status::Working { .. } | Status::Ready { .. } if model.compacting_of(member.session).is_some() => TeamState::Compacting(model.compacting_of(member.session).map_or(0, |d| d.as_secs())),
+            Status::Working { .. } | Status::Ready { .. } if model.runs_of(member.session).len() > 1 => TeamState::Runs(model.runs_of(member.session).len()),
             Status::Working { ticket, .. } => TeamState::Working(ticket),
             Status::Ready { .. } => TeamState::Resting,
             Status::Closed => TeamState::Closed,
@@ -1535,6 +1604,7 @@ impl TeamState {
         match self {
             TeamState::Working(Some(id)) => t!("sidebar.working_on", id = id),
             TeamState::Working(None) => t!("sidebar.working").to_owned(),
+            TeamState::Runs(n) => t!("sidebar.runs", n = n),
             TeamState::Compacting(secs) => t!("compact.sidebar", elapsed = crate::convo::elapsed(std::time::Duration::from_secs(secs))),
             TeamState::Asks => t!("state.section_permission").to_owned(),
             TeamState::YourTurn => t!("sidebar.needs_you").to_owned(),
@@ -1564,8 +1634,15 @@ fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, cx: &mut Co
     if matches!(state, TeamState::Compacting(_)) {
         shell.wake_at(std::time::Instant::now() + std::time::Duration::from_secs(1), cx);
     }
+    let at_work = shell.model.runs_of(session).iter().any(|r| r.presence == Presence::Working) || member.presence == Presence::Working;
+    // Running several tickets, it says how many — "frontend · 3 tickets" —
+    // whatever one of them waits for: its face's dot and that run's row say so.
+    let runs = shell.model.runs_of(session).len();
+    let words = if runs > 1 { t!("sidebar.runs", n = runs) } else { state.words() };
     let mark = match state {
         TeamState::Working(_) | TeamState::Compacting(_) => Mark::Spinner,
+        TeamState::Runs(_) if at_work => Mark::Spinner,
+        TeamState::Runs(_) => Mark::Ring(p.member(hue)),
         TeamState::Asks | TeamState::YourTurn => Mark::Waits,
         TeamState::Closed => Mark::Hollow,
         TeamState::Resting => Mark::Ring(p.member(hue)),
@@ -1573,7 +1650,7 @@ fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, cx: &mut Co
     let group = SharedString::from(format!("mem-{session}"));
     row_shell(p, ("member", session), on)
         .h(px(TEAM_ROW))
-        .aria_label(format!("{}, {}", member.name, state.words()))
+        .aria_label(format!("{}, {}", member.name, words))
         .aria_selected(on)
         .group(group.clone())
         .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
@@ -1598,7 +1675,7 @@ fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, cx: &mut Co
                 .text_color(if state.waits() { p.text2 } else { p.muted })
                 .when(state.waits(), |d| d.font_weight(FontWeight::MEDIUM))
                 .group_hover(group.clone(), |s| s.invisible())
-                .child(state.words()),
+                .child(words.clone()),
         )
         .children(member.engine.map(|e| div().flex_none().group_hover(group.clone(), |s| s.invisible()).child(super::switching::mark(p, ("member-engine", session), e))))
         // No room for its subagents' rows: how many, which opens them all.

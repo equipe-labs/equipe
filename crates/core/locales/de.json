@@ -620,5 +620,6 @@
   "error.recovery_not_stalled": "T-{id} ist nicht mehr hängen geblieben, daher hat sich nichts geändert.",
   "error.recovery_member_gone": "{name} ist nicht mehr im Squad: Reihe T-{id} für seine Rolle neu ein oder weise es neu zu.",
   "error.recovery_failed": "T-{id} konnte nicht zurückgeholt werden: {err}",
-  "error.recovery_no_operation": "Um T-{id} zurückzuholen, braucht es den Schlüssel der Karte; versuch es auf der Karte noch einmal."
+  "error.recovery_no_operation": "Um T-{id} zurückzuholen, braucht es den Schlüssel der Karte; versuch es auf der Karte noch einmal.",
+  "notice.runs_update": "Arbeitet an {count} Tickets gleichzeitig – aktualisiere equipe auf diesem Bildschirm, um ihnen zu folgen."
 }

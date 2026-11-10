@@ -14,7 +14,7 @@ impl Runtime {
     fn designer_of(&self, squad: &str) -> Option<SessionId> {
         self.sessions
             .iter()
-            .find(|(_, s)| s.squad.as_deref() == Some(squad) && s.lane.is_none() && s.member.as_ref().is_some_and(|m| m.role == review::ROLE))
+            .find(|(_, s)| s.squad.as_deref() == Some(squad) && s.is_member_itself() && s.member.as_ref().is_some_and(|m| m.role == review::ROLE))
             .map(|(&id, _)| id)
     }
 

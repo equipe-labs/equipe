@@ -117,16 +117,17 @@ async fn add(handle: &Handle, events: &mut UnboundedReceiver<Event>, id: u64, sp
 }
 
 async fn tool(handle: &Handle, member: &str, name: &str, arguments: serde_json::Value) -> ToolResult {
-    handle.tool(ToolCall { squad: "acme".into(), member: member.into(), name: name.into(), arguments }).await
+    handle.tool(ToolCall { run: None, squad: "acme".into(), member: member.into(), name: name.into(), arguments }).await
 }
 
 fn proposed(events: &[Event]) -> TeamChange {
     events.iter().find_map(|e| if let Event::TeamChangeProposed { change, .. } = e { Some(change.clone()) } else { None }).expect("proposed")
 }
 
-/// The squad's members by name, as a screen attaching sees them.
+/// The squad's members by name, as a screen attaching sees them: each once,
+/// however many tickets it runs.
 async fn names(handle: &Handle) -> Vec<String> {
-    let mut names: Vec<String> = handle.snapshot("acme").await.sessions.iter().filter_map(|s| s.member.as_ref().map(|m| m.name.clone())).collect();
+    let mut names: Vec<String> = handle.snapshot("acme").await.sessions.iter().filter(|s| s.run.is_none()).filter_map(|s| s.member.as_ref().map(|m| m.name.clone())).collect();
     names.sort();
     names
 }
@@ -137,7 +138,7 @@ async fn busy_squad(home: &Path, project: &Path, persist: bool) -> (Handle, Unbo
     add(&handle, &mut events, 1, member(project, "pm")).await;
     add(&handle, &mut events, 2, member(project, "qa")).await;
     tool(&handle, "pm", "create_ticket", json!({ "title": "Review the release", "body": "-", "owner": "qa" })).await;
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
     tool(&handle, "pm", "create_ticket", json!({ "title": "Test checkout", "body": "-", "owner": "qa" })).await;
     (handle, events)
 }
@@ -154,9 +155,10 @@ async fn the_pm_proposes_the_person_approves_and_the_new_member_takes_the_waitin
     let odd = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "astronaut", "reason": "-" })).await;
     assert!(odd.is_error && odd.text.contains("No role called astronaut"), "{odd:?}");
 
-    // Unasked, a few seconds after T-2 came: too soon — qa takes it as it finishes.
+    // Unasked, for a role the team holds: never — qa runs T-2 beside T-1.
     let soon = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "qa", "reason": "T-2가 기다려요", "unblocks": [2] })).await;
-    assert!(soon.is_error && soon.text.contains("has waited 0 min"), "{soon:?}");
+    assert!(soon.is_error && soon.text.contains("T-2 needs no new member"), "{soon:?}");
+    assert!(handle.snapshot("acme").await.team_changes.is_empty(), "nothing waits for the person");
     // The person asked for one in words: it goes to them.
     let said = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "qa", "reason": "T-2가 기다려요 (qa는 T-1 중)", "unblocks": [2], "asked": true })).await;
     assert!(!said.is_error && said.text.starts_with("Proposed — the person decides on a card."), "{said:?}");
@@ -169,7 +171,8 @@ async fn the_pm_proposes_the_person_approves_and_the_new_member_takes_the_waitin
     let again = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "qa", "reason": "again" })).await;
     assert!(again.is_error && again.text.contains("already waits for the person"), "{again:?}");
 
-    // The person approves: what `/add qa` does — qa-2 joins, and takes T-2.
+    // The person approves: what `/add qa` does — qa-2 joins. T-2 already runs
+    // beside T-1 under qa, so it stays there: nothing is started twice.
     handle.send(Command::ApproveTeamChange { squad: "acme".into(), id: change.id });
     let seen = until(&mut events, |e| matches!(e, Event::TeamChangeClosed { .. })).await;
     let joined = seen.iter().find_map(|e| match e {
@@ -177,7 +180,9 @@ async fn the_pm_proposes_the_person_approves_and_the_new_member_takes_the_waitin
         _ => None,
     });
     let joined = joined.expect("qa-2 joined");
-    assert!(seen.iter().any(|e| matches!(e, Event::WorkStarted { session, ticket: 2, .. } if *session == joined)), "{seen:#?}");
+    assert!(!seen.iter().any(|e| matches!(e, Event::WorkStarted { of: Some(session), .. } if *session == joined)), "{seen:#?}");
+    let t2 = handle.snapshot("acme").await.tickets.into_iter().find(|t| t.id == 2).unwrap();
+    assert_eq!((t2.assignee.as_deref(), t2.execution.map(|e| e.generation)), (Some("qa"), Some(1)), "one run of T-2, qa's");
     assert!(matches!(seen.last(), Some(Event::TeamChangeClosed { id, approved: true, members, .. }) if *id == change.id && members == &["qa-2".to_owned()]));
     let news = until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
     assert!(matches!(news.last(), Some(Event::Notice { text, .. }) if text == "팀에 qa-2를 추가했어요"), "{news:#?}");
@@ -209,7 +214,7 @@ async fn approval_prioritizes_ready_unblocks_for_several_new_members_then_uses_b
     let started: Vec<(u64, u32)> = seen
         .iter()
         .filter_map(|event| match event {
-            Event::WorkStarted { session, ticket, .. } => Some((*session, *ticket)),
+            Event::WorkStarted { of: Some(session), ticket, .. } => Some((*session, *ticket)),
             _ => None,
         })
         .collect();
@@ -252,13 +257,13 @@ async fn removal_approval_redispatches_returned_work_to_an_idle_teammate() {
     add(&handle, &mut events, 2, member(&project, "qa")).await;
     add(&handle, &mut events, 3, member(&project, "qa")).await;
     tool(&handle, "pm", "create_ticket", json!({ "title": "QA work", "body": "-", "owner": "qa" })).await;
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
     tool(&handle, "pm", "propose_team_change", json!({ "change": "remove", "name": "qa", "reason": "handoff" })).await;
     let change = proposed(&until(&mut events, |e| matches!(e, Event::TeamChangeProposed { .. })).await);
 
     handle.send(Command::ApproveTeamChange { squad: "acme".into(), id: change.id });
     let seen = until(&mut events, |e| matches!(e, Event::TeamChangeClosed { .. })).await;
-    assert!(seen.iter().any(|event| matches!(event, Event::WorkStarted { session: 3, ticket: 1, .. })), "{seen:#?}");
+    assert!(seen.iter().any(|event| matches!(event, Event::WorkStarted { of: Some(3), ticket: 1, .. })), "{seen:#?}");
     handle.shutdown().await;
 }
 

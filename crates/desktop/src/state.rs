@@ -137,6 +137,21 @@ pub struct Lane {
     pub active: u64,
 }
 
+/// One ticket a member runs, in a session of its own beside its
+/// conversation ([`equipe_core::protocol::RunOf`]). The team lists the
+/// member once; its runs show under it, and one opens like the ticket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Run {
+    pub session: SessionId,
+    /// The member's own session.
+    pub of: SessionId,
+    pub ticket: TicketId,
+    pub presence: Presence,
+    pub verb: Verb,
+    /// Its last turn failed.
+    pub failed: bool,
+}
+
 /// What can be opened in the conversation's place: the PM (the one
 /// conversation to talk to), a ticket's work, someone on the team.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,6 +341,8 @@ pub struct Model {
     pub members: Vec<Member>,
     /// Members' lanes, kept apart from `members`.
     pub lanes: Vec<Lane>,
+    /// Members' ticket runs, kept apart from `members`: by when they started.
+    pub runs: Vec<Run>,
     pub conn: Conn,
     pub tickets: Vec<Ticket>,
     /// The squad's projects, in the order they joined.
@@ -535,6 +552,7 @@ impl Model {
             squad: squad.to_owned(),
             members: Vec::new(),
             lanes: Vec::new(),
+            runs: Vec::new(),
             conn: Conn::Connecting,
             tickets: Vec::new(),
             projects: Vec::new(),
@@ -621,6 +639,9 @@ impl Model {
     /// its work, when the PM runs one.
     pub fn viewed(&self) -> Option<SessionId> {
         if let Some(ticket) = self.opened {
+            if let Some(run) = self.run_on(ticket) {
+                return Some(run.session);
+            }
             return self.convos.iter().find(|(_, c)| c.showing == Some(ticket)).map(|(&id, _)| id);
         }
         if let Some((draft, _)) = self.draft_talk {
@@ -631,6 +652,21 @@ impl Model {
         }
         let selected = self.selected?;
         Some(self.lane_of(selected).map_or(selected, |l| l.session))
+    }
+
+    /// The run working `ticket` now, if one does.
+    pub fn run_on(&self, ticket: TicketId) -> Option<&Run> {
+        self.runs.iter().find(|r| r.ticket == ticket)
+    }
+
+    /// A member's ticket runs, in the order they started.
+    pub fn runs_of(&self, member: SessionId) -> Vec<&Run> {
+        self.runs.iter().filter(|r| r.of == member).collect()
+    }
+
+    /// The member a session is: a run's or a lane's own, else itself.
+    pub fn member_of(&self, session: SessionId) -> SessionId {
+        self.runs.iter().find(|r| r.session == session).map(|r| r.of).or_else(|| self.lanes.iter().find(|l| l.session == session).map(|l| l.of)).unwrap_or(session)
     }
 
     /// The member's conversation beside its work, if one runs — not one the
@@ -741,6 +777,13 @@ impl Model {
                 self.selected = Some(session);
                 true
             }
+            // A ticket a run works: that run's own conversation, whole.
+            Side::Ticket(id) if self.run_on(id).is_some() => {
+                let run = self.run_on(id).expect("checked");
+                self.selected = Some(run.of);
+                self.opened = Some(id);
+                true
+            }
             Side::Ticket(id) => {
                 // Whose work it is: the member on it now, else who did it.
                 let assignee = self.tickets.iter().find(|t| t.id == id).and_then(|t| t.assignee.clone());
@@ -806,6 +849,9 @@ impl Model {
         }
         if let Some(talk) = self.talking() {
             return Some(talk.presence);
+        }
+        if let Some(run) = self.opened.and_then(|t| self.run_on(t)) {
+            return Some(run.presence);
         }
         let member = self.selected_member()?;
         if self.opened.is_some() {
@@ -1142,7 +1188,7 @@ impl Model {
         self.spent = snapshot
             .sessions
             .iter()
-            .filter(|s| s.lane.is_none())
+            .filter(|s| s.lane.is_none() && s.run.is_none())
             .map(|s| (s.session, Spent { tokens: s.tokens, seen: (0, 0), context: s.context }))
             .collect();
         self.approvals.load(snapshot.approvals.clone());
@@ -1160,7 +1206,22 @@ impl Model {
         self.browsers_shown = snapshot.browsers_shown;
         self.desktop_stopped = snapshot.desktop.stopped;
         self.desktop = snapshot.desktop.clone();
-        let (lanes, own): (Vec<&_>, Vec<&_>) = snapshot.sessions.iter().partition(|s| s.lane.is_some());
+        self.runs = snapshot
+            .sessions
+            .iter()
+            .filter_map(|s| {
+                let run = s.run?;
+                Some(Run {
+                    session: s.session,
+                    of: run.of,
+                    ticket: run.ticket,
+                    presence: if s.state == SessionState::Working { Presence::Working } else { Presence::Ready },
+                    verb: Verb::of_entry(s.recent.iter().rev().find(|e| matches!(e, Entry::Tool { .. } | Entry::Reply { .. } | Entry::User { .. }))),
+                    failed: false,
+                })
+            })
+            .collect();
+        let (lanes, own): (Vec<&_>, Vec<&_>) = snapshot.sessions.iter().filter(|s| s.run.is_none()).partition(|s| s.lane.is_some());
         self.lanes = lanes
             .iter()
             .filter_map(|s| {
@@ -1333,7 +1394,7 @@ impl Model {
                 }
             }
             Event::TurnEnded { session, usage: Some(u), .. } if !self.lanes.iter().any(|l| l.session == *session) => {
-                let spent = self.spent.entry(*session).or_default();
+                let spent = self.spent.entry(self.member_of(*session)).or_default();
                 spent.tokens += u.total();
                 spent.seen.0 += u.total();
                 spent.seen.1 += u.cache_tokens.unwrap_or(0);
@@ -1375,7 +1436,7 @@ impl Model {
             // An answer: the shell tells it if it is to what the person last wrote.
             if let Event::TurnEnded { outcome: TurnOutcome::Completed | TurnOutcome::Incomplete, .. } = &event
                 && let Some(line) = self.convos.get(&id).and_then(|c| crate::notify::reply_line(c.transcript.entries()))
-                && let Some(member) = self.members.iter().find(|m| m.session == id).or_else(|| self.lanes.iter().find(|l| l.session == id).and_then(|l| self.members.iter().find(|m| m.session == l.of)))
+                && let Some(member) = self.members.iter().find(|m| m.session == self.member_of(id))
             {
                 self.alerts.push(Alert::Reply { session: id, member: member.name.clone(), line });
             }
@@ -1473,6 +1534,26 @@ impl Model {
                 self.desktop = desktop;
             }
             Event::LaneOpened { session, of, project, kept } => self.open_lane(session, of, project, kept),
+            // A ticket run: listed under its member, never as one of its own.
+            Event::RunOpened { session, of, ticket, .. } => {
+                self.members.retain(|m| m.session != session);
+                if !self.runs.iter().any(|r| r.session == session) {
+                    self.runs.push(Run { session, of, ticket, presence: Presence::Ready, verb: Verb::Thinking, failed: false });
+                }
+                self.revision += 1;
+            }
+            // Its ticket put down: it goes from under its member. What was said
+            // in it stays while this window is open.
+            Event::SessionClosed { session } if self.runs.iter().any(|r| r.session == session) => {
+                self.runs.retain(|r| r.session != session);
+                if let Some(ticket) = self.opened.filter(|t| !self.runs.iter().any(|r| r.ticket == *t))
+                    && let Some(convo) = self.convos.get_mut(&session)
+                    && convo.has_work_on(ticket)
+                {
+                    convo.showing = Some(ticket);
+                }
+                self.revision += 1;
+            }
             // Taken up again: its name and what was said, as it was left.
             Event::ConversationBack { session, title, lines, lines_at } => {
                 if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == session) {
@@ -1521,7 +1602,7 @@ impl Model {
                 self.board_rev += 1;
             }
             Event::SessionStarted { session, member, model, squad, engine, .. } => {
-                if squad.is_some_and(|s| s != self.squad) || self.members.iter().any(|m| m.session == session) {
+                if squad.is_some_and(|s| s != self.squad) || self.members.iter().any(|m| m.session == session) || self.runs.iter().any(|r| r.session == session) {
                     return;
                 }
                 let (name, role) = member.map_or(("session".to_owned(), String::new()), |m| (m.name, m.role));
@@ -1548,6 +1629,16 @@ impl Model {
                 let unix = self.unix;
                 if matches!(other, Event::UserMessage { .. }) {
                     self.said_at.insert(id, unix);
+                }
+                if let Some(run) = self.runs.iter_mut().find(|r| r.session == id) {
+                    match other {
+                        Event::UserMessage { .. } | Event::WorkStarted { .. } => (run.presence, run.verb, run.failed) = (Presence::Working, Verb::Thinking, false),
+                        Event::ToolUse { tool, .. } => (run.presence, run.verb) = (Presence::Working, Verb::of_tool(&tool)),
+                        Event::TextDelta { .. } => (run.presence, run.verb) = (Presence::Working, Verb::Writing),
+                        Event::TurnEnded { outcome, .. } => (run.presence, run.failed) = (Presence::Ready, outcome == TurnOutcome::Failed),
+                        _ => {}
+                    }
+                    return;
                 }
                 if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == id) {
                     if matches!(other, Event::UserMessage { .. } | Event::TurnEnded { .. }) {
@@ -2065,7 +2156,10 @@ impl Model {
 
     /// The member on a ticket now.
     pub fn member_on(&self, id: TicketId) -> Option<&Member> {
-        self.members.iter().find(|m| m.ticket == Some(id) && m.presence != Presence::Closed)
+        self.members
+            .iter()
+            .find(|m| m.ticket == Some(id) && m.presence != Presence::Closed)
+            .or_else(|| self.run_on(id).and_then(|r| self.members.iter().find(|m| m.session == r.of)))
     }
 
     /// How a ticket's run reads now ([`Ticket::run_view`], the one reading
@@ -2165,7 +2259,7 @@ impl Model {
             .iter()
             .find(|t| t.status == TicketStatus::Waiting && t.owner.as_deref() == Some(member.name.as_str()))
             .map(|t| t.id);
-        let asking = self.approvals.first_for(member.session);
+        let asking = self.approvals.first_for(member.session).or_else(|| self.runs_of(member.session).into_iter().find_map(|r| self.approvals.first_for(r.session)));
         let deciding = self.asked.from(&member.name).is_some();
         if member.presence != Presence::Closed && (asking.is_some() || waiting.is_some() || deciding) {
             return Status::NeedsYou(asking.and_then(|a| a.ticket).or(member.ticket).or(waiting));
@@ -2173,6 +2267,10 @@ impl Model {
         match member.presence {
             Presence::Closed => Status::Closed,
             Presence::Working => Status::Working { ticket: member.ticket, verb: member.verb },
+            Presence::Ready if self.runs_of(member.session).iter().any(|r| r.presence == Presence::Working) => {
+                let run = self.runs_of(member.session).into_iter().find(|r| r.presence == Presence::Working).expect("checked");
+                Status::Working { ticket: Some(run.ticket), verb: run.verb }
+            }
             Presence::Ready if self.lanes_working(member.session) > 0 => {
                 let verb = self.lanes.iter().find(|l| l.of == member.session && l.presence == Presence::Working).map_or(Verb::Working, |l| l.verb);
                 Status::Working { ticket: member.ticket, verb }
@@ -2530,6 +2628,7 @@ mod tests {
             steering: vec![],
             steering_in: vec![],
             lane: None,
+            run: None,
             estimate: None,
             work: None,
             mode: None,
@@ -2562,6 +2661,49 @@ mod tests {
         pm.recent = vec![about("app"), said("app q"), reply("app a"), about("site"), said("site q"), reply("site a")];
         model.apply(hello(vec![pm, session(2, "frontend", "frontend", SessionState::Ready)]), T0);
         model
+    }
+
+    /// A ticket run of member `of`, as a daemon lists it.
+    fn run(id: SessionId, of: SessionId, ticket: TicketId, state: SessionState) -> SessionInfo {
+        let mut run = session(id, "frontend", "frontend", state);
+        run.run = Some(equipe_core::protocol::RunOf { of, ticket, generation: 1 });
+        run.work = Some(equipe_core::protocol::WorkInfo { ticket, project: "/p".into(), workspace: None });
+        run
+    }
+
+    #[test]
+    fn a_member_running_several_tickets_is_listed_once_and_each_run_opens_as_its_ticket() {
+        let mut model = Model::new("acme");
+        model.apply(
+            hello(vec![
+                session(1, "pm", "pm", SessionState::Ready),
+                session(2, "frontend", "frontend", SessionState::Ready),
+                run(20, 2, 7, SessionState::Working),
+                run(21, 2, 8, SessionState::Ready),
+            ]),
+            T0,
+        );
+        assert_eq!(names(&model), ["pm", "frontend"], "runs are never members");
+        assert_eq!(model.runs_of(2).iter().map(|r| (r.session, r.ticket)).collect::<Vec<_>>(), [(20, 7), (21, 8)]);
+        let frontend = model.members.iter().find(|m| m.session == 2).unwrap().clone();
+        assert!(matches!(model.status(&frontend), Status::Working { ticket: Some(7), .. }), "at work through its run");
+        // Opened, a ticket a run works shows that run: what is said goes there.
+        assert!(model.open(Side::Ticket(8)));
+        assert_eq!((model.viewed(), model.side_open(), model.selected), (Some(21), Some(Side::Ticket(8)), Some(2)));
+        assert_eq!(model.viewed_presence(), Some(Presence::Ready));
+        // A request from a run is its member's to show; the run says it asks.
+        model.apply(Update::Event(Event::ApprovalRequested { squad: "acme".into(), approval: approval(5, 21) }), T0);
+        assert!(matches!(model.status(&frontend), Status::NeedsYou(_)));
+        // A new run comes under the member, never as one of its own; a run ending leaves.
+        model.apply(Update::Event(Event::RunOpened { session: 22, of: 2, ticket: 9, generation: 1 }), T0);
+        model.apply(Update::Event(Event::SessionStarted { session: 22, project: "/p".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Who { role: "frontend".into(), name: "frontend".into() }), squad: Some("acme".into()) }), T0);
+        assert_eq!(names(&model), ["pm", "frontend"]);
+        assert_eq!(model.runs_of(2).len(), 3);
+        model.apply(Update::Event(Event::UserMessage { session: 22, text: "go".into(), kept: Vec::new() }), T0);
+        assert_eq!(model.runs.iter().find(|r| r.session == 22).map(|r| r.presence), Some(Presence::Working));
+        model.apply(Update::Event(Event::SessionClosed { session: 20 }), T0);
+        assert_eq!(model.runs_of(2).iter().map(|r| r.ticket).collect::<Vec<_>>(), [8, 9]);
+        assert_eq!(model.member_of(21), 2);
     }
 
     fn said(sliced: &crate::convo::Sliced) -> Vec<String> {
@@ -2905,7 +3047,7 @@ mod tests {
         let mut model = Model::new("acme");
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
 
-        assert!(model.apply(Update::Event(Event::WorkStarted { session: 1, ticket: 5, title: "t".into(), project: "/p".into(), workspace: None }), T0));
+        assert!(model.apply(Update::Event(Event::WorkStarted { session: 1, ticket: 5, title: "t".into(), project: "/p".into(), workspace: None, of: None }), T0));
         assert_eq!(model.status(&model.members[0]), Status::Working { ticket: Some(5), verb: Verb::Thinking });
         model.apply(Update::Event(Event::ToolUse { session: 1, tool: "Read".into(), target: None, label: None, background: false }), T0);
         assert_eq!(model.status(&model.members[0]), Status::Working { ticket: Some(5), verb: Verb::Reading });
@@ -2985,7 +3127,7 @@ mod tests {
         assert_eq!(model.run_view(&queued), Some(RunView::Queued));
         assert_eq!(model.run_view(&old), None, "an older daemon keeps no runs: nothing new is said");
         // At work on it: active, and no word beyond in progress.
-        model.apply(Update::Event(Event::WorkStarted { session: 2, ticket: 4, title: "t".into(), project: "/p".into(), workspace: None }), T0);
+        model.apply(Update::Event(Event::WorkStarted { session: 2, ticket: 4, title: "t".into(), project: "/p".into(), workspace: None, of: None }), T0);
         assert_eq!(model.run_view(&idle), Some(RunView::Active));
         assert_eq!(model.state_word_of(&idle), state_word(&idle));
         assert_eq!(model.run_reason(&idle), None);

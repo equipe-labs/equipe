@@ -620,5 +620,6 @@
   "error.recovery_not_stalled": "T-{id} isn't stalled any more, so nothing changed.",
   "error.recovery_member_gone": "{name} isn't on the squad any more: requeue T-{id} for its role, or reassign it.",
   "error.recovery_failed": "T-{id} couldn't be brought back: {err}",
-  "error.recovery_no_operation": "Bringing T-{id} back needs the card's key; try again from its card."
+  "error.recovery_no_operation": "Bringing T-{id} back needs the card's key; try again from its card.",
+  "notice.runs_update": "Works on {count} tickets at once — update equipe on this screen to follow them."
 }

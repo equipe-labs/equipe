@@ -349,12 +349,27 @@ async fn serve_client(
                         continue;
                     }
                 };
+                // A screen from before a member's ticket runs sees the squad as
+                // it knew it: never a run as a member, never one run picked to
+                // stand for several ([`equipe_protocol::runs::Legacy`]).
+                let mut legacy = (!params.runs).then(|| {
+                    let words = crate::i18n::core(lang.unwrap_or(crate::i18n::Lang::En));
+                    equipe_protocol::runs::Legacy::new(move |count| words.fill("notice.runs_update", &[("count", count.to_string())]))
+                });
+                let snapshot = match &mut legacy {
+                    Some(legacy) => legacy.snapshot(snapshot),
+                    None => snapshot,
+                };
                 let _ = out_tx.send(Message::response(id, Hello { version: version.clone(), snapshot }));
                 followed = Some(params.squad.clone());
                 let out = out_tx.clone();
                 forwarder.replace(tokio::spawn(async move {
                     while let Some(event) = events.recv().await {
-                        if out.send(Message::event(&event)).is_err() {
+                        let sent = match &mut legacy {
+                            Some(legacy) => legacy.event(event).iter().all(|event| out.send(Message::event(event)).is_ok()),
+                            None => out.send(Message::event(&event)).is_ok(),
+                        };
+                        if !sent {
                             break;
                         }
                     }
@@ -972,13 +987,13 @@ impl Client {
     /// [`Client::connect`], saying the screen speaks `lang`: what the daemon
     /// says to the person is in it from now on.
     pub async fn connect_in(socket: &Path, version: &str, squad: &str, lang: Option<crate::i18n::Lang>) -> io::Result<(Self, Hello)> {
-        Self::attach(socket, HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: lang.map(|l| l.code().to_owned()), browser_panel: false, phone: false }).await
+        Self::attach(socket, HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: lang.map(|l| l.code().to_owned()), browser_panel: false, phone: false, runs: false }).await
     }
 
     /// [`Client::connect`] for a phone, through the relay: what the person
     /// sends from it reaches members marked as sent from a phone.
     pub async fn connect_phone(socket: &Path, version: &str, squad: &str) -> io::Result<(Self, Hello)> {
-        Self::attach(socket, HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: None, browser_panel: false, phone: true }).await
+        Self::attach(socket, HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: None, browser_panel: false, phone: true, runs: false }).await
     }
 
     async fn attach(socket: &Path, params: HelloParams) -> io::Result<(Self, Hello)> {

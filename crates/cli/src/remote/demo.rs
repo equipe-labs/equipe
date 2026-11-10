@@ -152,6 +152,7 @@ fn session(id: SessionId, role: &str, project: &str, recent: Vec<Entry>, work: O
         steering: vec![],
         steering_in: vec![],
         lane: None,
+        run: None,
         estimate: None,
         work: work.map(|ticket| WorkInfo { ticket, project: project.into(), workspace: None }),
         mode: None,

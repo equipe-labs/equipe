@@ -798,8 +798,8 @@ fn without_a_transcript_a_members_steps_come_from_the_daemons_events() {
 
 #[test]
 fn ticket_work_is_timed_from_its_start_to_its_end() {
-    let start = |at: f64| (at, Event::WorkStarted { session: 7, ticket: 1, title: "x".into(), project: PathBuf::from("/p"), workspace: None });
-    let end = |at: f64| (at, Event::WorkEnded { session: 7, ticket: 1 });
+    let start = |at: f64| (at, Event::WorkStarted { session: 7, ticket: 1, title: "x".into(), project: PathBuf::from("/p"), workspace: None, of: None });
+    let end = |at: f64| (at, Event::WorkEnded { session: 7, ticket: 1, of: None });
     let notice = |at: f64| (at, Event::Notice { undo: None, session: 8, text: "x".into() });
     assert_eq!(work_seconds(&[start(10.0), end(70.0), start(100.0), end(130.0)], 7), 90.0);
     assert_eq!(work_seconds(&[start(10.0), notice(250.0)], 7), 240.0, "still at it when the run ended");

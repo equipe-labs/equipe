@@ -232,6 +232,7 @@ async fn a_members_tool_call_reaches_the_board_over_the_socket() {
     until(&mut screen, |e| matches!(e, Event::SessionStarted { .. })).await;
 
     let call = ToolCall {
+        run: None,
         squad: "acme".into(),
         member: "designer".into(),
         name: "create_ticket".into(),
@@ -264,12 +265,12 @@ async fn while_the_app_is_attached_a_handed_over_browser_goes_to_its_panel_not_t
     let (mut screen, _) = Client::connect(&socket, "test", "acme").await.unwrap();
     screen.send(Command::Start { session: 51, spec: SessionSpec { role: Some("pm".into()), ..spec(&project) } });
     until(&mut screen, |e| matches!(e, Event::SessionStarted { .. })).await;
-    let call = ToolCall { squad: "acme".into(), member: "pm".into(), name: "show_my_browser".into(), arguments: serde_json::json!({ "why": "Sign in to App Store Connect" }) };
+    let call = ToolCall { run: None, squad: "acme".into(), member: "pm".into(), name: "show_my_browser".into(), arguments: serde_json::json!({ "why": "Sign in to App Store Connect" }) };
 
     // The app attaches, saying it has a panel (closed for now).
     let app = tokio::net::UnixStream::connect(&socket).await.unwrap();
     let (reader, mut writer) = app.into_split();
-    let hello = HelloParams { version: "app".into(), squad: "acme".into(), lang: None, browser_panel: true, phone: false };
+    let hello = HelloParams { version: "app".into(), squad: "acme".into(), lang: None, browser_panel: true, phone: false, runs: false };
     writer.write_all(Message::request(1, rpc::HELLO, hello).to_line().as_bytes()).await.unwrap();
     let mut lines = tokio::io::BufReader::new(reader).lines();
     while let Some(line) = lines.next_line().await.unwrap() {
@@ -819,7 +820,7 @@ async fn a_screen_connects_metrics_and_a_member_reads_them_without_the_key() {
     let (mut screen, _) = Client::connect(&socket, "test", "acme").await.unwrap();
     screen.send(Command::Start { session: 41, spec: spec(&project) });
     until(&mut screen, |e| matches!(e, Event::SessionStarted { .. })).await;
-    let call = ToolCall { squad: "acme".into(), member: "designer".into(), name: "metrics".into(), arguments: serde_json::json!({ "days": 7 }) };
+    let call = ToolCall { run: None, squad: "acme".into(), member: "designer".into(), name: "metrics".into(), arguments: serde_json::json!({ "days": 7 }) };
     let result = gateway::call_tool(&socket, &call).await.unwrap();
     assert!(!result.is_error && result.text.contains("Visits `visits`"), "{result:?}");
     assert!(!result.text.contains(KEY));
@@ -910,4 +911,57 @@ async fn a_trial_daemon_whose_home_is_removed_leaves() {
     assert!(!ends_within(&mut trial, Duration::from_millis(600)).await, "no idle rule: it stays while its home is there");
     std::fs::remove_dir_all(&home).unwrap();
     assert!(ends_within(&mut trial, Duration::from_secs(5)).await, "its home gone: it leaves");
+}
+
+/// A screen from before a member's ticket runs (no `runs` in its hello — the
+/// terminal, the phone, an older app) sees the member's one run as its work,
+/// and for several a line saying to update — never one run standing for the
+/// others, never a run as a member. A screen that says `runs` sees them all.
+#[tokio::test]
+async fn a_screen_from_before_runs_never_sees_one_run_standing_for_several() {
+    use equipe_core::protocol::rpc::{self, Hello, HelloParams, Message};
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+    let (home, project) = squad();
+    let claude = fake_claude(&slow_answer("30"));
+    let (socket, _daemon) = daemon(&home, &claude).await;
+    let (mut old, _) = Client::connect(&socket, "old", "acme").await.unwrap();
+    old.send(Command::Start { session: 51, spec: SessionSpec { role: Some("pm".into()), ..spec(&project) } });
+    until(&mut old, |e| matches!(e, Event::SessionStarted { session: 51, .. })).await;
+    old.send(Command::Start { session: 52, spec: SessionSpec { role: Some("qa".into()), ..spec(&project) } });
+    until(&mut old, |e| matches!(e, Event::SessionStarted { session: 52, .. })).await;
+    let ticket = |title: &str| ToolCall { run: None, squad: "acme".into(), member: "pm".into(), name: "create_ticket".into(), arguments: serde_json::json!({ "title": title, "body": "-", "owner": "qa", "kind": "code" }) };
+
+    // One run: it is qa's work, as this screen always knew it.
+    assert!(!gateway::call_tool(&socket, &ticket("Hero")).await.unwrap().is_error);
+    let seen = until(&mut old, |e| matches!(e, Event::WorkStarted { session: 52, ticket: 1, .. })).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::RunOpened { .. } | Event::SessionStarted { .. })), "no run as a member: {seen:#?}");
+    // Two: no work shown, and the member's conversation says to update.
+    assert!(!gateway::call_tool(&socket, &ticket("Footer")).await.unwrap().is_error);
+    let seen = until(&mut old, |e| matches!(e, Event::Notice { session: 52, text, .. } if text.contains("update equipe"))).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::WorkEnded { session: 52, ticket: 1, .. })), "{seen:#?}");
+    assert!(!seen.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })), "never the second as its work: {seen:#?}");
+    // Attaching now, the same.
+    let (_again, hello) = Client::connect(&socket, "old", "acme").await.unwrap();
+    let ids: Vec<u64> = hello.snapshot.sessions.iter().map(|s| s.session).collect();
+    assert_eq!(ids, [51, 52]);
+    let qa = &hello.snapshot.sessions[1];
+    assert_eq!(qa.work, None);
+    assert!(matches!(qa.recent.last(), Some(Entry::Note { text, .. }) if text.contains("2 tickets")), "{:?}", qa.recent);
+
+    // A screen that knows runs lists both under qa.
+    let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    let (reader, mut writer) = stream.into_split();
+    let hello = HelloParams { version: "app".into(), squad: "acme".into(), lang: None, browser_panel: false, phone: false, runs: true };
+    writer.write_all(Message::request(1, rpc::HELLO, hello).to_line().as_bytes()).await.unwrap();
+    let mut lines = tokio::io::BufReader::new(reader).lines();
+    let hello = loop {
+        let message = Message::from_line(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        if message.id == Some(1) {
+            break message.result_as::<Hello>().unwrap();
+        }
+    };
+    let mut runs: Vec<(u64, u32)> = hello.snapshot.sessions.iter().filter_map(|s| s.run.map(|r| (r.of, r.ticket))).collect();
+    runs.sort();
+    assert_eq!(runs, [(52, 1), (52, 2)]);
+    gateway::shutdown(&socket).await.unwrap();
 }

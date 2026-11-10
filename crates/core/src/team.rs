@@ -20,10 +20,11 @@ pub fn tool() -> Value {
     json!({
         "name": PROPOSE_TEAM_CHANGE,
         "description": "Propose a change to the team — add members of a role, or let one go — for the person to approve \
-with one click on a card. Call it as soon as more hands would unblock work (a ticket waits while its role's members are \
-busy for long), or when the person says in words to add or remove someone (\"add one more mobile\", \"I'll approve adding \
-one\"): never ask them to type a command, and never take their words as the approval — the card is where they decide. \
-You never add or remove anyone yourself. Approved, the new members join and pick up `unblocks` first.",
+with one click on a card. Call it when work needs a role nobody on the team holds, or when the person says in words to add \
+or remove someone (\"add one more mobile\", \"I'll approve adding one\"): never ask them to type a command, and never take \
+their words as the approval — the card is where they decide. Queued work is no reason to add: equipe runs a role's ready \
+tickets side by side under the members it has. You never add or remove anyone yourself. Approved, the new members join and \
+pick up `unblocks` first.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -42,48 +43,33 @@ how long, who is busy with what." },
                 "unblocks": { "type": "array", "items": { "type": "integer" }, "description": "Tickets that wait for these hands; \
 the new members take them first." },
                 "asked": { "type": "boolean", "description": "true when the person asked in words for this change. Left out, \
-an add is refused while the role's members could take the work themselves: one is free or only waits on the person, or the \
-work has waited under half an hour." },
+an add of a role the team already holds is refused: its members take the role's queued tickets side by side." },
             },
             "required": ["change", "role", "reason"],
         },
     })
 }
 
-/// How long work waits, with every member of its role busy, before more
-/// hands are worth proposing unasked: a member takes queued tickets as it
-/// finishes, and splits big work across subagents itself.
-pub const WAIT_BEFORE_MORE: u64 = 30 * 60;
-
-/// An add the PM makes unasked, refused while the role's members could take
-/// the work themselves: why, for the PM. `None`: worth the person's look.
-pub fn too_soon(p: &Proposal, team: &[Mate<'_>], tickets: &[Ticket], now: u64, asked: bool) -> Option<String> {
+/// An add the PM makes unasked of a role the team already holds — refused:
+/// queued work runs side by side under the role's members as their ticket
+/// runs ([`crate::lanes`]), never as more members. Why, for the PM. `None`
+/// for a role nobody holds, a removal, or what the person asked for.
+pub fn too_soon(p: &Proposal, team: &[Mate<'_>], asked: bool) -> Option<String> {
     if asked || p.change != Change::Add {
         return None;
     }
-    let holders: Vec<&Mate<'_>> = team.iter().filter(|m| m.role == p.role).collect();
+    let holders: Vec<&str> = team.iter().filter(|m| m.role == p.role).map(|m| m.name).collect();
+    if holders.is_empty() {
+        return None;
+    }
     let next = p.unblocks.first().map(|t| format!("T-{t}")).unwrap_or_else(|| "the queued work".into());
-    for m in &holders {
-        match m.on.and_then(|on| tickets.iter().find(|t| t.id == on)) {
-            None => return Some(format!("{} is free: it takes {next} next. Don't add anyone.", m.name)),
-            Some(t) if t.status != equipe_protocol::TicketStatus::InProgress => {
-                return Some(format!("{} only waits on the person for T-{}, and is free for other work meanwhile: it takes {next}. Don't add anyone.", m.name, t.id));
-            }
-            Some(_) => {}
-        }
-    }
-    let waited = p.unblocks.iter().filter_map(|id| tickets.iter().find(|t| t.id == *id)).filter_map(|t| t.updated_at).map(|at| now.saturating_sub(at)).max();
-    match waited {
-        Some(waited) if !holders.is_empty() && waited < WAIT_BEFORE_MORE => Some(format!(
-            "{next} has waited {} min. A {} takes it as soon as it finishes, and splits big work across subagents: propose more hands only when \
-work has waited {} minutes or more with every {} busy, or when the person asks (then say `asked`).",
-            waited / 60,
-            p.role,
-            WAIT_BEFORE_MORE / 60,
-            p.role
-        )),
-        _ => None,
-    }
+    Some(format!(
+        "The team has a {role} already ({names}): equipe starts the role's ready tickets side by side under its members, each in \
+a worktree of its own, so {next} needs no new member. Don't add anyone. Propose an add only for a role nobody on the team \
+holds, or when the person asks for one (then say `asked`).",
+        role = p.role,
+        names = holders.join(", "),
+    ))
 }
 
 /// A member as a proposal is checked against.
@@ -321,27 +307,21 @@ mod tests {
     }
 
     #[test]
-    fn more_hands_are_proposed_unasked_only_when_everyone_is_busy_for_long() {
-        use equipe_protocol::TicketStatus;
-        let mut tickets = board();
-        for t in &mut tickets {
-            t.updated_at = Some(1_000);
-        }
+    fn queued_work_never_adds_a_member_of_a_role_the_team_holds() {
         let add = |unblocks: &[u32]| Proposal { change: Change::Add, role: "backend".into(), count: 1, member: None, engine: None, model: None, effort: None, reason: "r".into(), unblocks: unblocks.to_vec(), busy_on: None };
-        let busy_id = tickets[0].id;
-        let waiting_id = tickets[1].id;
-        tickets[0].status = TicketStatus::InProgress;
-        tickets[1].status = TicketStatus::Waiting;
-        let queued = tickets[2].id;
-        let free = [Mate { name: "backend", role: "backend", on: None }];
-        assert!(too_soon(&add(&[queued]), &free, &tickets, 1_000 + 3_600, false).unwrap().contains("free"));
-        let waits = [Mate { name: "backend", role: "backend", on: Some(waiting_id) }];
-        assert!(too_soon(&add(&[queued]), &waits, &tickets, 1_000 + 3_600, false).unwrap().contains("waits on the person"));
-        let busy = [Mate { name: "backend", role: "backend", on: Some(busy_id) }];
-        assert!(too_soon(&add(&[queued]), &busy, &tickets, 1_000 + 240, false).unwrap().contains("4 min"));
-        assert_eq!(too_soon(&add(&[queued]), &busy, &tickets, 1_000 + WAIT_BEFORE_MORE, false), None, "busy for long: worth asking");
-        assert_eq!(too_soon(&add(&[queued]), &free, &tickets, 1_000, true), None, "the person asked");
-        assert_eq!(too_soon(&add(&[]), &[], &tickets, 1_000, false), None, "a role the team hasn't");
+        // Free, or busy on a ticket for hours: the same answer — its runs take the queue.
+        for on in [None, Some(130)] {
+            let team = [Mate { name: "backend", role: "backend", on }];
+            let why = too_soon(&add(&[117]), &team, false).expect("refused");
+            assert!(why.contains("side by side under its members") && why.contains("T-117 needs no new member") && why.contains("Don't add anyone"), "{why}");
+        }
+        let team = [Mate { name: "backend", role: "backend", on: Some(130) }, Mate { name: "backend-2", role: "backend", on: None }];
+        assert!(too_soon(&add(&[]), &team, false).unwrap().contains("(backend, backend-2)"));
+        assert_eq!(too_soon(&add(&[117]), &team, true), None, "the person asked");
+        assert_eq!(too_soon(&add(&[]), &[], false), None, "a role the team hasn't");
+        assert_eq!(too_soon(&add(&[]), &[Mate { name: "qa", role: "qa", on: None }], false), None, "another role isn't this one");
+        let remove = Proposal { change: Change::Remove, member: Some("backend".into()), ..add(&[]) };
+        assert_eq!(too_soon(&remove, &team, false), None, "letting one go is the person's to weigh");
     }
 
     fn check_args(args: Value) -> Result<Proposal, String> {

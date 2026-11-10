@@ -3619,5 +3619,7 @@
   "recover.kept": "La branche, le worktree, le commit et les fichiers non commités restent tels quels. Aucun nouveau ticket n'est créé.",
   "recover.toast_resume": "T-{id} reprend avec {who}",
   "recover.toast_requeue": "T-{id} relancé pour {role}",
-  "recover.toast_reassign": "T-{id} passe à {who}"
+  "recover.toast_reassign": "T-{id} passe à {who}",
+  "sidebar.runs": "{n} tickets",
+  "sidebar.run_failed": "Échec"
 }

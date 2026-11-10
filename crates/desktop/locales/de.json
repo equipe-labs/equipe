@@ -3619,5 +3619,7 @@
   "recover.kept": "Branch, Worktree, Commit und nicht committete Dateien bleiben, wie sie sind. Es entsteht kein neues Ticket.",
   "recover.toast_resume": "T-{id} geht mit {who} weiter",
   "recover.toast_requeue": "T-{id} für {role} neu eingereiht",
-  "recover.toast_reassign": "T-{id} geht an {who}"
+  "recover.toast_reassign": "T-{id} geht an {who}",
+  "sidebar.runs": "{n} Tickets",
+  "sidebar.run_failed": "Fehlgeschlagen"
 }

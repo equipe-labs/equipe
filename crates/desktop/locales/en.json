@@ -3619,5 +3619,7 @@
   "recover.kept": "The branch, worktree, commit and uncommitted files are kept as they are. No new ticket is made.",
   "recover.toast_resume": "T-{id} resumes with {who}",
   "recover.toast_requeue": "T-{id} requeued for {role}",
-  "recover.toast_reassign": "T-{id} goes to {who}"
+  "recover.toast_reassign": "T-{id} goes to {who}",
+  "sidebar.runs": "{n} tickets",
+  "sidebar.run_failed": "Failed"
 }
