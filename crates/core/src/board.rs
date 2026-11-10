@@ -256,6 +256,18 @@ pub fn render(tickets: &[Ticket]) -> String {
     out
 }
 
+/// What the board says under its tickets of the members the person rested:
+/// none, nothing — the board as before.
+pub fn resting_line(resting: &[String]) -> Option<String> {
+    (!resting.is_empty()).then(|| {
+        format!(
+            "Resting: {} — the person paused them; they take no new work until the person wakes them. Give their role's work to \
+another member of the role, or let what they own by name wait.",
+            resting.join(", ")
+        )
+    })
+}
+
 // ── the person's own moves ──
 
 /// What moving a ticket on the board means. The person's command only — a

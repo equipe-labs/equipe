@@ -1037,6 +1037,37 @@ pub fn checklist(note: &str) -> Vec<String> {
 }
 
 /// What a waiting ticket asks first, in a few words.
+/// A ticket waiting on the person, as Needs you says it: whose it is, what
+/// it asks first, how long it has waited, and whether that is long enough
+/// to ask whether it is still needed ([`equipe_core::heartbeat::STALE_WAIT_AFTER`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WaitNote {
+    pub who: Option<String>,
+    pub what: Option<String>,
+    pub waited: Option<u64>,
+    pub stale: bool,
+}
+
+impl WaitNote {
+    /// Its detail column: "mobile · Create the store account".
+    pub fn line(&self) -> Option<String> {
+        match (&self.who, &self.what) {
+            (Some(who), Some(what)) => Some(format!("{who} · {what}")),
+            (who, what) => who.clone().or_else(|| what.clone()),
+        }
+    }
+}
+
+/// [`WaitNote`] for a ticket waiting on the person; none for any other.
+pub fn wait_note(model: &Model, t: &Ticket) -> Option<WaitNote> {
+    if t.status != TicketStatus::Waiting {
+        return None;
+    }
+    let waited = model.in_state_for(t);
+    let stale = waited.is_some_and(|w| w >= equipe_core::heartbeat::STALE_WAIT_AFTER);
+    Some(WaitNote { who: t.assignee.clone().or_else(|| t.owner.clone()), what: first_need(t), waited, stale })
+}
+
 pub fn first_need(t: &Ticket) -> Option<String> {
     let note = t.note.as_deref()?;
     equipe_core::board::waiting_needs(note).first().map(|s| (*s).to_owned()).or_else(|| checklist(note).into_iter().next())
@@ -1391,6 +1422,33 @@ mod tests {
 
     fn headings(rows: &[Row]) -> Vec<String> {
         rows.iter().filter_map(|r| if let Row::Heading { label, .. } = r { Some(label.clone()) } else { None }).collect()
+    }
+
+    #[test]
+    fn needs_you_lists_what_waits_on_the_person_with_who_asks_what_and_how_long() {
+        const DAY: u64 = 24 * 60 * 60;
+        let mut old = ticket(4, "waiting", "/p", &[]);
+        old.note = Some("Waiting on you:\n- [ ] Create the App Store account\n- [ ] Check it on a real phone".into());
+        old.owner = Some("mobile".into());
+        let mut fresh = ticket(7, "waiting", "/p", &[]);
+        fresh.note = Some("Waiting on you:\n- [ ] Approve the copy".into());
+        let mut m = model(vec![old, fresh, ticket(5, "review", "/p", &[]), ticket(6, "in_progress", "/p", &[])], &["/p"]);
+        m.unix = 2_000_000_000;
+        m.since.insert(4, m.unix - 9 * DAY);
+        m.since.insert(7, m.unix - 2 * 60 * 60);
+        let ask: Approval = serde_json::from_value(serde_json::json!({"id": 3, "session": 2, "member": "backend", "ticket": 6, "tool": "Bash", "action": "git push", "reason": null})).unwrap();
+        m.approvals.push(ask);
+        let rows = inbox(&m, &Filter::default());
+        // Everything that waits: the request first, then the tickets put down for the person, the longest waiting first, then the review.
+        assert_eq!(items(&rows), vec![Need::Permission(3), Need::Ticket(4), Need::Ticket(7), Need::Ticket(5)]);
+        // A wait says whose it is, what it asks first, how long — and that it went stale.
+        let t = |id: u32| m.tickets.iter().find(|t| t.id == id).unwrap();
+        let note = wait_note(&m, t(4)).unwrap();
+        assert_eq!(note, WaitNote { who: Some("mobile".into()), what: Some("Create the App Store account".into()), waited: Some(9 * DAY), stale: true });
+        assert_eq!(note.line().as_deref(), Some("mobile · Create the App Store account"));
+        let fresh = wait_note(&m, t(7)).unwrap();
+        assert_eq!((fresh.who.as_deref(), fresh.stale), (Some("backend"), false), "two hours: not stale");
+        assert_eq!(wait_note(&m, t(5)), None, "handed in: not a wait");
     }
 
     #[test]

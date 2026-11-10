@@ -637,5 +637,10 @@
   "error.recovery_member_gone": "{name} ne fait plus partie de l'équipe : relancez T-{id} pour son rôle, ou réattribuez-le.",
   "error.recovery_failed": "Impossible de reprendre T-{id} : {err}",
   "error.recovery_no_operation": "Reprendre T-{id} demande la clé de la carte ; réessayez depuis sa carte.",
-  "notice.runs_update": "Travaille sur {count} tickets à la fois — mettez equipe à jour sur cet écran pour les suivre."
+  "notice.runs_update": "Travaille sur {count} tickets à la fois — mettez equipe à jour sur cet écran pour les suivre.",
+  "error.pm_rests": "Le PM reste en poste : il ne peut pas se mettre au repos.",
+  "news.resting": "{name} est au repos · aucun nouveau travail tant que vous ne le réveillez pas",
+  "news.awake": "{name} est de retour · reprend du nouveau travail",
+  "control.resting_on": "Mettre {member} au repos : aucun nouveau travail jusqu’à son réveil ; le travail en cours est terminé",
+  "control.resting_off": "Réveiller {member} : reprend du nouveau travail"
 }

@@ -633,5 +633,10 @@
   "error.recovery_member_gone": "{name} 已不在小队中：请把 T-{id} 重新排队给同一角色，或改派给其他人。",
   "error.recovery_failed": "无法恢复 T-{id}：{err}",
   "error.recovery_no_operation": "恢复 T-{id} 需要卡片的标识；请从卡片上重试。",
-  "notice.runs_update": "正在同时处理 {count} 个工单——请在此屏幕上更新 equipe 以查看它们。"
+  "notice.runs_update": "正在同时处理 {count} 个工单——请在此屏幕上更新 equipe 以查看它们。",
+  "error.pm_rests": "PM 不能休息，它始终在岗。",
+  "news.resting": "{name} 正在休息 · 在你唤醒之前不接新工作",
+  "news.awake": "{name} 回来了 · 重新接新工作",
+  "control.resting_on": "让 {member} 休息：在你唤醒之前不接新工作，手头的工作会做完",
+  "control.resting_off": "唤醒 {member}：重新接新工作"
 }

@@ -14,7 +14,7 @@ pub struct Spec {
 
 /// Every command, its `about` (and the words in its `args`) in the language in use — asked afresh each
 /// time, since the person may switch language while the console runs.
-pub fn commands() -> [Spec; 39] {
+pub fn commands() -> [Spec; 40] {
     [
         Spec { name: "usage", args: "", about: t!("commands.usage") },
         Spec { name: "compact", args: "[member]", about: t!("commands.compact") },
@@ -42,6 +42,7 @@ pub fn commands() -> [Spec; 39] {
         Spec { name: "add", args: "<role…> | custom <name> [--edits]", about: t!("commands.add") },
         Spec { name: "close", args: "", about: t!("commands.close") },
         Spec { name: "mode", args: "[member] read-only|ask|auto|full", about: t!("commands.mode") },
+        Spec { name: "rest", args: "<member> [stop|off]", about: t!("commands.rest") },
         Spec { name: "browser", args: "[watch|show|hide [member] · signin · max <n>]", about: t!("commands.browser") },
         Spec { name: "send-apps", args: "[add|remove <app> · reset]", about: t!("commands.send_apps") },
         Spec { name: "desktop", args: "stop|resume", about: t!("commands.desktop") },
@@ -188,6 +189,11 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
         }
         ("add", _) => ctx.roles.iter().filter(|w| starts(w)).map(|r| word(r, "", " ")).collect(),
         ("compact" | "clear", 1) => ctx.members.iter().filter(|(m, _)| starts(m)).map(|(m, _)| word(m, "", "")).collect(),
+        // A member, then how: let its work finish (as is), stop it too, or wake it.
+        ("rest", 1) => ctx.members.iter().filter(|(m, role)| starts(m) && *role != "pm").map(|(m, role)| word(m, role, " ")).collect(),
+        ("rest", 2) if ctx.members.iter().any(|(m, _)| *m == words[0]) => {
+            [("stop", t!("commands.rest_stop")), ("off", t!("commands.rest_off"))].into_iter().filter(|(w, _)| starts(w)).map(|(w, about)| word(w, about, "")).collect()
+        }
         // A member, then a model of its engine — or straight a model, for the member selected.
         ("model", 1) => {
             let mut choices: Vec<Choice> = ctx.members.iter().filter(|(m, _)| starts(m)).map(|(m, role)| word(m, role, " ")).collect();

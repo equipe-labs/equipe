@@ -1267,5 +1267,10 @@
   "app.ask_resume_run": "讓 {who} 在新工作階段中繼續 T-{id}？分支和工作目錄不變。y / n",
   "app.ask_requeue_run": "把 T-{id} 重新排隊給下一位空閒的 {role}？分支和工作目錄不變。y / n",
   "app.ask_reassign_run": "誰來接手 T-{id}？分支和工作目錄不變。{members} · n",
-  "app.recovered": "T-{id} 已恢復"
+  "app.recovered": "T-{id} 已恢復",
+  "commands.rest": "讓成員休息：喚醒之前不接新工作",
+  "commands.rest_stop": "並停止手頭的工作",
+  "commands.rest_off": "喚醒：重新接新工作",
+  "app.rest_usage": "/rest <成員> — 不接新工作，手頭的做完 · /rest <成員> stop — 手頭的也停止 · /rest <成員> off — 喚醒",
+  "app.pm_rests": "PM 不能休息，它始終在崗。"
 }

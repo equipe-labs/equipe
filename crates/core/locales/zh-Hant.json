@@ -633,5 +633,10 @@
   "error.recovery_member_gone": "{name} 已不在小隊中：請把 T-{id} 重新排隊給同一角色，或改派給其他人。",
   "error.recovery_failed": "無法恢復 T-{id}：{err}",
   "error.recovery_no_operation": "恢復 T-{id} 需要卡片的識別碼；請從卡片上重試。",
-  "notice.runs_update": "正在同時處理 {count} 張工單——請在此畫面上更新 equipe 以查看它們。"
+  "notice.runs_update": "正在同時處理 {count} 張工單——請在此畫面上更新 equipe 以查看它們。",
+  "error.pm_rests": "PM 不能休息，它始終在崗。",
+  "news.resting": "{name} 正在休息 · 在你喚醒之前不接新工作",
+  "news.awake": "{name} 回來了 · 重新接新工作",
+  "control.resting_on": "讓 {member} 休息：在你喚醒之前不接新工作，手頭的工作會做完",
+  "control.resting_off": "喚醒 {member}：重新接新工作"
 }

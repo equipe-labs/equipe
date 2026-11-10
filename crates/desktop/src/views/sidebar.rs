@@ -15,7 +15,7 @@ use equipe_core::t;
 use std::collections::HashMap;
 use std::time::Instant;
 
-use equipe_core::protocol::{SessionId, TicketId, TicketStatus};
+use equipe_core::protocol::{Engine, SessionId, TicketId, TicketStatus};
 use crate::convo::Sub;
 use crate::tips::TipExt as _;
 use gpui_kit::component::*;
@@ -370,6 +370,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .child(footer(p, shell, cx))
         .children(popup(p, shell, cx))
         .children(project_menu(shell, cx))
+        .children(member_menu(shell, cx))
         // The edge: drag to resize (it settles on the usual width when near
         // it), double-click for the usual width again. Lit under the pointer.
         .child(
@@ -1204,15 +1205,28 @@ fn team_block(shell: &Shell, height: Option<f32>, cx: &mut Context<Shell>) -> Op
         (motion.arriving(now), motion.leaving(now))
     };
     let run_rows: usize = members.iter().map(|m| run_rows(model.runs_of(m.session).len())).sum();
-    let child_rows = subs.iter().map(|s| sub_rows(s.len(), cap)).sum::<usize>() + leaving.len() + run_rows;
+    // Those the person rested come last, under a small label of their own.
+    let resting = members.iter().filter(|m| model.is_resting(m)).count();
+    let child_rows = subs.iter().map(|s| sub_rows(s.len(), cap)).sum::<usize>() + leaving.len() + run_rows + usize::from(resting > 0);
+    // Each row's engine only where it tells something; shared by all, once on the heading.
+    let (engine_shown, shared_engine) = engine_marks(&members.iter().map(|m| m.engine).collect::<Vec<_>>());
     let mut rows: Vec<AnyElement> = Vec::new();
-    for (m, subs) in members.iter().zip(&subs) {
+    let mut labelled = false;
+    for ((m, subs), show_engine) in members.iter().zip(&subs).zip(engine_shown) {
+        let rests = model.is_resting(m);
+        if rests && !labelled {
+            labelled = true;
+            rows.push(resting_label(p));
+        }
         let folded = (cap == 0).then_some(subs.len()).filter(|n| *n > 0);
-        rows.push(member_row(shell, m, folded, cx));
-        // Its tickets, each run under it: one row each, opened like the ticket.
+        rows.push(member_row(shell, m, folded, show_engine, rests, cx));
+        // Its tickets, each run under it, when it runs two or more: one row
+        // each, opened like the ticket. A single run is its member's row.
         let runs = model.runs_of(m.session);
-        for run in runs.iter().take(RUNS_SHOWN) {
-            rows.push(run_row(shell, run, cx));
+        if runs.len() > 1 {
+            for run in runs.iter().take(RUNS_SHOWN) {
+                rows.push(run_row(shell, run, cx));
+            }
         }
         if runs.len() > RUNS_SHOWN {
             rows.push(runs_more_row(shell, m.session, runs[RUNS_SHOWN].ticket, runs.len() - RUNS_SHOWN, cx));
@@ -1237,6 +1251,7 @@ fn team_block(shell: &Shell, height: Option<f32>, cx: &mut Context<Shell>) -> Op
     // on the heading shows the rows.
     let open = shell.remembered.team_open;
     let turns = members.iter().filter(|m| TeamState::of(model, m).waits()).count();
+    let heading_tip = shared_engine.map(|e| t!("sidebar.team_engine", engine = equipe_core::controls::engine_name(e)));
     let heading = h_flex()
         .id("team-heading")
         .h(px(24.))
@@ -1258,11 +1273,35 @@ fn team_block(shell: &Shell, height: Option<f32>, cx: &mut Context<Shell>) -> Op
         .font_weight(FontWeight::MEDIUM)
         .text_color(p.muted)
         .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(icon(if open { IconName::ChevronDown } else { IconName::ChevronRight }, 12., p.muted)))
+        .when_some(heading_tip, |h, tip| h.tip(p, tip, None))
         .child(t!("sidebar.team"))
         .child(div().font_weight(FontWeight::NORMAL).child(members.len().to_string()))
         .child(div().flex_1())
-        // How many wait on the person: the wait dot, the words in the heading's ink.
-        .when(turns > 0, |h| h.child(h_flex().gap(px(5.)).items_center().font_weight(FontWeight::NORMAL).child(dot(p.orange, SIGN_DOT)).child(t!("sidebar.team_turns", n = turns))));
+        // How many wait on the person: the wait dot, the words in the heading's
+        // ink. A click opens Needs you — everything waiting on them, each
+        // with its ticket, who asks, what and how long.
+        .when(turns > 0, |h| {
+            h.child(
+                h_flex()
+                    .id("team-turns")
+                    .gap(px(5.))
+                    .items_center()
+                    .px(px(4.))
+                    .rounded(px(4.))
+                    .font_weight(FontWeight::NORMAL)
+                    .hover(move |s| s.bg(p.side_sel))
+                    .aria_label(t!("sidebar.team_turns_open", n = turns))
+                    .tip(p, t!("sidebar.team_turns_open", n = turns), None)
+                    .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+                        cx.stop_propagation();
+                        if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Board, menu: Menu::Inbox, member: None, ticket: None }), window, cx) {
+                            this.open_side_menu(Menu::Inbox, cx);
+                        }
+                    }))
+                    .child(dot(p.orange, SIGN_DOT))
+                    .child(t!("sidebar.team_turns", n = turns)),
+            )
+        });
     let body = if open { list.into_any_element() } else { faces(shell, &members, cx) };
     Some(
         v_flex()
@@ -1330,6 +1369,7 @@ fn faces(shell: &Shell, members: &[&Member], cx: &mut Context<Shell>) -> AnyElem
                     this.select_member(session, window, cx);
                 }
             }))
+            .when(shell.model.is_resting(m), |d| d.opacity(0.5))
             .child(crate::theme::avatar(p, &m.role, &m.name, 20.))
             .children(dot.map(|c| div().absolute().right(px(0.)).bottom(px(0.)).size(px(8.)).rounded_full().border_1().border_color(p.side).bg(c)))
     });
@@ -1415,9 +1455,25 @@ fn child_room(members: usize) -> f32 {
 /// How many of a member's runs show as rows under it; the rest behind "+N more".
 pub const RUNS_SHOWN: usize = 4;
 
-/// How many rows `n` runs take: those shown, and "+N more" for the rest.
+/// How many rows `n` runs take: those shown, and "+N more" for the rest —
+/// none for a single run, which its member's row says and opens.
 pub fn run_rows(n: usize) -> usize {
-    n.min(RUNS_SHOWN) + usize::from(n > RUNS_SHOWN)
+    if n < 2 { 0 } else { n.min(RUNS_SHOWN) + usize::from(n > RUNS_SHOWN) }
+}
+
+/// "Resting", small and muted, over the members the person rested.
+fn resting_label(p: Palette) -> AnyElement {
+    h_flex()
+        .h(px(SUB_ROW))
+        .flex_none()
+        .mx_2()
+        .px_2()
+        .pt(px(4.))
+        .items_center()
+        .text_size(px(11.))
+        .text_color(p.muted)
+        .child(t!("sidebar.resting"))
+        .into_any_element()
 }
 
 /// One ticket a member runs, under the member: its mark (a spinner at
@@ -1620,26 +1676,143 @@ impl TeamState {
     }
 }
 
+/// What a member waiting on the person waits for, as its row says it: the
+/// ticket, what is asked, and how long it has waited.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Wait {
+    pub ticket: Option<TicketId>,
+    /// What is asked, in full.
+    pub what: String,
+    /// How long it has waited, in seconds, when known.
+    pub waited: Option<u64>,
+}
+
+/// How much of what is asked a team row shows before it is cut.
+const WAIT_WORDS: usize = 28;
+
+impl Wait {
+    /// The row's few words: "T-584 · Create the store account", cut to fit.
+    pub fn short(&self) -> String {
+        let what = cut(&self.what, WAIT_WORDS);
+        match self.ticket {
+            Some(id) => format!("T-{id} · {what}"),
+            None => what,
+        }
+    }
+
+    /// Waiting past three days: worth asking whether it is still needed.
+    pub fn stale(&self) -> bool {
+        self.waited.is_some_and(|w| w >= equipe_core::heartbeat::STALE_WAIT_AFTER)
+    }
+
+    /// On the pointer, under the ticket: all that is asked, and how long it waited.
+    pub fn detail(&self) -> String {
+        let mut out = self.what.clone();
+        if let Some(waited) = self.waited.filter(|w| *w > 0) {
+            let line = if self.stale() { t!("sidebar.waited_stale", span = crate::state::short_span(waited)) } else { t!("sidebar.waited", span = crate::state::short_span(waited)) };
+            out = format!("{out}\n{line}");
+        }
+        out
+    }
+}
+
+/// `text` on one line, cut at a word near `most` characters with an ellipsis.
+pub fn cut(text: &str, most: usize) -> String {
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
+    if line.chars().count() <= most {
+        return line.to_owned();
+    }
+    let head: String = line.chars().take(most).collect();
+    // Back to the last space, unless that leaves too little (a script without spaces).
+    let at = head.rfind(' ').filter(|at| head[..*at].chars().count() >= most / 2).unwrap_or(head.len());
+    format!("{}…", head[..at].trim_end())
+}
+
+/// What `member` waits on the person for, as [`Model::status`] reads it: a
+/// request for permission (its own or one of its runs'), its questions, or
+/// a ticket of its put down for the person. None when it waits for nothing.
+pub fn wait_of(model: &Model, member: &Member) -> Option<Wait> {
+    if !matches!(model.status(member), Status::NeedsYou(_)) {
+        return None;
+    }
+    let waiting = model.tickets.iter().find(|t| t.status == TicketStatus::Waiting && t.owner.as_deref() == Some(member.name.as_str()));
+    let asking = model.approvals.first_for(member.session).or_else(|| model.runs_of(member.session).into_iter().find_map(|r| model.approvals.first_for(r.session)));
+    if let Some(a) = asking {
+        let what = t!("approvals.allow_question", what = super::approvals::Card::of(a).noun);
+        return Some(Wait { ticket: a.ticket.or(member.ticket).or(waiting.map(|t| t.id)), what, waited: None });
+    }
+    if let Some(set) = model.asked.from(&member.name) {
+        let what = set.questions.first().map(|q| q.question.clone()).unwrap_or_else(|| t!("state.section_decide").to_owned());
+        let waited = (set.asked_at > 0).then(|| model.unix.saturating_sub(set.asked_at));
+        return Some(Wait { ticket: set.ticket, what, waited });
+    }
+    let t = waiting?;
+    let asks = t.asks();
+    let what = if asks.is_empty() { t!("sidebar.needs_you_what").to_owned() } else { asks.join("; ") };
+    Some(Wait { ticket: Some(t.id), what, waited: model.in_state_for(t) })
+}
+
+/// Which members' rows show their engine: only where it tells something —
+/// those on another engine than most of the team (all of them when it is a
+/// tie). The engine everyone shares, when they all do, is said once, on the
+/// team's heading instead.
+pub fn engine_marks(engines: &[Option<Engine>]) -> (Vec<bool>, Option<Engine>) {
+    let known: Vec<Engine> = engines.iter().flatten().copied().collect();
+    let count = |e: Engine| known.iter().filter(|k| **k == e).count();
+    let (claude, codex) = (count(Engine::Claude), count(Engine::Codex));
+    let most = match claude.cmp(&codex) {
+        std::cmp::Ordering::Greater => Some(Engine::Claude),
+        std::cmp::Ordering::Less => Some(Engine::Codex),
+        std::cmp::Ordering::Equal => None,
+    };
+    let shared = most.filter(|_| claude == 0 || codex == 0);
+    let shown = engines.iter().map(|e| e.is_some_and(|e| Some(e) != most)).collect();
+    (shown, shared)
+}
+
 /// Someone on the team, compact: a spinner at work, the orange dot when it
 /// waits on the person, else its colour; the name; where it stands, muted —
-/// and, on the pointer, "Talk". A click opens its conversation.
-fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, cx: &mut Context<Shell>) -> AnyElement {
+/// what it waits for when that is the person ("T-584 · Create the store
+/// account", all of it on the pointer) — its engine where that tells
+/// something, and, on the pointer, "Talk". A click opens its conversation —
+/// or, running a single ticket, that ticket, as its run's row would. Rested
+/// by the person, it is dimmed. A right-click offers to rest it or wake it.
+fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, show_engine: bool, rests: bool, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let (_, hue) = crate::theme::look(&member.role, &member.name);
     let side = if Model::is_pm(member) { Side::Pm } else { Side::Member(member.session) };
-    // The PM's conversation lights the PM row above; here only the others'.
-    let on = side != Side::Pm && shell.screen == Screen::Chat && shell.model.opened.is_none() && shell.model.side_open() == Some(side);
     let session = member.session;
+    let runs = shell.model.runs_of(session);
+    // A single run: the member's row is that ticket's.
+    let single = (runs.len() == 1).then(|| runs[0].ticket);
+    // The PM's conversation lights the PM row above; here only the others'.
+    let on = match single {
+        Some(ticket) => side != Side::Pm && shell.screen == Screen::Chat && shell.model.opened == Some(ticket),
+        None => side != Side::Pm && shell.screen == Screen::Chat && shell.model.opened.is_none() && shell.model.side_open() == Some(side),
+    };
     let state = TeamState::of(&shell.model, member);
     // Its seconds count up: drawn again when the next one is.
     if matches!(state, TeamState::Compacting(_)) {
         shell.wake_at(std::time::Instant::now() + std::time::Duration::from_secs(1), cx);
     }
-    let at_work = shell.model.runs_of(session).iter().any(|r| r.presence == Presence::Working) || member.presence == Presence::Working;
+    let at_work = runs.iter().any(|r| r.presence == Presence::Working) || member.presence == Presence::Working;
+    let failed = single.is_some() && runs[0].failed && runs[0].presence != Presence::Working;
     // Running several tickets, it says how many — "frontend · 3 tickets" —
     // whatever one of them waits for: its face's dot and that run's row say so.
-    let runs = shell.model.runs_of(session).len();
-    let words = if runs > 1 { t!("sidebar.runs", n = runs) } else { state.words() };
+    // Waiting on the person, it says for what.
+    let wait = if runs.len() > 1 { None } else { wait_of(&shell.model, member) };
+    let stale = wait.as_ref().is_some_and(Wait::stale);
+    let words = match (&wait, single) {
+        _ if runs.len() > 1 => t!("sidebar.runs", n = runs.len()),
+        (Some(wait), _) => wait.short(),
+        (None, Some(ticket)) if failed => format!("{} · T-{ticket}", t!("sidebar.run_failed")),
+        _ => state.words(),
+    };
+    // On the pointer: the ticket and all that is asked, how long it has waited.
+    let tip = wait.as_ref().map(|w| {
+        let title = w.ticket.and_then(|id| shell.model.tickets.iter().find(|t| t.id == id).map(|t| format!("T-{id} {}", t.title)));
+        (title.unwrap_or_else(|| member.name.clone()), w.detail())
+    });
     let mark = match state {
         TeamState::Working(_) | TeamState::Compacting(_) => Mark::Spinner,
         TeamState::Runs(_) if at_work => Mark::Spinner,
@@ -1649,36 +1822,61 @@ fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, cx: &mut Co
         TeamState::Resting => Mark::Ring(p.member(hue)),
     };
     let group = SharedString::from(format!("mem-{session}"));
+    let menu = (side != Side::Pm).then(|| member.name.clone());
+    let said = match &tip {
+        Some((_, detail)) => format!("{}, {}, {}", member.name, words, detail.replace('\n', ", ")),
+        None => format!("{}, {}", member.name, words),
+    };
     row_shell(p, ("member", session), on)
         .h(px(TEAM_ROW))
-        .aria_label(format!("{}, {}", member.name, words))
+        .aria_label(if rests { format!("{said}, {}", t!("sidebar.resting")) } else { said })
         .aria_selected(on)
         .group(group.clone())
+        .when(rests, |r| r.opacity(0.55))
         .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+            if let Some(ticket) = single {
+                let goal = super::elsewhere::Goal::Place(Place { screen: Screen::Chat, menu: this.board.view.menu, member: None, ticket: Some(ticket) });
+                if !this.open_elsewhere(e, goal, window, cx) {
+                    this.open_side(Side::Ticket(ticket), window, cx);
+                }
+                return;
+            }
             let goal = super::elsewhere::Goal::Place(Place { screen: Screen::Chat, menu: this.board.view.menu, member: Some(session), ticket: None });
             if !this.open_elsewhere(e, goal, window, cx) {
                 this.select_member(session, window, cx);
             }
         }))
+        // Right-click: rest it, or wake it — the person's choice.
+        .when_some(menu, |row, _| {
+            row.on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.open_member_menu(session, e.position, cx);
+                }),
+            )
+        })
         .child(face(p, member, mark))
         // Name, then what it is doing against the right edge, then its engine:
         // each in the same place on every row.
         .child(div().flex_1().min_w(px(36.)).truncate().text_size(px(TEXT)).text_color(if on { p.text } else { p.text2 }).child(member.name.clone()))
         .child(
             div()
+                .id(("member-words", session))
                 .flex_none()
-                .max_w(relative(0.55))
+                .max_w(relative(0.6))
                 .truncate()
                 .text_right()
                 .text_size(px(12.))
                 // Waiting on the person, its face's dot says so in orange; the
-                // words stay in ink, a step stronger.
-                .text_color(if state.waits() { p.text2 } else { p.muted })
+                // words stay in ink, a step stronger — amber once it waited for days.
+                .text_color(if stale { p.amber } else if state.waits() { p.text2 } else { p.muted })
                 .when(state.waits(), |d| d.font_weight(FontWeight::MEDIUM))
                 .group_hover(group.clone(), |s| s.invisible())
+                .when_some(tip, |d, (title, detail)| d.tip_at(p, format!("{title}\n{detail}"), None, gpui_kit::base::Placement::Right))
                 .child(words.clone()),
         )
-        .children(member.engine.map(|e| div().flex_none().group_hover(group.clone(), |s| s.invisible()).child(super::switching::mark(p, ("member-engine", session), e))))
+        .children(member.engine.filter(|_| show_engine).map(|e| div().flex_none().group_hover(group.clone(), |s| s.invisible()).child(super::switching::mark(p, ("member-engine", session), e))))
         // No room for its subagents' rows: how many, which opens them all.
         .children(folded.map(|n| {
             h_flex()
@@ -1713,9 +1911,84 @@ fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, cx: &mut Co
                 .text_color(p.text2)
                 .invisible()
                 .group_hover(group, |s| s.visible())
-                .child(t!("sidebar.talk")),
+                .child(if single.is_some() { t!("sidebar.open_ticket") } else { t!("sidebar.talk") }),
         )
         .into_any_element()
+}
+
+/// A member's menu, open where the right-click was: rest it — letting what
+/// it works on finish, or stopping that too — or wake it.
+fn member_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let p = shell.palette;
+    let (session, at) = shell.board.member_menu?;
+    let member = shell.model.members.iter().find(|m| m.session == session)?;
+    let name = member.name.clone();
+    let rests = shell.model.is_resting(member);
+    let busy = !shell.model.runs_of(session).is_empty() || member.presence == Presence::Working;
+    let can = shell.can_act();
+    let item = |id: &'static str, name: IconName, label: String, hint: Option<String>| {
+        h_flex()
+            .id(id)
+            .min_h(px(30.))
+            .py_1()
+            .px_2()
+            .gap_2()
+            .items_center()
+            .rounded(px(6.))
+            .text_size(px(TEXT))
+            .text_color(if can { p.text } else { p.muted })
+            .when(can, |r| r.cursor_pointer().hover(move |s| s.bg(p.side_hover)))
+            .child(icon(name, 14., if can { p.text } else { p.muted }))
+            .child(v_flex().flex_1().min_w_0().child(div().truncate().child(label)).children(hint.map(|h| div().text_size(px(11.)).text_color(p.muted).child(h))))
+    };
+    let mut rows: Vec<AnyElement> = Vec::new();
+    if rests {
+        let who = name.clone();
+        rows.push(
+            item("mm-wake", IconName::Play, t!("sidebar.wake").to_owned(), Some(t!("sidebar.wake_hint").to_owned()))
+                .on_click(cx.listener(move |this, _, _, cx| this.rest_member(&who, false, false, cx)))
+                .into_any_element(),
+        );
+    } else {
+        let who = name.clone();
+        rows.push(
+            item("mm-rest", IconName::Pause, t!("sidebar.rest").to_owned(), Some(if busy { t!("sidebar.rest_hint_busy") } else { t!("sidebar.rest_hint") }.to_owned()))
+                .on_click(cx.listener(move |this, _, _, cx| this.rest_member(&who, true, false, cx)))
+                .into_any_element(),
+        );
+        if busy {
+            let who = name.clone();
+            rows.push(
+                item("mm-rest-stop", IconName::Square, t!("sidebar.rest_stop").to_owned(), None)
+                    .on_click(cx.listener(move |this, _, _, cx| this.rest_member(&who, true, true, cx)))
+                    .into_any_element(),
+            );
+        }
+    }
+    Some(
+        deferred(
+            anchored().position(at).snap_to_window().child(
+                v_flex()
+                    .id("member-menu")
+                    .w(px(240.))
+                    .p_1()
+                    .rounded(px(10.))
+                    .bg(p.raised)
+                    .border_1()
+                    .border_color(p.hair)
+                    .shadow_lg()
+                    .occlude()
+                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        this.board.member_menu = None;
+                        cx.notify();
+                    }))
+                    .child(div().px_2().pt_1().pb(px(2.)).text_size(px(11.)).text_color(p.muted).child(name))
+                    .children(rows),
+            ),
+        )
+        .with_priority(2)
+        .into_any_element(),
+    )
 }
 
 // ── rows arriving and leaving ──
@@ -2283,6 +2556,22 @@ impl Shell {
         }
     }
 
+    /// A member's menu, at `at`.
+    pub fn open_member_menu(&mut self, member: SessionId, at: Point<Pixels>, cx: &mut Context<Self>) {
+        self.board.member_menu = Some((member, at));
+        cx.notify();
+    }
+
+    /// Rest member `name` — no new work; with `stop`, what it works on stops
+    /// too — or wake it (`resting` false). The daemon keeps it and tells every screen.
+    pub fn rest_member(&mut self, name: &str, resting: bool, stop: bool, cx: &mut Context<Self>) {
+        self.board.member_menu = None;
+        if self.can_act() {
+            self.send_command(equipe_core::protocol::Command::SetResting { squad: self.model.squad.clone(), member: name.to_owned(), resting, stop });
+        }
+        cx.notify();
+    }
+
     /// A project's menu, at `at`.
     pub fn open_project_menu(&mut self, project: String, at: Point<Pixels>, cx: &mut Context<Self>) {
         self.board.project_menu = Some((project, at));
@@ -2440,7 +2729,8 @@ pub struct Place {
 
 #[cfg(test)]
 mod tests {
-    use super::{HeadSign, MAX_WIDTH, MIN_WIDTH, SUB_ROW, SUBS_SHOWN, SubLeaving, SubMotion, SubShown, TEAM_ROW, TeamState, WIDTH, head_sign, remove_ask, settle, shown_projects, sub_rows, subs_cap, team_height};
+    use super::{HeadSign, MAX_WIDTH, MIN_WIDTH, SUB_ROW, SUBS_SHOWN, SubLeaving, SubMotion, SubShown, TEAM_ROW, TeamState, WIDTH, Wait, cut, engine_marks, head_sign, remove_ask, run_rows, settle, shown_projects, sub_rows, subs_cap, team_height, wait_of};
+    use equipe_core::protocol::Engine;
     use crate::state::{Member, Model, Presence, Verb};
     use equipe_core::protocol::Ticket;
     use std::time::{Duration, Instant};
@@ -2551,6 +2841,78 @@ mod tests {
         // Every member is listed, the PM first, whatever the sidebar holds above.
         assert_eq!(model.team().len(), 5);
         assert_eq!(model.team()[0], 1);
+    }
+
+    #[test]
+    fn a_member_on_one_ticket_is_one_row_and_two_or_more_list_each_under_it() {
+        assert_eq!(run_rows(0), 0);
+        assert_eq!(run_rows(1), 0, "a single run: the member's row says it and opens it");
+        assert_eq!(run_rows(2), 2);
+        assert_eq!(run_rows(4), 4);
+        assert_eq!(run_rows(6), 5, "four, then +2 more");
+        assert_eq!(team_height(3, run_rows(1)), team_height(3, 0), "no room taken for it");
+        // The member's row says the one ticket.
+        let mut model = Model::new("acme");
+        model.tickets = vec![ticket(669, "in_progress", "frontend")];
+        model.members = vec![member(1, "pm", Presence::Ready, None), member(2, "frontend", Presence::Ready, None)];
+        let run = |session, ticket| crate::state::Run { session, of: 2, ticket, presence: Presence::Working, verb: Verb::Working, failed: false };
+        model.runs = vec![run(20, 669)];
+        assert_eq!(TeamState::of(&model, &model.members[1]), TeamState::Working(Some(669)));
+        model.runs.push(run(21, 670));
+        assert_eq!(TeamState::of(&model, &model.members[1]), TeamState::Runs(2), "two: \"2 tickets\", each a row under it");
+    }
+
+    #[test]
+    fn your_turn_says_the_ticket_and_what_is_asked_and_goes_stale_after_three_days() {
+        const DAY: u64 = 24 * 60 * 60;
+        let mut model = Model::new("acme");
+        model.unix = 2_000_000_000;
+        let mut account = ticket(584, "waiting", "backend");
+        account.title = "Store listing".into();
+        account.note = Some("Waiting on you:\n- [ ] Create the App Store account\n- [ ] Check it on a real phone".into());
+        let bare = ticket(590, "waiting", "designer");
+        model.tickets = vec![account, bare, ticket(12, "in_progress", "frontend")];
+        model.members = vec![member(1, "pm", Presence::Ready, None), member(2, "backend", Presence::Ready, None), member(3, "designer", Presence::Ready, None), member(4, "frontend", Presence::Working, Some(12))];
+        model.since.insert(584, model.unix - 9 * DAY);
+        model.since.insert(590, model.unix - DAY);
+        let wait = wait_of(&model, &model.members[1]).unwrap();
+        assert_eq!(wait, Wait { ticket: Some(584), what: "Create the App Store account; Check it on a real phone".into(), waited: Some(9 * DAY) });
+        assert_eq!(wait.short(), "T-584 · Create the App Store…", "the ticket, then what, cut at a word");
+        assert!(wait.stale() && wait.detail().starts_with("Create the App Store account; Check it on a real phone\n"), "all of it on the pointer, then how long");
+        // Nothing listed: the ticket and that it needs the person.
+        let bare = wait_of(&model, &model.members[2]).unwrap();
+        assert_eq!((bare.ticket, bare.short()), (Some(590), "T-590 · 내 차례".to_owned()));
+        assert!(!bare.stale(), "a day: not stale");
+        // A request for permission says what it asks for, on its ticket.
+        let ask: equipe_core::protocol::Approval = serde_json::from_value(serde_json::json!({"id": 1, "session": 4, "member": "frontend", "ticket": 12, "tool": "Bash", "action": "git push", "reason": null})).unwrap();
+        model.approvals.push(ask);
+        let asks = wait_of(&model, &model.members[3]).unwrap();
+        assert!(asks.short().starts_with("T-12 · ") && asks.short().ends_with('?'), "{}", asks.short());
+        assert_eq!(wait_of(&model, &model.members[0]), None, "waits for nothing");
+        assert_eq!(cut("short", 28), "short");
+        assert_eq!(cut("가나다라마바사아자차카타파하가나다라마바사아자차카타파하가나다", 28).chars().count(), 29, "no spaces: cut where it must");
+    }
+
+    #[test]
+    fn a_rows_engine_shows_only_where_it_differs_and_one_shared_engine_is_said_once() {
+        let (c, x) = (Some(Engine::Claude), Some(Engine::Codex));
+        assert_eq!(engine_marks(&[c, c, c]), (vec![false, false, false], Some(Engine::Claude)), "all the same: once, on the heading");
+        assert_eq!(engine_marks(&[c, c, x, c]), (vec![false, false, true, false], None), "the odd one out");
+        assert_eq!(engine_marks(&[x, x, c]), (vec![false, false, true], None));
+        assert_eq!(engine_marks(&[c, x]), (vec![true, true], None), "a tie: each says its own");
+        assert_eq!(engine_marks(&[c, None, c]), (vec![false, false, false], Some(Engine::Claude)), "one not known yet");
+        assert_eq!(engine_marks(&[]), (vec![], None));
+    }
+
+    #[test]
+    fn a_resting_member_comes_last() {
+        let mut model = Model::new("acme");
+        model.tickets = vec![ticket(13, "waiting", "backend")];
+        model.members = vec![member(1, "pm", Presence::Ready, None), member(2, "designer", Presence::Working, None), member(3, "backend", Presence::Ready, None), member(4, "qa", Presence::Ready, None)];
+        assert_eq!(model.team(), [1, 3, 2, 4]);
+        model.resting = vec!["backend".into(), "designer".into()];
+        assert_eq!(model.team(), [1, 4, 3, 2], "under Resting at the foot, in the team's order");
+        assert!(model.is_resting(&model.members[2]) && !model.is_resting(&model.members[3]));
     }
 
     #[test]

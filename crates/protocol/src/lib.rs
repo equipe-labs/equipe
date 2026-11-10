@@ -1094,6 +1094,18 @@ pub enum Command {
     /// waiting — before the PM is woken to propose what's next, in hours;
     /// 0 turns it off. Answered by [`Event::IdleWakeChanged`].
     SetIdleWake { squad: SquadName, hours: u32 },
+    /// The person rests a member (`resting`) or wakes it again. A resting
+    /// member takes no new work: the board hands it nothing and no run of
+    /// its opens. What it works on now finishes, unless `stop`: then its runs
+    /// are stopped too. Kept in the squad's journal; only ever the person's.
+    /// Answered by [`Event::RestingChanged`].
+    SetResting {
+        squad: SquadName,
+        member: String,
+        resting: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        stop: bool,
+    },
     /// The person saves a login for members to sign in with (new, or a
     /// change): its password to the Keychain, the rest to every screen
     /// ([`Event::Logins`]).
@@ -2633,6 +2645,8 @@ pub enum Event {
     /// How long an empty board waits before the PM is woken now
     /// ([`Command::SetIdleWake`]); 0: never.
     IdleWakeChanged { squad: SquadName, hours: u32 },
+    /// The members resting now, by name ([`Command::SetResting`]).
+    RestingChanged { squad: SquadName, resting: Vec<String> },
     /// How many subagents a member runs at once now ([`Command::SetSubagentsAtOnce`]);
     /// `None`: each engine's own.
     SubagentsAtOnceChanged { squad: SquadName, at_once: Option<u32> },
@@ -2776,6 +2790,7 @@ impl Event {
             | Event::RoutineProposed { squad, .. }
             | Event::RoutineProposalClosed { squad, .. }
             | Event::IdleWakeChanged { squad, .. }
+            | Event::RestingChanged { squad, .. }
             | Event::SubagentsAtOnceChanged { squad, .. }
             | Event::ParallelChanged { squad, .. }
             | Event::ModelChoiceChanged { squad, .. }
@@ -2875,6 +2890,7 @@ impl Event {
             | Event::RoutineProposed { .. }
             | Event::RoutineProposalClosed { .. }
             | Event::IdleWakeChanged { .. }
+            | Event::RestingChanged { .. }
             | Event::SubagentsAtOnceChanged { .. }
             | Event::ParallelChanged { .. }
             | Event::ModelChoiceChanged { .. }
@@ -3245,6 +3261,10 @@ pub struct Snapshot {
     /// 0: never. `None` from a daemon that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_wake_hours: Option<u32>,
+    /// The members the person rested ([`Command::SetResting`]), by name:
+    /// they take no new work. None from a daemon that predates it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resting: Vec<String>,
     /// How many subagents a member runs at once ([`Command::SetSubagentsAtOnce`]).
     /// `None`: each engine's own — as on a daemon that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3702,6 +3722,7 @@ mod tests {
             projects: vec!["/repo".into()],
             hq: Some("/repo".into()),
             hand_overs: Vec::new(),
+            resting: vec!["qa".into()],
             put_away: vec![PutAway { session: 51, project: Some("web".into()), title: Some("the pricing page".into()), at: 1_760_000_000 }],
             words: None,
             words_all: false,
@@ -4298,5 +4319,29 @@ mod tests {
         assert_eq!((older.description, older.default), (None, false), "from a daemon that predates them");
         let said = ModelChoice { id: "gpt-6.1-sol".into(), description: Some("Frontier.".into()), default: true, ..Default::default() };
         assert_eq!(serde_json::to_value(&said).unwrap(), json!({ "id": "gpt-6.1-sol", "description": "Frontier.", "default": true }));
+    }
+
+    #[test]
+    fn resting_travels_by_name_and_is_left_out_when_nobody_rests() {
+        let rest = Command::SetResting { squad: "acme".into(), member: "designer".into(), resting: true, stop: false };
+        let wire = serde_json::to_value(&rest).unwrap();
+        assert_eq!(wire, json!({ "type": "set_resting", "squad": "acme", "member": "designer", "resting": true }), "letting work finish: no stop on the wire");
+        assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), rest);
+        let stop = Command::SetResting { squad: "acme".into(), member: "designer".into(), resting: true, stop: true };
+        assert_eq!(serde_json::from_value::<Command>(serde_json::to_value(&stop).unwrap()).unwrap(), stop);
+        let told = Event::RestingChanged { squad: "acme".into(), resting: vec!["designer".into()] };
+        let wire = serde_json::to_value(&told).unwrap();
+        assert_eq!(wire, json!({ "type": "resting_changed", "squad": "acme", "resting": ["designer"] }));
+        assert_eq!(serde_json::from_value::<Event>(wire).unwrap(), told);
+        assert_eq!(told.squad(), Some("acme"));
+        // Nobody resting: the snapshot as before; one from a daemon that predates it: nobody rests.
+        let snapshot = Snapshot { squad: "acme".into(), ..Default::default() };
+        assert!(serde_json::to_value(&snapshot).unwrap().get("resting").is_none());
+        let rested = Snapshot { resting: vec!["qa".into()], ..snapshot };
+        let wire = serde_json::to_value(&rested).unwrap();
+        assert_eq!(wire["resting"], json!(["qa"]));
+        assert_eq!(serde_json::from_value::<Snapshot>(wire).unwrap(), rested);
+        let older: Snapshot = serde_json::from_value(json!({ "squad": "acme", "sessions": [] })).unwrap();
+        assert!(older.resting.is_empty());
     }
 }

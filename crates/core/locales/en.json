@@ -637,5 +637,10 @@
   "error.recovery_member_gone": "{name} isn't on the squad any more: requeue T-{id} for its role, or reassign it.",
   "error.recovery_failed": "T-{id} couldn't be brought back: {err}",
   "error.recovery_no_operation": "Bringing T-{id} back needs the card's key; try again from its card.",
-  "notice.runs_update": "Works on {count} tickets at once — update equipe on this screen to follow them."
+  "notice.runs_update": "Works on {count} tickets at once — update equipe on this screen to follow them.",
+  "error.pm_rests": "The PM stays on duty: it can't rest.",
+  "news.resting": "{name} is resting · no new work until you wake them",
+  "news.awake": "{name} is back · takes new work again",
+  "control.resting_on": "Rest {member}: no new work until you wake them; what they work on now, they finish",
+  "control.resting_off": "Wake {member}: they take new work again"
 }

@@ -1290,5 +1290,10 @@
   "app.ask_resume_run": "T-{id} mit {who} in einer neuen Sitzung fortsetzen, auf demselben Branch und Worktree? y / n",
   "app.ask_requeue_run": "T-{id} für den nächsten freien {role} neu einreihen, auf demselben Branch und Worktree? y / n",
   "app.ask_reassign_run": "Wer übernimmt T-{id}, auf demselben Branch und Worktree? {members} · n",
-  "app.recovered": "T-{id} zurückgeholt"
+  "app.recovered": "T-{id} zurückgeholt",
+  "commands.rest": "Ein Mitglied pausieren: keine neue Arbeit bis zum Zurückholen",
+  "commands.rest_stop": "und laufende Arbeit stoppen",
+  "commands.rest_off": "zurückholen: nimmt wieder neue Arbeit an",
+  "app.rest_usage": "/rest <Mitglied> — keine neue Arbeit, Laufendes wird fertig · /rest <Mitglied> stop — stoppt auch das · /rest <Mitglied> off — holt es zurück",
+  "app.pm_rests": "Der PM bleibt im Dienst: Er kann nicht pausieren."
 }

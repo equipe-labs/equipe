@@ -1702,6 +1702,7 @@ impl App {
                 | Event::RoutineProposed { .. }
                 | Event::RoutineProposalClosed { .. }
                 | Event::IdleWakeChanged { .. }
+                | Event::RestingChanged { .. }
                 | Event::SignalsChanged { .. }
                 | Event::Logins { .. }
                 | Event::BrowserProfiles { .. }

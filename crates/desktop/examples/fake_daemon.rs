@@ -14,6 +14,7 @@
 //! `FAKE_BUSY=1` adds four members at work in web and more finished today;
 //! `FAKE_RUNS=1` has frontend run three tickets at once (T-160 to T-162), each in a
 //! session of its own under it — one asking the person, one at rest (`FAKE_RUNS=<n>`: n of them);
+//! `FAKE_OLD_WAIT=1` has T-73 wait on the person for nine days (stale);
 //! `FAKE_STALLED=1` adds a stalled run (T-90), a paused one (T-91) and one queued (T-92);
 //! Resume, Requeue and Reassign on T-90 queue it as the daemon does;
 //! `FAKE_SUBAGENTS=1` has frontend and backend hand work to subagents that come and go;
@@ -899,6 +900,10 @@ fn tickets() -> &'static std::sync::Mutex<Vec<Ticket>> {
                 _ => Priority::Normal,
             };
             t.updated_at = Some(now - u64::from(t.id % 9) * 3_400 - if t.status.is_closed() { u64::from(t.id % 5) * 86_400 } else { 0 });
+            // `FAKE_OLD_WAIT=1`: the production DB password has waited on the person for nine days.
+            if t.id == 73 && std::env::var_os("FAKE_OLD_WAIT").is_some() {
+                t.updated_at = Some(now - 9 * 86_400);
+            }
             t.model = fake_model(t);
         }
         std::sync::Mutex::new(all)
@@ -1689,6 +1694,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             approvals: asks().lock().unwrap().clone(),
                             questions: questions().lock().unwrap().clone(),
                             team_changes: team::changes(),
+                            resting: team::resting(),
                             routine_proposals: routine::proposals(),
                             routines: if retro::on() { retro::routines() } else { routine::routines() },
                             idle_wake_hours: Some(routine::idle_wake_hours()),

@@ -633,5 +633,10 @@
   "error.recovery_member_gone": "{name} はもうスクワッドにいません。T-{id} を同じ役割に再投入するか、担当を変えてください。",
   "error.recovery_failed": "T-{id} を再開できませんでした: {err}",
   "error.recovery_no_operation": "T-{id} の再開にはカードのキーが必要です。カードからもう一度試してください。",
-  "notice.runs_update": "{count}件のチケットを同時に進めています。この画面で追うには equipe を更新してください。"
+  "notice.runs_update": "{count}件のチケットを同時に進めています。この画面で追うには equipe を更新してください。",
+  "error.pm_rests": "PM は休めません。常に持ち場にいます。",
+  "news.resting": "{name} は休憩中 · 起こすまで新しい仕事を受けません",
+  "news.awake": "{name} が復帰 · また新しい仕事を受けます",
+  "control.resting_on": "{member} を休ませる: 起こすまで新しい仕事を受けず、今の作業は終わらせます",
+  "control.resting_off": "{member} の休憩を終える: また新しい仕事を受けます"
 }

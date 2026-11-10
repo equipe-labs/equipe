@@ -1267,5 +1267,10 @@
   "app.ask_resume_run": "让 {who} 在新会话中继续 T-{id}？分支和工作目录不变。y / n",
   "app.ask_requeue_run": "把 T-{id} 重新排队给下一位空闲的 {role}？分支和工作目录不变。y / n",
   "app.ask_reassign_run": "谁来接手 T-{id}？分支和工作目录不变。{members} · n",
-  "app.recovered": "T-{id} 已恢复"
+  "app.recovered": "T-{id} 已恢复",
+  "commands.rest": "让成员休息：唤醒之前不接新工作",
+  "commands.rest_stop": "并停止手头的工作",
+  "commands.rest_off": "唤醒：重新接新工作",
+  "app.rest_usage": "/rest <成员> — 不接新工作，手头的做完 · /rest <成员> stop — 手头的也停止 · /rest <成员> off — 唤醒",
+  "app.pm_rests": "PM 不能休息，它始终在岗。"
 }

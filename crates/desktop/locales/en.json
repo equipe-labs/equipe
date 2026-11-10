@@ -3707,5 +3707,20 @@
   "recover.toast_requeue": "T-{id} requeued for {role}",
   "recover.toast_reassign": "T-{id} goes to {who}",
   "sidebar.runs": "{n} tickets",
-  "sidebar.run_failed": "Failed"
+  "sidebar.run_failed": "Failed",
+  "sidebar.needs_you_what": "needs you",
+  "sidebar.waited": "Waiting {span}",
+  "sidebar.waited_stale": "Waiting {span} · stale: still needed?",
+  "sidebar.team_engine": "Everyone runs on {engine}",
+  "sidebar.team_turns_open": "Open what waits on you ({n})",
+  "sidebar.resting": "Resting",
+  "sidebar.rest": "Rest",
+  "sidebar.rest_hint": "No new work until you wake them",
+  "sidebar.rest_hint_busy": "No new work; what they work on now, they finish",
+  "sidebar.rest_stop": "Rest and stop current work",
+  "sidebar.wake": "Wake",
+  "sidebar.wake_hint": "Takes new work again",
+  "sidebar.open_ticket": "Open",
+  "board.flag_stale": "Stale",
+  "board.flag_stale_tip": "Waiting {span}: still needed, or can it be closed?"
 }

@@ -1290,5 +1290,10 @@
   "app.ask_resume_run": "Resume T-{id} with {who} in a fresh session, on the same branch and worktree? y / n",
   "app.ask_requeue_run": "Requeue T-{id} for the next free {role}, on the same branch and worktree? y / n",
   "app.ask_reassign_run": "Who takes T-{id} over, on the same branch and worktree? {members} · n",
-  "app.recovered": "T-{id} brought back"
+  "app.recovered": "T-{id} brought back",
+  "commands.rest": "Rest a member: no new work until woken",
+  "commands.rest_stop": "and stop what it works on now",
+  "commands.rest_off": "wake it: it takes new work again",
+  "app.rest_usage": "/rest <member> — no new work, what it works on finishes · /rest <member> stop — stops that too · /rest <member> off — wakes it",
+  "app.pm_rests": "The PM stays on duty: it can't rest."
 }

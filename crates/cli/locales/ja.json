@@ -1267,5 +1267,10 @@
   "app.ask_resume_run": "T-{id} を {who} が新しいセッションで再開しますか? ブランチと作業フォルダはそのままです。y / n",
   "app.ask_requeue_run": "T-{id} を次に空いた {role} に再投入しますか? ブランチと作業フォルダはそのままです。y / n",
   "app.ask_reassign_run": "T-{id} をだれが引き継ぎますか? ブランチと作業フォルダはそのままです。{members} · n",
-  "app.recovered": "T-{id} を再開します"
+  "app.recovered": "T-{id} を再開します",
+  "commands.rest": "メンバーを休ませる: 起こすまで新しい仕事を受けません",
+  "commands.rest_stop": "今の作業も止めます",
+  "commands.rest_off": "休憩を終える: また新しい仕事を受けます",
+  "app.rest_usage": "/rest <メンバー> — 新しい仕事は受けず、今の作業は終わらせます · /rest <メンバー> stop — 今の作業も止めます · /rest <メンバー> off — 休憩を終えます",
+  "app.pm_rests": "PM は休めません。常に持ち場にいます。"
 }
