@@ -115,7 +115,7 @@
 //! conversation before and its hand-over packet kept (`fake_daemon/moved.rs`).
 //! `FAKE_USAGE=healthy|claude86|claude_out|both_low|week61`: both engines' plans,
 //! and the card for moving members between them (`fake_daemon/engines.rs`;
-//! `FAKE_SWITCHING=auto|off`, `FAKE_SETUP=1`); `FAKE_ENGINES_MIXED=1` puts
+//! `FAKE_SWITCHING=auto|off`, else a squad that chose to be asked; `FAKE_SETUP=1`); `FAKE_ENGINES_MIXED=1` puts
 //! backend on Codex.
 //!
 //! `FAKE_BROWSER=1`: the shared Chrome's tabs and a picture stream for the

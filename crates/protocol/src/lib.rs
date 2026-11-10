@@ -3222,8 +3222,9 @@ pub struct Snapshot {
     /// Every engine's plan usage, as last read: Claude's (as `plan`) and Codex's.
     #[serde(default)]
     pub plans: Vec<EnginePlan>,
-    /// How the squad moves members between engines.
-    #[serde(default, skip_serializing_if = "engines::Switching::is_default")]
+    /// How the squad moves members between engines. Left out when `suggest`,
+    /// as daemons did when that was the default; an older screen reads it so.
+    #[serde(default = "engines::Switching::unsaid", skip_serializing_if = "engines::Switching::is_unsaid")]
     pub engine_switching: engines::Switching,
     /// The squad's latest moves to the other engine, oldest first: which
     /// closed session each open member carries on from.

@@ -968,6 +968,8 @@ enum Internal {
     ProviderListed { id: String, result: Result<Vec<String>, crate::nemotron::ReviewError> },
     /// Whether Claude is signed in, as just looked at off the loop.
     ClaudeReady(bool),
+    /// The Claude plan's usage, as just read off the loop; `None`: it couldn't be.
+    ClaudePlan(Option<equipe_protocol::PlanUsage>),
     /// A squad's design systems looked at off the loop: their stamp, and —
     /// when they changed or were asked for — what they are.
     Design(String, u64, Option<design::Catalog>),
@@ -1278,6 +1280,7 @@ impl Wake {
             Wake::Internal(Internal::CodexModels(_)) => Borrowed("the Codex models listed"),
             Wake::Internal(Internal::ProviderListed { .. }) => Borrowed("a provider's models listed"),
             Wake::Internal(Internal::ClaudeReady(_)) => Borrowed("whether Claude is signed in"),
+            Wake::Internal(Internal::ClaudePlan(_)) => Borrowed("claude's plan usage"),
             Wake::Internal(Internal::Design(..)) => Borrowed("a design system's look"),
             Wake::Internal(Internal::Docs(..)) => Borrowed("the briefs and plans"),
             Wake::Internal(Internal::DocsFound(..)) => Borrowed("a search of the briefs and plans"),
@@ -1500,6 +1503,7 @@ impl Runtime {
                 Internal::AuthChecked(engine, state, detail) => self.auth_checked(engine, state, detail).await,
                 Internal::AuthRecheck(engine) => self.check_engine(engine),
                 Internal::ClaudeReady(ok) => self.claude_ready(ok),
+                Internal::ClaudePlan(usage) => self.on_claude_plan(usage).await,
                 Internal::CodexModels(listed) => {
                     self.codex_listing = false;
                     if let Some(models) = listed.filter(|m| !m.is_empty()) {
@@ -1797,13 +1801,14 @@ impl Runtime {
     /// Read the Codex plan's usage off the loop, through the person's Codex CLI:
     /// every few minutes while a squad has Codex members, and — `asked` — when
     /// a screen attaches and the last reading is that old. Never more often.
-    fn read_codex_usage(&mut self, asked: bool) {
+    /// Whether a read started.
+    fn read_codex_usage(&mut self, asked: bool) -> bool {
         if self.codex_reading || self.codex_read.is_some_and(|at| at.elapsed() < CODEX_USAGE_EVERY) {
-            return;
+            return false;
         }
         let members = self.sessions.values().any(|s| s.engine == Engine::Codex && has_tools(s) && !s.model.as_deref().is_some_and(crate::nemotron::is_agent_model));
         if !(members || asked) || codex_app::find(&self.config.codex_binary).is_none() {
-            return;
+            return false;
         }
         self.codex_reading = true;
         self.codex_read = Some(std::time::Instant::now());
@@ -1813,6 +1818,7 @@ impl Runtime {
             let read = tokio::time::timeout(SERVER_WAIT, codex_app::read_limits(&binary, &cwd)).await;
             let _ = internal.send(Internal::CodexLimits(read.ok().and_then(Result::ok)));
         });
+        true
     }
 
     /// The Codex plan's limits, read or reported by a turn: to the screens as
@@ -4859,6 +4865,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                     if let Some(port) = browser {
                         browser::ready(port, Duration::from_secs(90)).await;
                     }
+                    let mut plan = engines::ToldPlan::default();
                     let outcome = claude_code::run_turn(&binary, &cwd, request, Some(steer_rx), |activity| {
                         if matches!(activity, Activity::Text(_)) {
                             streamed = true;
@@ -4866,6 +4873,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                         if let Activity::Engine { pid } = activity {
                             let _ = internal.send(Internal::EngineStarted { session: id, pid });
                             return;
+                        }
+                        if let Some(event) = plan.heard(&activity, std::time::Instant::now()).and_then(|again| activity_event(id, again)) {
+                            emit(event);
                         }
                         if let Some(event) = activity_event(id, activity) {
                             emit(event);
@@ -9432,16 +9442,20 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
         }
         Activity::Compacted => Event::Compacted { session: id, member: None, project: None, trigger: CompactTrigger::Auto, took_ms: 0 },
         Activity::CompactFailed(message) => Event::CompactFailed { session: id, member: None, project: None, trigger: CompactTrigger::Auto, message },
-        Activity::Plan { five_hour, seven_day } => {
-            let window = |w: Option<(f64, i64)>| {
-                w.map(|(used, resets_at)| equipe_protocol::PlanWindow { used_percent: (used * 100.0).round().clamp(0.0, 100.0) as u8, resets_at })
-            };
-            Event::PlanUsage { usage: equipe_protocol::PlanUsage { five_hour: window(five_hour), seven_day: window(seven_day) }, engine: Engine::Claude }
-        }
+        Activity::Plan { five_hour, seven_day } => Event::PlanUsage { usage: claude_plan(five_hour, seven_day), engine: Engine::Claude },
         Activity::Limits(_) => return None,
         // The loop's to know, never a screen's: sent apart by the turn.
         Activity::Engine { .. } | Activity::Spent(_) | Activity::SubagentHeard { .. } => return None,
     })
+}
+
+/// The Claude plan's windows, each as the share used (0–1) and when it
+/// resets, as plan usage.
+fn claude_plan(five_hour: Option<(f64, i64)>, seven_day: Option<(f64, i64)>) -> equipe_protocol::PlanUsage {
+    let window = |w: Option<(f64, i64)>| {
+        w.map(|(used, resets_at)| equipe_protocol::PlanWindow { used_percent: (used * 100.0).round().clamp(0.0, 100.0) as u8, resets_at })
+    };
+    equipe_protocol::PlanUsage { five_hour: window(five_hour), seven_day: window(seven_day) }
 }
 
 /// The Codex plan's limits as plan usage: its windows known by their length —
