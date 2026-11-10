@@ -122,7 +122,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .children(slice)
         .child(crate::ui::title_gap())
         // The plan window used most, while the sidebar's meters are away.
-        .children(super::switching::glance(shell, cx))
+        .children(super::switching::glance(shell, cx).map(|g| div().min_w_0().flex_shrink(1.).overflow_hidden().child(g)))
         .children(screen)
         .children(context)
         // The buttons stay whole; the words before them give way.
@@ -247,7 +247,9 @@ fn crumb(shell: &Shell, title: String, menu: bool, cx: &mut Context<Shell>) -> A
             let to = name.clone();
             h_flex()
                 .id("crumb-project")
-                .flex_none()
+                .min_w_0()
+                .flex_shrink(1.)
+                .overflow_hidden()
                 .h(px(PILL))
                 .px_2()
                 .gap(px(6.))
@@ -263,7 +265,7 @@ fn crumb(shell: &Shell, title: String, menu: bool, cx: &mut Context<Shell>) -> A
                 .child(div().max_w(px(200.)).truncate().child(name))
                 .into_any_element()
         }
-        _ => div().flex_none().px_2().text_size(px(13.5)).text_color(p.muted).child(t!("sidebar.outside")).into_any_element(),
+        _ => div().min_w_0().flex_shrink(1.).truncate().px_2().text_size(px(13.5)).text_color(p.muted).child(t!("sidebar.outside")).into_any_element(),
     };
     let more = div()
         .relative()
@@ -286,13 +288,14 @@ fn crumb(shell: &Shell, title: String, menu: bool, cx: &mut Context<Shell>) -> A
         )
         .children(open.then(|| talk_menu(shell, project.clone(), cx)));
     h_flex()
-        .min_w_0()
+        .min_w(px(120.))
         .flex_shrink(1.)
+        .overflow_hidden()
         .gap_1()
         .items_center()
         .child(place)
         .child(div().flex_none().text_color(p.muted).child("/"))
-        .child(div().min_w_0().flex_shrink(1.).max_w(px(420.)).truncate().px_1().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
+        .child(div().min_w(px(40.)).flex_shrink(1.).max_w(px(420.)).truncate().px_1().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
         .when(menu, |c| c.child(more))
         .into_any_element()
 }
