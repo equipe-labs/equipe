@@ -672,8 +672,9 @@ pub struct Reveal {
 
 impl Reveal {
     /// The state of one picture's buttons: `id` tells the picture, `held`
-    /// keeps them up (the way back from a view of the source).
-    pub fn of(name: &'static str, id: u64, held: bool, window: &mut Window, cx: &mut App) -> Self {
+    /// keeps them up (the way back from a view of the source), `also` is a
+    /// second button's own focus — at the keys there too, both show.
+    pub fn of(name: &'static str, id: u64, held: bool, also: Option<&FocusHandle>, window: &mut Window, cx: &mut App) -> Self {
         let hovered = window.use_keyed_state(
             ElementId::NamedInteger(format!("{name}-hover").into(), id),
             cx,
@@ -687,7 +688,7 @@ impl Reveal {
             )
             .read(cx)
             .clone();
-        let on = *hovered.read(cx) || held || focus.is_focused(window);
+        let on = *hovered.read(cx) || held || focus.is_focused(window) || also.is_some_and(|f| f.is_focused(window));
         let shown = motion::openness(
             ElementId::NamedInteger(format!("{name}-fade").into(), id),
             on,
@@ -857,7 +858,7 @@ pub fn card(
         None => t!("render.card_label").to_owned(),
     };
     let viewer = Viewer::of_reply(row, &[(tone.path.clone(), name.clone())], &tone.path);
-    let reveal = Reveal::of("card", id, false, window, cx);
+    let reveal = Reveal::of("card", id, false, None, window, cx);
     // Bottom right, where a card has the date line's empty end — its heading, at the top, stays whole.
     let big = {
         let (handle, viewer) = (handle.clone(), viewer.clone());

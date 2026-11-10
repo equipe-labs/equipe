@@ -347,12 +347,14 @@
         {
           "id": "chat",
           "title": "PM conversation",
-          "note": "Diagrams (```mermaid) are drawn by the app itself (render/raster.rs). HTML cards (```html card) are off until the T-340 security review: the app shows such a block as code, like the code blocks in the Markdown state, so no state of its own yet — add one when cards are turned on.",
+          "note": "Diagrams (```mermaid) are drawn by the app itself (render/raster.rs). HTML cards (```html card) are the daemon's PNGs of them, light or dark as the window is (`render/plugins.rs` Cards, `views/visuals.rs` card): a place held while drawn, the source folded when no picture comes, a click opens the page in the browser panel as a data: URL, View larger opens the picture big. The `cards*` states need Google Chrome for the fake daemon to draw them.",
           "source": [
             "crates/desktop/src/views/chat.rs",
             "crates/desktop/src/render/view.rs",
             "crates/desktop/src/render/prose.rs",
             "crates/desktop/src/render/raster.rs",
+            "crates/desktop/src/render/plugins.rs",
+            "crates/desktop/src/views/visuals.rs",
             "crates/desktop/src/views/compact.rs",
             "crates/desktop/src/views/asklist.rs",
             "crates/desktop/src/convo.rs"
@@ -360,6 +362,7 @@
           "expects": [
             "default",
             "empty",
+            "error",
             "loading",
             "long"
           ],
@@ -408,9 +411,57 @@
             },
             {
               "id": "diagram",
-              "label": "Mermaid diagrams",
+              "label": "Mermaid diagrams: one card each, tools hidden",
               "kind": "default",
               "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;say:torture 5;wait:5000`"
+            },
+            {
+              "id": "diagram-hover",
+              "label": "Diagram under the pointer: Source and Copy fade in",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;say:torture 5;wait:5000`"
+            },
+            {
+              "id": "diagram-focus",
+              "label": "Diagram's Copy reached by Shift-Tab: both tools show, with a ring",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;say:torture 5;wait:5000;press:shift-tab`"
+            },
+            {
+              "id": "diagram-source",
+              "label": "Source pressed by keys: the block turns to its code, no box inside the box",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;say:torture 5;wait:5000;press:shift-tab;press:shift-tab;press:space`"
+            },
+            {
+              "id": "cards",
+              "label": "HTML cards drawn by the daemon (needs Chrome): the comparison card",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_VISUALS=1 FAKE_ASKS=0; script `chat;wait:4000`"
+            },
+            {
+              "id": "cards-long",
+              "label": "A long HTML card (the board): whole, as wide as the column allows",
+              "kind": "long",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_VISUALS=1 FAKE_ASKS=0; script `chat;wait:4000;scroll:6,120`"
+            },
+            {
+              "id": "cards-hover",
+              "label": "A card under the pointer: View larger at its bottom right",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_VISUALS=1 FAKE_ASKS=0; script `chat;wait:4000`"
+            },
+            {
+              "id": "cards-waiting",
+              "label": "Cards waiting for the daemon's picture: a place held",
+              "kind": "loading",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_VISUALS=late FAKE_ASKS=0; script `chat;wait:1500`"
+            },
+            {
+              "id": "cards-failed",
+              "label": "No picture came: one line and Show source, folded",
+              "kind": "error",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_VISUALS=none FAKE_ASKS=0; script `chat;wait:16500`"
             },
             {
               "id": "markdown",

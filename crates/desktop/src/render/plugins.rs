@@ -455,8 +455,8 @@ impl MarkdownPlugin for Mermaid {
         };
         let name = crate::views::visuals::diagram_title(&source).unwrap_or_else(|| t!("render.show_diagram").to_owned());
         // Source and copy show under the pointer or at the keys (and stay while the source is up, which is the way back).
-        let reveal = crate::views::visuals::Reveal::of("mermaid", key, as_source, window, cx);
         let copy_focus = window.use_keyed_state(("mermaid-copy-focus", key), cx, |_, cx| cx.focus_handle().tab_stop(true)).read(cx).clone();
+        let reveal = crate::views::visuals::Reveal::of("mermaid", key, as_source, Some(&copy_focus), window, cx);
         let toggle = {
             let state = showing_source.clone();
             let label = if as_source { t!("render.show_diagram") } else { t!("render.show_source") };

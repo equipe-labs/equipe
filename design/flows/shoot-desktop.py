@@ -80,7 +80,17 @@ state("conversation/chat/long", "chat;wait:800", {"FAKE_READING": "1"})
 state("conversation/chat/pictures", "chat;wait:800", {"FAKE_REPLY_IMAGES": "1"}, wait=2500)
 state("conversation/chat/ticket-cards", "chat;wait:800", {"FAKE_CARDS": "1"})
 state("conversation/chat/ask-list", "chat;wait:800", {"FAKE_ASKLIST": "1"})
-state("conversation/chat/diagram", "chat;say:torture 5;wait:5000", {"FAKE_SECONDS": "1"})
+state("conversation/chat/diagram", "chat;say:torture 5;wait:5000", {"FAKE_SECONDS": "1"}, label="Mermaid diagrams: one card each, tools hidden")
+# The last diagram sits over the reply's meta line, above the composer.
+_DIAGRAM_AT = lambda w, h: (260 + (w - 260) // 2, h - 230)
+state("conversation/chat/diagram-hover", "chat;say:torture 5;wait:5000", {"FAKE_SECONDS": "1"}, each="hover:{X},{Y}", at=_DIAGRAM_AT, kind="default", label="Diagram under the pointer: Source and Copy fade in")
+state("conversation/chat/diagram-focus", "chat;say:torture 5;wait:5000;press:shift-tab", {"FAKE_SECONDS": "1"}, kind="default", label="Diagram's Copy reached by Shift-Tab: both tools show, with a ring")
+state("conversation/chat/diagram-source", "chat;say:torture 5;wait:5000;press:shift-tab;press:shift-tab;press:space", {"FAKE_SECONDS": "1"}, kind="default", label="Source pressed by keys: the block turns to its code, no box inside the box")
+state("conversation/chat/cards", "chat;wait:4000", {"FAKE_VISUALS": "1"}, wait=2500, label="HTML cards drawn by the daemon (needs Chrome): the comparison card")
+state("conversation/chat/cards-long", "chat;wait:4000;scroll:6,120", {"FAKE_VISUALS": "1"}, wait=2500, kind="long", label="A long HTML card (the board): whole, as wide as the column allows")
+state("conversation/chat/cards-hover", "chat;wait:4000", {"FAKE_VISUALS": "1"}, wait=2500, each="hover:{X},{Y}", at=lambda w, h: (260 + (w - 260) // 2, h // 2), kind="default", label="A card under the pointer: View larger at its bottom right")
+state("conversation/chat/cards-waiting", "chat;wait:1500", {"FAKE_VISUALS": "late"}, wait=200, kind="loading", label="Cards waiting for the daemon's picture: a place held")
+state("conversation/chat/cards-failed", "chat;wait:16500", {"FAKE_VISUALS": "none"}, wait=800, kind="error", label="No picture came: one line and Show source, folded")
 state("conversation/chat/markdown", "chat;say:torture 1;wait:6000", {"FAKE_SECONDS": "1"})
 state("conversation/chat/summarizing", "chat;wait:800", {"FAKE_COMPACT": "long"})
 state("conversation/chat/summarize-failed", "chat;wait:3000", {"FAKE_COMPACT": "fail", "FAKE_COMPACT_AFTER": "500"})
@@ -228,7 +238,7 @@ SCREENS = {
     "inbox/team-change": ("A change to the team", ["views/team.rs", "team.rs"], None),
     "inbox/routine": ("A routine the PM proposes", ["views/routine.rs", "routine.rs"], None),
     "inbox/accept": ("Work to confirm", ["views/accept.rs", "accept.rs"], None),
-    "conversation/chat": ("PM conversation", ["views/chat.rs", "render/view.rs", "render/prose.rs", "render/raster.rs", "views/compact.rs", "views/asklist.rs", "convo.rs"], "Diagrams (```mermaid) are drawn by the app itself (render/raster.rs). HTML cards (```html card) are off until the T-340 security review: the app shows such a block as code, like the code blocks in the Markdown state, so no state of its own yet — add one when cards are turned on."),
+    "conversation/chat": ("PM conversation", ["views/chat.rs", "render/view.rs", "render/prose.rs", "render/raster.rs", "render/plugins.rs", "views/visuals.rs", "views/compact.rs", "views/asklist.rs", "convo.rs"], "Diagrams (```mermaid) are drawn by the app itself (render/raster.rs). HTML cards (```html card) are the daemon's PNGs of them, light or dark as the window is (`render/plugins.rs` Cards, `views/visuals.rs` card): a place held while drawn, the source folded when no picture comes, a click opens the page in the browser panel as a data: URL, View larger opens the picture big. The `cards*` states need Google Chrome for the fake daemon to draw them."),
     "conversation/engine-switch": ("Engine switching card (over the composer)", ["views/switching.rs", "switching.rs", "usage.rs"], "Error: Claude's week used up; Done: what equipe did in auto, with Undo."),
     "conversation/composer": ("Composer", ["views/composer.rs", "views/attached.rs", "attach.rs", "compose.rs"], None),
     "board/board": ("Board", ["views/tickets.rs", "views/ticket_card.rs", "views/sidebar.rs", "tickets.rs"], None),
@@ -391,6 +401,11 @@ def run_state(item, bin_dir, root):
     script.append(f"wait:{opts.get('wait', 900)}")
     for w, h in opts.get("sizes", SIZES):
         script += [f"size:{w}x{h}", "wait:700"]
+        # Steps taken again at each size (a pointer resting where the window
+        # now has the thing): `{X}` and `{Y}` from the state's `at(w, h)`.
+        if opts.get("each"):
+            x, y = opts["at"](w, h)
+            script += [s.replace("{X}", str(x)).replace("{Y}", str(y)) for s in opts["each"].split(";") if s] + ["wait:400"]
         for mode in MODES:
             script += [f"theme:{mode}", "wait:500", f"shot:{out}/{st}.{mode}.{w}.png"]
     script.append("quit")
