@@ -11,22 +11,22 @@ use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::io::BufRead as _;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::time::Duration;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use base64::Engine as _;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use equipe_protocol::rpc::Image;
 use equipe_protocol::rpc::ToolResult;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use serde_json::json;
 use serde_json::Value;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
 use crate::controller::{Controller, Desktop};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::controller::{Reply, SETUP};
 
 /// The helper's folder in equipe's home: socket, token, signing key, bundles.
@@ -36,6 +36,18 @@ pub fn dir(home: &Path) -> PathBuf {
 
 pub fn socket_path(home: &Path) -> PathBuf {
     dir(home).join("helper.sock")
+}
+
+/// A stable, per-home pipe name. The token still authenticates every request;
+/// rejecting remote clients keeps the pipe local to this machine.
+#[cfg(windows)]
+fn pipe_name(home: &Path) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in home.as_os_str().to_string_lossy().to_lowercase().bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!(r"\\.\pipe\equipe-desktop-{hash:016x}")
 }
 
 fn token_path(home: &Path) -> PathBuf {
@@ -89,8 +101,12 @@ fn read_token(home: &Path) -> Option<String> {
 }
 
 /// What a member gets when the helper isn't there to answer.
+#[cfg(unix)]
 pub const NOT_RUNNING: &str =
     "The desktop helper isn't running on this Mac. Ask the person to run `equipe desktop setup` on the Mac (while logged in at its screen).";
+#[cfg(windows)]
+pub const NOT_RUNNING: &str =
+    "The desktop helper isn't running on this Windows PC. Ask the person to run `equipe desktop setup` while logged in at its screen.";
 
 /// Internal requests `equipe desktop setup` makes: the helper's own state,
 /// and asking macOS for the permissions (which puts the helper in both lists).
@@ -127,11 +143,36 @@ pub fn serve<D: Desktop>(home: &Path, controller: &mut Controller<D>, status: im
 }
 
 #[cfg(windows)]
-pub fn serve<D: Desktop>(_home: &Path, _controller: &mut Controller<D>, _status: impl Fn(&D) -> Value, _request: impl Fn(&D)) -> io::Result<()> {
-    Err(io::Error::other("desktop control unsupported on Windows yet"))
+pub fn serve<D: Desktop>(home: &Path, controller: &mut Controller<D>, status: impl Fn(&D) -> Value, request: impl Fn(&D)) -> io::Result<()> {
+    ensure_dir(home)?;
+    ensure_token(home)?;
+    let name = pipe_name(home);
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_io().enable_time().build()?;
+    runtime.block_on(async move {
+        use tokio::net::windows::named_pipe::ServerOptions;
+
+        let mut first = true;
+        loop {
+            let mut options = ServerOptions::new();
+            options.first_pipe_instance(first).reject_remote_clients(true);
+            let server = options.create(&name)?;
+            first = false;
+            server.connect().await?;
+            let mut line = String::new();
+            let mut stream = tokio::io::BufReader::new(server);
+            if tokio::time::timeout(Duration::from_secs(10), stream.read_line(&mut line)).await.is_err() {
+                continue;
+            }
+            let result = answer(home, controller, &line, &status, &request);
+            let output = format!("{}\n", serde_json::to_string(&result).unwrap_or_default());
+            let mut server = stream.into_inner();
+            let _ = server.write_all(output.as_bytes()).await;
+            let _ = server.flush().await;
+        }
+    })
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn answer<D: Desktop>(
     home: &Path,
     controller: &mut Controller<D>,
@@ -171,7 +212,7 @@ fn answer<D: Desktop>(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn reply(reply: Reply) -> ToolResult {
     ToolResult {
         text: reply.text,
@@ -181,7 +222,7 @@ fn reply(reply: Reply) -> ToolResult {
 }
 
 /// Compare without stopping at the first difference.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn same(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
@@ -210,11 +251,29 @@ pub async fn call(home: &Path, member: &str, tool: &str, arguments: &Value) -> T
 }
 
 #[cfg(windows)]
-pub async fn call(_home: &Path, _member: &str, _tool: &str, _arguments: &Value) -> ToolResult {
-    ToolResult::error(crate::WINDOWS_UNAVAILABLE)
+pub async fn call(home: &Path, member: &str, tool: &str, arguments: &Value) -> ToolResult {
+    use tokio::net::windows::named_pipe::ClientOptions;
+
+    let Some(token) = read_token(home) else {
+        return ToolResult::error(NOT_RUNNING);
+    };
+    let request = json!({ "token": token, "member": member, "tool": tool, "arguments": arguments });
+    let exchange = async {
+        let mut stream = ClientOptions::new().open(pipe_name(home))?;
+        stream.write_all(format!("{request}\n").as_bytes()).await?;
+        let mut line = String::new();
+        tokio::io::BufReader::new(stream).read_line(&mut line).await?;
+        serde_json::from_str::<ToolResult>(&line).map_err(io::Error::other)
+    };
+    match tokio::time::timeout(Duration::from_secs(90), exchange).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(err)) if matches!(err.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused) => ToolResult::error(NOT_RUNNING),
+        Ok(Err(err)) => ToolResult::error(format!("The desktop helper didn't answer ({err}). If it keeps happening, ask the person to run `{SETUP}`.")),
+        Err(_) => ToolResult::error("The desktop helper took longer than 90 s to answer; nothing more was done."),
+    }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, any(unix, windows)))]
 mod tests {
     use super::*;
 

@@ -5090,6 +5090,12 @@ for one project goes to it as tickets for its owners, with that project — and 
         let edits = role_edits || kind.in_home() || (pm_codes && worktree::repo_root(&workplace).is_ok());
 
         let sandbox = if edits {
+            // A squad home's copy leaves out other tickets' outputs: gigabytes in a home that has done much work.
+            let only = if kind.in_home() {
+                worktree::home_patterns(&std::iter::once(&ticket_id).chain(&ticket.depends_on).collect::<Vec<_>>())
+            } else {
+                Vec::new()
+            };
             let checkout = worktree::repo_root(&workplace).and_then(|repo| {
                 let id_part = format!("t{ticket_id}-{:x}", now_secs());
                 match (&saved.worktree, &ticket.branch, &saved.base) {
@@ -5098,9 +5104,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                         Ok(Sandbox { repo, path: path.clone(), branch: branch.clone(), base: base.clone() })
                     }
                     // Its worktree went away: check its branch out again.
-                    (_, Some(branch), Some(base)) => worktree::resume(&repo, &home, &id_part, branch, base),
+                    (_, Some(branch), Some(base)) => worktree::resume(&repo, &home, &id_part, branch, base, &only),
                     // New: from HEAD, with the finished work it depends on.
-                    _ => worktree::create_after(&repo, &home, &id_part, &name, &after),
+                    _ => worktree::create_after(&repo, &home, &id_part, &name, &after, &only),
                 }
             });
             match checkout {
@@ -8036,6 +8042,12 @@ fn work_prompt(
                 sandbox.path.display(),
                 ticket.id
             ));
+            if worktree::is_sparse(&sandbox.path) {
+                out.push_str(&format!(
+                    " Other tickets' outputs aren't in this copy: read them in the squad's folder, {}.",
+                    sandbox.repo.join("outputs").display()
+                ));
+            }
         }
         if ticket.kind == TicketKind::Task {
             out.push_str(
