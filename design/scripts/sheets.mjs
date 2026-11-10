@@ -128,10 +128,40 @@ const sheets = {
       ${row('on card (surface)', ['', '', '', ''].map((_, i) => `<div style="background:var(--eq-color-surface);padding:20px;border-radius:var(--eq-radius-card)"><div class="eq-toast"><span>✓</span><span>${i ? 'Ticket sent' : 'Link copied'}</span>${i ? `<button class="eq-toast-action ${['', 'is-hover', 'is-focus'][i - 1]}">Undo</button>` : ''}</div></div>`))}
     </div>`,
   }),
+  chrome: () => {
+    const sideRow = (label, meta, bg, dot, on) => `<div style="display:flex;align-items:center;gap:var(--eq-space-2);height:var(--eq-size-row);padding:0 var(--eq-space-3);border-radius:var(--eq-radius-md);background:${bg}"><span style="width:8px;height:8px;border-radius:var(--eq-radius-full);background:var(--eq-color-${dot});flex:none"></span><span style="flex:1;color:var(--eq-sidebar-${on ? 'selected-fg' : 'fg'})">${label}</span><span style="color:var(--eq-sidebar-secondary-fg);font:var(--eq-type-small)">${meta}</span></div>`;
+    const sw = (on) => `<span style="display:inline-block;width:36px;height:20px;border-radius:var(--eq-radius-full);background:var(--eq-switch-track-${on ? 'on' : 'off'});position:relative;vertical-align:middle"><span style="position:absolute;top:2px;${on ? 'right' : 'left'}:2px;width:16px;height:16px;border-radius:var(--eq-radius-full);background:var(--eq-switch-knob)"></span></span>`;
+    const pop = (label, key, hover) => `<div style="display:flex;justify-content:space-between;gap:24px;padding:6px var(--eq-space-3);border-radius:var(--eq-radius-sm);background:${hover ? 'var(--eq-popover-row-hover-bg)' : 'transparent'}"><span>${label}</span><span style="color:var(--eq-popover-secondary-fg)">${key}</span></div>`;
+    return { title: 'Desktop chrome', sub: 'The desktop\'s own surfaces (T-699): `sidebar.*`, `popover.*`, `tooltip.*`, `switch.*`, and the member colours. Values are the desktop palette as shipped (`crates/desktop/src/theme.rs`).',
+      body: `<div style="display:grid;grid-template-columns:300px 1fr;gap:0;border:1px solid var(--eq-color-line);border-radius:var(--eq-radius-lg);overflow:hidden;height:420px">
+        <div style="background:var(--eq-sidebar-bg);padding:var(--eq-space-3);display:flex;flex-direction:column;gap:2px">
+          <div class="rl" style="color:var(--eq-color-muted);font:var(--eq-type-small);padding:6px var(--eq-space-3)">sidebar · default / hover / selected</div>
+          ${sideRow('equipe-site', '2', 'transparent', 'work')}${sideRow('equipe-app', '1', 'var(--eq-sidebar-row-hover-bg)', 'wait')}${sideRow('equipe', '', 'var(--eq-sidebar-row-selected-bg)', 'ok', true)}${sideRow('equipe-design', '', 'transparent', 'err')}
+        </div>
+        <div style="background:var(--eq-color-bg);padding:28px 32px;position:relative">
+          <p style="color:var(--eq-color-text);font:var(--eq-type-title);margin:0 0 8px">Conversation title</p>
+          <p style="color:var(--eq-color-prose);max-width:560px;margin:0 0 6px">Reading text is <code>prose</code>, a shade softer than <code>text</code>.</p>
+          <p style="color:var(--eq-color-text-soft);margin:0 0 6px">Secondary text one step up is <code>text-soft</code>.</p>
+          <p style="color:var(--eq-color-muted);font:var(--eq-type-small);margin:0 0 20px">Meta is <code>muted</code>.</p>
+          <div style="display:flex;gap:40px;align-items:flex-start">
+            <div style="width:240px;background:var(--eq-popover-bg);border:1px solid var(--eq-popover-border);border-radius:var(--eq-popover-radius);box-shadow:var(--eq-popover-shadow);padding:6px;color:var(--eq-popover-fg)">${pop('Rename', 'R', false)}${pop('Copy link', '⌘C', true)}${pop('Archive', '⌘⌫', false)}</div>
+            <div style="display:flex;flex-direction:column;gap:18px">
+              <span style="display:inline-flex;gap:8px;background:var(--eq-tooltip-bg);color:var(--eq-tooltip-fg);font:var(--eq-type-small);padding:4px 8px;border-radius:var(--eq-radius-sm);width:max-content">New conversation <span style="color:var(--eq-tooltip-secondary-fg)">⌘N</span></span>
+              <span style="display:flex;gap:12px;align-items:center;color:var(--eq-color-text)">${sw(true)} On</span>
+              <span style="display:flex;gap:12px;align-items:center;color:var(--eq-color-text)">${sw(false)} Off</span>
+            </div>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px 20px;margin-top:28px;font:var(--eq-type-small)">${[0, 1, 2, 3, 4, 5, 6, 7].map((i) => `<span style="color:var(--eq-color-member-${i})">● member ${i}</span>`).join('')}</div>
+        </div>
+      </div>`,
+    };
+  },
   foundations: () => {
     const groups = {
-      'Backgrounds·surfaces': ['bg', 'surface', 'raised', 'sunken'], 'Text': ['text', 'muted'], 'Accent': ['accent', 'on-accent', 'accent-bg', 'focus', 'dot'],
+      'Backgrounds·surfaces': ['bg', 'surface', 'raised', 'sunken'], 'Desktop chrome': ['side', 'side-hover', 'side-selected', 'popover', 'popover-hover', 'tooltip', 'on-tooltip', 'on-tooltip-muted'],
+      'Text': ['text', 'prose', 'text-soft', 'muted'], 'Switch': ['switch-on', 'switch-off', 'switch-knob'], 'Accent': ['accent', 'on-accent', 'accent-bg', 'focus', 'dot'],
       'Action': ['action', 'on-action', 'action-hover', 'action-pressed', 'hover', 'pressed', 'border-strong', 'line', 'scrim'], 'Status': ['ok', 'work', 'wait', 'err', 'ok-bg', 'work-bg', 'wait-bg', 'err-bg', 'on-err'], 'Inverse': ['inverse', 'on-inverse', 'inverse-accent'],
+      'Members·projects': [0, 1, 2, 3, 4, 5, 6, 7].map((i) => `member-${i}`),
     };
     const sw = (n) => `<div class="sw"><i style="background:var(--eq-color-${n})"></i><div><b>${n}</b><span>--eq-color-${n}</span></div></div>`;
     const types = ['display', 'headline', 'title', 'body', 'ui', 'label', 'small', 'meta', 'code'];
@@ -159,7 +189,11 @@ for (const [name, fn] of Object.entries(sheets)) {
     const html = `<!doctype html><html lang="en" data-theme="${mode}"><head><meta charset="utf-8">${fonts}<style>${tokens}\n${comps}\n${shellCss}</style></head><body><div class="page"><h1>${s.title} <span style="font-weight:400;color:var(--eq-color-muted);font-size:20px">· ${mode === 'light' ? 'Light' : 'Dark'}</span></h1><p class="sub">${s.sub.replace(/`([^`]+)`/g, '<code>$1</code>')}</p>${s.body}</div></body></html>`;
     const hf = path.join(ROOT, `build/sheets/${name}-${mode}.html`); fs.writeFileSync(hf, html);
     const raw = `/tmp/eq-${name}-${mode}.png`, out = path.join(ROOT, `components/${name}-${mode}.png`);
-    execFileSync(CHROME, ['--headless=new', '--hide-scrollbars', '--force-device-scale-factor=2', '--window-size=1400,2400', '--virtual-time-budget=9000', `--screenshot=${raw}`, 'file://' + hf], { stdio: 'ignore' });
+    // Headless Chrome now and then exits 2 without a picture; try again before giving up.
+    for (let tries = 3; ; tries--) {
+      try { execFileSync(CHROME, ['--headless=new', '--hide-scrollbars', '--force-device-scale-factor=2', '--window-size=1400,2400', '--virtual-time-budget=9000', `--screenshot=${raw}`, 'file://' + hf], { stdio: 'ignore' }); break; }
+      catch (e) { if (tries <= 1) throw e; }
+    }
     execFileSync('python3', [path.join(ROOT, 'scripts/crop.py'), raw, out]);
     console.log('sheet', name, mode);
   }

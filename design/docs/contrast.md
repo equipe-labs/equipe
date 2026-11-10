@@ -7,132 +7,216 @@ The disabled state (`opacity.disabled` 0.4) is a WCAG 1.4.3 exception and is lef
 
 | Foreground | Background | Contrast | Needed | Result | Use |
 |---|---|---|---|---|---|
-| `text` #15161A | `bg` #F6F5F1 | 16.57:1 | 4.5:1 | ✅ | body text on page |
-| `text` #15161A | `surface` #FFFFFF | 18.08:1 | 4.5:1 | ✅ | text on card·field |
-| `text` #15161A | `raised` #FFFFFF | 18.08:1 | 4.5:1 | ✅ | text on popover·sheet |
-| `text` #15161A | `sunken` #EAE7E0 | 14.64:1 | 4.5:1 | ✅ | text on code·pressed surface |
-| `muted` #4F5159 | `bg` #F6F5F1 | 7.25:1 | 4.5:1 | ✅ | secondary text on page |
-| `muted` #4F5159 | `surface` #FFFFFF | 7.91:1 | 4.5:1 | ✅ | secondary text·placeholder on card/field |
-| `muted` #4F5159 | `raised` #FFFFFF | 7.91:1 | 4.5:1 | ✅ | secondary text on sheet |
-| `muted` #4F5159 | `sunken` #EAE7E0 | 6.41:1 | 4.5:1 | ✅ | secondary text on pressed surface (neutral badge) |
-| `accent` #1D4ED8 | `bg` #F6F5F1 | 6.14:1 | 4.5:1 | ✅ | link·text button on page |
-| `accent` #1D4ED8 | `surface` #FFFFFF | 6.70:1 | 4.5:1 | ✅ | link on card |
-| `accent` #1D4ED8 | `raised` #FFFFFF | 6.70:1 | 4.5:1 | ✅ | link on sheet |
-| `accent` #1D4ED8 | `surface` + `accent-bg` #E8EDFB | 5.72:1 | 4.5:1 | ✅ | selected chip·row text (accent on accent-bg) |
-| `text` #15161A | `surface` + `accent-bg` #E8EDFB | 15.44:1 | 4.5:1 | ✅ | selected row body text |
-| `muted` #4F5159 | `surface` + `accent-bg` #E8EDFB | 6.76:1 | 4.5:1 | ✅ | selected row secondary text |
-| `on-accent` #FFFFFF | `accent` #1D4ED8 | 6.70:1 | 4.5:1 | ✅ | filled brand button text (web marketing) |
-| `on-action` #F6F5F1 | `action` #15161A | 16.57:1 | 4.5:1 | ✅ | primary button text |
-| `on-action` #F6F5F1 | `action-hover` #2A2C33 | 12.78:1 | 4.5:1 | ✅ | primary button hover |
-| `on-action` #F6F5F1 | `action-pressed` #3A3C44 | 10.08:1 | 4.5:1 | ✅ | primary button pressed |
-| `on-err` #FFFFFF | `err` #AD2E27 | 6.57:1 | 4.5:1 | ✅ | destructive button text |
-| `err` #AD2E27 | `err-fill` #EEE0DE | 5.12:1 | 4.5:1 | ✅ | soft destructive button text (Deny) |
-| `err` #AD2E27 | `err-fill-hover` #EBD9D7 | 4.83:1 | 4.5:1 | ✅ | soft destructive button hover |
-| `err` #AD2E27 | `err-fill-pressed` #E9D2CF | 4.56:1 | 4.5:1 | ✅ | soft destructive button pressed |
-| `text` #15161A | `bg` + `hover` #EAE9E5 | 14.89:1 | 4.5:1 | ✅ | text on row hover |
-| `text` #15161A | `surface` + `hover` #F3F3F3 | 16.22:1 | 4.5:1 | ✅ | text on row hover inside a card |
-| `muted` #4F5159 | `surface` + `hover` #F3F3F3 | 7.10:1 | 4.5:1 | ✅ | secondary text on row hover |
-| `text` #15161A | `bg` + `pressed` #E1E0DC | 13.66:1 | 4.5:1 | ✅ | text on pressed row |
-| `accent` #1D4ED8 | `bg` + `pressed` #E1E0DC | 5.06:1 | 4.5:1 | ✅ | pressed text button |
-| `ok` #1F6B33 | `bg` #F6F5F1 | 6.00:1 | 4.5:1 | ✅ | done text on page |
-| `work` #825600 | `bg` #F6F5F1 | 5.87:1 | 4.5:1 | ✅ | in-progress text on page |
-| `wait` #A04610 | `bg` #F6F5F1 | 5.70:1 | 4.5:1 | ✅ | your-turn text on page |
-| `err` #AD2E27 | `bg` #F6F5F1 | 6.02:1 | 4.5:1 | ✅ | error text on page |
+| `text` #181713 | `bg` #FAF9F6 | 17.04:1 | 4.5:1 | ✅ | body text on page |
+| `text` #181713 | `surface` #FFFFFF | 17.94:1 | 4.5:1 | ✅ | text on card·field |
+| `text` #181713 | `raised` #FFFFFF | 17.94:1 | 4.5:1 | ✅ | text on popover·sheet |
+| `text` #181713 | `sunken` #F2F1ED | 15.87:1 | 4.5:1 | ✅ | text on code·pressed surface |
+| `muted` #62605A | `bg` #FAF9F6 | 5.97:1 | 4.5:1 | ✅ | secondary text on page |
+| `muted` #62605A | `surface` #FFFFFF | 6.29:1 | 4.5:1 | ✅ | secondary text·placeholder on card/field |
+| `muted` #62605A | `raised` #FFFFFF | 6.29:1 | 4.5:1 | ✅ | secondary text on sheet |
+| `muted` #62605A | `sunken` #F2F1ED | 5.56:1 | 4.5:1 | ✅ | secondary text on pressed surface (neutral badge) |
+| `accent` #2160AB | `bg` #FAF9F6 | 6.00:1 | 4.5:1 | ✅ | link·text button on page |
+| `accent` #2160AB | `surface` #FFFFFF | 6.31:1 | 4.5:1 | ✅ | link on card |
+| `accent` #2160AB | `raised` #FFFFFF | 6.31:1 | 4.5:1 | ✅ | link on sheet |
+| `accent` #2160AB | `surface` + `accent-bg` #EEF3F8 | 5.64:1 | 4.5:1 | ✅ | selected chip·row text (accent on accent-bg) |
+| `text` #181713 | `surface` + `accent-bg` #EEF3F8 | 16.01:1 | 4.5:1 | ✅ | selected row body text |
+| `muted` #62605A | `surface` + `accent-bg` #EEF3F8 | 5.61:1 | 4.5:1 | ✅ | selected row secondary text |
+| `on-accent` #FAF9F6 | `accent` #2160AB | 6.00:1 | 4.5:1 | ✅ | filled brand button text (web marketing) |
+| `on-action` #FAF9F6 | `action` #181713 | 17.04:1 | 4.5:1 | ✅ | primary button text |
+| `on-action` #FAF9F6 | `action-hover` #2C2B27 | 13.46:1 | 4.5:1 | ✅ | primary button hover |
+| `on-action` #FAF9F6 | `action-pressed` #050504 | 19.37:1 | 4.5:1 | ✅ | primary button pressed |
+| `on-err` #FFFFFF | `err` #AA2A27 | 6.84:1 | 4.5:1 | ✅ | destructive button text |
+| `err` #AA2A27 | `err-fill` #EEE0DE | 5.33:1 | 4.5:1 | ✅ | soft destructive button text (Deny) |
+| `err` #AA2A27 | `err-fill-hover` #EBD9D7 | 5.03:1 | 4.5:1 | ✅ | soft destructive button hover |
+| `err` #AA2A27 | `err-fill-pressed` #E9D2CF | 4.75:1 | 4.5:1 | ✅ | soft destructive button pressed |
+| `text` #181713 | `bg` + `hover` #EEEDEA | 15.36:1 | 4.5:1 | ✅ | text on row hover |
+| `text` #181713 | `surface` + `hover` #F3F3F3 | 16.16:1 | 4.5:1 | ✅ | text on row hover inside a card |
+| `muted` #62605A | `surface` + `hover` #F3F3F3 | 5.67:1 | 4.5:1 | ✅ | secondary text on row hover |
+| `text` #181713 | `bg` + `pressed` #E2E2DF | 13.79:1 | 4.5:1 | ✅ | text on pressed row |
+| `accent` #2160AB | `bg` + `pressed` #E2E2DF | 4.85:1 | 4.5:1 | ✅ | pressed text button |
+| `ok` #1F6B33 | `bg` #FAF9F6 | 6.22:1 | 4.5:1 | ✅ | done text on page |
+| `work` #865901 | `bg` #FAF9F6 | 5.79:1 | 4.5:1 | ✅ | in-progress text on page |
+| `wait` #B83A0B | `bg` #FAF9F6 | 5.47:1 | 4.5:1 | ✅ | your-turn text on page |
+| `err` #AA2A27 | `bg` #FAF9F6 | 6.50:1 | 4.5:1 | ✅ | error text on page |
 | `ok` #1F6B33 | `surface` #FFFFFF | 6.54:1 | 4.5:1 | ✅ | done text on card |
-| `work` #825600 | `surface` #FFFFFF | 6.40:1 | 4.5:1 | ✅ | in-progress text on card |
-| `wait` #A04610 | `surface` #FFFFFF | 6.22:1 | 4.5:1 | ✅ | your-turn text on card |
-| `err` #AD2E27 | `surface` #FFFFFF | 6.57:1 | 4.5:1 | ✅ | error text on card |
+| `work` #865901 | `surface` #FFFFFF | 6.10:1 | 4.5:1 | ✅ | in-progress text on card |
+| `wait` #B83A0B | `surface` #FFFFFF | 5.76:1 | 4.5:1 | ✅ | your-turn text on card |
+| `err` #AA2A27 | `surface` #FFFFFF | 6.84:1 | 4.5:1 | ✅ | error text on card |
 | `ok` #1F6B33 | `raised` #FFFFFF | 6.54:1 | 4.5:1 | ✅ | done on sheet |
-| `wait` #A04610 | `raised` #FFFFFF | 6.22:1 | 4.5:1 | ✅ | your turn on sheet |
-| `err` #AD2E27 | `raised` #FFFFFF | 6.57:1 | 4.5:1 | ✅ | error on sheet (field error text) |
-| `ok` #1F6B33 | `surface` + `ok-bg` #E4EDE6 | 5.47:1 | 4.5:1 | ✅ | badge ok (on card) |
-| `work` #825600 | `surface` + `work-bg` #F0EAE0 | 5.36:1 | 4.5:1 | ✅ | badge work (on card) |
-| `wait` #A04610 | `surface` + `wait-bg` #F3E9E2 | 5.19:1 | 4.5:1 | ✅ | badge wait (on card) |
-| `err` #AD2E27 | `surface` + `err-bg` #F5E6E5 | 5.41:1 | 4.5:1 | ✅ | badge err (on card) |
-| `ok` #1F6B33 | `bg` + `ok-bg` #DCE4DA | 5.04:1 | 4.5:1 | ✅ | badge ok (on page) |
-| `work` #825600 | `bg` + `work-bg` #E8E2D4 | 4.94:1 | 4.5:1 | ✅ | badge work (on page) |
-| `wait` #A04610 | `bg` + `wait-bg` #ECE0D6 | 4.78:1 | 4.5:1 | ✅ | badge wait (on page) |
-| `err` #AD2E27 | `bg` + `err-bg` #EDDDD8 | 4.98:1 | 4.5:1 | ✅ | badge·banner err (on page) |
-| `on-inverse` #F6F5F1 | `inverse` #15161A | 16.57:1 | 4.5:1 | ✅ | toast text |
-| `inverse-accent` #8FB0FF | `inverse` #15161A | 8.46:1 | 4.5:1 | ✅ | toast action |
-| `focus` #1D4ED8 | `bg` #F6F5F1 | 6.14:1 | 3:1 | ✅ | focus ring on page |
-| `focus` #1D4ED8 | `surface` #FFFFFF | 6.70:1 | 3:1 | ✅ | focus ring on card |
-| `focus` #1D4ED8 | `raised` #FFFFFF | 6.70:1 | 3:1 | ✅ | focus ring on sheet |
-| `focus` #1D4ED8 | `sunken` #EAE7E0 | 5.43:1 | 3:1 | ✅ | focus ring on pressed surface |
-| `border-strong` #74767D | `bg` #F6F5F1 | 4.16:1 | 3:1 | ✅ | field·secondary button border on page |
-| `border-strong` #74767D | `surface` #FFFFFF | 4.54:1 | 3:1 | ✅ | field border on card |
-| `border-strong` #74767D | `raised` #FFFFFF | 4.54:1 | 3:1 | ✅ | sheet handle·field on sheet |
-| `accent` #1D4ED8 | `surface` + `accent-bg` #E8EDFB | 5.72:1 | 3:1 | ✅ | selected chip border |
-| `wait` #A04610 | `surface` #FFFFFF | 6.22:1 | 3:1 | ✅ | decision card border (wait) |
-| `err` #AD2E27 | `surface` #FFFFFF | 6.57:1 | 3:1 | ✅ | error field border |
-| `dot` #3F6FF5 | `bg` #F6F5F1 | 4.01:1 | 3:1 | ✅ | brand dot on page (graphic·logo only) |
+| `wait` #B83A0B | `raised` #FFFFFF | 5.76:1 | 4.5:1 | ✅ | your turn on sheet |
+| `err` #AA2A27 | `raised` #FFFFFF | 6.84:1 | 4.5:1 | ✅ | error on sheet (field error text) |
+| `ok` #1F6B33 | `surface` + `ok-bg` #EDF3EF | 5.84:1 | 4.5:1 | ✅ | badge ok (on card) |
+| `work` #865901 | `surface` + `work-bg` #F6F2EB | 5.46:1 | 4.5:1 | ✅ | badge work (on card) |
+| `wait` #B83A0B | `surface` + `wait-bg` #F9F0EC | 5.12:1 | 4.5:1 | ✅ | badge wait (on card) |
+| `err` #AA2A27 | `surface` + `err-bg` #F8EEEE | 6.03:1 | 4.5:1 | ✅ | badge err (on card) |
+| `ok` #1F6B33 | `bg` + `ok-bg` #E9EEE7 | 5.55:1 | 4.5:1 | ✅ | badge ok (on page) |
+| `work` #865901 | `bg` + `work-bg` #F1ECE3 | 5.20:1 | 4.5:1 | ✅ | badge work (on page) |
+| `wait` #B83A0B | `bg` + `wait-bg` #F5EAE4 | 4.87:1 | 4.5:1 | ✅ | badge wait (on page) |
+| `err` #AA2A27 | `bg` + `err-bg` #F4E9E6 | 5.74:1 | 4.5:1 | ✅ | badge·banner err (on page) |
+| `on-inverse` #FAF9F6 | `inverse` #181713 | 17.04:1 | 4.5:1 | ✅ | toast text |
+| `inverse-accent` #7EB8F3 | `inverse` #181713 | 8.57:1 | 4.5:1 | ✅ | toast action |
+| `focus` #2160AB | `bg` #FAF9F6 | 6.00:1 | 3:1 | ✅ | focus ring on page |
+| `focus` #2160AB | `surface` #FFFFFF | 6.31:1 | 3:1 | ✅ | focus ring on card |
+| `focus` #2160AB | `raised` #FFFFFF | 6.31:1 | 3:1 | ✅ | focus ring on sheet |
+| `focus` #2160AB | `sunken` #F2F1ED | 5.59:1 | 3:1 | ✅ | focus ring on pressed surface |
+| `border-strong` #86847E | `bg` #FAF9F6 | 3.55:1 | 3:1 | ✅ | field·secondary button border on page |
+| `border-strong` #86847E | `surface` #FFFFFF | 3.74:1 | 3:1 | ✅ | field border on card |
+| `border-strong` #86847E | `raised` #FFFFFF | 3.74:1 | 3:1 | ✅ | sheet handle·field on sheet |
+| `accent` #2160AB | `surface` + `accent-bg` #EEF3F8 | 5.64:1 | 3:1 | ✅ | selected chip border |
+| `wait` #B83A0B | `surface` #FFFFFF | 5.76:1 | 3:1 | ✅ | decision card border (wait) |
+| `err` #AA2A27 | `surface` #FFFFFF | 6.84:1 | 3:1 | ✅ | error field border |
+| `dot` #3F6FF5 | `bg` #FAF9F6 | 4.15:1 | 3:1 | ✅ | brand dot on page (graphic·logo only) |
 | `dot` #3F6FF5 | `surface` #FFFFFF | 4.37:1 | 3:1 | ✅ | brand dot on card |
 | `dot` #3F6FF5 | `raw.neutral.950` #0A0A0C | 4.52:1 | 3:1 | ✅ | brand dot on icon tile (void) |
+| `prose` #24231F | `bg` #FAF9F6 | 14.94:1 | 4.5:1 | ✅ | reading text on page |
+| `prose` #24231F | `raised` #FFFFFF | 15.73:1 | 4.5:1 | ✅ | reading text on card |
+| `text-soft` #45443E | `bg` #FAF9F6 | 9.28:1 | 4.5:1 | ✅ | text-soft on page |
+| `text-soft` #45443E | `raised` #FFFFFF | 9.77:1 | 4.5:1 | ✅ | text-soft on card |
+| `text-soft` #45443E | `side-selected` #E7E6E1 | 7.82:1 | 4.5:1 | ✅ | text-soft on the open sidebar row |
+| `text` #181713 | `side` #F3F2EF | 16.02:1 | 4.5:1 | ✅ | text on side |
+| `muted` #62605A | `side` #F3F2EF | 5.62:1 | 4.5:1 | ✅ | secondary text on side |
+| `text` #181713 | `side-hover` #EEEDE8 | 15.30:1 | 4.5:1 | ✅ | text on side-hover |
+| `muted` #62605A | `side-hover` #EEEDE8 | 5.36:1 | 4.5:1 | ✅ | secondary text on side-hover |
+| `text` #181713 | `side-selected` #E7E6E1 | 14.35:1 | 4.5:1 | ✅ | text on side-selected |
+| `muted` #62605A | `side-selected` #E7E6E1 | 5.03:1 | 4.5:1 | ✅ | secondary text on side-selected |
+| `text` #181713 | `popover` #FFFFFF | 17.94:1 | 4.5:1 | ✅ | text on popover |
+| `muted` #62605A | `popover` #FFFFFF | 6.29:1 | 4.5:1 | ✅ | secondary text on popover |
+| `text` #181713 | `popover-hover` #F2F1EE | 15.88:1 | 4.5:1 | ✅ | text on popover-hover |
+| `muted` #62605A | `popover-hover` #F2F1EE | 5.57:1 | 4.5:1 | ✅ | secondary text on popover-hover |
+| `work` #865901 | `side` #F3F2EF | 5.45:1 | 4.5:1 | ✅ | work status on side |
+| `work` #865901 | `side-selected` #E7E6E1 | 4.88:1 | 4.5:1 | ✅ | work status on side-selected |
+| `wait` #B83A0B | `side` #F3F2EF | 5.14:1 | 4.5:1 | ✅ | wait status on side |
+| `wait` #B83A0B | `side-selected` #E7E6E1 | 4.61:1 | 4.5:1 | ✅ | wait status on side-selected |
+| `err` #AA2A27 | `side` #F3F2EF | 6.11:1 | 4.5:1 | ✅ | err status on side |
+| `err` #AA2A27 | `side-selected` #E7E6E1 | 5.47:1 | 4.5:1 | ✅ | err status on side-selected |
+| `accent` #2160AB | `side` #F3F2EF | 5.64:1 | 4.5:1 | ✅ | accent status on side |
+| `accent` #2160AB | `side-selected` #E7E6E1 | 5.05:1 | 4.5:1 | ✅ | accent status on side-selected |
+| `on-tooltip` #F3F0E9 | `tooltip` #232220 | 13.97:1 | 4.5:1 | ✅ | tooltip text |
+| `on-tooltip-muted` #A9A7A1 | `tooltip` #232220 | 6.61:1 | 4.5:1 | ✅ | tooltip key hint |
+| `switch-knob` #FFFFFF | `switch-on` #2160AB | 6.31:1 | 3:1 | ✅ | switch knob on the on track |
+| `member-0` #835600 | `bg` #FAF9F6 | 6.05:1 | 4.5:1 | ✅ | member colour 0 as words on bg |
+| `member-0` #835600 | `side-selected` #E7E6E1 | 5.10:1 | 4.5:1 | ✅ | member colour 0 as words on side-selected |
+| `member-1` #943C6B | `bg` #FAF9F6 | 6.40:1 | 4.5:1 | ✅ | member colour 1 as words on bg |
+| `member-1` #943C6B | `side-selected` #E7E6E1 | 5.39:1 | 4.5:1 | ✅ | member colour 1 as words on side-selected |
+| `member-2` #0065A4 | `bg` #FAF9F6 | 5.87:1 | 4.5:1 | ✅ | member colour 2 as words on bg |
+| `member-2` #0065A4 | `side-selected` #E7E6E1 | 4.95:1 | 4.5:1 | ✅ | member colour 2 as words on side-selected |
+| `member-3` #0D7435 | `bg` #FAF9F6 | 5.59:1 | 4.5:1 | ✅ | member colour 3 as words on bg |
+| `member-3` #0D7435 | `side-selected` #E7E6E1 | 4.71:1 | 4.5:1 | ✅ | member colour 3 as words on side-selected |
+| `member-4` #674EA1 | `bg` #FAF9F6 | 6.27:1 | 4.5:1 | ✅ | member colour 4 as words on bg |
+| `member-4` #674EA1 | `side-selected` #E7E6E1 | 5.28:1 | 4.5:1 | ✅ | member colour 4 as words on side-selected |
+| `member-5` #006F68 | `bg` #FAF9F6 | 5.74:1 | 4.5:1 | ✅ | member colour 5 as words on bg |
+| `member-5` #006F68 | `side-selected` #E7E6E1 | 4.84:1 | 4.5:1 | ✅ | member colour 5 as words on side-selected |
+| `member-6` #984500 | `bg` #FAF9F6 | 6.26:1 | 4.5:1 | ✅ | member colour 6 as words on bg |
+| `member-6` #984500 | `side-selected` #E7E6E1 | 5.27:1 | 4.5:1 | ✅ | member colour 6 as words on side-selected |
+| `member-7` #5F6700 | `bg` #FAF9F6 | 5.82:1 | 4.5:1 | ✅ | member colour 7 as words on bg |
+| `member-7` #5F6700 | `side-selected` #E7E6E1 | 4.90:1 | 4.5:1 | ✅ | member colour 7 as words on side-selected |
 
 ## Dark
 
 | Foreground | Background | Contrast | Needed | Result | Use |
 |---|---|---|---|---|---|
-| `text` #EFEDE7 | `bg` #0A0A0C | 16.90:1 | 4.5:1 | ✅ | body text on page |
-| `text` #EFEDE7 | `surface` #16171A | 15.31:1 | 4.5:1 | ✅ | text on card·field |
-| `text` #EFEDE7 | `raised` #1B1C20 | 14.54:1 | 4.5:1 | ✅ | text on popover·sheet |
-| `text` #EFEDE7 | `sunken` #111114 | 16.10:1 | 4.5:1 | ✅ | text on code·pressed surface |
-| `muted` #A3A5AB | `bg` #0A0A0C | 8.03:1 | 4.5:1 | ✅ | secondary text on page |
-| `muted` #A3A5AB | `surface` #16171A | 7.28:1 | 4.5:1 | ✅ | secondary text·placeholder on card/field |
-| `muted` #A3A5AB | `raised` #1B1C20 | 6.91:1 | 4.5:1 | ✅ | secondary text on sheet |
-| `muted` #A3A5AB | `sunken` #111114 | 7.65:1 | 4.5:1 | ✅ | secondary text on pressed surface (neutral badge) |
-| `accent` #8FB0FF | `bg` #0A0A0C | 9.25:1 | 4.5:1 | ✅ | link·text button on page |
-| `accent` #8FB0FF | `surface` #16171A | 8.38:1 | 4.5:1 | ✅ | link on card |
-| `accent` #8FB0FF | `raised` #1B1C20 | 7.96:1 | 4.5:1 | ✅ | link on sheet |
-| `accent` #8FB0FF | `surface` + `accent-bg` #252A36 | 6.75:1 | 4.5:1 | ✅ | selected chip·row text (accent on accent-bg) |
-| `text` #EFEDE7 | `surface` + `accent-bg` #252A36 | 12.32:1 | 4.5:1 | ✅ | selected row body text |
-| `muted` #A3A5AB | `surface` + `accent-bg` #252A36 | 5.86:1 | 4.5:1 | ✅ | selected row secondary text |
-| `on-accent` #0B1226 | `accent` #8FB0FF | 8.70:1 | 4.5:1 | ✅ | filled brand button text (web marketing) |
-| `on-action` #0A0A0C | `action` #EFEDE7 | 16.90:1 | 4.5:1 | ✅ | primary button text |
-| `on-action` #0A0A0C | `action-hover` #DAD7CF | 13.75:1 | 4.5:1 | ✅ | primary button hover |
-| `on-action` #0A0A0C | `action-pressed` #C9C6BE | 11.59:1 | 4.5:1 | ✅ | primary button pressed |
-| `on-err` #0A0A0C | `err` #EE7B74 | 7.27:1 | 4.5:1 | ✅ | destructive button text |
-| `err` #EE7B74 | `err-fill` #352728 | 5.24:1 | 4.5:1 | ✅ | soft destructive button text (Deny) |
-| `err` #EE7B74 | `err-fill-hover` #3C2A2B | 4.95:1 | 4.5:1 | ✅ | soft destructive button hover |
-| `err` #EE7B74 | `err-fill-pressed` #442E2E | 4.61:1 | 4.5:1 | ✅ | soft destructive button pressed |
-| `text` #EFEDE7 | `bg` + `hover` #1A1A1B | 14.84:1 | 4.5:1 | ✅ | text on row hover |
-| `text` #EFEDE7 | `surface` + `hover` #252628 | 12.91:1 | 4.5:1 | ✅ | text on row hover inside a card |
-| `muted` #A3A5AB | `surface` + `hover` #252628 | 6.14:1 | 4.5:1 | ✅ | secondary text on row hover |
-| `text` #EFEDE7 | `bg` + `pressed` #262627 | 12.97:1 | 4.5:1 | ✅ | text on pressed row |
-| `accent` #8FB0FF | `bg` + `pressed` #262627 | 7.10:1 | 4.5:1 | ✅ | pressed text button |
-| `ok` #7FCB8E | `bg` #0A0A0C | 10.21:1 | 4.5:1 | ✅ | done text on page |
-| `work` #E2B865 | `bg` #0A0A0C | 10.62:1 | 4.5:1 | ✅ | in-progress text on page |
-| `wait` #EC9A62 | `bg` #0A0A0C | 8.82:1 | 4.5:1 | ✅ | your-turn text on page |
-| `err` #EE7B74 | `bg` #0A0A0C | 7.27:1 | 4.5:1 | ✅ | error text on page |
-| `ok` #7FCB8E | `surface` #16171A | 9.25:1 | 4.5:1 | ✅ | done text on card |
-| `work` #E2B865 | `surface` #16171A | 9.63:1 | 4.5:1 | ✅ | in-progress text on card |
-| `wait` #EC9A62 | `surface` #16171A | 7.99:1 | 4.5:1 | ✅ | your-turn text on card |
-| `err` #EE7B74 | `surface` #16171A | 6.59:1 | 4.5:1 | ✅ | error text on card |
-| `ok` #7FCB8E | `raised` #1B1C20 | 8.78:1 | 4.5:1 | ✅ | done on sheet |
-| `wait` #EC9A62 | `raised` #1B1C20 | 7.59:1 | 4.5:1 | ✅ | your turn on sheet |
-| `err` #EE7B74 | `raised` #1B1C20 | 6.26:1 | 4.5:1 | ✅ | error on sheet (field error text) |
-| `ok` #7FCB8E | `surface` + `ok-bg` #232D28 | 7.35:1 | 4.5:1 | ✅ | badge ok (on card) |
-| `work` #E2B865 | `surface` + `work-bg` #2F2B23 | 7.60:1 | 4.5:1 | ✅ | badge work (on card) |
-| `wait` #EC9A62 | `surface` + `wait-bg` #302723 | 6.51:1 | 4.5:1 | ✅ | badge wait (on card) |
-| `err` #EE7B74 | `surface` + `err-bg` #302325 | 5.53:1 | 4.5:1 | ✅ | badge err (on card) |
-| `ok` #7FCB8E | `bg` + `ok-bg` #18211C | 8.47:1 | 4.5:1 | ✅ | badge ok (on page) |
-| `work` #E2B865 | `bg` + `work-bg` #241F17 | 8.77:1 | 4.5:1 | ✅ | badge work (on page) |
-| `wait` #EC9A62 | `bg` + `wait-bg` #251C16 | 7.47:1 | 4.5:1 | ✅ | badge wait (on page) |
-| `err` #EE7B74 | `bg` + `err-bg` #261819 | 6.31:1 | 4.5:1 | ✅ | badge·banner err (on page) |
-| `on-inverse` #0A0A0C | `inverse` #EFEDE7 | 16.90:1 | 4.5:1 | ✅ | toast text |
-| `inverse-accent` #1D4ED8 | `inverse` #EFEDE7 | 5.72:1 | 4.5:1 | ✅ | toast action |
-| `focus` #8FB0FF | `bg` #0A0A0C | 9.25:1 | 3:1 | ✅ | focus ring on page |
-| `focus` #8FB0FF | `surface` #16171A | 8.38:1 | 3:1 | ✅ | focus ring on card |
-| `focus` #8FB0FF | `raised` #1B1C20 | 7.96:1 | 3:1 | ✅ | focus ring on sheet |
-| `focus` #8FB0FF | `sunken` #111114 | 8.82:1 | 3:1 | ✅ | focus ring on pressed surface |
-| `border-strong` #7C7E85 | `bg` #0A0A0C | 4.88:1 | 3:1 | ✅ | field·secondary button border on page |
-| `border-strong` #7C7E85 | `surface` #16171A | 4.42:1 | 3:1 | ✅ | field border on card |
-| `border-strong` #7C7E85 | `raised` #1B1C20 | 4.20:1 | 3:1 | ✅ | sheet handle·field on sheet |
-| `accent` #8FB0FF | `surface` + `accent-bg` #252A36 | 6.75:1 | 3:1 | ✅ | selected chip border |
-| `wait` #EC9A62 | `surface` #16171A | 7.99:1 | 3:1 | ✅ | decision card border (wait) |
-| `err` #EE7B74 | `surface` #16171A | 6.59:1 | 3:1 | ✅ | error field border |
-| `dot` #3F6FF5 | `bg` #0A0A0C | 4.52:1 | 3:1 | ✅ | brand dot on page (graphic·logo only) |
-| `dot` #3F6FF5 | `surface` #16171A | 4.10:1 | 3:1 | ✅ | brand dot on card |
+| `text` #F3F0E9 | `bg` #151513 | 16.07:1 | 4.5:1 | ✅ | body text on page |
+| `text` #F3F0E9 | `surface` #1F1E1C | 14.64:1 | 4.5:1 | ✅ | text on card·field |
+| `text` #F3F0E9 | `raised` #1F1E1C | 14.64:1 | 4.5:1 | ✅ | text on popover·sheet |
+| `text` #F3F0E9 | `sunken` #1B1A19 | 15.27:1 | 4.5:1 | ✅ | text on code·pressed surface |
+| `muted` #A2A09A | `bg` #151513 | 6.99:1 | 4.5:1 | ✅ | secondary text on page |
+| `muted` #A2A09A | `surface` #1F1E1C | 6.37:1 | 4.5:1 | ✅ | secondary text·placeholder on card/field |
+| `muted` #A2A09A | `raised` #1F1E1C | 6.37:1 | 4.5:1 | ✅ | secondary text on sheet |
+| `muted` #A2A09A | `sunken` #1B1A19 | 6.65:1 | 4.5:1 | ✅ | secondary text on pressed surface (neutral badge) |
+| `accent` #7EB8F3 | `bg` #151513 | 8.74:1 | 4.5:1 | ✅ | link·text button on page |
+| `accent` #7EB8F3 | `surface` #1F1E1C | 7.96:1 | 4.5:1 | ✅ | link on card |
+| `accent` #7EB8F3 | `raised` #1F1E1C | 7.96:1 | 4.5:1 | ✅ | link on sheet |
+| `accent` #7EB8F3 | `surface` + `accent-bg` #2B3136 | 6.32:1 | 4.5:1 | ✅ | selected chip·row text (accent on accent-bg) |
+| `text` #F3F0E9 | `surface` + `accent-bg` #2B3136 | 11.61:1 | 4.5:1 | ✅ | selected row body text |
+| `muted` #A2A09A | `surface` + `accent-bg` #2B3136 | 5.05:1 | 4.5:1 | ✅ | selected row secondary text |
+| `on-accent` #151513 | `accent` #7EB8F3 | 8.74:1 | 4.5:1 | ✅ | filled brand button text (web marketing) |
+| `on-action` #151513 | `action` #ECEAE4 | 15.20:1 | 4.5:1 | ✅ | primary button text |
+| `on-action` #151513 | `action-hover` #FFFFFF | 18.28:1 | 4.5:1 | ✅ | primary button hover |
+| `on-action` #151513 | `action-pressed` #D6D3CC | 12.23:1 | 4.5:1 | ✅ | primary button pressed |
+| `on-err` #151513 | `err` #F2857D | 7.34:1 | 4.5:1 | ✅ | destructive button text |
+| `err` #F2857D | `err-fill` #352728 | 5.72:1 | 4.5:1 | ✅ | soft destructive button text (Deny) |
+| `err` #F2857D | `err-fill-hover` #3C2A2B | 5.41:1 | 4.5:1 | ✅ | soft destructive button hover |
+| `err` #F2857D | `err-fill-pressed` #442E2E | 5.03:1 | 4.5:1 | ✅ | soft destructive button pressed |
+| `text` #F3F0E9 | `bg` + `hover` #262624 | 13.40:1 | 4.5:1 | ✅ | text on row hover |
+| `text` #F3F0E9 | `surface` + `hover` #2F2E2C | 11.94:1 | 4.5:1 | ✅ | text on row hover inside a card |
+| `muted` #A2A09A | `surface` + `hover` #2F2E2C | 5.20:1 | 4.5:1 | ✅ | secondary text on row hover |
+| `text` #F3F0E9 | `bg` + `pressed` #363634 | 10.63:1 | 4.5:1 | ✅ | text on pressed row |
+| `accent` #7EB8F3 | `bg` + `pressed` #363634 | 5.78:1 | 4.5:1 | ✅ | pressed text button |
+| `ok` #7FCB8E | `bg` #151513 | 9.43:1 | 4.5:1 | ✅ | done text on page |
+| `work` #EABA67 | `bg` #151513 | 10.20:1 | 4.5:1 | ✅ | in-progress text on page |
+| `wait` #FF7A45 | `bg` #151513 | 7.07:1 | 4.5:1 | ✅ | your-turn text on page |
+| `err` #F2857D | `bg` #151513 | 7.34:1 | 4.5:1 | ✅ | error text on page |
+| `ok` #7FCB8E | `surface` #1F1E1C | 8.59:1 | 4.5:1 | ✅ | done text on card |
+| `work` #EABA67 | `surface` #1F1E1C | 9.29:1 | 4.5:1 | ✅ | in-progress text on card |
+| `wait` #FF7A45 | `surface` #1F1E1C | 6.44:1 | 4.5:1 | ✅ | your-turn text on card |
+| `err` #F2857D | `surface` #1F1E1C | 6.68:1 | 4.5:1 | ✅ | error text on card |
+| `ok` #7FCB8E | `raised` #1F1E1C | 8.59:1 | 4.5:1 | ✅ | done on sheet |
+| `wait` #FF7A45 | `raised` #1F1E1C | 6.44:1 | 4.5:1 | ✅ | your turn on sheet |
+| `err` #F2857D | `raised` #1F1E1C | 6.68:1 | 4.5:1 | ✅ | error on sheet (field error text) |
+| `ok` #7FCB8E | `surface` + `ok-bg` #2B332A | 6.74:1 | 4.5:1 | ✅ | badge ok (on card) |
+| `work` #EABA67 | `surface` + `work-bg` #383125 | 7.18:1 | 4.5:1 | ✅ | badge work (on card) |
+| `wait` #FF7A45 | `surface` + `wait-bg` #3A2921 | 5.33:1 | 4.5:1 | ✅ | badge wait (on card) |
+| `err` #F2857D | `surface` + `err-bg` #392B28 | 5.47:1 | 4.5:1 | ✅ | badge err (on card) |
+| `ok` #7FCB8E | `bg` + `ok-bg` #222B22 | 7.53:1 | 4.5:1 | ✅ | badge ok (on page) |
+| `work` #EABA67 | `bg` + `work-bg` #2F291D | 8.05:1 | 4.5:1 | ✅ | badge work (on page) |
+| `wait` #FF7A45 | `bg` + `wait-bg` #312119 | 5.94:1 | 4.5:1 | ✅ | badge wait (on page) |
+| `err` #F2857D | `bg` + `err-bg` #302320 | 6.10:1 | 4.5:1 | ✅ | badge·banner err (on page) |
+| `on-inverse` #151513 | `inverse` #F3F0E9 | 16.07:1 | 4.5:1 | ✅ | toast text |
+| `inverse-accent` #2160AB | `inverse` #F3F0E9 | 5.55:1 | 4.5:1 | ✅ | toast action |
+| `focus` #7EB8F3 | `bg` #151513 | 8.74:1 | 3:1 | ✅ | focus ring on page |
+| `focus` #7EB8F3 | `surface` #1F1E1C | 7.96:1 | 3:1 | ✅ | focus ring on card |
+| `focus` #7EB8F3 | `raised` #1F1E1C | 7.96:1 | 3:1 | ✅ | focus ring on sheet |
+| `focus` #7EB8F3 | `sunken` #1B1A19 | 8.31:1 | 3:1 | ✅ | focus ring on pressed surface |
+| `border-strong` #77756F | `bg` #151513 | 3.97:1 | 3:1 | ✅ | field·secondary button border on page |
+| `border-strong` #77756F | `surface` #1F1E1C | 3.62:1 | 3:1 | ✅ | field border on card |
+| `border-strong` #77756F | `raised` #1F1E1C | 3.62:1 | 3:1 | ✅ | sheet handle·field on sheet |
+| `accent` #7EB8F3 | `surface` + `accent-bg` #2B3136 | 6.32:1 | 3:1 | ✅ | selected chip border |
+| `wait` #FF7A45 | `surface` #1F1E1C | 6.44:1 | 3:1 | ✅ | decision card border (wait) |
+| `err` #F2857D | `surface` #1F1E1C | 6.68:1 | 3:1 | ✅ | error field border |
+| `dot` #3F6FF5 | `bg` #151513 | 4.18:1 | 3:1 | ✅ | brand dot on page (graphic·logo only) |
+| `dot` #3F6FF5 | `surface` #1F1E1C | 3.81:1 | 3:1 | ✅ | brand dot on card |
 | `dot` #3F6FF5 | `raw.neutral.950` #0A0A0C | 4.52:1 | 3:1 | ✅ | brand dot on icon tile (void) |
+| `prose` #E5E2DB | `bg` #151513 | 14.13:1 | 4.5:1 | ✅ | reading text on page |
+| `prose` #E5E2DB | `raised` #1F1E1C | 12.88:1 | 4.5:1 | ✅ | reading text on card |
+| `text-soft` #CCC8C2 | `bg` #151513 | 10.98:1 | 4.5:1 | ✅ | text-soft on page |
+| `text-soft` #CCC8C2 | `raised` #1F1E1C | 10.00:1 | 4.5:1 | ✅ | text-soft on card |
+| `text-soft` #CCC8C2 | `side-selected` #272624 | 9.08:1 | 4.5:1 | ✅ | text-soft on the open sidebar row |
+| `text` #F3F0E9 | `side` #100F0E | 16.82:1 | 4.5:1 | ✅ | text on side |
+| `muted` #A2A09A | `side` #100F0E | 7.32:1 | 4.5:1 | ✅ | secondary text on side |
+| `text` #F3F0E9 | `side-hover` #1C1C1A | 15.00:1 | 4.5:1 | ✅ | text on side-hover |
+| `muted` #A2A09A | `side-hover` #1C1C1A | 6.53:1 | 4.5:1 | ✅ | secondary text on side-hover |
+| `text` #F3F0E9 | `side-selected` #272624 | 13.28:1 | 4.5:1 | ✅ | text on side-selected |
+| `muted` #A2A09A | `side-selected` #272624 | 5.78:1 | 4.5:1 | ✅ | secondary text on side-selected |
+| `text` #F3F0E9 | `popover` #252422 | 13.63:1 | 4.5:1 | ✅ | text on popover |
+| `muted` #A2A09A | `popover` #252422 | 5.93:1 | 4.5:1 | ✅ | secondary text on popover |
+| `text` #F3F0E9 | `popover-hover` #2F2E2B | 11.93:1 | 4.5:1 | ✅ | text on popover-hover |
+| `muted` #A2A09A | `popover-hover` #2F2E2B | 5.19:1 | 4.5:1 | ✅ | secondary text on popover-hover |
+| `work` #EABA67 | `side` #100F0E | 10.68:1 | 4.5:1 | ✅ | work status on side |
+| `work` #EABA67 | `side-selected` #272624 | 8.44:1 | 4.5:1 | ✅ | work status on side-selected |
+| `wait` #FF7A45 | `side` #100F0E | 7.41:1 | 4.5:1 | ✅ | wait status on side |
+| `wait` #FF7A45 | `side-selected` #272624 | 5.85:1 | 4.5:1 | ✅ | wait status on side-selected |
+| `err` #F2857D | `side` #100F0E | 7.68:1 | 4.5:1 | ✅ | err status on side |
+| `err` #F2857D | `side-selected` #272624 | 6.07:1 | 4.5:1 | ✅ | err status on side-selected |
+| `accent` #7EB8F3 | `side` #100F0E | 9.15:1 | 4.5:1 | ✅ | accent status on side |
+| `accent` #7EB8F3 | `side-selected` #272624 | 7.23:1 | 4.5:1 | ✅ | accent status on side-selected |
+| `on-tooltip` #F3F0E9 | `tooltip` #2F2E2C | 11.92:1 | 4.5:1 | ✅ | tooltip text |
+| `on-tooltip-muted` #A9A7A1 | `tooltip` #2F2E2C | 5.64:1 | 4.5:1 | ✅ | tooltip key hint |
+| `switch-knob` #F3F0E9 | `switch-on` #4378AD | 4.07:1 | 3:1 | ✅ | switch knob on the on track |
+| `member-0` #E3B667 | `bg` #151513 | 9.71:1 | 4.5:1 | ✅ | member colour 0 as words on bg |
+| `member-0` #E3B667 | `side-selected` #272624 | 8.03:1 | 4.5:1 | ✅ | member colour 0 as words on side-selected |
+| `member-1` #F4A0C8 | `bg` #151513 | 9.32:1 | 4.5:1 | ✅ | member colour 1 as words on bg |
+| `member-1` #F4A0C8 | `side-selected` #272624 | 7.71:1 | 4.5:1 | ✅ | member colour 1 as words on side-selected |
+| `member-2` #7FC5FF | `bg` #151513 | 9.87:1 | 4.5:1 | ✅ | member colour 2 as words on bg |
+| `member-2` #7FC5FF | `side-selected` #272624 | 8.16:1 | 4.5:1 | ✅ | member colour 2 as words on side-selected |
+| `member-3` #89D298 | `bg` #151513 | 10.22:1 | 4.5:1 | ✅ | member colour 3 as words on bg |
+| `member-3` #89D298 | `side-selected` #272624 | 8.45:1 | 4.5:1 | ✅ | member colour 3 as words on side-selected |
+| `member-4` #C3B0FD | `bg` #151513 | 9.53:1 | 4.5:1 | ✅ | member colour 4 as words on bg |
+| `member-4` #C3B0FD | `side-selected` #272624 | 7.88:1 | 4.5:1 | ✅ | member colour 4 as words on side-selected |
+| `member-5` #5AD5CB | `bg` #151513 | 10.29:1 | 4.5:1 | ✅ | member colour 5 as words on bg |
+| `member-5` #5AD5CB | `side-selected` #272624 | 8.51:1 | 4.5:1 | ✅ | member colour 5 as words on side-selected |
+| `member-6` #F7A97C | `bg` #151513 | 9.51:1 | 4.5:1 | ✅ | member colour 6 as words on bg |
+| `member-6` #F7A97C | `side-selected` #272624 | 7.86:1 | 4.5:1 | ✅ | member colour 6 as words on side-selected |
+| `member-7` #BBC671 | `bg` #151513 | 9.95:1 | 4.5:1 | ✅ | member colour 7 as words on bg |
+| `member-7` #BBC671 | `side-selected` #272624 | 8.23:1 | 4.5:1 | ✅ | member colour 7 as words on side-selected |
 
-**Total: 0 of 122 pairs below threshold.**
+**Total: 0 of 206 pairs below threshold.**

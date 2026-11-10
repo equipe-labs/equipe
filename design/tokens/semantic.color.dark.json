@@ -3,35 +3,63 @@
   "color": {
     "$type": "color",
     "bg": {
-      "$value": "{color.raw.neutral.950}",
+      "$value": "{color.raw.warm.805}",
       "$description": "page / app background"
     },
+    "side": {
+      "$value": "{color.raw.warm.831}",
+      "$description": "sidebar — a step behind the page"
+    },
+    "side-hover": {
+      "$value": "{color.raw.warm.774}",
+      "$description": "sidebar row under the pointer — solid, so a title can fade into it"
+    },
+    "side-selected": {
+      "$value": "{color.raw.warm.731}",
+      "$description": "the open sidebar row — solid"
+    },
     "surface": {
-      "$value": "{color.raw.neutral.850}",
-      "$description": "cards, sheets, fields"
+      "$value": "{color.raw.warm.765}",
+      "$description": "cards, sheets, fields (same as raised; desktop has no separate card fill)"
     },
     "raised": {
-      "$value": "{color.raw.neutral.875}",
+      "$value": "{color.raw.warm.765}",
       "$description": "popovers, menus, toasts-over-surface, selected segment"
     },
     "sunken": {
-      "$value": "{color.raw.neutral.900}",
-      "$description": "code, pressed wells, progress tracks"
+      "$value": "{color.raw.warm.781}",
+      "$description": "code, pressed wells, progress tracks (desktop code_bg)"
+    },
+    "popover": {
+      "$value": "{color.raw.warm.739}",
+      "$description": "what floats over the window: menus, popovers, the jump button"
+    },
+    "popover-hover": {
+      "$value": "{color.raw.warm.699}",
+      "$description": "a popover row under the pointer — solid, never see-through"
     },
     "text": {
-      "$value": "{color.raw.neutral.100}",
-      "$description": "body and headings"
+      "$value": "{color.raw.warm.44}",
+      "$description": "titles, controls, body"
+    },
+    "prose": {
+      "$value": "{color.raw.warm.87}",
+      "$description": "reading text — replies, your messages: a shade softer than text"
+    },
+    "text-soft": {
+      "$value": "{color.raw.warm.166}",
+      "$description": "secondary text a step above muted (desktop text2)"
     },
     "muted": {
-      "$value": "{color.raw.neutral.400}",
-      "$description": "secondary text"
+      "$value": "{color.raw.warm.294}",
+      "$description": "secondary text — 4.5:1 on every surface, the selected sidebar row and popover included"
     },
     "accent": {
       "$value": "{color.raw.blue.300}",
       "$description": "links, text buttons, selection, focus"
     },
     "on-accent": {
-      "$value": "{color.raw.blue.950}",
+      "$value": "{color.raw.warm.805}",
       "$description": "text on a filled accent area"
     },
     "accent-bg": {
@@ -47,52 +75,76 @@
       "$description": "brand dot — logo graphic only, never text"
     },
     "line": {
-      "$value": "{color.raw.alpha.bone-14}",
+      "$value": "{color.raw.alpha.white-10}",
       "$description": "hairline dividers (decorative)"
     },
     "border-strong": {
-      "$value": "{color.raw.neutral.500}",
+      "$value": "{color.raw.warm.400}",
       "$description": "field / control boundary that must be seen (3:1)"
     },
     "action": {
-      "$value": "{color.raw.neutral.100}",
+      "$value": "{color.raw.warm.63}",
       "$description": "filled primary action in product UI (text-colour fill)"
     },
     "on-action": {
-      "$value": "{color.raw.neutral.950}",
+      "$value": "{color.raw.warm.805}",
       "$description": "text on action"
     },
     "action-hover": {
-      "$value": "{color.raw.neutral.150}",
+      "$value": "{color.raw.neutral.0}",
       "$description": "action, pointer over"
     },
     "action-pressed": {
-      "$value": "{color.raw.neutral.160}",
+      "$value": "{color.raw.warm.133}",
       "$description": "action, pressed"
     },
     "hover": {
-      "$value": "{color.raw.alpha.bone-7}",
+      "$value": "{color.raw.alpha.white-7}",
       "$description": "neutral overlay: pointer over a row / ghost control"
     },
     "pressed": {
-      "$value": "{color.raw.alpha.bone-12}",
-      "$description": "neutral overlay: pressed"
+      "$value": "{color.raw.alpha.white-14}",
+      "$description": "neutral overlay: pressed — the hover wash doubled"
     },
     "scrim": {
       "$value": "{color.raw.alpha.black-60}",
       "$description": "behind a modal or sheet"
     },
     "inverse": {
-      "$value": "{color.raw.neutral.100}",
-      "$description": "toast / tooltip background (opposite of the page)"
+      "$value": "{color.raw.warm.44}",
+      "$description": "toast background (opposite of the page); tooltips use color.tooltip"
     },
     "on-inverse": {
-      "$value": "{color.raw.neutral.950}",
+      "$value": "{color.raw.warm.805}",
       "$description": "text on inverse"
     },
     "inverse-accent": {
       "$value": "{color.raw.blue.700}",
       "$description": "link / action on inverse"
+    },
+    "tooltip": {
+      "$value": "{color.raw.warm.700}",
+      "$description": "tooltip chip — dark in either appearance"
+    },
+    "on-tooltip": {
+      "$value": "{color.raw.warm.44}",
+      "$description": "tooltip text"
+    },
+    "on-tooltip-muted": {
+      "$value": "{color.raw.warm.272}",
+      "$description": "tooltip secondary text (a key hint)"
+    },
+    "switch-on": {
+      "$value": "{color.raw.blue.600}",
+      "$description": "switch track, on"
+    },
+    "switch-off": {
+      "$value": "{color.raw.warm.625}",
+      "$description": "switch track, off"
+    },
+    "switch-knob": {
+      "$value": "{color.raw.warm.44}",
+      "$description": "switch knob, either state"
     },
     "ok": {
       "$value": "{color.raw.green.300}",
@@ -139,8 +191,33 @@
       "$description": "err-fill pressed — opaque, used instead of the pressed overlay"
     },
     "on-err": {
-      "$value": "{color.raw.neutral.950}",
+      "$value": "{color.raw.warm.805}",
       "$description": "text on a filled err area"
+    },
+    "member-0": {
+      "$value": "{color.raw.member.0.300}",
+      "$description": "member / project colour — one lightness and chroma, so no member is louder"
+    },
+    "member-1": {
+      "$value": "{color.raw.member.1.300}"
+    },
+    "member-2": {
+      "$value": "{color.raw.member.2.300}"
+    },
+    "member-3": {
+      "$value": "{color.raw.member.3.300}"
+    },
+    "member-4": {
+      "$value": "{color.raw.member.4.300}"
+    },
+    "member-5": {
+      "$value": "{color.raw.member.5.300}"
+    },
+    "member-6": {
+      "$value": "{color.raw.member.6.300}"
+    },
+    "member-7": {
+      "$value": "{color.raw.member.7.300}"
     }
   }
 }

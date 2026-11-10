@@ -57,7 +57,7 @@ The tests in `crates/core` (`design::tokens`) read `tokens.json` with the daemon
 | Swift | `Color(0x…)`, `EquipeColors.light/.dark` | `CGFloat` pt | `TimeInterval` seconds | `EquipeTextStyle` (Dynamic Type) | `.resolved(colorScheme)` |
 | Kotlin | `Color(0xAARRGGBB)`, `EquipeColors.Light/.Dark` | `Dp`·`sp` | `Int` ms | `EquipeTextStyle`·`Typography` | `equipeMaterialColors(dark)` |
 
-The generated code (`build/`) isn't wired into any screen yet. The desktop's `crates/desktop/src/theme.rs`·`motion.rs` still use their own values — the order of adoption is in `docs/adoption.md`.
+The desktop takes spacing·radius·size·type·motion from `build/rust/tokens.rs` (T-160). Its colours equal the tokens since 2.0.0 (T-699, `docs/t699-palette-map.md`) but `theme.rs` still writes them out; wiring `Palette` to `tokens::palette()` is a follow-up. The site, iOS and Android don't use the generated files yet — the order of adoption is in `docs/adoption.md`.
 
 ## Governance
 

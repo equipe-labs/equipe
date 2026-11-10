@@ -16,3 +16,6 @@ The generated files weren't edited; what follows was left in the desktop as **lo
 - **Token-side proposal (first):** update `design/tokens/semantic.color.*` to main's desktop palette (or the person decides to regenerate the palette from the tokens). Then `theme.rs`'s `Palette` can be filled from `tokens::palette()`.
 - `ICON_SM` stays a local 14, as main's screens use 14 (the token `SIZE_ICON_SM` is 16).
 - The local hover fix for danger buttons is no longer needed: main's `danger_bg` (8%) already solves it.
+
+## 2026-11-10 — done in T-699
+- Proposals 1–5 and the token-side proposal above are done in T-699 (tokens 2.0.0): `semantic.color.*` now holds main's desktop palette, and there are tokens for side, popover, tooltip, prose, text-soft, switch and member colours. The map: `docs/t699-palette-map.md`. Wiring `theme.rs` is a follow-up frontend ticket (T-704).

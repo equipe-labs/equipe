@@ -26,6 +26,14 @@ const P = [
   ['border-strong', ['bg'], GFX, 'field·secondary button border on page'], ['border-strong', ['surface'], GFX, 'field border on card'], ['border-strong', ['raised'], GFX, 'sheet handle·field on sheet'],
   ['accent', ['surface', 'accent-bg'], GFX, 'selected chip border'], ['wait', ['surface'], GFX, 'decision card border (wait)'], ['err', ['surface'], GFX, 'error field border'],
   ['dot', ['bg'], GFX, 'brand dot on page (graphic·logo only)'], ['dot', ['surface'], GFX, 'brand dot on card'], ['dot', ['raw.neutral.950'], GFX, 'brand dot on icon tile (void)'],
+  // T-699 — the desktop's own surfaces: sidebar, popover, tooltip, switch, reading text, member colours.
+  ['prose', ['bg'], TEXT, 'reading text on page'], ['prose', ['raised'], TEXT, 'reading text on card'],
+  ['text-soft', ['bg'], TEXT, 'text-soft on page'], ['text-soft', ['raised'], TEXT, 'text-soft on card'], ['text-soft', ['side-selected'], TEXT, 'text-soft on the open sidebar row'],
+  ...['side', 'side-hover', 'side-selected', 'popover', 'popover-hover'].flatMap((s) => [['text', [s], TEXT, `text on ${s}`], ['muted', [s], TEXT, `secondary text on ${s}`]]),
+  ...['work', 'wait', 'err', 'accent'].flatMap((f) => [['side', 'side-selected'].map((s) => [f, [s], TEXT, `${f} status on ${s}`])].flat()),
+  ['on-tooltip', ['tooltip'], TEXT, 'tooltip text'], ['on-tooltip-muted', ['tooltip'], TEXT, 'tooltip key hint'],
+  ['switch-knob', ['switch-on'], GFX, 'switch knob on the on track'],
+  ...[0, 1, 2, 3, 4, 5, 6, 7].flatMap((i) => [['bg', 'side-selected'].map((s) => [`member-${i}`, [s], TEXT, `member colour ${i} as words on ${s}`])].flat()),
 ];
 
 const lin = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };

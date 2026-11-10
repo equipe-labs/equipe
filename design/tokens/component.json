@@ -617,5 +617,96 @@
       "$type": "number",
       "$value": "{z.toast}"
     }
+  },
+  "sidebar": {
+    "$description": "desktop sidebar (T-699). Rows are solid fills, not overlays, so a title can fade into them.",
+    "bg": {
+      "$type": "color",
+      "$value": "{color.side}"
+    },
+    "row-hover-bg": {
+      "$type": "color",
+      "$value": "{color.side-hover}"
+    },
+    "row-selected-bg": {
+      "$type": "color",
+      "$value": "{color.side-selected}"
+    },
+    "fg": {
+      "$type": "color",
+      "$value": "{color.text-soft}",
+      "$description": "a row that is not open (desktop text2)"
+    },
+    "selected-fg": {
+      "$type": "color",
+      "$value": "{color.text}",
+      "$description": "the open row"
+    },
+    "secondary-fg": {
+      "$type": "color",
+      "$value": "{color.muted}"
+    }
+  },
+  "popover": {
+    "$description": "menus, popovers, the jump button (T-699). Solid in every state — a floating control is never see-through.",
+    "bg": {
+      "$type": "color",
+      "$value": "{color.popover}"
+    },
+    "row-hover-bg": {
+      "$type": "color",
+      "$value": "{color.popover-hover}"
+    },
+    "border": {
+      "$type": "color",
+      "$value": "{color.line}"
+    },
+    "fg": {
+      "$type": "color",
+      "$value": "{color.text}"
+    },
+    "secondary-fg": {
+      "$type": "color",
+      "$value": "{color.muted}"
+    },
+    "radius": {
+      "$type": "dimension",
+      "$value": "{radius.card}"
+    },
+    "shadow": {
+      "$type": "shadow",
+      "$value": "{elevation.float}"
+    }
+  },
+  "tooltip": {
+    "$description": "a small dark chip in either appearance (T-699)",
+    "bg": {
+      "$type": "color",
+      "$value": "{color.tooltip}"
+    },
+    "fg": {
+      "$type": "color",
+      "$value": "{color.on-tooltip}"
+    },
+    "secondary-fg": {
+      "$type": "color",
+      "$value": "{color.on-tooltip-muted}",
+      "$description": "a key hint inside the tooltip"
+    }
+  },
+  "switch": {
+    "$description": "on/off switch (T-699). The off track is below 3:1 on a card — see docs/t699-palette-map.md.",
+    "track-on": {
+      "$type": "color",
+      "$value": "{color.switch-on}"
+    },
+    "track-off": {
+      "$type": "color",
+      "$value": "{color.switch-off}"
+    },
+    "knob": {
+      "$type": "color",
+      "$value": "{color.switch-knob}"
+    }
   }
 }
