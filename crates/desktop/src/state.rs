@@ -1452,12 +1452,16 @@ impl Model {
                 }
                 self.revision += 1;
             }
-            // Named by the person (here, on another screen, on the phone): the header and the sidebar.
-            Event::ConversationTitle { session, title } => {
-                if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == session) {
+            // A title from the daemon: one the person gave (here, on another screen,
+            // on the phone) always shows; a topic equipe made up only fills a
+            // conversation still without a name.
+            Event::ConversationTitle { session, title, named } => {
+                if let Some(lane) = self.lanes.iter_mut().find(|lane| lane.session == session)
+                    && (named || lane.title.is_none())
+                {
                     lane.title = Some(title);
+                    self.revision += 1;
                 }
-                self.revision += 1;
             }
             // The screen that asked puts its old name back (`views::rename`).
             Event::ConversationRenameRefused { .. } => {}
@@ -1517,11 +1521,6 @@ impl Model {
                 if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == id) {
                     if matches!(other, Event::UserMessage { .. } | Event::TurnEnded { .. }) {
                         lane.active = unix;
-                    }
-                    if let Event::UserMessage { text, .. } = &other
-                        && lane.title.is_none()
-                    {
-                        lane.title = text.lines().next().map(str::to_owned);
                     }
                     match other {
                         Event::UserMessage { .. } => (lane.presence, lane.verb) = (Presence::Working, Verb::Thinking),
@@ -2549,6 +2548,25 @@ mod tests {
         let lines = vec![Entry::User { text: "what next?".into(), kept: Vec::new() }, Entry::Reply { text: "this".into() }];
         model.apply(Update::Event(Event::ConversationBack { session: 51, title: None, lines, lines_at: vec![Some(10), Some(20)] }), T0);
         assert_eq!(model.convos[&51].transcript.times(), &[Some(10), Some(20)]);
+    }
+
+    #[test]
+    fn a_new_conversation_stays_new_until_its_saved_topic_arrives_and_never_renames() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        model.apply(Update::Event(Event::SessionStarted { session: 60, project: "/p".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Who { role: "pm".into(), name: "pm".into() }), squad: Some("acme".into()) }), T0);
+        model.apply(Update::Event(Event::LaneOpened { session: 60, of: 1, project: Some("desktop".into()), kept: true }), T0);
+        model.apply(Update::Event(Event::UserMessage { session: 60, text: "질문 원문 전체가 제목이면 안 돼".into(), kept: Vec::new() }), T0);
+        assert_eq!(model.lanes.iter().find(|lane| lane.session == 60).and_then(|lane| lane.title.as_deref()), None, "the sidebar and header still read New conversation");
+        model.apply(Update::Event(Event::ConversationTitle { session: 60, title: "세션 주제 제목".into(), named: false }), T0);
+        assert_eq!(model.lanes.iter().find(|lane| lane.session == 60).and_then(|lane| lane.title.as_deref()), Some("세션 주제 제목"));
+        model.apply(Update::Event(Event::ConversationTitle { session: 60, title: "두 번째 제목".into(), named: false }), T0);
+        assert_eq!(model.lanes.iter().find(|lane| lane.session == 60).and_then(|lane| lane.title.as_deref()), Some("세션 주제 제목"));
+        // A name the person gave (T-643) replaces it, and a made-up topic after it doesn't.
+        model.apply(Update::Event(Event::ConversationTitle { session: 60, title: "결제 화면 문구".into(), named: true }), T0);
+        assert_eq!(model.lanes.iter().find(|lane| lane.session == 60).and_then(|lane| lane.title.as_deref()), Some("결제 화면 문구"));
+        model.apply(Update::Event(Event::ConversationTitle { session: 60, title: "다른 주제".into(), named: false }), T0);
+        assert_eq!(model.lanes.iter().find(|lane| lane.session == 60).and_then(|lane| lane.title.as_deref()), Some("결제 화면 문구"));
     }
 
     #[test]

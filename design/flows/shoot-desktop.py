@@ -76,6 +76,9 @@ state("inbox/accept/default", "menu:inbox;wait:600;cpick", {"FAKE_ACCEPT": "1"})
 # ── Conversation ───────────────────────────────────────────────────────────
 state("conversation/chat/default", "chat")
 state("conversation/chat/empty", "newtalk;wait:800")
+state("conversation/chat/topic", "newtalk;say:Please make conversation titles easier to find;wait:1800", {"FAKE_SECONDS": "1", "FAKE_ASKS": "0"}, label="First exchange named by topic")
+state("conversation/chat/topic-ko", "newtalk;say:대화 제목을 다시 찾기 쉽게 만들어 줘;wait:1800", {"FAKE_SECONDS": "1", "FAKE_ASKS": "0"}, lang="ko", label="첫 교환의 한국어 주제 제목")
+state("conversation/chat/topic-large", "newtalk;say:대화 제목을 다시 찾기 쉽게 만들어 줘;wait:1800;zoom:150;wait:500", {"FAKE_SECONDS": "1", "FAKE_ASKS": "0"}, lang="ko", label="큰 글자의 주제 제목")
 state("conversation/chat/loading", "chat;say:Where are you up to?;wait:1500", {"FAKE_SECONDS": "12"})
 state("conversation/chat/activity-running", "chat;say:torture 7;wait:1800", {"FAKE_SECONDS": "1"}, label="One running work-details row with elapsed time")
 state("conversation/chat/activity-done", "chat;say:torture 9;wait:2500", {"FAKE_SECONDS": "1"}, kind="success", label="Folded work details after a recovered failure")
@@ -246,7 +249,7 @@ SCREENS = {
     "inbox/team-change": ("A change to the team", ["views/team.rs", "team.rs"], None),
     "inbox/routine": ("A routine the PM proposes", ["views/routine.rs", "routine.rs"], None),
     "inbox/accept": ("Work to confirm", ["views/accept.rs", "accept.rs"], None),
-    "conversation/chat": ("PM conversation", ["views/chat.rs", "views/header.rs", "render/view.rs", "render/prose.rs", "render/raster.rs", "views/compact.rs", "views/asklist.rs", "convo.rs"], "Diagrams (```mermaid) are drawn by the app itself (render/raster.rs). HTML cards (```html card) are off until the T-340 security review: the app shows such a block as code, like the code blocks in the Markdown state, so no state of its own yet — add one when cards are turned on."),
+    "conversation/chat": ("PM conversation", ["views/chat.rs", "views/header.rs", "views/sidebar.rs", "render/view.rs", "render/prose.rs", "render/raster.rs", "views/compact.rs", "views/asklist.rs", "convo.rs"], "Diagrams (```mermaid) are drawn by the app itself (render/raster.rs). HTML cards (```html card) are off until the T-340 security review: the app shows such a block as code, like the code blocks in the Markdown state, so no state of its own yet — add one when cards are turned on."),
     "conversation/rename": ("Rename a conversation", ["views/rename.rs", "views/header.rs", "views/sidebar.rs"], "The app itself (T-643) on the fake daemon, a project's conversation begun for the purpose; 760 is a 760×760 window, so the sidebar row shows. Contract: design/specs/rename-conversation/spec.md (T-642)."),
     "conversation/engine-switch": ("Engine switching card (over the composer)", ["views/switching.rs", "switching.rs", "usage.rs"], "Error: Claude's week used up; Done: what equipe did in auto, with Undo."),
     "conversation/composer": ("Composer", ["views/composer.rs", "views/attached.rs", "attach.rs", "compose.rs"], None),
@@ -288,6 +291,9 @@ LABELS = {
     "confirm": "Install confirmed before it runs", "signedout": "Installed, signed out", "waiting": "Waiting for the browser sign-in",
     "pictures": "With pictures", "review": "In review, with a review", "page": "Opened as a page (⏎)", "busy": "Busy squad with subagents",
     "ticket-cards": "Ticket cards in a reply", "ask-list": "A reply asking a numbered list", "diagram": "Mermaid diagrams",
+    "topic": "First exchange named by topic",
+    "topic-ko": "첫 교환의 한국어 주제 제목",
+    "topic-large": "큰 글자의 주제 제목",
     "markdown": "Rich Markdown (headings, lists, callouts, code)", "summarizing": "Being summarized (long)", "summarize-failed": "Summary failed",
     "your-turn": "A ticket put down for the person, in the conversation", "attachments": "Two files attached", "drop": "A file dragged over",
     "queued": "A message waiting while the member works", "handover": "Browser handed to the person", "form": "Form open", "draft": "A draft in review",

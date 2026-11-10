@@ -214,7 +214,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .children(slice)
         .child(gap)
         // The plan window used most, while the sidebar's meters are away.
-        .children(super::switching::glance(shell, cx))
+        .children(super::switching::glance(shell, cx).map(|g| div().min_w_0().flex_shrink(1.).overflow_hidden().child(g)))
         .children(screen)
         .children(context)
         // The buttons stay whole; the words before them give way.

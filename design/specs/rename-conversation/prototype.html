@@ -99,6 +99,7 @@
 </head>
 <body>
 <div id="app"><img id="base" alt="" width="1200" height="760"></div>
+<script src="locales/ko.js"></script>
 <script>
 const Q = new URLSearchParams(location.search);
 const state = Q.get('state') || 'editing', lang = Q.get('lang') || 'ko', mode = Q.get('mode') || 'light';
@@ -109,10 +110,7 @@ document.documentElement.dataset.theme = mode;
 // Copy: existing keys where the app has them (sidebar.outside, header.context, header.move_to,
 // sidebar.put_away, peek.cancel, board.save); the rest are the new talk.rename_* keys of spec.md.
 const C = {
-  ko: { outside: '프로젝트 밖', ctx: '컨텍스트 31%', move: '다른 프로젝트로 옮기기', away: '대화 치우기', rename: '이름 바꾸기', label: '대화 이름', save: '저장', cancel: '취소', retry: '다시 시도',
-        empty: '이름을 입력해 주세요.', long: (m, o) => `${m}자까지 쓸 수 있어요. ${o}자를 줄여 주세요.`, failed: '이름을 저장하지 못했어요. 입력한 이름은 그대로 있어요.', offline: 'Mac과 연결이 끊겨 저장하지 못했어요. 입력한 이름은 그대로 있어요.',
-        auto: '가격 페이지 문구 다듬기', next: '11월 가격 페이지 카피', typing: '11월 가격 페이지 카', marked: '피',
-        pasted: '11월 가격 페이지 카피 — 첫 화면 헤드라인과 요금표 설명, 자주 묻는 질문까지 정리' },
+  ko: window.PROTO_KO,
   en: { outside: 'Outside projects', ctx: 'context 31%', move: 'Move to another project', away: 'Put away', rename: 'Rename', label: 'Conversation name', save: 'Save', cancel: 'Cancel', retry: 'Try again',
         empty: 'Enter a name.', long: (m, o) => `Up to ${m} characters. Remove ${o}.`, failed: 'Couldn’t save the name. What you typed is kept.', offline: 'Lost the connection to your Mac, so the name wasn’t saved. What you typed is kept.',
         auto: 'Pricing page copy', next: 'November pricing page copy', typing: 'November pricing page copy', marked: '',

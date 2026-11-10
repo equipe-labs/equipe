@@ -59,12 +59,25 @@ pub const WIDTH: f32 = 560.;
 const MIN_WIDTH: f32 = 360.;
 /// Room the conversation keeps beside it.
 const CHAT_MIN: f32 = 420.;
+/// What the window needs beside the sidebar for the conversation and the panel at its least.
+pub const SQUEEZE_REST: f32 = CHAT_MIN + MIN_WIDTH;
 /// Mouse moves go no more often than this (60 a second).
 const MOVE_EVERY: Duration = Duration::from_millis(16);
 /// How long the word that the person took or gave back a browser stays; and
 /// the hint for a wheel over a page they don't drive.
 const TOAST_FOR: Duration = Duration::from_secs(4);
 const HINT_FOR: Duration = Duration::from_millis(1800);
+
+/// The widest the panel may be in a window this wide: the conversation and
+/// the sidebar keep their room.
+fn widest(window: f32) -> f32 {
+    (window - CHAT_MIN - 220.).max(MIN_WIDTH)
+}
+
+/// The width the panel is drawn at: the one kept, held within the window.
+fn fit_width(kept: f32, window: f32) -> f32 {
+    kept.clamp(MIN_WIDTH, widest(window))
+}
 
 fn hash_text(text: &str) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
@@ -1560,7 +1573,8 @@ impl BrowserPanel {
         let typing = self.url.read(cx).focus_handle(cx).is_focused(window);
         let shown = page.as_ref().and_then(|pg| browse::address(&pg.url)).filter(|_| !typing);
         // Room for the words beside the icons: Follow from 420 points, Open in Chrome from 640.
-        let (wide, wider) = (self.width >= 420., self.width >= 640.);
+        let shown_width = fit_width(self.width, f32::from(window.viewport_size().width) / window.content_zoom().max(0.01));
+        let (wide, wider) = (shown_width >= 420., shown_width >= 640.);
         h_flex()
             .px_2()
             .pb_2()
@@ -2203,9 +2217,12 @@ impl Render for BrowserPanel {
         self.rewatch(window, cx);
         let p = self.palette;
         let dragging = self.drag.is_some();
+        // A window narrower than the width kept (or dragged wide before it
+        // shrank) holds the panel to what it can give: never past the edge.
+        let fit = fit_width(self.width, f32::from(window.viewport_size().width) / window.content_zoom().max(0.01));
         h_flex()
             .h_full()
-            .w(px(self.width))
+            .w(px(fit))
             .flex_none()
             .sans()
             .child(
@@ -2302,8 +2319,7 @@ impl BrowserPanel {
             self.drag = None;
             cx.emit(PanelEvent::Resized(self.width));
         } else {
-            let max = (f32::from(window.viewport_size().width) - CHAT_MIN - 220.).max(MIN_WIDTH);
-            self.width = (w0 + x0 - x).clamp(MIN_WIDTH, max);
+            self.width = (w0 + x0 - x).clamp(MIN_WIDTH, widest(f32::from(window.viewport_size().width) / window.content_zoom().max(0.01)));
         }
         cx.notify();
         true
@@ -2624,6 +2640,14 @@ pub mod keys {
 
     #[cfg(test)]
     mod tests {
+        use super::super::{MIN_WIDTH, fit_width};
+
+        #[test]
+        fn a_narrow_window_holds_the_panel_inside_it() {
+            assert_eq!(fit_width(560., 1200.), 560.);
+            assert_eq!(fit_width(560., 760.), MIN_WIDTH);
+            assert_eq!(fit_width(300., 1200.), MIN_WIDTH);
+        }
         use super::*;
 
         fn stroke(key: &str, key_char: Option<&str>, m: Modifiers) -> Keystroke {

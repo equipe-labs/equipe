@@ -12,6 +12,21 @@ use super::*;
 /// The role that checks screens.
 pub(super) const DESIGNER: &str = "designer";
 
+/// The folder of a repository a designer's code ticket may change.
+pub(super) const DESIGN_DIR: &str = "design";
+
+/// Of the files a ticket changed, those outside the repository's design
+/// folder — the first few, and how many more.
+fn outside_design(files: &[String]) -> Vec<String> {
+    const SHOWN: usize = 8;
+    let outside: Vec<&String> = files.iter().filter(|f| f.strip_prefix(DESIGN_DIR).is_none_or(|rest| !rest.starts_with('/'))).collect();
+    let mut named: Vec<String> = outside.iter().take(SHOWN).map(|f| format!("`{f}`")).collect();
+    if outside.len() > SHOWN {
+        named.push(format!("and {} more", outside.len() - SHOWN));
+    }
+    named
+}
+
 /// How a design QA hand-in ends: the designer's word on the screens.
 #[derive(Clone, Debug)]
 pub(super) struct Verdict {
@@ -79,6 +94,18 @@ impl Runtime {
             return Ok(false);
         };
         let role = session.member.as_ref().map(|m| m.role.clone()).unwrap_or_default();
+        // A designer's code ticket changes the repository's design assets only.
+        if kind == TicketKind::Code && role == DESIGNER {
+            let touched = session.work.as_ref().and_then(|w| w.sandbox.as_ref()).and_then(|s| s.touched_files().ok()).unwrap_or_default();
+            let outside = outside_design(&touched);
+            if !outside.is_empty() {
+                return Err(format!(
+                    "On a code ticket a designer changes only the repository's `{DESIGN_DIR}/` folder, and these are outside it: {}. \
+Undo them, propose that work as a ticket for an engineer (create_ticket), and hand in again.",
+                    outside.join(", ")
+                ));
+            }
+        }
         if self.checked_by(squad, ticket).is_some() {
             return Err(format!("T-{ticket} is a design QA ticket: finish it with design_qa — pass, or changes with your findings."));
         }
@@ -294,4 +321,17 @@ sheets under `outputs/T-{qa} …/`. Then finish with design_qa, not submit_for_r
 your own pictures in images, `compared`, what you `checked`, and no blocker."
     ));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::outside_design;
+
+    #[test]
+    fn only_the_design_folder_is_a_designers_to_change() {
+        let files = ["design/tokens.json", "design/assets/logo/mark.svg", "designs.md", "design", "src/app.css"].map(str::to_owned);
+        assert_eq!(outside_design(&files), ["`designs.md`", "`design`", "`src/app.css`"]);
+        let many: Vec<String> = (0..10).map(|n| format!("src/{n}.rs")).collect();
+        assert_eq!(outside_design(&many).last().map(String::as_str), Some("and 2 more"));
+    }
 }

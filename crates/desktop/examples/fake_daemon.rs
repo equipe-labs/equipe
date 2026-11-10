@@ -1721,6 +1721,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                         }
                                     }
                                 };
+                                let kept = r.kept.contains(&session);
                                 drop(r);
                                 let busy = working(session).await;
                                 if busy {
@@ -1733,6 +1734,14 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     let _ = events.send(Event::UserMessage { session, text, kept: Vec::new() });
                                     let task = match part {
                                         Some(part) => tokio::spawn(torture::turn(session, part, events.clone(), seconds)),
+                                        None if kept => {
+                                            let events = events.clone();
+                                            tokio::spawn(async move {
+                                                turn(session, events.clone(), seconds).await;
+                                                let title = if lang() == equipe_core::i18n::Lang::Ko { "세션 주제 제목" } else { "Conversation topic titles" };
+                                                let _ = events.send(Event::ConversationTitle { session, title: title.into(), named: false });
+                                            })
+                                        }
                                         None => tokio::spawn(turn(session, events.clone(), seconds)),
                                     };
                                     turns.lock().await.insert(session, task);
@@ -1752,7 +1761,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             Command::RenameConversation { session, title, .. } => {
                                 let kept = routes.lock().await.kept.contains(&session);
                                 match equipe_core::protocol::conversation_title(&title).filter(|_| kept && std::env::var("FAKE_RENAME").as_deref() != Ok("refuse")) {
-                                    Some(title) => drop(events.send(Event::ConversationTitle { session, title })),
+                                    Some(title) => drop(events.send(Event::ConversationTitle { session, title, named: true })),
                                     None => drop(events.send(Event::ConversationRenameRefused { session })),
                                 }
                             }

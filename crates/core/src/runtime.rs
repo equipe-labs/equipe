@@ -710,6 +710,8 @@ struct Session {
     work: Option<Work>,
     prompts: Vec<String>,
     title: Option<String>,
+    /// A first-exchange title side turn is already in flight (or finished).
+    title_started: bool,
     tokens: u64,
     /// How full its latest conversation's context was, and the window.
     context: Option<(u64, u64)>,
@@ -851,6 +853,12 @@ struct TurnDone {
     ticket: Option<TicketId>,
 }
 
+struct ConversationTitleDone {
+    session: SessionId,
+    squad: String,
+    title: String,
+}
+
 /// How a merge went off the loop: main's name and, when a push was asked
 /// for, how that went — or why nothing was merged.
 type MergeResult = Result<(String, Option<Result<(), String>>), String>;
@@ -862,6 +870,8 @@ enum Internal {
     /// Every process, as a look at members' commands found them (`None`: `ps` couldn't say).
     Processes(Option<Vec<crate::command_watch::Proc>>),
     Done(TurnDone),
+    /// A tool-less side turn named a conversation (or its local fallback did).
+    ConversationTitle(ConversationTitleDone),
     /// Nobody answered a request for permission in time.
     ApprovalTimedOut(u64),
     /// A decision in words: its undo or cancel window, or its read-back's wait, is over.
@@ -1195,6 +1205,7 @@ impl Wake {
             Wake::Internal(Internal::EngineStarted { .. }) => Borrowed("an engine's start"),
             Wake::Internal(Internal::Processes(_)) => Borrowed("what members' commands run"),
             Wake::Internal(Internal::Done(_)) => Borrowed("a turn's end"),
+            Wake::Internal(Internal::ConversationTitle(_)) => Borrowed("a conversation's title"),
             Wake::Internal(Internal::ApprovalTimedOut(_)) => Borrowed("an approval timing out"),
             Wake::Internal(Internal::WordsDue(_)) => Borrowed("a decision in words coming due"),
             Wake::Internal(Internal::Apply(_)) => Borrowed("a change the person said yes to"),
@@ -1404,6 +1415,7 @@ impl Runtime {
                 Internal::EngineStarted { session, pid } => self.engine_started(session, pid),
                 Internal::Processes(procs) => self.on_processes(procs),
                 Internal::Done(done) => self.on_turn_done(done).await,
+                Internal::ConversationTitle(done) => self.on_conversation_title(done),
                 Internal::ApprovalTimedOut(id) => self.answer(id, Decision::Deny, "Nobody answered in time."),
                 Internal::WordsDue(id) => self.words_due(id).await,
                 Internal::Apply(command) => Box::pin(self.handle(*command)).await,
@@ -1632,9 +1644,6 @@ impl Runtime {
                 _ => None,
             };
             match &event {
-                Event::UserMessage { text, .. } if session.title.is_none() => {
-                    session.title = text.lines().next().map(str::to_owned);
-                }
                 // What runs; what it is set to stays (an alias is asked for again each turn).
                 Event::ModelKnown { model, .. } => session.ran = Some(model.clone()),
                 Event::Steered { text, .. } => {
@@ -1688,9 +1697,8 @@ impl Runtime {
             if self.config.persist
                 && let Some(name) = squad.clone()
             {
-                let title = session.title.clone();
                 if let Some(journal) = journal_for(&mut self.journals, &self.config.home, &name) {
-                    no_room = !record(journal, id, &event, &finished, title.as_deref());
+                    no_room = !record(journal, id, &event, &finished);
                     if let Some(turn) = &turn {
                         let _ = journal.record_turn_use(turn, turn_use.as_ref());
                     }
@@ -3353,6 +3361,7 @@ runbooks and reports live there, and work across the projects or on running them
                 work: None,
                 prompts: Vec::new(),
                 title: None,
+                title_started: false,
                 tokens: 0,
                 context: None,
                 desk_context: None,
@@ -3958,7 +3967,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         if let Some(s) = self.sessions.get_mut(&id) {
             s.title = Some(title.clone());
         }
-        self.publish(Event::ConversationTitle { session: id, title });
+        self.publish(Event::ConversationTitle { session: id, title, named: true });
     }
 
     /// A conversation with the PM put away: its turn stops, it leaves the list.
@@ -3989,7 +3998,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         let Some(m) = self.sessions.get(&pm) else { return };
         let thread = DeskThread { claude_session: c.engine_session, ..DeskThread::default() };
         let mut lane = lane_of(pm, m, c.project.clone(), thread, true);
-        let title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text, .. } = e { first_said_line(text) } else { None }));
+        let title = c.title;
         lane.title = title.clone();
         lane.transcript = Transcript::with_times(lines.clone(), lines_at.clone());
         self.publish_lane(id, lane, pm, c.project, true);
@@ -4851,6 +4860,9 @@ for one project goes to it as tickets for its owners, with that project — and 
         if done.ticket.is_none() {
             self.save_desk_changes(done.session, &done.prompt);
         }
+        // The answer is already on every screen. Naming it is a separate,
+        // tool-less side turn and can never hold up or fail that answer.
+        self.start_conversation_title(done.session);
         if let Some(reply) = done.reply.filter(|r| !r.trim().is_empty()) {
             let short: String = reply.chars().take(BRIEF_REPLY_CHARS).collect();
             let more = if short.len() < reply.len() { "…" } else { "" };
@@ -4859,6 +4871,81 @@ for one project goes to it as tickets for its owners, with that project — and 
         self.after_turn(done.session).await;
         if answered_person {
             self.suggest_next(done.session);
+        }
+    }
+
+    fn start_conversation_title(&mut self, id: SessionId) {
+        let Some(session) = self.sessions.get_mut(&id).filter(|s| s.kept && s.title.is_none() && !s.title_started) else { return };
+        let Some((user, reply)) = first_exchange(session.transcript.entries()) else { return };
+        let (engine, model, codex, squad) = (session.engine, session.model.clone(), session.codex.clone(), session.squad.clone());
+        let Some(squad) = squad else { return };
+        session.title_started = true;
+        let prompt = crate::conversation_title::prompt(&user, &reply);
+        let fallback = crate::conversation_title::fallback(&user);
+        let internal = self.internal.clone();
+        let cwd = self.config.home.join("title");
+
+        match engine {
+            Engine::Claude => {
+                let binary = self.config.claude_binary.clone();
+                tokio::spawn(async move {
+                    let _ = std::fs::create_dir_all(&cwd);
+                    let generated = claude_code::conversation_title(&binary, &cwd, &prompt).await;
+                    let title = crate::conversation_title::resolve(generated.as_deref(), &fallback);
+                    let _ = internal.send(Internal::ConversationTitle(ConversationTitleDone { session: id, squad, title }));
+                });
+            }
+            Engine::Codex if codex.is_none() => {
+                let binary = self.config.codex_binary.clone();
+                let nebius = model.as_deref().is_some_and(crate::nemotron::is_agent_model);
+                let configured = if nebius { self.open_config(model.as_deref()).ok().flatten() } else { None };
+                let mut env = Vec::new();
+                let provider = configured.map(|cfg| {
+                    env.push(cfg.codex_env());
+                    cfg.codex_provider()
+                });
+                let model = model.as_deref().map(crate::model_providers::bare_model).map(str::to_owned);
+                tokio::spawn(async move {
+                    let _ = std::fs::create_dir_all(&cwd);
+                    let none = json!({});
+                    let request = codex_app::TurnRequest { prompt: &prompt, model: model.as_deref(), effort: Some("low"), access: claude_code::Access::ReadOnly, mcp_servers: Some(&none), env: &env, provider: provider.as_ref(), ..Default::default() };
+                    let generated = codex_app::run_turn(&binary, &cwd, request, None, None, None, |_| {}).await.ok().map(|turn| turn.result.text);
+                    let title = crate::conversation_title::resolve(generated.as_deref(), &fallback);
+                    let _ = internal.send(Internal::ConversationTitle(ConversationTitleDone { session: id, squad, title }));
+                });
+            }
+            Engine::Codex => {
+                let client = self.client.clone();
+                let version = self.config.client_version.clone();
+                let model = model.unwrap_or_default();
+                let Some(cred) = codex else { return };
+                tokio::spawn(async move {
+                    let request = responses::TurnRequest { prompt: &prompt, model: &model, instructions: None, history: &[], effort: Some("low") };
+                    let generated = responses::run_turn(&client, &cred, &version, request, |_| {}).await.ok().map(|turn| turn.text);
+                    let title = crate::conversation_title::resolve(generated.as_deref(), &fallback);
+                    let _ = internal.send(Internal::ConversationTitle(ConversationTitleDone { session: id, squad, title }));
+                });
+            }
+        }
+    }
+
+    fn on_conversation_title(&mut self, done: ConversationTitleDone) {
+        if self.sessions.get(&done.session).is_some_and(|s| s.title.is_some()) {
+            return;
+        }
+        if self.config.persist
+            && let Some(journal) = journal_for(&mut self.journals, &self.config.home, &done.squad)
+        {
+            let _ = journal.set_title_if_empty(done.session, &done.title);
+        }
+        if let Some(session) = self.sessions.get_mut(&done.session) {
+            if session.title.is_none() {
+                session.title = Some(done.title.clone());
+                self.publish(Event::ConversationTitle { session: done.session, title: done.title, named: false });
+            }
+        } else {
+            // It may have been put away while the small side turn ran.
+            self.publish_put_away(&done.squad);
         }
     }
 
@@ -7781,6 +7868,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         work,
                         prompts: Vec::new(),
                         title: record.title,
+                        title_started: false,
                         tokens: record.tokens,
                         context: None,
                         desk_context: None,
@@ -7822,7 +7910,7 @@ it back there once they have done it.{again} End your turn now with a short line
                     let thread = DeskThread { claude_session: c.engine_session, ..DeskThread::default() };
                     let mut lane = lane_of(pm, &self.sessions[&pm], c.project, thread, true);
                     let (lines, lines_at) = journal.conversation_at(c.id).unwrap_or_default();
-                    lane.title = c.title.or_else(|| lines.iter().find_map(|e| if let Entry::User { text, .. } = e { first_said_line(text) } else { None }));
+                    lane.title = c.title;
                     lane.transcript = Transcript::with_times(lines, lines_at);
                     self.sessions.insert(c.id, lane);
                 }
@@ -8350,12 +8438,6 @@ and carry on where you left off.]"
 /// How many of the last messages a fresh conversation is handed.
 const REFRESH_TAIL: usize = 12;
 
-/// A conversation's title from a message in it: its first line, when the
-/// person said it (a background task ending is the engine's).
-fn first_said_line(text: &str) -> Option<String> {
-    harness::words(text).and_then(|words| words.lines().next().map(str::to_owned))
-}
-
 /// `text` cut to about `max` characters, on a character boundary.
 fn clip(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -8539,6 +8621,7 @@ fn lane_of(main: SessionId, m: &Session, project: Option<String>, thread: DeskTh
         work: None,
         prompts: Vec::new(),
         title: None,
+        title_started: false,
         tokens: 0,
         context: thread.desk_context,
         desk_context: thread.desk_context,
@@ -8575,7 +8658,7 @@ fn lane_of(main: SessionId, m: &Session, project: Option<String>, thread: DeskTh
 
 /// `false` when the disk had no room for it. Nothing else stops for a write
 /// that failed: the screens still get the event.
-fn record(journal: &Journal, id: SessionId, event: &Event, finished: &[Entry], title: Option<&str>) -> bool {
+fn record(journal: &Journal, id: SessionId, event: &Event, finished: &[Entry]) -> bool {
     let mut room = true;
     let mut saw = |result: journal::Result<()>| {
         if let Err(err) = result
@@ -8588,11 +8671,7 @@ fn record(journal: &Journal, id: SessionId, event: &Event, finished: &[Entry], t
         saw(journal.append(id, entry));
     }
     match event {
-        Event::UserMessage { .. } => {
-            if let Some(title) = title {
-                saw(journal.set_title_if_empty(id, title));
-            }
-        }
+        Event::UserMessage { .. } => {}
         // What the member is set to, so an alias stays one; what runs when nothing was asked.
         Event::ModelKnown { model, asked, .. } => saw(journal.set_model(id, asked.as_deref().unwrap_or(model))),
         Event::TurnEnded { usage: Some(u), .. } => saw(journal.add_tokens(id, u.total())),
@@ -8612,6 +8691,21 @@ fn workspace_of(sandbox: &Sandbox) -> Workspace {
 /// The end of a conversation, as the guess at the person's next message reads
 /// it: the last few exchanges, each cut short, the member's last answer most
 /// fully. `None` when it doesn't end with the member answering.
+fn first_exchange(entries: &[Entry]) -> Option<(String, String)> {
+    let (at, user) = entries.iter().enumerate().find_map(|(at, entry)| match entry {
+        Entry::User { text, .. } if !text.trim().is_empty() && !harness::only_harness(text) => Some((at, text.clone())),
+        _ => None,
+    })?;
+    let reply = entries[at + 1..]
+        .iter()
+        .take_while(|entry| !matches!(entry, Entry::User { .. }))
+        .find_map(|entry| match entry {
+            Entry::Reply { text } if !text.trim().is_empty() => Some(text.clone()),
+            _ => None,
+        })?;
+    Some((user, reply))
+}
+
 fn suggestion_context(member: &str, entries: &[Entry]) -> Option<String> {
     let said: Vec<(bool, &str)> = entries
         .iter()
@@ -9041,10 +9135,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_background_task_ending_is_never_the_persons_title_nor_their_last_word() {
+    fn only_the_first_completed_exchange_can_name_a_conversation() {
+        let first = [
+            Entry::User { text: "첫 질문 원문".into(), kept: Vec::new() },
+            Entry::Reply { text: "첫 답변".into() },
+            Entry::User { text: "둘째 질문".into(), kept: Vec::new() },
+            Entry::Reply { text: "둘째 답변".into() },
+        ];
+        assert_eq!(first_exchange(&first), Some(("첫 질문 원문".into(), "첫 답변".into())));
+
+        let unanswered = [
+            Entry::User { text: "답하지 못한 첫 질문".into(), kept: Vec::new() },
+            Entry::User { text: "둘째 질문".into(), kept: Vec::new() },
+            Entry::Reply { text: "둘째 답변".into() },
+        ];
+        assert_eq!(first_exchange(&unanswered), None);
+    }
+
+    #[test]
+    fn a_background_task_ending_is_never_the_persons_last_word() {
         let done = "<task-notification><task-id>b1</task-id><status>completed</status><summary>built</summary></task-notification>";
-        assert_eq!(first_said_line(done), None);
-        assert_eq!(first_said_line("fix the header\nplease").as_deref(), Some("fix the header"));
         let talk = [Entry::User { text: "go".into(), kept: Vec::new() }, Entry::Reply { text: "Started the build.".into() }, Entry::User { text: done.into(), kept: Vec::new() }];
         let context = suggestion_context("frontend", &talk).expect("the member answered last");
         assert!(!context.contains("task-notification"), "{context}");

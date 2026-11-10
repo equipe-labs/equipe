@@ -1,131 +1,141 @@
-# T-642 · 대화 이름 바꾸기 — 구현 계약
+# T-642 · Renaming a conversation — implementation contract
 
-PM 대화 하나의 제목(자동 제목 T-578 포함)을 사용자가 바꾼다. 편집은 **헤더 제목 아래에 붙는 작은 카드 하나**에서만 하고, 진입 경로가 셋이어도 편집하는 곳은 같다. 대화 화면은 뒤에 그대로 보인다(모달 아님).
+The person renames one PM conversation (including a topic title equipe generated, T-578). Editing happens in **one small card hanging under the header title**; there are three ways in, but only one place to edit. The conversation stays visible behind it (not a modal).
 
-- 그림: UI map `conversation/rename` 12상태 × 760/1200 × 라이트/다크 (`design/flows/conversation/rename/`), 8개 언어 카드 `langs-sheet.png`.
-- 원본: `prototype.html`(?state=…&lang=…&mode=…&w=…&zoom=…) 위에 실제 앱 스냅샷(`base/`, T-578 빌드)을 깔고 바뀌는 부분만 다시 그렸다. 다시 그리기: `node design/specs/rename-conversation/render.mjs`, `langs.mjs`.
-- 목업 색·글자는 디자인 시스템 토큰의 가장 가까운 값이다. 구현은 `theme.rs` Palette와 기존 컴포넌트를 쓴다(아래 매핑).
+- Pictures: UI map `conversation/rename` (since T-643 the app itself, shot by `design/flows/shoot-desktop.py`), and the eight-language card sheet `langs-sheet.png`.
+- Source of the original mockups: `prototype.html` (`?state=…&lang=…&mode=…&w=…&zoom=…`) over real app snapshots (`base/`, the T-578 build), with only the changing parts redrawn. Redraw with `node design/specs/rename-conversation/render.mjs` and `langs.mjs`.
+- Mockup colours and type are the nearest design-system tokens. The implementation uses the `theme.rs` palette and existing components (mapping below).
 
-## 고르지 않은 안
+## Options not chosen
 
-- 사이드바 행 안에서 바로 편집(ChatGPT·Claude.ai 방식): 사이드바가 접혀 있거나 760×600처럼 행이 화면 밖이면 편집할 곳이 없다. 150%에서 행 폭 244pt로는 오류 문구를 둘 자리가 없다.
-- 헤더 제목 자리에서 바로 편집(Finder 방식): 1200에서는 가장 직접적이지만 760·150%에서는 헤더에 남는 폭이 120pt 안팎이라 입력·글자 수·오류·버튼을 둘 수 없다. 넓을 때와 좁을 때 두 가지 배치를 만들어야 한다.
-- 고른 안: 헤더 제목에 붙는 카드. 폭과 상관없이 배치가 하나이고, 오류·재시도까지 같은 자리에서 끝난다.
+- Editing inside the sidebar row (as ChatGPT and Claude.ai do): with the sidebar hidden, or the row off screen (760×600), there is nowhere to edit. At 150% a 244 pt row has no room for an error message.
+- Editing in place in the header (as Finder does): the most direct at 1200, but at 760 or 150% the header has about 120 pt left, too little for a field, a counter, an error and buttons. It would need two layouts, wide and narrow.
+- Chosen: a card attached to the header title. One layout at any width, and errors and retry happen in the same place.
 
-## 진입
+## Entry points
 
-| 경로 | 포인터 | 키보드 |
+| Path | Pointer | Keyboard |
 |---|---|---|
-| 헤더 제목 | 제목이 버튼이 된다. hover 시 `p.wash` 배경과 제목 뒤 연필(12pt, `p.muted`, 간격 8 — hover 때만 자리를 차지하고, 키보드 포커스에는 포커스 링만). 툴팁 `이름 바꾸기`. 제목이 잘렸으면 첫 줄에 전체 제목(좁아서 프로젝트를 접었으면 `프로젝트 / 제목`), 둘째 줄에 `이름 바꾸기` | Tab 순서: 프로젝트 → **제목** → ⋯. Return·Space로 연다 |
-| ‘이 대화’ ⋯ | 메뉴 **첫 항목** `이름 바꾸기`(연필 아이콘), 그 아래 구분선, 기존 `다른 프로젝트로 옮기기`·프로젝트들·구분선·`대화 치우기` | 메뉴는 ↑↓로 움직이고 Return으로 고른다. 열면 첫 항목에 포커스 |
-| 사이드바 대화 행 | hover 시 오른쪽에 연필·× 두 버튼(각 24pt, 간격 4). 연필 툴팁 `이름 바꾸기`. 누르면 그 대화를 열고 헤더 카드를 연다 | — (행에서 Return은 지금처럼 대화를 연다) |
+| Header title | The title is a button. On hover: `p.wash` background and a pencil after the title (12 pt, `p.muted`, 8 apart). Tooltip `Rename`. If the title is cut, the tooltip's first line is the full title (with `Project / title` when the project is folded), the second `Rename` | Tab order: project → **title** → ⋯. Return or Space opens the card |
+| This conversation ⋯ | Menu **first item** `Rename` (pencil icon), a rule under it, then the existing `Move to another project`, the projects, a rule and `Put away` | ↑↓ move, Return picks. Opening the menu focuses the first item |
+| Sidebar conversation row | On hover, two buttons at the right: pencil and × (24 pt each, 4 apart). Pencil tooltip `Rename`. Clicking it opens that conversation and the header card | — (Return on the row opens the conversation, as now) |
 
-- 전역 단축키는 두지 않는다(메뉴 항목에도 키 표시 없음).
-- 사이드바 행의 제목이 잘렸으면, 행 hover(아이콘 밖) 툴팁에 전체 제목을 보인다(T-641 지적 2).
-- 아직 시작하지 않은 대화(`draft_talk`)와 PM 자신의 대화(`with_pm`, 메뉴 없음)에는 진입점이 없다. ⋯ 메뉴가 있는 곳에만 있다. 읽기 전용 연결은 `대화 옮기기`와 같은 수준으로 처리한다(보낸 명령이 거절되면 아래 ‘실패’).
+- No global shortcut (and no key shown in the menu).
+- A cut sidebar row title shows the full title in the row's hover tooltip (outside the icons; T-641 note 2).
+- A conversation not yet begun (`draft_talk`) and the PM's own conversation (`with_pm`, no menu) have no entry point: only where ⋯ exists. A read-only connection is handled like `Move conversation` (a refused command follows "Failure" below).
 
-## 카드
+## The card
 
-- 위치: 헤더 제목 버튼 바로 아래 6pt, 왼쪽 끝은 **언제나 제목 버튼의 왼쪽 끝**(단 창 오른쪽에 240pt가 안 남으면 그만큼 왼쪽으로, 사이드바 경계 + 8pt보다 왼쪽으로는 가지 않음). 폭 `min(360, 창 오른쪽 끝 − 8 − 왼쪽 끝)`. 대화 영역 밖으로 나가지 않는다. `deferred` popover이고 모양은 기존 `talk-menu-list`와 같다: `p.raised`, 1px `p.hair`, `R_MD`(8), `shadow_lg`, 안쪽 12.
-- 열려 있는 동안 헤더 제목 버튼은 `p.wash` 배경(무엇을 바꾸는지 표시).
-- 위에서부터:
-  1. 라벨 `대화 이름` (12pt, `p.muted`). 입력의 접근성 이름이기도 하다.
-  2. 입력: 한 줄 `Input`, 높이 `FIELD`(36), `R_SM`, `p.code_bg`, 1px `p.hair`. 포커스면 테두리 `p.accent`, 오류면 `p.danger()`. 열 때 **현재 제목 전체가 선택**되고 커서는 끝에 있다. 30~40자일 때 입력 안 오른쪽에 글자 수 `n/40`(12pt, tabular, `p.muted`). 40자를 넘으면 글자 수는 메시지 줄 오른쪽으로 옮기고 `p.danger()`(입력 폭을 빼앗지 않게). 글이 입력보다 길어 왼쪽이 밀려나면 왼쪽 끝 8pt는 비우고 8→48pt에 걸쳐 페이드로 가린다(반쯤 잘린 글자를 깨진 글자로 보이지 않게).
-  3. 메시지 줄: 있을 때만 생긴다(카드가 아래로 한 줄 길어지고 위는 움직이지 않는다). 12pt `p.danger()` + `CircleAlert` 13pt.
-  4. 버튼(오른쪽 정렬): `취소 Esc`(Secondary) · `저장 ↩`(Primary, `data-primary`). 저장할 수 없는 값이면 Primary는 비활성 모양.
-- 카드 폭이 300pt보다 좁으면(760·150%): 키 힌트(`Esc`·`↩`)를 빼서 두 버튼이 한 줄에 남게 하고, 글자 수는 메시지 줄 오른쪽에 둔다. 키 동작과 접근성 이름은 그대로. 그래도 한 줄에 안 들어가면(de 등) 두 버튼을 카드 폭으로 세로로 쌓고 **주 버튼을 위**에 둔다.
-- 키 힌트 색: Secondary 안은 `p.muted`(흰 카드 위 6.29:1, dark 6.37:1), Primary 안은 `p.primary_key()`.
-- 카드가 열려 있는 동안 좁은 헤더(760·150%)에서는 프로젝트 표시와 `/`를 먼저 숨겨 제목에 자리를 준다.
+- Position: 6 pt under the header title button; its left edge **always at the title button's left edge** (unless fewer than 240 pt remain to the window's right, then moved left by that much, never left of the sidebar edge + 8 pt). Width `min(360, window right − 8 − left)`. It never leaves the conversation pane. A `deferred` popover shaped like the existing `talk-menu-list`: `p.raised`, 1 px `p.hair`, `R_MD` (8), `shadow_lg`, 12 inside.
+- While open, the header title button keeps the `p.wash` background (what is being changed).
+- Top to bottom:
+  1. Label `Conversation name` (12 pt, `p.muted`); also the field's accessible name.
+  2. Field: one-line `Input`, height `FIELD` (36), `R_SM`, `p.code_bg`, 1 px `p.hair`. Focused, its border is `p.accent`; in error, `p.danger()`. On open **the whole current title is selected**, cursor at the end. From 30 to 40 characters, a count `n/40` sits inside the field at the right (12 pt, tabular, `p.muted`). Past 40 the count moves to the right of the message line in `p.danger()` (so it takes no room from the field). When the text is longer than the field and scrolls left, the left 8 pt stays empty and 8→48 pt fades, so a half-cut glyph does not look broken.
+  3. Message line: only when there is something to say (the card grows one line downward; its top does not move). 12 pt `p.danger()` with `CircleAlert` 13 pt.
+  4. Buttons, right-aligned: `Cancel Esc` (Secondary) · `Save ↩` (Primary, `data-primary`). When the value cannot be saved, Primary looks disabled.
+- Narrower than 300 pt (760 at 150%): the key hints (`Esc`, `↩`) go so both buttons stay on one line, and the count sits on the message line. Keys and accessible names are unchanged. If they still do not fit (German and the like), the two buttons stack at card width with **the primary on top**.
+- Key hint colours: inside Secondary `p.muted` (6.29:1 on the white card, 6.37:1 dark); inside Primary `p.primary_key()`.
+- While the card is open in a narrow header (760 at 150%), the project mark and `/` hide first to give the title room.
 
-## 값과 검사
+## Value and checks
 
-- 최대 **40자**(T-578 자동 제목 상한과 같다). 글자 수는 grapheme 단위.
-- 저장 직전에 줄바꿈·탭은 공백으로, 연속 공백은 하나로, 앞뒤 공백은 지운다. 화면의 입력값은 바꾸지 않는다.
-- 비었거나 공백뿐: 지우는 동안은 저장 비활성만. Return·바깥 클릭으로 저장하려 할 때 메시지 `이름을 입력해 주세요.`와 입력 테두리 오류색을 보인다(UI map `empty`는 Return 뒤).
-- 40자 초과(타이핑이든 붙여넣기든): **자르지 않는다.** 41번째 글자부터 `p.danger_bg()` 배경 + `p.danger()` 글자로 표시, 메시지 `40자까지 쓸 수 있어요. {n}자를 줄여 주세요.`, 저장 비활성.
-- 정리한 값이 지금 제목과 같으면 저장은 명령 없이 카드만 닫는다.
-- 붙여넣기는 여러 줄도 받는다(위 규칙으로 한 줄이 됨).
+- At most **40 characters** (the same cap as T-578's generated titles).
+- Before saving, line breaks and tabs become spaces, runs of spaces become one, and leading and trailing spaces go. The field's own text is not changed.
+- Empty or only spaces: while deleting, Save is just disabled. On Return or an outside click, the message `Enter a name.` and the field's error border show (UI map `empty` is after Return).
+- Past 40 characters (typed or pasted): **nothing is cut.** From the 41st character on, `p.danger_bg()` background with `p.danger()` text; message `Up to {max} characters. Remove {over}.`; Save disabled.
+- If the cleaned value equals the current title, saving just closes the card, sending nothing.
+- Pasting accepts several lines (they become one by the rule above).
 
-## 키와 포커스
+## Keys and focus
 
-- 카드가 열리면 포커스는 입력. Tab 순서: 입력 → 취소 → 저장 → 입력(카드 안에서 돈다).
-- Return(또는 ⌘Return): 저장. 저장할 수 없는 값이면 아무것도 보내지 않고 메시지를 보인다. 카드는 열린 채.
-- Esc: 취소 — 카드를 닫고 원래 제목 그대로. 포커스는 카드를 연 곳으로 돌아간다: 헤더 제목·⋯ 메뉴에서 열었으면 **헤더 제목 버튼**, 사이드바 연필에서 열었으면 헤더 제목 버튼(그 대화가 열려 있으므로).
-- **한글 IME**: 조합 중(marked text가 있을 때) Return은 조합 확정만, Esc는 조합 취소만 한다. 저장·취소는 조합이 없을 때만. 조합 중 글자도 글자 수에 넣어 보이지만, 검사는 확정된 값으로 한다.
-- **바깥 클릭 = Return**: 바뀐 게 없으면 닫는다. 바뀌었고 저장할 수 있으면 저장한다. 저장할 수 없으면 카드는 열린 채 이유를 보인다(입력을 버리지 않는다).
-- 다른 대화·화면으로 옮기면(사이드바 클릭, ⌘N, 뒤로 등) 바깥 클릭과 같다. 단 저장할 수 없는 값이면 그 초안은 버리고 원래 제목을 둔다(헤더가 다른 대화로 바뀌기 때문).
-- 카드가 열린 동안 ⋯ 메뉴·멤버 popover는 열리지 않는다(popover는 한 번에 하나, 기존 `board.popover` 규칙).
+- When the card opens, the field has focus. Tab order: field → Cancel → Save → field (it cycles inside the card).
+- Return (or ⌘Return): save. If the value cannot be saved, nothing is sent and the message shows; the card stays open.
+- Esc: cancel — the card closes, the title as it was. Focus returns to where the card was opened from: the **header title button** for the header and ⋯, and also for the sidebar pencil (that conversation is open by then).
+- **IME composition** (Korean, Japanese, Chinese): while there is marked text, Return only commits the composition and Esc only cancels it. Save and cancel act only without a composition. Composing characters count in the shown count, but checks use the committed value.
+- **Outside click = Return**: nothing changed, it closes. Changed and savable, it saves. Not savable, the card stays open with the reason (the input is never thrown away).
+- Moving to another conversation or screen (a sidebar click, ⌘N, back…) acts as an outside click, except that an unsavable draft is dropped and the original title kept (the header now belongs to another conversation).
+- While the card is open, the ⋯ menu and the member popover do not open (one popover at a time, the existing `board.popover` rule).
 
-## 저장·성공·실패
+## Save, success, failure
 
-- 저장 순서: 정리한 값으로 `RenameConversation { session, title }` → **곧바로** 헤더·사이드바·보관 목록이 새 제목을 보인다(낙관적 표시) → 카드 닫힘 → 포커스는 헤더 제목 버튼(포커스 링이 보임, `saved` 상태).
-- 데몬 확인 이벤트가 오면 그대로 둔다. 다른 화면(다른 창, 폰)도 같은 이벤트로 바뀐다.
-- 실패(명령 거절, 연결 끊김, 없는 세션): 헤더·사이드바를 **원래 제목으로 되돌리고**, 카드를 다시 열어 사용자가 쳤던 값을 그대로 둔 채(선택 없이, 커서는 끝) 메시지를 보인다. Primary 버튼 문구는 `다시 시도 ↩`. 글자 수는 길이와 상관없이 숨긴다(메시지에 폭을 준다).
-  - 연결이 끊겼을 때: `Mac과 연결이 끊겨 저장하지 못했어요. 입력한 이름은 그대로 있어요.`
-  - 그 밖: `이름을 저장하지 못했어요. 입력한 이름은 그대로 있어요.`
-- 실패 상태에서 Esc는 위 취소와 같다(원래 제목 유지).
+- Order: `RenameConversation { squad, session, title }` with the cleaned value → **at once** the header, sidebar and put-away list show the new title (optimistic) → the card closes → focus on the header title button (ring visible, state `saved`).
+- When the daemon's confirming event arrives, nothing more changes. Other screens (another window, the phone) change with the same event.
+- Failure (command refused, connection lost, no such session): the header and sidebar **go back to the original title**, and the card opens again with what the person typed (no selection, cursor at the end) and a message. The primary button reads `Try again ↩`. The count hides whatever the length (the message gets the room).
+  - Connection lost: `Lost the connection to your Mac, so the name wasn’t saved. What you typed is kept.`
+  - Anything else: `Couldn’t save the name. What you typed is kept.`
+- Esc in the failure state cancels as above (the original title stays).
 
-## 헤더가 좁을 때 (T-651과 함께)
+## A narrow header (with T-651)
 
-제목이 먼저 자리를 갖는다. 제목이 잘리는 동안 순서대로 양보한다: ① `컨텍스트 31%` 숨김(잘린 글자로 보이지 않음) → ② 프로젝트 이름을 그 표시(프로젝트 색 표시, 프로젝트 밖이면 빈 원)로 접고 이름은 툴팁으로 → ③ 그래도 넘치면(760·150%) 프로젝트 표시와 `/`도 숨김. 제목은 최소 96pt를 지키고, ⋯·터미널·브라우저 버튼은 항상 남는다. 이 순서는 T-651(150%·760 상단 바 겹침)의 수정 기준이기도 하다.
+The title gets the room first. While the title is cut, things give way in this order: ① `context 31%` hides (never shown cut) → ② the project name folds to its mark (the project's mark, or an empty circle outside projects), its name on the pointer → ③ if it still overflows (760 at 150%), the mark and `/` hide too. The title keeps at least 96 pt; ⋯ and the terminal and browser buttons always stay. This order is also the fix rule for T-651 (the top bar overlapping at 150% and 760).
 
-## 접근성
+## Accessibility
 
-- 헤더 제목: role button, 이름 = 제목, 설명 = `이름 바꾸기`, `aria-expanded` = 카드 열림.
-- 카드: role dialog, 이름 `대화 이름 바꾸기`. 입력의 이름 `대화 이름`. 오류 메시지는 입력의 설명으로 연결하고, 생길 때 알린다(실패는 role alert).
-- 저장 성공 시 알림: `이름을 바꿨어요: {제목}`. 취소는 알리지 않는다.
-- 사이드바 연필·×: 이름 `이름 바꾸기` / `대화 치우기`, 24pt 이상. 아이콘만 있는 버튼은 툴팁으로 이름을 보인다.
-- 대비(계산값, WCAG 2 상대 휘도): 오류 글자 `red`/`raised` light 6.84:1, dark 6.68:1 · 라벨·글자 수 `muted`/`raised` 6.29:1, 6.37:1 · 입력 안 글자 수 `muted`/`code_bg` 5.56:1, 6.65:1. 모두 AA(4.5:1) 이상. 목업의 토큰 값도 오류 6.57:1 / 6.26:1.
-- Reduce Motion: 카드는 움직임 없이 나타난다(기존 popover와 같음).
+- Header title: role button, name = the title, description = `Rename`, `aria-expanded` = card open.
+- Card: role dialog, name `Rename conversation`. The field's name `Conversation name`. The error message describes the field and is announced when it appears (failure is role alert).
+- On success, announce `Renamed: {title}`. Cancelling announces nothing.
+- Sidebar pencil and ×: names `Rename` / `Put away`, at least 24 pt. Icon-only buttons show their names as tooltips.
+- Contrast (computed, WCAG 2 relative luminance): error text `red`/`raised` light 6.84:1, dark 6.68:1 · label and count `muted`/`raised` 6.29:1, 6.37:1 · count inside the field `muted`/`code_bg` 5.56:1, 6.65:1. All AA (4.5:1) or better. The mockup token values: error 6.57:1 / 6.26:1.
+- Reduce Motion: the card appears without motion (as existing popovers).
 
-## 문구 (새 키 `talk.rename_*`, 기존 키는 그대로)
+## Strings (new keys `talk.rename_*`; existing keys unchanged)
 
-| 키 | ko | en | ja | zh-Hans | zh-Hant | de | fr | es |
-|---|---|---|---|---|---|---|---|---|
-| rename (메뉴·툴팁·설명) | 이름 바꾸기 | Rename | 名前を変更 | 重命名 | 重新命名 | Umbenennen | Renommer | Cambiar nombre |
-| rename_dialog | 대화 이름 바꾸기 | Rename conversation | 会話の名前を変更 | 重命名对话 | 重新命名對話 | Gespräch umbenennen | Renommer la conversation | Cambiar nombre de la conversación |
-| rename_label | 대화 이름 | Conversation name | 会話の名前 | 对话名称 | 對話名稱 | Name des Gesprächs | Nom de la conversation | Nombre de la conversación |
-| 취소 / 저장 | `peek.cancel` / `board.save` | | | | | | | |
-| rename_retry | 다시 시도 | Try again | 再試行 | 重试 | 重試 | Erneut versuchen | Réessayer | Reintentar |
-| rename_empty | 이름을 입력해 주세요. | Enter a name. | 名前を入力してください。 | 请输入名称。 | 請輸入名稱。 | Gib einen Namen ein. | Saisissez un nom. | Escribe un nombre. |
-| rename_long {max}{over} | {max}자까지 쓸 수 있어요. {over}자를 줄여 주세요. | Up to {max} characters. Remove {over}. | {max}文字までです。あと{over}文字減らしてください。 | 最多 {max} 个字符，请删去 {over} 个。 | 最多 {max} 個字元，請刪去 {over} 個。 | Höchstens {max} Zeichen. Entferne {over}. | {max} caractères au maximum. Retirez-en {over}. | Máximo {max} caracteres. Quita {over}. |
-| rename_offline | Mac과 연결이 끊겨 저장하지 못했어요. 입력한 이름은 그대로 있어요. | Lost the connection to your Mac, so the name wasn’t saved. What you typed is kept. | Macとの接続が切れたため保存できませんでした。入力した名前はそのままです。 | 与 Mac 的连接已断开，未能保存名称。已保留你输入的内容。 | 與 Mac 的連線已中斷，未能儲存名稱。已保留你輸入的內容。 | Keine Verbindung zum Mac – Name nicht gesichert. Deine Eingabe bleibt erhalten. | Connexion au Mac perdue : nom non enregistré. Votre saisie est conservée. | Se perdió la conexión con el Mac y no se guardó el nombre. Lo que escribiste se conserva. |
-| rename_failed | 이름을 저장하지 못했어요. 입력한 이름은 그대로 있어요. | Couldn’t save the name. What you typed is kept. | 名前を保存できませんでした。入力した名前はそのままです。 | 未能保存名称，已保留你输入的内容。 | 未能儲存名稱，已保留你輸入的內容。 | Name nicht gesichert. Deine Eingabe bleibt erhalten. | Nom non enregistré. Votre saisie est conservée. | No se guardó el nombre. Lo que escribiste se conserva. |
-| renamed {title} (알림) | 이름을 바꿨어요: {title} | Renamed: {title} | 名前を変更しました: {title} | 已重命名：{title} | 已重新命名：{title} | Umbenannt: {title} | Renommée : {title} | Nombre cambiado: {title} |
-| rename_count {n}{max} | {n}/{max} | | | | | | | |
+English below; every language's wording (en, ko, ja, zh-Hans, zh-Hant, de, fr, es) is in `crates/desktop/locales/<lang>.json` under the same keys.
 
-- ja 메시지는 구절 단위로 끊는다(`保存で / きませんでした` 같은 낱말 중간 끊김 금지). GPUI 줄바꿈이 구절을 모르면 문장 끝(。) 뒤에서만 끊기도록 문장을 나눠 그린다 — GPUI에서 되는지는 미확인.
-- es: 기존 `sidebar.put_away`가 `Guardar`(=저장)와 같은 낱말이라 같은 메뉴·카드 근처에서 헷갈린다. 이 티켓 범위 밖이라 바꾸지 않았다 — 구현 때 `Quitar`/`Archivar` 같은 다른 낱말 검토를 권한다(미확정).
+| Key | en |
+|---|---|
+| `talk.rename` (menu, tooltip, description) | Rename |
+| `talk.rename_dialog` | Rename conversation |
+| `talk.rename_label` | Conversation name |
+| Cancel / Save | existing `peek.cancel` / `board.save` |
+| `talk.rename_retry` | Try again |
+| `talk.rename_empty` | Enter a name. |
+| `talk.rename_long` `{max}` `{over}` | Up to {max} characters. Remove {over}. |
+| `talk.rename_offline` | Lost the connection to your Mac, so the name wasn’t saved. What you typed is kept. |
+| `talk.rename_failed` | Couldn’t save the name. What you typed is kept. |
+| `talk.renamed` `{title}` (announcement) | Renamed: {title} |
+| `talk.rename_count` `{n}` `{max}` | {n}/{max} |
 
-## UI map 상태 (`conversation/rename`)
+- Japanese messages should break between phrases, never mid-word. If GPUI line breaking does not know phrases, draw each sentence separately so breaks fall only after `。` — unverified in GPUI.
+- es: the existing `sidebar.put_away` is `Guardar`, the same word as save, which confuses next to this card. Out of this ticket's scope and left as is; consider another word (`Quitar`, `Archivar`) when implementing (undecided).
 
-| 상태 | kind | 무엇 |
+## UI map states (`conversation/rename`)
+
+| State | kind | What |
 |---|---|---|
-| entry-title | default | 헤더 제목 hover: 연필 + 툴팁 (연필은 보일 때만 자리를 차지한다) |
-| entry-menu | default | ⋯ 메뉴, 첫 항목 `이름 바꾸기`에 포커스 |
-| entry-sidebar | default | 사이드바 행 hover: 연필·×, 연필 툴팁 |
-| editing | default | 카드 열림, 제목 전체 선택 |
-| composing | default | 한글 조합 중(`카` 확정 + `피` 조합) — Return은 확정만 |
-| empty | error | 빈 값으로 Return 뒤: 메시지, 저장 비활성 |
-| too-long | error | 붙여넣은 48자: 넘친 8자 표시, 저장 비활성 |
-| saved | success | 헤더·사이드바 같은 새 제목, 포커스는 헤더 제목 |
-| failed | error | 연결 끊김: 원래 제목, 입력값 유지, `다시 시도` |
-| long | long | 독일어 긴 제목: 헤더 양보 순서, 사이드바 잘린 행의 전체 제목 툴팁 |
-| large | default | 150%: 760에서 프로젝트 표시까지 양보, 카드가 대화 영역 안 |
-| large-failed | error | 150% 영어 실패(연결 끊김): 좁은 카드, 키 힌트 없이 한 줄 버튼 |
+| entry-title | default | Header title on hover: pencil and tooltip |
+| entry-menu | default | ⋯ menu, `Rename` first |
+| entry-sidebar | default | Sidebar row on hover: pencil and ×, pencil tooltip |
+| editing | default | Card open, whole title selected |
+| composing | default | IME composing (one syllable committed, the next composing) — Return only commits |
+| empty | error | After Return with an empty value: message, Save disabled |
+| too-long | error | Past 40 characters: the count over, Save disabled |
+| saved | success | Header and sidebar show the same new title; focus on the header title |
+| failed | error | Connection lost: original title, typed value kept, `Try again` |
+| refused | error | The daemon refused (T-643): the same as failed with the generic message |
+| long | long | A long German title: the header gives way in order |
+| large | default | 150%: at 760 the project mark gives way; the card stays inside the conversation pane |
+| large-failed | error | 150% English failure (connection lost): a narrow card, buttons on one line without key hints |
 
-760은 760×760 창이다(600 높이에서는 사이드바 대화 행이 화면 밖이라 TP-1의 ‘같은 제목’을 볼 수 없다).
+760 is a 760×760 window (at 600 high the sidebar conversation row is off screen, so TP-1's "same title" cannot be seen).
 
-## QA 계약 (T-644)
+## QA contract (T-644)
 
-- TP-1: entry-title → editing → saved에서 헤더·사이드바 제목이 같은 프레임에 바뀐다. 다른 창의 같은 대화도 이벤트로 바뀐다.
-- TP-2: 마우스 없이 Tab → 제목 → Return → 입력 → Return 저장 / Esc 취소, 포커스가 헤더 제목으로 돌아온다. VoiceOver가 `대화 이름 바꾸기` 대화상자, `대화 이름` 입력, 오류 문구를 읽는다.
-- TP-3: 빈 값·공백뿐·41자 이상·여러 줄 붙여넣기·한글 조합 중 Return/Esc에서 제목도 입력도 잃지 않는다.
-- TP-5: 데몬을 멈추고 저장 → 원래 제목으로 돌아오고 카드에 입력값과 `failed` 문구가 남는다. 다시 켜고 `다시 시도`로 저장된다.
-- TP-6: 8개 언어 × 760/1200 × 라이트/다크 × 100/150%에서 헤더 양보 순서대로 줄고 ⋯가 사라지지 않으며, 카드가 대화 영역을 넘지 않는다.
+- TP-1: entry-title → editing → saved: header and sidebar change in the same frame. The same conversation in another window changes with the event.
+- TP-2: without a mouse, Tab → title → Return → field → Return saves / Esc cancels, and focus returns to the header title. VoiceOver reads the `Rename conversation` dialog, the `Conversation name` field and the error text.
+- TP-3: empty, only spaces, 41+ characters, multi-line paste, Return/Esc mid-composition: neither the title nor the input is lost.
+- TP-5: stop the daemon and save → the original title comes back and the card keeps the typed value with the `failed` message. Start it again and `Try again` saves.
+- TP-6: 8 languages × 760/1200 × light/dark × 100/150%: the header gives way in order, ⋯ never disappears, the card never leaves the conversation pane.
 
-## 구현 메모
+## Implementation notes
 
-- 편집 상태는 하나(`Shell.rename: Option<{ session, input, origin, error }>`). 사이드바 연필은 대화를 열고 같은 상태를 연다.
-- 낙관적 표시는 `Lane.title`을 바꾸고 이전 값을 들고 있다가 실패 때 되돌린다. 자동 제목(`set_title_if_empty`)은 수동 제목을 덮지 않는다(계획서).
-- 목업 토큰 → 앱 값: 표면 `--eq-color-raised`→`p.raised`, 선 `--eq-color-line`→`p.hair`, hover `--eq-color-hover`→`p.wash`, 포커스 `--eq-color-focus`→`p.accent`, 오류 `--eq-color-err(-bg)`→`p.danger()`/`p.danger_bg()`, 입력 바탕 `--eq-color-bg`→`p.code_bg`, Primary `--eq-color-action`→`Kind::Primary`, 툴팁 `--eq-color-inverse`→`p.tip_bg()`. 글자 14→`UI`/`SMALL`(헤더 제목은 지금처럼 14 semibold), 12→`SMALL − 1`.
+- One edit state (`Shell.rename: Option<{ session, input, problem, retry }>`); the sidebar pencil opens the conversation and the same state.
+- The optimistic display changes `Lane.title` and keeps the previous value to restore on failure. A generated title (`set_title_if_empty`, T-578) never overwrites a manual one: the daemon only fills an empty title, and `Event::ConversationTitle { named: true }` from a rename always replaces what a screen shows while `named: false` (a generated topic) only fills an empty one.
+- Mockup tokens → app values: surface `--eq-color-raised`→`p.raised`, line `--eq-color-line`→`p.hair`, hover `--eq-color-hover`→`p.wash`, focus `--eq-color-focus`→`p.accent`, error `--eq-color-err(-bg)`→`p.danger()`/`p.danger_bg()`, field background `--eq-color-bg`→`p.code_bg`, primary `--eq-color-action`→`Kind::Primary`, tooltip `--eq-color-inverse`→`p.tip_bg()`. Type 14→`UI`/`SMALL` (the header title stays 14 semibold), 12→`SMALL − 1`.
+
+## As built in T-643 (differences from the above)
+
+- The header pencil keeps its room and only becomes visible on hover: GPUI cannot change layout on hover.
+- Characters past 40 are not tinted inside the field; the message and the red count say how many to remove.
+- Tab is not trapped inside the card.
+- "Renamed: {title}" shows briefly where the window says such things (the composer's note); there is no screen-reader-only live announcement.

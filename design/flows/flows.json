@@ -351,6 +351,7 @@
           "source": [
             "crates/desktop/src/views/chat.rs",
             "crates/desktop/src/views/header.rs",
+            "crates/desktop/src/views/sidebar.rs",
             "crates/desktop/src/render/view.rs",
             "crates/desktop/src/render/prose.rs",
             "crates/desktop/src/render/raster.rs",
@@ -377,6 +378,24 @@
               "label": "Empty",
               "kind": "empty",
               "note": "shot by design/flows/shoot-desktop.py: FAKE_ASKS=0; script `newtalk;wait:800`"
+            },
+            {
+              "id": "topic",
+              "label": "First exchange named by topic",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk;say:Please make conversation titles easier to find;wait:1800`"
+            },
+            {
+              "id": "topic-ko",
+              "label": "첫 교환의 한국어 주제 제목",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk;say:대화 제목을 다시 찾기 쉽게 만들어 줘;wait:1800`; EQUIPE_LANG=ko"
+            },
+            {
+              "id": "topic-large",
+              "label": "큰 글자의 주제 제목",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk;say:대화 제목을 다시 찾기 쉽게 만들어 줘;wait:1800;zoom:150;wait:500`; EQUIPE_LANG=ko"
             },
             {
               "id": "loading",

@@ -1889,8 +1889,16 @@ pub enum Event {
     },
     /// A conversation with the PM moved to another project ([`Command::MoveConversation`]).
     LaneMoved { session: SessionId, project: Option<String> },
-    /// A conversation's title is now `title` ([`Command::RenameConversation`]).
-    ConversationTitle { session: SessionId, title: String },
+    /// A conversation's title is now `title`: `named` by the person
+    /// ([`Command::RenameConversation`]) — it replaces whatever was shown — or
+    /// the topic equipe gave a conversation still without a name after its
+    /// first answered exchange (once; a screen shows it only where no title is).
+    ConversationTitle {
+        session: SessionId,
+        title: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        named: bool,
+    },
     /// A [`Command::RenameConversation`] was not done; the title is as it was.
     ConversationRenameRefused { session: SessionId },
     /// A conversation taken up again ([`Command::ReopenConversation`]): what
