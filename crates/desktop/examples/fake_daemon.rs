@@ -37,10 +37,12 @@
 //! `FAKE_SECONDS` (default 4) is how long a reply streams; `FAKE_SAID` adds a
 //! last message of the person's to the PM's history (attachment tags and all);
 //! `FAKE_KEPT=<words>` a voice memo whose files are gone, its words kept with it.
-//! `FAKE_CARDS=1` ends it on a reply naming T-42 (a review), T-117 and T-999
-//! (no such ticket), to rest the pointer on; `FAKE_CARDS=long` gives T-42 a
+//! `FAKE_CARDS=1` ends it on a person's line naming T-42 and T-51, then a
+//! multiline reply naming emphasized T-42, T-117 (waiting for the person) and T-999 (no such ticket),
+//! to rest the pointer on; `FAKE_CARDS=long` gives T-42 a
 //! hand-in long enough to scroll on its card, and with `FAKE_REPLY_IMAGES=1`
 //! the reply names T-4 too — its pictures and all, a card taller than a small window.
+//! `FAKE_RENAME=refuse`: a conversation's new name is refused, as a daemon that couldn't keep it would.
 //! `FAKE_REVIEW=1` gives T-42 and T-71 a made-up Nemotron review (canned, not a model's).
 //! `FAKE_ASKLIST=1` ends the PM's history on a reply asking three things in a
 //! numbered list of its own words, as a member does that skips `ask_decision`.
@@ -496,7 +498,8 @@ fn board() -> Vec<Ticket> {
         t.plan = Some(plan.clone());
         t.body.push_str(&format!("\n\nPlan: `{plan}`\n\nThis ticket's test plan:\n\n- TP-1: choosing a card and paying creates an order\n- TP-3: the chosen payment method survives a refresh"));
     }
-    if your_turn().is_some() {
+    // `FAKE_CARDS`'s reply names T-117 as the person's turn: it is on the board then too.
+    if your_turn().is_some() || std::env::var_os("FAKE_CARDS").is_some() {
         out.push(turn_ticket());
     }
     if stalled() {
@@ -1026,9 +1029,14 @@ fn on_board_command(command: &Command) -> Option<Vec<Event>> {
             let entries = records().lock().unwrap().get(ticket).cloned().unwrap_or_default();
             Some(vec![Event::TicketHistory { squad: squad(), ticket: *ticket, entries }])
         }
+        // `FAKE_NO_LOOKUP=1`: a daemon slow to answer, to shoot a card that is still looking.
+        Command::TicketHistory { .. } if std::env::var_os("FAKE_NO_LOOKUP").is_some() => Some(Vec::new()),
         Command::TicketHistory { ticket, .. } => {
             let entries = records().lock().unwrap().get(ticket).cloned().unwrap_or_default();
-            Some(vec![Event::TicketHistory { squad: squad(), ticket: *ticket, entries }])
+            // As the daemon does: the ticket first, if it has it.
+            let mut out: Vec<Event> = all.iter().find(|t| t.id == *ticket).map(|t| Event::TicketChanged { squad: squad(), ticket: t.clone() }).into_iter().collect();
+            out.push(Event::TicketHistory { squad: squad(), ticket: *ticket, entries });
+            Some(out)
         }
         _ => None,
     }
@@ -1368,9 +1376,9 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         // `FAKE_CARDS=1`: a last reply naming a review, a wait and a number
                         // long gone, for the tickets' cards on the pointer.
                         if std::env::var_os("FAKE_CARDS").is_some() {
-                            history.push(Entry::User { text: "Anything for me to look at?".into(), kept: Vec::new() });
+                            history.push(Entry::User { text: "Can you compare T-42 with T-51 before I review it?".into(), kept: Vec::new() });
                             let pictures = if replies::on() { " Have a look at T-4's pictures too." } else { "" };
-                            history.push(Entry::Reply { text: format!("T-42 is waiting for review. T-117 is your turn, and the old T-999 is gone.{pictures}") });
+                            history.push(Entry::Reply { text: format!("## What needs attention\n\n- **T-42** is waiting for review; T-51 is the related follow-up.\n- T-117 is your turn, and the old T-999 is gone.{pictures}") });
                         }
                         if let Some(how) = your_turn() {
                             history.push(Entry::Note { undo: None, text: "frontend handed in T-63 for your review · Competitor onboarding research.".into() });
@@ -1600,7 +1608,11 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             idle_wake_hours: Some(routine::idle_wake_hours()),
                             signals: signals::signals(),
                             accepts: accept::cards(),
-                            tickets: tickets().lock().unwrap().clone(),
+                            // `FAKE_STALE=117`: the snapshot lacks that ticket (as a missed sync would), the board still has it.
+                            tickets: {
+                                let stale: Option<u32> = std::env::var("FAKE_STALE").ok().and_then(|v| v.parse().ok());
+                                tickets().lock().unwrap().iter().filter(|t| Some(t.id) != stale).cloned().collect()
+                            },
                             allowed: allowed().lock().unwrap().clone(),
                             browsers_shown: true,
                             disk: disk::status(),
@@ -1804,7 +1816,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                             tokio::spawn(async move {
                                                 turn(session, events.clone(), seconds).await;
                                                 let title = if lang() == equipe_core::i18n::Lang::Ko { "세션 주제 제목" } else { "Conversation topic titles" };
-                                                let _ = events.send(Event::ConversationTitle { session, title: title.into() });
+                                                let _ = events.send(Event::ConversationTitle { session, title: title.into(), named: false });
                                             })
                                         }
                                         None => tokio::spawn(turn(session, events.clone(), seconds)),
@@ -1820,6 +1832,15 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             }
                             Command::MoveConversation { session, project } => {
                                 let _ = events.send(Event::LaneMoved { session, project });
+                            }
+                            // Like the daemon: a conversation of the person's named by them, or
+                            // (`FAKE_RENAME=refuse`) refused, the name as it was.
+                            Command::RenameConversation { session, title, .. } => {
+                                let kept = routes.lock().await.kept.contains(&session);
+                                match equipe_core::protocol::conversation_title(&title).filter(|_| kept && std::env::var("FAKE_RENAME").as_deref() != Ok("refuse")) {
+                                    Some(title) => drop(events.send(Event::ConversationTitle { session, title, named: true })),
+                                    None => drop(events.send(Event::ConversationRenameRefused { session })),
+                                }
                             }
                             Command::CloseConversation { session } => {
                                 routes.lock().await.kept.remove(&session);

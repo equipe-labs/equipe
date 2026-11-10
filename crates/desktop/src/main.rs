@@ -376,6 +376,15 @@ pub struct Shell {
     /// How far the connection being made has got, for its screen.
     pub(crate) connecting: views::connect::Connecting,
     pub(crate) log_renders: bool,
+    /// What the conversation's header leaves out while it is narrow (`views::header::Fit`).
+    pub(crate) header_fit: std::rc::Rc<std::cell::Cell<views::header::Fit>>,
+    /// Renaming the conversation open: its card (`views::rename`), a name on
+    /// its way to the daemon, and when a press outside last closed the card.
+    pub(crate) rename: Option<views::rename::Rename>,
+    pub(crate) rename_pending: Option<views::rename::Pending>,
+    pub(crate) rename_closed_at: Option<std::time::Instant>,
+    /// The header's title, a button: where the keys go back to from the card.
+    pub(crate) title_focus: FocusHandle,
     /// The tickets on cards to confirm whose size was asked for, as they looked then.
     pub(crate) accept_asked: std::collections::HashMap<equipe_core::protocol::TicketId, (Option<String>, String, Option<bool>)>,
     renders: u64,
@@ -536,6 +545,11 @@ impl Shell {
             connecting_shown: false,
             connecting: views::connect::Connecting::new(std::time::Instant::now()),
             log_renders: std::env::var_os("EQUIPE_LOG_RENDER").is_some(),
+            header_fit: std::rc::Rc::default(),
+            rename: None,
+            rename_pending: None,
+            rename_closed_at: None,
+            title_focus: cx.focus_handle(),
             accept_asked: std::collections::HashMap::new(),
             renders: 0,
             started: std::time::Instant::now(),
@@ -741,6 +755,15 @@ impl Shell {
             if this.update(cx, |shell, cx| shell.on_viewer_key(key, &modifiers, window, cx)).unwrap_or(false) {
                 cx.stop_propagation();
                 return;
+            }
+            // Renaming the conversation: ⏎ saves, Esc puts the card away (a composition's first).
+            match this.update(cx, |shell, cx| shell.on_rename_key(key, &modifiers, window, cx)).unwrap_or(views::decide::Took::Pass) {
+                views::decide::Took::Taken => {
+                    cx.stop_propagation();
+                    return;
+                }
+                views::decide::Took::Typing => return,
+                views::decide::Took::Pass => {}
             }
             // Words selected in the conversation: ⏎ or ⌘⇧R asks about them; in
             // the box that opens, ⏎ sends and Esc closes.
@@ -1206,7 +1229,14 @@ impl Shell {
                             daemon::Update::Event(Event::ConversationBack { session, .. }) => Some(*session),
                             _ => None,
                         };
+                        let renamed = match &update {
+                            daemon::Update::Event(Event::ConversationTitle { session, .. }) => Some((*session, true)),
+                            daemon::Update::Event(Event::ConversationRenameRefused { session }) => Some((*session, false)),
+                            _ => None,
+                        };
                         changed |= this.model.apply(update, now);
+                        // A name sent: kept, or refused (or the line gone) — the old one back, the card again.
+                        this.rename_heard(renamed, window, cx);
                         // A conversation taken up again from its project's page: opened.
                         if let Some(session) = back.filter(|s| this.board.reopening == Some(*s)) {
                             this.board.reopening = None;
@@ -1996,10 +2026,15 @@ impl Shell {
                 .border_b_1()
                 .border_color(p.hair)
                 .text_size(px(SMALL))
-                .child(icons::icon(icons::Icon::XCircle, theme::ICON_SM, p.text))
-                .child(div().text_color(p.text).child(format!("{} · {since}", guide.short)))
-                .child(div().flex_1().min_w_0().text_color(p.muted).child(if waits { t!("main.banner_needs_you") } else { t!("main.banner_reconnecting") }))
-                .child(ui::button(p, "banner-retry", ui::Kind::Secondary, t!("main.retry")).icon(icons::Icon::Retry).on_click(cx.listener(|this, _, _, cx| this.retry(cx)))),
+                // One line whatever the width: what went wrong gives way to the
+                // button, the line after it first — never a word a letter wide
+                // running down over the window (T-621).
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .child(div().flex_none().child(icons::icon(icons::Icon::XCircle, theme::ICON_SM, p.text)))
+                .child(div().min_w_0().truncate().text_color(p.text).child(format!("{} · {since}", guide.short)))
+                .child(div().flex_1().min_w_0().truncate().text_color(p.muted).child(if waits { t!("main.banner_needs_you") } else { t!("main.banner_reconnecting") }))
+                .child(div().flex_none().child(ui::button(p, "banner-retry", ui::Kind::Secondary, t!("main.retry")).icon(icons::Icon::Retry).on_click(cx.listener(|this, _, _, cx| this.retry(cx))))),
         )
     }
 }

@@ -1582,6 +1582,19 @@ impl Journal {
         self.touch_conversation(id, "project", project)
     }
 
+    /// The person names a conversation: its own title and its session's,
+    /// both or neither. What equipe names later ([`Journal::set_title_if_empty`])
+    /// leaves it be. False when there is no such conversation.
+    pub fn rename_conversation(&self, id: SessionId, title: &str) -> Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        if tx.execute("UPDATE conversations SET title = ?1, updated_at = ?2 WHERE id = ?3", params![title, now(), id as i64])? == 0 {
+            return Ok(false);
+        }
+        tx.execute("UPDATE sessions SET title = ?1 WHERE id = ?2", params![title, id as i64])?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     /// Put away: it leaves the list; its lines stay as long as any.
     pub fn close_conversation(&self, id: SessionId) -> Result<()> {
         self.touch_conversation(id, "open", false)
@@ -1994,6 +2007,27 @@ mod tests {
         assert_eq!(j.put_away(10).unwrap().iter().map(|c| c.session).collect::<Vec<_>>(), [52]);
         assert!(j.reopen_conversation(50).unwrap().is_none(), "open already");
         assert!(j.reopen_conversation(99).unwrap().is_none(), "no such one");
+    }
+
+    #[test]
+    fn a_name_the_person_gives_is_kept_whole_and_never_named_over() {
+        let home = temp_home();
+        let id = 71;
+        {
+            let j = Journal::for_squad(&home, "acme").unwrap();
+            j.record_session(&record(id)).unwrap();
+            j.record_conversation(id, Some("desktop"), Path::new("/squad/pm")).unwrap();
+            j.set_title_if_empty(id, "fix the login page").unwrap();
+            assert!(j.rename_conversation(id, "Login copy").unwrap());
+            // What equipe names later (the first message, a made-up topic) leaves it be.
+            j.set_title_if_empty(id, "something else").unwrap();
+            assert!(!j.rename_conversation(999, "nobody").unwrap(), "no such conversation");
+            j.close_conversation(id).unwrap();
+        }
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        assert_eq!(j.put_away(10).unwrap()[0].title.as_deref(), Some("Login copy"));
+        let back = j.reopen_conversation(id).unwrap().expect("back");
+        assert_eq!(back.title.as_deref(), Some("Login copy"));
     }
 
     #[test]

@@ -400,7 +400,8 @@
             "empty",
             "error",
             "loading",
-            "long"
+            "long",
+            "success"
           ],
           "states": [
             {
@@ -440,6 +441,36 @@
               "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=12 FAKE_ASKS=0; script `chat;say:Where are you up to?;wait:1500`"
             },
             {
+              "id": "activity-running",
+              "label": "One running work-details row with elapsed time",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;say:torture 7;wait:1800`"
+            },
+            {
+              "id": "activity-done",
+              "label": "Folded work details after a recovered failure",
+              "kind": "success",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;say:torture 9;wait:2500`"
+            },
+            {
+              "id": "activity-open",
+              "label": "Opened work details with the recovered failure",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;say:torture 9;wait:2500;turn:5;wait:500`"
+            },
+            {
+              "id": "activity-done-ko",
+              "label": "Folded work details · Korean",
+              "kind": "success",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;say:torture 9;wait:2500`; EQUIPE_LANG=ko"
+            },
+            {
+              "id": "activity-large",
+              "label": "Folded work details · 150% text",
+              "kind": "success",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;zoom:150;say:torture 9;wait:2500`"
+            },
+            {
               "id": "long",
               "label": "Long text (German)",
               "kind": "long",
@@ -456,6 +487,66 @@
               "label": "Ticket cards in a reply",
               "kind": "default",
               "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800`"
+            },
+            {
+              "id": "ticket-card-missing",
+              "label": "A ticket card for a number not on the board: Not found",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800`"
+            },
+            {
+              "id": "ticket-card-missing-long",
+              "label": "A ticket card for a number not on the board, in German",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800`; EQUIPE_LANG=de"
+            },
+            {
+              "id": "ticket-card-recovered",
+              "label": "A ticket card for a ticket the list missed: looked up, shown",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42; script `chat;wait:800`"
+            },
+            {
+              "id": "ticket-card-large",
+              "label": "Large text",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42; script `chat;wait:800;zoom:in;zoom:in;wait:600;hover:425,510;wait:1500`"
+            },
+            {
+              "id": "ticket-card-person",
+              "label": "A ticket card on a number in the person's message",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800`"
+            },
+            {
+              "id": "ticket-card-waiting",
+              "label": "A ticket card on a ticket waiting for the person",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800`"
+            },
+            {
+              "id": "ticket-card-zoomed",
+              "label": "Zoomed to 150%, narrowest width: the card keeps its gap over the link",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42; script `chat;wait:800;zoom:150;wait:600`"
+            },
+            {
+              "id": "ticket-card-zoomed-missing",
+              "label": "Zoomed to 150%: Not found, with its mark",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800;zoom:150;wait:600`"
+            },
+            {
+              "id": "ticket-card-looking",
+              "label": "A ticket card the list missed, while the daemon is still asked",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42 FAKE_NO_LOOKUP=1; script `chat;wait:800;hover:438,468;wait:700`"
+            },
+            {
+              "id": "ticket-card-looking-narrow",
+              "label": "The same, at the narrowest width",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42 FAKE_NO_LOOKUP=1; script `chat;wait:800`"
             },
             {
               "id": "ask-list",
@@ -524,6 +615,18 @@
               "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;say:torture 1;wait:6000`"
             },
             {
+              "id": "large",
+              "label": "150% text: the header gives way, ⋯ and the buttons stay",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_ASKS=0; script `chat;zoom:150;wait:1200`"
+            },
+            {
+              "id": "large-project",
+              "label": "150% text, a project's new conversation in German: only the title and ⋯ keep their room",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_ASKS=0; script `newtalk:web;wait:800;zoom:150;wait:1200`; EQUIPE_LANG=de"
+            },
+            {
               "id": "summarizing",
               "label": "Being summarized (long)",
               "kind": "default",
@@ -540,6 +643,102 @@
               "label": "A ticket put down for the person, in the conversation",
               "kind": "default",
               "note": "shot by design/flows/shoot-desktop.py: FAKE_TURN=1 FAKE_ASKS=0; script `chat;wait:600`"
+            }
+          ]
+        },
+        {
+          "id": "rename",
+          "title": "Rename a conversation",
+          "note": "The app itself (T-643) on the fake daemon, a project's conversation begun for the purpose; 760 is a 760×760 window, so the sidebar row shows. Contract: design/specs/rename-conversation/spec.md (T-642).",
+          "source": [
+            "crates/desktop/src/views/rename.rs",
+            "crates/desktop/src/views/header.rs",
+            "crates/desktop/src/views/sidebar.rs"
+          ],
+          "expects": [
+            "default",
+            "error",
+            "long",
+            "success"
+          ],
+          "states": [
+            {
+              "id": "entry-title",
+              "label": "Entry · the header title on the pointer: its pencil, Rename",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk:web;wait:600;say:Fix the checkout page copy;wait:2500`"
+            },
+            {
+              "id": "entry-menu",
+              "label": "Entry · This conversation ⋯, Rename first",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk:web;wait:600;say:Fix the checkout page copy;wait:2500;rename:menu;wait:300`"
+            },
+            {
+              "id": "entry-sidebar",
+              "label": "Entry · the sidebar row on the pointer: rename and put away",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk:web;wait:600;say:Fix the checkout page copy;wait:2500`"
+            },
+            {
+              "id": "editing",
+              "label": "Editing · the whole title selected",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk:web;wait:600;say:Fix the checkout page copy;wait:2500;rename;wait:300`"
+            },
+            {
+              "id": "composing",
+              "label": "Korean IME composing: Return only commits it",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk:web;wait:600;say:Fix the checkout page copy;wait:2500;rename;rename:compose:카|피;wait:300`; EQUIPE_LANG=ko"
+            },
+            {
+              "id": "empty",
+              "label": "Empty name · after Return",
+              "kind": "error",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk:web;wait:600;say:Fix the checkout page copy;wait:2500;rename;rename:type:   ;rename:save;wait:300`"
+            },
+            {
+              "id": "too-long",
+              "label": "Past 40 characters: nothing cut, how many to take out, Save waits",
+              "kind": "error",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk:web;wait:600;say:Fix the checkout page copy;wait:2500;rename;rename:type:Checkout copy, payment errors and the receipt email;wait:300`"
+            },
+            {
+              "id": "saved",
+              "label": "Saved: the header and the sidebar at once",
+              "kind": "success",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk:web;wait:600;say:Fix the checkout page copy;wait:2500;rename;rename:type:Checkout copy review;rename:save;wait:1200`"
+            },
+            {
+              "id": "failed",
+              "label": "Save failed, the Mac out of reach: the old title, what was typed, Try again",
+              "kind": "error",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk:web;wait:600;say:Fix the checkout page copy;wait:2500;wait:5000;rename;rename:type:Checkout copy review;rename:save;wait:600`; fake daemon stopped 8500 ms after the app opened"
+            },
+            {
+              "id": "refused",
+              "label": "Refused by the daemon: the old title back, the card again",
+              "kind": "error",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_RENAME=refuse FAKE_ASKS=0; script `newtalk:web;wait:600;say:Fix the checkout page copy;wait:2500;rename;rename:type:Checkout copy review;rename:save;wait:1200`"
+            },
+            {
+              "id": "long",
+              "label": "Long title (German): the place folds to its mark",
+              "kind": "long",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk:web;wait:600;say:Bezahlseite: Texte und Fehlermeldungen;wait:2500;rename;wait:300`; EQUIPE_LANG=de"
+            },
+            {
+              "id": "large",
+              "label": "150% text: the card inside the conversation pane",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk:web;wait:600;say:Fix the checkout page copy;wait:2500;zoom:150;wait:600;rename;wait:300`"
+            },
+            {
+              "id": "large-failed",
+              "label": "150% text · save failed: no key hints, the buttons whole",
+              "kind": "error",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk:web;wait:600;say:Fix the checkout page copy;wait:2500;zoom:150;wait:5000;rename;rename:type:Checkout copy review;rename:save;wait:600`; fake daemon stopped 8500 ms after the app opened"
             }
           ]
         },
@@ -1515,6 +1714,12 @@
               "label": "Daemon gone (banner over the last state)",
               "kind": "offline",
               "note": "shot by design/flows/shoot-desktop.py: script `wait:2500`; fake daemon stopped 4000 ms after the app opened"
+            },
+            {
+              "id": "offline-large",
+              "label": "Daemon gone at 150% text: one line, the retry whole",
+              "kind": "offline",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;zoom:150;wait:2500`; fake daemon stopped 4000 ms after the app opened; EQUIPE_LANG=ko"
             },
             {
               "id": "offline-first",

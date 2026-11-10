@@ -160,6 +160,18 @@ impl Estimate {
     }
 }
 
+/// The longest a conversation's title may be, in characters (what equipe
+/// makes up keeps under it too).
+pub const CONVERSATION_TITLE_MAX: usize = 40;
+
+/// A title as it is kept: its line breaks, tabs and runs of spaces made one
+/// space, trimmed. `None` when nothing is left or it is longer than
+/// [`CONVERSATION_TITLE_MAX`].
+pub fn conversation_title(raw: &str) -> Option<String> {
+    let title = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!title.is_empty() && title.chars().count() <= CONVERSATION_TITLE_MAX).then_some(title)
+}
+
 /// A conversation with the PM the person put away ([`Command::CloseConversation`]):
 /// off the list, its lines kept, to be opened again ([`Command::ReopenConversation`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -996,6 +1008,13 @@ pub enum Command {
     /// A conversation with the PM moves to another project (`None`: the
     /// whole squad): what is said there from now on is about it.
     MoveConversation { session: SessionId, project: Option<String> },
+    /// The person names a conversation with the PM in `squad` themselves:
+    /// `title`, at most [`CONVERSATION_TITLE_MAX`] characters once its spaces
+    /// are made one. Answered with [`Event::ConversationTitle`], or
+    /// [`Event::ConversationRenameRefused`] (no such conversation there, an
+    /// empty or too long name, a write that failed). A name given this way is
+    /// never replaced by one equipe makes up.
+    RenameConversation { squad: SquadName, session: SessionId, title: String },
     /// A conversation with the PM is put away: it leaves the list.
     CloseConversation { session: SessionId },
     /// A conversation put away is taken up again, as it was left: answered
@@ -2008,6 +2027,18 @@ pub enum Event {
     },
     /// A conversation with the PM moved to another project ([`Command::MoveConversation`]).
     LaneMoved { session: SessionId, project: Option<String> },
+    /// A conversation's title is now `title`: `named` by the person
+    /// ([`Command::RenameConversation`]) — it replaces whatever was shown — or
+    /// the topic equipe gave a conversation still without a name after its
+    /// first answered exchange (once; a screen shows it only where no title is).
+    ConversationTitle {
+        session: SessionId,
+        title: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        named: bool,
+    },
+    /// A [`Command::RenameConversation`] was not done; the title is as it was.
+    ConversationRenameRefused { session: SessionId },
     /// A conversation taken up again ([`Command::ReopenConversation`]): what
     /// was said in it, after its [`Event::LaneOpened`].
     ConversationBack {
@@ -2020,8 +2051,6 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         lines_at: Vec<Option<u64>>,
     },
-    /// The first answered exchange received its permanent topic title.
-    ConversationTitle { session: SessionId, title: String },
     /// The conversations put away, the latest first ([`Snapshot::put_away`]).
     PutAwayChanged { squad: SquadName, list: Vec<PutAway> },
     /// A member picked up a ticket. Its turns now run in the ticket's project —
@@ -2711,6 +2740,7 @@ impl Event {
             | Event::LaneMoved { session, .. }
             | Event::ConversationBack { session, .. }
             | Event::ConversationTitle { session, .. }
+            | Event::ConversationRenameRefused { session, .. }
             | Event::Steered { session, .. }
             | Event::CommandWatch { session, .. }
             | Event::Estimated { session, .. }

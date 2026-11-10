@@ -33,7 +33,8 @@ MODES = ["light", "dark"]
 # (flow/screen/state, fake daemon env, snapshot steps, options)
 # options: ask_telemetry (leave the usage question unanswered), no_daemon
 # (nothing to attach to), kill_daemon_ms (stop the daemon that long after
-# the app starts), lang, sizes, wait (ms after the steps, before shots).
+# the app starts), lang, sizes, wait (ms after the steps, before shots), at
+# ({width: steps} run after the window takes that width).
 STATES = []
 
 
@@ -82,9 +83,28 @@ state("conversation/chat/topic", "newtalk;say:Please make conversation titles ea
 state("conversation/chat/topic-ko", "newtalk;say:대화 제목을 다시 찾기 쉽게 만들어 줘;wait:1800", {"FAKE_SECONDS": "1", "FAKE_ASKS": "0"}, lang="ko", label="첫 교환의 한국어 주제 제목")
 state("conversation/chat/topic-large", "newtalk;say:대화 제목을 다시 찾기 쉽게 만들어 줘;wait:1800;zoom:150;wait:500", {"FAKE_SECONDS": "1", "FAKE_ASKS": "0"}, lang="ko", label="큰 글자의 주제 제목")
 state("conversation/chat/loading", "chat;say:Where are you up to?;wait:1500", {"FAKE_SECONDS": "12"})
+state("conversation/chat/activity-running", "chat;say:torture 7;wait:1800", {"FAKE_SECONDS": "1"}, label="One running work-details row with elapsed time")
+state("conversation/chat/activity-done", "chat;say:torture 9;wait:2500", {"FAKE_SECONDS": "1"}, kind="success", label="Folded work details after a recovered failure")
+state("conversation/chat/activity-open", "chat;say:torture 9;wait:2500;turn:5;wait:500", {"FAKE_SECONDS": "1"}, label="Opened work details with the recovered failure")
+state("conversation/chat/activity-done-ko", "chat;say:torture 9;wait:2500", {"FAKE_SECONDS": "1"}, kind="success", lang="ko", label="Folded work details · Korean")
+state("conversation/chat/activity-large", "chat;zoom:150;say:torture 9;wait:2500", {"FAKE_SECONDS": "1"}, kind="success", label="Folded work details · 150% text")
 state("conversation/chat/long", "chat;wait:800", {"FAKE_READING": "1"})
 state("conversation/chat/pictures", "chat;wait:800", {"FAKE_REPLY_IMAGES": "1"}, wait=2500)
 state("conversation/chat/ticket-cards", "chat;wait:800", {"FAKE_CARDS": "1"})
+state("conversation/chat/ticket-card-missing", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, at={1200: "hover:649,499;wait:1500", 760: "hover:553,428;wait:1500"}, label="A ticket card for a number not on the board: Not found")
+state("conversation/chat/ticket-card-missing-long", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, lang="de", at={1200: "hover:649,499;wait:1500", 760: "hover:553,428;wait:1500"}, label="A ticket card for a number not on the board, in German")
+state("conversation/chat/ticket-card-recovered", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42"}, at={1200: "hover:438,468;wait:1500", 760: "hover:341,397;wait:1500"}, label="A ticket card for a ticket the list missed: looked up, shown")
+state("conversation/chat/ticket-card-large", "chat;wait:800;zoom:in;zoom:in;wait:600;hover:425,510;wait:1500", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42"}, sizes=[(1200, 760)], label="Large text")
+# T-574: the card on a number in the person's own words, and on a ticket waiting for the person.
+state("conversation/chat/ticket-card-person", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, at={1200: "hover:837,358;wait:1500", 760: "hover:560,263;wait:1500"}, label="A ticket card on a number in the person's message")
+state("conversation/chat/ticket-card-waiting", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, at={1200: "hover:439,499;wait:1500", 760: "hover:343,428;wait:1500"}, label="A ticket card on a ticket waiting for the person")
+# At 150% the narrowest window has little room: the card keeps its gap and scrolls instead. One state each, as the lookup runs out in seconds.
+Z = "chat;wait:800;zoom:150;wait:600"
+state("conversation/chat/ticket-card-zoomed", Z, {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42"}, sizes=[(760, 600)], at={760: "hover:512,151;wait:1500"}, label="Zoomed to 150%, narrowest width: the card keeps its gap over the link")
+state("conversation/chat/ticket-card-zoomed-missing", Z, {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, sizes=[(760, 600)], at={760: "hover:639,308;wait:1500"}, label="Zoomed to 150%: Not found, with its mark")
+# One width each: the lookup runs out in a few seconds, and a resize takes longer than that.
+state("conversation/chat/ticket-card-looking", "chat;wait:800;hover:438,468;wait:700", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42", "FAKE_NO_LOOKUP": "1"}, sizes=[(1200, 760)], wait=0, label="A ticket card the list missed, while the daemon is still asked")
+state("conversation/chat/ticket-card-looking-narrow", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42", "FAKE_NO_LOOKUP": "1"}, sizes=[(760, 600)], at={760: "hover:341,397;wait:700"}, wait=0, label="The same, at the narrowest width")
 state("conversation/chat/ask-list", "chat;wait:800", {"FAKE_ASKLIST": "1"})
 state("conversation/chat/diagram", "chat;say:torture 5;wait:5000", {"FAKE_SECONDS": "1"}, label="Mermaid diagrams: one card each, tools hidden")
 # The last diagram sits over the reply's meta line, above the composer.
@@ -98,6 +118,9 @@ state("conversation/chat/cards-hover", "chat;wait:4000", {"FAKE_VISUALS": "1"}, 
 state("conversation/chat/cards-waiting", "chat;wait:1500", {"FAKE_VISUALS": "late"}, wait=200, kind="loading", label="Cards waiting for the daemon's picture: a place held")
 state("conversation/chat/cards-failed", "chat;wait:16500", {"FAKE_VISUALS": "none"}, wait=800, kind="error", label="No picture came: one line and Show source, folded")
 state("conversation/chat/markdown", "chat;say:torture 1;wait:6000", {"FAKE_SECONDS": "1"})
+# T-621: a narrow bar gives way in order (the context, the place to its mark, then the place); ⋯ and the buttons stay.
+state("conversation/chat/large", "chat;zoom:150;wait:1200", label="150% text: the header gives way, ⋯ and the buttons stay")
+state("conversation/chat/large-project", "newtalk:web;wait:800;zoom:150;wait:1200", lang="de", label="150% text, a project's new conversation in German: only the title and ⋯ keep their room")
 state("conversation/chat/summarizing", "chat;wait:800", {"FAKE_COMPACT": "long"})
 state("conversation/chat/summarize-failed", "chat;wait:3000", {"FAKE_COMPACT": "fail", "FAKE_COMPACT_AFTER": "500"})
 state("conversation/engine-switch/default", "chat", {"FAKE_USAGE": "claude86", "FAKE_ASKS": "0"})
@@ -107,6 +130,24 @@ state("conversation/chat/your-turn", "chat;wait:600", {"FAKE_TURN": "1", "FAKE_A
 state("conversation/composer/attachments", "chat;attach:{ROOT}/design/brand/logo-in-use.png,{ROOT}/design/guidelines.md;wait:600")
 state("conversation/composer/drop", "chat;drag:{ROOT}/design/guidelines.md;wait:400")
 state("conversation/composer/queued", "chat;say:First one;wait:200;say:Carry on with the second too;wait:600", {"FAKE_SECONDS": "12"})
+
+# ── Renaming a conversation (T-642's contract, built in T-643) ─────────────
+R = "newtalk:web;wait:600;say:Fix the checkout page copy;wait:2500"
+RS = [(1200, 760), (760, 760)]
+RF = {"FAKE_SECONDS": "1"}
+state("conversation/rename/entry-title", R, RF, sizes=RS, at={1200: "hover:440,21;wait:300;hover:442,21;wait:1200", 760: "hover:440,21;wait:300;hover:442,21;wait:1200"}, label="Entry · the header title on the pointer: its pencil, Rename")
+state("conversation/rename/entry-menu", R + ";rename:menu;wait:300", RF, sizes=RS, label="Entry · This conversation ⋯, Rename first")
+state("conversation/rename/entry-sidebar", R, RF, sizes=RS, at={1200: "hover:150,297;wait:300;hover:152,298;wait:1500", 760: "hover:150,297;wait:300;hover:152,298;wait:1500"}, label="Entry · the sidebar row on the pointer: rename and put away")
+state("conversation/rename/editing", R + ";rename;wait:300", RF, sizes=RS, label="Editing · the whole title selected")
+state("conversation/rename/composing", R + ";rename;rename:compose:카|피;wait:300", RF, sizes=RS, lang="ko", label="Korean IME composing: Return only commits it")
+state("conversation/rename/empty", R + ";rename;rename:type:   ;rename:save;wait:300", RF, sizes=RS, kind="error", label="Empty name · after Return")
+state("conversation/rename/too-long", R + ";rename;rename:type:Checkout copy, payment errors and the receipt email;wait:300", RF, sizes=RS, kind="error", label="Past 40 characters: nothing cut, how many to take out, Save waits")
+state("conversation/rename/saved", R + ";rename;rename:type:Checkout copy review;rename:save;wait:1200", RF, sizes=RS, kind="success", label="Saved: the header and the sidebar at once")
+state("conversation/rename/failed", R + ";wait:5000;rename;rename:type:Checkout copy review;rename:save;wait:600", RF, sizes=RS, kill_daemon_ms=8500, kind="error", label="Save failed, the Mac out of reach: the old title, what was typed, Try again")
+state("conversation/rename/refused", R + ";rename;rename:type:Checkout copy review;rename:save;wait:1200", {"FAKE_SECONDS": "1", "FAKE_RENAME": "refuse"}, sizes=RS, kind="error", label="Refused by the daemon: the old title back, the card again")
+state("conversation/rename/long", "newtalk:web;wait:600;say:Bezahlseite: Texte und Fehlermeldungen;wait:2500;rename;wait:300", RF, sizes=RS, lang="de", label="Long title (German): the place folds to its mark")
+state("conversation/rename/large", R + ";zoom:150;wait:600;rename;wait:300", RF, sizes=RS, label="150% text: the card inside the conversation pane")
+state("conversation/rename/large-failed", R + ";zoom:150;wait:5000;rename;rename:type:Checkout copy review;rename:save;wait:600", RF, sizes=RS, kill_daemon_ms=8500, kind="error", label="150% text · save failed: no key hints, the buttons whole")
 
 # ── Board & tickets ────────────────────────────────────────────────────────
 state("board/board/default", "menu:all", wait=1200)
@@ -207,6 +248,7 @@ state("studio/designer/waiting", "studio:205", {"FAKE_STUDIO": "blocked"}, wait=
 
 # ── Daemon disconnected ────────────────────────────────────────────────────
 state("connection/daemon/offline", "wait:2500", kill_daemon_ms=4000)
+state("connection/daemon/offline-large", "chat;zoom:150;wait:2500", kill_daemon_ms=4000, lang="ko", kind="offline", label="Daemon gone at 150% text: one line, the retry whole")
 state("connection/daemon/offline-first", "", no_daemon=True, home_squad=True, cli="fails", kind="offline")
 state("connection/install/default", "", no_daemon=True, cli="none")
 state("connection/chooser/default", "chooser;wait:500")
@@ -246,6 +288,7 @@ SCREENS = {
     "inbox/accept": ("Work to confirm", ["views/accept.rs", "accept.rs"], None),
     "inbox/stalled": ("A stalled run brought back (Resume · Requeue · Reassign)", ["views/peek.rs", "board.rs", "state.rs"], "In progress, its run stopped without a hand-in: why, what each way back keeps (branch, worktree, commit, uncommitted files, latest blocker), and each way asked back before it goes. Reassign lists the team to pick from (1–9). The board row and the sidebar's count read the same run state."),
     "conversation/chat": ("PM conversation", ["views/chat.rs", "views/header.rs", "views/sidebar.rs", "render/view.rs", "render/prose.rs", "render/raster.rs", "render/plugins.rs", "views/visuals.rs", "views/compact.rs", "views/asklist.rs", "convo.rs"], "Diagrams (```mermaid) are drawn by the app itself (render/raster.rs). HTML cards (```html card) are the daemon's PNGs of them, light or dark as the window is (`render/plugins.rs` Cards, `views/visuals.rs` card): a place held while drawn, the source folded when no picture comes, a click opens the page in the browser panel as a data: URL, View larger opens the picture big. The `cards*` states need Google Chrome for the fake daemon to draw them."),
+    "conversation/rename": ("Rename a conversation", ["views/rename.rs", "views/header.rs", "views/sidebar.rs"], "The app itself (T-643) on the fake daemon, a project's conversation begun for the purpose; 760 is a 760×760 window, so the sidebar row shows. Contract: design/specs/rename-conversation/spec.md (T-642)."),
     "conversation/engine-switch": ("Engine switching card (over the composer)", ["views/switching.rs", "switching.rs", "usage.rs"], "Error: Claude's week used up; Done: what equipe did in auto, with Undo."),
     "conversation/composer": ("Composer", ["views/composer.rs", "views/attached.rs", "attach.rs", "compose.rs"], None),
     "board/board": ("Board", ["views/tickets.rs", "views/ticket_card.rs", "views/sidebar.rs", "tickets.rs"], None),
@@ -411,11 +454,15 @@ def run_state(item, bin_dir, root):
     script.append(f"wait:{opts.get('wait', 900)}")
     for w, h in opts.get("sizes", SIZES):
         script += [f"size:{w}x{h}", "wait:700"]
-        # Steps taken again at each size (a pointer resting where the window
-        # now has the thing): `{X}` and `{Y}` from the state's `at(w, h)`.
+        # Steps taken again at each size: either `each` with `{X}`/`{Y}` from the
+        # state's `at(w, h)`, or `at` as the steps for each width (a pointer
+        # resting on text that moves with the width).
+        at = opts.get("at")
         if opts.get("each"):
-            x, y = opts["at"](w, h)
+            x, y = at(w, h)
             script += [s.replace("{X}", str(x)).replace("{Y}", str(y)) for s in opts["each"].split(";") if s] + ["wait:400"]
+        elif isinstance(at, dict):
+            script += [x for x in at.get(w, "").split(";") if x]
         for mode in MODES:
             script += [f"theme:{mode}", "wait:500", f"shot:{out}/{st}.{mode}.{w}.png"]
     script.append("quit")

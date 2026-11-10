@@ -848,10 +848,33 @@ fn conversation_row(shell: &Shell, lane: &crate::state::Lane, indent: f32, cx: &
         }))
         .child(mark)
         .child(row_title(p, title, on, false))
+        // On the pointer: rename (it opens the conversation, and the card under its title) and put away.
+        .child(
+            div()
+                .id(("conv-rename", id as usize))
+                .size(px(22.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.))
+                .invisible()
+                .group_hover(group.clone(), |s| s.visible())
+                .hover(move |s| s.bg(p.side_hover))
+                .role(Role::Button)
+                .aria_label(t!("talk.rename"))
+                .tip(p, t!("talk.rename"), None)
+                .child(crate::icons::icon(crate::icons::Icon::Pencil, 12., p.muted))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.open_side(Side::Conversation(id), window, cx);
+                    this.open_rename(id, None, window, cx);
+                })),
+        )
         .child(
             div()
                 .id(("conv-away", id as usize))
-                .size(px(20.))
+                .size(px(22.))
                 .flex_none()
                 .flex()
                 .items_center()
@@ -860,6 +883,8 @@ fn conversation_row(shell: &Shell, lane: &crate::state::Lane, indent: f32, cx: &
                 .invisible()
                 .group_hover(group, |s| s.visible())
                 .hover(move |s| s.bg(p.side_hover))
+                .role(Role::Button)
+                .aria_label(t!("sidebar.put_away"))
                 .tip(p, t!("sidebar.put_away"), None)
                 .child(crate::icons::icon(crate::icons::Icon::X, 12., p.muted))
                 .on_click(cx.listener(move |this, _, _, cx| {

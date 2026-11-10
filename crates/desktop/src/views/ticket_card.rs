@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use equipe_core::protocol::{Ticket, TicketId, TicketStatus};
+use equipe_core::protocol::{Command, Ticket, TicketId, TicketStatus};
 use equipe_core::t;
 use gpui_kit::base::ElementExt as _;
 use gpui_kit::component::{h_flex, v_flex};
@@ -52,7 +52,7 @@ const MARGIN: f32 = 8.;
 /// Slack around a link the pointer may wander in without leaving it.
 const SLACK: f32 = 2.;
 /// The size a card is taken to be before it was ever drawn.
-const GUESS: (f32, f32) = (WIDTH, 230.);
+const GUESS: (f32, f32) = (WIDTH, 300.);
 /// The excerpt: this many lines, then it fades out.
 const EXCERPT_LINES: f32 = 8.;
 /// How tall the fade over a cut edge of the card's text is.
@@ -203,11 +203,15 @@ pub struct Hover {
     dragging: bool,
     /// Where the pointer last was.
     pointer: Option<(f32, f32)>,
+    /// The link whose card was put away by Esc or an action: it stays shut
+    /// while the pointer keeps resting on it, and opens again only once the
+    /// pointer has left it and come back.
+    dismissed: Option<Target>,
 }
 
 impl Default for Hover {
     fn default() -> Self {
-        Self { phase: Phase::Idle, card: None, epoch: 0, scrolled: None, dragging: false, pointer: None }
+        Self { phase: Phase::Idle, card: None, epoch: 0, scrolled: None, dragging: false, pointer: None, dismissed: None }
     }
 }
 
@@ -217,14 +221,19 @@ impl Hover {
         if self.dragging || self.scrolled.is_some_and(|at| now.saturating_duration_since(at) < SCROLL_QUIET) {
             return false;
         }
+        // Put away on this link: the pointer resting (or wobbling) on it doesn't bring it back.
+        if self.dismissed.is_some_and(|d| d.id == target.id) {
+            return false;
+        }
         match self.phase {
             // A link on the card itself (in its excerpt) is not another card.
             Phase::Open { inside: true, .. } | Phase::Open { keys: true, .. } => false,
             // On its way to the card: a link it passes over isn't where it's going.
             Phase::Open { target: shown, .. } if shown.id != target.id && self.heading_in(shown) => false,
+            // The same link again: where it is now (the text may have reflowed under an open card).
             Phase::Open { target: shown, left, .. } if shown.id == target.id => {
-                self.phase = Phase::Open { target: shown, inside: false, left: None, keys: false };
-                left.is_some()
+                self.phase = Phase::Open { target, inside: false, left: None, keys: false };
+                left.is_some() || shown.anchor != target.anchor
             }
             // From one card to the next link: the next card at once.
             Phase::Open { .. } | Phase::Done { .. } => {
@@ -266,6 +275,9 @@ impl Hover {
     pub fn moved(&mut self, x: f32, y: f32, pressed: bool, now: Instant) -> bool {
         self.dragging = pressed;
         self.pointer = Some((x, y));
+        if self.dismissed.is_some_and(|d| !d.anchor.grown(SLACK).contains(x, y)) {
+            self.dismissed = None;
+        }
         let before = self.phase;
         match self.phase {
             Phase::Waiting { .. } if pressed => self.phase = Phase::Idle,
@@ -327,7 +339,17 @@ impl Hover {
         }
     }
 
-    /// Esc, or an action that went elsewhere: put it away. Whether it was there.
+    /// Esc, or an action that went elsewhere: put it away, and keep it away
+    /// while the pointer stays on its link. Whether it was there.
+    pub fn dismiss(&mut self) -> bool {
+        self.dismissed = match self.phase {
+            Phase::Open { target, .. } | Phase::Done { target, .. } | Phase::Waiting { target, .. } => Some(target),
+            Phase::Idle => self.dismissed,
+        };
+        self.close()
+    }
+
+    /// The card goes (the pointer left, a scroll, a press elsewhere). Whether it was there.
     pub fn close(&mut self) -> bool {
         let was = self.phase != Phase::Idle;
         self.phase = Phase::Idle;
@@ -466,6 +488,12 @@ pub struct TicketCard {
     result: Option<SharedString>,
     /// Branches whose size was asked for, as they looked then.
     asked: HashMap<TicketId, (Option<String>, String, Option<bool>)>,
+    /// Numbers the daemon was asked for because this window had no such ticket, and when.
+    looked: HashMap<TicketId, Instant>,
+    /// Whose card was last drawn (a number, and whether it is the ticket's or the small one): its size is that card's.
+    shape: Option<(TicketId, bool)>,
+    /// The card drawn was cut to its room, so its height says nothing of how tall it is.
+    capped: bool,
     /// Tickets acted on from a card: their undo shows off the work screens.
     acted: HashSet<TicketId>,
     /// Where the card's text, and its middle (when the window is too short
@@ -483,8 +511,13 @@ pub fn layer(cx: &mut Context<Shell>) -> AnyView {
     if let Some(layer) = cx.try_global::<Layer>() {
         return layer.0.clone().into();
     }
-    let shell = cx.entity().downgrade();
-    let card = cx.new(|_| TicketCard { shell, hover: Hover::default(), timer: None, drawn: Rc::new(Cell::new(None)), result: None, asked: HashMap::new(), acted: HashSet::new(), said: (0, ScrollHandle::new(), ScrollHandle::new()) });
+    let owner = cx.entity();
+    let shell = owner.downgrade();
+    let card = cx.new(|cx| {
+        // The daemon's answer to a lookup changes the shell, not the card: redraw with it.
+        cx.observe(&owner, |_, _, cx| cx.notify()).detach();
+        TicketCard { shell, hover: Hover::default(), timer: None, drawn: Rc::new(Cell::new(None)), result: None, asked: HashMap::new(), looked: HashMap::new(), shape: None, capped: false, acted: HashSet::new(), said: (0, ScrollHandle::new(), ScrollHandle::new()) }
+    });
     cx.set_global(Layer(card.clone()));
     gpui_kit::base::text::on_link_hover(cx, |url, bounds, _, cx| {
         if let Some(id) = url.strip_prefix(crate::convo::TICKET_SCHEME).and_then(|n| n.parse().ok()) {
@@ -581,7 +614,7 @@ pub fn key(shell: &mut Shell, event: &KeyDownEvent, window: &mut Window, cx: &mu
     let k = &event.keystroke;
     if k.key == "escape" {
         card.update(cx, |c, cx| {
-            c.hover.close();
+            c.hover.dismiss();
             c.changed(cx);
         });
         return true;
@@ -637,7 +670,7 @@ impl TicketCard {
                 self.result = Some(words.into());
             }
             None => {
-                self.hover.close();
+                self.hover.dismiss();
             }
         }
         self.changed(cx);
@@ -705,6 +738,7 @@ impl Render for TicketCard {
         let root = root.children(undo_toast(shell, &self.acted, &self.shell));
         let Some(target) = self.hover.shown() else {
             self.drawn.set(None);
+            self.shape = None;
             return root;
         };
         let p = shell.palette;
@@ -721,6 +755,7 @@ impl Render for TicketCard {
         }
         let shots = super::visuals::Shots::of(shell, self.shell.clone(), cx);
         let held = shell.shots.clone();
+        let mut wake = None;
         let body = match found {
             Some(t) => {
                 // Each card opens at the top of its text.
@@ -729,21 +764,48 @@ impl Render for TicketCard {
                 }
                 content(shell, t, self.result.clone(), &self.shell, &this, &shots, (&self.said.1, &self.said.2))
             }
-            None => missing(p, target.id),
+            None => {
+                // Not in this window's list is not "not on the board": ask the daemon, which sends the ticket if it has it.
+                let at = *self.looked.entry(target.id).or_insert_with(|| {
+                    shell.send_command(Command::TicketHistory { squad: shell.model.squad.clone(), ticket: target.id });
+                    Instant::now()
+                });
+                let gone = shell.model.absent.contains(&target.id) || at.elapsed() >= LOOK_FOR;
+                if !gone {
+                    wake = Some(at + LOOK_FOR);
+                }
+                missing(p, target.id, gone)
+            }
         };
         let found = found.is_some();
+        if let Some(at) = wake {
+            crate::beat::Beat::wake(cx.entity_id(), at, cx);
+        }
         // Its pictures, asked for once the window's state is let go.
         super::visuals::flush(&held, &self.shell, cx);
         // Placed by its size as last drawn; drawn again when that changes.
         let viewport = window.viewport_size();
-        let size = self.drawn.get().map_or(if found { GUESS } else { (200., 36.) }, |r| (r.w, r.h));
-        let (x, y, side) = place(target.anchor, size, (f32::from(viewport.width), f32::from(viewport.height)), target.prefer);
+        let window_size = (f32::from(viewport.width), f32::from(viewport.height));
+        // What was drawn belongs to the card it was: "Looking…" is not the ticket's card, whose side it must not pick.
+        if self.shape != Some((target.id, found)) {
+            self.shape = Some((target.id, found));
+            self.drawn.set(None);
+            self.capped = false;
+        }
+        let natural = match self.drawn.get() {
+            Some(r) => (r.w, if self.capped { tallest(window_size.1) } else { r.h }),
+            None if found => GUESS,
+            None => (200., 36.),
+        };
+        let ((x, y, side), room) = fit_for(target.anchor, natural, window_size, target.prefer, found);
+        // Cut to the room it was given, it stays "cut" next time: the side is picked by what it would be uncut.
+        self.capped = self.drawn.get().is_some_and(|r| r.h >= room - 0.5);
         let drawn = self.drawn.clone();
         let card = div()
             .id(("ticket-card", target.id as u64))
             .relative()
             .occlude()
-            .w(px(if found { WIDTH } else { 220. }))
+            .when(found, |c| c.w(px(WIDTH))).when(!found, |c| c.min_w(px(MISSING_MIN)))
             .rounded(px(10.))
             .bg(p.raised)
             .border_1()
@@ -754,7 +816,7 @@ impl Render for TicketCard {
             // No taller than the window: its middle scrolls instead.
             .flex()
             .flex_col()
-            .max_h(px(tallest(f32::from(viewport.height))))
+            .max_h(px(tallest(window_size.1).min(room).max(MIN_ROOM)))
             .child(body)
             // A wheel on the card is the card's, at its ends too: what is
             // under it (the conversation) never scrolls from here.
@@ -771,8 +833,43 @@ impl Render for TicketCard {
     }
 }
 
-/// "T-999 · Not found": a number the squad has no ticket for.
-fn missing(p: Palette, id: TicketId) -> AnyElement {
+/// Where a card of `natural` size goes for a link at `anchor`, and the height it may keep there: the
+/// side is picked by the card as tall as it wants, then its height is held to that side's room.
+fn fit(anchor: Rect, natural: (f32, f32), window: (f32, f32), prefer: Side) -> ((f32, f32, Side), f32) {
+    let (_, _, side) = place(anchor, natural, window, prefer);
+    let room = room_on(anchor, window.1, side);
+    (place(anchor, (natural.0, natural.1.min(room)), window, prefer), room)
+}
+
+/// [`fit`] for the card of a ticket, or (`found` false) for the small one standing in for it: it takes the
+/// side the ticket's card would, so the answer grows in the place the look was, and never lands on the next line.
+fn fit_for(anchor: Rect, natural: (f32, f32), window: (f32, f32), prefer: Side, found: bool) -> ((f32, f32, Side), f32) {
+    if found {
+        return fit(anchor, natural, window, prefer);
+    }
+    let (_, _, side) = place(anchor, GUESS, window, prefer);
+    fit(anchor, natural, window, side)
+}
+
+/// The room between the window's margin and the link, on `side` of it.
+fn room_on(anchor: Rect, window_h: f32, side: Side) -> f32 {
+    match side {
+        Side::Above => anchor.y - GAP - MARGIN,
+        _ => window_h - MARGIN - (anchor.bottom() + GAP),
+    }
+}
+
+/// Least height a card keeps when there is little room: its header and a line.
+const MIN_ROOM: f32 = 80.;
+
+/// How narrow the "Not found" / "Looking…" card goes.
+const MISSING_MIN: f32 = 150.;
+
+/// How long the daemon has to answer before a number reads "Not found" (an older one may not).
+const LOOK_FOR: Duration = Duration::from_secs(4);
+
+/// "T-999 · Not found": a number the squad has no ticket for — "Looking…" until the daemon says so.
+fn missing(p: Palette, id: TicketId, gone: bool) -> AnyElement {
     h_flex()
         .h(px(34.))
         .px_3()
@@ -781,7 +878,9 @@ fn missing(p: Palette, id: TicketId) -> AnyElement {
         .text_size(px(SMALL))
         .child(div().font_family(MONO).text_size(px(12.)).text_color(p.text2).child(format!("T-{id}")))
         .child(div().text_color(p.muted).child("·"))
-        .child(div().text_color(p.muted).child(t!("card.not_found")))
+        // Looking turns; gone is a still mark: the two read apart without the words.
+        .child(if gone { crate::icons::icon(crate::icons::Icon::XCircle, 12., p.muted).into_any_element() } else { crate::motion::spinner(11., p.muted) })
+        .child(div().text_color(p.muted).child(if gone { t!("card.not_found") } else { t!("card.loading") }))
         .into_any_element()
 }
 
@@ -1134,7 +1233,7 @@ mod tests {
 
     use equipe_core::protocol::{TicketId, TicketStatus};
 
-    use super::{Act, CLOSE_AFTER, Hover, OPEN_AFTER, Phase, RESULT_FOR, Rect, SCROLL_QUIET, Side, Target, act_for_key, acts, done_words, place};
+    use super::{Act, CLOSE_AFTER, Hover, OPEN_AFTER, Phase, RESULT_FOR, Rect, SCROLL_QUIET, Side, Target, act_for_key, acts, done_words, fit, fit_for, place, tallest};
     use crate::board::MergeWay;
 
     const WIN: (f32, f32) = (1200., 800.);
@@ -1145,6 +1244,37 @@ mod tests {
 
     fn target(id: TicketId) -> Target {
         Target { id, anchor: link(100., 100.), prefer: Side::Below }
+    }
+
+    #[test]
+    fn a_card_put_away_by_esc_stays_shut_while_the_pointer_rests_on_its_link() {
+        let t0 = Instant::now();
+        let mut h = Hover::default();
+        h.moved(110., 110., false, t0);
+        h.enter(target(42), t0);
+        h.tick(t0 + OPEN_AFTER);
+        assert!(h.shown().is_some());
+        assert!(h.dismiss(), "Esc put it away");
+        // The pointer wobbles a point or two on the same link: every move reports the link again.
+        let mut at = t0 + OPEN_AFTER;
+        for (x, y) in [(111., 110.), (112., 111.), (111., 112.)] {
+            at += Duration::from_millis(40);
+            h.moved(x, y, false, at);
+            assert!(!h.enter(target(42), at), "the same link, still resting on it");
+            assert!(!h.tick(at + OPEN_AFTER));
+            assert_eq!(h.phase, Phase::Idle);
+        }
+        // Another link opens its own card.
+        let other = Target { id: 51, anchor: link(300., 100.), prefer: Side::Below };
+        h.moved(310., 110., false, at);
+        assert!(h.enter(other, at));
+        h.close();
+        // Off the link and back: its card again, after the usual wait.
+        h.moved(110., 300., false, at);
+        h.moved(110., 110., false, at);
+        assert!(h.enter(target(42), at));
+        assert!(h.tick(at + OPEN_AFTER));
+        assert_eq!(h.shown().map(|t| t.id), Some(42));
     }
 
     #[test]
@@ -1159,6 +1289,38 @@ mod tests {
         // No room either way: the side with more, kept inside the window.
         let (_, y, side) = place(link(100., 420.), (380., 900.), WIN, Side::Below);
         assert_eq!((y, side), (8., Side::Above));
+    }
+
+    #[test]
+    fn a_card_picks_its_side_by_its_full_height_not_by_the_height_it_was_cut_to() {
+        // 760×600 at 100%: the link has 300 above and 270 below; the ticket's card wants about 400.
+        let anchor = link(100., 300.);
+        let win = (760., 600.);
+        // "Looking…" first (36 tall) goes below; the ticket's card, not yet drawn, is the GUESS and flips up.
+        assert_eq!(fit(anchor, (200., 36.), win, Side::Below).0.2, Side::Below);
+        let ((_, y, side), room) = fit(anchor, (380., 400.), win, Side::Below);
+        assert_eq!(side, Side::Above);
+        // Held to the room above, its foot a gap over the link.
+        assert!((y + room - (300. - 6.)).abs() < 0.01, "{y} {room}");
+        // Drawn at that cut height (capped), the next frame still picks the same side.
+        let ((_, _, again), _) = fit(anchor, (380., tallest(600.)), win, Side::Below);
+        assert_eq!(again, Side::Above);
+        // A card cut shorter than the room below, taken as if natural, sinks under the link: the regression.
+        let ((_, _, sunk), _) = fit(anchor, (380., 170.), win, Side::Below);
+        assert_eq!(sunk, Side::Below);
+    }
+
+    #[test]
+    fn looking_and_not_found_take_the_side_the_ticket_card_will_take() {
+        // 760×600: 300 above the link, 270 below; the ticket card (about 300) goes above.
+        let (anchor, win) = (link(100., 300.), (760., 600.));
+        let ticket = fit_for(anchor, (380., 400.), win, Side::Below, true).0;
+        let looking = fit_for(anchor, (200., 36.), win, Side::Below, false).0;
+        assert_eq!((ticket.2, looking.2), (Side::Above, Side::Above));
+        // Its foot a gap over the link, as the ticket's card's is: the answer grows upward from the same edge.
+        assert!((looking.1 + 36. - (300. - 6.)).abs() < 0.01, "{looking:?}");
+        // Where the ticket's card fits below (a link high up), the small one goes below too.
+        assert_eq!(fit_for(link(100., 40.), (200., 36.), win, Side::Below, false).0.2, Side::Below);
     }
 
     #[test]

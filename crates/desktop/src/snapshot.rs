@@ -277,6 +277,36 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                 }),
                 // A new conversation with the PM (`newtalk` the squad's, `newtalk:<project>`).
                 "newtalk" => shell.update(cx, |shell, cx| shell.start_conversation((!arg.is_empty()).then(|| arg.clone()), window, cx)),
+                // Renaming the conversation open (`views::rename`): `rename` (its card, as the title's click),
+                // `rename:menu` (its ⋯, Rename first), `rename:type:<words>` (the field's words; `|` a line break,
+                // as pasted), `rename:compose:<committed>|<composing>` (an IME mid-word), `rename:save`, `rename:esc`.
+                "rename" => shell.update(cx, |shell, cx| {
+                    let (how, words) = arg.split_once(':').unwrap_or((arg.as_str(), ""));
+                    match how {
+                        "" => {
+                            if let Some(talk) = shell.model.talk {
+                                shell.open_rename(talk, None, window, cx);
+                            }
+                        }
+                        "menu" => shell.toggle_popover(crate::views::board::Popover::Talk, cx),
+                        "type" | "compose" => {
+                            if let Some(input) = shell.rename.as_ref().map(|r| r.input.clone()) {
+                                let (done, marked) = if how == "compose" { words.split_once('|').unwrap_or((words, "")) } else { (words, "") };
+                                let done = done.replace('|', "\n");
+                                input.update(cx, |s, cx| {
+                                    s.set_value(done.clone(), window, cx);
+                                    s.set_selected_range(done.len()..done.len(), cx);
+                                    if !marked.is_empty() {
+                                        gpui_kit::EntityInputHandler::replace_and_mark_text_in_range(s, None, marked, None, window, cx);
+                                    }
+                                });
+                            }
+                        }
+                        "save" => shell.rename_save(window, cx),
+                        "esc" => shell.rename_close(window, cx),
+                        _ => eprintln!("rename: {how}?"),
+                    }
+                }),
                 "esc" => shell.update(cx, |shell, cx| shell.interrupt(cx)),
                 "up" | "down" => shell.update(cx, |shell, cx| {
                     shell.on_composer_key(&verb, &Modifiers::default(), window, cx);

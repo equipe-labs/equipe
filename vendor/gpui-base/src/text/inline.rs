@@ -1132,16 +1132,22 @@ impl Element for Inline {
 
                     let updated =
                         Self::link_range_for_position(&text_layout, &links, event.position);
+                    // equipe: report the link on every unpressed move, not only
+                    // the transition onto it. A TextView can be laid out or
+                    // repainted under a still pointer with this link already
+                    // recorded as hovered; waiting for another transition then
+                    // left the conversation's ticket card unopened. The card's
+                    // state machine deduplicates repeated reports and keeps the
+                    // original hover delay.
+                    if event.pressed_button.is_none()
+                        && let Some(range) = updated.clone()
+                        && let Some((_, link)) = links.iter().find(|(r, _)| *r == range)
+                    {
+                        let bounds = Self::link_row_bounds(&text_layout, &range, event.position);
+                        handle_link_hover(&link.url, bounds, window, cx);
+                    }
                     if hovered_link != updated {
                         hovered_link = updated;
-                        // equipe: the link the pointer came onto, and its row under it.
-                        if event.pressed_button.is_none()
-                            && let Some(range) = hovered_link.clone()
-                            && let Some((_, link)) = links.iter().find(|(r, _)| *r == range)
-                        {
-                            let bounds = Self::link_row_bounds(&text_layout, &range, event.position);
-                            handle_link_hover(&link.url, bounds, window, cx);
-                        }
                         cx.notify(current_view);
                     }
                 }

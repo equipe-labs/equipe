@@ -40,6 +40,7 @@ use crate::icons::{Icon, icon};
 use crate::motion;
 use crate::theme::{BODY, BODY_LINE, CONTROL, ICON_SM, MEASURE, META, META_LINE, MONO, Palette, R_LG, R_MD, R_SM, SMALL, SMALL_LINE, TAIL_ROOM};
 use crate::tips::tip;
+use crate::tips::TipExt as _;
 
 /// Where text starts inside the column: the cards' and the composer's inner
 /// padding plus their border. Replies, banners and card text all start here;
@@ -1727,6 +1728,8 @@ fn action_button(p: Palette, id: (&'static str, u64), glyph: Icon, label: &'stat
     let b = div()
         .id(id)
         .size(px(24.))
+        // Its own room at any text size: the reply's two buttons never touch (T-621).
+        .flex_none()
         .flex()
         .items_center()
         .justify_center()
@@ -1771,10 +1774,13 @@ fn disclosure_head(rows: &Rows, id: (&'static str, u64), part: u32, key: u64, fi
         .line_height(px(SMALL_LINE))
         .text_color(p.muted)
         .cursor_pointer()
+        .role(Role::Button)
         .hover(move |s| if fill { s.bg(p.wash) } else { s.text_color(p.text2) })
         .when(focused, |d| {
-            let out = if fill { 0. } else { -6. };
-            d.child(div().absolute().top(px(if fill { 0. } else { -1. })).bottom(px(if fill { 0. } else { -1. })).left(px(out)).right(px(out)).rounded(px(R_SM)).border_1().border_color(p.accent))
+            // A quiet line's ring: a little room around its words, its sides
+            // close to the column's (where an opened card's edges are).
+            let (side, edge) = if fill { (0., 0.) } else { (-4., -3.) };
+            d.child(div().absolute().top(px(edge)).bottom(px(edge)).left(px(side)).right(px(side)).rounded(px(R_SM)).border_1().border_color(p.accent))
         })
         .on_click(move |_, window, cx| {
             clicked.focus(window, cx);
@@ -1849,10 +1855,9 @@ fn named_ticket(text: Option<String>) -> Option<u32> {
     text[at + 2..at + len].parse().ok()
 }
 
-/// A group of tool calls: one quiet line — the call under way, the one call,
-/// or what they did counted — opening to a card of the calls, each a line
-/// that opens to its command, output or change. A failed call is a group of
-/// its own, open, in red.
+/// One assistant turn's tool activity: while it runs, one quiet line names
+/// the current call; once done, one localized work-details line stays folded.
+/// Opening it reuses the calls' command, output, diff and document views.
 fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mut App) -> AnyElement {
     let p = rows.p;
     let t = rows.tones;
@@ -1861,7 +1866,7 @@ fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mu
     let single = lines.len() == 1;
     // One call: the group is the call, and opens to what it has.
     let openable = !single || activity::has_more(&lines[0]);
-    let open = openable && (rows.expanded || rows.is_open(key, PART_GROUP, failed));
+    let open = openable && (rows.expanded || rows.is_open(key, PART_GROUP, activity_opens_by_default(status)));
     let progress = motion::openness(("group-open", key), open, window, cx);
     let tone = if failed { t.danger } else { p.muted };
     let mark: Option<AnyElement> = match status {
@@ -1871,14 +1876,37 @@ fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mu
         Status::Declined => Some(icon(Icon::Info, 13., p.muted).into_any_element()),
         _ => None,
     };
-    let title: AnyElement = match activity::title(lines) {
-        activity::Title::Call { phrase, object } => h_flex()
-            .min_w_0()
-            .gap(px(6.))
-            .child(div().flex_none().child(phrase))
-            .child(linked(rows, ("group-object", key), &object, if failed { t.danger } else { p.text2 }, false))
-            .into_any_element(),
-        activity::Title::Summary(summary) => div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(summary).into_any_element(),
+    // The same head while it runs and once done ("Work details · 3 steps"),
+    // so the row doesn't turn into another one as the turn ends. It is short
+    // and never cut; what follows it gives way first.
+    let label = div().flex_none().whitespace_nowrap().child(t!("chat.activity", count = lines.len()));
+    let dot = || div().flex_none().child("·");
+    let title: AnyElement = match status {
+        Status::Running => {
+            let now: AnyElement = match activity::title(lines) {
+                activity::Title::Call { phrase, object } => h_flex()
+                    .min_w_0()
+                    .flex_shrink(1.)
+                    .gap(px(6.))
+                    .child(div().flex_none().text_color(p.text2).child(phrase))
+                    .child(linked(rows, ("group-object", key), &object, p.text2, false))
+                    .into_any_element(),
+                activity::Title::Summary(summary) => div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(p.text2).child(summary).into_any_element(),
+            };
+            h_flex().min_w_0().flex_shrink(1.).gap(px(6.)).child(label).child(dot()).child(now).into_any_element()
+        }
+        _ => {
+            // A failure the turn got past: said quietly on the folded row, never in red.
+            let retried = activity::recovered(lines);
+            h_flex()
+                .min_w_0()
+                .flex_shrink(1.)
+                .gap(px(6.))
+                .child(label)
+                // Its dot goes with it when there is no room, not left hanging.
+                .when(retried > 0, |d| d.child(div().min_w_0().truncate().child(format!("·  {}", t!("chat.activity_retried", count = retried)))))
+                .into_any_element()
+        }
     };
     let one = single.then(|| &lines[0]);
     // A document read or written: a look at it in the panel, one click away.
@@ -1919,22 +1947,35 @@ fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mu
         .children(doc)
         .children(one.and_then(diff_stat).map(|(a, r)| stat_chip(rows, a, r)))
         .children(one.and_then(|l| l.exit.filter(|_| failed)).map(|code| div().flex_none().px_1().rounded(px(4.)).bg(t.danger_bg).text_size(px(META)).text_color(t.danger).child(t!("chat.exit_code", code = code))))
-        .children(activity::total_ms(lines).map(|ms| div().flex_none().text_size(px(META)).text_color(p.muted).child(tools::duration(ms))))
         // A call under way counts its seconds, so a long one doesn't look stuck.
+        // Done, the turn's time is said once, under the reply; each step keeps its own inside.
         .children(
             rows.step_since
                 .filter(|_| status == Status::Running)
                 .map(|since| since.elapsed())
                 .filter(|took| took.as_secs() >= 1)
-                .map(|took| div().flex_none().text_size(px(META)).text_color(p.muted).child(crate::convo::elapsed(took))),
+                .map(|took| h_flex().flex_none().gap(px(6.)).text_size(px(META)).text_color(p.muted).child(dot()).child(crate::convo::elapsed(took))),
         )
         .when(openable, |h| h.child(chevron(p.muted, progress)));
     let head = if !openable { head.cursor_default() } else { head };
+    // What the turn did, counted as it used to be said ("Read 1 file · Edited 1 file"),
+    // and the time its steps took, on the pointer.
+    let head = match status {
+        Status::Running => head,
+        _ => {
+            let did = match activity::title(lines) {
+                activity::Title::Summary(summary) => summary,
+                activity::Title::Call { phrase, object } => format!("{phrase} {object}"),
+            };
+            let took = activity::total_ms(lines).map(|ms| format!(" · {}", tools::duration(ms))).unwrap_or_default();
+            head.tip(p, format!("{did}{took}"), None)
+        }
+    };
     let head = super::ticket_card::space_opens(head, named_ticket(one.map(|l| l.text())));
     let body = (progress > 0.).then(|| {
         let inner = match one {
             Some(line) => call_body(rows, key, 0, line, failed, window, cx),
-            None => card(rows, key, lines, window, cx),
+            None => card(rows, key, lines, !failed, window, cx),
         };
         motion::Reveal::new(("group-body", key), progress, div().opacity(progress).pt_1().pb_1().child(inner).into_any_element())
     });
@@ -1950,6 +1991,12 @@ fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mu
     v_flex().child(head).children(watch).children(body).into_any_element()
 }
 
+/// A final failure opens so it cannot be missed. Recovered failures have a
+/// successful final status and start folded with the rest of completed work.
+fn activity_opens_by_default(status: Status) -> bool {
+    status == Status::Failed
+}
+
 /// `+12 −3`, an edit's change counted.
 fn diff_stat(line: &ToolLine) -> Option<(usize, usize)> {
     let card = tools::diff_card(line.diff.as_deref()?)?;
@@ -1961,24 +2008,28 @@ fn stat_chip(rows: &Rows, added: usize, removed: usize) -> impl IntoElement {
 }
 
 /// The calls of an open group, one line each, hairlines between.
-fn card(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mut App) -> AnyElement {
+/// `recovered`: the turn went on past its failures, so they are told quietly
+/// (amber, folded), not as a failure the person has to see to.
+fn card(rows: &Rows, key: u64, lines: &[ToolLine], recovered: bool, window: &mut Window, cx: &mut App) -> AnyElement {
     let p = rows.p;
     v_flex()
         .rounded(px(R_LG))
         .border_1()
         .border_color(p.hair)
-        .children(lines.iter().enumerate().map(|(at, line)| call_row(rows, key, at as u32, line, at > 0, at + 1 == lines.len(), window, cx)))
+        .children(lines.iter().enumerate().map(|(at, line)| call_row(rows, key, at as u32, line, at > 0, at + 1 == lines.len(), recovered, window, cx)))
         .into_any_element()
 }
 
 /// A call in an open group: its verb phrase, what it acted on, how long it
 /// took; opening it shows the rest.
 #[allow(clippy::too_many_arguments)]
-fn call_row(rows: &Rows, key: u64, at: u32, line: &ToolLine, rule: bool, last: bool, window: &mut Window, cx: &mut App) -> AnyElement {
+fn call_row(rows: &Rows, key: u64, at: u32, line: &ToolLine, rule: bool, last: bool, recovered: bool, window: &mut Window, cx: &mut App) -> AnyElement {
     let p = rows.p;
     let t = rows.tones;
     let more = activity::has_more(line);
-    let failed = line.status == Status::Failed;
+    let missed = line.status == Status::Failed;
+    // Red only for a failure that stood: one the turn got past is amber and starts folded.
+    let failed = missed && !recovered;
     let running = line.status == Status::Running;
     let part = PART_ROW + at;
     let open = more && rows.is_open(key, part, failed);
@@ -1994,12 +2045,15 @@ fn call_row(rows: &Rows, key: u64, at: u32, line: &ToolLine, rule: bool, last: b
         .when(last && progress == 0., |h| h.rounded_b(inner))
         .when(!more, |h| h.cursor_default())
         .children(running.then(|| motion::spinner(11., p.muted)))
-        .children(failed.then(|| icon(Icon::Alert, 12., t.danger)))
+        .children(missed.then(|| icon(Icon::Alert, 12., if failed { t.danger } else { t.warning })))
         .children((line.status == Status::Declined).then(|| icon(Icon::Info, 12., p.muted)))
         .child(div().flex_none().text_color(if failed { t.danger } else { p.muted }).child(activity::line_phrase(line, running)))
         .child(linked(rows, ("call-object", key << 8 | at as u64), &line.text(), p.text2, true))
         .children(diff_stat(line).map(|(a, r)| stat_chip(rows, a, r)))
-        .children(line.exit.filter(|_| failed).map(|code| div().flex_none().px_1().rounded(px(4.)).bg(t.danger_bg).text_size(px(META)).text_color(t.danger).child(t!("chat.exit_code", code = code))))
+        .children(line.exit.filter(|_| missed).map(|code| {
+            let (bg, fg) = if failed { (t.danger_bg, t.danger) } else { (p.code_bg, p.muted) };
+            div().flex_none().px_1().rounded(px(4.)).bg(bg).text_size(px(META)).text_color(fg).child(t!("chat.exit_code", code = code))
+        }))
         .children(line.ms.filter(|_| !running).map(|ms| div().flex_none().text_size(px(META)).text_color(p.muted).child(tools::duration(ms))))
         .when(more, |h| h.child(chevron(p.muted, progress)));
     let head = super::ticket_card::space_opens(head, named_ticket(Some(line.text())));
@@ -2946,6 +3000,13 @@ mod tests {
         let said = vec![Block::User("research".into()), Block::Note(stopped), Block::User("why did it stop?".into())];
         assert!(!super::resumable(&said, 1), "they spoke since: their words lead");
         assert!(!super::resumable(&[Block::Note("other".into())], 0));
+    }
+
+    #[test]
+    fn completed_activity_folds_but_a_final_failure_opens() {
+        assert!(!super::activity_opens_by_default(crate::convo::Status::Done));
+        assert!(!super::activity_opens_by_default(crate::convo::Status::Running));
+        assert!(super::activity_opens_by_default(crate::convo::Status::Failed));
     }
 
     use super::{Block, changed, escape_markdown, find_hits, occurrences, turn_ends};
