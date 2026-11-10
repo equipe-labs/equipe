@@ -21,6 +21,57 @@ use crate::tips::TipExt as _;
 pub const HEIGHT: f32 = super::sidebar::STRIP;
 /// Past this many projects the list offers a search.
 const SEARCH_FROM: usize = 7;
+/// The least a conversation's title keeps while the bar is narrow.
+const TITLE_MIN: f32 = 96.;
+/// How much wider than where it last gave way the bar must be to show it again.
+const GROW: f32 = 24.;
+/// The empty room between the words and the buttons, at its least.
+const GAP_MIN: f32 = 8.;
+
+/// What the header leaves out while it is narrow, in the order it gives way
+/// (T-621, the rule in design/specs/rename-conversation/spec.md): 0 nothing;
+/// 1 the context figure (gone, not cut to "con…"); 2 the project folded to
+/// its mark, its name on the pointer; 3 the project and its slash too. The
+/// title keeps at least [`TITLE_MIN`]; ⋯ and the buttons always stay.
+///
+/// Measured as it is drawn: the room left between the words and the buttons
+/// is down to its least when the words were squeezed, and the bar's width
+/// when it gave way says when it may show more again.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Fit {
+    pub level: u8,
+    at: [f32; 3],
+    key: u64,
+}
+
+impl Fit {
+    /// The deepest level.
+    const ALL: u8 = 3;
+
+    /// One frame's measure: what the bar shows (`key`), its `width`, and
+    /// whether its words were `squeezed`. True when the level changed.
+    pub fn measure(&mut self, key: u64, width: f32, squeezed: bool) -> bool {
+        if key != self.key {
+            let was = self.level;
+            *self = Fit { key, ..Fit::default() };
+            return was != 0;
+        }
+        let before = self.level;
+        if squeezed && self.level < Self::ALL {
+            self.at[self.level as usize] = width;
+            self.level += 1;
+        } else if self.level > 0 && width > self.at[self.level as usize - 1] + GROW {
+            self.level -= 1;
+        }
+        self.level != before
+    }
+}
+
+/// About how wide `text` is drawn at `size` (Latin narrower than CJK): enough
+/// to keep a short title from being given room it doesn't need.
+fn text_width(text: &str, size: f32) -> f32 {
+    text.chars().map(|c| if c.is_ascii() { size * 0.6 } else { size * 1.05 }).sum()
+}
 
 pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
@@ -70,10 +121,12 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             )
             .children(open.then(|| members(shell, cx)))
     });
-    let context = member.and_then(|m| m.context).map(|c| {
+    let fit = shell.header_fit.get();
+    // Whole, or not at all: the first thing a narrow bar gives up.
+    let context = member.and_then(|m| m.context).filter(|_| fit.level < 1).map(|c| {
         div()
-            .min_w_0()
-            .truncate()
+            .flex_none()
+            .whitespace_nowrap()
             .text_size(px(SMALL))
             .text_color(if c >= 50 { p.text2 } else { p.muted })
             .when(c >= 50, |d| d.font_weight(FontWeight::SEMIBOLD))
@@ -96,11 +149,40 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     // A conversation with the PM: where it is, as a path — its project (to
     // its page), then its name — and its ⋯. Who it is with goes without saying.
     let talk = match talk_title.clone() {
-        Some(title) => Some(crumb(shell, title, true, cx)),
+        Some(title) => Some(crumb(shell, title, true, fit.level, cx)),
         // The PM's own conversation: the same path, nothing to move or put away.
-        None if model.with_pm() => Some(crumb(shell, t!("sidebar.pm_talk").into(), false, cx)),
+        None if model.with_pm() => Some(crumb(shell, t!("sidebar.pm_talk").into(), false, fit.level, cx)),
         None => None,
     };
+    // What the bar holds: when it changes, what it leaves out is worked out afresh.
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (&talk_title, model.talk_project(), &model.focus, member.map(|m| (&m.name, m.context.is_some())), ticket.map(|t| &t.title), crate::state::screen_line(&model.desktop, &model.squad).is_some()).hash(&mut h);
+        h.finish()
+    };
+    let (width, measured) = (std::rc::Rc::new(std::cell::Cell::new(0f32)), shell.header_fit.clone());
+    let body = shell.panes.body.entity_id();
+    let bar = {
+        let width = width.clone();
+        canvas(move |b, _, _| width.set(f32::from(b.size.width)), |_, _, _, _| {}).absolute().size_full()
+    };
+    let gap = crate::ui::title_gap().relative().child(
+        canvas(
+            move |b, window, cx| {
+                let mut fit = measured.get();
+                let changed = fit.measure(key, width.get(), f32::from(b.size.width) <= GAP_MIN + 0.5);
+                measured.set(fit);
+                if changed {
+                    window.refresh();
+                    cx.defer(move |cx| cx.notify(body));
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full(),
+    );
     let (who, slice) = match talk {
         Some(_) => (None, None),
         None => (who, Some(slice_control(shell, "chat", cx))),
@@ -117,10 +199,11 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .overflow_hidden()
         .sans()
         .window_control_area(WindowControlArea::Drag)
+        .child(bar)
         .children(talk)
         .children(who)
         .children(slice)
-        .child(crate::ui::title_gap())
+        .child(gap)
         // The plan window used most, while the sidebar's meters are away.
         .children(super::switching::glance(shell, cx))
         .children(screen)
@@ -231,7 +314,7 @@ fn members(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
 
 /// A conversation's path: its project (its colour and name, to its page; or
 /// "Outside projects"), "/", its name — then its ⋯.
-fn crumb(shell: &Shell, title: String, menu: bool, cx: &mut Context<Shell>) -> AnyElement {
+fn crumb(shell: &Shell, title: String, menu: bool, level: u8, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let model = &shell.model;
     // The conversation's project; the PM's own is about the one in focus.
@@ -242,12 +325,18 @@ fn crumb(shell: &Shell, title: String, menu: bool, cx: &mut Context<Shell>) -> A
     let names = model.project_names();
     let at = project.as_ref().and_then(|name| names.iter().position(|n| n == name));
     let open = shell.board.popover == Some(Popover::Talk);
+    // Narrow, the place folds to its mark (its name on the pointer), then goes.
+    let folded = level >= 2;
     let place = match (project.clone(), at) {
+        _ if level >= 3 => None,
         (Some(name), Some(_)) => {
             let to = name.clone();
-            h_flex()
+            let tip = name.clone();
+            Some(h_flex()
                 .id("crumb-project")
-                .flex_none()
+                .min_w_0()
+                .flex_shrink(1.)
+                .overflow_hidden()
                 .h(px(PILL))
                 .px_2()
                 .gap(px(6.))
@@ -259,11 +348,25 @@ fn crumb(shell: &Shell, title: String, menu: bool, cx: &mut Context<Shell>) -> A
                 .hover(move |s| s.bg(p.wash).text_color(p.text))
                 .aria_label(t!("sidebar.open_project"))
                 .on_click(cx.listener(move |this, _, window, cx| this.open_project_page(to.clone(), window, cx)))
-                .child(crate::theme::project_mark(p, 13.))
-                .child(div().max_w(px(200.)).truncate().child(name))
-                .into_any_element()
+                .child(div().flex_none().child(crate::theme::project_mark(p, 13.)))
+                .when(!folded, |d| d.child(div().min_w_0().max_w(px(200.)).truncate().child(name)))
+                .when(folded, |d| d.tip(p, tip, None))
+                .into_any_element())
         }
-        _ => div().flex_none().px_2().text_size(px(13.5)).text_color(p.muted).child(t!("sidebar.outside")).into_any_element(),
+        _ if folded => Some(
+            div()
+                .id("crumb-outside")
+                .flex_none()
+                .size(px(PILL))
+                .flex()
+                .items_center()
+                .justify_center()
+                .aria_label(t!("sidebar.outside"))
+                .tip(p, t!("sidebar.outside"), None)
+                .child(div().size(px(7.)).rounded_full().border_1().border_color(p.muted))
+                .into_any_element(),
+        ),
+        _ => Some(div().min_w_0().flex_shrink(1.).truncate().px_2().text_size(px(13.5)).text_color(p.muted).child(t!("sidebar.outside")).into_any_element()),
     };
     let more = div()
         .relative()
@@ -285,14 +388,18 @@ fn crumb(shell: &Shell, title: String, menu: bool, cx: &mut Context<Shell>) -> A
                 .child(super::sidebar::icon(IconName::Ellipsis, 15., p.text2)),
         )
         .children(open.then(|| talk_menu(shell, project.clone(), cx)));
+    // The title keeps its least (or its own width, if shorter) and gives way
+    // after the place; ⋯ never shrinks. The path's own least width is what its
+    // parts keep, so ⋯ is never drawn over what follows (T-621).
+    let least = (text_width(&title, 14.) + 8.).min(TITLE_MIN);
+    let slash = place.is_some().then(|| div().flex_none().text_color(p.muted).child("/"));
     h_flex()
-        .min_w_0()
         .flex_shrink(1.)
         .gap_1()
         .items_center()
-        .child(place)
-        .child(div().flex_none().text_color(p.muted).child("/"))
-        .child(div().min_w_0().flex_shrink(1.).max_w(px(420.)).truncate().px_1().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
+        .children(place)
+        .children(slash)
+        .child(div().min_w(px(least)).flex_shrink(0.25).max_w(px(420.)).truncate().px_1().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
         .when(menu, |c| c.child(more))
         .into_any_element()
 }
@@ -611,5 +718,53 @@ impl Shell {
         self.send_command(equipe_core::protocol::Command::AddProject { squad: self.model.squad.clone(), path: path.clone().into() });
         self.composer.flash = Some(t!("header.adding_project", path = path));
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Fit, GROW};
+
+    #[test]
+    fn a_narrow_bar_gives_way_a_step_a_frame_and_takes_it_back_only_once_wider() {
+        let mut fit = Fit::default();
+        // The first frame learns what the bar shows; nothing to give up yet.
+        assert!(!fit.measure(7, 1200., false));
+        assert_eq!(fit.level, 0);
+        // Squeezed at 300: the context, then the project's name, then the project go, one frame each.
+        assert!(fit.measure(7, 300., true));
+        assert!(fit.measure(7, 300., true));
+        assert!(fit.measure(7, 300., true));
+        assert_eq!(fit.level, 3);
+        // Nothing further to give: it stays, squeezed or not.
+        assert!(!fit.measure(7, 300., true));
+        assert!(!fit.measure(7, 300. + GROW, false));
+        // Wider than where it last gave way: one step back.
+        assert!(fit.measure(7, 300. + GROW + 1., false));
+        assert_eq!(fit.level, 2);
+        // Still squeezed there: the step again, with the new width remembered — no flicker after.
+        assert!(fit.measure(7, 330., true));
+        assert_eq!(fit.level, 3);
+        assert!(!fit.measure(7, 330., false));
+    }
+
+    #[test]
+    fn a_new_title_or_place_starts_the_bar_over() {
+        let mut fit = Fit::default();
+        fit.measure(1, 900., false);
+        fit.measure(1, 400., true);
+        assert_eq!(fit.level, 1);
+        // Another conversation: everything shown again, then measured afresh.
+        assert!(fit.measure(2, 400., true), "redrawn with everything");
+        assert_eq!(fit.level, 0);
+        assert!(fit.measure(2, 400., true));
+        assert_eq!(fit.level, 1);
+    }
+
+    #[test]
+    fn a_short_title_keeps_its_own_width_a_long_one_the_least() {
+        assert!(super::text_width("PM", 14.) + 8. < super::TITLE_MIN);
+        assert!(super::text_width("Tidy the checkout page copy", 14.) > super::TITLE_MIN);
+        assert!(super::text_width("결제 화면 문구 정리", 14.) > super::text_width("abcdefghij", 14.));
     }
 }

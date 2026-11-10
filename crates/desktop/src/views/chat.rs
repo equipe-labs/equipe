@@ -1728,6 +1728,8 @@ fn action_button(p: Palette, id: (&'static str, u64), glyph: Icon, label: &'stat
     let b = div()
         .id(id)
         .size(px(24.))
+        // Its own room at any text size: the reply's two buttons never touch (T-621).
+        .flex_none()
         .flex()
         .items_center()
         .justify_center()

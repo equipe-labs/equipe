@@ -364,6 +364,8 @@ pub struct Shell {
     /// How far the connection being made has got, for its screen.
     pub(crate) connecting: views::connect::Connecting,
     pub(crate) log_renders: bool,
+    /// What the conversation's header leaves out while it is narrow (`views::header::Fit`).
+    pub(crate) header_fit: std::rc::Rc<std::cell::Cell<views::header::Fit>>,
     /// The tickets on cards to confirm whose size was asked for, as they looked then.
     pub(crate) accept_asked: std::collections::HashMap<equipe_core::protocol::TicketId, (Option<String>, String, Option<bool>)>,
     renders: u64,
@@ -519,6 +521,7 @@ impl Shell {
             connecting_shown: false,
             connecting: views::connect::Connecting::new(std::time::Instant::now()),
             log_renders: std::env::var_os("EQUIPE_LOG_RENDER").is_some(),
+            header_fit: std::rc::Rc::default(),
             accept_asked: std::collections::HashMap::new(),
             renders: 0,
             started: std::time::Instant::now(),
@@ -1809,10 +1812,15 @@ impl Shell {
                 .border_b_1()
                 .border_color(p.hair)
                 .text_size(px(SMALL))
-                .child(icons::icon(icons::Icon::XCircle, theme::ICON_SM, p.text))
-                .child(div().text_color(p.text).child(format!("{} · {since}", guide.short)))
-                .child(div().flex_1().min_w_0().text_color(p.muted).child(if waits { t!("main.banner_needs_you") } else { t!("main.banner_reconnecting") }))
-                .child(ui::button(p, "banner-retry", ui::Kind::Secondary, t!("main.retry")).icon(icons::Icon::Retry).on_click(cx.listener(|this, _, _, cx| this.retry(cx)))),
+                // One line whatever the width: what went wrong gives way to the
+                // button, the line after it first — never a word a letter wide
+                // running down over the window (T-621).
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .child(div().flex_none().child(icons::icon(icons::Icon::XCircle, theme::ICON_SM, p.text)))
+                .child(div().min_w_0().truncate().text_color(p.text).child(format!("{} · {since}", guide.short)))
+                .child(div().flex_1().min_w_0().truncate().text_color(p.muted).child(if waits { t!("main.banner_needs_you") } else { t!("main.banner_reconnecting") }))
+                .child(div().flex_none().child(ui::button(p, "banner-retry", ui::Kind::Secondary, t!("main.retry")).icon(icons::Icon::Retry).on_click(cx.listener(|this, _, _, cx| this.retry(cx))))),
         )
     }
 }
