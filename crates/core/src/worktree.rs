@@ -204,8 +204,9 @@ pub fn resume(repo: &Path, home: &Path, id: &str, branch: &str, base: &str, only
 /// How long `git worktree add` (and the checkout that fills a sparse one) may
 /// take for a ticket: a squad home or a big project can hold tens of thousands
 /// of files, and an add stopped half-way leaves a locked, half-made worktree
-/// behind that nothing uses.
-pub const WORKTREE_ADD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// behind that nothing uses. It runs on the daemon's loop, so it stays
+/// short: a squad home's copy is sparse, and tidy clears a half-made one.
+pub const WORKTREE_ADD_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Whether `repo` is a squad home (`…/squads/<squad>/home`): the one kind of
 /// repository whose tickets' worktrees are sparse.
