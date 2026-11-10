@@ -718,6 +718,28 @@ impl Shell {
                 }
                 return;
             }
+            // On the studio's wait card action, Esc or Shift-Tab goes back to the text box when it is on screen.
+            if (key == "escape" || (key == "tab" && modifiers.shift)) && !modifiers.platform && !modifiers.control && !modifiers.alt && this.update(cx, |shell, cx| matches!(shell.screen, Screen::Studio) && shell.design_talk_open(window, cx) && shell.studio.wait_focus.as_ref().is_some_and(|f| f.is_focused(window))).unwrap_or(false) {
+                this.update(cx, |shell, cx| shell.composer.focus(window, cx)).ok();
+                cx.stop_propagation();
+                return;
+            }
+            // The studio, outside a text box with words in it: only the first Tab (from an empty text box, or from nothing) reaches the wait card's action; the rest follow the usual order.
+            if key == "tab" && !modifiers.shift && !modifiers.platform && !modifiers.control && !modifiers.alt && this.update(cx, |shell, cx| {
+                let focus = shell.studio.wait_focus.clone().filter(|_| matches!(shell.screen, Screen::Studio) && shell.studio.wait_button.get());
+                let free = if shell.composer.is_focused(window, cx) { shell.composer.state.read(cx).value().is_empty() } else { window.focused(cx).is_none() };
+                match focus {
+                    Some(f) if free && !f.is_focused(window) && !shell.studio.wait_tab_used.get() => {
+                        shell.studio.wait_tab_used.set(true);
+                        window.focus(&f, cx);
+                        true
+                    }
+                    _ => false,
+                }
+            }).unwrap_or(false) {
+                cx.stop_propagation();
+                return;
+            }
             // The document's text, focused by the keyboard: the arrows, Page
             // keys, Space, Home and End scroll it. Its buttons keep Enter and
             // Space, which press them (on the key's release), from every

@@ -137,6 +137,9 @@ impl SettingsUi {
 
 // ── the page's pieces ──
 
+/// The narrowest a row's words get beside a wrapping control before it drops below them.
+const WRAP_TEXT_MIN: f32 = 280.;
+
 /// One row: what it is, a line saying what it does, and its control. `words`
 /// are what else search finds it by.
 pub(super) struct Line {
@@ -149,13 +152,15 @@ pub(super) struct Line {
     compact: bool,
     /// Drawn under the words, across the row (a code to enter, a usage bar).
     below: Option<AnyElement>,
+    /// The control drops under the words when the row is too narrow to keep them readable beside it.
+    wrap: bool,
 }
 
 impl Line {
     pub(super) fn new(label: impl Into<String>, desc: impl Into<String>) -> Self {
         let label = label.into();
         let desc: String = desc.into();
-        Self { label: div().child(label.clone()).into_any_element(), text: label, desc: (!desc.is_empty()).then_some((desc, false)), words: String::new(), control: None, compact: false, below: None }
+        Self { label: div().child(label.clone()).into_any_element(), text: label, desc: (!desc.is_empty()).then_some((desc, false)), words: String::new(), control: None, compact: false, below: None, wrap: false }
     }
 
     pub(super) fn control(mut self, control: impl IntoElement) -> Self {
@@ -185,6 +190,12 @@ impl Line {
     /// The label drawn otherwise (a member's mark, a rule in monospace); `text` stays what search reads.
     pub(super) fn label_el(mut self, el: impl IntoElement) -> Self {
         self.label = el.into_any_element();
+        self
+    }
+
+    /// Its control wraps under the words in a narrow row.
+    pub(super) fn wrap_control(mut self) -> Self {
+        self.wrap = true;
         self
     }
 
@@ -905,6 +916,7 @@ fn permissions(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let mode = Line::new(t!("settings.squad_mode"), mode_summary(model.mode))
         .warn(model.mode == Mode::Full)
         .words(Mode::ALL.iter().map(|m| format!("{} {}", mode_label(*m), mode_summary(*m))).collect::<Vec<_>>().join(" ") + " permission mode")
+        .wrap_control()
         .control(if connected { segmented(shell, "squad-mode", modes, model.mode, |this, m, _, _| this.set_squad_mode(m), cx) } else { value(p, mode_label(model.mode)) });
     let overrides: Vec<String> = model.ordered().iter().filter_map(|m| model.member_modes.get(&m.session).map(|mode| format!("{} · {}", m.name, mode_label(*mode)))).collect();
     let mut first = vec![mode];
@@ -1138,8 +1150,10 @@ fn intro(category: Category) -> &'static str {
 fn draw_line(p: Palette, line: Line, first: bool) -> AnyElement {
     let compact = line.compact;
     let below = line.below;
+    let wrap = line.wrap;
     let row = h_flex()
         .w_full()
+        .when(wrap, |r| r.flex_wrap().gap_y(px(8.)))
         .min_h(px(if compact { 40. } else if line.desc.is_some() { 60. } else { 48. }))
         .px_4()
         .py(px(if compact { 6. } else { 10. }))
@@ -1148,7 +1162,8 @@ fn draw_line(p: Palette, line: Line, first: bool) -> AnyElement {
         .when(!first, |r| r.border_t_1().border_color(p.hair))
         .child(
             v_flex()
-                .flex_1()
+                .when(!wrap, |c| c.flex_1())
+                .when(wrap, |c| c.flex_grow(1.).flex_shrink(1.).flex_basis(px(WRAP_TEXT_MIN)))
                 .min_w_0()
                 .gap(px(2.))
                 .child(div().text_size(px(if compact { SMALL } else { UI })).text_color(p.text).child(line.label))
