@@ -424,15 +424,15 @@
             },
             {
               "id": "topic-ko",
-              "label": "첫 교환의 한국어 주제 제목",
+              "label": "First exchange named by topic · Korean",
               "kind": "default",
-              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk;say:대화 제목을 다시 찾기 쉽게 만들어 줘;wait:1800`; EQUIPE_LANG=ko"
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk;say:{KO:topic_ask};wait:1800`; EQUIPE_LANG=ko"
             },
             {
               "id": "topic-large",
-              "label": "큰 글자의 주제 제목",
+              "label": "Topic title · 150% text",
               "kind": "default",
-              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk;say:대화 제목을 다시 찾기 쉽게 만들어 줘;wait:1800;zoom:150;wait:500`; EQUIPE_LANG=ko"
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk;say:{KO:topic_ask};wait:1800;zoom:150;wait:500`; EQUIPE_LANG=ko"
             },
             {
               "id": "loading",
@@ -690,7 +690,7 @@
               "id": "composing",
               "label": "Korean IME composing: Return only commits it",
               "kind": "default",
-              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk:web;wait:600;say:Fix the checkout page copy;wait:2500;rename;rename:compose:카|피;wait:300`; EQUIPE_LANG=ko"
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `newtalk:web;wait:600;say:Fix the checkout page copy;wait:2500;rename;rename:compose:{KO:compose};wait:300`; EQUIPE_LANG=ko"
             },
             {
               "id": "empty",

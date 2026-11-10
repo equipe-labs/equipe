@@ -408,6 +408,7 @@
   "match.wall_titles": "un instant",
   "match.human_words": "vérifiez que vous êtes humain",
   "match.code_words": "code de vérification",
+  "match.title_prefixes": "Titre :|Titre:",
   "match.sign_in_words": "connexion|se connecter",
   "match.blocked_words": "mot de passe|double authentification|paramètres de sécurité|confidentialité et sécurité|supprimer le compte|supprimer mon compte|paiement|payer maintenant|acheter maintenant|passer la commande",
   "match.outward_words": "envoyer|partager|inviter|accepter|rejoindre|publier|soumettre|appeler|téléverser|joindre|transférer",
