@@ -504,7 +504,7 @@ mod tests {
 
     #[test]
     fn only_ticket_numbers_standing_on_their_own_become_links() {
-        let path = "/Users/abel/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 갤러리 디자인/images/";
+        let path = "/Users/you/.equipe/worktrees/photo-studio.home/t2-6ad338ba/outputs/T-2 갤러리 디자인/images/";
         let cases: &[(&str, &str)] = &[
             // Kept: the number alone, and beside punctuation or a particle.
             ("T-2: 갤러리", "[T-2](ticket:2): 갤러리"),

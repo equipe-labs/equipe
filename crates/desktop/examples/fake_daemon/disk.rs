@@ -56,12 +56,12 @@ pub fn status() -> Option<DiskStatus> {
 }
 
 fn home() -> PathBuf {
-    PathBuf::from("/Users/abel")
+    PathBuf::from("/Users/you")
 }
 
 #[allow(clippy::too_many_arguments)]
 fn item(group: DiskGroup, kind: DiskKind, label: &str, path: &str, bytes: u64, safe: bool, why: DiskWhy, ticket: Option<u32>, command: Option<&str>) -> DiskItem {
-    let path = PathBuf::from(path.replace('~', "/Users/abel"));
+    let path = PathBuf::from(path.replace('~', "/Users/you"));
     let kind_word = serde_json::to_value(kind).unwrap().as_str().unwrap().to_owned();
     DiskItem {
         id: format!("{kind_word}:{}", path.display()),
@@ -171,7 +171,7 @@ pub fn failed_build() -> Vec<equipe_core::protocol::Entry> {
     if !matches!(mode(), Some(DiskLevel::Critical | DiskLevel::Full)) {
         return Vec::new();
     }
-    let output = "   Compiling gpui v0.2.0\nerror: failed to write /Users/abel/.equipe/cache/build/demo/frontend/debug/deps/libgpui.rlib: No space left on device (os error 28)\n\nerror: could not compile `gpui` (lib) due to 1 previous error";
+    let output = "   Compiling gpui v0.2.0\nerror: failed to write /Users/you/.equipe/cache/build/demo/frontend/debug/deps/libgpui.rlib: No space left on device (os error 28)\n\nerror: could not compile `gpui` (lib) due to 1 previous error";
     let outcome = ToolOutcome { ok: false, exit: Some(101), ms: Some(48_200), output: output.into(), skipped: 0, diff: None };
     vec![
         Entry::Tool { tool: "Bash".into(), target: Some("cargo build -p equipe-desktop".into()), outcome: Some(Box::new(outcome)), label: None, background: false },
