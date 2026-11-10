@@ -7,6 +7,7 @@
 //! accepts, merges or sends back any other way, and nobody's words confirm.
 
 use equipe_protocol::accept::{AcceptProposal, Confirmed, Land, Verdict};
+use equipe_protocol::tiers::SendBackReason;
 
 use super::*;
 use crate::accept::{self as rules, Declined, Outcome};
@@ -127,7 +128,7 @@ them, and note what they said on the ticket with `comment`, for the PM."
                         "Its branch conflicts with main in {files}. Merge main into your branch in your worktree (git merge \
 main; no rebase needed), resolve each conflict keeping what both sides meant, run the relevant tests, and hand it in again."
                     );
-                    match self.send_back(squad, ticket, member, &reason, true) {
+                    match self.send_back(squad, ticket, member, &reason, SendBackReason::Environment, true) {
                         Ok(who) => left.push(format!("T-{ticket} conflicts with main in {files}: sent back to {who} to merge main in")),
                         Err(why) => left.push(why),
                     }
@@ -286,8 +287,10 @@ carry on meanwhile.",
     /// its record by `by`, and handed out again, so its member hears it when it
     /// picks it up (its sent-back work goes ahead of new). With `news`, the
     /// person reads it in the PM's conversation. Routing only: nothing is
-    /// accepted or merged. The member it went back to.
-    pub(super) fn send_back(&mut self, squad: &str, ticket: TicketId, by: &str, reason: &str, news: bool) -> Result<String, String> {
+    /// accepted or merged. `why` is what kind of problem it is, which decides
+    /// whether its model goes up ([`Runtime::after_send_back`]). The member it
+    /// went back to.
+    pub(super) fn send_back(&mut self, squad: &str, ticket: TicketId, by: &str, reason: &str, why: SendBackReason, news: bool) -> Result<String, String> {
         let reason = reason.trim();
         if reason.is_empty() {
             return Err("Say what to change.".into());
@@ -314,6 +317,7 @@ carry on meanwhile.",
         if news && let Some(pm) = self.pm_of(squad) {
             self.show_news(pm, shown);
         }
+        self.after_send_back(squad, ticket, by, why);
         let _ = self.internal.send(Internal::Dispatch);
         Ok(member)
     }
@@ -321,7 +325,7 @@ carry on meanwhile.",
     /// The PM's `comment` on `ticket`: on work in review it says whether it
     /// sends it back or only notes it — a change request is never left as a
     /// note its member doesn't hear.
-    pub(super) fn pm_comment(&mut self, squad: &str, member: &str, ticket: &Ticket, text: &str, word: Option<rules::ReviewWord>) -> Result<String, String> {
+    pub(super) fn pm_comment(&mut self, squad: &str, member: &str, ticket: &Ticket, text: &str, word: Option<rules::ReviewWord>, why: SendBackReason) -> Result<String, String> {
         let id = ticket.id;
         let note = |rt: &mut Self| rt.journal(squad).ok_or_else(|| "The board can't be opened.".to_owned())?.ticket_event(id, member, board::COMMENT, text).map_err(|e| e.to_string());
         if ticket.status != TicketStatus::Review {
@@ -339,7 +343,7 @@ carry on meanwhile.",
                 Ok(format!("Noted on T-{id}; it still waits for review."))
             }
             Some(rules::ReviewWord::Changes) => {
-                let who = self.send_back(squad, id, member, text, true)?;
+                let who = self.send_back(squad, id, member, text, why, true)?;
                 Ok(format!("Sent T-{id} back to {who} with what to change; they pick it up next, on the same branch. Carry on with what else waits."))
             }
         }
@@ -372,7 +376,7 @@ carry on meanwhile.",
             }
             let mut sent = Vec::new();
             for (id, asked) in unheard {
-                match self.send_back(&squad, id, &pm, &format!("{asked}{}", rules::UNHEARD_NOTE), false) {
+                match self.send_back(&squad, id, &pm, &format!("{asked}{}", rules::UNHEARD_NOTE), SendBackReason::Correctness, false) {
                     Ok(who) => {
                         crate::daemon_log!("equipe: {squad}: T-{id} went back to {who} with the PM's change request it never heard");
                         sent.push(id);

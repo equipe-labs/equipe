@@ -108,7 +108,7 @@ impl Runtime {
                 let command = command.clone();
                 let reason = checks::failed_reason(&outcome).unwrap_or_default();
                 note(self, "checks failed", &command);
-                match self.send_back(&squad, ticket, "equipe", &reason, false) {
+                match self.send_back(&squad, ticket, "equipe", &reason, equipe_protocol::tiers::SendBackReason::Correctness, false) {
                     Ok(who) => {
                         let shown = say!(self, "news.checks_sent_back", id = ticket, title = t.title, name = who, command = command);
                         let line = format!(

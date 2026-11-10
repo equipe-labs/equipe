@@ -96,6 +96,7 @@ mod side_chat;
 mod providers;
 mod phone;
 mod call;
+mod tiers;
 
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
@@ -585,6 +586,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         codex_read: None,
         codex_reading: false,
         codex_models: None,
+        tool_repeats: HashMap::new(),
         codex_listing: false,
         providers: HashMap::new(),
         questions: HashMap::new(),
@@ -1122,6 +1124,9 @@ struct Runtime {
     codex_reading: bool,
     /// The models the Codex CLI offers, as last listed.
     codex_models: Option<(std::time::Instant, Vec<codex_app::ModelInfo>)>,
+    /// For each run, its latest tool call and how many times in a row it
+    /// came: a loop raises its ticket's next lane (`runtime::tiers`).
+    tool_repeats: HashMap<SessionId, (String, u32)>,
     /// A listing for the screens is under way.
     codex_listing: bool,
     /// What each model provider connected here listed, by its id.
@@ -1661,6 +1666,13 @@ impl Runtime {
             crate::kept::keep(&self.config.home, text);
             *kept = crate::kept::words(&self.config.home, text);
         }
+        // A run making the same call over and over: its ticket's next lane goes up a tier.
+        if let Event::ToolUse { session, tool, target: Some(target), .. } = &event {
+            self.watch_loop(*session, tool, target);
+        }
+        if let Event::TurnEnded { session, .. } = &event {
+            self.tool_repeats.remove(session);
+        }
         // Where a member's browser goes, to bring it back there on screen.
         if let Event::ToolUse { session, tool, target: Some(url), .. } = &event
             && tool.ends_with("browser_navigate")
@@ -1697,7 +1709,11 @@ impl Runtime {
             };
             // …and what it used, by kind, for where the plans went.
             let turn_use = match (&event, &turn) {
-                (Event::TurnEnded { usage: Some(u), .. }, Some(_)) => Some(journal::TurnUse::of(session.engine, session.ran.clone().or_else(|| session.model.clone()), session.claude_session.clone(), u)),
+                (Event::TurnEnded { usage: Some(u), .. }, Some(_)) => Some(journal::TurnUse {
+                    // The effort it ran at, beside the model the engine named.
+                    effort: effort_of(session),
+                    ..journal::TurnUse::of(session.engine, session.ran.clone().or_else(|| session.model.clone()), session.claude_session.clone(), u)
+                }),
                 _ => None,
             };
             match &event {
@@ -2303,6 +2319,8 @@ impl Runtime {
             Command::InstallEngine { engine } => self.install_engine(engine),
             Command::SetEngineSwitching { squad, mode } => self.set_engine_switching(&squad, mode).await,
             Command::SetParallel { squad, parallel } => self.set_parallel(&squad, parallel).await,
+            Command::SetModelChoice { squad, choice } => self.set_model_choice(&squad, choice),
+            Command::SetTicketTier { squad, ticket, tier, pinned } => self.set_ticket_tier(&squad, ticket, tier, pinned),
             Command::SetPmAccepts { squad, on } => {
                 if let Some(journal) = self.journal(&squad) {
                     let _ = journal.set_pm_accepts(on);
@@ -3101,6 +3119,9 @@ runbooks and reports live there, and work across the projects or on running them
     /// before it starts ([`Event::RunOpened`], then [`Event::SessionStarted`]).
     fn open_run(&mut self, member: SessionId, work: Work) -> Option<SessionId> {
         let id = work.execution_session;
+        // The model and effort its ticket's lane was picked to start on, when on this engine.
+        let squad = self.sessions.get(&member).and_then(|m| m.squad.clone());
+        let picked = squad.and_then(|squad| self.journals.get(&squad)).and_then(|j| j.ticket(work.ticket).ok().flatten()).and_then(|t| t.model);
         let used: Vec<usize> = self.sessions.values().filter(|s| s.run_of == Some(member)).map(|s| s.slot).collect();
         let slot = (0..).find(|n| !used.contains(n)).unwrap_or_default();
         let m = self.sessions.get(&member)?;
@@ -3110,6 +3131,10 @@ runbooks and reports live there, and work across the projects or on running them
         run.slot = slot;
         run.thread = None;
         run.effort = m.effort.clone();
+        if let Some(picked) = picked.filter(|p| p.engine == Some(run.engine)) {
+            run.model = picked.model;
+            run.effort = picked.effort;
+        }
         run.context = None;
         run.desk_context = None;
         let (ticket, generation) = (work.ticket, work.execution_generation);
@@ -5573,7 +5598,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         let Some(mut ticket) = journal.ticket(ticket_id).ok().flatten() else {
             return;
         };
-        let saved = journal.ticket_work(ticket_id).unwrap_or_default();
+        let mut saved = journal.ticket_work(ticket_id).unwrap_or_default();
         let after = work_before(&journal.tickets().unwrap_or_default(), &ticket);
         let fresh = ticket.branch.is_none() || saved.base.is_none();
         let kind = ticket.kind;
@@ -5640,6 +5665,27 @@ for one project goes to it as tickets for its owners, with that project — and 
             return;
         };
         let cwd = sandbox.as_ref().map_or_else(|| project.clone(), |s| within(s, &project));
+
+        // Its model and effort, picked once as its lane starts. A tier
+        // changed since its last lane starts a fresh conversation, with a
+        // handoff note in place of the one before; branch and worktree stay.
+        let mut handoff = None;
+        if let Some(choice) = self.choose_model(&squad, id, &ticket) {
+            if choice.fresh {
+                saved.engine_session = None;
+                handoff = Some(self.latest_handoff(&squad, ticket_id).unwrap_or_else(|| {
+                    "This ticket's model changed, so you start in a fresh conversation: read its record, the work so far on its branch \
+(its log and diff), and what was handed in and sent back before you go on."
+                        .to_owned()
+                }));
+            }
+            let role = self.sessions.get(&id).and_then(|s| s.member.as_ref()).map(|m| m.role.clone()).unwrap_or_default();
+            if let Some(journal) = self.journal(&squad) {
+                let _ = journal.set_ticket_model(ticket_id, Some(&choice.ticket));
+                let _ = journal.record_model_choice(ticket_id, "lane", Some((name.as_str(), role.as_str())), &choice.ticket);
+            }
+            ticket.model = Some(choice.ticket);
+        }
 
         ticket.status = TicketStatus::InProgress;
         ticket.assignee = Some(name.clone());
@@ -5710,6 +5756,9 @@ for one project goes to it as tickets for its owners, with that project — and 
             // One quick look, beside the worktree this start already made.
             let main = repo.and_then(|r| worktree::main_branch(r).ok());
             prompt.push_str(&crate::plan::work_note(plan, repo.zip(main.as_deref())));
+        }
+        if let Some(note) = &handoff {
+            prompt.push_str(&format!("\n{note}"));
         }
         if sandbox.is_some() && !after.is_empty() && fresh {
             let ids: Vec<&str> = after.iter().map(|(what, _)| what.as_str()).collect();
@@ -7772,6 +7821,7 @@ there, end your turn, and carry on when they say they're done."
                     design_qa: None,
                     // Read and checked off the loop before it gets here (`cut_from_plan`).
                     plan: board::arg_str(&args, "plan").map(str::to_owned),
+                    model: None,
                     created_by: member.clone(),
                     note: None,
                     asks: vec![],
@@ -7900,11 +7950,12 @@ there, end your turn, and carry on when they say they're done."
                 let ticket_id = board::arg_id(&args, "id").ok_or("Which ticket? Give its id.")?;
                 let text = board::arg_str(&args, "text").ok_or("Say something.")?;
                 let word = crate::accept::review_word(&args)?;
+                let why = crate::accept::send_back_reason(&args)?;
                 let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
                 let ticket = journal.ticket(ticket_id).ok().flatten().ok_or_else(|| format!("There is no T-{ticket_id}."))?;
                 // The PM's word on work in review sends it back or only notes it: said which.
                 if is_pm {
-                    return self.pm_comment(&squad, &member, &ticket, text, word);
+                    return self.pm_comment(&squad, &member, &ticket, text, word, why);
                 }
                 journal.ticket_event(ticket_id, &member, board::COMMENT, text).map_err(|e| e.to_string())?;
                 Ok(format!("Noted on T-{ticket_id}."))
@@ -8244,6 +8295,7 @@ it back there once they have done it.{again} End your turn now with a short line
             plans: self.plans.clone(),
             engine_switching: self.journals.get(squad).map(Journal::engine_switching).unwrap_or_default(),
             parallel: self.journals.get(squad).map(Journal::parallel).unwrap_or_default(),
+            model_choice: self.journals.get(squad).map(Journal::model_choice).unwrap_or_default(),
             pm_accepts: self.journals.get(squad).is_none_or(Journal::pm_accepts),
             role_models: self.journals.get(squad).map(Journal::role_models).unwrap_or_default(),
             secret_asks: self.secret_asks(squad).clone(),

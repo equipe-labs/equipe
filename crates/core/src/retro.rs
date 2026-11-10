@@ -655,6 +655,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             plan: None,
+            model: None,
             asks: vec![],
             remaining: vec![],
             images: Vec::new(),

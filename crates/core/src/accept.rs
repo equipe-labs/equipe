@@ -312,6 +312,17 @@ pub fn review_word(args: &Value) -> Result<Option<ReviewWord>, String> {
     }
 }
 
+/// What kind of problem a `comment` sending work back says it is (`reason`):
+/// correctness when left out — the safe side, since only correctness raises
+/// the ticket's model. Anything else is said why.
+pub fn send_back_reason(args: &Value) -> Result<equipe_protocol::tiers::SendBackReason, String> {
+    match board::arg_str(args, "reason") {
+        None => Ok(equipe_protocol::tiers::SendBackReason::default()),
+        Some(word) => equipe_protocol::tiers::SendBackReason::parse(word)
+            .ok_or_else(|| format!("`reason` is `correctness` (it doesn't do what was asked, or breaks something), `style` (taste, wording, polish) or `environment` (a device, a simulator, a conflict, a service), not {word}.")),
+    }
+}
+
 /// What the PM hears when it comments on work in review without saying
 /// whether it sends it back.
 pub fn say_which(ticket: TicketId, member: &str) -> String {
@@ -543,6 +554,11 @@ mod tests {
         assert_eq!(review_word(&json!({ "review": "Changes" })), Ok(Some(ReviewWord::Changes)));
         assert_eq!(review_word(&json!({ "review": "note" })), Ok(Some(ReviewWord::Note)));
         assert!(review_word(&json!({ "review": "maybe" })).is_err());
+        use equipe_protocol::tiers::SendBackReason;
+        assert_eq!(send_back_reason(&json!({ "review": "changes" })), Ok(SendBackReason::Correctness), "left out: correctness");
+        assert_eq!(send_back_reason(&json!({ "reason": "Style" })), Ok(SendBackReason::Style));
+        assert_eq!(send_back_reason(&json!({ "reason": "environment" })), Ok(SendBackReason::Environment));
+        assert!(send_back_reason(&json!({ "reason": "taste" })).unwrap_err().contains("correctness"));
         let said = say_which(7, "frontend");
         assert!(said.contains("`changes`") && said.contains("`note`") && said.contains("never reaches frontend"), "{said}");
     }

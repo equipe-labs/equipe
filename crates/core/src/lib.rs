@@ -75,6 +75,7 @@ pub mod store;
 pub mod subagent_watch;
 pub mod team;
 pub mod telemetry;
+pub mod tiers;
 pub mod vault;
 pub mod visuals;
 pub mod watchdog;

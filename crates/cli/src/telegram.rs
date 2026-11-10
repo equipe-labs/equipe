@@ -1008,7 +1008,7 @@ mod tests {
             execution: None,
             merged: None,
             off_main: None,
-            design_qa: None, plan: None,
+            design_qa: None, plan: None, model: None,
             kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: Some("Done: <form> & tests".into()),

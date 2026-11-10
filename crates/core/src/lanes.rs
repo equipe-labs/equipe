@@ -202,6 +202,7 @@ mod tests {
             off_main: None,
             design_qa: None,
             plan: None,
+            model: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],

@@ -314,7 +314,7 @@ mod tests {
             execution: None,
             merged: None,
             off_main: None,
-            design_qa: None, plan: None,
+            design_qa: None, plan: None, model: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],

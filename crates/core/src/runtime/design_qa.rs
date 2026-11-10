@@ -160,7 +160,7 @@ screen_checks value; missing: {}. Then hand in again.",
             execution: None,
             merged: None,
             off_main: None,
-            design_qa: None, plan: None,
+            design_qa: None, plan: None, model: None,
             created_by: "equipe".to_owned(),
             note: None,
             asks: Vec::new(),
@@ -210,6 +210,10 @@ screen_checks value; missing: {}. Then hand in again.",
             let _ = journal.ticket_event(checked.id, designer, event, findings);
         }
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: checked.clone() });
+        // Blockers are differences from the spec: the work isn't right yet.
+        if !verdict.passed {
+            self.after_send_back(squad, checked.id, designer, equipe_protocol::tiers::SendBackReason::Correctness);
+        }
         Some((checked, engineer))
     }
 

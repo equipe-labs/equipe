@@ -23,6 +23,7 @@ pub mod metrics;
 pub mod plan_use;
 pub mod engines;
 pub mod lanes;
+pub mod tiers;
 pub mod harness;
 pub mod design;
 pub mod look;
@@ -423,6 +424,11 @@ pub struct Ticket {
     /// an older daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
+    /// The model and effort its lanes run on, and why ([`tiers::TicketModel`]).
+    /// Left out — and absent from an older daemon — when it runs on its
+    /// member's own model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<tiers::TicketModel>,
 }
 
 /// A durable run of a ticket. A newer generation supersedes late messages
@@ -1321,6 +1327,14 @@ pub enum Command {
     /// the plans' usage, or max at the person's caps. Answered by
     /// [`Event::ParallelChanged`].
     SetParallel { squad: SquadName, parallel: lanes::Parallel },
+    /// Whether equipe picks each ticket's model and effort
+    /// ([`tiers::ModelChoice`]). Answered by [`Event::ModelChoiceChanged`].
+    SetModelChoice { squad: SquadName, choice: tiers::ModelChoice },
+    /// The person sets a ticket's tier: `tier` for its next lanes (raised
+    /// or lowered — their call), `pinned` to keep escalation off it. `None`
+    /// with `pinned` false gives it back to equipe. Answered by
+    /// [`Event::TicketChanged`].
+    SetTicketTier { squad: SquadName, ticket: TicketId, tier: Option<tiers::ModelTier>, pinned: bool },
     /// Which engine reviews the designer's work ([`engines::Reviewer`]).
     /// Answered by [`Event::DesignReviewerChanged`].
     SetDesignReviewer { squad: SquadName, reviewer: engines::Reviewer },
@@ -2624,6 +2638,8 @@ pub enum Event {
     SubagentsAtOnceChanged { squad: SquadName, at_once: Option<u32> },
     /// How many tickets the squad works at once now ([`Command::SetParallel`]).
     ParallelChanged { squad: SquadName, parallel: lanes::Parallel },
+    /// Whether equipe picks each ticket's model now ([`Command::SetModelChoice`]).
+    ModelChoiceChanged { squad: SquadName, choice: tiers::ModelChoice },
     /// Which engine reviews the designer's work now ([`Command::SetDesignReviewer`]).
     DesignReviewerChanged { squad: SquadName, reviewer: engines::Reviewer },
     /// The squad's signals now, each with its latest readings: on a new
@@ -2762,6 +2778,7 @@ impl Event {
             | Event::IdleWakeChanged { squad, .. }
             | Event::SubagentsAtOnceChanged { squad, .. }
             | Event::ParallelChanged { squad, .. }
+            | Event::ModelChoiceChanged { squad, .. }
             | Event::DesignReviewerChanged { squad, .. }
             | Event::SignalsChanged { squad, .. }
             | Event::PutAwayChanged { squad, .. }
@@ -2860,6 +2877,7 @@ impl Event {
             | Event::IdleWakeChanged { .. }
             | Event::SubagentsAtOnceChanged { .. }
             | Event::ParallelChanged { .. }
+            | Event::ModelChoiceChanged { .. }
             | Event::DesignReviewerChanged { .. }
             | Event::SignalsChanged { .. }
             | Event::Logins { .. }
@@ -3236,6 +3254,10 @@ pub struct Snapshot {
     /// predates it.
     #[serde(default, skip_serializing_if = "lanes::Parallel::is_default")]
     pub parallel: lanes::Parallel,
+    /// Whether equipe picks each ticket's model ([`Command::SetModelChoice`]);
+    /// left out on quality first, the default — as from a daemon that predates it.
+    #[serde(default, skip_serializing_if = "tiers::ModelChoice::is_default")]
+    pub model_choice: tiers::ModelChoice,
     /// Which engine reviews the designer's work ([`Command::SetDesignReviewer`]);
     /// auto from a daemon that predates it.
     #[serde(default, skip_serializing_if = "engines::Reviewer::is_default")]
@@ -3338,7 +3360,7 @@ mod tests {
             execution: None,
             merged: None,
             off_main: None,
-            design_qa: None, plan: None,
+            design_qa: None, plan: None, model: None,
             kind: TicketKind::Code,
             created_by: "pm".into(),
             note: None,
@@ -3750,6 +3772,7 @@ mod tests {
             idle_wake_hours: Some(24),
             subagents_at_once: Some(8),
             parallel: lanes::Parallel::max(8, 20),
+            model_choice: tiers::ModelChoice::Off,
             design_reviewer: engines::Reviewer::Same,
             signals: Vec::new(),
             scale: Some(2),
