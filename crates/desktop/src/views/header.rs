@@ -42,6 +42,8 @@ pub struct Fit {
     pub level: u8,
     at: [f32; 3],
     key: u64,
+    /// The bar's width as last drawn.
+    pub seen: f32,
 }
 
 impl Fit {
@@ -51,9 +53,10 @@ impl Fit {
     /// One frame's measure: what the bar shows (`key`), its `width`, and
     /// whether its words were `squeezed`. True when the level changed.
     pub fn measure(&mut self, key: u64, width: f32, squeezed: bool) -> bool {
+        self.seen = width;
         if key != self.key {
             let was = self.level;
-            *self = Fit { key, ..Fit::default() };
+            *self = Fit { key, seen: width, ..Fit::default() };
             return was != 0;
         }
         let before = self.level;
@@ -122,6 +125,12 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             .children(open.then(|| members(shell, cx)))
     });
     let fit = shell.header_fit.get();
+    if shell.rename.as_ref().is_some_and(|r| shell.screen != crate::Screen::Chat || model.talk != Some(r.session) || model.draft_talk.is_some()) {
+        let this = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            this.update(cx, |shell, cx| shell.rename_left(cx)).ok();
+        });
+    }
     // Whole, or not at all: the first thing a narrow bar gives up.
     let context = member.and_then(|m| m.context).filter(|_| fit.level < 1).map(|c| {
         div()
@@ -393,13 +402,67 @@ fn crumb(shell: &Shell, title: String, menu: bool, level: u8, cx: &mut Context<S
     // parts keep, so ⋯ is never drawn over what follows (T-621).
     let least = (text_width(&title, 14.) + 8.).min(TITLE_MIN);
     let slash = place.is_some().then(|| div().flex_none().text_color(p.muted).child("/"));
+    let words = div().min_w_0().flex_shrink(1.).truncate().child(title.clone());
+    // A conversation of the person's: its title is the way to rename it (T-642).
+    let session = model.talk.filter(|_| menu && model.draft_talk.is_none());
+    let name: AnyElement = match session {
+        Some(session) => {
+            let editing = shell.rename.as_ref().is_some_and(|r| r.session == session);
+            // Its full name first when it may be cut (long, or the bar narrow), then what a click does.
+            let tip = if text_width(&title, 14.) + 8. > 420. || level >= 2 { format!("{title}\n{}", t!("talk.rename")) } else { t!("talk.rename").into() };
+            let focus = shell.title_focus.clone();
+            div()
+                .relative()
+                .min_w(px(least + 4.))
+                .flex_shrink(0.25)
+                .max_w(px(440.))
+                .child(
+                    h_flex()
+                        .id("conversation-title")
+                        .track_focus(&focus)
+                        .group("conversation-title")
+                        .h(px(PILL))
+                        .px_1()
+                        .gap(px(8.))
+                        .items_center()
+                        .rounded(px(R_MD))
+                        .cursor_pointer()
+                        .text_size(px(14.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(p.text)
+                        .role(Role::Button)
+                        .aria_label(title.clone())
+                        .aria_description(t!("talk.rename"))
+                        .aria_expanded(editing)
+                        .when(editing, |b| b.bg(p.wash))
+                        .hover(move |s| s.bg(p.wash))
+                        .border_1()
+                        .border_color(gpui_kit::transparent_black())
+                        .focus_visible(move |s| s.border_color(p.accent))
+                        .tip(p, tip, None)
+                        .on_click(cx.listener(move |this, _, window, cx| this.rename_from_title(session, window, cx)))
+                        .on_key_down(cx.listener(move |this, e: &KeyDownEvent, window, cx| {
+                            if matches!(e.keystroke.key.as_str(), "enter" | "space") && !e.keystroke.modifiers.modified() {
+                                cx.stop_propagation();
+                                this.rename_from_title(session, window, cx);
+                            }
+                        }))
+                        .child(words)
+                        // The pencil shows on the pointer (its room is kept: a hover may not change the layout).
+                        .child(div().flex_none().invisible().group_hover("conversation-title", |s| s.visible()).child(crate::icons::icon(crate::icons::Icon::Pencil, 12., p.muted))),
+                )
+                .children(super::rename::card(shell, shell.header_fit.get().seen, cx).map(|card| div().absolute().top(px(PILL + 6.)).left_0().child(card)))
+                .into_any_element()
+        }
+        None => words.min_w(px(least)).flex_shrink(0.25).max_w(px(420.)).px_1().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).into_any_element(),
+    };
     h_flex()
         .flex_shrink(1.)
         .gap_1()
         .items_center()
         .children(place)
         .children(slash)
-        .child(div().min_w(px(least)).flex_shrink(0.25).max_w(px(420.)).truncate().px_1().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
+        .child(name)
         .when(menu, |c| c.child(more))
         .into_any_element()
 }
@@ -424,7 +487,17 @@ fn talk_menu(shell: &Shell, current: Option<String>, cx: &mut Context<Shell>) ->
             .child(div().flex_1().min_w_0().truncate().when(on, |d| d.font_weight(FontWeight::SEMIBOLD)).child(label))
             .when(on, |r| r.child(super::sidebar::icon(IconName::Check, 13., p.text2)))
     };
-    let mut rows: Vec<AnyElement> = vec![div().px_2().pt_1().pb(px(2.)).text_size(px(11.)).text_color(p.muted).child(t!("header.move_to")).into_any_element()];
+    let mut rows: Vec<AnyElement> = Vec::new();
+    // Renaming comes first (T-642): a conversation begun has a name to change.
+    if let Some(session) = model.talk.filter(|_| model.draft_talk.is_none()) {
+        rows.push(
+            item("talk-rename".into(), crate::icons::icon(crate::icons::Icon::Pencil, 12., p.text2).into_any_element(), t!("talk.rename").into(), false)
+                .on_click(cx.listener(move |this, _, window, cx| this.open_rename(session, None, window, cx)))
+                .into_any_element(),
+        );
+        rows.push(div().my_1().h(px(1.)).bg(p.hair).into_any_element());
+    }
+    rows.push(div().px_2().pt_1().pb(px(2.)).text_size(px(11.)).text_color(p.muted).child(t!("header.move_to")).into_any_element());
     let mut targets: Vec<(Option<String>, Option<usize>)> = model.project_names().into_iter().enumerate().map(|(i, n)| (Some(n), Some(i))).collect();
     targets.push((None, None));
     for (target, at) in targets {

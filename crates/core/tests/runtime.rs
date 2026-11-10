@@ -3780,6 +3780,61 @@ async fn said_to_the_pm_while_its_conversation_beside_the_work_is_at_it_steers_t
 }
 
 #[tokio::test]
+async fn the_person_names_a_conversation_and_the_name_stays_through_turns_a_restart_and_put_away() {
+    let site = named("site");
+    let (claude, _recorded) = recording_claude(&answering_per_call("ok"));
+    let home = squad_home(&[&site]);
+    let refused = |events: &[Event], id: u64| events.iter().any(|e| matches!(e, Event::ConversationRenameRefused { session } if *session == id));
+    {
+        let (handle, mut events) = runtime::start(config(&claude, &home, true));
+        add(&handle, &mut events, 1, member(&site, "pm")).await;
+        handle.send(Command::NewConversation { squad: "acme".into(), session: 50, project: Some("site".into()) });
+        until(&mut events, |e| matches!(e, Event::LaneOpened { session: 50, .. })).await;
+        handle.send(Command::Submit { session: 50, text: "login is broken".into(), about: None });
+        until(&mut events, |e| matches!(e, Event::TurnEnded { session: 50, .. })).await;
+
+        // Its spaces made one, kept, told to every screen.
+        handle.send(Command::RenameConversation { squad: "acme".into(), session: 50, title: "  Login\n  page  ".into() });
+        until(&mut events, |e| matches!(e, Event::ConversationTitle { session: 50, title } if title == "Login page")).await;
+
+        // Refused, the title as it was: nothing left of the name, too long a one,
+        // the PM's own conversation, another squad's, one that isn't there.
+        for (squad, session, title) in [("acme", 50, "   "), ("acme", 50, &"x".repeat(41)[..]), ("acme", 1, "PM"), ("other", 50, "Elsewhere"), ("acme", 99, "Nobody")] {
+            handle.send(Command::RenameConversation { squad: squad.into(), session, title: title.into() });
+            let seen = until(&mut events, |e| matches!(e, Event::ConversationRenameRefused { .. })).await;
+            assert!(refused(&seen, session), "{squad} {session} {title:?}: {seen:#?}");
+            assert!(!seen.iter().any(|e| matches!(e, Event::ConversationTitle { .. })), "{seen:#?}");
+        }
+        // Forty characters is a name.
+        handle.send(Command::RenameConversation { squad: "acme".into(), session: 50, title: "가".repeat(40) });
+        until(&mut events, |e| matches!(e, Event::ConversationTitle { session: 50, title } if title.chars().count() == 40)).await;
+        handle.send(Command::RenameConversation { squad: "acme".into(), session: 50, title: "Login page".into() });
+        until(&mut events, |e| matches!(e, Event::ConversationTitle { session: 50, .. })).await;
+
+        // Another turn names nothing over it.
+        handle.send(Command::Submit { session: 50, text: "and the signup?".into(), about: None });
+        until(&mut events, |e| matches!(e, Event::TurnEnded { session: 50, .. })).await;
+        let snapshot = handle.snapshot("acme").await;
+        assert_eq!(snapshot.sessions.iter().find(|s| s.session == 50).and_then(|s| s.title.clone()).as_deref(), Some("Login page"));
+        handle.shutdown().await;
+    }
+
+    // Through a restart…
+    let (handle, mut events) = runtime::start(config(&claude, &home, true));
+    let snapshot = handle.snapshot("acme").await;
+    assert_eq!(snapshot.sessions.iter().find(|s| s.session == 50).and_then(|s| s.title.clone()).as_deref(), Some("Login page"));
+    // …and put away and taken up again.
+    handle.send(Command::CloseConversation { session: 50 });
+    until(&mut events, |e| matches!(e, Event::SessionClosed { session: 50 })).await;
+    let snapshot = handle.snapshot("acme").await;
+    assert_eq!(snapshot.put_away.iter().find(|c| c.session == 50).and_then(|c| c.title.clone()).as_deref(), Some("Login page"));
+    handle.send(Command::ReopenConversation { squad: "acme".into(), session: 50 });
+    let seen = until(&mut events, |e| matches!(e, Event::ConversationBack { session: 50, .. })).await;
+    assert!(matches!(seen.last(), Some(Event::ConversationBack { title: Some(t), .. }) if t == "Login page"), "{seen:#?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn the_person_talks_with_the_pm_in_conversations_of_their_own_kept_through_a_restart() {
     let site = named("site");
     let app = named("app");

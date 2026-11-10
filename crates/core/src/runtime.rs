@@ -2134,6 +2134,7 @@ impl Runtime {
             Command::SetSignalOn { squad, project, name, on } => self.set_signal_on(&squad, &project, &name, on),
             Command::NewConversation { squad, session, project } => self.new_conversation(&squad, session, project),
             Command::MoveConversation { session, project } => self.move_conversation(session, project),
+            Command::RenameConversation { squad, session, title } => self.rename_conversation(&squad, session, &title),
             Command::CloseConversation { session } => self.close_conversation(session).await,
             Command::ReopenConversation { squad, session } => self.reopen_conversation(&squad, session),
             Command::Focus { squad, project } => match project {
@@ -3937,6 +3938,27 @@ for one project goes to it as tickets for its owners, with that project — and 
             let _ = journal.set_conversation_project(id, project.as_deref());
         }
         self.publish(Event::LaneMoved { session: id, project });
+    }
+
+    /// The person names a conversation with the PM themselves: kept (the
+    /// journal's conversation and session together) and told to every screen,
+    /// or refused as it was — no such conversation in `squad`, nothing left of
+    /// the name or too long a one, a write that failed.
+    fn rename_conversation(&mut self, squad: &str, id: SessionId, raw: &str) {
+        let ours = self.sessions.get(&id).is_some_and(|s| s.kept && s.squad.as_deref() == Some(squad));
+        let Some(title) = equipe_protocol::conversation_title(raw).filter(|_| ours) else {
+            return self.publish(Event::ConversationRenameRefused { session: id });
+        };
+        if self.config.persist {
+            let kept = journal_for(&mut self.journals, &self.config.home, squad).map(|j| j.rename_conversation(id, &title));
+            if !matches!(kept, Some(Ok(true))) {
+                return self.publish(Event::ConversationRenameRefused { session: id });
+            }
+        }
+        if let Some(s) = self.sessions.get_mut(&id) {
+            s.title = Some(title.clone());
+        }
+        self.publish(Event::ConversationTitle { session: id, title });
     }
 
     /// A conversation with the PM put away: its turn stops, it leaves the list.

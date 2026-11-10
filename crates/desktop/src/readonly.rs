@@ -136,6 +136,7 @@ pub fn reads(command: &Command) -> bool {
         | C::Focus { .. }
         | C::NewConversation { .. }
         | C::MoveConversation { .. }
+        | C::RenameConversation { .. }
         | C::CloseConversation { .. }
         | C::ReopenConversation { .. }
         | C::AddProject { .. }
@@ -526,6 +527,7 @@ mod tests {
             Command::Focus { squad: s(), project: None },
             Command::NewConversation { squad: s(), session: 1, project: None },
             Command::MoveConversation { session: 1, project: None },
+            Command::RenameConversation { squad: s(), session: 1, title: "t".into() },
             Command::CloseConversation { session: 1 },
             Command::ReopenConversation { squad: s(), session: 1 },
             Command::AddProject { squad: s(), path: "/p".into() },

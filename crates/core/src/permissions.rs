@@ -147,6 +147,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::Focus { .. }
         | C::NewConversation { .. }
         | C::MoveConversation { .. }
+        | C::RenameConversation { .. }
         | C::CloseConversation { .. }
         | C::ReopenConversation { .. }
         | C::Unqueue { .. }

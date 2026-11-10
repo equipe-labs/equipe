@@ -115,6 +115,24 @@ state("conversation/composer/attachments", "chat;attach:{ROOT}/design/brand/logo
 state("conversation/composer/drop", "chat;drag:{ROOT}/design/guidelines.md;wait:400")
 state("conversation/composer/queued", "chat;say:First one;wait:200;say:Carry on with the second too;wait:600", {"FAKE_SECONDS": "12"})
 
+# ── Renaming a conversation (T-642's contract, built in T-643) ─────────────
+R = "newtalk:web;wait:600;say:Fix the checkout page copy;wait:2500"
+RS = [(1200, 760), (760, 760)]
+RF = {"FAKE_SECONDS": "1"}
+state("conversation/rename/entry-title", R, RF, sizes=RS, at={1200: "hover:440,21;wait:300;hover:442,21;wait:1200", 760: "hover:440,21;wait:300;hover:442,21;wait:1200"}, label="Entry · the header title on the pointer: its pencil, Rename")
+state("conversation/rename/entry-menu", R + ";rename:menu;wait:300", RF, sizes=RS, label="Entry · This conversation ⋯, Rename first")
+state("conversation/rename/entry-sidebar", R, RF, sizes=RS, at={1200: "hover:150,297;wait:300;hover:152,298;wait:1500", 760: "hover:150,297;wait:300;hover:152,298;wait:1500"}, label="Entry · the sidebar row on the pointer: rename and put away")
+state("conversation/rename/editing", R + ";rename;wait:300", RF, sizes=RS, label="Editing · the whole title selected")
+state("conversation/rename/composing", R + ";rename;rename:compose:카|피;wait:300", RF, sizes=RS, lang="ko", label="Korean IME composing: Return only commits it")
+state("conversation/rename/empty", R + ";rename;rename:type:   ;rename:save;wait:300", RF, sizes=RS, kind="error", label="Empty name · after Return")
+state("conversation/rename/too-long", R + ";rename;rename:type:Checkout copy, payment errors and the receipt email;wait:300", RF, sizes=RS, kind="error", label="Past 40 characters: nothing cut, how many to take out, Save waits")
+state("conversation/rename/saved", R + ";rename;rename:type:Checkout copy review;rename:save;wait:1200", RF, sizes=RS, kind="success", label="Saved: the header and the sidebar at once")
+state("conversation/rename/failed", R + ";wait:5000;rename;rename:type:Checkout copy review;rename:save;wait:600", RF, sizes=RS, kill_daemon_ms=8500, kind="error", label="Save failed, the Mac out of reach: the old title, what was typed, Try again")
+state("conversation/rename/refused", R + ";rename;rename:type:Checkout copy review;rename:save;wait:1200", {"FAKE_SECONDS": "1", "FAKE_RENAME": "refuse"}, sizes=RS, kind="error", label="Refused by the daemon: the old title back, the card again")
+state("conversation/rename/long", "newtalk:web;wait:600;say:Bezahlseite: Texte und Fehlermeldungen;wait:2500;rename;wait:300", RF, sizes=RS, lang="de", label="Long title (German): the place folds to its mark")
+state("conversation/rename/large", R + ";zoom:150;wait:600;rename;wait:300", RF, sizes=RS, label="150% text: the card inside the conversation pane")
+state("conversation/rename/large-failed", R + ";zoom:150;wait:5000;rename;rename:type:Checkout copy review;rename:save;wait:600", RF, sizes=RS, kill_daemon_ms=8500, kind="error", label="150% text · save failed: no key hints, the buttons whole")
+
 # ── Board & tickets ────────────────────────────────────────────────────────
 state("board/board/default", "menu:all", wait=1200)
 state("board/board/empty", "menu:all", {"FAKE_EMPTY": "1", "FAKE_WORKING": "0", "FAKE_ASKS": "0"}, wait=1200, label="Nothing waiting for the person")
@@ -229,7 +247,7 @@ SCREENS = {
     "inbox/routine": ("A routine the PM proposes", ["views/routine.rs", "routine.rs"], None),
     "inbox/accept": ("Work to confirm", ["views/accept.rs", "accept.rs"], None),
     "conversation/chat": ("PM conversation", ["views/chat.rs", "views/header.rs", "render/view.rs", "render/prose.rs", "render/raster.rs", "views/compact.rs", "views/asklist.rs", "convo.rs"], "Diagrams (```mermaid) are drawn by the app itself (render/raster.rs). HTML cards (```html card) are off until the T-340 security review: the app shows such a block as code, like the code blocks in the Markdown state, so no state of its own yet — add one when cards are turned on."),
-    "conversation/rename": ("Rename a conversation", ["views/header.rs", "views/sidebar.rs"], "T-642 mockups over real snapshot shots (design/specs/rename-conversation/) until T-643 builds it; 760 is a 760×760 window. Contract: design/specs/rename-conversation/spec.md."),
+    "conversation/rename": ("Rename a conversation", ["views/rename.rs", "views/header.rs", "views/sidebar.rs"], "The app itself (T-643) on the fake daemon, a project's conversation begun for the purpose; 760 is a 760×760 window, so the sidebar row shows. Contract: design/specs/rename-conversation/spec.md (T-642)."),
     "conversation/engine-switch": ("Engine switching card (over the composer)", ["views/switching.rs", "switching.rs", "usage.rs"], "Error: Claude's week used up; Done: what equipe did in auto, with Undo."),
     "conversation/composer": ("Composer", ["views/composer.rs", "views/attached.rs", "attach.rs", "compose.rs"], None),
     "board/board": ("Board", ["views/tickets.rs", "views/ticket_card.rs", "views/sidebar.rs", "tickets.rs"], None),
@@ -280,20 +298,7 @@ RECORDED = {"first-run"}
 
 # States that no fake daemon or snapshot step reaches: drawn as HTML mockups
 # (design/flows/mockups/) and rendered to the same paths.
-MOCKUPS = {
-    "conversation/rename/entry-title": ("Entry · header title hover", "default", "T-642, design/specs/rename-conversation/render.mjs — pencil after the title, tooltip Rename (full title first when cut)"),
-    "conversation/rename/entry-menu": ("Entry · This conversation ⋯", "default", "T-642, design/specs/rename-conversation/render.mjs — Rename is the menu's first item, focused; the menu stays inside the window"),
-    "conversation/rename/entry-sidebar": ("Entry · sidebar row hover", "default", "T-642, design/specs/rename-conversation/render.mjs — pencil and × (24pt each), tooltip Rename; opens the conversation and the same card"),
-    "conversation/rename/editing": ("Editing · title selected", "default", "T-642, design/specs/rename-conversation/render.mjs — the card under the header title; the whole title selected, Cancel Esc / Save ↩"),
-    "conversation/rename/composing": ("Korean IME composing", "default", "T-642, design/specs/rename-conversation/render.mjs — 카 committed, 피 still composing: Return only commits it"),
-    "conversation/rename/empty": ("Empty name · after Return", "error", "T-642, design/specs/rename-conversation/render.mjs — after Return: after Return: message, Save disabled; Esc still restores the title"),
-    "conversation/rename/too-long": ("Pasted past 40 characters", "error", "T-642, design/specs/rename-conversation/render.mjs — nothing cut: the 8 over are marked, n/40 in the field, Save disabled"),
-    "conversation/rename/saved": ("Saved", "success", "T-642, design/specs/rename-conversation/render.mjs — header and sidebar show the new title at once; keyboard focus back on the header title"),
-    "conversation/rename/failed": ("Save failed (Mac disconnected)", "error", "T-642, design/specs/rename-conversation/render.mjs — title back to the old one, the typed name kept, Try again ↩"),
-    "conversation/rename/long": ("Long title (German)", "long", "T-642, design/specs/rename-conversation/render.mjs — the bar gives way (context, then the place to its mark); the cut sidebar row shows the full title on the pointer"),
-    "conversation/rename/large": ("150% text", "default", "T-642, design/specs/rename-conversation/render.mjs — at 760 the place and its slash give way, ⋯ stays; the card keeps inside the conversation pane"),
-    "conversation/rename/large-failed": ("150% text · save failed (English)", "error", "T-642, design/specs/rename-conversation/render.mjs — Mac disconnected; under 300 wide the key hints go and both buttons stay on one line"),
-}
+MOCKUPS = {}
 NOTES = {}
 
 

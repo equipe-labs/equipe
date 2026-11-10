@@ -40,6 +40,7 @@
 //! to rest the pointer on; `FAKE_CARDS=long` gives T-42 a
 //! hand-in long enough to scroll on its card, and with `FAKE_REPLY_IMAGES=1`
 //! the reply names T-4 too — its pictures and all, a card taller than a small window.
+//! `FAKE_RENAME=refuse`: a conversation's new name is refused, as a daemon that couldn't keep it would.
 //! `FAKE_REVIEW=1` gives T-42 and T-71 a made-up Nemotron review (canned, not a model's).
 //! `FAKE_ASKLIST=1` ends the PM's history on a reply asking three things in a
 //! numbered list of its own words, as a member does that skips `ask_decision`.
@@ -1745,6 +1746,15 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             }
                             Command::MoveConversation { session, project } => {
                                 let _ = events.send(Event::LaneMoved { session, project });
+                            }
+                            // Like the daemon: a conversation of the person's named by them, or
+                            // (`FAKE_RENAME=refuse`) refused, the name as it was.
+                            Command::RenameConversation { session, title, .. } => {
+                                let kept = routes.lock().await.kept.contains(&session);
+                                match equipe_core::protocol::conversation_title(&title).filter(|_| kept && std::env::var("FAKE_RENAME").as_deref() != Ok("refuse")) {
+                                    Some(title) => drop(events.send(Event::ConversationTitle { session, title })),
+                                    None => drop(events.send(Event::ConversationRenameRefused { session })),
+                                }
                             }
                             Command::CloseConversation { session } => {
                                 routes.lock().await.kept.remove(&session);

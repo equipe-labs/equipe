@@ -1452,6 +1452,15 @@ impl Model {
                 }
                 self.revision += 1;
             }
+            // Named by the person (here, on another screen, on the phone): the header and the sidebar.
+            Event::ConversationTitle { session, title } => {
+                if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == session) {
+                    lane.title = Some(title);
+                }
+                self.revision += 1;
+            }
+            // The screen that asked puts its old name back (`views::rename`).
+            Event::ConversationRenameRefused { .. } => {}
             Event::LaneMoved { session, project } => {
                 if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == session) {
                     lane.project = project;
