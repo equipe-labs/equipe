@@ -336,3 +336,26 @@ async fn signed_in_to_both_with_the_team_on_one_the_setup_is_proposed_once_and_a
     let seen = until(&mut events, |e| matches!(e, Event::EngineProposed { .. })).await;
     assert_eq!(proposed(&seen).why, Why::Setup);
 }
+
+#[tokio::test]
+async fn a_ticket_an_engine_out_of_its_plan_keeps_waiting_is_told_once_never_silent() {
+    let (bin, _dir) = claude(ANSWERS);
+    let (home, project) = home();
+    let (handle, mut events) = runtime::start(config(&bin, &home));
+    add(&handle, &mut events, 1, member(&project, "pm", None)).await;
+    add(&handle, &mut events, 2, member(&project, "qa", Some(Engine::Claude))).await;
+    // Claude's five hours are out and start over within the hour: waited for, nothing new starts on it.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let out = PlanUsage { five_hour: Some(PlanWindow { used_percent: 100, resets_at: now + 40 * 60 }), seven_day: Some(PlanWindow { used_percent: 40, resets_at: now + 3 * 24 * 3600 }) };
+    handle.usage_read(Engine::Codex, usage(5, 5));
+    handle.usage_read(Engine::Claude, out);
+    let _ = within(&mut events, Duration::from_millis(300)).await;
+    create_ticket(&handle, "qa").await;
+    let told = |e: &Event| format!("{e:?}").contains("T-1 대기 중이에요");
+    let seen = until(&mut events, told).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::WorkStarted { session: 2, .. })), "held, not started");
+    // Once per hold, however often the board is looked at again.
+    create_ticket(&handle, "qa").await;
+    let later = within(&mut events, Duration::from_millis(1200)).await;
+    assert!(!later.iter().any(|e| told(e) || format!("{e:?}").contains("T-2 대기 중")), "{later:#?}");
+}

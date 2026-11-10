@@ -82,6 +82,8 @@ struct SquadEngines {
     due: Vec<Due>,
     /// Engines that take no new tickets for now.
     holds: Vec<Hold>,
+    /// Holds the person was told keep tickets waiting, as (engine, until).
+    told_held: Vec<(Engine, i64)>,
 }
 
 struct Due {
@@ -170,8 +172,13 @@ impl Engines {
 
     /// Whether members on `engine` take no new ticket now.
     pub(super) fn held(&self, squad: &str, engine: Engine) -> bool {
+        self.hold_on(squad, engine).is_some()
+    }
+
+    /// The hold on `engine`, if any: until when.
+    fn hold_on(&self, squad: &str, engine: Engine) -> Option<i64> {
         let now = unix_now();
-        self.squads.get(squad).is_some_and(|s| s.holds.iter().any(|h| h.engine == engine && h.until > now))
+        self.squads.get(squad)?.holds.iter().filter(|h| h.engine == engine && h.until > now).map(|h| h.until).max()
     }
 
     /// The engines as just looked at.
@@ -375,6 +382,27 @@ impl Runtime {
         }
     }
 
+    /// Tickets a member would have started wait for `engine`'s hold: the
+    /// person and the PM are told, once per hold, which and until when — work
+    /// that stops is never silent.
+    pub(super) fn tell_held(&mut self, squad: &str, engine: Engine, tickets: &[TicketId]) {
+        let Some(until) = self.engines.hold_on(squad, engine) else { return };
+        let told = &mut self.engines_of(squad).told_held;
+        if tickets.is_empty() || told.contains(&(engine, until)) {
+            return;
+        }
+        told.push((engine, until));
+        let name = engine_name(engine);
+        let list = tickets.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
+        let span = self.span(until - unix_now());
+        let text = say!(self, "engines.news_held", tickets = list, engine = name, span = span);
+        self.log_engines(squad, format!("held: {list} wait for {name} ({span})"));
+        let line = format!(
+            "equipe: {list} are waiting and won't start: {name} reached its plan's limit, and equipe starts nothing new on it until it resets in {span}. Tell the person plainly; don't requeue them or change models to get around it. They may top up or reset the plan, or move members to another engine."
+        );
+        self.brief_pm(squad, line, Some(text));
+    }
+
     /// The person is told, once, where an engine's plan stands.
     fn tell_level(&mut self, squad: &str, n: rules::Notice) {
         let engine = engine_name(n.engine);
@@ -429,7 +457,8 @@ impl Runtime {
             Some((id, _)) => self.close_proposal(squad, id, false),
             None => {}
         }
-        let auto = mode == Switching::Auto;
+        // A lighter model trades quality for room: only the person makes that call.
+        let auto = mode == Switching::Auto && batch.why != Why::StepDown;
         let proposal = Proposal {
             id: equipe_protocol::new_session_id(),
             why: batch.why,
