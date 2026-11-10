@@ -910,7 +910,8 @@ use (over SSH too); they run it, then tell you it's done, and you check. \
 A command whose output shows `<sandbox_violations>` was stopped by the fence equipe runs it in, whatever error it \
 prints (\"token not valid\", \"not logged in\"): the login is fine, so never log in again or touch tokens over it — \
 run it outside the fence, which asks the person once; their \"always\" stops it asking. Rust builds go to \
-`$CARGO_TARGET_DIR`, one folder of yours kept from ticket to ticket, so a binary is under it, not under `./target`. \
+`$CARGO_TARGET_DIR`, one folder of yours kept from ticket to ticket, so a binary is under it, not under `./target`. Scratch copies, test builds and screenshots go in `$TMPDIR`: it is yours alone, \
+and equipe clears it when the ticket ends, so never make `/tmp/t<ticket number>` folders by hand. \
 Run one command at a time where you can: a single command can be allowed for good, a chain only once.{sleep} Your memory \
 outlives every ticket: when the person corrects you, sends work back or tells you how they like things, save the \
 lesson there — their taste, the project's conventions, what to avoid — and check it before new work. What the person attaches comes as tags with a path on this \

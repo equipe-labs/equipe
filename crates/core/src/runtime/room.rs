@@ -435,11 +435,26 @@ impl Runtime {
         });
     }
 
+    /// A ticket's lane has ended (accepted, merged or cancelled): what stands in
+    /// its temporary folder (`~/.equipe/tmp/<squad>/t<N>`) is stopped and the
+    /// folder removed, off the loop. The folder is this squad's alone. A live
+    /// session's engine is never stopped.
+    pub(super) fn clear_lane_tmp_of(&mut self, squad: &str, id: TicketId) {
+        let (home, owner, keep) = (self.config.home.clone(), squad.to_owned(), self.commands.engine_pids());
+        tokio::task::spawn_blocking(move || {
+            for line in disk::clear_ticket_tmp(&home, &owner, id, &keep) {
+                crate::daemon_log!("equipe: {line} (its ticket is done with)");
+            }
+        });
+    }
+
     /// A ticket merged or cancelled: what it left running in its worktree and
     /// scratch folders in the system's temporary folder is stopped, and those
     /// scratch folders removed, off the loop. Another squad's open ticket of
     /// the same number may own folders there named alike: then only the
-    /// worktree's own are looked at. A live session's engine is never stopped.
+    /// worktree's own are looked at. The ticket's lane folder
+    /// (`~/.equipe/tmp/<squad>/t<N>`) is this squad's alone: always cleared.
+    /// A live session's engine is never stopped.
     fn clear_finished_leftovers(&mut self, squad: &str, ticket: &Ticket) {
         let id = ticket.id;
         let shared = self.journals.keys().filter(|s| s.as_str() != squad).cloned().collect::<Vec<_>>().iter().any(|other| {
@@ -458,7 +473,12 @@ impl Runtime {
         worktrees.sort();
         worktrees.dedup();
         let keep: Vec<u32> = self.commands.engine_pids();
+        let (home, owner) = (self.config.home.clone(), squad.to_owned());
         tokio::task::spawn_blocking(move || {
+            // The lane's own temporary folder: this squad's, whatever other squads have open.
+            for line in disk::clear_ticket_tmp(&home, &owner, id, &keep) {
+                crate::daemon_log!("equipe: {line} (its ticket is done with)");
+            }
             for line in disk::clear_ticket_leftovers(id, &temp, &worktrees, &keep) {
                 crate::daemon_log!("equipe: {line} (its ticket is done with)");
             }

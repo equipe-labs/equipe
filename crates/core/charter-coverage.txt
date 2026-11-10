@@ -45,6 +45,7 @@ backend.bare,custom.bare,data.bare,designer.bare,frontend.bare,marketing.bare,mo
 *	equipe opens a terminal on this machine for them in the app, with the command typed, on whatever screen they use (over SSH too); they run it, then tell you it's done, and you check
 *	A command whose output shows `<sandbox_violations>` was stopped by the fence equipe runs it in, whatever error it prints ("token not valid", "not logged in"): the login is fine, so never log in again or touch tokens over it — run it outside the fence, which asks the person once; their "always" stops it asking
 *	Rust builds go to `$CARGO_TARGET_DIR`, one folder of yours kept from ticket to ticket, so a binary is under it, not under `./target`
+*	Scratch copies, test builds and screenshots go in `$TMPDIR`: it is yours alone, and equipe clears it when the ticket ends, so never make `/tmp/t<ticket number>` folders by hand
 *	Run one command at a time where you can: a single command can be allowed for good, a chain only once
 backend.bare,custom.bare,data.bare,designer.bare,frontend.bare,marketing.bare,mobile.bare,pm.bare,qa.bare,security.bare	Never sleep in the foreground to wait for something: run a long command in the background and wait for it with your engine's own wait or monitor tool
 *	Your memory outlives every ticket: when the person corrects you, sends work back or tells you how they like things, save the lesson there — their taste, the project's conventions, what to avoid — and check it before new work

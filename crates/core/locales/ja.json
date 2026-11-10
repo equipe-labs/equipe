@@ -624,6 +624,7 @@
   "notice.qa_report": "▶ {name} が T-{ticket} で {flow} をテストしました: {steps} ステップ中 {passed} 合格 · {video}",
   "disk.kind.recordings": "スマホの画面録画",
   "disk.kind.ticket_temp": "終わったチケットの一時フォルダ",
+  "disk.kind.lane_temp": "作業レーンの一時フォルダ",
   "news.stalled": "T-{id} の実行が提出なしで止まりました。ブランチと作業フォルダはそのままです。カードから再開・再投入・担当変更を選んでください · {title}。",
   "news.recovery_resume": "T-{id} は {to} が新しいセッションで再開します。ブランチと作業フォルダはそのままです · {title}。",
   "news.recovery_requeue": "T-{id} を次に空いた {to} に再投入しました。ブランチと作業フォルダはそのままです · {title}。",

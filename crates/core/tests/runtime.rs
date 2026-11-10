@@ -5704,3 +5704,81 @@ async fn one_side_chat_a_conversation_and_the_conversation_closing_takes_it() {
     handle.send(Command::Close { session: 2 });
     until(&mut events, |e| matches!(e, Event::SideChatClosed { side: 2, .. })).await;
 }
+
+// ── a lane's own temporary folder ──
+
+/// Each lane's temporary folder as its turn saw it: `(kind, TMPDIR, TMP, TEMP)`, `kind` being
+/// `ticket` for a ticket's turn and `desk` for any other.
+fn temp_seen(dir: &Path) -> Vec<(String, String, String, String)> {
+    let mut seen = Vec::new();
+    for file in std::fs::read_dir(dir).unwrap().flatten() {
+        let text = std::fs::read_to_string(file.path()).unwrap();
+        let mut lines = text.lines();
+        let kind = lines.next().unwrap_or_default().to_owned();
+        let value = |name: &str| lines.clone().find_map(|l| l.strip_prefix(&format!("{name}="))).unwrap_or_default().to_owned();
+        seen.push((kind, value("TMPDIR"), value("TMP"), value("TEMP")));
+    }
+    seen
+}
+
+#[tokio::test]
+async fn a_lane_works_in_a_temporary_folder_of_its_own_that_goes_with_its_ticket_and_no_other_squads() {
+    let repo = repo();
+    let envs = scratch("envs");
+    let turn = format!(
+        "case \"$*\" in *\"You're on T-\"*) k=ticket;; *) k=desk;; esac\n{{ echo $k; env | grep -E '^(TMPDIR|TMP|TEMP)='; }} > '{}'/$$\n{}",
+        envs.display(),
+        working_turn("HERO.md")
+    );
+    let (claude, recorded) = recording_claude(&turn);
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+
+    // At its desk, a member's folder is its own, under the squad's.
+    handle.send(Command::Submit { session: 2, text: "hello".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let desk = home.join("tmp").join("acme").join("frontend");
+    let desk_str = desk.to_string_lossy().into_owned();
+    assert!(temp_seen(&envs).contains(&("desk".into(), desk_str.clone(), desk_str.clone(), desk_str)), "{:?}", temp_seen(&envs));
+
+    // On a ticket, the lane's: under the squad's, named for the ticket, and the fence lets it be written.
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
+    let call = latest_call(&recorded, |p| p.starts_with("[equipe] You're on T-1")).await;
+    let lane = home.join("tmp").join("acme").join("t1");
+    let lane_str = lane.to_string_lossy().into_owned();
+    let ticket_env = ("ticket".to_owned(), lane_str.clone(), lane_str.clone(), lane_str.clone());
+    assert!(temp_seen(&envs).contains(&ticket_env), "{:?}", temp_seen(&envs));
+    assert!(lane.is_dir(), "made before the turn");
+    let settings = settings_of(&call);
+    let writable = settings["sandbox"]["filesystem"]["allowWrite"].as_array().unwrap();
+    assert!(writable.iter().any(|p| *p == lane_str), "{writable:?}");
+
+    // Something left running in it, and the same number's folder of another squad doing the same.
+    let others = home.join("tmp").join("other").join("t1");
+    std::fs::create_dir_all(&others).unwrap();
+    std::fs::write(lane.join("shot.png"), b"x").unwrap();
+    std::fs::write(others.join("shot.png"), b"x").unwrap();
+    let sleeper = |cwd: &Path| Process::new("sleep").arg("60").current_dir(cwd).stdin(std::process::Stdio::null()).spawn().unwrap();
+    let (mut mine, mut theirs) = (sleeper(&lane), sleeper(&others));
+
+    // The ticket is merged: its folder goes, and what ran in it stops; the other squad's stays.
+    let handed = tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Done.", "changes_screens": false })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
+    handle.send(Command::Accept { squad: "acme".into(), ticket: 1 });
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Done)).await;
+    for _ in 0..200 {
+        if !lane.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!lane.exists(), "the ticket's folder is removed");
+    assert!(mine.wait().is_ok(), "what ran in it stopped");
+    assert!(others.join("shot.png").exists() && theirs.try_wait().unwrap().is_none(), "another squad's T-1 is left alone");
+    assert!(desk.is_dir(), "a desk's folder isn't a ticket's to clear");
+    let _ = (theirs.kill(), theirs.wait());
+}

@@ -652,6 +652,7 @@ impl Scan<'_> {
         }
         self.recordings();
         self.ticket_temps();
+        self.lane_temps();
     }
 
     /// Scratch folders members made for a ticket in the system's temporary
@@ -710,6 +711,44 @@ impl Scan<'_> {
                     }
                     TempName::Loose(_) => {}
                 }
+            }
+        }
+    }
+
+    /// Lanes' own temporary folders (`<home>/tmp/<squad>/…`): a finished
+    /// ticket's is given back, an open ticket's is in use, a desk's is given
+    /// back once untouched for a day.
+    fn lane_temps(&mut self) {
+        let root = self.known.home.join("tmp");
+        let mut squads: Vec<PathBuf> = std::fs::read_dir(&root).into_iter().flatten().flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()).collect();
+        squads.sort();
+        for squad_dir in squads {
+            let squad = squad_dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let mut dirs: Vec<PathBuf> = std::fs::read_dir(&squad_dir).into_iter().flatten().flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()).collect();
+            dirs.sort();
+            for path in dirs {
+                if !self.budget.left() {
+                    return;
+                }
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let (bytes, whole) = measure(&path, &mut self.budget);
+                let ticket = lane_tmp_ticket(&name);
+                let (safe, why) = match ticket {
+                    Some(id) => match self.known.tickets.iter().find(|t| t.squad == squad && t.id == id) {
+                        Some(t) if !t.status.is_closed() => (false, DiskWhy::OpenTicket),
+                        Some(t) if t.status == TicketStatus::Cancelled => (true, DiskWhy::Cancelled),
+                        Some(_) => (true, DiskWhy::Merged),
+                        None => (true, DiskWhy::NoTicket),
+                    },
+                    None if newest_deep(&path).and_then(|at| at.elapsed().ok()).is_some_and(|ago| ago >= DESK_TMP_IDLE) => (true, DiskWhy::Stale),
+                    None => (false, DiskWhy::InUse),
+                };
+                if bytes < MB && !safe {
+                    continue;
+                }
+                let at = self.push(DiskGroup::Equipe, DiskKind::LaneTemp, format!("tmp/{squad}/{name}"), &path, bytes, whole, safe, why);
+                self.items[at].squad = Some(squad.clone());
+                self.items[at].ticket = ticket;
             }
         }
     }
@@ -873,6 +912,12 @@ pub fn clean(known: &Known, ids: &[String]) -> DiskCleaned {
                     crate::daemon_log!("equipe: {line}");
                 }
                 remove_any(&item.path)
+            }
+            DiskKind::LaneTemp if removable(&item.path, &lane_tmp_roots(&known.home)) => {
+                for line in clear_lane_tmp(&known.home, &item.path, &[]) {
+                    crate::daemon_log!("equipe: {line}");
+                }
+                !item.path.exists()
             }
             // Kept attachments sent long ago: the files go, their names with them.
             DiskKind::Attachments if item.why == DiskWhy::SentLongAgo => {
@@ -1286,6 +1331,104 @@ pub fn clear_ticket_leftovers(id: TicketId, temp: &[PathBuf], worktrees: &[PathB
         }
         if temp_removable(folder, temp) && remove_any(folder) {
             done.push(format!("removed {}", folder.display()));
+        }
+    }
+    done
+}
+
+// ── lanes' own temporary folders ──
+
+/// How long a desk session's temporary folder must be left untouched before
+/// tidy removes it: a member may come back to its desk the next day.
+const DESK_TMP_IDLE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// The environment that points a lane's temporary files at `dir`: `TMPDIR`
+/// (macOS and Linux tools), `TMP` and `TEMP` (those that read the others).
+pub fn lane_tmp_env(dir: &Path) -> Vec<(String, String)> {
+    let at = dir.to_string_lossy().into_owned();
+    ["TMPDIR", "TMP", "TEMP"].into_iter().map(|name| (name.to_owned(), at.clone())).collect()
+}
+
+/// The folders a lane's temporary folder may be removed under.
+fn lane_tmp_roots(home: &Path) -> Vec<PathBuf> {
+    vec![home.join("tmp")]
+}
+
+/// The ticket a lane's temporary folder is named for: `t<N>`, nothing else.
+fn lane_tmp_ticket(name: &str) -> Option<TicketId> {
+    let digits = name.strip_prefix('t')?;
+    (!digits.starts_with('0') && !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then(|| digits.parse().ok()).flatten()
+}
+
+/// When anything in `dir` last changed, looking a few folders down.
+fn newest_deep(dir: &Path) -> Option<std::time::SystemTime> {
+    let mut budget = 20_000usize;
+    let mut newest = std::fs::symlink_metadata(dir).and_then(|m| m.modified()).ok();
+    let mut stack = vec![(dir.to_owned(), 0usize)];
+    while let Some((at, depth)) = stack.pop() {
+        for entry in std::fs::read_dir(&at).into_iter().flatten().flatten() {
+            budget = budget.saturating_sub(1);
+            if budget == 0 {
+                return Some(std::time::SystemTime::now());
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            newest = newest.max(meta.modified().ok());
+            if meta.is_dir() && depth < 4 {
+                stack.push((entry.path(), depth + 1));
+            }
+        }
+    }
+    newest
+}
+
+/// Stop what stands in a lane's temporary folder `dir` (never `keep`'s: the
+/// live sessions' engines), then remove it. Only under `<home>/tmp`, never
+/// through a link. What was done, for the log.
+pub fn clear_lane_tmp(home: &Path, dir: &Path, keep: &[u32]) -> Vec<String> {
+    off_the_loop("disk::clear_lane_tmp");
+    if std::fs::symlink_metadata(dir).is_err() || !removable(dir, &lane_tmp_roots(home)) {
+        return Vec::new();
+    }
+    let mut done = crate::leftovers::stop_in(std::slice::from_ref(&dir.to_owned()), keep);
+    done.extend(stop_gradle_daemons(dir));
+    if remove_any(dir) {
+        done.push(format!("removed {}", dir.display()));
+    }
+    done
+}
+
+/// A ticket of squad `squad` is done with: its lane's temporary folder goes.
+/// Exact: ticket numbers are per squad, and the folder is under the squad's.
+pub fn clear_ticket_tmp(home: &Path, squad: &str, id: TicketId, keep: &[u32]) -> Vec<String> {
+    clear_lane_tmp(home, &crate::journal::lane_tmp_dir(home, squad, Some(id), ""), keep)
+}
+
+/// Tidy lanes' temporary folders. `open` is, for each squad known, the tickets
+/// it has open: a squad's `t<N>` folder of a ticket not among them goes, and a
+/// member's desk folder untouched for [`DESK_TMP_IDLE`]. A squad not listed is
+/// left alone. What was done, for the log.
+pub fn tidy_lane_tmp(home: &Path, open: &[(String, Vec<TicketId>)], keep: &[u32]) -> Vec<String> {
+    off_the_loop("disk::tidy_lane_tmp");
+    let mut done = Vec::new();
+    for (squad, tickets) in open {
+        let root = home.join("tmp").join(squad);
+        let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .map(|e| e.path())
+            .collect();
+        dirs.sort();
+        for dir in dirs {
+            let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let stale = match lane_tmp_ticket(&name) {
+                Some(id) => !tickets.contains(&id),
+                None => newest_deep(&dir).and_then(|at| at.elapsed().ok()).is_some_and(|ago| ago >= DESK_TMP_IDLE),
+            };
+            if stale {
+                done.extend(clear_lane_tmp(home, &dir, keep));
+            }
         }
     }
     done
@@ -2169,5 +2312,97 @@ mod tests {
         assert!(items.iter().any(|i| i.path == path && certain(i)), "fresh, but held: it is what a clean stops and removes");
         let cleaned = clean_certain(&known);
         assert!(!path.exists() && dev.wait().is_ok(), "{cleaned:?}");
+    }
+
+    // ── lanes' own temporary folders ──
+
+    fn aged(path: &Path, hours: u64) {
+        let at = std::time::SystemTime::now() - Duration::from_secs(hours * 3600);
+        for entry in std::fs::read_dir(path).into_iter().flatten().flatten() {
+            let _ = std::fs::File::open(entry.path()).and_then(|f| f.set_modified(at));
+        }
+        std::fs::File::open(path).unwrap().set_modified(at).unwrap();
+    }
+
+    #[test]
+    fn a_lanes_temporary_environment_names_one_folder_three_ways() {
+        let env = lane_tmp_env(Path::new("/h/tmp/acme/t84"));
+        assert_eq!(env.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["TMPDIR", "TMP", "TEMP"]);
+        assert!(env.iter().all(|(_, v)| v == "/h/tmp/acme/t84"));
+        let home = Path::new("/h");
+        assert_eq!(crate::journal::lane_tmp_dir(home, "acme", Some(84), "backend"), Path::new("/h/tmp/acme/t84"));
+        assert_eq!(crate::journal::lane_tmp_dir(home, "acme", None, "backend"), Path::new("/h/tmp/acme/backend"));
+        assert_eq!(crate::journal::lane_tmp_dir(home, "other", Some(84), "backend"), Path::new("/h/tmp/other/t84"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_finished_ticket_clears_its_squads_folder_and_stops_what_runs_in_it_and_no_other_squads() {
+        use std::process::{Command, Stdio};
+        let tree = Tree::new();
+        let (mine, theirs) = (crate::journal::lane_tmp_dir(&tree.home, "acme", Some(84), "x"), crate::journal::lane_tmp_dir(&tree.home, "beta", Some(84), "x"));
+        for dir in [&mine, &theirs] {
+            fill(&dir.join("app"), 1000);
+        }
+        let run = |cwd: &Path| Command::new("sleep").arg("60").current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::null()).spawn().unwrap();
+        let (mut a, mut b) = (run(&mine.join("app")), run(&theirs));
+        std::thread::sleep(Duration::from_millis(300));
+        let done = clear_ticket_tmp(&tree.home, "acme", 84, &[]);
+        assert!(done.iter().any(|l| l.contains("stopped process")) && done.iter().any(|l| l.starts_with("removed ")), "{done:?}");
+        assert!(!mine.exists() && a.wait().is_ok(), "the lane's folder is gone and what ran there stopped");
+        assert!(theirs.join("app/blob").exists() && b.try_wait().unwrap().is_none(), "beta's T-84 is its own");
+        assert!(clear_ticket_tmp(&tree.home, "acme", 84, &[]).is_empty(), "nothing to do twice");
+        let _ = (b.kill(), b.wait());
+    }
+
+    #[test]
+    fn tidy_removes_tickets_no_longer_open_and_idle_desks_and_keeps_the_rest() {
+        let tree = Tree::new();
+        let dir = |squad: &str, name: &str| tree.home.join("tmp").join(squad).join(name);
+        for (squad, name) in [("acme", "t1"), ("acme", "t2"), ("acme", "t3"), ("acme", "backend"), ("acme", "frontend"), ("beta", "t1"), ("beta", "t2"), ("gone", "t9")] {
+            fill(&dir(squad, name), 100);
+        }
+        aged(&dir("acme", "backend"), 30);
+        aged(&dir("acme", "frontend"), 2);
+        // acme has T-2 open; beta has T-1 open and T-2 not; `gone` isn't known: left alone.
+        let open = vec![("acme".to_owned(), vec![2]), ("beta".to_owned(), vec![1])];
+        let done = tidy_lane_tmp(&tree.home, &open, &[]);
+        assert_eq!(done.iter().filter(|l| l.starts_with("removed ")).count(), 4, "{done:?}");
+        for (squad, name, kept) in [
+            ("acme", "t1", false),
+            ("acme", "t2", true),
+            ("acme", "t3", false),
+            ("acme", "backend", false),
+            ("acme", "frontend", true),
+            ("beta", "t1", true),
+            ("beta", "t2", false),
+            ("gone", "t9", true),
+        ] {
+            assert_eq!(dir(squad, name).exists(), kept, "{squad}/{name}");
+        }
+        assert!(tidy_lane_tmp(&tree.home, &open, &[]).is_empty());
+    }
+
+    #[test]
+    fn the_report_lists_every_lanes_folder_and_gives_back_a_finished_tickets() {
+        let tree = Tree::new();
+        let dir = |squad: &str, name: &str| tree.home.join("tmp").join(squad).join(name);
+        for (squad, name) in [("acme", "t1"), ("acme", "t2"), ("beta", "t1"), ("acme", "backend")] {
+            fill(&dir(squad, name), 2 * MB as usize);
+        }
+        let ticket = |squad: &str, id, status| KnownTicket { squad: squad.into(), ..tree.ticket(id, status, Some(true), None) };
+        let known = Known {
+            home: tree.home.clone(),
+            tickets: vec![ticket("acme", 1, TicketStatus::Done), ticket("acme", 2, TicketStatus::InProgress), ticket("beta", 1, TicketStatus::InProgress)],
+            ..Known::default()
+        };
+        let (items, _) = scan(&known, SCAN_BUDGET);
+        let lane = |squad: &str, name: &str| find(&items, DiskKind::LaneTemp, &dir(squad, name));
+        assert!(lane("acme", "t1").safe && lane("acme", "t1").why == DiskWhy::Merged && certain(lane("acme", "t1")), "done in acme");
+        assert!(!lane("beta", "t1").safe && lane("beta", "t1").why == DiskWhy::OpenTicket, "open in beta, though done in acme");
+        assert!(!lane("acme", "t2").safe && !lane("acme", "backend").safe);
+        assert_eq!(lane("acme", "t2").squad.as_deref(), Some("acme"));
+        let cleaned = clean_certain(&known);
+        assert!(!dir("acme", "t1").exists() && dir("beta", "t1").exists() && dir("acme", "t2").exists(), "{cleaned:?}");
     }
 }
