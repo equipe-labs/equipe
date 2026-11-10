@@ -3829,14 +3829,14 @@ async fn the_person_talks_with_the_pm_in_conversations_of_their_own_kept_through
     kept.sort();
     assert_eq!(
         kept,
-        [(50, 1, Some("site".to_owned()), true, Some("login is broken".to_owned())), (51, 1, Some("app".to_owned()), true, Some("what next?".to_owned()))],
+        [(50, 1, Some("site".to_owned()), true, Some("login is broken".to_owned())), (51, 1, Some("app".to_owned()), true, Some("what next".to_owned()))],
         "both back, where they were left"
     );
     let login = snapshot.sessions.iter().find(|s| s.session == 50).unwrap();
     assert!(text_entries(&login.recent).contains(&"user: and the signup?".to_owned()), "{:?}", login.recent);
     handle.send(Command::Submit { session: 50, text: "still there?".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 50, .. })).await;
-    assert_eq!(arg(&said(&calls(&recorded), "still there?"), "--resume"), Some("sess-4"), "picked up where it was left");
+    assert_eq!(arg(&said(&calls(&recorded), "still there?"), "--resume"), Some("sess-6"), "picked up where it was left"); // two topic-naming side turns ran in between
 
     // Put away: it leaves, and stays away.
     handle.send(Command::CloseConversation { session: 51 });
@@ -3848,13 +3848,13 @@ async fn the_person_talks_with_the_pm_in_conversations_of_their_own_kept_through
     assert_eq!(left, [50]);
     // Listed as put away, to be taken up again as it was left.
     let away: Vec<_> = snapshot.put_away.iter().map(|c| (c.session, c.project.clone(), c.title.clone())).collect();
-    assert_eq!(away, [(51, Some("app".to_owned()), Some("what next?".to_owned()))]);
+    assert_eq!(away, [(51, Some("app".to_owned()), Some("what next".to_owned()))]);
     handle.send(Command::ReopenConversation { squad: "acme".into(), session: 51 });
     let seen = until(&mut events, |e| matches!(e, Event::PutAwayChanged { .. })).await;
     assert!(seen.iter().any(|e| matches!(e, Event::LaneOpened { session: 51, of: 1, project: Some(p), kept: true } if p == "app")), "{seen:#?}");
     let back = seen.iter().find_map(|e| if let Event::ConversationBack { session: 51, title, lines, lines_at } = e { Some((title.clone(), text_entries(lines), lines.len() == lines_at.len() && lines.iter().zip(lines_at).all(|(e, at)| !matches!(e, Entry::User { .. }) || at.is_some()))) } else { None }).expect("its lines");
     assert!(back.2, "taken up again, each message says when it was said");
-    assert_eq!(back.0.as_deref(), Some("what next?"));
+    assert_eq!(back.0.as_deref(), Some("what next"));
     assert!(back.1.contains(&"user: what next?".to_owned()), "{:?}", back.1);
     assert!(matches!(seen.last(), Some(Event::PutAwayChanged { list, .. }) if list.is_empty()));
     handle.send(Command::Submit { session: 51, text: "and now?".into(), about: None });

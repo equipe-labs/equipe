@@ -347,7 +347,7 @@
         {
           "id": "chat",
           "title": "PM conversation",
-          "note": "Diagrams (```mermaid) are drawn by the app itself (render/raster.rs). HTML cards (```html card) are off until the T-340 security review: the app shows such a block as code, like the code blocks in the Markdown state, so no state of its own yet — add one when cards are turned on.",
+          "note": "Diagrams (```mermaid) are drawn by the app itself (render/raster.rs). HTML cards (```html card) are the daemon's PNGs of them, light or dark as the window is (`render/plugins.rs` Cards, `views/visuals.rs` card): a place held while drawn, the source folded when no picture comes, a click opens the page in the browser panel as a data: URL, View larger opens the picture big. The `cards*` states need Google Chrome for the fake daemon to draw them.",
           "source": [
             "crates/desktop/src/views/chat.rs",
             "crates/desktop/src/views/header.rs",
@@ -355,6 +355,8 @@
             "crates/desktop/src/render/view.rs",
             "crates/desktop/src/render/prose.rs",
             "crates/desktop/src/render/raster.rs",
+            "crates/desktop/src/render/plugins.rs",
+            "crates/desktop/src/views/visuals.rs",
             "crates/desktop/src/views/compact.rs",
             "crates/desktop/src/views/asklist.rs",
             "crates/desktop/src/convo.rs"
@@ -362,6 +364,7 @@
           "expects": [
             "default",
             "empty",
+            "error",
             "loading",
             "long"
           ],
@@ -428,9 +431,57 @@
             },
             {
               "id": "diagram",
-              "label": "Mermaid diagrams",
+              "label": "Mermaid diagrams: one card each, tools hidden",
               "kind": "default",
               "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;say:torture 5;wait:5000`"
+            },
+            {
+              "id": "diagram-hover",
+              "label": "Diagram under the pointer: Source and Copy fade in",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;say:torture 5;wait:5000`"
+            },
+            {
+              "id": "diagram-focus",
+              "label": "Diagram's Copy reached by Shift-Tab: both tools show, with a ring",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;say:torture 5;wait:5000;press:shift-tab`"
+            },
+            {
+              "id": "diagram-source",
+              "label": "Source pressed by keys: the block turns to its code, no box inside the box",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_SECONDS=1 FAKE_ASKS=0; script `chat;say:torture 5;wait:5000;press:shift-tab;press:shift-tab;press:space`"
+            },
+            {
+              "id": "cards",
+              "label": "HTML cards drawn by the daemon (needs Chrome): the comparison card",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_VISUALS=1 FAKE_ASKS=0; script `chat;wait:4000`"
+            },
+            {
+              "id": "cards-long",
+              "label": "A long HTML card (the board): whole, as wide as the column allows",
+              "kind": "long",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_VISUALS=1 FAKE_ASKS=0; script `chat;wait:4000;scroll:6,120`"
+            },
+            {
+              "id": "cards-hover",
+              "label": "A card under the pointer: View larger at its bottom right",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_VISUALS=1 FAKE_ASKS=0; script `chat;wait:4000`"
+            },
+            {
+              "id": "cards-waiting",
+              "label": "Cards waiting for the daemon's picture: a place held",
+              "kind": "loading",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_VISUALS=late FAKE_ASKS=0; script `chat;wait:1500`"
+            },
+            {
+              "id": "cards-failed",
+              "label": "No picture came: one line and Show source, folded",
+              "kind": "error",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_VISUALS=none FAKE_ASKS=0; script `chat;wait:16500`"
             },
             {
               "id": "markdown",
@@ -1118,12 +1169,10 @@
         {
           "id": "document",
           "title": "Document panel · focus view",
-          "note": "T-617 mockups until the GPUI state is implemented. The default panel exposes Focus view; focus reuses the same document surface across the full content area and returns to the recorded conversation or board origin.",
+          "note": "The default panel exposes Focus view; focus reuses the same document surface across the full content area and returns to the recorded conversation or board origin.",
           "source": [
             "crates/desktop/src/views/doc.rs",
-            "crates/desktop/src/doc.rs",
-            "design/specs/document-focus/prototype.html",
-            "design/specs/document-focus/spec.md"
+            "crates/desktop/src/doc.rs"
           ],
           "expects": [
             "default",
@@ -1134,73 +1183,115 @@
               "id": "default",
               "label": "Default panel · focus entry",
               "kind": "default",
-              "note": "T-617 mockup: conversation + document panel, long Korean title, Focus view and Close document remain distinct. Replaces the old shot until implementation."
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md`"
+            },
+            {
+              "id": "default-large",
+              "label": "Default panel · 150% · Korean",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;zoom:150;wait:600`; EQUIPE_LANG=ko"
             },
             {
               "id": "default-board",
               "label": "Default panel · board origin",
               "kind": "default",
-              "note": "T-617 mockup: board + document panel before focus; selected ticket T-617 and its keyboard focus are the restoration baseline."
+              "note": "shot by design/flows/shoot-desktop.py: script `docs;wait:600;docsopen:0`"
             },
             {
               "id": "default-board-scrolled",
               "label": "Board origin · document scrolled",
               "kind": "default",
-              "note": "T-617 mockup: the same board baseline with the document at a recorded middle scroll position before entering focus."
+              "note": "shot by design/flows/shoot-desktop.py: script `docs;wait:600;docsopen:0;wait:800;scroll:6,-120`"
             },
             {
               "id": "focus",
               "label": "Focus view · conversation origin",
               "kind": "default",
-              "note": "T-617 mockup: selected B Return-first header, Korean, 100%; 760/1200pt and light/dark."
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f`"
+            },
+            {
+              "id": "focus-ko",
+              "label": "Focus view · Korean",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f`; EQUIPE_LANG=ko"
             },
             {
               "id": "focus-board",
               "label": "Focus view · board origin",
               "kind": "default",
-              "note": "T-617 mockup: the same focused document records Board as its origin and exposes an explicit return action; 760/1200pt and light/dark."
+              "note": "shot by design/flows/shoot-desktop.py: script `docs;wait:600;docsopen:0;wait:800;press:cmd-shift-f`"
             },
             {
               "id": "focus-large",
               "label": "Focus view · long English · 150%",
               "kind": "long",
-              "note": "T-617 mockup: long English filename, 150% text, compact tools; 760/1200pt and light/dark."
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;zoom:150;wait:600;press:cmd-shift-f`"
             },
             {
               "id": "focus-menu",
               "label": "Focus view · More open",
               "kind": "default",
-              "note": "T-617 mockup: the first Esc closes More and returns keyboard focus to its trigger; 760/1200pt and light/dark."
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f;wait:400;dmore`"
             },
             {
               "id": "focus-menu-board",
               "label": "Board focus · More open",
               "kind": "default",
-              "note": "T-617 mockup: Board-origin sequence, before the first Esc closes More; 760/1200pt and light/dark."
+              "note": "shot by design/flows/shoot-desktop.py: script `docs;wait:600;docsopen:0;wait:800;press:cmd-shift-f;wait:400;dmore`"
             },
             {
               "id": "focus-after-menu-board",
               "label": "Board focus · first Esc complete",
               "kind": "default",
-              "note": "T-617 mockup: More is closed, focus is visibly restored to its trigger, and focus view remains active until the second Esc."
+              "note": "shot by design/flows/shoot-desktop.py: script `docs;wait:600;docsopen:0;wait:800;press:cmd-shift-f;wait:400;dmore;wait:300;press:escape`"
             },
             {
               "id": "focus-restored",
               "label": "Restored origin · entry focus",
               "kind": "default",
-              "note": "T-617 mockup: the next Esc exits focus, restores the conversation split, document scroll and selection, then returns keyboard focus to Focus view; 760/1200pt and light/dark."
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f;wait:400;press:escape`"
             },
             {
               "id": "focus-restored-board",
               "label": "Restored board · selected ticket focus",
               "kind": "default",
-              "note": "T-617 mockup: after the second Esc, the board split and document return and keyboard focus is visibly restored to selected ticket T-617; 760/1200pt and light/dark."
+              "note": "shot by design/flows/shoot-desktop.py: script `docs;wait:600;docsopen:0;wait:800;press:cmd-shift-f;wait:400;press:escape`"
+            },
+            {
+              "id": "focus-ring",
+              "label": "Focus view · way back focused by keyboard (ring)",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f;wait:300;press:tab;press:shift-tab`"
+            },
+            {
+              "id": "focus-ring-ko",
+              "label": "Focus view · Korean 150% · way back focused",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;zoom:150;wait:600;press:cmd-shift-f;wait:300;press:tab;press:shift-tab`; EQUIPE_LANG=ko"
+            },
+            {
+              "id": "focus-keys-scrolled",
+              "label": "Focus view · text focused and scrolled by keyboard",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f;wait:300;press:shift-tab;press:pagedown;press:down`"
+            },
+            {
+              "id": "focus-enter-back",
+              "label": "Way back pressed with Return: the panel beside the conversation",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f;wait:300;press:enter`"
+            },
+            {
+              "id": "focus-closed-by-keys",
+              "label": "Close document by keyboard: back to the conversation's box",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{DOCS}/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md;wait:800;press:cmd-shift-f;wait:300;press:tab;press:tab;press:tab;press:tab;press:enter`"
             },
             {
               "id": "focus-restored-board-scrolled",
               "label": "Restored board · scroll and focus",
               "kind": "default",
-              "note": "T-617 mockup: the board split, selected ticket focus and the recorded middle document scroll position are all restored after the second Esc."
+              "note": "shot by design/flows/shoot-desktop.py: script `docs;wait:600;docsopen:0;wait:800;scroll:6,-120;wait:400;press:cmd-shift-f;wait:400;press:escape`"
             }
           ]
         },
