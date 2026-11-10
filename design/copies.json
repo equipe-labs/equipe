@@ -1,0 +1,5 @@
+{
+  "$description": "Copies of generated files in other repositories. `npm run check:copies -- <repo>=<path> …` checks each is byte-for-byte its source; each repository's CI compares its own copies too (docs/DESIGN-SYSTEM.md, 'Copies').",
+  "source": "https://raw.githubusercontent.com/equipe-labs/equipe/main/design/",
+  "copies": []
+}

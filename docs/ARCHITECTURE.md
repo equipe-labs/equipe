@@ -272,6 +272,9 @@ squad has no designer. `equipe_core::runtime::design_qa`.
   main, rebase the ticket branch onto it, resolve to zero conflicts and run the
   relevant tests on the rebased tree. After a merge the PM pushes main at once
   and verifies that its upstream ahead/behind counts are both zero.
+- **A designer's own code ticket** has no design QA, and changes only the
+  repository's `design/`: its hand-in is refused while the worktree changes
+  anything else (`Sandbox::touched_files`, committed or not).
 - **What a designer counts as a defect**: differences from the spec, the
   design system's tokens and accessibility — not taste. New ideas are proposed
   tickets.
@@ -764,8 +767,16 @@ owns it or suggests `/add`.
   through a `data:` URL, since the members' browser opens neither `file://` nor
   a server started on the Mac — and contrast is computed, not judged. A
   project's design assets live in its own repository's `design/`, versioned
-  with its code; the squad home's `design/` holds only principles every project
-  shares.
+  with its code, made there from the start on a `code` ticket that changes only
+  `design/` (`submit_for_review` refuses a designer's hand-in that changes
+  anything else); the squad home's `design/` holds only principles every
+  project shares. Learned from T-145/T-152 (2026-10-26): design system work is
+  done only when it is on a real screen of one platform, with before and after
+  screenshots, or a code ticket per platform applies it; colours and sizes are
+  judged on real screens; components become each platform's code and design QA
+  compares with it; each unconfirmed item goes up as a proposal; copies of
+  generated token files are listed in `design/copies.json` and checked against
+  their source ([DESIGN-SYSTEM.md](./DESIGN-SYSTEM.md)).
 
 ### Talking to the team
 
