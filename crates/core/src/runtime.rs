@@ -5094,6 +5094,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             } else {
                 Vec::new()
             };
+            let mut made = false;
             let checkout = worktree::repo_root(&workplace).and_then(|repo| {
                 let id_part = format!("t{ticket_id}-{:x}", now_secs());
                 match (&saved.worktree, &ticket.branch, &saved.base) {
@@ -5102,13 +5103,25 @@ for one project goes to it as tickets for its owners, with that project — and 
                         Ok(Sandbox { repo, path: path.clone(), branch: branch.clone(), base: base.clone() })
                     }
                     // Its worktree went away: check its branch out again.
-                    (_, Some(branch), Some(base)) => worktree::resume(&repo, &home, &id_part, branch, base, &only),
+                    (_, Some(branch), Some(base)) => {
+                        made = true;
+                        worktree::resume(&repo, &home, &id_part, branch, base, &only)
+                    }
                     // New: from HEAD, with the finished work it depends on.
-                    _ => worktree::create_after(&repo, &home, &id_part, &name, &after, &only),
+                    _ => {
+                        made = true;
+                        worktree::create_after(&repo, &home, &id_part, &name, &after, &only)
+                    }
                 }
             });
             match checkout {
-                Ok(sandbox) => Some(sandbox),
+                Ok(sandbox) => {
+                    // Its dependencies cloned from a checkout that has them installed, off the loop.
+                    if made {
+                        worktree::seed_in_background(sandbox.path.clone());
+                    }
+                    Some(sandbox)
+                }
                 Err(err) => return self.cannot_start(&squad, ticket, &name, &err),
             }
         } else {
