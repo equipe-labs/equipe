@@ -289,14 +289,52 @@ async fn a_member_at_work_is_never_moved_mid_turn_and_a_draining_plan_moves_it_a
 }
 
 #[tokio::test]
+async fn a_squad_that_never_chose_moves_off_an_exhausted_engine_on_its_own_and_says_so() {
+    let (bin, _dir) = claude(ANSWERS);
+    let (handle, mut events) = pm_and_codex_qa(&bin).await;
+    assert_eq!(handle.snapshot("acme").await.engine_switching, Switching::Auto, "never chosen: auto");
+    handle.usage_read(Engine::Claude, usage(10, 10));
+    handle.usage_read(Engine::Codex, usage(100, 20));
+    let seen = until(&mut events, |e| matches!(e, Event::SessionStarted { member: Some(m), engine: Engine::Claude, .. } if m.name == "qa")).await;
+    let card = proposed(&seen);
+    assert_eq!((card.why, card.engine, card.applied), (Why::Exhausted, Some(Engine::Codex), true), "made, not proposed");
+    assert_eq!(card.moves.iter().map(|m| (m.member.as_str(), m.from, m.to)).collect::<Vec<_>>(), [("qa", Engine::Codex, Engine::Claude)]);
+    // Told, and undoable: the card stays, saying it was made.
+    assert!(handle.snapshot("acme").await.engine_proposals.iter().any(|p| p.id == card.id && p.applied));
+}
+
+/// A stand-in `claude` that tells the plan's usage only when equipe reads it
+/// on its own (the tiny turn of `claude_code::read_plan`); a member's turn
+/// answers without it.
+fn claude_telling_its_plan_when_read() -> (PathBuf, PathBuf) {
+    let resets = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 4 * 24 * 3600;
+    let plan = format!(r#"{{"type":"rate_limit_event","rate_limit_info":{{"status":"allowed","unifiedWindows":{{"seven_day":{{"utilization":0.12,"resetsAt":{resets}}}}}}}}}"#);
+    claude(&format!("if [ \"$2\" = \"Reply with the single word: ok\" ]; then echo '{plan}'; fi\n{ANSWERS}"))
+}
+
+#[tokio::test]
+async fn an_engine_out_with_the_other_never_read_reads_it_and_then_moves() {
+    let (bin, _dir) = claude_telling_its_plan_when_read();
+    let (handle, mut events) = pm_and_codex_qa(&bin).await;
+    // No Claude turn has told its plan: equipe reads it, and the move follows.
+    handle.usage_read(Engine::Codex, usage(100, 20));
+    let seen = until(&mut events, |e| matches!(e, Event::SessionStarted { member: Some(m), engine: Engine::Claude, .. } if m.name == "qa")).await;
+    let read = seen.iter().find_map(|e| if let Event::PlanUsage { engine: Engine::Claude, usage } = e { Some(*usage) } else { None }).expect("Claude's plan read");
+    assert_eq!(read.seven_day.map(|w| w.used_percent), Some(12));
+    assert!(proposed(&seen).applied);
+}
+
+#[tokio::test]
 async fn in_suggest_only_the_persons_click_moves_and_a_no_is_not_asked_again() {
     let (bin, _dir) = claude(ANSWERS);
     let (handle, mut events) = pm_and_codex_qa(&bin).await;
+    handle.send(Command::SetEngineSwitching { squad: "acme".into(), mode: Switching::Suggest });
+    until(&mut events, |e| matches!(e, Event::EngineSwitchingChanged { mode: Switching::Suggest, .. })).await;
     handle.usage_read(Engine::Claude, usage(10, 10));
     handle.usage_read(Engine::Codex, usage(96, 20));
     let seen = until(&mut events, |e| matches!(e, Event::EngineProposed { .. })).await;
     let card = proposed(&seen);
-    assert!(!card.applied, "suggest is the default: a card to answer");
+    assert!(!card.applied, "chosen: a card to answer");
     let later = within(&mut events, Duration::from_millis(1000)).await;
     assert!(!later.iter().any(|e| matches!(e, Event::SessionClosed { .. })), "nothing moves without the person");
     assert_eq!(handle.snapshot("acme").await.engine_proposals, vec![card.clone()]);

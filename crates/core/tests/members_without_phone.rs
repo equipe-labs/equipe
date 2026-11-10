@@ -101,6 +101,7 @@ fn a_squad_without_a_mobile_project_tells_its_members_exactly_what_it_did() {
     let now: String = told_now().iter().map(|(tag, text)| format!("{tag}\t{}\n", sha(text))).collect();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(PINNED);
     if std::env::var_os("EQUIPE_BLESS_PINNED").is_some() {
+        equipe_core::bless::here(env!("CARGO_MANIFEST_DIR"));
         std::fs::write(&path, &now).unwrap();
         return;
     }

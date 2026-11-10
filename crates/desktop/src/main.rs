@@ -358,6 +358,8 @@ pub struct Shell {
     pub sheet: Option<sheet::Sheet>,
     /// The sheet's Close button: keys move there when a sheet opens (`sheet_focused` once they have).
     pub sheet_focus: FocusHandle,
+    /// The window's own focus, for keys when nothing else holds it (a studio with no box): menu shortcuts like ⌘/ still reach the window.
+    pub root_focus: FocusHandle,
     sheet_focused: bool,
     /// The sidebar is away because the browser panel needed the room (`render`).
     sidebar_squeezed: bool,
@@ -367,6 +369,9 @@ pub struct Shell {
     /// The squad this window asked its daemon to delete, until it answers
     /// (`views/delete_squad.rs`).
     pub deleting_squad: Option<String>,
+    /// The question before a squad is deleted, while it is on screen: whether
+    /// for good, and what it gives back once the daemon has measured it.
+    pub delete_asking: Option<views::delete_squad::Asking>,
     /// The roles a squad just started joins with, once it is open and empty.
     pending_team: Option<Vec<String>>,
     /// A squad just made on another machine, and how much it does alone: set
@@ -536,10 +541,12 @@ impl Shell {
             sheet: None,
             sheet_focus: cx.focus_handle().tab_stop(true),
             sheet_focused: false,
+            root_focus: cx.focus_handle(),
             sidebar_squeezed: false,
             sheet_stops: Default::default(),
             confirm: None,
             deleting_squad: None,
+            delete_asking: None,
             pending_team: None,
             pending_mode: None,
             connecting_shown: false,
@@ -713,6 +720,28 @@ impl Shell {
                     this.update(cx, |shell, cx| shell.answer_question(true, window, cx)).ok();
                     cx.stop_propagation();
                 }
+                return;
+            }
+            // On the studio's wait card action, Esc goes back to the text box when it is on screen; Shift-Tab walks the usual order back.
+            if key == "escape" && !modifiers.platform && !modifiers.control && !modifiers.alt && this.update(cx, |shell, cx| matches!(shell.screen, Screen::Studio) && shell.design_talk_open(window, cx) && shell.studio.wait_focus.as_ref().is_some_and(|f| f.is_focused(window))).unwrap_or(false) {
+                this.update(cx, |shell, cx| shell.composer.focus(window, cx)).ok();
+                cx.stop_propagation();
+                return;
+            }
+            // The studio, outside a text box with words in it: only the first Tab (from an empty text box, or from nothing) reaches the wait card's action; the rest follow the usual order.
+            if key == "tab" && !modifiers.shift && !modifiers.platform && !modifiers.control && !modifiers.alt && this.update(cx, |shell, cx| {
+                let focus = shell.studio.wait_focus.clone().filter(|_| matches!(shell.screen, Screen::Studio) && shell.studio.wait_button.get());
+                let free = if shell.composer.is_focused(window, cx) { shell.composer.state.read(cx).value().is_empty() } else { window.focused(cx).is_none() };
+                match focus {
+                    Some(f) if free && !f.is_focused(window) && !shell.studio.wait_tab_used.get() => {
+                        shell.studio.wait_tab_used.set(true);
+                        window.focus(&f, cx);
+                        true
+                    }
+                    _ => false,
+                }
+            }).unwrap_or(false) {
+                cx.stop_propagation();
                 return;
             }
             // The document's text, focused by the keyboard: the arrows, Page
@@ -1091,8 +1120,8 @@ impl Shell {
                                 continue;
                             }
                             // A squad deleted, here or from another screen: the switcher's, and the window's if it was on it.
-                            daemon::Update::Event(Event::SquadDeleted { squad, moved_to, next }) => {
-                                changed |= this.squad_deleted(&squad, &moved_to, next, window, cx);
+                            daemon::Update::Event(Event::SquadDeleted { squad, moved_to, next, freed, purged }) => {
+                                changed |= this.squad_deleted(&squad, &moved_to, next, freed, purged, window, cx);
                                 continue;
                             }
                             daemon::Update::Event(Event::SquadNotDeleted { squad, why }) => {
@@ -2281,6 +2310,9 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if window.focused(cx).is_none() {
+            self.root_focus.focus(window, cx);
+        }
         // A sheet opened: the keys go into it, once; Esc or Close sends them back to the box.
         if self.sheet.is_some() != self.sheet_focused {
             self.sheet_focused = self.sheet.is_some();
@@ -2328,6 +2360,7 @@ impl Render for Shell {
             .bg(p.bg)
             .sans()
             .text_color(p.text)
+            .track_focus(&self.root_focus)
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &DismissOverlay, window, cx| {
                 if this.overlay_open() {

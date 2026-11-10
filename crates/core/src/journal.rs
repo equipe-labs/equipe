@@ -734,6 +734,16 @@ impl Journal {
         self.set_meta("subagents_at_once", &at_once.map(|n| equipe_protocol::subagents_at_once(n).to_string()).unwrap_or_default())
     }
 
+    /// How many tickets the squad works at once: auto (by the plans) unless
+    /// the person set max, its caps within bounds.
+    pub fn parallel(&self) -> equipe_protocol::lanes::Parallel {
+        self.meta("parallel").and_then(|v| serde_json::from_str::<equipe_protocol::lanes::Parallel>(&v).ok()).map(|p| p.clamped()).unwrap_or_default()
+    }
+
+    pub fn set_parallel(&self, parallel: equipe_protocol::lanes::Parallel) -> Result<()> {
+        self.set_meta("parallel", &serde_json::to_string(&parallel.clamped()).unwrap_or_default())
+    }
+
     /// Which engine reviews the designer's work; auto unless the person set it.
     pub fn design_reviewer(&self) -> equipe_protocol::engines::Reviewer {
         self.meta("design_reviewer").and_then(|v| equipe_protocol::engines::Reviewer::parse(&v)).unwrap_or_default()
@@ -1025,6 +1035,17 @@ impl Journal {
             params![at as i64, equipe_protocol::stall_reason::MIGRATED],
         )?;
         tx.commit()
+    }
+
+    /// `ticket`'s run, still active although nothing runs it any more — its
+    /// member left the squad — stalled now (`reason`), so that it can be
+    /// requeued ([`Self::reserve_requeue`]). Whether it was active.
+    pub fn stall_execution(&self, ticket: TicketId, reason: &str, at: u64) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE ticket_executions SET state = 'stalled', lease_expires_at = 0, reason = ?1, updated_at = ?2
+             WHERE ticket = ?3 AND state = 'active'",
+            params![reason, at as i64, ticket],
+        )? == 1)
     }
 
     /// What a stalled run left in its checkout — its commit and how many
@@ -1844,6 +1865,18 @@ impl Journal {
         rows.collect()
     }
 
+    /// Every member that was ever on the squad, open or closed, as
+    /// `(name, role)`, each name once with the role it held last.
+    pub fn members_ever(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT name, role FROM sessions s WHERE name IS NOT NULL AND role IS NOT NULL
+               AND id = (SELECT id FROM sessions t WHERE t.name = s.name AND t.role IS NOT NULL ORDER BY t.updated_at DESC, t.id DESC LIMIT 1)
+             ORDER BY name",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        rows.collect()
+    }
+
     /// Drop conversation lines older than `cutoff` (unix seconds) and give the
     /// space back. Session records are kept. Returns the lines removed.
     pub fn prune(&self, cutoff: i64) -> Result<usize> {
@@ -1950,6 +1983,24 @@ mod tests {
         // Back to each engine's own.
         j.set_subagents_at_once(None).unwrap();
         assert_eq!(j.subagents_at_once(), None);
+    }
+
+    #[test]
+    fn a_squad_keeps_its_parallel_work_and_max_comes_back_as_it_was_left() {
+        use equipe_protocol::lanes::{Parallel, ParallelMode};
+        let home = temp_home();
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        assert_eq!(j.parallel(), Parallel::default(), "never set: auto");
+        j.set_parallel(Parallel::max(8, 20)).unwrap();
+        assert_eq!(Journal::for_squad(&home, "acme").unwrap().parallel(), Parallel::max(8, 20), "kept across opening");
+        // Back on auto, the caps stay for the next time max is chosen.
+        j.set_parallel(Parallel { mode: ParallelMode::Auto, ..Parallel::max(8, 20) }).unwrap();
+        assert_eq!(j.parallel(), Parallel { mode: ParallelMode::Auto, per_member: 8, per_engine: 20 });
+        // Never past the bounds, whatever was written.
+        j.set_meta("parallel", r#"{"mode":"max","per_member":400,"per_engine":0}"#).unwrap();
+        assert_eq!(j.parallel(), Parallel::max(12, 1));
+        j.set_meta("parallel", "not json").unwrap();
+        assert_eq!(j.parallel(), Parallel::default(), "unreadable: auto");
     }
 
     #[test]

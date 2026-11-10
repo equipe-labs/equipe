@@ -84,3 +84,6 @@ objc2-speech = { version = "0.3", default-features = false, features = ["std", "
 
 [features]
 snapshot = ["gpui-kit/test-support"]
+
+[dev-dependencies]
+gpui-kit = { version = "=0.7.1", features = ["test-support"] }

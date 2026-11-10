@@ -77,13 +77,14 @@ pub fn person_only(command: &Command) -> bool {
         | C::CommentTicket { .. }
         | C::RestoreDesign { .. } => true,
         // What widens what members may do, or changes how they run: modes, who
-        // accepts, how many, engine switching, subagents, scaling, idle wake,
+        // accepts, how many, engine switching, subagents, parallel work, scaling, idle wake,
         // the models and effort, taking back an "always allow", pausing signals,
         // the Mac's screen. A member must never turn any of these up on itself.
         C::SetMode { .. }
         | C::SetPmAccepts { .. }
         | C::SetEngineSwitching { .. }
         | C::SetSubagentsAtOnce { .. }
+        | C::SetParallel { .. }
         | C::SetDesignReviewer { .. }
         | C::Scale { .. }
         | C::SetIdleWake { .. }

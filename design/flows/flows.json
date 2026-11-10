@@ -489,6 +489,12 @@
               "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800`"
             },
             {
+              "id": "outline-open",
+              "label": "The two bars at the left are the conversation outline: the pointer opens the list of what was asked",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800;rail:open;wait:500`"
+            },
+            {
               "id": "ticket-card-missing",
               "label": "A ticket card for a number not on the board: Not found",
               "kind": "default",
@@ -544,6 +550,18 @@
             },
             {
               "id": "ticket-card-looking-narrow",
+              "label": "The same, at the narrowest width",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42 FAKE_NO_LOOKUP=1; script `chat;wait:800`"
+            },
+            {
+              "id": "ticket-card-unanswered",
+              "label": "A ticket card the list missed, the daemon silent for good: Couldn't check, not Not found",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42 FAKE_NO_LOOKUP=1; script `chat;wait:800;hover:421,432;wait:5500`"
+            },
+            {
+              "id": "ticket-card-unanswered-narrow",
               "label": "The same, at the narrowest width",
               "kind": "default",
               "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42 FAKE_NO_LOOKUP=1; script `chat;wait:800`"

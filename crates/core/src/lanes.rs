@@ -21,10 +21,16 @@
 //! | 70% to under 90%            | 2               | 4                           |
 //! | 90% and over                | 1               | 2                           |
 //!
-//! With the disk low ([`DiskLevel::Low`]) every member runs one ticket at a
-//! time; from [`DiskLevel::Critical`] new code work waits altogether (the
-//! hard safety), while tasks and actions still start. An engine out of its
-//! plan takes no new ticket at all (the engine hold).
+//! That is the squad's *auto* parallel work. On *max*
+//! ([`equipe_protocol::lanes::Parallel`]) the plan's usage is left out: the
+//! person's caps hold instead — 6 runs per member and 16 per engine unless
+//! they said otherwise — and the plan is used faster. Only an engine whose
+//! plan is used up still runs as on auto.
+//!
+//! Either way, with the disk low ([`DiskLevel::Low`]) every member runs one
+//! ticket at a time; from [`DiskLevel::Critical`] new code work waits
+//! altogether (the hard safety), while tasks and actions still start. An
+//! engine out of its plan takes no new ticket at all (the engine hold).
 //!
 //! Which member of a role takes a ticket is fixed, and the same every time:
 //! the ready tickets in the board's order, each to the member of its role
@@ -36,6 +42,7 @@
 use std::collections::HashMap;
 
 use equipe_protocol::disk::DiskLevel;
+use equipe_protocol::lanes::Parallel;
 use equipe_protocol::{Engine, PlanUsage, Ticket, TicketId, TicketStatus};
 
 use crate::board;
@@ -52,10 +59,20 @@ pub fn plan_used(usage: Option<&PlanUsage>) -> Option<u8> {
     usage.five_hour.iter().chain(usage.seven_day.iter()).map(|w| w.used_percent).max()
 }
 
-/// How many runs one member has at once, by its engine's plan and the disk.
-pub fn member_limit(plan_used: Option<u8>, disk: DiskLevel) -> usize {
+/// A plan used up: nothing new runs there whatever the squad chose, and
+/// max runs no more than auto would.
+fn used_up(plan_used: Option<u8>) -> bool {
+    plan_used.is_some_and(|p| p >= 100)
+}
+
+/// How many runs one member has at once, by its engine's plan, the disk and
+/// the squad's parallel work.
+pub fn member_limit(plan_used: Option<u8>, disk: DiskLevel, parallel: &Parallel) -> usize {
     if disk >= DiskLevel::Low {
         return 1;
+    }
+    if parallel.is_max() && !used_up(plan_used) {
+        return parallel.clamped().per_member as usize;
     }
     match plan_used {
         None => LANES_PER_MEMBER,
@@ -67,8 +84,9 @@ pub fn member_limit(plan_used: Option<u8>, disk: DiskLevel) -> usize {
 }
 
 /// How many runs one engine has at once across the squad.
-pub fn engine_limit(plan_used: Option<u8>, disk: DiskLevel) -> usize {
+pub fn engine_limit(plan_used: Option<u8>, disk: DiskLevel, parallel: &Parallel) -> usize {
     let limit = match plan_used {
+        _ if parallel.is_max() && !used_up(plan_used) => parallel.clamped().per_engine as usize,
         None => LANES_PER_ENGINE,
         Some(p) if p >= 90 => 2,
         Some(p) if p >= 70 => 4,
@@ -261,14 +279,61 @@ mod tests {
         let used = |p: u8| PlanUsage { five_hour: Some(PlanWindow { used_percent: p, resets_at: 0 }), seven_day: Some(PlanWindow { used_percent: 10, resets_at: 0 }) };
         assert_eq!(plan_used(None), None);
         assert_eq!(plan_used(Some(&used(55))), Some(55), "the tightest window");
-        assert_eq!(member_limit(None, DiskLevel::Ok), 3);
-        assert_eq!(member_limit(Some(10), DiskLevel::Ok), 4);
-        assert_eq!(member_limit(Some(50), DiskLevel::Ok), 3);
-        assert_eq!(member_limit(Some(75), DiskLevel::Ok), 2);
-        assert_eq!(member_limit(Some(95), DiskLevel::Ok), 1);
-        assert_eq!(member_limit(Some(10), DiskLevel::Low), 1, "a low disk: one at a time");
-        assert_eq!(engine_limit(None, DiskLevel::Ok), 8);
-        assert_eq!(engine_limit(Some(95), DiskLevel::Ok), 2);
-        assert_eq!(engine_limit(Some(10), DiskLevel::Low), 4);
+        let auto = Parallel::default();
+        assert_eq!(member_limit(None, DiskLevel::Ok, &auto), 3);
+        assert_eq!(member_limit(Some(10), DiskLevel::Ok, &auto), 4);
+        assert_eq!(member_limit(Some(50), DiskLevel::Ok, &auto), 3);
+        assert_eq!(member_limit(Some(75), DiskLevel::Ok, &auto), 2);
+        assert_eq!(member_limit(Some(95), DiskLevel::Ok, &auto), 1);
+        assert_eq!(member_limit(Some(10), DiskLevel::Low, &auto), 1, "a low disk: one at a time");
+        assert_eq!(engine_limit(None, DiskLevel::Ok, &auto), 8);
+        assert_eq!(engine_limit(Some(10), DiskLevel::Ok, &auto), 10);
+        assert_eq!(engine_limit(Some(75), DiskLevel::Ok, &auto), 4);
+        assert_eq!(engine_limit(Some(95), DiskLevel::Ok, &auto), 2);
+        assert_eq!(engine_limit(Some(10), DiskLevel::Low, &auto), 4);
+    }
+
+    #[test]
+    fn max_holds_the_persons_caps_whatever_the_plans_usage() {
+        let max = Parallel::max(6, 16);
+        for used in [None, Some(0), Some(10), Some(50), Some(75), Some(95), Some(99)] {
+            assert_eq!(member_limit(used, DiskLevel::Ok, &max), 6, "{used:?}");
+            assert_eq!(engine_limit(used, DiskLevel::Ok, &max), 16, "{used:?}");
+        }
+        let set = Parallel::max(9, 25);
+        assert_eq!((member_limit(Some(95), DiskLevel::Ok, &set), engine_limit(Some(95), DiskLevel::Ok, &set)), (9, 25));
+        // Set past the bounds by hand: held within them.
+        let wild = Parallel { per_member: 99, per_engine: 0, ..Parallel::max(1, 1) };
+        assert_eq!((member_limit(None, DiskLevel::Ok, &wild), engine_limit(None, DiskLevel::Ok, &wild)), (12, 1));
+        // The caps kept while on auto change nothing there.
+        let kept = Parallel { mode: equipe_protocol::lanes::ParallelMode::Auto, ..set };
+        assert_eq!((member_limit(Some(95), DiskLevel::Ok, &kept), engine_limit(Some(95), DiskLevel::Ok, &kept)), (1, 2));
+    }
+
+    #[test]
+    fn max_still_gives_way_to_a_used_up_plan_and_a_short_disk() {
+        let max = Parallel::max(6, 16);
+        // A plan used up: no more than auto would run there.
+        assert_eq!(member_limit(Some(100), DiskLevel::Ok, &max), member_limit(Some(100), DiskLevel::Ok, &Parallel::default()));
+        assert_eq!((member_limit(Some(100), DiskLevel::Ok, &max), engine_limit(Some(100), DiskLevel::Ok, &max)), (1, 2));
+        // A low disk: one at a time per member, and the engine's room halved as on auto.
+        assert_eq!(member_limit(Some(10), DiskLevel::Low, &max), 1);
+        assert_eq!(engine_limit(Some(10), DiskLevel::Low, &max), LANES_PER_ENGINE / 2);
+        assert_eq!(member_limit(None, DiskLevel::Critical, &max), 1);
+        assert_eq!(engine_limit(None, DiskLevel::Critical, &max), LANES_PER_ENGINE / 2);
+        // A small cap stays small on a low disk.
+        assert_eq!(engine_limit(None, DiskLevel::Low, &Parallel::max(6, 2)), 2);
+    }
+
+    #[test]
+    fn on_max_a_held_engine_still_starts_nothing() {
+        let tickets: Vec<Ticket> = (1..=10).map(|id| ticket(id, "frontend")).collect();
+        let max = Parallel::max(6, 16);
+        let room = HashMap::from([(Engine::Claude, engine_limit(Some(95), DiskLevel::Ok, &max))]);
+        let free = Member { limit: member_limit(Some(95), DiskLevel::Ok, &max), ..member("frontend", "frontend", 0, 0) };
+        assert_eq!(assign(&tickets, std::slice::from_ref(&free), true, &[], &room).len(), 6, "a plan at 95%: six at once on max");
+        // Out of its plan, the engine is held: its members take nothing new.
+        let held = Member { takes_new: false, ..free };
+        assert!(assign(&tickets, &[held], true, &[], &room).is_empty());
     }
 }

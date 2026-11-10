@@ -980,6 +980,7 @@ fn snapshot() -> Snapshot {
         routine_proposals: vec![routine_proposal()],
         idle_wake_hours: Some(24),
         subagents_at_once: None,
+        parallel: Default::default(),
         design_reviewer: Default::default(),
         signals: Vec::new(),
         accepts: vec![accept_proposal()],
@@ -1416,6 +1417,7 @@ fn vectors_are_what_the_daemon_makes() {
         let text = serde_json::to_string_pretty(&value).unwrap() + "\n";
         let path = dir().join(name);
         if write {
+            equipe_core::bless::here(env!("CARGO_MANIFEST_DIR"));
             std::fs::create_dir_all(dir()).unwrap();
             std::fs::write(&path, &text).unwrap();
         } else {

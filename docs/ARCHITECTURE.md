@@ -542,13 +542,22 @@ project is valid everywhere: `/squad remove` may take its last project away.
 squad switcher and Settings › Squad & machine): the daemon stops the squad's
 members the way it does when it stops — turns, browsers, side chats and helpers
 end, every screen hears `SessionClosed` — but writes nothing about them into the
-journal, then closes the journal. Off the loop (`squads::delete`) the worktrees
-its tickets used are removed unless another squad's ticket uses them (branches
-stay; the projects' repositories are otherwise never touched), its members'
-build caches go, and the folder `~/.equipe/squads/<name>/` moves whole to
-`~/.equipe/deleted/<name>-<YYYYMMDD-HHMMSS>`: a rename on the same disk, never a
-copy, on the machine the squad lived on. Moving it back with the daemon stopped
-restores the squad — board, history, members, home. While it goes, and after,
+journal, then closes the journal; its checks waiting in line are dropped. Off
+the loop (`squads::delete`) what can be made again goes at once: the worktrees
+equipe made for it — its tickets', its home's, and any of its projects'
+repositories under `~/.equipe/worktrees` or `~/.equipe/checks`, unless another
+squad works on the same repository or another squad's ticket uses the worktree
+— removed with `git worktree remove` and pruned (branches stay; the projects'
+checkouts are never touched), its members' build caches
+(`~/.equipe/cache/build/<name>`, the checks' among them), and `node_modules`,
+`target` and `.next` in its folder. The rest of `~/.equipe/squads/<name>/`
+moves to `~/.equipe/deleted/<name>-<YYYYMMDD-HHMMSS>`: a rename on the same
+disk, never a copy, on the machine the squad lived on, with `.deleted-at`
+saying when. Moving it back with the daemon stopped restores the squad — board,
+history, members' memory, home. The daily tidy deletes it after
+`squads::KEPT_DAYS` (7); `purge` (`--purge`, the desktop's "Delete permanently
+now") deletes it at once. `SquadDeleted` says how many bytes went (`freed`);
+`rpc::SQUAD_FOOTPRINT` measures it beforehand, for the question. While it goes, and after,
 nothing opens its journal again (which would make an empty squad of the same
 name): `squads::is_gone`, until a squad of that name is made again. If it was
 `last_squad` in `state.json`, the next squad by name takes its place, or none.

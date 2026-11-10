@@ -1,80 +1,104 @@
 {
   "screen": "conversation/rename",
-  "at": 1794276664,
+  "at": 1794318171,
   "files": [
     {
-      "path": "design/specs/rename-conversation/prototype.html",
-      "modified": 1794276545
+      "path": "/private/tmp/t711/review/index.html",
+      "modified": 1794318158
     }
   ],
   "rendered": true,
   "summary": {
     "floor": [
-      11,
-      11
+      10,
+      10
     ],
     "habits": 0,
-    "finish": 1,
+    "finish": 0,
     "widths": [
-      360,
-      390,
-      768,
-      1024,
-      1280,
-      1440,
-      1920
+      760,
+      1200
     ],
-    "notes": [
-      [
-        "touch-target",
-        "span#title is 44×8"
-      ]
-    ],
-    "screen": "conversation/rename"
+    "screen": "conversation/rename",
+    "skipped": [
+      "primary-in-view"
+    ]
   },
-  "findings": [
-    {
-      "rule": "touch-target",
-      "tier": "finish",
-      "file": "design/specs/rename-conversation/prototype.html",
-      "width": 360,
-      "evidence": "span#title is 44×8"
-    },
-    {
-      "rule": "touch-target",
-      "tier": "finish",
-      "file": "design/specs/rename-conversation/prototype.html",
-      "width": 390,
-      "evidence": "span#title is 48×9"
-    }
-  ],
+  "findings": [],
   "pictures": [
-    "/Users/abel/.equipe/worktrees/equipe/t642-6af27364/design/checks/conversation/rename/360.png",
-    "/Users/abel/.equipe/worktrees/equipe/t642-6af27364/design/checks/conversation/rename/390.png",
-    "/Users/abel/.equipe/worktrees/equipe/t642-6af27364/design/checks/conversation/rename/768.png",
-    "/Users/abel/.equipe/worktrees/equipe/t642-6af27364/design/checks/conversation/rename/1024.png",
-    "/Users/abel/.equipe/worktrees/equipe/t642-6af27364/design/checks/conversation/rename/1280.png",
-    "/Users/abel/.equipe/worktrees/equipe/t642-6af27364/design/checks/conversation/rename/1440.png",
-    "/Users/abel/.equipe/worktrees/equipe/t642-6af27364/design/checks/conversation/rename/1920.png"
+    "/Users/abel/.equipe/worktrees/equipe/t711-6af31e01/design/checks/conversation/rename/760.png",
+    "/Users/abel/.equipe/worktrees/equipe/t711-6af31e01/design/checks/conversation/rename/1200.png"
   ],
   "new": true,
-  "first": null,
-  "verdict": {
-    "pass": true,
-    "fixes": [],
-    "summary": "헤더 제목에서 연 이름 바꾸기 팝오버가 제목 바로 아래에 붙어 있어요. 눈은 먼저 선택된 제목 입력칸에 가고, 그다음 하나뿐인 주 동작 '저장 ↩'에 가요. 헤더 제목·사이드바 행·입력값이 같은 문구로 이어져서 대화 맥락이 끊기지 않아요. 레이블·입력칸·버튼 줄은 한 간격 리듬과 오른쪽 정렬을 지키고, 제품의 기존 팝오버·버튼 모양(text 색 채움 주 버튼, 테두리 보조 버튼)과 단축키 표기도 그대로 써서 출시 전에 고칠 곳은 보이지 않아요.",
-    "at": 1794276702,
+  "first": {
+    "pass": false,
+    "fixes": [
+      {
+        "where": "카드의 이름 필드 (760, 1200 둘 다)",
+        "what": "카드가 열릴 때 'Conversation topic titles' 전체를 선택 하이라이트로 보여 주고 커서는 끝에 두세요 (spec §The card 2, UI map 상태 editing). 선택이 실제로 되어 있다면 GPUI Input의 선택 배경이 이 테두리와 배경 위에서 눈에 보이는지 확인하세요.",
+        "why": "선택 표시가 없으면 이름을 바꾸려는 사람은 입력이 기존 제목을 덮어쓸지, 뒤에 붙을지 알 수 없어서 먼저 지우게 됩니다. 이 그림은 editing 상태의 기준 그림인데, 상태를 정의하는 핵심 장면이 빠져 있습니다."
+      }
+    ],
+    "summary": "카드는 spec대로 헤더 제목 버튼 바로 아래 왼쪽 끝을 맞춰 달려 있고, 열려 있는 동안 제목에 p.wash가 남아 있습니다. 라벨·필드·Cancel Esc·Save ↩ 순서, 360 폭, 대화가 뒤에 보이는 구성도 760과 1200 모두에서 흔들림이 없습니다. 다만 spec은 이 editing 상태에서 '현재 제목 전체가 선택된 채로' 열려야 한다고 하는데, 두 너비 모두 필드에 선택 표시도 커서도 보이지 않아 바로 지우고 다시 쓸 수 있다는 신호가 없습니다.",
+    "at": 1794318316,
     "by": "claude",
     "widths": [
-      360,
-      390,
-      768,
-      1024,
-      1280,
-      1440,
-      1920
+      760,
+      1200
+    ],
+    "first": true,
+    "reviewer": {
+      "engine": "claude",
+      "member": "claude",
+      "why": {
+        "kind": "used_up",
+        "window": "weekly"
+      }
+    }
+  },
+  "verdict": {
+    "pass": false,
+    "fixes": [
+      {
+        "where": "too-long state, the name field, at 760 and 1200",
+        "what": "Scroll the field so the cursor at the end of the text is visible, with the left side fading out as the spec describes (8 pt empty, 8→48 pt fade). Right now the field shows the start of the text and cuts 'the receip' mid-glyph at the right edge.",
+        "why": "The message says 'Remove 11.', but the person can't see the characters that put them over the limit or where the cursor is. The half-cut glyph at the right edge also looks broken."
+      },
+      {
+        "where": "editing state, the name field, at 760 and 1200",
+        "what": "Show the selection highlight on the whole title 'Conversation topic titles' when the card opens. The spec and the acceptance criteria both say the title is selected. In the shots the text has no highlight, so either the shot was taken before the field had focus or the selection isn't drawn.",
+        "why": "Without a visible selection, the person can't tell that typing will replace the whole title. The shot also doesn't prove the 'title selected' criterion."
+      },
+      {
+        "where": "saved state, the header title button, at 760 and 1200",
+        "what": "Show the focus ring on the header title button after saving, as the spec says: focus on the header title, ring visible, state `saved`.",
+        "why": "After the card closes, nothing shows where focus went. Someone using the keyboard loses their place, and TP-2 (focus returns to the header title) can't be checked from this shot."
+      },
+      {
+        "where": "failed state, the daemon banner's 'Try Again' next to the card's 'Try again' button, at 760 and 1200",
+        "what": "Use the same casing for both: 'Try again' (sentence case, like `talk.rename_retry`). Keep the banner's retry visually secondary so the card's button is the only primary action.",
+        "why": "Two retry buttons cased differently, one above the other, make the person wonder whether they do different things (reconnect vs. save the name). It also breaks the 'one primary action per area' rule."
+      },
+      {
+        "where": "failed state, the daemon banner at 760",
+        "what": "Don't cut 'Reconnecting — pic…' mid-word. Drop the clause at a word boundary, or let the banner hide the time first, so the visible text ends on a whole word.",
+        "why": "At 760 the reason for the failure, and what will happen next, ends in a fragment. That is exactly the moment the person needs to understand it."
+      }
+    ],
+    "summary": "The rename card is in the right place at both widths, and most of it matches the spec: it hangs from the header title, the title keeps its wash while the card is open, the over-limit message and the red 51/40 count are right, the failed state puts the original title back and keeps the typed text, and the saved state renames the header and the sidebar together and shows the 'Renamed:' note. Three states still fall short: the too-long field shows the start of the text instead of the end, no selection can be seen in the editing state, and the saved state has no visible focus on the header title. The failed state also shows two retry buttons that compete and are cased differently.",
+    "at": 1794318216,
+    "by": "claude",
+    "widths": [
+      760,
+      1200
     ],
     "first": false,
+    "questions": [
+      {
+        "what": "The banner says 'The daemon is off', but the card says 'Lost the connection to your Mac'. Neither the spec nor the guidelines say which wording the person should see when both appear at the same time.",
+        "wording": "Keep both strings as they are until it's decided. The card's message already explains the result in the person's own terms."
+      }
+    ],
     "reviewer": {
       "engine": "claude",
       "member": "claude",

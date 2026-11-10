@@ -115,8 +115,9 @@
 //! conversation before and its hand-over packet kept (`fake_daemon/moved.rs`).
 //! `FAKE_USAGE=healthy|claude86|claude_out|both_low|week61`: both engines' plans,
 //! and the card for moving members between them (`fake_daemon/engines.rs`;
-//! `FAKE_SWITCHING=auto|off`, `FAKE_SETUP=1`); `FAKE_ENGINES_MIXED=1` puts
-//! backend on Codex.
+//! `FAKE_SWITCHING=auto|off`, else a squad that chose to be asked; `FAKE_SETUP=1`); `FAKE_ENGINES_MIXED=1` puts
+//! backend on Codex. `FAKE_PARALLEL=max` (or `max:<per member>:<per engine>`)
+//! sets the squad's parallel work to max.
 //!
 //! `FAKE_BROWSER=1`: the shared Chrome's tabs and a picture stream for the
 //! browser panel (`fake_daemon/browser.rs`); `FAKE_BROWSER=empty`, no tabs;
@@ -1630,6 +1631,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             plans: switching::plans(),
                             plan: switching::claude().or_else(engines::plan),
                             engine_switching: switching::switching(),
+                            parallel: switching::parallel(),
                             pm_accepts: true,
                             role_models: switching::role_models(),
                             // `FAKE_SECRET=1`: backend waits for the NAS login, typed into a card.
@@ -1696,6 +1698,13 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             return;
                         }
                         return browser::serve_stream(lines.into_inner(), writer, events.clone()).await;
+                    }
+                    // What deleting the squad would give back: made-up sizes.
+                    (Some(rpc::SQUAD_FOOTPRINT), Some(id)) => {
+                        let footprint = rpc::SquadFootprint { freed: 12_400_000_000, kept: 41_000_000, complete: true };
+                        if writer.write_all(Message::response(id, footprint).to_line().as_bytes()).await.is_err() {
+                            return;
+                        }
                     }
                     // The real consent file, in the fake home: `unset` until a screen answers.
                     (Some(rpc::TELEMETRY), Some(id)) => {

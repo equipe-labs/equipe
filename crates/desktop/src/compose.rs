@@ -651,6 +651,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                     body: m.ticket.map(|ticket| t!("compose.close_ticket_back", ticket = ticket)).into_iter().collect(),
                     yes: t!("compose.close_yes").into(),
                     then: Then::Send(vec![Command::Close { session: m.session }]),
+                    option: None,
                 })),
                 ..Plan::default()
             },
@@ -678,6 +679,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                     body: vec![t!("compose.clear_body").into()],
                     yes: t!("compose.clear_yes").into(),
                     then: Then::Send(vec![Command::Refresh { session: m.session, summary: false }]),
+                    option: None,
                 })),
                 ..Plan::default()
             },
@@ -748,6 +750,33 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 None => Plan::say(t!("engines.cmd_usage")),
             },
         },
+        // `/parallel [auto|max [per member] [per engine]]`: how many tickets run at once.
+        "parallel" => {
+            use equipe_core::protocol::lanes::{MOST_PER_ENGINE, MOST_PER_MEMBER, Parallel, ParallelMode};
+            let now = model.parallel;
+            let words: Vec<&str> = rest.split_whitespace().collect();
+            let Some((word, caps)) = words.split_first() else {
+                return Plan::say(t!("parallel.now", mode = crate::switching::parallel_word(now.mode), about = crate::switching::parallel_about(&now)));
+            };
+            let caps: Option<Vec<u32>> = caps.iter().map(|c| c.parse().ok()).collect();
+            let parallel = match (ParallelMode::parse(word), caps.as_deref()) {
+                (Some(ParallelMode::Auto), Some([])) => Parallel { mode: ParallelMode::Auto, ..now },
+                (Some(ParallelMode::Max), Some(caps)) if caps.len() <= 2 => {
+                    let per_member = caps.first().copied().unwrap_or(now.per_member);
+                    let per_engine = caps.get(1).copied().unwrap_or(now.per_engine);
+                    if !(1..=MOST_PER_MEMBER).contains(&per_member) || !(1..=MOST_PER_ENGINE).contains(&per_engine) {
+                        return Plan::say(t!("parallel.cmd_usage"));
+                    }
+                    Parallel::max(per_member, per_engine)
+                }
+                _ => return Plan::say(t!("parallel.cmd_usage")),
+            };
+            Plan {
+                commands: vec![Command::SetParallel { squad, parallel }],
+                flash: Some(t!("parallel.set", mode = crate::switching::parallel_word(parallel.mode), about = crate::switching::parallel_about(&parallel))),
+                ..Plan::default()
+            }
+        }
         "desktop" => match rest {
             "stop" => Plan { commands: vec![Command::Desktop { open: false }], flash: Some(t!("compose.desktop_stopped").into()), ..Plan::default() },
             "resume" => Plan { commands: vec![Command::Desktop { open: true }], flash: Some(t!("compose.desktop_resumed").into()), ..Plan::default() },
@@ -844,6 +873,7 @@ pub fn undo(squad: String, n: usize) -> Plan {
             body: vec![t!("compose.undo_body").into()],
             yes: t!("sheet.undo").into(),
             then: Then::Job(Job::Home { squad, words: vec!["undo".into(), n.to_string()] }, After::Flash),
+            option: None,
         })),
         ..Plan::default()
     }
@@ -959,6 +989,7 @@ fn squad_command(model: &Model, rest: &str) -> Plan {
                     body: vec![t!("compose.squad_remove_body").into()],
                     yes: t!("compose.squad_remove_yes").into(),
                     then: Then::Job(job(&["remove", name], false), After::Squads { open: None, say: t!("compose.squad_removed", squad = squad, name = name) }),
+                    option: None,
                 })),
                 ..Plan::default()
             }
@@ -1049,6 +1080,7 @@ fn decide(model: &Model, verb: &str, rest: &str) -> Plan {
                     body: vec![title, t!("compose.cancel_body").into()],
                     yes: t!("compose.cancel_yes").into(),
                     then: Then::Send(vec![Command::Cancel { squad, ticket }]),
+                    option: None,
                 })),
                 ..Plan::default()
             }
@@ -1610,8 +1642,30 @@ mod tests {
         assert!(auto.flash.unwrap().contains("자동"));
         assert_eq!(plan(&model, "/engines off").commands, vec![Command::SetEngineSwitching { squad: "acme".into(), mode: Switching::Off }]);
         assert_eq!(plan(&model, "/engines setup").commands, vec![Command::ShowEngineSetup { squad: "acme".into() }]);
-        assert!(plan(&model, "/engines").flash.unwrap().contains("제안"), "suggest unless the person chose");
+        assert!(plan(&model, "/engines").flash.unwrap().contains("자동"), "on its own unless the person chose");
         assert!(plan(&model, "/engines sometimes").commands.is_empty());
+    }
+
+    #[test]
+    fn parallel_sets_max_with_its_caps_or_auto_and_says_what_it_is() {
+        use equipe_core::protocol::lanes::{Parallel, ParallelMode};
+        let mut model = team();
+        let set = |model: &Model, text: &str| plan(model, text).commands;
+        assert_eq!(set(&model, "/parallel max"), vec![Command::SetParallel { squad: "acme".into(), parallel: Parallel::max(6, 16) }], "max's default caps");
+        assert_eq!(set(&model, "/parallel max 8"), vec![Command::SetParallel { squad: "acme".into(), parallel: Parallel::max(8, 16) }]);
+        assert_eq!(set(&model, "/parallel max 8 24"), vec![Command::SetParallel { squad: "acme".into(), parallel: Parallel::max(8, 24) }]);
+        assert!(plan(&model, "/parallel max 8 24").flash.unwrap().contains("24"));
+        // Out of bounds, or numbers on auto: what it takes, nothing sent.
+        for wrong in ["/parallel max 13", "/parallel max 4 33", "/parallel max 0", "/parallel max many", "/parallel auto 4", "/parallel turbo", "/parallel max 1 2 3"] {
+            let said = plan(&model, wrong);
+            assert!(said.commands.is_empty() && said.flash.is_some_and(|f| f.contains("/parallel")), "{wrong}");
+        }
+        // Auto keeps max's caps for next time.
+        model.parallel = Parallel::max(9, 20);
+        assert_eq!(set(&model, "/parallel auto"), vec![Command::SetParallel { squad: "acme".into(), parallel: Parallel { mode: ParallelMode::Auto, ..Parallel::max(9, 20) } }]);
+        assert_eq!(set(&model, "/parallel max"), vec![Command::SetParallel { squad: "acme".into(), parallel: Parallel::max(9, 20) }]);
+        assert!(plan(&model, "/parallel").flash.unwrap().contains("20"), "bare: what it is now");
+        assert!(set(&model, "/parallel").is_empty());
     }
 
     #[test]

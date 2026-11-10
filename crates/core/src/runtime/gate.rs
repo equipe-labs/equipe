@@ -189,6 +189,6 @@ Get main fixed first (put it on the board), then accept T-{ticket} again."
 }
 
 /// Where checks' temporary worktrees go, under equipe's home.
-pub(super) fn checks_scratch(home: &Path) -> PathBuf {
+pub(crate) fn checks_scratch(home: &Path) -> PathBuf {
     home.join("checks")
 }

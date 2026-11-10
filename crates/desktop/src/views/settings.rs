@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use equipe_core::i18n::{Front, Lang};
+use equipe_core::protocol::lanes::Parallel;
 use equipe_core::protocol::{Command, Engine, EngineState, Mode, RoleModel, SessionId};
 use equipe_core::t;
 use gpui_kit::component::input::{Input, InputState};
@@ -55,6 +56,9 @@ pub enum Pop {
     RoleEffort(&'static str),
     /// How many subagents each member runs at once.
     Subagents,
+    /// Max's runs per member, and per engine (Settings › AI platforms).
+    PerMember,
+    PerEngine,
     /// The model providers to connect (Settings › AI platforms).
     AddProvider,
 }
@@ -73,6 +77,8 @@ enum Act {
     RoleEffort(&'static str, Engine, Option<String>),
     /// Subagents at once (`None`: each engine's own).
     Subagents(Option<u32>),
+    /// The squad's parallel work, a cap changed.
+    Parallel(equipe_core::protocol::lanes::Parallel),
     /// A provider's form opened, by its preset.
     AddProvider(&'static str),
 }
@@ -137,6 +143,9 @@ impl SettingsUi {
 
 // ── the page's pieces ──
 
+/// The narrowest a row's words get beside a wrapping control before it drops below them.
+const WRAP_TEXT_MIN: f32 = 280.;
+
 /// One row: what it is, a line saying what it does, and its control. `words`
 /// are what else search finds it by.
 pub(super) struct Line {
@@ -149,13 +158,15 @@ pub(super) struct Line {
     compact: bool,
     /// Drawn under the words, across the row (a code to enter, a usage bar).
     below: Option<AnyElement>,
+    /// The control drops under the words when the row is too narrow to keep them readable beside it.
+    wrap: bool,
 }
 
 impl Line {
     pub(super) fn new(label: impl Into<String>, desc: impl Into<String>) -> Self {
         let label = label.into();
         let desc: String = desc.into();
-        Self { label: div().child(label.clone()).into_any_element(), text: label, desc: (!desc.is_empty()).then_some((desc, false)), words: String::new(), control: None, compact: false, below: None }
+        Self { label: div().child(label.clone()).into_any_element(), text: label, desc: (!desc.is_empty()).then_some((desc, false)), words: String::new(), control: None, compact: false, below: None, wrap: false }
     }
 
     pub(super) fn control(mut self, control: impl IntoElement) -> Self {
@@ -185,6 +196,12 @@ impl Line {
     /// The label drawn otherwise (a member's mark, a rule in monospace); `text` stays what search reads.
     pub(super) fn label_el(mut self, el: impl IntoElement) -> Self {
         self.label = el.into_any_element();
+        self
+    }
+
+    /// Its control wraps under the words in a narrow row.
+    pub(super) fn wrap_control(mut self) -> Self {
+        self.wrap = true;
         self
     }
 
@@ -905,6 +922,7 @@ fn permissions(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let mode = Line::new(t!("settings.squad_mode"), mode_summary(model.mode))
         .warn(model.mode == Mode::Full)
         .words(Mode::ALL.iter().map(|m| format!("{} {}", mode_label(*m), mode_summary(*m))).collect::<Vec<_>>().join(" ") + " permission mode")
+        .wrap_control()
         .control(if connected { segmented(shell, "squad-mode", modes, model.mode, |this, m, _, _| this.set_squad_mode(m), cx) } else { value(p, mode_label(model.mode)) });
     let overrides: Vec<String> = model.ordered().iter().filter_map(|m| model.member_modes.get(&m.session).map(|mode| format!("{} · {}", m.name, mode_label(*mode)))).collect();
     let mut first = vec![mode];
@@ -1138,8 +1156,10 @@ fn intro(category: Category) -> &'static str {
 fn draw_line(p: Palette, line: Line, first: bool) -> AnyElement {
     let compact = line.compact;
     let below = line.below;
+    let wrap = line.wrap;
     let row = h_flex()
         .w_full()
+        .when(wrap, |r| r.flex_wrap().gap_y(px(8.)))
         .min_h(px(if compact { 40. } else if line.desc.is_some() { 60. } else { 48. }))
         .px_4()
         .py(px(if compact { 6. } else { 10. }))
@@ -1148,7 +1168,8 @@ fn draw_line(p: Palette, line: Line, first: bool) -> AnyElement {
         .when(!first, |r| r.border_t_1().border_color(p.hair))
         .child(
             v_flex()
-                .flex_1()
+                .when(!wrap, |c| c.flex_1())
+                .when(wrap, |c| c.flex_grow(1.).flex_shrink(1.).flex_basis(px(WRAP_TEXT_MIN)))
                 .min_w_0()
                 .gap(px(2.))
                 .child(div().text_size(px(if compact { SMALL } else { UI })).text_color(p.text).child(line.label))
@@ -1396,6 +1417,17 @@ fn choices(shell: &Shell, pop: Pop) -> (f32, Vec<(String, String, bool, Act)>) {
             rows.extend(SUBAGENT_CHOICES.into_iter().map(|n| (n.to_string(), String::new(), now == Some(n), Act::Subagents(Some(n)))));
             (420., rows)
         }
+        Pop::PerMember | Pop::PerEngine => {
+            let now = model.parallel;
+            let (mut caps, at) = if pop == Pop::PerMember { (switching::per_member_choices(), now.per_member) } else { (switching::PER_ENGINE_CHOICES.to_vec(), now.per_engine) };
+            // One set elsewhere (the PM, `/parallel`) is listed too.
+            if !caps.contains(&at) {
+                caps.push(at);
+                caps.sort_unstable();
+            }
+            let set = |n: u32| if pop == Pop::PerMember { Parallel { per_member: n, ..now } } else { Parallel { per_engine: n, ..now } };
+            (120., caps.into_iter().map(|n| (n.to_string(), String::new(), n == at, Act::Parallel(set(n)))).collect())
+        }
         Pop::AddProvider => {
             let connected: Vec<&str> = shell.engines.providers.iter().flatten().map(|p| p.id.as_str()).collect();
             let rows = equipe_core::model_providers::PRESETS
@@ -1498,6 +1530,9 @@ fn pop_number(pop: Pop) -> u64 {
         Pop::Squad => 2,
         Pop::Dictation => 6,
         Pop::Subagents => 0,
+        // Past every role's and the providers'.
+        Pop::PerMember => 8 * (2 * ROLE_ORDER.len() as u64 + 2),
+        Pop::PerEngine => 8 * (2 * ROLE_ORDER.len() as u64 + 3),
         Pop::Model(s) => 3 + s * 8,
         Pop::Effort(s) => 4 + s * 8,
         Pop::Mode(s) => 5 + s * 8,
@@ -1643,6 +1678,7 @@ impl Shell {
                 let squad = self.model.squad.clone();
                 self.send_command(Command::SetSubagentsAtOnce { squad, at_once });
             }
+            Act::Parallel(parallel) => self.set_parallel(parallel, cx),
             Act::Mode(session, mode) => {
                 if let Some(name) = self.model.members.iter().find(|m| m.session == session).map(|m| m.name.clone()) {
                     self.send_command(Command::SetMode { squad: self.model.squad.clone(), member: Some(name), mode });

@@ -96,6 +96,7 @@ state("conversation/chat/activity-large", "chat;zoom:150;say:torture 9;wait:2500
 state("conversation/chat/long", "chat;wait:800", {"FAKE_READING": "1"})
 state("conversation/chat/pictures", "chat;wait:800", {"FAKE_REPLY_IMAGES": "1"}, wait=2500)
 state("conversation/chat/ticket-cards", "chat;wait:800", {"FAKE_CARDS": "1"})
+state("conversation/chat/outline-open", "chat;wait:800;rail:open;wait:500", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, label="The two bars at the left are the conversation outline: the pointer opens the list of what was asked")
 state("conversation/chat/ticket-card-missing", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, at={1200: "hover:649,499;wait:1500", 760: "hover:553,428;wait:1500"}, label="A ticket card for a number not on the board: Not found")
 state("conversation/chat/ticket-card-missing-long", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, lang="de", at={1200: "hover:649,499;wait:1500", 760: "hover:553,428;wait:1500"}, label="A ticket card for a number not on the board, in German")
 state("conversation/chat/ticket-card-recovered", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42"}, at={1200: "hover:438,468;wait:1500", 760: "hover:341,397;wait:1500"}, label="A ticket card for a ticket the list missed: looked up, shown")
@@ -110,6 +111,8 @@ state("conversation/chat/ticket-card-zoomed-missing", Z, {"FAKE_CARDS": "1", "FA
 # One width each: the lookup runs out in a few seconds, and a resize takes longer than that.
 state("conversation/chat/ticket-card-looking", "chat;wait:800;hover:438,468;wait:700", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42", "FAKE_NO_LOOKUP": "1"}, sizes=[(1200, 760)], wait=0, label="A ticket card the list missed, while the daemon is still asked")
 state("conversation/chat/ticket-card-looking-narrow", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42", "FAKE_NO_LOOKUP": "1"}, sizes=[(760, 600)], at={760: "hover:341,397;wait:700"}, wait=0, label="The same, at the narrowest width")
+state("conversation/chat/ticket-card-unanswered", "chat;wait:800;hover:438,468;wait:5500", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42", "FAKE_NO_LOOKUP": "1"}, sizes=[(1200, 760)], wait=0, label="A ticket card the list missed, the daemon silent for good: Couldn't check, not Not found")
+state("conversation/chat/ticket-card-unanswered-narrow", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42", "FAKE_NO_LOOKUP": "1"}, sizes=[(760, 600)], at={760: "hover:341,397;wait:5500"}, wait=0, label="The same, at the narrowest width")
 state("conversation/chat/ask-list", "chat;wait:800", {"FAKE_ASKLIST": "1"})
 state("conversation/chat/diagram", "chat;say:torture 5;wait:5000", {"FAKE_SECONDS": "1"}, label="Mermaid diagrams: one card each, tools hidden")
 # The last diagram sits over the reply's meta line, above the composer.

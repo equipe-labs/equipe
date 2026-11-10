@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 
 use crate::i18n::{Lang, core};
 use crate::protocol::engines::{Reviewer, Switching};
+use crate::protocol::lanes::{MOST_PER_ENGINE, MOST_PER_MEMBER, ParallelMode};
 use crate::protocol::{Engine, Mode};
 
 pub const SETTINGS: &str = "settings";
@@ -47,6 +48,9 @@ pub enum Change {
     Effort { member: String, effort: Option<String> },
     /// How members move between engines as plans run low.
     EngineSwitching(Switching),
+    /// How many tickets run at once: by the plans' usage, or max at caps
+    /// (each left out: as the squad has it).
+    Parallel { mode: ParallelMode, per_member: Option<u32>, per_engine: Option<u32> },
     /// Which engine reviews the designer's work.
     DesignReviewer(Reviewer),
     /// Take a project off the squad (its folder stays).
@@ -83,6 +87,8 @@ impl Change {
             Change::Mode { mode, .. } => mode.is_none_or(|m| reach(m) > reach(now)),
             Change::PmAccepts(on) => *on,
             Change::EngineSwitching(mode) => *mode == Switching::Auto,
+            // Max spends the plan faster than it would on its own: the person's.
+            Change::Parallel { mode, .. } => *mode == ParallelMode::Max,
             // Always the other engine draws on its plan however low it runs:
             // the person's. Auto and the member's own only narrow it.
             Change::DesignReviewer(reviewer) => *reviewer == Reviewer::Other,
@@ -162,6 +168,19 @@ impl Change {
                 "auto" => Switching::Auto,
                 v => return Err(format!("Engine switching is off, suggest or auto, not {v:?}.")),
             }),
+            "parallel" => {
+                let mode = ParallelMode::parse(&value()?).ok_or("Parallel work is auto (by the plans' usage) or max (fixed caps, whatever the usage).")?;
+                // A number as JSON or as text, within its bounds.
+                let cap = |key: &str, most: u32| -> Result<Option<u32>, String> {
+                    let Some(v) = args.get(key).filter(|v| !v.is_null()) else { return Ok(None) };
+                    let n = v.as_u64().or_else(|| v.as_str().and_then(|t| t.trim().parse().ok()));
+                    match n.and_then(|n| u32::try_from(n).ok()) {
+                        Some(n) if (1..=most).contains(&n) => Ok(Some(n)),
+                        _ => Err(format!("`{key}` must be a whole number from 1 through {most}.")),
+                    }
+                };
+                Change::Parallel { mode, per_member: cap("per_member", MOST_PER_MEMBER)?, per_engine: cap("per_engine", MOST_PER_ENGINE)? }
+            }
             "design_reviewer" => Change::DesignReviewer(Reviewer::parse(&value()?).ok_or("The design reviewer is auto, same (the member's own engine, in a fresh session) or other (always the other engine).")?),
             "remove_project" => Change::RemoveProject(s("project").ok_or("Which project? Give `project`.")?),
             "hq" => Change::Hq(s("project").filter(|p| p != "none")),
@@ -271,7 +290,7 @@ pub fn tools() -> Vec<Value> {
             "description": "Read the squad's settings, as the person sees them on their screen: its projects and HQ, \
 how much members may do on their own (the squad's mode and each member's), each member's engine, model and effort, \
 whether you accept the team's work yourself, how long an empty board waits before you are woken, how many subagents \
-members run at once, engine switching, \
+members run at once, engine switching, how many tickets run at once (parallel), \
 who reviews the designer's work, routines, signals, and the \"always allow\" rules. Read it before you change one, and to answer what is set.",
             "inputSchema": { "type": "object", "properties": {} },
         }),
@@ -280,7 +299,7 @@ who reviews the designer's work, routines, signals, and the \"always allow\" rul
             "description": "Change one of the squad's settings, only when the person asked for that change. One that \
 only narrows what the squad does happens at once. One that widens it — a mode that lets members do more on their own, \
 raising how many subagents members run at once, \
-you accepting the team's work, engine switching on auto, a signal on again, a merge, a move to another engine — is put \
+you accepting the team's work, engine switching on auto, parallel work on max, a signal on again, a merge, a move to another engine — is put \
 to the person as an approval card saying exactly what changes; it happens only if they tap yes, and this call waits for \
 their answer. Never ask them to tell you yes instead. Settings: mode (value read_only | ask | auto | full, or default \
 with member), pm_accepts (on | off), idle_wake_hours (a number, 0 off), subagents_at_once (value 1 through 50), model (member, value: a model of the engine \
@@ -288,7 +307,8 @@ the member runs on), effort (member, value, or default), engine (members — eve
 codex, optionally model and effort there, and when: next_ticket — the default: one on a ticket finishes it where it is and \
 moves before its next — or now: at the end of each one's current turn, a ticket in progress handed over, same branch, and \
 carried on there; one not on a ticket, you included, moves once its turn ends either way, its conversation handed over), \
-engine_switching (off | suggest | auto), design_reviewer (who reviews the designer's work: auto — the other engine when \
+engine_switching (off | suggest | auto), parallel (value auto — by the plans' usage — | max — fixed caps whatever the \
+usage, optionally per_member 1 through 12 and per_engine 1 through 32), design_reviewer (who reviews the designer's work: auto — the other engine when \
 it is signed in with room, else the member's own in a fresh session — | same | other), remove_project (project), \
 hq (project, or none), run_routine (id), delete_routine (id), signal (project, name, value on | off), disallow (value: \
 the rule as `settings` lists it), merge (ticket, push), keep_on_branch (ticket). Never set another engine's model \
@@ -297,7 +317,7 @@ through `model`: moving a member to it is `engine`. Adding a project is `add_pro
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "subagents_at_once", "model", "effort", "engine", "engine_switching", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch"] },
+                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "subagents_at_once", "model", "effort", "engine", "engine_switching", "parallel", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch"] },
                     "value": { "type": "string", "description": "The new value, as the setting takes it." },
                     "member": { "type": "string", "description": "The member, for mode (left out: the squad's), model, effort and engine." },
                     "members": { "type": "array", "items": { "type": "string" }, "description": "engine: the members to move, on one card." },
@@ -309,6 +329,8 @@ through `model`: moving a member to it is `engine`. Adding a project is `add_pro
                     "id": { "type": "integer", "description": "The routine's id." },
                     "ticket": { "type": "integer", "description": "The ticket's number, for merge and keep_on_branch." },
                     "push": { "type": "boolean", "description": "merge: push main to origin too (default true)." },
+                    "per_member": { "type": "integer", "description": "parallel max: tickets each member runs at once (left out: as set)." },
+                    "per_engine": { "type": "integer", "description": "parallel max: tickets each engine runs at once across the squad (left out: as set)." },
                     "why": { "type": "string", "description": "What the person said they want, in one line — shown on a card that asks them." },
                 },
                 "required": ["setting"],
@@ -340,7 +362,10 @@ mod tests {
         assert!(!change(json!({ "setting": "signal", "project": "site", "name": "posthog", "value": "off" })).needs_yes(Mode::Auto));
         assert!(change(json!({ "setting": "engine_switching", "value": "auto" })).needs_yes(Mode::Auto));
         assert!(change(json!({ "setting": "design_reviewer", "value": "other" })).needs_yes(Mode::Auto), "always the other plan: the person's");
+        assert!(change(json!({ "setting": "parallel", "value": "max" })).needs_yes(Mode::Auto), "the plan spent faster: the person's");
+        assert!(change(json!({ "setting": "parallel", "value": "max", "per_member": 2 })).needs_yes(Mode::Auto));
         for args in [
+            json!({ "setting": "parallel", "value": "auto" }),
             json!({ "setting": "idle_wake_hours", "value": "6" }),
             json!({ "setting": "design_reviewer", "value": "same" }),
             json!({ "setting": "design_reviewer", "value": "auto" }),
@@ -365,7 +390,12 @@ mod tests {
         assert_eq!(change(json!({ "setting": "design_reviewer", "value": "same" })), Change::DesignReviewer(Reviewer::Same));
         assert_eq!(change(json!({ "setting": "subagents_at_once", "value": "50" })), Change::SubagentsAtOnce(50));
         assert_eq!(change(json!({ "setting": "merge", "ticket": 4, "push": false })), Change::Merge { ticket: 4, push: false });
+        assert_eq!(change(json!({ "setting": "parallel", "value": "auto" })), Change::Parallel { mode: ParallelMode::Auto, per_member: None, per_engine: None });
+        assert_eq!(change(json!({ "setting": "parallel", "value": "Max", "per_member": 8, "per_engine": "20" })), Change::Parallel { mode: ParallelMode::Max, per_member: Some(8), per_engine: Some(20) });
         let err = |args: Value| Change::parse(&args).unwrap_err();
+        assert!(err(json!({ "setting": "parallel", "value": "turbo" })).contains("auto"));
+        assert!(err(json!({ "setting": "parallel", "value": "max", "per_member": 13 })).contains("1 through 12"));
+        assert!(err(json!({ "setting": "parallel", "value": "max", "per_engine": 0 })).contains("1 through 32"));
         assert!(err(json!({ "setting": "mode", "value": "default" })).contains("default puts a member"), "the squad has no default but its own");
         assert!(err(json!({ "setting": "idle_wake_hours", "value": "soon" })).contains("hours"));
         assert!(err(json!({ "setting": "subagents_at_once", "value": "0" })).contains("1 through 50"));

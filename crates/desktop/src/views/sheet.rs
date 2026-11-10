@@ -27,6 +27,28 @@ pub fn question(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             .gap_3()
             .child(div().text_size(px(18.)).line_height(px(26.)).font_weight(FontWeight::SEMIBOLD).child(ask.title.clone()))
             .children(ask.body.iter().filter(|l| !l.is_empty()).map(|l| div().text_size(px(BODY)).line_height(px(24.)).text_color(p.text2).child(l.clone())))
+            // A switch that changes what yes does: its words flip it too.
+            .when_some(ask.option.clone(), |v, option| {
+                let handle = cx.entity().downgrade();
+                let on = option.on;
+                v.child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(ui::switch(p, "ask-option", on).name(option.label.clone()).on_flip(move |on, _, cx| {
+                            handle.update(cx, |this, cx| this.flip_ask_option(on, cx)).ok();
+                        }))
+                        .child(
+                            div()
+                                .id("ask-option-words")
+                                .cursor_pointer()
+                                .text_size(px(BODY))
+                                .text_color(p.text)
+                                .child(option.label)
+                                .on_click(cx.listener(move |this, _, _, cx| this.flip_ask_option(!on, cx))),
+                        ),
+                )
+            })
             .child(
                 h_flex()
                     .gap_2()

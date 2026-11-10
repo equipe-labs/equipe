@@ -405,6 +405,7 @@ impl Runtime {
     /// when wanted; the worktree and its branch stay. Logged.
     pub(super) fn clear_finished_builds(&mut self, squad: &str, ticket: &Ticket) {
         self.clear_finished_phones(squad, ticket.id);
+        self.clear_finished_leftovers(squad, ticket);
         let folder = if ticket.kind.in_home() {
             format!("{squad}.home")
         } else {
@@ -430,6 +431,36 @@ impl Runtime {
                         crate::daemon_log!("equipe: {line} (its ticket is done with)");
                     }
                 }
+            }
+        });
+    }
+
+    /// A ticket merged or cancelled: what it left running in its worktree and
+    /// scratch folders in the system's temporary folder is stopped, and those
+    /// scratch folders removed, off the loop. Another squad's open ticket of
+    /// the same number may own folders there named alike: then only the
+    /// worktree's own are looked at. A live session's engine is never stopped.
+    fn clear_finished_leftovers(&mut self, squad: &str, ticket: &Ticket) {
+        let id = ticket.id;
+        let shared = self.journals.keys().filter(|s| s.as_str() != squad).cloned().collect::<Vec<_>>().iter().any(|other| {
+            self.journal(other).and_then(|j| j.tickets().ok()).is_some_and(|ts| ts.iter().any(|t| t.id == id && !t.status.is_closed()))
+        });
+        // A daemon with a home of its own for the person never looks at the machine's `/tmp`.
+        let temp = if shared || self.config.person_home.is_some() { Vec::new() } else { disk::temp_roots() };
+        let folder = if ticket.kind.in_home() { Some(format!("{squad}.home")) } else { ticket.project.as_deref().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()) };
+        let prefix = format!("t{id}-");
+        let mut worktrees: Vec<PathBuf> = ticket.worktree.iter().cloned().collect();
+        if let Some(folder) = folder {
+            let dir = self.config.home.join("worktrees").join(folder);
+            worktrees.extend(std::fs::read_dir(&dir).into_iter().flatten().flatten().filter(|e| e.file_name().to_string_lossy().starts_with(&prefix)).map(|e| e.path()));
+        }
+        worktrees.retain(|w| disk::removable(w, &[self.config.home.join("worktrees")]));
+        worktrees.sort();
+        worktrees.dedup();
+        let keep: Vec<u32> = self.commands.engine_pids();
+        tokio::task::spawn_blocking(move || {
+            for line in disk::clear_ticket_leftovers(id, &temp, &worktrees, &keep) {
+                crate::daemon_log!("equipe: {line} (its ticket is done with)");
             }
         });
     }

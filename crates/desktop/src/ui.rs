@@ -234,7 +234,27 @@ impl RenderOnce for Button {
                 // A 2px ring, 3px off the button: the surface is drawn between,
                 // so the words never sit on the accent.
                 let shadow = |color: Rgba, spread: f32| BoxShadow { color: color.into(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(spread), inset: false };
-                b.track_focus(&focus).focus_visible(move |s| s.shadow(vec![shadow(ring, 5.), shadow(gap, 3.)]))
+                let press = self.on_click.clone();
+                b.track_focus(&focus)
+                    .focus_visible(move |s| s.shadow(vec![shadow(ring, 5.), shadow(gap, 3.)]))
+                    // Tab moves on from a button as it does from a switch; Enter and Space press it.
+                    .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                        let k = &event.keystroke;
+                        if k.modifiers.platform || k.modifiers.control || k.modifiers.alt {
+                            return;
+                        }
+                        match k.key.as_str() {
+                            "tab" if k.modifiers.shift => window.focus_prev(cx),
+                            "tab" => window.focus_next(cx),
+                            "enter" | "space" if !k.modifiers.shift => {
+                                if let Some(f) = &press {
+                                    f(&ClickEvent::default(), window, cx);
+                                }
+                            }
+                            _ => return,
+                        }
+                        cx.stop_propagation();
+                    })
             })
             .when_some(self.on_click.filter(|_| live), |b, f| b.on_click(move |e, w, cx| f(e, w, cx)));
         let b = match self.tip {
@@ -336,7 +356,7 @@ impl RenderOnce for Switch {
         let knob = div().absolute().top(px((SWITCH_H - KNOB) / 2.)).left(px(knob_left(t))).size(px(KNOB)).rounded_full().bg(p.knob()).shadow(shadow);
         let ring = Rgba { a: 0.55, ..p.accent };
         let on = self.on;
-        let (click, keys) = (self.on_flip.clone(), self.on_flip);
+        let click = self.on_flip;
         div()
             .id(ElementId::Name(self.id.clone()))
             .relative()
@@ -362,14 +382,11 @@ impl RenderOnce for Switch {
                             f(!on, window, cx);
                         }
                     })
+                    // Space and Return are GPUI's keyboard click, on release —
+                    // flipping here too would flip it twice and end where it began.
                     .on_key_down(move |event: &KeyDownEvent, window, cx| {
                         let k = &event.keystroke;
                         match k.key.as_str() {
-                            "space" | "enter" if !k.modifiers.modified() => {
-                                if let Some(f) = &keys {
-                                    f(!on, window, cx);
-                                }
-                            }
                             "tab" if k.modifiers.shift => window.focus_prev(cx),
                             "tab" => window.focus_next(cx),
                             _ => return,
@@ -495,5 +512,39 @@ mod tests {
         assert_eq!(track(&p, 0.), p.switch_off());
         assert_eq!(track(&p, 1.), p.switch_on());
     }
-}
 
+    struct Row {
+        on: bool,
+    }
+
+    impl gpui_kit::Render for Row {
+        fn render(&mut self, _: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<Self>) -> impl gpui_kit::IntoElement {
+            let view = cx.entity();
+            super::switch(Palette::new(WindowAppearance::Dark), "t765-switch", self.on).on_flip(move |on, _, cx| view.update(cx, |row, _| row.on = on))
+        }
+    }
+
+    /// Space and Return flip a focused switch once: the key goes down, a frame
+    /// is drawn, the key comes up (GPUI's keyboard click) — and it stays flipped.
+    #[gpui_kit::test]
+    fn a_key_press_flips_a_switch_once(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::{KeyUpEvent, Keystroke, PlatformInput};
+        let (view, cx) = cx.add_window_view(|_, _| Row { on: false });
+        for key in ["space", "enter"] {
+            let before = view.read_with(cx, |r, _| r.on);
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+                window.focus_next(cx);
+                window.draw(cx).clear(cx);
+            });
+            let stroke = Keystroke::parse(key).unwrap();
+            cx.update(|window, cx| window.dispatch_keystroke(stroke.clone(), cx));
+            cx.run_until_parked();
+            assert_eq!(view.read_with(cx, |r, _| r.on), before, "{key} down alone doesn't flip");
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.update(|window, cx| window.dispatch_event(PlatformInput::KeyUp(KeyUpEvent { keystroke: stroke }), cx));
+            cx.run_until_parked();
+            assert_eq!(view.read_with(cx, |r, _| r.on), !before, "{key} flips it exactly once");
+        }
+    }
+}

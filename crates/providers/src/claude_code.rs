@@ -347,6 +347,10 @@ pub struct TurnCollector {
     /// The model requests heard (the member's and its subagents'), by message
     /// id: Claude Code writes a message once per content block.
     calls: std::collections::HashSet<String>,
+    /// What the subagents' requests used, by message id (the latest word on
+    /// each): input, output, cache read, cache write, of it kept an hour.
+    /// The result's own `usage` is the member's alone.
+    subagent_use: std::collections::HashMap<String, [u64; 5]>,
 }
 
 /// A subagent run in the background answers its tool call at once with this;
@@ -487,6 +491,14 @@ impl TurnCollector {
                         n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens") + n("output_tokens"),
                     );
                 }
+                if parent(event).is_some()
+                    && let (Some(id), Some(u)) = (event.get("message").and_then(|m| m.get("id")).and_then(Value::as_str), event.get("message").and_then(|m| m.get("usage")))
+                {
+                    let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
+                    let write = n("cache_creation_input_tokens");
+                    let long = u.get("cache_creation").and_then(|c| c.get("ephemeral_1h_input_tokens")).and_then(Value::as_u64).unwrap_or(0).min(write);
+                    self.subagent_use.insert(id.to_owned(), [n("input_tokens"), n("output_tokens"), n("cache_read_input_tokens"), write, long]);
+                }
                 // Inside a subagent: its words and steps, as the subagent's —
                 // each call waiting for its answer, timed from now.
                 if let Some(id) = parent(event) {
@@ -579,7 +591,7 @@ impl TurnCollector {
                 out
             }
             "result" => {
-                let mut result = result_from(event, &self.streamed, &self.last_message);
+                let mut result = result_from(event, &self.streamed, &self.last_message, self.subagent_use.values().fold([0; 5], |a, u| std::array::from_fn(|i| a[i] + u[i])));
                 if let Ok(TurnResult { usage: Some(usage), .. }) = &mut result {
                     usage.context_tokens = self.context;
                     usage.calls = (!self.calls.is_empty()).then_some(self.calls.len() as u64);
@@ -869,7 +881,8 @@ fn message_text(event: &Value) -> String {
         .collect()
 }
 
-fn result_from(event: &Value, streamed: &str, last_message: &str) -> Result<TurnResult> {
+/// `subagents` is what the turn's subagents used (see `TurnCollector::subagent_use`).
+fn result_from(event: &Value, streamed: &str, last_message: &str, subagents: [u64; 5]) -> Result<TurnResult> {
     let text = event.get("result").and_then(Value::as_str).unwrap_or("");
     let subtype = event.get("subtype").and_then(Value::as_str).unwrap_or("success");
     // Failures inside the run, such as a missing login, arrive as an error result.
@@ -887,14 +900,16 @@ fn result_from(event: &Value, streamed: &str, last_message: &str) -> Result<Turn
     let usage = event.get("usage").and_then(|u| {
         let n = |v: &Value, k: &str| v.get(k).and_then(Value::as_u64);
         let models = event.get("modelUsage").and_then(Value::as_object);
-        // Every model the turn used, its subagents' among them: what the plan
-        // counts. The turn's own `usage` is the member's alone.
-        let sum = |k: &str| models.map(|m| m.values().filter_map(|v| n(v, k)).sum::<u64>()).filter(|t| *t > 0);
-        let input_tokens = sum("inputTokens").max(n(u, "input_tokens"));
-        let output_tokens = sum("outputTokens").max(n(u, "output_tokens"));
-        let read = sum("cacheReadInputTokens").max(n(u, "cache_read_input_tokens"));
-        let write = sum("cacheCreationInputTokens").max(n(u, "cache_creation_input_tokens"));
-        let long = u.get("cache_creation").and_then(|c| n(c, "ephemeral_1h_input_tokens")).filter(|t| *t > 0).map(|t| t.min(write.unwrap_or(0)));
+        // The turn's own `usage` is the member's alone, and the turn's: what
+        // the plan counts adds the subagents' requests, heard as they came.
+        // `modelUsage` is no help: on a resumed session it is the whole
+        // session's so far, every turn before this one in it.
+        let add = |own: Option<u64>, extra: u64| (own.is_some() || extra > 0).then_some(own.unwrap_or(0) + extra);
+        let input_tokens = add(n(u, "input_tokens"), subagents[0]);
+        let output_tokens = add(n(u, "output_tokens"), subagents[1]);
+        let read = add(n(u, "cache_read_input_tokens"), subagents[2]);
+        let write = add(n(u, "cache_creation_input_tokens"), subagents[3]);
+        let long = u.get("cache_creation").and_then(|c| n(c, "ephemeral_1h_input_tokens")).map(|t| t + subagents[4]).filter(|t| *t > 0).map(|t| t.min(write.unwrap_or(0)));
         let cache = read.unwrap_or(0) + write.unwrap_or(0);
         // The window of the model that did the work (the first listed).
         let context_window = models.and_then(|models| models.values().find_map(|m| m.get("contextWindow").and_then(Value::as_u64)));
@@ -1084,6 +1099,59 @@ pub async fn suggest(binary: &str, cwd: &Path, conversation: &str) -> Option<Str
         return None;
     }
     parse_suggestion(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// What the plan read asks of Claude Code: as little as a turn can be.
+const PLAN_READ_PROMPT: &str = "Reply with the single word: ok";
+
+/// Arguments for reading the Claude plan's usage: one tiny turn of the small
+/// model, with no tools, no MCP servers and nothing kept. Claude Code tells
+/// the plan's windows (`rate_limit_event`) as its request comes back.
+pub fn plan_read_args() -> Vec<String> {
+    [
+        "-p",
+        PLAN_READ_PROMPT,
+        "--model",
+        "haiku",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        "--system-prompt",
+        PLAN_READ_PROMPT,
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .collect()
+}
+
+/// The plan's windows in a turn's stream-json output, the last told.
+pub fn parse_plan(output: &str) -> Option<Activity> {
+    let mut collector = TurnCollector::new();
+    output
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .flat_map(|event| collector.on_event(&event))
+        .filter(|a| matches!(a, Activity::Plan { .. }))
+        .last()
+}
+
+/// Read the Claude plan's usage with the person's own Claude Code, in `cwd`:
+/// for when no member's turn has told it lately. A few tokens of the small
+/// model; any failure is no reading.
+pub async fn read_plan(binary: &str, cwd: &Path) -> Option<Activity> {
+    let output = crate::tools_path::command(binary)
+        .args(plan_read_args())
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(std::time::Duration::from_secs(60), output).await.ok()?.ok()?;
+    parse_plan(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// Name one conversation without touching its real thread or tools. The core
@@ -1624,22 +1692,41 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_counts_its_requests_once_each_and_every_model_it_used() {
-        let message = |id: &str, parent: Option<&str>| json!({ "type": "assistant", "parent_tool_use_id": parent, "message": { "id": id, "content": [{ "type": "text", "text": "x" }], "usage": { "input_tokens": 1, "output_tokens": 1 } } });
+    fn a_turn_counts_its_requests_once_each_and_its_subagents_too() {
+        let message = |id: &str, parent: Option<&str>, usage: Value| json!({ "type": "assistant", "parent_tool_use_id": parent, "message": { "id": id, "content": [{ "type": "text", "text": "x" }], "usage": usage } });
+        let small = || json!({ "input_tokens": 1, "output_tokens": 1 });
         let result = json!({ "type": "result", "subtype": "success", "is_error": false, "result": "ok",
             "usage": { "input_tokens": 10, "output_tokens": 20, "cache_read_input_tokens": 900, "cache_creation_input_tokens": 300, "cache_creation": { "ephemeral_1h_input_tokens": 300, "ephemeral_5m_input_tokens": 0 } },
             "modelUsage": {
                 "claude-opus-5-5": { "inputTokens": 10, "outputTokens": 20, "cacheReadInputTokens": 900, "cacheCreationInputTokens": 300, "contextWindow": 1000000 },
                 "claude-haiku-5-5": { "inputTokens": 5, "outputTokens": 7, "cacheReadInputTokens": 100, "cacheCreationInputTokens": 0 }
             } });
+        let sub = json!({ "input_tokens": 5, "output_tokens": 7, "cache_read_input_tokens": 100 });
         // A message comes once per content block; a subagent's requests count too.
-        let (_, turn) = collect(&[message("m1", None), message("m1", None), message("m2", None), message("s1", Some("toolu_1")), result]);
+        let (_, turn) = collect(&[message("m1", None, small()), message("m1", None, small()), message("m2", None, small()), message("s1", Some("toolu_1"), json!({ "input_tokens": 1 })), message("s1", Some("toolu_1"), sub), result]);
         let usage = turn.unwrap().usage.unwrap();
         assert_eq!(usage.calls, Some(3));
-        assert_eq!((usage.input_tokens, usage.output_tokens), (Some(15), Some(27)), "every model's, the subagent's Haiku among them");
+        assert_eq!((usage.input_tokens, usage.output_tokens), (Some(15), Some(27)), "the member's and the subagent's Haiku");
         assert_eq!((usage.cache_read_tokens, usage.cache_write_tokens, usage.cache_write_long_tokens), (Some(1000), Some(300), Some(300)));
         assert_eq!(usage.cache_tokens, Some(1300), "the sum, as before");
         assert_eq!(usage.context_window, Some(1_000_000));
+    }
+
+    #[test]
+    fn a_resumed_session_reports_each_turns_own_usage_not_the_sessions() {
+        // Claude Code restores a resumed session's `modelUsage` totals; `usage` stays the turn's.
+        let turn = |own_read: u64, own_out: u64, session_read: u64, session_out: u64| {
+            let result = json!({ "type": "result", "subtype": "success", "is_error": false, "result": "ok",
+                "usage": { "input_tokens": 2, "output_tokens": own_out, "cache_read_input_tokens": own_read, "cache_creation_input_tokens": 100 },
+                "modelUsage": { "claude-opus-5-5": { "inputTokens": 2, "outputTokens": session_out, "cacheReadInputTokens": session_read, "cacheCreationInputTokens": 300, "contextWindow": 1000000 } } });
+            collect(&[result]).1.unwrap().usage.unwrap()
+        };
+        let turns = [turn(700_000, 4_000, 700_000, 4_000), turn(300_000, 3_000, 1_000_000, 7_000), turn(1_600_000, 6_000, 2_600_000, 13_000)];
+        let read: Vec<_> = turns.iter().map(|u| u.cache_read_tokens.unwrap()).collect();
+        let out: Vec<_> = turns.iter().map(|u| u.output_tokens.unwrap()).collect();
+        assert_eq!(read, [700_000, 300_000, 1_600_000]);
+        assert_eq!(out, [4_000, 3_000, 6_000]);
+        assert_eq!(read.iter().sum::<u64>(), 2_600_000, "summed over the session: its total once");
     }
 
     #[test]
@@ -1731,6 +1818,24 @@ mod tests {
         assert!(std::process::Command::new("cp").arg(&draft).arg(&bin).status().unwrap().success());
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         (bin, dir)
+    }
+
+    #[test]
+    fn a_plan_read_is_one_tiny_turn_and_takes_the_last_windows_told() {
+        let args = plan_read_args();
+        for wanted in ["haiku", "stream-json", "--no-session-persistence", "--strict-mcp-config"] {
+            assert!(args.iter().any(|a| a == wanted), "{wanted} in {args:?}");
+        }
+        assert_eq!(args.iter().position(|a| a == "--tools").map(|i| args[i + 1].as_str()), Some(""), "no tools");
+        let output = [
+            r#"{"type":"system","subtype":"init","session_id":"s"}"#,
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","rateLimitType":"seven_day","utilization":0.33,"resetsAt":1794873600,"unifiedWindows":{"seven_day":{"utilization":0.33,"resetsAt":1794873600}}}}"#,
+            "not json",
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#,
+        ]
+        .join("\n");
+        assert_eq!(parse_plan(&output), Some(Activity::Plan { five_hour: None, seven_day: Some((0.33, 1794873600)) }));
+        assert_eq!(parse_plan(r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#), None, "nothing told: no reading");
     }
 
     #[test]
