@@ -469,6 +469,10 @@ pub struct TicketCard {
     asked: HashMap<TicketId, (Option<String>, String, Option<bool>)>,
     /// Numbers the daemon was asked for because this window had no such ticket, and when.
     looked: HashMap<TicketId, Instant>,
+    /// Whose card was last drawn (a number, and whether it is the ticket's or the small one): its size is that card's.
+    shape: Option<(TicketId, bool)>,
+    /// The card drawn was cut to its room, so its height says nothing of how tall it is.
+    capped: bool,
     /// Tickets acted on from a card: their undo shows off the work screens.
     acted: HashSet<TicketId>,
     /// Where the card's text, and its middle (when the window is too short
@@ -491,7 +495,7 @@ pub fn layer(cx: &mut Context<Shell>) -> AnyView {
     let card = cx.new(|cx| {
         // The daemon's answer to a lookup changes the shell, not the card: redraw with it.
         cx.observe(&owner, |_, _, cx| cx.notify()).detach();
-        TicketCard { shell, hover: Hover::default(), timer: None, drawn: Rc::new(Cell::new(None)), result: None, asked: HashMap::new(), looked: HashMap::new(), acted: HashSet::new(), said: (0, ScrollHandle::new(), ScrollHandle::new()) }
+        TicketCard { shell, hover: Hover::default(), timer: None, drawn: Rc::new(Cell::new(None)), result: None, asked: HashMap::new(), looked: HashMap::new(), shape: None, capped: false, acted: HashSet::new(), said: (0, ScrollHandle::new(), ScrollHandle::new()) }
     });
     cx.set_global(Layer(card.clone()));
     gpui_kit::base::text::on_link_hover(cx, |url, bounds, _, cx| {
@@ -713,6 +717,7 @@ impl Render for TicketCard {
         let root = root.children(undo_toast(shell, &self.acted, &self.shell));
         let Some(target) = self.hover.shown() else {
             self.drawn.set(None);
+            self.shape = None;
             return root;
         };
         let p = shell.palette;
@@ -759,13 +764,21 @@ impl Render for TicketCard {
         super::visuals::flush(&held, &self.shell, cx);
         // Placed by its size as last drawn; drawn again when that changes.
         let viewport = window.viewport_size();
-        let mut size = self.drawn.get().map_or(if found { GUESS } else { (200., 36.) }, |r| (r.w, r.h));
         let window_size = (f32::from(viewport.width), f32::from(viewport.height));
-        let (_, _, side) = place(target.anchor, size, window_size, target.prefer);
-        // No taller than the room on its side of the link, its gap kept: a short window scrolls the card's middle.
-        let room = room_on(target.anchor, window_size.1, side);
-        size.1 = size.1.min(room);
-        let (x, y, side) = place(target.anchor, size, window_size, target.prefer);
+        // What was drawn belongs to the card it was: "Looking…" is not the ticket's card, whose side it must not pick.
+        if self.shape != Some((target.id, found)) {
+            self.shape = Some((target.id, found));
+            self.drawn.set(None);
+            self.capped = false;
+        }
+        let natural = match self.drawn.get() {
+            Some(r) => (r.w, if self.capped { tallest(window_size.1) } else { r.h }),
+            None if found => GUESS,
+            None => (200., 36.),
+        };
+        let ((x, y, side), room) = fit(target.anchor, natural, window_size, target.prefer);
+        // Cut to the room it was given, it stays "cut" next time: the side is picked by what it would be uncut.
+        self.capped = self.drawn.get().is_some_and(|r| r.h >= room - 0.5);
         let drawn = self.drawn.clone();
         let card = div()
             .id(("ticket-card", target.id as u64))
@@ -775,7 +788,7 @@ impl Render for TicketCard {
             .rounded(px(10.))
             .bg(p.raised)
             .border_1()
-            .border_color(rim(p))
+            .border_color(p.hair)
             .shadow(crate::motion::float_shadow(1.))
             .text_color(p.text)
             .cursor_default()
@@ -799,6 +812,14 @@ impl Render for TicketCard {
     }
 }
 
+/// Where a card of `natural` size goes for a link at `anchor`, and the height it may keep there: the
+/// side is picked by the card as tall as it wants, then its height is held to that side's room.
+fn fit(anchor: Rect, natural: (f32, f32), window: (f32, f32), prefer: Side) -> ((f32, f32, Side), f32) {
+    let (_, _, side) = place(anchor, natural, window, prefer);
+    let room = room_on(anchor, window.1, side);
+    (place(anchor, (natural.0, natural.1.min(room)), window, prefer), room)
+}
+
 /// The room between the window's margin and the link, on `side` of it.
 fn room_on(anchor: Rect, window_h: f32, side: Side) -> f32 {
     match side {
@@ -809,11 +830,6 @@ fn room_on(anchor: Rect, window_h: f32, side: Side) -> f32 {
 
 /// Least height a card keeps when there is little room: its header and a line.
 const MIN_ROOM: f32 = 80.;
-
-/// The card's edge: a line that shows on the page in either appearance (the hairline is for rules inside it).
-fn rim(p: Palette) -> Rgba {
-    Rgba { a: 0.55, ..p.muted }
-}
 
 /// How narrow the "Not found" / "Looking…" card goes.
 const MISSING_MIN: f32 = 150.;
@@ -1186,7 +1202,7 @@ mod tests {
 
     use equipe_core::protocol::{TicketId, TicketStatus};
 
-    use super::{Act, CLOSE_AFTER, Hover, OPEN_AFTER, Phase, RESULT_FOR, Rect, SCROLL_QUIET, Side, Target, act_for_key, acts, done_words, place};
+    use super::{Act, CLOSE_AFTER, Hover, OPEN_AFTER, Phase, RESULT_FOR, Rect, SCROLL_QUIET, Side, Target, act_for_key, acts, done_words, fit, place, tallest};
     use crate::board::MergeWay;
 
     const WIN: (f32, f32) = (1200., 800.);
@@ -1211,6 +1227,25 @@ mod tests {
         // No room either way: the side with more, kept inside the window.
         let (_, y, side) = place(link(100., 420.), (380., 900.), WIN, Side::Below);
         assert_eq!((y, side), (8., Side::Above));
+    }
+
+    #[test]
+    fn a_card_picks_its_side_by_its_full_height_not_by_the_height_it_was_cut_to() {
+        // 760×600 at 100%: the link has 300 above and 270 below; the ticket's card wants about 400.
+        let anchor = link(100., 300.);
+        let win = (760., 600.);
+        // "Looking…" first (36 tall) goes below; the ticket's card, not yet drawn, is the GUESS and flips up.
+        assert_eq!(fit(anchor, (200., 36.), win, Side::Below).0.2, Side::Below);
+        let ((_, y, side), room) = fit(anchor, (380., 400.), win, Side::Below);
+        assert_eq!(side, Side::Above);
+        // Held to the room above, its foot a gap over the link.
+        assert!((y + room - (300. - 6.)).abs() < 0.01, "{y} {room}");
+        // Drawn at that cut height (capped), the next frame still picks the same side.
+        let ((_, _, again), _) = fit(anchor, (380., tallest(600.)), win, Side::Below);
+        assert_eq!(again, Side::Above);
+        // A card cut shorter than the room below, taken as if natural, sinks under the link: the regression.
+        let ((_, _, sunk), _) = fit(anchor, (380., 170.), win, Side::Below);
+        assert_eq!(sunk, Side::Below);
     }
 
     #[test]
