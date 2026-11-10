@@ -16,6 +16,24 @@ use crate::theme::{BODY, BODY_LINE, META, SMALL};
 use crate::tips::tip;
 use crate::ui;
 
+/// Where the keyboard goes: the button that went into focus view (back
+/// there on the way out), its way back, the "more" button, and a stop for
+/// every tool and menu item so Tab reaches them in the order they are drawn.
+pub struct Handles {
+    pub entry: FocusHandle,
+    pub back: FocusHandle,
+    pub more: FocusHandle,
+    pub menu: [FocusHandle; 4],
+    pub tools: [FocusHandle; 6],
+}
+
+impl Handles {
+    pub fn new(cx: &mut Context<Shell>) -> Self {
+        let stop = |cx: &mut Context<Shell>| cx.focus_handle().tab_stop(true);
+        Self { entry: stop(cx), back: stop(cx), more: stop(cx), menu: [stop(cx), stop(cx), stop(cx), stop(cx)], tools: [stop(cx), stop(cx), stop(cx), stop(cx), stop(cx), stop(cx)] }
+    }
+}
+
 /// The panel's left edge: drag to make it wider or narrower (kept), double-
 /// click for the usual width. Shared by the document and the terminal.
 pub fn edge(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
@@ -77,45 +95,120 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
     let path = doc.path.display().to_string();
     let wide = shell.side_width(window);
     let folder = crate::doc::folder_shown(&doc.path, &crate::render::base_dir(shell), std::env::home_dir().as_deref());
-    let bar = h_flex()
-        .h(px(super::header::HEIGHT))
-        .flex_none()
-        .px_3()
-        .gap_2()
-        .items_center()
-        .border_b_1()
-        .border_color(p.hair)
-        .child(icon(Icon::FileText, 15., p.muted))
-        // One line: its name, then where it is, short — the whole path on hover.
-        .child(tip(
+    let focused = doc.focus.is_some();
+    let window_width: f32 = window.viewport_size().width.into();
+    let compact = crate::doc::compact(window_width, shell.remembered.zoom.0);
+    let keys = &shell.doc_keys;
+    let copy_path = {
+        let path = path.clone();
+        move |cx: &mut App| {
+            cx.write_to_clipboard(ClipboardItem::new_string(path.clone()));
+            crate::render::flash(t!("doc.copied").into(), cx);
+        }
+    };
+    // Reading again, opening, copying the path: beside the name when there is
+    // room, else under "more".
+    let tools = |bar: Div, cx: &mut Context<Shell>| {
+        bar.when(doc.slides().is_some_and(|s| !s.is_empty()), |bar| bar.child(ui::icon_button(p, "doc-present", Icon::Play, t!("deck.present"), None).focus(&keys.tools[0]).on_click(cx.listener(|this, _, _, cx| this.present(0, cx)))))
+            .when(!compact && !doc.kept, |bar| bar.child(ui::icon_button(p, "doc-reload", Icon::Reload, t!("doc.reload"), None).focus(&keys.tools[1]).on_click(cx.listener(|this, _, _, cx| this.reload_doc(cx)))))
+            .when(!compact && local && !doc.kept, |bar| {
+                let path = doc.path.clone();
+                bar.child(ui::icon_button(p, "doc-open", Icon::External, t!("doc.open"), None).focus(&keys.tools[2]).on_click(move |_, _, cx| crate::render::open_file(&path, crate::render::Open::Edit, cx)))
+            })
+            .when(!compact && doc.path.is_absolute(), |bar| {
+                let copy = copy_path.clone();
+                bar.child(ui::icon_button(p, "doc-copy", Icon::Copy, t!("doc.copy_path"), None).focus(&keys.tools[3]).on_click(move |_, _, cx| copy(cx)))
+            })
+    };
+    let more_button = |cx: &mut Context<Shell>| {
+        ui::icon_button(p, "doc-more", Icon::More, t!("doc.focus_more"), None)
+            .focus(&keys.more)
+            .expanded(doc.more)
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_doc_more(window, cx)))
+    };
+    let lights = super::sidebar::lights_end(crate::zoom::factor(shell.remembered.zoom.0));
+    // Where the way back's words start: the lines under it start there too.
+    let edge_left = if focused { lights + 8. + 12. } else { 12. };
+    let menu = doc.more.then(|| {
+        let mut row = h_flex().id("doc-more-menu").flex_none().pl(px(if focused { lights + 8. } else { 8. })).pr_3().py_1().gap_1().flex_wrap().items_center().border_b_1().border_color(p.hair);
+        if !doc.kept {
+            row = row.child(ui::button(p, "doc-more-reload", ui::Kind::Ghost, t!("doc.reload")).icon(Icon::Reload).focus(&keys.menu[0]).on_click(cx.listener(|this, _, _, cx| {
+                this.reload_doc(cx);
+                this.close_doc_more(cx);
+            })));
+        }
+        if local && !doc.kept {
+            let path = doc.path.clone();
+            row = row.child(ui::button(p, "doc-more-open", ui::Kind::Ghost, t!("doc.open")).icon(Icon::External).focus(&keys.menu[1]).on_click(move |_, _, cx| crate::render::open_file(&path, crate::render::Open::Edit, cx)));
+        }
+        if doc.path.is_absolute() {
+            let copy = copy_path.clone();
+            row = row.child(ui::button(p, "doc-more-copy", ui::Kind::Ghost, t!("doc.copy_path")).icon(Icon::Copy).focus(&keys.menu[2]).on_click(move |_, _, cx| copy(cx)));
+        }
+        // In focus view the close folds in with the rest; beside the panel it never leaves the bar.
+        row.when(focused, |row| row.child(ui::button(p, "doc-more-close", ui::Kind::Ghost, t!("doc.close_doc")).icon(Icon::X).focus(&keys.menu[3]).on_click(cx.listener(|this, _, _, cx| this.close_doc(cx)))))
+    });
+    // The whole name, wrapping, and where it is — never cut.
+    let where_ = |left: f32| {
+        tip(
             h_flex()
                 .id("doc-where")
                 .flex_1()
                 .min_w_0()
-                .gap(px(8.))
-                .items_baseline()
-                .child(div().min_w_0().flex_shrink_0().max_w(px(wide * 0.6)).text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).overflow_hidden().whitespace_nowrap().text_ellipsis().child(doc.name()))
-                .child(div().flex_1().min_w_0().text_size(px(META)).text_color(p.muted).overflow_hidden().whitespace_nowrap().text_ellipsis().child(folder)),
+                .pl(px(left))
+                .pr_3()
+                .pb_2()
+                .gap_2()
+                .items_start()
+                .child(div().flex_none().pt(px(2.)).child(icon(Icon::FileText, 15., p.muted)))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .flex()
+                        .flex_wrap()
+                        .items_baseline()
+                        .gap_x(px(8.))
+                        .child(div().min_w_0().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(doc.name()))
+                        .child(div().min_w_0().text_size(px(META)).text_color(p.muted).child(folder.clone())),
+                ),
             p,
             path.clone(),
             None,
-        ))
-        .when(doc.slides().is_some_and(|s| !s.is_empty()), |bar| bar.child(ui::icon_button(p, "doc-present", Icon::Play, t!("deck.present"), None).on_click(cx.listener(|this, _, _, cx| this.present(0, cx)))))
-        // Kept words have no file to read again or open.
-        .when(!doc.kept, |bar| bar.child(ui::icon_button(p, "doc-reload", Icon::Reload, t!("doc.reload"), None).on_click(cx.listener(|this, _, _, cx| this.reload_doc(cx)))))
-        .when(local && !doc.kept, |bar| {
-            let path = doc.path.clone();
-            bar.child(ui::icon_button(p, "doc-open", Icon::External, t!("doc.open"), None).on_click(move |_, _, cx| crate::render::open_file(&path, crate::render::Open::Edit, cx)))
-        })
-        // Words with no file of their own (a hand-over packet) have no path to copy.
-        .when(doc.path.is_absolute(), |bar| {
-            bar.child(ui::icon_button(p, "doc-copy", Icon::Copy, t!("doc.copy_path"), None).on_click(move |_, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(path.clone()));
-                crate::render::flash(t!("doc.copied").into(), cx);
-            }))
-        })
-        .child(ui::icon_button(p, "doc-fold", Icon::ChevronRight, t!("doc.fold"), None).on_click(cx.listener(|this, _, _, cx| this.fold_doc(true, cx))))
-        .child(ui::icon_button(p, "doc-close", Icon::X, t!("doc.close"), None).on_click(cx.listener(|this, _, _, cx| this.close_doc(cx))));
+        )
+    };
+    let bar = if let Some(focus) = &doc.focus {
+        // Focus view: a way back on the left, the tools on the right; under
+        // them the whole name and where it is.
+        let back = match &focus.origin {
+            crate::doc::Origin::Conversation(title) => t!("doc.focus_back_chat", title = title),
+            crate::doc::Origin::Docs => t!("doc.focus_back_docs").to_string(),
+            crate::doc::Origin::Project(name) => t!("doc.focus_back_project", name = name),
+        };
+        let esc = if doc.more { t!("doc.focus_menu_esc").to_string() } else { "Esc".to_string() };
+        let first = ui::title_bar(
+            h_flex().h(px(super::header::HEIGHT)).flex_none().pl(px(lights + 8.)).pr_3().gap_2().items_center().child(
+                div().flex_shrink(1.).min_w_0().overflow_hidden().child(
+                    ui::button(p, "doc-focus-back", ui::Kind::Ghost, back).icon(Icon::ArrowLeft).key(esc).focus(&keys.back).on_click(cx.listener(|this, _, window, cx| this.toggle_doc_focus(window, cx))),
+                ),
+            ),
+        )
+        .child(div().flex_1().min_w_0());
+        let first = tools(first, cx).when(compact, |bar| bar.child(more_button(cx))).when(!compact, |bar| bar.child(ui::icon_button(p, "doc-close", Icon::X, t!("doc.close_doc"), None).focus(&keys.tools[5]).on_click(cx.listener(|this, _, _, cx| this.close_doc(cx)))));
+        v_flex().flex_none().border_b_1().border_color(p.hair).child(first).child(where_(edge_left))
+    } else {
+        // Beside the conversation: the name and the two ways out on top; under
+        // them Focus view, the one way in, and the document's tools.
+        let top = h_flex()
+            .flex_none()
+            .items_start()
+            .child(where_(edge_left).pt_2())
+            .child(h_flex().flex_none().h(px(super::header::HEIGHT)).pr_3().gap_1().items_center().child(ui::icon_button(p, "doc-fold", Icon::ChevronRight, t!("doc.fold"), None).focus(&keys.tools[4]).on_click(cx.listener(|this, _, _, cx| this.fold_doc(true, cx)))).child(ui::icon_button(p, "doc-close", Icon::X, t!("doc.close_doc"), None).focus(&keys.tools[5]).on_click(cx.listener(|this, _, _, cx| this.close_doc(cx)))));
+        let enter = ui::button(p, "doc-focus", ui::Kind::Ghost, t!("doc.focus")).icon(Icon::Expand).key("⇧⌘F").focus(&keys.entry).on_click(cx.listener(|this, _, window, cx| this.toggle_doc_focus(window, cx)));
+        let row = h_flex().flex_none().px_2().pb_2().gap_1().items_center().child(enter).child(div().flex_1().min_w_0());
+        let row = tools(row, cx).when(compact, |bar| bar.child(more_button(cx)));
+        v_flex().flex_none().border_b_1().border_color(p.hair).child(top).child(row)
+    };
     let named = crate::docs::doc_at(&shell.docs, &doc.path.to_string_lossy()).map(|d| d.ticket_ids()).unwrap_or_default();
     let tickets = (!named.is_empty()).then(|| {
         h_flex()
@@ -184,17 +277,16 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
         v_flex()
             .id("doc-panel")
             .relative()
-            .w(px(wide))
-            .flex_none()
+            .when(focused, |d| d.flex_1().min_w_0())
+            .when(!focused, |d| d.w(px(wide)).flex_none().border_l_1().border_color(p.hair))
             .h_full()
             .min_h_0()
-            .border_l_1()
-            .border_color(p.hair)
             .bg(p.bg)
             .child(bar)
+            .children(menu)
             .children(tickets)
-            .child(div().id("doc-scroll").flex_1().min_h_0().overflow_y_scroll().track_scroll(&doc.scroll).child(body))
-            .child(edge(shell, cx))
+            .child(div().id("doc-scroll").flex_1().min_h_0().overflow_y_scroll().track_scroll(&doc.scroll).child(if focused { div().w_full().max_w(px(680.)).mx_auto().child(body).into_any_element() } else { body }))
+            .children((!focused).then(|| edge(shell, cx)))
             .into_any_element(),
     )
 }
