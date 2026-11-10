@@ -1644,6 +1644,11 @@ impl Runtime {
                 _ => None,
             };
             match &event {
+                // A member's own session is named by its first message; a
+                // conversation the person keeps gets a generated topic instead.
+                Event::UserMessage { text, .. } if session.title.is_none() && !session.kept => {
+                    session.title = text.lines().next().map(str::to_owned);
+                }
                 // What runs; what it is set to stays (an alias is asked for again each turn).
                 Event::ModelKnown { model, .. } => session.ran = Some(model.clone()),
                 Event::Steered { text, .. } => {
@@ -1697,8 +1702,12 @@ impl Runtime {
             if self.config.persist
                 && let Some(name) = squad.clone()
             {
+                let named = matches!(event, Event::UserMessage { .. }).then(|| session.title.clone()).flatten().filter(|_| !session.kept);
                 if let Some(journal) = journal_for(&mut self.journals, &self.config.home, &name) {
                     no_room = !record(journal, id, &event, &finished);
+                    if let Some(title) = &named {
+                        let _ = journal.set_title_if_empty(id, title);
+                    }
                     if let Some(turn) = &turn {
                         let _ = journal.record_turn_use(turn, turn_use.as_ref());
                     }
@@ -3976,7 +3985,14 @@ for one project goes to it as tickets for its owners, with that project — and 
         let Some(m) = self.sessions.get(&pm) else { return };
         let thread = DeskThread { claude_session: c.engine_session, ..DeskThread::default() };
         let mut lane = lane_of(pm, m, c.project.clone(), thread, true);
-        let title = c.title;
+        // One whose topic was never named (made before topics, or its naming
+        // turn didn't finish) shows the person's first words meanwhile.
+        let title = c.title.or_else(|| {
+            lines.iter().find_map(|e| match e {
+                Entry::User { text, .. } => Some(crate::conversation_title::fallback(text)).filter(|t| !t.is_empty()),
+                _ => None,
+            })
+        });
         lane.title = title.clone();
         lane.transcript = Transcript::with_times(lines.clone(), lines_at.clone());
         self.publish_lane(id, lane, pm, c.project, true);
