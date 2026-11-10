@@ -1443,6 +1443,14 @@ impl Model {
                 }
                 self.revision += 1;
             }
+            Event::ConversationTitle { session, title } => {
+                if let Some(lane) = self.lanes.iter_mut().find(|lane| lane.session == session)
+                    && lane.title.is_none()
+                {
+                    lane.title = Some(title.clone());
+                    self.revision += 1;
+                }
+            }
             Event::LaneMoved { session, project } => {
                 if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == session) {
                     lane.project = project;
@@ -1499,11 +1507,6 @@ impl Model {
                 if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == id) {
                     if matches!(other, Event::UserMessage { .. } | Event::TurnEnded { .. }) {
                         lane.active = unix;
-                    }
-                    if let Event::UserMessage { text, .. } = &other
-                        && lane.title.is_none()
-                    {
-                        lane.title = text.lines().next().map(str::to_owned);
                     }
                     match other {
                         Event::UserMessage { .. } => (lane.presence, lane.verb) = (Presence::Working, Verb::Thinking),
@@ -2530,6 +2533,20 @@ mod tests {
         let lines = vec![Entry::User { text: "what next?".into(), kept: Vec::new() }, Entry::Reply { text: "this".into() }];
         model.apply(Update::Event(Event::ConversationBack { session: 51, title: None, lines, lines_at: vec![Some(10), Some(20)] }), T0);
         assert_eq!(model.convos[&51].transcript.times(), &[Some(10), Some(20)]);
+    }
+
+    #[test]
+    fn a_new_conversation_stays_new_until_its_saved_topic_arrives_and_never_renames() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        model.apply(Update::Event(Event::SessionStarted { session: 60, project: "/p".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Who { role: "pm".into(), name: "pm".into() }), squad: Some("acme".into()) }), T0);
+        model.apply(Update::Event(Event::LaneOpened { session: 60, of: 1, project: Some("desktop".into()), kept: true }), T0);
+        model.apply(Update::Event(Event::UserMessage { session: 60, text: "질문 원문 전체가 제목이면 안 돼".into(), kept: Vec::new() }), T0);
+        assert_eq!(model.lanes.iter().find(|lane| lane.session == 60).and_then(|lane| lane.title.as_deref()), None, "the sidebar and header still read New conversation");
+        model.apply(Update::Event(Event::ConversationTitle { session: 60, title: "세션 주제 제목".into() }), T0);
+        assert_eq!(model.lanes.iter().find(|lane| lane.session == 60).and_then(|lane| lane.title.as_deref()), Some("세션 주제 제목"));
+        model.apply(Update::Event(Event::ConversationTitle { session: 60, title: "두 번째 제목".into() }), T0);
+        assert_eq!(model.lanes.iter().find(|lane| lane.session == 60).and_then(|lane| lane.title.as_deref()), Some("세션 주제 제목"));
     }
 
     #[test]
