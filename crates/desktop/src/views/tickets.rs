@@ -2319,6 +2319,38 @@ pub fn properties(shell: &Shell, t: &Ticket, compact: bool, width: f32, cx: &mut
     if !compact {
         rows.push(row(t!("tickets.prop_kind"), prop(EditKind::Kind, div().into_any_element(), equipe_core::i18n::label::kind(crate::i18n::lang(), t.kind).to_owned(), cx)));
     }
+    // Its model and effort, and why — raised, lowered or pinned by the person.
+    if let Some(line) = rules::model_line(t) {
+        let pinned = t.model.as_ref().is_some_and(|m| m.pinned);
+        let mine = t.model.as_ref().is_some_and(|m| m.by == equipe_core::protocol::tiers::TierBy::Person);
+        let squad = model.squad.clone();
+        let act = |act: rules::TierAct, label: &'static str, tip: &'static str, cx: &mut Context<Shell>| {
+            let command = rules::tier_command(&squad, t, act);
+            let on = can && command.is_some();
+            pill(p, SharedString::from(format!("page-tier-{}-{id}", label)), on)
+                .flex_none()
+                .text_size(px(11.5))
+                .text_color(if on { p.text2 } else { p.muted })
+                .child(label)
+                .tip(p, tip, None)
+                .when_some(command.filter(|_| on), |d, command| d.on_click(cx.listener(move |this, _, _, cx| {
+                    this.send_command(command.clone());
+                    cx.notify();
+                })))
+                .into_any_element()
+        };
+        let buttons = vec![
+            act(rules::TierAct::Raise, t!("tier.raise"), t!("tier.tip_raise"), cx),
+            act(rules::TierAct::Lower, t!("tier.lower"), t!("tier.tip_lower"), cx),
+            act(rules::TierAct::Pin, if pinned { t!("tier.unpin") } else { t!("tier.pin") }, t!("tier.tip_pin"), cx),
+        ];
+        let auto = (mine || pinned).then(|| act(rules::TierAct::Auto, t!("tier.auto"), t!("tier.tip_auto"), cx));
+        let value = v_flex()
+            .min_w_0()
+            .child(div().pl(px(6.)).py_1().text_size(px(12.5)).text_color(p.text2).child(line))
+            .child(h_flex().flex_wrap().gap_1().children(buttons).children(auto));
+        rows.push(row(t!("tier.row"), value.into_any_element()));
+    }
     let link = |dep: TicketId, removable: bool, cx: &mut Context<Shell>| {
         let found = model.tickets.iter().find(|x| x.id == dep);
         let row = h_flex().id(SharedString::from(format!("prop-link-{id}-{dep}-{removable}")));
@@ -2474,6 +2506,9 @@ fn entry_words(kind: &str) -> String {
         "restored" => t!("tickets.ev_restored").into(),
         "blocked" => t!("tickets.ev_blocked").into(),
         "released" => t!("tickets.ev_released").into(),
+        "model raised" => t!("tickets.ev_model_raised").into(),
+        "model" => t!("tickets.ev_model").into(),
+        "handoff" => t!("tickets.ev_handoff").into(),
         other => other.to_owned(),
     }
 }

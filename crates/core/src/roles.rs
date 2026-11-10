@@ -392,7 +392,7 @@ pub fn recommended_model_for(role: &Role, engine: Engine, catalog: &[String]) ->
 
 /// The latest model of the first family in `families` the catalog has:
 /// `gpt-6.1-sol` over `gpt-6-sol`.
-fn codex_family(catalog: &[String], families: &[&str]) -> Option<String> {
+pub(crate) fn codex_family(catalog: &[String], families: &[&str]) -> Option<String> {
     let version = |id: &str| -> Vec<u32> {
         id.split('-').find(|part| part.starts_with(|c: char| c.is_ascii_digit())).map(|v| v.split('.').filter_map(|n| n.parse().ok()).collect()).unwrap_or_default()
     };

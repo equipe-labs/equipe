@@ -226,6 +226,8 @@ pub struct TurnUse {
     /// Of `tokens.cache_write`, written to be kept an hour.
     pub cache_write_long: u64,
     pub calls: u64,
+    /// The effort it ran at; `None`: the engine's own.
+    pub effort: Option<String>,
 }
 
 impl TurnUse {
@@ -243,8 +245,29 @@ impl TurnUse {
             tokens: crate::protocol::plan_use::Tokens { input: u.input_tokens.unwrap_or(0), output: u.output_tokens.unwrap_or(0), cache_write: write, cache_read: read },
             cache_write_long: u.cache_write_long_tokens.unwrap_or(0).min(write),
             calls: u.calls.unwrap_or(1),
+            effort: None,
         }
     }
+}
+
+/// A model choice kept for a ticket ([`Journal::record_model_choice`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelChoiceKept {
+    /// `lane`, `escalated` or `person`.
+    pub what: String,
+    pub tier: Option<String>,
+    pub by: String,
+    /// The cheaper tier the rules would have picked, never acted on.
+    pub shadow: Option<String>,
+}
+
+/// What a turn ran on, as kept ([`Journal::ticket_turns`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnRan {
+    pub engine: Option<String>,
+    pub model: Option<String>,
+    /// `None`: the engine's own.
+    pub effort: Option<String>,
 }
 
 /// How long turns and waits are kept for the retros: a quarter.
@@ -510,6 +533,40 @@ impl Journal {
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN design_qa INTEGER", []);
         // The plan it was cut from, or reviews: its path.
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN plan TEXT", []);
+        // The model and effort its lanes run on, and why (JSON, `tiers::TicketModel`).
+        let _ = conn.execute("ALTER TABLE tickets ADD COLUMN model TEXT", []);
+        // The effort a member's turn ran at; `NULL`: the engine's own, or a turn from before.
+        let _ = conn.execute("ALTER TABLE turns ADD COLUMN effort TEXT", []);
+        // Work sent back, and why: what decides whether a stronger model would
+        // help (`tiers::after_send_back`). Send-backs from before have none:
+        // none counted.
+        // Every model choice a lane started with, the cheaper tier the rules
+        // would have picked beside it, and every escalation: kept to see which
+        // defaults are too low or too high (`crate::tiers`).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS send_backs (
+               ticket INTEGER NOT NULL,
+               at INTEGER NOT NULL,
+               by TEXT NOT NULL,
+               reason TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS send_backs_ticket ON send_backs(ticket);
+             CREATE TABLE IF NOT EXISTS model_choices (
+               ticket INTEGER NOT NULL,
+               at INTEGER NOT NULL,
+               what TEXT NOT NULL,
+               member TEXT,
+               role TEXT,
+               engine TEXT,
+               tier TEXT,
+               model TEXT,
+               effort TEXT,
+               by TEXT NOT NULL,
+               reason TEXT NOT NULL,
+               shadow TEXT
+             );
+             CREATE INDEX IF NOT EXISTS model_choices_ticket ON model_choices(ticket);",
+        )?;
         // Tickets from before kinds: `code` with a project, `task` without — once,
         // when the column arrives.
         if conn.execute("ALTER TABLE tickets ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'", []).is_ok() {
@@ -1265,6 +1322,69 @@ impl Journal {
         Ok(())
     }
 
+    /// Set the model and effort a ticket's lanes run on ([`Ticket::model`]).
+    /// Kept apart from [`Journal::save_ticket`], so a copy of the ticket read
+    /// before the choice never writes it away.
+    pub fn set_ticket_model(&self, id: TicketId, model: Option<&equipe_protocol::tiers::TicketModel>) -> Result<()> {
+        let text = model.and_then(|m| serde_json::to_string(m).ok());
+        self.conn.execute("UPDATE tickets SET model = ?1 WHERE id = ?2", params![text, id])?;
+        Ok(())
+    }
+
+    /// Keep that `ticket` was sent back by `by`, and why.
+    pub fn record_send_back(&self, ticket: TicketId, by: &str, reason: equipe_protocol::tiers::SendBackReason) -> Result<()> {
+        self.conn.execute("INSERT INTO send_backs (ticket, at, by, reason) VALUES (?1, ?2, ?3, ?4)", params![ticket, now(), by, reason.code()])?;
+        Ok(())
+    }
+
+    /// How many times `ticket` was sent back for `reason`.
+    pub fn send_backs(&self, ticket: TicketId, reason: equipe_protocol::tiers::SendBackReason) -> Result<u32> {
+        self.conn.query_row("SELECT COUNT(*) FROM send_backs WHERE ticket = ?1 AND reason = ?2", params![ticket, reason.code()], |r| r.get(0))
+    }
+
+    /// Keep a model choice for `ticket`: `what` happened (`lane`: a lane
+    /// started on it; `escalated`; `person`), on whom, and the cheaper tier
+    /// the rules would have picked, never acted on.
+    pub fn record_model_choice(&self, ticket: TicketId, what: &str, member: Option<(&str, &str)>, m: &equipe_protocol::tiers::TicketModel) -> Result<()> {
+        let word = |v: serde_json::Result<serde_json::Value>| v.ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+        self.conn.execute(
+            "INSERT INTO model_choices (ticket, at, what, member, role, engine, tier, model, effort, by, reason, shadow)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                ticket,
+                now(),
+                what,
+                member.map(|(name, _)| name),
+                member.map(|(_, role)| role),
+                m.engine.map(engine_str),
+                m.tier.map(|t| t.code()),
+                m.model,
+                m.effort,
+                word(serde_json::to_value(m.by)),
+                word(serde_json::to_value(m.reason)),
+                m.shadow.map(|t| t.code()),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The model choices kept for `ticket`, oldest first: what happened, the
+    /// tier, by whom, and the cheaper tier recorded beside it.
+    pub fn model_choices(&self, ticket: TicketId) -> Result<Vec<ModelChoiceKept>> {
+        let mut stmt = self.conn.prepare("SELECT what, tier, by, shadow FROM model_choices WHERE ticket = ?1 ORDER BY at, rowid")?;
+        let rows = stmt.query_map([ticket], |r| Ok(ModelChoiceKept { what: r.get(0)?, tier: r.get(1)?, by: r.get(2)?, shadow: r.get(3)? }))?;
+        rows.collect()
+    }
+
+    /// Whether equipe picks each ticket's model: quality first unless the person said off.
+    pub fn model_choice(&self) -> equipe_protocol::tiers::ModelChoice {
+        self.meta("model_choice").and_then(|v| equipe_protocol::tiers::ModelChoice::parse(&v)).unwrap_or_default()
+    }
+
+    pub fn set_model_choice(&self, choice: equipe_protocol::tiers::ModelChoice) -> Result<()> {
+        self.set_meta("model_choice", choice.code())
+    }
+
     pub fn ticket(&self, id: TicketId) -> Result<Option<Ticket>> {
         Ok(self.query_tickets("WHERE id = ?1", params![id])?.into_iter().next())
     }
@@ -1297,7 +1417,7 @@ impl Journal {
     fn query_tickets(&self, filter: &str, args: impl rusqlite::Params) -> Result<Vec<Ticket>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree, merged, kind, off_main, updated_at,
-                    priority, rank, remaining, images, design_qa, plan
+                    priority, rank, remaining, images, design_qa, plan, model
              FROM tickets {filter} ORDER BY id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -1326,6 +1446,8 @@ impl Journal {
                 updated_at: r.get::<_, Option<i64>>(15)?.map(|at| at.max(0) as u64),
                 design_qa: r.get(20)?,
                 plan: r.get(21)?,
+                // Unreadable (a newer daemon's, or damaged): its member's own model, as before.
+                model: r.get::<_, Option<String>>(22)?.and_then(|m| serde_json::from_str(&m).ok()),
             };
             // A waiting ticket's asks are kept in its note; they travel as a list.
             t.asks = t.asks();
@@ -1434,8 +1556,8 @@ impl Journal {
     pub fn record_turn_use(&self, t: &crate::retro::Turn, used: Option<&TurnUse>) -> Result<()> {
         let n = |f: fn(&TurnUse) -> u64| used.map(|u| f(u) as i64);
         self.conn.execute(
-            "INSERT INTO turns (member, role, ticket, began, ended, outcome, tokens, engine, model, session, input, output, cache_write, cache_write_long, cache_read, calls)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            "INSERT INTO turns (member, role, ticket, began, ended, outcome, tokens, engine, model, session, input, output, cache_write, cache_write_long, cache_read, calls, effort)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 t.member,
                 t.role,
@@ -1452,11 +1574,20 @@ impl Journal {
                 n(|u| u.tokens.cache_write),
                 n(|u| u.cache_write_long),
                 n(|u| u.tokens.cache_read),
-                n(|u| u.calls)
+                n(|u| u.calls),
+                used.and_then(|u| u.effort.clone())
             ],
         )?;
         self.conn.execute("DELETE FROM turns WHERE ended < ?1", [now() - KEPT_FOR_RETROS])?;
         Ok(())
+    }
+
+    /// What each turn on `ticket` ran on, oldest first: its engine, the model
+    /// the engine named and the effort it ran at (`None`: the engine's own).
+    pub fn ticket_turns(&self, ticket: TicketId) -> Result<Vec<TurnRan>> {
+        let mut stmt = self.conn.prepare("SELECT engine, model, effort FROM turns WHERE ticket = ?1 ORDER BY ended, rowid")?;
+        let rows = stmt.query_map([ticket], |r| Ok(TurnRan { engine: r.get(0)?, model: r.get(1)?, effort: r.get(2)? }))?;
+        rows.collect()
     }
 
     /// The turns that ended at or after `since`, oldest first.
@@ -2288,7 +2419,7 @@ mod tests {
             execution: None,
             merged: None,
             off_main: None,
-            design_qa: None, plan: None,
+            design_qa: None, plan: None, model: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],
@@ -2394,10 +2525,51 @@ mod tests {
             .unwrap();
         assert_eq!(kept, ("claude".into(), "claude-opus-5-5".into(), "s-1".into(), 200, 1000, 300, 4));
         // The retro reads them as before.
-        assert_eq!(j.turns_since(now - 100).unwrap(), [turn]);
+        assert_eq!(j.turns_since(now - 100).unwrap(), std::slice::from_ref(&turn));
         // A sum alone: read from the cache.
         let summed = TurnUse::of(Engine::Codex, None, None, &crate::protocol::Usage { cache_tokens: Some(900), ..Default::default() });
         assert_eq!((summed.tokens.cache_read, summed.tokens.cache_write, summed.calls), (900, 0, 1));
+        // The effort it ran at is kept beside the model; the turn from before has none.
+        let thought = TurnUse { effort: Some("high".into()), ..used };
+        j.record_turn_use(&crate::retro::Turn { member: "backend".into(), ..turn }, Some(&thought)).unwrap();
+        let efforts: Vec<(String, Option<String>)> =
+            j.conn.prepare("SELECT member, effort FROM turns ORDER BY rowid").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
+        assert_eq!(efforts, [("frontend".into(), None), ("backend".into(), Some("high".into()))]);
+    }
+
+    #[test]
+    fn a_tickets_model_send_backs_and_choices_are_kept_and_old_tickets_read_as_before() {
+        use equipe_protocol::tiers::{ModelChoice, ModelTier, SendBackReason, TicketModel, TierBy, TierReason};
+        let home = temp_home();
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        let id = j.create_ticket(&ticket("Sign-in")).unwrap();
+        assert_eq!(j.ticket(id).unwrap().unwrap().model, None, "none chosen: the member's own model");
+        let m = TicketModel { tier: Some(ModelTier::Deep), by: TierBy::Escalation, reason: TierReason::Escalated, escalations: 1, model: Some("opus".into()), ..TicketModel::default() };
+        j.set_ticket_model(id, Some(&m)).unwrap();
+        // A copy read before the choice doesn't write it away.
+        let mut stale = j.ticket(id).unwrap().unwrap();
+        stale.model = None;
+        stale.title = "Sign-in, again".into();
+        j.save_ticket(&stale).unwrap();
+        assert_eq!(j.ticket(id).unwrap().unwrap().model, Some(m.clone()));
+        // Damaged or from a newer daemon: read as none.
+        j.conn.execute("UPDATE tickets SET model = 'not json' WHERE id = ?1", [id]).unwrap();
+        assert_eq!(j.ticket(id).unwrap().unwrap().model, None);
+        // Send-backs by reason.
+        assert_eq!(j.send_backs(id, SendBackReason::Correctness).unwrap(), 0);
+        j.record_send_back(id, "pm", SendBackReason::Correctness).unwrap();
+        j.record_send_back(id, "pm", SendBackReason::Style).unwrap();
+        j.record_send_back(id, "equipe", SendBackReason::Correctness).unwrap();
+        assert_eq!((j.send_backs(id, SendBackReason::Correctness).unwrap(), j.send_backs(id, SendBackReason::Style).unwrap()), (2, 1));
+        // Every choice, with the cheaper tier beside it.
+        j.record_model_choice(id, "lane", Some(("backend", "backend")), &TicketModel { tier: Some(ModelTier::Max), reason: TierReason::MemberFloor, shadow: Some(ModelTier::Strong), ..TicketModel::default() }).unwrap();
+        j.record_model_choice(id, "escalated", None, &m).unwrap();
+        let kept = |what: &str, tier: &str, by: &str, shadow: Option<&str>| ModelChoiceKept { what: what.into(), tier: Some(tier.into()), by: by.into(), shadow: shadow.map(str::to_owned) };
+        assert_eq!(j.model_choices(id).unwrap(), [kept("lane", "max", "rule", Some("strong")), kept("escalated", "deep", "escalation", None)]);
+        // The squad's say: quality first until set.
+        assert_eq!(j.model_choice(), ModelChoice::QualityFirst);
+        j.set_model_choice(ModelChoice::Off).unwrap();
+        assert_eq!(Journal::for_squad(&home, "acme").unwrap().model_choice(), ModelChoice::Off);
     }
 
     #[test]

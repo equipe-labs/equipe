@@ -51,6 +51,8 @@ pub enum Change {
     /// How many tickets run at once: by the plans' usage, or max at caps
     /// (each left out: as the squad has it).
     Parallel { mode: ParallelMode, per_member: Option<u32>, per_engine: Option<u32> },
+    /// Whether equipe picks each ticket's model and effort (`crate::tiers`).
+    ModelChoice(crate::protocol::tiers::ModelChoice),
     /// Which engine reviews the designer's work.
     DesignReviewer(Reviewer),
     /// Take a project off the squad (its folder stays).
@@ -89,6 +91,8 @@ impl Change {
             Change::EngineSwitching(mode) => *mode == Switching::Auto,
             // Max spends the plan faster than it would on its own: the person's.
             Change::Parallel { mode, .. } => *mode == ParallelMode::Max,
+            // Stronger models spend the plan faster: the person's. Off only narrows.
+            Change::ModelChoice(choice) => *choice == crate::protocol::tiers::ModelChoice::QualityFirst,
             // Always the other engine draws on its plan however low it runs:
             // the person's. Auto and the member's own only narrow it.
             Change::DesignReviewer(reviewer) => *reviewer == Reviewer::Other,
@@ -181,6 +185,9 @@ impl Change {
                 };
                 Change::Parallel { mode, per_member: cap("per_member", MOST_PER_MEMBER)?, per_engine: cap("per_engine", MOST_PER_ENGINE)? }
             }
+            "model_choice" => Change::ModelChoice(
+                crate::protocol::tiers::ModelChoice::parse(&value()?).ok_or("Model choice is quality (raise a ticket's model where it matters, never below its member's own) or off (members' own models).")?,
+            ),
             "design_reviewer" => Change::DesignReviewer(Reviewer::parse(&value()?).ok_or("The design reviewer is auto, same (the member's own engine, in a fresh session) or other (always the other engine).")?),
             "remove_project" => Change::RemoveProject(s("project").ok_or("Which project? Give `project`.")?),
             "hq" => Change::Hq(s("project").filter(|p| p != "none")),
@@ -290,7 +297,7 @@ pub fn tools() -> Vec<Value> {
             "description": "Read the squad's settings, as the person sees them on their screen: its projects and HQ, \
 how much members may do on their own (the squad's mode and each member's), each member's engine, model and effort, \
 whether you accept the team's work yourself, how long an empty board waits before you are woken, how many subagents \
-members run at once, engine switching, how many tickets run at once (parallel), \
+members run at once, engine switching, how many tickets run at once (parallel), whether equipe picks each ticket's model (model_choice), \
 who reviews the designer's work, routines, signals, and the \"always allow\" rules. Read it before you change one, and to answer what is set.",
             "inputSchema": { "type": "object", "properties": {} },
         }),
@@ -299,7 +306,7 @@ who reviews the designer's work, routines, signals, and the \"always allow\" rul
             "description": "Change one of the squad's settings, only when the person asked for that change. One that \
 only narrows what the squad does happens at once. One that widens it — a mode that lets members do more on their own, \
 raising how many subagents members run at once, \
-you accepting the team's work, engine switching on auto, parallel work on max, a signal on again, a merge, a move to another engine — is put \
+you accepting the team's work, engine switching on auto, parallel work on max, model choice on quality, a signal on again, a merge, a move to another engine — is put \
 to the person as an approval card saying exactly what changes; it happens only if they tap yes, and this call waits for \
 their answer. Never ask them to tell you yes instead. Settings: mode (value read_only | ask | auto | full, or default \
 with member), pm_accepts (on | off), idle_wake_hours (a number, 0 off), subagents_at_once (value 1 through 50), model (member, value: a model of the engine \
@@ -308,7 +315,8 @@ codex, optionally model and effort there, and when: next_ticket — the default:
 moves before its next — or now: at the end of each one's current turn, a ticket in progress handed over, same branch, and \
 carried on there; one not on a ticket, you included, moves once its turn ends either way, its conversation handed over), \
 engine_switching (off | suggest | auto), parallel (value auto — by the plans' usage — | max — fixed caps whatever the \
-usage, optionally per_member 1 through 12 and per_engine 1 through 32), design_reviewer (who reviews the designer's work: auto — the other engine when \
+usage, optionally per_member 1 through 12 and per_engine 1 through 32), model_choice (quality — raise a ticket's model and \
+effort where it matters, never below its member's own — | off — members' own models), design_reviewer (who reviews the designer's work: auto — the other engine when \
 it is signed in with room, else the member's own in a fresh session — | same | other), remove_project (project), \
 hq (project, or none), run_routine (id), delete_routine (id), signal (project, name, value on | off), disallow (value: \
 the rule as `settings` lists it), merge (ticket, push), keep_on_branch (ticket). Never set another engine's model \
@@ -317,7 +325,7 @@ through `model`: moving a member to it is `engine`. Adding a project is `add_pro
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "subagents_at_once", "model", "effort", "engine", "engine_switching", "parallel", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch"] },
+                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "subagents_at_once", "model", "effort", "engine", "engine_switching", "parallel", "model_choice", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch"] },
                     "value": { "type": "string", "description": "The new value, as the setting takes it." },
                     "member": { "type": "string", "description": "The member, for mode (left out: the squad's), model, effort and engine." },
                     "members": { "type": "array", "items": { "type": "string" }, "description": "engine: the members to move, on one card." },
@@ -364,6 +372,10 @@ mod tests {
         assert!(change(json!({ "setting": "design_reviewer", "value": "other" })).needs_yes(Mode::Auto), "always the other plan: the person's");
         assert!(change(json!({ "setting": "parallel", "value": "max" })).needs_yes(Mode::Auto), "the plan spent faster: the person's");
         assert!(change(json!({ "setting": "parallel", "value": "max", "per_member": 2 })).needs_yes(Mode::Auto));
+        assert!(change(json!({ "setting": "model_choice", "value": "quality" })).needs_yes(Mode::Auto), "stronger models spend the plan: the person's");
+        assert!(!change(json!({ "setting": "model_choice", "value": "off" })).needs_yes(Mode::Auto), "off only narrows");
+        assert_eq!(change(json!({ "setting": "model_choice", "value": "Off" })), Change::ModelChoice(crate::protocol::tiers::ModelChoice::Off));
+        assert!(Change::parse(&json!({ "setting": "model_choice", "value": "cheap" })).unwrap_err().contains("quality"));
         for args in [
             json!({ "setting": "parallel", "value": "auto" }),
             json!({ "setting": "idle_wake_hours", "value": "6" }),

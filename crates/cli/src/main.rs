@@ -1708,6 +1708,7 @@ impl App {
                 | Event::PmAcceptsChanged { .. }
                 | Event::SubagentsAtOnceChanged { .. }
                 | Event::ParallelChanged { .. }
+                | Event::ModelChoiceChanged { .. }
                 | Event::DesignReviewerChanged { .. }
                 | Event::RoleModelsChanged { .. }
                 | Event::Models { .. }

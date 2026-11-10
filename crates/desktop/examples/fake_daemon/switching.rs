@@ -90,6 +90,11 @@ pub fn switching() -> Switching {
     env("FAKE_SWITCHING").and_then(|v| Switching::parse(&v)).unwrap_or(Switching::Suggest)
 }
 
+/// The squad's model choice: `FAKE_MODEL_CHOICE=off`, else quality first.
+pub fn model_choice() -> equipe_core::protocol::tiers::ModelChoice {
+    env("FAKE_MODEL_CHOICE").and_then(|v| equipe_core::protocol::tiers::ModelChoice::parse(&v)).unwrap_or_default()
+}
+
 /// The squad's parallel work: `FAKE_PARALLEL=max` (max's default caps) or
 /// `max:<per member>:<per engine>`; else auto.
 pub fn parallel() -> equipe_core::protocol::lanes::Parallel {
@@ -242,6 +247,9 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
         }
         Command::SetDesignReviewer { reviewer, .. } => {
             let _ = events.send(Event::DesignReviewerChanged { squad: squad(), reviewer: *reviewer });
+        }
+        Command::SetModelChoice { choice, .. } => {
+            let _ = events.send(Event::ModelChoiceChanged { squad: squad(), choice: *choice });
         }
         Command::SetParallel { parallel, .. } => {
             let _ = events.send(Event::ParallelChanged { squad: squad(), parallel: parallel.clamped() });

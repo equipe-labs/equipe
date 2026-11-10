@@ -35,6 +35,7 @@ impl Runtime {
         );
         let reviewer = journal.design_reviewer();
         let parallel = journal.parallel();
+        let model_choice = journal.model_choice();
         let (routines, signals, allowed) = (journal.routines(), journal.signals(), journal.allowed().unwrap_or_default());
         let on = |b: bool| if b { "on" } else { "off" };
         let mut out = vec![format!("Squad {squad}.")];
@@ -67,6 +68,12 @@ impl Runtime {
             format!("Parallel work (parallel): max — up to {} tickets per member and {} per engine at once, whatever the plans' usage.", parallel.per_member, parallel.per_engine)
         } else {
             format!("Parallel work (parallel): auto — fewer tickets at once as a plan runs low (max's caps: {} per member, {} per engine).", parallel.per_member, parallel.per_engine)
+        });
+        out.push(match model_choice {
+            crate::protocol::tiers::ModelChoice::QualityFirst => {
+                "Model choice (model_choice): quality — each ticket's lane starts on a stronger model or more thinking where its work needs it, never below its member's own; work sent back twice for correctness goes up a step.".to_owned()
+            }
+            crate::protocol::tiers::ModelChoice::Off => "Model choice (model_choice): off — every ticket runs on its member's own model and effort.".to_owned(),
         });
         out.push(format!(
             "Who reviews the designer's work (design_reviewer): {}.",
@@ -209,6 +216,7 @@ impl Runtime {
             Change::Effort { member, effort } => Command::SetEffort { session: session(&member)?, effort },
             Change::EngineSwitching(mode) => Command::SetEngineSwitching { squad: squad_name, mode },
             Change::Parallel { .. } => Command::SetParallel { squad: squad_name, parallel: self.parallel_for(squad, change) },
+            Change::ModelChoice(choice) => Command::SetModelChoice { squad: squad_name, choice },
             Change::DesignReviewer(reviewer) => Command::SetDesignReviewer { squad: squad_name, reviewer },
             Change::RemoveProject(name) => Command::RemoveProject { squad: squad_name, path: project(&name)? },
             Change::Hq(name) => Command::SetHq { squad: squad_name, path: name.as_deref().map(project).transpose()? },
@@ -397,6 +405,8 @@ impl Runtime {
             }
             Change::Effort { member, effort } => say!(self, "control.effort", member = member, effort = effort.as_deref().unwrap_or("default")),
             Change::EngineSwitching(m) => say!(self, "control.engine_switching", mode = format!("{m:?}").to_lowercase()),
+            Change::ModelChoice(crate::protocol::tiers::ModelChoice::QualityFirst) => say!(self, "control.model_choice_quality"),
+            Change::ModelChoice(crate::protocol::tiers::ModelChoice::Off) => say!(self, "control.model_choice_off"),
             Change::Parallel { .. } => {
                 let parallel = self.parallel_for(squad, change);
                 if parallel.is_max() {

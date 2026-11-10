@@ -99,6 +99,14 @@ impl Shell {
         cx.notify();
     }
 
+    /// Whether equipe picks each ticket's model, from settings or `/model-choice`.
+    pub fn set_model_choice(&mut self, choice: equipe_core::protocol::tiers::ModelChoice, cx: &mut Context<Self>) {
+        self.model.model_choice = choice;
+        let squad = self.model.squad.clone();
+        self.send_command(equipe_core::protocol::Command::SetModelChoice { squad, choice });
+        cx.notify();
+    }
+
     /// "See the recommended setup again": the daemon proposes the setup again.
     pub fn show_engine_setup(&mut self, cx: &mut Context<Self>) {
         let squad = self.model.squad.clone();

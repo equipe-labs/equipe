@@ -648,7 +648,7 @@ mod tests {
         for (n, w) in [(144, changed), (150, copy)] {
             let ticket = equipe_protocol::Ticket {
                 id: 0, title: format!("T{n}"), body: String::new(), status: TicketStatus::Review, kind: TicketKind::Task, owner: Some("designer".into()), assignee: None,
-                project: None, depends_on: vec![], branch: None, worktree: None, execution: None, merged: None, off_main: None, design_qa: None, plan: None, created_by: "pm".into(), note: None,
+                project: None, depends_on: vec![], branch: None, worktree: None, execution: None, merged: None, off_main: None, design_qa: None, plan: None, model: None, created_by: "pm".into(), note: None,
                 asks: vec![], remaining: vec![], images: vec![], priority: Default::default(), rank: 0, updated_at: None,
             };
             let id = journal.create_ticket(&ticket).unwrap();
@@ -701,7 +701,7 @@ mod tests {
         let ticket = |status: TicketStatus, title: &str, w: PathBuf| {
             let t = equipe_protocol::Ticket {
                 id: 0, title: title.into(), body: String::new(), status, kind: TicketKind::Task, owner: Some("designer".into()), assignee: None,
-                project: None, depends_on: vec![], branch: None, worktree: None, execution: None, merged: None, off_main: None, design_qa: None, plan: None, created_by: "pm".into(), note: None,
+                project: None, depends_on: vec![], branch: None, worktree: None, execution: None, merged: None, off_main: None, design_qa: None, plan: None, model: None, created_by: "pm".into(), note: None,
                 asks: vec![], remaining: vec![], images: vec![], priority: Default::default(), rank: 0, updated_at: None,
             };
             let id = journal.create_ticket(&t).unwrap();

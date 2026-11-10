@@ -13,7 +13,7 @@ pub struct Spec {
     pub about: &'static str,
 }
 
-pub const COMMANDS: [Spec; 33] = [
+pub const COMMANDS: [Spec; 34] = [
     Spec { name: "usage", args: "", about: "commands.about_usage" },
     Spec { name: "scale", args: "[0-6|off]", about: "commands.about_scale" },
     Spec { name: "compact", args: "[member]", about: "commands.about_compact" },
@@ -43,6 +43,7 @@ pub const COMMANDS: [Spec; 33] = [
     Spec { name: "engine", args: "[member|all] <claude|codex>", about: "commands.about_engine" },
     Spec { name: "engines", args: "[auto|suggest|off|setup]", about: "commands.about_engines" },
     Spec { name: "parallel", args: "[auto|max [per member] [per engine]]", about: "commands.about_parallel" },
+    Spec { name: "model-choice", args: "[quality|off]", about: "commands.about_model_choice" },
     Spec { name: "export", args: "", about: "commands.about_export" },
     Spec { name: "mouse", args: "", about: "commands.about_mouse" },
     Spec { name: "help", args: "", about: "commands.about_help" },
@@ -310,6 +311,11 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
         .filter(|(w, _)| starts(w))
         .map(|(w, about)| word(w, about, ""))
         .collect(),
+        ("model-choice", 1) => [("quality", t!("model_choice.quality_about")), ("off", t!("model_choice.off_about"))]
+            .iter()
+            .filter(|(w, _)| starts(w))
+            .map(|(w, about)| word(w, about, ""))
+            .collect(),
         ("parallel", 1) => [("auto", t!("parallel.auto_about")), ("max", t!("parallel.max_about"))]
             .iter()
             .filter(|(w, _)| starts(w))

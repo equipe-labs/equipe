@@ -4,11 +4,13 @@
 //! the card over the composer — `y` makes the moves, `n` leaves things as they
 //! are; for moves equipe made on its own, `u` undoes them and `n` closes it.
 //! Only the person's key answers a card. Beside it, how many tickets the squad
-//! works at once (`/parallel auto|max [per member] [per engine]`).
+//! works at once (`/parallel auto|max [per member] [per engine]`), and whether
+//! equipe picks each ticket's model (`/model-choice quality|off`).
 
 use crossterm::event::KeyCode;
 use equipe_core::protocol::engines::{Move, Proposal, Switching, Why, Window};
 use equipe_core::protocol::lanes::{MOST_PER_ENGINE, MOST_PER_MEMBER, Parallel, ParallelMode};
+use equipe_core::protocol::tiers::ModelChoice;
 use equipe_core::protocol::{Command, Engine, EnginePlan, Event, PlanUsage, Snapshot};
 use equipe_core::t;
 
@@ -24,6 +26,8 @@ pub struct Engines {
     pub proposals: Vec<Proposal>,
     /// How many tickets the squad works at once.
     pub parallel: Parallel,
+    /// Whether equipe picks each ticket's model and effort.
+    pub model_choice: ModelChoice,
 }
 
 fn now() -> i64 {
@@ -46,7 +50,7 @@ impl Engines {
         {
             plans.push(EnginePlan { engine: Engine::Claude, usage, plan_type: None, at: now() });
         }
-        let mut engines = Engines { plans, mode: snapshot.engine_switching, proposals: snapshot.engine_proposals.clone(), parallel: snapshot.parallel };
+        let mut engines = Engines { plans, mode: snapshot.engine_switching, proposals: snapshot.engine_proposals.clone(), parallel: snapshot.parallel, model_choice: snapshot.model_choice };
         engines.plans.sort_by_key(|p| p.engine != Engine::Claude);
         engines
     }
@@ -91,6 +95,21 @@ pub fn parallel_about(parallel: &Parallel) -> String {
     match parallel.mode {
         ParallelMode::Auto => t!("parallel.auto_about").to_owned(),
         ParallelMode::Max => t!("parallel.max_about", per_member = parallel.per_member, per_engine = parallel.per_engine),
+    }
+}
+
+pub fn model_choice_word(choice: ModelChoice) -> &'static str {
+    match choice {
+        ModelChoice::QualityFirst => t!("model_choice.quality"),
+        ModelChoice::Off => t!("model_choice.off"),
+    }
+}
+
+/// What the squad's model choice does.
+pub fn model_choice_about(choice: ModelChoice) -> &'static str {
+    match choice {
+        ModelChoice::QualityFirst => t!("model_choice.quality_about"),
+        ModelChoice::Off => t!("model_choice.off_about"),
     }
 }
 
@@ -159,6 +178,7 @@ impl App {
             Event::EngineProposalClosed { id, .. } => self.engines.proposals.retain(|p| p.id != id),
             Event::EngineSwitchingChanged { mode, .. } => self.engines.mode = mode,
             Event::ParallelChanged { parallel, .. } => self.engines.parallel = parallel,
+            Event::ModelChoiceChanged { choice, .. } => self.engines.model_choice = choice,
             _ => {}
         }
     }
@@ -211,6 +231,23 @@ impl App {
         self.engines.parallel = parallel;
         self.flash = Some(t!("parallel.set", mode = parallel_word(parallel.mode), about = parallel_about(&parallel)));
         vec![Command::SetParallel { squad: self.squad.clone(), parallel }]
+    }
+
+    /// `/model-choice [quality|off]`.
+    pub(super) fn model_choice_command(&mut self, rest: &str) -> Vec<Command> {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            let now = self.engines.model_choice;
+            self.flash = Some(t!("model_choice.now", mode = model_choice_word(now), about = model_choice_about(now)));
+            return Vec::new();
+        }
+        let Some(choice) = ModelChoice::parse(rest) else {
+            self.flash = Some(t!("model_choice.usage").into());
+            return Vec::new();
+        };
+        self.engines.model_choice = choice;
+        self.flash = Some(t!("model_choice.set", mode = model_choice_word(choice), about = model_choice_about(choice)));
+        vec![Command::SetModelChoice { squad: self.squad.clone(), choice }]
     }
 
     /// `/engines [auto|suggest|off|setup]`.
@@ -283,6 +320,7 @@ mod tests {
         assert_eq!(engines.plans.iter().map(|p| p.engine).collect::<Vec<_>>(), [Engine::Claude, Engine::Codex], "Claude first");
         assert_eq!(engines.plan(Engine::Claude).unwrap().usage, PlanUsage::default());
         assert_eq!(engines.parallel, Parallel::default(), "no parallel work said: auto");
+        assert_eq!(engines.model_choice, ModelChoice::QualityFirst, "no model choice said: quality first");
     }
 
     #[test]

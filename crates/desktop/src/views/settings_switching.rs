@@ -3,11 +3,13 @@
 //! members when a plan runs low (off · suggest · auto), each plan as last read,
 //! and the recommended setup for both engines, again — and, beside it, which
 //! engine reviews the designer's work (auto · the member's own · the other),
-//! and how many tickets the squad works at once (auto · max, with max's caps).
+//! how many tickets the squad works at once (auto · max, with max's caps),
+//! and whether equipe picks each ticket's model (quality first · off).
 //! A child of `views/settings.rs`, drawn with its rows and controls.
 
 use equipe_core::protocol::engines::{Reviewer, Switching};
 use equipe_core::protocol::lanes::{MOST_PER_ENGINE, MOST_PER_MEMBER, Parallel, ParallelMode};
+use equipe_core::protocol::tiers::ModelChoice;
 use equipe_core::t;
 use gpui_kit::*;
 
@@ -45,7 +47,7 @@ pub(super) fn sections(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         }),
     );
     let lines = std::iter::once(choice).chain(plans).chain(std::iter::once(setup)).collect();
-    vec![Section::new(t!("engines.settings_section"), lines).foot(t!("engines.settings_foot")), parallel_section(shell, cx), reviewer_section(shell, cx)]
+    vec![Section::new(t!("engines.settings_section"), lines).foot(t!("engines.settings_foot")), parallel_section(shell, cx), model_choice_section(shell, cx), reviewer_section(shell, cx)]
 }
 
 /// The caps "Per member" offers: every one, as each makes a difference.
@@ -89,6 +91,21 @@ fn parallel_section(shell: &Shell, cx: &mut Context<Shell>) -> Section {
     Section::new("", lines).foot(t!("parallel.foot"))
 }
 
+/// "Model choice": quality first — a ticket's model raised where its work
+/// needs it, never below its member's own — or off, members' own models.
+fn model_choice_section(shell: &Shell, cx: &mut Context<Shell>) -> Section {
+    let p = shell.palette;
+    let connected = matches!(shell.model.conn, Conn::Connected { .. });
+    let now = shell.model.model_choice;
+    let options: Vec<(ModelChoice, String)> = ModelChoice::ALL.iter().map(|c| (*c, rules::model_choice_word(*c).to_owned())).collect();
+    let line = Line::new(t!("model_choice.row"), rules::model_choice_about(now)).words("model choice tier quality first off raise escalate opus sonnet effort").control(if connected {
+        segmented(shell, "model-choice", options, now, |shell, choice, _, cx| shell.set_model_choice(choice, cx), cx)
+    } else {
+        value(p, rules::model_choice_word(now))
+    });
+    Section::new("", vec![line]).foot(t!("model_choice.foot"))
+}
+
 /// The design reviewer's choice in the person's words: its name, and what it does.
 pub(crate) fn reviewer_words(reviewer: Reviewer) -> (&'static str, &'static str) {
     match reviewer {
@@ -113,7 +130,7 @@ fn reviewer_section(shell: &Shell, cx: &mut Context<Shell>) -> Section {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui_kit's glob brings its own `test` attribute, which `#[test]` would then mean.
-    use super::{PER_ENGINE_CHOICES, Parallel, Reviewer, parallel_rows, per_member_choices, reviewer_words};
+    use super::{ModelChoice, PER_ENGINE_CHOICES, Parallel, Reviewer, parallel_rows, per_member_choices, reviewer_words};
     use equipe_core::protocol::lanes::{MOST_PER_ENGINE, MOST_PER_MEMBER};
 
     #[test]
@@ -139,5 +156,15 @@ mod tests {
         assert_eq!(per_member_choices().first().zip(per_member_choices().last()), Some((&1, &MOST_PER_MEMBER)));
         assert!(PER_ENGINE_CHOICES.windows(2).all(|w| w[0] < w[1]) && PER_ENGINE_CHOICES.last() == Some(&MOST_PER_ENGINE));
         assert!(PER_ENGINE_CHOICES.contains(&equipe_core::protocol::lanes::MAX_PER_ENGINE) && per_member_choices().contains(&equipe_core::protocol::lanes::MAX_PER_MEMBER), "the defaults offered");
+    }
+
+    #[test]
+    fn model_choice_offers_quality_first_then_off_and_says_what_each_does() {
+        use crate::switching::{model_choice_about, model_choice_word};
+        // The tests' screens speak Korean.
+        assert_eq!(ModelChoice::ALL.map(model_choice_word), ["품질 우선", "끔"]);
+        assert_eq!(ModelChoice::ALL[0], ModelChoice::default(), "quality first, the default, first");
+        assert!(model_choice_about(ModelChoice::QualityFirst).contains("낮추지는 않아요"));
+        assert!(model_choice_about(ModelChoice::Off).contains("멤버 자신의 모델"));
     }
 }

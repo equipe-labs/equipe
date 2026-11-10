@@ -1800,7 +1800,7 @@ impl App {
                 self.engines.read(engine, usage);
                 return Vec::new();
             }
-            event @ (Event::EngineProposed { .. } | Event::EngineProposalClosed { .. } | Event::EngineSwitchingChanged { .. } | Event::ParallelChanged { .. }) => {
+            event @ (Event::EngineProposed { .. } | Event::EngineProposalClosed { .. } | Event::EngineSwitchingChanged { .. } | Event::ParallelChanged { .. } | Event::ModelChoiceChanged { .. }) => {
                 self.on_engines_event(event);
                 return Vec::new();
             }
@@ -2864,6 +2864,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             "mode" => self.set_mode(rest),
             "engines" => self.engines_command(rest),
             "parallel" => self.parallel_command(rest),
+            "model-choice" => self.model_choice_command(rest),
             "wake" => self.wake_command(rest),
             "lang" => self.set_lang(rest),
             "close" => match self.agents.get_mut(self.selected) {
@@ -3987,7 +3988,7 @@ mod tests {
             execution: None,
             merged: None,
             off_main: None,
-            design_qa: None, plan: None,
+            design_qa: None, plan: None, model: None,
             kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: None,
@@ -4203,6 +4204,24 @@ mod tests {
         assert!(run(&mut app, "/parallel").is_empty());
         app.on_event(Event::ParallelChanged { squad: "acme".into(), parallel: Parallel::max(3, 9) });
         assert_eq!(app.engines.parallel, Parallel::max(3, 9));
+    }
+
+    #[test]
+    fn model_choice_sets_quality_or_off_and_follows_the_daemon() {
+        use equipe_core::protocol::tiers::ModelChoice;
+        let (mut app, _, _) = team();
+        let run = |app: &mut App, text: &str| {
+            type_text(app, text);
+            enter(app)
+        };
+        assert_eq!(run(&mut app, "/model-choice off"), vec![Command::SetModelChoice { squad: "acme".into(), choice: ModelChoice::Off }]);
+        assert!(app.flash.as_deref().is_some_and(|f| f.contains("own model")), "{:?}", app.flash);
+        assert_eq!(run(&mut app, "/model-choice quality"), vec![Command::SetModelChoice { squad: "acme".into(), choice: ModelChoice::QualityFirst }]);
+        assert!(run(&mut app, "/model-choice cheap").is_empty(), "nothing sent");
+        assert!(app.flash.as_deref().is_some_and(|f| f.contains("/model-choice")));
+        assert!(run(&mut app, "/model-choice").is_empty());
+        app.on_event(Event::ModelChoiceChanged { squad: "acme".into(), choice: ModelChoice::Off });
+        assert_eq!(app.engines.model_choice, ModelChoice::Off);
     }
 
     // ── the team ──
