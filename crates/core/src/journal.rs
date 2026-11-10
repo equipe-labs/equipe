@@ -693,6 +693,15 @@ impl Journal {
         Ok(members)
     }
 
+    /// When the PM was last asked about the person's stale waits (unix seconds).
+    pub fn stale_waits_asked_at(&self) -> Option<u64> {
+        self.meta("stale_waits_asked_at").and_then(|at| at.parse().ok())
+    }
+
+    pub fn set_stale_waits_asked_at(&self, at: u64) -> Result<()> {
+        self.set_meta("stale_waits_asked_at", &at.to_string())
+    }
+
     fn meta(&self, key: &str) -> Option<String> {
         self.conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0)).optional().ok().flatten()
     }
@@ -2606,6 +2615,9 @@ mod tests {
         assert!(j.is_resting("designer") && j.is_resting("qa") && !j.is_resting("backend"));
         assert_eq!(j.set_resting("designer", false).unwrap(), ["qa"]);
         assert!(!Journal::for_squad(&home, "acme").unwrap().is_resting("designer"), "woken: kept too");
+        assert_eq!(j.stale_waits_asked_at(), None);
+        j.set_stale_waits_asked_at(1_000).unwrap();
+        assert_eq!(Journal::for_squad(&home, "acme").unwrap().stale_waits_asked_at(), Some(1_000));
     }
 
     #[test]

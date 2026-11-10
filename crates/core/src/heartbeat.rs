@@ -227,6 +227,75 @@ the person must decide in one card. If proposals already wait for them, don't ad
     )
 }
 
+/// A ticket waiting on the person past this long is stale: screens mark it,
+/// and the PM asks the person whether it is still needed.
+pub const STALE_WAIT_AFTER: u64 = 3 * 24 * 60 * 60;
+
+/// The PM asks about the person's stale waits at most this often, all of
+/// them in one message: cheap, and never a nag.
+pub const STALE_WAITS_EVERY: u64 = 24 * 60 * 60;
+
+/// At most this many stale waits are named in one message, the longest first.
+pub const STALE_WAITS_LISTED: usize = 20;
+
+/// A ticket left waiting on the person: its number, title, owner, how long
+/// it has waited (seconds), and what it asks of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleWait {
+    pub ticket: equipe_protocol::TicketId,
+    pub title: String,
+    pub owner: Option<String>,
+    pub waited: u64,
+    pub asks: Vec<String>,
+}
+
+/// Whether a ticket waiting on the person since `at` (unix seconds) is stale at `now`.
+pub fn is_stale_wait(at: u64, now: u64) -> bool {
+    at > 0 && now.saturating_sub(at) >= STALE_WAIT_AFTER
+}
+
+/// Tickets waiting on the person past [`STALE_WAIT_AFTER`], the longest first.
+pub fn stale_waits(tickets: &[Ticket], now: u64) -> Vec<StaleWait> {
+    let mut out: Vec<StaleWait> = tickets
+        .iter()
+        .filter(|t| t.status == TicketStatus::Waiting)
+        .filter_map(|t| t.updated_at.filter(|at| is_stale_wait(*at, now)).map(|at| (t, now.saturating_sub(at))))
+        .map(|(t, waited)| StaleWait { ticket: t.id, title: t.title.clone(), owner: t.assignee.clone().or_else(|| t.owner.clone()), waited, asks: t.asks() })
+        .collect();
+    out.sort_by_key(|w| (std::cmp::Reverse(w.waited), w.ticket));
+    out
+}
+
+/// Whether to ask the PM about the stale waits now: some wait, and it wasn't
+/// asked in [`STALE_WAITS_EVERY`].
+pub fn stale_waits_due(stale: usize, asked_at: Option<u64>, now: u64) -> bool {
+    stale > 0 && asked_at.is_none_or(|at| now.saturating_sub(at) >= STALE_WAITS_EVERY)
+}
+
+/// The one message the PM is handed about the person's stale waits.
+pub fn stale_waits_message(stale: &[StaleWait]) -> String {
+    let lines: Vec<String> = stale
+        .iter()
+        .take(STALE_WAITS_LISTED)
+        .map(|w| {
+            let who = w.owner.as_deref().map(|o| format!(", {o}'s")).unwrap_or_default();
+            let asks = if w.asks.is_empty() { String::new() } else { format!(": needs {}", w.asks.join("; ")) };
+            format!("- T-{} {} (waiting {}{who}){asks}", w.ticket, w.title, crate::accept::waited(w.waited))
+        })
+        .collect();
+    let more = stale.len().saturating_sub(STALE_WAITS_LISTED);
+    let more = if more > 0 { format!("\n…and {more} more, waiting less long.") } else { String::new() };
+    format!(
+        "[Stale waits · {}]\n\nThese tickets have waited on the person for more than {} days:\n{}{more}\n\nAsk the person, in one \
+short message, whether each is still needed or can be closed — the list in their language, longest waiting first, \
+nothing else. Cancel what they say is no longer needed; leave the rest waiting, and do what they answer for it. Don't \
+ask again about these today: you are reminded once a day while any waits this long.",
+        stale.len(),
+        STALE_WAIT_AFTER / (24 * 60 * 60),
+        lines.join("\n")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,6 +354,39 @@ mod tests {
         assert!(check(&args, &[], std::slice::from_ref(&waiting), 10).unwrap_err().contains("already waits"));
         let other = json!({ "title": "다른 것", "prompt": "x", "every": "daily", "hour": 9 });
         assert!(check(&other, &[kept], &[waiting], 2).unwrap_err().contains("up to 2"));
+    }
+
+    #[test]
+    fn waits_past_three_days_are_stale_and_the_pm_asks_about_them_all_at_once_once_a_day() {
+        let wait = |id, days: u64, owner: &str| Ticket {
+            id,
+            title: format!("Wait {id}"),
+            owner: Some(owner.into()),
+            note: Some("Waiting on you:\n- [ ] Create the store account".into()),
+            updated_at: Some(NOW - days * DAY),
+            ..ticket_with(TicketStatus::Waiting)
+        };
+        let fresh = wait(4, 1, "backend");
+        let in_review = Ticket { id: 5, updated_at: Some(NOW - 9 * DAY), ..ticket_with(TicketStatus::Review) };
+        let tickets = vec![wait(2, 4, "mobile"), fresh, wait(3, 9, "pm"), in_review];
+        let stale = stale_waits(&tickets, NOW);
+        assert_eq!(stale.iter().map(|w| w.ticket).collect::<Vec<_>>(), [3, 2], "past three days, the longest first; review isn't a wait on the person");
+        assert_eq!((stale[0].owner.as_deref(), stale[0].waited, stale[0].asks.as_slice()), (Some("pm"), 9 * DAY, ["Create the store account".to_owned()].as_slice()));
+        assert!(is_stale_wait(NOW - 3 * DAY, NOW) && !is_stale_wait(NOW - 3 * DAY + 60, NOW) && !is_stale_wait(0, NOW));
+        // Once a day at most, and only while some wait.
+        assert!(stale_waits_due(2, None, NOW));
+        assert!(!stale_waits_due(0, None, NOW), "nothing stale");
+        assert!(!stale_waits_due(2, Some(NOW - DAY + 60), NOW), "asked within the day");
+        assert!(stale_waits_due(2, Some(NOW - DAY), NOW));
+        // One message names them all.
+        let message = stale_waits_message(&stale);
+        assert!(message.starts_with("[Stale waits · 2]"), "{message}");
+        assert!(message.contains("- T-3 Wait 3 (waiting 9d, pm's): needs Create the store account"), "{message}");
+        assert!(message.contains("- T-2 Wait 2 (waiting 4d, mobile's)"), "{message}");
+        assert!(message.contains("still needed or can be closed") && message.contains("once a day"), "{message}");
+        let many: Vec<StaleWait> = (1..=25).map(|n| StaleWait { ticket: n, title: format!("W{n}"), owner: None, waited: 4 * DAY, asks: vec![] }).collect();
+        let message = stale_waits_message(&many);
+        assert!(message.contains("- T-20 W20") && !message.contains("- T-21 ") && message.contains("…and 5 more"), "{message}");
     }
 
     #[test]

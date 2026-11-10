@@ -91,6 +91,7 @@ don't ask them in words meanwhile."
         let squads: Vec<String> = self.journals.keys().cloned().collect();
         for squad in squads {
             self.remind_of_reviews(&squad).await;
+            self.ask_about_stale_waits(&squad).await;
             if !self.wake_if_idle(&squad).await {
                 self.ask_about_ideas(&squad).await;
             }
@@ -121,6 +122,26 @@ don't ask them in words meanwhile."
         }
         crate::daemon_log!("equipe: {squad}: {} handed-in tickets wait past {}h; the PM is reminded", due.len(), crate::accept::REVIEW_NUDGE_AFTER / 3600);
         self.hand_to_pm(squad, pm, crate::accept::stale_review_message(&due)).await;
+    }
+
+    /// Tickets left waiting on the person for days are brought up to the PM
+    /// — all of them in one message, at most once a day, as a routine is
+    /// handed to it — for it to ask the person whether each is still needed
+    /// or can be closed. A wait nobody answers shouldn't sit for weeks.
+    async fn ask_about_stale_waits(&mut self, squad: &str) {
+        let Some(asked_at) = self.journal(squad).map(Journal::stale_waits_asked_at) else { return };
+        let now = now_secs();
+        let stale = rules::stale_waits(&self.tickets(squad), now);
+        if !rules::stale_waits_due(stale.len(), asked_at, now) {
+            return;
+        }
+        let Some(pm) = self.pm_of(squad) else { return };
+        if let Some(Err(err)) = self.journal(squad).map(|j| j.set_stale_waits_asked_at(now)) {
+            crate::daemon_log!("equipe: {squad}: the stale waits' ask wasn't kept: {err}");
+            return;
+        }
+        crate::daemon_log!("equipe: {squad}: {} tickets wait on the person past {} days; the PM is asked to check them", stale.len(), rules::STALE_WAIT_AFTER / 86_400);
+        self.hand_to_pm(squad, pm, rules::stale_waits_message(&stale)).await;
     }
 
     /// The PM asked, at most every few days, whether one of the person's
