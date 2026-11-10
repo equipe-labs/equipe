@@ -85,20 +85,26 @@ state("conversation/chat/activity-large", "chat;zoom:150;say:torture 9;wait:2500
 state("conversation/chat/long", "chat;wait:800", {"FAKE_READING": "1"})
 state("conversation/chat/pictures", "chat;wait:800", {"FAKE_REPLY_IMAGES": "1"}, wait=2500)
 state("conversation/chat/ticket-cards", "chat;wait:800", {"FAKE_CARDS": "1"})
-state("conversation/chat/ticket-card-missing", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, at={1200: "hover:806,432;wait:1500", 760: "hover:323,429;wait:1500"}, label="A ticket card for a number not on the board: Not found")
-state("conversation/chat/ticket-card-missing-long", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, lang="de", at={1200: "hover:806,432;wait:1500", 760: "hover:323,429;wait:1500"}, label="A ticket card for a number not on the board, in German")
-state("conversation/chat/ticket-card-recovered", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42"}, at={1200: "hover:421,432;wait:1500", 760: "hover:318,404;wait:1500"}, label="A ticket card for a ticket the list missed: looked up, shown")
-state("conversation/chat/ticket-card-large", "chat;wait:800;zoom:in;zoom:in;wait:600;hover:398,535;wait:1500", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42"}, sizes=[(1200, 760)], label="Large text")
+state("conversation/chat/ticket-card-missing", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, at={1200: "hover:649,499;wait:1500", 760: "hover:553,428;wait:1500"}, label="A ticket card for a number not on the board: Not found")
+state("conversation/chat/ticket-card-missing-long", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, lang="de", at={1200: "hover:649,499;wait:1500", 760: "hover:553,428;wait:1500"}, label="A ticket card for a number not on the board, in German")
+state("conversation/chat/ticket-card-recovered", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42"}, at={1200: "hover:438,468;wait:1500", 760: "hover:341,397;wait:1500"}, label="A ticket card for a ticket the list missed: looked up, shown")
+state("conversation/chat/ticket-card-large", "chat;wait:800;zoom:in;zoom:in;wait:600;hover:425,510;wait:1500", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42"}, sizes=[(1200, 760)], label="Large text")
+# T-574: the card on a number in the person's own words, and on a ticket waiting for the person.
+state("conversation/chat/ticket-card-person", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, at={1200: "hover:837,358;wait:1500", 760: "hover:560,263;wait:1500"}, label="A ticket card on a number in the person's message")
+state("conversation/chat/ticket-card-waiting", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, at={1200: "hover:439,499;wait:1500", 760: "hover:343,428;wait:1500"}, label="A ticket card on a ticket waiting for the person")
 # At 150% the narrowest window has little room: the card keeps its gap and scrolls instead. One state each, as the lookup runs out in seconds.
 Z = "chat;wait:800;zoom:150;wait:600"
-state("conversation/chat/ticket-card-zoomed", Z, {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42"}, sizes=[(760, 600)], at={760: "hover:475,234;wait:1500"}, label="Zoomed to 150%, narrowest width: the card keeps its gap over the link")
-state("conversation/chat/ticket-card-zoomed-missing", Z, {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, sizes=[(760, 600)], at={760: "hover:485,346;wait:1500"}, label="Zoomed to 150%: Not found, with its mark")
+state("conversation/chat/ticket-card-zoomed", Z, {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42"}, sizes=[(760, 600)], at={760: "hover:512,151;wait:1500"}, label="Zoomed to 150%, narrowest width: the card keeps its gap over the link")
+state("conversation/chat/ticket-card-zoomed-missing", Z, {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, sizes=[(760, 600)], at={760: "hover:639,308;wait:1500"}, label="Zoomed to 150%: Not found, with its mark")
 # One width each: the lookup runs out in a few seconds, and a resize takes longer than that.
-state("conversation/chat/ticket-card-looking", "chat;wait:800;hover:421,432;wait:700", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42", "FAKE_NO_LOOKUP": "1"}, sizes=[(1200, 760)], wait=0, label="A ticket card the list missed, while the daemon is still asked")
-state("conversation/chat/ticket-card-looking-narrow", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42", "FAKE_NO_LOOKUP": "1"}, sizes=[(760, 600)], at={760: "hover:318,404;wait:700"}, wait=0, label="The same, at the narrowest width")
+state("conversation/chat/ticket-card-looking", "chat;wait:800;hover:438,468;wait:700", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42", "FAKE_NO_LOOKUP": "1"}, sizes=[(1200, 760)], wait=0, label="A ticket card the list missed, while the daemon is still asked")
+state("conversation/chat/ticket-card-looking-narrow", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42", "FAKE_NO_LOOKUP": "1"}, sizes=[(760, 600)], at={760: "hover:341,397;wait:700"}, wait=0, label="The same, at the narrowest width")
 state("conversation/chat/ask-list", "chat;wait:800", {"FAKE_ASKLIST": "1"})
 state("conversation/chat/diagram", "chat;say:torture 5;wait:5000", {"FAKE_SECONDS": "1"})
 state("conversation/chat/markdown", "chat;say:torture 1;wait:6000", {"FAKE_SECONDS": "1"})
+# T-621: a narrow bar gives way in order (the context, the place to its mark, then the place); ⋯ and the buttons stay.
+state("conversation/chat/large", "chat;zoom:150;wait:1200", label="150% text: the header gives way, ⋯ and the buttons stay")
+state("conversation/chat/large-project", "newtalk:web;wait:800;zoom:150;wait:1200", lang="de", label="150% text, a project's new conversation in German: only the title and ⋯ keep their room")
 state("conversation/chat/summarizing", "chat;wait:800", {"FAKE_COMPACT": "long"})
 state("conversation/chat/summarize-failed", "chat;wait:3000", {"FAKE_COMPACT": "fail", "FAKE_COMPACT_AFTER": "500"})
 state("conversation/engine-switch/default", "chat", {"FAKE_USAGE": "claude86", "FAKE_ASKS": "0"})
@@ -184,6 +190,7 @@ state("studio/designer/waiting", "studio:205", {"FAKE_STUDIO": "blocked"}, wait=
 
 # ── Daemon disconnected ────────────────────────────────────────────────────
 state("connection/daemon/offline", "wait:2500", kill_daemon_ms=4000)
+state("connection/daemon/offline-large", "chat;zoom:150;wait:2500", kill_daemon_ms=4000, lang="ko", kind="offline", label="Daemon gone at 150% text: one line, the retry whole")
 state("connection/daemon/offline-first", "", no_daemon=True, home_squad=True, cli="fails", kind="offline")
 state("connection/install/default", "", no_daemon=True, cli="none")
 state("connection/chooser/default", "chooser;wait:500")
@@ -221,7 +228,7 @@ SCREENS = {
     "inbox/team-change": ("A change to the team", ["views/team.rs", "team.rs"], None),
     "inbox/routine": ("A routine the PM proposes", ["views/routine.rs", "routine.rs"], None),
     "inbox/accept": ("Work to confirm", ["views/accept.rs", "accept.rs"], None),
-    "conversation/chat": ("PM conversation", ["views/chat.rs", "render/view.rs", "render/prose.rs", "render/raster.rs", "views/compact.rs", "views/asklist.rs", "convo.rs"], "Diagrams (```mermaid) are drawn by the app itself (render/raster.rs). HTML cards (```html card) are off until the T-340 security review: the app shows such a block as code, like the code blocks in the Markdown state, so no state of its own yet — add one when cards are turned on."),
+    "conversation/chat": ("PM conversation", ["views/chat.rs", "views/header.rs", "render/view.rs", "render/prose.rs", "render/raster.rs", "views/compact.rs", "views/asklist.rs", "convo.rs"], "Diagrams (```mermaid) are drawn by the app itself (render/raster.rs). HTML cards (```html card) are off until the T-340 security review: the app shows such a block as code, like the code blocks in the Markdown state, so no state of its own yet — add one when cards are turned on."),
     "conversation/engine-switch": ("Engine switching card (over the composer)", ["views/switching.rs", "switching.rs", "usage.rs"], "Error: Claude's week used up; Done: what equipe did in auto, with Undo."),
     "conversation/composer": ("Composer", ["views/composer.rs", "views/attached.rs", "attach.rs", "compose.rs"], None),
     "board/board": ("Board", ["views/tickets.rs", "views/ticket_card.rs", "views/sidebar.rs", "tickets.rs"], None),
