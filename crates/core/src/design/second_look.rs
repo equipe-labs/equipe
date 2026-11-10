@@ -75,7 +75,9 @@ const ANSWER: &str = "Answer with one JSON object and nothing after it:\n\
 (top bar, second card, the form at 360)\", \"what\": \"what to change\", \"why\": \"what it costs the person now\"}], \
 \"questions\": [{\"what\": \"the fact that is missing\", \"wording\": \"what the screen can say without it\"}]}\n\
 Say \"pass\" only when nothing needs fixing before a person sees it; polish you'd merely like is not a fix. Worst \
-fix first, at most eight, each tied to a region and, where it differs, a width. Write in the brief's language.";
+fix first, at most eight, each tied to a region and, where it differs, a width. Write it in English, whatever \
+language the brief, its criteria or the screen are in: the verdict is kept in the project's design folder, and \
+whoever passes it on to the person says it in their language.";
 
 /// The prompt: the reviewer's role, what it is given, and how to answer.
 pub fn prompt(ask: &Ask) -> String {
@@ -207,6 +209,8 @@ mod tests {
         assert!(!p.contains("first screenful of a new screen"));
         let first = prompt(&Ask { first: true, ..ask() });
         assert!(first.contains("first screenful of a new screen"));
+        // Kept with the screen's check in the design folder: in English, whatever the brief (a ticket's, say) is in.
+        assert!(p.contains("Write it in English, whatever language the brief, its criteria or the screen are in"));
     }
 
     #[test]

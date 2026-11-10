@@ -1,13 +1,13 @@
-# 문서 집중 보기 헤더
+# Document focus view header
 
-Question: 문서 집중 보기의 헤더는 어느 방향으로 확정할까요?
+Question: Which direction should the document focus view header take?
 
-Chose: B 복귀 우선
+Chose: B, return first
 
 Picture: `design/specs/document-focus/options-round3/option-b-1200-light.png`
 
-Passed over: A 현재 헤더 유지; C 모드 먼저
+Passed over: A, keep the current header; C, mode first
 
-Why: 별도 이유는 적지 않았습니다. 선택한 B는 왼쪽에 정확한 복귀 목적지, 오른쪽에 문서 도구, 다음 행에 긴 문서 정보를 두는 구조입니다.
+Why: No separate reason was written down. The chosen B puts the exact return destination on the left, document tools on the right, and the long document details on the next row.
 
 Ticket: T-617

@@ -107,7 +107,8 @@ states); the stock looks (cream page with a serif, Inter with an indigo gradient
 When a round before is given: is the revision better as a whole? A fix that loses the whole is worse than the flaw \
 it fixed — say so plainly.\n\
 \n\
-Answer in this shape, in the language of the brief:\n\
+Answer in English, whatever language the brief, the goal or the work is in — the critique is kept in the project's \
+design folder, and whoever passes it on to the person says it in their language — in this shape:\n\
 ## Whole\n\
 Two or three sentences on the impression, against the reference.\n\
 ## Findings\n\
@@ -235,6 +236,8 @@ mod tests {
         assert!(p.contains("A clinic marketing site's home"));
         let bare = prompt(&Ask { pictures: vec!["a.png".into()], ..Ask::default() });
         assert!(!bare.contains("reference it should stand beside") && !bare.contains("<brief>") && !bare.contains("round before this one"));
+        // Kept in the project's design folder: in English, whatever the brief or the goal is written in.
+        assert!(p.contains("Answer in English, whatever language the brief, the goal or the work is in") && p.contains("kept in the project's design folder"));
     }
 
     #[test]

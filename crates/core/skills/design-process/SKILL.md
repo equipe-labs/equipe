@@ -49,7 +49,7 @@ they passed over, their own words) and every piece of design work they send back
 seen on — `- <note> _(noticed on T-<n>, <date>, seen on T-<a> T-<b>)_` — and leave the person's lines as they are;
 they confirm it, correct it or remove it on the design screen. After each decision, record it in
 `design/decisions/<date>-<question>.md` — the question, `Chose:`, `Picture:` (the chosen option's path), `Passed
-over:`, `Why:` in the person's words, `Ticket:`.
+over:`, `Why:` the person's reason, true to their words, `Ticket:` — in the project's language, like every file in it.
 
 Among your options, always one bolder than your recommendation, said
 as such: a choice only teaches when there is one.

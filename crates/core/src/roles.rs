@@ -863,13 +863,13 @@ that overlap, drop what no longer holds.",
     let language = match ctx.language {
         Some(language) => format!(
             "The person writes in {language}: write everything meant for them in {language} — replies, ticket \
-titles and bodies, hand-in summaries, comments — whatever language this prompt is in."
+titles and bodies, hand-in summaries, comments — whatever language this prompt is in. {PROJECT_FILES}"
         ),
         None => match ctx.screen_language {
             Some(screen) => format!(
-                "Write for the person in the language they write in; until they have written, in {screen}, the language of their screen."
+                "Write for the person in the language they write in; until they have written, in {screen}, the language of their screen. {PROJECT_FILES}"
             ),
-            None => "Write for the person in the language they write in.".to_owned(),
+            None => format!("Write for the person in the language they write in. {PROJECT_FILES}"),
         },
     };
     // Where the guard is asked, it refuses a long foreground sleep, saying what to do instead.
@@ -914,6 +914,12 @@ pub const PRIVATE: &str = "A project's repository may be public: never put the p
 contacts, schedules, private plans, money, health, anything about them or their team that isn't the product's — into \
 its files, commits, branch names, or pull requests' titles and bodies; it belongs in the squad's own folder or its memory. \
 Product documents meant for the public — a README, a changelog, user docs — are fine.";
+
+/// Every member, every turn, beside the person's language: what goes into a
+/// project's files is in the project's language, not the conversation's.
+pub const PROJECT_FILES: &str = "Files you write into a project — its `design/` folder, specs, notes, docs, code \
+comments — are in the language its files are written in (English unless they plainly use another), whatever language \
+you speak with the person.";
 
 #[cfg(test)]
 mod tests {
@@ -1556,6 +1562,24 @@ mod tests {
     }
 
     #[test]
+    fn a_projects_files_stay_in_its_language_whatever_the_conversations() {
+        let team = [Teammate { name: "pm", role: PM }, Teammate { name: "designer", role: "designer" }];
+        for r in ROLES.iter().chain([&CUSTOM]) {
+            for context in [
+                Context { language: Some("Korean"), ..ctx(&team, &[], true) },
+                Context { screen_language: Some("Japanese"), ..ctx(&team, &[], true) },
+                ctx(&team, &[], true),
+            ] {
+                let text = charter(r, r.id, &context);
+                assert!(text.contains(PROJECT_FILES), "{}: {text}", r.id);
+            }
+        }
+        for part in ["its `design/` folder, specs, notes, docs, code comments", "English unless they plainly use another", "whatever language you speak with the person"] {
+            assert!(PROJECT_FILES.contains(part), "{part}");
+        }
+    }
+
+    #[test]
     fn the_persons_language_is_whichever_they_write_in_and_none_is_assumed() {
         let team = [Teammate { name: "pm", role: PM }, Teammate { name: "designer", role: "designer" }];
         let languages = ["English", "Spanish", "Portuguese", "Arabic", "Hindi", "Simplified Chinese", "Traditional Chinese", "German", "Japanese", "Korean"];
@@ -1727,7 +1751,7 @@ invent one."), "{id}: true numbers");
             assert!(text.contains(rule), "{rule}");
         }
         // Taste: notes read before any proposal and followed, a departure said, a pattern proposed, a decision recorded.
-        for rule in ["`design taste notes`", "`design/taste.md`", "before any proposal and follow them", "departs from one, say which and why", "propose a new note", "unconfirmed, naming the tickets", "outranks one still waiting for their yes", "follow the confirmed one", "`design/decisions/<date>-<question>.md`", "`Why:` in the person's words"] {
+        for rule in ["`design taste notes`", "`design/taste.md`", "before any proposal and follow them", "departs from one, say which and why", "propose a new note", "unconfirmed, naming the tickets", "outranks one still waiting for their yes", "follow the confirmed one", "`design/decisions/<date>-<question>.md`", "`Why:` the person's reason, true to their words", "in the project's language, like every file in it"] {
             assert!(text.contains(rule), "{rule}");
         }
         let bare = skill("designer", &ctx(&team, &[], true), "design-tools");

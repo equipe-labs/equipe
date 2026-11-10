@@ -35,7 +35,7 @@
   "verdict": {
     "pass": true,
     "fixes": [],
-    "summary": "760·1200px 모두 긴 파일명, 복귀 버튼과 Esc 안내, Markdown 본문과 Mermaid 도식이 잘리지 않고 읽혀요. 문서 제목을 중심으로 위계와 읽기 폭이 안정적이고, 따뜻한 중성색과 절제된 도구 모음이 집중 보기의 목적에 맞아요.",
+    "summary": "At both 760 and 1200px the long file name, the return button with its Esc hint, the Markdown body and the Mermaid diagram read without clipping. The hierarchy and reading width are steady around the document title, and the warm neutrals and restrained toolbar fit the purpose of focus view.",
     "at": 1794208447,
     "by": "codex",
     "widths": [
