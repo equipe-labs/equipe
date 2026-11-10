@@ -94,6 +94,8 @@ pub fn platform(engine: Engine) -> &'static Platform {
 /// With no word from the daemon this long after asking, it doesn't know the
 /// command: it's older than this app.
 pub const NO_ANSWER: Duration = Duration::from_secs(8);
+/// A sign-in that just finished is said on its card this long.
+pub const SIGNED_IN_SHOWN: Duration = Duration::from_secs(8);
 /// While the person signs Claude Code in in a terminal, the card looks again this often…
 pub const TERMINAL_POLL: Duration = Duration::from_secs(4);
 /// …for at most this long.
@@ -137,6 +139,59 @@ impl Card {
     pub fn under_way(&self) -> bool {
         matches!(self, Card::Starting { .. } | Card::Browser { .. } | Card::Code { .. } | Card::Paste { .. } | Card::Elsewhere)
     }
+
+    /// Nothing is on its way: a new sign-in or sign-out may start (a failure
+    /// still on the card is put away by it).
+    pub fn settled(&self) -> bool {
+        matches!(self, Card::Idle | Card::Failed { .. })
+    }
+}
+
+/// The main action at a card's top right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Head {
+    Install,
+    Installing,
+    /// Signed in: "Sign out" — pressable only when nothing else is on its way.
+    SignOut { enabled: bool },
+    /// Signed out: "Sign in", the platform's own way (Claude Code's page and
+    /// pasted code; Codex's browser or code).
+    SignIn { enabled: bool },
+    None,
+}
+
+/// What a card offers to manage its login.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Offers {
+    pub head: Head,
+    /// The account row (who as, on what plan) with "Use another account".
+    pub account: bool,
+    /// "Use another account" can be pressed.
+    pub switch: bool,
+}
+
+/// What a card offers, from where its engine stands. A sign-in or sign-out
+/// on its way only disables buttons, or hands the top right to its own row
+/// (the question, "Signing out…"): it never hides the account a signed-in
+/// engine has — so a re-login that ends, is cancelled, fails or is started
+/// twice always comes back to the same card.
+pub fn offers(status: Option<&EngineStatus>, card: &Card, installing: bool, connected: bool) -> Offers {
+    let none = Offers { head: Head::None, account: false, switch: false };
+    let Some(status) = status else { return none };
+    let free = connected && card.settled();
+    match status.state {
+        EngineState::NotInstalled if card != &Card::Idle => none,
+        EngineState::NotInstalled if installing => Offers { head: Head::Installing, ..none },
+        EngineState::NotInstalled => Offers { head: Head::Install, ..none },
+        EngineState::SignedIn => {
+            // The question and "Signing out…" carry the sign-out on their own row.
+            let head = if matches!(card, Card::ConfirmSignOut | Card::SigningOut) { Head::None } else { Head::SignOut { enabled: free } };
+            Offers { head, account: true, switch: free }
+        }
+        // A sign-in on its way or failed has its own row, with Cancel or Retry.
+        EngineState::SignedOut | EngineState::Unknown if card == &Card::Idle => Offers { head: Head::SignIn { enabled: connected }, ..none },
+        EngineState::SignedOut | EngineState::Unknown => none,
+    }
 }
 
 /// What an event asks of the window besides drawing.
@@ -147,6 +202,8 @@ pub struct Effect {
     pub open: Option<String>,
     /// Installed as this screen asked: its sign-in starts at once.
     pub sign_in: Option<Engine>,
+    /// Draw again this much later (a note that goes).
+    pub later: Option<Duration>,
 }
 
 #[derive(Debug, Default)]
@@ -186,6 +243,8 @@ pub struct Engines {
     pub auth: HashMap<Engine, Auth>,
     /// Engines this screen asked to look at since it attached.
     auth_asked: std::collections::HashSet<Engine>,
+    /// When a sign-in followed on a card finished, said there a moment.
+    signed_in_at: HashMap<Engine, Instant>,
 }
 
 /// Why an engine can't serve its members, as the daemon said ([`Event::EngineAuth`]).
@@ -235,6 +294,11 @@ impl Engines {
         self.providers.iter().flatten().find(|p| p.id == id)
     }
 
+    /// A sign-in followed on its card finished a moment ago: the card says so.
+    pub fn signed_in_lately(&self, engine: Engine, now: Instant) -> bool {
+        self.card(engine) == &Card::Idle && self.signed_in_at.get(&engine).is_some_and(|at| now.duration_since(*at) < SIGNED_IN_SHOWN)
+    }
+
     /// The daemon never said: the page explains rather than waiting on.
     pub fn no_answer(&self, now: Instant) -> bool {
         self.statuses.is_none() && self.asked.is_some_and(|at| now.duration_since(at) >= NO_ANSWER)
@@ -243,9 +307,10 @@ impl Engines {
     /// "Sign in": the daemon runs the tool's sign-in; `remote` (the daemon is on
     /// another Mac, the browser here) asks for a code instead of its browser.
     pub fn sign_in(&mut self, engine: Engine, remote: bool, now: Instant) -> Vec<Command> {
-        if self.card(engine).under_way() || platform(engine).signs_in != SignsIn::FromApp {
+        if self.card(engine).under_way() || self.card(engine) == &Card::SigningOut || platform(engine).signs_in != SignsIn::FromApp {
             return vec![];
         }
+        self.signed_in_at.remove(&engine);
         self.set(engine, Card::Starting { since: now });
         vec![Command::SignIn { engine, device: remote }]
     }
@@ -253,9 +318,11 @@ impl Engines {
     /// From a conversation's card: the daemon runs the tool's own sign-in —
     /// Claude Code's too, whose page and pasted code work from any Mac.
     pub fn sign_in_again(&mut self, engine: Engine, remote: bool, now: Instant) -> Vec<Command> {
-        if self.card(engine).under_way() {
+        // Not over a sign-in on its way, nor over a sign-out under way.
+        if self.card(engine).under_way() || self.card(engine) == &Card::SigningOut {
             return vec![];
         }
+        self.signed_in_at.remove(&engine);
         if remote {
             self.asked_remote.insert(engine);
         } else {
@@ -329,8 +396,9 @@ impl Engines {
 
     /// "Sign out" asks first; "Keep" puts it back.
     pub fn ask_sign_out(&mut self, engine: Engine) {
-        // Not over a sign-in on its way, a failure still to read, or a sign-out under way.
-        if self.card(engine) == &Card::Idle {
+        // Not over a sign-in on its way or a sign-out under way; a failure is put away.
+        if self.card(engine).settled() {
+            self.signed_in_at.remove(&engine);
             self.set(engine, Card::ConfirmSignOut);
         }
     }
@@ -440,7 +508,16 @@ impl Engines {
                         }
                         self.set(engine, Card::Paste { url: url.clone() });
                     }
-                    SignInStep::Done | SignInStep::Cancelled => self.set(engine, Card::Idle),
+                    SignInStep::Done => {
+                        // Followed here: said on the card a moment, then the card as it is.
+                        let followed = self.card(engine).under_way();
+                        self.set(engine, Card::Idle);
+                        if followed {
+                            self.signed_in_at.insert(engine, Instant::now());
+                            return Effect { changed: true, later: Some(SIGNED_IN_SHOWN), ..Effect::default() };
+                        }
+                    }
+                    SignInStep::Cancelled => self.set(engine, Card::Idle),
                     SignInStep::Failed { why, detail } => {
                         // Another screen's no about an engine nobody here is signing in.
                         if self.card(engine) == &Card::Idle {
@@ -733,14 +810,127 @@ mod tests {
         e.sign_in_again(claude, true, now);
         e.on_event(&Event::SignIn { engine: claude, step: SignInStep::Failed { why: SignInFailure::Unsupported, detail: String::new() } });
         assert!(matches!(e.card(claude), Card::Failed { .. }));
-        e.ask_sign_out(claude);
-        assert!(matches!(e.card(claude), Card::Failed { .. }), "the failure stays until read");
         e.keep(claude);
         assert_eq!(e.card(claude), &Card::Idle);
+        // "Sign out" over a failure still on the card puts it away and asks.
+        e.sign_in_again(claude, false, now);
+        e.on_event(&Event::SignIn { engine: claude, step: SignInStep::Failed { why: SignInFailure::Failed, detail: String::new() } });
+        e.ask_sign_out(claude);
+        assert_eq!(e.card(claude), &Card::ConfirmSignOut);
+        assert_eq!(e.sign_in_again(claude, false, now).len(), 1, "or a sign-in, from a conversation’s card, instead");
+        e.cancel(claude);
         // Another Mac's daemon losing the window is a failure to read, not a sign-out.
         e.ask_sign_out(claude);
         e.disconnected();
         assert!(!matches!(e.card(claude), Card::SigningOut));
+    }
+
+    /// Claude Code's card as the daemon says it: signed in on Max as `me@example.com`.
+    fn claude_signed_in(account: &str) -> EngineStatus {
+        EngineStatus { plan: Some("max".into()), account: Some(account.into()), ..status(Engine::Claude, EngineState::SignedIn) }
+    }
+
+    /// The card's offers right now, connected.
+    fn offered(e: &Engines, engine: Engine) -> Offers {
+        offers(e.status(engine), e.card(engine), false, true)
+    }
+
+    const SIGNED_IN: Offers = Offers { head: Head::SignOut { enabled: true }, account: true, switch: true };
+    /// A sign-in on its way over a signed-in engine: the account stays, its buttons wait.
+    const BUSY: Offers = Offers { head: Head::SignOut { enabled: false }, account: true, switch: false };
+
+    /// The design QA's blockers (T-660): Sign out, the account row and "Use
+    /// another account" went missing after a re-login, a cancel, a double
+    /// click, from another Mac and beside a signed-in Codex. They follow from
+    /// the engine being signed in, whatever the sign-in on the card did.
+    #[test]
+    fn a_signed_in_claude_code_card_keeps_its_session_actions_through_every_re_login() {
+        let claude = Engine::Claude;
+        let now = Instant::now();
+        let mut e = Engines::default();
+        e.on_event(&Event::Engines { engines: vec![claude_signed_in("me@example.com"), status(Engine::Codex, EngineState::SignedOut)] });
+        assert_eq!(offered(&e, claude), SIGNED_IN);
+
+        // "Use another account" twice: one sign-in; the account row stays, its buttons wait.
+        assert_eq!(e.sign_in_again(claude, false, now).len(), 1);
+        assert!(e.sign_in_again(claude, false, now).is_empty(), "a double click starts nothing twice");
+        assert_eq!(offered(&e, claude), BUSY);
+        e.on_event(&Event::SignIn { engine: claude, step: SignInStep::Browser { url: None } });
+        e.on_event(&Event::SignIn { engine: claude, step: SignInStep::Paste { url: "https://claude.com/cai/oauth/authorize".into() } });
+        assert_eq!(offered(&e, claude), BUSY);
+        assert_eq!(e.paste(claude, " abc#def "), vec![Command::SignInCode { engine: claude, code: "abc#def".into() }]);
+
+        // Completed: said a moment, the other account's email shows, and every action is back.
+        let done = e.on_event(&Event::SignIn { engine: claude, step: SignInStep::Done });
+        assert_eq!(done.later, Some(SIGNED_IN_SHOWN), "drawn again when the note goes");
+        e.on_event(&Event::Engines { engines: vec![claude_signed_in("other@example.com"), status(Engine::Codex, EngineState::SignedOut)] });
+        assert_eq!(offered(&e, claude), SIGNED_IN);
+        assert!(e.signed_in_lately(claude, Instant::now()));
+        assert!(!e.signed_in_lately(claude, Instant::now() + SIGNED_IN_SHOWN), "and only a moment");
+        assert_eq!(e.status(claude).and_then(|s| s.account.as_deref()), Some("other@example.com"));
+
+        // Cancelled: back as it was, the daemon told.
+        e.sign_in_again(claude, false, now);
+        assert!(!e.signed_in_lately(claude, Instant::now()), "a new sign-in puts the note away");
+        assert_eq!(e.cancel(claude), vec![Command::SignInCancel { engine: claude }]);
+        e.on_event(&Event::SignIn { engine: claude, step: SignInStep::Cancelled });
+        assert_eq!(offered(&e, claude), SIGNED_IN);
+        assert!(!e.signed_in_lately(claude, Instant::now()), "a cancel isn't a sign-in");
+
+        // Refused: the failure's row explains; Sign out and another try stay at hand.
+        e.sign_in_again(claude, false, now);
+        e.on_event(&Event::SignIn { engine: claude, step: SignInStep::Failed { why: SignInFailure::Failed, detail: "Request failed with status code 400".into() } });
+        assert!(matches!(e.card(claude), Card::Failed { .. }));
+        assert_eq!(offered(&e, claude), SIGNED_IN);
+        e.keep(claude);
+
+        // From another Mac: the code's page opens here; the account row stays.
+        e.sign_in_again(claude, true, now);
+        let page = e.on_event(&Event::SignIn { engine: claude, step: SignInStep::Paste { url: "https://claude.com/cai/oauth/authorize".into() } });
+        assert_eq!(page.open.as_deref(), Some("https://claude.com/cai/oauth/authorize"));
+        assert_eq!(offered(&e, claude), BUSY);
+        e.cancel(claude);
+
+        // Codex signed in too, and signing in again beside it: each card keeps its own.
+        let codex = EngineStatus { plan: Some("plus".into()), account: Some("abel@example.com".into()), ..status(Engine::Codex, EngineState::SignedIn) };
+        e.on_event(&Event::Engines { engines: vec![claude_signed_in("other@example.com"), codex.clone()] });
+        assert_eq!(offered(&e, claude), SIGNED_IN);
+        assert_eq!(offered(&e, Engine::Codex), SIGNED_IN);
+        e.sign_in(Engine::Codex, false, now);
+        assert_eq!(offered(&e, claude), SIGNED_IN, "Codex's sign-in leaves Claude Code's card alone");
+        assert_eq!(offered(&e, Engine::Codex), BUSY);
+        e.on_event(&Event::SignIn { engine: Engine::Codex, step: SignInStep::Done });
+        e.on_event(&Event::Engines { engines: vec![claude_signed_in("other@example.com"), codex] });
+        assert_eq!(offered(&e, Engine::Codex), SIGNED_IN);
+
+        // The window lost the daemon: all still shown, none pressable.
+        assert_eq!(offers(e.status(claude), e.card(claude), false, false), BUSY);
+    }
+
+    #[test]
+    fn the_sign_out_question_and_a_signed_out_card_offer_the_way_back() {
+        let claude = Engine::Claude;
+        let mut e = Engines::default();
+        assert_eq!(offered(&e, claude), Offers { head: Head::None, account: false, switch: false }, "nothing before the daemon says");
+        e.on_event(&Event::Engines { engines: vec![claude_signed_in("me@example.com")] });
+        // The question carries "Sign out" on its own row; the account it removes stays named.
+        e.ask_sign_out(claude);
+        assert_eq!(offered(&e, claude), Offers { head: Head::None, account: true, switch: false });
+        e.keep(claude);
+        assert_eq!(offered(&e, claude), SIGNED_IN);
+        e.ask_sign_out(claude);
+        e.sign_out(claude);
+        assert_eq!(offered(&e, claude), Offers { head: Head::None, account: true, switch: false }, "signing out");
+        // Signed out: "Sign in" in the same place, no account row.
+        e.on_event(&Event::Engines { engines: vec![status(claude, EngineState::SignedOut)] });
+        assert_eq!(offered(&e, claude), Offers { head: Head::SignIn { enabled: true }, account: false, switch: false });
+        // Its sign-in on its way or failed: that row's Cancel or Retry, not a second "Sign in".
+        e.sign_in_again(claude, false, Instant::now());
+        assert_eq!(offered(&e, claude).head, Head::None);
+        // Not installed: Install, or that it is installing.
+        let missing = status(claude, EngineState::NotInstalled);
+        assert_eq!(offers(Some(&missing), &Card::Idle, false, true).head, Head::Install);
+        assert_eq!(offers(Some(&missing), &Card::Idle, true, true).head, Head::Installing);
     }
 
     #[test]

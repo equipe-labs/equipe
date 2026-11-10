@@ -1320,6 +1320,8 @@
   "engines.sign_out": "Se déconnecter",
   "engines.signed_in": "Connecté",
   "engines.signed_in_plan": "Connecté · {plan}",
+  "engines.signed_in_now": "Connecté",
+  "engines.signed_in_now_desc": "Les membres travaillent désormais avec cette connexion.",
   "engines.signed_out": "Non connecté",
   "engines.signing_out": "Déconnexion…",
   "engines.span_days.one": "{count} jour",

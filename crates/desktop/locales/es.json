@@ -1320,6 +1320,8 @@
   "engines.sign_out": "Cerrar sesión",
   "engines.signed_in": "Sesión iniciada",
   "engines.signed_in_plan": "Sesión iniciada · {plan}",
+  "engines.signed_in_now": "Sesión iniciada",
+  "engines.signed_in_now_desc": "A partir de ahora, los miembros trabajan con este acceso.",
   "engines.signed_out": "Sin sesión",
   "engines.signing_out": "Cerrando sesión…",
   "engines.span_days.one": "{count} día",

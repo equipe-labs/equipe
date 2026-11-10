@@ -1282,6 +1282,8 @@
   "engines.sign_out": "退出登录",
   "engines.signed_in": "已登录",
   "engines.signed_in_plan": "已登录 · {plan}",
+  "engines.signed_in_now": "已登录",
+  "engines.signed_in_now_desc": "从现在起，成员将使用此登录工作。",
   "engines.signed_out": "未登录",
   "engines.signing_out": "正在退出登录…",
   "engines.span_days.other": "{count} 天",

@@ -122,7 +122,9 @@ pub async fn claude(binary: &str) -> EngineStatus {
         Ok(None) => EngineStatus::new(Engine::Claude, EngineState::NotInstalled),
         Ok(Some(status)) if status.logged_in => {
             let plan = if status.uses_subscription() { status.subscription_type.clone() } else { None };
-            EngineStatus { plan, per_token: !status.uses_subscription(), ..EngineStatus::new(Engine::Claude, EngineState::SignedIn) }
+            // Who as: the email Claude Code prints about itself — never anything it keeps.
+            let account = status.email.clone().filter(|e| !e.trim().is_empty());
+            EngineStatus { plan, account, per_token: !status.uses_subscription(), ..EngineStatus::new(Engine::Claude, EngineState::SignedIn) }
         }
         Ok(Some(_)) => EngineStatus::new(Engine::Claude, EngineState::SignedOut),
         Err(err) => EngineStatus { detail: Some(err.to_string()), ..EngineStatus::new(Engine::Claude, EngineState::Unknown) },

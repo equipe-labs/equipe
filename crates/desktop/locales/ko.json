@@ -1282,6 +1282,8 @@
   "engines.sign_out": "로그아웃",
   "engines.signed_in": "로그인됨",
   "engines.signed_in_plan": "로그인됨 · {plan}",
+  "engines.signed_in_now": "로그인했어요",
+  "engines.signed_in_now_desc": "이제부터 멤버가 이 로그인으로 일해요.",
   "engines.signed_out": "로그인 필요",
   "engines.signing_out": "로그아웃하는 중…",
   "engines.span_days.other": "{count}일",

@@ -848,9 +848,15 @@
             },
             {
               "id": "success",
-              "label": "Claude Code signed in again",
+              "label": "Claude Code signed in as another account: said a moment, its email shown",
               "kind": "success",
-              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=healthy; script `settings:engines;eng:signout:claude;eng:sure:claude;wait:1500;eng:switch:claude;wait:900;signin:paste:abc#def;wait:1500`"
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=healthy; script `settings:engines;eng:switch:claude;wait:900;signin:paste:abc#def;wait:1200`"
+            },
+            {
+              "id": "cancelled",
+              "label": "Claude Code: another account's sign-in cancelled, the card as before",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=healthy; script `settings:engines;eng:switch:claude;wait:900;eng:cancel:claude;wait:800`"
             },
             {
               "id": "long",

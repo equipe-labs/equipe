@@ -39,6 +39,9 @@ pub struct AuthStatus {
     /// e.g. `pro` or `max`.
     #[serde(default)]
     pub subscription_type: Option<String>,
+    /// The account's email, as Claude Code prints it about itself.
+    #[serde(default)]
+    pub email: Option<String>,
 }
 
 impl AuthStatus {
@@ -78,6 +81,7 @@ pub async fn auth_status(binary: &str) -> Result<Option<AuthStatus>> {
             auth_method: None,
             api_provider: None,
             subscription_type: None,
+            email: None,
         }));
     }
     parse_auth_status(&stdout).map(Some)
@@ -1170,7 +1174,7 @@ mod tests {
     // ── auth status ──
 
     #[test]
-    fn parses_a_subscription_login_and_ignores_identifying_fields() {
+    fn parses_a_subscription_login_with_its_email_and_ignores_the_rest() {
         let status = parse_auth_status(
             r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty",
                 "email":"someone@example.com","orgId":"o","subscriptionType":"max"}"#,
@@ -1178,6 +1182,8 @@ mod tests {
         .unwrap();
         assert!(status.uses_subscription());
         assert_eq!(status.subscription_type.as_deref(), Some("max"));
+        // The account's email shows on its card, as Codex's does; the organisation isn't kept.
+        assert_eq!(status.email.as_deref(), Some("someone@example.com"));
     }
 
     #[test]

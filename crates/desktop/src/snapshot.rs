@@ -1049,9 +1049,9 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                     let (act, which) = arg.split_once(':').unwrap_or((arg.as_str(), "codex"));
                     let engine = if which == "claude" { equipe_core::protocol::Engine::Claude } else { equipe_core::protocol::Engine::Codex };
                     match act {
-                        "signin" => shell.engine_sign_in(engine, cx),
+                        "signin" => shell.engine_sign_in_any(engine, window, cx),
                         // "Use another account": Claude Code's own sign-in, its page and a box for the code.
-                        "switch" => shell.signin_start(engine, window, cx),
+                        "switch" => shell.engine_sign_in_any(engine, window, cx),
                         "cancel" => shell.engine_cancel(engine, cx),
                         "signout" => shell.engines.ask_sign_out(engine),
                         "sure" => shell.engine_sign_out(engine, cx),

@@ -1320,6 +1320,8 @@
   "engines.sign_out": "Abmelden",
   "engines.signed_in": "Angemeldet",
   "engines.signed_in_plan": "Angemeldet · {plan}",
+  "engines.signed_in_now": "Angemeldet",
+  "engines.signed_in_now_desc": "Die Mitglieder arbeiten ab jetzt mit dieser Anmeldung.",
   "engines.signed_out": "Nicht angemeldet",
   "engines.signing_out": "Abmeldung…",
   "engines.span_days.one": "{count} Tag",

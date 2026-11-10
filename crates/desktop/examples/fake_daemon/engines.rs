@@ -8,7 +8,9 @@
 //! fails: with a code, as an account with device codes turned off.
 //! `missing` — neither `claude` nor `codex` is installed. `claude_out` —
 //! Claude Code signed out, Codex signed in. `legacy` — Codex's own CLI
-//! signed out, equipe's older login kept beside it.
+//! signed out, equipe's older login kept beside it. Claude Code signs out
+//! from its card and in again with its page and a pasted code (refused with
+//! `failed`), then shows another account's email.
 //!
 //! The model providers (`FAKE_PROVIDERS`): (unset) Nebius and OpenRouter
 //! connected with their models, a local Ollama that isn't running; `none` —
@@ -24,13 +26,25 @@ fn mode() -> String {
     std::env::var("FAKE_ENGINES").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "signed_out".into())
 }
 
-/// Codex's state, as signing in and out moves it.
 /// Claude Code signed out from its card, until it signs in again.
 fn claude_out() -> &'static std::sync::atomic::AtomicBool {
     static OUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     &OUT
 }
 
+/// Claude Code signed in again from its card: another account's email shows.
+fn claude_again() -> &'static std::sync::atomic::AtomicBool {
+    static AGAIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    &AGAIN
+}
+
+/// Claude Code's sign-in on its way, stopped by Cancel.
+fn claude_signing_in() -> &'static std::sync::Mutex<Option<tokio::task::JoinHandle<()>>> {
+    static TASK: std::sync::OnceLock<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>> = std::sync::OnceLock::new();
+    TASK.get_or_init(Default::default)
+}
+
+/// Codex's state, as signing in and out moves it.
 fn codex() -> &'static std::sync::Mutex<EngineState> {
     static CODEX: std::sync::OnceLock<std::sync::Mutex<EngineState>> = std::sync::OnceLock::new();
     CODEX.get_or_init(|| {
@@ -95,6 +109,8 @@ fn statuses() -> Vec<EngineStatus> {
         "claude_out" => claude.state = EngineState::SignedOut,
         _ => {
             claude.plan = Some("max".into());
+            let again = claude_again().load(std::sync::atomic::Ordering::Relaxed);
+            claude.account = Some(if again { "other@example.com" } else { "me@example.com" }.into());
             claude.members = vec![member("pm"), member("designer"), member("frontend")];
         }
     }
@@ -125,12 +141,24 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
         // Claude Code's own: its page, then the code pasted back (`failed`: refused).
         Command::SignIn { engine: Engine::Claude, .. } => {
             let events = events.clone();
-            tokio::spawn(async move {
+            let task = tokio::spawn(async move {
                 let tell = |step| drop(events.send(Event::SignIn { engine: Engine::Claude, step }));
                 tell(SignInStep::Browser { url: None });
                 tokio::time::sleep(Duration::from_millis(400)).await;
                 tell(SignInStep::Paste { url: "https://claude.com/cai/oauth/authorize?code=true&client_id=fake".into() });
+                // Waits for the code, as `claude auth login` does.
+                std::future::pending::<()>().await;
             });
+            if let Some(old) = claude_signing_in().lock().unwrap().replace(task) {
+                old.abort();
+            }
+        }
+        Command::SignInCancel { engine: Engine::Claude } => {
+            if let Some(task) = claude_signing_in().lock().unwrap().take() {
+                task.abort();
+                tell(Engine::Claude, SignInStep::Cancelled);
+                let _ = events.send(Event::Engines { engines: statuses() });
+            }
         }
         Command::SignInCode { engine: Engine::Claude, .. } => {
             let events = events.clone();
@@ -140,7 +168,11 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
                     let _ = events.send(Event::SignIn { engine: Engine::Claude, step: SignInStep::Failed { why: SignInFailure::Failed, detail: "Login failed: Request failed with status code 400".into() } });
                     return;
                 }
+                if let Some(task) = claude_signing_in().lock().unwrap().take() {
+                    task.abort();
+                }
                 claude_out().store(false, std::sync::atomic::Ordering::Relaxed);
+                claude_again().store(true, std::sync::atomic::Ordering::Relaxed);
                 let _ = events.send(Event::SignIn { engine: Engine::Claude, step: SignInStep::Done });
                 let _ = events.send(Event::Engines { engines: statuses() });
             });

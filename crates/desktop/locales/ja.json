@@ -1282,6 +1282,8 @@
   "engines.sign_out": "ログアウト",
   "engines.signed_in": "ログイン済み",
   "engines.signed_in_plan": "ログイン済み · {plan}",
+  "engines.signed_in_now": "ログインしました",
+  "engines.signed_in_now_desc": "これからはメンバーがこのログインで作業します。",
   "engines.signed_out": "未ログイン",
   "engines.signing_out": "ログアウト中…",
   "engines.span_days.other": "{count}日",
