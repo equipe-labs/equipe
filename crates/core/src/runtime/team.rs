@@ -37,7 +37,7 @@ proposes it to the person."
         let waiting = self.team_changes.get(squad).cloned().unwrap_or_default();
         let proposal = rules::check(args, &mates, &tickets, &waiting)?;
         let asked = args.get("asked").and_then(serde_json::Value::as_bool).unwrap_or(false);
-        if let Some(why) = rules::too_soon(&proposal, &mates, &tickets, now_secs(), asked) {
+        if let Some(why) = rules::too_soon(&proposal, &mates, asked) {
             return Err(why);
         }
         let reply = rules::proposed_reply(&proposal);

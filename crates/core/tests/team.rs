@@ -154,9 +154,10 @@ async fn the_pm_proposes_the_person_approves_and_the_new_member_takes_the_waitin
     let odd = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "astronaut", "reason": "-" })).await;
     assert!(odd.is_error && odd.text.contains("No role called astronaut"), "{odd:?}");
 
-    // Unasked, a few seconds after T-2 came: too soon — qa takes it as it finishes.
+    // Unasked, for a role the team holds: never — queued work is no reason to add.
     let soon = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "qa", "reason": "T-2가 기다려요", "unblocks": [2] })).await;
-    assert!(soon.is_error && soon.text.contains("has waited 0 min"), "{soon:?}");
+    assert!(soon.is_error && soon.text.contains("T-2 needs no new member"), "{soon:?}");
+    assert!(handle.snapshot("acme").await.team_changes.is_empty(), "nothing waits for the person");
     // The person asked for one in words: it goes to them.
     let said = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "qa", "reason": "T-2가 기다려요 (qa는 T-1 중)", "unblocks": [2], "asked": true })).await;
     assert!(!said.is_error && said.text.starts_with("Proposed — the person decides on a card."), "{said:?}");
