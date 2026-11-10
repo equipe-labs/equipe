@@ -316,6 +316,8 @@
   "ticket.design_qa_body": "{name} hat in T-{id} Screens geändert. Prüfe sie vor der Review der Person gegen Spezifikation, Designsystem und Barrierefreiheit, dann gib sie frei oder schick sie mit den nötigen Änderungen zurück.",
   "news.helper_left": "{name} ist gegangen, die Arbeit erledigt: die Rolle bleibt",
   "news.left": "{name} hat T-{id} verlassen; es ist wieder auf dem Board · {title}.",
+  "news.member_work_kept": "{name} ist gegangen, und im Team ist kein {role} mehr: {tickets} warten auf einen",
+  "news.member_work_moved": "{name} ist gegangen: {tickets} gehen an {role}",
   "news.merge_declined": "{tickets} nicht angenommen und nicht gemergt — bleibt, wie es ist",
   "news.merge_conflict_owner": "T-{id} kollidiert mit main: main hereinholen und den Konflikt lösen.",
   "news.merged": "Du hast T-{id} · {title} in {branch} gemergt.",

@@ -316,6 +316,8 @@
   "ticket.design_qa_body": "{name} changed screens in T-{id}. Check them against its spec, the design system and accessibility before the person reviews it, then pass it or send it back with what to change.",
   "news.helper_left": "{name} left, its work done: its role carries on",
   "news.left": "{name} left T-{id}; it is back on the board · {title}.",
+  "news.member_work_kept": "{name} left and no {role} is left on the team: {tickets} wait for one",
+  "news.member_work_moved": "{name} left: {tickets} went to {role}",
   "news.merge_declined": "You didn't accept and merge {tickets} — it stays as it is",
   "news.merge_conflict_owner": "T-{id} conflicts with main: asked to merge main in and resolve it.",
   "news.merged": "You merged T-{id} · {title} into {branch}.",
