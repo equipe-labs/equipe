@@ -19,6 +19,7 @@ state names another language; `long` states switch to German, the longest langua
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# What a Korean state types (`{KO:name}` in its steps), kept with the other
+# languages' words in locales/.
+with open(os.path.join(HERE, "locales", "ko.json"), encoding="utf-8") as f:
+    KO = json.load(f)
 SIZES = [(1200, 760), (760, 600)]
 MODES = ["light", "dark"]
 
@@ -80,8 +85,8 @@ state("inbox/stalled/long", "menu:inbox;wait:600;ppick:90;bkey:a", {"FAKE_STALLE
 state("conversation/chat/default", "chat")
 state("conversation/chat/empty", "newtalk;wait:800")
 state("conversation/chat/topic", "newtalk;say:Please make conversation titles easier to find;wait:1800", {"FAKE_SECONDS": "1", "FAKE_ASKS": "0"}, label="First exchange named by topic")
-state("conversation/chat/topic-ko", "newtalk;say:대화 제목을 다시 찾기 쉽게 만들어 줘;wait:1800", {"FAKE_SECONDS": "1", "FAKE_ASKS": "0"}, lang="ko", label="첫 교환의 한국어 주제 제목")
-state("conversation/chat/topic-large", "newtalk;say:대화 제목을 다시 찾기 쉽게 만들어 줘;wait:1800;zoom:150;wait:500", {"FAKE_SECONDS": "1", "FAKE_ASKS": "0"}, lang="ko", label="큰 글자의 주제 제목")
+state("conversation/chat/topic-ko", "newtalk;say:{KO:topic_ask};wait:1800", {"FAKE_SECONDS": "1", "FAKE_ASKS": "0"}, lang="ko", label="First exchange named by topic · Korean")
+state("conversation/chat/topic-large", "newtalk;say:{KO:topic_ask};wait:1800;zoom:150;wait:500", {"FAKE_SECONDS": "1", "FAKE_ASKS": "0"}, lang="ko", label="Topic title · 150% text")
 state("conversation/chat/loading", "chat;say:Where are you up to?;wait:1500", {"FAKE_SECONDS": "12"})
 state("conversation/chat/activity-running", "chat;say:torture 7;wait:1800", {"FAKE_SECONDS": "1"}, label="One running work-details row with elapsed time")
 state("conversation/chat/activity-done", "chat;say:torture 9;wait:2500", {"FAKE_SECONDS": "1"}, kind="success", label="Folded work details after a recovered failure")
@@ -139,7 +144,7 @@ state("conversation/rename/entry-title", R, RF, sizes=RS, at={1200: "hover:440,2
 state("conversation/rename/entry-menu", R + ";rename:menu;wait:300", RF, sizes=RS, label="Entry · This conversation ⋯, Rename first")
 state("conversation/rename/entry-sidebar", R, RF, sizes=RS, at={1200: "hover:150,297;wait:300;hover:152,298;wait:1500", 760: "hover:150,297;wait:300;hover:152,298;wait:1500"}, label="Entry · the sidebar row on the pointer: rename and put away")
 state("conversation/rename/editing", R + ";rename;wait:300", RF, sizes=RS, label="Editing · the whole title selected")
-state("conversation/rename/composing", R + ";rename;rename:compose:카|피;wait:300", RF, sizes=RS, lang="ko", label="Korean IME composing: Return only commits it")
+state("conversation/rename/composing", R + ";rename;rename:compose:{KO:compose};wait:300", RF, sizes=RS, lang="ko", label="Korean IME composing: Return only commits it")
 state("conversation/rename/empty", R + ";rename;rename:type:   ;rename:save;wait:300", RF, sizes=RS, kind="error", label="Empty name · after Return")
 state("conversation/rename/too-long", R + ";rename;rename:type:Checkout copy, payment errors and the receipt email;wait:300", RF, sizes=RS, kind="error", label="Past 40 characters: nothing cut, how many to take out, Save waits")
 state("conversation/rename/saved", R + ";rename;rename:type:Checkout copy review;rename:save;wait:1200", RF, sizes=RS, kind="success", label="Saved: the header and the sidebar at once")
@@ -330,8 +335,8 @@ LABELS = {
     "pictures": "With pictures", "review": "In review, with a review", "page": "Opened as a page (⏎)", "busy": "Busy squad with subagents",
     "ticket-cards": "Ticket cards in a reply", "ask-list": "A reply asking a numbered list", "diagram": "Mermaid diagrams",
     "topic": "First exchange named by topic",
-    "topic-ko": "첫 교환의 한국어 주제 제목",
-    "topic-large": "큰 글자의 주제 제목",
+    "topic-ko": "First exchange named by topic · Korean",
+    "topic-large": "Topic title · 150% text",
     "markdown": "Rich Markdown (headings, lists, callouts, code)", "summarizing": "Being summarized (long)", "summarize-failed": "Summary failed",
     "your-turn": "A ticket put down for the person, in the conversation", "attachments": "Two files attached", "drop": "A file dragged over",
     "queued": "A message waiting while the member works", "handover": "Browser handed to the person", "form": "Form open", "draft": "A draft in review",
@@ -450,7 +455,7 @@ def run_state(item, bin_dir, root):
     script = ["wait:2500"]
     docs = os.path.join(user, "Documents", "plans")
     shutil.copytree(os.path.join(HERE, "fixtures", "docs"), docs)
-    script += [s.replace("{ROOT}", root).replace("{DOCS}", docs) for s in steps.split(";") if s]
+    script += [re.sub(r"\{KO:(\w+)\}", lambda m: KO[m[1]], s.replace("{ROOT}", root).replace("{DOCS}", docs)) for s in steps.split(";") if s]
     script.append(f"wait:{opts.get('wait', 900)}")
     for w, h in opts.get("sizes", SIZES):
         script += [f"size:{w}x{h}", "wait:700"]

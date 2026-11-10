@@ -63,7 +63,7 @@ pub fn listed<'a>(docs: &'a [ProjectDoc], filter: &Filter, query: &str, found: O
     let mut out: Vec<&ProjectDoc> = docs
         .iter()
         .filter(|d| filter.takes(d))
-        .filter(|d| query.is_empty() || d.title.to_lowercase().contains(&query) || found.is_some_and(|f| f.iter().any(|p| *p == d.path)))
+        .filter(|d| query.is_empty() || d.title.to_lowercase().contains(&query) || found.is_some_and(|f| f.contains(&d.path)))
         .collect();
     out.sort_by(newest_first);
     out

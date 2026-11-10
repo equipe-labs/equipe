@@ -244,7 +244,7 @@ pub(crate) fn segmented<T: Copy + PartialEq + 'static>(shell: &Shell, id: &str, 
     let handle = cx.entity().downgrade();
     let values: Vec<T> = options.iter().map(|(v, _)| *v).collect();
     let on = values.iter().position(|v| *v == now);
-    let pick: Rc<dyn Fn(usize, &mut Window, &mut App)> = Rc::new(move |ix, window, cx| {
+    let pick: Pick = Rc::new(move |ix, window, cx| {
         let Some(value) = values.get(ix).copied() else { return };
         handle
             .update(cx, |this, cx| {
@@ -256,13 +256,16 @@ pub(crate) fn segmented<T: Copy + PartialEq + 'static>(shell: &Shell, id: &str, 
     Segmented { p: shell.palette, id: SharedString::from(id.to_owned()), labels: options.into_iter().map(|(_, l)| l).collect(), on, pick }.into_any_element()
 }
 
+/// What a segment does when picked, by its index.
+type Pick = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+
 #[derive(IntoElement)]
 struct Segmented {
     p: Palette,
     id: SharedString,
     labels: Vec<String>,
     on: Option<usize>,
-    pick: Rc<dyn Fn(usize, &mut Window, &mut App)>,
+    pick: Pick,
 }
 
 impl RenderOnce for Segmented {

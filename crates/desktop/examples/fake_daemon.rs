@@ -159,6 +159,13 @@ fn lang() -> equipe_core::i18n::Lang {
     std::env::var("EQUIPE_LANG").ok().and_then(|tag| equipe_core::i18n::Lang::parse(&tag)).unwrap_or(equipe_core::i18n::Lang::En)
 }
 
+/// The topic the fake names a kept conversation, in the screen's language
+/// where `fake_daemon/locales/topics.json` has it, else in English.
+fn topic_title() -> String {
+    let topics: std::collections::HashMap<String, String> = serde_json::from_str(include_str!("fake_daemon/locales/topics.json")).unwrap_or_default();
+    topics.get(lang().code()).or_else(|| topics.get("en")).cloned().unwrap_or_default()
+}
+
 const REPLY: &str = "Sure, got it. I'll look over the board now and take **T-12** first.\n\nHere's the order:\n\n- Tidy the header component\n- Check IME composition in the composer\n- Check the streaming display (`T-13`)\n\n| Item | Status | Owner |\n|---|---|---|\n| Header | In progress | frontend |\n| Composer | Waiting | frontend |\n| Daemon link | Done | backend |\n\n```rust\nfn main() {\n    println!(\"hello, equipe\");\n}\n```\n\nI'll let you know when it's done.";
 
 /// `FAKE_ASKLIST`'s reply: what the PM needs to know, as a numbered list in prose.
@@ -706,8 +713,11 @@ fn runs() -> usize {
     }
 }
 
-/// Frontend's runs: (session, ticket, title, at work, its latest step).
-fn run_list() -> Vec<(SessionId, u32, String, bool, (&'static str, &'static str))> {
+/// A run: (session, ticket, title, at work, its latest step).
+type Run = (SessionId, u32, String, bool, (&'static str, &'static str));
+
+/// Frontend's runs.
+fn run_list() -> Vec<Run> {
     let titles = [
         "Product detail page image gallery",
         "Checkout address form validation and error messages for every field",
@@ -1860,8 +1870,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                             let events = events.clone();
                                             tokio::spawn(async move {
                                                 turn(session, events.clone(), seconds).await;
-                                                let title = if lang() == equipe_core::i18n::Lang::Ko { "세션 주제 제목" } else { "Conversation topic titles" };
-                                                let _ = events.send(Event::ConversationTitle { session, title: title.into(), named: false });
+                                                let title = topic_title();
+                                                let _ = events.send(Event::ConversationTitle { session, title, named: false });
                                             })
                                         }
                                         None => tokio::spawn(turn(session, events.clone(), seconds)),

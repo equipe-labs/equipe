@@ -58,10 +58,9 @@ pub fn resolve(generated: Option<&str>, user: &str) -> String {
     generated.and_then(clean).unwrap_or_else(|| fallback(user))
 }
 
+/// A label a model put before the title ("Title:"), in any language.
 fn strip_prefix(line: &str) -> &str {
-    for prefix in [
-        "Title:", "title:", "TITLE:", "제목:", "題名:", "标题:", "標題:",
-    ] {
+    for prefix in crate::i18n::every("match.title_prefixes") {
         if let Some(rest) = line.strip_prefix(prefix) {
             return rest;
         }

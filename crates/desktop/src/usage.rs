@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 use equipe_core::protocol::plan_use::{Beat, Burn, Mostly, Report, Slice, Span, Who};
 use equipe_core::protocol::{Command, Engine, Event, TicketId};
 
-use crate::state::{Model, Presence};
 use equipe_core::t;
 
 /// How long until `resets_at`, from `now`, as a person says it: "3h 20m",
@@ -27,41 +26,6 @@ pub fn time_left(resets_at: i64, now: i64) -> String {
     } else {
         t!("usage.left_minutes", minutes = minutes.max(1))
     }
-}
-
-/// A member as the usage panel lists it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemberUse {
-    pub name: String,
-    pub role: String,
-    pub engine: Option<equipe_core::protocol::Engine>,
-    /// Its context's fill, once known.
-    pub context: Option<u8>,
-    pub tokens: u64,
-    /// The share of what it read that came from the prompt cache.
-    pub cache: Option<u8>,
-}
-
-/// The squad's open members, those that spent the most first.
-pub fn members(model: &Model) -> Vec<MemberUse> {
-    let mut all: Vec<MemberUse> = model
-        .members
-        .iter()
-        .filter(|m| m.presence != Presence::Closed)
-        .map(|m| {
-            let spent = model.spent.get(&m.session).copied().unwrap_or_default();
-            MemberUse {
-                name: m.name.clone(),
-                role: m.role.clone(),
-                engine: m.engine,
-                context: spent.context.filter(|(_, w)| *w > 0).map(|(u, w)| (u * 100 / w).min(100) as u8),
-                tokens: spent.tokens,
-                cache: (spent.seen.1 * 100).checked_div(spent.seen.0).map(|p| p.min(100) as u8),
-            }
-        })
-        .collect();
-    all.sort_by(|a, b| b.tokens.cmp(&a.tokens).then_with(|| a.name.cmp(&b.name)));
-    all
 }
 
 /// 8400 → "8.4k", 2_800_000 → "2.8M".
@@ -276,7 +240,7 @@ pub fn grouped(n: u64) -> String {
     let sep = t!("plan_use.digits_group");
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push_str(sep);
         }
         out.push(c);
@@ -396,7 +360,7 @@ pub fn beat_label(at: i64, span: Span) -> Option<String> {
     let local = crate::state::local_time(at.max(0) as u64);
     match span {
         Span::Week if local.hour == 0 => Some(format!("{}/{}", local.month, local.day)),
-        Span::Day if local.hour % 6 == 0 => Some(format!("{:02}:00", local.hour)),
+        Span::Day if local.hour.is_multiple_of(6) => Some(format!("{:02}:00", local.hour)),
         _ => None,
     }
 }
@@ -404,50 +368,6 @@ pub fn beat_label(at: i64, span: Span) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon::Update;
-    use crate::state::Clock;
-    use equipe_core::protocol::rpc::Hello;
-    use equipe_core::protocol::{Access, Engine, Event, Member as Who, SessionInfo, SessionState, Snapshot, TurnOutcome, Usage};
-
-    const T0: Clock = Clock { hour: 14, minute: 2, second: 10 };
-
-    fn model() -> Model {
-        let session = |id, name: &str| SessionInfo {
-            session: id,
-            project: "/p".into(),
-            member: Some(Who { role: name.into(), name: name.into() }),
-            engine: Engine::Claude,
-            model: None,
-            asked_model: None,
-            access: Access::ReadOnly,
-            workspace: None,
-            state: SessionState::Ready,
-            title: None,
-            tokens: 0,
-            context: None,
-            recent: vec![],
-            recent_at: Vec::new(),
-            queued: vec![],
-            queued_project: None,
-            queued_in: vec![],
-            steering: vec![],
-            steering_in: vec![],
-            lane: None,
-            run: None,
-            estimate: None,
-            work: None,
-            mode: None,
-            effort: None,
-            subagents: Vec::new(),
-            compacting: None,
-            visuals: Vec::new(),
-        };
-        let mut m = Model::new("acme");
-        m.apply(Update::Attached(Hello { version: "x".into(), snapshot: Snapshot { squad: "acme".into(), sessions: vec![session(1, "pm"), session(2, "frontend")], ..Default::default() } }), T0);
-        m
-    }
-
-
 
     #[test]
     fn a_plan_says_how_long_until_it_starts_over() {
@@ -455,17 +375,6 @@ mod tests {
         assert_eq!(time_left(1_000 + 2 * 86_400 + 4 * 3_600, 1_000), "2일 4시간");
         assert_eq!(time_left(1_030, 1_000), "1분", "never \"0\"");
         assert_eq!(time_left(500, 1_000), "1분", "past: it starts over any moment");
-    }
-
-    #[test]
-    fn members_are_listed_by_what_they_spent_most() {
-        let mut m = model();
-        let usage = Usage { input_tokens: Some(100_000), output_tokens: Some(2_000), cache_tokens: Some(900_000), context_tokens: Some(126_000), context_window: Some(200_000), ..Default::default() };
-        m.apply(Update::Event(Event::TurnEnded { session: 2, outcome: TurnOutcome::Completed, usage: Some(usage) }), T0);
-        let all = members(&m);
-        assert_eq!(all.iter().map(|u| u.name.as_str()).collect::<Vec<_>>(), ["frontend", "pm"]);
-        assert_eq!((all[0].context, all[0].cache), (Some(63), Some(89)));
-        assert_eq!((all[1].context, all[1].tokens), (None, 0), "nothing yet: no bar, no guess");
     }
 
     #[test]
