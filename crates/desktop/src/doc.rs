@@ -58,11 +58,54 @@ pub struct Doc {
     /// Not read from the file: the words a sent message kept of it, the file
     /// being gone (`crate::sent::Sent::kept`). There is nothing to read again.
     pub kept: bool,
+    /// Read across the whole window (focus view), and where it goes back to.
+    pub focus: Option<Focus>,
+    /// The "more document actions" menu is open.
+    pub more: bool,
+}
+
+/// Where focus view returns to: the conversation, or the board, it was
+/// entered from. Fixed on entry — it doesn't follow what changes underneath.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Origin {
+    Conversation(String),
+    Board(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Focus {
+    pub origin: Origin,
+    /// Where the document was scrolled to on entry: the wider measure
+    /// reflows it, and the way back puts it where it was.
+    pub scrolled: gpui_kit::Point<gpui_kit::Pixels>,
+}
+
+/// What Esc does with the document: the menu first, then focus view; else
+/// it is not the document's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Escape {
+    CloseMore,
+    LeaveFocus,
+    Pass,
+}
+
+pub fn escape(doc: Option<&Doc>) -> Escape {
+    match doc {
+        Some(d) if d.more => Escape::CloseMore,
+        Some(d) if d.focus.is_some() && !d.folded => Escape::LeaveFocus,
+        _ => Escape::Pass,
+    }
+}
+
+/// The window is narrow, or its text large: the document's tools fold into
+/// "more". Widths are the window's, in points.
+pub fn compact(window: f32, zoom_pct: u16) -> bool {
+    window <= 820. || zoom_pct >= 150
 }
 
 impl Doc {
     pub fn new(path: PathBuf, read: u64) -> Self {
-        Self { path, text: None, cut: false, scroll: gpui_kit::ScrollHandle::new(), read, folded: false, presenting: None, fresh: true, kept: false }
+        Self { path, text: None, cut: false, scroll: gpui_kit::ScrollHandle::new(), read, folded: false, presenting: None, fresh: true, kept: false, focus: None, more: false }
     }
 
     /// The words a sent message kept of `path`, shown as the file was.
@@ -234,6 +277,30 @@ fn words(mut bytes: Vec<u8>) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn focused() -> Doc {
+        Doc { focus: Some(Focus { origin: Origin::Conversation("Plan".into()), scrolled: Default::default() }), ..Doc::new("a.md".into(), 1) }
+    }
+
+    #[test]
+    fn esc_closes_the_menu_before_focus_view_and_focus_view_before_anything_else() {
+        assert_eq!(escape(None), Escape::Pass);
+        assert_eq!(escape(Some(&Doc::new("a.md".into(), 1))), Escape::Pass, "a plain panel leaves Esc to the app");
+        let mut doc = focused();
+        assert_eq!(escape(Some(&doc)), Escape::LeaveFocus);
+        doc.more = true;
+        assert_eq!(escape(Some(&doc)), Escape::CloseMore, "one layer at a time: the menu first");
+        doc.more = false;
+        doc.folded = true;
+        assert_eq!(escape(Some(&doc)), Escape::Pass, "a folded panel isn't in focus view");
+    }
+
+    #[test]
+    fn tools_fold_into_more_when_narrow_or_large() {
+        assert!(!compact(1200., 100));
+        assert!(compact(760., 100));
+        assert!(compact(1200., 150));
+    }
 
     #[test]
     fn a_documents_place_is_said_short_from_where_the_conversation_works() {

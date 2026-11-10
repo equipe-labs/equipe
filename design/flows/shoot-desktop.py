@@ -145,7 +145,23 @@ state("tools/browser/default", "chat", {"FAKE_BROWSER": "1"}, wait=3000)
 state("tools/browser/empty", "chat;browser", {"FAKE_BROWSER": "empty"}, wait=1500)
 state("tools/browser/handover", "chat", {"FAKE_BROWSER": "handover"}, wait=3000, lang="ko")
 state("tools/terminal/default", "chat;term;wait:3000;tkeys:ls -la~", wait=1500)
-state("tools/document/default", "chat;doc:{ROOT}/design/guidelines.md", wait=1500)
+# Document panel and its focus view (T-618). The board-origin states open the
+# document from the briefs-and-plans page, the board's side of the app.
+LONG_DOC = "{ROOT}/design/flows/fixtures/docs/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md"
+DOC = "{ROOT}/design/flows/fixtures/docs/2026-11-08-quarterly-onboarding-flow-review-with-a-long-english-filename.md"
+state("tools/document/default", "chat;doc:" + DOC, wait=1500, label="Default panel · focus entry")
+state("tools/document/default-board", "docs;wait:600;docsopen:0", wait=1500, label="Default panel · board origin")
+state("tools/document/default-board-scrolled", "docs;wait:600;docsopen:0;wait:800;scroll:6,-120", wait=1200, label="Board origin · document scrolled")
+state("tools/document/focus", "chat;doc:" + DOC + ";wait:800;press:cmd-shift-f", wait=1200, label="Focus view · conversation origin")
+state("tools/document/focus-ko", "chat;doc:" + DOC + ";wait:800;press:cmd-shift-f", wait=1200, lang="ko", label="Focus view · Korean")
+state("tools/document/focus-board", "docs;wait:600;docsopen:0;wait:800;press:cmd-shift-f", wait=1200, label="Focus view · board origin")
+state("tools/document/focus-large", "chat;doc:" + LONG_DOC + ";wait:800;zoom:150;wait:600;press:cmd-shift-f", wait=1200, kind="long", label="Focus view · long English · 150%")
+state("tools/document/focus-menu", "chat;doc:" + DOC + ";wait:800;press:cmd-shift-f;wait:400;dmore", wait=1000, label="Focus view · More open")
+state("tools/document/focus-menu-board", "docs;wait:600;docsopen:0;wait:800;press:cmd-shift-f;wait:400;dmore", wait=1000, label="Board focus · More open")
+state("tools/document/focus-after-menu-board", "docs;wait:600;docsopen:0;wait:800;press:cmd-shift-f;wait:400;dmore;wait:300;press:escape", wait=1000, label="Board focus · first Esc complete")
+state("tools/document/focus-restored", "chat;doc:" + DOC + ";wait:800;press:cmd-shift-f;wait:400;press:escape", wait=1000, label="Restored origin · entry focus")
+state("tools/document/focus-restored-board", "docs;wait:600;docsopen:0;wait:800;press:cmd-shift-f;wait:400;press:escape", wait=1000, label="Restored board · selected ticket focus")
+state("tools/document/focus-restored-board-scrolled", "docs;wait:600;docsopen:0;wait:800;scroll:6,-120;wait:400;press:cmd-shift-f;wait:400;press:escape", wait=1000, label="Restored board · scroll and focus")
 state("tools/subagent/default", "chat;subagent:frontend", {"FAKE_SUBAGENTS": "1"}, wait=2000)
 state("tools/pair-phone/default", "pair", wait=1200)
 state("tools/pair-phone/permission", "pair", {"FAKE_PAIR": "ask"}, wait=2500)
@@ -218,7 +234,7 @@ SCREENS = {
     "overview/design": ("Design system", ["views/design.rs", "design.rs"], None),
     "tools/browser": ("Browser panel", ["views/browser.rs", "browse.rs"], None),
     "tools/terminal": ("Terminal panel", ["views/terminal.rs", "term.rs"], "A real shell on this Mac, in the shot's temporary home."),
-    "tools/document": ("Document panel", ["views/doc.rs", "doc.rs"], None),
+    "tools/document": ("Document panel · focus view", ["views/doc.rs", "doc.rs"], "The default panel exposes Focus view; focus reuses the same document surface across the full content area and returns to the recorded conversation or board origin."),
     "tools/subagent": ("A subagent", ["views/subagent.rs"], None),
     "tools/pair-phone": ("Pair a phone", ["views/pair.rs", "pair.rs"], None),
     "tools/notifications": ("Notifications sheet", ["views/bell.rs", "notify.rs"], None),
