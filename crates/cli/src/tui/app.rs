@@ -4191,7 +4191,7 @@ mod tests {
     fn parallel_sets_max_with_its_caps_or_auto_and_follows_the_daemon() {
         use equipe_core::protocol::lanes::{Parallel, ParallelMode};
         let (mut app, _, _) = team();
-        let mut run = |app: &mut App, text: &str| {
+        let run = |app: &mut App, text: &str| {
             type_text(app, text);
             enter(app)
         };

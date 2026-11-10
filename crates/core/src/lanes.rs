@@ -331,7 +331,7 @@ mod tests {
         let max = Parallel::max(6, 16);
         let room = HashMap::from([(Engine::Claude, engine_limit(Some(95), DiskLevel::Ok, &max))]);
         let free = Member { limit: member_limit(Some(95), DiskLevel::Ok, &max), ..member("frontend", "frontend", 0, 0) };
-        assert_eq!(assign(&tickets, &[free.clone()], true, &[], &room).len(), 6, "a plan at 95%: six at once on max");
+        assert_eq!(assign(&tickets, std::slice::from_ref(&free), true, &[], &room).len(), 6, "a plan at 95%: six at once on max");
         // Out of its plan, the engine is held: its members take nothing new.
         let held = Member { takes_new: false, ..free };
         assert!(assign(&tickets, &[held], true, &[], &room).is_empty());
