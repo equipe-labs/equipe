@@ -30,6 +30,9 @@
 //! - `review`: the designer's weekly review, held back until the setup is done.
 //! - `folder`: where the folders are, what they hold, and the stamp that says
 //!   one changed; the pictures in them are what `read_image` may give.
+//! - `gallery`: the components a design system has, for its Components
+//!   section — from the registry, the components' folder, the previews in
+//!   `components/` and each matrix — and the ticket at work on each.
 //! - `studio`: a ticket's design work as it is on disk, for a screen that
 //!   watches it (checks, directions, critiques, references, pictures).
 //! - `system`: a project's design system as code — its tokens, its
@@ -53,6 +56,7 @@ pub mod diff;
 pub mod directions;
 pub mod flows;
 pub mod folder;
+pub mod gallery;
 pub mod kept;
 pub mod review;
 pub mod reviewer;

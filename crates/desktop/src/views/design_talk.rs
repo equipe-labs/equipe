@@ -266,6 +266,7 @@ fn glyph(item: &DesignContext) -> Icon {
         DesignContext::Token { .. } | DesignContext::TypeStyle { .. } => Icon::Pencil,
         DesignContext::Asset { .. } => Icon::File,
         DesignContext::Screen { .. } => Icon::AppWindow,
+        DesignContext::Component { .. } => Icon::PenTool,
     }
 }
 

@@ -28,6 +28,8 @@ pub enum Section {
     Radius,
     Shadow,
     Motion,
+    /// Every component, pictured, with where it stands.
+    Components,
     Assets,
     Guidelines,
     /// Taste & decisions: the person's taste notes and the decisions made.
@@ -35,7 +37,7 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 10] = [Section::Overview, Section::Colors, Section::Typography, Section::Spacing, Section::Radius, Section::Shadow, Section::Motion, Section::Assets, Section::Guidelines, Section::Taste];
+    pub const ALL: [Section; 11] = [Section::Overview, Section::Colors, Section::Typography, Section::Spacing, Section::Radius, Section::Shadow, Section::Motion, Section::Components, Section::Assets, Section::Guidelines, Section::Taste];
 
     /// Its word in the locale files.
     pub fn key(self) -> &'static str {
@@ -47,6 +49,7 @@ impl Section {
             Section::Radius => "design.section_radius",
             Section::Shadow => "design.section_shadow",
             Section::Motion => "design.section_motion",
+            Section::Components => "design.section_components",
             Section::Assets => "design.section_assets",
             Section::Guidelines => "design.section_guidelines",
             Section::Taste => "design.taste_tab",
@@ -68,6 +71,7 @@ impl Section {
             "radius" => Section::Radius,
             "shadow" | "shadows" => Section::Shadow,
             "motion" => Section::Motion,
+            "components" | "component" => Section::Components,
             "assets" => Section::Assets,
             "guidelines" => Section::Guidelines,
             "taste" => Section::Taste,
@@ -102,6 +106,8 @@ pub fn count(system: &DesignSystem, section: Section) -> Option<usize> {
     let n = match section {
         // Always there, to invite the first note.
         Section::Overview | Section::Taste => return Some(0),
+        // Always there: where to see what is built, and to ask for it when nothing is.
+        Section::Components => return Some(system.components.len()),
         Section::Assets => system.assets.len(),
         Section::Guidelines => return system.guidelines.as_ref().map(|g| headings(g).len()),
         other => tokens_in(system, other).len(),
@@ -343,6 +349,9 @@ pub struct DesignUi {
     pub sources_open: bool,
     /// The asset shown big, by its place in the system's assets.
     pub lightbox: Option<usize>,
+    /// A component's picture shown big: the component's place in the
+    /// system's components, the picture's in its previews.
+    pub component_shot: Option<(usize, usize)>,
     /// What was copied last, and when — its swatch says so for a moment.
     pub copied: Option<(String, Instant)>,
     /// The motion token under the pointer, and how many times one was: a
@@ -399,6 +408,7 @@ impl Default for DesignUi {
             problems_open: false,
             sources_open: false,
             lightbox: None,
+            component_shot: None,
             copied: None,
             playing: None,
             plays: 0,
@@ -481,6 +491,7 @@ impl DesignUi {
             self.end_compare();
         }
         self.lightbox = None;
+        self.component_shot = None;
         let map = self.current().and_then(|s| s.flows.clone());
         self.map.arrived(map.as_ref());
         if let Some(system) = self.current()
@@ -576,6 +587,11 @@ impl DesignUi {
             && self.current().is_none_or(|s| at >= s.assets.len())
         {
             self.lightbox = None;
+        }
+        if let Some((c, k)) = self.component_shot
+            && self.current().is_none_or(|s| s.components.get(c).is_none_or(|c| k >= c.previews.len()))
+        {
+            self.component_shot = None;
         }
         let map = self.current().and_then(|s| s.flows.clone());
         self.map.arrived(map.as_ref());
@@ -677,6 +693,7 @@ impl DesignUi {
         self.draft = side == Side::After && self.draft_of(&self.source).is_some();
         self.working = false;
         self.lightbox = None;
+        self.component_shot = None;
         let map = self.current().and_then(|s| s.flows.clone());
         self.map.arrived(map.as_ref());
         if let Some(system) = self.current()
@@ -1032,11 +1049,34 @@ mod tests {
     fn only_sections_with_something_show_and_colours_keep_their_groups() {
         let mut s = system(None, None, vec![token("color.brand.dot", "color", json!("#3F6FF5")), token("color.bg", "color", json!("#fff")), token("color.brand.ink", "color", json!("#000")), token("space.2", "dimension", json!("8px"))]);
         s.guidelines = Some("# Title\n\n## Logo\n\ntext\n\n```md\n## not a heading\n```\n\n### Colour\n".into());
-        assert_eq!(sections(&s), [Section::Overview, Section::Colors, Section::Spacing, Section::Guidelines, Section::Taste]);
+        assert_eq!(sections(&s), [Section::Overview, Section::Colors, Section::Spacing, Section::Components, Section::Guidelines, Section::Taste]);
         let colors = tokens_in(&s, Section::Colors);
         let g = groups(&colors);
         assert_eq!(g.iter().map(|(n, l)| (n.as_str(), l.len())).collect::<Vec<_>>(), [("color.brand", 2), ("color", 1)]);
         assert_eq!(count(&s, Section::Guidelines), Some(2));
+    }
+
+    #[test]
+    fn the_components_are_always_a_section_and_a_picture_of_one_goes_when_it_does() {
+        use equipe_core::protocol::design::{Component, Preview};
+        let shot = |n: usize| (0..n).map(|i| Preview { path: format!("/d/components/x{i}.png"), ..Preview::default() }).collect::<Vec<_>>();
+        let mut s = system(None, None, vec![]);
+        assert_eq!(count(&s, Section::Components), Some(0), "there with none yet, to ask for them");
+        assert!(sections(&s).contains(&Section::Components));
+        assert_eq!(Section::parse("components"), Some(Section::Components));
+        s.components = vec![Component { name: "button".into(), title: "Button".into(), previews: shot(2), ..Component::default() }];
+        assert_eq!(count(&s, Section::Components), Some(1));
+        let key = |s: &DesignSystem| s.key();
+        let mut ui = DesignUi::default();
+        ui.arrived(vec![s.clone()], "/f".into(), vec![], &key);
+        ui.component_shot = Some((0, 1));
+        // The designer took a picture away: the one on show closes.
+        s.components[0].previews = shot(1);
+        ui.arrived(vec![s.clone()], "/f".into(), vec![], &key);
+        assert_eq!(ui.component_shot, None);
+        ui.component_shot = Some((0, 0));
+        ui.arrived(vec![s], "/f".into(), vec![], &key);
+        assert_eq!(ui.component_shot, Some((0, 0)), "kept while it is there");
     }
 
     #[test]
@@ -1185,7 +1225,7 @@ mod tests {
     fn the_taste_tab_is_always_there_and_shows_the_taste_of_the_source_on_screen() {
         use equipe_core::protocol::design::Decision;
         let s = system(None, None, vec![]);
-        assert_eq!(sections(&s), [Section::Overview, Section::Taste], "there with nothing in it, to invite the first note");
+        assert_eq!(sections(&s), [Section::Overview, Section::Components, Section::Taste], "there with nothing in it, to invite the first note");
         assert_eq!(Section::parse("taste"), Some(Section::Taste));
         let taste = |project: Option<&str>, note: &str| Taste { project: project.map(str::to_owned), notes: vec![TasteNote { text: note.into(), ..Default::default() }], ..Default::default() };
         let mut ui = DesignUi::default();

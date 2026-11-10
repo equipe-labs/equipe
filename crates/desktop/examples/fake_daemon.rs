@@ -1101,6 +1101,8 @@ mod switching;
 
 #[path = "fake_daemon/design.rs"]
 mod design;
+#[path = "fake_daemon/components.rs"]
+mod components;
 
 #[path = "fake_daemon/briefs.rs"]
 mod briefs;
