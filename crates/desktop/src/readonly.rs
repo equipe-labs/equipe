@@ -505,6 +505,7 @@ mod tests {
             Command::KeepOnBranch { squad: s(), ticket: 1 },
             Command::Reopen { squad: s(), ticket: 1, note: "n".into() },
             Command::Resume { squad: s(), ticket: 1, note: "n".into() },
+            Command::Requeue { squad: s(), ticket: 1, operation: "o".into(), how: equipe_core::protocol::Recovery::Resume },
             Command::Cancel { squad: s(), ticket: 1 },
             Command::CreateTicket { squad: s(), draft: TicketDraft::default() },
             Command::EditTicket { squad: s(), ticket: 1, changes: TicketEdit::default() },

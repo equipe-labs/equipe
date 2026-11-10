@@ -1213,7 +1213,7 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
                 div().relative().size(px(14.)).child(icons::status(p, t.status, 14.)).when(live, |d| d.child(div().absolute().top(px(-2.)).right(px(-3.)).child(icons::live_dot(p, shell.pulse(cx))))).into_any_element(),
                 cx,
             )
-            .tip(p, t!("tickets.tip_status", status = crate::state::state_word(t)), Some("S")),
+            .tip(p, t!("tickets.tip_status", status = shell.model.state_word_of(t)), Some("S")),
         )
         .child(div().w(px(46.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
         .child(
@@ -2311,7 +2311,7 @@ pub fn properties(shell: &Shell, t: &Ticket, compact: bool, width: f32, cx: &mut
     let who = rules::who(t).map(str::to_owned);
     let project = model.ticket_project_name(t);
     let mut rows = vec![
-        row(t!("tickets.prop_status"), prop(EditKind::Status, icons::status(p, t.status, 13.).into_any_element(), crate::state::state_word(t).to_owned(), cx)),
+        row(t!("tickets.prop_status"), prop(EditKind::Status, icons::status(p, t.status, 13.).into_any_element(), model.state_word_of(t).to_owned(), cx)),
         row(t!("tickets.prop_priority"), prop(EditKind::Priority, priority_icon(p, t.priority, 13.), tickets::priority_word(t.priority).to_owned(), cx)),
         row(t!("tickets.prop_assignee"), prop(EditKind::Assignee, avatar(p, model, who.as_deref(), 16.), who.unwrap_or_else(|| t!("tickets.pm_decides").into()), cx)),
         row(t!("tickets.prop_project"), prop(EditKind::Project, crate::theme::project_mark(p, 12.).into_any_element(), project.unwrap_or_else(|| t!("board.squad_folder").into()), cx)),
