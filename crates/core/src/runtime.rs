@@ -76,6 +76,7 @@ mod design;
 mod briefs;
 mod plans;
 mod accept;
+mod gate;
 mod secrets;
 mod design_qa;
 mod team;
@@ -598,6 +599,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         settle_again: false,
         settled_at: None,
         merging: std::collections::HashSet::new(),
+        gates: HashMap::new(),
         disk: Default::default(),
         plan_use: Default::default(),
         commands: Default::default(),
@@ -908,6 +910,8 @@ enum Internal {
     /// A merge the person asked for, worked out off the loop: main's name and,
     /// when a push was asked for, how it went — or why nothing was merged.
     Merged { squad: String, ticket: TicketId, result: MergeResult },
+    /// A project's checks ran on accepted work merged with main, off the loop.
+    Checked(Box<gate::Gate>, crate::checks::Outcome),
     /// The free space on equipe's disk, as a look begun then found it.
     Disk(Option<crate::disk::DiskStatus>, std::time::Instant),
     /// A pass over the engines' transcripts ended: the burns going on now.
@@ -1136,6 +1140,10 @@ struct Runtime {
     settled_at: Option<std::time::Instant>,
     /// Merges under way off the loop, by squad and ticket.
     merging: std::collections::HashSet<(String, TicketId)>,
+    /// Accepted work whose project's checks run on its merge before it lands,
+    /// by repository: the first of each runs off the loop, the rest wait
+    /// their turn (`gate.rs`).
+    gates: HashMap<PathBuf, std::collections::VecDeque<gate::Gate>>,
     /// The disk's room, as last looked at or as a write said (`room.rs`).
     disk: room::DiskWatch,
     /// Where the plans went, as followed (`plan_use.rs`).
@@ -1233,6 +1241,7 @@ impl Wake {
             Wake::Internal(Internal::Frame(..)) => Borrowed("a browser picture"),
             Wake::Internal(Internal::Settled { .. }) => Borrowed("settling merged work"),
             Wake::Internal(Internal::Merged { .. }) => Borrowed("a merge's end"),
+            Wake::Internal(Internal::Checked(..)) => Borrowed("a project's checks ending"),
             Wake::Internal(Internal::Disk(..)) => Borrowed("the disk's free space"),
             Wake::Internal(Internal::DiskReport(..)) => Borrowed("what uses the disk"),
             Wake::Internal(Internal::PlanUsePassed(..)) => Borrowed("where the plans went"),
@@ -1455,6 +1464,7 @@ impl Runtime {
                 }
                 Internal::Settled { merged, cache } => self.on_settled(merged, cache),
                 Internal::Merged { squad, ticket, result } => self.on_merged(&squad, ticket, result),
+                Internal::Checked(gate, outcome) => Box::pin(self.on_checked(*gate, outcome)).await,
                 Internal::Disk(status, asked) => self.on_disk(status, asked),
                 Internal::DiskReport(report, asked) => self.on_disk_report(*report, asked),
                 Internal::PlanUsePassed(burns, loads) => self.on_plan_use_passed(burns, loads),
@@ -8298,12 +8308,14 @@ check what is already done in your worktree first."
         }
         self.builds_trimmed = Some(std::time::Instant::now());
         // A member mid-turn may be building: its cache is left alone.
-        let busy: Vec<PathBuf> = self
+        let mut busy: Vec<PathBuf> = self
             .sessions
             .values()
             .filter(|s| s.is_working())
             .filter_map(|s| Some(journal::build_dir(&self.config.home, s.squad.as_deref()?, s.name()?)))
             .collect();
+        // And where accepted work's checks are building.
+        busy.extend(self.gate_builds());
         let home = self.config.home.clone();
         std::thread::spawn(move || {
             for line in worktree::trim_builds(&home, &busy, BUILD_CAP, BUILDS_BUDGET) {
@@ -8368,8 +8380,13 @@ check what is already done in your worktree first."
             .filter_map(|t| t.worktree)
             .collect();
         let home = self.config.home.clone();
+        // What checks that never finished left (the daemon stopped mid-run): only while none run.
+        let checks_left = self.gates.is_empty().then(|| gate::checks_scratch(&home));
         std::thread::spawn(move || {
             for line in worktree::tidy(&home, &in_use, &kept) {
+                crate::daemon_log!("equipe: {line}");
+            }
+            for line in checks_left.map(|dir| crate::checks::sweep(&dir)).unwrap_or_default() {
                 crate::daemon_log!("equipe: {line}");
             }
         });

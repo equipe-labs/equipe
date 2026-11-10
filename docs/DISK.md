@@ -37,7 +37,8 @@ Asked for (`disk_scan`, `equipe disk`), within a 20-second budget — never the 
 
 - **Members' worktrees** (`~/.equipe/worktrees/*/*`), each with its ticket's state, and the
   build output in it apart (`target/`, `node_modules/`, `.next/`, `dist/`, `build/`,
-  `DerivedData/`, `.turbo/` up to three levels down, only what git ignores there).
+  `DerivedData/`, `.turbo/`, SwiftPM's `.build/`, Gradle's project `.gradle/` up to three
+  levels down, only what git ignores there).
 - **Members' build folders** (`~/.equipe/cache/build/<squad>/<member>`, their
   `CARGO_TARGET_DIR`).
 - **equipe's own**: logs, the members' browser, journals, uploads — the attachments of sent
@@ -46,6 +47,11 @@ Asked for (`disk_scan`, `equipe disk`), within a 20-second budget — never the 
   and each ticket's phone
   recordings (`<squad home>/recordings/T-<n>/`, given back once the ticket is done or
   cancelled; see [mobile-qa.md](./mobile-qa.md)).
+- **Finished tickets' temporary folders** in the system's temporary folders (`/tmp`, which is
+  `/private/tmp` on a Mac, and `$TMPDIR`): scratch copies of a branch a reviewer built, a
+  ticket's own Gradle home, screenshots. Only entries whose name ties them to a ticket that
+  is done or cancelled in **every** squad that has that number (see *Temporary folders*
+  below).
 - **Build output in the squads' projects**, other tools' worktrees there included
   (`.claude/worktrees/*`, `.codex/worktrees/*`): the person's, so reported with a command.
 - **The Mac's caches**, reported only, with the command that clears each: Xcode DerivedData,
@@ -66,7 +72,8 @@ and acts only on what that fresh look still says is safe:
 - a member's build folder while that member isn't mid-turn;
 - a log past 20 MB, trimmed to its last 1 MB;
 - attachments of messages sent over 30 days ago, only when the person picks that fix — the
-  words of their text files stay in the conversation.
+  words of their text files stay in the conversation;
+- a finished ticket's `equipe-t<N>-…` temporary folder (below).
 
 Never: an open ticket's worktree (in progress, waiting, in review, or done but not in main),
 a worktree with anything not committed, anything outside `~/.equipe`, anything reached
@@ -75,6 +82,34 @@ daemon's own look, never by path.
 
 When a ticket is merged or cancelled, build output left in a worktree of its goes at once,
 on its own (the worktree and branch stay), and `daemon.log` says so.
+
+## Temporary folders
+
+Members and reviewers make scratch folders outside their worktree: a design QA unpacks and
+builds a branch's copy, a mobile ticket gives Gradle a home of its own
+(`GRADLE_USER_HOME=/tmp/equipe-t<N>-gradle`, about 2 GB, with a Gradle daemon that outlives
+the ticket). On 2026-11-10 these, not the build caches, took the disk down to 2.2 GB.
+
+**The naming rule:** a folder made for ticket T-N outside its worktree goes right in the
+system's temporary folder and is named `equipe-t<N>-<what>` (`equipe-t430-gradle`,
+`equipe-t506-shots`). That name is what lets equipe give it back on its own:
+
+- `equipe-t<N>…` (alone, or followed by `-`, `_` or `.`), right in `/tmp` or `$TMPDIR`, not a
+  link, whose ticket number is done or cancelled in every squad that has it, and untouched
+  for an hour: **certain** — it goes with the automatic clean (every few hours, and at once
+  when the disk runs short), and is listed in `equipe disk` and `/disk`. A Gradle daemon
+  still running from it (one that wrote `daemon/<version>/daemon-<pid>.out.log` there, and
+  whose command line is a `GradleDaemon`) is stopped first, politely and then for good.
+- touched within the hour: listed as in use, left alone.
+- `t<N>-…` (the dash required: never `t16`, `t17venv` or `t1.png`): members often name a
+  copy so, but so might the person. It is only **reported**, with the `rm -rf` command that
+  removes it, for the person to run from `/disk`; equipe never removes it itself.
+- A ticket number that any squad still has open, or that no squad has, is never touched.
+
+A daemon given a person's home of its own (a test's, a demo's) never looks at the system's
+temporary folders. The checks equipe runs before the PM's acceptance lands
+([USAGE.md](USAGE.md#project-checks)) work in `~/.equipe/checks/`, removed after each run;
+what a run cut short left there goes at the next start.
 
 ## Leaner builds (the defaults)
 

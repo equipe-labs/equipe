@@ -115,6 +115,9 @@ pub enum DiskKind {
     Docker,
     /// A ticket's phone recordings and their frames, in its squad's folder.
     Recordings,
+    /// A finished ticket's scratch folder in the system's temporary folder
+    /// (`/tmp/equipe-t<N>-…`: a branch's copy, a Gradle home).
+    TicketTemp,
 }
 
 /// Why an item may, or may not, be given back.
