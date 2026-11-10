@@ -22,6 +22,7 @@ pub mod disk;
 pub mod metrics;
 pub mod plan_use;
 pub mod engines;
+pub mod lanes;
 pub mod harness;
 pub mod design;
 pub mod look;
@@ -1313,6 +1314,10 @@ pub enum Command {
     /// each engine's own ([`engine_subagents_at_once`]), nothing given to it.
     /// Answered by [`Event::SubagentsAtOnceChanged`].
     SetSubagentsAtOnce { squad: SquadName, at_once: Option<u32> },
+    /// How many tickets the squad works at once ([`lanes::Parallel`]): by
+    /// the plans' usage, or max at the person's caps. Answered by
+    /// [`Event::ParallelChanged`].
+    SetParallel { squad: SquadName, parallel: lanes::Parallel },
     /// Which engine reviews the designer's work ([`engines::Reviewer`]).
     /// Answered by [`Event::DesignReviewerChanged`].
     SetDesignReviewer { squad: SquadName, reviewer: engines::Reviewer },
@@ -2614,6 +2619,8 @@ pub enum Event {
     /// How many subagents a member runs at once now ([`Command::SetSubagentsAtOnce`]);
     /// `None`: each engine's own.
     SubagentsAtOnceChanged { squad: SquadName, at_once: Option<u32> },
+    /// How many tickets the squad works at once now ([`Command::SetParallel`]).
+    ParallelChanged { squad: SquadName, parallel: lanes::Parallel },
     /// Which engine reviews the designer's work now ([`Command::SetDesignReviewer`]).
     DesignReviewerChanged { squad: SquadName, reviewer: engines::Reviewer },
     /// The squad's signals now, each with its latest readings: on a new
@@ -2751,6 +2758,7 @@ impl Event {
             | Event::RoutineProposalClosed { squad, .. }
             | Event::IdleWakeChanged { squad, .. }
             | Event::SubagentsAtOnceChanged { squad, .. }
+            | Event::ParallelChanged { squad, .. }
             | Event::DesignReviewerChanged { squad, .. }
             | Event::SignalsChanged { squad, .. }
             | Event::PutAwayChanged { squad, .. }
@@ -2848,6 +2856,7 @@ impl Event {
             | Event::RoutineProposalClosed { .. }
             | Event::IdleWakeChanged { .. }
             | Event::SubagentsAtOnceChanged { .. }
+            | Event::ParallelChanged { .. }
             | Event::DesignReviewerChanged { .. }
             | Event::SignalsChanged { .. }
             | Event::Logins { .. }
@@ -3219,6 +3228,11 @@ pub struct Snapshot {
     /// `None`: each engine's own — as on a daemon that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagents_at_once: Option<u32>,
+    /// How many tickets the squad works at once ([`Command::SetParallel`]);
+    /// left out when auto at max's defaults, and auto from a daemon that
+    /// predates it.
+    #[serde(default, skip_serializing_if = "lanes::Parallel::is_default")]
+    pub parallel: lanes::Parallel,
     /// Which engine reviews the designer's work ([`Command::SetDesignReviewer`]);
     /// auto from a daemon that predates it.
     #[serde(default, skip_serializing_if = "engines::Reviewer::is_default")]
@@ -3732,6 +3746,7 @@ mod tests {
             }],
             idle_wake_hours: Some(24),
             subagents_at_once: Some(8),
+            parallel: lanes::Parallel::max(8, 20),
             design_reviewer: engines::Reviewer::Same,
             signals: Vec::new(),
             scale: Some(2),
@@ -4045,6 +4060,28 @@ mod tests {
         assert_eq!((old.engine_switching, old.engine_proposals.len(), old.plans.len()), (Switching::Suggest, 0, 0));
         let wire = serde_json::to_value(&old).unwrap();
         assert!(wire.get("engine_switching").is_none() && wire.get("engine_proposals").is_none(), "{wire}");
+    }
+
+    #[test]
+    fn parallel_work_is_set_and_told_as_json_and_older_snapshots_read_as_auto() {
+        use lanes::{Parallel, ParallelMode};
+        let command = Command::SetParallel { squad: "acme".into(), parallel: Parallel::max(8, 20) };
+        assert_eq!(serde_json::to_value(&command).unwrap(), json!({ "type": "set_parallel", "squad": "acme", "parallel": { "mode": "max", "per_member": 8, "per_engine": 20 } }));
+        assert_eq!(serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(), command);
+        let event = Event::ParallelChanged { squad: "acme".into(), parallel: Parallel::default() };
+        assert_eq!((event.squad(), event.session(), event.for_everyone()), (Some("acme"), None, false));
+        let json = serde_json::to_string(&event).unwrap();
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event, "{json}");
+        // A screen that predates the caps sends the mode alone: max's defaults.
+        let bare: Command = serde_json::from_value(json!({ "type": "set_parallel", "squad": "acme", "parallel": { "mode": "max" } })).unwrap();
+        assert_eq!(bare, Command::SetParallel { squad: "acme".into(), parallel: Parallel::max(6, 16) });
+        // A daemon that predates it says nothing: auto. Auto at the defaults is left out again.
+        let old: Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[]}"#).unwrap();
+        assert_eq!(old.parallel.mode, ParallelMode::Auto);
+        assert!(serde_json::to_value(&old).unwrap().get("parallel").is_none());
+        let max = Snapshot { parallel: Parallel::max(12, 32), ..old };
+        let back: Snapshot = serde_json::from_value(serde_json::to_value(&max).unwrap()).unwrap();
+        assert_eq!(back.parallel, Parallel::max(12, 32));
     }
 
     #[test]

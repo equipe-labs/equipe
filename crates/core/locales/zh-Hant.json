@@ -521,6 +521,8 @@
   "control.engine_turn_end": "{name} 在這一輪結束後換到 {to}，對話會交接過去。",
   "control.engine_free": "{name} 一有空就換到 {to}，對話會交接過去。",
   "control.engine_switching": "將引擎切換設為「{mode}」",
+  "control.parallel_max": "無論方案用量如何，每位成員最多同時進行 {per_member} 張工單，每個引擎最多 {per_engine} 張（最大）",
+  "control.parallel_auto": "並行工作重新依方案用量調整（自動）",
   "control.design_reviewer_auto": "自動選擇由誰審查設計師的工作：另一個引擎有餘量時用它，否則用設計師自己引擎的新工作階段",
   "control.design_reviewer_same": "由設計師自己的引擎在新的工作階段中審查其工作",
   "control.design_reviewer_other": "一律由另一個引擎審查設計師的工作",

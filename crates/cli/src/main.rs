@@ -1707,6 +1707,7 @@ impl App {
                 | Event::BrowserProfiles { .. }
                 | Event::PmAcceptsChanged { .. }
                 | Event::SubagentsAtOnceChanged { .. }
+                | Event::ParallelChanged { .. }
                 | Event::DesignReviewerChanged { .. }
                 | Event::RoleModelsChanged { .. }
                 | Event::Models { .. }

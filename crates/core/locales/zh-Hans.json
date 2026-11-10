@@ -521,6 +521,8 @@
   "control.engine_turn_end": "{name} 在这一轮结束后换到 {to}，对话会交接过去。",
   "control.engine_free": "{name} 一有空就换到 {to}，对话会交接过去。",
   "control.engine_switching": "将引擎切换设为“{mode}”",
+  "control.parallel_max": "无论套餐用量如何，每位成员最多同时进行 {per_member} 个工单，每个引擎最多 {per_engine} 个（最大）",
+  "control.parallel_auto": "并行工作重新按套餐用量调整（自动）",
   "control.design_reviewer_auto": "自动选择谁来评审设计师的工作：另一个引擎有余量时用它，否则用设计师自己引擎的新会话",
   "control.design_reviewer_same": "由设计师自己的引擎在新会话中评审其工作",
   "control.design_reviewer_other": "始终由另一个引擎评审设计师的工作",

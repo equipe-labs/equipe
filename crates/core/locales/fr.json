@@ -525,6 +525,8 @@
   "control.engine_turn_end": "{name} passe à {to} à la fin de ce tour, sa conversation transmise.",
   "control.engine_free": "{name} passe à {to} dès qu'il est libre, sa conversation transmise.",
   "control.engine_switching": "Passer le changement de moteur à « {mode} »",
+  "control.parallel_max": "Traiter jusqu’à {per_member} tickets par membre et {per_engine} par moteur à la fois, quelle que soit l’utilisation du forfait (Max)",
+  "control.parallel_auto": "Régler de nouveau le travail en parallèle sur l’utilisation du forfait (Auto)",
   "control.design_reviewer_auto": "Choisir automatiquement qui relit le travail du designer : l’autre moteur quand il a de la marge, sinon une nouvelle session du moteur du designer",
   "control.design_reviewer_same": "Faire relire le travail du designer par son propre moteur, dans une nouvelle session",
   "control.design_reviewer_other": "Faire toujours relire le travail du designer par l’autre moteur",

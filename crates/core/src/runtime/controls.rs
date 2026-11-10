@@ -7,6 +7,20 @@ use super::*;
 use crate::controls::{self, Change, ModelFit, Mover, engine_name};
 
 impl Runtime {
+    /// The squad's parallel work, kept and told; more room on max starts
+    /// what is ready at once, and less lets the runs at work finish.
+    pub(super) async fn set_parallel(&mut self, squad: &str, parallel: crate::protocol::lanes::Parallel) {
+        let parallel = parallel.clamped();
+        match self.journal(squad).map(|j| j.set_parallel(parallel)) {
+            Some(Ok(())) => {}
+            Some(Err(err)) => return self.squad_error(squad, format!("{err:#}")),
+            None => return,
+        }
+        crate::daemon_log!("equipe: {squad}'s parallel work is now {} ({} per member, {} per engine)", parallel.mode.code(), parallel.per_member, parallel.per_engine);
+        self.publish(Event::ParallelChanged { squad: squad.to_owned(), parallel });
+        self.dispatch(squad).await;
+    }
+
     /// `settings`: what the person's screen shows of the squad's settings.
     pub(super) fn settings_text(&mut self, squad: &str) -> String {
         let projects = self.projects(squad);
@@ -20,6 +34,7 @@ impl Runtime {
             journal.subagents_at_once(),
         );
         let reviewer = journal.design_reviewer();
+        let parallel = journal.parallel();
         let (routines, signals, allowed) = (journal.routines(), journal.signals(), journal.allowed().unwrap_or_default());
         let on = |b: bool| if b { "on" } else { "off" };
         let mut out = vec![format!("Squad {squad}.")];
@@ -48,6 +63,11 @@ impl Runtime {
             ),
         });
         out.push(format!("Engine switching: {}.", format!("{switching:?}").to_lowercase()));
+        out.push(if parallel.is_max() {
+            format!("Parallel work (parallel): max — up to {} tickets per member and {} per engine at once, whatever the plans' usage.", parallel.per_member, parallel.per_engine)
+        } else {
+            format!("Parallel work (parallel): auto — fewer tickets at once as a plan runs low (max's caps: {} per member, {} per engine).", parallel.per_member, parallel.per_engine)
+        });
         out.push(format!(
             "Who reviews the designer's work (design_reviewer): {}.",
             match reviewer {
@@ -188,6 +208,7 @@ impl Runtime {
             }
             Change::Effort { member, effort } => Command::SetEffort { session: session(&member)?, effort },
             Change::EngineSwitching(mode) => Command::SetEngineSwitching { squad: squad_name, mode },
+            Change::Parallel { .. } => Command::SetParallel { squad: squad_name, parallel: self.parallel_for(squad, change) },
             Change::DesignReviewer(reviewer) => Command::SetDesignReviewer { squad: squad_name, reviewer },
             Change::RemoveProject(name) => Command::RemoveProject { squad: squad_name, path: project(&name)? },
             Change::Hq(name) => Command::SetHq { squad: squad_name, path: name.as_deref().map(project).transpose()? },
@@ -203,6 +224,18 @@ impl Runtime {
             Change::Merge { ticket, push } => Command::Merge { squad: squad_name, ticket, push },
             Change::KeepOnBranch(ticket) => Command::KeepOnBranch { squad: squad_name, ticket },
         })
+    }
+
+    /// The squad's parallel work as `change` leaves it: the caps it names,
+    /// else those the squad has.
+    fn parallel_for(&self, squad: &str, change: &Change) -> crate::protocol::lanes::Parallel {
+        let now = self.journals.get(squad).map(Journal::parallel).unwrap_or_default();
+        match change {
+            Change::Parallel { mode, per_member, per_engine } => {
+                crate::protocol::lanes::Parallel { mode: *mode, per_member: per_member.unwrap_or(now.per_member), per_engine: per_engine.unwrap_or(now.per_engine) }.clamped()
+            }
+            _ => now,
+        }
     }
 
     /// The squad's projects, as far as is known without opening its journal.
@@ -364,6 +397,14 @@ impl Runtime {
             }
             Change::Effort { member, effort } => say!(self, "control.effort", member = member, effort = effort.as_deref().unwrap_or("default")),
             Change::EngineSwitching(m) => say!(self, "control.engine_switching", mode = format!("{m:?}").to_lowercase()),
+            Change::Parallel { .. } => {
+                let parallel = self.parallel_for(squad, change);
+                if parallel.is_max() {
+                    say!(self, "control.parallel_max", per_member = parallel.per_member, per_engine = parallel.per_engine)
+                } else {
+                    say!(self, "control.parallel_auto")
+                }
+            }
             Change::DesignReviewer(crate::protocol::engines::Reviewer::Auto) => say!(self, "control.design_reviewer_auto"),
             Change::DesignReviewer(crate::protocol::engines::Reviewer::Same) => say!(self, "control.design_reviewer_same"),
             Change::DesignReviewer(crate::protocol::engines::Reviewer::Other) => say!(self, "control.design_reviewer_other"),

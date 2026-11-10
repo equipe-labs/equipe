@@ -198,6 +198,7 @@ pub fn reads(command: &Command) -> bool {
         | C::SetEngineSwitching { .. }
         | C::SetPmAccepts { .. }
         | C::SetSubagentsAtOnce { .. }
+        | C::SetParallel { .. }
         | C::SetDesignReviewer { .. }
         | C::SetRoleModel { .. }
         | C::ApplyEngineProposal { .. }
@@ -604,6 +605,7 @@ mod tests {
             Command::SetEngineSwitching { squad: s(), mode: engines::Switching::default() },
             Command::SetPmAccepts { squad: s(), on: false },
             Command::SetSubagentsAtOnce { squad: s(), at_once: Some(4) },
+            Command::SetParallel { squad: s(), parallel: equipe_core::protocol::lanes::Parallel::max(6, 16) },
             Command::SetDesignReviewer { squad: s(), reviewer: engines::Reviewer::Same },
             Command::Models { engine: Engine::Codex },
             Command::SetRoleModel { squad: s(), default: equipe_core::protocol::RoleModel { role: "qa".into(), engine: Engine::Claude, model: None, effort: None } },

@@ -8,7 +8,8 @@
 //! - the order members of a role take tickets in is fixed (fewest in hand,
 //!   then who joined first) and the same on every run;
 //! - a ticket owned by a member by name goes to that member only;
-//! - how many run at once is the lane policy's (plan usage, never members);
+//! - how many run at once is the lane policy's (plan usage, never members),
+//!   or the person's caps on max;
 //! - a call from a run that no longer holds its ticket changes nothing;
 //! - one run waiting, stopped or failing leaves its siblings as they were;
 //! - a restart brings each run back exactly once.
@@ -287,6 +288,51 @@ async fn how_many_run_at_once_follows_the_plan_not_the_number_of_members() {
     until(&mut events, |e| matches!(e, Event::PlanUsage { .. })).await;
     handle.send(Command::Cancel { squad: "acme".into(), ticket: 2 });
     assert_eq!(started(&mut events, 2).await, [(2, 4), (2, 5)]);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn on_max_the_persons_caps_hold_whatever_the_plan_and_auto_brings_the_plan_back() {
+    use equipe_core::protocol::lanes::{Parallel, ParallelMode};
+    let engine = Engine0::new(true);
+    let (home, repo) = squad();
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    // The plan nearly used up: on auto, one at a time.
+    let window = PlanWindow { used_percent: 95, resets_at: 4_000_000_000 };
+    handle.usage_read(Engine::Claude, PlanUsage { five_hour: Some(window), seven_day: None });
+    until(&mut events, |e| matches!(e, Event::PlanUsage { .. })).await;
+    assert_eq!(handle.snapshot("acme").await.parallel, Parallel::default(), "never set: auto");
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    for n in 1..=6 {
+        ticket_for(&handle, "frontend", &format!("Page {n}")).await;
+    }
+    assert_eq!(started(&mut events, 1).await, [(2, 1)]);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(runs(&handle.snapshot("acme").await).len(), 1);
+    // Max at four per member: four at once, the plan's usage left out.
+    handle.send(Command::SetParallel { squad: "acme".into(), parallel: Parallel::max(4, 16) });
+    until(&mut events, |e| matches!(e, Event::ParallelChanged { parallel, .. } if parallel.is_max())).await;
+    assert_eq!(started(&mut events, 3).await, [(2, 2), (2, 3), (2, 4)]);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let snapshot = handle.snapshot("acme").await;
+    assert_eq!(runs(&snapshot).len(), 4, "never past the cap");
+    assert_eq!(snapshot.parallel, Parallel::max(4, 16));
+    assert_eq!(members(&snapshot), ["pm", "frontend"], "no one added for the queue");
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().parallel(), Parallel::max(4, 16), "kept");
+    // Out of bounds from an old or careless screen: held within them.
+    handle.send(Command::SetParallel { squad: "acme".into(), parallel: Parallel { per_member: 0, ..Parallel::max(4, 99) } });
+    let told = until(&mut events, |e| matches!(e, Event::ParallelChanged { .. })).await;
+    assert!(matches!(told.last(), Some(Event::ParallelChanged { parallel, .. }) if *parallel == Parallel::max(1, 32)), "{told:#?}");
+    // Back on auto, the plan rules again: one run ends and nothing new starts.
+    let auto = Parallel { mode: ParallelMode::Auto, ..Parallel::max(4, 16) };
+    handle.send(Command::SetParallel { squad: "acme".into(), parallel: auto });
+    until(&mut events, |e| matches!(e, Event::ParallelChanged { parallel, .. } if !parallel.is_max())).await;
+    handle.send(Command::Cancel { squad: "acme".into(), ticket: 1 });
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Cancelled)).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(runs(&handle.snapshot("acme").await).iter().map(|r| r.1).collect::<Vec<_>>(), [2, 3, 4], "over auto's limit: nothing more starts");
+    assert_eq!(handle.snapshot("acme").await.parallel, auto, "max's caps kept for next time");
     handle.shutdown().await;
 }
 
