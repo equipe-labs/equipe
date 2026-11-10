@@ -60,7 +60,7 @@ jobs:
       - run: cargo build -p equipe-desktop --features snapshot --bins --example fake_daemon --example remote_probe --locked
       - name: TP-9 ConPTY runs a command and its output shows
         run: cargo test -p equipe-desktop --features snapshot --locked conpty_starts_powershell
-      - name: Desktop unit tests (10 Mac/path-assumption tests still fail on Windows: tracked separately)
+      - name: "Desktop unit tests (10 Mac/path-assumption tests still fail on Windows, tracked separately)"
         continue-on-error: true
         run: cargo test -p equipe-desktop --features snapshot --locked
       - name: TP-8 screens against the fake daemon
