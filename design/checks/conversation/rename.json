@@ -30,7 +30,32 @@
     "/Users/abel/.equipe/worktrees/equipe/t711-6af31e01/design/checks/conversation/rename/1200.png"
   ],
   "new": true,
-  "first": null,
+  "first": {
+    "pass": false,
+    "fixes": [
+      {
+        "where": "카드의 이름 필드 (760, 1200 둘 다)",
+        "what": "카드가 열릴 때 'Conversation topic titles' 전체를 선택 하이라이트로 보여 주고 커서는 끝에 두세요 (spec §The card 2, UI map 상태 editing). 선택이 실제로 되어 있다면 GPUI Input의 선택 배경이 이 테두리와 배경 위에서 눈에 보이는지 확인하세요.",
+        "why": "선택 표시가 없으면 이름을 바꾸려는 사람은 입력이 기존 제목을 덮어쓸지, 뒤에 붙을지 알 수 없어서 먼저 지우게 됩니다. 이 그림은 editing 상태의 기준 그림인데, 상태를 정의하는 핵심 장면이 빠져 있습니다."
+      }
+    ],
+    "summary": "카드는 spec대로 헤더 제목 버튼 바로 아래 왼쪽 끝을 맞춰 달려 있고, 열려 있는 동안 제목에 p.wash가 남아 있습니다. 라벨·필드·Cancel Esc·Save ↩ 순서, 360 폭, 대화가 뒤에 보이는 구성도 760과 1200 모두에서 흔들림이 없습니다. 다만 spec은 이 editing 상태에서 '현재 제목 전체가 선택된 채로' 열려야 한다고 하는데, 두 너비 모두 필드에 선택 표시도 커서도 보이지 않아 바로 지우고 다시 쓸 수 있다는 신호가 없습니다.",
+    "at": 1794318316,
+    "by": "claude",
+    "widths": [
+      760,
+      1200
+    ],
+    "first": true,
+    "reviewer": {
+      "engine": "claude",
+      "member": "claude",
+      "why": {
+        "kind": "used_up",
+        "window": "weekly"
+      }
+    }
+  },
   "verdict": {
     "pass": false,
     "fixes": [
@@ -83,5 +108,5 @@
       }
     }
   },
-  "fixes_in_a_row": 1
+  "fixes_in_a_row": 2
 }
