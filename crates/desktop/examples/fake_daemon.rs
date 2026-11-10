@@ -12,6 +12,10 @@
 //! `FAKE_PHONE_QA=<file>` ends the conversation on a phone test's report kept in that file;
 //! `FAKE_CROWD=1` has nearly every project wait on the person (`fake_daemon/crowd.rs`);
 //! `FAKE_BUSY=1` adds four members at work in web and more finished today;
+//! `FAKE_RUNS=1` has frontend run three tickets at once (T-160 to T-162), each in a
+//! session of its own under it — one asking the person, one at rest (`FAKE_RUNS=<n>`: n of them);
+//! `FAKE_STALLED=1` adds a stalled run (T-90), a paused one (T-91) and one queued (T-92);
+//! Resume, Requeue and Reassign on T-90 queue it as the daemon does;
 //! `FAKE_SUBAGENTS=1` has frontend and backend hand work to subagents that come and go;
 //! `FAKE_HELPERS=1` puts backend on Nemotron with equipe's helpers at work, one looking
 //! stuck (`fake_daemon/helpers.rs`; `codex`: a quiet subagent of Codex's own instead);
@@ -35,10 +39,12 @@
 //! `FAKE_SECONDS` (default 4) is how long a reply streams; `FAKE_SAID` adds a
 //! last message of the person's to the PM's history (attachment tags and all);
 //! `FAKE_KEPT=<words>` a voice memo whose files are gone, its words kept with it.
-//! `FAKE_CARDS=1` ends it on a reply naming T-42 (a review), T-117 and T-999
-//! (no such ticket), to rest the pointer on; `FAKE_CARDS=long` gives T-42 a
+//! `FAKE_CARDS=1` ends it on a person's line naming T-42 and T-51, then a
+//! multiline reply naming emphasized T-42, T-117 (waiting for the person) and T-999 (no such ticket),
+//! to rest the pointer on; `FAKE_CARDS=long` gives T-42 a
 //! hand-in long enough to scroll on its card, and with `FAKE_REPLY_IMAGES=1`
 //! the reply names T-4 too — its pictures and all, a card taller than a small window.
+//! `FAKE_RENAME=refuse`: a conversation's new name is refused, as a daemon that couldn't keep it would.
 //! `FAKE_REVIEW=1` gives T-42 and T-71 a made-up Nemotron review (canned, not a model's).
 //! `FAKE_ASKLIST=1` ends the PM's history on a reply asking three things in a
 //! numbered list of its own words, as a member does that skips `ask_decision`.
@@ -75,6 +81,8 @@
 //! (`fake_daemon/history.rs`); `FAKE_LONG_REPLY=1`: its answers are long too.
 //! `FAKE_HISTORY_PICTURES=<n>`: its screenshots are n different ones, and every
 //! other reply embeds one too — for measuring what pictures hold (`EQUIPE_SNAPSHOT_HIDDEN`, `snapshot.rs`).
+//! `FAKE_VISUALS=1`: it ends on a reply with a Mermaid flow, a table and two
+//! HTML cards, drawn by Chrome (`fake_daemon/visuals.rs`; `late`, `none`).
 //! `FAKE_READING=1`: it ends on a long reply with every kind of text
 //! (`fake_daemon/reading.rs`), to compare how the conversation reads.
 //!
@@ -151,6 +159,13 @@ fn lang() -> equipe_core::i18n::Lang {
     std::env::var("EQUIPE_LANG").ok().and_then(|tag| equipe_core::i18n::Lang::parse(&tag)).unwrap_or(equipe_core::i18n::Lang::En)
 }
 
+/// The topic the fake names a kept conversation, in the screen's language
+/// where `fake_daemon/locales/topics.json` has it, else in English.
+fn topic_title() -> String {
+    let topics: std::collections::HashMap<String, String> = serde_json::from_str(include_str!("fake_daemon/locales/topics.json")).unwrap_or_default();
+    topics.get(lang().code()).or_else(|| topics.get("en")).cloned().unwrap_or_default()
+}
+
 const REPLY: &str = "Sure, got it. I'll look over the board now and take **T-12** first.\n\nHere's the order:\n\n- Tidy the header component\n- Check IME composition in the composer\n- Check the streaming display (`T-13`)\n\n| Item | Status | Owner |\n|---|---|---|\n| Header | In progress | frontend |\n| Composer | Waiting | frontend |\n| Daemon link | Done | backend |\n\n```rust\nfn main() {\n    println!(\"hello, equipe\");\n}\n```\n\nI'll let you know when it's done.";
 
 /// `FAKE_ASKLIST`'s reply: what the PM needs to know, as a numbered list in prose.
@@ -175,6 +190,7 @@ fn info(session: SessionId, role: &str, recent: Vec<Entry>) -> SessionInfo {
         steering: vec![],
         steering_in: vec![],
         lane: None,
+        run: None,
         estimate: None,
         recent,
         recent_at: Vec::new(),
@@ -285,6 +301,8 @@ fn asks() -> &'static std::sync::Mutex<Vec<Approval>> {
             .into_iter()
             // Orchestration's squad: only backend held on a permission, frontend at work.
             .filter(|a| !orchestra::on() || a.member == "backend")
+            // `FAKE_RUNS`: frontend's second run is the one asking.
+            .map(|a| if runs() > 1 && a.member == "frontend" { Approval { session: 61, ticket: Some(161), ..a } } else { a })
             .collect::<Vec<_>>()
         } else {
             vec![]
@@ -402,6 +420,44 @@ fn ticket(id: u32, status: &str, project: &str, who: &str, title: &str, body: &s
     serde_json::from_value(serde_json::json!({"id": id, "title": title, "body": body, "status": status, "owner": who, "assignee": who, "project": repo(project), "depends_on": deps, "branch": branch, "created_by": "pm", "note": note})).unwrap()
 }
 
+/// `FAKE_STALLED=1`: runs the daemon keeps of three tickets — one stalled
+/// (its turn ended without a hand-in), one paused (its member isn't on it),
+/// one the person already brought back, queued for its member.
+fn stalled() -> bool {
+    std::env::var("FAKE_STALLED").is_ok_and(|v| v == "1")
+}
+
+fn stalled_tickets() -> Vec<Ticket> {
+    let now = unix();
+    let run = |state: &str, lease: u64, reason: Option<&str>, head: Option<&str>, dirty: Option<u32>| {
+        serde_json::from_value(serde_json::json!({
+            "state": state, "session": 7, "operation": "start:7", "generation": 2,
+            "heartbeat_at": now - 600, "lease_expires_at": lease, "reason": reason, "head": head, "dirty": dirty,
+        }))
+        .ok()
+        .map(Box::new)
+    };
+    let mut stuck = ticket(
+        90,
+        "in_progress",
+        "web",
+        "frontend",
+        "Coupon field on the checkout page",
+        "- [ ] A coupon can be applied and removed\n- [ ] The total updates at once",
+        &[],
+        Some("equipe/t-90-coupon"),
+        Some("Reopened by the PM: The coupon field overlaps the total at 760px."),
+    );
+    stuck.worktree = Some(repo("web").join(".equipe-worktrees/t90-6af01aaf"));
+    stuck.remaining = vec!["The coupon API key for staging".into()];
+    stuck.execution = run("stalled", 0, Some(equipe_core::protocol::stall_reason::LEASE_EXPIRED), Some("3f9c2a1"), Some(3));
+    let mut paused = ticket(91, "in_progress", "api", "backend", "Refund webhook retries", "", &[], Some("equipe/t-91-refunds"), None);
+    paused.execution = run("active", now + 90, None, None, None);
+    let mut queued = ticket(92, "todo", "app", "designer", "Settings screen spacing pass", "", &[], Some("equipe/t-92-spacing"), None);
+    queued.execution = run("queued", 0, None, None, None);
+    vec![stuck, paused, queued]
+}
+
 /// The board: work in every state, across three projects.
 fn board() -> Vec<Ticket> {
     if crowd::on() {
@@ -454,8 +510,12 @@ fn board() -> Vec<Ticket> {
         t.plan = Some(plan.clone());
         t.body.push_str(&format!("\n\nPlan: `{plan}`\n\nThis ticket's test plan:\n\n- TP-1: choosing a card and paying creates an order\n- TP-3: the chosen payment method survives a refresh"));
     }
-    if your_turn().is_some() {
+    // `FAKE_CARDS`'s reply names T-117 as the person's turn: it is on the board then too.
+    if your_turn().is_some() || std::env::var_os("FAKE_CARDS").is_some() {
         out.push(turn_ticket());
+    }
+    if stalled() {
+        out.extend(stalled_tickets());
     }
     if replies::on() {
         out.extend(replies::tickets(|id, title, note| ticket(id, "review", "web", "frontend", title, "", &[], Some("equipe/frontend-t4-6ad33ac5"), Some(note))));
@@ -476,6 +536,7 @@ fn board() -> Vec<Ticket> {
             t.design_qa = Some(studio::TICKET);
         }
     }
+    out.extend(run_list().into_iter().map(|(_, id, title, ..)| ticket(id, "in_progress", "web", "frontend", &title, "", &[], Some(&format!("equipe/frontend-t{id}")), None)));
     if busy() {
         out.extend(BUSY.iter().map(|(id, _, who, title)| ticket(*id, "in_progress", "web", who, title, "", &[], None, None)));
         out.extend([
@@ -640,6 +701,35 @@ fn busy() -> bool {
 /// screen attaches (default both; `0`: nothing turns anywhere).
 fn working() -> u32 {
     std::env::var("FAKE_WORKING").ok().and_then(|v| v.parse().ok()).unwrap_or(2)
+}
+
+/// `FAKE_RUNS=<n>` (`1`: three): how many tickets frontend runs at once, each
+/// in a session of its own under it ([`equipe_core::protocol::RunOf`]).
+fn runs() -> usize {
+    match std::env::var("FAKE_RUNS").ok().and_then(|v| v.parse::<usize>().ok()) {
+        Some(1) => 3,
+        Some(n) => n,
+        None => 0,
+    }
+}
+
+/// A run: (session, ticket, title, at work, its latest step).
+type Run = (SessionId, u32, String, bool, (&'static str, &'static str));
+
+/// Frontend's runs.
+fn run_list() -> Vec<Run> {
+    let titles = [
+        "Product detail page image gallery",
+        "Checkout address form validation and error messages for every field",
+        "Search results empty state",
+    ];
+    (0..runs())
+        .map(|n| {
+            let title = titles.get(n).map_or_else(|| format!("Landing section {}", n + 1), |t| (*t).to_owned());
+            let tool = if n % 2 == 0 { ("Edit", "src/gallery.tsx") } else { ("Bash", "npm test -- checkout") };
+            (60 + n as SessionId, 160 + n as u32, title, n != 2, tool)
+        })
+        .collect()
 }
 
 /// The busy squad's extra members: (ticket, session, name, title).
@@ -981,9 +1071,14 @@ fn on_board_command(command: &Command) -> Option<Vec<Event>> {
             let entries = records().lock().unwrap().get(ticket).cloned().unwrap_or_default();
             Some(vec![Event::TicketHistory { squad: squad(), ticket: *ticket, entries }])
         }
+        // `FAKE_NO_LOOKUP=1`: a daemon slow to answer, to shoot a card that is still looking.
+        Command::TicketHistory { .. } if std::env::var_os("FAKE_NO_LOOKUP").is_some() => Some(Vec::new()),
         Command::TicketHistory { ticket, .. } => {
             let entries = records().lock().unwrap().get(ticket).cloned().unwrap_or_default();
-            Some(vec![Event::TicketHistory { squad: squad(), ticket: *ticket, entries }])
+            // As the daemon does: the ticket first, if it has it.
+            let mut out: Vec<Event> = all.iter().find(|t| t.id == *ticket).map(|t| Event::TicketChanged { squad: squad(), ticket: t.clone() }).into_iter().collect();
+            out.push(Event::TicketHistory { squad: squad(), ticket: *ticket, entries });
+            Some(out)
         }
         _ => None,
     }
@@ -1012,11 +1107,33 @@ fn run_commands(commands: Vec<Command>, events: &broadcast::Sender<Event>) {
 fn on_ticket_command(command: &Command) -> Option<Ticket> {
     let mut all = tickets().lock().unwrap();
     let id = match command {
-        Command::Accept { ticket, .. } | Command::Merge { ticket, .. } | Command::KeepOnBranch { ticket, .. } | Command::Reopen { ticket, .. } | Command::Resume { ticket, .. } | Command::Cancel { ticket, .. } => *ticket,
+        Command::Accept { ticket, .. }
+        | Command::Merge { ticket, .. }
+        | Command::KeepOnBranch { ticket, .. }
+        | Command::Reopen { ticket, .. }
+        | Command::Resume { ticket, .. }
+        | Command::Requeue { ticket, .. }
+        | Command::Cancel { ticket, .. } => *ticket,
         _ => return None,
     };
     let t = all.iter_mut().find(|t| t.id == id)?;
     match command {
+        // A stalled run brought back: queued for its owner, everything else kept, as the daemon does.
+        Command::Requeue { how, operation, .. } => {
+            use equipe_core::protocol::{ExecutionState, Recovery};
+            let run = t.execution.as_mut().filter(|e| e.state == ExecutionState::Stalled)?;
+            run.state = ExecutionState::Queued;
+            run.operation = operation.clone();
+            run.generation += 1;
+            run.reason = None;
+            let member = t.assignee.take().unwrap_or_default();
+            t.owner = Some(match how {
+                Recovery::Resume => member,
+                Recovery::Requeue => member.rsplit_once('-').map_or(member.clone(), |(role, _)| role.to_owned()),
+                Recovery::Reassign(to) => to.clone(),
+            });
+            t.status = TicketStatus::Todo;
+        }
         Command::Accept { .. } if t.status == TicketStatus::Proposed => t.status = TicketStatus::Todo,
         Command::Accept { .. } => {
             t.status = TicketStatus::Done;
@@ -1066,6 +1183,8 @@ mod torture;
 mod history;
 #[path = "fake_daemon/reading.rs"]
 mod reading;
+#[path = "fake_daemon/visuals.rs"]
+mod visuals;
 
 #[path = "fake_daemon/pictures.rs"]
 mod pictures;
@@ -1271,6 +1390,10 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history.push(Entry::User { text: reading::ASKED.into(), kept: Vec::new() });
                             history.push(Entry::Reply { text: reading::REPLY.into() });
                         }
+                        if visuals::on() {
+                            history.push(Entry::User { text: visuals::ASKED.into(), kept: Vec::new() });
+                            history.push(Entry::Reply { text: visuals::reply() });
+                        }
                         if pictures::on() {
                             history.push(Entry::Note { undo: None, text: pictures::NEWS.into() });
                         }
@@ -1295,9 +1418,9 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         // `FAKE_CARDS=1`: a last reply naming a review, a wait and a number
                         // long gone, for the tickets' cards on the pointer.
                         if std::env::var_os("FAKE_CARDS").is_some() {
-                            history.push(Entry::User { text: "Anything for me to look at?".into(), kept: Vec::new() });
+                            history.push(Entry::User { text: "Can you compare T-42 with T-51 before I review it?".into(), kept: Vec::new() });
                             let pictures = if replies::on() { " Have a look at T-4's pictures too." } else { "" };
-                            history.push(Entry::Reply { text: format!("T-42 is waiting for review. T-117 is your turn, and the old T-999 is gone.{pictures}") });
+                            history.push(Entry::Reply { text: format!("## What needs attention\n\n- **T-42** is waiting for review; T-51 is the related follow-up.\n- T-117 is your turn, and the old T-999 is gone.{pictures}") });
                         }
                         if let Some(how) = your_turn() {
                             history.push(Entry::Note { undo: None, text: "frontend handed in T-63 for your review · Competitor onboarding research.".into() });
@@ -1421,6 +1544,9 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             history.push(Entry::Reply { text: "Sure, I'm watching for a new commit and deploy. When it's up I'll check the screen and show you.".into() });
                         }
                         let mut pm_info = info(1, "pm", history);
+                        if visuals::on() {
+                            pm_info.visuals = visuals::visuals();
+                        }
                         if let Some(mode) = std::env::var("FAKE_COMPACT").ok().filter(|m| !m.is_empty()) {
                             let ago = |secs: u64| now_ms().saturating_sub(secs * 1000);
                             let (trigger, secs) = match mode.as_str() {
@@ -1455,6 +1581,19 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         let mut sessions = vec![pm_info, frontend, backend, designer];
                         if std::env::var_os("FAKE_NO_DESIGNER").is_some() {
                             sessions.pop();
+                        }
+                        if runs() > 0 {
+                            // Frontend runs its tickets beside its own conversation, which rests.
+                            if let Some(frontend) = sessions.iter_mut().find(|s| s.session == 2) {
+                                frontend.work = None;
+                                frontend.state = SessionState::Ready;
+                                frontend.estimate = None;
+                            }
+                            for (session, ticket, title, working, tool) in run_list() {
+                                let mut run = on(info(session, "frontend", vec![]), ticket, "web", &title, working, tool, None);
+                                run.run = Some(equipe_core::protocol::RunOf { of: 2, ticket, generation: 1 });
+                                sessions.push(run);
+                            }
                         }
                         if busy() {
                             for (ticket, session, name, title) in BUSY {
@@ -1524,7 +1663,11 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             idle_wake_hours: Some(routine::idle_wake_hours()),
                             signals: signals::signals(),
                             accepts: accept::cards(),
-                            tickets: tickets().lock().unwrap().clone(),
+                            // `FAKE_STALE=117`: the snapshot lacks that ticket (as a missed sync would), the board still has it.
+                            tickets: {
+                                let stale: Option<u32> = std::env::var("FAKE_STALE").ok().and_then(|v| v.parse().ok());
+                                tickets().lock().unwrap().iter().filter(|t| Some(t.id) != stale).cloned().collect()
+                            },
                             allowed: allowed().lock().unwrap().clone(),
                             browsers_shown: true,
                             disk: disk::status(),
@@ -1535,6 +1678,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             ..Default::default()
                         };
                         team::on_hello(&events);
+                        visuals::on_hello(&events);
                         // `FAKE_VERSION=0.1.0`: an older daemon, for the update banner.
                         let hello = Hello { version: std::env::var("FAKE_VERSION").unwrap_or_else(|_| "fake".into()), snapshot };
                         writer.write_all(Message::response(id, hello).to_line().as_bytes()).await.unwrap();
@@ -1604,7 +1748,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                     // design system's, checked as the daemon checks it.
                     (Some(rpc::READ_IMAGE), Some(id)) => {
                         let ask: rpc::ReadImage = message.params_as().unwrap();
-                        let reply = match phone_qa::read(&ask).or_else(|why| pictures::read(&ask).map_err(|_| why)).or_else(|why| if replies::on() { replies::read(&ask) } else { Err(why) }).or_else(|why| if design::mode().is_some() { design::read_image(&ask) } else { Err(why) }).or_else(|why| history::read(&ask).map_err(|_| why)).or_else(|why| studio::read_image(&ask).map_err(|_| why)) {
+                        let reply = match phone_qa::read(&ask).or_else(|why| pictures::read(&ask).map_err(|_| why)).or_else(|why| if replies::on() { replies::read(&ask) } else { Err(why) }).or_else(|why| if visuals::on() { visuals::read(&ask) } else { Err(why) }).or_else(|why| if design::mode().is_some() { design::read_image(&ask) } else { Err(why) }).or_else(|why| history::read(&ask).map_err(|_| why)).or_else(|why| studio::read_image(&ask).map_err(|_| why)) {
                             Ok(read) => Message::response(id, read),
                             Err(why) => Message::failure(id, -32000, why),
                         };
@@ -1726,8 +1870,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                             let events = events.clone();
                                             tokio::spawn(async move {
                                                 turn(session, events.clone(), seconds).await;
-                                                let title = if lang() == equipe_core::i18n::Lang::Ko { "세션 주제 제목" } else { "Conversation topic titles" };
-                                                let _ = events.send(Event::ConversationTitle { session, title: title.into() });
+                                                let title = topic_title();
+                                                let _ = events.send(Event::ConversationTitle { session, title, named: false });
                                             })
                                         }
                                         None => tokio::spawn(turn(session, events.clone(), seconds)),
@@ -1743,6 +1887,15 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             }
                             Command::MoveConversation { session, project } => {
                                 let _ = events.send(Event::LaneMoved { session, project });
+                            }
+                            // Like the daemon: a conversation of the person's named by them, or
+                            // (`FAKE_RENAME=refuse`) refused, the name as it was.
+                            Command::RenameConversation { session, title, .. } => {
+                                let kept = routes.lock().await.kept.contains(&session);
+                                match equipe_core::protocol::conversation_title(&title).filter(|_| kept && std::env::var("FAKE_RENAME").as_deref() != Ok("refuse")) {
+                                    Some(title) => drop(events.send(Event::ConversationTitle { session, title, named: true })),
+                                    None => drop(events.send(Event::ConversationRenameRefused { session })),
+                                }
                             }
                             Command::CloseConversation { session } => {
                                 routes.lock().await.kept.remove(&session);

@@ -115,6 +115,7 @@ pub fn reads(command: &Command) -> bool {
         | C::KeepOnBranch { .. }
         | C::Reopen { .. }
         | C::Resume { .. }
+        | C::Requeue { .. }
         | C::Cancel { .. }
         | C::CreateTicket { .. }
         | C::EditTicket { .. }
@@ -136,6 +137,7 @@ pub fn reads(command: &Command) -> bool {
         | C::Focus { .. }
         | C::NewConversation { .. }
         | C::MoveConversation { .. }
+        | C::RenameConversation { .. }
         | C::CloseConversation { .. }
         | C::ReopenConversation { .. }
         | C::AddProject { .. }
@@ -504,6 +506,7 @@ mod tests {
             Command::KeepOnBranch { squad: s(), ticket: 1 },
             Command::Reopen { squad: s(), ticket: 1, note: "n".into() },
             Command::Resume { squad: s(), ticket: 1, note: "n".into() },
+            Command::Requeue { squad: s(), ticket: 1, operation: "o".into(), how: equipe_core::protocol::Recovery::Resume },
             Command::Cancel { squad: s(), ticket: 1 },
             Command::CreateTicket { squad: s(), draft: TicketDraft::default() },
             Command::EditTicket { squad: s(), ticket: 1, changes: TicketEdit::default() },
@@ -526,6 +529,7 @@ mod tests {
             Command::Focus { squad: s(), project: None },
             Command::NewConversation { squad: s(), session: 1, project: None },
             Command::MoveConversation { session: 1, project: None },
+            Command::RenameConversation { squad: s(), session: 1, title: "t".into() },
             Command::CloseConversation { session: 1 },
             Command::ReopenConversation { squad: s(), session: 1 },
             Command::AddProject { squad: s(), path: "/p".into() },

@@ -154,7 +154,10 @@ flowchart LR
 5. **The work is accepted.** By default the PM checks and accepts routine work, and brings you
    anything that can't easily be undone or reaches outside: production deploys, live data,
    money, security and permissions, what customers will see, and brand direction. Turn this off
-   in **Settings → Team → The PM accepts work** and you accept every ticket yourself.
+   in **Settings → Team → The PM accepts work** and you accept every ticket yourself. When
+   the project declares its checks in `.equipe/checks.json`, equipe runs them on the work
+   merged with main before the PM's acceptance lands, and sends failing work back to its
+   member ([docs/USAGE.md](docs/USAGE.md#project-checks)).
 
 More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 

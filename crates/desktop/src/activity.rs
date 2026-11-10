@@ -177,16 +177,30 @@ pub fn title(lines: &[ToolLine]) -> Title {
     }
 }
 
-/// Where a group stands: running while any call runs, failed when one did.
+/// Where a turn's activity stands: running while any call runs; otherwise
+/// the latest decisive call says whether the turn recovered from an earlier
+/// failure. A failed call remains in the opened detail even after recovery.
 pub fn status(lines: &[ToolLine]) -> Status {
     if lines.iter().any(|l| l.status == Status::Running) {
         Status::Running
-    } else if lines.iter().any(|l| l.status == Status::Failed) {
-        Status::Failed
-    } else if lines.iter().all(|l| matches!(l.status, Status::Done | Status::Declined)) {
-        if lines.iter().any(|l| l.status == Status::Declined) { Status::Declined } else { Status::Done }
+    } else if let Some(last) = lines.iter().rev().find_map(|line| match line.status {
+        Status::Done | Status::Failed => Some(line.status),
+        Status::Running | Status::Declined | Status::Unknown => None,
+    }) {
+        last
+    } else if lines.iter().any(|l| l.status == Status::Declined) {
+        Status::Declined
     } else {
         Status::Unknown
+    }
+}
+
+/// The failures a turn went on past: how many of its calls failed while the
+/// turn itself did not (0 while it runs, or when it ended failed).
+pub fn recovered(lines: &[ToolLine]) -> usize {
+    match status(lines) {
+        Status::Done | Status::Declined | Status::Unknown => lines.iter().filter(|l| l.status == Status::Failed).count(),
+        Status::Running | Status::Failed => 0,
     }
 }
 
@@ -199,25 +213,10 @@ pub fn total_ms(lines: &[ToolLine]) -> Option<u64> {
     (!known.is_empty()).then(|| known.iter().sum())
 }
 
-/// A run of calls cut into groups: a call that failed stands on its own,
-/// so it stays in sight.
+/// A turn's calls stay one activity. Failures remain on their individual
+/// detail rows; whether the activity itself failed is decided by `status`.
 pub fn groups(run: Vec<ToolLine>) -> Vec<Vec<ToolLine>> {
-    let mut out: Vec<Vec<ToolLine>> = Vec::new();
-    let mut current: Vec<ToolLine> = Vec::new();
-    for line in run {
-        if line.status == Status::Failed {
-            if !current.is_empty() {
-                out.push(std::mem::take(&mut current));
-            }
-            out.push(vec![line]);
-        } else {
-            current.push(line);
-        }
-    }
-    if !current.is_empty() {
-        out.push(current);
-    }
-    out
+    if run.is_empty() { Vec::new() } else { vec![run] }
 }
 
 /// What a call shows when its row is opened: a command's full text and
@@ -740,7 +739,7 @@ mod tests {
         assert_ne!(de.fill("chat.sum_read", &[("count", "1".into())]), de.fill("chat.sum_read", &[("count", "2".into())]).replace('2', "1"));
         for lang in Lang::ALL {
             let words = equipe_core::i18n::Catalog::load(lang, crate::i18n::FILES);
-            for key in ["chat.sum_run", "chat.sum_read", "chat.sum_edit", "chat.news_count", "chat.ago_mins"] {
+            for key in ["chat.activity", "chat.activity_retried", "chat.sum_run", "chat.sum_read", "chat.sum_edit", "chat.news_count", "chat.ago_mins"] {
                 let said = words.fill(key, &[("count", "4".into())]);
                 assert!(said.contains('4') && !said.contains('{'), "{lang:?} {key}: {said}");
             }
@@ -765,13 +764,15 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_call_breaks_its_group_and_stands_alone() {
+    fn a_failed_call_stays_in_the_activity_and_a_later_success_recovers_it() {
         let run = vec![line("read", &["a"], Status::Done), line("run", &["cargo test"], Status::Failed), line("run", &["cargo fix"], Status::Done), line("edit", &["a"], Status::Done)];
         let cut = groups(run);
-        assert_eq!(cut.iter().map(Vec::len).collect::<Vec<_>>(), [1, 1, 2]);
-        assert_eq!(status(&cut[1]), Status::Failed);
-        assert_eq!(status(&cut[2]), Status::Done);
+        assert_eq!(cut.iter().map(Vec::len).collect::<Vec<_>>(), [4]);
+        assert_eq!(status(&cut[0]), Status::Done, "the failure remains in detail, but the later successful path decides the activity");
+        assert_eq!(status(&[line("read", &["a"], Status::Done), line("run", &["cargo test"], Status::Failed)]), Status::Failed, "a final failure stays visible");
         assert_eq!(groups(vec![]).len(), 0);
+        assert_eq!(recovered(&cut[0]), 1, "the folded row says one failure was got past");
+        assert_eq!(recovered(&[line("read", &["a"], Status::Done), line("run", &["cargo test"], Status::Failed)]), 0, "a failure that stood is not a retry");
     }
 
     #[test]

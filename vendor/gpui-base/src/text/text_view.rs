@@ -2794,6 +2794,79 @@ mod tests {
     }
 
     #[gpui::test]
+    fn multiline_markdown_links_report_each_hover_but_not_selection_drag(
+        cx: &mut TestAppContext,
+    ) {
+        use std::sync::Mutex;
+
+        struct MarkdownHoverRoot {
+            text_view: Entity<TextViewState>,
+        }
+
+        impl Render for MarkdownHoverRoot {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div()
+                    .w(px(520.))
+                    .h(px(160.))
+                    .child(TextView::new(&self.text_view).selectable(true))
+            }
+        }
+
+        cx.update(crate::init);
+        let hovered = Arc::new(Mutex::new(Vec::<SharedString>::new()));
+        let captured = hovered.clone();
+        cx.update(move |cx| {
+            super::on_link_hover(cx, move |url, _, _, _| {
+                captured.lock().unwrap().push(url.clone());
+            });
+        });
+        let markdown = "First [**T-42**](ticket:42) and [T-51](ticket:51).\n\n- Then [T-117](ticket:117).";
+        let (root, cx) = cx.add_window_view(|_, cx| MarkdownHoverRoot {
+            text_view: cx.new(|cx| TextViewState::markdown(markdown, cx)),
+        });
+        let cx: &mut VisualTestContext = cx;
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // Walk every rendered fragment. This finds both links in the first
+        // sentence independently, including the emphasized one, and the link
+        // in the list on the next Markdown block.
+        let bounds = root.read_with(cx, |root, cx| {
+            root.text_view.read(cx).selection_adapter.text_bounds()
+        });
+        for fragment in &bounds {
+            let mut x = fragment.left() + px(1.);
+            while x < fragment.right() {
+                cx.simulate_mouse_move(
+                    point(x, fragment.center().y),
+                    None,
+                    Modifiers::default(),
+                );
+                x += px(3.);
+            }
+        }
+        let seen = hovered.lock().unwrap();
+        for url in ["ticket:42", "ticket:51", "ticket:117"] {
+            assert!(seen.iter().any(|seen| seen == url), "{url} was not reported: {seen:?}");
+        }
+        drop(seen);
+
+        // Dragging a selection across the linked prose must not ask for a
+        // hover card, even when it crosses several ticket links.
+        let before = hovered.lock().unwrap().len();
+        let first = bounds.first().expect("first Markdown fragment");
+        let last = bounds.last().expect("last Markdown fragment");
+        cx.simulate_mouse_down(first.origin, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(point(last.right() - px(1.), last.center().y), Some(MouseButton::Left), Modifiers::default());
+        cx.simulate_mouse_up(point(last.right() - px(1.), last.center().y), MouseButton::Left, Modifiers::default());
+        assert_eq!(hovered.lock().unwrap().len(), before, "selection drag opened a link hover");
+    }
+
+    #[gpui::test]
     fn inline_object_inherits_bold_and_link_clicks_without_opening_on_drag(
         cx: &mut TestAppContext,
     ) {

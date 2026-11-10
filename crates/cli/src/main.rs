@@ -209,6 +209,11 @@ enum Command {
         /// A designer on brand work: its reference tools (`design_tools`) too
         #[arg(long)]
         branding: bool,
+        /// The ticket run this server serves (`session:ticket:generation`):
+        /// every call says it, and the daemon takes a call that changes the
+        /// ticket only from the run that holds it now
+        #[arg(long)]
+        run: Option<String>,
     },
     /// Sign in to sites in a browser, for the squad to work in as you
     Browser {
@@ -697,7 +702,10 @@ async fn run(cli: Cli) -> ExitCode {
                 },
             }
         }
-        Command::Mcp { server, squad, member, role, home, helpers, branding } => serve_mcp(&server, squad, member, role, home, helpers, branding).await,
+        Command::Mcp { server, squad, member, role, home, helpers, branding, run } => {
+            let run = run.as_deref().and_then(protocol::rpc::RunKey::parse);
+            serve_mcp(&server, squad, member, role, home, helpers, branding, run).await
+        }
         // Answered in `main`, before anything starts.
         Command::Hook { .. } => Ok(()),
         Command::Desktop { action } => desktop::run(action.map(|a| match a {
@@ -801,7 +809,8 @@ async fn run(cli: Cli) -> ExitCode {
 
 /// `equipe mcp`: a member's board tools, as a stdio MCP server. Every call goes
 /// to the daemon, which decides; stdout carries only the protocol.
-async fn serve_mcp(server: &str, squad: String, member: String, role: String, home: std::path::PathBuf, helpers: bool, branding: bool) -> CmdResult {
+#[allow(clippy::too_many_arguments)]
+async fn serve_mcp(server: &str, squad: String, member: String, role: String, home: std::path::PathBuf, helpers: bool, branding: bool, run: Option<protocol::rpc::RunKey>) -> CmdResult {
     use equipe_core::mcp::{self, Step};
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
@@ -826,14 +835,14 @@ async fn serve_mcp(server: &str, squad: String, member: String, role: String, ho
             Step::Reply(reply) => reply,
             // A designer's reference tools run here, outside its engine's sandbox.
             Step::Call { id, name, arguments } if !desktop && !phone && name == equipe_core::board::DESIGN_TOOLS => {
-                mcp::call_reply(id, &design_taste::from_board(&socket, &home, &squad, &member, &arguments).await)
+                mcp::call_reply(id, &design_taste::from_board(&socket, &home, &squad, &member, run, &arguments).await)
             }
             // The design system's checks run here, outside the member's engine's sandbox.
             Step::Call { id, name, arguments } if !desktop && !phone && name == equipe_core::board::SYSTEM_TOOLS => {
-                mcp::call_reply(id, &design_system::from_board(&socket, &home, &squad, &member, &arguments).await)
+                mcp::call_reply(id, &design_system::from_board(&socket, &home, &squad, &member, run, &arguments).await)
             }
             Step::Call { id, name, arguments } => {
-                let call = protocol::rpc::ToolCall { squad: squad.clone(), member: member.clone(), name, arguments };
+                let call = protocol::rpc::ToolCall { squad: squad.clone(), member: member.clone(), name, arguments, run };
                 let result = if desktop {
                     equipe_core::gateway::call_desktop(&socket, &call).await
                 } else if phone {
@@ -1630,7 +1639,7 @@ impl App {
                 // Work handed to a subagent shows as it starts and as it hands back.
                 Event::SubagentStarted { what, .. } => eprintln!("{}", e.dim(&format!("  ↳ {what}"))),
                 Event::SubagentEnded { .. } => eprintln!("{}", e.dim(&format!("  ↳ {}", t!("main.handed_back")))),
-                Event::SubagentStep { .. } | Event::SubagentEntry { .. } | Event::SubagentStuck { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::LaneMoved { .. } | Event::ConversationBack { .. } | Event::ConversationTitle { .. } | Event::PutAwayChanged { .. } | Event::Estimated { .. } | Event::MemoWithdrawn { .. } | Event::QueueSent { .. } | Event::VisualsRendered { .. } => {}
+                Event::SubagentStep { .. } | Event::SubagentEntry { .. } | Event::SubagentStuck { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::RunOpened { .. } | Event::LaneMoved { .. } | Event::ConversationBack { .. } | Event::ConversationTitle { .. } | Event::ConversationRenameRefused { .. } | Event::PutAwayChanged { .. } | Event::Estimated { .. } | Event::MemoWithdrawn { .. } | Event::QueueSent { .. } | Event::VisualsRendered { .. } => {}
                 Event::Compacting { .. } | Event::Compacted { .. } | Event::CompactFailed { .. } => {}
                 Event::ToolResult { .. } | Event::Thinking { .. } | Event::CommandWatch { .. } => {}
                 Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. }

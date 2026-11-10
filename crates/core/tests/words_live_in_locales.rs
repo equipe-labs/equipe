@@ -46,13 +46,22 @@ fn repository_files(root: &Path) -> Vec<String> {
 
 /// Where another language's words may be: its locale files (and macOS's
 /// `<lang>.lproj`), tests and what only tests read — the conformance vectors
-/// `cli`'s test-only `remote/vectors.rs` writes — and code vendored as it came.
+/// `cli`'s test-only `remote/vectors.rs` writes — code vendored as it came,
+/// and the records equipe's design tools keep in the language the work was
+/// done in: design QA's checks, a reviewer's critiques, an audit or QA pass,
+/// the references and directions shown, and the person's decisions in their
+/// own words (`design/decisions/`). Those quote screens and people as they
+/// were; the design lint leaves them out too. A design's own files — specs,
+/// prototypes, docs, scripts — are in English.
+const DESIGN_RECORDS: [&str; 7] = ["design/checks/", "design/critiques/", "design/audit/", "design/qa/", "design/references/", "design/directions/", "design/decisions/"];
+
 fn may_hold_any_language(path: &str) -> bool {
     let parts: Vec<&str> = path.split('/').collect();
     let dirs = &parts[..parts.len() - 1];
     dirs.iter().any(|d| *d == "locales" || *d == "tests" || d.ends_with(".lproj"))
         || parts[0] == "vendor"
         || path.starts_with("docs/remote-vectors/")
+        || DESIGN_RECORDS.iter().any(|record| path.starts_with(record))
 }
 
 /// Whether `line` opens an item only tests build: `#[cfg(test)]`, or
@@ -173,6 +182,8 @@ fn the_guard_knows_what_only_tests_build() {
     assert!(may_hold_any_language("crates/desktop/locales/ko.json") && may_hold_any_language("crates/core/tests/runtime.rs"));
     assert!(may_hold_any_language("crates/desktop/macos/lproj/ko.lproj/InfoPlist.strings") && may_hold_any_language("docs/remote-vectors/messages.json"));
     assert!(!may_hold_any_language("crates/core/skills/design-system/SKILL.md") && !may_hold_any_language("design/guidelines.md"));
+    assert!(may_hold_any_language("design/checks/t582/profile.md") && may_hold_any_language("design/decisions/2026-11-09-document-focus-header.md"));
+    assert!(!may_hold_any_language("design/specs/document-focus/spec.md") && !may_hold_any_language("design/specs/document-focus/prototype.html"));
     assert!(!may_hold_any_language("crates/desktop/examples/fake_daemon.rs") && !may_hold_any_language("crates/core/src/latest.rs"));
 }
 

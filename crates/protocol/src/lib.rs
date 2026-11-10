@@ -63,6 +63,7 @@ pub const WHY_NOW: &str = "Why now: ";
 /// (`update_ticket`, status todo).
 pub const OFFICE_HOURS_FIRST: &str = "Office hours first: the PM releases it.";
 pub mod rpc;
+pub mod runs;
 pub mod stream;
 pub mod studio;
 pub mod tags;
@@ -160,6 +161,18 @@ impl Estimate {
     }
 }
 
+/// The longest a conversation's title may be, in characters (what equipe
+/// makes up keeps under it too).
+pub const CONVERSATION_TITLE_MAX: usize = 40;
+
+/// A title as it is kept: its line breaks, tabs and runs of spaces made one
+/// space, trimmed. `None` when nothing is left or it is longer than
+/// [`CONVERSATION_TITLE_MAX`].
+pub fn conversation_title(raw: &str) -> Option<String> {
+    let title = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!title.is_empty() && title.chars().count() <= CONVERSATION_TITLE_MAX).then_some(title)
+}
+
 /// A conversation with the PM the person put away ([`Command::CloseConversation`]):
 /// off the list, its lines kept, to be opened again ([`Command::ReopenConversation`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,6 +197,20 @@ pub struct Lane {
     /// the PM runs beside its work, folded back when idle.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub kept: bool,
+}
+
+/// A session that runs one ticket for a member: the member's own session
+/// stays its one identity (role, memory, settings, its conversation with the
+/// person), and each ticket it works runs in a session of its own beside it —
+/// its own worktree, engine conversation, turn, steering and stop. A member
+/// may run several at once; the team lists it once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RunOf {
+    /// The member's own session.
+    pub of: SessionId,
+    pub ticket: TicketId,
+    /// The ticket's run generation this session holds ([`TicketExecution::generation`]).
+    pub generation: u64,
 }
 
 /// A squad's name: lowercase letters, digits and dashes.
@@ -337,6 +364,9 @@ pub struct Ticket {
     /// Its checkout, while there is one — the person can look at the work there.
     #[serde(default)]
     pub worktree: Option<PathBuf>,
+    /// The ticket's runtime lifecycle, independent of its workflow column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<Box<TicketExecution>>,
     /// Whether its branch is in the project's main branch, as of its acceptance
     /// or merge — `Some(false)`: accepted, but not on main yet. `None`: unknown.
     #[serde(default)]
@@ -388,6 +418,127 @@ pub struct Ticket {
     /// an older daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
+}
+
+/// A durable run of a ticket. A newer generation supersedes late messages
+/// from every older runtime session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TicketExecution {
+    pub state: ExecutionState,
+    pub session: SessionId,
+    pub operation: String,
+    pub generation: u64,
+    pub heartbeat_at: u64,
+    pub lease_expires_at: u64,
+    /// Why it is in its state, as a code screens put in words
+    /// ([`stall_reason`] for a stalled run).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The checkout's commit when the run stalled, abbreviated: what every
+    /// recovery keeps. Left out when unknown or not stalled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    /// How many files in its checkout were changed or untracked when the run
+    /// stalled, kept as they are by every recovery. Left out when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dirty: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionState {
+    /// A runtime session holds the ticket's lease.
+    Active,
+    /// The person approved a recovery; its owner starts it when free.
+    Queued,
+    /// The run put the ticket down for the person.
+    Waiting,
+    /// The run ended without a hand-in or a wait: only the person recovers it.
+    Stalled,
+    /// The run ended as the workflow said: handed in, accepted, cancelled, ….
+    Stopped,
+}
+
+impl ExecutionState {
+    pub fn code(self) -> &'static str {
+        match self {
+            ExecutionState::Active => "active",
+            ExecutionState::Queued => "queued",
+            ExecutionState::Waiting => "waiting",
+            ExecutionState::Stalled => "stalled",
+            ExecutionState::Stopped => "stopped",
+        }
+    }
+
+    pub fn parse(code: &str) -> Self {
+        match code {
+            "active" => ExecutionState::Active,
+            "queued" => ExecutionState::Queued,
+            "waiting" => ExecutionState::Waiting,
+            "stalled" => ExecutionState::Stalled,
+            _ => ExecutionState::Stopped,
+        }
+    }
+}
+
+/// Why a run stalled, as [`TicketExecution::reason`] says it.
+pub mod stall_reason {
+    /// Its turn ended without a hand-in or a wait, and nothing ran it again
+    /// before its lease ran out.
+    pub const LEASE_EXPIRED: &str = "lease_expired";
+    /// equipe restarted and the run couldn't carry on: its member is gone, or
+    /// its engine can't resume here.
+    pub const NOT_RESUMED: &str = "not_resumed";
+    /// From before equipe kept runs, and nothing could carry it on.
+    pub const MIGRATED: &str = "migrated";
+}
+
+/// How the person recovers a stalled ticket ([`Command::Requeue`]). Each keeps
+/// the same ticket, branch, worktree, commit and uncommitted files.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "how", content = "member")]
+pub enum Recovery {
+    /// The same member goes on, in a fresh runtime session.
+    #[default]
+    Resume,
+    /// Whoever of its role is free next starts a fresh run.
+    Requeue,
+    /// The named member takes it over.
+    Reassign(String),
+}
+
+/// What a ticket's run looks like on every screen — board, sidebar, terminal
+/// — worked out one way from the daemon's record ([`Ticket::run_view`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunView {
+    /// Its member is at work on it.
+    Active,
+    /// In progress, but nothing runs it right now: its member is idle, or its
+    /// lease ran out. equipe marks it stalled if that lasts.
+    Paused,
+    /// Its run ended without a hand-in: the person resumes, requeues or
+    /// reassigns it.
+    Stalled,
+    /// A recovery the person approved, waiting for its member to be free.
+    Queued,
+}
+
+impl Ticket {
+    /// Its [`RunView`] at unix time `now`. `assignee_working`: whether its
+    /// assignee has a turn running, when the screen knows. `None` when it
+    /// isn't in progress or requeued, or its daemon keeps no runs.
+    pub fn run_view(&self, now: u64, assignee_working: Option<bool>) -> Option<RunView> {
+        let execution = self.execution.as_deref()?;
+        match (self.status, execution.state) {
+            (TicketStatus::Todo, ExecutionState::Queued) => Some(RunView::Queued),
+            (TicketStatus::InProgress, ExecutionState::Stalled) => Some(RunView::Stalled),
+            (TicketStatus::InProgress, ExecutionState::Active) if execution.lease_expires_at > now && assignee_working != Some(false) => {
+                Some(RunView::Active)
+            }
+            (TicketStatus::InProgress, _) => Some(RunView::Paused),
+            _ => None,
+        }
+    }
 }
 
 /// The gap between two tickets' ranks when they are spread out again.
@@ -704,6 +855,17 @@ pub enum Command {
     /// The person did what a `waiting` ticket needed: it goes back to its
     /// member, in the same worktree, with `note` (what was done) to go on from.
     Resume { squad: SquadName, ticket: TicketId, note: String },
+    /// The person recovers a stalled ticket: a fresh runtime session on the
+    /// same ticket, branch and worktree — for its member, its role or another
+    /// member (`how`). `operation` makes retries idempotent: the same key twice
+    /// is one recovery.
+    Requeue {
+        squad: SquadName,
+        ticket: TicketId,
+        operation: String,
+        #[serde(default)]
+        how: Recovery,
+    },
     /// The person drops a ticket.
     Cancel { squad: SquadName, ticket: TicketId },
     /// The person puts a ticket of their own on the board, ready (`todo`).
@@ -861,6 +1023,13 @@ pub enum Command {
     /// A conversation with the PM moves to another project (`None`: the
     /// whole squad): what is said there from now on is about it.
     MoveConversation { session: SessionId, project: Option<String> },
+    /// The person names a conversation with the PM in `squad` themselves:
+    /// `title`, at most [`CONVERSATION_TITLE_MAX`] characters once its spaces
+    /// are made one. Answered with [`Event::ConversationTitle`], or
+    /// [`Event::ConversationRenameRefused`] (no such conversation there, an
+    /// empty or too long name, a write that failed). A name given this way is
+    /// never replaced by one equipe makes up.
+    RenameConversation { squad: SquadName, session: SessionId, title: String },
     /// A conversation with the PM is put away: it leaves the list.
     CloseConversation { session: SessionId },
     /// A conversation put away is taken up again, as it was left: answered
@@ -1839,6 +2008,9 @@ fn claude() -> Engine {
 #[cfg_attr(windows, allow(clippy::large_enum_variant))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+// Events are an in-process/wire sum type; boxing its common TicketChanged
+// payload would add allocations across every board update.
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     SessionStarted {
         session: SessionId,
@@ -1868,8 +2040,30 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         kept: bool,
     },
+    /// The session just started runs one ticket for member `of` ([`RunOf`]):
+    /// a screen lists it under the member. Sent right after its
+    /// [`Event::SessionStarted`], before its [`Event::WorkStarted`]; it ends
+    /// with [`Event::SessionClosed`].
+    RunOpened {
+        session: SessionId,
+        of: SessionId,
+        ticket: TicketId,
+        generation: u64,
+    },
     /// A conversation with the PM moved to another project ([`Command::MoveConversation`]).
     LaneMoved { session: SessionId, project: Option<String> },
+    /// A conversation's title is now `title`: `named` by the person
+    /// ([`Command::RenameConversation`]) — it replaces whatever was shown — or
+    /// the topic equipe gave a conversation still without a name after its
+    /// first answered exchange (once; a screen shows it only where no title is).
+    ConversationTitle {
+        session: SessionId,
+        title: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        named: bool,
+    },
+    /// A [`Command::RenameConversation`] was not done; the title is as it was.
+    ConversationRenameRefused { session: SessionId },
     /// A conversation taken up again ([`Command::ReopenConversation`]): what
     /// was said in it, after its [`Event::LaneOpened`].
     ConversationBack {
@@ -1882,8 +2076,6 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         lines_at: Vec<Option<u64>>,
     },
-    /// The first answered exchange received its permanent topic title.
-    ConversationTitle { session: SessionId, title: String },
     /// The conversations put away, the latest first ([`Snapshot::put_away`]).
     PutAwayChanged { squad: SquadName, list: Vec<PutAway> },
     /// A member picked up a ticket. Its turns now run in the ticket's project —
@@ -1894,10 +2086,19 @@ pub enum Event {
         title: String,
         project: PathBuf,
         workspace: Option<Workspace>,
+        /// Set when `session` is a run of a member ([`RunOf`]): that member.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        of: Option<SessionId>,
     },
     /// The member put the ticket down (handed in, accepted, cancelled, or left);
-    /// its turns are back at its desk.
-    WorkEnded { session: SessionId, ticket: TicketId },
+    /// its turns are back at its desk — or, for a run, the run is over.
+    WorkEnded {
+        session: SessionId,
+        ticket: TicketId,
+        /// Set when `session` is a run of a member ([`RunOf`]): that member.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        of: Option<SessionId>,
+    },
     /// A ticket was created or changed. Carries the whole ticket.
     TicketChanged { squad: SquadName, ticket: Ticket },
     /// An NVIDIA Nemotron model on Nebius Token Factory read a handed-in
@@ -2570,9 +2771,11 @@ impl Event {
             | Event::Suggestion { session, .. }
             | Event::SteerQueued { session, .. }
             | Event::LaneOpened { session, .. }
+            | Event::RunOpened { session, .. }
             | Event::LaneMoved { session, .. }
             | Event::ConversationBack { session, .. }
             | Event::ConversationTitle { session, .. }
+            | Event::ConversationRenameRefused { session, .. }
             | Event::Steered { session, .. }
             | Event::CommandWatch { session, .. }
             | Event::Estimated { session, .. }
@@ -2870,6 +3073,10 @@ pub struct SessionInfo {
     /// about one project, running beside the others.
     #[serde(default)]
     pub lane: Option<Lane>,
+    /// Set when this session runs one ticket for a member ([`RunOf`]). A
+    /// screen lists it under that member, never as a member of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<RunOf>,
     /// When it expects its work done, and what it ships live.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimate: Option<Estimate>,
@@ -3094,6 +3301,7 @@ mod tests {
             depends_on: vec![1],
             branch: None,
             worktree: None,
+            execution: None,
             merged: None,
             off_main: None,
             design_qa: None, plan: None,
@@ -3321,7 +3529,7 @@ mod tests {
                 squad: Some("acme".into()),
             },
             Event::TicketChanged { squad: "acme".into(), ticket: ticket(3) },
-            Event::WorkStarted { session: 1, ticket: 3, title: "Hero".into(), project: "/site".into(), workspace: None },
+            Event::WorkStarted { session: 1, ticket: 3, title: "Hero".into(), project: "/site".into(), workspace: None, of: None },
             Event::MessageQueued { session: 1, text: "also the footer".into(), project: None },
             Event::Notice { undo: None, session: 2, text: "↪ You → frontend: hi".into() },
             Event::TextDelta { session: 1, text: "안녕".into() },
@@ -3361,6 +3569,71 @@ mod tests {
         let b = new_session_id();
         assert_ne!(a, b);
         assert!(a < (1 << 53) && a > 0);
+    }
+
+    #[test]
+    fn requeue_and_execution_lifecycle_are_stable_on_the_wire() {
+        let command = Command::Requeue { squad: "acme".into(), ticket: 7, operation: "approve:9".into(), how: Recovery::Resume };
+        assert_eq!(serde_json::to_value(&command).unwrap(), json!({
+            "type": "requeue", "squad": "acme", "ticket": 7, "operation": "approve:9", "how": { "how": "resume" }
+        }));
+        // Sent without `how`: the same member goes on.
+        let bare: Command = serde_json::from_value(json!({ "type": "requeue", "squad": "acme", "ticket": 7, "operation": "approve:9" })).unwrap();
+        assert_eq!(bare, command);
+        let reassign = Command::Requeue { squad: "acme".into(), ticket: 7, operation: "o".into(), how: Recovery::Reassign("backend-3".into()) };
+        let wire = serde_json::to_value(&reassign).unwrap();
+        assert_eq!(wire["how"], json!({ "how": "reassign", "member": "backend-3" }));
+        assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), reassign);
+        let execution = TicketExecution {
+            state: ExecutionState::Stalled,
+            session: 11,
+            operation: "start:1".into(),
+            generation: 2,
+            heartbeat_at: 100,
+            lease_expires_at: 0,
+            reason: Some(stall_reason::LEASE_EXPIRED.into()),
+            head: Some("1a2b3c4".into()),
+            dirty: Some(2),
+        };
+        assert_eq!(serde_json::from_value::<TicketExecution>(serde_json::to_value(&execution).unwrap()).unwrap(), execution);
+        for state in [ExecutionState::Active, ExecutionState::Queued, ExecutionState::Waiting, ExecutionState::Stalled, ExecutionState::Stopped] {
+            assert_eq!(ExecutionState::parse(state.code()), state);
+            assert_eq!(serde_json::to_value(state).unwrap(), json!(state.code()));
+        }
+    }
+
+    #[test]
+    fn every_screen_reads_a_tickets_run_the_same_way() {
+        let run = |state: ExecutionState, lease_expires_at: u64| {
+            Some(Box::new(TicketExecution {
+                state,
+                session: 1,
+                operation: "start:1".into(),
+                generation: 1,
+                heartbeat_at: 0,
+                lease_expires_at,
+                reason: None,
+                head: None,
+                dirty: None,
+            }))
+        };
+        let mut t = ticket(1);
+        t.status = TicketStatus::InProgress;
+        assert_eq!(t.run_view(100, None), None, "an older daemon keeps no runs: nothing is said");
+        t.execution = run(ExecutionState::Active, 200);
+        assert_eq!(t.run_view(100, None), Some(RunView::Active));
+        assert_eq!(t.run_view(100, Some(true)), Some(RunView::Active));
+        assert_eq!(t.run_view(100, Some(false)), Some(RunView::Paused), "its member idle while it says active: paused");
+        assert_eq!(t.run_view(300, Some(true)), Some(RunView::Paused), "its lease ran out");
+        t.execution = run(ExecutionState::Stalled, 0);
+        assert_eq!(t.run_view(100, Some(true)), Some(RunView::Stalled));
+        t.status = TicketStatus::Todo;
+        assert_eq!(t.run_view(100, None), None);
+        t.execution = run(ExecutionState::Queued, 0);
+        assert_eq!(t.run_view(100, None), Some(RunView::Queued));
+        t.status = TicketStatus::Review;
+        t.execution = run(ExecutionState::Stopped, 0);
+        assert_eq!(t.run_view(100, None), None, "work handed in has no run to show");
     }
 
     #[test]
@@ -3472,6 +3745,7 @@ mod tests {
                 steering: Vec::new(),
                 steering_in: vec![],
                 lane: None,
+                run: None,
                 estimate: None,
                 work: Some(WorkInfo { ticket: 1, project: "/repo".into(), workspace: None }),
                 mode: Some(Mode::Ask),

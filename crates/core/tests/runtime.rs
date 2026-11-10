@@ -8,7 +8,7 @@ use std::process::Command as Process;
 use std::time::Duration;
 
 use equipe_core::journal::{self, Journal};
-use equipe_core::protocol::rpc::{ToolCall, ToolResult};
+use equipe_core::protocol::rpc::{RunKey, ToolCall, ToolResult};
 use equipe_core::protocol::{
     Access, Command, CompactTrigger, Engine, Entry, Event, OffMain, Priority, RoleModel, SessionSpec, SessionState, Ticket, TicketDraft, TicketEdit, TicketStatus, TurnOutcome,
 };
@@ -156,6 +156,16 @@ async fn until(rx: &mut UnboundedReceiver<Event>, done: impl Fn(&Event) -> bool)
     seen
 }
 
+/// The run member `of` opened last among the events seen: where its ticket's
+/// turns run, beside its own conversation.
+fn run_in(seen: &[Event], of: u64) -> u64 {
+    seen.iter().rev().find_map(|e| match e {
+        Event::RunOpened { session, of: o, .. } if *o == of => Some(*session),
+        _ => None,
+    })
+    .unwrap_or_else(|| panic!("no run of {of}: {seen:#?}"))
+}
+
 /// Every event in the next `ms` milliseconds.
 async fn within(rx: &mut UnboundedReceiver<Event>, ms: u64) -> Vec<Event> {
     let mut seen = Vec::new();
@@ -221,7 +231,15 @@ async fn add(handle: &Handle, events: &mut UnboundedReceiver<Event>, id: u64, sp
 }
 
 async fn tool(handle: &Handle, member: &str, name: &str, arguments: serde_json::Value) -> ToolResult {
-    handle.tool(ToolCall { squad: "acme".into(), member: member.into(), name: name.into(), arguments }).await
+    handle.tool(ToolCall { run: None, squad: "acme".into(), member: member.into(), name: name.into(), arguments }).await
+}
+
+/// A tool call from the run of `ticket`, as its board server makes it.
+async fn tool_on(handle: &Handle, member: &str, ticket: u32, name: &str, arguments: serde_json::Value) -> ToolResult {
+    let snapshot = handle.snapshot("acme").await;
+    let run = snapshot.sessions.iter().find_map(|s| s.run.filter(|r| r.ticket == ticket).map(|r| RunKey { session: s.session, ticket, generation: r.generation }));
+    assert!(run.is_some(), "T-{ticket} runs: {:#?}", snapshot.sessions);
+    handle.tool(ToolCall { run, squad: "acme".into(), member: member.into(), name: name.into(), arguments }).await
 }
 
 fn ticket_changed(events: &[Event]) -> Vec<Ticket> {
@@ -1161,7 +1179,8 @@ async fn the_squad_writes_for_the_person_in_their_language() {
     let pm = arg(&calls(&recorded)[0], "--append-system-prompt").unwrap().to_owned();
     assert!(pm.contains("The person writes in Korean"), "{pm}");
     tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "히어로", "body": "-", "owner": "frontend" })).await;
-    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let run = run_in(&until(&mut events, |e| matches!(e, Event::RunOpened { of: 2, .. })).await, 2);
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == run)).await;
     let work = calls(&recorded).pop().unwrap();
     assert!(arg(&work, "-p").unwrap().ends_with("Write your summary and anything else for the person in Korean."));
 }
@@ -1192,7 +1211,7 @@ async fn a_ticket_goes_to_its_owner_who_hands_it_in_and_the_person_accepts_it() 
     .await;
     assert_eq!(made, ToolResult { text: "Created T-1.".into(), is_error: false, image: None });
     let started = until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
-    let Some(Event::WorkStarted { session: 2, ticket: 1, workspace: Some(ws), .. }) = started.last() else {
+    let Some(Event::WorkStarted { of: Some(2), ticket: 1, workspace: Some(ws), .. }) = started.last() else {
         panic!("{started:#?}")
     };
     assert!(ws.branch.starts_with("equipe/frontend-t1-"), "{}", ws.branch);
@@ -1259,7 +1278,7 @@ async fn the_pm_changes_code_only_on_a_ticket_of_its_own_in_its_worktree_and_nev
     let made = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "README typo", "body": "teh → the", "owner": "pm" })).await;
     assert_eq!(made.text, "Created T-1.");
     let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
-    let Some(Event::WorkStarted { session: 1, workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    let Some(Event::WorkStarted { of: Some(1), workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
     assert!(ws.branch.starts_with("equipe/pm-t1-"), "{}", ws.branch);
     assert!(!ws.path.starts_with(&repo), "{}", ws.path.display());
     // Its ticket's turn edits there, as an engineer's does.
@@ -1267,10 +1286,10 @@ async fn the_pm_changes_code_only_on_a_ticket_of_its_own_in_its_worktree_and_nev
     assert_eq!(arg(&call, "--permission-mode"), Some("acceptEdits"));
     assert!(!denied(&call).contains(&only_read), "its worktree is its to write: {:?}", denied(&call));
 
-    // Its conversation, beside the work, still only reads the project.
+    // Its own conversation goes on beside the ticket's run, and still only reads the project.
     handle.send(Command::Submit { session: 1, text: "how is it going?".into(), about: None });
-    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session != 1 && *session != 2)).await;
-    assert!(seen.iter().any(|e| matches!(e, Event::LaneOpened { of: 1, .. })), "{seen:#?}");
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::LaneOpened { .. })), "no lane needed: {seen:#?}");
     let beside = latest_call(&recorded, |p| p.contains("how is it going?")).await;
     assert!(denied(&beside).contains(&only_read), "{:?}", denied(&beside));
 
@@ -1385,6 +1404,7 @@ async fn work_not_on_main_says_why_can_be_kept_on_its_branch_and_settles_when_no
                     depends_on: Vec::new(),
                     branch: Some(format!("equipe/dev-t{id}")),
                     worktree: None,
+                    execution: None,
                     merged: None,
                     off_main: None,
                     design_qa: None, plan: None,
@@ -1472,6 +1492,7 @@ async fn dependencies_that_conflict_hold_the_ticket_and_say_why() {
                     depends_on: Vec::new(),
                     branch: Some(format!("equipe/dev-t{id}")),
                     worktree: None,
+                    execution: None,
                     merged: Some(false),
                     off_main: None,
                     design_qa: None, plan: None,
@@ -1523,7 +1544,7 @@ async fn dependencies_hold_a_ticket_until_the_one_before_is_done() {
 
     handle.send(Command::Accept { squad: "acme".into(), ticket: 1 });
     let next = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
-    assert!(matches!(next.last(), Some(Event::WorkStarted { session: 3, .. })));
+    assert!(matches!(next.last(), Some(Event::WorkStarted { of: Some(3), .. })));
 }
 
 #[tokio::test]
@@ -1534,20 +1555,20 @@ async fn work_sent_back_returns_to_its_member_on_the_same_branch_and_conversatio
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
     add(&handle, &mut events, 2, member(&repo, "frontend")).await;
     tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Page", "body": "-", "owner": "frontend" })).await;
-    until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
+    let run = run_in(&until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await, 2);
     tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Page done.", "changes_screens": false })).await;
     let review =
         until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
     let branch = ticket_changed(&review).pop().unwrap().branch;
     // Its turn ends (and its conversation is kept) before the person sends it
     // back: else the reopen can come first and find nothing yet to resume.
-    if !review.iter().any(|e| matches!(e, Event::TurnEnded { session: 2, .. })) {
-        until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    if !review.iter().any(|e| matches!(e, Event::TurnEnded { session, .. } if *session == run)) {
+        until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == run)).await;
     }
 
     handle.send(Command::Reopen { squad: "acme".into(), ticket: 1, note: "make the button blue".into() });
     let again = until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
-    assert!(matches!(again.last(), Some(Event::WorkStarted { session: 2, workspace: Some(ws), .. }) if Some(&ws.branch) == branch.as_ref()));
+    assert!(matches!(again.last(), Some(Event::WorkStarted { of: Some(2), workspace: Some(ws), .. }) if Some(&ws.branch) == branch.as_ref()));
     let call = latest_call(&recorded, |p| p.contains("The person sent it back")).await;
     let prompt = arg(&call, "-p").unwrap();
     assert!(prompt.contains("The person sent it back. Reopened: make the button blue"), "{prompt}");
@@ -1576,7 +1597,7 @@ async fn a_members_ticket_is_a_proposal_until_the_pm_accepts_it() {
     assert!(refused.is_error);
     // The PM accepts it, and it goes to work.
     assert!(!tool(&handle, "pm", "update_ticket", serde_json::json!({ "id": 1, "status": "todo" })).await.is_error);
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
     // Work in progress is the person's to change, not the PM's.
     let late = tool(&handle, "pm", "update_ticket", serde_json::json!({ "id": 1, "title": "x" })).await;
     assert!(late.is_error && late.text.contains("in progress"), "{late:?}");
@@ -1625,11 +1646,11 @@ async fn a_member_who_leaves_puts_its_ticket_back_for_someone_else() {
     add(&handle, &mut events, 1, member(&cwd, "pm")).await;
     add(&handle, &mut events, 2, member(&cwd, "qa")).await;
     tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Review", "body": "-", "owner": "qa" })).await;
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, .. })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), .. })).await;
     add(&handle, &mut events, 3, member(&cwd, "qa")).await;
 
     handle.send(Command::Close { session: 2 });
-    let moved = until(&mut events, |e| matches!(e, Event::WorkStarted { session: 3, .. })).await;
+    let moved = until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(3), .. })).await;
     assert!(
         ticket_changed(&moved).iter().any(|t| t.status == TicketStatus::Todo && t.note.as_deref() == Some("qa left the squad.")),
         "{moved:#?}"
@@ -1656,10 +1677,15 @@ async fn a_member_waiting_on_the_person_takes_its_next_ticket_and_comes_back_to_
     let Some(Event::WorkStarted { workspace: Some(first), .. }) = started.last() else { panic!("{started:#?}") };
     tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Webhooks", "body": "-", "owner": "backend" })).await;
 
+    // The next ticket runs beside it, in a worktree of its own.
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 2, .. })).await;
+    // Said from the member's own conversation, with two runs: neither is picked.
+    let which = tool(&handle, "backend", "block_on_person", serde_json::json!({ "needs": ["GitHub token"] })).await;
+    assert!(which.is_error && which.text.contains("not on a ticket"), "{which:?}");
     // It can't go on without the person: the ticket waits, with their checklist.
-    let empty = tool(&handle, "backend", "block_on_person", serde_json::json!({ "needs": [] })).await;
+    let empty = tool_on(&handle, "backend", 1, "block_on_person", serde_json::json!({ "needs": [] })).await;
     assert!(empty.is_error, "{empty:?}");
-    let blocked = tool(&handle, "backend", "block_on_person", serde_json::json!({
+    let blocked = tool_on(&handle, "backend", 1, "block_on_person", serde_json::json!({
         "needs": ["GitHub token", "PostHog secrets"], "why": "to deploy",
     }))
     .await;
@@ -1673,11 +1699,9 @@ async fn a_member_waiting_on_the_person_takes_its_next_ticket_and_comes_back_to_
     let branch = ticket.branch.clone().unwrap();
     assert_eq!(git(&repo, &["show", &format!("{branch}:WIP.md")]), "made by the squad", "the work so far is kept");
 
-    // The member is free, and takes the next ticket.
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 2, .. })).await;
-    tool(&handle, "backend", "submit_for_review", serde_json::json!({ "summary": "Webhooks done.", "changes_screens": false })).await;
-    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.status == TicketStatus::Review))
-        .await;
+    // Its other run goes on, untouched by the wait.
+    let t2 = handle.snapshot("acme").await.tickets.into_iter().find(|t| t.id == 2).unwrap();
+    assert_eq!((t2.status, t2.execution.map(|e| e.state)), (TicketStatus::InProgress, Some(equipe_core::protocol::ExecutionState::Active)));
 
     // Only a waiting ticket resumes; the person says it's done, and it comes back where it was.
     handle.send(Command::Resume { squad: "acme".into(), ticket: 2, note: String::new() });
@@ -1686,7 +1710,7 @@ async fn a_member_waiting_on_the_person_takes_its_next_ticket_and_comes_back_to_
     handle.send(Command::Resume { squad: "acme".into(), ticket: 1, note: "both are in .env.local".into() });
     let again = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
     assert!(
-        matches!(again.last(), Some(Event::WorkStarted { session: 2, workspace: Some(ws), .. }) if ws.path == first.path && ws.branch == branch),
+        matches!(again.last(), Some(Event::WorkStarted { of: Some(2), workspace: Some(ws), .. }) if ws.path == first.path && ws.branch == branch),
         "{again:#?}"
     );
     let call = latest_call(&recorded, |p| p.contains("it is back")).await;
@@ -1752,8 +1776,7 @@ async fn a_waiting_ticket_stays_put_through_a_restart_until_the_pm_resumes_it() 
     }
     let (handle, mut events) = runtime::start(config(&claude, &home, true));
     let snapshot = handle.snapshot("acme").await;
-    let backend = snapshot.sessions.iter().find(|s| s.session == 2).unwrap();
-    assert!(backend.work.is_none(), "a waiting ticket isn't picked up again");
+    assert!(!snapshot.sessions.iter().any(|s| s.run.is_some_and(|r| r.of == 2)), "a waiting ticket isn't picked up again");
     assert_eq!(snapshot.tickets[0].status, TicketStatus::Waiting);
     assert_eq!(snapshot.tickets[0].asks, ["a Vercel token"], "read back from the note it is kept in");
     let worktree = snapshot.tickets[0].worktree.clone().unwrap();
@@ -1763,7 +1786,7 @@ async fn a_waiting_ticket_stays_put_through_a_restart_until_the_pm_resumes_it() 
     let resumed = tool(&handle, "pm", "update_ticket", serde_json::json!({ "id": 1, "status": "todo" })).await;
     assert!(!resumed.is_error, "{resumed:?}");
     let again = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
-    assert!(matches!(again.last(), Some(Event::WorkStarted { session: 2, workspace: Some(ws), .. }) if ws.path == worktree), "{again:#?}");
+    assert!(matches!(again.last(), Some(Event::WorkStarted { of: Some(2), workspace: Some(ws), .. }) if ws.path == worktree), "{again:#?}");
 }
 
 // ── persistence: the daemon's runtime ──
@@ -1838,7 +1861,7 @@ async fn a_restarted_runtime_resumes_a_member_on_its_ticket() {
     }
     let (handle, _events) = runtime::start(config(&claude, &home, true));
     let snapshot = handle.snapshot("acme").await;
-    let frontend = snapshot.sessions.iter().find(|s| s.session == 2).unwrap();
+    let frontend = snapshot.sessions.iter().find(|s| s.run.is_some_and(|r| r.of == 2)).expect("its run carried on");
     let work = frontend.work.as_ref().expect("still on its ticket");
     assert_eq!(work.ticket, 1);
     assert!(work.workspace.as_ref().is_some_and(|ws| ws.path.exists()));
@@ -2020,8 +2043,8 @@ fn with_tools(claude: &Path, home: &Path) -> Config {
 async fn first_ticket_turn(handle: &Handle, events: &mut UnboundedReceiver<Event>, recorded: &Path, owner: &str) -> Vec<String> {
     let before = calls(recorded).len();
     tool(handle, "pm", "create_ticket", serde_json::json!({ "title": "Hero", "body": "-", "owner": owner })).await;
-    until(events, |e| matches!(e, Event::WorkStarted { .. })).await;
-    until(events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let run = run_in(&until(events, |e| matches!(e, Event::WorkStarted { .. })).await, 2);
+    until(events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == run)).await;
     let all = calls(recorded);
     assert_eq!(all.len(), before + 1);
     all.last().unwrap().clone()
@@ -2581,10 +2604,10 @@ async fn work_that_waits_waits_for_its_role_and_a_rush_member_takes_nothing_new(
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
     let snapshot = handle.snapshot("acme").await;
-    assert_eq!(snapshot.sessions.len(), 3, "nobody is brought in, whatever waits");
+    assert_eq!(snapshot.sessions.iter().filter(|s| s.run.is_none()).count(), 3, "nobody is brought in, whatever waits");
+    // backend runs its role's two tickets side by side; backend-2's waits for it.
     let working: Vec<_> = snapshot.tickets.iter().filter(|t| t.status == TicketStatus::InProgress).collect();
-    assert_eq!(working.len(), 1, "{working:?}");
-    assert_eq!(working[0].assignee.as_deref(), Some("backend"));
+    assert_eq!(working.iter().map(|t| (t.title.as_str(), t.assignee.as_deref())).collect::<Vec<_>>(), [("API", Some("backend")), ("Exports", Some("backend"))], "{working:?}");
 }
 
 #[tokio::test]
@@ -2664,8 +2687,10 @@ async fn the_mode_decides_how_a_ticket_runs_and_a_member_can_differ_from_the_squ
 
     handle.send(Command::SetMode { squad: "acme".into(), member: Some("frontend".into()), mode: Some(Mode::Ask) });
     until(&mut events, |e| matches!(e, Event::ModeChanged { member: Some(_), .. })).await;
-    handle.send(Command::Submit { session: 2, text: "go on".into(), about: None });
-    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    // Said to its ticket's run, the next turn there runs in the member's mode.
+    let run = handle.snapshot("acme").await.sessions.iter().find(|s| s.run.is_some_and(|r| r.of == 2)).map(|s| s.session).expect("its run");
+    handle.send(Command::Submit { session: run, text: "go on".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == run)).await;
     let call = calls(&recorded).pop().unwrap();
     assert_eq!(arg(&call, "--permission-mode"), Some("manual"), "ask me: every change is asked");
     assert_eq!(arg(&call, "--permission-prompt-tool"), Some("mcp__equipe__approve"));
@@ -2684,7 +2709,7 @@ fn ask(handle: &Handle, command: &str) -> tokio::task::JoinHandle<ToolResult> {
         "tool_use_id": "toolu_1",
     });
     tokio::spawn(async move {
-        handle.tool(ToolCall { squad: "acme".into(), member: "frontend".into(), name: "approve".into(), arguments }).await
+        handle.tool(ToolCall { run: None, squad: "acme".into(), member: "frontend".into(), name: "approve".into(), arguments }).await
     })
 }
 
@@ -2716,7 +2741,7 @@ async fn a_request_for_permission_waits_for_the_person_and_always_becomes_a_rule
     assert_eq!(verdict["behavior"], "allow");
     assert_eq!(verdict["updatedInput"]["command"], "npm install react");
     let seen = until(&mut events, |e| matches!(e, Event::ApprovalResolved { .. })).await;
-    assert!(seen.iter().any(|e| matches!(e, Event::Notice { undo: None, session: 2, text } if text.starts_with("✓ You always allow Bash(npm install:*)"))));
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { undo: None, text, .. } if text.starts_with("✓ You always allow Bash(npm install:*)"))));
     assert_eq!(Journal::for_squad(&home, "acme").unwrap().allowed().unwrap(), ["Bash(npm install:*)"]);
 
     // The same kind of thing doesn't ask again; something else does.
@@ -2813,8 +2838,11 @@ async fn stopping_a_member_withdraws_what_it_was_waiting_for() {
     tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
     until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
     let waiting = ask(&handle, "npm publish");
-    until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
-    handle.send(Command::Interrupt { session: 2 });
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    // Stopping its ticket's run: what that run waited for goes.
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    assert_ne!(approval.session, 2, "asked from the run, not the member's own conversation");
+    handle.send(Command::Interrupt { session: approval.session });
     let resolved = until(&mut events, |e| matches!(e, Event::ApprovalResolved { .. })).await;
     assert!(matches!(resolved.last(), Some(Event::ApprovalResolved { decision: Decision::Deny, .. })));
     assert_eq!(serde_json::from_str::<serde_json::Value>(&waiting.await.unwrap().text).unwrap()["behavior"], "deny");
@@ -3148,7 +3176,7 @@ async fn a_task_with_no_project_runs_in_the_squads_folder_and_goes_in_when_accep
     .await;
     assert_eq!(made.text, "Created T-1 (task).");
     let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
-    let Some(Event::WorkStarted { session: 2, workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    let Some(Event::WorkStarted { of: Some(2), workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
     assert!(ws.path.starts_with(home.join("worktrees/acme.home")), "{}", ws.path.display());
     assert!(ws.branch.starts_with("equipe/data-t1-"), "{}", ws.branch);
 
@@ -3436,7 +3464,7 @@ async fn a_squad_of_only_a_pm_researches_tax_deadlines_into_its_folder_and_memor
     }))
     .await;
     assert_eq!(made.text, "Created T-1 (task).");
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 1, ticket: 1, .. })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(1), ticket: 1, .. })).await;
     let brief = arg(&latest_call(&recorded, |p| p.contains("give each fact its source")).await, "-p").unwrap().to_owned();
     assert!(brief.contains("give each fact its source") && brief.contains("unconfirmed"), "{brief}");
 
@@ -3481,13 +3509,15 @@ async fn a_custom_role_edits_a_projects_files_only_when_the_person_says_so() {
     // On a code ticket the one that edits gets a branch of its own; the other only reads.
     tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Docs", "kind": "code", "owner": "editor" })).await;
     let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
-    assert!(matches!(started.last(), Some(Event::WorkStarted { session: 3, workspace: Some(_), .. })), "{started:#?}");
+    assert!(matches!(started.last(), Some(Event::WorkStarted { of: Some(3), workspace: Some(_), .. })), "{started:#?}");
     // One turn at a time, so the stand-in records each.
-    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 3, .. })).await;
+    let run = run_in(&started, 3);
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == run)).await;
     tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Review docs", "kind": "code", "owner": "writer" })).await;
     let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
-    assert!(matches!(started.last(), Some(Event::WorkStarted { session: 2, workspace: None, .. })), "{started:#?}");
-    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    assert!(matches!(started.last(), Some(Event::WorkStarted { of: Some(2), workspace: None, .. })), "{started:#?}");
+    let run = run_in(&started, 2);
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == run)).await;
     let charters: Vec<String> = calls(&recorded).iter().filter_map(|c| arg(c, "--append-system-prompt").map(str::to_owned)).collect();
     let of = |name: &str| {
         let who = format!("You are {name},");
@@ -3721,20 +3751,15 @@ async fn the_pm_on_a_ticket_of_its_own_is_still_reached_beside_it() {
     add(&handle, &mut events, 1, member(&site, "pm")).await;
     add(&handle, &mut events, 2, member(&site, "designer")).await;
     tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Translate the site", "body": "slow-work", "owner": "pm", "project": "site" })).await;
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 1, .. })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(1), .. })).await;
     tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Login page", "body": "-", "owner": "qa", "project": "app" })).await;
 
-    // The PM's own ticket runs; what the person says opens its conversation beside it.
+    // The PM's own ticket runs beside it; what the person says is its own conversation's.
     handle.send(Command::Focus { squad: "acme".into(), project: None });
     handle.send(Command::Submit { session: 1, text: "how is everything?".into(), about: None });
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
-    let lane = seen
-        .iter()
-        .find_map(|e| match e {
-            Event::LaneOpened { session, of: 1, project: None, kept: false } => Some(*session),
-            _ => None,
-        })
-        .expect("the PM's conversation, beside its ticket");
+    assert!(!seen.iter().any(|e| matches!(e, Event::LaneOpened { .. })), "no lane needed: {seen:#?}");
+    let lane = 1;
     // Answered while the ticket's work goes on.
     assert!(matches!(seen.last(), Some(Event::TurnEnded { session, .. }) if *session == lane), "{seen:#?}");
     assert!(!seen.iter().any(|e| matches!(e, Event::SteerQueued { .. } | Event::MessageQueued { .. })), "not into the ticket's work");
@@ -3764,18 +3789,74 @@ async fn said_to_the_pm_while_its_conversation_beside_the_work_is_at_it_steers_t
     let (handle, mut events) = runtime::start(Config { npx: Some(npx), ..with_tools(&claude, &home) });
     add(&handle, &mut events, 1, member(&site, "pm")).await;
     tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Translate the site", "body": "slow-work", "owner": "pm", "project": "site", "kind": "task" })).await;
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 1, .. })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(1), .. })).await;
 
     handle.send(Command::Submit { session: 1, text: "slow-talk: how is it?".into(), about: Some(None) });
     let seen = until(&mut events, |e| matches!(e, Event::UserMessage { text, .. } if text.starts_with("slow-talk"))).await;
-    let lane = seen.iter().find_map(|e| if let Event::LaneOpened { session, of: 1, .. } = e { Some(*session) } else { None }).expect("its conversation beside the work");
-    assert!(matches!(seen.last(), Some(Event::UserMessage { session, .. }) if *session == lane), "the person's message is the lane's, at once: {seen:#?}");
+    // Its ticket runs in a session of its own: the PM's conversation takes the message at once.
+    let lane = 1;
+    assert!(matches!(seen.last(), Some(Event::UserMessage { session, .. }) if *session == lane), "the person's message is the PM's, at once: {seen:#?}");
 
-    // Said to the PM (the screen names the member) while the lane answers:
-    // it steers the lane, which the screen shows waiting.
+    // Said to the PM while it answers: it steers that conversation, which
+    // the screen shows waiting — never the ticket's run.
     handle.send(Command::Submit { session: 1, text: "and the footer".into(), about: Some(None) });
     let seen = until(&mut events, |e| matches!(e, Event::SteerQueued { .. } | Event::MessageQueued { .. })).await;
     assert!(matches!(seen.last(), Some(Event::SteerQueued { session, text, project: None }) if *session == lane && text == "and the footer"), "{seen:#?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_person_names_a_conversation_and_the_name_stays_through_turns_a_restart_and_put_away() {
+    let site = named("site");
+    let (claude, _recorded) = recording_claude(&answering_per_call("ok"));
+    let home = squad_home(&[&site]);
+    let refused = |events: &[Event], id: u64| events.iter().any(|e| matches!(e, Event::ConversationRenameRefused { session } if *session == id));
+    {
+        let (handle, mut events) = runtime::start(config(&claude, &home, true));
+        add(&handle, &mut events, 1, member(&site, "pm")).await;
+        handle.send(Command::NewConversation { squad: "acme".into(), session: 50, project: Some("site".into()) });
+        until(&mut events, |e| matches!(e, Event::LaneOpened { session: 50, .. })).await;
+        handle.send(Command::Submit { session: 50, text: "login is broken".into(), about: None });
+        until(&mut events, |e| matches!(e, Event::TurnEnded { session: 50, .. })).await;
+
+        // Its spaces made one, kept, told to every screen.
+        handle.send(Command::RenameConversation { squad: "acme".into(), session: 50, title: "  Login\n  page  ".into() });
+        until(&mut events, |e| matches!(e, Event::ConversationTitle { session: 50, title, named: true } if title == "Login page")).await;
+
+        // Refused, the title as it was: nothing left of the name, too long a one,
+        // the PM's own conversation, another squad's, one that isn't there.
+        for (squad, session, title) in [("acme", 50, "   "), ("acme", 50, &"x".repeat(41)[..]), ("acme", 1, "PM"), ("other", 50, "Elsewhere"), ("acme", 99, "Nobody")] {
+            handle.send(Command::RenameConversation { squad: squad.into(), session, title: title.into() });
+            let seen = until(&mut events, |e| matches!(e, Event::ConversationRenameRefused { .. })).await;
+            assert!(refused(&seen, session), "{squad} {session} {title:?}: {seen:#?}");
+            assert!(!seen.iter().any(|e| matches!(e, Event::ConversationTitle { .. })), "{seen:#?}");
+        }
+        // Forty characters is a name.
+        handle.send(Command::RenameConversation { squad: "acme".into(), session: 50, title: "가".repeat(40) });
+        until(&mut events, |e| matches!(e, Event::ConversationTitle { session: 50, title, named: true } if title.chars().count() == 40)).await;
+        handle.send(Command::RenameConversation { squad: "acme".into(), session: 50, title: "Login page".into() });
+        until(&mut events, |e| matches!(e, Event::ConversationTitle { session: 50, .. })).await;
+
+        // Another turn names nothing over it.
+        handle.send(Command::Submit { session: 50, text: "and the signup?".into(), about: None });
+        until(&mut events, |e| matches!(e, Event::TurnEnded { session: 50, .. })).await;
+        let snapshot = handle.snapshot("acme").await;
+        assert_eq!(snapshot.sessions.iter().find(|s| s.session == 50).and_then(|s| s.title.clone()).as_deref(), Some("Login page"));
+        handle.shutdown().await;
+    }
+
+    // Through a restart…
+    let (handle, mut events) = runtime::start(config(&claude, &home, true));
+    let snapshot = handle.snapshot("acme").await;
+    assert_eq!(snapshot.sessions.iter().find(|s| s.session == 50).and_then(|s| s.title.clone()).as_deref(), Some("Login page"));
+    // …and put away and taken up again.
+    handle.send(Command::CloseConversation { session: 50 });
+    until(&mut events, |e| matches!(e, Event::SessionClosed { session: 50 })).await;
+    let snapshot = handle.snapshot("acme").await;
+    assert_eq!(snapshot.put_away.iter().find(|c| c.session == 50).and_then(|c| c.title.clone()).as_deref(), Some("Login page"));
+    handle.send(Command::ReopenConversation { squad: "acme".into(), session: 50 });
+    let seen = until(&mut events, |e| matches!(e, Event::ConversationBack { session: 50, .. })).await;
+    assert!(matches!(seen.last(), Some(Event::ConversationBack { title: Some(t), .. }) if t == "Login page"), "{seen:#?}");
     handle.shutdown().await;
 }
 
@@ -3829,14 +3910,14 @@ async fn the_person_talks_with_the_pm_in_conversations_of_their_own_kept_through
     kept.sort();
     assert_eq!(
         kept,
-        [(50, 1, Some("site".to_owned()), true, Some("login is broken".to_owned())), (51, 1, Some("app".to_owned()), true, Some("what next?".to_owned()))],
+        [(50, 1, Some("site".to_owned()), true, Some("login is broken".to_owned())), (51, 1, Some("app".to_owned()), true, Some("what next".to_owned()))],
         "both back, where they were left"
     );
     let login = snapshot.sessions.iter().find(|s| s.session == 50).unwrap();
     assert!(text_entries(&login.recent).contains(&"user: and the signup?".to_owned()), "{:?}", login.recent);
     handle.send(Command::Submit { session: 50, text: "still there?".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 50, .. })).await;
-    assert_eq!(arg(&said(&calls(&recorded), "still there?"), "--resume"), Some("sess-4"), "picked up where it was left");
+    assert_eq!(arg(&said(&calls(&recorded), "still there?"), "--resume"), Some("sess-6"), "picked up where it was left"); // two topic-naming side turns ran in between
 
     // Put away: it leaves, and stays away.
     handle.send(Command::CloseConversation { session: 51 });
@@ -3848,13 +3929,13 @@ async fn the_person_talks_with_the_pm_in_conversations_of_their_own_kept_through
     assert_eq!(left, [50]);
     // Listed as put away, to be taken up again as it was left.
     let away: Vec<_> = snapshot.put_away.iter().map(|c| (c.session, c.project.clone(), c.title.clone())).collect();
-    assert_eq!(away, [(51, Some("app".to_owned()), Some("what next?".to_owned()))]);
+    assert_eq!(away, [(51, Some("app".to_owned()), Some("what next".to_owned()))]);
     handle.send(Command::ReopenConversation { squad: "acme".into(), session: 51 });
     let seen = until(&mut events, |e| matches!(e, Event::PutAwayChanged { .. })).await;
     assert!(seen.iter().any(|e| matches!(e, Event::LaneOpened { session: 51, of: 1, project: Some(p), kept: true } if p == "app")), "{seen:#?}");
     let back = seen.iter().find_map(|e| if let Event::ConversationBack { session: 51, title, lines, lines_at } = e { Some((title.clone(), text_entries(lines), lines.len() == lines_at.len() && lines.iter().zip(lines_at).all(|(e, at)| !matches!(e, Entry::User { .. }) || at.is_some()))) } else { None }).expect("its lines");
     assert!(back.2, "taken up again, each message says when it was said");
-    assert_eq!(back.0.as_deref(), Some("what next?"));
+    assert_eq!(back.0.as_deref(), Some("what next"));
     assert!(back.1.contains(&"user: what next?".to_owned()), "{:?}", back.1);
     assert!(matches!(seen.last(), Some(Event::PutAwayChanged { list, .. }) if list.is_empty()));
     handle.send(Command::Submit { session: 51, text: "and now?".into(), about: None });
@@ -4023,9 +4104,10 @@ async fn a_folder_inside_a_repository_is_a_project_of_its_own_worked_in_its_fold
     let started = until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
     let Some(Event::WorkStarted { workspace: Some(ws), project, .. }) = started.last() else { panic!("{started:#?}") };
     assert_eq!(project, &desktop);
-    // Its conversation marks what follows as that project's.
-    assert!(started.iter().any(|e| matches!(e, Event::Thread { session: 2, project: Some(p) } if *p == name)), "{started:#?}");
-    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    // Its run's conversation marks what follows as that project's.
+    let run = run_in(&started, 2);
+    assert!(started.iter().any(|e| matches!(e, Event::Thread { session, project: Some(p) } if *session == run && *p == name)), "{started:#?}");
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == run)).await;
     // The worktree is the whole repository's; the member works in the folder.
     let ran = std::fs::read_to_string(wd.join("cwd")).unwrap();
     let ran = std::fs::canonicalize(ran.trim()).unwrap();
@@ -4315,7 +4397,7 @@ async fn the_person_writes_a_ticket_its_owner_takes_it_and_the_pm_hears_with_its
 
     let plan = TicketDraft { priority: Priority::High, ..draft("Test plan", Some("qa")) };
     handle.send(Command::CreateTicket { squad: "acme".into(), draft: plan });
-    let seen = until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
+    let seen = until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
     let made = ticket_changed(&seen).into_iter().next().unwrap();
     assert_eq!((made.status, made.created_by.as_str(), made.priority, made.owner.as_deref()), (TicketStatus::Todo, "you", Priority::High, Some("qa")));
     assert!(made.updated_at.is_some());
@@ -4357,7 +4439,7 @@ async fn the_persons_edits_are_checked_then_told_to_the_pm_and_the_members_conce
     // Title, priority and owner at once: one change, saved, and told.
     let changes = TicketEdit { title: Some("Brand logo".into()), priority: Some(Priority::Urgent), assignee: Some(Some("qa".into())), ..Default::default() };
     handle.send(edit(1, changes));
-    let seen = until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
+    let seen = until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
     let changed = ticket_changed(&seen).into_iter().next().unwrap();
     assert_eq!((changed.title.as_str(), changed.priority, changed.owner.as_deref()), ("Brand logo", Priority::Urgent, Some("qa")));
     let news = "You changed T-1: title “Brand logo” · priority normal → urgent · owner designer → qa";
@@ -4367,8 +4449,8 @@ async fn the_persons_edits_are_checked_then_told_to_the_pm_and_the_members_conce
 
     // Given to someone else mid-work: its member stops, the other picks it up.
     handle.send(edit(1, TicketEdit { assignee: Some(Some("data".into())), ..Default::default() }));
-    let moved = until(&mut events, |e| matches!(e, Event::WorkStarted { session: 3, ticket: 1, .. })).await;
-    assert!(moved.iter().any(|e| matches!(e, Event::WorkEnded { session: 2, ticket: 1 })), "{moved:#?}");
+    let moved = until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(3), ticket: 1, .. })).await;
+    assert!(moved.iter().any(|e| matches!(e, Event::WorkEnded { of: Some(2), ticket: 1, .. })), "{moved:#?}");
     assert!(ticket_changed(&moved).iter().any(|t| t.status == TicketStatus::Todo && t.owner.as_deref() == Some("data")));
     handle.send(edit(1, TicketEdit { assignee: Some(None), ..Default::default() }));
     assert!(error_text(&until(&mut events, |e| matches!(e, Event::Error { .. })).await).contains("being worked on"));
@@ -4385,6 +4467,11 @@ async fn the_persons_edits_are_checked_then_told_to_the_pm_and_the_members_conce
     let Some(Event::TicketHistory { ticket: 1, entries, .. }) = history.last() else { panic!("{history:#?}") };
     let kinds: Vec<(&str, &str)> = entries.iter().map(|e| (e.by.as_str(), e.kind.as_str())).collect();
     assert!(kinds.contains(&("you", "edited")) && kinds.contains(&("you", "reassigned")), "{kinds:?}");
+    // The read sends the ticket itself first, so a screen that missed it mends its list; a number never on the board gets its record alone.
+    assert!(ticket_changed(&history).iter().any(|t| t.id == 1), "{history:#?}");
+    handle.send(Command::TicketHistory { squad: "acme".into(), ticket: 99 });
+    let none = until(&mut events, |e| matches!(e, Event::TicketHistory { ticket: 99, .. })).await;
+    assert!(ticket_changed(&none).is_empty(), "{none:#?}");
     handle.shutdown().await;
 }
 
@@ -4415,8 +4502,13 @@ async fn moving_a_ticket_means_what_its_button_would_and_the_board_order_decides
     // The board's order decides what is picked up first — not priority.
     handle.send(Command::EditTicket { squad: "acme".into(), ticket: 1, changes: TicketEdit { priority: Some(Priority::Urgent), ..Default::default() } });
     until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.priority == Priority::Urgent)).await;
+    // A plan nearly used up: one ticket at a time ([`equipe_core::lanes::member_limit`]).
+    let window = equipe_core::protocol::PlanWindow { used_percent: 95, resets_at: 4_000_000_000 };
+    handle.usage_read(Engine::Claude, equipe_core::protocol::PlanUsage { five_hour: Some(window), seven_day: None });
+    until(&mut events, |e| matches!(e, Event::PlanUsage { .. })).await;
     add(&handle, &mut events, 2, member(&cwd, "qa")).await;
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 3, .. })).await;
+    let first = until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), .. })).await;
+    assert!(matches!(first.last(), Some(Event::WorkStarted { ticket: 3, .. })), "{first:#?}");
 
     // Back to a proposal, then taken on again — not done.
     handle.send(to(2, Some(TicketStatus::Proposed), None));
@@ -4446,9 +4538,10 @@ async fn a_persons_comment_reaches_the_member_on_it_or_waits_for_its_owner_and_t
     assert_eq!(entries.last().map(|e| (e.kind.as_str(), e.text.as_str())), Some(("comment", "check the login page too")));
     // On it: the member reads it as the person talking to it.
     add(&handle, &mut events, 2, member(&cwd, "qa")).await;
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, .. })).await;
+    let run = run_in(&until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), .. })).await, 2);
     handle.send(Command::CommentTicket { squad: "acme".into(), ticket: 1, text: "and the footer".into() });
-    let said = until(&mut events, |e| matches!(e, Event::SteerQueued { session: 2, .. } | Event::MessageQueued { session: 2, .. })).await;
+    // Into the ticket's run, never the member's own conversation.
+    let said = until(&mut events, |e| matches!(e, Event::SteerQueued { session, .. } | Event::MessageQueued { session, .. } if *session == run)).await;
     assert!(said.iter().any(|e| matches!(e, Event::SteerQueued { text, .. } | Event::MessageQueued { text, .. } if text == "[T-1] and the footer")), "{said:#?}");
     handle.shutdown().await;
 }
@@ -4460,7 +4553,7 @@ async fn the_desktop_is_only_for_members_the_person_turned_it_on_for() {
     let home = squad_home(&[&cwd]);
     let (handle, mut events) = runtime::start(with_tools(&claude, &home));
     add(&handle, &mut events, 1, member(&cwd, "frontend")).await;
-    let desktop = |member: &str| ToolCall { squad: "acme".into(), member: member.into(), name: "screenshot".into(), arguments: serde_json::json!({}) };
+    let desktop = |member: &str| ToolCall { run: None, squad: "acme".into(), member: member.into(), name: "screenshot".into(), arguments: serde_json::json!({}) };
     let servers = |call: &[String]| -> serde_json::Value {
         serde_json::from_str::<serde_json::Value>(arg(call, "--mcp-config").unwrap()).unwrap()["mcpServers"].clone()
     };
@@ -4492,7 +4585,7 @@ async fn only_qa_and_mobile_get_the_phone_and_only_in_a_squad_with_a_mobile_app(
     let servers = |call: &[String]| -> serde_json::Value {
         serde_json::from_str::<serde_json::Value>(arg(call, "--mcp-config").unwrap()).unwrap()["mcpServers"].clone()
     };
-    let phone = |member: &str| ToolCall { squad: "acme".into(), member: member.into(), name: "look".into(), arguments: serde_json::json!({}) };
+    let phone = |member: &str| ToolCall { run: None, squad: "acme".into(), member: member.into(), name: "look".into(), arguments: serde_json::json!({}) };
     for mobile in [false, true] {
         let (claude, recorded) = recording_claude(&answering("ok"));
         let cwd = scratch("cwd");
@@ -4718,7 +4811,7 @@ fn short_home(project: &Path) -> PathBuf {
 }
 
 fn desktop_call(member: &str, tool: &str, arguments: serde_json::Value) -> ToolCall {
-    ToolCall { squad: "acme".into(), member: member.into(), name: tool.into(), arguments }
+    ToolCall { run: None, squad: "acme".into(), member: member.into(), name: tool.into(), arguments }
 }
 
 /// Two members with the desktop on, a Mac nobody has touched for ten
@@ -4907,7 +5000,7 @@ async fn screens_in_design_qa(recorded: &Path, handle: &Handle, events: &mut Unb
     let made = changed.iter().find(|t| t.id == 2).unwrap();
     assert_eq!((made.kind, made.owner.as_deref(), made.created_by.as_str()), (equipe_core::protocol::TicketKind::Task, Some("designer"), "equipe"));
     assert!(made.title.contains("T-1") && made.title.contains("Settings screen"), "{}", made.title);
-    assert!(matches!(qa.last(), Some(Event::WorkStarted { session: 3, .. })), "{qa:#?}");
+    assert!(matches!(qa.last(), Some(Event::WorkStarted { of: Some(3), .. })), "{qa:#?}");
     // The person isn't told it's ready for review yet; the PM hears the designer checks it first.
     let told = text_of_notices(&qa);
     assert!(told.iter().any(|t| t.contains("checks its screens before your review")), "{told:#?}");
@@ -4984,7 +5077,7 @@ async fn screens_that_need_changes_go_back_to_their_engineer() {
     let sent = tool(&handle, "designer", "design_qa", serde_json::json!({ "verdict": "changes", "findings": "Close, one difference.", "checked": ["1280"], "blockers": ["The title is 20px; the spec says 24px."] })).await;
     assert!(!sent.is_error, "{sent:?}");
     let again = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
-    assert!(matches!(again.last(), Some(Event::WorkStarted { session: 2, workspace: Some(ws), .. }) if Some(&ws.branch) == held.branch.as_ref()), "{again:#?}");
+    assert!(matches!(again.last(), Some(Event::WorkStarted { of: Some(2), workspace: Some(ws), .. }) if Some(&ws.branch) == held.branch.as_ref()), "{again:#?}");
     let qa = ticket_changed(&again).into_iter().rev().find(|t| t.id == 2).unwrap();
     assert_eq!(qa.status, TicketStatus::Done);
     let call = latest_call(&recorded, |p| p.contains("designer checked its screens and sent it back")).await;
@@ -5100,6 +5193,7 @@ fn ticket_in(home: &Path, squad: &str, project: &Path, worktree: &Path) {
             depends_on: Vec::new(),
             branch: None,
             worktree: None,
+            execution: None,
             merged: None,
             off_main: None,
             design_qa: None,

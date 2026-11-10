@@ -150,6 +150,12 @@ pub struct HelloParams {
     /// and members are told so ([`crate::Command::OnPhone`]). Others: `false`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub phone: bool,
+    /// The screen lists a member's ticket runs under it ([`crate::RunOf`]).
+    /// A screen without it gets the squad as it knew it
+    /// ([`crate::runs::Legacy`]): a member with several runs shows that the
+    /// screen must be updated to follow them, never one of them as its work.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub runs: bool,
 }
 
 /// A member calling one of its board tools.
@@ -161,6 +167,35 @@ pub struct ToolCall {
     pub name: String,
     #[serde(default)]
     pub arguments: Value,
+    /// The ticket run the call comes from, as equipe started its MCP server
+    /// for that run (`--run`); `None` from the member's own conversation.
+    /// A call that changes a ticket, asks the person or hands work in is
+    /// taken only from the run that holds the ticket's current generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<RunKey>,
+}
+
+/// Which run of which ticket a tool call comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunKey {
+    /// The run's session.
+    pub session: crate::SessionId,
+    pub ticket: crate::TicketId,
+    pub generation: u64,
+}
+
+impl RunKey {
+    /// As `equipe mcp --run` takes it: `session:ticket:generation`.
+    pub fn arg(&self) -> String {
+        format!("{}:{}:{}", self.session, self.ticket, self.generation)
+    }
+
+    /// Read back from [`Self::arg`].
+    pub fn parse(arg: &str) -> Option<Self> {
+        let mut parts = arg.split(':');
+        let key = RunKey { session: parts.next()?.parse().ok()?, ticket: parts.next()?.parse().ok()?, generation: parts.next()?.parse().ok()? };
+        parts.next().is_none().then_some(key)
+    }
 }
 
 /// What a tool call returns: text for the model, whether it failed, and — for
@@ -517,7 +552,7 @@ mod tests {
 
     #[test]
     fn requests_and_responses_pair_by_id() {
-        let req = Message::request(7, HELLO, HelloParams { version: "1".into(), squad: "acme".into(), lang: None, browser_panel: false, phone: false });
+        let req = Message::request(7, HELLO, HelloParams { version: "1".into(), squad: "acme".into(), lang: None, browser_panel: false, phone: false, runs: false });
         let res = Message::response(7, Hello { version: "1".into(), snapshot: Default::default() });
         assert_eq!(req.id, res.id);
         assert!(res.result_as::<Hello>().is_some());

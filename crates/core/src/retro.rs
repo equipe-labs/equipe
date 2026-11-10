@@ -648,6 +648,7 @@ mod tests {
             depends_on: vec![],
             branch: Some(format!("equipe/t-{id}")),
             worktree: None,
+            execution: None,
             merged: None,
             off_main: None,
             design_qa: None,

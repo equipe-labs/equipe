@@ -217,3 +217,11 @@ Note: this table is a **list** of where values change. Each change is a screen c
 - At 760pt or 150% text, keep back and More document actions visible and move secondary tools into More. The reading measure stays `layout.measure`; diagrams reflow vertically before they overflow horizontally.
 - Exiting by Back, `Esc`, or `⇧⌘F` restores the exact origin, split widths, selected ticket/document, scroll position, and keyboard focus. `Esc` closes an open menu before it exits focus view.
 - Full interaction, copy, accessibility and QA contract: `design/specs/document-focus/spec.md` (T-617).
+
+## Component · renaming a conversation
+
+- One editor, wherever rename starts: a small card hanging 6pt under the header title (its left edge on the title, at most 360 wide, never outside the conversation pane), the app's popover look. Entries: the header title itself (a button: hover wash + pencil, tooltip Rename with the full title when cut), the first item of `This conversation` ⋯, and the sidebar row's pencil (beside ×, 24pt each), which opens the conversation and the same card.
+- The card: label, one-line field with the whole title selected, a counter inside the field from 30 of 40 characters, a message line only when there is something to say, Cancel `Esc` · Save `↩`. Nothing is ever cut: past 40 the overflow is marked and Save waits. Return saves, Esc reverts, an outside click acts as Return; Korean composition takes Return and Esc first.
+- Saving shows the new title in the header and sidebar at once; a failed save puts the old title back and reopens the card with what was typed and Try again.
+- In a narrow bar the title has the room first: the context figure goes, then the project folds to its mark, then the project and its slash go; ⋯ always stays.
+- Full interaction, copy (8 languages), accessibility and QA contract: `design/specs/rename-conversation/spec.md` (T-642).

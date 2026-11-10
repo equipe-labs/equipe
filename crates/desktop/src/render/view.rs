@@ -103,7 +103,7 @@ pub fn prepare(raw: &str, live: bool, expanded: &dyn Fn(usize) -> bool) -> (Stri
 pub fn configure(view: TextView, p: Palette, look: Look, scope: u64, full: Arc<HashMap<String, String>>) -> TextView {
     let muted = p.muted;
     let (wash, text) = (p.wash, p.text);
-    let (a, b, c, d, e, f) = plugins::all(p, look, scope);
+    let (a, b, c, d, e, f, g) = plugins::all(p, look, scope);
     let motion = if look.live { TextViewMotion::default().with_stream_fade(Duration::from_millis(150)).with_stream_fade_stagger(Duration::from_millis(20)) } else { TextViewMotion::default() };
     view.style(style(p, &look))
         .selectable(true)
@@ -183,6 +183,7 @@ pub fn configure(view: TextView, p: Palette, look: Look, scope: u64, full: Arc<H
         .plugin(d)
         .plugin(e)
         .plugin(f)
+        .plugin(g)
         .motion(motion)
 }
 

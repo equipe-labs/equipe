@@ -159,6 +159,7 @@ async fn add(handle: &Handle, events: &mut UnboundedReceiver<Event>, id: u64, sp
 
 async fn create_ticket(handle: &Handle, owner: &str) -> ToolResult {
     let call = equipe_core::protocol::rpc::ToolCall {
+        run: None,
         squad: "acme".into(),
         member: "pm".into(),
         name: "create_ticket".into(),
@@ -223,12 +224,12 @@ async fn moved_by_the_person_mid_ticket_it_waits_for_its_ticket_unless_now_and_t
     let (bin, dir) = claude(ANSWERS);
     let (handle, mut events) = pm_and_codex_qa(&bin).await;
     create_ticket(&handle, "qa").await;
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, .. })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), .. })).await;
     // Its turn on Codex ends (there is no Codex here), the ticket still in hand.
     for _ in 0..100 {
         let snapshot = handle.snapshot("acme").await;
-        let qa = snapshot.sessions.iter().find(|s| s.session == 2).expect("qa");
-        if qa.state == equipe_core::protocol::SessionState::Ready && qa.work.is_some() {
+        let run = snapshot.sessions.iter().find(|s| s.run.is_some_and(|r| r.of == 2));
+        if run.is_some_and(|qa| qa.state == equipe_core::protocol::SessionState::Ready && qa.work.is_some()) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -250,7 +251,7 @@ async fn moved_by_the_person_mid_ticket_it_waits_for_its_ticket_unless_now_and_t
         assert!(prompt.contains(wanted), "{wanted} in: {prompt}");
     }
     let snapshot = handle.snapshot("acme").await;
-    let qa = snapshot.sessions.iter().find(|s| s.member.as_ref().is_some_and(|m| m.name == "qa")).expect("qa is back");
+    let qa = snapshot.sessions.iter().find(|s| s.run.is_some() && s.member.as_ref().is_some_and(|m| m.name == "qa")).expect("qa is back on it");
     assert_eq!((qa.engine, qa.work.as_ref().map(|w| w.ticket)), (Engine::Claude, Some(1)), "the same ticket, carried on");
 }
 
@@ -263,7 +264,8 @@ async fn a_member_at_work_is_never_moved_mid_turn_and_a_draining_plan_moves_it_a
     add(&handle, &mut events, 2, member(&project, "qa", Some(Engine::Claude))).await;
     handle.send(Command::SetEngineSwitching { squad: "acme".into(), mode: Switching::Auto });
     create_ticket(&handle, "qa").await;
-    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, .. })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), .. })).await;
+    let run = started.iter().find_map(|e| if let Event::WorkStarted { session, of: Some(2), .. } = e { Some(*session) } else { None }).unwrap();
     handle.usage_read(Engine::Codex, usage(5, 5));
     handle.usage_read(Engine::Claude, usage(96, 30));
     // Both signed in, the team on Claude: the setup is proposed too — this is the other card.
@@ -278,7 +280,8 @@ async fn a_member_at_work_is_never_moved_mid_turn_and_a_draining_plan_moves_it_a
     // Its turn stopped, at a clean point on its ticket: it moves now, its
     // ticket handed over — here Codex can't start it, so it carries on on
     // Claude, its ticket and the packet with it.
-    handle.send(Command::Interrupt { session: 2 });
+    // The person stops its run: its ticket's turn, not the member.
+    handle.send(Command::Interrupt { session: run });
     let seen = until(&mut events, |e| matches!(e, Event::SessionStarted { member: Some(m), .. } if m.name == "qa")).await;
     assert!(seen.iter().any(|e| matches!(e, Event::SessionClosed { session: 2 })), "{seen:#?}");
     assert!(seen.iter().any(|e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.note.as_deref().is_some_and(|n| n.starts_with("Handed over from Claude to Codex")))));
@@ -353,7 +356,7 @@ async fn a_ticket_an_engine_out_of_its_plan_keeps_waiting_is_told_once_never_sil
     create_ticket(&handle, "qa").await;
     let told = |e: &Event| format!("{e:?}").contains("T-1 대기 중이에요");
     let seen = until(&mut events, told).await;
-    assert!(!seen.iter().any(|e| matches!(e, Event::WorkStarted { session: 2, .. })), "held, not started");
+    assert!(!seen.iter().any(|e| matches!(e, Event::WorkStarted { of: Some(2), .. })), "held, not started");
     // Once per hold, however often the board is looked at again.
     create_ticket(&handle, "qa").await;
     let later = within(&mut events, Duration::from_millis(1200)).await;

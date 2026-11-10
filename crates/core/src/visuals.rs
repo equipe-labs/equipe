@@ -24,6 +24,7 @@ pub mod cache;
 pub mod card;
 pub mod diagram;
 pub mod markdown;
+mod theme;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -978,6 +979,7 @@ mod tests {
             depends_on: vec![],
             branch: None,
             worktree: None,
+            execution: None,
             merged: None,
             off_main: None,
             design_qa: None, plan: None,
@@ -1116,6 +1118,7 @@ mod tests {
             depends_on: vec![],
             branch: branch.map(str::to_owned),
             worktree: None,
+            execution: None,
             merged,
             off_main: None,
             design_qa: None, plan: None,

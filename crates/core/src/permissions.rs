@@ -36,6 +36,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::KeepOnBranch { .. }
         | C::Reopen { .. }
         | C::Resume { .. }
+        | C::Requeue { .. }
         | C::Cancel { .. }
         | C::ProposeAccept { .. }
         | C::ConfirmAccept { .. }
@@ -147,6 +148,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::Focus { .. }
         | C::NewConversation { .. }
         | C::MoveConversation { .. }
+        | C::RenameConversation { .. }
         | C::CloseConversation { .. }
         | C::ReopenConversation { .. }
         | C::Unqueue { .. }

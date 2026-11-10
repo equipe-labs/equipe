@@ -13,7 +13,10 @@ use std::time::{Duration, Instant};
 use equipe_core::protocol::harness;
 use equipe_core::protocol::transcript::scope;
 use equipe_core::protocol::watch::CommandWatch;
-use equipe_core::protocol::{CompactTrigger, Engine, Entry, Event, SessionId, SessionInfo, TicketId, ToolOutcome, Transcript, TurnOutcome};
+use equipe_core::protocol::{
+    CompactTrigger, Engine, Entry, Event, Rendered, SessionId, SessionInfo, TicketId,
+    ToolOutcome, Transcript, TurnOutcome,
+};
 use equipe_core::t;
 
 use crate::activity::News;
@@ -118,6 +121,8 @@ pub struct Convo {
     pub suggestion: Option<String>,
     /// Subagents it handed work to this turn and that haven't handed back.
     pub subagents: Vec<Sub>,
+    /// Blocks of its replies the daemon drew (HTML cards' pictures, by key), told as `visuals_rendered`.
+    pub rendered: Vec<Rendered>,
     /// Its conversation being summarized, or just was.
     pub compact: Option<Compact>,
     /// Those that handed back (or stopped with a turn), the latest
@@ -171,6 +176,7 @@ impl Convo {
             queue: crate::queue::Queue::default(),
             suggestion: None,
             subagents: Vec::new(),
+            rendered: Vec::new(),
             compact: None,
             finished: Vec::new(),
             desk: base.clone(),
@@ -202,6 +208,7 @@ impl Convo {
                 ..Sub::new(s.id.clone(), s.what.clone(), s.brief.clone(), now.checked_sub(Duration::from_secs(s.secs)).unwrap_or(now))
             })
             .collect();
+        convo.rendered = info.visuals.clone();
         convo.compact = info.compacting.as_ref().map(|c| Compact::Running {
             manual: c.trigger == CompactTrigger::Manual,
             since: since_ms(c.started_at, now),
@@ -263,6 +270,12 @@ impl Convo {
                 self.queue.withdraw(text);
             }
             Event::QueueSent { texts, .. } => self.queue.sent(texts),
+            Event::VisualsRendered { visuals, .. } => {
+                for v in visuals {
+                    self.rendered.retain(|r| !(r.kind == v.kind && r.key == v.key));
+                    self.rendered.push(v.clone());
+                }
+            }
             Event::Suggestion { text, .. } => {
                 // Too late once it is at work again, or a memo is on its way.
                 if self.working_since.is_none() && !self.queue.has_memo() {
@@ -759,7 +772,7 @@ pub enum Block {
     /// named over it); `live` while it is still streaming; `worked`, when it
     /// ended its turn: how long the turn took, and when.
     Reply { text: String, first: bool, live: bool, worked: Option<Worked> },
-    /// A group of tool calls one after another (a failed one alone).
+    /// One assistant turn's tool calls, including failures it recovered from.
     Steps(Vec<ToolLine>),
     /// equipe's news, one after another.
     News(Vec<News>),
@@ -958,6 +971,12 @@ pub fn build_blocks_at(entries: &[Cow<'_, Entry>], times: &[Option<u64>], base: 
             }
             _ => {}
         }
+        // A finished thought stays in the transcript (and in `self.thoughts`)
+        // for diagnostics, but is not a conversation row and does not split
+        // the activity gathered across this assistant turn.
+        if matches!(entry, Entry::Note { text, .. } if thought_of(text).is_some()) {
+            continue;
+        }
         if !run.is_empty() {
             blocks.extend(crate::activity::groups(std::mem::take(&mut run)).into_iter().map(Block::Steps));
             at.resize(blocks.len(), run_at);
@@ -980,24 +999,24 @@ pub fn build_blocks_at(entries: &[Cow<'_, Entry>], times: &[Option<u64>], base: 
                 }
             }
             Entry::Reply { text } => {
+                dedupe_completion_news(&mut blocks, text);
                 blocks.push(Block::Reply { text: text.clone(), first: !replied, live: false, worked: None });
                 replied = true;
             }
             Entry::Note { text, .. } if text.starts_with(COMPACTED) => blocks.push(Block::Summarized),
-            Entry::Note { text, .. } => match (thought_of(text), worked_of(text)) {
-                (Some((n, secs)), _) => blocks.push(Block::Thought { n, secs, text: String::new() }),
-                (None, Some(worked)) => match blocks.last_mut() {
+            Entry::Note { text, .. } => match worked_of(text) {
+                Some(worked) => match blocks.last_mut() {
                     Some(Block::Reply { worked: slot, .. }) => *slot = Some(worked),
                     _ => blocks.push(Block::Worked(worked)),
                 },
-                (None, None) if crate::activity::qa_report_of(text).is_some() => {
+                None if crate::activity::qa_report_of(text).is_some() => {
                     blocks.push(Block::QaReport(Box::new(crate::activity::qa_report_of(text).expect("just read"))));
                 }
-                (None, None) if crate::activity::handed_of(text).is_some() => {
+                None if crate::activity::handed_of(text).is_some() => {
                     let (name, why) = crate::activity::handed_of(text).unwrap_or_default();
                     blocks.push(Block::HandOver { name, why, live: false });
                 }
-                (None, None) => match crate::activity::news_of(text) {
+                None => match crate::activity::news_of(text) {
                     // A ticket waiting for the person: their card, not a line.
                     Some(news) if news.kind == crate::activity::NewsKind::Waiting && ticket_ref(&news.text).is_some() => {
                         let (at, len) = ticket_ref(&news.text).unwrap_or_default();
@@ -1022,6 +1041,48 @@ pub fn build_blocks_at(entries: &[Cow<'_, Entry>], times: &[Option<u64>], base: 
     }
     at.resize(blocks.len(), run_at);
     (blocks, at)
+}
+
+/// A structured completion immediately followed by a reply that says the
+/// same ticket and event is one fact, not two rows. Both keys must be clear;
+/// ambiguous prose is left alone, and the transcript itself is untouched.
+fn dedupe_completion_news(blocks: &mut Vec<Block>, reply: &str) {
+    let Some(Block::News(news)) = blocks.last_mut() else { return };
+    news.retain(|item| !completion_repeated(item, reply));
+    if news.is_empty() {
+        blocks.pop();
+    }
+}
+
+fn completion_repeated(news: &News, reply: &str) -> bool {
+    use crate::activity::NewsKind;
+    if !matches!(news.kind, NewsKind::HandedIn | NewsKind::Accepted | NewsKind::Merged) {
+        return false;
+    }
+    let Some((at, len)) = ticket_ref(&news.text) else { return false };
+    let ticket = &news.text[at..at + len];
+    let mut from = 0;
+    let mut same_ticket = false;
+    while let Some((at, len)) = ticket_ref_from(reply, from) {
+        same_ticket |= &reply[at..at + len] == ticket;
+        from = at + len;
+    }
+    if !same_ticket {
+        return false;
+    }
+    let reply = reply.to_lowercase();
+    // "T-58 isn't accepted yet" names the ticket and the word but says the
+    // opposite: a reply that denies anything keeps the news row. The words
+    // are every language's (`match.*` in the locales): a reply may be in any.
+    let said = |key: &str| crate::i18n::every(key).iter().any(|word| reply.contains(&word.to_lowercase()));
+    if said("match.denied") {
+        return false;
+    }
+    said(match news.kind {
+        NewsKind::HandedIn => "match.handed_in",
+        NewsKind::Accepted => "match.accepted",
+        _ => "match.merged",
+    })
 }
 
 /// The conversation's hand-over rows brought up to date: each member's
@@ -1249,7 +1310,7 @@ mod tests {
         feed(&mut c, &[
             Event::UserMessage { session: 1, text: "go".into(), kept: Vec::new() },
             tool("Bash", "cp /a/logo.png img/"),
-            refused("cp /a/logo.png img/", "cp to '/Users/abel/Abel/equipe-site/public/logo.png' was blocked by a deny rule."),
+            refused("cp /a/logo.png img/", "cp to '/Users/you/Abel/equipe-site/public/logo.png' was blocked by a deny rule."),
             tool("Bash", "cp x y"),
             refused("cp x y", "cp: y: Permission denied"),
         ]);
@@ -1360,23 +1421,22 @@ mod tests {
         let Block::Steps(lines) = &c.blocks()[1] else { panic!() };
         assert!(lines.iter().all(|l| l.status == Status::Running), "unanswered while it works");
         assert_eq!(crate::activity::status(lines), Status::Running);
-        // The command fails: it stands apart from the reads after it, so it stays in sight.
+        // The command fails, but stays inside this turn's one activity.
         feed(&mut c, &[done("Bash", "cargo test", false, "error[E0308]", None), tool("Read", "/work/site/b.rs"), done("Read", "/work/site/a.rs", true, "", None)]);
         let blocks = c.blocks();
-        let Block::Steps(failed) = &blocks[1] else { panic!() };
-        assert_eq!((failed.len(), failed[0].status, failed[0].exit, failed[0].output.clone()), (1, Status::Failed, Some(2), Some(("error[E0308]".into(), 0))));
-        let Block::Steps(reads) = &blocks[2] else { panic!("{blocks:?}") };
-        assert_eq!(reads[0].status, Status::Running, "one read of the two still out");
+        let Block::Steps(lines) = &blocks[1] else { panic!("{blocks:?}") };
+        assert_eq!((lines.len(), lines[0].status, lines[0].exit, lines[0].output.clone()), (2, Status::Failed, Some(2), Some(("error[E0308]".into(), 0))));
+        assert_eq!(lines[1].status, Status::Running, "one read of the two still out");
         feed(&mut c, &[done("Read", "/work/site/b.rs", true, "", None), tool("Edit", "/work/site/a.rs"), done("Edit", "/work/site/a.rs", true, "", Some("diff --git a/a b/a\n"))]);
-        let Block::Steps(lines) = &c.blocks()[2] else { panic!() };
-        assert_eq!((lines[0].status, lines[0].ms), (Status::Done, Some(3000)), "a merged line adds its steps up");
-        assert_eq!(lines[1].diff.as_deref(), Some("diff --git a/a b/a\n"));
-        assert_eq!(lines[1].path.as_deref(), Some("/work/site/a.rs"));
-        assert_eq!(crate::activity::status(lines), Status::Done);
+        let Block::Steps(lines) = &c.blocks()[1] else { panic!() };
+        assert_eq!((lines[1].status, lines[1].ms), (Status::Done, Some(3000)), "a merged line adds its steps up");
+        assert_eq!(lines[2].diff.as_deref(), Some("diff --git a/a b/a\n"));
+        assert_eq!(lines[2].path.as_deref(), Some("/work/site/a.rs"));
+        assert_eq!(crate::activity::status(lines), Status::Done, "the successful replacement path recovers the failed call");
         // Turn over: what never answered is just a step.
         feed(&mut c, &[tool("Bash", "ls"), Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }]);
-        let Block::Steps(lines) = &c.blocks()[2] else { panic!() };
-        assert_eq!(lines[2].status, Status::Unknown);
+        let Block::Steps(lines) = &c.blocks()[1] else { panic!() };
+        assert_eq!(lines[3].status, Status::Unknown);
     }
 
     #[test]
@@ -1467,7 +1527,7 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_shows_while_it_goes_and_stays_as_a_line() {
+    fn reasoning_shows_while_it_goes_but_not_as_a_finished_transcript_row() {
         let mut c = convo(false);
         let t0 = Instant::now();
         c.on_event(&Event::UserMessage { session: 1, text: "go".into(), kept: Vec::new() }, t0, T);
@@ -1476,8 +1536,53 @@ mod tests {
         c.on_event(&Event::Thinking { session: 1, text: "footer.".into() }, t0, T);
         c.on_event(&Event::TextDelta { session: 1, text: "Done".into() }, t0 + Duration::from_secs(4), T);
         let blocks = c.blocks();
-        assert_eq!(blocks[1], Block::Thought { n: 0, secs: 4, text: "First, the header.\nThen the footer.".into() });
-        assert_eq!(blocks[2], Block::Reply { text: "Done".into(), first: true, live: true, worked: None });
+        assert_eq!(blocks[1], Block::Reply { text: "Done".into(), first: true, live: true, worked: None });
+        assert!(c.transcript.entries().iter().any(|entry| matches!(entry, Entry::Note { text, .. } if thought_of(text) == Some((0, 4)))), "the diagnostic marker remains in the transcript");
+        assert_eq!(c.thought(0), Some("First, the header.\nThen the footer."));
+    }
+
+    #[test]
+    fn thoughts_between_tools_do_not_split_a_turns_activity() {
+        let entries = vec![
+            Cow::Owned(Entry::Note { undo: None, text: format!("{THOUGHT}0:1") }),
+            Cow::Owned(Entry::Tool { tool: "Read".into(), target: Some("/w/a.rs".into()), outcome: Some(Box::new(ToolOutcome { ok: true, ..Default::default() })), label: None, background: false }),
+            Cow::Owned(Entry::Note { undo: None, text: format!("{THOUGHT}1:2") }),
+            Cow::Owned(Entry::Tool { tool: "Bash".into(), target: Some("cargo test".into()), outcome: Some(Box::new(ToolOutcome { ok: true, ..Default::default() })), label: None, background: false }),
+            Cow::Owned(Entry::Tool { tool: "Grep".into(), target: Some("Rust GPUI".into()), outcome: Some(Box::new(ToolOutcome { ok: true, ..Default::default() })), label: None, background: false }),
+            Cow::Owned(Entry::Reply { text: "Done.".into() }),
+        ];
+        let blocks = build_blocks(&entries, Path::new("/w"));
+        assert!(matches!(&blocks[..], [Block::Steps(lines), Block::Reply { .. }] if lines.iter().map(|line| line.verb.as_str()).collect::<Vec<_>>() == ["read", "run", "search"]), "{blocks:#?}");
+        assert!(!blocks.iter().any(|block| matches!(block, Block::Thought { .. })));
+    }
+
+    #[test]
+    fn a_person_action_error_remains_a_body_row_after_activity() {
+        let entries = vec![
+            Cow::Owned(Entry::Tool { tool: "Bash".into(), target: Some("deploy".into()), outcome: Some(Box::new(ToolOutcome { ok: false, output: "sign in required".into(), ..Default::default() })), label: None, background: false }),
+            Cow::Owned(Entry::Error { message: "Sign in required".into(), next: Some("Open the account sign-in".into()) }),
+        ];
+        let blocks = build_blocks(&entries, Path::new("/w"));
+        assert!(matches!(&blocks[..], [Block::Steps(_), Block::Error { message, next: Some(next) }] if message == "Sign in required" && next == "Open the account sign-in"), "{blocks:#?}");
+    }
+
+    #[test]
+    fn a_structured_completion_and_matching_reply_show_once_only_with_certain_keys() {
+        let accepted = Entry::Note { undo: None, text: "You accepted T-58 · Header.".into() };
+        let same = build_blocks(&[Cow::Borrowed(&accepted), Cow::Owned(Entry::Reply { text: "T-58 was accepted and is ready.".into() })], Path::new("/w"));
+        assert!(matches!(&same[..], [Block::Reply { .. }]), "{same:#?}");
+        let second_ticket = build_blocks(&[Cow::Borrowed(&accepted), Cow::Owned(Entry::Reply { text: "T-59 remains open; T-58 was accepted.".into() })], Path::new("/w"));
+        assert!(matches!(&second_ticket[..], [Block::Reply { .. }]), "{second_ticket:#?}");
+
+        let other_ticket = build_blocks(&[Cow::Borrowed(&accepted), Cow::Owned(Entry::Reply { text: "T-59 was accepted and is ready.".into() })], Path::new("/w"));
+        assert!(matches!(&other_ticket[..], [Block::News(_), Block::Reply { .. }]));
+        let ambiguous = build_blocks(&[Cow::Borrowed(&accepted), Cow::Owned(Entry::Reply { text: "T-58 is ready.".into() })], Path::new("/w"));
+        assert!(matches!(&ambiguous[..], [Block::News(_), Block::Reply { .. }]));
+        // The ticket and the word, but denied: both stay.
+        for denied in ["T-58 hasn't been accepted yet.", "T-58 is not accepted.", "T-58은 아직 수락되지 않았어요.", "T-58 wurde nicht akzeptiert."] {
+            let kept = build_blocks(&[Cow::Borrowed(&accepted), Cow::Owned(Entry::Reply { text: denied.into() })], Path::new("/w"));
+            assert!(matches!(&kept[..], [Block::News(_), Block::Reply { .. }]), "{denied}: {kept:#?}");
+        }
     }
 
     #[test]
@@ -1779,6 +1884,17 @@ mod tests {
     }
 
     #[test]
+    fn what_the_daemon_drew_is_kept_by_its_key_and_told_again_it_is_the_one_already_here() {
+        use equipe_core::protocol::RenderedImage;
+        let image = |path: &str| RenderedImage { path: path.into(), width: 880, height: 400 };
+        let card = |key: &str, page: &str| Rendered { kind: "card".into(), key: key.into(), light: image("/v/a-light.png"), dark: image("/v/a-dark.png"), page: Some(page.into()) };
+        let mut c = convo(false);
+        feed(&mut c, &[Event::VisualsRendered { session: 1, visuals: vec![card("aaaaaaaaaaaaaaaa", "/v/a.html")] }]);
+        feed(&mut c, &[Event::VisualsRendered { session: 1, visuals: vec![card("aaaaaaaaaaaaaaaa", "/v/b.html"), card("bbbbbbbbbbbbbbbb", "/v/c.html")] }]);
+        assert_eq!(c.rendered.iter().map(|r| (r.key.as_str(), r.page.as_deref().unwrap())).collect::<Vec<_>>(), [("aaaaaaaaaaaaaaaa", "/v/b.html"), ("bbbbbbbbbbbbbbbb", "/v/c.html")]);
+    }
+
+    #[test]
     fn subagents_come_and_go_with_their_steps() {
         let mut c = convo(false);
         let start = Instant::now();
@@ -1989,6 +2105,7 @@ mod tests {
             steering: vec![],
             steering_in: vec![],
             lane: None,
+            run: None,
             estimate: None,
             work: None,
             mode: None,
@@ -2027,6 +2144,7 @@ mod tests {
                 steering: vec![],
                 steering_in: vec![],
                 lane: None,
+                run: None,
                 estimate: None,
                 work: None,
                 mode: None,

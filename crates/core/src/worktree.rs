@@ -95,6 +95,18 @@ fn git_within(dir: &Path, args: &[&str], timeout: Duration) -> Result<String> {
     }
 }
 
+/// What a checkout holds, only looked at: its commit, abbreviated, and how
+/// many files are changed or untracked. `None` for what git couldn't say —
+/// a checkout that is gone, say.
+pub fn checkout_facts(path: &Path) -> (Option<String>, Option<u32>) {
+    if !path.exists() {
+        return (None, None);
+    }
+    let head = git(path, &["rev-parse", "--short", "HEAD"]).ok().filter(|h| !h.is_empty());
+    let dirty = git(path, &["status", "--porcelain", "--untracked-files=all"]).ok().map(|s| s.lines().filter(|l| !l.trim().is_empty()).count() as u32);
+    (head, dirty)
+}
+
 /// The top of the git repository containing `dir`.
 pub fn repo_root(dir: &Path) -> Result<PathBuf> {
     git(dir, &["rev-parse", "--show-toplevel"])
@@ -682,13 +694,48 @@ pub fn merge_conflicts(repo: &Path, branch: &str) -> Result<Vec<String>> {
 /// nothing changes. Returns the main branch's name; `Ok` with nothing done when
 /// `branch` is in it already, or would change nothing in it.
 pub fn merge_into_main(repo: &Path, branch: &str, message: &str) -> Result<String> {
+    match prepare_merge(repo, branch, message)? {
+        Prepared::Nothing { main } => Ok(main),
+        Prepared::Merge(merge) => land(repo, &merge),
+    }
+}
+
+/// A merge of a branch into main, worked out and committed as an object but
+/// not landed: main still points at `tip`. Checks run on `commit`'s tree, and
+/// exactly that commit is what [`land`] puts on main.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeCommit {
+    /// The main branch's name.
+    pub main: String,
+    /// Main's tip the merge was worked out on: its first parent.
+    pub tip: String,
+    /// The branch's commit merged: its second parent.
+    pub head: String,
+    /// The merge commit.
+    pub commit: String,
+}
+
+/// What merging a branch into main comes to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Prepared {
+    /// It is in main already, or would change nothing there.
+    Nothing { main: String },
+    Merge(MergeCommit),
+}
+
+/// Work out merging `branch` into the main branch, as [`merge_into_main`]
+/// would, without moving anything: the merge commit is made (an object only)
+/// for checks to run on and [`land`] to put on main. A conflict is an error
+/// naming its files.
+pub fn prepare_merge(repo: &Path, branch: &str, message: &str) -> Result<Prepared> {
     let main = main_branch(repo)?;
     if is_ancestor(repo, branch, &main) || adds_nothing(repo, branch, &main) {
-        return Ok(main);
+        return Ok(Prepared::Nothing { main });
     }
     let tip = git(repo, &["rev-parse", &format!("refs/heads/{main}")])?;
+    let head = git(repo, &["rev-parse", &format!("{branch}^{{commit}}")])?;
     let mut command = git_command(repo);
-    command.args(["merge-tree", "--write-tree", "--name-only", "--no-messages", &tip, branch]);
+    command.args(["merge-tree", "--write-tree", "--name-only", "--no-messages", &tip, &head]);
     let out = output_within(command, GIT_TIMEOUT)?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut lines = stdout.lines();
@@ -701,9 +748,41 @@ pub fn merge_into_main(repo: &Path, branch: &str, message: &str) -> Result<Strin
         }
         _ => return Err(format!("git merge-tree failed: {}", String::from_utf8_lossy(&out.stderr).trim())),
     }
-    let commit = with_identity(repo, &["commit-tree", &tree, "-p", &tip, "-p", branch, "-m", message])?;
-    move_main(repo, &main, &tip, &commit, "merged")?;
-    Ok(main)
+    let commit = with_identity(repo, &["commit-tree", &tree, "-p", &tip, "-p", &head, "-m", message])?;
+    Ok(Prepared::Merge(MergeCommit { main, tip, head, commit }))
+}
+
+/// How [`land`]'s error begins when main moved on after the merge was
+/// worked out: what was checked is no longer what would land.
+pub const MAIN_MOVED: &str = "main moved on since the merge was worked out";
+
+/// Put a merge [`prepare_merge`] worked out on main — only while main is
+/// still at the tip it was worked out on; else nothing moves and the error
+/// starts with [`MAIN_MOVED`]. Returns the main branch's name.
+pub fn land(repo: &Path, merge: &MergeCommit) -> Result<String> {
+    if !main_is_at(repo, merge) {
+        return Err(format!("{MAIN_MOVED} — nothing was merged"));
+    }
+    move_main(repo, &merge.main, &merge.tip, &merge.commit, "merged")?;
+    Ok(merge.main.clone())
+}
+
+/// Whether main still points at the tip `merge` was worked out on.
+pub fn main_is_at(repo: &Path, merge: &MergeCommit) -> bool {
+    git(repo, &["rev-parse", &format!("refs/heads/{}", merge.main)]).is_ok_and(|now| now == merge.tip)
+}
+
+/// Whether `branch` still points at the commit `merge` merged.
+pub fn branch_is_at(repo: &Path, branch: &str, merge: &MergeCommit) -> bool {
+    git(repo, &["rev-parse", &format!("{branch}^{{commit}}")]).is_ok_and(|now| now == merge.head)
+}
+
+/// Check out `commit` (detached, no branch) in a new worktree of `repo` at
+/// `path`, for something to run on it — a merge's checks. Remove it with
+/// [`remove_at`].
+pub fn add_detached(repo: &Path, path: &Path, commit: &str) -> Result<()> {
+    off_the_loop("add_detached");
+    add_worktree(repo, path, &["--detach", &path.to_string_lossy(), commit], &[])
 }
 
 /// Move `main` from `tip` to `commit`, which has it as a parent: where a

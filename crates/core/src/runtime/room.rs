@@ -257,7 +257,7 @@ impl Runtime {
 
     /// Every member of `squad`, lanes left out.
     pub(super) fn squad_members(&self, squad: &str) -> Vec<SessionId> {
-        self.sessions.iter().filter(|(_, s)| s.squad.as_deref() == Some(squad) && s.lane.is_none() && s.member.is_some()).map(|(&id, _)| id).collect()
+        self.sessions.iter().filter(|(_, s)| s.squad.as_deref() == Some(squad) && s.is_member_itself() && s.member.is_some()).map(|(&id, _)| id).collect()
     }
 
     /// A member's build or turn failed for want of room: the disk is full,
@@ -287,7 +287,11 @@ impl Runtime {
     /// What equipe knows, for a look at the disk: cheap, from what it holds.
     fn disk_known(&mut self) -> disk::Known {
         let squads: Vec<String> = self.journals.keys().cloned().collect();
-        let mut known = disk::Known { home: self.config.home.clone(), user_home: std::env::var_os("HOME").map(PathBuf::from), ..Default::default() };
+        // The system's temporary folders are the person's machine's: a daemon
+        // given a home of its own for the person (a test's, a demo's) never
+        // looks there, let alone removes anything.
+        let temp = if self.config.person_home.is_none() { disk::temp_roots() } else { Vec::new() };
+        let mut known = disk::Known { home: self.config.home.clone(), user_home: std::env::var_os("HOME").map(PathBuf::from), temp, ..Default::default() };
         for squad in &squads {
             let tickets = self.journal(squad).map(|j| (j.tickets().unwrap_or_default(), j.projects().unwrap_or_default()));
             let Some((tickets, projects)) = tickets else { continue };
@@ -302,8 +306,10 @@ impl Runtime {
             .sessions
             .values()
             .filter(|s| s.is_working())
-            .filter_map(|s| Some(journal::build_dir(&self.config.home, s.squad.as_deref()?, s.name()?)))
+            .filter_map(|s| self.build_dir_of(s))
             .collect();
+        // And where accepted work's checks are building.
+        known.building.extend(self.gate_builds());
         known
     }
 

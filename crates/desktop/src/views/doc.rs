@@ -16,6 +16,41 @@ use crate::theme::{BODY, BODY_LINE, META, SMALL};
 use crate::tips::tip;
 use crate::ui;
 
+/// Where the keyboard goes: the button that went into focus view (back
+/// there on the way out), its way back, the "more" button, a stop for
+/// every tool and menu item so Tab reaches them in the order they are drawn,
+/// and the text itself, last, where the arrows and Page keys scroll it.
+pub struct Handles {
+    pub entry: FocusHandle,
+    pub back: FocusHandle,
+    pub more: FocusHandle,
+    pub menu: [FocusHandle; 4],
+    pub tools: [FocusHandle; 6],
+    pub body: FocusHandle,
+}
+
+impl Handles {
+    pub fn new(cx: &mut Context<Shell>) -> Self {
+        let stop = |cx: &mut Context<Shell>| cx.focus_handle().tab_stop(true);
+        Self { entry: stop(cx), back: stop(cx), more: stop(cx), menu: [stop(cx), stop(cx), stop(cx), stop(cx)], tools: [stop(cx), stop(cx), stop(cx), stop(cx), stop(cx), stop(cx)], body: stop(cx) }
+    }
+
+    /// The document's buttons: one of them has the keyboard.
+    pub fn button_focused(&self, window: &Window) -> bool {
+        [&self.entry, &self.back, &self.more].into_iter().chain(&self.menu).chain(&self.tools).any(|h| h.is_focused(window))
+    }
+
+    /// Anywhere in the document has the keyboard.
+    pub fn any_focused(&self, window: &Window) -> bool {
+        self.button_focused(window) || self.body.is_focused(window)
+    }
+}
+
+/// How far a focus ring reaches outside its button.
+const RING: f32 = 6.;
+/// The text's side margins in focus view (`layout.gutter`).
+const GUTTER: f32 = 24.;
+
 /// The panel's left edge: drag to make it wider or narrower (kept), double-
 /// click for the usual width. Shared by the document and the terminal.
 pub fn edge(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
@@ -77,50 +112,133 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
     let path = doc.path.display().to_string();
     let wide = shell.side_width(window);
     let folder = crate::doc::folder_shown(&doc.path, &crate::render::base_dir(shell), std::env::home_dir().as_deref());
-    let bar = h_flex()
-        .h(px(super::header::HEIGHT))
-        .flex_none()
-        .px_3()
-        .gap_2()
-        .items_center()
-        .border_b_1()
-        .border_color(p.hair)
-        .child(icon(Icon::FileText, 15., p.muted))
-        // One line: its name, then where it is, short — the whole path on hover.
-        .child(tip(
+    let focused = doc.focus.is_some();
+    let window_width: f32 = window.viewport_size().width.into();
+    let compact = crate::doc::compact(window_width, shell.remembered.zoom.0);
+    let keys = &shell.doc_keys;
+    let zoom = crate::zoom::factor(shell.remembered.zoom.0);
+    let body_ring = keys.body.is_focused(window) && window.last_input_was_keyboard();
+    let copy_path = {
+        let path = path.clone();
+        move |cx: &mut App| {
+            cx.write_to_clipboard(ClipboardItem::new_string(path.clone()));
+            crate::render::flash(t!("doc.copied").into(), cx);
+        }
+    };
+    // Reading again, opening, copying the path: beside the name when there is
+    // room, else under "more".
+    let tools = |bar: Div, cx: &mut Context<Shell>| {
+        bar.when(doc.slides().is_some_and(|s| !s.is_empty()), |bar| bar.child(ui::icon_button(p, "doc-present", Icon::Play, t!("deck.present"), None).focus(&keys.tools[0]).on_click(cx.listener(|this, _, _, cx| this.present(0, cx)))))
+            .when(!compact && !doc.kept, |bar| bar.child(ui::icon_button(p, "doc-reload", Icon::Reload, t!("doc.reload"), None).focus(&keys.tools[1]).on_click(cx.listener(|this, _, _, cx| this.reload_doc(cx)))))
+            .when(!compact && local && !doc.kept, |bar| {
+                let path = doc.path.clone();
+                bar.child(ui::icon_button(p, "doc-open", Icon::External, t!("doc.open"), None).focus(&keys.tools[2]).on_click(move |_, _, cx| crate::render::open_file(&path, crate::render::Open::Edit, cx)))
+            })
+            .when(!compact && doc.path.is_absolute(), |bar| {
+                let copy = copy_path.clone();
+                bar.child(ui::icon_button(p, "doc-copy", Icon::Copy, t!("doc.copy_path"), None).focus(&keys.tools[3]).on_click(move |_, _, cx| copy(cx)))
+            })
+    };
+    let more_button = |cx: &mut Context<Shell>| {
+        ui::icon_button(p, "doc-more", Icon::More, t!("doc.focus_more"), None)
+            .focus(&keys.more)
+            .expanded(doc.more)
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_doc_more(window, cx)))
+    };
+    let lights = super::sidebar::lights_end(crate::zoom::factor(shell.remembered.zoom.0));
+    // Where the way back's words start: the lines under it start there too.
+    let edge_left = if focused { lights + 8. + 12. } else { 12. };
+    let menu = doc.more.then(|| {
+        let mut row = h_flex().id("doc-more-menu").flex_none().pl(px(if focused { lights + 8. } else { 8. })).pr_3().py_1().gap_1().flex_wrap().items_center().border_b_1().border_color(p.hair);
+        if !doc.kept {
+            row = row.child(ui::button(p, "doc-more-reload", ui::Kind::Ghost, t!("doc.reload")).icon(Icon::Reload).focus(&keys.menu[0]).on_click(cx.listener(|this, _, _, cx| {
+                this.reload_doc(cx);
+                this.close_doc_more(cx);
+            })));
+        }
+        if local && !doc.kept {
+            let path = doc.path.clone();
+            row = row.child(ui::button(p, "doc-more-open", ui::Kind::Ghost, t!("doc.open")).icon(Icon::External).focus(&keys.menu[1]).on_click(move |_, _, cx| crate::render::open_file(&path, crate::render::Open::Edit, cx)));
+        }
+        if doc.path.is_absolute() {
+            let copy = copy_path.clone();
+            row = row.child(ui::button(p, "doc-more-copy", ui::Kind::Ghost, t!("doc.copy_path")).icon(Icon::Copy).focus(&keys.menu[2]).on_click(move |_, _, cx| copy(cx)));
+        }
+        // In focus view the close folds in with the rest; beside the panel it never leaves the bar.
+        row.when(focused, |row| row.child(ui::button(p, "doc-more-close", ui::Kind::Ghost, t!("doc.close_doc")).icon(Icon::X).focus(&keys.menu[3]).on_click(cx.listener(|this, _, window, cx| this.close_doc_from(window, cx)))))
+    });
+    // The whole name, wrapping, and where it is — never cut.
+    let where_ = |left: f32| {
+        tip(
             h_flex()
                 .id("doc-where")
                 .flex_1()
                 .min_w_0()
-                .gap(px(8.))
-                .items_baseline()
-                .child(div().min_w_0().flex_shrink_0().max_w(px(wide * 0.6)).text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).overflow_hidden().whitespace_nowrap().text_ellipsis().child(doc.name()))
-                .child(div().flex_1().min_w_0().text_size(px(META)).text_color(p.muted).overflow_hidden().whitespace_nowrap().text_ellipsis().child(folder)),
+                .pl(px(left))
+                .pr_3()
+                .pb_2()
+                .gap_2()
+                .items_start()
+                .child(div().flex_none().pt(px(2.)).child(icon(Icon::FileText, 15., p.muted)))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .flex()
+                        .flex_wrap()
+                        .items_baseline()
+                        .gap_x(px(8.))
+                        .child(div().min_w_0().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(doc.name()))
+                        .child(div().min_w_0().text_size(px(META)).text_color(p.muted).child(folder.clone())),
+                ),
             p,
             path.clone(),
             None,
-        ))
-        .when(doc.slides().is_some_and(|s| !s.is_empty()), |bar| bar.child(ui::icon_button(p, "doc-present", Icon::Play, t!("deck.present"), None).on_click(cx.listener(|this, _, _, cx| this.present(0, cx)))))
-        // Kept words have no file to read again or open.
-        .when(!doc.kept, |bar| bar.child(ui::icon_button(p, "doc-reload", Icon::Reload, t!("doc.reload"), None).on_click(cx.listener(|this, _, _, cx| this.reload_doc(cx)))))
-        .when(local && !doc.kept, |bar| {
-            let path = doc.path.clone();
-            bar.child(ui::icon_button(p, "doc-open", Icon::External, t!("doc.open"), None).on_click(move |_, _, cx| crate::render::open_file(&path, crate::render::Open::Edit, cx)))
-        })
-        // Words with no file of their own (a hand-over packet) have no path to copy.
-        .when(doc.path.is_absolute(), |bar| {
-            bar.child(ui::icon_button(p, "doc-copy", Icon::Copy, t!("doc.copy_path"), None).on_click(move |_, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(path.clone()));
-                crate::render::flash(t!("doc.copied").into(), cx);
-            }))
-        })
-        .child(ui::icon_button(p, "doc-fold", Icon::ChevronRight, t!("doc.fold"), None).on_click(cx.listener(|this, _, _, cx| this.fold_doc(true, cx))))
-        .child(ui::icon_button(p, "doc-close", Icon::X, t!("doc.close"), None).on_click(cx.listener(|this, _, _, cx| this.close_doc(cx))));
+        )
+    };
+    let bar = if let Some(focus) = &doc.focus {
+        // Focus view: a way back on the left, the tools on the right; under
+        // them the whole name and where it is.
+        // A long title is shortened so the way back's words and Esc show.
+        let title_most = if compact { 24 } else { 48 };
+        let back = match &focus.origin {
+            crate::doc::Origin::Conversation(title) => t!("doc.focus_back_chat", title = crate::doc::shortened(title, title_most)),
+            crate::doc::Origin::Docs => t!("doc.focus_back_docs").to_string(),
+            crate::doc::Origin::Project(name) => t!("doc.focus_back_project", name = crate::doc::shortened(name, title_most)),
+        };
+        let esc = if doc.more { t!("doc.focus_menu_esc").to_string() } else { "Esc".to_string() };
+        let first = ui::title_bar(
+            h_flex().h(px(super::header::HEIGHT)).flex_none().pl(px(lights + 8.)).pr_3().gap_2().items_center().child(
+                // Room around the button for its focus ring, which a tight
+                // clip would cut; the margin takes the room back.
+                div().flex_shrink(1.).min_w_0().overflow_hidden().p(px(RING)).m(px(-RING)).child(
+                    ui::button(p, "doc-focus-back", ui::Kind::Ghost, back).icon(Icon::ArrowLeft).key(esc).strong().focus(&keys.back).on_click(cx.listener(|this, _, window, cx| this.toggle_doc_focus(window, cx))),
+                ),
+            ),
+        )
+        .child(div().flex_1().min_w_0());
+        let first = tools(first, cx).when(compact, |bar| bar.child(more_button(cx))).when(!compact, |bar| bar.child(ui::icon_button(p, "doc-close", Icon::X, t!("doc.close_doc"), None).focus(&keys.tools[5]).on_click(cx.listener(|this, _, window, cx| this.close_doc_from(window, cx)))));
+        v_flex().flex_none().border_b_1().border_color(p.hair).child(first).child(where_(edge_left))
+    } else {
+        // Beside the conversation: the name and the two ways out on top; under
+        // them Focus view, the one way in, and the document's tools.
+        let top = h_flex()
+            .flex_none()
+            .items_start()
+            .child(where_(edge_left).pt_2())
+            .child(h_flex().flex_none().h(px(super::header::HEIGHT)).pr_3().gap_1().items_center().child(ui::icon_button(p, "doc-fold", Icon::ChevronRight, t!("doc.fold"), None).focus(&keys.tools[4]).on_click(cx.listener(|this, _, _, cx| this.fold_doc(true, cx)))).child(ui::icon_button(p, "doc-close", Icon::X, t!("doc.close_doc"), None).focus(&keys.tools[5]).on_click(cx.listener(|this, _, window, cx| this.close_doc_from(window, cx)))));
+        let enter = ui::button(p, "doc-focus", ui::Kind::Secondary, t!("doc.focus")).icon(Icon::Expand).key("⇧⌘F").focus(&keys.entry).on_click(cx.listener(|this, _, window, cx| this.toggle_doc_focus(window, cx)));
+        let row = h_flex().flex_none().px_2().pb_2().gap_1().items_center().child(enter).child(div().flex_1().min_w_0());
+        let row = tools(row, cx).when(compact, |bar| bar.child(more_button(cx)));
+        v_flex().flex_none().border_b_1().border_color(p.hair).child(top).child(row)
+    };
     let named = crate::docs::doc_at(&shell.docs, &doc.path.to_string_lossy()).map(|d| d.ticket_ids()).unwrap_or_default();
     let tickets = (!named.is_empty()).then(|| {
         h_flex()
             .flex_none()
-            .px_3()
+            // In focus view it starts where the header's words do (past the file icon and its gap).
+            .pl(px(if focused { edge_left + 15. + 8. } else { 12. }))
+            .pr_3()
             .py_1p5()
             .gap_1()
             .flex_wrap()
@@ -157,7 +275,9 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
             let markdown = doc.markdown().unwrap_or_default();
             let look = Look { size: BODY, line: BODY_LINE, color: p.prose, live: false };
             v_flex()
-                .px_5()
+                // In focus view the gutter keeps its size however large the text.
+                .when(focused, |b| b.px(px(GUTTER / zoom)))
+                .when(!focused, |b| b.px_5())
                 .pt_4()
                 .pb_8()
                 .min_w_0()
@@ -184,17 +304,36 @@ pub fn panel(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<
         v_flex()
             .id("doc-panel")
             .relative()
-            .w(px(wide))
-            .flex_none()
+            .when(focused, |d| d.flex_1().min_w_0())
+            .when(!focused, |d| d.w(px(wide)).flex_none().border_l_1().border_color(p.hair))
             .h_full()
             .min_h_0()
-            .border_l_1()
-            .border_color(p.hair)
             .bg(p.bg)
             .child(bar)
+            .children(menu)
             .children(tickets)
-            .child(div().id("doc-scroll").flex_1().min_h_0().overflow_y_scroll().track_scroll(&doc.scroll).child(body))
-            .child(edge(shell, cx))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(
+                        div()
+                            .id("doc-scroll")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .track_scroll(&doc.scroll)
+                            // The text is the last stop: there the arrows, Page keys, Space, Home and End scroll it.
+                            .track_focus(&keys.body)
+                            .role(Role::Document)
+                            .aria_label(format!("{}, {}", t!("doc.body"), doc.name()))
+                            .child(if focused { div().w_full().max_w(px(680.)).mx_auto().child(body).into_any_element() } else { body }),
+                    )
+                    // Its ring, over the text rather than under it, when the keys moved there.
+                    .children(body_ring.then(|| div().absolute().inset_0().border_2().border_color(p.accent))),
+            )
+            .children((!focused).then(|| edge(shell, cx)))
             .into_any_element(),
     )
 }

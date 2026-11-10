@@ -23,8 +23,17 @@ pub struct Candidate<'a> {
 /// Whether a ticket knows where its work happens: a `code` ticket needs its
 /// project (or the squad's only one); a `task` or `action` works in the squad
 /// home, whatever the squad's projects.
-fn knows_where(ticket: &Ticket, single_project: bool) -> bool {
+pub(crate) fn knows_where(ticket: &Ticket, single_project: bool) -> bool {
     ticket.kind.in_home() || ticket.project.is_some() || single_project
+}
+
+/// The `todo` tickets in the order they start: `first` as given, then work
+/// that came back to its member, then the board's order, priority only
+/// between equals. A started idea the PM still thinks through waits.
+pub(crate) fn ready_in_order<'t>(tickets: &'t [Ticket], first: &[TicketId]) -> Vec<&'t Ticket> {
+    let mut ready: Vec<&Ticket> = tickets.iter().filter(|t| t.status == TicketStatus::Todo && !t.office_hours_first()).collect();
+    ready.sort_by_key(|t| (first.iter().position(|id| *id == t.id).unwrap_or(usize::MAX), !came_back(t), t.order_key(), t.priority, t.id));
+    ready
 }
 
 /// Which free member picks up which ready ticket. A ticket is ready when it is
@@ -54,9 +63,7 @@ pub fn assignments_prioritizing(
     // came back to its member (sent back from review, design QA, a wait)
     // goes ahead of what it hasn't started: its branch and context wait.
     // A started idea the PM is still thinking through with the person waits.
-    let mut ready: Vec<&Ticket> = tickets.iter().filter(|t| t.status == TicketStatus::Todo && !t.office_hours_first()).collect();
-    ready.sort_by_key(|t| (first.iter().position(|id| *id == t.id).unwrap_or(usize::MAX), !came_back(t), t.order_key(), t.priority, t.id));
-    for ticket in ready {
+    for ticket in ready_in_order(tickets, first) {
         let Some(owner) = ticket.owner.as_deref() else {
             continue;
         };
@@ -84,13 +91,16 @@ pub fn assignments_prioritizing(
 
 /// Started work back on the board for its member to go on with: sent back
 /// from review or design QA, or resumed after a wait — the notes
-/// `begin_work` reads as its reopen envelope.
+/// `begin_work` reads as its reopen envelope — or brought back by the person
+/// after its run stalled.
 fn came_back(ticket: &Ticket) -> bool {
-    ticket.branch.is_some() && ticket.note.as_deref().is_some_and(|n| n.starts_with("Reopened") || n.starts_with("Resumed") || n.starts_with("Design QA by "))
+    let recovered = ticket.execution.as_ref().is_some_and(|e| e.state == equipe_protocol::ExecutionState::Queued);
+    recovered
+        || ticket.branch.is_some() && ticket.note.as_deref().is_some_and(|n| n.starts_with("Reopened") || n.starts_with("Resumed") || n.starts_with("Design QA by "))
 }
 
 /// The role a numbered member's name stands for: `frontend-3` → `frontend`.
-fn role_of(name: &str) -> &str {
+pub(crate) fn role_of(name: &str) -> &str {
     match name.rsplit_once('-') {
         Some((role, n)) if !role.is_empty() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => role,
         _ => name,
@@ -1210,6 +1220,7 @@ mod tests {
             depends_on: vec![],
             branch: None,
             worktree: None,
+            execution: None,
             merged: None,
             off_main: None,
             design_qa: None, plan: None,

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use equipe_core::protocol::briefs::{DocKind, ProjectDoc};
 use equipe_core::protocol::decide;
-use equipe_core::protocol::{Command, OffMain, Priority, Ticket, TicketId, TicketKind, TicketStatus};
+use equipe_core::protocol::{Command, OffMain, Priority, Recovery, Ticket, TicketId, TicketKind, TicketStatus};
 
 use crate::state::{Model, Need, Section, status_word};
 
@@ -1010,6 +1010,107 @@ pub fn yes_commands(squad: &str, t: &Ticket, way: Option<MergeWay>, note: &str) 
     }
 }
 
+// ── bringing back a stalled run ──
+
+/// The person's three ways back for a stalled ticket, each on the same
+/// ticket, branch and worktree — never a new ticket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoverHow {
+    /// Its member goes on, in a fresh session.
+    Resume,
+    /// The next free member of its role starts a fresh run.
+    Requeue,
+    /// A member the person picks takes it over.
+    Reassign,
+}
+
+impl RecoverHow {
+    pub const ALL: [RecoverHow; 3] = [RecoverHow::Resume, RecoverHow::Requeue, RecoverHow::Reassign];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RecoverHow::Resume => t!("recover.resume"),
+            RecoverHow::Requeue => t!("recover.requeue"),
+            RecoverHow::Reassign => t!("recover.reassign"),
+        }
+    }
+
+    pub fn code(self) -> &'static str {
+        match self {
+            RecoverHow::Resume => "resume",
+            RecoverHow::Requeue => "requeue",
+            RecoverHow::Reassign => "reassign",
+        }
+    }
+}
+
+/// The member a stalled ticket's run was its member's: who resumes it.
+pub fn stalled_member(t: &Ticket) -> Option<&str> {
+    t.assignee.as_deref().or(t.owner.as_deref())
+}
+
+/// The role a requeue hands a stalled ticket to: its member's, as the team
+/// says it; else the owner's name read as a role (`frontend-2` → `frontend`).
+pub fn requeue_role(model: &Model, t: &Ticket) -> String {
+    let who = stalled_member(t).unwrap_or_default();
+    if let Some(m) = model.members.iter().find(|m| m.name == who) {
+        return m.role.clone();
+    }
+    match who.rsplit_once('-') {
+        Some((role, n)) if !role.is_empty() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => role.to_owned(),
+        _ => who.to_owned(),
+    }
+}
+
+/// Who a stalled ticket can be reassigned to: the team but the PM and the
+/// member it was with, in the team's order.
+pub fn reassign_to(model: &Model, t: &Ticket) -> Vec<String> {
+    let now = stalled_member(t);
+    model
+        .ordered()
+        .into_iter()
+        .filter(|m| m.presence != crate::state::Presence::Closed && !Model::is_pm(m) && Some(m.name.as_str()) != now)
+        .map(|m| m.name.clone())
+        .collect()
+}
+
+/// What a recovery keeps, as its card says it: the branch, the worktree,
+/// the commit, how many files are uncommitted, and the latest blocker —
+/// the first thing the person left open, else the latest send-back or
+/// design QA reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Kept {
+    pub branch: Option<String>,
+    pub worktree: Option<String>,
+    pub head: Option<String>,
+    pub dirty: Option<u32>,
+    pub blocker: Option<String>,
+}
+
+pub fn kept(t: &Ticket) -> Kept {
+    let run = t.execution.as_deref();
+    let reopened = t.note.as_deref().map(str::trim).filter(|n| n.starts_with("Reopened") || n.starts_with("Design QA by ")).map(str::to_owned);
+    Kept {
+        branch: t.branch.clone(),
+        worktree: t.worktree.as_ref().map(|w| w.display().to_string()),
+        head: run.and_then(|r| r.head.clone()),
+        dirty: run.and_then(|r| r.dirty),
+        blocker: t.remaining.first().cloned().or(reopened),
+    }
+}
+
+/// The command a recovery's confirmation sends: `key` is the card's own,
+/// made when it opened, so a second click is the same recovery. `None` for
+/// a reassignment with nobody picked.
+pub fn recover_command(squad: &str, t: &Ticket, how: RecoverHow, to: Option<&str>, key: u64) -> Option<Command> {
+    let how = match how {
+        RecoverHow::Resume => Recovery::Resume,
+        RecoverHow::Requeue => Recovery::Requeue,
+        RecoverHow::Reassign => Recovery::Reassign(to.filter(|m| !m.is_empty())?.to_owned()),
+    };
+    Some(Command::Requeue { squad: squad.to_owned(), ticket: t.id, operation: format!("recover:{}:{key:x}", t.id), how })
+}
+
 /// Whether A on this ticket lands code, so the project's way is asked for.
 pub fn needs_way(t: &Ticket) -> bool {
     (t.status == TicketStatus::Review && Model::merges(t)) || t.not_on_main()
@@ -1103,6 +1204,43 @@ mod tests {
     use equipe_core::protocol::rpc::Hello;
     use equipe_core::protocol::{Approval, Snapshot};
     use std::path::PathBuf;
+
+    #[test]
+    fn each_way_back_sends_its_own_recovery_under_the_cards_key() {
+        let mut t = ticket(90, "in_progress", "web", &[]);
+        t.assignee = Some("frontend-2".into());
+        t.owner = Some("frontend".into());
+        t.branch = Some("equipe/t-90".into());
+        t.worktree = Some("/w/t90".into());
+        t.note = Some("Reopened by the PM: the field overlaps.".into());
+        t.execution = serde_json::from_value(serde_json::json!({
+            "state": "stalled", "session": 1, "operation": "start:1", "generation": 1, "heartbeat_at": 0, "lease_expires_at": 0, "head": "3f9c2a1", "dirty": 3
+        }))
+        .ok()
+        .map(Box::new);
+        let sent = |how, to| recover_command("acme", &t, how, to, 0xab);
+        let requeue = |how| Command::Requeue { squad: "acme".into(), ticket: 90, operation: "recover:90:ab".into(), how };
+        assert_eq!(sent(RecoverHow::Resume, None), Some(requeue(Recovery::Resume)));
+        assert_eq!(sent(RecoverHow::Requeue, None), Some(requeue(Recovery::Requeue)));
+        assert_eq!(sent(RecoverHow::Reassign, Some("backend")), Some(requeue(Recovery::Reassign("backend".into()))));
+        assert_eq!(sent(RecoverHow::Reassign, None), None, "a reassignment names its member");
+        // The same card confirmed twice is one key; another card, another.
+        assert_eq!(sent(RecoverHow::Resume, None), sent(RecoverHow::Resume, None));
+        assert_ne!(recover_command("acme", &t, RecoverHow::Resume, None, 1), sent(RecoverHow::Resume, None));
+        // What the card says is kept: the send-back is the latest blocker, until the person left one open.
+        let k = kept(&t);
+        assert_eq!((k.branch.as_deref(), k.worktree.as_deref(), k.head.as_deref(), k.dirty), (Some("equipe/t-90"), Some("/w/t90"), Some("3f9c2a1"), Some(3)));
+        assert_eq!(k.blocker.as_deref(), Some("Reopened by the PM: the field overlaps."));
+        t.remaining = vec!["The staging key".into()];
+        assert_eq!(kept(&t).blocker.as_deref(), Some("The staging key"));
+        t.note = Some("Handed in: done.".into());
+        t.remaining.clear();
+        assert_eq!(kept(&t).blocker, None, "an old hand-in is no blocker");
+        // Requeue goes to its member's role; reassigning, to anyone else but the PM.
+        let m = model(vec![t.clone()], &["web"]);
+        assert_eq!(requeue_role(&m, &t), "frontend");
+        assert_eq!(stalled_member(&t), Some("frontend-2"));
+    }
 
     fn ticket(id: u32, status: &str, project: &str, deps: &[u32]) -> Ticket {
         serde_json::from_value(serde_json::json!({

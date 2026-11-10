@@ -14,11 +14,24 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use equipe_protocol::{Access, Engine, Entry, Member, Mode, Priority, SessionId, Ticket, TicketEntry, TicketId, TicketKind, TicketStatus};
+use equipe_protocol::{
+    Access, Engine, Entry, ExecutionState, Member, Mode, Priority, SessionId, Ticket, TicketEntry, TicketExecution, TicketId, TicketKind, TicketStatus,
+};
 use rusqlite::{Connection, OptionalExtension as _, params};
 
 pub use rusqlite::Error;
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// What [`Journal::reserve_requeue`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Requeued {
+    /// Queued for its owner, under a new generation.
+    Reserved,
+    /// The same operation came before: nothing more.
+    AlreadyApplied,
+    /// Its run isn't stalled (or queued): nothing changed.
+    NotStalled,
+}
 
 /// Whether `err` says there is no room left: the disk is full (SQLite's
 /// "database or disk is full"), or a file couldn't be written for it.
@@ -438,10 +451,34 @@ impl Journal {
                created_at INTEGER NOT NULL,
                updated_at INTEGER NOT NULL,
                cwd TEXT
+             );
+             CREATE TABLE IF NOT EXISTS ticket_executions (
+               ticket INTEGER PRIMARY KEY,
+               state TEXT NOT NULL,
+               session INTEGER NOT NULL,
+               operation TEXT NOT NULL UNIQUE,
+               generation INTEGER NOT NULL,
+               heartbeat_at INTEGER NOT NULL,
+               lease_expires_at INTEGER NOT NULL,
+               reason TEXT,
+               updated_at INTEGER NOT NULL,
+               head TEXT,
+               dirty INTEGER
+             );
+             CREATE INDEX IF NOT EXISTS ticket_executions_lease
+               ON ticket_executions(state, lease_expires_at);
+             CREATE TABLE IF NOT EXISTS execution_operations (
+               operation TEXT PRIMARY KEY,
+               ticket INTEGER NOT NULL,
+               generation INTEGER NOT NULL,
+               at INTEGER NOT NULL
              );",
         )?;
         for column in ["role TEXT", "name TEXT", "joined INTEGER", "mode TEXT"] {
             let _ = conn.execute(&format!("ALTER TABLE sessions ADD COLUMN {column}"), []);
+        }
+        for column in ["head TEXT", "dirty INTEGER"] {
+            let _ = conn.execute(&format!("ALTER TABLE ticket_executions ADD COLUMN {column}"), []);
         }
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN merged INTEGER", []);
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN cwd TEXT", []);
@@ -794,6 +831,212 @@ impl Journal {
         rows.collect()
     }
 
+    /// The latest durable runtime generation for a ticket.
+    pub fn execution(&self, ticket: TicketId) -> Result<Option<TicketExecution>> {
+        self.conn
+            .query_row(
+                "SELECT state, session, operation, generation, heartbeat_at, lease_expires_at, reason, head, dirty
+                 FROM ticket_executions WHERE ticket = ?1",
+                [ticket],
+                |r| {
+                    Ok(TicketExecution {
+                        state: ExecutionState::parse(&r.get::<_, String>(0)?),
+                        session: r.get::<_, i64>(1)?.max(0) as u64,
+                        operation: r.get(2)?,
+                        generation: r.get::<_, i64>(3)?.max(0) as u64,
+                        heartbeat_at: r.get::<_, i64>(4)?.max(0) as u64,
+                        lease_expires_at: r.get::<_, i64>(5)?.max(0) as u64,
+                        reason: r.get(6)?,
+                        head: r.get(7)?,
+                        dirty: r.get::<_, Option<i64>>(8)?.map(|n| n.clamp(0, i64::from(u32::MAX)) as u32),
+                    })
+                },
+            )
+            .optional()
+    }
+
+    /// Start a run of `ticket` for runtime `session`: its generation, or
+    /// `None` when another run holds a valid lease or `operation` was used
+    /// already. A recovery the person approved ([`Self::reserve_requeue`])
+    /// starts with its own operation and keeps the generation it reserved;
+    /// any other start takes the next one.
+    pub fn acquire_execution(&self, ticket: TicketId, session: SessionId, operation: &str, at: u64, lease_for: u64) -> Result<Option<u64>> {
+        let tx = self.conn.unchecked_transaction()?;
+        let lease = at.saturating_add(lease_for) as i64;
+        let queued: Option<i64> = tx
+            .query_row(
+                "SELECT generation FROM ticket_executions WHERE ticket = ?1 AND operation = ?2 AND state = 'queued'",
+                params![ticket, operation],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(generation) = queued {
+            tx.execute(
+                "UPDATE ticket_executions SET state = 'active', session = ?1, heartbeat_at = ?2,
+                   lease_expires_at = ?3, reason = NULL, head = NULL, dirty = NULL, updated_at = ?2
+                 WHERE ticket = ?4 AND operation = ?5 AND state = 'queued'",
+                params![session as i64, at as i64, lease, ticket, operation],
+            )?;
+            tx.commit()?;
+            return Ok(Some(generation.max(0) as u64));
+        }
+        let used = tx.query_row("SELECT 1 FROM execution_operations WHERE operation = ?1", [operation], |_| Ok(())).optional()?.is_some();
+        let busy = tx
+            .query_row(
+                "SELECT 1 FROM ticket_executions WHERE ticket = ?1 AND state = 'active' AND lease_expires_at > ?2",
+                params![ticket, at as i64],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if used || busy {
+            tx.commit()?;
+            return Ok(None);
+        }
+        tx.execute(
+            "INSERT INTO ticket_executions
+               (ticket, state, session, operation, generation, heartbeat_at, lease_expires_at, reason, updated_at, head, dirty)
+             VALUES (?1, 'active', ?2, ?3,
+               COALESCE((SELECT generation + 1 FROM ticket_executions WHERE ticket = ?1), 1), ?4, ?5, NULL, ?4, NULL, NULL)
+             ON CONFLICT(ticket) DO UPDATE SET state = excluded.state, session = excluded.session,
+               operation = excluded.operation, generation = excluded.generation,
+               heartbeat_at = excluded.heartbeat_at, lease_expires_at = excluded.lease_expires_at,
+               reason = NULL, updated_at = excluded.updated_at, head = NULL, dirty = NULL",
+            params![ticket, session as i64, operation, at as i64, lease],
+        )?;
+        let generation: i64 = tx.query_row("SELECT generation FROM ticket_executions WHERE ticket = ?1", [ticket], |r| r.get(0))?;
+        tx.execute(
+            "INSERT OR IGNORE INTO execution_operations (operation, ticket, generation, at) VALUES (?1, ?2, ?3, ?4)",
+            params![operation, ticket, generation, at as i64],
+        )?;
+        tx.commit()?;
+        Ok(Some(generation.max(0) as u64))
+    }
+
+    /// Reserve a recovery the person approved, in one transaction: the run is
+    /// queued under a new generation, and the ticket goes back to `todo` for
+    /// `owner` (left as it is when `None`). The ticket's note — the latest
+    /// send-back or design QA reason, which the next run is told first — its
+    /// open blockers, branch and worktree are kept as they are. Only a stalled
+    /// run, or one already queued, is recovered; an operation used before
+    /// changes nothing, however late it comes.
+    pub fn reserve_requeue(&self, ticket: TicketId, operation: &str, owner: Option<&str>, at: u64) -> Result<Requeued> {
+        let tx = self.conn.unchecked_transaction()?;
+        if tx.query_row("SELECT 1 FROM execution_operations WHERE operation = ?1", [operation], |_| Ok(())).optional()?.is_some() {
+            tx.commit()?;
+            return Ok(Requeued::AlreadyApplied);
+        }
+        let state: Option<(String, String)> = tx
+            .query_row(
+                "SELECT e.state, t.status FROM ticket_executions e JOIN tickets t ON t.id = e.ticket WHERE e.ticket = ?1",
+                [ticket],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let recoverable = matches!(state.as_ref().map(|(e, t)| (e.as_str(), t.as_str())), Some(("stalled", "in_progress")) | Some(("queued", "todo")));
+        if !recoverable {
+            tx.commit()?;
+            return Ok(Requeued::NotStalled);
+        }
+        tx.execute(
+            "UPDATE ticket_executions SET state = 'queued', session = 0, operation = ?1,
+               generation = generation + 1, heartbeat_at = ?2, lease_expires_at = 0,
+               reason = NULL, updated_at = ?2 WHERE ticket = ?3",
+            params![operation, at as i64, ticket],
+        )?;
+        tx.execute(
+            "UPDATE tickets SET status = 'todo', assignee = NULL, owner = COALESCE(?1, owner), updated_at = ?2 WHERE id = ?3",
+            params![owner, at as i64, ticket],
+        )?;
+        tx.execute(
+            "INSERT INTO execution_operations (operation, ticket, generation, at)
+             VALUES (?1, ?2, (SELECT generation FROM ticket_executions WHERE ticket = ?2), ?3)",
+            params![operation, ticket, at as i64],
+        )?;
+        tx.commit()?;
+        Ok(Requeued::Reserved)
+    }
+
+    /// Renew only the exact generation/session that emitted the heartbeat.
+    pub fn heartbeat_execution(&self, ticket: TicketId, generation: u64, session: SessionId, at: u64, lease_for: u64) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE ticket_executions SET heartbeat_at = ?1, lease_expires_at = ?2, updated_at = ?1
+             WHERE ticket = ?3 AND generation = ?4 AND session = ?5 AND state = 'active'",
+            params![at as i64, at.saturating_add(lease_for) as i64, ticket, generation as i64, session as i64],
+        )? == 1)
+    }
+
+    /// Close generation `generation` of `ticket`'s run as the workflow ended
+    /// it; a newer generation is left alone.
+    pub fn finish_execution(&self, ticket: TicketId, generation: u64, state: ExecutionState, reason: Option<&str>) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE ticket_executions SET state = ?1, lease_expires_at = 0, reason = ?2, updated_at = ?3
+             WHERE ticket = ?4 AND generation = ?5",
+            params![state.code(), reason, now(), ticket, generation as i64],
+        )? == 1)
+    }
+
+    /// The minute's check: active runs whose runtime session isn't among
+    /// `live` and whose lease ran out by `at` are stalled. A live session is
+    /// never stalled, whatever the clock says. Returns the tickets stalled,
+    /// for the runtime to let go of; their work, checkout and files are
+    /// untouched.
+    pub fn recover_executions(&self, live: &[SessionId], at: u64) -> Result<Vec<TicketId>> {
+        let tx = self.conn.unchecked_transaction()?;
+        let stale: Vec<(TicketId, i64)> = {
+            let mut stmt = tx.prepare("SELECT ticket, session FROM ticket_executions WHERE state = 'active' AND lease_expires_at <= ?1")?;
+            let rows = stmt.query_map([at as i64], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<Result<Vec<_>>>()?
+        };
+        let mut stalled = Vec::new();
+        for (ticket, session) in stale {
+            if live.contains(&(session.max(0) as u64)) {
+                continue;
+            }
+            tx.execute(
+                "UPDATE ticket_executions SET state = 'stalled', lease_expires_at = 0, reason = ?1, updated_at = ?2
+                 WHERE ticket = ?3 AND state = 'active'",
+                params![equipe_protocol::stall_reason::LEASE_EXPIRED, at as i64, ticket],
+            )?;
+            stalled.push(ticket);
+        }
+        tx.commit()?;
+        Ok(stalled)
+    }
+
+    /// A daemon start: no runtime session outlives the process that ran it,
+    /// so every active run is stalled (`not_resumed`), and the runtime starts
+    /// a new generation for each one it carries on
+    /// ([`Self::acquire_execution`]). In-progress tickets from before runs
+    /// were kept are recorded the same way (`migrated`, generation 0). Safe
+    /// to run again; tickets, their work and their checkouts are untouched.
+    pub fn stall_all_executions(&self, at: u64) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE ticket_executions SET state = 'stalled', lease_expires_at = 0, reason = ?1, updated_at = ?2 WHERE state = 'active'",
+            params![equipe_protocol::stall_reason::NOT_RESUMED, at as i64],
+        )?;
+        tx.execute(
+            "INSERT INTO ticket_executions
+               (ticket, state, session, operation, generation, heartbeat_at, lease_expires_at, reason, updated_at)
+             SELECT id, 'stalled', 0, 'migration:' || id, 0, ?1, 0, ?2, ?1
+             FROM tickets WHERE status = 'in_progress'
+               AND NOT EXISTS (SELECT 1 FROM ticket_executions e WHERE e.ticket = tickets.id)",
+            params![at as i64, equipe_protocol::stall_reason::MIGRATED],
+        )?;
+        tx.commit()
+    }
+
+    /// What a stalled run left in its checkout — its commit and how many
+    /// files are changed or untracked — for the person's recovery card.
+    pub fn set_stalled_checkout(&self, ticket: TicketId, head: Option<&str>, dirty: Option<u32>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE ticket_executions SET head = ?1, dirty = ?2 WHERE ticket = ?3 AND state = 'stalled'",
+            params![head, dirty.map(i64::from), ticket],
+        )?;
+        Ok(())
+    }
+
     pub fn allow(&self, rule: &str, by: &str) -> Result<()> {
         self.conn.execute(
             "INSERT OR IGNORE INTO allowed (rule, by, added_at) VALUES (?1, ?2, ?3)",
@@ -1050,6 +1293,7 @@ impl Journal {
                 created_by: r.get(9)?,
                 note: r.get(10)?,
                 worktree: r.get::<_, Option<String>>(11)?.map(PathBuf::from),
+                execution: None,
                 merged: r.get(12)?,
                 kind: TicketKind::parse(&r.get::<_, String>(13)?).unwrap_or_default(),
                 asks: Vec::new(),
@@ -1066,7 +1310,11 @@ impl Journal {
             t.asks = t.asks();
             Ok(t)
         })?;
-        rows.collect()
+        let mut tickets: Vec<Ticket> = rows.collect::<Result<_>>()?;
+        for ticket in &mut tickets {
+            ticket.execution = self.execution(ticket.id)?.map(Box::new);
+        }
+        Ok(tickets)
     }
 
     pub fn ticket_work(&self, id: TicketId) -> Result<TicketWork> {
@@ -1332,6 +1580,19 @@ impl Journal {
 
     pub fn set_conversation_project(&self, id: SessionId, project: Option<&str>) -> Result<()> {
         self.touch_conversation(id, "project", project)
+    }
+
+    /// The person names a conversation: its own title and its session's,
+    /// both or neither. What equipe names later ([`Journal::set_title_if_empty`])
+    /// leaves it be. False when there is no such conversation.
+    pub fn rename_conversation(&self, id: SessionId, title: &str) -> Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        if tx.execute("UPDATE conversations SET title = ?1, updated_at = ?2 WHERE id = ?3", params![title, now(), id as i64])? == 0 {
+            return Ok(false);
+        }
+        tx.execute("UPDATE sessions SET title = ?1 WHERE id = ?2", params![title, id as i64])?;
+        tx.commit()?;
+        Ok(true)
     }
 
     /// Put away: it leaves the list; its lines stay as long as any.
@@ -1749,6 +2010,27 @@ mod tests {
     }
 
     #[test]
+    fn a_name_the_person_gives_is_kept_whole_and_never_named_over() {
+        let home = temp_home();
+        let id = 71;
+        {
+            let j = Journal::for_squad(&home, "acme").unwrap();
+            j.record_session(&record(id)).unwrap();
+            j.record_conversation(id, Some("desktop"), Path::new("/squad/pm")).unwrap();
+            j.set_title_if_empty(id, "fix the login page").unwrap();
+            assert!(j.rename_conversation(id, "Login copy").unwrap());
+            // What equipe names later (the first message, a made-up topic) leaves it be.
+            j.set_title_if_empty(id, "something else").unwrap();
+            assert!(!j.rename_conversation(999, "nobody").unwrap(), "no such conversation");
+            j.close_conversation(id).unwrap();
+        }
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        assert_eq!(j.put_away(10).unwrap()[0].title.as_deref(), Some("Login copy"));
+        let back = j.reopen_conversation(id).unwrap().expect("back");
+        assert_eq!(back.title.as_deref(), Some("Login copy"));
+    }
+
+    #[test]
     fn a_generated_topic_is_written_once_and_survives_more_turns_restart_and_put_away() {
         let home = temp_home();
         let id = 70;
@@ -1952,6 +2234,7 @@ mod tests {
             depends_on: vec![],
             branch: None,
             worktree: None,
+            execution: None,
             merged: None,
             off_main: None,
             design_qa: None, plan: None,
@@ -2232,6 +2515,114 @@ mod tests {
         let home = Path::new("/h");
         assert_eq!(squad_dir(home, "acme"), PathBuf::from("/h/squads/acme"));
         assert_eq!(member_memory_dir(home, "acme", "frontend"), PathBuf::from("/h/squads/acme/members/frontend/memory"));
+    }
+
+    #[test]
+    fn execution_generation_fences_late_heartbeats_and_requeue_is_idempotent() {
+        let j = Journal::for_squad(&temp_home(), "lease").unwrap();
+        j.conn.execute(
+            "INSERT INTO tickets (id,title,body,status,depends_on,created_by,created_at,updated_at,kind)
+             VALUES (7,'recover','', 'in_progress','', 'you',1,1,'code')",
+            [],
+        ).unwrap();
+        assert_eq!(j.acquire_execution(7, 11, "start:one", 100, 30).unwrap(), Some(1));
+        assert_eq!(j.acquire_execution(7, 12, "start:two", 101, 30).unwrap(), None, "valid lease prevents duplicate work");
+        let first = j.execution(7).unwrap().unwrap();
+        assert_eq!(first.generation, 1);
+        assert_eq!(j.recover_executions(&[], 120).unwrap(), Vec::<TicketId>::new(), "a lease not yet run out is left alone");
+        assert_eq!(j.recover_executions(&[], 131).unwrap(), vec![7], "past its lease, with no live session: stalled");
+        assert_eq!(j.execution(7).unwrap().unwrap().reason.as_deref(), Some(equipe_protocol::stall_reason::LEASE_EXPIRED));
+        assert_eq!(j.reserve_requeue(7, "approved:one", None, 133).unwrap(), Requeued::Reserved);
+        assert_eq!(j.reserve_requeue(7, "approved:one", None, 134).unwrap(), Requeued::AlreadyApplied, "same approval is harmless");
+        assert_eq!(j.execution(7).unwrap().unwrap().state, ExecutionState::Queued);
+        assert_eq!(j.acquire_execution(7, 22, "approved:one", 135, 30).unwrap(), Some(2), "the queued recovery starts under its own generation");
+        let second = j.execution(7).unwrap().unwrap();
+        assert_eq!((second.generation, second.state, second.session), (2, ExecutionState::Active, 22));
+        assert!(!j.heartbeat_execution(7, first.generation, 11, 136, 30).unwrap(), "old runtime cannot extend the new lease");
+        assert!(j.heartbeat_execution(7, second.generation, 22, 136, 30).unwrap());
+        assert_eq!(j.recover_executions(&[22], 10_000).unwrap(), Vec::<TicketId>::new(), "an observed live session is never called stale");
+        assert!(!j.finish_execution(7, first.generation, ExecutionState::Stopped, None).unwrap(), "an old generation can't close the new run");
+        // Stalled again much later: the first approval, replayed, still changes nothing.
+        assert_eq!(j.recover_executions(&[], 10_000).unwrap(), vec![7]);
+        assert_eq!(j.reserve_requeue(7, "approved:one", None, 10_001).unwrap(), Requeued::AlreadyApplied);
+        assert_eq!(j.execution(7).unwrap().unwrap().state, ExecutionState::Stalled);
+        assert_eq!(j.acquire_execution(7, 33, "approved:one", 10_002, 30).unwrap(), None, "a used operation never starts another run");
+    }
+
+    #[test]
+    fn only_a_stalled_run_is_requeued() {
+        let j = Journal::for_squad(&temp_home(), "requeue-states").unwrap();
+        for (id, status) in [(1, "in_progress"), (2, "review"), (3, "waiting")] {
+            j.conn.execute(
+                "INSERT INTO tickets (id,title,body,status,depends_on,created_by,created_at,updated_at,kind) VALUES (?1,'t','',?2,'','you',1,1,'code')",
+                params![id, status],
+            ).unwrap();
+            j.acquire_execution(id, 10 + u64::from(id), &format!("start:{id}"), 100, 30).unwrap();
+        }
+        j.finish_execution(2, 1, ExecutionState::Stopped, Some("handed_in")).unwrap();
+        j.finish_execution(3, 1, ExecutionState::Waiting, Some("waiting_for_person")).unwrap();
+        assert_eq!(j.reserve_requeue(1, "op:1", None, 101).unwrap(), Requeued::NotStalled, "an active run is not taken from its member");
+        assert_eq!(j.reserve_requeue(2, "op:2", None, 101).unwrap(), Requeued::NotStalled, "work in review stays in review");
+        assert_eq!(j.reserve_requeue(3, "op:3", None, 101).unwrap(), Requeued::NotStalled, "a wait is the person's Resume");
+        let statuses: Vec<TicketStatus> = [1, 2, 3].iter().map(|id| j.ticket(*id).unwrap().unwrap().status).collect();
+        assert_eq!(statuses, [TicketStatus::InProgress, TicketStatus::Review, TicketStatus::Waiting]);
+        // A queued recovery can be pointed elsewhere before it starts.
+        j.recover_executions(&[], 200).unwrap();
+        assert_eq!(j.reserve_requeue(1, "op:1", Some("backend"), 201).unwrap(), Requeued::Reserved);
+        assert_eq!(j.reserve_requeue(1, "op:1b", Some("backend-3"), 202).unwrap(), Requeued::Reserved);
+        assert_eq!(j.ticket(1).unwrap().unwrap().owner.as_deref(), Some("backend-3"));
+        assert_eq!(j.execution(1).unwrap().unwrap().generation, 3);
+    }
+
+    /// T-563 review: a requeue overwrote the note, so the next run lost the
+    /// latest send-back or design QA reason it must be told first.
+    #[test]
+    fn a_requeue_keeps_the_latest_send_back_reason_and_open_blockers() {
+        let j = Journal::for_squad(&temp_home(), "requeue-note").unwrap();
+        for (id, note) in [(4, "Reopened by the PM: the header overlaps the logo at 760px."), (5, "Design QA by designer: the button radius is 6, not 8.")] {
+            j.conn.execute(
+                "INSERT INTO tickets (id,title,body,status,depends_on,branch,owner,assignee,note,created_by,created_at,updated_at,kind)
+                 VALUES (?1,'t','','in_progress','','topic','backend','backend-2',?2,'you',1,1,'code')",
+                params![id, note],
+            ).unwrap();
+            let mut t = j.ticket(id).unwrap().unwrap();
+            t.remaining = vec!["The API token for staging".into()];
+            j.save_ticket(&t).unwrap();
+            j.acquire_execution(id, 10 + u64::from(id), &format!("start:{id}"), 100, 30).unwrap();
+            j.recover_executions(&[], 200).unwrap();
+            assert_eq!(j.reserve_requeue(id, &format!("op:{id}"), Some("backend-3"), 201).unwrap(), Requeued::Reserved);
+            let back = j.ticket(id).unwrap().unwrap();
+            assert_eq!(back.note.as_deref(), Some(note), "the latest reason is kept for the next run");
+            assert_eq!(back.remaining, ["The API token for staging"], "open blockers are kept");
+            assert_eq!(
+                (back.status, back.assignee.as_deref(), back.owner.as_deref(), back.branch.as_deref()),
+                (TicketStatus::Todo, None, Some("backend-3"), Some("topic"))
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_in_progress_ticket_migrates_without_touching_ticket_work() {
+        let j = Journal::for_squad(&temp_home(), "migration").unwrap();
+        j.conn.execute(
+            "INSERT INTO tickets (id,title,body,status,depends_on,branch,base,worktree,created_by,created_at,updated_at,kind)
+             VALUES (8,'old','', 'in_progress','','topic','main','/tmp/kept','you',1,1,'code')",
+            [],
+        ).unwrap();
+        j.stall_all_executions(50).unwrap();
+        let migrated = j.execution(8).unwrap().unwrap();
+        assert_eq!((migrated.state, migrated.generation, migrated.reason.as_deref()), (ExecutionState::Stalled, 0, Some(equipe_protocol::stall_reason::MIGRATED)));
+        assert_eq!(j.ticket_work(8).unwrap(), TicketWork { base: Some("main".into()), worktree: Some("/tmp/kept".into()), engine_session: None });
+        j.stall_all_executions(60).unwrap();
+        assert_eq!(j.execution(8).unwrap().unwrap(), migrated, "safe to run again");
+        // Carried on after the restart: a new generation, active.
+        assert_eq!(j.acquire_execution(8, 9, "restart:1", 61, 30).unwrap(), Some(1));
+        j.set_stalled_checkout(8, Some("abc1234"), Some(3)).unwrap();
+        assert_eq!(j.execution(8).unwrap().unwrap().head, None, "only a stalled run keeps its checkout's facts");
+        j.stall_all_executions(70).unwrap();
+        j.set_stalled_checkout(8, Some("abc1234"), Some(3)).unwrap();
+        let stalled = j.execution(8).unwrap().unwrap();
+        assert_eq!((stalled.reason.as_deref(), stalled.head.as_deref(), stalled.dirty), (Some(equipe_protocol::stall_reason::NOT_RESUMED), Some("abc1234"), Some(3)));
     }
 
     #[test]

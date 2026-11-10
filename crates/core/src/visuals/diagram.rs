@@ -97,25 +97,24 @@ pub fn font_family(source: &str) -> &'static str {
 
 /// The diagram's SVG, in colours that sit on the conversation's background.
 pub fn svg(source: &str, dark: bool) -> Result<String, String> {
-    use mermaid_rs_renderer::{RenderOptions, Theme, render_with_options};
-    let mut theme = if dark { Theme::dark() } else { Theme::modern() };
+    use super::theme::{CLASSDEFS_DARK, CLASSDEFS_LIGHT, equipe_layout, equipe_theme_dark, equipe_theme_light};
+    use mermaid_rs_renderer::{LayoutConfig, RenderOptions, render_with_options};
+    let mut theme = if dark { equipe_theme_dark() } else { equipe_theme_light() };
     theme.font_family = font_family(source).into();
-    theme.font_size = 14.;
-    if dark {
-        theme.background = "transparent".into();
-        theme.primary_color = "#1b1d22".into();
-        theme.primary_border_color = "#7c7e85".into();
-        theme.primary_text_color = "#efede7".into();
-        theme.text_color = "#cfccc4".into();
-        theme.line_color = "#9a9ca3".into();
-        theme.cluster_background = "#141417".into();
-        theme.edge_label_background = "#141417".into();
+    let draw = |source: &str| {
+        let options = RenderOptions { theme: theme.clone(), layout: equipe_layout(LayoutConfig::default()) };
+        // The renderer panics on some malformed input; a bad diagram is its source.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| render_with_options(source, options))).map_err(|_| "mermaid failed".to_owned())?.map_err(|e| e.to_string())
+    };
+    // A flowchart with no classes of its own gets the status classes (design/visuals/README.md); a member's own are left as meant.
+    let first = source.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("%%")).and_then(|l| l.split(|c: char| c.is_whitespace() || c == ';').next()).unwrap_or_default();
+    let flow = first.eq_ignore_ascii_case("flowchart") || first.eq_ignore_ascii_case("graph") || first.starts_with("flowchart-");
+    let svg = if flow && !source.contains("classDef") {
+        let dressed = format!("{}\n{}", source.trim_end(), if dark { CLASSDEFS_DARK } else { CLASSDEFS_LIGHT });
+        draw(&dressed).or_else(|_| draw(source))?
     } else {
-        theme.background = "transparent".into();
-    }
-    let options = RenderOptions { theme, ..RenderOptions::default() };
-    // The renderer panics on some malformed input; a bad diagram is its source.
-    let svg = std::panic::catch_unwind(|| render_with_options(source, options)).map_err(|_| "mermaid failed".to_owned())?.map_err(|e| e.to_string())?;
+        draw(source)?
+    };
     Ok(if dark { quadrants_in_the_dark(&svg) } else { svg })
 }
 
@@ -258,6 +257,18 @@ mod tests {
         assert!(blocks("```\nmermaid\n```").is_empty());
         // A shorter fence inside doesn't close it.
         assert_eq!(blocks("````mermaid\nflowchart LR\n```\nA-->B\n````"), vec!["flowchart LR\n```\nA-->B".to_owned()]);
+    }
+
+    #[test]
+    fn a_flowchart_is_dressed_in_the_status_classes_and_the_themes_colours() {
+        let flow = "flowchart LR\n  A(\"✓ done\"):::ok --> B(\"● going\"):::work";
+        let (light, dark) = (svg(flow, false).unwrap(), svg(flow, true).unwrap());
+        assert!(light.contains("#E4EDE6") && light.contains("#1F6B33"), "ok: light tint and border");
+        assert!(dark.contains("#232D28") && dark.contains("#7FCB8E"), "ok: dark tint and border");
+        // Classes of its own are left as they were meant; other kinds of diagram take none.
+        let own = "flowchart LR\n  A:::mine --> B\n  classDef mine fill:#123456";
+        assert!(svg(own, false).unwrap().contains("#123456"));
+        assert!(svg("pie\n  \"a\" : 1\n  \"b\" : 2", false).is_ok());
     }
 
     #[test]

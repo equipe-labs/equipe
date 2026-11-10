@@ -287,7 +287,7 @@ pub fn for_you(model: &Model) -> ForYou {
         match section {
             Section::Permission => out.permissions += 1,
             Section::Decide => out.decisions += 1,
-            Section::Waiting => out.turns += 1,
+            Section::Waiting | Section::Stalled => out.turns += 1,
             Section::Review => out.reviews += 1,
             Section::Proposed | Section::NotOnMain => out.other += 1,
         }
@@ -428,7 +428,7 @@ pub fn person_owes(model: &Model, t: &Ticket) -> Option<Why> {
         return None;
     }
     match model.section_of(t) {
-        Some(Section::Waiting) => Some(Why::YourTurn),
+        Some(Section::Waiting | Section::Stalled) => Some(Why::YourTurn),
         Some(Section::Review) => Some(Why::Review),
         _ => None,
     }
@@ -515,11 +515,9 @@ fn stuck(model: &Model, lanes: &[Lane]) -> Vec<Stuck> {
                         out.push(Stuck::Nobody { member: lane.name.clone(), ticket, on: on.ticket });
                     }
                 }
-                _ if w.is_chain() && w.on_member() != Some(lane.name.as_str()) => {
-                    // Once per ticket held up directly: two tickets waiting on the same one are one chain.
-                    if chained.insert(w.hops[0].ticket) {
-                        out.push(Stuck::Chain { member: lane.name.clone(), wait: w.clone() });
-                    }
+                // Once per ticket held up directly: two tickets waiting on the same one are one chain.
+                _ if w.is_chain() && w.on_member() != Some(lane.name.as_str()) && chained.insert(w.hops[0].ticket) => {
+                    out.push(Stuck::Chain { member: lane.name.clone(), wait: w.clone() });
                 }
                 _ => {}
             }

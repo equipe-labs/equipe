@@ -27,8 +27,13 @@ pub fn width(window: f32) -> f32 {
 /// within what the sidebar leaves: the conversation keeps room to be read.
 pub fn kept_width(dragged: Option<f32>, window: f32, sidebar: f32) -> f32 {
     let most = (window - sidebar - CHAT_LEAST).max(MIN_WIDTH);
-    dragged.unwrap_or_else(|| width(window)).clamp(MIN_WIDTH, most)
+    // Never wider than the window leaves: in a very narrow one (small, or
+    // zoomed) the panel gives up its narrowest rather than run off the edge.
+    dragged.unwrap_or_else(|| width(window)).clamp(MIN_WIDTH, most).min((window - sidebar).max(NARROWEST))
 }
+
+/// What the panel keeps however narrow the window.
+pub const NARROWEST: f32 = 220.;
 
 /// The conversation's narrowest beside the panel.
 pub const CHAT_LEAST: f32 = 420.;
@@ -58,11 +63,106 @@ pub struct Doc {
     /// Not read from the file: the words a sent message kept of it, the file
     /// being gone (`crate::sent::Sent::kept`). There is nothing to read again.
     pub kept: bool,
+    /// Read across the whole window (focus view), and where it goes back to.
+    pub focus: Option<Focus>,
+    /// The "more document actions" menu is open.
+    pub more: bool,
+}
+
+/// Where focus view returns to: the conversation, or the board, it was
+/// entered from. Fixed on entry — it doesn't follow what changes underneath.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Origin {
+    Conversation(String),
+    /// The briefs-and-plans page.
+    Docs,
+    /// A project's page.
+    Project(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Focus {
+    pub origin: Origin,
+    /// Where the document was scrolled to on entry: the wider measure
+    /// reflows it, and the way back puts it where it was.
+    pub scrolled: gpui_kit::Point<gpui_kit::Pixels>,
+}
+
+/// What Esc does with the document: the menu first, then focus view; else
+/// it is not the document's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Escape {
+    CloseMore,
+    LeaveFocus,
+    Pass,
+}
+
+pub fn escape(doc: Option<&Doc>) -> Escape {
+    match doc {
+        Some(d) if d.more => Escape::CloseMore,
+        Some(d) if d.focus.is_some() && !d.folded => Escape::LeaveFocus,
+        _ => Escape::Pass,
+    }
+}
+
+/// Where a key scrolls the document's text to, focused by the keyboard:
+/// ↑↓ a line, PageUp/PageDown and Space (⇧Space back) a screen less a line,
+/// Home/End the ends. `down` is how far it is scrolled now, `most` the
+/// furthest it goes, `seen` how tall the text's view is. None: not a key of
+/// its, or nowhere to go.
+pub fn scrolled(key: &str, shift: bool, down: f32, most: f32, seen: f32) -> Option<f32> {
+    const LINE: f32 = 40.;
+    let page = (seen - LINE).max(LINE);
+    let to = match (key, shift) {
+        ("down", false) => down + LINE,
+        ("up", false) => down - LINE,
+        ("pagedown", false) | ("space", false) => down + page,
+        ("pageup", false) | ("space", true) => down - page,
+        ("home", false) => 0.,
+        ("end", false) => most,
+        _ => return None,
+    };
+    let to = to.clamp(0., most.max(0.));
+    (to != down).then_some(to)
+}
+
+/// A long title shortened to `most` characters, with an ellipsis, so the
+/// words around it ("Back to … conversation", Esc) always show.
+pub fn shortened(title: &str, most: usize) -> String {
+    if title.chars().count() <= most {
+        return title.to_string();
+    }
+    let kept: String = title.chars().take(most.saturating_sub(1)).collect();
+    format!("{}…", kept.trim_end())
+}
+
+/// Where the keyboard goes when Esc closes "more": the button that opened
+/// it — or, the window widened since and "more" folded away, the header's
+/// first stop (the way back in focus view, Focus view beside the conversation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuClosed {
+    More,
+    Back,
+    Entry,
+}
+
+pub fn menu_closed(compact: bool, focused: bool) -> MenuClosed {
+    match (compact, focused) {
+        (true, _) => MenuClosed::More,
+        (false, true) => MenuClosed::Back,
+        (false, false) => MenuClosed::Entry,
+    }
+}
+
+/// The window is narrow, or its text large: the document's tools fold into
+/// "more". Widths are the window's, in points.
+pub fn compact(window: f32, zoom_pct: u16) -> bool {
+    window <= 820. || zoom_pct >= 150
 }
 
 impl Doc {
     pub fn new(path: PathBuf, read: u64) -> Self {
-        Self { path, text: None, cut: false, scroll: gpui_kit::ScrollHandle::new(), read, folded: false, presenting: None, fresh: true, kept: false }
+        Self { path, text: None, cut: false, scroll: gpui_kit::ScrollHandle::new(), read, folded: false, presenting: None, fresh: true, kept: false, focus: None, more: false }
     }
 
     /// The words a sent message kept of `path`, shown as the file was.
@@ -234,6 +334,80 @@ fn words(mut bytes: Vec<u8>) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn focused() -> Doc {
+        Doc { focus: Some(Focus { origin: Origin::Conversation("Plan".into()), scrolled: Default::default() }), ..Doc::new("a.md".into(), 1) }
+    }
+
+    #[test]
+    fn esc_closes_the_menu_before_focus_view_and_focus_view_before_anything_else() {
+        assert_eq!(escape(None), Escape::Pass);
+        assert_eq!(escape(Some(&Doc::new("a.md".into(), 1))), Escape::Pass, "a plain panel leaves Esc to the app");
+        let mut doc = focused();
+        assert_eq!(escape(Some(&doc)), Escape::LeaveFocus);
+        doc.more = true;
+        assert_eq!(escape(Some(&doc)), Escape::CloseMore, "one layer at a time: the menu first");
+        doc.more = false;
+        doc.folded = true;
+        assert_eq!(escape(Some(&doc)), Escape::Pass, "a folded panel isn't in focus view");
+    }
+
+    #[test]
+    fn the_panel_never_runs_past_a_narrow_window() {
+        assert_eq!(kept_width(None, 506., 260.), 246.);
+        assert!((kept_width(None, 1200., 260.) - 504.).abs() < 0.01);
+        assert_eq!(kept_width(None, 300., 260.), NARROWEST);
+    }
+
+    #[test]
+    fn esc_on_more_gives_the_keyboard_back_to_a_button_that_is_there() {
+        assert_eq!(menu_closed(true, true), MenuClosed::More, "focus view, narrow: more");
+        assert_eq!(menu_closed(true, false), MenuClosed::More, "beside the conversation, narrow: more too");
+        assert_eq!(menu_closed(false, true), MenuClosed::Back, "widened since: more is gone");
+        assert_eq!(menu_closed(false, false), MenuClosed::Entry);
+    }
+
+    #[test]
+    fn esc_walks_out_one_layer_at_a_time_then_is_the_apps_again() {
+        let mut doc = focused();
+        doc.more = true;
+        assert_eq!(escape(Some(&doc)), Escape::CloseMore);
+        doc.more = false;
+        assert_eq!(escape(Some(&doc)), Escape::LeaveFocus);
+        doc.focus = None;
+        assert_eq!(escape(Some(&doc)), Escape::Pass, "out of focus view, Esc is the app's again");
+    }
+
+    #[test]
+    fn the_keyboard_scrolls_the_text_and_stops_at_its_ends() {
+        assert_eq!(scrolled("down", false, 0., 1000., 600.), Some(40.));
+        assert_eq!(scrolled("up", false, 0., 1000., 600.), None, "already at the top");
+        assert_eq!(scrolled("pagedown", false, 100., 1000., 600.), Some(660.));
+        assert_eq!(scrolled("space", false, 100., 1000., 600.), Some(660.));
+        assert_eq!(scrolled("space", true, 660., 1000., 600.), Some(100.));
+        assert_eq!(scrolled("pagedown", false, 900., 1000., 600.), Some(1000.), "no further than the end");
+        assert_eq!(scrolled("end", false, 0., 1000., 600.), Some(1000.));
+        assert_eq!(scrolled("home", false, 500., 1000., 600.), Some(0.));
+        assert_eq!(scrolled("down", false, 0., 0., 600.), None, "a short text doesn't move");
+        assert_eq!(scrolled("a", false, 0., 1000., 600.), None);
+    }
+
+    #[test]
+    fn a_long_title_is_shortened_and_a_short_one_kept() {
+        assert_eq!(shortened("PM", 32), "PM");
+        let long = "A very long automatically made conversation title that runs on";
+        let short = shortened(long, 32);
+        assert!(short.chars().count() <= 32);
+        assert!(short.starts_with("A very long"));
+        assert!(short.ends_with('…'));
+    }
+
+    #[test]
+    fn tools_fold_into_more_when_narrow_or_large() {
+        assert!(!compact(1200., 100));
+        assert!(compact(760., 100));
+        assert!(compact(1200., 150));
+    }
 
     #[test]
     fn a_documents_place_is_said_short_from_where_the_conversation_works() {

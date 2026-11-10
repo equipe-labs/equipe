@@ -77,7 +77,7 @@ impl Runtime {
         let by_role = || {
             self.sessions
                 .iter()
-                .filter(|(_, s)| s.squad.as_deref() == Some(squad) && s.lane.is_none() && s.member.as_ref().is_some_and(|m| m.role == name))
+                .filter(|(_, s)| s.squad.as_deref() == Some(squad) && s.is_member_itself() && s.member.as_ref().is_some_and(|m| m.role == name))
                 .min_by_key(|(_, s)| (s.name() != Some(name), s.joined))
                 .map(|(&id, _)| id)
         };
@@ -170,6 +170,7 @@ impl Runtime {
             depends_on: draft.depends_on,
             branch: None,
             worktree: None,
+            execution: None,
             merged: None,
             off_main: None,
             design_qa: None, plan: None,
@@ -366,6 +367,11 @@ impl Runtime {
                     None => return Err(say!(self, "error.owner_under_way", id = id)),
                 },
                 _ => {
+                    // In progress with nobody on it (its run stalled): back on
+                    // the board for its new owner, branch and worktree kept.
+                    if t.status == TicketStatus::InProgress && owner.is_some() {
+                        t.status = TicketStatus::Todo;
+                    }
                     t.owner = owner;
                     t.assignee = None;
                 }
@@ -558,6 +564,10 @@ impl Runtime {
         };
         // When its member said it would be done is the retro's to read, not a line to show.
         entries.retain(|e| e.kind != crate::retro::ESTIMATED);
+        // The ticket itself first: a screen that missed it (a card in a conversation) mends its list from this read.
+        if let Some(ticket) = self.journal(squad).and_then(|j| j.ticket(id).ok().flatten()) {
+            self.publish_in(Some(squad), Event::TicketChanged { squad: squad.to_owned(), ticket });
+        }
         self.publish_in(Some(squad), Event::TicketHistory { squad: squad.to_owned(), ticket: id, entries });
     }
 }

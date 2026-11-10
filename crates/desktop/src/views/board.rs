@@ -49,6 +49,10 @@ pub enum Flow {
     Method(TicketId),
     /// A or N on several chosen tickets, said back once before it goes.
     Bulk { yes: bool },
+    /// A stalled ticket brought back: what it keeps, said back before it
+    /// goes (y / ⏎; a reassignment picks its member, 1–9). `key` is the
+    /// card's own, made as it opened: a second click is the same recovery.
+    Recover { ticket: TicketId, how: crate::board::RecoverHow, key: u64 },
     /// ⌥V: a name for what is listed now.
     SaveView,
 }
@@ -544,6 +548,9 @@ impl Shell {
                     self.land_with(&t, None, &note, cx);
                 } else if matches!(t.status, TicketStatus::Review | TicketStatus::Proposed | TicketStatus::Idea) {
                     self.land(&t, None, cx);
+                } else if self.model.run_view(&t) == Some(equipe_core::protocol::RunView::Stalled) {
+                    // Its run stopped: A resumes it with its member — asked back first.
+                    self.board_recover_open(id, board::RecoverHow::Resume, cx);
                 }
             }
             // Answered on its card, in the peek.
@@ -832,6 +839,35 @@ impl Shell {
         self.hold(id, t!("board.toast_cancel", id = id), vec![command], cx);
     }
 
+    /// Resume, Requeue or Reassign on a stalled ticket: its card, saying what
+    /// the recovery keeps, under a key of its own — the same card confirmed
+    /// twice is one recovery.
+    pub fn board_recover_open(&mut self, id: TicketId, how: board::RecoverHow, cx: &mut Context<Self>) {
+        if !self.can_act() {
+            return;
+        }
+        self.board.flow = Some(Flow::Recover { ticket: id, how, key: equipe_core::protocol::new_session_id() });
+        cx.notify();
+    }
+
+    /// The recovery's card confirmed (`to`: the member picked, for a
+    /// reassignment): sent after the moment every action waits, unless taken
+    /// back. What the daemon makes of it comes back on the ticket and as a
+    /// notice — done, done already, or why nothing changed.
+    pub fn board_recover_send(&mut self, id: TicketId, how: board::RecoverHow, to: Option<&str>, key: u64, cx: &mut Context<Self>) {
+        if !self.can_act() {
+            return;
+        }
+        let Some(t) = self.model.tickets.iter().find(|t| t.id == id).cloned() else { return };
+        let Some(command) = board::recover_command(&self.model.squad, &t, how, to, key) else { return };
+        let text = match how {
+            board::RecoverHow::Resume => t!("recover.toast_resume", id = id, who = board::stalled_member(&t).unwrap_or("—")),
+            board::RecoverHow::Requeue => t!("recover.toast_requeue", id = id, role = board::requeue_role(&self.model, &t)),
+            board::RecoverHow::Reassign => t!("recover.toast_reassign", id = id, who = to.unwrap_or("—")),
+        };
+        self.hold(id, text, vec![command], cx);
+    }
+
     /// The bulk action, said back and confirmed.
     pub fn board_bulk(&mut self, yes: bool, cx: &mut Context<Self>) {
         self.board.flow = None;
@@ -1085,6 +1121,23 @@ impl Shell {
                 cx.notify();
                 return true;
             }
+            (Some(Flow::Recover { ticket, how, key: card }), "y" | "enter") if how != board::RecoverHow::Reassign => {
+                self.board_recover_send(ticket, how, None, card, cx);
+                return true;
+            }
+            (Some(Flow::Recover { ticket, how: board::RecoverHow::Reassign, key: card }), "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9") => {
+                let pick = key.parse::<usize>().unwrap_or(1) - 1;
+                let to = self.model.tickets.iter().find(|t| t.id == ticket).and_then(|t| board::reassign_to(&self.model, t).get(pick).cloned());
+                if let Some(to) = to {
+                    self.board_recover_send(ticket, board::RecoverHow::Reassign, Some(&to), card, cx);
+                }
+                return true;
+            }
+            (Some(Flow::Recover { .. }), "n") => {
+                self.board.flow = None;
+                cx.notify();
+                return true;
+            }
             (Some(Flow::Bulk { yes }), "y" | "enter") => {
                 self.board_bulk(yes, cx);
                 return true;
@@ -1282,7 +1335,7 @@ fn peek_edge(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<>
 fn flow_ticket(flow: Flow) -> Option<TicketId> {
     match flow {
         Flow::Reply(t) | Flow::Cancel(t) | Flow::Method(t) => Some(t),
-        Flow::Way { ticket, .. } => Some(ticket),
+        Flow::Way { ticket, .. } | Flow::Recover { ticket, .. } => Some(ticket),
         Flow::Bulk { .. } | Flow::SaveView => None,
     }
 }
@@ -1868,6 +1921,17 @@ pub fn row_flags(shell: &Shell, t: &Ticket) -> Vec<(String, Rgba, Option<String>
     let p = shell.palette;
     let model = &shell.model;
     let mut flags = Vec::new();
+    // Its run, as the sidebar and the ticket read it: stalled, paused, queued — why, on the pointer.
+    if let Some(view) = model.run_view(t)
+        && let Some(word) = crate::state::run_word(view)
+    {
+        let tone = match view {
+            equipe_core::protocol::RunView::Stalled => p.red,
+            equipe_core::protocol::RunView::Paused => p.amber,
+            _ => p.accent,
+        };
+        flags.push((word.to_owned(), tone, model.run_reason(t)));
+    }
     if let Some(dep) = model.blocked_by(t).filter(|_| matches!(t.status, TicketStatus::Todo | TicketStatus::Proposed)) {
         flags.push((format!("⛔ T-{dep}"), p.orange, Some(t!("tickets.tip_blocked", id = dep))));
     }
@@ -1896,7 +1960,13 @@ fn meta(shell: &Shell, t: &Ticket) -> Meta {
     let p = shell.palette;
     let model = &shell.model;
     let flags = row_flags(shell, t);
+    let run = model.run_view(t).filter(|v| matches!(v, equipe_core::protocol::RunView::Stalled | equipe_core::protocol::RunView::Paused));
+    // Said where the step would be (shown at every width), not again as a chip.
+    let word = run.and_then(crate::state::run_word);
+    let flags: Vec<_> = flags.into_iter().filter(|(text, _, _)| Some(text.as_str()) != word).collect();
     let activity = match t.status {
+        // A run that stopped, or that nothing runs now: said where the step would be.
+        TicketStatus::InProgress if run.is_some() => run.and_then(crate::state::run_word).map(|w| (w.to_owned(), if run == Some(equipe_core::protocol::RunView::Stalled) { p.red } else { p.amber })),
         // What it does now, and how many subagents it handed work to.
         TicketStatus::InProgress => live_activity(model, t).map(|a| match model.member_on(t.id).map_or(0, |m| model.subagents_of(m.session).len()) {
             0 => (a, p.text2),

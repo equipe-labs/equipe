@@ -23,7 +23,7 @@ use equipe_protocol::rpc::{ToolCall, ToolResult};
 use equipe_protocol::transcript::scope;
 use equipe_protocol::{
     Access, Approval, AuthState, BrowserNavAction, Command, CompactTrigger, Decision, Engine, Entry, Event, Member, MemberRef, Mode, SessionId, SessionInfo,
-    Estimate, ModelChoice, OffMain, RoleModel, SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
+    Estimate, ExecutionState, ModelChoice, OffMain, RoleModel, SessionSpec, SessionState, Snapshot, Ticket, TicketId, TicketKind, TicketStatus, Transcript, TurnOutcome, Usage, WorkInfo, Workspace,
 };
 use equipe_providers::claude_code::{self, Activity};
 use equipe_providers::codex_app;
@@ -36,13 +36,13 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::board::{self, Candidate};
+use crate::board;
 use crate::browser;
 use crate::desktop_gate::{self, Act, Verdict};
 use crate::desktop;
 use crate::eta;
 use crate::guard;
-use crate::journal::{self, Journal, SessionRecord, TicketWork};
+use crate::journal::{self, Journal, Requeued, SessionRecord, TicketWork};
 use crate::permissions;
 use crate::roles::{self, Teammate};
 use crate::routines;
@@ -54,6 +54,9 @@ use crate::squad_memory;
 use crate::steers;
 use crate::watchdog;
 use crate::worktree::{self, Sandbox};
+
+/// Runtime turns renew this on activity and on the daemon's minute tick.
+const EXECUTION_LEASE_SECS: u64 = 150;
 
 /// What equipe says to the person, in their language: `say!(self, "notice.model", model = m)`.
 /// What it tells the models is written out in English instead.
@@ -73,6 +76,7 @@ mod design;
 mod briefs;
 mod plans;
 mod accept;
+mod gate;
 mod secrets;
 mod design_qa;
 mod team;
@@ -257,6 +261,8 @@ enum Request {
     Phone(phone::PhoneRequest),
     /// An engine's plan, read outside a turn.
     Usage(Engine, equipe_protocol::PlanUsage),
+    /// The lease check, as if at this unix time (tests).
+    CheckLeases(u64, oneshot::Sender<()>),
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -497,6 +503,16 @@ impl Handle {
         let _ = self.requests.send(Request::Usage(engine, usage));
     }
 
+    /// The minute tick's lease check, run now as if at unix time `at`, and
+    /// answered once done: for tests of what stalls when, without waiting.
+    #[doc(hidden)]
+    pub async fn check_leases_at(&self, at: u64) {
+        let (tx, rx) = oneshot::channel();
+        if self.requests.send(Request::CheckLeases(at, tx)).is_ok() {
+            let _ = rx.await;
+        }
+    }
+
     /// Stop running turns and the runtime. Open sessions stay journaled.
     pub async fn shutdown(&self) {
         let (tx, rx) = oneshot::channel();
@@ -583,6 +599,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         settle_again: false,
         settled_at: None,
         merging: std::collections::HashSet::new(),
+        gates: HashMap::new(),
         disk: Default::default(),
         plan_use: Default::default(),
         commands: Default::default(),
@@ -648,6 +665,9 @@ pub fn project_of(dir: &Path) -> PathBuf {
 /// A member's current ticket: where its turns run until the ticket is put down.
 struct Work {
     ticket: TicketId,
+    /// Fresh for every dispatch, even when the same member/engine continues.
+    execution_session: SessionId,
+    execution_generation: u64,
     kind: TicketKind,
     project: PathBuf,
     cwd: PathBuf,
@@ -774,6 +794,15 @@ struct Session {
     /// A lane that is a conversation the person opened with the PM: listed,
     /// kept through restarts, never folded away.
     kept: bool,
+    /// For a ticket run: the member's own session. A run works one ticket
+    /// (its `work`) in a session of its own — its own engine conversation,
+    /// turn, steering and stop — beside the member's conversation and its
+    /// other runs; the team lists the member once. Never a lane, never a
+    /// member of its own. See [`crate::lanes`].
+    run_of: Option<SessionId>,
+    /// A run's place among its member's runs at once: where it builds, and
+    /// which browser it drives. 0 — the member's own — for its first.
+    slot: usize,
     /// When it expects its work done, and what it ships live, as it said.
     estimate: Option<Estimate>,
     /// When its turn running now began (unix seconds).
@@ -815,6 +844,11 @@ impl Session {
 
     fn is_working(&self) -> bool {
         self.turn.as_ref().is_some_and(|t| !t.is_finished())
+    }
+
+    /// The member itself: neither a lane of it nor one of its ticket runs.
+    fn is_member_itself(&self) -> bool {
+        self.lane.is_none() && self.run_of.is_none()
     }
 
     fn is_pm(&self) -> bool {
@@ -890,6 +924,8 @@ enum Internal {
     /// A merge the person asked for, worked out off the loop: main's name and,
     /// when a push was asked for, how it went — or why nothing was merged.
     Merged { squad: String, ticket: TicketId, result: MergeResult },
+    /// A project's checks ran on accepted work merged with main, off the loop.
+    Checked(Box<gate::Gate>, crate::checks::Outcome),
     /// The free space on equipe's disk, as a look begun then found it.
     Disk(Option<crate::disk::DiskStatus>, std::time::Instant),
     /// A pass over the engines' transcripts ended: the burns going on now.
@@ -1118,6 +1154,10 @@ struct Runtime {
     settled_at: Option<std::time::Instant>,
     /// Merges under way off the loop, by squad and ticket.
     merging: std::collections::HashSet<(String, TicketId)>,
+    /// Accepted work whose project's checks run on its merge before it lands,
+    /// by repository: the first of each runs off the loop, the rest wait
+    /// their turn (`gate.rs`).
+    gates: HashMap<PathBuf, std::collections::VecDeque<gate::Gate>>,
     /// The disk's room, as last looked at or as a write said (`room.rs`).
     disk: room::DiskWatch,
     /// Where the plans went, as followed (`plan_use.rs`).
@@ -1200,6 +1240,7 @@ impl Wake {
             Wake::Request(Some(Request::Desktop(_))) => Borrowed("desktop lease"),
             Wake::Request(Some(Request::Phone(_))) => Borrowed("phone tool"),
             Wake::Request(Some(Request::Usage(..))) => Borrowed("an engine's plan usage"),
+            Wake::Request(Some(Request::CheckLeases(..))) => Borrowed("lease check"),
             Wake::Request(Some(Request::Shutdown(_))) | Wake::Request(None) => Borrowed("shutdown"),
             Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
             Wake::Internal(Internal::EngineStarted { .. }) => Borrowed("an engine's start"),
@@ -1214,6 +1255,7 @@ impl Wake {
             Wake::Internal(Internal::Frame(..)) => Borrowed("a browser picture"),
             Wake::Internal(Internal::Settled { .. }) => Borrowed("settling merged work"),
             Wake::Internal(Internal::Merged { .. }) => Borrowed("a merge's end"),
+            Wake::Internal(Internal::Checked(..)) => Borrowed("a project's checks ending"),
             Wake::Internal(Internal::Disk(..)) => Borrowed("the disk's free space"),
             Wake::Internal(Internal::DiskReport(..)) => Borrowed("what uses the disk"),
             Wake::Internal(Internal::PlanUsePassed(..)) => Borrowed("where the plans went"),
@@ -1382,6 +1424,11 @@ impl Runtime {
                         self.apply_engine_moves(&squad).await;
                     }
                 }
+                Some(Request::CheckLeases(at, reply)) => {
+                    self.renew_execution_leases();
+                    self.recover_execution_leases(at).await;
+                    let _ = reply.send(());
+                }
                 Some(Request::Shutdown(reply)) => {
                     self.stop_all_turns();
                     let _ = reply.send(());
@@ -1431,6 +1478,7 @@ impl Runtime {
                 }
                 Internal::Settled { merged, cache } => self.on_settled(merged, cache),
                 Internal::Merged { squad, ticket, result } => self.on_merged(&squad, ticket, result),
+                Internal::Checked(gate, outcome) => Box::pin(self.on_checked(*gate, outcome)).await,
                 Internal::Disk(status, asked) => self.on_disk(status, asked),
                 Internal::DiskReport(report, asked) => self.on_disk_report(*report, asked),
                 Internal::PlanUsePassed(burns, loads) => self.on_plan_use_passed(burns, loads),
@@ -1515,6 +1563,8 @@ impl Runtime {
             Wake::DesignTick => self.design_tick(),
             Wake::Minute => {
                 self.keep_awake();
+                self.renew_execution_leases();
+                self.recover_execution_leases(now_secs()).await;
                 self.plan_use_pass();
                 pulse.step("minute tick: idle lanes");
                 self.fold_idle_lanes();
@@ -1644,6 +1694,11 @@ impl Runtime {
                 _ => None,
             };
             match &event {
+                // A member's own session is named by its first message; a
+                // conversation the person keeps gets a generated topic instead.
+                Event::UserMessage { text, .. } if session.title.is_none() && !session.kept => {
+                    session.title = text.lines().next().map(str::to_owned);
+                }
                 // What runs; what it is set to stays (an alias is asked for again each turn).
                 Event::ModelKnown { model, .. } => session.ran = Some(model.clone()),
                 Event::Steered { text, .. } => {
@@ -1696,12 +1751,17 @@ impl Runtime {
             }
             if self.config.persist
                 && let Some(name) = squad.clone()
+                && let Some(journal) = journal_for(&mut self.journals, &self.config.home, &name)
             {
-                if let Some(journal) = journal_for(&mut self.journals, &self.config.home, &name) {
-                    no_room = !record(journal, id, &event, &finished);
-                    if let Some(turn) = &turn {
-                        let _ = journal.record_turn_use(turn, turn_use.as_ref());
-                    }
+                no_room = !record(journal, id, &event, &finished);
+                if matches!(event, Event::UserMessage { .. })
+                    && !session.kept
+                    && let Some(title) = &session.title
+                {
+                    let _ = journal.set_title_if_empty(id, title);
+                }
+                if let Some(turn) = &turn {
+                    let _ = journal.record_turn_use(turn, turn_use.as_ref());
                 }
             }
         }
@@ -1953,12 +2013,16 @@ impl Runtime {
                 self.said_about = None;
             }
             Command::Interrupt { session } => self.interrupt(session).await,
+            // A run is stopped, never closed alone: its member stays, and the
+            // ticket with its run until it hands in, waits or is recovered.
+            Command::Close { session } if self.sessions.get(&session).is_some_and(|s| s.run_of.is_some()) => self.interrupt(session).await,
             Command::Close { session } => self.close(session).await,
             Command::Accept { squad, ticket } => self.accept(&squad, ticket, crate::telemetry::Accepter::Person).await,
             Command::Merge { squad, ticket, push } => self.merge(&squad, ticket, push),
             Command::KeepOnBranch { squad, ticket } => self.keep_on_branch(&squad, ticket),
             Command::Reopen { squad, ticket, note } => self.reopen(&squad, ticket, note).await,
             Command::Resume { squad, ticket, note } => self.resume(&squad, ticket, note).await,
+            Command::Requeue { squad, ticket, operation, how } => self.requeue(&squad, ticket, &operation, how).await,
             Command::Cancel { squad, ticket } => self.cancel(&squad, ticket).await,
             Command::CreateTicket { squad, draft } => self.person_creates(&squad, draft).await,
             Command::EditTicket { squad, ticket, changes } => self.person_edits(&squad, ticket, changes).await,
@@ -2142,6 +2206,7 @@ impl Runtime {
             Command::SetSignalOn { squad, project, name, on } => self.set_signal_on(&squad, &project, &name, on),
             Command::NewConversation { squad, session, project } => self.new_conversation(&squad, session, project),
             Command::MoveConversation { session, project } => self.move_conversation(session, project),
+            Command::RenameConversation { squad, session, title } => self.rename_conversation(&squad, session, &title),
             Command::CloseConversation { session } => self.close_conversation(session).await,
             Command::ReopenConversation { squad, session } => self.reopen_conversation(&squad, session),
             Command::Focus { squad, project } => match project {
@@ -2422,7 +2487,7 @@ impl Runtime {
     /// A turn failed for want of `engine`'s sign-in: kept (with what it was
     /// asked) to carry on once it is signed in again, and why looked at.
     fn sign_in_lost(&mut self, engine: Engine, session: SessionId, prompt: String) {
-        let member = self.sessions.get(&session).filter(|s| s.lane.is_none()).and_then(session_member);
+        let member = self.sessions.get(&session).filter(|s| s.is_member_itself()).and_then(session_member);
         let fix = self.auth.entry(engine).or_default();
         match fix.stopped.iter_mut().find(|s| s.session == session) {
             Some(stopped) if !stopped.prompts.contains(&prompt) => stopped.prompts.push(prompt),
@@ -2513,7 +2578,7 @@ impl Runtime {
             .get(&stopped.session)
             .filter(|s| stopped.member.is_none() || session_member(s) == stopped.member)
             .map(|_| stopped.session)
-            .or_else(|| self.sessions.iter().find(|(_, s)| s.lane.is_none() && stopped.member.is_some() && session_member(s) == stopped.member).map(|(id, _)| *id));
+            .or_else(|| self.sessions.iter().find(|(_, s)| s.is_member_itself() && stopped.member.is_some() && session_member(s) == stopped.member).map(|(id, _)| *id));
         let Some(id) = found.filter(|id| self.sessions.get(id).is_some_and(|s| !s.is_working())) else {
             return false;
         };
@@ -2549,7 +2614,7 @@ impl Runtime {
     /// their sessions here, then looked at: signed in, they carry on.
     fn restore_stopped(&mut self) {
         for mut stopped in crate::engine_auth::load_stopped(&self.config.home, now_secs()) {
-            let Some(id) = self.sessions.iter().find(|(_, s)| s.lane.is_none() && session_member(s) == stopped.member).map(|(id, _)| *id) else { continue };
+            let Some(id) = self.sessions.iter().find(|(_, s)| s.is_member_itself() && session_member(s) == stopped.member).map(|(id, _)| *id) else { continue };
             stopped.session = id;
             let engine = stopped.engine;
             let fix = self.auth.entry(engine).or_default();
@@ -2661,7 +2726,7 @@ impl Runtime {
         // Closed first: what the members' ends say isn't written into it.
         self.journals.remove(squad);
         // Lanes before the members they belong to.
-        let mut ids: Vec<(bool, SessionId)> = self.sessions.iter().filter(|(_, s)| s.squad.as_deref() == Some(squad)).map(|(&id, s)| (s.lane.is_none(), id)).collect();
+        let mut ids: Vec<(bool, SessionId)> = self.sessions.iter().filter(|(_, s)| s.squad.as_deref() == Some(squad)).map(|(&id, s)| (s.is_member_itself(), id)).collect();
         ids.sort();
         let mut desktop_changed = false;
         for (_, id) in ids {
@@ -2985,8 +3050,129 @@ runbooks and reports live there, and work across the projects or on running them
     fn member_id(&self, squad: &str, name: &str) -> Option<SessionId> {
         self.sessions
             .iter()
-            .find(|(_, s)| s.squad.as_deref() == Some(squad) && s.lane.is_none() && s.name() == Some(name))
+            .find(|(_, s)| s.squad.as_deref() == Some(squad) && s.is_member_itself() && s.name() == Some(name))
             .map(|(&id, _)| id)
+    }
+
+    /// Member `member`'s ticket runs, by their place ([`Session::slot`]).
+    fn runs_of(&self, member: SessionId) -> Vec<SessionId> {
+        let mut runs: Vec<(usize, SessionId)> = self.sessions.iter().filter(|(_, s)| s.run_of == Some(member)).map(|(&id, s)| (s.slot, id)).collect();
+        runs.sort_unstable();
+        runs.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// The member a session is: a run's or a lane's own, else itself.
+    fn member_of(&self, id: SessionId) -> SessionId {
+        self.sessions.get(&id).and_then(|s| s.run_of.or(s.lane.as_ref().map(|(of, _)| *of))).unwrap_or(id)
+    }
+
+    /// Where a session builds: its member's own place, or — for a run
+    /// beside another — one of the run's place's own, so two builds at once
+    /// never overwrite each other's binaries.
+    fn build_dir_of(&self, session: &Session) -> Option<PathBuf> {
+        let (squad, name) = (session.squad.as_deref()?, session.name()?);
+        let key = if session.slot == 0 { name.to_owned() } else { format!("{name}~{}", session.slot + 1) };
+        Some(journal::build_dir(&self.config.home, squad, &key))
+    }
+
+    /// Run member `member`'s ticket `work` in a session of its own, beside
+    /// the member's conversation and its other runs ([`crate::lanes`]): the
+    /// run's session is the work's runtime session. Told to the screens
+    /// before it starts ([`Event::RunOpened`], then [`Event::SessionStarted`]).
+    fn open_run(&mut self, member: SessionId, work: Work) -> Option<SessionId> {
+        let id = work.execution_session;
+        let used: Vec<usize> = self.sessions.values().filter(|s| s.run_of == Some(member)).map(|s| s.slot).collect();
+        let slot = (0..).find(|n| !used.contains(n)).unwrap_or_default();
+        let m = self.sessions.get(&member)?;
+        let mut run = lane_of(member, m, None, DeskThread::default(), false);
+        run.lane = None;
+        run.run_of = Some(member);
+        run.slot = slot;
+        run.thread = None;
+        run.effort = m.effort.clone();
+        run.context = None;
+        run.desk_context = None;
+        let (ticket, generation) = (work.ticket, work.execution_generation);
+        run.work = Some(work);
+        let started = Event::SessionStarted {
+            session: id,
+            project: run.project.clone(),
+            engine: run.engine,
+            model: run.model.clone(),
+            workspace: None,
+            member: run.member.clone(),
+            squad: run.squad.clone(),
+        };
+        self.sessions.insert(id, run);
+        self.publish(Event::RunOpened { session: id, of: member, ticket, generation });
+        self.publish(started);
+        Some(id)
+    }
+
+    /// Run `id` put its ticket down: it closes. What was left for it and
+    /// not read goes to its member's conversation; what it asked the person
+    /// and is still unanswered is answered no — no other run takes it.
+    fn close_run(&mut self, id: SessionId) {
+        let Some(member) = self.sessions.get(&id).filter(|s| s.work.is_none()).and_then(|s| s.run_of) else { return };
+        self.stop_turn(id);
+        let asked: Vec<u64> = self.pending.iter().filter(|(_, p)| p.approval.session == id).map(|(&a, _)| a).collect();
+        for approval in asked {
+            self.answer(approval, Decision::Deny, "That ticket's run ended.");
+        }
+        let (memos, threads) = self.sessions.get_mut(&id).map(|s| (std::mem::take(&mut s.queued), std::mem::take(&mut s.memo_threads))).unwrap_or_default();
+        for (i, text) in memos.into_iter().enumerate() {
+            self.leave_memo_about(member, text, threads.get(i).cloned().flatten());
+        }
+        self.close_side_chats_of(id);
+        self.publish(Event::SessionClosed { session: id });
+        if let Some(who) = self.sessions.remove(&id).as_ref().and_then(session_member)
+            && self.desktop.leave(&who)
+        {
+            self.publish_desktop();
+        }
+    }
+
+    /// Who a tool call comes from: the run it names, while that run still
+    /// holds its ticket's current generation; the member itself when it
+    /// names none. `Err` for a run that holds it no longer — a stale call.
+    fn caller(&self, call: &ToolCall) -> Result<SessionId, String> {
+        let Some(member) = self.member_id(&call.squad, &call.member) else {
+            return Err(format!("{} isn't on the squad {}.", call.member, call.squad));
+        };
+        let Some(run) = call.run else {
+            // No run named. equipe names one for every run it starts, so this
+            // is the member's own conversation — unless that isn't at work: a
+            // call from an older board server, made for the one ticket the
+            // member runs. With several, none is picked: no run is changed.
+            let desk_at_work = self.sessions.get(&member).is_some_and(Session::is_working);
+            return Ok(match self.runs_of(member).as_slice() {
+                [only] if !desk_at_work => *only,
+                _ => member,
+            });
+        };
+        let live = self.sessions.get(&run.session).is_some_and(|s| {
+            s.run_of == Some(member) && s.work.as_ref().is_some_and(|w| w.ticket == run.ticket && w.execution_generation == run.generation)
+        });
+        let current = self
+            .journals
+            .get(&call.squad)
+            .and_then(|j| j.execution(run.ticket).ok().flatten())
+            .is_some_and(|e| e.generation == run.generation && e.state == ExecutionState::Active && e.session == run.session);
+        if live && current {
+            Ok(run.session)
+        } else {
+            Err(format!(
+                "That run of T-{} (generation {}) is over: the ticket moved on without it, so nothing was changed. Stop here.",
+                run.ticket, run.generation
+            ))
+        }
+    }
+
+    /// The session a tool call acts for: its run when it is still current,
+    /// else the member's own (a stale run's state-changing calls are refused
+    /// before they get here, [`Self::tool`]).
+    fn caller_id(&self, call: &ToolCall) -> Option<SessionId> {
+        self.caller(call).ok().or_else(|| self.member_id(&call.squad, &call.member))
     }
 
     /// `role`, or `role-2`, `role-3`… — whichever no member of `squad` has.
@@ -3002,7 +3188,7 @@ runbooks and reports live there, and work across the projects or on running them
         let mut members: Vec<(u64, String, String)> = self
             .sessions
             .values()
-            .filter(|s| s.squad.as_deref() == Some(squad) && s.lane.is_none())
+            .filter(|s| s.squad.as_deref() == Some(squad) && s.is_member_itself())
             .filter_map(|s| s.member.as_ref().map(|m| (s.joined, m.name.clone(), m.role.clone())))
             .collect();
         members.sort();
@@ -3012,7 +3198,7 @@ runbooks and reports live there, and work across the projects or on running them
     fn pm_of(&self, squad: &str) -> Option<SessionId> {
         self.sessions
             .iter()
-            .find(|(_, s)| s.squad.as_deref() == Some(squad) && s.lane.is_none() && s.is_pm())
+            .find(|(_, s)| s.squad.as_deref() == Some(squad) && s.is_member_itself() && s.is_pm())
             .map(|(&id, _)| id)
     }
 
@@ -3390,6 +3576,8 @@ runbooks and reports live there, and work across the projects or on running them
                 threads: HashMap::new(),
                 lane: None,
                 kept: false,
+                run_of: None,
+                slot: 0,
                 estimate: None,
                 turn_began: None,
             },
@@ -3948,6 +4136,27 @@ for one project goes to it as tickets for its owners, with that project — and 
         self.publish(Event::LaneMoved { session: id, project });
     }
 
+    /// The person names a conversation with the PM themselves: kept (the
+    /// journal's conversation and session together) and told to every screen,
+    /// or refused as it was — no such conversation in `squad`, nothing left of
+    /// the name or too long a one, a write that failed.
+    fn rename_conversation(&mut self, squad: &str, id: SessionId, raw: &str) {
+        let ours = self.sessions.get(&id).is_some_and(|s| s.kept && s.squad.as_deref() == Some(squad));
+        let Some(title) = equipe_protocol::conversation_title(raw).filter(|_| ours) else {
+            return self.publish(Event::ConversationRenameRefused { session: id });
+        };
+        if self.config.persist {
+            let kept = journal_for(&mut self.journals, &self.config.home, squad).map(|j| j.rename_conversation(id, &title));
+            if !matches!(kept, Some(Ok(true))) {
+                return self.publish(Event::ConversationRenameRefused { session: id });
+            }
+        }
+        if let Some(s) = self.sessions.get_mut(&id) {
+            s.title = Some(title.clone());
+        }
+        self.publish(Event::ConversationTitle { session: id, title, named: true });
+    }
+
     /// A conversation with the PM put away: its turn stops, it leaves the list.
     async fn close_conversation(&mut self, id: SessionId) {
         let Some(squad) = self.sessions.get(&id).filter(|s| s.kept).map(|s| s.squad.clone()) else { return };
@@ -3976,7 +4185,14 @@ for one project goes to it as tickets for its owners, with that project — and 
         let Some(m) = self.sessions.get(&pm) else { return };
         let thread = DeskThread { claude_session: c.engine_session, ..DeskThread::default() };
         let mut lane = lane_of(pm, m, c.project.clone(), thread, true);
-        let title = c.title;
+        // One whose topic was never named (made before topics, or its naming
+        // turn didn't finish) shows the person's first words meanwhile.
+        let title = c.title.or_else(|| {
+            lines.iter().find_map(|e| match e {
+                Entry::User { text, .. } => Some(crate::conversation_title::fallback(text)).filter(|t| !t.is_empty()),
+                _ => None,
+            })
+        });
         lane.title = title.clone();
         lane.transcript = Transcript::with_times(lines.clone(), lines_at.clone());
         self.publish_lane(id, lane, pm, c.project, true);
@@ -4071,7 +4287,11 @@ for one project goes to it as tickets for its owners, with that project — and 
             None => prompt,
         };
         // A member that just moved engines: equipe's brief of where it was.
-        let prompt = match self.engines.brief_for(id) {
+        // The brief is the member's; its first run's first turn carries it
+        // when that comes before a turn at its desk.
+        let member = self.sessions.get(&id).and_then(|s| s.run_of);
+        let brief = self.engines.brief_for(id).or_else(|| member.and_then(|m| self.engines.brief_for(m)));
+        let prompt = match brief {
             Some(brief) => format!("{brief}\n\n{prompt}"),
             None => prompt,
         };
@@ -4148,6 +4368,9 @@ for one project goes to it as tickets for its owners, with that project — and 
             } else {
                 Vec::new()
             };
+        // A run's servers say which run they serve, on every call.
+        let run_key = session.run_of.and(session.work.as_ref()).map(|w| equipe_protocol::rpc::RunKey { session: id, ticket: w.ticket, generation: w.execution_generation });
+        let run_arg = run_key.map(|k| k.arg());
         let mcp_config = match (&squad, &session.member, &self.config.equipe_binary) {
             (Some(squad), Some(m), Some(binary)) if board_tools => {
                 let mut servers = json!({ MCP_SERVER: {
@@ -4157,6 +4380,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                 }});
                 if branding && let Some(args) = servers[MCP_SERVER]["args"].as_array_mut() {
                     args.push(json!("--branding"));
+                }
+                if let Some(run) = &run_arg && let Some(args) = servers[MCP_SERVER]["args"].as_array_mut() {
+                    args.extend([json!("--run"), json!(run)]);
                 }
                 if let Some(port) = browser {
                     servers[browser::SERVER] = browser::entry(port);
@@ -4170,6 +4396,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                         "command": binary,
                         "args": ["mcp", "--server", DESKTOP_SERVER, "--squad", squad, "--member", m.name, "--role", m.role, "--home", self.config.home],
                     });
+                    if let Some(run) = &run_arg && let Some(args) = servers[DESKTOP_SERVER]["args"].as_array_mut() {
+                        args.extend([json!("--run"), json!(run)]);
+                    }
                 }
                 if let Some(design) = &design {
                     servers[DESIGN_SERVER] = json!({ "type": "stdio", "command": design, "args": ["mcp"] });
@@ -4180,6 +4409,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                         "command": binary,
                         "args": ["mcp", "--server", crate::phone::SERVER, "--squad", squad, "--member", m.name, "--role", m.role, "--home", self.config.home],
                     });
+                    if let Some(run) = &run_arg && let Some(args) = servers[crate::phone::SERVER]["args"].as_array_mut() {
+                        args.extend([json!("--run"), json!(run)]);
+                    }
                 }
                 Some(json!({ "mcpServers": servers }).to_string())
             }
@@ -4277,7 +4509,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         // Rust build is gigabytes, and one in every ticket's worktree filled the disk.
         // Its own, not the squad's: two builds at once in one place overwrite each
         // other's binaries.
-        let builds = session.squad.as_deref().zip(session.name()).map(|(squad, name)| journal::build_dir(&self.config.home, squad, name));
+        let builds = self.build_dir_of(session);
         if let Some(dir) = &builds {
             let _ = std::fs::create_dir_all(dir);
         }
@@ -4375,6 +4607,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                             }
                             args.extend(["--squad", squad, "--member", &m.name, "--role", &m.role, "--home"].map(str::to_owned));
                             args.push(self.config.home.to_string_lossy().into_owned());
+                            if let Some(run) = &run_arg {
+                                args.extend(["--run".to_owned(), run.clone()]);
+                            }
                             args
                         };
                         let mut servers = json!({ MCP_SERVER: codex_app::mcp_server(binary, &args(None), true) });
@@ -4415,6 +4650,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 // What Codex asks goes to the person as Claude Code's permission prompts do.
                 let (ask_tx, mut ask_rx) = mpsc::unbounded_channel::<codex_app::Ask>();
                 let asker = session_member(session);
+                let asker_run = run_key;
                 let forward = internal.clone();
                 tokio::spawn(async move {
                     while let Some(ask) = ask_rx.recv().await {
@@ -4424,7 +4660,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         };
                         let (tx, rx) = oneshot::channel();
                         let arguments = json!({ "tool_name": ask.tool, "input": ask.input });
-                        let call = ToolCall { squad: who.squad.clone(), member: who.member.clone(), name: permissions::APPROVE_TOOL.into(), arguments };
+                        let call = ToolCall { squad: who.squad.clone(), member: who.member.clone(), name: permissions::APPROVE_TOOL.into(), arguments, run: asker_run };
                         let _ = forward.send(Internal::Ask(call, tx));
                         let answer = ask.answer;
                         tokio::spawn(async move {
@@ -4919,7 +5155,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         if let Some(session) = self.sessions.get_mut(&done.session) {
             if session.title.is_none() {
                 session.title = Some(done.title.clone());
-                self.publish(Event::ConversationTitle { session: done.session, title: done.title });
+                self.publish(Event::ConversationTitle { session: done.session, title: done.title, named: false });
             }
         } else {
             // It may have been put away while the small side turn ran.
@@ -5066,17 +5302,28 @@ for one project goes to it as tickets for its owners, with that project — and 
     }
 
     async fn close(&mut self, id: SessionId) {
-        // A member leaving takes its lanes with it.
-        let lanes: Vec<SessionId> = self.sessions.iter().filter(|(_, s)| s.lane.as_ref().is_some_and(|(of, _)| *of == id)).map(|(&l, _)| l).collect();
+        // A member leaving takes its lanes and its runs with it; each run's
+        // ticket goes back on the board.
+        let lanes: Vec<SessionId> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.lane.as_ref().is_some_and(|(of, _)| *of == id) || s.run_of == Some(id))
+            .map(|(&l, _)| l)
+            .collect();
         for lane in lanes {
             Box::pin(self.close(lane)).await;
+        }
+        if self.sessions.get(&id).is_some_and(|s| s.run_of.is_some()) {
+            self.stop_turn(id);
+            self.end_work(id, WorkEnd::Left);
+            return;
         }
         self.stop_turn(id);
         let Some(session) = self.sessions.get(&id) else {
             return self.error(Some(id), say!(self, "error.no_session", id = id), None);
         };
         let squad = session.squad.clone();
-        let leaving = session.name().filter(|_| session.lane.is_none()).map(str::to_owned);
+        let leaving = session.name().filter(|_| session.is_member_itself()).map(str::to_owned);
         if session.work.is_some() {
             self.end_work(id, WorkEnd::Left);
         }
@@ -5146,7 +5393,10 @@ for one project goes to it as tickets for its owners, with that project — and 
     }
 
     /// Hand ready tickets to `only` (or every member when empty), considering
-    /// `first` before the board's normal order. Readiness stays in `board`;
+    /// `first` before the board's normal order: every ready ticket a member
+    /// has room for starts now, each as a run of its own beside the member's
+    /// others ([`crate::lanes`]). Readiness stays in `board`; how many runs go
+    /// at once, and which member of a role takes which, is the lane policy's;
     /// runtime-only engine and room holds are applied here as usual.
     async fn dispatch_to(&mut self, squad: &str, only: &[String], first: &[TicketId]) {
         // A member moving engines moves before it picks up its next ticket.
@@ -5156,30 +5406,70 @@ for one project goes to it as tickets for its owners, with that project — and 
         let single_project = self.projects(squad).len() == 1;
         // Members equipe once brought in for a rush finish what they hold and take nothing new.
         let helpers = self.journals.get(squad).map(Journal::helpers).unwrap_or_default();
-        let members: Vec<(String, String, bool, Option<Engine>)> = self
-            .sessions
-            .iter()
-            .filter(|(id, s)| s.squad.as_deref() == Some(squad) && s.lane.is_none() && !helpers.contains(id))
-            .filter(|(_, s)| only.is_empty() || s.name().is_some_and(|name| only.iter().any(|only| only == name)))
-            // An engine out of its plan, or waited for, takes no new ticket.
-            .filter_map(|(_, s)| {
-                s.member.as_ref().map(|m| {
-                    let held = s.is_free() && self.engines.held(squad, s.engine);
-                    (m.name.clone(), m.role.clone(), s.is_free() && !held, held.then_some(s.engine))
-                })
-            })
+        let disk = self.disk.status.level;
+        let used = |engine: Engine| crate::lanes::plan_used(self.plans.iter().find(|p| p.engine == engine).map(|p| &p.usage));
+        /// A member as this pass weighs it.
+        struct Seat {
+            name: String,
+            role: String,
+            joined: u64,
+            engine: Engine,
+            runs: usize,
+            limit: usize,
+            takes_new: bool,
+            /// Its engine takes no new ticket now.
+            held: bool,
+        }
+        let mut members: Vec<Seat> = Vec::new();
+        let mut at_work: HashMap<Engine, usize> = HashMap::new();
+        for (&id, s) in &self.sessions {
+            if s.squad.as_deref() != Some(squad) {
+                continue;
+            }
+            if s.run_of.is_some() {
+                *at_work.entry(s.engine).or_default() += 1;
+                continue;
+            }
+            let Some(m) = s.member.as_ref().filter(|_| s.is_member_itself()) else { continue };
+            if !only.is_empty() && !only.contains(&m.name) {
+                continue;
+            }
+            let runs = self.sessions.values().filter(|r| r.run_of == Some(id)).count();
+            // An engine out of its plan, or waited for, takes no new ticket;
+            // nor does a member about to move to the other engine.
+            let held = self.engines.held(squad, s.engine);
+            let moving = self.engines.moving(squad, &m.name);
+            // One brought in for a rush only finishes what it holds; what it
+            // owns by name waits for it rather than going to its role.
+            let takes_new = !moving && !helpers.contains(&id);
+            let limit = crate::lanes::member_limit(used(s.engine), disk);
+            members.push(Seat { name: m.name.clone(), role: m.role.clone(), joined: s.joined, engine: s.engine, runs, limit, takes_new, held });
+        }
+        let room: HashMap<Engine, usize> = [Engine::Claude, Engine::Codex]
+            .into_iter()
+            .map(|e| (e, crate::lanes::engine_limit(used(e), disk).saturating_sub(at_work.get(&e).copied().unwrap_or(0))))
             .collect();
-        let candidates: Vec<Candidate> =
-            members.iter().map(|(name, role, free, _)| Candidate { name, role, free: *free }).collect();
-        let assigned = board::assignments_prioritizing(&tickets, &candidates, single_project, first);
-        // What a hold keeps from starting: what free members would take but for it.
-        if members.iter().any(|m| m.3.is_some()) {
-            let unheld: Vec<Candidate> =
-                members.iter().map(|(name, role, free, held)| Candidate { name, role, free: *free || held.is_some() }).collect();
-            let mut waiting: Vec<(Engine, TicketId)> = board::assignments_prioritizing(&tickets, &unheld, single_project, first)
+        fn lane<'a>(m: &'a Seat, tickets: &[Ticket], held_too: bool) -> crate::lanes::Member<'a> {
+            crate::lanes::Member {
+                name: &m.name,
+                role: &m.role,
+                joined: m.joined,
+                engine: m.engine,
+                runs: m.runs,
+                waiting: crate::lanes::waiting_on_person(tickets, &m.name),
+                limit: m.limit,
+                takes_new: m.takes_new && (held_too || !m.held),
+            }
+        }
+        let candidates: Vec<crate::lanes::Member> = members.iter().map(|m| lane(m, &tickets, false)).collect();
+        let assigned = crate::lanes::assign(&tickets, &candidates, single_project, first, &room);
+        // What a hold keeps from starting: what members would take but for it.
+        if members.iter().any(|m| m.held) {
+            let unheld: Vec<crate::lanes::Member> = members.iter().map(|m| lane(m, &tickets, true)).collect();
+            let mut waiting: Vec<(Engine, TicketId)> = crate::lanes::assign(&tickets, &unheld, single_project, first, &room)
                 .into_iter()
                 .filter(|(t, _)| !assigned.iter().any(|(a, _)| a == t))
-                .filter_map(|(t, name)| members.iter().find(|m| m.0 == name).and_then(|m| m.3).map(|e| (e, t)))
+                .filter_map(|(t, name)| members.iter().find(|m| m.name == name).filter(|m| m.held).map(|m| (m.engine, t)))
                 .collect();
             waiting.sort_by_key(|(_, t)| *t);
             for engine in [Engine::Claude, Engine::Codex] {
@@ -5306,6 +5596,17 @@ for one project goes to it as tickets for its owners, with that project — and 
         } else {
             None
         };
+        // A recovery the person approved starts under the operation and
+        // generation it reserved; any other start takes a fresh one. Either
+        // way the run gets a runtime session of its own, even on the same
+        // member and engine as the run before.
+        let recovered = ticket.execution.as_ref().filter(|e| e.state == ExecutionState::Queued).map(|e| e.operation.clone());
+        let operation = recovered.clone().unwrap_or_else(|| format!("start:{}", equipe_protocol::new_session_id()));
+        let execution_session = equipe_protocol::new_session_id();
+        let Some(execution_generation) = journal.acquire_execution(ticket_id, execution_session, &operation, now_secs(), EXECUTION_LEASE_SECS).ok().flatten()
+        else {
+            return;
+        };
         let cwd = sandbox.as_ref().map_or_else(|| project.clone(), |s| within(s, &project));
 
         ticket.status = TicketStatus::InProgress;
@@ -5329,27 +5630,32 @@ for one project goes to it as tickets for its owners, with that project — and 
             );
             let _ = journal.ticket_event(ticket_id, "equipe", "assigned", &name);
         }
-        if let Some(session) = self.sessions.get_mut(&id) {
-            session.work = Some(Work {
-                ticket: ticket_id,
-                kind,
-                project: project.clone(),
-                cwd,
-                sandbox: sandbox.clone(),
-                claude_session: saved.engine_session,
-                history: Vec::new(),
-                handed_in: None,
-                shown: Vec::new(),
-                waiting: None,
-                screens: false,
-                verdict: None,
-                refused: None,
-            });
-        }
+        let work = Work {
+            ticket: ticket_id,
+            execution_session,
+            execution_generation,
+            kind,
+            project: project.clone(),
+            cwd,
+            sandbox: sandbox.clone(),
+            claude_session: saved.engine_session,
+            history: Vec::new(),
+            handed_in: None,
+            shown: Vec::new(),
+            waiting: None,
+            screens: false,
+            verdict: None,
+            refused: None,
+        };
+        // The ticket runs in a session of its own, beside the member's
+        // conversation and its other runs: from here `id` is the run.
+        let Some(id) = self.open_run(id, work) else { return };
         self.publish(Event::TicketChanged { squad: squad.clone(), ticket: ticket.clone() });
         // What follows in its conversation is about the ticket's project.
         self.publish(Event::Thread { session: id, project: ticket.project.as_deref().map(board::project_name) });
+        let of = self.sessions.get(&id).and_then(|s| s.run_of);
         self.publish(Event::WorkStarted {
+            of,
             session: id,
             ticket: ticket_id,
             title: ticket.title.clone(),
@@ -5358,7 +5664,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         });
         self.brief_pm(&squad, format!("{name} picked up T-{ticket_id} ({}).", ticket.title), None);
         let language = self.journal(&squad).and_then(Journal::language);
-        let mut prompt = work_prompt(&ticket, &project, sandbox.as_ref(), reopened.as_deref(), board_tools, language.as_deref());
+        let mut prompt = work_prompt(&ticket, &project, sandbox.as_ref(), reopened.as_deref(), recovered.is_some(), board_tools, language.as_deref());
         if let Some(checked) = self.checked_by(&squad, ticket_id) {
             prompt.push_str(&design_qa::qa_prompt(ticket_id, &checked));
         }
@@ -5381,6 +5687,98 @@ for one project goes to it as tickets for its owners, with that project — and 
             ));
         }
         self.start_turn(id, prompt);
+    }
+
+    /// Renew leases only for turns that this runtime can still observe. Late
+    /// heartbeats are fenced by the stored generation and session id.
+    fn renew_execution_leases(&mut self) {
+        let active: Vec<(String, SessionId, TicketId, u64)> = self
+            .sessions
+            .iter()
+            .filter(|(_, session)| session.is_working())
+            .filter_map(|(_, session)| {
+                let work = session.work.as_ref()?;
+                Some((session.squad.clone()?, work.execution_session, work.ticket, work.execution_generation))
+            })
+            .collect();
+        let at = now_secs();
+        for (squad, session, ticket, generation) in active {
+            let Some(journal) = self.journal(&squad) else { continue };
+            let _ = journal.heartbeat_execution(ticket, generation, session, at, EXECUTION_LEASE_SECS);
+        }
+    }
+
+    /// The minute's check, as of unix time `at`: a run whose turn ended
+    /// without a hand-in or a wait, and that nothing renewed before its lease
+    /// ran out, is stalled. A turn still running is never stalled, however
+    /// long it takes. The stalled ticket's member lets go of it and is free
+    /// for other work.
+    async fn recover_execution_leases(&mut self, at: u64) {
+        let squads: Vec<String> = self.journals.keys().cloned().collect();
+        for squad in squads {
+            let live: Vec<SessionId> = self
+                .sessions
+                .values()
+                .filter(|session| session.squad.as_deref() == Some(squad.as_str()) && session.is_working())
+                .filter_map(|session| session.work.as_ref().map(|work| work.execution_session))
+                .collect();
+            let stalled = self.journal(&squad).and_then(|j| j.recover_executions(&live, at).ok()).unwrap_or_default();
+            if stalled.is_empty() {
+                continue;
+            }
+            for ticket in stalled {
+                self.stalled(&squad, ticket, true);
+            }
+            Box::pin(self.dispatch(&squad)).await;
+        }
+    }
+
+    /// `ticket`'s run stalled. Its member, if still on it, lets go — in
+    /// memory only: nothing is committed, and the ticket stays in progress
+    /// with its branch, worktree, commit and uncommitted files exactly as they
+    /// were, for the person to resume, requeue or reassign. What its checkout
+    /// holds is kept for their card; the PM hears of it when `tell`.
+    fn stalled(&mut self, squad: &str, ticket_id: TicketId, tell: bool) {
+        let Some(ticket) = self.journal(squad).and_then(|j| j.ticket(ticket_id).ok().flatten()) else { return };
+        let generation = ticket.execution.as_ref().map(|e| e.generation);
+        // Only the session on that very run lets go.
+        let holder = self
+            .sessions
+            .iter()
+            .find(|(_, s)| s.squad.as_deref() == Some(squad) && s.work.as_ref().is_some_and(|w| w.ticket == ticket_id && Some(w.execution_generation) == generation))
+            .map(|(&id, _)| id);
+        if let Some(id) = holder {
+            if let Some(session) = self.sessions.get_mut(&id) {
+                session.work = None;
+            }
+            let of = self.sessions.get(&id).and_then(|s| s.run_of);
+        self.publish(Event::WorkEnded { session: id, ticket: ticket_id, of });
+            let desk = self.sessions.get(&id).and_then(|s| s.thread.clone());
+            self.publish(Event::Thread { session: id, project: desk });
+            self.close_run(id);
+        }
+        // A run whose ticket moved on without it (back on the board, say) only
+        // frees its lease: the board starts it again as usual.
+        if ticket.status != TicketStatus::InProgress {
+            return;
+        }
+        let Some(journal) = self.journal(squad) else { return };
+        let (head, dirty) = ticket.worktree.as_deref().map(worktree::checkout_facts).unwrap_or_default();
+        let _ = journal.set_stalled_checkout(ticket_id, head.as_deref(), dirty);
+        let reason = ticket.execution.as_ref().and_then(|e| e.reason.clone()).unwrap_or_default();
+        let _ = journal.ticket_event(ticket_id, "equipe", "stalled", &reason);
+        let Some(ticket) = journal.ticket(ticket_id).ok().flatten() else { return };
+        let (title, who) = (ticket.title.clone(), ticket.assignee.clone().unwrap_or_default());
+        self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
+        if tell {
+            let line = format!(
+                "T-{ticket_id}'s run stopped: {who}'s turn ended without a hand-in or a wait, and nothing ran it since. It stays in \
+progress with its branch and worktree as they are. The person resumes, requeues or reassigns it on its card — you can't, and \
+don't open a new ticket for it."
+            );
+            let shown = say!(self, "news.stalled", id = ticket_id, name = who, title = title);
+            self.brief_pm(squad, line, Some(shown));
+        }
     }
 
     /// A ticket that can't start (its project isn't a repository, say) goes back
@@ -5415,6 +5813,12 @@ todo); or drop it if it's no longer wanted.]"
     /// branch; the worktree stays while the work is in review, so it can be sent
     /// back, and goes otherwise — the branch stays to merge.
     fn end_work(&mut self, id: SessionId, how: WorkEnd) {
+        self.put_down(id, how);
+        // A run is its ticket's: put down, it closes.
+        self.close_run(id);
+    }
+
+    fn put_down(&mut self, id: SessionId, how: WorkEnd) {
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -5462,7 +5866,9 @@ todo); or drop it if it's no longer wanted.]"
             && !ticket.kind.in_home()
             && let Some(sandbox) = &work.sandbox
         {
-            self.ask_for_review(&squad, &ticket, sandbox.clone(), id);
+            // Its word on the review goes to the member: the run closes now.
+            let member = self.member_of(id);
+            self.ask_for_review(&squad, &ticket, sandbox.clone(), member);
         }
         let handed_in = match (&how, &summary) {
             (WorkEnd::HandedIn, Some(summary)) if ticket.kind.in_home() => Some(self.home_hand_in(&squad, &ticket, work.sandbox.as_ref(), summary)),
@@ -5552,7 +5958,7 @@ todo); or drop it if it's no longer wanted.]"
                 });
                 ("equipe", "released", format!("{name} left T-{}; it is back on the board", ticket.id), "news.left")
             }
-            WorkEnd::Reassigned { to } => {
+            WorkEnd::Reassigned { ref to } => {
                 ticket.status = TicketStatus::Todo;
                 ticket.assignee = None;
                 ticket.owner = Some(to.clone());
@@ -5570,6 +5976,19 @@ todo); or drop it if it's no longer wanted.]"
             saved.worktree = kept_worktree;
             let _ = journal.set_ticket_work(ticket.id, &saved);
             let _ = journal.ticket_event(ticket.id, &by, event, summary.as_deref().unwrap_or(""));
+            if work.execution_generation > 0 {
+                let state = if how == WorkEnd::Waiting { ExecutionState::Waiting } else { ExecutionState::Stopped };
+                let reason = match how {
+                    WorkEnd::Waiting => "waiting_for_person",
+                    WorkEnd::HandedIn => "handed_in",
+                    WorkEnd::Accepted => "accepted",
+                    WorkEnd::Cancelled => "cancelled",
+                    WorkEnd::Checked => "design_qa_ended",
+                    WorkEnd::Left => "member_left",
+                    WorkEnd::Reassigned { .. } => "reassigned",
+                };
+                let _ = journal.finish_execution(ticket.id, work.execution_generation, state, Some(reason));
+            }
         }
         // Work now ready for review — this ticket handed in, or the one a
         // designer's QA just passed — when the PM accepts it. Code the PM
@@ -5588,7 +6007,8 @@ todo); or drop it if it's no longer wanted.]"
         let to = to.or_else(|| ticket.owner.clone()).unwrap_or_default();
         let shown = self.said(news, &[("id", about_id.to_string()), ("name", name.clone()), ("title", about_title), ("to", to)]);
         self.publish(Event::TicketChanged { squad: squad.clone(), ticket });
-        self.publish(Event::WorkEnded { session: id, ticket: ticket_id });
+        let of = self.sessions.get(&id).and_then(|s| s.run_of);
+        self.publish(Event::WorkEnded { session: id, ticket: ticket_id, of });
         // Back at its desk: the thread it was in there.
         let desk = self.sessions.get(&id).and_then(|s| s.thread.clone());
         self.publish(Event::Thread { session: id, project: desk });
@@ -5597,7 +6017,7 @@ todo); or drop it if it's no longer wanted.]"
             Some(summary) => format!("{line}: {summary}"),
             None => format!("{line}."),
         };
-        if self.pm_of(&squad) != Some(id) {
+        if self.pm_of(&squad) != Some(self.member_of(id)) {
             self.brief_pm(&squad, briefing, Some(shown));
             // Where the PM accepts, work ready for review is its to act on now —
             // a note it would read only when next spoken to leaves it waiting.
@@ -6119,6 +6539,66 @@ with what else waits.]"
         self.dispatch(squad).await;
     }
 
+    /// The person recovers a stalled ticket (`Command::Requeue`, theirs
+    /// only): its same member goes on, whoever of its role is free next
+    /// starts, or another member takes it over. The recovery and the move
+    /// back to the board are one journal transaction; the start follows at
+    /// once when its owner is free, in a fresh runtime session on the same
+    /// ticket, branch and worktree. The same `operation` twice is one
+    /// recovery. What happened is said: started or queued, done already, or
+    /// why nothing changed.
+    async fn requeue(&mut self, squad: &str, ticket: TicketId, operation: &str, how: equipe_protocol::Recovery) {
+        use equipe_protocol::Recovery;
+        if operation.trim().is_empty() {
+            return self.squad_error(squad, say!(self, "error.recovery_no_operation", id = ticket));
+        }
+        let Some(found) = self.find_ticket(squad, ticket) else { return };
+        let team = self.team(squad);
+        let on_team = |name: &str| team.iter().any(|(_, member, _)| member == name);
+        // The run's member: who held it, or — queued already — who it waits for.
+        let member = found.assignee.clone().or_else(|| found.owner.clone().filter(|o| on_team(o))).unwrap_or_default();
+        let owner = match &how {
+            Recovery::Resume if on_team(&member) => member.clone(),
+            Recovery::Resume => return self.squad_error(squad, say!(self, "error.recovery_member_gone", id = ticket, name = member)),
+            Recovery::Requeue => team
+                .iter()
+                .find(|(_, name, _)| *name == member)
+                .map(|(_, _, role)| role.clone())
+                .unwrap_or_else(|| board::role_of(found.owner.as_deref().unwrap_or(&member)).to_owned()),
+            Recovery::Reassign(to) if on_team(to) => to.clone(),
+            Recovery::Reassign(to) => return self.squad_error(squad, say!(self, "error.no_member", name = to)),
+        };
+        let Some(journal) = self.journal(squad) else { return };
+        match journal.reserve_requeue(ticket, operation, Some(&owner), now_secs()) {
+            Ok(Requeued::Reserved) => {
+                let (event, key) = match how {
+                    Recovery::Resume => ("resumed", "news.recovery_resume"),
+                    Recovery::Requeue => ("requeued", "news.recovery_requeue"),
+                    Recovery::Reassign(_) => ("reassigned", "news.recovery_reassign"),
+                };
+                let _ = journal.ticket_event(ticket, "you", event, &format!("to {owner}, on the same branch and worktree"));
+                if let Ok(Some(changed)) = journal.ticket(ticket) {
+                    self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: changed });
+                }
+                let line = format!(
+                    "The person brought T-{ticket} back for {owner}: a fresh run on the same ticket, branch and worktree, nothing reset. \
+It starts when {owner} is free."
+                );
+                let shown = self.said(key, &[("id", ticket.to_string()), ("title", found.title.clone()), ("to", owner.clone())]);
+                self.brief_pm(squad, line, Some(shown));
+                self.dispatch(squad).await;
+            }
+            Ok(Requeued::AlreadyApplied) => {
+                let text = say!(self, "notice.recovery_applied", id = ticket);
+                if let Some(pm) = self.pm_of(squad) {
+                    self.publish(Event::Notice { undo: None, session: pm, text });
+                }
+            }
+            Ok(Requeued::NotStalled) => self.squad_error(squad, say!(self, "error.recovery_not_stalled", id = ticket)),
+            Err(err) => self.squad_error(squad, say!(self, "error.recovery_failed", id = ticket, err = err)),
+        }
+    }
+
     /// `ticket`, waiting, back to `todo` for the member that put it down,
     /// saved and announced. What was done (`note`) is what the member goes on from.
     fn resumed(&mut self, squad: &str, mut ticket: Ticket, by: &str, note: &str) -> Ticket {
@@ -6170,6 +6650,21 @@ with what else waits.]"
     /// A member's tool call. A request for permission waits for the person; the
     /// rest are answered at once.
     async fn tool(&mut self, call: ToolCall, reply: oneshot::Sender<ToolResult>) {
+        // A run that no longer holds its ticket changes nothing: no ticket,
+        // no question or permission to the person, no estimate, no hand-in.
+        // Reading the board is still fine.
+        if let Err(why) = self.caller(&call)
+            && call.run.is_some()
+            && !crate::lanes::reads_only(&call.name)
+        {
+            if let Some(run) = call.run
+                && let Some(journal) = self.journal(&call.squad)
+            {
+                let _ = journal.ticket_event(run.ticket, &call.member, "stale call", &format!("{} from generation {}", call.name, run.generation));
+            }
+            let _ = reply.send(if call.name == permissions::APPROVE_TOOL { verdict(Decision::Deny, &json!({}), &why) } else { ToolResult::error(why) });
+            return;
+        }
         if call.name == permissions::APPROVE_TOOL {
             return self.ask_permission(call, reply);
         }
@@ -6198,7 +6693,7 @@ with what else waits.]"
             let url = call.arguments["url"].as_str().map(str::to_owned);
             let why = call.arguments["why"].as_str().unwrap_or_default().to_owned();
             if self.ask_in_panel(&call.squad, &call.member, url.as_deref(), &why) {
-                if let Some(id) = self.member_id(&call.squad, &call.member) {
+                if let Some(id) = self.caller_id(&call) {
                     let text = say!(self, "notice.browser_in_panel", name = call.member, why = why);
                     self.publish(Event::Notice { undo: None, session: id, text });
                 }
@@ -6216,7 +6711,7 @@ and hand it back you get a message and carry on by yourself — don't ask them t
                 self.show_url.insert((call.squad.clone(), call.member.clone()), url);
             }
             self.show_browser(&call.squad, Some(call.member.clone()), true);
-            if let Some(id) = self.member_id(&call.squad, &call.member) {
+            if let Some(id) = self.caller_id(&call) {
                 let text = say!(self, "notice.browser_on_screen", name = call.member, why = why);
                 self.publish(Event::Notice { undo: None, session: id, text });
             }
@@ -6243,7 +6738,7 @@ there, end your turn, and carry on when they say they're done."
         let squad = call.squad.clone();
         // The PM accepting its team's work: it waits for the acceptance itself.
         if call.name == crate::accept::ACCEPT_WORK {
-            let result = match self.member_id(&squad, &call.member) {
+            let result = match self.caller_id(&call) {
                 Some(id) => self.accept_work(&squad, &call.member, id, &call.arguments).await,
                 None => Err("You're not on the squad.".into()),
             };
@@ -6272,7 +6767,7 @@ there, end your turn, and carry on when they say they're done."
         let tool = permissions::canonical(call.arguments.get("tool_name").and_then(Value::as_str).unwrap_or("?")).to_owned();
         let input = call.arguments.get("input").cloned().unwrap_or_else(|| json!({}));
         let (action, reason) = permissions::describe_in(self.config.lang, &tool, &input);
-        let Some(id) = self.member_id(&call.squad, &call.member) else {
+        let Some(id) = self.caller_id(&call) else {
             let _ = reply.send(verdict(Decision::Deny, &input, "Unknown member."));
             return;
         };
@@ -6373,7 +6868,7 @@ there, end your turn, and carry on when they say they're done."
     fn ask_person(&mut self, call: ToolCall, reply: oneshot::Sender<ToolResult>) {
         let text = |key: &str| call.arguments.get(key).and_then(Value::as_str).map(str::trim).unwrap_or_default().to_owned();
         let (action, why) = (text("action"), text("why"));
-        let Some(id) = self.member_id(&call.squad, &call.member).filter(|_| !action.is_empty()) else {
+        let Some(id) = self.caller_id(&call).filter(|_| !action.is_empty()) else {
             let _ = reply.send(ToolResult { text: "Say what you'll do in `action`.".into(), is_error: true, image: None });
             return;
         };
@@ -6599,7 +7094,7 @@ there, end your turn, and carry on when they say they're done."
     fn ask_sign_in(&mut self, call: ToolCall, reply: oneshot::Sender<ToolResult>) {
         let text = |key: &str| call.arguments.get(key).and_then(Value::as_str).map(str::trim).unwrap_or_default().to_owned();
         let (site, account, why) = (text("site"), text("account"), text("why"));
-        let Some(id) = self.member_id(&call.squad, &call.member) else {
+        let Some(id) = self.caller_id(&call) else {
             let _ = reply.send(ToolResult::error("Unknown member."));
             return;
         };
@@ -6785,6 +7280,9 @@ there, end your turn, and carry on when they say they're done."
         let name = s.name()?;
         let key = match &s.lane {
             Some((_, project)) => browser::lane_key(name, project.as_deref()),
+            // A run drives a browser of its own: never its member's, whose
+            // conversation goes on beside it, nor another run's.
+            None if s.run_of.is_some() => browser::lane_key(name, Some(&format!("run{}", s.slot + 1))),
             None => name.to_owned(),
         };
         Some((s.squad.clone()?, key))
@@ -7157,8 +7655,12 @@ there, end your turn, and carry on when they say they're done."
                 let Some(id) = self.member_id(squad, name) else {
                     return self.squad_error(squad, say!(self, "error.no_member", name = name));
                 };
-                if let Some(session) = self.sessions.get_mut(&id) {
-                    session.mode = mode;
+                // Its runs too: how far a member may go is the member's, on every ticket it runs.
+                let runs = self.runs_of(id);
+                for at in std::iter::once(id).chain(runs) {
+                    if let Some(session) = self.sessions.get_mut(&at) {
+                        session.mode = mode;
+                    }
                 }
                 if self.config.persist
                     && let Some(journal) = self.journal(squad)
@@ -7171,8 +7673,8 @@ there, end your turn, and carry on when they say they're done."
     }
 
     fn run_tool(&mut self, call: ToolCall) -> Result<String, String> {
+        let id = self.caller_id(&call).ok_or_else(|| format!("{} isn't on the squad {}.", call.member, call.squad))?;
         let ToolCall { squad, member, name, arguments: args, .. } = call;
-        let id = self.member_id(&squad, &member).ok_or_else(|| format!("{member} isn't on the squad {squad}."))?;
         let is_pm = self.sessions.get(&id).is_some_and(Session::is_pm);
         let projects = self.projects(&squad);
         let names: Vec<String> = projects.iter().map(|p| board::project_name(p)).collect();
@@ -7227,6 +7729,7 @@ there, end your turn, and carry on when they say they're done."
                     depends_on,
                     branch: None,
                     worktree: None,
+                    execution: None,
                     merged: None,
                     off_main: None,
                     design_qa: None,
@@ -7624,6 +8127,7 @@ it back there once they have done it.{again} End your turn now with a short line
                     steering: s.steering.clone(),
                     steering_in: s.steer_threads.clone(),
                     lane: s.lane.clone().map(|(of, project)| equipe_protocol::Lane { of, project, kept: s.kept }),
+                    run: s.run_of.zip(s.work.as_ref()).map(|(of, w)| equipe_protocol::RunOf { of, ticket: w.ticket, generation: w.execution_generation }),
                     estimate: s.estimate.clone().filter(|e| !e.is_empty()),
                     work: s.work.as_ref().map(|w| WorkInfo {
                         ticket: w.ticket,
@@ -7728,6 +8232,32 @@ it back there once they have done it.{again} End your turn now with a short line
             let Some(squad) = journal.squad() else {
                 continue;
             };
+            // No runtime session outlives the process that ran it: every run
+            // still active when the daemon stopped — and in-progress work from
+            // before runs were kept — is stalled now. A member brought back
+            // below on the ticket it ran, its checkout still there and its
+            // engine able to resume here, carries it on under a new generation
+            // (`resume_work`); what nothing carries on stays stalled for the
+            // person, its ticket, work and files untouched.
+            let carried: Vec<TicketId> = journal
+                .tickets()
+                .unwrap_or_default()
+                .iter()
+                .filter(|t| t.status == TicketStatus::InProgress && t.execution.as_ref().is_none_or(|e| e.state == ExecutionState::Active))
+                .map(|t| t.id)
+                .collect();
+            // The run session each was in, for what was said there.
+            let ran_in: HashMap<TicketId, SessionId> = journal
+                .tickets()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|t| t.execution.as_ref().filter(|e| e.state == ExecutionState::Active).map(|e| (t.id, e.session)))
+                .collect();
+            // Each member's runs to carry on, opened once the squad is back.
+            let mut runs: Vec<(SessionId, Work)> = Vec::new();
+            let _ = journal.stall_all_executions(now_secs());
+            let codex_cli = codex_app::find(&self.config.codex_binary).is_some();
+            let mut carried_on: Vec<TicketId> = Vec::new();
             // A squad from before squad homes gets its home now.
             let home = squad_home::path(&self.config.home, &squad);
             if let Err(err) = squad_home::ensure(&self.config.home, &squad, journal.language().as_deref()) {
@@ -7769,10 +8299,24 @@ it back there once they have done it.{again} End your turn now with a short line
                     })
                     .collect();
                 let edits = record.access == Access::EditFiles;
-                let work = tickets
+                let resumes = record.engine == Engine::Claude || codex_cli;
+                // Every ticket it ran comes back as a run of its own, each
+                // exactly once, under a new generation.
+                let works: Vec<Work> = tickets
                     .iter()
-                    .find(|t| t.status == TicketStatus::InProgress && t.assignee.as_deref() == Some(member.name.as_str()))
-                    .and_then(|ticket| restore_work(&journal, ticket, &projects, &home, edits));
+                    .filter(|_| resumes)
+                    .filter(|t| t.status == TicketStatus::InProgress && t.assignee.as_deref() == Some(member.name.as_str()) && carried.contains(&t.id))
+                    .filter_map(|ticket| restore_work(&journal, ticket, &projects, &home, edits))
+                    .filter_map(|mut work| {
+                        let session = equipe_protocol::new_session_id();
+                        let operation = format!("restart:{session}");
+                        work.execution_generation = journal.acquire_execution(work.ticket, session, &operation, now_secs(), EXECUTION_LEASE_SECS).ok().flatten()?;
+                        work.execution_session = session;
+                        carried_on.push(work.ticket);
+                        Some(work)
+                    })
+                    .collect();
+                runs.extend(works.into_iter().map(|work| (record.id, work)));
                 // A desk opened in a project moves to the home. Claude Code resumes a
                 // conversation only where it began, so the desk starts afresh there,
                 // from a summary of the last one — once.
@@ -7843,7 +8387,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         codex: None,
                         history,
                         claude_session: record.engine_session,
-                        work,
+                        work: None,
                         prompts: Vec::new(),
                         title: record.title,
                         title_started: false,
@@ -7875,6 +8419,8 @@ it back there once they have done it.{again} End your turn now with a short line
                         threads,
                         lane: None,
                         kept: false,
+                        run_of: None,
+                        slot: 0,
                         answers_person: false,
                         on_phone: false,
                         effort: None,
@@ -7882,7 +8428,7 @@ it back there once they have done it.{again} End your turn now with a short line
                 );
             }
             // The conversations the person opened with the PM, as they were left.
-            let pm = self.sessions.iter().find(|(_, s)| s.squad.as_deref() == Some(squad.as_str()) && s.lane.is_none() && s.is_pm()).map(|(&id, _)| id);
+            let pm = self.sessions.iter().find(|(_, s)| s.squad.as_deref() == Some(squad.as_str()) && s.is_member_itself() && s.is_pm()).map(|(&id, _)| id);
             if let Some(pm) = pm {
                 for c in journal.conversations().unwrap_or_default() {
                     let thread = DeskThread { claude_session: c.engine_session, ..DeskThread::default() };
@@ -7894,6 +8440,21 @@ it back there once they have done it.{again} End your turn now with a short line
                 }
             }
             self.journals.insert(squad.clone(), journal);
+            // The runs carried on, each beside its member, with what was said in it.
+            for (member, work) in runs {
+                let before = ran_in.get(&work.ticket).copied();
+                let Some(run) = self.open_run(member, work) else { continue };
+                let lines = before.and_then(|old| self.journals.get(&squad).and_then(|j| j.conversation_at(old).ok()));
+                if let (Some((lines, at)), Some(session)) = (lines, self.sessions.get_mut(&run)) {
+                    session.transcript = Transcript::with_times(lines, at);
+                }
+            }
+            // What the restart couldn't carry on: stalled, for the person.
+            for ticket in carried.into_iter().filter(|t| !carried_on.contains(t)) {
+                if self.journals.get(&squad).and_then(|j| j.ticket(ticket).ok().flatten()).is_some_and(|t| t.status == TicketStatus::InProgress) {
+                    self.stalled(&squad, ticket, true);
+                }
+            }
             // A squad whose PM joined before the weekly retro was: it comes now, once.
             if pm.is_some() && self.config.persist {
                 self.add_joining_routine(&squad, crate::retro::ROLE);
@@ -8022,12 +8583,14 @@ check what is already done in your worktree first."
         }
         self.builds_trimmed = Some(std::time::Instant::now());
         // A member mid-turn may be building: its cache is left alone.
-        let busy: Vec<PathBuf> = self
+        let mut busy: Vec<PathBuf> = self
             .sessions
             .values()
             .filter(|s| s.is_working())
             .filter_map(|s| Some(journal::build_dir(&self.config.home, s.squad.as_deref()?, s.name()?)))
             .collect();
+        // And where accepted work's checks are building.
+        busy.extend(self.gate_builds());
         let home = self.config.home.clone();
         std::thread::spawn(move || {
             for line in worktree::trim_builds(&home, &busy, BUILD_CAP, BUILDS_BUDGET) {
@@ -8092,8 +8655,13 @@ check what is already done in your worktree first."
             .filter_map(|t| t.worktree)
             .collect();
         let home = self.config.home.clone();
+        // What checks that never finished left (the daemon stopped mid-run): only while none run.
+        let checks_left = self.gates.is_empty().then(|| gate::checks_scratch(&home));
         std::thread::spawn(move || {
             for line in worktree::tidy(&home, &in_use, &kept) {
+                crate::daemon_log!("equipe: {line}");
+            }
+            for line in checks_left.map(|dir| crate::checks::sweep(&dir)).unwrap_or_default() {
                 crate::daemon_log!("equipe: {line}");
             }
         });
@@ -8165,6 +8733,9 @@ fn restore_work(journal: &Journal, ticket: &Ticket, projects: &[PathBuf], home: 
     };
     Some(Work {
         ticket: ticket.id,
+        // Bound to a new run by the restart that brings it back.
+        execution_session: 0,
+        execution_generation: 0,
         kind: ticket.kind,
         cwd: sandbox.as_ref().map_or_else(|| project.clone(), |s| within(s, &project)),
         project,
@@ -8227,6 +8798,7 @@ fn work_prompt(
     project: &Path,
     sandbox: Option<&Sandbox>,
     reopened: Option<&str>,
+    recovered: bool,
     board_tools: bool,
     language: Option<&str>,
 ) -> String {
@@ -8300,6 +8872,25 @@ then hand in again.\n"
             "The person sent it back. {note}\nWhat they asked for says something about how they want work done: save that \
 lesson in your memory before you start, so the next ticket begins with it.\n"
         ));
+    }
+    if reopened.is_some() {
+        out.push_str("This latest reopen state supersedes any older message saying the work was complete or handed in.\n");
+    }
+    if !ticket.remaining.is_empty() {
+        out.push_str("The latest unresolved blockers take priority:\n");
+        for blocker in &ticket.remaining {
+            out.push_str(&format!("- {blocker}\n"));
+        }
+    }
+    if recovered {
+        out.push_str("The last run on this ticket stopped without a hand-in, and the person brought it back: this is a fresh session on the same ticket.");
+        if sandbox.is_some() {
+            out.push_str(
+                " Same branch and worktree, nothing reset, committed or cleaned — the commit and the uncommitted and untracked files \
+are as the last run left them. Look at `git status` and what is already done first, then carry on from there.",
+            );
+        }
+        out.push('\n');
     }
     if !ticket.body.is_empty() {
         out.push_str(&format!("\n{}\n", ticket.body));
@@ -8631,6 +9222,8 @@ fn lane_of(main: SessionId, m: &Session, project: Option<String>, thread: DeskTh
         turn_began: None,
         lane: Some((main, project)),
         kept,
+        run_of: None,
+        slot: 0,
     }
 }
 

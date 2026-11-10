@@ -83,7 +83,7 @@ impl Runtime {
     }
 
     pub(super) fn spawn_helper(&mut self, call: ToolCall, reply: oneshot::Sender<ToolResult>) {
-        let Some(member) = self.member_id(&call.squad, &call.member) else {
+        let Some(member) = self.caller_id(&call) else {
             let _ = reply.send(refused("You're not on the squad."));
             return;
         };
@@ -254,7 +254,7 @@ impl Runtime {
     }
 
     pub(super) fn helper_result(&mut self, call: ToolCall, reply: oneshot::Sender<ToolResult>) {
-        let Some(member) = self.member_id(&call.squad, &call.member) else {
+        let Some(member) = self.caller_id(&call) else {
             let _ = reply.send(refused("You're not on the squad."));
             return;
         };

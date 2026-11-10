@@ -39,6 +39,7 @@ pub mod orchestra;
 pub mod progress;
 pub mod project;
 pub mod quote;
+pub mod rename;
 pub mod settings;
 pub mod metrics;
 pub mod model_picker;
