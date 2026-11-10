@@ -90,6 +90,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::SetDesignReviewer { .. }
         | C::Scale { .. }
         | C::SetIdleWake { .. }
+        | C::SetResting { .. }
         | C::SetModel { .. }
         | C::SetRoleModel { .. }
         | C::SetEffort { .. }
@@ -523,6 +524,7 @@ mod tests {
             Command::SetModel { session: 1, model: "gpt-6.1-sol".into() },
             Command::SetMode { squad: "a".into(), member: None, mode: None },
             Command::SetPmAccepts { squad: "a".into(), on: true },
+            Command::SetResting { squad: "a".into(), member: "qa".into(), resting: true, stop: false },
             Command::Disallow { squad: "a".into(), rule: "Bash(rm:*)".into() },
             Command::DeleteLogin { id: 1 },
             Command::SetNebiusKey { key: None },

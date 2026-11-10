@@ -2228,6 +2228,7 @@ impl Runtime {
             Command::ApproveRoutine { squad, id } => self.approve_routine(&squad, id),
             Command::DeclineRoutine { squad, id } => self.decline_routine(&squad, id),
             Command::SetIdleWake { squad, hours } => self.set_idle_wake(&squad, hours).await,
+            Command::SetResting { squad, member, resting, stop } => self.set_resting(&squad, &member, resting, stop).await,
             Command::SetSignalOn { squad, project, name, on } => self.set_signal_on(&squad, &project, &name, on),
             Command::NewConversation { squad, session, project } => self.new_conversation(&squad, session, project),
             Command::MoveConversation { session, project } => self.move_conversation(session, project),
@@ -5462,6 +5463,8 @@ for one project goes to it as tickets for its owners, with that project — and 
         let single_project = self.projects(squad).len() == 1;
         // Members equipe once brought in for a rush finish what they hold and take nothing new.
         let helpers = self.journals.get(squad).map(Journal::helpers).unwrap_or_default();
+        // So do members the person rested.
+        let resting = self.journals.get(squad).map(Journal::resting).unwrap_or_default();
         let disk = self.disk.status.level;
         let parallel = self.journals.get(squad).map(Journal::parallel).unwrap_or_default();
         let used = |engine: Engine| crate::lanes::plan_used(self.plans.iter().find(|p| p.engine == engine).map(|p| &p.usage));
@@ -5496,9 +5499,9 @@ for one project goes to it as tickets for its owners, with that project — and 
             // nor does a member about to move to the other engine.
             let held = self.engines.held(squad, s.engine);
             let moving = self.engines.moving(squad, &m.name);
-            // One brought in for a rush only finishes what it holds; what it
-            // owns by name waits for it rather than going to its role.
-            let takes_new = !moving && !helpers.contains(&id);
+            // One brought in for a rush, or rested, only finishes what it
+            // holds; what it owns by name waits for it rather than going to its role.
+            let takes_new = !moving && !helpers.contains(&id) && !resting.contains(&m.name);
             let limit = crate::lanes::member_limit(used(s.engine), disk, &parallel);
             members.push(Seat { name: m.name.clone(), role: m.role.clone(), joined: s.joined, engine: s.engine, runs, limit, takes_new, held });
         }
@@ -5595,6 +5598,10 @@ for one project goes to it as tickets for its owners, with that project — and 
         let Some(journal) = self.journal(&squad) else {
             return;
         };
+        // A member the person rested opens no run, whoever asks.
+        if journal.is_resting(&name) {
+            return;
+        }
         let Some(mut ticket) = journal.ticket(ticket_id).ok().flatten() else {
             return;
         };
@@ -7766,7 +7773,14 @@ there, end your turn, and carry on when they say they're done."
         let names: Vec<String> = projects.iter().map(|p| board::project_name(p)).collect();
         let no_project = |arg: &str| format!("No project called {arg}. The squad's projects: {}.", names.join(", "));
         match name.as_str() {
-            board::BOARD => Ok(board::render(&self.tickets(&squad))),
+            board::BOARD => {
+                let mut text = board::render(&self.tickets(&squad));
+                let resting = self.journal(&squad).map(|j| j.resting()).unwrap_or_default();
+                if let Some(line) = board::resting_line(&resting) {
+                    text = format!("{}\n\n{line}", text.trim_end());
+                }
+                Ok(text)
+            }
             board::CREATE_TICKET => {
                 let title = board::arg_str(&args, "title").ok_or("A ticket needs a title.")?;
                 let body = board::arg_str(&args, "body").unwrap_or_default();
@@ -8297,6 +8311,7 @@ it back there once they have done it.{again} End your turn now with a short line
             parallel: self.journals.get(squad).map(Journal::parallel).unwrap_or_default(),
             model_choice: self.journals.get(squad).map(Journal::model_choice).unwrap_or_default(),
             pm_accepts: self.journals.get(squad).is_none_or(Journal::pm_accepts),
+            resting: self.journals.get(squad).map(Journal::resting).unwrap_or_default(),
             role_models: self.journals.get(squad).map(Journal::role_models).unwrap_or_default(),
             secret_asks: self.secret_asks(squad).clone(),
             engine_proposals: self.engines.proposals(squad),

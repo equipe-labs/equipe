@@ -151,6 +151,7 @@ pub fn reads(command: &Command) -> bool {
         | C::DeclineRoutine { .. }
         | C::SetSignalOn { .. }
         | C::SetIdleWake { .. }
+        | C::SetResting { .. }
         | C::SaveLogin { .. }
         | C::DeleteLogin { .. }
         | C::ForgetLoginAllowance { .. }
@@ -547,6 +548,7 @@ mod tests {
             Command::DeclineRoutine { squad: s(), id: 1 },
             Command::SetSignalOn { squad: s(), project: "p".into(), name: "n".into(), on: false },
             Command::SetIdleWake { squad: s(), hours: 0 },
+            Command::SetResting { squad: s(), member: "qa".into(), resting: true, stop: false },
             Command::SaveLogin { draft: login },
             Command::DeleteLogin { id: 1 },
             Command::ForgetLoginAllowance { id: 1, who: "acme/pm".into() },

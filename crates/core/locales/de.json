@@ -637,5 +637,10 @@
   "error.recovery_member_gone": "{name} ist nicht mehr im Squad: Reihe T-{id} für seine Rolle neu ein oder weise es neu zu.",
   "error.recovery_failed": "T-{id} konnte nicht zurückgeholt werden: {err}",
   "error.recovery_no_operation": "Um T-{id} zurückzuholen, braucht es den Schlüssel der Karte; versuch es auf der Karte noch einmal.",
-  "notice.runs_update": "Arbeitet an {count} Tickets gleichzeitig – aktualisiere equipe auf diesem Bildschirm, um ihnen zu folgen."
+  "notice.runs_update": "Arbeitet an {count} Tickets gleichzeitig – aktualisiere equipe auf diesem Bildschirm, um ihnen zu folgen.",
+  "error.pm_rests": "Der PM bleibt im Dienst: Er kann nicht pausieren.",
+  "news.resting": "{name} pausiert · keine neue Arbeit, bis du sie zurückholst",
+  "news.awake": "{name} ist zurück · nimmt wieder neue Arbeit an",
+  "control.resting_on": "{member} pausieren: keine neue Arbeit, bis du sie zurückholst; Laufendes wird fertig",
+  "control.resting_off": "{member} zurückholen: nimmt wieder neue Arbeit an"
 }

@@ -979,6 +979,7 @@ fn snapshot() -> Snapshot {
         team_changes: vec![team_change()],
         routine_proposals: vec![routine_proposal()],
         idle_wake_hours: Some(24),
+        resting: Vec::new(),
         subagents_at_once: None,
         parallel: Default::default(),
         model_choice: Default::default(),

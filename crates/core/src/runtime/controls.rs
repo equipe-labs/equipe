@@ -37,6 +37,7 @@ impl Runtime {
         let parallel = journal.parallel();
         let model_choice = journal.model_choice();
         let (routines, signals, allowed) = (journal.routines(), journal.signals(), journal.allowed().unwrap_or_default());
+        let resting = journal.resting();
         let on = |b: bool| if b { "on" } else { "off" };
         let mut out = vec![format!("Squad {squad}.")];
         let names: Vec<String> = projects.iter().map(|p| board::project_name(p)).collect();
@@ -51,7 +52,9 @@ impl Runtime {
             let effort = s.effort.as_deref().unwrap_or("default");
             // An alias the engine resolved: what it runs as, too.
             let ran = s.ran.as_deref().filter(|r| s.model.as_deref() != Some(*r)).map(|r| format!(" (runs as {r})")).unwrap_or_default();
-            out.push(format!("- {name}: engine {:?}, model {}{ran}, effort {effort}, mode {own}.", s.engine, s.model.as_deref().unwrap_or("default")));
+            // Rested by the person: no new work until woken.
+            let rests = if resting.iter().any(|r| r == name) { ", resting (takes no new work)" } else { "" };
+            out.push(format!("- {name}: engine {:?}, model {}{ran}, effort {effort}, mode {own}{rests}.", s.engine, s.model.as_deref().unwrap_or("default")));
         }
         out.push(format!("You accept the team's handed-in work yourself (pm_accepts): {}.", on(pm_accepts)));
         out.push(format!("An empty board wakes you after (idle_wake_hours): {}.", if idle == 0 { "off".to_owned() } else { format!("{idle} h") }));
@@ -231,6 +234,13 @@ impl Runtime {
             Change::Disallow(rule) => Command::Disallow { squad: squad_name, rule },
             Change::Merge { ticket, push } => Command::Merge { squad: squad_name, ticket, push },
             Change::KeepOnBranch(ticket) => Command::KeepOnBranch { squad: squad_name, ticket },
+            Change::Resting { member, resting } => {
+                let id = session(&member)?;
+                if resting && self.sessions.get(&id).is_some_and(Session::is_pm) {
+                    return Err("You can't rest yourself: the PM stays on duty.".to_owned());
+                }
+                Command::SetResting { squad: squad_name, member, resting, stop: false }
+            }
         })
     }
 
@@ -429,6 +439,8 @@ impl Runtime {
             Change::Merge { ticket, push: true } => say!(self, "control.merge_push", ticket = ticket),
             Change::Merge { ticket, push: false } => say!(self, "control.merge", ticket = ticket),
             Change::KeepOnBranch(ticket) => say!(self, "control.keep_on_branch", ticket = ticket),
+            Change::Resting { member, resting: true } => say!(self, "control.resting_on", member = member),
+            Change::Resting { member, resting: false } => say!(self, "control.resting_off", member = member),
         }
     }
 }

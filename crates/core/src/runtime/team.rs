@@ -321,4 +321,47 @@ to the person, or reassign them."
             self.publish(Event::TeamChangeClosed { squad: squad.to_owned(), id: change.id, approved: false, members: Vec::new() });
         }
     }
+
+    /// The person rests member `name` (`resting`) or wakes it: kept in the
+    /// journal and told every screen. A resting member takes no new work
+    /// (`dispatch_to`); what it works on finishes, unless `stop` — then its
+    /// runs are stopped too, their tickets waiting for the person as any
+    /// stopped run's. Woken, it takes work again at once. The PM is told, to
+    /// plan around it.
+    pub(super) async fn set_resting(&mut self, squad: &str, name: &str, resting: bool, stop: bool) {
+        let Some(id) = self.member_id(squad, name) else {
+            return self.squad_error(squad, say!(self, "error.no_member", name = name));
+        };
+        if resting && self.sessions.get(&id).is_some_and(Session::is_pm) {
+            return self.squad_error(squad, say!(self, "error.pm_rests"));
+        }
+        let now = match self.journal(squad).map(|j| j.set_resting(name, resting)) {
+            Some(Ok(now)) => now,
+            Some(Err(err)) => return self.squad_error(squad, format!("{err:#}")),
+            None => return,
+        };
+        crate::daemon_log!("equipe: {squad}: {name} {}", if resting { "rests: no new work" } else { "takes work again" });
+        self.publish(Event::RestingChanged { squad: squad.to_owned(), resting: now });
+        if resting && stop {
+            for run in self.runs_of(id) {
+                self.interrupt(run).await;
+            }
+        }
+        let (line, shown) = if resting {
+            (
+                format!(
+                    "The person set {name} resting: it takes no new work until they wake it{}. Don't hand it tickets meanwhile: \
+give its role's work to another member of the role, or leave what it owns by name waiting, and say so if the person asks.",
+                    if stop { ", and its work in progress was stopped" } else { "; what it works on now, it finishes" }
+                ),
+                say!(self, "news.resting", name = name),
+            )
+        } else {
+            (format!("The person woke {name}: it takes work again."), say!(self, "news.awake", name = name))
+        };
+        self.brief_pm(squad, line, Some(shown));
+        if !resting {
+            self.dispatch(squad).await;
+        }
+    }
 }

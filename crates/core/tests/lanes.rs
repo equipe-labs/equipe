@@ -22,7 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use equipe_core::journal::Journal;
 use equipe_core::protocol::rpc::{RunKey, ToolCall, ToolResult};
-use equipe_core::protocol::{Access, Command, Engine, Event, ExecutionState, PlanUsage, PlanWindow, Recovery, SessionSpec, SessionState, Snapshot, TicketStatus};
+use equipe_core::protocol::{Access, Command, Engine, Event, ExecutionState, PlanUsage, PlanWindow, Recovery, SessionSpec, SessionState, Snapshot, TicketStatus, TurnOutcome};
 use equipe_core::runtime::{self, Config, Handle};
 use equipe_core::squads;
 use equipe_providers::CredentialStore;
@@ -431,6 +431,49 @@ async fn one_run_waiting_or_stopped_leaves_its_siblings_as_they_were() {
     handle.send(Command::Close { session: c.session });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == c.session)).await;
     assert_eq!(members(&handle.snapshot("acme").await), ["pm", "frontend"]);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_resting_member_takes_no_new_work_until_woken_and_stays_resting_across_a_restart() {
+    let engine = Engine0::new(true);
+    let (home, repo) = squad();
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    add(&handle, &mut events, 3, member(&repo, "frontend")).await;
+    // The person rests frontend-2: what it owns by name waits, the role's work goes to the other.
+    handle.send(Command::SetResting { squad: "acme".into(), member: "frontend-2".into(), resting: true, stop: false });
+    until(&mut events, |e| matches!(e, Event::RestingChanged { resting, .. } if resting == &["frontend-2".to_owned()])).await;
+    ticket_for(&handle, "frontend-2", "Mine").await;
+    ticket_for(&handle, "frontend", "The role's").await;
+    assert_eq!(started(&mut events, 1).await, [(2, 2)], "the role's to frontend; frontend-2's own waits");
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let snapshot = handle.snapshot("acme").await;
+    assert_eq!(runs(&snapshot).iter().map(|r| (r.0, r.1)).collect::<Vec<_>>(), [(2, 2)], "no run of frontend-2's opens");
+    assert_eq!(snapshot.tickets.iter().find(|t| t.id == 1).map(|t| t.status), Some(TicketStatus::Todo));
+    assert_eq!(snapshot.resting, ["frontend-2"]);
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().resting(), ["frontend-2"], "kept");
+    // The board the PM reads says who rests.
+    let board = tool(&handle, "pm", None, "board", json!({})).await;
+    assert!(board.text.contains("Resting: frontend-2"), "{}", board.text);
+    handle.shutdown().await;
+    drop(events);
+
+    // A restart: still resting, and still nothing for it.
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home));
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let snapshot = handle.snapshot("acme").await;
+    assert_eq!(snapshot.resting, ["frontend-2"]);
+    assert!(runs(&snapshot).iter().all(|r| r.0 != 3), "{:#?}", runs(&snapshot));
+    // Woken: what waited for it starts at once.
+    handle.send(Command::SetResting { squad: "acme".into(), member: "frontend-2".into(), resting: false, stop: false });
+    assert_eq!(started(&mut events, 1).await, [(3, 1)]);
+    assert!(handle.snapshot("acme").await.resting.is_empty());
+    // Rested with its work stopped: its run's turn ends there.
+    let run = key(&handle.snapshot("acme").await, 1).session;
+    handle.send(Command::SetResting { squad: "acme".into(), member: "frontend-2".into(), resting: true, stop: true });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session, outcome: TurnOutcome::Interrupted, .. } if *session == run)).await;
     handle.shutdown().await;
 }
 

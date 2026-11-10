@@ -672,6 +672,27 @@ impl Journal {
         self.set_meta("desktop_members", &serde_json::json!(members).to_string())
     }
 
+    /// The members the person rested (`Command::SetResting`), by name: they
+    /// take no new work until woken. Nobody by default.
+    pub fn resting(&self) -> Vec<String> {
+        self.meta("resting").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    /// Whether `member` rests.
+    pub fn is_resting(&self, member: &str) -> bool {
+        self.resting().iter().any(|m| m == member)
+    }
+
+    /// Rest `member`, or wake it; the members resting after.
+    pub fn set_resting(&self, member: &str, on: bool) -> Result<Vec<String>> {
+        let mut members: Vec<String> = self.resting().into_iter().filter(|m| m != member).collect();
+        if on {
+            members.push(member.to_owned());
+        }
+        self.set_meta("resting", &serde_json::json!(members).to_string())?;
+        Ok(members)
+    }
+
     fn meta(&self, key: &str) -> Option<String> {
         self.conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0)).optional().ok().flatten()
     }
@@ -2570,6 +2591,21 @@ mod tests {
         assert_eq!(j.model_choice(), ModelChoice::QualityFirst);
         j.set_model_choice(ModelChoice::Off).unwrap();
         assert_eq!(Journal::for_squad(&home, "acme").unwrap().model_choice(), ModelChoice::Off);
+    }
+
+    #[test]
+    fn a_resting_member_is_kept_by_name_across_a_restart() {
+        let home = temp_home();
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        assert!(j.resting().is_empty(), "nobody rests by default");
+        assert_eq!(j.set_resting("designer", true).unwrap(), ["designer"]);
+        assert_eq!(j.set_resting("qa", true).unwrap(), ["designer", "qa"]);
+        assert_eq!(j.set_resting("designer", true).unwrap(), ["qa", "designer"], "once each");
+        drop(j);
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        assert!(j.is_resting("designer") && j.is_resting("qa") && !j.is_resting("backend"));
+        assert_eq!(j.set_resting("designer", false).unwrap(), ["qa"]);
+        assert!(!Journal::for_squad(&home, "acme").unwrap().is_resting("designer"), "woken: kept too");
     }
 
     #[test]

@@ -69,6 +69,8 @@ pub enum Change {
     Merge { ticket: u32, push: bool },
     /// Leave a done ticket's work on its branch.
     KeepOnBranch(u32),
+    /// Rest a member (`resting`: no new work until woken) or wake it.
+    Resting { member: String, resting: bool },
 }
 
 /// How far a mode lets members go, for telling a wider one from a narrower.
@@ -99,6 +101,8 @@ impl Change {
             Change::Signal { on, .. } => *on,
             // Another plan, another bill, another way of working: the person's, always.
             Change::Merge { .. } | Change::Engine { .. } => true,
+            // Who works is the person's choice, both ways: the PM never rests or wakes one on its own.
+            Change::Resting { .. } => true,
             _ => false,
         }
     }
@@ -197,6 +201,7 @@ impl Change {
             "disallow" => Change::Disallow(value()?),
             "merge" => Change::Merge { ticket: ticket()?, push: args.get("push").and_then(Value::as_bool).unwrap_or(true) },
             "keep_on_branch" => Change::KeepOnBranch(ticket()?),
+            "resting" => Change::Resting { member: member()?, resting: on(&value()?)? },
             other => return Err(format!("There is no setting {other:?}; `settings` lists what can change.")),
         })
     }
@@ -298,7 +303,7 @@ pub fn tools() -> Vec<Value> {
 how much members may do on their own (the squad's mode and each member's), each member's engine, model and effort, \
 whether you accept the team's work yourself, how long an empty board waits before you are woken, how many subagents \
 members run at once, engine switching, how many tickets run at once (parallel), whether equipe picks each ticket's model (model_choice), \
-who reviews the designer's work, routines, signals, and the \"always allow\" rules. Read it before you change one, and to answer what is set.",
+who reviews the designer's work, routines, signals, the \"always allow\" rules, and which members rest. Read it before you change one, and to answer what is set.",
             "inputSchema": { "type": "object", "properties": {} },
         }),
         json!({
@@ -306,8 +311,8 @@ who reviews the designer's work, routines, signals, and the \"always allow\" rul
             "description": "Change one of the squad's settings, only when the person asked for that change. One that \
 only narrows what the squad does happens at once. One that widens it — a mode that lets members do more on their own, \
 raising how many subagents members run at once, \
-you accepting the team's work, engine switching on auto, parallel work on max, model choice on quality, a signal on again, a merge, a move to another engine — is put \
-to the person as an approval card saying exactly what changes; it happens only if they tap yes, and this call waits for \
+you accepting the team's work, engine switching on auto, parallel work on max, model choice on quality, a signal on again, a merge, a move to another engine, \
+resting a member or waking one — is put to the person as an approval card saying exactly what changes; it happens only if they tap yes, and this call waits for \
 their answer. Never ask them to tell you yes instead. Settings: mode (value read_only | ask | auto | full, or default \
 with member), pm_accepts (on | off), idle_wake_hours (a number, 0 off), subagents_at_once (value 1 through 50), model (member, value: a model of the engine \
 the member runs on), effort (member, value, or default), engine (members — every one in one call — value claude | \
@@ -319,15 +324,16 @@ usage, optionally per_member 1 through 12 and per_engine 1 through 32), model_ch
 effort where it matters, never below its member's own — | off — members' own models), design_reviewer (who reviews the designer's work: auto — the other engine when \
 it is signed in with room, else the member's own in a fresh session — | same | other), remove_project (project), \
 hq (project, or none), run_routine (id), delete_routine (id), signal (project, name, value on | off), disallow (value: \
-the rule as `settings` lists it), merge (ticket, push), keep_on_branch (ticket). Never set another engine's model \
+the rule as `settings` lists it), merge (ticket, push), keep_on_branch (ticket), resting (member, value on | off: a resting \
+member takes no new work — the board hands it nothing — and finishes what it holds; woken, it takes work again). Never set another engine's model \
 through `model`: moving a member to it is `engine`. Adding a project is `add_project`; adding a routine, \
 `propose_routine`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "subagents_at_once", "model", "effort", "engine", "engine_switching", "parallel", "model_choice", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch"] },
+                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "subagents_at_once", "model", "effort", "engine", "engine_switching", "parallel", "model_choice", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch", "resting"] },
                     "value": { "type": "string", "description": "The new value, as the setting takes it." },
-                    "member": { "type": "string", "description": "The member, for mode (left out: the squad's), model, effort and engine." },
+                    "member": { "type": "string", "description": "The member, for mode (left out: the squad's), model, effort, engine and resting." },
                     "members": { "type": "array", "items": { "type": "string" }, "description": "engine: the members to move, on one card." },
                     "model": { "type": "string", "description": "engine: the model there (left out: what that engine recommends for each one's role)." },
                     "effort": { "type": "string", "description": "engine: the effort there (left out: its default)." },
@@ -392,6 +398,21 @@ mod tests {
         ] {
             assert!(!change(args.clone()).needs_yes(Mode::Auto), "{args}");
         }
+    }
+
+    #[test]
+    fn resting_a_member_or_waking_one_is_always_the_persons_tap() {
+        let rest = change(json!({ "setting": "resting", "member": "designer", "value": "on" }));
+        assert_eq!(rest, Change::Resting { member: "designer".into(), resting: true });
+        let wake = change(json!({ "setting": "resting", "member": "designer", "value": "off" }));
+        assert_eq!(wake, Change::Resting { member: "designer".into(), resting: false });
+        for mode in [Mode::ReadOnly, Mode::Ask, Mode::Auto, Mode::Full] {
+            assert!(rest.needs_yes(mode) && wake.needs_yes(mode), "never the PM's alone");
+        }
+        assert!(Change::parse(&json!({ "setting": "resting", "value": "on" })).unwrap_err().contains("member"));
+        assert!(Change::parse(&json!({ "setting": "resting", "member": "qa", "value": "maybe" })).unwrap_err().contains("on or off"));
+        let tool = &tools()[1];
+        assert!(tool["inputSchema"]["properties"]["setting"]["enum"].as_array().unwrap().iter().any(|s| s == "resting"));
     }
 
     #[test]
