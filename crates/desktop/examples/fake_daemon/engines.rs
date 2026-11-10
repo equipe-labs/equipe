@@ -25,6 +25,12 @@ fn mode() -> String {
 }
 
 /// Codex's state, as signing in and out moves it.
+/// Claude Code signed out from its card, until it signs in again.
+fn claude_out() -> &'static std::sync::atomic::AtomicBool {
+    static OUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    &OUT
+}
+
 fn codex() -> &'static std::sync::Mutex<EngineState> {
     static CODEX: std::sync::OnceLock<std::sync::Mutex<EngineState>> = std::sync::OnceLock::new();
     CODEX.get_or_init(|| {
@@ -92,6 +98,9 @@ fn statuses() -> Vec<EngineStatus> {
             claude.members = vec![member("pm"), member("designer"), member("frontend")];
         }
     }
+    if claude_out().load(std::sync::atomic::Ordering::Relaxed) {
+        claude = EngineStatus::new(Engine::Claude, EngineState::SignedOut);
+    }
     let mut codex = EngineStatus::new(Engine::Codex, *self::codex().lock().unwrap());
     if codex.state == EngineState::SignedIn {
         codex.plan = Some("plus".into());
@@ -113,7 +122,37 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
                 let _ = events.send(Event::Engines { engines: statuses() });
             });
         }
-        Command::SignIn { engine: Engine::Claude, .. } => tell(Engine::Claude, SignInStep::Failed { why: SignInFailure::Unsupported, detail: String::new() }),
+        // Claude Code's own: its page, then the code pasted back (`failed`: refused).
+        Command::SignIn { engine: Engine::Claude, .. } => {
+            let events = events.clone();
+            tokio::spawn(async move {
+                let tell = |step| drop(events.send(Event::SignIn { engine: Engine::Claude, step }));
+                tell(SignInStep::Browser { url: None });
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                tell(SignInStep::Paste { url: "https://claude.com/cai/oauth/authorize?code=true&client_id=fake".into() });
+            });
+        }
+        Command::SignInCode { engine: Engine::Claude, .. } => {
+            let events = events.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                if mode() == "failed" {
+                    let _ = events.send(Event::SignIn { engine: Engine::Claude, step: SignInStep::Failed { why: SignInFailure::Failed, detail: "Login failed: Request failed with status code 400".into() } });
+                    return;
+                }
+                claude_out().store(false, std::sync::atomic::Ordering::Relaxed);
+                let _ = events.send(Event::SignIn { engine: Engine::Claude, step: SignInStep::Done });
+                let _ = events.send(Event::Engines { engines: statuses() });
+            });
+        }
+        Command::SignOut { engine: Engine::Claude } => {
+            let events = events.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(600)).await;
+                claude_out().store(true, std::sync::atomic::Ordering::Relaxed);
+                let _ = events.send(Event::Engines { engines: statuses() });
+            });
+        }
         Command::SignIn { engine, device } => {
             let (engine, device) = (*engine, *device || std::env::var("FAKE_ENGINES_CODE").is_ok_and(|v| v == "1"));
             let said = events.clone();

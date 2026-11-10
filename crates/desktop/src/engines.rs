@@ -329,7 +329,10 @@ impl Engines {
 
     /// "Sign out" asks first; "Keep" puts it back.
     pub fn ask_sign_out(&mut self, engine: Engine) {
-        self.set(engine, Card::ConfirmSignOut);
+        // Not over a sign-in on its way, a failure still to read, or a sign-out under way.
+        if self.card(engine) == &Card::Idle {
+            self.set(engine, Card::ConfirmSignOut);
+        }
     }
 
     pub fn keep(&mut self, engine: Engine) {
@@ -701,6 +704,50 @@ mod tests {
         e.on_event(&Event::Engines { engines: vec![status(Engine::Codex, EngineState::SignedOut)] });
         assert_eq!(e.card(Engine::Codex), &Card::Idle);
         assert!(e.sign_in(Engine::Claude, false, Instant::now()).is_empty(), "Claude Code signs in in a terminal");
+    }
+
+    #[test]
+    fn claude_code_signs_out_and_back_in_on_its_card() {
+        let mut e = Engines::default();
+        let now = Instant::now();
+        let claude = Engine::Claude;
+        // Asked once; a second press while asking, or over a sign-in, changes nothing.
+        e.ask_sign_out(claude);
+        e.ask_sign_out(claude);
+        assert_eq!(e.card(claude), &Card::ConfirmSignOut);
+        assert_eq!(e.sign_out(claude), vec![Command::SignOut { engine: claude }]);
+        assert!(e.sign_out(claude).is_empty(), "a double click sends nothing twice");
+        e.ask_sign_out(claude);
+        assert_eq!(e.card(claude), &Card::SigningOut, "not asked again while signing out");
+        e.on_event(&Event::Engines { engines: vec![status(claude, EngineState::SignedOut)] });
+        assert_eq!(e.card(claude), &Card::Idle);
+        // Back in at the same place: its page, the code pasted, then done.
+        assert_eq!(e.sign_in_again(claude, false, now), vec![Command::SignIn { engine: claude, device: false }]);
+        e.ask_sign_out(claude);
+        assert!(matches!(e.card(claude), Card::Starting { .. }), "no sign-out over a sign-in on its way");
+        assert!(e.sign_in_again(claude, false, now).is_empty(), "a second click starts nothing");
+        // Cancel puts the card back and tells the daemon.
+        assert_eq!(e.cancel(claude), vec![Command::SignInCancel { engine: claude }]);
+        assert_eq!(e.card(claude), &Card::Idle);
+        // A sign-in that fails is read, then dismissed.
+        e.sign_in_again(claude, true, now);
+        e.on_event(&Event::SignIn { engine: claude, step: SignInStep::Failed { why: SignInFailure::Unsupported, detail: String::new() } });
+        assert!(matches!(e.card(claude), Card::Failed { .. }));
+        e.ask_sign_out(claude);
+        assert!(matches!(e.card(claude), Card::Failed { .. }), "the failure stays until read");
+        e.keep(claude);
+        assert_eq!(e.card(claude), &Card::Idle);
+        // Another Mac's daemon losing the window is a failure to read, not a sign-out.
+        e.ask_sign_out(claude);
+        e.disconnected();
+        assert!(!matches!(e.card(claude), Card::SigningOut));
+    }
+
+    #[test]
+    fn the_sign_out_question_names_who_is_working() {
+        let mut working = status(Engine::Claude, EngineState::SignedIn);
+        working.members = vec![MemberRef { squad: "acme".into(), member: "backend".into() }, MemberRef { squad: "other".into(), member: "pm".into() }];
+        assert_eq!(members_line(&working, "acme").as_deref(), Some("backend, other/pm"));
     }
 
     #[test]

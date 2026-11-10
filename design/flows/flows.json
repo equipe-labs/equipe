@@ -805,7 +805,9 @@
           ],
           "expects": [
             "default",
-            "error"
+            "error",
+            "long",
+            "success"
           ],
           "states": [
             {
@@ -819,6 +821,42 @@
               "label": "Error",
               "kind": "error",
               "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=both_low; script `settings:engines`"
+            },
+            {
+              "id": "confirm",
+              "label": "Claude Code: sign-out asked first, naming who is working",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=healthy; script `settings:engines;eng:signout:claude`"
+            },
+            {
+              "id": "signedout",
+              "label": "Claude Code signed out",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=healthy; script `settings:engines;eng:signout:claude;eng:sure:claude;wait:1500`"
+            },
+            {
+              "id": "waiting",
+              "label": "Claude Code: another account's sign-in under way",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=healthy; script `settings:engines;eng:switch:claude;wait:900`"
+            },
+            {
+              "id": "failed",
+              "label": "Claude Code: another account's sign-in refused",
+              "kind": "error",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=healthy FAKE_ENGINES=failed; script `settings:engines;eng:switch:claude;wait:900;signin:paste:bad-code;wait:1200`"
+            },
+            {
+              "id": "success",
+              "label": "Claude Code signed in again",
+              "kind": "success",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=healthy; script `settings:engines;eng:signout:claude;eng:sure:claude;wait:1500;eng:switch:claude;wait:900;signin:paste:abc#def;wait:1500`"
+            },
+            {
+              "id": "long",
+              "label": "Long text (German)",
+              "kind": "long",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_USAGE=healthy; script `settings:engines;eng:signout:claude`; EQUIPE_LANG=de"
             }
           ]
         },

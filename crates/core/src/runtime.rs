@@ -2381,17 +2381,19 @@ impl Runtime {
         self.codex_models = None;
     }
 
-    /// Sign `engine` out with its own tool. Claude Code's login is the
-    /// person's: equipe never touches it.
+    /// Sign `engine` out with its own tool, when the person asks on its card.
     fn sign_out(&mut self, engine: Engine) {
-        if engine != Engine::Codex {
-            return;
+        if engine == Engine::Codex {
+            self.forget_codex_plan();
         }
-        self.forget_codex_plan();
         let (claude, codex, store, internal) = (self.config.claude_binary.clone(), self.codex_binary.clone(), self.config.store.clone(), self.internal.clone());
         tokio::spawn(async move {
-            if let Err(why) = crate::engines::codex_logout(&codex).await {
-                crate::daemon_log!("equipe: `codex logout` failed: {why}");
+            let out = match engine {
+                Engine::Codex => crate::engines::codex_logout(&codex).await.map_err(|why| ("codex logout", why)),
+                _ => crate::engines::claude_logout(&claude).await.map_err(|why| ("claude auth logout", why)),
+            };
+            if let Err((tool, why)) = out {
+                crate::daemon_log!("equipe: `{tool}` failed: {why}");
             }
             let _ = internal.send(Internal::Engines(crate::engines::statuses(&claude, &codex, &store).await));
         });

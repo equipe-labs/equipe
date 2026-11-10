@@ -331,6 +331,17 @@ pub async fn codex_logout(binary: &str) -> Result<(), String> {
     }
 }
 
+/// `claude auth logout`: Claude Code forgets its own login.
+pub async fn claude_logout(binary: &str) -> Result<(), String> {
+    let run = equipe_providers::tools_path::command(binary).args(["auth", "logout"]).stdin(Stdio::null()).kill_on_drop(true).output();
+    match tokio::time::timeout(ASK_WAIT, run).await {
+        Err(_) => Err(format!("`{binary} auth logout` didn't answer in {}s", ASK_WAIT.as_secs())),
+        Ok(Err(err)) => Err(err.to_string()),
+        Ok(Ok(out)) if out.status.success() => Ok(()),
+        Ok(Ok(out)) => Err(short(plain(&String::from_utf8_lossy(&out.stderr)).trim())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,5 +487,8 @@ mod tests {
         assert!(matches!(none, SignInStep::Failed { why: SignInFailure::NotInstalled, .. }));
         let bye = script(&dir, "bye", "[ \"$1\" = logout ] && echo 'Successfully logged out' >&2");
         assert_eq!(codex_logout(&bye).await, Ok(()));
+        let out = script(&dir, "claude-out", "[ \"$1 $2\" = 'auth logout' ]");
+        assert_eq!(claude_logout(&out).await, Ok(()));
+        assert!(claude_logout(dir.join("nope").to_str().unwrap()).await.is_err());
     }
 }
