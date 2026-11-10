@@ -7,7 +7,7 @@ exclude = ["vendor"]
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.103.80"
+version = "0.103.81"
 
 [profile.release]
 lto = "thin"
