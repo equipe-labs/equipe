@@ -2,60 +2,141 @@
   "$description": "equipe design system v1 — layer 1: primitives (raw values, no meaning). Never use these directly in product code; use the semantic layer (semantic.*.json) or component tokens. Source: T-144 brand guideline §2.2, §6; audit in audit.md.",
   "color": {
     "raw": {
+      "$description": "layer 1: raw values. Only semantic tokens reference these. The warm neutral and the hues are the desktop palette as shipped on main (crates/desktop/src/theme.rs, T-699); numbers are (1 − OKLCH L) × 1000.",
       "neutral": {
         "$type": "color",
         "0":   { "$value": "#FFFFFF", "$description": "white" },
-        "50":  { "$value": "#F6F5F1", "$description": "paper — light bg" },
         "100": { "$value": "#EFEDE7", "$description": "bone — dark text, mark" },
-        "200": { "$value": "#EAE7E0", "$description": "light sunken" },
-        "400": { "$value": "#A3A5AB", "$description": "dark muted" },
-        "500": { "$value": "#7C7E85" },
-        "550": { "$value": "#74767D", "$description": "light strong border (>=3:1 on bg)" },
-        "600": { "$value": "#4F5159", "$description": "light muted" },
-        "800": { "$value": "#15161A", "$description": "ink — light text" },
-        "825": { "$value": "#2A2C33", "$description": "ink, a step lighter (light action hover)" },
-        "850": { "$value": "#16171A", "$description": "dark surface" },
-        "860": { "$value": "#3A3C44", "$description": "ink, two steps lighter (light action pressed)" },
-        "875": { "$value": "#1B1C20", "$description": "dark raised" },
-        "900": { "$value": "#111114", "$description": "dark sunken" },
-        "950": { "$value": "#0A0A0C", "$description": "void — dark bg, icon tile" },
-        "150": { "$value": "#DAD7CF", "$description": "bone, a step darker (dark action hover)" },
-        "160": { "$value": "#C9C6BE", "$description": "bone, two steps darker (dark action pressed)" }
+        "950": { "$value": "#0A0A0C", "$description": "void — dark bg, icon tile" }
+      },
+      "warm": {
+        "$type": "color",
+        "$description": "one warm neutral (the brand Bone) — every grey on screen",
+        "18":  { "$value": "#FAF9F6", "$description": "light bg" },
+        "39":  { "$value": "#F3F2EF", "$description": "light sidebar" },
+        "42":  { "$value": "#F2F1ED", "$description": "light code / sunken" },
+        "43":  { "$value": "#F2F1EE", "$description": "light popover hover" },
+        "44":  { "$value": "#F3F0E9", "$description": "dark text; tooltip text" },
+        "55":  { "$value": "#EEEDE8", "$description": "light sidebar hover" },
+        "63":  { "$value": "#ECEAE4", "$description": "dark primary action (bone)" },
+        "76":  { "$value": "#E7E6E1", "$description": "light sidebar selected" },
+        "87":  { "$value": "#E5E2DB", "$description": "dark prose" },
+        "133": { "$value": "#D6D3CC", "$description": "dark primary pressed" },
+        "166": { "$value": "#CCC8C2", "$description": "dark text-soft" },
+        "170": { "$value": "#C9C7C2", "$description": "light switch off" },
+        "272": { "$value": "#A9A7A1", "$description": "tooltip muted text" },
+        "294": { "$value": "#A2A09A", "$description": "dark muted" },
+        "350": { "$value": "#86847E", "$description": "light border-strong (3:1)" },
+        "400": { "$value": "#77756F", "$description": "dark border-strong (3:1)" },
+        "511": { "$value": "#62605A", "$description": "light muted" },
+        "614": { "$value": "#45443E", "$description": "light text-soft" },
+        "625": { "$value": "#42413E", "$description": "dark switch off" },
+        "699": { "$value": "#2F2E2B", "$description": "dark popover hover" },
+        "700": { "$value": "#2F2E2C", "$description": "dark tooltip" },
+        "711": { "$value": "#2C2B27", "$description": "light primary hover" },
+        "731": { "$value": "#272624", "$description": "dark sidebar selected" },
+        "739": { "$value": "#252422", "$description": "dark popover" },
+        "744": { "$value": "#24231F", "$description": "light prose" },
+        "748": { "$value": "#232220", "$description": "light tooltip" },
+        "765": { "$value": "#1F1E1C", "$description": "dark raised / surface" },
+        "774": { "$value": "#1C1C1A", "$description": "dark sidebar hover" },
+        "781": { "$value": "#1B1A19", "$description": "dark code / sunken" },
+        "796": { "$value": "#181713", "$description": "light text; primary action" },
+        "805": { "$value": "#151513", "$description": "dark bg" },
+        "831": { "$value": "#100F0E", "$description": "dark sidebar" },
+        "886": { "$value": "#050504", "$description": "light primary pressed" }
       },
       "blue": {
         "$type": "color",
-        "300": { "$value": "#8FB0FF", "$description": "dark accent" },
+        "300": { "$value": "#7EB8F3", "$description": "dark accent" },
         "500": { "$value": "#3F6FF5", "$description": "the brand dot (graphic only, not text)" },
-        "700": { "$value": "#1D4ED8", "$description": "light accent" },
-        "950": { "$value": "#0B1226", "$description": "text on dark accent" }
+        "600": { "$value": "#4378AD", "$description": "dark switch on — deep enough for a light knob" },
+        "700": { "$value": "#2160AB", "$description": "light accent" }
       },
-      "green":  { "$type": "color", "300": { "$value": "#7FCB8E" }, "700": { "$value": "#1F6B33" } },
-      "amber":  { "$type": "color", "300": { "$value": "#E2B865" }, "700": { "$value": "#825600" } },
-      "orange": { "$type": "color", "300": { "$value": "#EC9A62" }, "700": { "$value": "#A04610" } },
-      "red":    { "$type": "color", "100": { "$value": "#EEE0DE", "$description": "light err fill (opaque)" }, "150": { "$value": "#EBD9D7", "$description": "light err fill hover (100 + 4% red.700)" }, "200": { "$value": "#E9D2CF", "$description": "light err fill pressed (100 + 8% red.700)" }, "300": { "$value": "#EE7B74" }, "700": { "$value": "#AD2E27" }, "850": { "$value": "#442E2E", "$description": "dark err fill pressed (900 + 8% red.300)" }, "875": { "$value": "#3C2A2B", "$description": "dark err fill hover (900 + 4% red.300)" }, "900": { "$value": "#352728", "$description": "dark err fill (opaque)" } },
+      "green": {
+        "$type": "color",
+        "300": { "$value": "#7FCB8E" },
+        "700": { "$value": "#1F6B33" }
+      },
+      "amber": {
+        "$type": "color",
+        "300": { "$value": "#EABA67" },
+        "700": { "$value": "#865901" }
+      },
+      "orange": {
+        "$type": "color",
+        "300": { "$value": "#FF7A45" },
+        "700": { "$value": "#B83A0B" }
+      },
+      "red": {
+        "$type": "color",
+        "100": { "$value": "#EEE0DE", "$description": "light err fill (opaque)" },
+        "150": { "$value": "#EBD9D7", "$description": "light err fill hover (100 + 4% red.700)" },
+        "200": { "$value": "#E9D2CF", "$description": "light err fill pressed (100 + 8% red.700)" },
+        "300": { "$value": "#F2857D" },
+        "700": { "$value": "#AA2A27" },
+        "850": { "$value": "#442E2E", "$description": "dark err fill pressed (900 + 8% red.300)" },
+        "875": { "$value": "#3C2A2B", "$description": "dark err fill hover (900 + 4% red.300)" },
+        "900": { "$value": "#352728", "$description": "dark err fill (opaque)" }
+      },
+      "member": {
+        "$type": "color",
+        "$description": "member and project colours: 300 = dark (OKLCH 0.80 0.11), 700 = light (OKLCH 0.49 0.12)",
+        "0": {
+          "300": { "$value": "#E3B667" },
+          "700": { "$value": "#835600" }
+        },
+        "1": {
+          "300": { "$value": "#F4A0C8" },
+          "700": { "$value": "#943C6B" }
+        },
+        "2": {
+          "300": { "$value": "#7FC5FF" },
+          "700": { "$value": "#0065A4" }
+        },
+        "3": {
+          "300": { "$value": "#89D298" },
+          "700": { "$value": "#0D7435" }
+        },
+        "4": {
+          "300": { "$value": "#C3B0FD" },
+          "700": { "$value": "#674EA1" }
+        },
+        "5": {
+          "300": { "$value": "#5AD5CB" },
+          "700": { "$value": "#006F68" }
+        },
+        "6": {
+          "300": { "$value": "#F7A97C" },
+          "700": { "$value": "#984500" }
+        },
+        "7": {
+          "300": { "$value": "#BBC671" },
+          "700": { "$value": "#5F6700" }
+        }
+      },
       "alpha": {
         "$type": "color",
-        "ink-5":   { "$value": "#0A0A0C0D" },
-        "ink-9":   { "$value": "#0A0A0C17" },
-        "ink-14":  { "$value": "#0A0A0C24" },
-        "ink-40":  { "$value": "#0A0A0C66" },
-        "bone-7":  { "$value": "#EFEDE712" },
-        "bone-12": { "$value": "#EFEDE71F" },
-        "bone-14": { "$value": "#E9E6DF24" },
-        "black-60": { "$value": "#00000099" },
-        "blue700-10": { "$value": "#1D4ED81A" },
-        "blue300-12": { "$value": "#8FB0FF1F" },
-        "green700-12": { "$value": "#1F6B331F" },
-        "green300-12": { "$value": "#7FCB8E1F" },
-        "amber700-12": { "$value": "#8256001F" },
-        "amber300-12": { "$value": "#E2B8651F" },
-        "orange700-12": { "$value": "#A046101F" },
-        "orange300-12": { "$value": "#EC9A621F" },
-        "red700-12": { "$value": "#AD2E271F" },
-        "red300-12": { "$value": "#EE7B741F" },
-        "black-22": { "$value": "#00000038" },
-        "black-10": { "$value": "#0000001A" },
-        "black-30": { "$value": "#0000004D" }
+        "white-7":      { "$value": "#FFFFFF12", "$description": "dark hover wash" },
+        "white-10":     { "$value": "#FFFFFF1A", "$description": "dark hairline" },
+        "white-14":     { "$value": "#FFFFFF24", "$description": "dark pressed (wash × 2)" },
+        "black-5":      { "$value": "#0000000C", "$description": "light hover wash" },
+        "black-9":      { "$value": "#00000018", "$description": "light pressed (wash × 2)" },
+        "black-10":     { "$value": "#0000001A" },
+        "black-22":     { "$value": "#00000038" },
+        "black-30":     { "$value": "#0000004D" },
+        "black-40":     { "$value": "#00000066", "$description": "light scrim" },
+        "black-60":     { "$value": "#00000099" },
+        "blue300-12":   { "$value": "#7EB8F31F" },
+        "blue700-8":    { "$value": "#2160AB14" },
+        "green300-12":  { "$value": "#7FCB8E1F" },
+        "green700-8":   { "$value": "#1F6B3314" },
+        "amber300-12":  { "$value": "#EABA671F" },
+        "amber700-8":   { "$value": "#86590114" },
+        "orange300-12": { "$value": "#FF7A451F" },
+        "orange700-8":  { "$value": "#B83A0B14" },
+        "red300-12":    { "$value": "#F2857D1F" },
+        "red700-8":     { "$value": "#AA2A2714" }
       }
     }
   },

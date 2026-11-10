@@ -16,3 +16,6 @@
 - **토큰 쪽 제안(우선):** `design/tokens/semantic.color.*`를 main 데스크톱 팔레트에 맞게 갱신(또는 팔레트를 토큰에서 다시 만들도록 사람이 결정). 그러면 `theme.rs`의 `Palette`를 `tokens::palette()`로 채울 수 있다.
 - `ICON_SM`은 main 화면이 14를 쓰므로 로컬 14로 유지(토큰 `SIZE_ICON_SM`은 16).
 - 위험 버튼 hover 로컬 보정은 main의 `danger_bg`(8%)가 이미 해결해 필요 없어졌다.
+
+## 2026-11-10 — T-699에서 반영
+- 제안 1~5와 위 '토큰 쪽 제안(우선)'은 T-699(tokens 2.0.0)에서 반영했다: `semantic.color.*`가 main 데스크톱 팔레트와 같은 값이 되었고, side·popover·tooltip·prose·text-soft·switch·member 토큰이 생겼다. 짝지은 표: `docs/t699-palette-map.md`. `theme.rs` 연결은 후속 frontend 티켓.

@@ -17,10 +17,17 @@ public struct EquipeCubicBezier { public let x1: Double, y1: Double, x2: Double,
 
 public struct EquipeColors {
     public let colorBg: Color
+    public let colorSide: Color
+    public let colorSideHover: Color
+    public let colorSideSelected: Color
     public let colorSurface: Color
     public let colorRaised: Color
     public let colorSunken: Color
+    public let colorPopover: Color
+    public let colorPopoverHover: Color
     public let colorText: Color
+    public let colorProse: Color
+    public let colorTextSoft: Color
     public let colorMuted: Color
     public let colorAccent: Color
     public let colorOnAccent: Color
@@ -39,6 +46,12 @@ public struct EquipeColors {
     public let colorInverse: Color
     public let colorOnInverse: Color
     public let colorInverseAccent: Color
+    public let colorTooltip: Color
+    public let colorOnTooltip: Color
+    public let colorOnTooltipMuted: Color
+    public let colorSwitchOn: Color
+    public let colorSwitchOff: Color
+    public let colorSwitchKnob: Color
     public let colorOk: Color
     public let colorOkBg: Color
     public let colorWork: Color
@@ -51,6 +64,14 @@ public struct EquipeColors {
     public let colorErrFillHover: Color
     public let colorErrFillPressed: Color
     public let colorOnErr: Color
+    public let colorMember0: Color
+    public let colorMember1: Color
+    public let colorMember2: Color
+    public let colorMember3: Color
+    public let colorMember4: Color
+    public let colorMember5: Color
+    public let colorMember6: Color
+    public let colorMember7: Color
     public let buttonPrimaryBg: Color
     public let buttonPrimaryFg: Color
     public let buttonPrimaryBgHover: Color
@@ -121,12 +142,36 @@ public struct EquipeColors {
     public let toastBg: Color
     public let toastFg: Color
     public let toastActionFg: Color
-    fileprivate init(colorBg: Color, colorSurface: Color, colorRaised: Color, colorSunken: Color, colorText: Color, colorMuted: Color, colorAccent: Color, colorOnAccent: Color, colorAccentBg: Color, colorFocus: Color, colorDot: Color, colorLine: Color, colorBorderStrong: Color, colorAction: Color, colorOnAction: Color, colorActionHover: Color, colorActionPressed: Color, colorHover: Color, colorPressed: Color, colorScrim: Color, colorInverse: Color, colorOnInverse: Color, colorInverseAccent: Color, colorOk: Color, colorOkBg: Color, colorWork: Color, colorWorkBg: Color, colorWait: Color, colorWaitBg: Color, colorErr: Color, colorErrBg: Color, colorErrFill: Color, colorErrFillHover: Color, colorErrFillPressed: Color, colorOnErr: Color, buttonPrimaryBg: Color, buttonPrimaryFg: Color, buttonPrimaryBgHover: Color, buttonPrimaryBgPressed: Color, buttonBrandBg: Color, buttonBrandFg: Color, buttonSecondaryBg: Color, buttonSecondaryFg: Color, buttonSecondaryBorder: Color, buttonGhostBg: Color, buttonGhostFg: Color, buttonDangerBg: Color, buttonDangerFg: Color, buttonDangerSoftBg: Color, buttonDangerSoftBgHover: Color, buttonDangerSoftBgPressed: Color, buttonDangerSoftFg: Color, buttonHoverOverlay: Color, buttonPressedOverlay: Color, buttonFocusRing: Color, inputBg: Color, inputFg: Color, inputPlaceholder: Color, inputBorder: Color, inputBorderFocus: Color, inputBorderError: Color, inputErrorFg: Color, inputHelperFg: Color, cardBg: Color, cardBorder: Color, cardTitleFg: Color, cardMetaFg: Color, cardRaisedBg: Color, chipBg: Color, chipFg: Color, chipBorder: Color, chipSelectedBg: Color, chipSelectedFg: Color, chipSelectedBorder: Color, chipHoverOverlay: Color, chipPressedOverlay: Color, badgeNeutralBg: Color, badgeNeutralFg: Color, badgeOkBg: Color, badgeOkFg: Color, badgeWorkBg: Color, badgeWorkFg: Color, badgeWaitBg: Color, badgeWaitFg: Color, badgeErrBg: Color, badgeErrFg: Color, rowFg: Color, rowSecondaryFg: Color, rowDivider: Color, rowHoverBg: Color, rowPressedBg: Color, rowSelectedBg: Color, sheetBg: Color, sheetScrim: Color, sheetGrabber: Color, sheetTitleFg: Color, decisionBg: Color, decisionBorder: Color, decisionWhoFg: Color, decisionWhereFg: Color, decisionCodeBg: Color, decisionCodeFg: Color, toastBg: Color, toastFg: Color, toastActionFg: Color) {
+    public let sidebarBg: Color
+    public let sidebarRowHoverBg: Color
+    public let sidebarRowSelectedBg: Color
+    public let sidebarFg: Color
+    public let sidebarSelectedFg: Color
+    public let sidebarSecondaryFg: Color
+    public let popoverBg: Color
+    public let popoverRowHoverBg: Color
+    public let popoverBorder: Color
+    public let popoverFg: Color
+    public let popoverSecondaryFg: Color
+    public let tooltipBg: Color
+    public let tooltipFg: Color
+    public let tooltipSecondaryFg: Color
+    public let switchTrackOn: Color
+    public let switchTrackOff: Color
+    public let switchKnob: Color
+    fileprivate init(colorBg: Color, colorSide: Color, colorSideHover: Color, colorSideSelected: Color, colorSurface: Color, colorRaised: Color, colorSunken: Color, colorPopover: Color, colorPopoverHover: Color, colorText: Color, colorProse: Color, colorTextSoft: Color, colorMuted: Color, colorAccent: Color, colorOnAccent: Color, colorAccentBg: Color, colorFocus: Color, colorDot: Color, colorLine: Color, colorBorderStrong: Color, colorAction: Color, colorOnAction: Color, colorActionHover: Color, colorActionPressed: Color, colorHover: Color, colorPressed: Color, colorScrim: Color, colorInverse: Color, colorOnInverse: Color, colorInverseAccent: Color, colorTooltip: Color, colorOnTooltip: Color, colorOnTooltipMuted: Color, colorSwitchOn: Color, colorSwitchOff: Color, colorSwitchKnob: Color, colorOk: Color, colorOkBg: Color, colorWork: Color, colorWorkBg: Color, colorWait: Color, colorWaitBg: Color, colorErr: Color, colorErrBg: Color, colorErrFill: Color, colorErrFillHover: Color, colorErrFillPressed: Color, colorOnErr: Color, colorMember0: Color, colorMember1: Color, colorMember2: Color, colorMember3: Color, colorMember4: Color, colorMember5: Color, colorMember6: Color, colorMember7: Color, buttonPrimaryBg: Color, buttonPrimaryFg: Color, buttonPrimaryBgHover: Color, buttonPrimaryBgPressed: Color, buttonBrandBg: Color, buttonBrandFg: Color, buttonSecondaryBg: Color, buttonSecondaryFg: Color, buttonSecondaryBorder: Color, buttonGhostBg: Color, buttonGhostFg: Color, buttonDangerBg: Color, buttonDangerFg: Color, buttonDangerSoftBg: Color, buttonDangerSoftBgHover: Color, buttonDangerSoftBgPressed: Color, buttonDangerSoftFg: Color, buttonHoverOverlay: Color, buttonPressedOverlay: Color, buttonFocusRing: Color, inputBg: Color, inputFg: Color, inputPlaceholder: Color, inputBorder: Color, inputBorderFocus: Color, inputBorderError: Color, inputErrorFg: Color, inputHelperFg: Color, cardBg: Color, cardBorder: Color, cardTitleFg: Color, cardMetaFg: Color, cardRaisedBg: Color, chipBg: Color, chipFg: Color, chipBorder: Color, chipSelectedBg: Color, chipSelectedFg: Color, chipSelectedBorder: Color, chipHoverOverlay: Color, chipPressedOverlay: Color, badgeNeutralBg: Color, badgeNeutralFg: Color, badgeOkBg: Color, badgeOkFg: Color, badgeWorkBg: Color, badgeWorkFg: Color, badgeWaitBg: Color, badgeWaitFg: Color, badgeErrBg: Color, badgeErrFg: Color, rowFg: Color, rowSecondaryFg: Color, rowDivider: Color, rowHoverBg: Color, rowPressedBg: Color, rowSelectedBg: Color, sheetBg: Color, sheetScrim: Color, sheetGrabber: Color, sheetTitleFg: Color, decisionBg: Color, decisionBorder: Color, decisionWhoFg: Color, decisionWhereFg: Color, decisionCodeBg: Color, decisionCodeFg: Color, toastBg: Color, toastFg: Color, toastActionFg: Color, sidebarBg: Color, sidebarRowHoverBg: Color, sidebarRowSelectedBg: Color, sidebarFg: Color, sidebarSelectedFg: Color, sidebarSecondaryFg: Color, popoverBg: Color, popoverRowHoverBg: Color, popoverBorder: Color, popoverFg: Color, popoverSecondaryFg: Color, tooltipBg: Color, tooltipFg: Color, tooltipSecondaryFg: Color, switchTrackOn: Color, switchTrackOff: Color, switchKnob: Color) {
         self.colorBg = colorBg
+        self.colorSide = colorSide
+        self.colorSideHover = colorSideHover
+        self.colorSideSelected = colorSideSelected
         self.colorSurface = colorSurface
         self.colorRaised = colorRaised
         self.colorSunken = colorSunken
+        self.colorPopover = colorPopover
+        self.colorPopoverHover = colorPopoverHover
         self.colorText = colorText
+        self.colorProse = colorProse
+        self.colorTextSoft = colorTextSoft
         self.colorMuted = colorMuted
         self.colorAccent = colorAccent
         self.colorOnAccent = colorOnAccent
@@ -145,6 +190,12 @@ public struct EquipeColors {
         self.colorInverse = colorInverse
         self.colorOnInverse = colorOnInverse
         self.colorInverseAccent = colorInverseAccent
+        self.colorTooltip = colorTooltip
+        self.colorOnTooltip = colorOnTooltip
+        self.colorOnTooltipMuted = colorOnTooltipMuted
+        self.colorSwitchOn = colorSwitchOn
+        self.colorSwitchOff = colorSwitchOff
+        self.colorSwitchKnob = colorSwitchKnob
         self.colorOk = colorOk
         self.colorOkBg = colorOkBg
         self.colorWork = colorWork
@@ -157,6 +208,14 @@ public struct EquipeColors {
         self.colorErrFillHover = colorErrFillHover
         self.colorErrFillPressed = colorErrFillPressed
         self.colorOnErr = colorOnErr
+        self.colorMember0 = colorMember0
+        self.colorMember1 = colorMember1
+        self.colorMember2 = colorMember2
+        self.colorMember3 = colorMember3
+        self.colorMember4 = colorMember4
+        self.colorMember5 = colorMember5
+        self.colorMember6 = colorMember6
+        self.colorMember7 = colorMember7
         self.buttonPrimaryBg = buttonPrimaryBg
         self.buttonPrimaryFg = buttonPrimaryFg
         self.buttonPrimaryBgHover = buttonPrimaryBgHover
@@ -227,220 +286,313 @@ public struct EquipeColors {
         self.toastBg = toastBg
         self.toastFg = toastFg
         self.toastActionFg = toastActionFg
+        self.sidebarBg = sidebarBg
+        self.sidebarRowHoverBg = sidebarRowHoverBg
+        self.sidebarRowSelectedBg = sidebarRowSelectedBg
+        self.sidebarFg = sidebarFg
+        self.sidebarSelectedFg = sidebarSelectedFg
+        self.sidebarSecondaryFg = sidebarSecondaryFg
+        self.popoverBg = popoverBg
+        self.popoverRowHoverBg = popoverRowHoverBg
+        self.popoverBorder = popoverBorder
+        self.popoverFg = popoverFg
+        self.popoverSecondaryFg = popoverSecondaryFg
+        self.tooltipBg = tooltipBg
+        self.tooltipFg = tooltipFg
+        self.tooltipSecondaryFg = tooltipSecondaryFg
+        self.switchTrackOn = switchTrackOn
+        self.switchTrackOff = switchTrackOff
+        self.switchKnob = switchKnob
     }
     public static let light = EquipeColors(
-        colorBg: Color(0xF6F5F1),
+        colorBg: Color(0xFAF9F6),
+        colorSide: Color(0xF3F2EF),
+        colorSideHover: Color(0xEEEDE8),
+        colorSideSelected: Color(0xE7E6E1),
         colorSurface: Color(0xFFFFFF),
         colorRaised: Color(0xFFFFFF),
-        colorSunken: Color(0xEAE7E0),
-        colorText: Color(0x15161A),
-        colorMuted: Color(0x4F5159),
-        colorAccent: Color(0x1D4ED8),
-        colorOnAccent: Color(0xFFFFFF),
-        colorAccentBg: Color(0x1D4ED8, 0.102),
-        colorFocus: Color(0x1D4ED8),
+        colorSunken: Color(0xF2F1ED),
+        colorPopover: Color(0xFFFFFF),
+        colorPopoverHover: Color(0xF2F1EE),
+        colorText: Color(0x181713),
+        colorProse: Color(0x24231F),
+        colorTextSoft: Color(0x45443E),
+        colorMuted: Color(0x62605A),
+        colorAccent: Color(0x2160AB),
+        colorOnAccent: Color(0xFAF9F6),
+        colorAccentBg: Color(0x2160AB, 0.078),
+        colorFocus: Color(0x2160AB),
         colorDot: Color(0x3F6FF5),
-        colorLine: Color(0x0A0A0C, 0.141),
-        colorBorderStrong: Color(0x74767D),
-        colorAction: Color(0x15161A),
-        colorOnAction: Color(0xF6F5F1),
-        colorActionHover: Color(0x2A2C33),
-        colorActionPressed: Color(0x3A3C44),
-        colorHover: Color(0x0A0A0C, 0.051),
-        colorPressed: Color(0x0A0A0C, 0.09),
-        colorScrim: Color(0x0A0A0C, 0.4),
-        colorInverse: Color(0x15161A),
-        colorOnInverse: Color(0xF6F5F1),
-        colorInverseAccent: Color(0x8FB0FF),
+        colorLine: Color(0x000000, 0.102),
+        colorBorderStrong: Color(0x86847E),
+        colorAction: Color(0x181713),
+        colorOnAction: Color(0xFAF9F6),
+        colorActionHover: Color(0x2C2B27),
+        colorActionPressed: Color(0x050504),
+        colorHover: Color(0x000000, 0.047),
+        colorPressed: Color(0x000000, 0.094),
+        colorScrim: Color(0x000000, 0.4),
+        colorInverse: Color(0x181713),
+        colorOnInverse: Color(0xFAF9F6),
+        colorInverseAccent: Color(0x7EB8F3),
+        colorTooltip: Color(0x232220),
+        colorOnTooltip: Color(0xF3F0E9),
+        colorOnTooltipMuted: Color(0xA9A7A1),
+        colorSwitchOn: Color(0x2160AB),
+        colorSwitchOff: Color(0xC9C7C2),
+        colorSwitchKnob: Color(0xFFFFFF),
         colorOk: Color(0x1F6B33),
-        colorOkBg: Color(0x1F6B33, 0.122),
-        colorWork: Color(0x825600),
-        colorWorkBg: Color(0x825600, 0.122),
-        colorWait: Color(0xA04610),
-        colorWaitBg: Color(0xA04610, 0.122),
-        colorErr: Color(0xAD2E27),
-        colorErrBg: Color(0xAD2E27, 0.122),
+        colorOkBg: Color(0x1F6B33, 0.078),
+        colorWork: Color(0x865901),
+        colorWorkBg: Color(0x865901, 0.078),
+        colorWait: Color(0xB83A0B),
+        colorWaitBg: Color(0xB83A0B, 0.078),
+        colorErr: Color(0xAA2A27),
+        colorErrBg: Color(0xAA2A27, 0.078),
         colorErrFill: Color(0xEEE0DE),
         colorErrFillHover: Color(0xEBD9D7),
         colorErrFillPressed: Color(0xE9D2CF),
         colorOnErr: Color(0xFFFFFF),
-        buttonPrimaryBg: Color(0x15161A),
-        buttonPrimaryFg: Color(0xF6F5F1),
-        buttonPrimaryBgHover: Color(0x2A2C33),
-        buttonPrimaryBgPressed: Color(0x3A3C44),
-        buttonBrandBg: Color(0x1D4ED8),
-        buttonBrandFg: Color(0xFFFFFF),
+        colorMember0: Color(0x835600),
+        colorMember1: Color(0x943C6B),
+        colorMember2: Color(0x0065A4),
+        colorMember3: Color(0x0D7435),
+        colorMember4: Color(0x674EA1),
+        colorMember5: Color(0x006F68),
+        colorMember6: Color(0x984500),
+        colorMember7: Color(0x5F6700),
+        buttonPrimaryBg: Color(0x181713),
+        buttonPrimaryFg: Color(0xFAF9F6),
+        buttonPrimaryBgHover: Color(0x2C2B27),
+        buttonPrimaryBgPressed: Color(0x050504),
+        buttonBrandBg: Color(0x2160AB),
+        buttonBrandFg: Color(0xFAF9F6),
         buttonSecondaryBg: Color(0x000000, 0),
-        buttonSecondaryFg: Color(0x15161A),
-        buttonSecondaryBorder: Color(0x74767D),
+        buttonSecondaryFg: Color(0x181713),
+        buttonSecondaryBorder: Color(0x86847E),
         buttonGhostBg: Color(0x000000, 0),
-        buttonGhostFg: Color(0x1D4ED8),
-        buttonDangerBg: Color(0xAD2E27),
+        buttonGhostFg: Color(0x2160AB),
+        buttonDangerBg: Color(0xAA2A27),
         buttonDangerFg: Color(0xFFFFFF),
         buttonDangerSoftBg: Color(0xEEE0DE),
         buttonDangerSoftBgHover: Color(0xEBD9D7),
         buttonDangerSoftBgPressed: Color(0xE9D2CF),
-        buttonDangerSoftFg: Color(0xAD2E27),
-        buttonHoverOverlay: Color(0x0A0A0C, 0.051),
-        buttonPressedOverlay: Color(0x0A0A0C, 0.09),
-        buttonFocusRing: Color(0x1D4ED8),
+        buttonDangerSoftFg: Color(0xAA2A27),
+        buttonHoverOverlay: Color(0x000000, 0.047),
+        buttonPressedOverlay: Color(0x000000, 0.094),
+        buttonFocusRing: Color(0x2160AB),
         inputBg: Color(0xFFFFFF),
-        inputFg: Color(0x15161A),
-        inputPlaceholder: Color(0x4F5159),
-        inputBorder: Color(0x74767D),
-        inputBorderFocus: Color(0x1D4ED8),
-        inputBorderError: Color(0xAD2E27),
-        inputErrorFg: Color(0xAD2E27),
-        inputHelperFg: Color(0x4F5159),
+        inputFg: Color(0x181713),
+        inputPlaceholder: Color(0x62605A),
+        inputBorder: Color(0x86847E),
+        inputBorderFocus: Color(0x2160AB),
+        inputBorderError: Color(0xAA2A27),
+        inputErrorFg: Color(0xAA2A27),
+        inputHelperFg: Color(0x62605A),
         cardBg: Color(0xFFFFFF),
-        cardBorder: Color(0x0A0A0C, 0.141),
-        cardTitleFg: Color(0x15161A),
-        cardMetaFg: Color(0x4F5159),
+        cardBorder: Color(0x000000, 0.102),
+        cardTitleFg: Color(0x181713),
+        cardMetaFg: Color(0x62605A),
         cardRaisedBg: Color(0xFFFFFF),
         chipBg: Color(0x000000, 0),
-        chipFg: Color(0x15161A),
-        chipBorder: Color(0x0A0A0C, 0.141),
-        chipSelectedBg: Color(0x1D4ED8, 0.102),
-        chipSelectedFg: Color(0x1D4ED8),
-        chipSelectedBorder: Color(0x1D4ED8),
-        chipHoverOverlay: Color(0x0A0A0C, 0.051),
-        chipPressedOverlay: Color(0x0A0A0C, 0.09),
-        badgeNeutralBg: Color(0xEAE7E0),
-        badgeNeutralFg: Color(0x4F5159),
-        badgeOkBg: Color(0x1F6B33, 0.122),
+        chipFg: Color(0x181713),
+        chipBorder: Color(0x000000, 0.102),
+        chipSelectedBg: Color(0x2160AB, 0.078),
+        chipSelectedFg: Color(0x2160AB),
+        chipSelectedBorder: Color(0x2160AB),
+        chipHoverOverlay: Color(0x000000, 0.047),
+        chipPressedOverlay: Color(0x000000, 0.094),
+        badgeNeutralBg: Color(0xF2F1ED),
+        badgeNeutralFg: Color(0x62605A),
+        badgeOkBg: Color(0x1F6B33, 0.078),
         badgeOkFg: Color(0x1F6B33),
-        badgeWorkBg: Color(0x825600, 0.122),
-        badgeWorkFg: Color(0x825600),
-        badgeWaitBg: Color(0xA04610, 0.122),
-        badgeWaitFg: Color(0xA04610),
-        badgeErrBg: Color(0xAD2E27, 0.122),
-        badgeErrFg: Color(0xAD2E27),
-        rowFg: Color(0x15161A),
-        rowSecondaryFg: Color(0x4F5159),
-        rowDivider: Color(0x0A0A0C, 0.141),
-        rowHoverBg: Color(0x0A0A0C, 0.051),
-        rowPressedBg: Color(0x0A0A0C, 0.09),
-        rowSelectedBg: Color(0x1D4ED8, 0.102),
+        badgeWorkBg: Color(0x865901, 0.078),
+        badgeWorkFg: Color(0x865901),
+        badgeWaitBg: Color(0xB83A0B, 0.078),
+        badgeWaitFg: Color(0xB83A0B),
+        badgeErrBg: Color(0xAA2A27, 0.078),
+        badgeErrFg: Color(0xAA2A27),
+        rowFg: Color(0x181713),
+        rowSecondaryFg: Color(0x62605A),
+        rowDivider: Color(0x000000, 0.102),
+        rowHoverBg: Color(0x000000, 0.047),
+        rowPressedBg: Color(0x000000, 0.094),
+        rowSelectedBg: Color(0x2160AB, 0.078),
         sheetBg: Color(0xFFFFFF),
-        sheetScrim: Color(0x0A0A0C, 0.4),
-        sheetGrabber: Color(0x74767D),
-        sheetTitleFg: Color(0x15161A),
+        sheetScrim: Color(0x000000, 0.4),
+        sheetGrabber: Color(0x86847E),
+        sheetTitleFg: Color(0x181713),
         decisionBg: Color(0xFFFFFF),
-        decisionBorder: Color(0xA04610),
-        decisionWhoFg: Color(0x15161A),
-        decisionWhereFg: Color(0x4F5159),
-        decisionCodeBg: Color(0xEAE7E0),
-        decisionCodeFg: Color(0x15161A),
-        toastBg: Color(0x15161A),
-        toastFg: Color(0xF6F5F1),
-        toastActionFg: Color(0x8FB0FF)
+        decisionBorder: Color(0xB83A0B),
+        decisionWhoFg: Color(0x181713),
+        decisionWhereFg: Color(0x62605A),
+        decisionCodeBg: Color(0xF2F1ED),
+        decisionCodeFg: Color(0x181713),
+        toastBg: Color(0x181713),
+        toastFg: Color(0xFAF9F6),
+        toastActionFg: Color(0x7EB8F3),
+        sidebarBg: Color(0xF3F2EF),
+        sidebarRowHoverBg: Color(0xEEEDE8),
+        sidebarRowSelectedBg: Color(0xE7E6E1),
+        sidebarFg: Color(0x45443E),
+        sidebarSelectedFg: Color(0x181713),
+        sidebarSecondaryFg: Color(0x62605A),
+        popoverBg: Color(0xFFFFFF),
+        popoverRowHoverBg: Color(0xF2F1EE),
+        popoverBorder: Color(0x000000, 0.102),
+        popoverFg: Color(0x181713),
+        popoverSecondaryFg: Color(0x62605A),
+        tooltipBg: Color(0x232220),
+        tooltipFg: Color(0xF3F0E9),
+        tooltipSecondaryFg: Color(0xA9A7A1),
+        switchTrackOn: Color(0x2160AB),
+        switchTrackOff: Color(0xC9C7C2),
+        switchKnob: Color(0xFFFFFF)
     )
     public static let dark = EquipeColors(
-        colorBg: Color(0x0A0A0C),
-        colorSurface: Color(0x16171A),
-        colorRaised: Color(0x1B1C20),
-        colorSunken: Color(0x111114),
-        colorText: Color(0xEFEDE7),
-        colorMuted: Color(0xA3A5AB),
-        colorAccent: Color(0x8FB0FF),
-        colorOnAccent: Color(0x0B1226),
-        colorAccentBg: Color(0x8FB0FF, 0.122),
-        colorFocus: Color(0x8FB0FF),
+        colorBg: Color(0x151513),
+        colorSide: Color(0x100F0E),
+        colorSideHover: Color(0x1C1C1A),
+        colorSideSelected: Color(0x272624),
+        colorSurface: Color(0x1F1E1C),
+        colorRaised: Color(0x1F1E1C),
+        colorSunken: Color(0x1B1A19),
+        colorPopover: Color(0x252422),
+        colorPopoverHover: Color(0x2F2E2B),
+        colorText: Color(0xF3F0E9),
+        colorProse: Color(0xE5E2DB),
+        colorTextSoft: Color(0xCCC8C2),
+        colorMuted: Color(0xA2A09A),
+        colorAccent: Color(0x7EB8F3),
+        colorOnAccent: Color(0x151513),
+        colorAccentBg: Color(0x7EB8F3, 0.122),
+        colorFocus: Color(0x7EB8F3),
         colorDot: Color(0x3F6FF5),
-        colorLine: Color(0xE9E6DF, 0.141),
-        colorBorderStrong: Color(0x7C7E85),
-        colorAction: Color(0xEFEDE7),
-        colorOnAction: Color(0x0A0A0C),
-        colorActionHover: Color(0xDAD7CF),
-        colorActionPressed: Color(0xC9C6BE),
-        colorHover: Color(0xEFEDE7, 0.071),
-        colorPressed: Color(0xEFEDE7, 0.122),
+        colorLine: Color(0xFFFFFF, 0.102),
+        colorBorderStrong: Color(0x77756F),
+        colorAction: Color(0xECEAE4),
+        colorOnAction: Color(0x151513),
+        colorActionHover: Color(0xFFFFFF),
+        colorActionPressed: Color(0xD6D3CC),
+        colorHover: Color(0xFFFFFF, 0.071),
+        colorPressed: Color(0xFFFFFF, 0.141),
         colorScrim: Color(0x000000, 0.6),
-        colorInverse: Color(0xEFEDE7),
-        colorOnInverse: Color(0x0A0A0C),
-        colorInverseAccent: Color(0x1D4ED8),
+        colorInverse: Color(0xF3F0E9),
+        colorOnInverse: Color(0x151513),
+        colorInverseAccent: Color(0x2160AB),
+        colorTooltip: Color(0x2F2E2C),
+        colorOnTooltip: Color(0xF3F0E9),
+        colorOnTooltipMuted: Color(0xA9A7A1),
+        colorSwitchOn: Color(0x4378AD),
+        colorSwitchOff: Color(0x42413E),
+        colorSwitchKnob: Color(0xF3F0E9),
         colorOk: Color(0x7FCB8E),
         colorOkBg: Color(0x7FCB8E, 0.122),
-        colorWork: Color(0xE2B865),
-        colorWorkBg: Color(0xE2B865, 0.122),
-        colorWait: Color(0xEC9A62),
-        colorWaitBg: Color(0xEC9A62, 0.122),
-        colorErr: Color(0xEE7B74),
-        colorErrBg: Color(0xEE7B74, 0.122),
+        colorWork: Color(0xEABA67),
+        colorWorkBg: Color(0xEABA67, 0.122),
+        colorWait: Color(0xFF7A45),
+        colorWaitBg: Color(0xFF7A45, 0.122),
+        colorErr: Color(0xF2857D),
+        colorErrBg: Color(0xF2857D, 0.122),
         colorErrFill: Color(0x352728),
         colorErrFillHover: Color(0x3C2A2B),
         colorErrFillPressed: Color(0x442E2E),
-        colorOnErr: Color(0x0A0A0C),
-        buttonPrimaryBg: Color(0xEFEDE7),
-        buttonPrimaryFg: Color(0x0A0A0C),
-        buttonPrimaryBgHover: Color(0xDAD7CF),
-        buttonPrimaryBgPressed: Color(0xC9C6BE),
-        buttonBrandBg: Color(0x8FB0FF),
-        buttonBrandFg: Color(0x0B1226),
+        colorOnErr: Color(0x151513),
+        colorMember0: Color(0xE3B667),
+        colorMember1: Color(0xF4A0C8),
+        colorMember2: Color(0x7FC5FF),
+        colorMember3: Color(0x89D298),
+        colorMember4: Color(0xC3B0FD),
+        colorMember5: Color(0x5AD5CB),
+        colorMember6: Color(0xF7A97C),
+        colorMember7: Color(0xBBC671),
+        buttonPrimaryBg: Color(0xECEAE4),
+        buttonPrimaryFg: Color(0x151513),
+        buttonPrimaryBgHover: Color(0xFFFFFF),
+        buttonPrimaryBgPressed: Color(0xD6D3CC),
+        buttonBrandBg: Color(0x7EB8F3),
+        buttonBrandFg: Color(0x151513),
         buttonSecondaryBg: Color(0x000000, 0),
-        buttonSecondaryFg: Color(0xEFEDE7),
-        buttonSecondaryBorder: Color(0x7C7E85),
+        buttonSecondaryFg: Color(0xF3F0E9),
+        buttonSecondaryBorder: Color(0x77756F),
         buttonGhostBg: Color(0x000000, 0),
-        buttonGhostFg: Color(0x8FB0FF),
-        buttonDangerBg: Color(0xEE7B74),
-        buttonDangerFg: Color(0x0A0A0C),
+        buttonGhostFg: Color(0x7EB8F3),
+        buttonDangerBg: Color(0xF2857D),
+        buttonDangerFg: Color(0x151513),
         buttonDangerSoftBg: Color(0x352728),
         buttonDangerSoftBgHover: Color(0x3C2A2B),
         buttonDangerSoftBgPressed: Color(0x442E2E),
-        buttonDangerSoftFg: Color(0xEE7B74),
-        buttonHoverOverlay: Color(0xEFEDE7, 0.071),
-        buttonPressedOverlay: Color(0xEFEDE7, 0.122),
-        buttonFocusRing: Color(0x8FB0FF),
-        inputBg: Color(0x16171A),
-        inputFg: Color(0xEFEDE7),
-        inputPlaceholder: Color(0xA3A5AB),
-        inputBorder: Color(0x7C7E85),
-        inputBorderFocus: Color(0x8FB0FF),
-        inputBorderError: Color(0xEE7B74),
-        inputErrorFg: Color(0xEE7B74),
-        inputHelperFg: Color(0xA3A5AB),
-        cardBg: Color(0x16171A),
-        cardBorder: Color(0xE9E6DF, 0.141),
-        cardTitleFg: Color(0xEFEDE7),
-        cardMetaFg: Color(0xA3A5AB),
-        cardRaisedBg: Color(0x1B1C20),
+        buttonDangerSoftFg: Color(0xF2857D),
+        buttonHoverOverlay: Color(0xFFFFFF, 0.071),
+        buttonPressedOverlay: Color(0xFFFFFF, 0.141),
+        buttonFocusRing: Color(0x7EB8F3),
+        inputBg: Color(0x1F1E1C),
+        inputFg: Color(0xF3F0E9),
+        inputPlaceholder: Color(0xA2A09A),
+        inputBorder: Color(0x77756F),
+        inputBorderFocus: Color(0x7EB8F3),
+        inputBorderError: Color(0xF2857D),
+        inputErrorFg: Color(0xF2857D),
+        inputHelperFg: Color(0xA2A09A),
+        cardBg: Color(0x1F1E1C),
+        cardBorder: Color(0xFFFFFF, 0.102),
+        cardTitleFg: Color(0xF3F0E9),
+        cardMetaFg: Color(0xA2A09A),
+        cardRaisedBg: Color(0x1F1E1C),
         chipBg: Color(0x000000, 0),
-        chipFg: Color(0xEFEDE7),
-        chipBorder: Color(0xE9E6DF, 0.141),
-        chipSelectedBg: Color(0x8FB0FF, 0.122),
-        chipSelectedFg: Color(0x8FB0FF),
-        chipSelectedBorder: Color(0x8FB0FF),
-        chipHoverOverlay: Color(0xEFEDE7, 0.071),
-        chipPressedOverlay: Color(0xEFEDE7, 0.122),
-        badgeNeutralBg: Color(0x111114),
-        badgeNeutralFg: Color(0xA3A5AB),
+        chipFg: Color(0xF3F0E9),
+        chipBorder: Color(0xFFFFFF, 0.102),
+        chipSelectedBg: Color(0x7EB8F3, 0.122),
+        chipSelectedFg: Color(0x7EB8F3),
+        chipSelectedBorder: Color(0x7EB8F3),
+        chipHoverOverlay: Color(0xFFFFFF, 0.071),
+        chipPressedOverlay: Color(0xFFFFFF, 0.141),
+        badgeNeutralBg: Color(0x1B1A19),
+        badgeNeutralFg: Color(0xA2A09A),
         badgeOkBg: Color(0x7FCB8E, 0.122),
         badgeOkFg: Color(0x7FCB8E),
-        badgeWorkBg: Color(0xE2B865, 0.122),
-        badgeWorkFg: Color(0xE2B865),
-        badgeWaitBg: Color(0xEC9A62, 0.122),
-        badgeWaitFg: Color(0xEC9A62),
-        badgeErrBg: Color(0xEE7B74, 0.122),
-        badgeErrFg: Color(0xEE7B74),
-        rowFg: Color(0xEFEDE7),
-        rowSecondaryFg: Color(0xA3A5AB),
-        rowDivider: Color(0xE9E6DF, 0.141),
-        rowHoverBg: Color(0xEFEDE7, 0.071),
-        rowPressedBg: Color(0xEFEDE7, 0.122),
-        rowSelectedBg: Color(0x8FB0FF, 0.122),
-        sheetBg: Color(0x1B1C20),
+        badgeWorkBg: Color(0xEABA67, 0.122),
+        badgeWorkFg: Color(0xEABA67),
+        badgeWaitBg: Color(0xFF7A45, 0.122),
+        badgeWaitFg: Color(0xFF7A45),
+        badgeErrBg: Color(0xF2857D, 0.122),
+        badgeErrFg: Color(0xF2857D),
+        rowFg: Color(0xF3F0E9),
+        rowSecondaryFg: Color(0xA2A09A),
+        rowDivider: Color(0xFFFFFF, 0.102),
+        rowHoverBg: Color(0xFFFFFF, 0.071),
+        rowPressedBg: Color(0xFFFFFF, 0.141),
+        rowSelectedBg: Color(0x7EB8F3, 0.122),
+        sheetBg: Color(0x1F1E1C),
         sheetScrim: Color(0x000000, 0.6),
-        sheetGrabber: Color(0x7C7E85),
-        sheetTitleFg: Color(0xEFEDE7),
-        decisionBg: Color(0x16171A),
-        decisionBorder: Color(0xEC9A62),
-        decisionWhoFg: Color(0xEFEDE7),
-        decisionWhereFg: Color(0xA3A5AB),
-        decisionCodeBg: Color(0x111114),
-        decisionCodeFg: Color(0xEFEDE7),
-        toastBg: Color(0xEFEDE7),
-        toastFg: Color(0x0A0A0C),
-        toastActionFg: Color(0x1D4ED8)
+        sheetGrabber: Color(0x77756F),
+        sheetTitleFg: Color(0xF3F0E9),
+        decisionBg: Color(0x1F1E1C),
+        decisionBorder: Color(0xFF7A45),
+        decisionWhoFg: Color(0xF3F0E9),
+        decisionWhereFg: Color(0xA2A09A),
+        decisionCodeBg: Color(0x1B1A19),
+        decisionCodeFg: Color(0xF3F0E9),
+        toastBg: Color(0xF3F0E9),
+        toastFg: Color(0x151513),
+        toastActionFg: Color(0x2160AB),
+        sidebarBg: Color(0x100F0E),
+        sidebarRowHoverBg: Color(0x1C1C1A),
+        sidebarRowSelectedBg: Color(0x272624),
+        sidebarFg: Color(0xCCC8C2),
+        sidebarSelectedFg: Color(0xF3F0E9),
+        sidebarSecondaryFg: Color(0xA2A09A),
+        popoverBg: Color(0x252422),
+        popoverRowHoverBg: Color(0x2F2E2B),
+        popoverBorder: Color(0xFFFFFF, 0.102),
+        popoverFg: Color(0xF3F0E9),
+        popoverSecondaryFg: Color(0xA2A09A),
+        tooltipBg: Color(0x2F2E2C),
+        tooltipFg: Color(0xF3F0E9),
+        tooltipSecondaryFg: Color(0xA9A7A1),
+        switchTrackOn: Color(0x4378AD),
+        switchTrackOff: Color(0x42413E),
+        switchKnob: Color(0xF3F0E9)
     )
     public static func resolved(_ scheme: ColorScheme) -> EquipeColors { scheme == .dark ? .dark : .light }
 }
@@ -649,6 +801,11 @@ public enum EquipeToast {
     /// seconds (5000 ms)
     public static let duration: TimeInterval = 5
     public static let z: Double = 30
+}
+
+public enum EquipePopover {
+    public static let radius: CGFloat = 16
+    public static let shadow = EquipeElevation.float
 }
 
 public extension EquipeMotion {

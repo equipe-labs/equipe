@@ -70,29 +70,41 @@ Source: the brand part (§0–§7) is carried over as is from the T-144 brand gu
 3. Text pairs meet WCAG 2.x AA (4.5:1), graphics (focus ring·dot·icons) 3:1 or more. A status is never told by colour alone (words·icons with it).
 4. BRAND.md's "no second accent colour" becomes "**one blue** is the only colour (+ semantic colours)" (per D2 A·B. C keeps BRAND.md as is).
 
-### 2.2 Role tokens — recommended A (Signal blue)
+### 2.2 Role tokens (2.0.0 — the desktop palette as shipped, T-699)
+
+T-144 chose A (one blue, warm neutrals). The desktop then re-tuned that palette on screen (a lifted dark page, one
+warm neutral, a calmer blue), and tokens 2.0.0 take those values as the reference. Full list and the map to
+`theme.rs`: `docs/t699-palette-map.md`; every value lives in `tokens/semantic.color.{light,dark}.json`.
 
 | Role | Light | Dark | Use |
 |---|---|---|---|
-| `bg` | `#F6F5F1` | `#0A0A0C` | page·app background |
-| `surface` | `#FFFFFF` | `#16171A` | cards·sheets |
-| `sunken` | `#EAE7E0` | `#111114` | code·pressed surfaces |
-| `text` | `#15161A` | `#EFEDE7` | body·titles |
-| `muted` | `#4F5159` | `#A3A5AB` | secondary text |
-| `accent` | `#1D4ED8` | `#8FB0FF` | links·text buttons·selection·focus |
-| `onAccent` | `#FFFFFF` | `#0B1226` | text on a filled accent surface |
+| `bg` | `#FAF9F6` | `#151513` | page·app background |
+| `side` (hover · selected) | `#F3F2EF` (`#EEEDE8` · `#E7E6E1`) | `#100F0E` (`#1C1C1A` · `#272624`) | desktop sidebar, solid row fills |
+| `surface` · `raised` | `#FFFFFF` | `#1F1E1C` | cards·sheets·fields |
+| `popover` (hover) | `#FFFFFF` (`#F2F1EE`) | `#252422` (`#2F2E2B`) | menus·popovers, solid |
+| `sunken` | `#F2F1ED` | `#1B1A19` | code·pressed surfaces |
+| `text` | `#181713` | `#F3F0E9` | titles·controls·body |
+| `prose` | `#24231F` | `#E5E2DB` | reading text — a shade softer than `text` |
+| `text-soft` | `#45443E` | `#CCC8C2` | secondary text a step above `muted` |
+| `muted` | `#62605A` | `#A2A09A` | secondary text·meta |
+| `accent` · `focus` | `#2160AB` | `#7EB8F3` | links·text buttons·selection·focus |
+| `onAccent` | `#FAF9F6` | `#151513` | text on a filled accent surface |
+| `action` (hover · pressed) | `#181713` (`#2C2B27` · `#050504`) | `#ECEAE4` (`#FFFFFF` · `#D6D3CC`) | the main button: the text colour inverted |
 | `dot` | `#3F6FF5` | `#3F6FF5` | **the brand dot** (a logo-only graphic, not a text colour) |
-| `focus` | `#1D4ED8` | `#8FB0FF` | focus ring 2px (offset 3px) |
-| `ok` / `work` / `wait` / `err` | `#1F6B33` / `#825600` / `#A04610` / `#AD2E27` | `#7FCB8E` / `#E2B865` / `#EC9A62` / `#EE7B74` | done / in progress / your turn·waiting for permission / error |
-| `errFill` (hover · pressed) | `#EEE0DE` (`#EBD9D7` · `#E9D2CF`) | `#352728` (`#3C2A2B` · `#442E2E`) | opaque fill behind `err` text — the soft destructive button (Deny). err on it: light 5.12 / 4.83 / 4.56, dark 5.24 / 4.95 / 4.61 :1 |
-| `line` | `rgba(10,10,12,.14)` | `rgba(233,230,223,.14)` | hairline (decoration — not subject to text contrast) |
+| `ok` / `work` / `wait` / `err` | `#1F6B33` / `#865901` / `#B83A0B` / `#AA2A27` | `#7FCB8E` / `#EABA67` / `#FF7A45` / `#F2857D` | done / in progress / your turn·waiting for permission / error |
+| `errFill` (hover · pressed) | `#EEE0DE` (`#EBD9D7` · `#E9D2CF`) | `#352728` (`#3C2A2B` · `#442E2E`) | opaque fill behind `err` text — the soft destructive button (Deny) |
+| `tooltip` | `#232220` | `#2F2E2C` | a small dark chip in either mode; text `#F3F0E9`, hint `#A9A7A1` |
+| `line` | `rgba(0,0,0,.10)` | `rgba(255,255,255,.10)` | hairline (decoration — not subject to text contrast) |
+| `member-0…7` | OKLCH 0.49 0.12 | OKLCH 0.80 0.11 | member·project colours, one lightness so no member is louder |
 
-- The semantic colours' light values (`work` `#825600`, `wait` `#A04610`, `err` `#AD2E27`) and dark values (amber `#E2B865`, orange `#EC9A62`, red `#EE7B74`) are **exactly the desktop `theme.rs`'s current values**. `ok` (done) isn't defined anywhere yet, so it's a **newly chosen value** (proposed): light `#1F6B33`, dark `#7FCB8E`. The meanings: amber = working, orange = waiting on the person (the intent of desktop `theme.rs:132-134`); neither is ever a project colour.
-- **`errFill` is opaque on purpose (T-492)**: a translucent tint (`err-bg`, 12%) over a translucent bar or sheet changes with whatever scrolls behind it, and at 8% over iOS's `.bar` the Deny label fell to 4.27:1 (T-491). The soft destructive button takes `errFill` with `err` text, and for hover·pressed its own opaque steps instead of the `hover`·`pressed` overlays (an overlay on it drops the label below 4.5:1). `err-bg` stays for badges·banners on solid surfaces.
-- **Filled primary button (proposed)**: the marketing web (the site) uses an `accent` fill + `onAccent` text. **Product UI (app·desktop) keeps a `text`-coloured fill as now** (black/bone), with blue only for links·selection·focus·the dot. Why: the app screens are mostly one colour now (audit C2), and with more blue buttons the one important action, like "approve", gets lost.
-- The 8 member avatar colours (`theme.rs:135,163`) aren't the brand palette but *a separate system for telling members apart* — not touched this time (contrast not recomputed).
+- Tints (`accent-bg`, `ok-bg`, `work-bg`, `wait-bg`, `err-bg`) are the colour at 8 % in light and 12 % in dark.
+- **`errFill` is opaque on purpose (T-492)**: a translucent tint over a translucent bar or sheet changes with whatever scrolls behind it, and at 8% over iOS's `.bar` the Deny label fell to 4.27:1 (T-491). The soft destructive button takes `errFill` with `err` text, and for hover·pressed its own opaque steps instead of the `hover`·`pressed` overlays. `err-bg` stays for badges·banners on solid surfaces.
+- **Filled primary button**: the marketing web (the site) uses an `accent` fill + `onAccent` text. **Product UI (app·desktop) uses the `action` fill** (the text colour inverted), with blue only for links·selection·focus·the dot, so the one important action, like "approve", isn't lost among blue buttons.
+- Member colours are *a system for telling members apart*, not brand colours; they meet 4.5:1 as words on the page and on the selected sidebar row (`docs/contrast.md`).
 
 ### 2.3 The three options compared (`compare-color.png`)
+
+T-144's comparison, kept as the record of why A; its values are the 1.x ones, superseded by §2.2.
 
 | | **A Signal blue (recommended)** | B Steel chrome | C Mono ink |
 |---|---|---|---|
@@ -106,54 +118,10 @@ Source: the brand part (§0–§7) is carried over as is from the T-144 brand gu
 
 Why A: ① it uses the site's values as they are (already AA-checked and documented, `tokens.md`), so the site barely changes ② the desktop·app accent sits in small places — *links·selection·focus* — so changing it is low risk ③ the blue dot keeps the site's meaning, "the person who leads", in the logo. (The judgement is a proposal — taste weighs heavily.)
 
-### 2.4 Contrast — recommended A (every pair)
-Computed with `src/palettes.py` (the WCAG 2.x formula). **0 below threshold**. The same calculation for B·C is in `contrast.md`.
-
-| Mode | Foreground | Background | Contrast | Needed | Result | Use |
-|---|---|---|---|---|---|---|
-| light | `text` #15161A | `bg` #F6F5F1 | 16.57:1 | 4.5:1 | ✅ | body text |
-| light | `text` #15161A | `surface` #FFFFFF | 18.08:1 | 4.5:1 | ✅ | text on a card |
-| light | `text` #15161A | `sunken` #EAE7E0 | 14.64:1 | 4.5:1 | ✅ | text on code·pressed surface |
-| light | `muted` #4F5159 | `bg` #F6F5F1 | 7.25:1 | 4.5:1 | ✅ | secondary text |
-| light | `muted` #4F5159 | `surface` #FFFFFF | 7.91:1 | 4.5:1 | ✅ | secondary text on a card |
-| light | `muted` #4F5159 | `sunken` #EAE7E0 | 6.41:1 | 4.5:1 | ✅ | secondary text on a pressed surface |
-| light | `accent` #1D4ED8 | `bg` #F6F5F1 | 6.14:1 | 4.5:1 | ✅ | links·text buttons |
-| light | `accent` #1D4ED8 | `surface` #FFFFFF | 6.70:1 | 4.5:1 | ✅ | links on a card |
-| light | `onAccent` #FFFFFF | `accent` #1D4ED8 | 6.70:1 | 4.5:1 | ✅ | filled button text |
-| light | `focus` #1D4ED8 | `bg` #F6F5F1 | 6.14:1 | 3.0:1 | ✅ | focus ring (graphic) |
-| light | `dot` #3F6FF5 | `bg` #F6F5F1 | 4.01:1 | 3.0:1 | ✅ | brand dot on the background (graphic) |
-| light | `ok` #1F6B33 | `bg` #F6F5F1 | 6.00:1 | 4.5:1 | ✅ | done·success text |
-| light | `work` #825600 | `bg` #F6F5F1 | 5.87:1 | 4.5:1 | ✅ | in-progress text |
-| light | `wait` #A04610 | `bg` #F6F5F1 | 5.70:1 | 4.5:1 | ✅ | your turn·waiting-for-permission text |
-| light | `err` #AD2E27 | `bg` #F6F5F1 | 6.02:1 | 4.5:1 | ✅ | error text |
-| light | `ok` #1F6B33 | `surface` #FFFFFF | 6.54:1 | 4.5:1 | ✅ | success on a card |
-| light | `err` #AD2E27 | `surface` #FFFFFF | 6.57:1 | 4.5:1 | ✅ | error on a card |
-| light | `wait` #A04610 | `surface` #FFFFFF | 6.22:1 | 4.5:1 | ✅ | waiting on a card |
-| light | `work` #825600 | `surface` #FFFFFF | 6.40:1 | 4.5:1 | ✅ | in progress on a card |
-| light | `dot` #3F6FF5 | `icon tile void` #0A0A0C | 4.52:1 | 3.0:1 | ✅ | the app icon's dot (graphic) |
-| dark | `text` #EFEDE7 | `bg` #0A0A0C | 16.90:1 | 4.5:1 | ✅ | body text |
-| dark | `text` #EFEDE7 | `surface` #16171A | 15.31:1 | 4.5:1 | ✅ | text on a card |
-| dark | `text` #EFEDE7 | `sunken` #111114 | 16.10:1 | 4.5:1 | ✅ | text on code·pressed surface |
-| dark | `muted` #A3A5AB | `bg` #0A0A0C | 8.03:1 | 4.5:1 | ✅ | secondary text |
-| dark | `muted` #A3A5AB | `surface` #16171A | 7.28:1 | 4.5:1 | ✅ | secondary text on a card |
-| dark | `muted` #A3A5AB | `sunken` #111114 | 7.65:1 | 4.5:1 | ✅ | secondary text on a pressed surface |
-| dark | `accent` #8FB0FF | `bg` #0A0A0C | 9.25:1 | 4.5:1 | ✅ | links·text buttons |
-| dark | `accent` #8FB0FF | `surface` #16171A | 8.38:1 | 4.5:1 | ✅ | links on a card |
-| dark | `onAccent` #0B1226 | `accent` #8FB0FF | 8.70:1 | 4.5:1 | ✅ | filled button text |
-| dark | `focus` #8FB0FF | `bg` #0A0A0C | 9.25:1 | 3.0:1 | ✅ | focus ring (graphic) |
-| dark | `dot` #3F6FF5 | `bg` #0A0A0C | 4.52:1 | 3.0:1 | ✅ | brand dot on the background (graphic) |
-| dark | `ok` #7FCB8E | `bg` #0A0A0C | 10.21:1 | 4.5:1 | ✅ | done·success text |
-| dark | `work` #E2B865 | `bg` #0A0A0C | 10.62:1 | 4.5:1 | ✅ | in-progress text |
-| dark | `wait` #EC9A62 | `bg` #0A0A0C | 8.82:1 | 4.5:1 | ✅ | your turn·waiting-for-permission text |
-| dark | `err` #EE7B74 | `bg` #0A0A0C | 7.27:1 | 4.5:1 | ✅ | error text |
-| dark | `ok` #7FCB8E | `surface` #16171A | 9.25:1 | 4.5:1 | ✅ | success on a card |
-| dark | `err` #EE7B74 | `surface` #16171A | 6.59:1 | 4.5:1 | ✅ | error on a card |
-| dark | `wait` #EC9A62 | `surface` #16171A | 7.99:1 | 4.5:1 | ✅ | waiting on a card |
-| dark | `work` #E2B865 | `surface` #16171A | 9.63:1 | 4.5:1 | ✅ | in progress on a card |
-| dark | `dot` #3F6FF5 | `icon tile void` #0A0A0C | 4.52:1 | 3.0:1 | ✅ | the app icon's dot (graphic) |
-
-
-> The dot's (`dot`) "3:1 against the background" is the graphics threshold. The dot is **never a text colour** (it may fall below 4.5:1: 4.01:1 on the light bg).
+### 2.4 Contrast
+Every pair is computed from the tokens on each `npm run check` and written to `docs/contrast.md` (206 pairs, light and
+dark, 0 below threshold at 2.0.0); the build stops if one fails. The table that stood here measured the T-144
+values. One known gap: the switch's off track is under 3:1 (`docs/t699-palette-map.md`, "Open").
 
 ## Brand 3. Typefaces
 
