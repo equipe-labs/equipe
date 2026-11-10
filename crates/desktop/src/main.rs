@@ -126,7 +126,7 @@ use views::connect::{AskUi, ConnectUi};
 
 actions!(
     equipe,
-    [ToggleBoard, ToggleBrowser, ToggleTerminal, ChooseTarget, AllProjects, Project1, Project2, Project3, Project4, Project5, Project6, Project7, Project8, Project9, ToggleFolds]
+    [ToggleDocFocus, ToggleBoard, ToggleBrowser, ToggleTerminal, ChooseTarget, AllProjects, Project1, Project2, Project3, Project4, Project5, Project6, Project7, Project8, Project9, ToggleFolds]
 );
 // The conversation's: ⌘F, and Escape in its find bar.
 actions!(equipe, [FindInConversation, CloseFind]);
@@ -298,6 +298,8 @@ pub struct Shell {
     /// The document open in the panel at the right, if one is.
     pub(crate) doc: Option<doc::Doc>,
     doc_reads: u64,
+    /// Where the keyboard goes in the document's focus view, and back to.
+    pub(crate) doc_keys: views::doc::Handles,
     /// A hand-over packet asked to be shown, by the session it was handed to: opened once it comes.
     pub(crate) packet_wanted: Option<SessionId>,
     /// The side panel's edge being dragged: where it began, and the width then.
@@ -493,6 +495,7 @@ impl Shell {
             signin_sub: None,
             doc: None,
             doc_reads: 0,
+            doc_keys: views::doc::Handles::new(cx),
             packet_wanted: None,
             side_drag: None,
             term_drag: None,
@@ -698,6 +701,22 @@ impl Shell {
                 }
                 return;
             }
+            // The document's text, focused by the keyboard: the arrows, Page
+            // keys, Space, Home and End scroll it. Its buttons keep Enter and
+            // Space, which press them (on the key's release), from every
+            // shortcut below.
+            let plain = !(modifiers.control || modifiers.alt || modifiers.platform || modifiers.function);
+            if plain && this.update(cx, |shell, _| shell.doc_keys.body.is_focused(window)).unwrap_or(false) {
+                if this.update(cx, |shell, cx| shell.scroll_doc(key, modifiers.shift, cx)).unwrap_or(false) {
+                    cx.stop_propagation();
+                }
+                if matches!(key, "up" | "down" | "pageup" | "pagedown" | "space" | "home" | "end") {
+                    return;
+                }
+            }
+            if plain && !modifiers.shift && matches!(key, "enter" | "space") && this.update(cx, |shell, _| shell.doc_keys.button_focused(window)).unwrap_or(false) {
+                return;
+            }
             // Typing in a "your turn" card's box or one of the browser panel's: T, N,
             // y, 1… are letters there, not shortcuts. Esc still leaves; Tab and ⌘⏎ are the card's own.
             if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx) || shell.secrets.typing(window, cx) || shell.browser.read(cx).typing(window, cx) || shell.design_taste.typing(window, cx)).unwrap_or(false) {
@@ -740,6 +759,17 @@ impl Shell {
             }
             // A small menu open (the project slice): Esc puts it away.
             if key == "escape" && this.update(cx, |shell, cx| shell.close_popover(cx)).unwrap_or(false) {
+                cx.stop_propagation();
+                return;
+            }
+            // ⇧⌘F, wherever the keyboard is (a screen with nothing focused has no action to reach).
+            if key == "f" && modifiers.platform && modifiers.shift && !modifiers.alt && !modifiers.control && this.update(cx, |shell, _| shell.doc.is_some()).unwrap_or(false) {
+                this.update(cx, |shell, cx| shell.toggle_doc_focus(window, cx)).ok();
+                cx.stop_propagation();
+                return;
+            }
+            // The document's menu, then its focus view, give way to Esc.
+            if key == "escape" && this.update(cx, |shell, cx| shell.escape_doc(window, cx)).unwrap_or(false) {
                 cx.stop_propagation();
                 return;
             }
@@ -1507,7 +1537,8 @@ impl Shell {
     pub fn open_kept(&mut self, path: &str, cx: &mut Context<Self>) {
         let Some(words) = self.chat.sent.borrow().kept(path).map(str::to_owned) else { return };
         self.doc_reads += 1;
-        self.doc = Some(doc::Doc::of_kept(path.into(), &words, self.doc_reads));
+        let focus = self.doc.take().and_then(|d| d.focus);
+        self.doc = Some(doc::Doc { focus, ..doc::Doc::of_kept(path.into(), &words, self.doc_reads) });
         cx.notify();
     }
 
@@ -1532,7 +1563,8 @@ impl Shell {
         };
         let packet = handed.packet.clone();
         self.doc_reads += 1;
-        self.doc = Some(doc::Doc::of_kept(std::path::PathBuf::from(name), &packet, self.doc_reads));
+        let focus = self.doc.take().and_then(|d| d.focus);
+        self.doc = Some(doc::Doc { focus, ..doc::Doc::of_kept(std::path::PathBuf::from(name), &packet, self.doc_reads) });
         cx.notify();
     }
 
@@ -1542,7 +1574,10 @@ impl Shell {
         match &mut self.doc {
             // Read again in place: where it was scrolled to stays.
             Some(doc) if doc.path == path => (doc.read, doc.folded, doc.fresh) = (read, false, false),
-            _ => self.doc = Some(doc::Doc::new(path.clone(), read)),
+            _ => {
+                let focus = self.doc.take().and_then(|d| d.focus);
+                self.doc = Some(doc::Doc { focus, ..doc::Doc::new(path.clone(), read) });
+            }
         }
         let endpoint = self.endpoint.clone();
         // Written in a ticket's worktree, or on its branch only: looked for there too.
@@ -1580,6 +1615,11 @@ impl Shell {
             cx.open_url(url);
             return;
         }
+        self.open_in_panel(url, window, cx);
+    }
+
+    /// `url` in a tab of equipe's browser panel, whatever the setting for links says.
+    pub fn open_in_panel(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.screen != Screen::Chat {
             self.show(Screen::Chat, cx);
         }
@@ -1679,6 +1719,117 @@ impl Shell {
         cx.notify();
     }
 
+    /// The document closed by its own button or menu: the keyboard, if it
+    /// was in the document, goes back to where the document came up — the
+    /// conversation's box, or the briefs-and-plans search.
+    pub fn close_doc_from(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let had_keys = self.doc_keys.any_focused(window);
+        self.close_doc(cx);
+        if had_keys {
+            match self.screen {
+                Screen::Chat => self.composer.focus(window, cx),
+                Screen::Docs => window.focus(&self.docs_search.read(cx).focus_handle(cx), cx),
+                _ => window.blur(cx),
+            }
+        }
+    }
+
+    /// A key on the document's focused text: scrolled, or not a key of its.
+    pub fn scroll_doc(&mut self, key: &str, shift: bool, cx: &mut Context<Self>) -> bool {
+        let Some(doc) = self.doc.as_ref() else { return false };
+        let seen = f32::from(doc.scroll.bounds().size.height);
+        let (down, most) = (-f32::from(doc.scroll.offset().y), f32::from(doc.scroll.max_offset().y));
+        let Some(to) = doc::scrolled(key, shift, down, most, seen) else { return false };
+        doc.scroll.set_offset(point(doc.scroll.offset().x, px(-to)));
+        cx.notify();
+        true
+    }
+
+    /// Whether the document is read across the whole window now.
+    pub fn doc_focused(&self) -> bool {
+        matches!(self.screen, Screen::Chat | Screen::Project | Screen::Docs) && self.doc.as_ref().is_some_and(|d| d.focus.is_some() && !d.folded)
+    }
+
+    /// Where focus view was entered from, named as the person knows it.
+    fn doc_origin(&self) -> doc::Origin {
+        match self.screen {
+            Screen::Chat => {
+                let title = match (&self.model.draft_talk, self.model.talking()) {
+                    (Some(_), _) => t!("sidebar.new_conversation").to_string(),
+                    (None, Some(lane)) => lane.title.clone().unwrap_or_else(|| t!("sidebar.new_conversation").to_string()),
+                    _ => self.model.selected_member().map(|m| if m.role == equipe_core::roles::PM { "PM".to_string() } else { m.name.clone() }).unwrap_or_default(),
+                };
+                doc::Origin::Conversation(title)
+            }
+            Screen::Project => doc::Origin::Project(self.board.project_page.clone().unwrap_or_default()),
+            _ => doc::Origin::Docs,
+        }
+    }
+
+    /// ⇧⌘F, the header's button and its way back: one command. In, the
+    /// keyboard goes to the way back; out, to the button that went in.
+    pub fn toggle_doc_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.screen, Screen::Chat | Screen::Project | Screen::Docs) {
+            return;
+        }
+        let origin = self.doc_origin();
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.more = false;
+        if let Some(focus) = doc.focus.take() {
+            doc.scroll.set_offset(focus.scrolled);
+            self.doc_keys.entry.focus(window, cx);
+        } else {
+            doc.folded = false;
+            doc.focus = Some(doc::Focus { origin, scrolled: doc.scroll.offset() });
+            self.doc_keys.back.focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Esc, for the document: the menu, then focus view. False: not its to take.
+    pub fn escape_doc(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        match doc::escape(self.doc.as_ref().filter(|_| matches!(self.screen, Screen::Chat | Screen::Project | Screen::Docs))) {
+            doc::Escape::CloseMore => {
+                if let Some(doc) = self.doc.as_mut() {
+                    doc.more = false;
+                }
+                // Back to the button that opened it, beside the conversation as in focus
+                // view — or, the window widened since and "more" gone, to the header's first.
+                let width: f32 = window.viewport_size().width.into();
+                let keys = &self.doc_keys;
+                let to = match doc::menu_closed(doc::compact(width, self.remembered.zoom.0), self.doc_focused()) {
+                    doc::MenuClosed::More => &keys.more,
+                    doc::MenuClosed::Back => &keys.back,
+                    doc::MenuClosed::Entry => &keys.entry,
+                };
+                to.clone().focus(window, cx);
+                cx.notify();
+                true
+            }
+            doc::Escape::LeaveFocus => {
+                self.toggle_doc_focus(window, cx);
+                true
+            }
+            doc::Escape::Pass => false,
+        }
+    }
+
+    fn close_doc_more(&mut self, cx: &mut Context<Self>) {
+        if let Some(doc) = self.doc.as_mut() {
+            doc.more = false;
+        }
+        cx.notify();
+    }
+
+    pub fn toggle_doc_more(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.more = !doc.more;
+        if doc.more {
+            self.doc_keys.menu[0].focus(window, cx);
+        }
+        cx.notify();
+    }
+
     /// Show a file the daemon's machine named (an approval's screen). On this
     /// Mac it opens where it is; from another machine it is fetched first, over
     /// the same SSH connection, into a private temp file.
@@ -1747,6 +1898,9 @@ impl Shell {
 
     pub fn show(&mut self, screen: Screen, cx: &mut Context<Self>) {
         if self.screen != screen {
+            if let Some(doc) = self.doc.as_mut() {
+                (doc.focus, doc.more) = (None, false);
+            }
             self.screen = screen;
             self.board_sync(cx);
             cx.notify();
@@ -2226,6 +2380,7 @@ impl Render for Shell {
             }))
             .on_action(cx.listener(|this, _: &ShowOrchestration, _, cx| this.open_orchestra(cx)))
             .on_action(cx.listener(|this, _: &ChooseTarget, window, cx| this.open_chooser(window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleDocFocus, window, cx| this.toggle_doc_focus(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleBrowser, window, cx| this.toggle_browser(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleTerminal, window, cx| this.toggle_terminal(window, cx)))
             // The browser panel's divider follows the pointer wherever it goes.
@@ -2302,10 +2457,18 @@ impl Render for Shell {
         let body = self.panes.body.clone().cached(StyleRefinement::default().flex_1().min_w_0().min_h_0());
         // What doesn't fit the room beside the panel is cut at its edge, not drawn under it.
         let middle = v_flex().flex_1().min_w_0().h_full().overflow_hidden().child(body).children(below);
-        root.relative().child(h_flex().flex_1().min_h_0().children(sidebar).child(middle).children(doc).children(talk).children(browser))
+        // Focus view: only the document, across the window's whole content.
+        let focused = self.doc_focused();
+        let row = if focused {
+            h_flex().flex_1().min_h_0().children(doc)
+        } else {
+            h_flex().flex_1().min_h_0().children(sidebar).child(middle).children(doc).children(talk).children(browser)
+        };
+        root.relative()
+            .child(row)
             // The title bar's fixed buttons, by the traffic lights, over the
             // sidebar or the header alike: the same place whatever slides.
-            .child(views::sidebar::title_buttons(self, cx))
+            .children((!focused).then(|| views::sidebar::title_buttons(self, cx)))
             // Over everything: the chooser, then a question from ssh above it.
             .children(views::quote::layer(self, window, cx))
             .children(views::quote::peek(self))
@@ -2446,6 +2609,7 @@ fn window_bindings() -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("cmd-b", ToggleBoard, None),
         KeyBinding::new("cmd-shift-b", ToggleBrowser, None),
+        KeyBinding::new("cmd-shift-f", ToggleDocFocus, None),
         KeyBinding::new("cmd-shift-l", ShowOrchestration, None),
         KeyBinding::new("ctrl-`", ToggleTerminal, None),
         KeyBinding::new("cmd-\\", ToggleSidebar, None),

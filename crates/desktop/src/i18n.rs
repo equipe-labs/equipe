@@ -43,6 +43,16 @@ mod tests {
     use equipe_core::i18n::{Lang, Words};
 
     #[test]
+    fn focus_views_way_back_names_the_page_as_its_title_does() {
+        // "Back to Briefs & plans" names the page the way the page names itself, in every language.
+        for (code, text) in super::FILES {
+            let words: serde_json::Value = serde_json::from_str(text).unwrap();
+            let (title, back) = (words["docs.title"].as_str().unwrap(), words["doc.focus_back_docs"].as_str().unwrap());
+            assert!(back.contains(title), "{code}: {back:?} doesn't name {title:?}");
+        }
+    }
+
+    #[test]
     fn every_language_has_every_word_taking_the_same_values() {
         let problems = equipe_core::i18n::problems(super::FILES);
         assert!(problems.is_empty(), "{}", problems.join("\n"));

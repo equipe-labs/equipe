@@ -35,6 +35,8 @@ pub enum Icon {
     Clear,
     /// `/compact`.
     Compact,
+    /// Three dots: more actions.
+    More,
     External,
     File,
     Folder,
@@ -125,7 +127,7 @@ pub enum Icon {
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 68] = [
+    pub const ALL: [Icon; 69] = [
         Icon::ArrowDown,
         Icon::ArrowLeft,
         Icon::ArrowRight,
@@ -139,6 +141,7 @@ impl Icon {
         Icon::Copy,
         Icon::Clear,
         Icon::Compact,
+        Icon::More,
         Icon::External,
         Icon::File,
         Icon::Folder,
@@ -211,6 +214,7 @@ impl Icon {
             Icon::Copy => "icons/copy.svg",
             Icon::Clear => "icons/eraser.svg",
             Icon::Compact => "icons/minimize-2.svg",
+            Icon::More => "icons/ellipsis.svg",
             Icon::External => "icons/external-link.svg",
             Icon::File => "icons/file.svg",
             Icon::Folder => "icons/folder.svg",
