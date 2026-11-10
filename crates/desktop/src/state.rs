@@ -1357,7 +1357,7 @@ impl Model {
         // A member starting or leaving may be a move to the other engine.
         let comes_or_goes = matches!(event, Event::SessionStarted { .. } | Event::SessionClosed { .. });
         match event {
-            Event::TicketChanged { ticket, .. } => { { use std::io::Write; let _ = writeln!(std::fs::OpenOptions::new().create(true).append(true).open("/tmp/t585.log").unwrap(), "changed {}", ticket.id); } self.on_ticket(&ticket) }
+            Event::TicketChanged { ticket, .. } => self.on_ticket(&ticket),
             Event::TicketHistory { squad, ticket, entries } if squad == self.squad => {
                 // The ticket itself comes before its record: still not here, it is not on the board.
                 if !self.tickets.iter().any(|t| t.id == ticket) {

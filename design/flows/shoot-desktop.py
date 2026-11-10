@@ -33,7 +33,8 @@ MODES = ["light", "dark"]
 # (flow/screen/state, fake daemon env, snapshot steps, options)
 # options: ask_telemetry (leave the usage question unanswered), no_daemon
 # (nothing to attach to), kill_daemon_ms (stop the daemon that long after
-# the app starts), lang, sizes, wait (ms after the steps, before shots).
+# the app starts), lang, sizes, wait (ms after the steps, before shots), at
+# ({width: steps} run after the window takes that width).
 STATES = []
 
 
@@ -79,9 +80,13 @@ state("conversation/chat/loading", "chat;say:Where are you up to?;wait:1500", {"
 state("conversation/chat/long", "chat;wait:800", {"FAKE_READING": "1"})
 state("conversation/chat/pictures", "chat;wait:800", {"FAKE_REPLY_IMAGES": "1"}, wait=2500)
 state("conversation/chat/ticket-cards", "chat;wait:800", {"FAKE_CARDS": "1"})
-state("conversation/chat/ticket-card-missing", "chat;wait:800;hover:806,432;wait:1500", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, label="A ticket card for a number not on the board: Not found")
-state("conversation/chat/ticket-card-missing-long", "chat;wait:800;hover:806,432;wait:1500", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, lang="de", label="A ticket card for a number not on the board, in German")
-state("conversation/chat/ticket-card-recovered", "chat;wait:800;hover:421,432;wait:1500", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42"}, label="A ticket card for a ticket the list missed: looked up, shown")
+state("conversation/chat/ticket-card-missing", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, at={1200: "hover:806,432;wait:1500", 760: "hover:323,429;wait:1500"}, label="A ticket card for a number not on the board: Not found")
+state("conversation/chat/ticket-card-missing-long", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, lang="de", at={1200: "hover:806,432;wait:1500", 760: "hover:323,429;wait:1500"}, label="A ticket card for a number not on the board, in German")
+state("conversation/chat/ticket-card-recovered", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42"}, at={1200: "hover:421,432;wait:1500", 760: "hover:318,404;wait:1500"}, label="A ticket card for a ticket the list missed: looked up, shown")
+state("conversation/chat/ticket-card-large", "chat;wait:800;zoom:in;zoom:in;wait:600;hover:398,535;wait:1500", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42"}, sizes=[(1200, 760)], label="Large text")
+# One width each: the lookup runs out in a few seconds, and a resize takes longer than that.
+state("conversation/chat/ticket-card-looking", "chat;wait:800;hover:421,432;wait:700", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42", "FAKE_NO_LOOKUP": "1"}, sizes=[(1200, 760)], wait=0, label="A ticket card the list missed, while the daemon is still asked")
+state("conversation/chat/ticket-card-looking-narrow", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42", "FAKE_NO_LOOKUP": "1"}, sizes=[(760, 600)], at={760: "hover:318,404;wait:700"}, wait=0, label="The same, at the narrowest width")
 state("conversation/chat/ask-list", "chat;wait:800", {"FAKE_ASKLIST": "1"})
 state("conversation/chat/diagram", "chat;say:torture 5;wait:5000", {"FAKE_SECONDS": "1"})
 state("conversation/chat/markdown", "chat;say:torture 1;wait:6000", {"FAKE_SECONDS": "1"})
@@ -368,6 +373,8 @@ def run_state(item, bin_dir, root):
     script.append(f"wait:{opts.get('wait', 900)}")
     for w, h in opts.get("sizes", SIZES):
         script += [f"size:{w}x{h}", "wait:700"]
+        # Where the text falls changes with the width: a pointer resting on it moves with it.
+        script += [x for x in opts.get("at", {}).get(w, "").split(";") if x]
         for mode in MODES:
             script += [f"theme:{mode}", "wait:500", f"shot:{out}/{st}.{mode}.{w}.png"]
     script.append("quit")

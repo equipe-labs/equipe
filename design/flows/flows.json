@@ -401,6 +401,42 @@
               "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800`"
             },
             {
+              "id": "ticket-card-missing",
+              "label": "A ticket card for a number not on the board: Not found",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800`"
+            },
+            {
+              "id": "ticket-card-missing-long",
+              "label": "A ticket card for a number not on the board, in German",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800`; EQUIPE_LANG=de"
+            },
+            {
+              "id": "ticket-card-recovered",
+              "label": "A ticket card for a ticket the list missed: looked up, shown",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42; script `chat;wait:800`"
+            },
+            {
+              "id": "ticket-card-large",
+              "label": "Large text",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42; script `chat;wait:800;zoom:in;zoom:in;wait:600;hover:398,535;wait:1500`"
+            },
+            {
+              "id": "ticket-card-looking",
+              "label": "A ticket card the list missed, while the daemon is still asked",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42 FAKE_NO_LOOKUP=1; script `chat;wait:800;hover:421,432;wait:700`"
+            },
+            {
+              "id": "ticket-card-looking-narrow",
+              "label": "The same, at the narrowest width",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42 FAKE_NO_LOOKUP=1; script `chat;wait:800`"
+            },
+            {
               "id": "ask-list",
               "label": "A reply asking a numbered list",
               "kind": "default",
@@ -1097,90 +1133,20 @@
         },
         {
           "id": "document",
-          "title": "Document panel · focus view",
-          "note": "T-617 mockups until the GPUI state is implemented. The default panel exposes Focus view; focus reuses the same document surface across the full content area and returns to the recorded conversation or board origin.",
+          "title": "Document panel",
           "source": [
             "crates/desktop/src/views/doc.rs",
-            "crates/desktop/src/doc.rs",
-            "design/specs/document-focus/prototype.html",
-            "design/specs/document-focus/spec.md"
+            "crates/desktop/src/doc.rs"
           ],
           "expects": [
-            "default",
-            "long"
+            "default"
           ],
           "states": [
             {
               "id": "default",
-              "label": "Default panel · focus entry",
+              "label": "Default",
               "kind": "default",
-              "note": "T-617 mockup: conversation + document panel, long Korean title, Focus view and Close document remain distinct. Replaces the old shot until implementation."
-            },
-            {
-              "id": "default-board",
-              "label": "Default panel · board origin",
-              "kind": "default",
-              "note": "T-617 mockup: board + document panel before focus; selected ticket T-617 and its keyboard focus are the restoration baseline."
-            },
-            {
-              "id": "default-board-scrolled",
-              "label": "Board origin · document scrolled",
-              "kind": "default",
-              "note": "T-617 mockup: the same board baseline with the document at a recorded middle scroll position before entering focus."
-            },
-            {
-              "id": "focus",
-              "label": "Focus view · conversation origin",
-              "kind": "default",
-              "note": "T-617 mockup: selected B Return-first header, Korean, 100%; 760/1200pt and light/dark."
-            },
-            {
-              "id": "focus-board",
-              "label": "Focus view · board origin",
-              "kind": "default",
-              "note": "T-617 mockup: the same focused document records Board as its origin and exposes an explicit return action; 760/1200pt and light/dark."
-            },
-            {
-              "id": "focus-large",
-              "label": "Focus view · long English · 150%",
-              "kind": "long",
-              "note": "T-617 mockup: long English filename, 150% text, compact tools; 760/1200pt and light/dark."
-            },
-            {
-              "id": "focus-menu",
-              "label": "Focus view · More open",
-              "kind": "default",
-              "note": "T-617 mockup: the first Esc closes More and returns keyboard focus to its trigger; 760/1200pt and light/dark."
-            },
-            {
-              "id": "focus-menu-board",
-              "label": "Board focus · More open",
-              "kind": "default",
-              "note": "T-617 mockup: Board-origin sequence, before the first Esc closes More; 760/1200pt and light/dark."
-            },
-            {
-              "id": "focus-after-menu-board",
-              "label": "Board focus · first Esc complete",
-              "kind": "default",
-              "note": "T-617 mockup: More is closed, focus is visibly restored to its trigger, and focus view remains active until the second Esc."
-            },
-            {
-              "id": "focus-restored",
-              "label": "Restored origin · entry focus",
-              "kind": "default",
-              "note": "T-617 mockup: the next Esc exits focus, restores the conversation split, document scroll and selection, then returns keyboard focus to Focus view; 760/1200pt and light/dark."
-            },
-            {
-              "id": "focus-restored-board",
-              "label": "Restored board · selected ticket focus",
-              "kind": "default",
-              "note": "T-617 mockup: after the second Esc, the board split and document return and keyboard focus is visibly restored to selected ticket T-617; 760/1200pt and light/dark."
-            },
-            {
-              "id": "focus-restored-board-scrolled",
-              "label": "Restored board · scroll and focus",
-              "kind": "default",
-              "note": "T-617 mockup: the board split, selected ticket focus and the recorded middle document scroll position are all restored after the second Esc."
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;doc:{ROOT}/design/guidelines.md`"
             }
           ]
         },

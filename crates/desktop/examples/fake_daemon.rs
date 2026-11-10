@@ -981,10 +981,12 @@ fn on_board_command(command: &Command) -> Option<Vec<Event>> {
             let entries = records().lock().unwrap().get(ticket).cloned().unwrap_or_default();
             Some(vec![Event::TicketHistory { squad: squad(), ticket: *ticket, entries }])
         }
+        // `FAKE_NO_LOOKUP=1`: a daemon slow to answer, to shoot a card that is still looking.
+        Command::TicketHistory { .. } if std::env::var_os("FAKE_NO_LOOKUP").is_some() => Some(Vec::new()),
         Command::TicketHistory { ticket, .. } => {
             let entries = records().lock().unwrap().get(ticket).cloned().unwrap_or_default();
             // As the daemon does: the ticket first, if it has it.
-            let mut out: Vec<Event> = tickets().lock().unwrap().iter().find(|t| t.id == *ticket).map(|t| Event::TicketChanged { squad: squad(), ticket: t.clone() }).into_iter().collect();
+            let mut out: Vec<Event> = all.iter().find(|t| t.id == *ticket).map(|t| Event::TicketChanged { squad: squad(), ticket: t.clone() }).into_iter().collect();
             out.push(Event::TicketHistory { squad: squad(), ticket: *ticket, entries });
             Some(out)
         }

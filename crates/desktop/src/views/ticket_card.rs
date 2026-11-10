@@ -222,9 +222,10 @@ impl Hover {
             Phase::Open { inside: true, .. } | Phase::Open { keys: true, .. } => false,
             // On its way to the card: a link it passes over isn't where it's going.
             Phase::Open { target: shown, .. } if shown.id != target.id && self.heading_in(shown) => false,
+            // The same link again: where it is now (the text may have reflowed under an open card).
             Phase::Open { target: shown, left, .. } if shown.id == target.id => {
-                self.phase = Phase::Open { target: shown, inside: false, left: None, keys: false };
-                left.is_some()
+                self.phase = Phase::Open { target, inside: false, left: None, keys: false };
+                left.is_some() || shown.anchor != target.anchor
             }
             // From one card to the next link: the next card at once.
             Phase::Open { .. } | Phase::Done { .. } => {
@@ -806,6 +807,7 @@ fn missing(p: Palette, id: TicketId, gone: bool) -> AnyElement {
         .text_size(px(SMALL))
         .child(div().font_family(MONO).text_size(px(12.)).text_color(p.text2).child(format!("T-{id}")))
         .child(div().text_color(p.muted).child("·"))
+        .when(!gone, |row| row.child(crate::motion::spinner(11., p.muted)))
         .child(div().text_color(p.muted).child(if gone { t!("card.not_found") } else { t!("card.loading") }))
         .into_any_element()
 }
