@@ -1512,7 +1512,7 @@ const STAGE_H: f32 = 172.;
 /// Its other pictures' thumbnails, and how many before "+n".
 const THUMB_W: f32 = 46.;
 const THUMB_H: f32 = 32.;
-const THUMBS_MAX: usize = 5;
+const THUMBS_MAX: usize = 4;
 
 /// A component as the person points at it, with the picture on show.
 fn component_context(c: &Component, picture: Option<&Preview>) -> DesignContext {
