@@ -1573,7 +1573,8 @@ impl BrowserPanel {
         let typing = self.url.read(cx).focus_handle(cx).is_focused(window);
         let shown = page.as_ref().and_then(|pg| browse::address(&pg.url)).filter(|_| !typing);
         // Room for the words beside the icons: Follow from 420 points, Open in Chrome from 640.
-        let (wide, wider) = (self.width >= 420., self.width >= 640.);
+        let shown_width = fit_width(self.width, f32::from(window.viewport_size().width) / window.content_zoom().max(0.01));
+        let (wide, wider) = (shown_width >= 420., shown_width >= 640.);
         h_flex()
             .px_2()
             .pb_2()
