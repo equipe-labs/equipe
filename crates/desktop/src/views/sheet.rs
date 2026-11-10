@@ -59,18 +59,21 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         "sheet",
         680.,
         v_flex()
+            .id("sheet-card")
+            .role(Role::Dialog)
+            .aria_label(sheet.title.clone())
             .gap_3()
             .min_h_0()
-            .child(div().text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(sheet.title.clone()))
-            .children(sheet.lead.clone().map(|l| div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.text2).child(l)))
-            .child(v_flex().id("sheet-rows").flex_1().min_h_0().max_h(px(420.)).overflow_y_scroll().gap_1().children(rows))
-            .children(sheet.foot.clone().map(|l| div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.muted).child(l)))
+            .child(div().id("sheet-title").role(Role::Heading).aria_label(sheet.title.clone()).text_size(px(18.)).font_weight(FontWeight::SEMIBOLD).child(sheet.title.clone()))
+            .children(sheet.lead.clone().map(|l| div().id("sheet-lead").role(Role::Paragraph).aria_label(l.clone()).text_size(px(SMALL)).line_height(px(20.)).text_color(p.text2).child(l)))
+            .child(v_flex().id("sheet-rows").role(Role::List).aria_label(sheet.title.clone()).flex_1().min_h_0().max_h(px(420.)).overflow_y_scroll().gap_1().children(rows))
+            .children(sheet.foot.clone().map(|l| div().id("sheet-foot").role(Role::Paragraph).aria_label(l.clone()).text_size(px(SMALL)).line_height(px(20.)).text_color(p.muted).child(l)))
             .child(
                 h_flex()
                     .gap_2()
                     .justify_end()
                     .children(buttons)
-                    .child(button(p, "sheet-close", t!("sheet.close"), true).on_click(cx.listener(|this, _, window, cx| this.close_info(window, cx)))),
+                    .child(button(p, "sheet-close", t!("sheet.close"), true).track_focus(&shell.sheet_focus).role(Role::Button).aria_label(t!("sheet.close")).on_click(cx.listener(|this, _, window, cx| this.close_info(window, cx)))),
             ),
     ))
 }
@@ -78,11 +81,14 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
 fn row(shell: &Shell, ix: usize, r: &Row, key_width: f32, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     if r.heading {
-        return div().pt_2().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.accent).child(r.text.clone()).into_any_element();
+        return div().id(("sheet-row", ix)).role(Role::Heading).aria_label(r.text.clone()).pt_2().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.accent).child(r.text.clone()).into_any_element();
     }
     let undo = r.undo;
     let squad = shell.model.squad.clone();
     h_flex()
+        .id(("sheet-row", ix))
+        .role(Role::ListItem)
+        .aria_label(if r.head.is_empty() { r.text.clone() } else { format!("{}: {}", r.head, r.text) })
         .gap_3()
         .items_start()
         .text_size(px(SMALL))

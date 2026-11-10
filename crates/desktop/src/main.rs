@@ -351,6 +351,9 @@ pub struct Shell {
     jobs: tokio::sync::mpsc::UnboundedSender<(sheet::After, Result<Vec<String>, String>)>,
     /// A sheet over the window (usage, help, changes, memory) and a question asked first.
     pub sheet: Option<sheet::Sheet>,
+    /// The sheet's Close button: keys move there when a sheet opens (`sheet_focused` once they have).
+    pub sheet_focus: FocusHandle,
+    sheet_focused: bool,
     pub confirm: Option<sheet::Ask>,
     /// The roles a squad just started joins with, once it is open and empty.
     pending_team: Option<Vec<String>>,
@@ -509,6 +512,8 @@ impl Shell {
             notices,
             jobs,
             sheet: None,
+            sheet_focus: cx.focus_handle().tab_stop(true),
+            sheet_focused: false,
             confirm: None,
             pending_team: None,
             pending_mode: None,
@@ -2042,6 +2047,13 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A sheet opened: the keys go into it, once; Esc or Close sends them back to the box.
+        if self.sheet.is_some() != self.sheet_focused {
+            self.sheet_focused = self.sheet.is_some();
+            if self.sheet_focused {
+                self.sheet_focus.focus(window, cx);
+            }
+        }
         // The metrics cards pick their layout by the width the screen has.
         self.metrics.room = f32::from(window.viewport_size().width) - self.board.sidebar_width;
         // A message held for its uploads goes as soon as they're up.

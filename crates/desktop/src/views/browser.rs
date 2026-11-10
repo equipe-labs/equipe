@@ -66,6 +66,17 @@ const MOVE_EVERY: Duration = Duration::from_millis(16);
 const TOAST_FOR: Duration = Duration::from_secs(4);
 const HINT_FOR: Duration = Duration::from_millis(1800);
 
+/// The widest the panel may be in a window this wide: the conversation and
+/// the sidebar keep their room.
+fn widest(window: f32) -> f32 {
+    (window - CHAT_MIN - 220.).max(MIN_WIDTH)
+}
+
+/// The width the panel is drawn at: the one kept, held within the window.
+fn fit_width(kept: f32, window: f32) -> f32 {
+    kept.clamp(MIN_WIDTH, widest(window))
+}
+
 fn hash_text(text: &str) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -2203,9 +2214,12 @@ impl Render for BrowserPanel {
         self.rewatch(window, cx);
         let p = self.palette;
         let dragging = self.drag.is_some();
+        // A window narrower than the width kept (or dragged wide before it
+        // shrank) holds the panel to what it can give: never past the edge.
+        let fit = fit_width(self.width, f32::from(window.viewport_size().width));
         h_flex()
             .h_full()
-            .w(px(self.width))
+            .w(px(fit))
             .flex_none()
             .sans()
             .child(
@@ -2302,8 +2316,7 @@ impl BrowserPanel {
             self.drag = None;
             cx.emit(PanelEvent::Resized(self.width));
         } else {
-            let max = (f32::from(window.viewport_size().width) - CHAT_MIN - 220.).max(MIN_WIDTH);
-            self.width = (w0 + x0 - x).clamp(MIN_WIDTH, max);
+            self.width = (w0 + x0 - x).clamp(MIN_WIDTH, widest(f32::from(window.viewport_size().width)));
         }
         cx.notify();
         true
@@ -2624,6 +2637,14 @@ pub mod keys {
 
     #[cfg(test)]
     mod tests {
+        use super::*;
+
+        #[test]
+        fn a_narrow_window_holds_the_panel_inside_it() {
+            assert_eq!(fit_width(560., 1200.), 560.);
+            assert_eq!(fit_width(560., 760.), MIN_WIDTH);
+            assert_eq!(fit_width(300., 1200.), MIN_WIDTH);
+        }
         use super::*;
 
         fn stroke(key: &str, key_char: Option<&str>, m: Modifiers) -> Keystroke {
