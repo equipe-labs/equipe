@@ -16,15 +16,17 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 
+use crate::tokens;
+
 /// Hover fills, tooltips, a press.
-pub const FAST: Duration = Duration::from_millis(120);
+pub const FAST: Duration = Duration::from_millis(tokens::MOTION_DURATION_FAST_MS);
 /// Popovers, menus, chips, the jump button.
-pub const BASE: Duration = Duration::from_millis(160);
+pub const BASE: Duration = Duration::from_millis(tokens::MOTION_DURATION_BASE_MS);
 /// Dialogs, the lightbox, cards and messages arriving.
-pub const SLOW: Duration = Duration::from_millis(200);
+pub const SLOW: Duration = Duration::from_millis(tokens::MOTION_DURATION_SLOW_MS);
 
 /// The sidebar sliding in or out (⌘\), and the header's content beside it.
-pub const SLIDE: Duration = Duration::from_millis(180);
+pub const SLIDE: Duration = Duration::from_millis(tokens::MOTION_DURATION_SLIDE_MS);
 
 /// The one curve: cubic ease-out — quick to start, soft to land.
 pub fn ease_out(t: f32) -> f32 {
@@ -46,18 +48,21 @@ pub fn slide_inverse(v: f32) -> f32 {
 }
 
 /// How far a popover or a tooltip travels toward its anchor.
-const POP_TRAVEL: f32 = 4.;
+const POP_TRAVEL: f32 = tokens::MOTION_TRAVEL_POP;
 /// How far a card or a message rises as it arrives.
-const RISE_TRAVEL: f32 = 6.;
+const RISE_TRAVEL: f32 = tokens::MOTION_TRAVEL_RISE;
 /// How far a dialog settles.
-const DIALOG_TRAVEL: f32 = 8.;
+const DIALOG_TRAVEL: f32 = tokens::MOTION_TRAVEL_DIALOG;
 
 /// The resting shadow of what floats, at `ink` (0–1) of its strength.
 pub fn float_shadow(ink: f32) -> Vec<BoxShadow> {
-    vec![
-        BoxShadow { color: hsla(0., 0., 0., 0.22 * ink), offset: point(px(0.), px(8.)), blur_radius: px(24.), spread_radius: px(-4.), inset: false },
-        BoxShadow { color: hsla(0., 0., 0., 0.10 * ink), offset: point(px(0.), px(2.)), blur_radius: px(6.), spread_radius: px(0.), inset: false },
-    ]
+    tokens::ELEVATION_FLOAT
+        .iter()
+        .map(|s| {
+            let alpha = (s.color & 0xFF) as f32 / 255.;
+            BoxShadow { color: hsla(0., 0., 0., alpha * ink), offset: point(px(s.x), px(s.y)), blur_radius: px(s.blur), spread_radius: px(s.spread), inset: false }
+        })
+        .collect()
 }
 
 /// A popover or a menu: it fades in, travels a few points from its anchor
