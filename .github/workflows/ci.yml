@@ -46,6 +46,30 @@ jobs:
       - run: cargo build -p equipe-core -p equipe-providers -p equipe-protocol -p equipe-desktop-control --locked
       - run: cargo clippy -p equipe-core -p equipe-providers -p equipe-protocol -p equipe-desktop-control --locked -- -D warnings
 
+  windows-desktop:
+    name: Windows desktop (TP-8..TP-10)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build -p equipe-desktop --features snapshot --bins --example fake_daemon --locked
+      - name: TP-9 ConPTY runs a command and its output shows
+        run: cargo test -p equipe-desktop --features snapshot --locked conpty_starts_powershell
+      - name: Desktop unit tests
+        run: cargo test -p equipe-desktop --features snapshot --locked
+      - name: TP-8 screens against the fake daemon
+        run: pwsh scripts/windows-desktop-shots.ps1 windows-shots
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        if: always()
+        with:
+          name: windows-desktop-shots
+          path: windows-shots
+
   test:
     name: test (${{ matrix.os }})
     strategy:
