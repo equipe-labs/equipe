@@ -2302,6 +2302,7 @@ impl Runtime {
             Command::SignOut { engine } => self.sign_out(engine),
             Command::InstallEngine { engine } => self.install_engine(engine),
             Command::SetEngineSwitching { squad, mode } => self.set_engine_switching(&squad, mode).await,
+            Command::SetParallel { squad, parallel } => self.set_parallel(&squad, parallel).await,
             Command::SetPmAccepts { squad, on } => {
                 if let Some(journal) = self.journal(&squad) {
                     let _ = journal.set_pm_accepts(on);
@@ -5437,6 +5438,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         // Members equipe once brought in for a rush finish what they hold and take nothing new.
         let helpers = self.journals.get(squad).map(Journal::helpers).unwrap_or_default();
         let disk = self.disk.status.level;
+        let parallel = self.journals.get(squad).map(Journal::parallel).unwrap_or_default();
         let used = |engine: Engine| crate::lanes::plan_used(self.plans.iter().find(|p| p.engine == engine).map(|p| &p.usage));
         /// A member as this pass weighs it.
         struct Seat {
@@ -5472,12 +5474,12 @@ for one project goes to it as tickets for its owners, with that project — and 
             // One brought in for a rush only finishes what it holds; what it
             // owns by name waits for it rather than going to its role.
             let takes_new = !moving && !helpers.contains(&id);
-            let limit = crate::lanes::member_limit(used(s.engine), disk);
+            let limit = crate::lanes::member_limit(used(s.engine), disk, &parallel);
             members.push(Seat { name: m.name.clone(), role: m.role.clone(), joined: s.joined, engine: s.engine, runs, limit, takes_new, held });
         }
         let room: HashMap<Engine, usize> = [Engine::Claude, Engine::Codex]
             .into_iter()
-            .map(|e| (e, crate::lanes::engine_limit(used(e), disk).saturating_sub(at_work.get(&e).copied().unwrap_or(0))))
+            .map(|e| (e, crate::lanes::engine_limit(used(e), disk, &parallel).saturating_sub(at_work.get(&e).copied().unwrap_or(0))))
             .collect();
         fn lane<'a>(m: &'a Seat, tickets: &[Ticket], held_too: bool) -> crate::lanes::Member<'a> {
             crate::lanes::Member {
@@ -8241,6 +8243,7 @@ it back there once they have done it.{again} End your turn now with a short line
             plan: self.plan,
             plans: self.plans.clone(),
             engine_switching: self.journals.get(squad).map(Journal::engine_switching).unwrap_or_default(),
+            parallel: self.journals.get(squad).map(Journal::parallel).unwrap_or_default(),
             pm_accepts: self.journals.get(squad).is_none_or(Journal::pm_accepts),
             role_models: self.journals.get(squad).map(Journal::role_models).unwrap_or_default(),
             secret_asks: self.secret_asks(squad).clone(),

@@ -527,6 +527,8 @@
   "control.engine_turn_end": "{name} wechselt zu {to}, sobald diese Runde endet; das Gespräch wird übergeben.",
   "control.engine_free": "{name} wechselt zu {to}, sobald es frei ist; das Gespräch wird übergeben.",
   "control.engine_switching": "Engine-Wechsel auf „{mode}“ setzen",
+  "control.parallel_max": "Unabhängig von der Plannutzung bis zu {per_member} Tickets pro Mitglied und {per_engine} pro Engine gleichzeitig bearbeiten (Max)",
+  "control.parallel_auto": "Parallele Arbeit wieder nach der Plannutzung bemessen (Automatisch)",
   "control.design_reviewer_auto": "Automatisch wählen, wer die Arbeit des Designers prüft: die andere Engine, wenn sie Kapazität hat, sonst eine frische Sitzung der eigenen Engine des Designers",
   "control.design_reviewer_same": "Die Arbeit des Designers von seiner eigenen Engine prüfen lassen, in einer frischen Sitzung",
   "control.design_reviewer_other": "Die Arbeit des Designers immer von der anderen Engine prüfen lassen",

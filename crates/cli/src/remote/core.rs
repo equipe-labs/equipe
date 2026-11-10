@@ -246,6 +246,7 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::ConfirmAccept { squad, .. }
         | Command::DeclineAccept { squad, .. }
         | Command::SetEngineSwitching { squad, .. }
+        | Command::SetParallel { squad, .. }
         | Command::ApplyEngineProposal { squad, .. }
         | Command::DismissEngineProposal { squad, .. }
         | Command::UndoEngineProposal { squad, .. }

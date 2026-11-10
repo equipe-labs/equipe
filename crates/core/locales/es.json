@@ -527,6 +527,8 @@
   "control.engine_turn_end": "{name} pasa a {to} cuando termine este turno, con su conversación traspasada.",
   "control.engine_free": "{name} pasa a {to} en cuanto esté libre, con su conversación traspasada.",
   "control.engine_switching": "Poner el cambio de motor en «{mode}»",
+  "control.parallel_max": "Trabajar hasta {per_member} tickets por miembro y {per_engine} por motor a la vez, sea cual sea el uso del plan (Máx.)",
+  "control.parallel_auto": "Volver a ajustar el trabajo en paralelo al uso del plan (Automático)",
   "control.design_reviewer_auto": "Elegir automáticamente quién revisa el trabajo del diseñador: el otro motor cuando tenga margen; si no, una sesión nueva del motor del propio diseñador",
   "control.design_reviewer_same": "Que el propio motor del diseñador revise su trabajo, en una sesión nueva",
   "control.design_reviewer_other": "Que el otro motor revise siempre el trabajo del diseñador",

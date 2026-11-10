@@ -734,6 +734,16 @@ impl Journal {
         self.set_meta("subagents_at_once", &at_once.map(|n| equipe_protocol::subagents_at_once(n).to_string()).unwrap_or_default())
     }
 
+    /// How many tickets the squad works at once: auto (by the plans) unless
+    /// the person set max, its caps within bounds.
+    pub fn parallel(&self) -> equipe_protocol::lanes::Parallel {
+        self.meta("parallel").and_then(|v| serde_json::from_str::<equipe_protocol::lanes::Parallel>(&v).ok()).map(|p| p.clamped()).unwrap_or_default()
+    }
+
+    pub fn set_parallel(&self, parallel: equipe_protocol::lanes::Parallel) -> Result<()> {
+        self.set_meta("parallel", &serde_json::to_string(&parallel.clamped()).unwrap_or_default())
+    }
+
     /// Which engine reviews the designer's work; auto unless the person set it.
     pub fn design_reviewer(&self) -> equipe_protocol::engines::Reviewer {
         self.meta("design_reviewer").and_then(|v| equipe_protocol::engines::Reviewer::parse(&v)).unwrap_or_default()
@@ -1973,6 +1983,24 @@ mod tests {
         // Back to each engine's own.
         j.set_subagents_at_once(None).unwrap();
         assert_eq!(j.subagents_at_once(), None);
+    }
+
+    #[test]
+    fn a_squad_keeps_its_parallel_work_and_max_comes_back_as_it_was_left() {
+        use equipe_protocol::lanes::{Parallel, ParallelMode};
+        let home = temp_home();
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        assert_eq!(j.parallel(), Parallel::default(), "never set: auto");
+        j.set_parallel(Parallel::max(8, 20)).unwrap();
+        assert_eq!(Journal::for_squad(&home, "acme").unwrap().parallel(), Parallel::max(8, 20), "kept across opening");
+        // Back on auto, the caps stay for the next time max is chosen.
+        j.set_parallel(Parallel { mode: ParallelMode::Auto, ..Parallel::max(8, 20) }).unwrap();
+        assert_eq!(j.parallel(), Parallel { mode: ParallelMode::Auto, per_member: 8, per_engine: 20 });
+        // Never past the bounds, whatever was written.
+        j.set_meta("parallel", r#"{"mode":"max","per_member":400,"per_engine":0}"#).unwrap();
+        assert_eq!(j.parallel(), Parallel::max(12, 1));
+        j.set_meta("parallel", "not json").unwrap();
+        assert_eq!(j.parallel(), Parallel::default(), "unreadable: auto");
     }
 
     #[test]

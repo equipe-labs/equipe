@@ -2286,6 +2286,44 @@ async fn the_pm_reads_and_changes_subagents_at_once_with_a_card_only_for_an_incr
 }
 
 #[tokio::test]
+async fn the_pm_sets_parallel_work_to_max_only_on_the_persons_tap_and_back_to_auto_at_once() {
+    use equipe_core::protocol::lanes::{Parallel, ParallelMode};
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+
+    let read = tool(&handle, "pm", "settings", serde_json::json!({})).await;
+    assert!(read.text.contains("Parallel work (parallel): auto"), "{}", read.text);
+    let out_of_range = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "parallel", "value": "max", "per_member": 40 })).await;
+    assert!(out_of_range.is_error && out_of_range.text.contains("1 through 12"), "{}", out_of_range.text);
+
+    // Max spends the plan faster: the person's card, applied on their yes alone.
+    let handle2 = handle.clone();
+    let asking = tokio::spawn(async move {
+        tool(&handle2, "pm", "change_setting", serde_json::json!({ "setting": "parallel", "value": "max", "per_member": 8, "why": "run flat out" })).await
+    });
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    assert_eq!(approval.tool, "Change setting");
+    assert!(approval.action.contains("8 tickets per member and 16 per engine"), "{}", approval.action);
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().parallel(), Parallel::default(), "not before the tap");
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None, said: None });
+    until(&mut events, |e| matches!(e, Event::ParallelChanged { parallel, .. } if *parallel == Parallel::max(8, 16))).await;
+    assert!(asking.await.unwrap().text.starts_with("The person said yes"));
+    let read = tool(&handle, "pm", "settings", serde_json::json!({})).await;
+    assert!(read.text.contains("Parallel work (parallel): max — up to 8 tickets per member and 16 per engine"), "{}", read.text);
+
+    // Auto only narrows: at once, max's caps kept.
+    let narrowed = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "parallel", "value": "auto" })).await;
+    assert!(!narrowed.is_error && narrowed.text.starts_with("Done:"), "{}", narrowed.text);
+    until(&mut events, |e| matches!(e, Event::ParallelChanged { parallel, .. } if parallel.mode == ParallelMode::Auto)).await;
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().parallel(), Parallel { mode: ParallelMode::Auto, ..Parallel::max(8, 16) });
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn the_pm_moves_members_to_another_engine_only_on_the_persons_tap_and_never_through_their_model() {
     use equipe_core::protocol::Engine;
     use equipe_core::protocol::engines::Why;

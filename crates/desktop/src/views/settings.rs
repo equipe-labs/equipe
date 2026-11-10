@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use equipe_core::i18n::{Front, Lang};
+use equipe_core::protocol::lanes::Parallel;
 use equipe_core::protocol::{Command, Engine, EngineState, Mode, RoleModel, SessionId};
 use equipe_core::t;
 use gpui_kit::component::input::{Input, InputState};
@@ -55,6 +56,9 @@ pub enum Pop {
     RoleEffort(&'static str),
     /// How many subagents each member runs at once.
     Subagents,
+    /// Max's runs per member, and per engine (Settings › AI platforms).
+    PerMember,
+    PerEngine,
     /// The model providers to connect (Settings › AI platforms).
     AddProvider,
 }
@@ -73,6 +77,8 @@ enum Act {
     RoleEffort(&'static str, Engine, Option<String>),
     /// Subagents at once (`None`: each engine's own).
     Subagents(Option<u32>),
+    /// The squad's parallel work, a cap changed.
+    Parallel(equipe_core::protocol::lanes::Parallel),
     /// A provider's form opened, by its preset.
     AddProvider(&'static str),
 }
@@ -1411,6 +1417,17 @@ fn choices(shell: &Shell, pop: Pop) -> (f32, Vec<(String, String, bool, Act)>) {
             rows.extend(SUBAGENT_CHOICES.into_iter().map(|n| (n.to_string(), String::new(), now == Some(n), Act::Subagents(Some(n)))));
             (420., rows)
         }
+        Pop::PerMember | Pop::PerEngine => {
+            let now = model.parallel;
+            let (mut caps, at) = if pop == Pop::PerMember { (switching::per_member_choices(), now.per_member) } else { (switching::PER_ENGINE_CHOICES.to_vec(), now.per_engine) };
+            // One set elsewhere (the PM, `/parallel`) is listed too.
+            if !caps.contains(&at) {
+                caps.push(at);
+                caps.sort_unstable();
+            }
+            let set = |n: u32| if pop == Pop::PerMember { Parallel { per_member: n, ..now } } else { Parallel { per_engine: n, ..now } };
+            (120., caps.into_iter().map(|n| (n.to_string(), String::new(), n == at, Act::Parallel(set(n)))).collect())
+        }
         Pop::AddProvider => {
             let connected: Vec<&str> = shell.engines.providers.iter().flatten().map(|p| p.id.as_str()).collect();
             let rows = equipe_core::model_providers::PRESETS
@@ -1513,6 +1530,9 @@ fn pop_number(pop: Pop) -> u64 {
         Pop::Squad => 2,
         Pop::Dictation => 6,
         Pop::Subagents => 0,
+        // Past every role's and the providers'.
+        Pop::PerMember => 8 * (2 * ROLE_ORDER.len() as u64 + 2),
+        Pop::PerEngine => 8 * (2 * ROLE_ORDER.len() as u64 + 3),
         Pop::Model(s) => 3 + s * 8,
         Pop::Effort(s) => 4 + s * 8,
         Pop::Mode(s) => 5 + s * 8,
@@ -1658,6 +1678,7 @@ impl Shell {
                 let squad = self.model.squad.clone();
                 self.send_command(Command::SetSubagentsAtOnce { squad, at_once });
             }
+            Act::Parallel(parallel) => self.set_parallel(parallel, cx),
             Act::Mode(session, mode) => {
                 if let Some(name) = self.model.members.iter().find(|m| m.session == session).map(|m| m.name.clone()) {
                     self.send_command(Command::SetMode { squad: self.model.squad.clone(), member: Some(name), mode });

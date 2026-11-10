@@ -527,6 +527,8 @@
   "control.engine_turn_end": "{name} switches to {to} when this turn ends, its conversation handed over.",
   "control.engine_free": "{name} switches to {to} as soon as it's free, its conversation handed over.",
   "control.engine_switching": "Set engine switching to '{mode}'",
+  "control.parallel_max": "Run up to {per_member} tickets per member and {per_engine} per engine at once, whatever the plan usage (Max)",
+  "control.parallel_auto": "Size parallel work by plan usage again (Auto)",
   "control.design_reviewer_auto": "Choose who reviews the designer's work automatically: the other engine when it has room, else a fresh session of the designer's own",
   "control.design_reviewer_same": "Have the designer's work reviewed by its own engine, in a fresh session",
   "control.design_reviewer_other": "Have the designer's work always reviewed by the other engine",
