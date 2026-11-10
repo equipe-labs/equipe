@@ -598,7 +598,7 @@ mod tests {
         assert_eq!(parsed.problems, [], "every token reads");
         assert_eq!(parsed.modes, ["light", "dark"]);
         let bg = token(&parsed, "color.bg");
-        assert_eq!((bg.value_in(Some("light")), bg.value_in(Some("dark"))), (&json!("#F6F5F1"), &json!("#0A0A0C")));
+        assert_eq!((bg.value_in(Some("light")), bg.value_in(Some("dark"))), (&json!("#FAF9F6"), &json!("#151513")));
         assert_eq!(token(&parsed, "button.primary-bg").value_in(Some("dark")), token(&parsed, "color.action").value_in(Some("dark")), "a component token takes its alias's modes");
     }
 }
