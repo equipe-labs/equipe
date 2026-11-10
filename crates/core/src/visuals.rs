@@ -9,13 +9,20 @@
 //! so a member hears at once what won't show. A thumbnail is made here, so a
 //! phone never gets the whole of a 6 MB render.
 //!
+//! A reply's Mermaid diagrams are drawn here as PNGs for a screen that
+//! can't draw them (`diagram`); the daemon gives those by their path alone.
+//!
 //! A reply shows pictures too: each image its Markdown embeds, and the
 //! pictures right in a folder it points at (`markdown`) — given only when a
 //! line the daemon itself recorded for the squad names them, under the same
-//! rules. A ticket whose worktree went (accepted, its merge still to come)
+//! rules; a picture a line embeds by name may be in one of the squad's
+//! projects or a temp folder too, where a quick chart or render lands. A ticket whose worktree went (accepted, its merge still to come)
 //! still shows its hand-in: the pictures are read from its branch, or from
 //! main once merged, by the paths the ticket recorded and no others.
 
+pub mod cache;
+pub mod card;
+pub mod diagram;
 pub mod markdown;
 
 use std::collections::{HashMap, HashSet};
@@ -122,7 +129,7 @@ pub fn check(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, String> {
     let real = std::fs::canonicalize(path).map_err(|_| refused(path, "no such file"))?;
     let roots: Vec<PathBuf> = roots.iter().filter_map(|r| std::fs::canonicalize(r).ok()).collect();
     if !roots.iter().any(|root| real.starts_with(root)) {
-        return Err(refused(path, "outside your worktree and the squad's folder"));
+        return Err(refused(path, &format!("{} and the squad's folder", rpc::IMAGE_OUTSIDE)));
     }
     if mime_of(&real).is_none() {
         return Err(refused(path, "a link to something that isn't a picture"));
@@ -251,6 +258,11 @@ pub struct Shown {
     pub folders: HashSet<String>,
     /// A ticket's pictures whose worktree is gone: where git still has each.
     pub kept: HashMap<String, Kept>,
+    /// The pictures the conversation's lines embed by name: given from the
+    /// squad's projects and the scratch folders too.
+    pub said: HashSet<String>,
+    /// The squad's projects.
+    pub projects: Vec<PathBuf>,
 }
 
 /// Where git has a picture of a ticket whose worktree went: in `repo`, at
@@ -298,11 +310,14 @@ pub fn shown(home: &Path, squad: &str) -> Shown {
         return Shown::default();
     }
     let Ok(journal) = crate::journal::Journal::open(&db) else { return Shown::default() };
-    let mut out = Shown { roots: vec![crate::squad_home::path(home, squad)], ..Shown::default() };
+    let mut out = Shown { roots: vec![crate::squad_home::path(home, squad)], projects: journal.projects().unwrap_or_default(), ..Shown::default() };
     for set in journal.questions() {
         out.paths.extend(set.images().map(str::to_owned));
     }
-    for ticket in journal.tickets().unwrap_or_default() {
+    let tickets = journal.tickets().unwrap_or_default();
+    // What a ticket still at work keeps in its design folder: the designer studio's pictures.
+    out.paths.extend(crate::design::studio::shown(&tickets));
+    for ticket in tickets {
         out.paths.extend(ticket.images.iter().cloned());
         out.kept.extend(kept_of(&ticket, home, squad));
         out.roots.extend(ticket.worktree);
@@ -321,10 +336,11 @@ fn said(journal: &crate::journal::Journal, home: &Path, squad: &str, out: &mut S
     let folder = crate::squad_home::path(home, squad);
     let mut cwds: HashSet<PathBuf> = HashSet::new();
     for (cwd, entry) in journal.said_with_paths(SAID).unwrap_or_default() {
-        let (Entry::User { text } | Entry::Reply { text } | Entry::Note { text }) = &entry else { continue };
+        let (Entry::User { text, .. } | Entry::Reply { text } | Entry::Note { text, .. }) = &entry else { continue };
         for image in markdown::local_images(text) {
             for base in [&cwd, &folder] {
                 if let Some(path) = markdown::lexical(&image.path, base) {
+                    out.said.insert(path.to_string_lossy().into_owned());
                     out.paths.insert(path.to_string_lossy().into_owned());
                 }
             }
@@ -385,15 +401,73 @@ fn read_kept(path: &Path, kept: &Kept, max: Option<u32>) -> Result<ImageRead, St
 /// Answer a `read_image` for `ask.squad`, at most `cap` pixels on a side
 /// when given (a phone's).
 pub fn serve(home: &Path, ask: &ReadImage, cap: Option<u32>) -> Result<ImageRead, String> {
-    let shown = shown(home, &ask.squad);
-    if !shown.paths.contains(&ask.path) && !in_folder(&shown, &ask.path) {
-        return Err(format!("{} isn't a picture {} shows", ask.path, ask.squad));
+    serve_with(home, ask, cap, &scratch_folders())
+}
+
+/// A kept card page, as it is: `text/html`, its CSP inside (docs/VISUALS.md),
+/// while its card keeps the contract ([`card::kept_fragment`]).
+fn card_page(path: &Path) -> Result<ImageRead, String> {
+    use base64::Engine as _;
+    let meta = std::fs::symlink_metadata(path).map_err(|_| refused(path, "no such file"))?;
+    if !meta.is_file() || meta.len() > card::PAGE_MAX {
+        return Err(refused(path, "not a card's page"));
     }
+    let bytes = std::fs::read(path).map_err(|_| refused(path, "couldn't be read"))?;
+    let html = std::str::from_utf8(&bytes).map_err(|_| refused(path, "not a card's page"))?;
+    card::kept_fragment(html).map_err(|why| refused(path, &format!("no longer keeps the card contract ({why})")))?;
+    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(ImageRead { mime: "text/html".into(), size: bytes.len() as u64, width: None, height: None, data, scaled: false })
+}
+
+/// The folders a member drops a quick render or chart in: this Mac's temp folders.
+fn scratch_folders() -> Vec<PathBuf> {
+    vec![std::env::temp_dir(), PathBuf::from("/tmp"), PathBuf::from("/private/tmp")]
+}
+
+/// [`serve`], with `scratch` as the scratch folders: a picture a line embeds
+/// by name is given from the squad's projects and those too.
+pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[PathBuf]) -> Result<ImageRead, String> {
     let max = match (ask.max, cap) {
         (Some(max), Some(cap)) => Some(max.min(cap)),
         (max, cap) => max.or(cap),
     };
-    let path = Path::new(&ask.path);
+    // A card's page the daemon kept, for a screen that opens the card itself.
+    if card::is_page(home, &ask.squad, Path::new(&ask.path)) {
+        cache::touch(Path::new(&ask.path));
+        return card_page(Path::new(&ask.path));
+    }
+    // A diagram the daemon drew for the squad (`visuals_rendered`).
+    if diagram::is_drawn(home, &ask.squad, Path::new(&ask.path)) {
+        cache::touch(Path::new(&ask.path));
+        return read(Path::new(&ask.path), &[diagram::dir(home, &ask.squad)], max);
+    }
+    let mut shown = shown(home, &ask.squad);
+    // A picture of a ticket's work the designer studio named lately (`crate::design::studio`).
+    if crate::design::studio::given(home, &ask.squad, &ask.path) {
+        shown.paths.insert(ask.path.clone());
+        if let Some(dir) = Path::new(&ask.path).parent() {
+            shown.roots.push(dir.to_path_buf());
+        }
+    }
+    // A line that embeds a picture by its name alone, read against another
+    // folder than the screen's: the same name said counts as said.
+    let named = file_name(&ask.path).is_some_and(|name| shown.said.iter().any(|s| file_name(s) == Some(name)));
+    if !shown.paths.contains(&ask.path) && !in_folder(&shown, &ask.path) && !named {
+        return Err(format!("{} isn't a picture {} shows", ask.path, ask.squad));
+    }
+    if shown.said.contains(&ask.path) || named {
+        shown.roots.extend(shown.projects.iter().cloned());
+        shown.roots.extend(scratch.iter().cloned());
+    }
+    let asked = Path::new(&ask.path);
+    // Not where it was read against (a member named a file it saved in a
+    // ticket's worktree): the newest picture of that name in the squad's folders.
+    // Said in a ticket's worktree that went with its acceptance: the same place
+    // in the repository it was merged into, before any search by name.
+    let found = (std::fs::symlink_metadata(asked).is_err() && !shown.kept.contains_key(&ask.path))
+        .then(|| merged_copy(home, &ask.squad, &shown.projects, asked).or_else(|| by_name(&shown.roots, asked)))
+        .flatten();
+    let path = found.as_deref().unwrap_or(asked);
     match read(path, &shown.roots, max) {
         // Its worktree went with its acceptance: git still has it.
         Err(why) if std::fs::symlink_metadata(path).is_err() => match shown.kept.get(&ask.path) {
@@ -402,6 +476,58 @@ pub fn serve(home: &Path, ask: &ReadImage, cap: Option<u32>) -> Result<ImageRead
         },
         read => read,
     }
+}
+
+/// Where a picture said in a ticket's worktree is, now the worktree is gone:
+/// the same place in the repository it was cut from — the squad's folder or a
+/// project — once its work was merged there.
+fn merged_copy(home: &Path, squad: &str, projects: &[PathBuf], asked: &Path) -> Option<PathBuf> {
+    let image = asked.to_str()?;
+    std::iter::once(crate::squad_home::path(home, squad))
+        .chain(projects.iter().cloned())
+        .find_map(|repo| in_worktree(image, &repo, home).map(|rel| repo.join(rel)))
+        .filter(|path| path.is_file())
+}
+
+/// A path's last part, if it has one.
+fn file_name(path: &str) -> Option<&str> {
+    Path::new(path).file_name().and_then(|n| n.to_str())
+}
+
+/// How deep, and through how many entries, a picture is looked for by name.
+const BY_NAME_DEPTH: usize = 6;
+const BY_NAME_ENTRIES: usize = 20_000;
+
+/// The newest file named as `asked`'s last part under `roots` — never in
+/// hidden folders or build output — if any.
+fn by_name(roots: &[PathBuf], asked: &Path) -> Option<PathBuf> {
+    let name = asked.file_name()?;
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    let mut left = BY_NAME_ENTRIES;
+    let mut queue: std::collections::VecDeque<(PathBuf, usize)> = roots.iter().map(|r| (r.clone(), 0)).collect();
+    while let Some((dir, depth)) = queue.pop_front() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            if left == 0 {
+                return best.map(|(_, p)| p);
+            }
+            left -= 1;
+            let Ok(kind) = entry.file_type() else { continue };
+            let entry_name = entry.file_name();
+            if kind.is_dir() {
+                let skip = entry_name.to_string_lossy().starts_with('.') || matches!(entry_name.to_str(), Some("target" | "node_modules" | ".git"));
+                if !skip && depth + 1 < BY_NAME_DEPTH {
+                    queue.push_back((entry.path(), depth + 1));
+                }
+            } else if kind.is_file() && entry_name == name {
+                let at = entry.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+                if best.as_ref().is_none_or(|(b, _)| at > *b) {
+                    best = Some((at, entry.path()));
+                }
+            }
+        }
+    }
+    best.map(|(_, p)| p)
 }
 
 /// Answer a `list_images`: the pictures right in a folder the squad's
@@ -514,12 +640,9 @@ pub fn moved(images: &[String], from: &Path, to: &Path) -> Vec<String> {
 
 /// Words a question names something to look at by, in the languages the
 /// person may write in.
-const VISUAL_WORDS: [&str; 44] = [
-    "logo", "icon", "color", "colour", "palette", "mockup", "mock-up", "wireframe", "layout", "font", "typeface", "typography",
-    "illustration", "banner", "visual", "로고", "아이콘", "색상", "컬러", "배색", "시안", "목업", "와이어프레임", "레이아웃",
-    "폰트", "서체", "일러스트", "배너", "ロゴ", "アイコン", "配色", "フォント", "レイアウト", "图标", "標誌", "标志", "配色",
-    "字体", "字體", "布局", "版面", "farbe", "couleur", "police",
-];
+fn visual_words() -> &'static [&'static str] {
+    crate::i18n::every("match.visual_words")
+}
 
 /// The word a tool's answer adds when a question names something to look at
 /// — a logo, colours, a layout — yet shows no picture: the person would be
@@ -530,7 +653,7 @@ pub fn nudge(questions: &[Question]) -> Option<&'static str> {
     }
     let names_visuals = questions.iter().filter(|q| !q.options.is_empty()).any(|q| {
         let text = std::iter::once(q.question.as_str()).chain(std::iter::once(q.header.as_str())).chain(q.options.iter().flat_map(|c| [c.label.as_str(), c.description.as_str()])).collect::<Vec<_>>().join(" ").to_lowercase();
-        VISUAL_WORDS.iter().any(|w| text.contains(w))
+        visual_words().iter().any(|w| text.contains(w))
     });
     names_visuals.then_some(
         "This reads like a visual choice, yet no option shows a picture: the person is choosing blind. Render or mock up \
@@ -543,6 +666,11 @@ each option first (PNG, JPG, WebP, GIF or SVG, in your worktree or the squad's f
 mod tests {
     use super::*;
     use crate::protocol::decide::Choice;
+
+    /// The daemon's own temp folders hold every test's files: none here.
+    fn serve(home: &Path, ask: &ReadImage, cap: Option<u32>) -> Result<ImageRead, String> {
+        serve_with(home, ask, cap, &[])
+    }
     use std::os::unix::fs::symlink;
 
     fn dir(name: &str) -> PathBuf {
@@ -704,6 +832,8 @@ mod tests {
             ticket: None,
             questions: vec![Question { question: "Which logo?".into(), options: vec![choice, Choice { label: "B".into(), ..Default::default() }], ..Default::default() }],
             asked_at: 0,
+            review: false,
+            retro: None,
         };
         journal.set_questions(&[set]).unwrap();
         let ask = |path: &str, max| ReadImage { squad: "acme".into(), path: path.into(), max };
@@ -775,7 +905,7 @@ mod tests {
             "시안입니다.\n\n![평면도]({abs})\n![배치도](outputs/T-2 갤러리 디자인/images/배치도.png \"A안\")\n![x]({}/secret.png)\n![l](outputs/T-2 갤러리 디자인/images/link.png)\n![t](outputs/T-2 갤러리 디자인/images/notes.txt)\n![up](../t2-6ad338ba/outputs/T-2 갤러리 디자인/images/단면.png)",
             outside.display()
         );
-        conversation(&journal, 1, &worktree, &[Entry::User { text: "보여 주세요".into() }, reply(&text)]);
+        conversation(&journal, 1, &worktree, &[Entry::User { text: "보여 주세요".into(), kept: Vec::new() }, reply(&text)]);
         let ask = |path: &Path| ReadImage { squad: "acme".into(), path: path.to_string_lossy().into_owned(), max: Some(64) };
         // Absolute, and relative to where the member works: given.
         assert_eq!(serve(&home, &ask(&images.join("평면도.png")), None).unwrap().width, Some(40));
@@ -791,6 +921,109 @@ mod tests {
         assert!(serve(&home, &climbing, None).is_err());
         // Another squad's conversation names nothing of this one's.
         assert!(serve(&home, &ReadImage { squad: "zeta".into(), ..ask(&images.join("평면도.png")) }, None).is_err());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_reply_picture_in_one_of_the_squads_projects_or_a_scratch_folder_shows_and_nothing_else_there() {
+        let home = dir("scratch");
+        let journal = crate::journal::Journal::for_squad(&home, "acme").unwrap();
+        let project = home.join("code/atinum-mcp");
+        let scratch = home.join("tmp");
+        let private = home.join("Pictures");
+        for d in [&project, &scratch, &private] {
+            std::fs::create_dir_all(d.join("docs")).unwrap();
+        }
+        journal.add_project(&project).unwrap();
+        png(&project.join("docs/roadmap-erp.png"), 40, 30, false);
+        png(&project.join("docs/unsaid.png"), 4, 4, false);
+        png(&scratch.join("roadmap.png"), 40, 30, false);
+        png(&private.join("passport.png"), 4, 4, false);
+        let text = format!(
+            "![ERP 로드맵]({})\n![r]({})\n![p]({})",
+            project.join("docs/roadmap-erp.png").display(),
+            scratch.join("roadmap.png").display(),
+            private.join("passport.png").display()
+        );
+        conversation(&journal, 1, &home.join("squads/acme/home"), &[reply(&text)]);
+        let ask = |path: &Path| ReadImage { squad: "acme".into(), path: path.to_string_lossy().into_owned(), max: Some(64) };
+        let serve = |path: &Path| serve_with(&home, &ask(path), None, std::slice::from_ref(&scratch));
+        // A reply's picture in one of the squad's projects, or in a scratch folder: shown.
+        assert_eq!(serve(&project.join("docs/roadmap-erp.png")).unwrap().width, Some(40));
+        assert_eq!(serve(&scratch.join("roadmap.png")).unwrap().width, Some(40));
+        // Never said, though right there; said, but somewhere else of the person's.
+        assert!(serve(&project.join("docs/unsaid.png")).unwrap_err().contains("isn't a picture"));
+        let outside = serve(&private.join("passport.png")).unwrap_err();
+        assert_eq!(rpc::ImageWhy::of(&outside), rpc::ImageWhy::Outside, "{outside}");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_picture_named_alone_but_saved_in_a_tickets_worktree_still_shows() {
+        let home = dir("byname");
+        let journal = crate::journal::Journal::for_squad(&home, "acme").unwrap();
+        let worktree = home.join("worktrees/acme.home/t194-6ae5d43d");
+        let outputs = worktree.join("outputs/T-194 배포");
+        std::fs::create_dir_all(&outputs).unwrap();
+        png(&outputs.join("live-en.png"), 40, 30, false);
+        let ticket = Ticket {
+            id: 0,
+            title: "배포".into(),
+            body: "".into(),
+            status: crate::protocol::TicketStatus::Review,
+            kind: crate::protocol::TicketKind::Task,
+            owner: Some("frontend".into()),
+            assignee: Some("frontend".into()),
+            project: None,
+            depends_on: vec![],
+            branch: None,
+            worktree: None,
+            merged: None,
+            off_main: None,
+            design_qa: None, plan: None,
+            created_by: "pm".into(),
+            note: None,
+            asks: vec![],
+            remaining: vec![],
+            images: vec![],
+            priority: Default::default(),
+            rank: 0,
+            updated_at: None,
+        };
+        let id = journal.create_ticket(&ticket).unwrap();
+        journal.set_ticket_work(id, &crate::journal::TicketWork { worktree: Some(worktree.clone()), ..Default::default() }).unwrap();
+        // The PM speaks from the squad's folder and names the picture alone.
+        let desk = home.join("squads/acme/home");
+        std::fs::create_dir_all(&desk).unwrap();
+        conversation(&journal, 1, &desk, &[reply("라이브 화면이에요.\n![라이브 en](live-en.png)")]);
+        let ask = |path: &Path| ReadImage { squad: "acme".into(), path: path.to_string_lossy().into_owned(), max: Some(64) };
+        assert_eq!(serve(&home, &ask(&desk.join("live-en.png")), None).unwrap().width, Some(40), "found in the ticket's outputs");
+        // A screen that read it against the project instead: the same name, said, shows too.
+        assert_eq!(serve(&home, &ask(&home.join("code/site/live-en.png")), None).unwrap().width, Some(40));
+        // A name never said gives nothing, though a file of it is there.
+        png(&outputs.join("secret.png"), 4, 4, false);
+        assert!(serve(&home, &ask(&desk.join("secret.png")), None).unwrap_err().contains("isn't a picture"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_picture_said_in_a_worktree_that_went_shows_from_where_it_was_merged() {
+        let home = dir("merged-copy");
+        let journal = crate::journal::Journal::for_squad(&home, "acme").unwrap();
+        // The ticket's worktree is gone with its acceptance; its outputs were merged into the squad's folder.
+        let gone = home.join("worktrees/acme.home/t243-6ae63965/outputs/T-243 첫 화면 wow 3안/storyboard-A-ko.png");
+        let desk = crate::squad_home::path(&home, "acme");
+        let merged = desk.join("outputs/T-243 첫 화면 wow 3안");
+        std::fs::create_dir_all(&merged).unwrap();
+        png(&merged.join("storyboard-A-ko.png"), 40, 30, false);
+        // Another file of that name, newer, elsewhere: a search by name alone would pick it.
+        let other = desk.join("outputs/T-9 old");
+        std::fs::create_dir_all(&other).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        png(&other.join("storyboard-A-ko.png"), 8, 8, false);
+        conversation(&journal, 1, &desk, &[reply(&format!("3안이에요.\n![A안]({})", gone.display()))]);
+        let ask = ReadImage { squad: "acme".into(), path: gone.to_string_lossy().into_owned(), max: Some(64) };
+        assert_eq!(serve(&home, &ask, None).unwrap().width, Some(40), "the merged copy at the same place, not the newest of its name");
         std::fs::remove_dir_all(home).unwrap();
     }
 
@@ -885,7 +1118,7 @@ mod tests {
             worktree: None,
             merged,
             off_main: None,
-            design_qa: None,
+            design_qa: None, plan: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],

@@ -116,24 +116,25 @@ impl Endpoint {
         matches!(self, Self::Ssh(_))
     }
 
-    fn saved(&self) -> String {
+    pub(crate) fn saved(&self) -> String {
         match self {
             Self::Local { .. } => "local".to_owned(),
             Self::Ssh(host) => format!("ssh {}", host.spec()),
         }
     }
 
-    fn from_saved(text: &str) -> Option<Self> {
+    pub(crate) fn from_saved(text: &str) -> Option<Self> {
         match text.trim() {
             "local" => Some(Self::this_mac()),
             other => other.strip_prefix("ssh ").and_then(|spec| SshHost::parse(spec).ok()).map(Self::Ssh),
         }
     }
 
-    /// `local` / `this` / `이 맥`, or an SSH destination.
+    /// `local` / `this` / the locale's word for this Mac (`match.this_mac`), or an SSH destination.
     pub fn parse(text: &str) -> Result<Self, String> {
         match text.trim() {
-            "local" | "this" | "이 맥" => Ok(Self::this_mac()),
+            "local" | "this" => Ok(Self::this_mac()),
+            other if crate::i18n::every("match.this_mac").contains(&other) => Ok(Self::this_mac()),
             other if other == t!("target.this_mac") => Ok(Self::this_mac()),
             other => SshHost::parse(other).map(Self::Ssh),
         }
@@ -157,40 +158,89 @@ pub struct KeptView {
 pub struct Remembered {
     pub last: Option<Endpoint>,
     pub recent: Vec<SshHost>,
+    /// Hosts of `~/.ssh/config` the person hid from the chooser (the file is
+    /// theirs: hidden here, not edited there).
+    pub hidden_hosts: Vec<String>,
     /// How tall the board's list was left, in px (the divider the person dragged).
     pub board_split: Option<f32>,
     /// How wide the browser panel was left, in px.
     pub browser_width: Option<f32>,
+    /// How wide the document and terminal panel was left, in px.
+    pub side_width: Option<f32>,
+    /// How wide the board's ticket panel (its peek) was left, in px.
+    pub peek_width: Option<f32>,
+    /// A link in a reply opens in equipe's own browser panel, not the Mac's browser.
+    pub links_in_app: bool,
+    /// The order the person dragged each squad's projects into: (squad, names).
+    pub project_orders: Vec<(String, Vec<String>)>,
+    /// The terminal sits under the conversation rather than at its right.
+    pub term_below: bool,
+    /// How tall it was left there, in px.
+    pub term_height: Option<f32>,
     /// What accepting lands, per project (by name), once the person said.
     pub merge_ways: Vec<(String, String)>,
+    /// The person's own names for the machines they connect to, by what
+    /// connecting is given (`user@host`, an address): read, not an IP.
+    pub host_names: Vec<(String, String)>,
     /// The views the person saved (⌥V), in their order.
     pub views: Vec<KeptView>,
     /// How wide the sidebar was left (px).
     pub sidebar_width: Option<f32>,
+    /// How tall the sidebar's usage and team areas were dragged (px; none:
+    /// their own height) — `side_split.rs`.
+    pub side_usage: Option<f32>,
+    pub side_team: Option<f32>,
+    /// When Progress was last opened (unix seconds): its "since you last looked".
+    pub progress_seen: Option<u64>,
+    /// The team shown row by row in the sidebar, not as one row of faces.
+    pub team_open: bool,
+    /// The plans' meters folded to their heading (the window used most alone);
+    /// they start open.
+    pub usage_folded: bool,
     /// The language this app kept before the pick was everyone's (`ko`, `en`, …):
     /// read once, moved to the shared pick (`i18n::migrate`), never written again.
     pub lang: Option<String>,
+    /// The language dictation listens for, if the person picked one (`ko`, …):
+    /// else the first this Mac can hear (`dictation.rs`).
+    pub dictation: Option<String>,
+    /// The person agreed that dictation may use Apple's servers (better in
+    /// mixed-language speech and languages this Mac has no model for; the sound leaves this Mac). Off until then.
+    pub dictation_servers: bool,
     /// Light or dark, or as the Mac is.
     pub appearance: Appearance,
     /// What the window opens on.
     pub start: Start,
     /// What the person wants to be told of while the window is out of sight.
     pub pings: Pings,
-    /// The person said "나중에" when asked to let equipe notify: not asked
+    /// The person said "Not Now" when asked to let equipe notify: not asked
     /// again on its own (settings still offers it).
     pub notify_later: bool,
     /// The update notices told already (`found <v>`, `ready <v>`): each once.
     pub update_told: Vec<String>,
     /// The PM's conversation shows whole whatever project is in focus — as it
-    /// did before it followed the project (settings ▸ 일반).
+    /// did before it followed the project (settings ▸ General).
     pub whole_conversation: bool,
     /// The sidebar's projects folded to their header, by name (the squad's
     /// shared folder: ""): `fold\t<name>` lines.
     pub folded: std::collections::BTreeSet<String>,
-    /// 티켓 as a board rather than rows, as last left.
+    /// Tickets as a board rather than rows, as last left.
     pub tickets_board: bool,
-    /// How large the window draws, in percent (⌘+ / ⌘-, settings ▸ 일반).
+    /// How large the window draws, in percent (⌘+ / ⌘-, settings ▸ General).
     pub zoom: Zoom,
+    /// The design screen's tab the person last picked (`map`, `system`);
+    /// none: the map when there is one.
+    pub design_tab: Option<String>,
+    /// The designer's conversation beside the design screen, open or folded
+    /// as the person left it; none: open where there is room.
+    pub design_talk: Option<bool>,
+    /// How wide it was dragged (px).
+    pub design_talk_width: Option<f32>,
+    /// The member's conversation beside the designer studio, open or folded
+    /// as the person left it there (apart from the design screen's); none:
+    /// open where there is room.
+    pub studio_talk: Option<bool>,
+    /// The window's size as the person left it, in points: what it opens at.
+    pub window: Option<(f32, f32)>,
 }
 
 /// The window's size in percent (`zoom.rs`): actual size unless the person
@@ -243,7 +293,7 @@ impl Appearance {
 }
 
 /// What the person wants to be told of while the window is out of sight
-/// (settings → 알림): each kind on or off, whether a notice makes a sound,
+/// (settings → Notifications): each kind on or off, whether a notice makes a sound,
 /// whether the Dock's icon shows what waits. Everything but merges, by default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pings {
@@ -258,7 +308,7 @@ pub struct Pings {
     /// A new version of the app, downloaded.
     pub update: bool,
     pub sound: bool,
-    /// The number on the Dock's icon: 나에게's.
+    /// The number on the Dock's icon: Needs you's.
     pub badge: bool,
 }
 
@@ -345,9 +395,9 @@ pub enum Start {
     /// The PM's conversation.
     #[default]
     Pm,
-    /// 나에게: what waits for the person.
+    /// Needs you: what waits for the person.
     Inbox,
-    /// 모든 일.
+    /// All work.
     All,
 }
 
@@ -387,15 +437,36 @@ impl Remembered {
                     out.merge_ways.retain(|(p, _)| p != project);
                     out.merge_ways.push((project.to_owned(), way.to_owned()));
                 }
+            } else if let Some(rest) = line.strip_prefix("host-name ") {
+                if let Some((spec, name)) = rest.split_once('\t') {
+                    out.set_host_name(spec, name);
+                }
             } else if let Some(rest) = line.strip_prefix("view ") {
                 let mut parts = rest.splitn(4, '\t');
                 if let (Some(pinned), Some(group), Some(name), Some(query)) = (parts.next(), parts.next(), parts.next(), parts.next()) {
                     out.views.push(KeptView { name: name.to_owned(), query: query.to_owned(), group: group.to_owned(), pinned: pinned == "1" });
                 }
+            } else if let Some(rest) = line.strip_prefix("side-usage ") {
+                out.side_usage = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
+            } else if let Some(rest) = line.strip_prefix("progress-seen ") {
+                out.progress_seen = rest.trim().parse::<u64>().ok().filter(|at| *at > 0);
+            } else if line == "team-open" {
+                out.team_open = true;
+            } else if line == "usage-folded" {
+                out.usage_folded = true;
+            } else if let Some(rest) = line.strip_prefix("side-team ") {
+                out.side_team = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("sidebar-width ") {
                 out.sidebar_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
+            } else if let Some(rest) = line.strip_prefix("window-size ") {
+                let size = |n: &str| n.trim().parse::<f32>().ok().filter(|n| n.is_finite() && *n > 0.);
+                out.window = rest.split_once('x').and_then(|(w, h)| Some((size(w)?, size(h)?)));
             } else if let Some(rest) = line.strip_prefix("lang ") {
                 out.lang = Some(rest.trim().to_owned()).filter(|l| !l.is_empty());
+            } else if line.trim() == "dictation-servers on" {
+                out.dictation_servers = true;
+            } else if let Some(rest) = line.strip_prefix("dictation ") {
+                out.dictation = Some(rest.trim().to_owned()).filter(|l| !l.is_empty());
             } else if let Some(rest) = line.strip_prefix("appearance ") {
                 out.appearance = Appearance::parse(rest.trim()).unwrap_or_default();
             } else if let Some(rest) = line.strip_prefix("start ") {
@@ -408,6 +479,22 @@ impl Remembered {
                 out.folded.insert(name.to_owned());
             } else if line.trim() == "tickets board" {
                 out.tickets_board = true;
+            } else if let Some(rest) = line.strip_prefix("design-talk-width ") {
+                out.design_talk_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
+            } else if let Some(rest) = line.strip_prefix("design-talk ") {
+                out.design_talk = match rest.trim() {
+                    "open" => Some(true),
+                    "folded" => Some(false),
+                    _ => None,
+                };
+            } else if let Some(rest) = line.strip_prefix("studio-talk ") {
+                out.studio_talk = match rest.trim() {
+                    "open" => Some(true),
+                    "folded" => Some(false),
+                    _ => None,
+                };
+            } else if let Some(rest) = line.strip_prefix("design-tab ") {
+                out.design_tab = Some(rest.trim().to_owned()).filter(|t| !t.is_empty());
             } else if let Some((on, rest)) = line.strip_prefix("quiet ").map(|r| (false, r)).or_else(|| line.strip_prefix("ping ").map(|r| (true, r))) {
                 if let Some(ping) = Ping::ALL.into_iter().find(|p| p.code() == rest.trim()) {
                     out.pings.set(ping, on);
@@ -420,11 +507,30 @@ impl Remembered {
                 out.board_split = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("browser-width ") {
                 out.browser_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
+            } else if let Some(rest) = line.strip_prefix("project-order ")
+                && let Some((squad, names)) = rest.split_once(' ')
+            {
+                out.project_orders.push((squad.to_owned(), names.split('\t').filter(|n| !n.is_empty()).map(str::to_owned).collect()));
+            } else if line.trim() == "links in-app" {
+                out.links_in_app = true;
+            } else if line.trim() == "term-below" {
+                out.term_below = true;
+            } else if let Some(rest) = line.strip_prefix("term-height ") {
+                out.term_height = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
+            } else if let Some(rest) = line.strip_prefix("side-width ") {
+                out.side_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
+            } else if let Some(rest) = line.strip_prefix("peek-width ") {
+                out.peek_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
             } else if let Some(rest) = line.strip_prefix("recent ssh ")
                 && let Ok(host) = SshHost::parse(rest)
                 && !out.recent.contains(&host)
             {
                 out.recent.push(host);
+            } else if let Some(rest) = line.strip_prefix("hide ssh ")
+                && !rest.trim().is_empty()
+                && !out.hidden_hosts.iter().any(|h| h == rest.trim())
+            {
+                out.hidden_hosts.push(rest.trim().to_owned());
             }
         }
         out.recent.truncate(RECENT);
@@ -439,17 +545,62 @@ impl Remembered {
         for host in &self.recent {
             text.push_str(&format!("recent ssh {}\n", host.spec()));
         }
+        for host in &self.hidden_hosts {
+            text.push_str(&format!("hide ssh {host}\n"));
+        }
         if let Some(split) = self.board_split {
             text.push_str(&format!("board-split {split:.0}\n"));
         }
         if let Some(width) = self.browser_width {
             text.push_str(&format!("browser-width {width:.0}\n"));
         }
+        if let Some(width) = self.side_width {
+            text.push_str(&format!("side-width {width:.0}\n"));
+        }
+        if let Some(width) = self.peek_width {
+            text.push_str(&format!("peek-width {width:.0}\n"));
+        }
+        for (squad, names) in &self.project_orders {
+            text.push_str(&format!("project-order {squad} {}\n", names.join("\t")));
+        }
+        if self.links_in_app {
+            text.push_str("links in-app\n");
+        }
+        if self.term_below {
+            text.push_str("term-below\n");
+        }
+        if let Some(height) = self.term_height {
+            text.push_str(&format!("term-height {height:.0}\n"));
+        }
         if let Some(width) = self.sidebar_width {
             text.push_str(&format!("sidebar-width {width:.0}\n"));
         }
+        if let Some((width, height)) = self.window {
+            text.push_str(&format!("window-size {width:.0}x{height:.0}\n"));
+        }
+        if let Some(height) = self.side_usage {
+            text.push_str(&format!("side-usage {height:.0}\n"));
+        }
+        if let Some(height) = self.side_team {
+            text.push_str(&format!("side-team {height:.0}\n"));
+        }
+        if let Some(at) = self.progress_seen {
+            text.push_str(&format!("progress-seen {at}\n"));
+        }
+        if self.team_open {
+            text.push_str("team-open\n");
+        }
+        if self.usage_folded {
+            text.push_str("usage-folded\n");
+        }
         if let Some(lang) = &self.lang {
             text.push_str(&format!("lang {lang}\n"));
+        }
+        if let Some(lang) = &self.dictation {
+            text.push_str(&format!("dictation {lang}\n"));
+        }
+        if self.dictation_servers {
+            text.push_str("dictation-servers on\n");
         }
         if self.appearance != Appearance::System {
             text.push_str(&format!("appearance {}\n", self.appearance.code()));
@@ -469,6 +620,18 @@ impl Remembered {
         if self.tickets_board {
             text.push_str("tickets board\n");
         }
+        if let Some(tab) = &self.design_tab {
+            text.push_str(&format!("design-tab {tab}\n"));
+        }
+        if let Some(open) = self.design_talk {
+            text.push_str(if open { "design-talk open\n" } else { "design-talk folded\n" });
+        }
+        if let Some(width) = self.design_talk_width {
+            text.push_str(&format!("design-talk-width {width:.0}\n"));
+        }
+        if let Some(open) = self.studio_talk {
+            text.push_str(if open { "studio-talk open\n" } else { "studio-talk folded\n" });
+        }
         // Only what differs from the default: off as `quiet`, on as `ping`.
         for ping in Ping::ALL.into_iter().filter(|p| self.pings.get(*p) != p.default_on()) {
             text.push_str(&format!("{} {}\n", if self.pings.get(ping) { "ping" } else { "quiet" }, ping.code()));
@@ -482,6 +645,9 @@ impl Remembered {
         for (project, way) in &self.merge_ways {
             text.push_str(&format!("merge {project} {way}\n"));
         }
+        for (spec, name) in &self.host_names {
+            text.push_str(&format!("host-name {spec}\t{}\n", name.replace(['\t', '\n'], " ")));
+        }
         for view in &self.views {
             let clean = |s: &str| s.replace(['\t', '\n'], " ");
             text.push_str(&format!("view {}\t{}\t{}\t{}\n", u8::from(view.pinned), clean(&view.group), clean(&view.name), clean(&view.query)));
@@ -492,6 +658,20 @@ impl Remembered {
     /// What accepting lands in `project`, if the person said.
     pub fn merge_way(&self, project: &str) -> Option<&str> {
         self.merge_ways.iter().find(|(p, _)| p == project).map(|(_, w)| w.as_str())
+    }
+
+    /// The person's name for the machine `spec` connects to, if they gave one.
+    pub fn host_name(&self, spec: &str) -> Option<&str> {
+        self.host_names.iter().find(|(s, _)| s == spec).map(|(_, n)| n.as_str())
+    }
+
+    /// Name a machine; an empty name takes the name away.
+    pub fn set_host_name(&mut self, spec: &str, name: &str) {
+        self.host_names.retain(|(s, _)| s != spec);
+        let name = name.trim();
+        if !name.is_empty() {
+            self.host_names.push((spec.to_owned(), name.to_owned()));
+        }
     }
 
     pub fn set_merge_way(&mut self, project: &str, way: &str) {
@@ -514,7 +694,23 @@ impl Remembered {
         }
     }
 
+    /// Take a host off the recent ones (one typed wrong, one gone).
+    pub fn forget(&mut self, host: &SshHost) {
+        self.recent.retain(|h| h != host);
+    }
+
+    /// Hide a host of `~/.ssh/config` from the chooser, or show it again.
+    pub fn hide_host(&mut self, name: &str, hidden: bool) {
+        self.hidden_hosts.retain(|h| h != name);
+        if hidden {
+            self.hidden_hosts.push(name.to_owned());
+        }
+    }
+
     pub fn save(&self, home: &Path) {
+        if crate::readonly::blocked(&Self::path(home).display().to_string()) {
+            return;
+        }
         let _ = std::fs::create_dir_all(home);
         let _ = std::fs::write(Self::path(home), self.render());
     }
@@ -598,6 +794,17 @@ mod tests {
     }
 
     #[test]
+    fn this_mac_is_understood_in_every_language() {
+        for word in ["local", "this", "this Mac", "이 맥", "このMac", "这台Mac", "這台Mac", "este Mac", "ce Mac", "dieser Mac"] {
+            assert_eq!(Endpoint::parse(word), Ok(Endpoint::this_mac()), "{word}");
+        }
+        for lang in equipe_core::i18n::Lang::ALL {
+            let words = crate::i18n::of(lang).own("match.this_mac").unwrap_or_default();
+            assert!(!words.is_empty(), "{lang:?} has no word for this Mac");
+        }
+    }
+
+    #[test]
     fn refuses_what_could_become_an_option_or_a_command() {
         for bad in ["", "  ", "-oProxyCommand=x", "me@-bad", "a b", "a;b", "host:99999", "host:0", "@host", "x$(y)", "'a'"] {
             assert!(SshHost::parse(bad).is_err(), "{bad:?} should be refused");
@@ -624,8 +831,20 @@ mod tests {
         remembered.use_endpoint(&Endpoint::Ssh(host("b:2222")));
         remembered.use_endpoint(&Endpoint::Ssh(host("me@a")));
         remembered.board_split = Some(212.4);
+        remembered.peek_width = Some(560.);
         remembered.sidebar_width = Some(301.6);
+        remembered.window = Some((1440.2, 899.6));
+        remembered.side_usage = Some(96.);
+        remembered.side_team = Some(240.4);
+        remembered.progress_seen = Some(1_793_700_000);
+        remembered.team_open = true;
+        remembered.usage_folded = true;
+        remembered.set_host_name("me@100.106.17.55", "  사무실 맥미니 ");
+        remembered.set_host_name("vision", "vision");
+        remembered.set_host_name("vision", "");
         remembered.lang = Some("ko".into());
+        remembered.dictation = Some("ja".into());
+        remembered.dictation_servers = true;
         remembered.set_merge_way("my site", "merge");
         remembered.set_merge_way("app", "push");
         remembered.set_merge_way("app", "branch");
@@ -634,11 +853,22 @@ mod tests {
 
         let loaded = Remembered::load(&dir);
         assert_eq!((loaded.sidebar_width, loaded.lang.as_deref()), (Some(302.), Some("ko")));
+        assert_eq!(loaded.window, Some((1440., 900.)), "the window's size, as left");
+        assert_eq!((loaded.side_usage, loaded.side_team), (Some(96.), Some(240.)), "the sidebar's areas as dragged");
+        assert_eq!(loaded.progress_seen, Some(1_793_700_000), "진행 상황's last look, for \"since you last looked\"");
+        assert!(loaded.team_open, "the team as the person left it");
+        assert!(loaded.usage_folded, "the plans' meters folded, as left");
+        assert!(!Remembered::default().usage_folded, "they start open");
+        assert_eq!(loaded.host_name("me@100.106.17.55"), Some("사무실 맥미니"), "a machine's name, trimmed");
+        assert_eq!(loaded.host_name("vision"), None, "an empty name takes it away");
+        assert_eq!(loaded.dictation.as_deref(), Some("ja"), "dictation's language, apart from the app's");
+        assert!(loaded.dictation_servers, "the person's yes to Apple's servers is kept");
         assert_eq!(loaded.merge_way("my site"), Some("merge"), "a project's way is kept, spaces and all");
         assert_eq!(loaded.merge_way("app"), Some("branch"), "the last word wins");
         assert_eq!(loaded.merge_way("web"), None);
         assert_eq!(loaded.views, vec![KeptView { name: "막힌 것".into(), query: "is:blocked project:app".into(), group: "deps".into(), pinned: true }]);
         assert_eq!(loaded.board_split, Some(212.0), "the board's divider is kept, to the pixel");
+        assert_eq!(loaded.peek_width, Some(560.0), "and how wide its ticket panel was dragged");
         assert_eq!(loaded.last, Some(Endpoint::Ssh(host("me@a"))));
         assert_eq!(loaded.recent, vec![host("me@a"), host("b:2222")]);
 
@@ -647,6 +877,25 @@ mod tests {
         local.save(&dir);
         assert_eq!(Remembered::load(&dir).last, Some(Endpoint::this_mac()));
         assert_eq!(Remembered::load(&dir).recent.len(), 2, "this Mac isn't a host to remember");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_recent_host_is_forgotten_and_a_config_host_hidden_across_launches() {
+        let dir = std::env::temp_dir().join(format!("eq-target-forget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut remembered = Remembered::default();
+        remembered.use_endpoint(&Endpoint::Ssh(host("atinumai@110.66.18.3")));
+        remembered.use_endpoint(&Endpoint::Ssh(host("atinumai@100.66.18.3")));
+        remembered.forget(&host("atinumai@110.66.18.3"));
+        remembered.hide_host("ironact-prod", true);
+        remembered.hide_host("vision", true);
+        remembered.hide_host("vision", false);
+        remembered.save(&dir);
+
+        let loaded = Remembered::load(&dir);
+        assert_eq!(loaded.recent, vec![host("atinumai@100.66.18.3")], "the one typed wrong is gone");
+        assert_eq!(loaded.hidden_hosts, vec!["ironact-prod".to_owned()], "hidden stays hidden; shown again is shown");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -661,7 +910,7 @@ mod tests {
         assert!(!fresh.whole_conversation, "the conversation follows the project by default");
         assert!(!fresh.tickets_board, "티켓 opens as a list");
         assert_eq!(fresh.zoom, Zoom(100), "actual size");
-        let mut prefs = Remembered { appearance: Appearance::Dark, start: Start::Inbox, whole_conversation: true, tickets_board: true, zoom: Zoom(125), ..Remembered::default() };
+        let mut prefs = Remembered { appearance: Appearance::Dark, start: Start::Inbox, whole_conversation: true, tickets_board: true, zoom: Zoom(125), design_tab: Some("system".into()), design_talk: Some(false), design_talk_width: Some(432.), studio_talk: Some(true), ..Remembered::default() };
         prefs.pings.set(Ping::Failed, false);
         prefs.pings.set(Ping::Sound, false);
         prefs.set_merge_way("app", "push");
@@ -674,6 +923,10 @@ mod tests {
         assert_eq!(loaded.zoom, Zoom(125), "the window's size, from one launch to the next");
         assert_eq!(loaded.folded, prefs.folded, "the sidebar's folds, the shared folder's too");
         assert!(loaded.tickets_board, "the board, as last left");
+        assert_eq!(loaded.design_tab.as_deref(), Some("system"), "the design screen's tab, as last picked");
+        assert_eq!((loaded.design_talk, loaded.design_talk_width), (Some(false), Some(432.)), "the conversation beside the design screen, folded as left, as wide");
+        assert_eq!(fresh.design_talk, None, "open where there is room until the person says");
+        assert_eq!(loaded.studio_talk, Some(true), "the studio's own, apart from the design screen's");
         assert!(!loaded.pings.failed && !loaded.pings.sound && loaded.pings.approvals && loaded.pings.reviews && loaded.pings.waiting);
         assert_eq!((loaded.merge_way("app"), loaded.merge_way("site")), (None, Some("merge")), "back to asking each time");
 

@@ -1,8 +1,9 @@
 //! Moving members between engines, driven the way screens and engines drive
 //! it: each plan's usage in as it is read, the card out as an event, the
 //! person's answer in as their command — and the member closed and started
-//! again on the other engine at its ticket boundary, never mid-turn, its first
-//! turn opening with equipe's brief. A stand-in `claude` and a Codex login
+//! again on the other engine at its ticket boundary — or, moved now, at the
+//! end of its turn mid-ticket — never mid-turn, its first turn opening with
+//! equipe's hand-over packet. A stand-in `claude` and a Codex login
 //! written for the test play the engines; nothing reaches a network.
 
 #![cfg(unix)]
@@ -105,10 +106,14 @@ fn config(claude: &Path, home: &Path) -> Config {
         retention_days: 90,
         equipe_binary: None,
         npx: None,
+        design_path: None,
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,
+        person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::Ko,
+        nemotron: None,
+        watch_disk: false,
     }
 }
 
@@ -214,7 +219,43 @@ async fn in_auto_an_idle_member_moves_at_once_and_its_first_turn_opens_with_the_
 }
 
 #[tokio::test]
-async fn a_member_at_work_is_never_moved_mid_turn_nor_off_its_ticket() {
+async fn moved_by_the_person_mid_ticket_it_waits_for_its_ticket_unless_now_and_then_carries_it_on_the_other_engine() {
+    let (bin, dir) = claude(ANSWERS);
+    let (handle, mut events) = pm_and_codex_qa(&bin).await;
+    create_ticket(&handle, "qa").await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, .. })).await;
+    // Its turn on Codex ends (there is no Codex here), the ticket still in hand.
+    for _ in 0..100 {
+        let snapshot = handle.snapshot("acme").await;
+        let qa = snapshot.sessions.iter().find(|s| s.session == 2).expect("qa");
+        if qa.state == equipe_core::protocol::SessionState::Ready && qa.work.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Gently: it keeps its ticket where it is.
+    handle.send(Command::MoveEngine { squad: "acme".into(), members: vec!["qa".into()], engine: Engine::Claude, model: None, effort: None, now: false });
+    let seen = until(&mut events, |e| matches!(e, Event::EngineProposed { proposal, .. } if proposal.why == Why::Person)).await;
+    let card = proposed(&seen);
+    assert!(!card.moves[0].now);
+    let later = within(&mut events, Duration::from_millis(1200)).await;
+    assert!(!later.iter().any(|e| matches!(e, Event::SessionClosed { session: 2 })), "on its ticket: not before it ends");
+    // "Move now": at the end of its turn, its ticket handed over and carried on on Claude.
+    handle.send(Command::ApplyEngineProposal { squad: "acme".into(), id: card.id, now: true });
+    let seen = until(&mut events, |e| matches!(e, Event::SessionStarted { member: Some(m), engine: Engine::Claude, .. } if m.name == "qa")).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::SessionClosed { session: 2 })));
+    assert!(seen.iter().any(|e| matches!(e, Event::EngineProposed { proposal, .. } if proposal.moves[0].now)), "the card says it moves now");
+    let prompt = prompt_with(&dir, "[equipe] You are qa").await;
+    for wanted in ["on Claude what you were doing on Codex", "the person moved you", "## The ticket: T-1 Review the release", "Check the changelog against main.", "## Where things stand", "## Before you change anything"] {
+        assert!(prompt.contains(wanted), "{wanted} in: {prompt}");
+    }
+    let snapshot = handle.snapshot("acme").await;
+    let qa = snapshot.sessions.iter().find(|s| s.member.as_ref().is_some_and(|m| m.name == "qa")).expect("qa is back");
+    assert_eq!((qa.engine, qa.work.as_ref().map(|w| w.ticket)), (Engine::Claude, Some(1)), "the same ticket, carried on");
+}
+
+#[tokio::test]
+async fn a_member_at_work_is_never_moved_mid_turn_and_a_draining_plan_moves_it_at_its_turns_end_with_its_ticket() {
     let (bin, _dir) = claude(WORKS_LONG);
     let (home, project) = home();
     let (handle, mut events) = runtime::start(config(&bin, &home));
@@ -230,21 +271,18 @@ async fn a_member_at_work_is_never_moved_mid_turn_nor_off_its_ticket() {
     let card = seen.iter().rev().find_map(|e| if let Event::EngineProposed { proposal, .. } = e { Some(proposal.clone()) } else { None }).unwrap();
     assert_eq!((card.why, card.applied), (Why::Drain, true));
     assert!(card.moves.iter().any(|m| m.member == "qa" && m.to == Engine::Codex && !m.done));
+    assert!(card.moves.iter().any(|m| m.member == "qa" && m.now), "a drain moves at the end of the turn");
     // Mid-turn: nothing happens to it.
     let later = within(&mut events, Duration::from_millis(1500)).await;
     assert!(!later.iter().any(|e| matches!(e, Event::SessionClosed { session: 2 })), "{later:#?}");
-    // Its turn stopped, it is still on its ticket: it stays on Claude until it puts the ticket down.
+    // Its turn stopped, at a clean point on its ticket: it moves now, its
+    // ticket handed over — here Codex can't start it, so it carries on on
+    // Claude, its ticket and the packet with it.
     handle.send(Command::Interrupt { session: 2 });
-    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
-    let later = within(&mut events, Duration::from_millis(1500)).await;
-    assert!(!later.iter().any(|e| matches!(e, Event::SessionClosed { session: 2 })), "{later:#?}");
-    let snapshot = handle.snapshot("acme").await;
-    let qa = snapshot.sessions.iter().find(|s| s.session == 2).expect("still there");
-    assert_eq!((qa.engine, qa.work.as_ref().map(|w| w.ticket)), (Engine::Claude, Some(1)));
-    assert!(snapshot.engine_proposals.iter().any(|p| p.id == card.id), "the card stays until the person closes it");
-    // The person takes it back: nothing is left to do.
-    handle.send(Command::UndoEngineProposal { squad: "acme".into(), id: card.id });
-    until(&mut events, |e| matches!(e, Event::EngineProposalClosed { id, applied: false, .. } if *id == card.id)).await;
+    let seen = until(&mut events, |e| matches!(e, Event::SessionStarted { member: Some(m), .. } if m.name == "qa")).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::SessionClosed { session: 2 })), "{seen:#?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.note.as_deref().is_some_and(|n| n.starts_with("Handed over from Claude to Codex")))));
+    assert!(handle.snapshot("acme").await.engine_proposals.iter().any(|p| p.id == card.id), "the card stays until the person closes it");
 }
 
 #[tokio::test]
@@ -270,7 +308,7 @@ async fn in_suggest_only_the_persons_click_moves_and_a_no_is_not_asked_again() {
     let seen = until(&mut events, |e| matches!(e, Event::EngineProposed { .. })).await;
     let card = proposed(&seen);
     assert_eq!((card.why, card.applied), (Why::Exhausted, false));
-    handle.send(Command::ApplyEngineProposal { squad: "acme".into(), id: card.id });
+    handle.send(Command::ApplyEngineProposal { squad: "acme".into(), id: card.id, now: false });
     let seen = until(&mut events, |e| matches!(e, Event::SessionStarted { member: Some(m), engine: Engine::Claude, .. } if m.name == "qa")).await;
     assert!(seen.iter().any(|e| matches!(e, Event::EngineProposalClosed { applied: true, .. })));
 }
@@ -297,4 +335,46 @@ async fn signed_in_to_both_with_the_team_on_one_the_setup_is_proposed_once_and_a
     handle.send(Command::ShowEngineSetup { squad: "acme".into() });
     let seen = until(&mut events, |e| matches!(e, Event::EngineProposed { .. })).await;
     assert_eq!(proposed(&seen).why, Why::Setup);
+}
+
+#[tokio::test]
+async fn a_ticket_an_engine_out_of_its_plan_keeps_waiting_is_told_once_never_silent() {
+    let (bin, _dir) = claude(ANSWERS);
+    let (home, project) = home();
+    let (handle, mut events) = runtime::start(config(&bin, &home));
+    add(&handle, &mut events, 1, member(&project, "pm", None)).await;
+    add(&handle, &mut events, 2, member(&project, "qa", Some(Engine::Claude))).await;
+    // Claude's five hours are out and start over within the hour: waited for, nothing new starts on it.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let out = PlanUsage { five_hour: Some(PlanWindow { used_percent: 100, resets_at: now + 40 * 60 }), seven_day: Some(PlanWindow { used_percent: 40, resets_at: now + 3 * 24 * 3600 }) };
+    handle.usage_read(Engine::Codex, usage(5, 5));
+    handle.usage_read(Engine::Claude, out);
+    let _ = within(&mut events, Duration::from_millis(300)).await;
+    create_ticket(&handle, "qa").await;
+    let told = |e: &Event| format!("{e:?}").contains("T-1 대기 중이에요");
+    let seen = until(&mut events, told).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::WorkStarted { session: 2, .. })), "held, not started");
+    // Once per hold, however often the board is looked at again.
+    create_ticket(&handle, "qa").await;
+    let later = within(&mut events, Duration::from_millis(1200)).await;
+    assert!(!later.iter().any(|e| told(e) || format!("{e:?}").contains("T-2 대기 중")), "{later:#?}");
+}
+
+#[tokio::test]
+async fn the_conversations_the_person_opened_with_the_pm_move_with_it_to_its_new_session() {
+    let (bin, _dir) = claude(ANSWERS);
+    let (home, project) = home();
+    let (handle, mut events) = runtime::start(config(&bin, &home));
+    add(&handle, &mut events, 1, member(&project, "pm", None)).await;
+    handle.send(Command::NewConversation { squad: "acme".into(), session: 77, project: None });
+    until(&mut events, |e| matches!(e, Event::SessionStarted { session: 77, .. })).await;
+    // Moved by the person; there is no Codex here, so it starts again on Claude — a new session either way.
+    handle.send(Command::MoveEngine { squad: "acme".into(), members: vec!["pm".into()], engine: Engine::Codex, model: None, effort: None, now: true });
+    let seen = until(&mut events, |e| matches!(e, Event::SessionStarted { member: Some(m), .. } if m.name == "pm")).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::SessionClosed { session: 1 })), "the old session closed");
+    assert!(!seen.iter().any(|e| matches!(e, Event::SessionClosed { session: 77 })), "the conversation stayed: {seen:#?}");
+    let snapshot = handle.snapshot("acme").await;
+    let pm = snapshot.sessions.iter().find(|s| s.lane.is_none() && s.member.as_ref().is_some_and(|m| m.name == "pm")).expect("the pm").session;
+    let talk = snapshot.sessions.iter().find(|s| s.session == 77).expect("the conversation is still listed");
+    assert_eq!(talk.lane.as_ref().map(|l| (l.of, l.kept)), Some((pm, true)), "it belongs to the new session");
 }

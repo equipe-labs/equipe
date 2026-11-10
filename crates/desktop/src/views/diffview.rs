@@ -1,7 +1,7 @@
 //! The diff, as a place to review (D): the files at the left, the lines at
 //! the right with a cursor; ]/[ walk files, n/p hunks, c leaves a comment on
 //! the line, and R sends them all with the words as one request for changes.
-//! A accepts. The bar says where the review stands in 나에게: `검토 2/4`.
+//! A accepts. The bar says where the review stands in the Inbox: `Review 2/4`.
 
 use equipe_core::t;
 use std::collections::HashSet;
@@ -160,7 +160,7 @@ impl DiffUi {
 }
 
 impl Shell {
-    /// The reviews in 나에게 with a branch to look at, and where this one is among them.
+    /// The reviews in the Inbox with a branch to look at, and where this one is among them.
     fn reviews(&self) -> Vec<TicketId> {
         self.model
             .needs_you()
@@ -171,7 +171,7 @@ impl Shell {
             .collect()
     }
 
-    /// The diff of another review: the one `by` away in 나에게.
+    /// The diff of another review: the one `by` away in the Inbox.
     fn diff_review(&mut self, by: isize, window: &mut Window, cx: &mut Context<Self>) {
         let list = self.reviews();
         let Some(d) = &self.board.diff else { return };
@@ -273,7 +273,7 @@ pub fn render(shell: &Shell, diff: &DiffUi, cx: &mut Context<Shell>) -> impl Int
         .items_center()
         .border_b_1()
         .border_color(p.hair)
-        .child(btn(p, "diff-back", "←", Some("Esc"), false, true).on_click(cx.listener(|this, _, _, cx| {
+        .child(super::board::back_btn(p, "diff-back").on_click(cx.listener(|this, _, _, cx| {
             this.board.diff = None;
             cx.notify();
         })))
@@ -445,7 +445,7 @@ fn diff_row(p: Palette, files: &[diffs::File], d: &DiffUi, ix: usize, f: usize, 
             .font_weight(FontWeight::SEMIBOLD)
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| this.diff_fold(f, cx)))
-            .child(if folded { "▸" } else { "▾" })
+            .child(crate::icons::icon(if folded { crate::icons::Icon::ChevronRight } else { crate::icons::Icon::ChevronDown }, 12., p.text))
             .child(file.path.clone())
             .child(div().text_color(p.muted).font_weight(FontWeight::NORMAL).child(format!("+{} −{}", file.added, file.removed)))
             .into_any_element();

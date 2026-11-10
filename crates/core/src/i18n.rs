@@ -27,18 +27,19 @@ use std::sync::atomic::{AtomicU8, Ordering};
 /// The languages equipe speaks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Lang {
-    Ko,
     En,
-    Ja,
-    ZhHans,
-    ZhHant,
+    De,
     Es,
     Fr,
-    De,
+    Ja,
+    Ko,
+    ZhHans,
+    ZhHant,
 }
 
 impl Lang {
-    pub const ALL: [Lang; 8] = [Lang::Ko, Lang::En, Lang::Ja, Lang::ZhHans, Lang::ZhHant, Lang::Es, Lang::Fr, Lang::De];
+    /// English first, then by code: a list to pick from favours no language.
+    pub const ALL: [Lang; 8] = [Lang::En, Lang::De, Lang::Es, Lang::Fr, Lang::Ja, Lang::Ko, Lang::ZhHans, Lang::ZhHant];
 
     /// Its code, as locale files are named: `ko`, `zh-Hans`.
     pub fn code(self) -> &'static str {
@@ -54,18 +55,10 @@ impl Lang {
         }
     }
 
-    /// Its name in itself, for a list to pick from.
+    /// Its name in itself, for a list to pick from: `language.native` in its
+    /// own locale file (never English's in its place), else its English name.
     pub fn native_name(self) -> &'static str {
-        match self {
-            Lang::Ko => "한국어",
-            Lang::En => "English",
-            Lang::Ja => "日本語",
-            Lang::ZhHans => "简体中文",
-            Lang::ZhHant => "繁體中文",
-            Lang::Es => "Español",
-            Lang::Fr => "Français",
-            Lang::De => "Deutsch",
-        }
+        core(self).own("language.native").unwrap_or(self.english_name())
     }
 
     /// Its name in English, as the squad's prompts name the person's language.
@@ -80,6 +73,18 @@ impl Lang {
             Lang::Fr => "French",
             Lang::De => "German",
         }
+    }
+
+    /// The language an English name names — as [`Lang::english_name`] says
+    /// it, or as the person's language is detected (`Chinese`, which is
+    /// written in simplified characters unless said otherwise) — if equipe
+    /// speaks it.
+    pub fn from_english_name(name: &str) -> Option<Lang> {
+        let name = name.trim();
+        if name.eq_ignore_ascii_case("Chinese") || name.eq_ignore_ascii_case("Mandarin") {
+            return Some(Lang::ZhHans);
+        }
+        Lang::ALL.into_iter().find(|l| l.english_name().eq_ignore_ascii_case(name))
     }
 
     /// Its place in [`Lang::ALL`].
@@ -167,6 +172,17 @@ fn system_languages() -> Vec<String> {
     sys_locale::get_locales().collect()
 }
 
+/// The system's preferred languages that equipe speaks, most preferred first.
+pub fn preferred() -> Vec<Lang> {
+    let mut langs: Vec<Lang> = Vec::new();
+    for lang in system_languages().iter().filter_map(|tag| Lang::parse(tag)) {
+        if !langs.contains(&lang) {
+            langs.push(lang);
+        }
+    }
+    langs
+}
+
 /// A locale value that names no language: `C`, `POSIX`, `C.UTF-8`.
 fn names_no_language(value: &str) -> bool {
     matches!(value.split(['.', '@']).next().unwrap_or_default(), "" | "C" | "POSIX")
@@ -243,6 +259,11 @@ impl Catalog {
         self.words.get(key).or_else(|| self.english.get(key)).map_or(key, String::as_str)
     }
 
+    /// The word for `key` in this language only — no English in its place.
+    pub fn own(&self, key: &str) -> Option<&str> {
+        self.words.get(key).map(String::as_str)
+    }
+
     /// The word for `key` said of `n` things: its plural form for `n` in the
     /// language (`key.one`, `key.other`), else in English, else `key` itself.
     pub fn plural<'a>(&'a self, key: &'a str, n: u64) -> &'a str {
@@ -263,13 +284,89 @@ impl Catalog {
     }
 }
 
-/// `text` with each `{name}` replaced by its value.
+/// `text` with each `{name}` replaced by its value. A paired particle right
+/// after a `{name}` (Korean's "X(Y)" forms) becomes the one the value takes.
 pub fn fill(text: &str, args: &[(&str, String)]) -> String {
     let mut out = text.to_owned();
     for (name, value) in args {
-        out = out.replace(&format!("{{{name}}}"), value);
+        let slot = format!("{{{name}}}");
+        for (paired, closed, open) in PARTICLES {
+            let after = format!("{slot}{paired}");
+            if out.contains(&after)
+                && let Some(word) = particle(value, closed, open)
+            {
+                out = out.replace(&after, &format!("{slot}{word}"));
+            }
+        }
+        out = out.replace(&slot, value);
     }
     out
+}
+
+/// `template` as [`fill`] may have written it: each paired particle after a
+/// `{name}` as it is, and as either of its forms — for reading a filled line
+/// back against its template. Without one, just `template`.
+pub fn particle_forms(template: &str) -> Vec<String> {
+    let mut forms = vec![template.to_owned()];
+    for (paired, closed, open) in PARTICLES {
+        let after = format!("}}{paired}");
+        if !template.contains(&after) {
+            continue;
+        }
+        forms = forms
+            .into_iter()
+            .flat_map(|form| [form.clone(), form.replace(&after, &format!("}}{closed}")), form.replace(&after, &format!("}}{open}"))])
+            .collect();
+    }
+    forms
+}
+
+/// Korean's paired particles as a locale writes them, then the form after a
+/// final consonant and the form after a vowel (`ro` the exception: after
+/// a final rieul, the vowel's form).
+const PARTICLES: [(&str, &str, &str); 6] = [
+    ("\u{C774}(\u{AC00})", "\u{C774}", "\u{AC00}"),
+    ("\u{C744}(\u{B97C})", "\u{C744}", "\u{B97C}"),
+    ("\u{C740}(\u{B294})", "\u{C740}", "\u{B294}"),
+    ("\u{ACFC}(\u{C640})", "\u{ACFC}", "\u{C640}"),
+    ("\u{C640}(\u{ACFC})", "\u{ACFC}", "\u{C640}"),
+    ("(\u{C73C})\u{B85C}", "\u{C73C}\u{B85C}", "\u{B85C}"),
+];
+
+/// Which of `closed` and `open` follows `value`, read aloud in Korean: by its
+/// last syllable's final consonant, a digit's Korean name, or a Latin word's
+/// usual reading. `None` where that can't be told — the paired form stays.
+fn particle<'a>(value: &str, closed: &'a str, open: &'a str) -> Option<&'a str> {
+    let ro = closed.ends_with('\u{B85C}');
+    let last = value.trim_end().chars().last()?;
+    // 0: none, 1: rieul, 2: another.
+    let fin = match last {
+        '\u{AC00}'..='\u{D7A3}' => match (last as u32 - 0xAC00) % 28 {
+            0 => 0,
+            8 => 1,
+            _ => 2,
+        },
+        // yeong, il, i, sam, sa, o, yuk, chil, pal, gu
+        '0' | '3' | '6' => 2,
+        '1' | '7' | '8' => 1,
+        '2' | '4' | '5' | '9' => 0,
+        c if c.is_ascii_alphabetic() => {
+            let word = value.trim_end().to_ascii_lowercase();
+            if word.ends_with("le") || word.ends_with('l') {
+                1
+            } else if word.ends_with('m') || word.ends_with('n') || word.ends_with("ng") {
+                2
+            } else {
+                0
+            }
+        }
+        _ => return None,
+    };
+    Some(match fin {
+        0 => open,
+        1 if ro => open,
+        _ => closed,
+    })
 }
 
 /// The `{name}`s a text takes, sorted — what every translation of it must take too.
@@ -344,10 +441,30 @@ pub fn problems(files: &[(&str, &str)]) -> Vec<String> {
         for key in words.keys().filter(|k| !english.contains_key(*k)) {
             out.push(format!("{}: {key} isn't in English", lang.code()));
         }
+        // A word in another language's letters: Korean outside Korean, Chinese
+        // characters or kana in a language written in Latin letters.
+        for (key, word) in &words {
+            if let Some(stray) = word.chars().find(|c| foreign(lang, *c)) {
+                out.push(format!("{}: {key} has '{stray}' from another language", lang.code()));
+            }
+        }
     }
     out.sort();
     out.dedup();
     out
+}
+
+/// Whether `c` is written in a script `lang` doesn't use.
+fn foreign(lang: Lang, c: char) -> bool {
+    let hangul = matches!(c, '\u{AC00}'..='\u{D7A3}' | '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}');
+    let kana = matches!(c, '\u{3040}'..='\u{30FF}');
+    let han = matches!(c, '\u{4E00}'..='\u{9FFF}');
+    match lang {
+        Lang::Ko => kana,
+        Lang::Ja => hangul,
+        Lang::ZhHans | Lang::ZhHant => hangul || kana,
+        _ => hangul || kana || han,
+    }
 }
 
 /// A front end's words in every language, one of them in use — switched while
@@ -359,13 +476,15 @@ pub struct Words {
     /// `Lang::index` of the language in use; `u8::MAX` until one is.
     current: AtomicU8,
     tables: [OnceLock<Catalog>; 8],
+    /// [`Words::every`]'s lists, by key.
+    lists: std::sync::Mutex<std::collections::BTreeMap<String, &'static [&'static str]>>,
 }
 
 impl Words {
     /// `files` as `include_str!` brings them in; `first` says the language
     /// to start in, asked the first time a word is.
     pub const fn new(files: &'static [(&'static str, &'static str)], first: fn() -> Lang) -> Self {
-        Self { files, first, current: AtomicU8::new(u8::MAX), tables: [const { OnceLock::new() }; 8] }
+        Self { files, first, current: AtomicU8::new(u8::MAX), tables: [const { OnceLock::new() }; 8], lists: std::sync::Mutex::new(std::collections::BTreeMap::new()) }
     }
 
     /// The language in use.
@@ -394,21 +513,56 @@ impl Words {
     pub fn set(&self, lang: Lang) {
         self.current.store(lang.index() as u8, Ordering::Release);
     }
+
+    /// `key`'s words in every language, each language's list `|`-separated:
+    /// what text is matched against when it may be in any language (what a
+    /// member wrote, a page's words), whichever one the screen is in.
+    /// Read once per key and kept.
+    pub fn every(&'static self, key: &str) -> &'static [&'static str] {
+        let mut lists = self.lists.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(list) = lists.get(key) {
+            return list;
+        }
+        let mut out: Vec<&'static str> = Vec::new();
+        for lang in Lang::ALL {
+            for word in self.of(lang).own(key).unwrap_or_default().split('|').filter(|w| !w.is_empty()) {
+                if !out.contains(&word) {
+                    out.push(word);
+                }
+            }
+        }
+        let list: &'static [&'static str] = Vec::leak(out);
+        lists.insert(key.to_owned(), list);
+        list
+    }
 }
 
 /// equipe core's own words, in every language.
 pub const FILES: &[(&str, &str)] = &[
-    ("ko", include_str!("../locales/ko.json")),
     ("en", include_str!("../locales/en.json")),
-    ("ja", include_str!("../locales/ja.json")),
-    ("zh-Hans", include_str!("../locales/zh-Hans.json")),
-    ("zh-Hant", include_str!("../locales/zh-Hant.json")),
+    ("de", include_str!("../locales/de.json")),
     ("es", include_str!("../locales/es.json")),
     ("fr", include_str!("../locales/fr.json")),
-    ("de", include_str!("../locales/de.json")),
+    ("ja", include_str!("../locales/ja.json")),
+    ("ko", include_str!("../locales/ko.json")),
+    ("zh-Hans", include_str!("../locales/zh-Hans.json")),
+    ("zh-Hant", include_str!("../locales/zh-Hant.json")),
 ];
 
 static CORE: Words = Words::new(FILES, || Lang::En);
+
+/// How a language worded `key` before (a language's lines once more formal):
+/// what a line kept from then, or a daemon not yet updated, still says.
+pub fn previous(key: &str) -> impl Iterator<Item = &'static str> {
+    static PREVIOUS: OnceLock<HashMap<String, HashMap<String, String>>> = OnceLock::new();
+    let all = PREVIOUS.get_or_init(|| serde_json::from_str(include_str!("../locales/previous.json")).unwrap_or_default());
+    all.values().filter_map(move |words| words.get(key).map(String::as_str))
+}
+
+/// core's `key` words in every language (`Words::every`).
+pub fn every(key: &str) -> &'static [&'static str] {
+    CORE.every(key)
+}
 
 /// equipe core's words in `lang`: what the daemon says to the person.
 pub fn core(lang: Lang) -> &'static Catalog {
@@ -455,6 +609,7 @@ pub mod label {
     pub fn status(lang: Lang, status: TicketStatus) -> &'static str {
         core(lang).get(match status {
             TicketStatus::Proposed => "status.proposed",
+            TicketStatus::Idea => "status.idea",
             TicketStatus::Todo => "status.todo",
             TicketStatus::InProgress => "status.in_progress",
             TicketStatus::Waiting => "status.waiting",
@@ -508,8 +663,8 @@ pub mod label {
         })
     }
 
-    /// The one line a screen shows while the disk is short: `디스크 여유 4.2 GB — 곧
-    /// 빌드가 실패할 수 있어요`. `None` while it's fine.
+    /// The one line a screen shows while the disk is short: `4.2 GB free on the
+    /// disk — builds may fail soon`. `None` while it's fine.
     pub fn disk_line(lang: Lang, status: &crate::disk::DiskStatus) -> Option<String> {
         use crate::disk::DiskLevel as L;
         let key = match status.level {
@@ -552,6 +707,8 @@ pub mod label {
             K::Pnpm => "disk.kind.pnpm",
             K::Yarn => "disk.kind.yarn",
             K::Docker => "disk.kind.docker",
+            K::Recordings => "disk.kind.recordings",
+            K::Attachments => "disk.kind.attachments",
         })
     }
 
@@ -571,6 +728,8 @@ pub mod label {
             W::OldLog => "disk.why.old_log",
             W::Needed => "disk.why.needed",
             W::NotEquipes => "disk.why.not_equipes",
+            W::Sent => "disk.why.sent",
+            W::SentLongAgo => "disk.why.sent_long_ago",
         })
     }
 }
@@ -585,10 +744,12 @@ pub fn waiting_ticket(text: &str) -> Option<crate::protocol::TicketId> {
     Lang::ALL
         .into_iter()
         .any(|lang| {
-            let template = core(lang).get("news.waiting");
-            let Some(tail) = template.strip_prefix("T-{id}") else { return false };
-            let literal = tail.split('{').next().unwrap_or_default();
-            !literal.trim().is_empty() && after.starts_with(literal)
+            // The particle after the id as it took it, or as kept from before.
+            particle_forms(core(lang).get("news.waiting")).iter().any(|template| {
+                let Some(tail) = template.strip_prefix("T-{id}") else { return false };
+                let literal = tail.split('{').next().unwrap_or_default();
+                !literal.trim().is_empty() && after.starts_with(literal)
+            })
         })
         .then_some(id)
 }
@@ -652,6 +813,18 @@ macro_rules! words {
         pub fn set(lang: $crate::i18n::Lang) {
             WORDS.set(lang)
         }
+
+        /// `key`'s words in every language (`Words::every`).
+        #[allow(dead_code)]
+        pub fn every(key: &str) -> &'static [&'static str] {
+            WORDS.every(key)
+        }
+
+        /// The words in `lang`, whichever is in use.
+        #[allow(dead_code)]
+        pub fn of(lang: $crate::i18n::Lang) -> &'static $crate::i18n::Catalog {
+            WORDS.of(lang)
+        }
     };
 }
 
@@ -671,6 +844,29 @@ macro_rules! t {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_paired_particle_after_a_name_becomes_the_one_it_takes() {
+        let said = |text: &str, name: &str| fill(text, &[("name", name.to_owned())]);
+        assert_eq!(said("✎ {name}이(가) 저장했어요", "pm"), "✎ pm이 저장했어요");
+        assert_eq!(said("{name}이(가)", "backend"), "backend가");
+        assert_eq!(said("{name}이(가)", "mobile"), "mobile이");
+        assert_eq!(said("{name}이(가)", "marketing"), "marketing이");
+        assert_eq!(said("{name}이(가)", "mobile-2"), "mobile-2가");
+        assert_eq!(said("{name}이(가)", "디자이너"), "디자이너가");
+        assert_eq!(said("{name}을(를)", "T-13"), "T-13을");
+        assert_eq!(said("{name}은(는)", "T-12"), "T-12는");
+        assert_eq!(said("{name}(으)로", "서울"), "서울로");
+        assert_eq!(said("{name}(으)로", "부산"), "부산으로");
+        assert_eq!(said("{name}와(과)", "팀"), "팀과");
+        // What can't be read aloud keeps both; elsewhere nothing changes.
+        assert_eq!(said("{name}이(가)", "`x`"), "`x`이(가)");
+        assert_eq!(said("{name} saved it", "pm"), "pm saved it");
+        assert_eq!(said("이(가) {name}", "pm"), "이(가) pm");
+        // Read back: the paired form, and each the value may have taken.
+        assert_eq!(particle_forms("{name}이(가) 왔어요"), ["{name}이(가) 왔어요", "{name}이 왔어요", "{name}가 왔어요"]);
+        assert_eq!(particle_forms("plain {name}"), ["plain {name}"]);
+    }
 
     #[test]
     fn a_locale_tag_names_its_language_whatever_its_shape() {
@@ -736,6 +932,26 @@ mod tests {
         assert_eq!(auto(&locale, Front::App, &system(&["zh-Hans-CN"])), Lang::ZhHans);
         assert_eq!(auto(&locale, Front::App, &system(&["it-IT", "pt-PT"])), Lang::En);
         assert_eq!(resolve(&env_of(&[("EQUIPE_LANG", "ja")]), None, Front::App, &system(&["ko"])), Lang::Ja);
+    }
+
+    #[test]
+    fn no_language_known_is_english_never_another() {
+        let none = env_of(&[]);
+        for front in [Front::Terminal, Front::App] {
+            assert_eq!(resolve(&none, None, front, &[]), Lang::En, "{front:?}");
+            assert_eq!(resolve(&none, None, front, &system(&["pt-BR", "ru-RU", "ar"])), Lang::En, "{front:?}: none it speaks");
+            assert_eq!(resolve(&env_of(&[("LANG", "C.UTF-8")]), None, front, &[]), Lang::En, "{front:?}: the C locale");
+        }
+        assert_eq!(Lang::ALL[0], Lang::En, "a list to pick from starts with English");
+        // A squad's language, as detected or kept: equipe's own words for it, else English.
+        for lang in Lang::ALL {
+            assert_eq!(Lang::from_english_name(lang.english_name()), Some(lang));
+        }
+        assert_eq!(Lang::from_english_name("Chinese"), Some(Lang::ZhHans));
+        assert_eq!(Lang::from_english_name("Portuguese"), None);
+        assert_eq!(crate::squad_home::named(None), Lang::En);
+        assert_eq!(crate::squad_home::named(Some("Portuguese")), Lang::En);
+        assert_eq!(crate::squad_home::named(Some("Japanese")), Lang::Ja);
     }
 
     #[test]
@@ -847,7 +1063,7 @@ mod tests {
     fn the_transcripts_own_lines_read_in_the_persons_language_and_the_rest_as_they_are() {
         use equipe_protocol::transcript::notes;
         assert_eq!(note(Lang::En, notes::STOPPED), notes::STOPPED);
-        assert_eq!(note(Lang::Ko, notes::STOPPED), "멈췄습니다.");
+        assert_eq!(note(Lang::Ko, notes::STOPPED), "멈췄어요.");
         let working = format!("{}equipe/try-1{}", notes::WORKING_ON, notes::WORKING_REST);
         assert_eq!(note(Lang::En, &working), working, "English reads as it always did");
         assert!(note(Lang::Fr, &working).contains("equipe/try-1"));
@@ -863,6 +1079,7 @@ mod tests {
             let line = core(lang).fill("news.waiting", &[("id", "117".into()), ("name", "ios".into()), ("title", "앱스토어 제출".into())]);
             assert_eq!(waiting_ticket(&line), Some(117), "{lang:?}: {line}");
         }
+        assert_eq!(waiting_ticket("T-117이(가) 나를 기다려요 — ios에게 나만 할 수 있는 일이 필요해요 · x."), Some(117), "as kept from before");
         assert_eq!(waiting_ticket("T-4 · Research"), None);
         assert_eq!(waiting_ticket("You accepted T-58 · 헤더."), None);
     }
@@ -873,7 +1090,7 @@ mod tests {
         let who = |squad: &str, member: &str| MemberRef { squad: squad.into(), member: member.into() };
         let state = DesktopState { holder: Some(who("acme", "qa")), queue: vec![who("beta", "pm")], stopped: false };
         assert_eq!(label::desktop(Lang::En, &state, Some("acme")), state.summary(Some("acme")));
-        assert_eq!(label::desktop(Lang::Ko, &state, Some("acme")).as_deref(), Some("qa이(가) 화면 사용 중 · 1명 대기"));
+        assert_eq!(label::desktop(Lang::Ko, &state, Some("acme")).as_deref(), Some("qa가 화면 사용 중 · 1명 대기"));
         let two = DesktopState { queue: vec![who("a", "x"), who("b", "y")], ..DesktopState::default() };
         assert_eq!(label::desktop(Lang::De, &two, None).as_deref(), Some("2 warten"));
         assert_eq!(label::desktop(Lang::En, &DesktopState::default(), None), None);

@@ -80,32 +80,29 @@ pub struct LaneRef<'a> {
 /// the other members' by name, the person's own (`""`) last.
 pub fn order<'a>(mut lanes: Vec<LaneRef<'a>>, viewed: Option<SessionId>) -> Vec<LaneRef<'a>> {
     lanes.sort_by(|a, b| {
-        let key = |l: &LaneRef| (l.lane.is_empty(), viewed.is_none() || l.session != viewed, l.name.to_lowercase(), l.lane.to_owned());
+        let key = |l: &LaneRef| (mine(l.lane), viewed.is_none() || l.session != viewed, l.name.to_lowercase(), l.lane.to_owned());
         key(a).cmp(&key(b))
     });
     lanes
 }
 
+/// Whether `lane` is the person's own tabs: the main profile's (`""`) or
+/// another profile's (`#jhjung`).
+pub fn mine(lane: &str) -> bool {
+    lane.is_empty() || lane.starts_with('#')
+}
+
+/// The browser profile `lane` is in: `jhjung` for `acme/qa#jhjung` or
+/// `#jhjung`; `None` for the main one.
+pub fn profile_of(lane: &str) -> Option<&str> {
+    lane.rsplit_once('#').map(|(_, p)| p).filter(|p| !p.is_empty())
+}
+
 /// Titles that say nothing of the page: a wall before it, or a page on its
 /// way. The tab reads as its site instead.
-const NOTHING_TITLES: &[&str] = &[
-    "just a moment",
-    "잠시만 기다리십시오",
-    "잠시만 기다려 주십시오",
-    "잠시만 기다려주세요",
-    "un instant",
-    "einen moment",
-    "un momento",
-    "しばらくお待ちください",
-    "请稍候",
-    "請稍候",
-    "attention required! | cloudflare",
-    "loading",
-    "redirecting",
-    "please wait",
-    "untitled",
-    "about:blank",
-];
+fn nothing_titles() -> impl Iterator<Item = &'static &'static str> {
+    ["attention required! | cloudflare", "untitled", "about:blank"].iter().chain(crate::i18n::every("match.nothing_titles"))
+}
 
 /// What a tab reads as: its title, or its site where the title says nothing
 /// (none yet, an address, a wall's "Just a moment…").
@@ -116,7 +113,7 @@ pub fn tab_title(page: &BrowserPage) -> String {
         || title.starts_with("http://")
         || title.starts_with("https://")
         || page.check == Some(HumanCheck::Challenge)
-        || (bare.chars().count() <= 40 && NOTHING_TITLES.iter().any(|t| bare.starts_with(t)));
+        || (bare.chars().count() <= 40 && nothing_titles().any(|t| bare.starts_with(t)));
     if says_nothing { site(&page.url).unwrap_or_default() } else { title.to_owned() }
 }
 
@@ -219,13 +216,13 @@ impl Hand {
         }
     }
 
-    /// The person takes it (직접 하기, or a hand on the page).
+    /// The person takes it ("Take over", or a hand on the page).
     pub fn take(&mut self) {
         self.held = true;
         self.touched = true;
     }
 
-    /// The person gives it back (돌려주기, Esc).
+    /// The person gives it back ("Give back", Esc).
     pub fn give_back(&mut self) {
         *self = Hand::default();
     }
@@ -299,7 +296,7 @@ impl Handovers {
             }
             return None;
         };
-        if lane.is_empty() || !self.opened.insert((lane.to_owned(), what)) {
+        if mine(lane) || !self.opened.insert((lane.to_owned(), what)) {
             return None;
         }
         Some(match page {
@@ -536,6 +533,24 @@ mod tests {
         let lanes_of = |v: Vec<LaneRef<'static>>| v.into_iter().map(|l| l.lane).collect::<Vec<_>>();
         assert_eq!(lanes_of(order(lanes.clone(), Some(7))), ["acme/mobile", "acme/backend", "acme/designer", ""]);
         assert_eq!(lanes_of(order(lanes, None)), ["acme/backend", "acme/designer", "acme/mobile", ""]);
+    }
+
+    #[test]
+    fn another_profiles_tabs_are_told_apart_and_the_persons_own_go_last() {
+        assert!(mine("") && mine("#jhjung"));
+        assert!(!mine("acme/qa") && !mine("acme/qa#jhjung"));
+        assert_eq!(profile_of("acme/qa#jhjung"), Some("jhjung"));
+        assert_eq!(profile_of("#jhjung"), Some("jhjung"));
+        assert_eq!(profile_of("acme/qa"), None);
+        assert_eq!(profile_of(""), None);
+        let lanes = vec![
+            LaneRef { lane: "#jhjung", session: None, name: "" },
+            LaneRef { lane: "acme/qa#jhjung", session: Some(3), name: "qa" },
+            LaneRef { lane: "", session: None, name: "" },
+            LaneRef { lane: "acme/qa", session: Some(3), name: "qa" },
+        ];
+        let lanes_of = |v: Vec<LaneRef<'static>>| v.into_iter().map(|l| l.lane).collect::<Vec<_>>();
+        assert_eq!(lanes_of(order(lanes, None)), ["acme/qa", "acme/qa#jhjung", "", "#jhjung"]);
     }
 
     #[test]

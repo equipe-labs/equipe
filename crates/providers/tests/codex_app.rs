@@ -87,10 +87,11 @@ async fn a_recorded_turn_streams_as_entries_and_writes_its_files() {
     assert_eq!((usage.output_tokens, usage.context_window), (Some(309), Some(258400)));
 
     let a = &run.activities;
-    assert_eq!(a[0], Activity::Model("gpt-6.1-sol".into()));
+    assert!(matches!(a[0], Activity::Engine { pid } if pid > 0), "the engine's process first, for a look at what runs under it");
+    assert_eq!(a[1], Activity::Model("gpt-6.1-sol".into()));
     assert!(a.contains(&Activity::Thinking("Looking at the repo".into())));
     assert_eq!(text(a), "I'll add the file, then test.DONE");
-    let tools: Vec<(&str, Option<&str>)> = a.iter().filter_map(|x| if let Activity::Tool { name, target } = x { Some((name.as_str(), target.as_deref())) } else { None }).collect();
+    let tools: Vec<(&str, Option<&str>)> = a.iter().filter_map(|x| if let Activity::Tool { name, target, .. } = x { Some((name.as_str(), target.as_deref())) } else { None }).collect();
     let readme = run.cwd.join("README.md").to_string_lossy().into_owned();
     let hello = run.cwd.join("hello.txt").to_string_lossy().into_owned();
     assert_eq!(tools, [
@@ -182,6 +183,37 @@ async fn an_interrupt_stops_the_turn_through_codex() {
 }
 
 #[tokio::test]
+async fn a_subagent_is_stopped_alone_through_its_own_turn_and_the_members_goes_on() {
+    let cwd = scratch("cwd");
+    let log = scratch("log").join("sent.jsonl");
+    let env = [("FAKE_CODEX_LOG".to_owned(), log.to_string_lossy().into_owned())];
+    let request = TurnRequest { prompt: "hand it to a subagent", access: Access::EditFiles, env: &env, ..Default::default() };
+    let (stop_tx, stop_rx) = mpsc::unbounded_channel::<String>();
+    let controls = codex_app::Controls { stop_subagent: Some(stop_rx), ..Default::default() };
+    let mut activities = Vec::new();
+    let turn = tokio::time::timeout(
+        Duration::from_secs(20),
+        codex_app::run_turn_with(&fake(), &cwd, request, controls, |a| {
+            // Heard from: the person stops it.
+            if let Activity::SubagentHeard { id } = &a {
+                let _ = stop_tx.send(id.clone());
+            }
+            activities.push(a);
+        }),
+    )
+    .await
+    .expect("the turn ends")
+    .unwrap();
+    assert_eq!((turn.result.status.as_str(), turn.result.text.as_str()), ("completed", "The subagent was interrupted. DONE"), "the member's turn went on");
+    assert!(activities.contains(&Activity::SubagentHeard { id: "thr-sub".into() }), "{activities:?}");
+    assert!(activities.contains(&Activity::SubagentEnded { id: "thr-sub".into(), result: None, failed: false }), "{activities:?}");
+    let log = sent(&log);
+    let interrupts: Vec<&Value> = log.iter().filter(|m| m["method"] == "turn/interrupt").collect();
+    assert_eq!(interrupts.len(), 1, "only the subagent's turn: {interrupts:?}");
+    assert_eq!((interrupts[0]["params"]["threadId"].as_str(), interrupts[0]["params"]["turnId"].as_str()), (Some("thr-sub"), Some("turn-sub")));
+}
+
+#[tokio::test]
 async fn what_the_person_says_mid_turn_steers_it() {
     let (tx, rx) = mpsc::unbounded_channel();
     tx.send("not the footer".to_owned()).unwrap();
@@ -202,6 +234,55 @@ async fn a_thread_is_continued_and_a_lost_one_started_afresh() {
     let lost = run("again", Access::ReadOnly, Some("thr-gone"), None, None, None).await;
     assert_eq!(lost.result.unwrap().thread_id.as_deref(), Some("thr-1"));
     assert!(method(&lost.log, "thread/start").is_some());
+}
+
+/// A side chat's turn on the fake: forked from `thread`, read-only, searching the web.
+async fn forked(thread: &str) -> Run {
+    let cwd = scratch("cwd");
+    let log = scratch("log").join("sent.jsonl");
+    let env = [("FAKE_CODEX_LOG".to_owned(), log.to_string_lossy().into_owned())];
+    let none = serde_json::json!({});
+    let request = TurnRequest {
+        prompt: "what does it mean?",
+        fresh_prompt: Some("[the conversation so far, summed up] what does it mean?"),
+        access: Access::ReadOnly,
+        resume: Some(thread),
+        fork: true,
+        web_search: true,
+        mcp_servers: Some(&none),
+        env: &env,
+        ..Default::default()
+    };
+    let mut activities = Vec::new();
+    let result = tokio::time::timeout(Duration::from_secs(20), codex_app::run_turn(&fake(), &cwd, request, None, None, None, |a| activities.push(a))).await.expect("the turn ends");
+    Run { activities, result, log: sent(&log), cwd }
+}
+
+#[tokio::test]
+async fn a_fork_continues_a_copy_of_the_thread_and_never_the_thread_itself() {
+    let run = forked("thr-7").await;
+    assert_eq!(run.result.unwrap().thread_id.as_deref(), Some("fork-of-thr-7"), "its own thread, to go on in");
+    let fork = &method(&run.log, "thread/fork").expect("forked")["params"];
+    assert_eq!(fork["threadId"], "thr-7");
+    assert_eq!((fork["sandbox"].as_str(), fork["approvalPolicy"].as_str()), (Some("read-only"), Some("never")));
+    assert_eq!(fork["config"]["web_search"], "live", "it searches the web");
+    assert_eq!(fork["config"]["mcp_servers"]["node_repl"]["enabled"], false, "the person's own servers off");
+    assert!(fork["config"]["mcp_servers"].get("equipe").is_none(), "and no board");
+    assert!(method(&run.log, "thread/resume").is_none() && method(&run.log, "thread/start").is_none(), "the member's thread is never resumed");
+    let turn = &method(&run.log, "turn/start").unwrap()["params"];
+    assert_eq!(turn["threadId"], "fork-of-thr-7");
+    assert_eq!(turn["sandboxPolicy"]["type"], "readOnly");
+    assert_eq!(turn["input"][0]["text"], "what does it mean?", "the fork knows the conversation: only the question");
+}
+
+#[tokio::test]
+async fn without_a_fork_a_fresh_thread_starts_with_the_conversation_summed_up() {
+    let run = forked("thr-nofork").await;
+    assert_eq!(run.result.unwrap().thread_id.as_deref(), Some("thr-1"));
+    assert!(method(&run.log, "thread/resume").is_none(), "never the member's own thread");
+    let start = &method(&run.log, "thread/start").expect("a fresh thread")["params"];
+    assert_eq!((start["sandbox"].as_str(), start["config"]["web_search"].as_str()), (Some("read-only"), Some("live")));
+    assert_eq!(method(&run.log, "turn/start").unwrap()["params"]["input"][0]["text"], "[the conversation so far, summed up] what does it mean?");
 }
 
 #[tokio::test]

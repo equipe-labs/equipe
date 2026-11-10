@@ -1,0 +1,11 @@
+#!/bin/sh
+# A stand-in for `tailscale status --json`: sample machines for the chooser's
+# picture, so no real tailnet ends up in the UI map.
+cat <<'JSON'
+{"Peer": {
+ "a": {"HostName": "studio-mac-mini", "DNSName": "studio-mac-mini.tail0000.ts.net.", "OS": "macOS", "TailscaleIPs": ["100.64.0.11"], "Online": true},
+ "b": {"HostName": "Office MacBook Pro", "DNSName": "office-macbook-pro.tail0000.ts.net.", "OS": "macOS", "TailscaleIPs": ["100.64.0.12"], "Online": true},
+ "c": {"HostName": "build-box", "DNSName": "build-box.tail0000.ts.net.", "OS": "linux", "TailscaleIPs": ["100.64.0.13"], "Online": false, "LastSeen": "2026-11-02T08:15:00Z"},
+ "d": {"HostName": "phone", "DNSName": "phone.tail0000.ts.net.", "OS": "iOS", "TailscaleIPs": ["100.64.0.14"], "Online": true}
+}}
+JSON

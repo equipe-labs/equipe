@@ -37,13 +37,15 @@ enum Input {
     /// An event of a squad a device follows.
     Device(String, String, Event),
     /// A device's squad is followed, or couldn't be.
-    Opened(String, String, Value, Result<(Commands, equipe_core::protocol::rpc::Hello), String>),
+    Opened(String, String, Value, Result<(Commands, Box<equipe_core::protocol::rpc::Hello>), String>),
     /// An event of any squad, for pushes.
     Squad(String, Event),
     /// A member's picture a device asked for, read (`read_image`).
     ImageRead(String, String, u64, Result<equipe_core::protocol::rpc::ImageRead, String>),
     /// A folder's pictures a device asked for, listed (`list_images`).
     ImagesListed(String, String, u64, Result<equipe_core::protocol::rpc::ImageList, String>),
+    /// The project's numbers a device asked for, worked out (`metrics.summary`).
+    MetricsSummarized(String, String, u64, Result<equipe_core::protocol::metrics::Summary, String>),
     /// The answer to a device's request, made off the loop (an `upload`'s).
     Answer(String, equipe_core::protocol::rpc::Message),
 }
@@ -63,6 +65,13 @@ fn phone_image(home: &Path, ask: &equipe_core::protocol::rpc::ReadImage) -> Resu
         return Err("the picture is too big for the phone".into());
     }
     Ok(read)
+}
+
+/// A project's numbers for a phone (`metrics.summary`): read from what the
+/// daemon kept — connections.json and the days' numbers — never a key.
+pub(super) fn phone_summary(home: &Path, ask: &equipe_core::protocol::metrics::SummaryParams, now: u64) -> Result<equipe_core::protocol::metrics::Summary, String> {
+    let today = equipe_core::metrics::day_of(&equipe_core::routines::Local, now);
+    equipe_core::metrics::summary(home, ask, today).map_err(|refused| refused.message)
 }
 
 /// Run in the daemon for as long as it lives.
@@ -103,6 +112,14 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                     .into_iter()
                     .map(|s| (s.name, s.projects.iter().map(|p| equipe_core::board::project_name(p)).collect()))
                     .collect();
+                // A squad deleted since: followed no more.
+                followed.retain(|squad, task| {
+                    let listed = core.squads.iter().any(|(s, _)| s == squad);
+                    if !listed {
+                        task.abort();
+                    }
+                    listed
+                });
                 // With devices to reach, every squad is followed for pushes.
                 if core.has_devices() {
                     for (squad, _) in core.squads.clone() {
@@ -218,7 +235,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                 let hello = match result {
                     Ok((commands, hello)) => {
                         senders.insert((device.clone(), squad.clone()), commands);
-                        Ok(hello)
+                        Ok(*hello)
                     }
                     Err(why) => Err(why),
                 };
@@ -227,6 +244,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
             Some(Input::Squad(squad, event)) => actions.extend(core.on_squad_event(&squad, &event)),
             Some(Input::ImageRead(device, squad, id, read)) => actions.extend(core.image_read(&device, &squad, id, read)),
             Some(Input::ImagesListed(device, squad, id, listed)) => actions.extend(core.images_listed(&device, &squad, id, listed)),
+            Some(Input::MetricsSummarized(device, squad, id, summary)) => actions.extend(core.metrics_summarized(&device, &squad, id, summary)),
             Some(Input::Answer(device, message)) => actions.extend(core.answer(&device, &message)),
         }
         for action in actions {
@@ -242,10 +260,10 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                     let socket = socket.clone();
                     let version = version.clone();
                     let task = tokio::spawn(async move {
-                        match Client::connect(&socket, &version, &squad).await {
+                        match Client::connect_phone(&socket, &version, &squad).await {
                             Ok((client, hello)) => {
                                 let (commands, mut events) = client.split();
-                                let _ = tx.send(Input::Opened(device.clone(), squad.clone(), id, Ok((commands, hello))));
+                                let _ = tx.send(Input::Opened(device.clone(), squad.clone(), id, Ok((commands, Box::new(hello)))));
                                 while let Some(event) = events.recv().await {
                                     if tx.send(Input::Device(device.clone(), squad.clone(), event)).is_err() {
                                         break;
@@ -279,6 +297,17 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                     tokio::spawn(async move {
                         let listed = tokio::task::spawn_blocking(move || equipe_core::visuals::list(&home, &ask)).await.unwrap_or_else(|_| Err("the folder couldn't be read".into()));
                         let _ = tx.send(Input::ImagesListed(device, squad, id, listed));
+                    });
+                }
+                // Read from what the daemon kept (connections.json and the numbers): no key is read.
+                Action::MetricsSummary { device, squad, id, ask } => {
+                    let (tx, home) = (input_tx.clone(), home.clone());
+                    tokio::spawn(async move {
+                        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                        let summary = tokio::task::spawn_blocking(move || phone_summary(&home, &ask, now))
+                        .await
+                        .unwrap_or_else(|_| Err("the numbers couldn't be read".into()));
+                        let _ = tx.send(Input::MetricsSummarized(device, squad, id, summary));
                     });
                 }
                 Action::Close { device } => {
@@ -454,6 +483,10 @@ pub async fn serve_demo(home: PathBuf, version: String) -> Result<(), String> {
                     Action::ListImages { device, squad, id, .. } => {
                         actions.extend(core.images_listed(&device, &squad, id, Err("the demo has no pictures".into())));
                     }
+                    // Nor any numbers: the phone hides the card.
+                    Action::MetricsSummary { device, squad, id, .. } => {
+                        actions.extend(core.metrics_summarized(&device, &squad, id, Err("the demo has no numbers".into())));
+                    }
                     Action::Upload { device, id, piece } => {
                         let answer = match uploads.piece(&device, *piece, now) {
                             Ok(result) => equipe_core::protocol::rpc::Message::response(id, result),
@@ -624,6 +657,22 @@ async fn serve_local(stream: UnixStream, input: UnboundedSender<Input>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_drawn_diagram_reaches_a_phone_in_one_frame() {
+        let home = std::env::temp_dir().join(format!("equipe-link-diagram-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let steps: String = (0..30).map(|i| format!("  S{i}[Step {i}] --> S{}[Step {}]\n", i + 1, i + 1)).collect();
+        let drawn = equipe_core::visuals::diagram::draw(&home, "acme", &format!("```mermaid\nflowchart TD\n{steps}```"));
+        assert_eq!(drawn.len(), 1);
+        for image in [&drawn[0].light, &drawn[0].dark] {
+            let ask = equipe_core::protocol::rpc::ReadImage { squad: "acme".into(), path: image.path.clone(), max: None };
+            let read = phone_image(&home, &ask).unwrap();
+            assert!(read.data.len() <= super::super::core::PHONE_IMAGE_MAX, "{} bytes", read.data.len());
+            assert_eq!(read.mime, "image/png", "a diagram keeps its transparent ground");
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     /// A relay on this machine that opens every slot it's asked to; every
     /// frame the daemon sends it goes to the result.

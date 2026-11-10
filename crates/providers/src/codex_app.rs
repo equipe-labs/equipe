@@ -27,7 +27,7 @@ use futures_util::StreamExt as _;
 use futures_util::stream::FuturesUnordered;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::claude_code::{Access, cap_diff, tool_target};
@@ -46,16 +46,14 @@ const ANSWER_WAIT: Duration = Duration::from_secs(30);
 const THREAD_WAIT: Duration = Duration::from_secs(120);
 /// After an interrupt, how long the turn has to wind down before it is cut.
 const INTERRUPT_WAIT: Duration = Duration::from_secs(5);
+/// A subagent heard is said at most this often: enough for a watch counting minutes.
+const HEARD_EVERY: Duration = Duration::from_secs(5);
 
 // ── the binary and its sign-in ──
 
 /// Where `binary` is: itself when it names a path, else the first on `PATH`.
 pub fn find(binary: &str) -> Option<PathBuf> {
-    if binary.contains('/') {
-        let path = PathBuf::from(binary);
-        return path.is_file().then_some(path);
-    }
-    std::env::split_paths(&std::env::var_os("PATH")?).map(|dir| dir.join(binary)).find(|p| p.is_file())
+    crate::tools_path::find(binary)
 }
 
 /// How the person's Codex CLI is signed in.
@@ -91,7 +89,7 @@ pub fn parse_login_status(success: bool, said: &str) -> SignIn {
 
 /// Ask the installed Codex CLI whether it is signed in. `Ok(None)`: it isn't installed.
 pub async fn login_status(binary: &str) -> Result<Option<SignIn>> {
-    let asked = Command::new(binary).args(["login", "status"]).stdin(Stdio::null()).kill_on_drop(true).output();
+    let asked = crate::tools_path::command(binary).args(["login", "status"]).stdin(Stdio::null()).kill_on_drop(true).output();
     let Ok(output) = tokio::time::timeout(ANSWER_WAIT, asked).await else {
         return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("`{binary} login status` didn't answer")).into());
     };
@@ -205,6 +203,77 @@ pub fn others_off(listing: &Value, ours: &Value) -> Value {
 /// Codex's built-in server for ChatGPT apps.
 const APPS_SERVER: &str = "codex_apps";
 
+// ── another provider ──
+
+/// What Codex can't send a provider that only speaks the Responses API's
+/// function tools: tools of other types (the web search, the namespaces
+/// subagents and apps come in, image generation), images, compaction on
+/// OpenAI's own endpoint, and compressed bodies. Turned off for such a
+/// provider's turns, so each request carries function tools only
+/// (`exec_command`, `write_stdin`, `request_user_input`), and MCP servers'
+/// tools, which Codex sends in a `namespace`, flattened on the way
+/// ([`crate::relay`]). Its edits go through the shell: `apply_patch` comes
+/// only as a freeform tool (codex-cli 0.154.0 has no function form of it).
+pub const PLAIN_FEATURES_OFF: [&str; 11] = [
+    "multi_agent",
+    "goals",
+    "image_generation",
+    "apps",
+    "plugins",
+    "remote_compaction_v2",
+    "view_image",
+    "browser_use",
+    "computer_use",
+    "tool_suggest",
+    "enable_request_compression",
+];
+
+/// Another provider speaking OpenAI's Responses API, for a turn to run on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Provider {
+    /// The id Codex knows it by.
+    pub id: String,
+    /// Its name, as Codex shows it.
+    pub name: String,
+    /// Its API's root, before `/responses`.
+    pub base_url: String,
+    /// The environment variable Codex reads its key from.
+    pub env_key: String,
+    /// More config overrides for its turns (`key=value`, as `-c` takes them).
+    pub config: Vec<String>,
+    /// The API it is asked in: Codex's Responses requests are said in chat
+    /// for one that speaks only Chat Completions ([`crate::relay::Wire`]).
+    pub wire: crate::relay::Wire,
+}
+
+/// The app-server's command line for a turn on another provider that speaks
+/// OpenAI's Responses API at `base_url` (`wire_api = "responses"`; Codex
+/// takes no other), as config overrides on top of the person's own: the
+/// provider by its id, its key read by Codex itself from the environment
+/// variable it names (never passed on the command line, never seen by
+/// equipe), and the requests kept to what such a provider serves
+/// ([`PLAIN_FEATURES_OFF`]). The ChatGPT sign-in plays no part: Codex asks for
+/// none when the provider doesn't require OpenAI's auth. The key is kept out
+/// of the commands the agent runs (`shell_environment_policy.exclude`, which
+/// for these turns stands in for the person's own list).
+pub fn provider_args(provider: &Provider, base_url: &str) -> Vec<String> {
+    let toml = |value: &str| serde_json::to_string(value).unwrap_or_default();
+    let id = &provider.id;
+    let mut config = vec![format!("model_provider={}", toml(id))];
+    let at = format!("model_providers.{id}");
+    config.push(format!("{at}.name={}", toml(&provider.name)));
+    config.push(format!("{at}.base_url={}", toml(base_url)));
+    config.push(format!("{at}.env_key={}", toml(&provider.env_key)));
+    config.push(format!("{at}.wire_api={}", toml("responses")));
+    config.push(format!("{at}.requires_openai_auth=false"));
+    config.push(format!("web_search={}", toml("disabled")));
+    config.push(format!("model_reasoning_summary={}", toml("none")));
+    config.push(format!("shell_environment_policy.exclude=[{}]", toml(&provider.env_key)));
+    config.extend(PLAIN_FEATURES_OFF.iter().map(|feature| format!("features.{feature}=false")));
+    config.extend(provider.config.iter().cloned());
+    config.into_iter().flat_map(|c| ["-c".to_owned(), c]).collect()
+}
+
 // ── one turn ──
 
 /// One turn's input.
@@ -217,6 +286,13 @@ pub struct TurnRequest<'a> {
     pub access: Access,
     /// The thread an earlier turn ran in, to continue it.
     pub resume: Option<&'a str>,
+    /// Continue a copy of `resume` (`thread/fork`), never `resume` itself.
+    pub fork: bool,
+    /// What to say instead of `prompt` when no earlier thread could be
+    /// continued (or forked) and a fresh one starts; `None`: `prompt`.
+    pub fresh_prompt: Option<&'a str>,
+    /// Codex's own web search, live (`web_search = "live"`); not on another provider.
+    pub web_search: bool,
     /// Who the agent is on the team: Codex's developer instructions, beside
     /// its own and the project's `AGENTS.md`.
     pub instructions: Option<&'a str>,
@@ -226,6 +302,14 @@ pub struct TurnRequest<'a> {
     pub writable: &'a [PathBuf],
     /// More environment for the app-server, and so for its commands.
     pub env: &'a [(String, String)],
+    /// Another provider to run the turn on ([`Provider`]); `None`: the
+    /// person's own Codex, as they set it up.
+    pub provider: Option<&'a Provider>,
+    /// How many subagents the thread runs at once
+    /// (`agents.max_concurrent_threads_per_session`; `agents.max_threads` in
+    /// older configs); `None`, Codex's own default. On another provider it
+    /// has none: `multi_agent` is off there.
+    pub subagents: Option<u32>,
 }
 
 /// `thread/start`'s parameters; `others`, the person's own MCP servers off.
@@ -237,11 +321,36 @@ pub fn start_params(request: &TurnRequest<'_>, cwd: &Path, others: Option<&Value
         "config": thread_config(request.mcp_servers, others),
         "serviceName": CLIENT_NAME,
     });
+    // A thread's `features` stand in for the command line's: on another
+    // provider, what it can't serve stays off in them too.
+    if request.provider.is_some() {
+        for feature in PLAIN_FEATURES_OFF {
+            params["config"]["features"][feature] = json!(false);
+        }
+    } else if let Some(at_once) = request.subagents {
+        params["config"]["agents"]["max_concurrent_threads_per_session"] = json!(at_once);
+    }
+    // Searching the web as it goes: Codex's own tool, OpenAI's only.
+    if request.web_search && request.provider.is_none() {
+        params["config"]["web_search"] = json!("live");
+    }
     if let Some(model) = request.model {
         params["model"] = json!(model);
     }
     if let Some(instructions) = request.instructions {
         params["developerInstructions"] = json!(instructions);
+    }
+    params
+}
+
+/// `thread/fork`'s: a copy of thread `id` with the turn's settings — its
+/// sandbox, its servers — the original left as it was.
+pub fn fork_params(request: &TurnRequest<'_>, cwd: &Path, id: &str, others: Option<&Value>) -> Value {
+    let mut params = start_params(request, cwd, others);
+    if let Some(map) = params.as_object_mut() {
+        map.remove("serviceName");
+        map.insert("threadId".into(), json!(id));
+        map.insert("excludeTurns".into(), json!(true));
     }
     params
 }
@@ -291,6 +400,8 @@ fn text_input(text: &str) -> Value {
 pub struct Turn {
     pub result: TurnResult,
     pub thread_id: Option<String>,
+    /// On another provider: each request relayed to it ([`crate::relay`]).
+    pub provider_requests: Vec<crate::relay::Exchange>,
 }
 
 /// Codex asks before it acts: `tool` and `input` say what, as Claude Code's
@@ -446,6 +557,10 @@ pub struct TurnCollector {
     input: u64,
     cached: u64,
     output: u64,
+    /// Of `input`, what was written to the cache, where Codex says.
+    cache_written: u64,
+    /// The requests counted.
+    calls: u64,
     /// The context as of the latest request, and the window.
     context: Option<u64>,
     window: Option<u64>,
@@ -453,6 +568,10 @@ pub struct TurnCollector {
     /// The plan last shown, so an unchanged one isn't shown again.
     plan: Option<String>,
     subagents: HashSet<String>,
+    /// When each subagent was last said to be heard ([`Activity::SubagentHeard`]).
+    heard: HashMap<String, Instant>,
+    /// Each subagent's turn under way, by its thread: what stopping it interrupts.
+    sub_turns: HashMap<String, String>,
     /// An error the app-server reported on the way.
     error: Option<String>,
     result: Option<Result<TurnResult>>,
@@ -477,6 +596,38 @@ impl TurnCollector {
         self.turn.as_deref()
     }
 
+    /// The turn a subagent of this one runs now, by its thread, once it was heard starting.
+    pub fn subagent_turn(&self, thread: &str) -> Option<&str> {
+        self.sub_turns.get(thread).map(String::as_str)
+    }
+
+    /// Something said on a subagent's own thread: never the member's, only
+    /// a sign it is alive — and its turn, to stop it by.
+    fn on_subagent(&mut self, method: &str, thread: &str, params: &Value) -> Vec<Activity> {
+        if !self.subagents.contains(thread) {
+            return Vec::new();
+        }
+        if method == "turn/started"
+            && let Some(turn) = params.get("turn").and_then(|t| t.get("id")).and_then(Value::as_str)
+        {
+            self.sub_turns.insert(thread.to_owned(), turn.to_owned());
+        }
+        self.heard_from(thread)
+    }
+
+    /// A subagent heard: said, unless it was a moment ago.
+    fn heard_from(&mut self, thread: &str) -> Vec<Activity> {
+        if !self.subagents.contains(thread) {
+            return Vec::new();
+        }
+        let now = Instant::now();
+        if self.heard.get(thread).is_some_and(|at| now.duration_since(*at) < HEARD_EVERY) {
+            return Vec::new();
+        }
+        self.heard.insert(thread.to_owned(), now);
+        vec![Activity::SubagentHeard { id: thread.to_owned() }]
+    }
+
     /// Whether the turn has ended.
     pub fn done(&self) -> bool {
         self.result.is_some()
@@ -498,7 +649,7 @@ impl TurnCollector {
         if let (Some(ours), Some(thread)) = (&self.thread, thread)
             && ours != thread
         {
-            return Vec::new();
+            return self.on_subagent(method, thread, params);
         }
         let out = match method {
             "turn/started" => {
@@ -531,13 +682,15 @@ impl TurnCollector {
                 self.input += n("inputTokens").saturating_sub(cached);
                 self.cached += cached;
                 self.output += n("outputTokens");
+                self.cache_written += n("cacheWriteInputTokens");
                 if last.is_some() {
                     self.context = Some(n("totalTokens"));
+                    self.calls += 1;
                 }
                 if let Some(window) = usage.and_then(|u| u.get("modelContextWindow")).and_then(Value::as_u64) {
                     self.window = Some(window);
                 }
-                vec![Activity::Output(self.output)]
+                vec![Activity::Output(self.output), Activity::Spent(self.input + self.cached + self.output)]
             }
             "model/rerouted" => match params.get("toModel").and_then(Value::as_str) {
                 Some(model) => vec![Activity::Model(model.to_owned())],
@@ -560,7 +713,7 @@ impl TurnCollector {
             }
             _ => Vec::new(),
         };
-        if out.iter().any(|a| !matches!(a, Activity::Text(_) | Activity::Thinking(_) | Activity::Output(_) | Activity::Limits(_))) {
+        if out.iter().any(|a| !matches!(a, Activity::Text(_) | Activity::Thinking(_) | Activity::Output(_) | Activity::Spent(_) | Activity::Limits(_) | Activity::SubagentHeard { .. })) {
             self.text_open = false;
         }
         out
@@ -584,11 +737,14 @@ impl TurnCollector {
                 changes.into_iter().map(|(path, kind, _)| (change_tool(&kind).to_owned(), Some(path))).collect()
             }
             "mcpToolCall" => vec![mcp_tool(item)],
+            // Compacting the thread to make room (app-server v2's
+            // `contextCompaction` item; `thread/compacted` is its deprecated echo).
+            "contextCompaction" => return vec![Activity::Compacting],
             _ => return Vec::new(),
         };
         let now = Instant::now();
         self.pending.insert(id.to_owned(), uses.iter().map(|(name, target)| Pending { name: name.clone(), target: target.clone(), since: now }).collect());
-        uses.into_iter().map(|(name, target)| Activity::Tool { name, target }).collect()
+        uses.into_iter().map(|(name, target)| Activity::Tool { name, target, label: None, background: false }).collect()
     }
 
     fn item_completed(&mut self, item: &Value) -> Vec<Activity> {
@@ -609,6 +765,12 @@ impl TurnCollector {
                 }
                 out
             }
+            "contextCompaction" => vec![Activity::Compacted],
+            // A subagent at work, as the member's thread tells of it.
+            "subAgentActivity" => match item.get("agentThreadId").and_then(Value::as_str) {
+                Some(thread) => self.heard_from(thread),
+                None => Vec::new(),
+            },
             // The person's words, read: the prompt, then what they said while it worked.
             "userMessage" => {
                 self.read += 1;
@@ -670,12 +832,12 @@ impl TurnCollector {
                     .or_else(|| item.get("action").and_then(|a| a.get("query").or_else(|| a.get("url"))).and_then(Value::as_str))
                     .map(|q| q.chars().take(120).collect::<String>());
                 let pending = Pending { name: "WebSearch".into(), target: query.clone(), since: Instant::now() };
-                vec![Activity::Tool { name: "WebSearch".into(), target: query }, Activity::ToolDone(done(pending, true, None, ms, String::new(), None))]
+                vec![Activity::Tool { name: "WebSearch".into(), target: query, label: None, background: false }, Activity::ToolDone(done(pending, true, None, ms, String::new(), None))]
             }
             "imageView" => {
                 let path = item.get("path").and_then(Value::as_str).map(str::to_owned);
                 let pending = Pending { name: "Read".into(), target: path.clone(), since: Instant::now() };
-                vec![Activity::Tool { name: "Read".into(), target: path }, Activity::ToolDone(done(pending, true, None, ms, String::new(), None))]
+                vec![Activity::Tool { name: "Read".into(), target: path, label: None, background: false }, Activity::ToolDone(done(pending, true, None, ms, String::new(), None))]
             }
             // Work handed to a subagent, and back.
             "collabAgentToolCall" => {
@@ -686,7 +848,7 @@ impl TurnCollector {
                         .filter(|r| self.subagents.insert(r.clone()))
                         .map(|id| {
                             let what = item.get("prompt").and_then(Value::as_str).unwrap_or("a subagent");
-                            Activity::SubagentStarted { id, what: what.lines().next().unwrap_or("").chars().take(80).collect() }
+                            Activity::SubagentStarted { id, what: what.lines().next().unwrap_or("").chars().take(80).collect(), brief: what.chars().take(4000).collect() }
                         })
                         .collect(),
                     Some(_) => {
@@ -699,7 +861,11 @@ impl TurnCollector {
                                     || item.get("tool").and_then(Value::as_str) == Some("closeAgent")
                             })
                             .filter(|r| self.subagents.remove(r))
-                            .map(|id| Activity::SubagentEnded { id })
+                            .map(|id| {
+                                self.heard.remove(&id);
+                                self.sub_turns.remove(&id);
+                                Activity::SubagentEnded { id, result: None, failed: false }
+                            })
                             .collect()
                     }
                     None => Vec::new(),
@@ -736,14 +902,18 @@ impl TurnCollector {
         }
         self.plan = Some(line.clone());
         let pending = Pending { name: "TodoWrite".into(), target: Some(line.clone()), since: Instant::now() };
-        vec![Activity::Tool { name: "TodoWrite".into(), target: Some(line) }, Activity::ToolDone(done(pending, true, None, Some(0), String::new(), None))]
+        vec![Activity::Tool { name: "TodoWrite".into(), target: Some(line), label: None, background: false }, Activity::ToolDone(done(pending, true, None, Some(0), String::new(), None))]
     }
 
     fn usage(&self) -> Option<TurnUsage> {
         (self.input + self.cached + self.output > 0).then_some(TurnUsage {
-            input_tokens: Some(self.input),
+            input_tokens: Some(self.input.saturating_sub(self.cache_written)),
             output_tokens: Some(self.output),
-            cache_tokens: (self.cached > 0).then_some(self.cached),
+            cache_tokens: (self.cached + self.cache_written > 0).then_some(self.cached + self.cache_written),
+            cache_read_tokens: (self.cached > 0).then_some(self.cached),
+            cache_write_tokens: (self.cache_written > 0).then_some(self.cache_written),
+            cache_write_long_tokens: None,
+            calls: (self.calls > 0).then_some(self.calls),
             context_tokens: self.context,
             context_window: self.window,
         })
@@ -910,8 +1080,21 @@ pub fn parse_limits(snapshot: &Value) -> Option<Limits> {
     })
 }
 
-/// Usable model ids from `model/list`, the account's default first; hidden ones left out.
-pub fn model_ids(listing: &Value) -> Vec<String> {
+/// A model `model/list` offers: its id, the name Codex gives it, the
+/// reasoning efforts it takes (empty: not said), what Codex says it is for,
+/// and whether it is the account's default.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelInfo {
+    pub id: String,
+    pub name: Option<String>,
+    pub efforts: Vec<String>,
+    pub default_effort: Option<String>,
+    pub description: Option<String>,
+    pub default: bool,
+}
+
+/// Usable models from `model/list`, the account's default first; hidden ones left out.
+pub fn model_infos(listing: &Value) -> Vec<ModelInfo> {
     let models: Vec<&Value> = listing
         .get("data")
         .and_then(Value::as_array)
@@ -919,16 +1102,35 @@ pub fn model_ids(listing: &Value) -> Vec<String> {
         .flatten()
         .filter(|m| m.get("hidden").and_then(Value::as_bool) != Some(true))
         .collect();
-    let id = |m: &&Value| m.get("id").or_else(|| m.get("model")).and_then(Value::as_str).map(str::to_owned);
-    let default = models.iter().filter(|m| m.get("isDefault").and_then(Value::as_bool) == Some(true)).filter_map(id);
-    let rest = models.iter().filter(|m| m.get("isDefault").and_then(Value::as_bool) != Some(true)).filter_map(id);
+    let info = |m: &&Value| -> Option<ModelInfo> {
+        let id = m.get("id").or_else(|| m.get("model")).and_then(Value::as_str)?.to_owned();
+        let text = |k: &str| m.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
+        // Each effort as a word, or as `{ reasoningEffort, description }`.
+        let efforts = m
+            .get("supportedReasoningEfforts")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.as_str().or_else(|| e.get("reasoningEffort").and_then(Value::as_str)).map(str::to_owned))
+            .collect();
+        let default = m.get("isDefault").and_then(Value::as_bool) == Some(true);
+        Some(ModelInfo { name: text("displayName").filter(|n| *n != id), id, efforts, default_effort: text("defaultReasoningEffort"), description: text("description"), default })
+    };
+    let is_default = |m: &&&Value| m.get("isDefault").and_then(Value::as_bool) == Some(true);
+    let default = models.iter().filter(is_default).filter_map(info);
+    let rest = models.iter().filter(|m| !is_default(m)).filter_map(info);
     let mut seen = HashSet::new();
-    default.chain(rest).filter(|m| seen.insert(m.clone())).collect()
+    default.chain(rest).filter(|m| seen.insert(m.id.clone())).collect()
+}
+
+/// Usable model ids from `model/list`, the account's default first; hidden ones left out.
+pub fn model_ids(listing: &Value) -> Vec<String> {
+    model_infos(listing).into_iter().map(|m| m.id).collect()
 }
 
 /// The plan's usage now, without running a turn.
 pub async fn read_limits(binary: &str, cwd: &Path) -> Result<Limits> {
-    let mut server = Server::start(binary, cwd, &[]).await?;
+    let mut server = Server::start(binary, cwd, &[], &[]).await?;
     let read = server.call("account/rateLimits/read", json!({}), ANSWER_WAIT).await?;
     server.close().await;
     read.get("rateLimits").and_then(parse_limits).ok_or_else(|| Error::Protocol("codex reported no usage limits".into()))
@@ -945,7 +1147,7 @@ pub struct Account {
 
 /// Read who the person's Codex is signed in as (`account/read`); `None`: signed out.
 pub async fn read_account(binary: &str, cwd: &Path) -> Result<Option<Account>> {
-    let mut server = Server::start(binary, cwd, &[]).await?;
+    let mut server = Server::start(binary, cwd, &[], &[]).await?;
     let read = server.call("account/read", json!({}), ANSWER_WAIT).await?;
     server.close().await;
     Ok(account_of(&read))
@@ -959,13 +1161,18 @@ fn account_of(read: &Value) -> Option<Account> {
 
 /// The models the person's Codex offers, its default first.
 pub async fn list_models(binary: &str, cwd: &Path) -> Result<Vec<String>> {
-    let mut server = Server::start(binary, cwd, &[]).await?;
-    let mut ids = Vec::new();
+    Ok(list_model_infos(binary, cwd).await?.into_iter().map(|m| m.id).collect())
+}
+
+/// The same, with each one's name and efforts.
+pub async fn list_model_infos(binary: &str, cwd: &Path) -> Result<Vec<ModelInfo>> {
+    let mut server = Server::start(binary, cwd, &[], &[]).await?;
+    let mut ids: Vec<ModelInfo> = Vec::new();
     let mut cursor: Option<String> = None;
     // Pages, as many as there are — a few at most.
     for _ in 0..10 {
         let listing = server.call("model/list", json!({ "cursor": cursor }), ANSWER_WAIT).await?;
-        ids.extend(model_ids(&listing));
+        ids.extend(model_infos(&listing));
         cursor = listing.get("nextCursor").and_then(Value::as_str).map(str::to_owned);
         if cursor.is_none() {
             break;
@@ -1017,9 +1224,10 @@ struct Server {
 
 impl Server {
     /// Start it in `cwd` and introduce equipe.
-    async fn start(binary: &str, cwd: &Path, env: &[(String, String)]) -> Result<Self> {
-        let mut child = Command::new(binary)
+    async fn start(binary: &str, cwd: &Path, args: &[String], env: &[(String, String)]) -> Result<Self> {
+        let mut child = crate::tools_path::command(binary)
             .arg("app-server")
+            .args(args)
             .current_dir(cwd)
             .envs(env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::piped())
@@ -1149,12 +1357,44 @@ pub async fn run_turn(
     binary: &str,
     cwd: &Path,
     request: TurnRequest<'_>,
-    mut steering: Option<mpsc::UnboundedReceiver<String>>,
+    steering: Option<mpsc::UnboundedReceiver<String>>,
     asks: Option<mpsc::UnboundedSender<Ask>>,
     stop: Option<oneshot::Receiver<()>>,
-    mut on_activity: impl FnMut(Activity),
+    on_activity: impl FnMut(Activity),
 ) -> Result<Turn> {
-    let mut server = Server::start(binary, cwd, request.env).await?;
+    run_turn_with(binary, cwd, request, Controls { steering, asks, stop, stop_subagent: None }, on_activity).await
+}
+
+/// What the caller has a say in while a turn runs ([`run_turn_with`]).
+#[derive(Default)]
+pub struct Controls {
+    /// What the person says meanwhile, read at the turn's next step.
+    pub steering: Option<mpsc::UnboundedReceiver<String>>,
+    /// Where Codex's requests for approval go (none: declined).
+    pub asks: Option<mpsc::UnboundedSender<Ask>>,
+    /// A word here interrupts the turn, which then winds down.
+    pub stop: Option<oneshot::Receiver<()>>,
+    /// A subagent of the turn's to stop, by its thread: its own turn is
+    /// interrupted, once it was heard starting; the member's goes on.
+    pub stop_subagent: Option<mpsc::UnboundedReceiver<String>>,
+}
+
+/// [`run_turn`], with [`Controls`] beyond it.
+pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, controls: Controls, mut on_activity: impl FnMut(Activity)) -> Result<Turn> {
+    let Controls { mut steering, asks, stop, mut stop_subagent } = controls;
+    // On another provider, through a relay on the loopback that keeps its tools plain.
+    let relay = match request.provider {
+        Some(provider) => Some(crate::relay::start(&provider.base_url, provider.wire).await?),
+        None => None,
+    };
+    let args = match (request.provider, &relay) {
+        (Some(provider), Some(relay)) => provider_args(provider, &relay.url),
+        _ => Vec::new(),
+    };
+    let mut server = Server::start(binary, cwd, &args, request.env).await?;
+    if let Some(pid) = server.child.id() {
+        on_activity(Activity::Engine { pid });
+    }
     // Signed out, the turn would fail somewhere inside: say so first.
     let account = server.call("account/read", json!({}), ANSWER_WAIT).await?;
     if account.get("account").is_none_or(Value::is_null) && account.get("requiresOpenaiAuth").and_then(Value::as_bool) != Some(false) {
@@ -1171,14 +1411,19 @@ pub async fn run_turn(
             .map(|listing| others_off(&listing, ours)),
         None => None,
     };
-    // The member's thread, continued; a fresh one when there is none, or it is gone.
-    let resumed = match request.resume {
-        Some(id) => server.call("thread/resume", resume_params(&request, cwd, id, others.as_ref()), THREAD_WAIT).await.ok(),
-        None => None,
+    // The member's thread, continued — or a copy of it, forked; a fresh one
+    // when there is none, it is gone, or this Codex can't fork.
+    let resumed = match (request.resume, request.fork) {
+        (Some(id), false) => server.call("thread/resume", resume_params(&request, cwd, id, others.as_ref()), THREAD_WAIT).await.ok(),
+        (Some(id), true) => server.call("thread/fork", fork_params(&request, cwd, id, others.as_ref()), THREAD_WAIT).await.ok(),
+        (None, _) => None,
     };
-    let opened = match resumed {
-        Some(opened) => opened,
-        None => server.call("thread/start", start_params(&request, cwd, others.as_ref()), THREAD_WAIT).await?,
+    let (opened, request) = match resumed {
+        Some(opened) => (opened, request),
+        None => {
+            let opened = server.call("thread/start", start_params(&request, cwd, others.as_ref()), THREAD_WAIT).await?;
+            (opened, TurnRequest { prompt: request.fresh_prompt.unwrap_or(request.prompt), ..request })
+        }
     };
     let Some(thread) = opened.get("thread").and_then(|t| t.get("id")).and_then(Value::as_str).map(str::to_owned) else {
         return Err(Error::Protocol("codex app-server started no thread".into()));
@@ -1218,6 +1463,12 @@ pub async fn run_turn(
             let deadline = async {
                 match stopping {
                     Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            };
+            let stop_sub = async {
+                match &mut stop_subagent {
+                    Some(rx) => rx.recv().await,
                     None => std::future::pending().await,
                 }
             };
@@ -1267,6 +1518,14 @@ pub async fn run_turn(
                     stopping = Some(tokio::time::Instant::now() + INTERRUPT_WAIT);
                 }
                 () = deadline => break,
+                sub = stop_sub => match sub {
+                    Some(sub) => {
+                        if let Some(turn) = collector.subagent_turn(&sub).map(str::to_owned) {
+                            server.request("turn/interrupt", json!({ "threadId": sub, "turnId": turn })).await?;
+                        }
+                    }
+                    None => stop_subagent = None,
+                },
             }
             // Into the turn, once it has an id to aim at: steers, or the interrupt.
             if let Some(turn) = collector.turn().map(str::to_owned) {
@@ -1284,12 +1543,13 @@ pub async fn run_turn(
     }
     .await;
     let diagnostics = server.close().await;
+    let requests = relay.as_ref().map(crate::relay::Relay::exchanges).unwrap_or_default();
     // Stopped: however it wound down, it ended because it was told to.
     if stopping.is_some() {
-        return Ok(Turn { result: collector.interrupted(), thread_id: Some(thread) });
+        return Ok(Turn { result: collector.interrupted(), thread_id: Some(thread), provider_requests: requests });
     }
     looped?;
-    collector.finish(&diagnostics).map(|result| Turn { result, thread_id: Some(thread) })
+    collector.finish(&diagnostics).map(|result| Turn { result, thread_id: Some(thread), provider_requests: requests })
 }
 
 #[cfg(test)]
@@ -1374,6 +1634,20 @@ mod tests {
     }
 
     #[test]
+    fn a_thread_runs_as_many_subagents_at_once_as_it_is_told_and_none_on_another_provider() {
+        let request = TurnRequest { prompt: "hi", subagents: Some(8), ..Default::default() };
+        let params = start_params(&request, Path::new("/r"), None);
+        assert_eq!(params["config"]["agents"]["max_concurrent_threads_per_session"], 8, "{params}");
+        assert_eq!(resume_params(&request, Path::new("/r"), "thr-1", None)["config"]["agents"]["max_concurrent_threads_per_session"], 8);
+        // Not told: Codex's own default, the person's config left alone.
+        assert!(start_params(&TurnRequest { prompt: "hi", ..Default::default() }, Path::new("/r"), None)["config"].get("agents").is_none());
+        // Another provider has no subagents at all: nothing to cap.
+        let provider = Provider { id: "nebius".into(), name: "Nebius".into(), base_url: "http://127.0.0.1:9/v1".into(), env_key: "NEBIUS_API_KEY".into(), config: Vec::new(), wire: crate::relay::Wire::default() };
+        let plain = start_params(&TurnRequest { provider: Some(&provider), ..request }, Path::new("/r"), None);
+        assert!(plain["config"].get("agents").is_none() && plain["config"]["features"]["multi_agent"] == false, "{plain}");
+    }
+
+    #[test]
     fn a_command_shows_as_what_it_does() {
         let cmd = |command: &str, actions: Value| command_tool(&json!({ "command": command, "commandActions": actions }));
         assert_eq!(cmd("/bin/zsh -lc 'cat a.rs'", json!([{ "type": "read", "command": "cat a.rs", "name": "a.rs", "path": "/w/a.rs" }])), ("Read".into(), Some("/w/a.rs".into())));
@@ -1409,7 +1683,7 @@ mod tests {
         assert_eq!(out[0], Activity::Thinking("Looking".into()));
         let text: String = out.iter().filter_map(|a| if let Activity::Text(t) = a { Some(t.as_str()) } else { None }).collect();
         assert_eq!(text, "On it.Fixed.\n\nDONE", "a tool between messages parts them already; back to back they get a paragraph");
-        assert!(out.contains(&Activity::Tool { name: "Bash".into(), target: Some("cargo test".into()) }));
+        assert!(out.contains(&Activity::Tool { name: "Bash".into(), target: Some("cargo test".into()), label: None, background: false }));
         let Some(Activity::ToolDone(failed)) = out.iter().find(|a| matches!(a, Activity::ToolDone(_))) else { panic!("{out:?}") };
         assert_eq!((failed.ok, failed.exit, failed.ms, failed.output.as_str()), (false, Some(101), 900, "1 failed"));
         assert!(out.contains(&Activity::Output(100)));
@@ -1418,6 +1692,7 @@ mod tests {
         let usage = result.usage.unwrap();
         assert_eq!((usage.input_tokens, usage.cache_tokens, usage.output_tokens), (Some(400), Some(1000), Some(100)));
         assert_eq!((usage.context_tokens, usage.context_window), (Some(1500), Some(258400)));
+        assert_eq!((usage.cache_read_tokens, usage.cache_write_tokens, usage.calls), (Some(1000), None, Some(1)), "cached input is read from the cache; one request");
     }
 
     #[test]
@@ -1429,8 +1704,8 @@ mod tests {
         ]);
         let started = c.on_notification("item/started", &item("fileChange", json!({ "id": "p1", "changes": changes, "status": "inProgress" })));
         assert_eq!(started, vec![
-            Activity::Tool { name: "Write".into(), target: Some("/w/hello.txt".into()) },
-            Activity::Tool { name: "Edit".into(), target: Some("/w/README.md".into()) },
+            Activity::Tool { name: "Write".into(), target: Some("/w/hello.txt".into()), label: None, background: false },
+            Activity::Tool { name: "Edit".into(), target: Some("/w/README.md".into()), label: None, background: false },
         ]);
         let done: Vec<ToolDone> = c
             .on_notification("item/completed", &item("fileChange", json!({ "id": "p1", "changes": changes, "status": "completed" })))
@@ -1447,15 +1722,15 @@ mod tests {
     fn board_tools_web_searches_and_plans_read_as_claude_codes_do() {
         let mut c = TurnCollector::new();
         let call = json!({ "id": "m1", "server": "equipe", "tool": "update_ticket", "arguments": { "id": 4, "status": "cancelled" }, "status": "inProgress" });
-        assert_eq!(c.on_notification("item/started", &item("mcpToolCall", call.clone())), vec![Activity::Tool { name: "mcp__equipe__update_ticket".into(), target: Some("T-4 · cancelled".into()) }]);
+        assert_eq!(c.on_notification("item/started", &item("mcpToolCall", call.clone())), vec![Activity::Tool { name: "mcp__equipe__update_ticket".into(), target: Some("T-4 · cancelled".into()), label: None, background: false }]);
         let mut finished = call;
         finished["status"] = json!("completed");
         finished["result"] = json!({ "content": [{ "type": "text", "text": "T-4 cancelled." }] });
         assert!(matches!(&c.on_notification("item/completed", &item("mcpToolCall", finished))[..], [Activity::ToolDone(d)] if d.ok && d.name == "mcp__equipe__update_ticket"));
         let search = c.on_notification("item/completed", &item("webSearch", json!({ "id": "w1", "query": "codex app-server" })));
-        assert_eq!(search[0], Activity::Tool { name: "WebSearch".into(), target: Some("codex app-server".into()) });
+        assert_eq!(search[0], Activity::Tool { name: "WebSearch".into(), target: Some("codex app-server".into()), label: None, background: false });
         let plan = json!({ "threadId": "t", "plan": [{ "step": "Read the code", "status": "completed" }, { "step": "Write the test", "status": "inProgress" }, { "step": "Fix", "status": "pending" }] });
-        assert_eq!(c.on_notification("turn/plan/updated", &plan)[0], Activity::Tool { name: "TodoWrite".into(), target: Some("1/3 · Write the test".into()) });
+        assert_eq!(c.on_notification("turn/plan/updated", &plan)[0], Activity::Tool { name: "TodoWrite".into(), target: Some("1/3 · Write the test".into()), label: None, background: false });
         assert!(c.on_notification("turn/plan/updated", &plan).is_empty(), "the same plan again shows nothing new");
     }
 
@@ -1465,6 +1740,15 @@ mod tests {
         let said = |text: &str| item("userMessage", json!({ "id": text, "content": [{ "type": "text", "text": text }] }));
         assert!(c.on_notification("item/completed", &said("the prompt")).is_empty());
         assert_eq!(c.on_notification("item/completed", &said("not the footer")), vec![Activity::Steered("not the footer".into())]);
+    }
+
+    #[test]
+    fn compacting_the_thread_is_said_as_it_starts_and_ends() {
+        // From the app-server's v2 schema (codex-cli 0.154.0): a `contextCompaction` item.
+        let mut c = TurnCollector::new();
+        let compaction = item("contextCompaction", json!({ "id": "k1" }));
+        assert_eq!(c.on_notification("item/started", &compaction), vec![Activity::Compacting]);
+        assert_eq!(c.on_notification("item/completed", &compaction), vec![Activity::Compacted]);
     }
 
     #[test]
@@ -1495,6 +1779,31 @@ mod tests {
             { "id": "gpt-6-astra", "hidden": false, "isDefault": false },
         ], "nextCursor": null });
         assert_eq!(model_ids(&listing), ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"]);
+    }
+
+    #[test]
+    fn each_model_in_the_catalog_brings_its_name_and_the_efforts_it_takes() {
+        let listing = json!({ "data": [
+            { "id": "gpt-6.1-sol", "displayName": "GPT-6.1 Sol", "isDefault": true, "defaultReasoningEffort": "medium", "description": "Frontier agentic coding.",
+              "supportedReasoningEfforts": [{ "reasoningEffort": "low", "description": "fast" }, { "reasoningEffort": "medium" }, { "reasoningEffort": "xhigh" }] },
+            { "id": "gpt-6-luna", "displayName": "gpt-6-luna", "supportedReasoningEfforts": ["minimal", "low"] },
+            { "id": "gpt-6-astra" },
+        ] });
+        let infos = model_infos(&listing);
+        assert_eq!(
+            infos[0],
+            ModelInfo {
+                id: "gpt-6.1-sol".into(),
+                name: Some("GPT-6.1 Sol".into()),
+                efforts: vec!["low".into(), "medium".into(), "xhigh".into()],
+                default_effort: Some("medium".into()),
+                description: Some("Frontier agentic coding.".into()),
+                default: true,
+            }
+        );
+        assert!(!infos[1].default && infos[1].description.is_none(), "only the account's default says so; no description: none");
+        assert_eq!((infos[1].name.as_deref(), infos[1].efforts.as_slice()), (None, &["minimal".to_owned(), "low".to_owned()][..]), "a name that is only the id says nothing");
+        assert!(infos[2].efforts.is_empty() && infos[2].default_effort.is_none());
     }
 
     #[test]
@@ -1533,6 +1842,42 @@ mod tests {
     fn a_change_reads_as_a_git_diff_whatever_codex_sent() {
         assert!(change_diff("/w/a", "delete", "x\ny\n").contains("--- a//w/a\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-x\n-y\n"));
         assert_eq!(change_diff("/w/a", "update", "--- a/a\n+++ b/a\n@@ -1 +1 @@\n-x\n+y"), "diff --git a//w/a b//w/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-x\n+y\n");
+    }
+
+    #[test]
+    fn what_a_turn_spends_is_said_whole_as_it_goes() {
+        let mut c = TurnCollector::new();
+        c.set_thread("t");
+        let usage = |input: u64, cached: u64, output: u64| {
+            note("thread/tokenUsage/updated", json!({ "threadId": "t", "tokenUsage": { "last": { "totalTokens": input + output, "inputTokens": input, "cachedInputTokens": cached, "outputTokens": output } } }))
+        };
+        let out = feed(&mut c, &[usage(1000, 600, 50), usage(1200, 1000, 80)]);
+        // Input not cached, cached input and output: 400 + 600 + 50, then 200 + 1000 + 80 more.
+        let spent: Vec<u64> = out.iter().filter_map(|a| if let Activity::Spent(n) = a { Some(*n) } else { None }).collect();
+        assert_eq!(spent, vec![1050, 2330]);
+        assert!(out.contains(&Activity::Output(130)), "the output alone still goes as before: {out:?}");
+    }
+
+    #[test]
+    fn a_subagent_heard_on_its_own_thread_is_said_now_and_then_and_its_turn_is_kept() {
+        let mut c = TurnCollector::new();
+        c.set_thread("t");
+        let spawn = item("collabAgentToolCall", json!({ "id": "s1", "tool": "spawnAgent", "status": "completed", "senderThreadId": "t", "receiverThreadIds": ["sub"], "prompt": "Read the logs", "agentsStates": {} }));
+        assert!(matches!(&feed(&mut c, &[note("item/completed", spawn)])[..], [Activity::SubagentStarted { id, .. }] if id == "sub"));
+        assert!(c.subagent_turn("sub").is_none(), "no turn of its own heard yet");
+        let out = feed(&mut c, &[
+            note("turn/started", json!({ "threadId": "sub", "turn": { "id": "sub-turn", "status": "inProgress" } })),
+            note("item/agentMessage/delta", json!({ "threadId": "sub", "itemId": "x", "delta": "reading" })),
+            note("item/reasoning/textDelta", json!({ "threadId": "sub", "itemId": "y", "delta": "hmm" })),
+        ]);
+        assert_eq!(out, vec![Activity::SubagentHeard { id: "sub".into() }], "heard once, not once a delta; and none of it is the member's own text");
+        assert_eq!(c.subagent_turn("sub"), Some("sub-turn"));
+        // A thread nobody spawned in this turn says nothing.
+        assert!(feed(&mut c, &[note("item/agentMessage/delta", json!({ "threadId": "stranger", "itemId": "z", "delta": "x" }))]).is_empty());
+        // What the member's thread says about it counts too.
+        c.heard.clear();
+        let activity = item("subAgentActivity", json!({ "id": "a1", "kind": "interacted", "agentThreadId": "sub", "agentPath": "/root/sub" }));
+        assert_eq!(feed(&mut c, &[note("item/completed", activity)]), vec![Activity::SubagentHeard { id: "sub".into() }]);
     }
 
     #[test]

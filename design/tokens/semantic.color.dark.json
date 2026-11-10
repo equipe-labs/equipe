@@ -126,6 +126,18 @@
       "$value": "{color.raw.alpha.red300-12}",
       "$description": "badge / banner tint"
     },
+    "err-fill": {
+      "$value": "{color.raw.red.900}",
+      "$description": "opaque fill behind err text — a soft destructive button; stays the same over translucent bars and scrolling content"
+    },
+    "err-fill-hover": {
+      "$value": "{color.raw.red.875}",
+      "$description": "err-fill on hover — opaque, used instead of the hover overlay (an overlay drops err text below 4.5:1)"
+    },
+    "err-fill-pressed": {
+      "$value": "{color.raw.red.850}",
+      "$description": "err-fill pressed — opaque, used instead of the pressed overlay"
+    },
     "on-err": {
       "$value": "{color.raw.neutral.950}",
       "$description": "text on a filled err area"

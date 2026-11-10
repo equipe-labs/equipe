@@ -8,14 +8,14 @@ use equipe_core::i18n::{Front, Lang};
 
 /// Every language's words, as compiled in.
 pub const FILES: &[(&str, &str)] = &[
-    ("ko", include_str!("../locales/ko.json")),
     ("en", include_str!("../locales/en.json")),
-    ("ja", include_str!("../locales/ja.json")),
-    ("zh-Hans", include_str!("../locales/zh-Hans.json")),
-    ("zh-Hant", include_str!("../locales/zh-Hant.json")),
+    ("de", include_str!("../locales/de.json")),
     ("es", include_str!("../locales/es.json")),
     ("fr", include_str!("../locales/fr.json")),
-    ("de", include_str!("../locales/de.json")),
+    ("ja", include_str!("../locales/ja.json")),
+    ("ko", include_str!("../locales/ko.json")),
+    ("zh-Hans", include_str!("../locales/zh-Hans.json")),
+    ("zh-Hant", include_str!("../locales/zh-Hant.json")),
 ];
 
 equipe_core::words!(test = Lang::Ko, front = Front::App);
@@ -26,6 +26,10 @@ equipe_core::words!(test = Lang::Ko, front = Front::App);
 pub fn migrate(home: &std::path::Path) {
     let mut remembered = crate::target::Remembered::load(home);
     let Some(old) = remembered.lang.take() else { return };
+    // The real view reads that pick as it is (`readonly::Look`), moving nothing.
+    if crate::readonly::blocked("the language picked before") {
+        return;
+    }
     if equipe_core::i18n::saved(home).is_none()
         && let Some(lang) = Lang::parse(&old)
     {

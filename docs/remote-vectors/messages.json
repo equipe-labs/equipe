@@ -13,7 +13,7 @@
             "type": "accept"
           }
         },
-        "seq": 37,
+        "seq": 40,
         "squad": "home",
         "ts": 1760000000000
       }
@@ -30,7 +30,7 @@
             "type": "accept"
           }
         },
-        "seq": 36,
+        "seq": 39,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -83,7 +83,7 @@
             "type": "accept"
           }
         },
-        "seq": 25,
+        "seq": 27,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -207,7 +207,35 @@
             "type": "apply_engine_proposal"
           }
         },
-        "seq": 22,
+        "seq": 24,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "approve routine": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 9000001,
+            "squad": "acme",
+            "type": "approve_routine"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 9000001,
+            "squad": "acme",
+            "type": "approve_routine"
+          }
+        },
+        "seq": 19,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -273,7 +301,7 @@
             "type": "confirm_accept"
           }
         },
-        "seq": 19,
+        "seq": 21,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -312,7 +340,7 @@
             "type": "confirm_accept"
           }
         },
-        "seq": 20,
+        "seq": 22,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -377,6 +405,40 @@
         "ts": 1760000000000
       }
     },
+    "decide: by voice, made sure of on the phone": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "approval": 17,
+            "decision": "allow",
+            "squad": "acme",
+            "type": "decide",
+            "utterance": "응 해",
+            "via": "voice"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "approval": 17,
+            "decision": "allow",
+            "squad": "acme",
+            "type": "decide",
+            "utterance": "응 해",
+            "via": "voice"
+          }
+        },
+        "seq": 46,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "decide: deny": {
       "daemon": {
         "command": {
@@ -430,7 +492,35 @@
             "type": "decline_accept"
           }
         },
-        "seq": 21,
+        "seq": 23,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "decline routine": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 9000001,
+            "squad": "acme",
+            "type": "decline_routine"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 9000001,
+            "squad": "acme",
+            "type": "decline_routine"
+          }
+        },
+        "seq": 20,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -528,7 +618,7 @@
             "type": "dismiss_engine_proposal"
           }
         },
-        "seq": 23,
+        "seq": 25,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -572,7 +662,7 @@
             "type": "sign_in"
           }
         },
-        "seq": 33,
+        "seq": 36,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -588,7 +678,7 @@
             "type": "sign_out"
           }
         },
-        "seq": 34,
+        "seq": 37,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -612,7 +702,7 @@
             "type": "engines"
           }
         },
-        "seq": 32,
+        "seq": 35,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -628,7 +718,7 @@
             "type": "text_delta"
           }
         },
-        "seq": 16,
+        "seq": 17,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -648,7 +738,7 @@
             "type": "accept_closed"
           }
         },
-        "seq": 27,
+        "seq": 31,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -665,7 +755,7 @@
             "type": "accept_closed"
           }
         },
-        "seq": 28,
+        "seq": 32,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -691,7 +781,7 @@
             "type": "accept_proposed"
           }
         },
-        "seq": 26,
+        "seq": 30,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -715,7 +805,7 @@
             "type": "approval_requested"
           }
         },
-        "seq": 7,
+        "seq": 8,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -732,7 +822,7 @@
             "type": "approval_resolved"
           }
         },
-        "seq": 8,
+        "seq": 9,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -750,7 +840,116 @@
             "type": "branch_landed"
           }
         },
-        "seq": 56,
+        "seq": 62,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: code reviewed": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "review": {
+              "at": 1760000000,
+              "missing_tests": [
+                "A failed user lookup answers 401."
+              ],
+              "model": "nvidia/nemotron-example",
+              "risks": [
+                {
+                  "file": "src/auth.rs",
+                  "line": 42,
+                  "why": "The error branch returns Ok: the request goes through."
+                }
+              ],
+              "summary": "A wrong password still gets a session when the lookup fails.",
+              "ticket": 38,
+              "verdict": "needs_attention"
+            },
+            "squad": "acme",
+            "type": "code_reviewed"
+          }
+        },
+        "seq": 7,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: compact failed": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "member": "backend",
+            "message": "The turn ended before the compaction finished.",
+            "project": "api",
+            "session": 4242,
+            "trigger": "auto",
+            "type": "compact_failed"
+          }
+        },
+        "seq": 67,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: compacted": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "member": "backend",
+            "project": "api",
+            "session": 4242,
+            "took_ms": 81250,
+            "trigger": "auto",
+            "type": "compacted"
+          }
+        },
+        "seq": 65,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: compacting": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "estimate_ms": 95000,
+            "member": "backend",
+            "project": "api",
+            "session": 4242,
+            "started_at": 1760000000000,
+            "trigger": "auto",
+            "type": "compacting"
+          }
+        },
+        "seq": 64,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: compacting (manual)": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "estimate_ms": 2000,
+            "member": "pm",
+            "session": 1001,
+            "started_at": 1760000000000,
+            "trigger": "manual",
+            "type": "compacting"
+          }
+        },
+        "seq": 66,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -922,7 +1121,7 @@
             "type": "design"
           }
         },
-        "seq": 21,
+        "seq": 22,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -939,7 +1138,7 @@
             "type": "design"
           }
         },
-        "seq": 22,
+        "seq": 23,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -959,7 +1158,7 @@
             "type": "disk_level"
           }
         },
-        "seq": 54,
+        "seq": 60,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1000,7 +1199,7 @@
             "type": "engine_proposed"
           }
         },
-        "seq": 31,
+        "seq": 35,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1040,7 +1239,7 @@
             "type": "engine_proposed"
           }
         },
-        "seq": 30,
+        "seq": 34,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1057,7 +1256,7 @@
             "type": "engine_proposal_closed"
           }
         },
-        "seq": 32,
+        "seq": 36,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1073,7 +1272,7 @@
             "type": "engine_switching_changed"
           }
         },
-        "seq": 33,
+        "seq": 37,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1110,7 +1309,7 @@
             "type": "engines"
           }
         },
-        "seq": 55,
+        "seq": 61,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1127,7 +1326,7 @@
             "type": "error"
           }
         },
-        "seq": 47,
+        "seq": 53,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1144,7 +1343,7 @@
             "type": "message_queued"
           }
         },
-        "seq": 36,
+        "seq": 40,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1160,7 +1359,7 @@
             "type": "model_known"
           }
         },
-        "seq": 52,
+        "seq": 58,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1175,7 +1374,7 @@
             "type": "nothing_changed"
           }
         },
-        "seq": 57,
+        "seq": 63,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1191,7 +1390,41 @@
             "type": "notice"
           }
         },
-        "seq": 46,
+        "seq": 50,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: notice of a change taken back": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "session": 1001,
+            "text": "Taken back: saved notes/tax-deadline.md · you can take this back too",
+            "type": "notice",
+            "undo": "9a8b7c6d5e4f30211203f4e5d6c7b8a9f0e1d2c3"
+          }
+        },
+        "seq": 52,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: notice of a change to the squad's folder": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "session": 1001,
+            "text": "✎ pm saved notes/tax-deadline.md in the squad's folder · /home undo takes it back",
+            "type": "notice",
+            "undo": "3f1c2a9b7e5d4c6a8b0f1e2d3c4b5a6978877665"
+          }
+        },
+        "seq": 51,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1216,7 +1449,7 @@
             }
           }
         },
-        "seq": 29,
+        "seq": 33,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1241,7 +1474,7 @@
             }
           }
         },
-        "seq": 44,
+        "seq": 48,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1263,7 +1496,7 @@
             }
           }
         },
-        "seq": 45,
+        "seq": 49,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1293,7 +1526,7 @@
             "type": "questions_closed"
           }
         },
-        "seq": 10,
+        "seq": 11,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1347,7 +1580,7 @@
             "type": "questions_asked"
           }
         },
-        "seq": 9,
+        "seq": 10,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1363,7 +1596,7 @@
             "type": "questions_closed"
           }
         },
-        "seq": 11,
+        "seq": 12,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1382,7 +1615,75 @@
             "type": "queue_sent"
           }
         },
-        "seq": 53,
+        "seq": 59,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: routine approved": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "approved": true,
+            "id": 9000001,
+            "squad": "acme",
+            "type": "routine_proposal_closed"
+          }
+        },
+        "seq": 28,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: routine declined": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "approved": false,
+            "id": 9000001,
+            "squad": "acme",
+            "type": "routine_proposal_closed"
+          }
+        },
+        "seq": 29,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: routine proposed": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "proposal": {
+              "by": "pm",
+              "id": 9000001,
+              "proposed_at": 1760000000,
+              "reason": "3주째 월요일마다 요약을 부탁하셨어요",
+              "routine": {
+                "id": 0,
+                "on": true,
+                "prompt": "지난주 요약과 다음 일 1~3개를 제안 티켓으로 올려 주세요.",
+                "title": "주간 점검",
+                "when": {
+                  "every": "weekly",
+                  "hour": 9,
+                  "minute": 0,
+                  "weekday": 1
+                }
+              },
+              "session": 1001
+            },
+            "squad": "acme",
+            "type": "routine_proposed"
+          }
+        },
+        "seq": 27,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1399,7 +1700,7 @@
             "type": "steer_queued"
           }
         },
-        "seq": 48,
+        "seq": 54,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1415,7 +1716,7 @@
             "type": "steered"
           }
         },
-        "seq": 49,
+        "seq": 55,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1431,7 +1732,7 @@
             "type": "subagent_ended"
           }
         },
-        "seq": 41,
+        "seq": 45,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1448,7 +1749,7 @@
             "what": "Compare the two login flows"
           }
         },
-        "seq": 39,
+        "seq": 43,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1465,7 +1766,7 @@
             "type": "subagent_step"
           }
         },
-        "seq": 40,
+        "seq": 44,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1485,7 +1786,7 @@
             "type": "team_change_closed"
           }
         },
-        "seq": 24,
+        "seq": 25,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1502,7 +1803,7 @@
             "type": "team_change_closed"
           }
         },
-        "seq": 25,
+        "seq": 26,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1529,7 +1830,7 @@
             "type": "team_change_proposed"
           }
         },
-        "seq": 23,
+        "seq": 24,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1545,7 +1846,7 @@
             "type": "text_delta"
           }
         },
-        "seq": 37,
+        "seq": 41,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1561,7 +1862,7 @@
             "type": "thread"
           }
         },
-        "seq": 50,
+        "seq": 56,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1577,7 +1878,7 @@
             "type": "thread"
           }
         },
-        "seq": 51,
+        "seq": 57,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1608,7 +1909,7 @@
             "type": "ticket_changed"
           }
         },
-        "seq": 34,
+        "seq": 38,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1674,7 +1975,7 @@
             "type": "ticket_changed"
           }
         },
-        "seq": 20,
+        "seq": 21,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1691,7 +1992,7 @@
             "type": "tool_use"
           }
         },
-        "seq": 38,
+        "seq": 42,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1711,7 +2012,7 @@
             }
           }
         },
-        "seq": 42,
+        "seq": 46,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1728,7 +2029,7 @@
             "usage": null
           }
         },
-        "seq": 43,
+        "seq": 47,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1744,7 +2045,7 @@
             "type": "user_message"
           }
         },
-        "seq": 35,
+        "seq": 39,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1788,7 +2089,116 @@
             "type": "questions_asked"
           }
         },
-        "seq": 12,
+        "seq": 13,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: visuals rendered": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "session": 1001,
+            "type": "visuals_rendered",
+            "visuals": [
+              {
+                "dark": {
+                  "height": 724,
+                  "path": "/Users/me/.equipe/squads/acme/visuals/558211ed72b2d696-dark.png",
+                  "width": 880
+                },
+                "key": "558211ed72b2d696",
+                "kind": "mermaid",
+                "light": {
+                  "height": 724,
+                  "path": "/Users/me/.equipe/squads/acme/visuals/558211ed72b2d696-light.png",
+                  "width": 880
+                }
+              }
+            ]
+          }
+        },
+        "seq": 72,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: words closed": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "id": 12000001,
+            "outcome": "undone",
+            "squad": "acme",
+            "text": "Undone — nothing happened: Accept T-38",
+            "type": "words_closed"
+          }
+        },
+        "seq": 75,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: words live, read back": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "live": {
+              "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+              "id": 12000001,
+              "items": [
+                "T-38 “로그인 API 에러 메시지”"
+              ],
+              "kind": "merge",
+              "read_back": "Merge T-38 into main, on this Mac",
+              "said": "T-38 수락",
+              "session": 1000001,
+              "stage": "read_back",
+              "tier": "high",
+              "until": 1760000005000,
+              "via": "voice"
+            },
+            "squad": "acme",
+            "type": "words_live"
+          }
+        },
+        "seq": 74,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "event: words live, undo window": {
+      "receives": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "live": {
+              "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+              "id": 12000001,
+              "items": [
+                "T-38 “로그인 API 에러 메시지”"
+              ],
+              "kind": "accept_task",
+              "read_back": "Accept T-38",
+              "said": "T-38 수락",
+              "session": 1000001,
+              "stage": "undo",
+              "tier": "low",
+              "until": 1760000005000,
+              "via": "voice"
+            },
+            "squad": "acme",
+            "type": "words_live"
+          }
+        },
+        "seq": 73,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -1863,6 +2273,7 @@
                     "window": "five_hour"
                   }
                 ],
+                "idle_wake_hours": 24,
                 "mode": "auto",
                 "plan": {
                   "five_hour": {
@@ -1906,6 +2317,7 @@
                     }
                   }
                 ],
+                "pm_accepts": true,
                 "projects": [
                   "/Users/you/projects/site",
                   "/Users/you/projects/api"
@@ -1949,6 +2361,46 @@
                     ],
                     "session": 4242,
                     "ticket": 38
+                  }
+                ],
+                "reviews": [
+                  {
+                    "at": 1760000000,
+                    "missing_tests": [
+                      "A failed user lookup answers 401."
+                    ],
+                    "model": "nvidia/nemotron-example",
+                    "risks": [
+                      {
+                        "file": "src/auth.rs",
+                        "line": 42,
+                        "why": "The error branch returns Ok: the request goes through."
+                      }
+                    ],
+                    "summary": "A wrong password still gets a session when the lookup fails.",
+                    "ticket": 38,
+                    "verdict": "needs_attention"
+                  }
+                ],
+                "routine_proposals": [
+                  {
+                    "by": "pm",
+                    "id": 9000001,
+                    "proposed_at": 1760000000,
+                    "reason": "3주째 월요일마다 요약을 부탁하셨어요",
+                    "routine": {
+                      "id": 0,
+                      "on": true,
+                      "prompt": "지난주 요약과 다음 일 1~3개를 제안 티켓으로 올려 주세요.",
+                      "title": "주간 점검",
+                      "when": {
+                        "every": "weekly",
+                        "hour": 9,
+                        "minute": 0,
+                        "weekday": 1
+                      }
+                    },
+                    "session": 1001
                   }
                 ],
                 "scale": 0,
@@ -2004,6 +2456,11 @@
                   },
                   {
                     "access": "edit_files",
+                    "compacting": {
+                      "estimate_ms": 95000,
+                      "started_at": 1759999980000,
+                      "trigger": "auto"
+                    },
                     "engine": "claude",
                     "lane": null,
                     "member": {
@@ -2091,7 +2548,8 @@
                     "title": "로그인 API",
                     "worktree": "/Users/you/.equipe/worktrees/api/t38-1a2b3c4d"
                   }
-                ]
+                ],
+                "words": []
               },
               "uploads": {
                 "chunk": 393216,
@@ -2192,7 +2650,7 @@
             "type": "interrupt"
           }
         },
-        "seq": 28,
+        "seq": 30,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2213,7 +2671,7 @@
               "total": 3
             }
           },
-          "seq": 17,
+          "seq": 18,
           "squad": "acme",
           "ts": 1760000000000
         },
@@ -2249,7 +2707,7 @@
           "id": 24,
           "jsonrpc": "2.0"
         },
-        "seq": 18,
+        "seq": 19,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2265,7 +2723,7 @@
             "id": 25,
             "jsonrpc": "2.0"
           },
-          "seq": 19,
+          "seq": 20,
           "squad": "home",
           "ts": 1760000000000
         }
@@ -2298,7 +2756,165 @@
             "type": "merge"
           }
         },
-        "seq": 35,
+        "seq": 38,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "metrics summary": {
+      "daemon": {
+        "answers": {
+          "rpc": {
+            "id": 26,
+            "jsonrpc": "2.0",
+            "result": {
+              "from": "2026-10-27",
+              "project": "site",
+              "squad": "acme",
+              "tiles": [
+                {
+                  "as_of": "2026-11-02",
+                  "change_pct": 8.2,
+                  "connection": "m1",
+                  "kind": "posthog",
+                  "label": "Visits",
+                  "metric": "visits",
+                  "previous": 1187.0,
+                  "unit": "page_loads",
+                  "value": 1284.0
+                },
+                {
+                  "as_of": "2026-11-02",
+                  "change_pct": 13.6,
+                  "connection": "m3",
+                  "kind": "github",
+                  "label": "Stars",
+                  "metric": "stars",
+                  "previous": 22.0,
+                  "unit": "stars",
+                  "value": 25.0
+                },
+                {
+                  "as_of": "2026-11-01",
+                  "change_pct": -6.0,
+                  "connection": "m2",
+                  "error": {
+                    "code": "auth",
+                    "message": "key ••• was refused"
+                  },
+                  "kind": "app_store",
+                  "label": "Downloads",
+                  "metric": "downloads",
+                  "previous": 67.0,
+                  "unit": "downloads",
+                  "value": 63.0
+                }
+              ],
+              "to": "2026-11-02",
+              "updated_at": 1793520000
+            }
+          },
+          "seq": 68,
+          "squad": "acme",
+          "ts": 1760000000000
+        },
+        "asked": {
+          "project": "site",
+          "squad": "acme"
+        },
+        "sums_up_numbers_of": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "id": 26,
+          "jsonrpc": "2.0",
+          "method": "metrics.summary",
+          "params": {
+            "project": "site",
+            "squad": "acme"
+          }
+        },
+        "seq": 41,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "metrics summary: another squad than the frame's": {
+      "daemon": {
+        "answers": {
+          "rpc": {
+            "error": {
+              "code": -32002,
+              "message": "say hello to that squad first"
+            },
+            "id": 28,
+            "jsonrpc": "2.0"
+          },
+          "seq": 70,
+          "squad": "acme",
+          "ts": 1760000000000
+        }
+      },
+      "sends": {
+        "rpc": {
+          "id": 28,
+          "jsonrpc": "2.0",
+          "method": "metrics.summary",
+          "params": {
+            "project": "site",
+            "squad": "home"
+          }
+        },
+        "seq": 42,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "metrics summary: nothing connected": {
+      "receives": {
+        "rpc": {
+          "id": 27,
+          "jsonrpc": "2.0",
+          "result": {
+            "from": "2026-10-27",
+            "project": "site",
+            "squad": "acme",
+            "tiles": [],
+            "to": "2026-11-02"
+          }
+        },
+        "seq": 69,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "metrics: connecting is not something a device may ask": {
+      "daemon": {
+        "answers": {
+          "rpc": {
+            "error": {
+              "code": -32601,
+              "message": "not something a device may ask"
+            },
+            "id": 29,
+            "jsonrpc": "2.0"
+          },
+          "seq": 71,
+          "squad": "acme",
+          "ts": 1760000000000
+        }
+      },
+      "sends": {
+        "rpc": {
+          "id": 29,
+          "jsonrpc": "2.0",
+          "method": "metrics.connect",
+          "params": {
+            "project": "site",
+            "squad": "acme"
+          }
+        },
+        "seq": 43,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2550,6 +3166,49 @@
         "ts": 1760000000000
       }
     },
+    "push: routine": {
+      "daemon_sends": {
+        "body": "acme",
+        "category": "routine",
+        "collapse": "routine-9000001",
+        "data": "<sealed daemon-to-device frame: data_opened>",
+        "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+        "title": "pm proposes a routine",
+        "type": "push"
+      },
+      "data_opened": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "event",
+          "params": {
+            "proposal": {
+              "by": "pm",
+              "id": 9000001,
+              "proposed_at": 1760000000,
+              "reason": "3주째 월요일마다 요약을 부탁하셨어요",
+              "routine": {
+                "id": 0,
+                "on": true,
+                "prompt": "지난주 요약과 다음 일 1~3개를 제안 티켓으로 올려 주세요.",
+                "title": "주간 점검",
+                "when": {
+                  "every": "weekly",
+                  "hour": 9,
+                  "minute": 0,
+                  "weekday": 1
+                }
+              },
+              "session": 1001
+            },
+            "squad": "acme",
+            "type": "routine_proposed"
+          }
+        },
+        "seq": 0,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
     "push: team change": {
       "daemon_sends": {
         "body": "acme",
@@ -2641,7 +3300,7 @@
               "width": 1024
             }
           },
-          "seq": 13,
+          "seq": 14,
           "squad": "acme",
           "ts": 1760000000000
         },
@@ -2679,7 +3338,7 @@
           "id": 21,
           "jsonrpc": "2.0"
         },
-        "seq": 14,
+        "seq": 15,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2695,7 +3354,7 @@
             "id": 22,
             "jsonrpc": "2.0"
           },
-          "seq": 15,
+          "seq": 16,
           "squad": "home",
           "ts": 1760000000000
         }
@@ -2741,7 +3400,41 @@
             "type": "reopen"
           }
         },
-        "seq": 26,
+        "seq": 28,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "say": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "device": "b9e7dbfc95945ac17102665e1cc82fa6",
+            "session": 1000001,
+            "squad": "acme",
+            "text": "T-38 수락",
+            "type": "say",
+            "via": "voice"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "all": true,
+            "session": 1000001,
+            "squad": "acme",
+            "text": "T-38 수락",
+            "type": "say",
+            "via": "voice"
+          }
+        },
+        "seq": 44,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2775,7 +3468,7 @@
             "type": "send_now"
           }
         },
-        "seq": 31,
+        "seq": 34,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2837,7 +3530,7 @@
             "type": "submit"
           }
         },
-        "seq": 27,
+        "seq": 29,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2867,7 +3560,7 @@
             "type": "submit"
           }
         },
-        "seq": 29,
+        "seq": 32,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2897,7 +3590,7 @@
             "type": "submit"
           }
         },
-        "seq": 30,
+        "seq": 33,
         "squad": "acme",
         "ts": 1760000000000
       }
@@ -2925,7 +3618,65 @@
             "type": "undo_engine_proposal"
           }
         },
-        "seq": 24,
+        "seq": 26,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "undo home change": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "change": "3f1c2a9b7e5d4c6a8b0f1e2d3c4b5a6978877665",
+            "session": 1001,
+            "squad": "acme",
+            "type": "undo_home_change"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "change": "3f1c2a9b7e5d4c6a8b0f1e2d3c4b5a6978877665",
+            "session": 1001,
+            "squad": "acme",
+            "type": "undo_home_change"
+          }
+        },
+        "seq": 31,
+        "squad": "acme",
+        "ts": 1760000000000
+      }
+    },
+    "undo words": {
+      "daemon": {
+        "command": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 12000001,
+            "squad": "acme",
+            "type": "undo_words"
+          }
+        },
+        "to_squad": "acme"
+      },
+      "sends": {
+        "rpc": {
+          "jsonrpc": "2.0",
+          "method": "command",
+          "params": {
+            "id": 12000001,
+            "squad": "acme",
+            "type": "undo_words"
+          }
+        },
+        "seq": 45,
         "squad": "acme",
         "ts": 1760000000000
       }

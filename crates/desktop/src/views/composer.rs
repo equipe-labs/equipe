@@ -1,5 +1,5 @@
 //! The box the person writes in: several lines, Enter sends and ⇧Enter breaks
-//! the line, a Korean syllable still being composed is never sent, ↑↓ walk what
+//! the line, text an input source is still composing is never sent, ↑↓ walk what
 //! was sent, `/…` and `@…` complete, Esc stops the member who is working.
 //! Around it: what is attached (any file — pictures, videos, PDFs, text,
 //! documents), the "+" menu (⌘U), the memos and steers waiting for a member at
@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use equipe_core::i18n::label;
-use equipe_core::protocol::{Command, Engine, Mode, SessionId};
+use equipe_core::protocol::{Command, Mode, SessionId};
 use gpui_kit::component::input::{InlineToken, InputEvent, Paste, Textarea, TextareaState};
 use gpui_kit::component::speech::{SpeechError, SpeechEvent, SpeechState, SystemRecognizer};
 use gpui_kit::component::*;
@@ -30,6 +30,7 @@ use crate::motion;
 use crate::target::Endpoint;
 use crate::theme::{CONTROL, GAP, ICON, ICON_SM, MONO, Palette, R_LG, R_MD, R_SM, R_XL, ROW, SMALL, look};
 use crate::tips::tip;
+use crate::transcribe::Failure;
 use crate::{Screen, Shell, files, media};
 
 /// How tall the box may grow, in lines, before it scrolls inside.
@@ -40,6 +41,16 @@ const ROWS: usize = 8;
 const SAVE_AFTER: Duration = Duration::from_millis(800);
 
 actions!(composer, [OpenAttach, StopMember, OpenModels, OpenEffort, OpenModes, PasteInline, SendInverted]);
+
+/// Where an attachment goes: the message being written, an answer to a
+/// member's question (`(set, question)`), or to an ask of a ticket waiting for
+/// the person (`(ticket, ask)`) — whose words carry its tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AttachTo {
+    Composer,
+    Answer(u64, usize),
+    Turn(u32, usize),
+}
 
 /// The composer's own keys (main.rs binds them with the app's).
 pub fn bind_keys(cx: &mut App) {
@@ -81,12 +92,8 @@ enum Act {
     Screenshot,
     Commands,
     Select(SessionId),
-    Model(String),
-    Effort(Option<String>),
     Mode(Mode),
     Refresh(bool),
-    /// The member onto the other engine, at its next ticket.
-    Engine(Engine),
 }
 
 impl MenuKind {
@@ -113,6 +120,8 @@ impl MenuKind {
             MenuKind::Recent => 340.,
             MenuKind::Context => 300.,
             MenuKind::Model => 280.,
+            // Each mode's name and what it lets members do, whole.
+            MenuKind::Mode => 340.,
             _ => 248.,
         }
     }
@@ -120,11 +129,12 @@ impl MenuKind {
 
 /// What leads a menu row: an icon, a member's mark in their colour, or nothing
 /// (the column stays, so every label starts at the same place).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum Lead {
     None,
     Icon(Icon),
-    Mark(&'static str, usize),
+    /// A member: its avatar (`theme::avatar`), by role and name.
+    Avatar(String, String),
 }
 
 #[derive(Debug, Clone)]
@@ -138,16 +148,24 @@ struct Row {
     more: bool,
     on: bool,
     act: Option<Act>,
+    /// The hint is a sentence: under the label, whole, not cut beside it.
+    below: bool,
 }
 
 impl Row {
     fn new(label: impl Into<String>, hint: impl Into<String>, act: Act) -> Self {
-        Self { label: label.into(), hint: hint.into(), keys: None, lead: Lead::None, more: false, on: false, act: Some(act) }
+        Self { label: label.into(), hint: hint.into(), keys: None, lead: Lead::None, more: false, on: false, act: Some(act), below: false }
+    }
+
+    /// The hint under the label, wrapping, for one that says what a choice does.
+    fn below(mut self) -> Self {
+        self.below = true;
+        self
     }
 
     /// A line of words that does nothing (the context menu's explanation).
     fn note(label: impl Into<String>) -> Self {
-        Self { label: label.into(), hint: String::new(), keys: None, lead: Lead::None, more: false, on: false, act: None }
+        Self { label: label.into(), hint: String::new(), keys: None, lead: Lead::None, more: false, on: false, act: None, below: false }
     }
 
     fn checked(self, on: bool) -> Self {
@@ -191,14 +209,6 @@ impl Menu {
     }
 }
 
-/// The efforts each engine takes.
-pub(crate) fn efforts(engine: Option<Engine>) -> &'static [&'static str] {
-    match engine {
-        Some(Engine::Codex) => &["minimal", "low", "medium", "high"],
-        _ => &["low", "medium", "high", "xhigh", "max"],
-    }
-}
-
 /// A model's name as the bar shows it: `claude-opus-5-5` → `opus 5.5`.
 pub(crate) fn short_model(model: &str) -> String {
     let m = model.strip_prefix("claude-").unwrap_or(model);
@@ -223,10 +233,32 @@ pub struct Composer {
     guard: EnterGuard,
     /// One quiet line over the box: what the last send did.
     pub flash: Option<String>,
+    /// Esc on an empty box while a member works: when it was pressed, and in
+    /// whose conversation. A second press soon after stops the turn
+    /// (`stop_on_escape`); one alone only says how.
+    pub stop_armed: Option<(SessionId, std::time::Instant)>,
+    /// The cards over the box until sent (`views/quote.rs`): passages of the
+    /// conversation replied to ("Reply"), or only quoted to ask about
+    /// ("Ask about this"). Kept with the draft.
+    pub replies: Vec<crate::quote::Reply>,
+    /// The card the keys are on (Tab from the box), the box keeping the focus.
+    pub card: Option<usize>,
+    /// The card under the pointer: its passage shows over it.
+    pub peek: Option<usize>,
+    /// The cards' row, scrolled sideways when they overflow it.
+    pub cards_scroll: ScrollHandle,
+    /// Where each card was last drawn: its passage and its box open from there.
+    pub card_rects: Rc<std::cell::RefCell<Vec<Bounds<Pixels>>>>,
+    /// What the person pointed at on the design screen ("Talk"), over the
+    /// box until sent — a block before the words (`crate::design_talk`).
+    pub context: Vec<crate::design_talk::DesignContext>,
+    /// What went wrong with something the person asked for (a merge that
+    /// didn't land): a notice over the box, framed, until closed.
+    pub problem: Option<String>,
     /// ⏎ while attachments still upload: sent the moment they're up (as a
     /// memo when `true`), the person typing on meanwhile; Esc takes it back.
     pub send_when_ready: Option<bool>,
-    choices: Vec<Choice>,
+    pub(crate) choices: Vec<Choice>,
     pick: usize,
     /// The text completion was dismissed for (Esc), until it changes.
     dismissed: Option<String>,
@@ -242,12 +274,18 @@ pub struct Composer {
     /// The attachment ← reached from the start of the box (Backspace removes it).
     chip: Option<usize>,
     /// A menu of the bar, open.
-    menu: Option<Menu>,
+    pub(crate) menu: Option<Menu>,
     /// The menu just closed, fading out (its number keys the fade).
-    leaving: Option<(Menu, u64)>,
+    pub(crate) leaving: Option<(Menu, u64)>,
     menus_closed: u64,
+    /// The model picker (`views/model_picker.rs`), open from the model's
+    /// control or the effort's.
+    pub(crate) picker: Option<super::model_picker::Open>,
+    /// When Codex was last asked for its models: the picker says so when no
+    /// answer came.
+    pub(crate) codex_asked: Option<Instant>,
     /// Where each control that opens a menu was last drawn: menus open from there.
-    anchors: Rc<std::cell::RefCell<std::collections::HashMap<MenuKind, Bounds<Pixels>>>>,
+    pub(crate) anchors: Rc<std::cell::RefCell<std::collections::HashMap<MenuKind, Bounds<Pixels>>>>,
     /// What a drag over the window would attach, said before the drop.
     drag: Option<(Vec<PathBuf>, attach::Preview)>,
     /// The drop frame shown without a drag (for the snapshot tool).
@@ -264,21 +302,26 @@ pub struct Composer {
     save_task: Option<Task<()>>,
     /// Writes the draft down as the app quits.
     _quit: Subscription,
-    /// Dictation: on-device speech recognition in the app's language.
+    /// Dictation: speech recognition in `listening` — on this Mac, or with
+    /// Apple's servers too when the person agreed (`servers`).
     pub speech: Entity<SpeechState>,
+    pub listening: equipe_core::i18n::Lang,
+    pub servers: bool,
     /// What is being said, while it is (shown dimmed under the box; Esc drops it).
     dictating: Option<String>,
+    /// The words in the box came, at least in part, from dictation, or from a
+    /// paste: how the person said them goes with them (`crate::words`).
+    pub dictated: bool,
+    pub pasted: bool,
     _speech: Subscription,
     /// Keeps the inbox folder watched for as long as the window lives.
-    inbox_watch: Option<fs_notify::RecommendedWatcher>,
+    pub(crate) inbox_watch: Option<fs_notify::RecommendedWatcher>,
 }
 
 impl Composer {
-    pub fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Shell>, listening: equipe_core::i18n::Lang, servers: bool) -> Self {
         let placeholder = t!("composer.placeholder").to_owned();
-        let locale = speech_locale(crate::i18n::lang());
-        let speech = cx.new(|cx| SpeechState::new(cx).recognizer(SystemRecognizer::new().locale(locale)));
-        let heard = cx.subscribe_in(&speech, window, |shell: &mut Shell, _, event: &SpeechEvent, window, cx| shell.on_speech(event, window, cx));
+        let (speech, heard) = listener(listening, servers, window, cx);
         let state = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, MAX_LINES).submit_on_enter(true).placeholder(placeholder.clone()));
         Self {
             state,
@@ -286,6 +329,14 @@ impl Composer {
             drafts: Drafts::load(Drafts::file(&equipe_providers::credentials::equipe_home())),
             guard: EnterGuard::default(),
             flash: None,
+            stop_armed: None,
+            replies: Vec::new(),
+            card: None,
+            peek: None,
+            cards_scroll: ScrollHandle::new(),
+            card_rects: Rc::default(),
+            context: Vec::new(),
+            problem: None,
             send_when_ready: None,
             choices: Vec::new(),
             pick: 0,
@@ -299,6 +350,8 @@ impl Composer {
             menu: None,
             leaving: None,
             menus_closed: 0,
+            picker: None,
+            codex_asked: None,
             anchors: Rc::default(),
             drag: None,
             drag_shown: false,
@@ -314,9 +367,22 @@ impl Composer {
                 async {}
             }),
             speech,
+            listening,
+            servers,
             dictating: None,
+            dictated: false,
+            pasted: false,
             _speech: heard,
             inbox_watch: None,
+        }
+    }
+
+    /// Card `n` scrolled into the row's view; the first, the row back at its start.
+    pub fn reveal_card(&self, n: usize) {
+        if n == 0 {
+            self.cards_scroll.set_offset(Point::default());
+        } else {
+            self.cards_scroll.scroll_to_item(n);
         }
     }
 
@@ -361,7 +427,7 @@ impl Composer {
 
     /// What the box holds now, as a draft.
     fn draft(&self, cx: &App) -> Draft {
-        Draft { text: self.text(cx), caret: self.caret(cx), attachments: self.strip.saved() }
+        Draft { text: self.text(cx), caret: self.caret(cx), attachments: self.strip.saved(), replies: self.replies.clone() }
     }
 
     /// Put what the box holds away under the key it belongs to.
@@ -389,7 +455,7 @@ impl Composer {
         }
         self.suggestion = guess;
         let hint = match &self.suggestion {
-            Some(g) => format!("{g}  →"),
+            Some(g) => suggestion_hint(g),
             None => placeholder(model),
         };
         if hint != self.placeholder {
@@ -404,6 +470,9 @@ impl Composer {
         let draft = key.as_ref().map(|k| self.drafts.get(k)).unwrap_or_default();
         self.set_text_at(&draft.text, draft.caret, window, cx);
         self.strip.restore(&draft.attachments);
+        self.replies = draft.replies;
+        self.card = None;
+        self.peek = None;
         self.holds = key;
         self.history.stop();
         self.choices.clear();
@@ -414,22 +483,43 @@ impl Composer {
     }
 }
 
-/// The language dictation listens for: the app's.
-fn speech_locale(lang: equipe_core::i18n::Lang) -> &'static str {
-    use equipe_core::i18n::Lang as L;
-    match lang {
-        L::Ko => "ko-KR",
-        L::En => "en-US",
-        L::Ja => "ja-JP",
-        L::ZhHans => "zh-CN",
-        L::ZhHant => "zh-TW",
-        L::Es => "es-ES",
-        L::Fr => "fr-FR",
-        L::De => "de-DE",
+/// Dictation listening for `lang` (with Apple's servers if `servers`), and
+/// what it hears going to the composer.
+fn listener(lang: equipe_core::i18n::Lang, servers: bool, window: &mut Window, cx: &mut Context<Shell>) -> (Entity<SpeechState>, Subscription) {
+    let speech = cx.new(|cx| SpeechState::new(cx).recognizer(SystemRecognizer::new().locale(crate::dictation::locale(lang)).servers(servers)));
+    let heard = cx.subscribe_in(&speech, window, |shell: &mut Shell, _, event: &SpeechEvent, window, cx| shell.on_speech(event, window, cx));
+    (speech, heard)
+}
+
+/// Whether the bar shows who the line goes to: always, but in a
+/// conversation with the PM — where the header says so — only once the line
+/// turns to someone else (`@`) or is a command (`/`).
+fn shows_recipient(model: &Model, text: &str) -> bool {
+    !model.with_pm() || text.starts_with('@') || text.starts_with('/')
+}
+
+/// The project a line to the PM is about: the conversation's, else the one in focus.
+fn pm_about(model: &Model) -> Option<String> {
+    match model.talk_project() {
+        Some(project) => project,
+        None => model.focus.clone(),
     }
 }
 
 /// What the empty box says: who it is for.
+/// Whether `key` takes the greyed suggestion: only in an empty box showing
+/// one, with no list of choices open, and for Tab only when no cards wait
+/// over the box (Tab from an empty box reaches those).
+fn takes_suggestion(key: &str, text: &str, suggested: bool, choices_open: bool, cards: bool) -> bool {
+    text.is_empty() && suggested && !choices_open && (key == "right" || (key == "tab" && !cards))
+}
+
+/// The greyed suggestion in an empty box, and the key that takes it: Tab, as
+/// in a terminal or an editor (→ takes it too).
+fn suggestion_hint(guess: &str) -> String {
+    format!("{guess}  · Tab")
+}
+
 fn placeholder(model: &Model) -> String {
     let Some(member) = model.selected_member() else {
         return t!("composer.placeholder").to_owned();
@@ -443,10 +533,12 @@ fn placeholder(model: &Model) -> String {
             let to = if member.ticket == Some(ticket) { member.name.as_str() } else { model.members.iter().find(|m| Model::is_pm(m)).map_or(member.name.as_str(), |m| m.name.as_str()) };
             t!("composer.placeholder_ticket", id = ticket, name = to)
         }
-        // To the PM, with a project in focus: about it.
-        None => match model.focus.as_deref().filter(|_| Model::is_pm(member)) {
-            Some(project) => t!("composer.placeholder_to_in", name = member.name, project = project),
-            None => t!("composer.placeholder_to", name = member.name),
+        // To the PM about a project — its conversation's, or the one in focus.
+        None => match (pm_about(model).as_deref(), Model::is_pm(member)) {
+            (Some(project), true) => t!("composer.placeholder_to_in", name = member.name, project = project),
+            // The PM with no project in focus: anything at all, a new project too.
+            (None, true) => t!("composer.placeholder_to_pm_any", name = member.name),
+            _ => t!("composer.placeholder_to", name = member.name),
         },
     }
 }
@@ -461,6 +553,7 @@ impl Shell {
                 self.composer.history.stop();
                 self.composer.flash = None;
                 self.composer.chip = None;
+                self.composer.card = None;
                 // Typing lets a waiting bubble reached with ↑ go.
                 self.chat.picked = None;
                 if self.composer.text(cx).contains('@') {
@@ -510,7 +603,7 @@ impl Shell {
     }
 
     /// Write the drafts down a moment after the last change, off the UI thread.
-    fn save_drafts_soon(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn save_drafts_soon(&mut self, cx: &mut Context<Self>) {
         if self.composer.save_task.is_some() {
             return;
         }
@@ -539,7 +632,7 @@ impl Shell {
 
     /// As `send`; `later` leaves a member at work a memo instead of steering it.
     pub fn send_as(&mut self, later: bool, window: &mut Window, cx: &mut Context<Self>) {
-        // The Enter that ends a Korean composition is only that.
+        // The Enter that ends a composition is only that.
         if !self.composer.guard.allows_send(Instant::now()) {
             return;
         }
@@ -548,13 +641,25 @@ impl Shell {
         // person's flow isn't stopped by a progress bar.
         if self.composer.strip.busy() {
             self.composer.send_when_ready = Some(later);
-            self.composer.flash = Some(t!("composer.sends_when_uploaded").into());
+            let writing = self.composer.strip.items().iter().any(|i| i.writing);
+            self.composer.flash = Some(if writing { t!("composer.sends_when_written") } else { t!("composer.sends_when_uploaded") }.into());
             cx.notify();
             return;
         }
         self.composer.send_when_ready = None;
         let tags = self.composer.strip.tags();
-        let text = attach::message(&typed, &tags);
+        // The cards go first, in order — each passage and the words to it —
+        // then what was typed in the box.
+        let quoted = !self.composer.replies.is_empty() && !typed.trim().starts_with('/');
+        let typed_with_quotes = if quoted { crate::quote::message_all(&self.composer.replies, &typed) } else { typed.clone() };
+        // What was pointed at on the design screen goes before them, its pictures attached.
+        let pointed = !self.composer.context.is_empty() && !typed.trim().starts_with('/') && (!typed_with_quotes.trim().is_empty() || !tags.is_empty());
+        let (typed_with_quotes, all_tags) = if pointed {
+            (crate::design_talk::message(&self.composer.context, &typed_with_quotes), format!("{tags}{}", crate::design_talk::tags(&self.composer.context)))
+        } else {
+            (typed_with_quotes, tags.clone())
+        };
+        let text = attach::message(&typed_with_quotes, &all_tags);
         let carries = !tags.is_empty() && !typed.trim().starts_with('/');
         let plan = compose::plan(&self.model, &text, later);
         if plan.commands.is_empty() && plan.flash.is_none() && plan.effect.is_none() && plan.restore.is_none() {
@@ -568,7 +673,23 @@ impl Shell {
         if carries && plan.restore.is_none() && !plan.commands.is_empty() {
             self.composer.strip.clear();
         }
-        for command in plan.commands {
+        // So did the cards.
+        if quoted && plan.restore.is_none() && !plan.commands.is_empty() {
+            self.composer.replies.clear();
+            self.composer.card = None;
+            self.composer.peek = None;
+        }
+        // And what was pointed at.
+        if pointed && plan.restore.is_none() && !plan.commands.is_empty() {
+            self.composer.context.clear();
+        }
+        // The person's own message: to a daemon that reads words, `say`, with how it came in.
+        let said = crate::words::Said { dictated: self.composer.dictated, pasted: self.composer.pasted };
+        if !plan.commands.is_empty() {
+            self.composer.dictated = false;
+            self.composer.pasted = false;
+        }
+        for command in crate::words::commands(plan.commands, &self.model.squad, self.model.words.read, said) {
             self.send_command(command);
         }
         self.composer.flash = plan.flash;
@@ -593,7 +714,30 @@ impl Shell {
         self.send_as(working && steerable, window, cx);
     }
 
-    /// Stop the turn in progress (Esc on an empty box, ⌘., or the Stop button).
+    /// Esc on an empty box: a member's turn stops on the second press, soon
+    /// after the first — a stray Esc says how, and stops nothing.
+    fn escape_to_stop(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.model.viewed() else { return };
+        if self.model.viewed_presence() != Some(Presence::Working) {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if stop_on_escape(self.composer.stop_armed, session, now) {
+            self.composer.stop_armed = None;
+            self.composer.flash = None;
+            self.interrupt(cx);
+            return;
+        }
+        self.composer.stop_armed = Some((session, now));
+        let member = self.model.selected_member();
+        let name = member.map(|m| m.name.clone()).unwrap_or_default();
+        // What a second press would stop, its subagents with it.
+        let subs = member.map_or(0, |m| self.model.subagents_of(m.session).len());
+        self.composer.flash = Some(if subs > 0 { t!("composer.esc_again_subs", name = name, count = subs) } else { t!("composer.esc_again", name = name) });
+        cx.notify();
+    }
+
+    /// Stop the turn in progress (Esc twice on an empty box, ⌘., or the Stop button).
     pub fn interrupt(&mut self, cx: &mut Context<Self>) {
         // Only the conversation in view stops; a member's others go on.
         let Some(session) = self.model.viewed() else { return };
@@ -608,7 +752,50 @@ impl Shell {
     // ── dictation ──
 
     /// The mic button: start listening, or stop and keep what was said.
-    fn toggle_dictation(&mut self, cx: &mut Context<Self>) {
+    /// The language dictation listens for, again: the one picked in settings
+    /// (`None`: the first this Mac can hear), at once — no restart.
+    pub fn set_dictation(&mut self, choice: Option<equipe_core::i18n::Lang>, window: &mut Window, cx: &mut Context<Self>) {
+        self.remembered.dictation = choice.map(|l| l.code().to_owned());
+        self.remembered.save(&equipe_providers::credentials::equipe_home());
+        self.refresh_dictation(window, cx);
+    }
+
+    /// Apple's servers for dictation: on only after the person's yes on
+    /// settings' sheet; off at once.
+    pub fn set_dictation_servers(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.remembered.dictation_servers = on;
+        self.remembered.save(&equipe_providers::credentials::equipe_home());
+        self.refresh_dictation(window, cx);
+    }
+
+    /// The language to listen for now: the one picked; else the keyboard's
+    /// (the language of the input source typed with) when this Mac can hear it; else the first
+    /// [`crate::dictation::choose`] finds.
+    fn dictation_lang(&self) -> equipe_core::i18n::Lang {
+        let servers = self.remembered.dictation_servers;
+        let heard = |l: equipe_core::i18n::Lang| servers || crate::dictation::heard_here(l);
+        let picked = self.remembered.dictation.as_deref().and_then(equipe_core::i18n::Lang::parse);
+        let typing = if picked.is_none() { crate::dictation::typing_lang() } else { None };
+        crate::dictation::choose(picked.or(typing.filter(|l| heard(*l))), crate::i18n::lang(), &equipe_core::i18n::preferred(), heard)
+    }
+
+    /// Listen for what [`Self::dictation_lang`] says now, if that changed.
+    pub fn refresh_dictation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (lang, servers) = (self.dictation_lang(), self.remembered.dictation_servers);
+        if lang == self.composer.listening && servers == self.composer.servers {
+            return;
+        }
+        self.composer.speech.update(cx, |s, cx| s.cancel(cx));
+        let (speech, heard) = listener(lang, servers, window, cx);
+        (self.composer.speech, self.composer._speech, self.composer.listening, self.composer.servers) = (speech, heard, lang, servers);
+        cx.notify();
+    }
+
+    fn toggle_dictation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // About to listen: in the language being typed now, if it changed.
+        if self.composer.dictating.is_none() {
+            self.refresh_dictation(window, cx);
+        }
         self.composer.speech.update(cx, |s, cx| s.toggle(cx));
         cx.notify();
     }
@@ -626,6 +813,7 @@ impl Shell {
                         now.push(' ');
                     }
                     now.push_str(said);
+                    self.composer.dictated = true;
                     self.composer.set_text(&now, window, cx);
                     self.composer.focus(window, cx);
                 }
@@ -636,7 +824,8 @@ impl Shell {
                 self.composer.flash = Some(match error {
                     SpeechError::PermissionDenied => t!("composer.dictation_denied").to_owned(),
                     SpeechError::NoInputDevice => t!("composer.dictation_no_mic").to_owned(),
-                    SpeechError::Unsupported => t!("composer.dictation_unsupported").to_owned(),
+                    // No model for it on this Mac: which language, and where to add it or pick another.
+                    SpeechError::Unsupported => t!("composer.dictation_no_model", lang = self.composer.listening.native_name()),
                     other => t!("composer.dictation_failed", why = other),
                 });
             }
@@ -658,20 +847,128 @@ impl Shell {
     /// Attach: each is checked, read on this Mac and sent to the daemon's
     /// machine on a thread of the background pool; its chip shows how far it got.
     pub fn attach_sources(&mut self, sources: Vec<Source>, cx: &mut Context<Self>) {
+        self.attach_sources_to(AttachTo::Composer, sources, cx);
+    }
+
+    /// Where an attachment goes: the strip it waits in.
+    pub fn strip_mut(&mut self, to: AttachTo) -> &mut attach::Strip {
+        match to {
+            AttachTo::Composer => &mut self.composer.strip,
+            AttachTo::Answer(set, question) => self.decide.strips.entry((set, question)).or_default(),
+            AttachTo::Turn(ticket, ask) => self.turn.strips.entry((ticket, ask)).or_default(),
+        }
+    }
+
+    /// What is attached to an answer, if anything.
+    pub fn strip_of(&self, to: AttachTo) -> Option<&attach::Strip> {
+        match to {
+            AttachTo::Composer => Some(&self.composer.strip),
+            AttachTo::Answer(set, question) => self.decide.strips.get(&(set, question)),
+            AttachTo::Turn(ticket, ask) => self.turn.strips.get(&(ticket, ask)),
+        }
+    }
+
+    /// The tags an answer's attachments add to its words: what the member opens.
+    pub fn answer_tags(&self, to: AttachTo) -> String {
+        self.strip_of(to).map(attach::Strip::tags).unwrap_or_default()
+    }
+
+    /// ⌘V in an answer's box: files or a picture on the clipboard are attached
+    /// to it; anything else is the box's to paste.
+    pub fn paste_into(&mut self, to: AttachTo, item: &ClipboardItem, cx: &mut Context<Self>) -> bool {
+        match attach::from_clipboard(item) {
+            Some(sources) => {
+                self.attach_sources_to(to, sources, cx);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Files dropped on an answer's box: attached to it; a folder, its path written in.
+    pub fn drop_into(&mut self, to: AttachTo, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer.drag = None;
+        let (files, folders) = attach::from_drop(paths.paths());
+        if let Some(field) = self.answer_field(to).filter(|_| !folders.is_empty()) {
+            field.update(cx, |s, cx| {
+                let mut text = s.value().to_string();
+                for path in &folders {
+                    if !text.is_empty() && !text.ends_with(' ') {
+                        text.push(' ');
+                    }
+                    text.push_str(&path.to_string_lossy());
+                }
+                s.set_value(text, window, cx);
+            });
+        }
+        self.attach_sources_to(to, files, cx);
+    }
+
+    /// "Attach": the system's file picker, into an answer.
+    pub fn pick_into(&mut self, to: AttachTo, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(t!("composer.pick_prompt").into()) });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = picked.await {
+                this.update(cx, |this, cx| this.attach_sources_to(to, paths.into_iter().map(Source::File).collect(), cx)).ok();
+            }
+        })
+        .detach();
+    }
+
+    /// An attachment taken off an answer.
+    pub fn unattach_from(&mut self, to: AttachTo, id: u64, cx: &mut Context<Self>) {
+        self.strip_mut(to).remove(id);
+        self.answer_redrawn(to, cx);
+    }
+
+    /// An answer's box, by where its attachments go.
+    fn answer_field(&self, to: AttachTo) -> Option<Entity<TextareaState>> {
+        match to {
+            AttachTo::Composer => Some(self.composer.state.clone()),
+            AttachTo::Answer(set, question) => self.decide.fields.get(&(set, question)).cloned(),
+            AttachTo::Turn(ticket, ask) => self.turn.fields.get(&(ticket, ask)).cloned(),
+        }
+    }
+
+    /// An answer's attachments changed: its card is drawn — and measured — again.
+    fn answer_redrawn(&mut self, to: AttachTo, cx: &mut Context<Self>) {
+        if let AttachTo::Turn(ticket, _) = to {
+            self.chat_remeasure_turn(ticket, cx);
+        }
+        self.model.revision += 1;
+        cx.notify();
+    }
+
+    /// Attach `sources` to the message being written, or to an answer.
+    pub fn attach_sources_to(&mut self, to: AttachTo, sources: Vec<Source>, cx: &mut Context<Self>) {
+        let composer = to == AttachTo::Composer;
+        // The ask being answered stays open while its file goes up: the step
+        // doesn't move on under the person.
+        if let AttachTo::Turn(ticket, n) = to {
+            self.turn.open.insert(ticket, n);
+        }
         let store = self.store();
         let mut over = 0;
         for source in sources {
             if let Some(path) = source.path() {
                 if let Err(why) = attach::check(path) {
-                    self.composer.strip.refuse(&source.name(), source.kind(), why);
+                    self.strip_mut(to).refuse(&source.name(), source.kind(), why);
                     continue;
                 }
-                self.composer.drafts.used(path);
+                if composer {
+                    self.composer.drafts.used(path);
+                }
             }
-            let Some(id) = self.composer.strip.begin(&source) else {
+            let Some(id) = self.strip_mut(to).begin(&source) else {
                 over += 1;
                 continue;
             };
+            if let Source::File(path) = &source
+                && composer
+                && source.kind() == Kind::Audio
+            {
+                self.write_down(id, path.clone(), cx);
+            }
             let store = store.clone();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Step>();
             cx.background_spawn(async move {
@@ -680,6 +977,12 @@ impl Shell {
                     Err(why) => return drop(tx.send(Step::Done(Err(why)))),
                 };
                 let _ = tx.send(Step::Shown(Box::new(prepared_head(&prepared))));
+                if let (attach::Kind::Image, attach::Payload::Bytes { name, bytes }) = (prepared.kind, &prepared.main) {
+                    let path = crate::ssh::scratch_dir().join(format!("{}-{}", std::process::id(), crate::ssh::safe_name(std::path::Path::new(name))));
+                    if std::fs::write(&path, bytes).is_ok() {
+                        let _ = tx.send(Step::Whole(path));
+                    }
+                }
                 let Some(store) = store else {
                     return drop(tx.send(Step::Done(Err(t!("composer.not_connected").into()))));
                 };
@@ -697,13 +1000,16 @@ impl Shell {
                 while let Some(step) = rx.recv().await {
                     let finished = matches!(step, Step::Done(_));
                     let alive = this.update(cx, |this, cx| {
-                        let strip = &mut this.composer.strip;
                         let redraw = match step {
                             Step::Shown(prepared) => {
-                                strip.prepared(id, &prepared);
+                                this.strip_mut(to).prepared(id, &prepared);
                                 true
                             }
-                            Step::Share(share) => strip.progress(id, share),
+                            Step::Share(share) => this.strip_mut(to).progress(id, share),
+                            Step::Whole(path) => {
+                                this.strip_mut(to).whole(id, path);
+                                false
+                            }
                             Step::Seen(seen) => {
                                 let mut sent = this.chat.sent.borrow_mut();
                                 for (path, shown) in seen {
@@ -712,13 +1018,19 @@ impl Shell {
                                 false
                             }
                             Step::Done(done) => {
-                                strip.finish(id, done);
-                                this.save_drafts_soon(cx);
+                                this.strip_mut(to).finish(id, done);
+                                if composer {
+                                    this.save_drafts_soon(cx);
+                                }
                                 true
                             }
                         };
                         if redraw {
-                            cx.notify();
+                            if composer {
+                                cx.notify();
+                            } else {
+                                this.answer_redrawn(to, cx);
+                            }
                         }
                     });
                     if alive.is_err() || finished {
@@ -732,6 +1044,42 @@ impl Shell {
             self.composer.flash = Some(t!("composer.too_many", n = attach::MAX_ATTACHMENTS, over = over));
         }
         cx.notify();
+    }
+
+    /// A recording attached (a voice memo, a call): written down on this Mac
+    /// too, and its words attached beside it as a text file, so a member reads
+    /// what was said, on this Mac's daemon or a far one alike.
+    fn write_down(&mut self, id: u64, path: PathBuf, cx: &mut Context<Self>) {
+        self.composer.strip.writing(id, true);
+        let (locale, servers) = (crate::dictation::locale(self.composer.listening), self.composer.servers);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let from = path.clone();
+        // Minutes for a long one: its own thread, not one of the pool's.
+        std::thread::spawn(move || drop(tx.send(crate::transcribe::transcribe(&from, locale, media::audio_duration(&from), servers))));
+        cx.spawn(async move |this, cx| {
+            let heard = rx.await.unwrap_or_else(|_| Err(Failure::Failed("stopped".into())));
+            let _ = this.update(cx, |this, cx| {
+                // Taken off meanwhile: its words aren't wanted either.
+                if !this.composer.strip.writing(id, false) {
+                    return cx.notify();
+                }
+                let name = attach::file_name(&path);
+                this.composer.flash = Some(match heard {
+                    Ok(words) => {
+                        let stem = path.file_stem().map_or_else(|| name.clone(), |s| s.to_string_lossy().into_owned());
+                        let text = format!("{}\n\n{}\n", t!("composer.transcript_head", name = name), words.trim());
+                        this.attach_sources(vec![Source::Text { name: format!("{}.txt", t!("composer.transcript_name", name = stem)), text }], cx);
+                        t!("composer.transcribed", name = name)
+                    }
+                    Err(Failure::Denied) => t!("composer.transcribe_denied").into(),
+                    Err(Failure::Unsupported) => t!("composer.transcribe_unsupported").into(),
+                    Err(Failure::NoSpeech) => t!("composer.transcribe_no_speech", name = name),
+                    Err(Failure::Failed(why)) => t!("composer.transcribe_failed", why = why),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// ⌘V in the box. True when the clipboard held files or a picture and they
@@ -749,6 +1097,11 @@ impl Shell {
                 self.attach_sources(vec![Source::Text { name, text }], cx);
                 self.composer.flash = Some(t!("composer.pasted_as_file").into());
                 true
+            }
+            // The box pastes it: pasted words never decide anything (`crate::words`).
+            Some(_) => {
+                self.composer.pasted = true;
+                false
             }
             _ => false,
         }
@@ -775,7 +1128,7 @@ impl Shell {
         self.composer.focus(window, cx);
     }
 
-    /// "사진·파일…": the system's file picker.
+    /// "Photos & Files…": the system's file picker.
     fn pick_files(&mut self, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(t!("composer.pick_prompt").into()) });
         cx.spawn(async move |this, cx| {
@@ -786,7 +1139,7 @@ impl Shell {
         .detach();
     }
 
-    /// "스크린샷": the system's selection, then attached.
+    /// "Screenshot": the system's selection, then attached.
     fn screenshot(&mut self, cx: &mut Context<Self>) {
         let path = crate::ssh::scratch_dir().join(format!("screenshot-{}.png", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())));
         let shot = path.clone();
@@ -864,14 +1217,22 @@ impl Shell {
 
     // ── the memos and steers waiting ──
 
-    /// 되돌리기: a steer or memo still waiting is taken back — its words and
+    /// Take back: a steer or memo still waiting is taken back — its words and
     /// what it attached come back into the box — and its bubble fades out.
     pub fn withdraw_pending(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.model.viewed() else { return };
         if self.chat.leaving.contains(&text) {
             return;
         }
-        let said = self.composer.history.sent_as(&text).cloned().unwrap_or_else(|| compose::Said { text: crate::sent::parts(&text).text, attachments: attach::saved_of(&text) });
+        // Its cards come back over the box too, its own words into it.
+        let written = crate::sent::parts(&text).text;
+        let (cards, rest) = crate::quote::read(&crate::design_talk::split(&written).1);
+        let said = self.composer.history.sent_as(&text).cloned().unwrap_or_else(|| compose::Said { text: if cards.is_empty() { written.clone() } else { rest.clone() }, attachments: attach::saved_of(&text) });
+        for card in cards.into_iter().filter(|c| !c.quote.is_empty()) {
+            if !self.composer.replies.contains(&card) {
+                self.composer.replies.push(card);
+            }
+        }
         let mut now = self.composer.text(cx);
         if !now.trim().is_empty() {
             now.push('\n');
@@ -905,15 +1266,25 @@ impl Shell {
         cx.notify();
     }
 
-    /// 지금 보내기: the member's turn stops, as Esc stops it, and everything
-    /// waiting goes to it at once — in the order shown, as one message.
+    /// Send now: what waits is read now — never by stopping the work. At
+    /// work, the member reads it at its next step (a command running now is
+    /// stopped, just it, so that step comes at once) and decides what to do;
+    /// not at work, it all goes as one message, in the order shown.
     pub fn send_pending_now(&mut self, cx: &mut Context<Self>) {
         let Some(session) = self.model.viewed() else { return };
         let Some(texts) = self.model.convo().map(|c| c.queue.texts()).filter(|t| !t.is_empty()) else { return };
         let n = texts.len();
+        let working = self.model.viewed_presence() == Some(Presence::Working);
+        let member = self.model.selected_member();
+        let name = member.map(|m| m.name.clone()).unwrap_or_default();
+        let steers = member.is_some_and(|m| m.engine.is_some());
+        let commanding = working && steers && self.model.convo().and_then(|c| c.command_watch()).is_some_and(|w| w.process.is_some());
         self.send_command(Command::SendNow { session, texts });
+        if commanding && let Some(convo) = self.model.convo_mut() {
+            convo.stopping_command = true;
+        }
         self.chat.picked = None;
-        self.composer.flash = Some(if n > 1 { t!("composer.sent_now_many", count = n) } else { t!("composer.sent_now").to_owned() });
+        self.composer.flash = Some(crate::activity::read_now(&name, working, steers, commanding, n));
         self.chat.follow_tail(cx);
         cx.notify();
     }
@@ -927,6 +1298,7 @@ impl Shell {
 
     /// Close the bar's menu; it fades out where it was.
     pub(crate) fn close_menu(&mut self, cx: &mut Context<Self>) {
+        self.close_picker(cx);
         let Some(menu) = self.composer.menu.take() else { return };
         self.composer.menus_closed += 1;
         let n = self.composer.menus_closed;
@@ -947,6 +1319,11 @@ impl Shell {
 
     pub(crate) fn open_menu(&mut self, kind: MenuKind, window: &mut Window, cx: &mut Context<Self>) {
         crate::tips::hide(cx);
+        // The model and the effort are one picker, engines and all.
+        if matches!(kind, MenuKind::Model | MenuKind::Effort) {
+            return self.open_picker(kind, window, cx);
+        }
+        self.close_picker(cx);
         if self.composer.menu.as_ref().is_some_and(|m| m.kind == kind) {
             self.close_menu(cx);
             return;
@@ -972,49 +1349,16 @@ impl Shell {
                 title = Some(t!("composer.menu_to").to_owned());
                 let selected = self.model.selected;
                 self.model.ordered().iter().filter(|m| m.presence != Presence::Closed).map(|m| {
-                        let (mark, hue) = look(&m.role, &m.name);
-                        Row { lead: Lead::Mark(mark, hue), ..Row::new(m.name.clone(), m.role.clone(), Act::Select(m.session)).checked(Some(m.session) == selected) }
+                        Row { lead: Lead::Avatar(m.role.clone(), m.name.clone()), ..Row::new(m.name.clone(), m.role.clone(), Act::Select(m.session)).checked(Some(m.session) == selected) }
                     })
                     .collect()
             }
-            MenuKind::Model => {
-                let Some(member) = member else { return };
-                title = Some(t!("composer.menu_model", name = member.name));
-                let mut models = compose::engine_models(member.engine, member.model.as_deref());
-                if models.is_empty() {
-                    models.extend(member.model.clone());
-                }
-                let now = member.model.clone().unwrap_or_default();
-                let exact = models.contains(&now);
-                let mut rows: Vec<Row> = models
-                    .into_iter()
-                    .map(|m| {
-                        let short = short_model(&m);
-                        let hint = if short == m { String::new() } else { m.clone() };
-                        Row::new(short, hint, Act::Model(m.clone())).checked(now == m || (!exact && now.contains(&m)))
-                    })
-                    .collect();
-                // Which engine it works on: the other one, at its next ticket.
-                let on = member.engine;
-                rows.push(Row::note(t!("composer.menu_engine")));
-                for (engine, mark) in [(Engine::Claude, Icon::ClaudeMark), (Engine::Codex, Icon::OpenAiMark)] {
-                    let hint = if on == Some(engine) { String::new() } else { t!("composer.engine_next").to_owned() };
-                    rows.push(Row::new(crate::switching::engine_name(engine), hint, Act::Engine(engine)).icon(mark).checked(on == Some(engine)));
-                }
-                rows
-            }
-            MenuKind::Effort => {
-                let Some(member) = member else { return };
-                title = Some(t!("composer.menu_effort", name = member.name));
-                let now = self.model.efforts.get(&member.session).cloned();
-                let mut rows = vec![Row::new(t!("composer.effort_default"), "", Act::Effort(None)).checked(now.is_none())];
-                rows.extend(efforts(member.engine).iter().map(|e| Row::new(*e, "", Act::Effort(Some((*e).to_owned()))).checked(now.as_deref() == Some(*e))));
-                rows
-            }
+            // Opened above, as the picker.
+            MenuKind::Model | MenuKind::Effort => return,
             MenuKind::Mode => {
                 title = Some(t!("composer.menu_mode").to_owned());
                 let lang = crate::i18n::lang();
-                Mode::ALL.iter().map(|m| Row::new(label::mode(lang, *m), label::mode_short(lang, *m), Act::Mode(*m)).checked(*m == self.model.mode)).collect()
+                Mode::ALL.iter().map(|m| Row::new(label::mode(lang, *m), label::mode_short(lang, *m), Act::Mode(*m)).checked(*m == self.model.mode).below()).collect()
             }
             MenuKind::Context => {
                 let Some(member) = member else { return };
@@ -1060,33 +1404,6 @@ impl Shell {
                 }
             }
             Act::Select(session) => self.select_member(session, window, cx),
-            Act::Engine(engine) => {
-                if let Some((_, name)) = member
-                    && self.model.selected_member().is_some_and(|m| m.engine != Some(engine))
-                {
-                    self.send_command(Command::MoveEngine { squad: self.model.squad.clone(), members: vec![name.clone()], engine });
-                    self.composer.flash = Some(t!("compose.engine_moving", names = name, engine = crate::switching::engine_name(engine)));
-                }
-            }
-            Act::Model(model) => {
-                if let Some((session, name)) = member {
-                    self.send_command(Command::SetModel { session, model: model.clone() });
-                    self.composer.flash = Some(t!("compose.model_set", name = name, wanted = model));
-                }
-            }
-            Act::Effort(effort) => {
-                if let Some((session, name)) = member {
-                    self.send_command(Command::SetEffort { session, effort: effort.clone() });
-                    self.composer.flash = Some(match &effort {
-                        Some(e) => t!("composer.effort_set", name = name, effort = e),
-                        None => t!("composer.effort_reset", name = name),
-                    });
-                    match effort {
-                        Some(effort) => self.model.efforts.insert(session, effort),
-                        None => self.model.efforts.remove(&session),
-                    };
-                }
-            }
             Act::Mode(mode) => self.send_command(Command::SetMode { squad: self.model.squad.clone(), member: None, mode: Some(mode) }),
             Act::Refresh(summary) => {
                 if let Some((session, _)) = member {
@@ -1125,6 +1442,10 @@ impl Shell {
             self.composer.speech.update(cx, |s, cx| s.cancel(cx));
             self.composer.dictating = None;
             cx.notify();
+            return true;
+        }
+        // The model picker is open: it has the keys it takes.
+        if self.picker_key(key, modifiers, window, cx) {
             return true;
         }
         // A menu of the bar is open: it has the keys.
@@ -1172,6 +1493,33 @@ impl Shell {
             cx.notify();
             return true;
         }
+        // A card reached with Tab: Tab and the arrows walk the cards, ⏎ opens
+        // its box, Backspace removes it, Esc goes back to the box.
+        if let Some(at) = self.composer.card {
+            let n = self.composer.replies.len();
+            let unmodified = !modifiers.control && !modifiers.alt && !modifiers.platform;
+            match key {
+                "tab" if unmodified => self.composer.card = crate::quote::tab(Some(at), n, modifiers.shift),
+                "left" if plain => self.composer.card = Some(at.saturating_sub(1).min(n.saturating_sub(1))),
+                "right" if plain => self.composer.card = crate::quote::tab(Some(at), n, false).or(Some(at.min(n.saturating_sub(1)))),
+                "backspace" | "delete" if plain => self.remove_card(at, cx),
+                "enter" | "space" if plain => {
+                    self.composer.card = None;
+                    self.quote_edit(at, window, cx);
+                }
+                "escape" => self.composer.card = None,
+                _ => {
+                    self.composer.card = None;
+                    cx.notify();
+                    return false;
+                }
+            }
+            if let Some(at) = self.composer.card {
+                self.composer.reveal_card(at);
+            }
+            cx.notify();
+            return true;
+        }
         let text = self.composer.text(cx);
         // A bubble waiting, reached with ↑: Backspace takes it back, ⌘↵ sends
         // everything waiting now, Esc lets it go.
@@ -1214,7 +1562,7 @@ impl Shell {
                     self.composer.dismissed = Some(text);
                     self.composer.choices.clear();
                 } else if !self.composer.guard.composing() && text.is_empty() {
-                    self.interrupt(cx);
+                    self.escape_to_stop(cx);
                 }
                 cx.notify();
                 true
@@ -1261,8 +1609,9 @@ impl Shell {
                     None => false,
                 }
             }
-            // → on an empty box takes the greyed suggestion.
-            "right" if plain && text.is_empty() && self.composer.suggestion.is_some() => {
+            // Tab (or →) on an empty box takes the greyed suggestion; with
+            // cards over the box, Tab reaches them instead (below).
+            "tab" | "right" if plain && takes_suggestion(key, &text, self.composer.suggestion.is_some(), self.composer.open(), !self.composer.replies.is_empty()) => {
                 if let Some(guess) = self.composer.suggestion.clone() {
                     self.composer.set_text(&guess, window, cx);
                     cx.notify();
@@ -1280,6 +1629,20 @@ impl Shell {
                 if let Some(item) = self.composer.strip.items().last().map(|i| i.id) {
                     self.unattach(item, cx);
                 }
+                true
+            }
+            // Then the last card.
+            "backspace" if plain && text.is_empty() && !self.composer.replies.is_empty() => {
+                self.remove_card(self.composer.replies.len() - 1, cx);
+                true
+            }
+            // Tab from an empty box (⇧Tab from any) reaches the cards.
+            "tab" if !modifiers.control && !modifiers.alt && !modifiers.platform && !self.composer.open() && !self.composer.replies.is_empty() && (modifiers.shift || text.is_empty()) => {
+                self.composer.card = crate::quote::tab(None, self.composer.replies.len(), modifiers.shift);
+                if let Some(at) = self.composer.card {
+                    self.composer.reveal_card(at);
+                }
+                cx.notify();
                 true
             }
             // Tab with something written to a member at work: a memo for after.
@@ -1385,6 +1748,8 @@ impl Shell {
 /// One step of an attachment on its way, as the UI hears it.
 enum Step {
     Shown(Box<attach::Prepared>),
+    /// A pasted picture's bytes, kept whole in a scratch file for its big view.
+    Whole(PathBuf),
     Share(f32),
     /// What the conversation shows of it once sent, by its paths there.
     Seen(Vec<(String, crate::sent::Shown)>),
@@ -1445,12 +1810,46 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .flex_none()
         .pb_3()
         // Lined up with the text in the card: its padding and border.
+        .children(composer.problem.clone().map(|problem| problem_notice(p, problem, cx)))
         .children(composer.flash.clone().map(|flash| motion::fade(div().px(px(INSET + 1.)).pb_2().text_size(px(SMALL)).text_color(p.text2).child(flash.clone()), ElementId::Name(format!("flash-{}", crate::render::hash_of(&flash)).into()), motion::BASE)))
         .child(card(shell, cx))
 }
 
 /// The card's inner padding: the text and the bar's controls start here.
 const INSET: f32 = 12.;
+
+/// Something the person asked for that went wrong: framed and marked, so it
+/// never reads as a member's words — closed with ✕.
+fn problem_notice(p: Palette, problem: String, cx: &mut Context<Shell>) -> AnyElement {
+    let id = ElementId::Name(format!("problem-{}", crate::render::hash_of(&problem)).into());
+    motion::fade(
+        h_flex()
+            .w_full()
+            .mb_2()
+            .px_3()
+            .py(px(8.))
+            .gap_2()
+            .items_start()
+            .rounded(px(R_MD))
+            .bg(p.raised)
+            .border_1()
+            .border_color(p.hair)
+            .child(div().flex_none().mt(px(2.)).child(icon(Icon::Warning, ICON_SM, p.amber)))
+            .child(div().flex_1().min_w_0().text_size(px(13.)).line_height(px(19.)).text_color(p.text).child(problem))
+            .child(
+                crate::ui::x_box("problem-close", p.muted, t!("composer.aria_close"))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(p.wash))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.composer.problem = None;
+                        cx.notify();
+                    })),
+            ),
+        id,
+        motion::BASE,
+    )
+    .into_any_element()
+}
 
 fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
@@ -1479,6 +1878,8 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         .on_action(cx.listener(|this, _: &SendInverted, window, cx| this.send_inverted(window, cx)))
         .children(completion(shell, cx))
         .children(menu_layer(shell, cx))
+        .children(super::design_talk::chips(shell, INSET, cx))
+        .children(super::quote::cards(shell, INSET, cx))
         .children(strip(shell, cx))
         .child(
             motion::SmoothHeight::new(
@@ -1529,7 +1930,7 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
 fn completion(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
     let p = shell.palette;
     let composer = &shell.composer;
-    if !composer.open() || composer.menu.is_some() {
+    if !composer.open() || composer.menu.is_some() || composer.picker.is_some() {
         return None;
     }
     let mut rows: Vec<AnyElement> = Vec::new();
@@ -1606,6 +2007,7 @@ fn menu_layer(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
     if let Some(menu) = &shell.composer.menu {
         layers.extend(menu_popup(shell, menu, None, cx));
     }
+    layers.extend(super::model_picker::layer(shell, cx));
     layers
 }
 
@@ -1628,9 +2030,9 @@ fn menu_popup(shell: &Shell, menu: &Menu, leaving: Option<u64>, cx: &mut Context
                 None => base.py_1().child(div().flex_1().min_w_0().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(row.label.clone())).into_any_element(),
                 Some(_) => {
                     let picked = ix == menu.pick;
-                    let lead = match row.lead {
-                        Lead::Icon(name) => icon(name, ICON, p.text2).into_any_element(),
-                        Lead::Mark(mark, hue) => div().text_size(px(12.)).text_color(p.member(hue)).child(mark).into_any_element(),
+                    let lead = match &row.lead {
+                        Lead::Icon(name) => icon(*name, ICON, p.text2).into_any_element(),
+                        Lead::Avatar(role, name) => crate::theme::avatar(p, role, name, 18.).into_any_element(),
                         Lead::None if row.on => icon(Icon::Check, ICON, p.accent).into_any_element(),
                         Lead::None => div().into_any_element(),
                     };
@@ -1642,6 +2044,12 @@ fn menu_popup(shell: &Shell, menu: &Menu, leaving: Option<u64>, cx: &mut Context
                     };
                     let row_el = base
                         .id(("menu-row", ix))
+                        .role(Role::MenuItem)
+                        .aria_label(if row.hint.is_empty() { row.label.to_string() } else { format!("{}, {}", row.label, row.hint) })
+                        .aria_selected(picked)
+                        .when(row.on, |r| r.aria_toggled(Toggled::True))
+                        .when(row.more, |r| r.aria_expanded(false))
+                        .when_some(row.keys, |r, keys| r.aria_keyshortcuts(keys))
                         .when(live, |r| {
                             r.cursor_pointer()
                                 // The pointer moves the highlight, as the arrows do.
@@ -1657,8 +2065,18 @@ fn menu_popup(shell: &Shell, menu: &Menu, leaving: Option<u64>, cx: &mut Context
                                 .on_click(cx.listener(move |this, _, window, cx| this.run_row(ix, window, cx)))
                         })
                         .child(div().w(px(ICON)).flex_none().flex().justify_center().child(lead))
-                        .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.)).text_color(p.text).child(row.label.clone()))
-                        .when(!row.hint.is_empty(), |r| r.child(div().flex_none().max_w(px(160.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.)).text_color(p.muted).child(row.hint.clone())))
+                        .when(row.below, |r| {
+                            r.py(px(6.)).items_start().child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap(px(2.))
+                                    .child(div().text_size(px(13.)).text_color(p.text).child(row.label.clone()))
+                                    .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.muted).child(row.hint.clone())),
+                            )
+                        })
+                        .when(!row.below, |r| r.child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.)).text_color(p.text).child(row.label.clone())))
+                        .when(!row.below && !row.hint.is_empty(), |r| r.child(div().flex_none().max_w(px(160.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.)).text_color(p.muted).child(row.hint.clone())))
                         .children(trail.map(|t| div().flex_none().flex().items_center().child(t)));
                     motion::hover_fill(row_el, ("menu-row-fill", ix), p.wash, picked).into_any_element()
                 }
@@ -1668,6 +2086,8 @@ fn menu_popup(shell: &Shell, menu: &Menu, leaving: Option<u64>, cx: &mut Context
     let kind = menu.kind;
     let surface = v_flex()
         .id(if live { "bar-menu" } else { "bar-menu-leaving" })
+        .role(Role::Menu)
+        .when_some(menu.title.clone(), |s, title| s.aria_label(title))
         .w(px(kind.width()))
         .p_1()
         .rounded(px(R_MD))
@@ -1727,13 +2147,14 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let working = model.viewed_presence() == Some(Presence::Working);
     let stopping = working && model.viewed().is_some_and(|s| composer.stopping == Some(s));
     let text = composer.text(cx);
-    let has_words = !text.trim().is_empty();
+    // The cards are words too: they send with an empty box.
+    let has_words = !text.trim().is_empty() || !composer.replies.is_empty();
     let has_any = has_words || composer.strip.ready() > 0;
     let steerable = member.is_some_and(|m| m.engine.is_some());
     let (to_label, to_color) = recipient(p, model, &text);
-    let project = model.focus.clone().filter(|_| member.is_some_and(Model::is_pm));
+    let project = pm_about(model).filter(|_| member.is_some_and(Model::is_pm));
     let anchors = composer.anchors.clone();
-    let open = |kind: MenuKind| composer.menu.as_ref().is_some_and(|m| m.kind.trigger() == kind);
+    let open = |kind: MenuKind| composer.menu.as_ref().is_some_and(|m| m.kind.trigger() == kind) || composer.picker.as_ref().is_some_and(|o| o.from == kind);
 
     // "+" wears a hairline, as Claude's does: its edge is where the text above starts.
     let plus_open = open(MenuKind::Attach);
@@ -1746,7 +2167,7 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let mic = composer.speech.read(cx).is_available(cx).then(|| {
         let label = if listening { t!("composer.tip_mic_stop") } else { t!("composer.tip_mic") };
         let b = tip(
-            button("mic", label, |this, _, cx| this.toggle_dictation(cx), cx)
+            button("mic", label, |this, window, cx| this.toggle_dictation(window, cx), cx)
                 .size(px(CONTROL))
                 .flex_none()
                 .flex()
@@ -1872,11 +2293,21 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     if mic.is_some() {
         wants.push((Slot::Fixed, CONTROL));
     }
+    // "All by words" on: said where the person types, always.
+    let words = super::words::badge(shell, cx);
+    if let Some(width) = super::words::badge_width(shell) {
+        wants.push((Slot::Fixed, width));
+    }
     let to_text = match &project {
         Some(project) => format!("{to_label} · {project}"),
         None => to_label.clone(),
     };
-    wants.push((Slot::Fixed, pill_width(&to_text)));
+    // In a conversation with the PM it goes to the PM, said above: no picker —
+    // unless the line names someone else, or a command.
+    let show_to = shows_recipient(model, &text);
+    if show_to {
+        wants.push((Slot::Fixed, pill_width(&to_text)));
+    }
     if member.is_some() {
         wants.push((Slot::Mode, pill_width(label::mode(crate::i18n::lang(), model.mode))));
     }
@@ -1910,7 +2341,7 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
 
     let plus = plus.into_any_element();
     let mic = mic.map(IntoElement::into_any_element);
-    let to = to.into_any_element();
+    let to = show_to.then(|| to.into_any_element());
     let mode_pill = mode_pill.map(IntoElement::into_any_element);
     let ring = ring.map(IntoElement::into_any_element);
     let model_pill = model_pill.map(IntoElement::into_any_element);
@@ -1926,7 +2357,8 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
             .items_center()
             .child(plus)
             .children(mic)
-            .child(h_flex().flex_1().min_w_0().overflow_hidden().gap_1().items_center().child(to).children(mode_pill.filter(|_| keep(Slot::Mode))))
+            .children(words)
+            .child(h_flex().flex_1().min_w_0().overflow_hidden().gap_1().items_center().children(to).children(mode_pill.filter(|_| keep(Slot::Mode))))
             .child(
                 h_flex()
                     .flex_none()
@@ -1969,7 +2401,7 @@ fn fit(width: f32, wants: &[(Slot, f32)]) -> Vec<Slot> {
 }
 
 /// About how wide `text` is at 12–13 points: Hangul and CJK wider than Latin.
-fn text_width(text: &str) -> f32 {
+pub(crate) fn text_width(text: &str) -> f32 {
     text.chars().map(|c| if c.is_ascii() { 7. } else { 13. }).sum()
 }
 
@@ -2014,8 +2446,8 @@ fn context_ring(p: Palette, used: u8) -> impl IntoElement {
 /// Who the line goes to, as the bar shows it: always someone, never a guess.
 fn recipient(p: Palette, model: &Model, text: &str) -> (String, Rgba) {
     let name_of = |m: &crate::state::Member| {
-        let (mark, hue) = look(&m.role, &m.name);
-        (format!("{mark} {}", m.name), p.member(hue))
+        let (_, hue) = look(&m.role, &m.name);
+        (m.name.clone(), p.member(hue))
     };
     if text.starts_with('/') {
         return (t!("composer.command").into(), p.accent);
@@ -2094,7 +2526,7 @@ fn remove_button(p: Palette, id: u64, name: &str, cx: &mut Context<Shell>) -> St
         .bg(p.popover())
         .border_1()
         .border_color(p.hair)
-        .hover(move |s| s.bg(p.wash))
+        .hover(move |s| s.bg(p.popover_hover()))
         .child(icon(Icon::X, 12., p.text2));
     tip(b, p, t!("composer.tip_remove"), None)
 }
@@ -2109,6 +2541,7 @@ fn chip_detail(item: &attach::Item) -> String {
         Stage::Sending(share) => t!("composer.sending", percent = (share * 100.).round() as u32),
         // The chip names the file already.
         Stage::Failed(why) => why.strip_prefix(&format!("{} — ", item.name)).unwrap_or(why).to_owned(),
+        Stage::Ready(_) if item.writing => t!("composer.writing_down").into(),
         Stage::Ready(_) => {
             let size = attach::size_label(item.size);
             let m = &item.meta;
@@ -2172,7 +2605,8 @@ fn chip(shell: &Shell, item: &attach::Item, n: usize, cx: &mut Context<Shell>) -
     // A picture: its thumbnail, 72 points, with its number.
     if item.kind == Kind::Image && !failed {
         let face = match &item.thumb {
-            Some(thumb) => img(thumb.clone()).size_full().object_fit(ObjectFit::Cover).into_any_element(),
+            // Rounded itself, inside the border: a parent's overflow clips square, not to its corners.
+            Some(thumb) => img(thumb.clone()).size_full().object_fit(ObjectFit::Cover).rounded(px(R_LG - 1.)).into_any_element(),
             None => div().size_full().flex().items_center().justify_center().text_size(px(11.)).text_color(p.muted).child(t!("composer.preparing")).into_any_element(),
         };
         let number = shell.composer.strip.picture_number(id).unwrap_or(n + 1);
@@ -2213,8 +2647,8 @@ fn chip(shell: &Shell, item: &attach::Item, n: usize, cx: &mut Context<Shell>) -
             .rounded(px(R_SM))
             .overflow_hidden()
             .bg(p.wash)
-            .child(img(thumb.clone()).size_full().object_fit(ObjectFit::Cover))
-            .when(item.kind == Kind::Video, |d| d.child(div().absolute().inset_0().flex().items_center().justify_center().text_size(px(12.)).text_color(rgb(0xFFFFFF)).child("▶")))
+            .child(img(thumb.clone()).size_full().object_fit(ObjectFit::Cover).rounded(px(R_SM)))
+            .when(item.kind == Kind::Video, |d| d.child(div().absolute().inset_0().flex().items_center().justify_center().child(icon(Icon::Play, 12., rgb(0xFFFFFF)))))
             .into_any_element(),
         _ => div()
             .size(px(36.))
@@ -2292,7 +2726,7 @@ pub fn drop_overlay(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoE
             .gap_2()
             .max_w(px(520.))
             .text_size(px(SMALL))
-            .child(div().flex_none().text_color(p.danger()).child("✕"))
+            .child(icon(Icon::X, 12., p.danger()))
             .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(p.text2).child(if why.contains(name.as_str()) { why.clone() } else { format!("{name} — {why}") }))
     });
     Some(
@@ -2343,7 +2777,7 @@ pub fn drop_overlay(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoE
     )
 }
 
-/// `사진 2`, `PDF 1`, …
+/// `Photo 2`, `PDF 1`, …
 fn kind_word(kind: Kind, n: usize) -> String {
     let word = match kind {
         Kind::Image => t!("composer.kind_image"),
@@ -2358,7 +2792,7 @@ fn kind_word(kind: Kind, n: usize) -> String {
 }
 
 /// An attachment shown big over the window (a click on its chip): a picture
-/// whole, a video's frames with what it is and "QuickTime에서 열기", a PDF's
+/// whole, a video's frames with what it is and "Open in QuickTime", a PDF's
 /// first page. ←/→ go through the others, Esc closes.
 pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
     let id = shell.composer.lightbox?;
@@ -2373,6 +2807,8 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoEleme
     // What to show: the file itself on this Mac (a picture, a video's sheet), else the thumbnail.
     let sheet = ready.as_ref().and_then(|r| r.tag.split(" · ").find_map(|f| f.strip_prefix("sheet: ")).map(|s| PathBuf::from(s.trim_end_matches(']'))));
     let shown: Option<ImageSource> = match (item.kind, local, &ready) {
+        // The picture whole, on this Mac or not: a paste's kept copy, a file where it is.
+        (Kind::Image, _, _) if item.whole.as_ref().is_some_and(|p| p.is_file()) => item.whole.clone().map(Into::into),
         (Kind::Image, true, Some(r)) => Some(PathBuf::from(&r.path).into()),
         (Kind::Video, true, Some(_)) => sheet.map(Into::into),
         (Kind::Pdf, _, _) => shell.composer.page.as_ref().filter(|(at, _)| *at == id).map(|(_, page)| page.clone().into()),
@@ -2416,7 +2852,8 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoEleme
                     .justify_center()
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .child(match shown {
-                        Some(source) => img(source).max_w_full().max_h_full().object_fit(ObjectFit::Contain).rounded(px(8.)).into_any_element(),
+                        // As big as the window lets it be, its shape kept.
+                        Some(source) => img(source).size_full().object_fit(ObjectFit::Contain).rounded(px(8.)).into_any_element(),
                         None => div().size(px(160.)).rounded(px(R_XL)).bg(rgba(0xFFFFFF14)).flex().items_center().justify_center().text_size(px(28.)).font_weight(FontWeight::BOLD).text_color(rgb(0xFFFFFF)).child(attach::badge(&item.name, item.kind)).into_any_element(),
                     }),
                 ("lightbox-shown", id),
@@ -2463,9 +2900,139 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoEleme
 }
 
 
+/// An answer's attachments, one small chip each — its picture or kind, its
+/// name, how far it got or why it failed, and ✕ — and "Attach" to add one.
+pub fn answer_attachments(p: Palette, to: AttachTo, key: u64, items: Vec<attach::Item>, handle: WeakEntity<Shell>) -> AnyElement {
+    let chips = items.into_iter().map(|item| {
+        let id = item.id;
+        let failed = item.failed().map(str::to_owned);
+        let state = match item.stage {
+            Stage::Preparing => Some(t!("composer.preparing").to_owned()),
+            Stage::Sending(s) => Some(format!("{}%", (s * 100.).round() as u32)),
+            _ => None,
+        };
+        let face = match (&item.thumb, item.kind) {
+            (Some(thumb), Kind::Image) => img(thumb.clone()).size(px(18.)).rounded(px(4.)).object_fit(ObjectFit::Cover).into_any_element(),
+            _ => icon(if item.kind == Kind::Audio { Icon::Mic } else { Icon::File }, ICON_SM, p.muted).into_any_element(),
+        };
+        let off = handle.clone();
+        h_flex()
+            .id(SharedString::from(format!("answer-chip-{key}-{id}")))
+            .h(px(26.))
+            .max_w(px(260.))
+            .pl(px(5.))
+            .pr_1()
+            .gap(px(6.))
+            .items_center()
+            .rounded(px(R_SM + 2.))
+            .bg(p.wash)
+            .border_1()
+            .border_color(if failed.is_some() { p.danger() } else { p.hair })
+            .text_size(px(12.))
+            .child(face)
+            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(p.text).child(item.name.clone()))
+            .children(state.map(|s| div().flex_none().text_color(p.muted).child(s)))
+            .children(failed.map(|why| div().flex_none().max_w(px(120.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(p.danger()).child(why)))
+            .child(
+                crate::ui::x_box(SharedString::from(format!("answer-unattach-{key}-{id}")), p.muted, t!("composer.tip_remove"))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(p.hair))
+                    .on_click(move |_, _, cx| {
+                        off.update(cx, |this, cx| this.unattach_from(to, id, cx)).ok();
+                    }),
+            )
+    });
+    let pick = handle.clone();
+    h_flex()
+        .w_full()
+        .flex_wrap()
+        .gap_1p5()
+        .items_center()
+        .children(chips)
+        .child(
+            h_flex()
+                .id(SharedString::from(format!("answer-attach-{key}")))
+                .h(px(26.))
+                .px_2()
+                .gap_1()
+                .items_center()
+                .rounded(px(R_SM + 2.))
+                .cursor_pointer()
+                .text_size(px(12.))
+                .text_color(p.muted)
+                .hover(move |s| s.text_color(p.text).bg(p.wash))
+                .child(icon(Icon::Paperclip, ICON_SM, p.muted))
+                .child(t!("composer.attach_answer"))
+                .on_click(move |_, _, cx| {
+                    pick.update(cx, |this, cx| this.pick_into(to, cx)).ok();
+                }),
+        )
+        .into_any_element()
+}
+
+/// An answer's box, taking pasted and dropped files as its attachments.
+pub fn answer_box(field: &Entity<TextareaState>, to: AttachTo, handle: WeakEntity<Shell>) -> Textarea {
+    Textarea::new(field).appearance(false).bordered(false).on_paste(move |item, _, cx| handle.update(cx, |shell, cx| shell.paste_into(to, item, cx)).unwrap_or(false))
+}
+
+/// What a box takes when files are dropped on it: attached to its answer, and no further.
+pub fn on_answer_drop(to: AttachTo, handle: WeakEntity<Shell>) -> impl Fn(&ExternalPaths, &mut Window, &mut App) + 'static {
+    move |paths, window, cx| {
+        handle.update(cx, |shell, cx| shell.drop_into(to, paths, window, cx)).ok();
+        cx.stop_propagation();
+    }
+}
+
+/// How soon a second Esc must follow the first to stop a turn.
+const ESC_AGAIN: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Whether this Esc stops `session`'s turn: the second press in its
+/// conversation within [`ESC_AGAIN`] of the first.
+fn stop_on_escape(armed: Option<(SessionId, std::time::Instant)>, session: SessionId, now: std::time::Instant) -> bool {
+    armed.is_some_and(|(at, when)| at == session && now.duration_since(when) <= ESC_AGAIN)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Act, Engine, Menu, MenuKind, Row, efforts, short_model, takes};
+
+    #[test]
+    fn a_stray_esc_stops_nothing_and_a_second_one_soon_after_stops_the_turn() {
+        let t0 = std::time::Instant::now();
+        assert!(!super::stop_on_escape(None, 7, t0), "the first press only says how");
+        assert!(super::stop_on_escape(Some((7, t0)), 7, t0 + std::time::Duration::from_millis(900)));
+        assert!(!super::stop_on_escape(Some((7, t0)), 7, t0 + std::time::Duration::from_millis(2000)), "too late: it arms again");
+        assert!(!super::stop_on_escape(Some((7, t0)), 8, t0 + std::time::Duration::from_millis(300)), "another conversation's");
+    }
+
+    use super::{Act, Menu, MenuKind, Row, pm_about, short_model, shows_recipient, suggestion_hint, takes, takes_suggestion};
+
+    #[test]
+    fn tab_takes_the_greyed_suggestion_as_the_arrow_does_and_the_box_says_so() {
+        assert!(takes_suggestion("tab", "", true, false, false), "Tab takes it");
+        assert!(takes_suggestion("right", "", true, false, false), "→ still does");
+        assert!(!takes_suggestion("tab", "", false, false, false), "no suggestion: Tab moves on as everywhere");
+        assert!(!takes_suggestion("tab", "fix the", true, false, false), "something written: it isn't taken over");
+        assert!(!takes_suggestion("tab", "", true, true, false), "a list of choices open: Tab takes the choice");
+        assert!(!takes_suggestion("tab", "", true, false, true), "cards over the box: Tab reaches them");
+        assert!(takes_suggestion("right", "", true, false, true));
+        assert!(suggestion_hint("Run the tests").ends_with("Tab"), "the box shows the key that takes it");
+    }
+    use crate::state::Model;
+
+    #[test]
+    fn in_a_conversation_with_the_pm_the_line_is_about_its_project_and_the_picker_stands_aside() {
+        let mut model = Model::new("acme");
+        model.focus = Some("app".into());
+        assert_eq!(pm_about(&model).as_deref(), Some("app"), "no conversation: the project in focus");
+        assert!(shows_recipient(&model, "hi"), "no one on screen to speak to yet");
+        model.draft_conversation(Some("web".into()));
+        assert_eq!(pm_about(&model).as_deref(), Some("web"), "the conversation's own, not the focus");
+        assert!(!shows_recipient(&model, "hi"), "the header says who it is with");
+        assert!(shows_recipient(&model, "@backend look"), "someone else, named");
+        assert!(shows_recipient(&model, "/project app"), "a command");
+        model.draft_conversation(None);
+        assert_eq!(pm_about(&model), None, "outside every project, whatever is in focus");
+    }
 
     #[test]
     fn model_names_read_short() {
@@ -2484,9 +3051,11 @@ mod tests {
     }
 
     #[test]
-    fn effort_choices_follow_the_engine() {
-        assert_eq!(efforts(Some(Engine::Claude)), ["low", "medium", "high", "xhigh", "max"]);
-        assert_eq!(efforts(Some(Engine::Codex))[0], "minimal");
+    fn effort_choices_follow_the_engine_and_its_model() {
+        let efforts = |engine, model| crate::models::efforts(Some(engine), model, &[]);
+        assert_eq!(efforts(equipe_core::protocol::Engine::Claude, None), ["low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(efforts(equipe_core::protocol::Engine::Claude, Some("claude-sonnet-4-6")), ["low", "medium", "high", "max"]);
+        assert_eq!(efforts(equipe_core::protocol::Engine::Codex, None)[0], "minimal");
     }
 
     #[test]

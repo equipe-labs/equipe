@@ -1,6 +1,10 @@
 # CHANGELOG
 
-한 줄에 하나: 버전 · 날짜 · 무엇을 · 왜 · 영향 플랫폼. 버전 규칙은 `README.md` 거버넌스.
+One line each: version · date · what · why · platforms affected. Version rules are in `README.md`'s governance.
 
-- **1.0.0 (2026-10-19)** — 저장소 `design/`로 옮김(T-152): T-145 원천·스크립트 이관, 화면이 읽는 `tokens.json` 생성 추가(라이트·다크), T-144 가이드라인을 `guidelines.md`로, 로고 SVG(`assets/logo/`). 값은 그대로. 영향: 없음(아직 어느 화면도 생성 코드를 쓰지 않음).
-- **1.0.0 (2026-10-16)** — 첫 버전(T-145). 3층 토큰, 라이트·다크, 모션·동작 줄이기, 4개 플랫폼 생성기, 대비 116조합, 컴포넌트 9종 시트. 근거: T-144 가이드라인 v1 + T-145 감사.
+- **1.1.0 (2026-11-09)** — Document focus view contract, selected return-first header prototype and default/focus UI map states (T-617). No new tokens. Why: long Markdown and Mermaid output was confined to the narrow right panel and did not preserve an explicit return target. Affects: desktop design handoff; implementation follows separately.
+- **1.1.0 (2026-11-07)** — New `color.err-fill` (light `#EEE0DE` · dark `#352728`) with `err-fill-hover`·`err-fill-pressed`, primitives `red.100/150/200/850/875/900`, and `button.danger-soft-*` (T-492). Why: the iOS Deny button's translucent red fill over the glass bar dropped to 4.27:1 when content scrolled behind it (T-491); an opaque fill holds 5.12 / 5.24:1 whatever is behind. 6 new contrast pairs, all AA. Affects: iOS (T-484 Deny), then Android·desktop·site wherever a soft destructive button appears.
+- **1.0.0 (2026-11-05)** — Count rule (`components.md` §5): one filled `wait` pill for the total, the breakdown as `muted` numbers + status-colour dots. No new tokens. Why: when nearly every project was waiting, the sidebar turned all orange. Affects: the equipe desktop sidebar.
+- **1.0.0 (2026-11-03)** — Pictures in the conversation (T-336): in `visuals/`, a Mermaid theme (card style A, light·dark, the renderer's `Theme` values·generated Rust) and three HTML cards (status board·comparison table·number summary) + a contrast table. No new tokens. Affects: the equipe desktop (T-338), daemon rendering (T-337), mobile (T-339).
+- **1.0.0 (2026-10-19)** — Moved into the repository's `design/` (T-152): T-145's sources·scripts carried over, generating the `tokens.json` the screen reads added (light·dark), the T-144 guidelines as `guidelines.md`, logo SVGs (`assets/logo/`). Values unchanged. Affects: nothing (no screen uses the generated code yet).
+- **1.0.0 (2026-10-16)** — First version (T-145). Three-layer tokens, light·dark, motion·reduce motion, generators for 4 platforms, 116 contrast pairs, sheets for 9 components. Grounds: T-144 guidelines v1 + the T-145 audit.

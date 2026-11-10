@@ -2,4 +2,4 @@
 "CFBundleDisplayName" = "equipe";
 "CFBundleName" = "equipe";
 "NSMicrophoneUsageDescription" = "メッセージを音声で入力するときにマイクを使います。音声がこの Mac の外に出ることはありません。";
-"NSSpeechRecognitionUsageDescription" = "話した内容をこの Mac 上で文字にして、入力欄に入れます。";
+"NSSpeechRecognitionUsageDescription" = "話した内容や添付した録音を、この Mac 上で文字にします。";

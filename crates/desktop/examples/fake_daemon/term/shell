@@ -1,0 +1,6 @@
+#!/bin/sh
+# The terminal panel's fixture shell, for snapshots: zsh with this folder's
+# .zshrc and none of the person's own. The snapshot runs the app with
+#   SHELL=$PWD/crates/desktop/examples/fake_daemon/term/shell
+# and the script's `term` step opens it.
+ZDOTDIR=$(cd "$(dirname "$0")" && pwd) exec /bin/zsh -i

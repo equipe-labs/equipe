@@ -294,6 +294,12 @@ impl A11y {
         update
     }
 
+    /// equipe: turn on as a screen reader would, for a tool that reads the tree
+    /// without one listening.
+    pub(crate) fn force_active(&self) {
+        self.active_flag.store(true, Ordering::SeqCst);
+    }
+
     pub(crate) fn debug_tree_json(&self) -> Option<String> {
         self.debug.to_json()
     }

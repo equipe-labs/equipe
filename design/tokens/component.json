@@ -94,6 +94,22 @@
       "$type": "color",
       "$value": "{color.on-err}"
     },
+    "danger-soft-bg": {
+      "$type": "color",
+      "$value": "{color.err-fill}"
+    },
+    "danger-soft-bg-hover": {
+      "$type": "color",
+      "$value": "{color.err-fill-hover}"
+    },
+    "danger-soft-bg-pressed": {
+      "$type": "color",
+      "$value": "{color.err-fill-pressed}"
+    },
+    "danger-soft-fg": {
+      "$type": "color",
+      "$value": "{color.err}"
+    },
     "hover-overlay": {
       "$type": "color",
       "$value": "{color.hover}"

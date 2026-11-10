@@ -12,7 +12,7 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::board::{Flow, btn, dot, hue_of, kbd, live_activity, member_color};
+use super::board::{Flow, btn, kbd, live_activity, member_color};
 use super::icons;
 use crate::board::{self as rules, MergeWay, Tab};
 use super::yourturn::Place;
@@ -36,8 +36,10 @@ pub fn panel(shell: &Shell, need: Need, cx: &mut Context<Shell>) -> AnyElement {
             .into_any_element(),
         Need::Questions(id) => super::decide::peek(shell, id, cx),
         Need::Team(id) => super::team::peek(shell, id, cx),
+        Need::Routine(id) => super::routine::peek(shell, id, cx),
         Need::Accept(id) => super::accept::peek(shell, id, cx),
         Need::Browser(page) => super::browser::need_peek(shell, page, cx),
+        Need::Secret(id) => super::secrets::peek(shell, id, cx),
         Need::Ticket(id) => {
             let Some(t) = shell.model.tickets.iter().find(|t| t.id == id).cloned() else { return div().into_any_element() };
             let width = shell.board.peek_width;
@@ -114,7 +116,7 @@ pub fn page(shell: &Shell, t: &Ticket, tab: Tab, cx: &mut Context<Shell>) -> imp
                 .items_center()
                 .border_b_1()
                 .border_color(p.hair)
-                .child(btn(p, "page-back", "←", Some("Esc"), false, true).on_click(cx.listener(|this, _, _, cx| {
+                .child(super::board::back_btn(p, "page-back").on_click(cx.listener(|this, _, _, cx| {
                     this.board.view.page = None;
                     cx.notify();
                 })))
@@ -223,6 +225,43 @@ fn kicker(p: Palette, text: impl Into<SharedString>) -> Div {
     div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(p.muted).child(text.into())
 }
 
+/// Nemotron's review of the hand-in (Nebius Token Factory), as plain text:
+/// who read it, the verdict, the summary, risks by file and line, the tests
+/// missing. Advice for the person; it decides nothing.
+fn code_review(p: Palette, review: &equipe_core::protocol::review::CodeReview) -> AnyElement {
+    use equipe_core::protocol::review::ReviewVerdict;
+    let (word, tone) = match review.verdict {
+        ReviewVerdict::LooksGood => (t!("peek.review_looks_good"), p.accent),
+        ReviewVerdict::NeedsAttention => (t!("peek.review_needs_attention"), p.amber),
+        ReviewVerdict::Risky => (t!("peek.review_risky"), p.red),
+    };
+    let line = |text: String| h_flex().gap_2().items_start().text_size(px(13.)).line_height(px(20.)).text_color(p.text2).child(div().flex_none().text_color(p.muted).child("·")).child(div().flex_1().min_w_0().child(text));
+    let chip = div().flex_none().px_2().rounded(px(999.)).border_1().border_color(tone).text_color(tone).text_size(px(11.)).line_height(px(18.)).font_weight(FontWeight::SEMIBOLD).child(word);
+    let mut block = v_flex()
+        .gap_1()
+        .child(kicker(p, t!("peek.review_kicker", model = review.model)))
+        .child(h_flex().gap_2().items_start().child(chip).child(div().flex_1().min_w_0().text_size(px(13.)).line_height(px(20.)).text_color(p.text).child(review.summary.clone())));
+    if !review.risks.is_empty() {
+        block = block.child(div().pt_1().text_size(px(11.)).text_color(p.muted).child(t!("peek.review_risks")));
+        block = block.children(review.risks.iter().map(|r| {
+            let place = match (r.file.as_str(), r.line) {
+                ("", _) => String::new(),
+                (file, Some(n)) => format!("{file}:{n} — "),
+                (file, None) => format!("{file} — "),
+            };
+            line(format!("{place}{}", r.why))
+        }));
+    }
+    if !review.missing_tests.is_empty() {
+        block = block.child(div().pt_1().text_size(px(11.)).text_color(p.muted).child(t!("peek.review_missing_tests")));
+        block = block.children(review.missing_tests.iter().map(|m| line(m.clone())));
+    }
+    if review.truncated {
+        block = block.child(div().text_size(px(11.)).text_color(p.muted).child(t!("peek.review_truncated")));
+    }
+    block.into_any_element()
+}
+
 /// Icon, number, status; the title; where, who, the branch, how big, how long.
 fn head(shell: &Shell, t: &Ticket, wide: bool, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
@@ -231,12 +270,12 @@ fn head(shell: &Shell, t: &Ticket, wide: bool, cx: &mut Context<Shell>) -> AnyEl
     let who = rules::who(t).map(str::to_owned);
     let mut facts: Vec<AnyElement> = Vec::new();
     if let Some(project) = model.ticket_project_name(t) {
-        facts.push(h_flex().gap(px(6.)).items_center().child(dot(hue_of(p, model, t).unwrap_or(p.muted), 6.)).child(project).into_any_element());
+        facts.push(h_flex().gap(px(6.)).items_center().child(crate::theme::project_mark(p, 11.)).child(project).into_any_element());
     }
     if let Some(w) = &who {
         let member = model.members.iter().find(|m| m.name == *w || m.role == *w);
-        let (mark, _) = member.map_or_else(|| look(w, w), |m| look(&m.role, &m.name));
-        facts.push(h_flex().gap_1().text_color(member_color(p, model, w)).child(mark).child(w.clone()).into_any_element());
+        let role = member.map_or(w.as_str(), |m| m.role.as_str());
+        facts.push(h_flex().gap_1().items_center().text_color(member_color(p, model, w)).child(crate::theme::avatar(p, role, w, 15.)).child(w.clone()).into_any_element());
     }
     if let Some(branch) = t.branch.clone().filter(|_| !t.kind.in_home()) {
         facts.push(div().font_family(MONO).text_size(px(12.)).child(format!("{branch} → main")).into_any_element());
@@ -323,6 +362,9 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
             if let Some(note) = t.note.as_deref().filter(|n| !n.trim().is_empty()) {
                 out.push(v_flex().gap_1().child(kicker(p, t!("peek.hand_in"))).child(md("peek-note", note)).into_any_element());
             }
+            if let Some(review) = model.reviews.get(&t.id) {
+                out.push(code_review(p, review));
+            }
             out.extend(super::decide::for_ticket(shell, t.id, cx));
             // On the page the description above carries its checklist already.
             let checks = if wide { Vec::new() } else { rules::checklist(&t.body) };
@@ -339,9 +381,14 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
             }
             out.extend(changes(shell, t, wide, cx));
         }
-        TicketStatus::Proposed => {
+        TicketStatus::Proposed | TicketStatus::Idea => {
+            // An idea the PM brings back: why its time has come, then the idea.
+            if let Some(why) = t.why_now() {
+                out.push(v_flex().gap_1().child(kicker(p, t!("peek.why_now"))).child(md("peek-why-now", why)).into_any_element());
+            }
+            let idea = t.status == TicketStatus::Idea || t.why_now().is_some();
             if !t.body.trim().is_empty() && !wide {
-                out.push(v_flex().gap_1().child(kicker(p, t!("peek.why"))).child(md("peek-body", &t.body)).into_any_element());
+                out.push(v_flex().gap_1().child(kicker(p, if idea { t!("peek.the_idea") } else { t!("peek.why") })).child(md("peek-body", &t.body)).into_any_element());
             }
             let facts = [
                 (t!("peek.owner"), t.owner.clone().unwrap_or_else(|| "—".into())),
@@ -464,6 +511,34 @@ fn links(shell: &Shell, t: &Ticket, cx: &mut Context<Shell>) -> Vec<AnyElement> 
     if !unblocks.is_empty() {
         out.push(v_flex().child(kicker(p, t!("peek.unblocks"))).children(unblocks).into_any_element());
     }
+    // The brief it came from, the plan it was cut from: opened beside, on a screen that shows them.
+    let came_from: Vec<AnyElement> = crate::docs::docs_of_ticket(&shell.docs, t.id)
+        .into_iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let path = std::path::PathBuf::from(&d.path);
+            h_flex()
+                .id(("from-doc", i))
+                .h(px(26.))
+                .px_1()
+                .gap_2()
+                .items_center()
+                .rounded(px(6.))
+                .text_size(px(13.))
+                .cursor_pointer()
+                .hover(move |s| s.bg(p.wash))
+                .aria_label(d.title.clone())
+                .on_click(cx.listener(move |this, _, _, cx| this.open_doc_of_ticket(path.clone(), cx)))
+                .child(crate::icons::icon(crate::icons::Icon::FileText, 12., p.muted))
+                .child(div().w(px(40.)).flex_none().text_size(px(12.)).text_color(p.muted).child(crate::board::doc_kind(d.kind)))
+                .child(div().flex_1().min_w_0().truncate().text_color(p.text2).child(d.title.clone()))
+                .child(div().flex_none().text_size(px(12.)).text_color(p.muted).child(super::docs::where_of(d.project.as_deref())))
+                .into_any_element()
+        })
+        .collect();
+    if !came_from.is_empty() {
+        out.push(v_flex().child(kicker(p, t!("peek.from_docs"))).children(came_from).into_any_element());
+    }
     out
 }
 
@@ -484,7 +559,7 @@ fn activity(shell: &Shell, id: TicketId, turns: usize) -> AnyElement {
         let w = rules::who(t)?.to_owned();
         Some((w.clone(), shell.model.members.iter().find(|m| m.name == w).map_or(w, |m| m.role.clone())))
     });
-    let (mark, hue) = who.as_ref().map_or(("·", 0), |(n, r)| look(r, n));
+    let hue = who.as_ref().map_or(0, |(n, r)| look(r, n).1);
     let short = |s: &str| {
         let s = s.trim();
         if s.chars().count() > 280 { format!("{}…", s.chars().take(280).collect::<String>()) } else { s.to_owned() }
@@ -494,13 +569,21 @@ fn activity(shell: &Shell, id: TicketId, turns: usize) -> AnyElement {
         .child(kicker(p, t!("peek.last_words")))
         .when(blocks.is_empty(), |c| c.child(div().text_size(px(12.)).text_color(p.muted).child(t!("peek.no_words"))))
         .children(blocks[start..].iter().map(|b| {
-            let (lead, color, text) = match b {
-                Block::User(text) => ("›".to_owned(), p.accent, short(text)),
-                Block::Reply { text, .. } => (mark.to_owned(), p.member(hue), short(text)),
-                Block::Error { message, .. } => ("✗".to_owned(), p.red, short(message)),
-                _ => (String::new(), p.muted, String::new()),
+            let glyph = |g: &str, color: Rgba| div().w(px(14.)).flex_none().text_color(color).child(g.to_owned()).into_any_element();
+            let (lead, text) = match b {
+                Block::User(text) => (glyph("›", p.accent), short(text)),
+                // The member's avatar, as everywhere else it speaks.
+                Block::Reply { text, .. } => (
+                    match &who {
+                        Some((n, r)) => div().pt(px(3.)).child(crate::theme::avatar(p, r, n, 14.)).into_any_element(),
+                        None => glyph("·", p.member(hue)),
+                    },
+                    short(text),
+                ),
+                Block::Error { message, .. } => (glyph("✗", p.red), short(message)),
+                _ => (glyph("", p.muted), String::new()),
             };
-            h_flex().gap_2().items_start().text_size(px(13.)).line_height(px(20.)).child(div().w(px(14.)).flex_none().text_color(color).child(lead)).child(div().flex_1().min_w_0().text_color(p.text2).child(text))
+            h_flex().gap_2().items_start().text_size(px(13.)).line_height(px(20.)).child(lead).child(div().flex_1().min_w_0().text_color(p.text2).child(text))
         }))
         .into_any_element()
 }
@@ -556,6 +639,15 @@ fn foot(shell: &Shell, t: &Ticket, width: f32, cx: &mut Context<Shell>) -> AnyEl
         TicketStatus::Waiting => {
             add(btn(p, "p-yes", t!("peek.did_it").into(), Some("A"), true, can).on_click(cx.listener(|this, _, _, cx| this.board_yes(cx))), true);
             add(btn(p, "p-reply", t!("peek.memo_and_go").into(), Some("R"), false, can).on_click(cx.listener(|this, _, w, cx| this.board_open_reply(w, cx))), false);
+        }
+        TicketStatus::Idea => {
+            add(btn(p, "p-yes", t!("peek.start_idea").into(), Some("A"), true, can).on_click(cx.listener(|this, _, _, cx| this.board_yes(cx))), true);
+            add(btn(p, "p-no", t!("peek.drop").into(), Some("N"), false, can).on_click(cx.listener(|this, _, _, cx| this.board_no(cx))), false);
+        }
+        TicketStatus::Proposed if t.why_now().is_some() => {
+            add(btn(p, "p-yes", t!("peek.start_idea").into(), Some("A"), true, can).on_click(cx.listener(|this, _, _, cx| this.board_yes(cx))), true);
+            add(btn(p, "p-later", t!("peek.keep_idea").into(), None, false, can).on_click(cx.listener(move |this, _, _, cx| this.keep_as_idea(id, cx))), false);
+            add(btn(p, "p-no", t!("peek.drop").into(), Some("N"), false, can).on_click(cx.listener(|this, _, _, cx| this.board_no(cx))), false);
         }
         TicketStatus::Proposed => {
             add(btn(p, "p-yes", t!("peek.take_proposal").into(), Some("A"), true, can).on_click(cx.listener(|this, _, _, cx| this.board_yes(cx))), true);
@@ -666,7 +758,7 @@ fn question_card(shell: &Shell, flow: Flow, t: &Ticket, project: &str, cx: &mut 
                         this.board.flow = Some(Flow::Way { ticket: id, remember: !remember });
                         cx.notify();
                     }))
-                    .child(div().size(px(14.)).flex().items_center().justify_center().rounded(px(3.)).border_1().border_color(p.accent).when(remember, |d| d.bg(p.accent).text_color(p.on_accent).text_size(px(10.)).child("✓")))
+                    .child(div().size(px(14.)).flex().items_center().justify_center().rounded(px(3.)).border_1().border_color(p.accent).when(remember, |d| d.bg(p.accent).child(crate::icons::icon(crate::icons::Icon::Check, 10., p.on_accent))))
                     .child(t!("peek.remember"))
                     .child(kbd(p, "Space")),
             )

@@ -27,11 +27,8 @@ use objc2_user_notifications::{
 };
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::{ACTION_OPEN, ACTION_RELAUNCH, CATEGORY_OPEN, CATEGORY_UPDATE, Go, Permission, Toast};
+use super::{ACTION_OPEN, ACTION_RELAUNCH, CATEGORY_OPEN, CATEGORY_UPDATE, Click, Permission, Toast};
 
-/// The window is in front of the person: a notice arriving now (a race with
-/// the window coming forward) isn't shown as a banner.
-static IN_SIGHT: AtomicBool = AtomicBool::new(true);
 /// Whether there is a centre: the app runs from its bundle.
 static CENTRE: OnceLock<bool> = OnceLock::new();
 /// Say each notice macOS took, and each click (`--notify-test`).
@@ -39,7 +36,7 @@ pub static VERBOSE: AtomicBool = AtomicBool::new(false);
 /// Makes each notice's identifier its own.
 static SENT: AtomicU64 = AtomicU64::new(0);
 /// Where clicks go, once the window follows them; until then, kept.
-static CLICKS: Mutex<(Option<UnboundedSender<Go>>, Vec<Go>)> = Mutex::new((None, Vec::new()));
+static CLICKS: Mutex<(Option<UnboundedSender<Click>>, Vec<Click>)> = Mutex::new((None, Vec::new()));
 
 define_class!(
     // SAFETY: NSObject has no subclassing requirements, and this has no Drop.
@@ -60,7 +57,7 @@ define_class!(
                 eprintln!("equipe: clicked {id} ({action})");
             }
             if let Some(go) = super::clicked(&id, &action) {
-                deliver(go);
+                deliver(Click { go, route: super::route_of(&id) });
             }
             done.call(());
         }
@@ -69,8 +66,12 @@ define_class!(
         /// only while it is out of sight (minimised, hidden, on another
         /// Space): show it then; in sight, the window says it already.
         #[unsafe(method(userNotificationCenter:willPresentNotification:withCompletionHandler:))]
-        fn will_present(&self, _centre: &UNUserNotificationCenter, _notification: &UNNotification, done: &block2::DynBlock<dyn Fn(UNNotificationPresentationOptions)>) {
-            let options = if IN_SIGHT.load(Ordering::Relaxed) { UNNotificationPresentationOptions::empty() } else { UNNotificationPresentationOptions::Banner | UNNotificationPresentationOptions::List | UNNotificationPresentationOptions::Sound };
+        fn will_present(&self, _centre: &UNUserNotificationCenter, notification: &UNNotification, done: &block2::DynBlock<dyn Fn(UNNotificationPresentationOptions)>) {
+            // A browser waiting for the person's hands is shown in sight too:
+            // the window posts it then only when that page isn't on screen.
+            // A squad's shows unless a window on that squad is the one in front.
+            let shown = super::shows_banner(&notification.request().identifier().to_string());
+            let options = if !shown { UNNotificationPresentationOptions::empty() } else { UNNotificationPresentationOptions::Banner | UNNotificationPresentationOptions::List | UNNotificationPresentationOptions::Sound };
             done.call((options,));
         }
     }
@@ -84,7 +85,7 @@ impl Delegate {
     }
 }
 
-fn deliver(go: Go) {
+fn deliver(go: Click) {
     let Ok(mut clicks) = CLICKS.lock() else { return };
     let sent = clicks.0.as_ref().is_some_and(|to| to.send(go).is_ok());
     if !sent {
@@ -92,16 +93,12 @@ fn deliver(go: Go) {
     }
 }
 
-pub fn follow_clicks(to: UnboundedSender<Go>) {
+pub fn follow_clicks(to: UnboundedSender<Click>) {
     let Ok(mut clicks) = CLICKS.lock() else { return };
     for go in std::mem::take(&mut clicks.1) {
         let _ = to.send(go);
     }
     clicks.0 = Some(to);
-}
-
-pub fn set_in_sight(in_sight: bool) {
-    IN_SIGHT.store(in_sight, Ordering::Relaxed);
 }
 
 /// The app's bundle identifier, when it runs from its bundle.
@@ -171,7 +168,7 @@ pub fn ask() {
     centre.requestAuthorizationWithOptions_completionHandler(UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound | UNAuthorizationOptions::Badge, &done);
 }
 
-pub fn send(toast: &Toast, sound: bool) {
+pub fn send(toast: &Toast, route: Option<u64>, sound: bool) {
     let Some(centre) = centre() else { return };
     // The buttons, in the language in use now.
     categories(&centre);
@@ -183,7 +180,7 @@ pub fn send(toast: &Toast, sound: bool) {
     if sound {
         content.setSound(Some(&UNNotificationSound::defaultSound()));
     }
-    let id = toast.request_id(SENT.fetch_add(1, Ordering::Relaxed) + now_ms());
+    let id = toast.routed_id(SENT.fetch_add(1, Ordering::Relaxed) + now_ms(), route);
     let request = UNNotificationRequest::requestWithIdentifier_content_trigger(&NSString::from_str(&id), &content, None);
     let done = RcBlock::new(move |error: *mut NSError| {
         // SAFETY: when not null, an NSError valid during the call.

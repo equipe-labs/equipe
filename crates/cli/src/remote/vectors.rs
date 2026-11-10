@@ -14,9 +14,10 @@ use std::path::{Path, PathBuf};
 use equipe_core::protocol::decide::{Answer, Choice, Question, QuestionSet};
 use equipe_core::protocol::rpc::{Hello, Message};
 use equipe_core::protocol::engines::{Move, Proposal, Switching, Why, Window};
+use equipe_core::protocol::metrics::{ErrorCode, FetchError, SourceKind, Summary, Tile};
 use equipe_core::protocol::team::{Change, TeamChange};
 use equipe_core::protocol::{
-    Access, Approval, Decision, Engine, EnginePlan, EngineState, EngineStatus, Entry, Event, Member, MemberRef, Mode, PlanUsage, PlanWindow, SessionInfo, SessionState, SignInStep, Snapshot, SubagentInfo, Ticket, TicketKind, TicketStatus, TurnOutcome, Usage, WorkInfo,
+    Access, Approval, CompactTrigger, CompactingInfo, Decision, Engine, EnginePlan, EngineState, EngineStatus, Entry, Event, Member, MemberRef, Mode, PlanUsage, PlanWindow, SessionInfo, SessionState, SignInStep, Snapshot, SubagentInfo, Ticket, TicketKind, TicketStatus, TurnOutcome, Usage, WorkInfo,
 };
 use serde_json::{Value, json};
 
@@ -671,6 +672,8 @@ fn questions() -> QuestionSet {
             },
         ],
         asked_at: NOW / 1000,
+        review: false,
+        retro: None,
     }
 }
 
@@ -682,7 +685,7 @@ const DRAFTS: &str = "/Users/you/.equipe/worktrees/photo-studio.home/t2-6ad338ba
 
 /// A visual choice: the designer's logos, each option with its picture.
 fn visual_questions() -> QuestionSet {
-    let choice = |label: &str, description: &str, images: &[&str]| Choice { label: label.into(), description: description.into(), images: images.iter().map(|i| (*i).to_owned()).collect() };
+    let choice = |label: &str, description: &str, images: &[&str]| Choice { label: label.into(), description: description.into(), images: images.iter().map(|i| (*i).to_owned()).collect(), ..Choice::default() };
     QuestionSet {
         id: 5_000_002,
         session: 4243,
@@ -696,6 +699,8 @@ fn visual_questions() -> QuestionSet {
             images: Vec::new(),
         }],
         asked_at: NOW / 1000,
+        review: false,
+        retro: None,
     }
 }
 
@@ -721,12 +726,15 @@ fn design_system(draft: bool) -> equipe_core::protocol::design::DesignSystem {
     DesignSystem {
         project: None,
         dir: dir.into(),
-        draft: draft.then(|| DraftOf { ticket: 144, title: "브랜드 가이드라인".into() }),
+        draft: draft.then(|| DraftOf { ticket: 144, title: "브랜드 가이드라인".into(), working: false }),
         modes: tokens.modes,
         tokens: tokens.tokens,
         problems: vec![],
         guidelines: Some("# 브랜드 가이드라인\n\n## 1. 로고\n\n점은 브랜드 파랑 `#3F6FF5`.\n".into()),
         assets: vec![Asset { path: format!("{dir}/assets/logo/mark.svg"), name: "assets/logo/mark.svg".into(), kind: AssetKind::Logo, size: 1_204 }],
+        components: vec![],
+        flows: None,
+        setup: vec![],
         stamp: if draft { 7_002 } else { 7_001 },
     }
 }
@@ -751,7 +759,38 @@ fn team_change() -> TeamChange {
     }
 }
 
+/// The PM proposes a weekly check-in, Mondays at 09:00.
+fn routine_proposal() -> equipe_core::protocol::routines::RoutineProposal {
+    use equipe_core::protocol::routines::{Routine, RoutineProposal, Schedule};
+    RoutineProposal {
+        id: 9_000_001,
+        routine: Routine {
+            id: 0,
+            title: "주간 점검".into(),
+            prompt: "지난주 요약과 다음 일 1~3개를 제안 티켓으로 올려 주세요.".into(),
+            when: Schedule::Weekly { weekday: 1, hour: 9, minute: 0 },
+            on: true,
+            last_run: None,
+            next_run: None,
+        },
+        reason: "3주째 월요일마다 요약을 부탁하셨어요".into(),
+        by: "pm".into(),
+        session: 1001,
+        proposed_at: NOW / 1000,
+    }
+}
+
 /// The person told the PM "T-38 수락할게": the PM puts it to them on a card.
+/// A decision in words waiting on the person, at `stage`.
+fn words_live(stage: equipe_core::protocol::by_words::Stage) -> equipe_core::protocol::by_words::Live {
+    use equipe_core::protocol::by_words::{Kind, Live, Stage, Tier, Via};
+    let (tier, kind, read_back) = match stage {
+        Stage::ReadBack => (Tier::High, Kind::Merge, "Merge T-38 into main, on this Mac"),
+        _ => (Tier::Low, Kind::AcceptTask, "Accept T-38"),
+    };
+    Live { id: 12_000_001, session: 1_000_001, stage, tier, kind, read_back: read_back.into(), items: vec!["T-38 “로그인 API 에러 메시지”".into()], quotes: vec![], until: NOW + 5_000, said: "T-38 수락".into(), via: Via::Voice, asked_again: 0, device: Some(device_id()) }
+}
+
 fn accept_proposal() -> equipe_core::protocol::accept::AcceptProposal {
     equipe_core::protocol::accept::AcceptProposal {
         id: 8_000_001,
@@ -776,6 +815,7 @@ fn engine_proposal(why: Why, applied: bool) -> Proposal {
         effort: None,
         was_model: Some(model.into()),
         done: false,
+        now: false,
     };
     Proposal {
         id: 7_000_001,
@@ -787,6 +827,7 @@ fn engine_proposal(why: Why, applied: bool) -> Proposal {
         moves: vec![mv("backend", "opus"), mv("frontend", "sonnet")],
         applied,
         proposed_at: NOW / 1000,
+        forecast: None,
     }
 }
 
@@ -818,13 +859,28 @@ fn ticket(status: TicketStatus) -> Ticket {
         worktree: Some("/Users/you/.equipe/worktrees/api/t38-1a2b3c4d".into()),
         merged: None,
         off_main: None,
-        design_qa: None,
+        design_qa: None, plan: None,
         created_by: "pm".into(),
         note: None,
         asks: vec![],
         remaining: Vec::new(), images: Vec::new(),
         updated_at: None,
         priority: Default::default(), rank: 0,
+    }
+}
+
+/// Nemotron's review of the ticket handed in.
+fn code_review() -> equipe_core::protocol::review::CodeReview {
+    use equipe_core::protocol::review::{CodeReview, ReviewPoint, ReviewVerdict};
+    CodeReview {
+        ticket: 38,
+        model: "nvidia/nemotron-example".into(),
+        verdict: ReviewVerdict::NeedsAttention,
+        summary: "A wrong password still gets a session when the lookup fails.".into(),
+        risks: vec![ReviewPoint { file: "src/auth.rs".into(), line: Some(42), why: "The error branch returns Ok: the request goes through.".into() }],
+        missing_tests: vec!["A failed user lookup answers 401.".into()],
+        truncated: false,
+        at: NOW / 1000,
     }
 }
 
@@ -837,6 +893,8 @@ fn snapshot() -> Snapshot {
     Snapshot {
         squad: SQUAD.into(),
         projects: vec!["/Users/you/projects/site".into(), "/Users/you/projects/api".into()],
+        hq: None,
+        routines: Vec::new(),
         sessions: vec![
             SessionInfo {
                 session: 1001,
@@ -844,6 +902,7 @@ fn snapshot() -> Snapshot {
                 member: Some(Member { role: "pm".into(), name: "pm".into() }),
                 engine: Engine::Claude,
                 model: Some("claude-opus-5-5".into()),
+                asked_model: None,
                 access: Access::ReadOnly,
                 workspace: None,
                 state: SessionState::Ready,
@@ -853,11 +912,12 @@ fn snapshot() -> Snapshot {
                 // What follows each `thread` line is about that project (null: the whole squad).
                 recent: vec![
                     Entry::Thread { project: None },
-                    Entry::User { text: "이번 주 계획 정리해 줘".into() },
+                    Entry::User { text: "이번 주 계획 정리해 줘".into(), kept: Vec::new() },
                     Entry::Reply { text: "보드에 세 장 올렸어요.".into() },
                     Entry::Thread { project: Some("api".into()) },
                     Entry::Error { message: "Claude Code isn't signed in".into(), next: Some("claude login".into()) },
                 ],
+                recent_at: Vec::new(),
                 queued: vec![],
                 queued_project: None,
                 queued_in: vec![],
@@ -869,6 +929,8 @@ fn snapshot() -> Snapshot {
                 mode: None,
                 effort: None,
                 subagents: Vec::new(),
+                compacting: None,
+                visuals: Vec::new(),
             },
             SessionInfo {
                 session: 4242,
@@ -876,6 +938,7 @@ fn snapshot() -> Snapshot {
                 member: Some(Member { role: "backend".into(), name: "backend".into() }),
                 engine: Engine::Claude,
                 model: Some("claude-sonnet-5-5".into()),
+                asked_model: None,
                 access: Access::EditFiles,
                 workspace: None,
                 state: SessionState::Working,
@@ -886,8 +949,9 @@ fn snapshot() -> Snapshot {
                 recent: vec![
                     Entry::Thread { project: Some("api".into()) },
                     Entry::Landed { branch: "equipe/backend-t37-9f8e7d6c".into(), stat: " src/session.rs | 12 ++++++------\n 1 file changed, 6 insertions(+), 6 deletions(-)".into() },
-                    Entry::Tool { tool: "Bash".into(), target: Some("cargo test".into()), outcome: None },
+                    Entry::Tool { tool: "Bash".into(), target: Some("cargo test".into()), outcome: None, label: None, background: false },
                 ],
+                recent_at: Vec::new(),
                 queued: vec![],
                 queued_project: None,
                 queued_in: vec![],
@@ -899,7 +963,10 @@ fn snapshot() -> Snapshot {
                 mode: None,
                 effort: None,
                 // Handed side work, still at it: a screen attaching now lists it under its member.
-                subagents: vec![SubagentInfo { id: "toolu_01".into(), what: "Read the API's error logs".into(), step: Some("Grep TimeoutError".into()), secs: 48 }],
+                subagents: vec![SubagentInfo { id: "toolu_01".into(), what: "Read the API's error logs".into(), step: Some("Grep TimeoutError".into()), secs: 48, ..Default::default() }],
+                // Its conversation being summarized: a screen attaching now says so, timed from `started_at`.
+                compacting: Some(CompactingInfo { trigger: CompactTrigger::Auto, started_at: NOW - 20_000, estimate_ms: 95_000 }),
+                visuals: Vec::new(),
             },
         ],
         tickets: vec![ticket(TicketStatus::InProgress)],
@@ -907,17 +974,60 @@ fn snapshot() -> Snapshot {
         approvals: vec![approval()],
         questions: vec![questions()],
         team_changes: vec![team_change()],
+        routine_proposals: vec![routine_proposal()],
+        idle_wake_hours: Some(24),
+        subagents_at_once: None,
+        design_reviewer: Default::default(),
+        signals: Vec::new(),
         accepts: vec![accept_proposal()],
         scale: Some(0),
         plan: Some(plan(Engine::Claude, 86, 41).usage),
         plans: vec![plan(Engine::Claude, 86, 41), plan(Engine::Codex, 12, 18)],
         engine_switching: Switching::Suggest,
+        pm_accepts: true,
+        role_models: Vec::new(),
+        secret_asks: Vec::new(),
         engine_proposals: vec![engine_proposal(Why::Shift, false)],
+        hand_overs: Vec::new(),
         suggestions_off: false,
         desktop: Default::default(),
         allowed: vec![],
         browsers_shown: false,
         disk: Some(disk_status()),
+        reviews: vec![code_review()],
+        put_away: Vec::new(),
+        words: Some(vec![]),
+        words_all: false,
+    }
+}
+
+/// A project's numbers this week: one tile fetched today, one whose key the
+/// service refused (its number the last kept).
+fn metrics_summary() -> Summary {
+    let tile = |connection: &str, kind, metric: &str, label: &str, unit: &str, (value, previous, change_pct): (f64, f64, f64), as_of: &str| Tile {
+        connection: connection.into(),
+        kind,
+        metric: metric.into(),
+        label: label.into(),
+        unit: unit.into(),
+        value: Some(value),
+        previous: Some(previous),
+        change_pct: Some(change_pct),
+        as_of: Some(as_of.into()),
+        error: None,
+    };
+    let refused = FetchError { code: ErrorCode::Auth, message: "key ••• was refused".into(), retry_at: None };
+    Summary {
+        squad: SQUAD.into(),
+        project: Some("site".into()),
+        from: "2026-10-27".into(),
+        to: "2026-11-02".into(),
+        tiles: vec![
+            tile("m1", SourceKind::Posthog, "visits", "Visits", "page_loads", (1284.0, 1187.0, 8.2), "2026-11-02"),
+            tile("m3", SourceKind::Github, "stars", "Stars", "stars", (25.0, 22.0, 13.6), "2026-11-02"),
+            Tile { error: Some(refused), ..tile("m2", SourceKind::AppStore, "downloads", "Downloads", "downloads", (63.0, 67.0, -6.0), "2026-11-01") },
+        ],
+        updated_at: Some(1_793_520_000),
     }
 }
 
@@ -947,6 +1057,7 @@ fn message_vectors() -> Value {
             [Action::Command { squad, command, .. }] => json!({ "to_squad": squad, "command": Message::command(command) }),
             [Action::ReadImage { squad, ask, .. }] => json!({ "reads_picture_of": squad, "asked": ask, "max_for_a_phone": equipe_core::visuals::PHONE_SIDE }),
             [Action::ListImages { squad, ask, .. }] => json!({ "lists_pictures_of": squad, "asked": ask, "at_most": equipe_core::visuals::LIST_MAX }),
+            [Action::MetricsSummary { squad, ask, .. }] => json!({ "sums_up_numbers_of": squad, "asked": ask }),
             other => panic!("{name}: {other:?}"),
         };
         examples.insert(name.to_owned(), json!({ "sends": serde_json::from_str::<Value>(&sealed.plaintext).unwrap(), "daemon": does }));
@@ -971,6 +1082,7 @@ fn message_vectors() -> Value {
 
     // The board.
     tell(&mut core, &mut examples, "event: ticket changed", Event::TicketChanged { squad: SQUAD.into(), ticket: ticket(TicketStatus::Review) });
+    tell(&mut core, &mut examples, "event: code reviewed", Event::CodeReviewed { squad: SQUAD.into(), review: code_review() });
 
     // Approvals.
     tell(&mut core, &mut examples, "event: approval requested", Event::ApprovalRequested { squad: SQUAD.into(), approval: approval() });
@@ -986,7 +1098,7 @@ fn message_vectors() -> Value {
     ask(&mut core, &mut examples, "answer questions", Some(SQUAD), answer(json!([{ "picked": [0] }, { "picked": [0, 1], "other": "Apple은 다음 달에" }])));
     ask(&mut core, &mut examples, "answer questions: one skipped", Some(SQUAD), answer(json!([{ "other": "세션 쿠키로" }, {}])));
     ask(&mut core, &mut examples, "dismiss questions", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "dismiss_questions", "squad": SQUAD, "id": 5_000_001 } }));
-    let answered = vec![Answer { picked: vec![0], other: None }, Answer { picked: vec![0, 1], other: Some("Apple은 다음 달에".into()) }];
+    let answered = vec![Answer { picked: vec![0], ..Default::default() }, Answer { picked: vec![0, 1], other: Some("Apple은 다음 달에".into()), ..Default::default() }];
     tell(&mut core, &mut examples, "event: questions answered", Event::QuestionsClosed { squad: SQUAD.into(), id: 5_000_001, answers: Some(answered) });
     tell(&mut core, &mut examples, "event: questions closed", Event::QuestionsClosed { squad: SQUAD.into(), id: 5_000_001, answers: None });
     // A visual choice: each option with its pictures, which the phone asks for, as thumbnails.
@@ -1017,8 +1129,8 @@ fn message_vectors() -> Value {
 
     // The squad's design system: asked for, sent as it is (and again when the designer saves), its pictures read like any other.
     ask(&mut core, &mut examples, "design", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "design", "squad": SQUAD } }));
-    tell(&mut core, &mut examples, "event: design", Event::Design { squad: SQUAD.into(), systems: vec![design_system(false), design_system(true)], folder: DESIGN.into() });
-    tell(&mut core, &mut examples, "event: design, none yet", Event::Design { squad: SQUAD.into(), systems: vec![], folder: DESIGN.into() });
+    tell(&mut core, &mut examples, "event: design", Event::Design { squad: SQUAD.into(), systems: vec![design_system(false), design_system(true)], folder: DESIGN.into(), taste: vec![] });
+    tell(&mut core, &mut examples, "event: design, none yet", Event::Design { squad: SQUAD.into(), systems: vec![], folder: DESIGN.into(), taste: vec![] });
     ask(&mut core, &mut examples, "design: another squad than the frame's", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "design", "squad": "home" } }));
 
     // A change to the team the PM proposed: approved or declined by the person.
@@ -1027,6 +1139,11 @@ fn message_vectors() -> Value {
     ask(&mut core, &mut examples, "decline team change", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decline_team_change", "squad": SQUAD, "id": 6_000_001 } }));
     tell(&mut core, &mut examples, "event: team change approved", Event::TeamChangeClosed { squad: SQUAD.into(), id: 6_000_001, approved: true, members: vec!["backend-2".into()] });
     tell(&mut core, &mut examples, "event: team change declined", Event::TeamChangeClosed { squad: SQUAD.into(), id: 6_000_001, approved: false, members: vec![] });
+    tell(&mut core, &mut examples, "event: routine proposed", Event::RoutineProposed { squad: SQUAD.into(), proposal: routine_proposal() });
+    ask(&mut core, &mut examples, "approve routine", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "approve_routine", "squad": SQUAD, "id": 9_000_001 } }));
+    ask(&mut core, &mut examples, "decline routine", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decline_routine", "squad": SQUAD, "id": 9_000_001 } }));
+    tell(&mut core, &mut examples, "event: routine approved", Event::RoutineProposalClosed { squad: SQUAD.into(), id: 9_000_001, approved: true });
+    tell(&mut core, &mut examples, "event: routine declined", Event::RoutineProposalClosed { squad: SQUAD.into(), id: 9_000_001, approved: false });
 
     // Handed-in work the person said in words to accept, on a card: confirmed (accepted, never
     // merged from a phone) or declined by the person.
@@ -1058,31 +1175,36 @@ fn message_vectors() -> Value {
     // Talking with the PM.
     ask(&mut core, &mut examples, "submit", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "submit", "session": pm, "text": "로그인 화면 다음에 뭐 할까?" } }));
     ask(&mut core, &mut examples, "interrupt", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "interrupt", "session": pm } }));
-    tell(&mut core, &mut examples, "event: user message", Event::UserMessage { session: pm, text: "로그인 화면 다음에 뭐 할까?".into() });
+    tell(&mut core, &mut examples, "event: user message", Event::UserMessage { session: pm, text: "로그인 화면 다음에 뭐 할까?".into(), kept: Vec::new() });
     tell(&mut core, &mut examples, "event: message queued", Event::MessageQueued { session: pm, text: "그리고 테스트도".into(), project: None });
     tell(&mut core, &mut examples, "event: text delta", Event::TextDelta { session: pm, text: "보드를 보면".into() });
-    tell(&mut core, &mut examples, "event: tool use", Event::ToolUse { session: pm, tool: "board".into(), target: None });
+    tell(&mut core, &mut examples, "event: tool use", Event::ToolUse { session: pm, tool: "board".into(), target: None, label: None, background: false });
     // Side work handed to a subagent: it starts, takes steps, hands back (the snapshot lists those still at it).
-    tell(&mut core, &mut examples, "event: subagent started", Event::SubagentStarted { session: pm, id: "toolu_02".into(), what: "Compare the two login flows".into() });
+    tell(&mut core, &mut examples, "event: subagent started", Event::SubagentStarted { session: pm, id: "toolu_02".into(), what: "Compare the two login flows".into(), brief: String::new() });
     tell(&mut core, &mut examples, "event: subagent step", Event::SubagentStep { session: pm, id: "toolu_02".into(), step: "Read src/login.tsx".into() });
-    tell(&mut core, &mut examples, "event: subagent ended", Event::SubagentEnded { session: pm, id: "toolu_02".into() });
+    tell(&mut core, &mut examples, "event: subagent ended", Event::SubagentEnded { session: pm, id: "toolu_02".into(), result: None, failed: false });
     tell(&mut core, &mut examples, "event: turn ended", Event::TurnEnded { session: pm, outcome: TurnOutcome::Completed, usage: Some(Usage { input_tokens: Some(1200), output_tokens: Some(340), ..Usage::default() }) });
     tell(&mut core, &mut examples, "event: turn interrupted", Event::TurnEnded { session: pm, outcome: TurnOutcome::Interrupted, usage: None });
     // Each engine's plan usage, for every screen; a phone that knows no `engine` reads Claude's.
     tell(&mut core, &mut examples, "event: plan usage (claude)", Event::PlanUsage { usage: claude_plan(), engine: Engine::Claude });
     tell(&mut core, &mut examples, "event: plan usage (codex)", Event::PlanUsage { usage: codex_plan(), engine: Engine::Codex });
-    tell(&mut core, &mut examples, "event: notice", Event::Notice { session: pm, text: "↪ You → backend: 로그인 API 먼저".into() });
+    tell(&mut core, &mut examples, "event: notice", Event::Notice { undo: None, session: pm, text: "↪ You → backend: 로그인 API 먼저".into() });
+    // A member's change to the squad's folder, told with what takes it back; the person takes it back.
+    let change = "3f1c2a9b7e5d4c6a8b0f1e2d3c4b5a6978877665";
+    tell(&mut core, &mut examples, "event: notice of a change to the squad's folder", Event::Notice { undo: Some(change.into()), session: pm, text: "✎ pm saved notes/tax-deadline.md in the squad's folder · /home undo takes it back".into() });
+    ask(&mut core, &mut examples, "undo home change", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "undo_home_change", "squad": SQUAD, "session": pm, "change": change } }));
+    tell(&mut core, &mut examples, "event: notice of a change taken back", Event::Notice { undo: Some("9a8b7c6d5e4f30211203f4e5d6c7b8a9f0e1d2c3".into()), session: pm, text: "Taken back: saved notes/tax-deadline.md · you can take this back too".into() });
     tell(&mut core, &mut examples, "event: error", Event::Error { session: Some(pm), message: "Claude Code isn't signed in".into(), next: Some("claude login".into()) });
     // What the screen shows goes with the message: a project, or (null) the whole squad.
     ask(&mut core, &mut examples, "submit: about a project", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "submit", "session": pm, "text": "웹사이트는 어떻게 되어가?", "about": "web" } }));
     ask(&mut core, &mut examples, "submit: about the whole squad", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "submit", "session": pm, "text": "전체 상황은?", "about": null } }));
     tell(&mut core, &mut examples, "event: steer queued", Event::SteerQueued { session: pm, text: "푸터는 빼 줘".into(), project: Some("web".into()) });
     // Read at its next step: it shows where it was read, as the person's message.
-    tell(&mut core, &mut examples, "event: steered", Event::Steered { session: pm, text: "푸터는 빼 줘".into() });
+    tell(&mut core, &mut examples, "event: steered", Event::Steered { session: pm, text: "푸터는 빼 줘".into(), kept: Vec::new() });
     // What follows is about a project (null: the whole squad).
     tell(&mut core, &mut examples, "event: thread", Event::Thread { session: pm, project: Some("web".into()) });
     tell(&mut core, &mut examples, "event: thread, the whole squad", Event::Thread { session: pm, project: None });
-    tell(&mut core, &mut examples, "event: model known", Event::ModelKnown { session: pm, model: "claude-opus-5-5".into() });
+    tell(&mut core, &mut examples, "event: model known", Event::ModelKnown { session: pm, model: "claude-opus-5-5".into(), asked: None });
     // What waits, sent now: the turn stops and it goes as one message.
     ask(&mut core, &mut examples, "send now", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "send_now", "session": pm, "texts": ["푸터는 빼 줘", "그리고 테스트도"] } }));
     tell(&mut core, &mut examples, "event: queue sent", Event::QueueSent { session: pm, texts: vec!["푸터는 빼 줘".into(), "그리고 테스트도".into()] });
@@ -1108,6 +1230,13 @@ fn message_vectors() -> Value {
         stat: " src/login.rs | 48 ++++++++++++++++++++++++++++++++++++++++++++++++\n 1 file changed, 48 insertions(+)".into(),
     });
     tell(&mut core, &mut examples, "event: nothing changed", Event::NothingChanged { session: 4242 });
+    // A member's conversation compacted — by its engine mid-turn (auto) or on the person's /compact
+    // (manual) — or failing to; `estimate_ms` is a guess from the last ones, never progress.
+    let (backend, member, project) = (4242, Some("backend".to_owned()), Some("api".to_owned()));
+    tell(&mut core, &mut examples, "event: compacting", Event::Compacting { session: backend, member: member.clone(), project: project.clone(), trigger: CompactTrigger::Auto, started_at: NOW, estimate_ms: 95_000 });
+    tell(&mut core, &mut examples, "event: compacted", Event::Compacted { session: backend, member: member.clone(), project: project.clone(), trigger: CompactTrigger::Auto, took_ms: 81_250 });
+    tell(&mut core, &mut examples, "event: compacting (manual)", Event::Compacting { session: pm, member: Some("pm".into()), project: None, trigger: CompactTrigger::Manual, started_at: NOW, estimate_ms: 2_000 });
+    tell(&mut core, &mut examples, "event: compact failed", Event::CompactFailed { session: backend, member, project, trigger: CompactTrigger::Auto, message: "The turn ended before the compaction finished.".into() });
 
     // Not from a phone.
     ask(&mut core, &mut examples, "engine sign-in is refused", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "sign_in", "engine": "codex" } }));
@@ -1116,6 +1245,28 @@ fn message_vectors() -> Value {
     ask(&mut core, &mut examples, "a command for another squad than the frame's", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "accept", "squad": "home", "ticket": 1 } }));
     ask(&mut core, &mut examples, "a command for a squad not followed", Some("home"), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "accept", "squad": "home", "ticket": 1 } }));
 
+    // The project's numbers for the board's card: the summary only, read from what the daemon kept — no key, no setting.
+    let numbers = |id: u64, squad: &str, method: &str| json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": { "squad": squad, "project": "site" } });
+    let out = ask(&mut core, &mut examples, "metrics summary", Some(SQUAD), numbers(26, SQUAD, "metrics.summary"));
+    let [Action::MetricsSummary { id, .. }] = &out[..] else { panic!("{out:?}") };
+    examples["metrics summary"]["daemon"]["answers"] = opened(&relay_frames(&core.metrics_summarized(&device_id(), SQUAD, *id, Ok(metrics_summary())))[0]);
+    let none = Summary { tiles: vec![], updated_at: None, ..metrics_summary() };
+    examples.insert("metrics summary: nothing connected".into(), json!({ "receives": opened(&relay_frames(&core.metrics_summarized(&device_id(), SQUAD, 27, Ok(none)))[0]) }));
+    ask(&mut core, &mut examples, "metrics summary: another squad than the frame's", Some(SQUAD), numbers(28, "home", "metrics.summary"));
+    ask(&mut core, &mut examples, "metrics: connecting is not something a device may ask", Some(SQUAD), numbers(29, SQUAD, "metrics.connect"));
+
+    // A reply's Mermaid block, drawn by the daemon for a phone (docs/VISUALS.md): put in place of the block whose source has `key`.
+    let drawn = |tone: &str| equipe_core::protocol::RenderedImage { path: format!("/Users/me/.equipe/squads/{SQUAD}/visuals/558211ed72b2d696-{tone}.png"), width: 880, height: 724 };
+    tell(&mut core, &mut examples, "event: visuals rendered", Event::VisualsRendered { session: pm, visuals: vec![equipe_core::protocol::Rendered { kind: "mermaid".into(), key: "558211ed72b2d696".into(), light: drawn("light"), dark: drawn("dark"), page: None }] });
+    // Deciding in the person's own words: said (the device stamped by the daemon, all by words off
+    // from a phone), what waits on them shown, undone, and how it ended; a call mode's own decide, by voice.
+    let say = |text: &str| json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "say", "squad": SQUAD, "session": 1_000_001, "text": text, "via": "voice", "all": true } });
+    ask(&mut core, &mut examples, "say", Some(SQUAD), say("T-38 수락"));
+    tell(&mut core, &mut examples, "event: words live, undo window", Event::WordsLive { squad: SQUAD.into(), live: words_live(equipe_core::protocol::by_words::Stage::Undo) });
+    tell(&mut core, &mut examples, "event: words live, read back", Event::WordsLive { squad: SQUAD.into(), live: words_live(equipe_core::protocol::by_words::Stage::ReadBack) });
+    ask(&mut core, &mut examples, "undo words", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "undo_words", "squad": SQUAD, "id": 12_000_001 } }));
+    tell(&mut core, &mut examples, "event: words closed", Event::WordsClosed { squad: SQUAD.into(), id: 12_000_001, outcome: equipe_core::protocol::by_words::Outcome::Undone, text: "Undone — nothing happened: Accept T-38".into() });
+    ask(&mut core, &mut examples, "decide: by voice, made sure of on the phone", Some(SQUAD), json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "decide", "squad": SQUAD, "approval": 17, "decision": "allow", "via": "voice", "utterance": "응 해" } }));
     // Pushes, to a phone away.
     core.on_relay(&json!({ "type": "presence", "device": device_id(), "online": false }), NOW);
     for (name, event) in [
@@ -1124,6 +1275,7 @@ fn message_vectors() -> Value {
         ("push: waiting", Event::TicketChanged { squad: SQUAD.into(), ticket: ticket(TicketStatus::Waiting) }),
         ("push: decision", Event::QuestionsAsked { squad: SQUAD.into(), questions: questions() }),
         ("push: team change", Event::TeamChangeProposed { squad: SQUAD.into(), change: team_change() }),
+        ("push: routine", Event::RoutineProposed { squad: SQUAD.into(), proposal: routine_proposal() }),
         ("push: accept", Event::AcceptProposed { squad: SQUAD.into(), proposal: accept_proposal() }),
         ("push: disk", Event::DiskLevel { status: disk_status() }),
         ("push: engine exhausted", Event::EngineProposed { squad: SQUAD.into(), proposal: engine_proposal(Why::Exhausted, false) }),

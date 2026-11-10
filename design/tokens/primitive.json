@@ -32,7 +32,7 @@
       "green":  { "$type": "color", "300": { "$value": "#7FCB8E" }, "700": { "$value": "#1F6B33" } },
       "amber":  { "$type": "color", "300": { "$value": "#E2B865" }, "700": { "$value": "#825600" } },
       "orange": { "$type": "color", "300": { "$value": "#EC9A62" }, "700": { "$value": "#A04610" } },
-      "red":    { "$type": "color", "300": { "$value": "#EE7B74" }, "700": { "$value": "#AD2E27" } },
+      "red":    { "$type": "color", "100": { "$value": "#EEE0DE", "$description": "light err fill (opaque)" }, "150": { "$value": "#EBD9D7", "$description": "light err fill hover (100 + 4% red.700)" }, "200": { "$value": "#E9D2CF", "$description": "light err fill pressed (100 + 8% red.700)" }, "300": { "$value": "#EE7B74" }, "700": { "$value": "#AD2E27" }, "850": { "$value": "#442E2E", "$description": "dark err fill pressed (900 + 8% red.300)" }, "875": { "$value": "#3C2A2B", "$description": "dark err fill hover (900 + 4% red.300)" }, "900": { "$value": "#352728", "$description": "dark err fill (opaque)" } },
       "alpha": {
         "$type": "color",
         "ink-5":   { "$value": "#0A0A0C0D" },
@@ -90,7 +90,20 @@
   "font": {
     "family": {
       "$type": "fontFamily",
-      "sans": { "$value": ["Inter Variable", "Inter", "Pretendard Variable", "system-ui", "sans-serif"], "$description": "Web only. Apps use the platform font (SF Pro / Roboto) — guideline §3.2." },
+      "sans": {
+        "$value": ["Inter Variable", "Inter", "Pretendard Variable", "Noto Sans JP", "Noto Sans SC", "system-ui", "sans-serif"],
+        "$description": "Web only. Apps use the platform font (SF Pro / Roboto) — guideline §3.2. Latin in Inter; a page in no one language gives each CJK script its own face (Hangul Pretendard, kana Noto Sans JP, Han only Chinese writes Noto Sans SC). A page that says its language (<html lang>) takes that script's stack from $extensions[\"im.equipe\"].lang, as :lang() in tokens.css.",
+        "$extensions": {
+          "im.equipe": {
+            "lang": {
+              "ko": ["Inter Variable", "Inter", "Pretendard Variable", "system-ui", "sans-serif"],
+              "ja": ["Inter Variable", "Inter", "Hiragino Sans", "Noto Sans JP", "system-ui", "sans-serif"],
+              "zh-Hans": ["Inter Variable", "Inter", "PingFang SC", "Noto Sans SC", "system-ui", "sans-serif"],
+              "zh-Hant": ["Inter Variable", "Inter", "PingFang TC", "Noto Sans TC", "system-ui", "sans-serif"]
+            }
+          }
+        }
+      },
       "mono": { "$value": ["JetBrains Mono Variable", "JetBrains Mono", "ui-monospace", "Menlo", "monospace"] }
     },
     "weight": {

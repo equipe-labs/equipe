@@ -47,6 +47,9 @@ public struct EquipeColors {
     public let colorWaitBg: Color
     public let colorErr: Color
     public let colorErrBg: Color
+    public let colorErrFill: Color
+    public let colorErrFillHover: Color
+    public let colorErrFillPressed: Color
     public let colorOnErr: Color
     public let buttonPrimaryBg: Color
     public let buttonPrimaryFg: Color
@@ -61,6 +64,10 @@ public struct EquipeColors {
     public let buttonGhostFg: Color
     public let buttonDangerBg: Color
     public let buttonDangerFg: Color
+    public let buttonDangerSoftBg: Color
+    public let buttonDangerSoftBgHover: Color
+    public let buttonDangerSoftBgPressed: Color
+    public let buttonDangerSoftFg: Color
     public let buttonHoverOverlay: Color
     public let buttonPressedOverlay: Color
     public let buttonFocusRing: Color
@@ -114,7 +121,7 @@ public struct EquipeColors {
     public let toastBg: Color
     public let toastFg: Color
     public let toastActionFg: Color
-    fileprivate init(colorBg: Color, colorSurface: Color, colorRaised: Color, colorSunken: Color, colorText: Color, colorMuted: Color, colorAccent: Color, colorOnAccent: Color, colorAccentBg: Color, colorFocus: Color, colorDot: Color, colorLine: Color, colorBorderStrong: Color, colorAction: Color, colorOnAction: Color, colorActionHover: Color, colorActionPressed: Color, colorHover: Color, colorPressed: Color, colorScrim: Color, colorInverse: Color, colorOnInverse: Color, colorInverseAccent: Color, colorOk: Color, colorOkBg: Color, colorWork: Color, colorWorkBg: Color, colorWait: Color, colorWaitBg: Color, colorErr: Color, colorErrBg: Color, colorOnErr: Color, buttonPrimaryBg: Color, buttonPrimaryFg: Color, buttonPrimaryBgHover: Color, buttonPrimaryBgPressed: Color, buttonBrandBg: Color, buttonBrandFg: Color, buttonSecondaryBg: Color, buttonSecondaryFg: Color, buttonSecondaryBorder: Color, buttonGhostBg: Color, buttonGhostFg: Color, buttonDangerBg: Color, buttonDangerFg: Color, buttonHoverOverlay: Color, buttonPressedOverlay: Color, buttonFocusRing: Color, inputBg: Color, inputFg: Color, inputPlaceholder: Color, inputBorder: Color, inputBorderFocus: Color, inputBorderError: Color, inputErrorFg: Color, inputHelperFg: Color, cardBg: Color, cardBorder: Color, cardTitleFg: Color, cardMetaFg: Color, cardRaisedBg: Color, chipBg: Color, chipFg: Color, chipBorder: Color, chipSelectedBg: Color, chipSelectedFg: Color, chipSelectedBorder: Color, chipHoverOverlay: Color, chipPressedOverlay: Color, badgeNeutralBg: Color, badgeNeutralFg: Color, badgeOkBg: Color, badgeOkFg: Color, badgeWorkBg: Color, badgeWorkFg: Color, badgeWaitBg: Color, badgeWaitFg: Color, badgeErrBg: Color, badgeErrFg: Color, rowFg: Color, rowSecondaryFg: Color, rowDivider: Color, rowHoverBg: Color, rowPressedBg: Color, rowSelectedBg: Color, sheetBg: Color, sheetScrim: Color, sheetGrabber: Color, sheetTitleFg: Color, decisionBg: Color, decisionBorder: Color, decisionWhoFg: Color, decisionWhereFg: Color, decisionCodeBg: Color, decisionCodeFg: Color, toastBg: Color, toastFg: Color, toastActionFg: Color) {
+    fileprivate init(colorBg: Color, colorSurface: Color, colorRaised: Color, colorSunken: Color, colorText: Color, colorMuted: Color, colorAccent: Color, colorOnAccent: Color, colorAccentBg: Color, colorFocus: Color, colorDot: Color, colorLine: Color, colorBorderStrong: Color, colorAction: Color, colorOnAction: Color, colorActionHover: Color, colorActionPressed: Color, colorHover: Color, colorPressed: Color, colorScrim: Color, colorInverse: Color, colorOnInverse: Color, colorInverseAccent: Color, colorOk: Color, colorOkBg: Color, colorWork: Color, colorWorkBg: Color, colorWait: Color, colorWaitBg: Color, colorErr: Color, colorErrBg: Color, colorErrFill: Color, colorErrFillHover: Color, colorErrFillPressed: Color, colorOnErr: Color, buttonPrimaryBg: Color, buttonPrimaryFg: Color, buttonPrimaryBgHover: Color, buttonPrimaryBgPressed: Color, buttonBrandBg: Color, buttonBrandFg: Color, buttonSecondaryBg: Color, buttonSecondaryFg: Color, buttonSecondaryBorder: Color, buttonGhostBg: Color, buttonGhostFg: Color, buttonDangerBg: Color, buttonDangerFg: Color, buttonDangerSoftBg: Color, buttonDangerSoftBgHover: Color, buttonDangerSoftBgPressed: Color, buttonDangerSoftFg: Color, buttonHoverOverlay: Color, buttonPressedOverlay: Color, buttonFocusRing: Color, inputBg: Color, inputFg: Color, inputPlaceholder: Color, inputBorder: Color, inputBorderFocus: Color, inputBorderError: Color, inputErrorFg: Color, inputHelperFg: Color, cardBg: Color, cardBorder: Color, cardTitleFg: Color, cardMetaFg: Color, cardRaisedBg: Color, chipBg: Color, chipFg: Color, chipBorder: Color, chipSelectedBg: Color, chipSelectedFg: Color, chipSelectedBorder: Color, chipHoverOverlay: Color, chipPressedOverlay: Color, badgeNeutralBg: Color, badgeNeutralFg: Color, badgeOkBg: Color, badgeOkFg: Color, badgeWorkBg: Color, badgeWorkFg: Color, badgeWaitBg: Color, badgeWaitFg: Color, badgeErrBg: Color, badgeErrFg: Color, rowFg: Color, rowSecondaryFg: Color, rowDivider: Color, rowHoverBg: Color, rowPressedBg: Color, rowSelectedBg: Color, sheetBg: Color, sheetScrim: Color, sheetGrabber: Color, sheetTitleFg: Color, decisionBg: Color, decisionBorder: Color, decisionWhoFg: Color, decisionWhereFg: Color, decisionCodeBg: Color, decisionCodeFg: Color, toastBg: Color, toastFg: Color, toastActionFg: Color) {
         self.colorBg = colorBg
         self.colorSurface = colorSurface
         self.colorRaised = colorRaised
@@ -146,6 +153,9 @@ public struct EquipeColors {
         self.colorWaitBg = colorWaitBg
         self.colorErr = colorErr
         self.colorErrBg = colorErrBg
+        self.colorErrFill = colorErrFill
+        self.colorErrFillHover = colorErrFillHover
+        self.colorErrFillPressed = colorErrFillPressed
         self.colorOnErr = colorOnErr
         self.buttonPrimaryBg = buttonPrimaryBg
         self.buttonPrimaryFg = buttonPrimaryFg
@@ -160,6 +170,10 @@ public struct EquipeColors {
         self.buttonGhostFg = buttonGhostFg
         self.buttonDangerBg = buttonDangerBg
         self.buttonDangerFg = buttonDangerFg
+        self.buttonDangerSoftBg = buttonDangerSoftBg
+        self.buttonDangerSoftBgHover = buttonDangerSoftBgHover
+        self.buttonDangerSoftBgPressed = buttonDangerSoftBgPressed
+        self.buttonDangerSoftFg = buttonDangerSoftFg
         self.buttonHoverOverlay = buttonHoverOverlay
         self.buttonPressedOverlay = buttonPressedOverlay
         self.buttonFocusRing = buttonFocusRing
@@ -246,6 +260,9 @@ public struct EquipeColors {
         colorWaitBg: Color(0xA04610, 0.122),
         colorErr: Color(0xAD2E27),
         colorErrBg: Color(0xAD2E27, 0.122),
+        colorErrFill: Color(0xEEE0DE),
+        colorErrFillHover: Color(0xEBD9D7),
+        colorErrFillPressed: Color(0xE9D2CF),
         colorOnErr: Color(0xFFFFFF),
         buttonPrimaryBg: Color(0x15161A),
         buttonPrimaryFg: Color(0xF6F5F1),
@@ -260,6 +277,10 @@ public struct EquipeColors {
         buttonGhostFg: Color(0x1D4ED8),
         buttonDangerBg: Color(0xAD2E27),
         buttonDangerFg: Color(0xFFFFFF),
+        buttonDangerSoftBg: Color(0xEEE0DE),
+        buttonDangerSoftBgHover: Color(0xEBD9D7),
+        buttonDangerSoftBgPressed: Color(0xE9D2CF),
+        buttonDangerSoftFg: Color(0xAD2E27),
         buttonHoverOverlay: Color(0x0A0A0C, 0.051),
         buttonPressedOverlay: Color(0x0A0A0C, 0.09),
         buttonFocusRing: Color(0x1D4ED8),
@@ -346,6 +367,9 @@ public struct EquipeColors {
         colorWaitBg: Color(0xEC9A62, 0.122),
         colorErr: Color(0xEE7B74),
         colorErrBg: Color(0xEE7B74, 0.122),
+        colorErrFill: Color(0x352728),
+        colorErrFillHover: Color(0x3C2A2B),
+        colorErrFillPressed: Color(0x442E2E),
         colorOnErr: Color(0x0A0A0C),
         buttonPrimaryBg: Color(0xEFEDE7),
         buttonPrimaryFg: Color(0x0A0A0C),
@@ -360,6 +384,10 @@ public struct EquipeColors {
         buttonGhostFg: Color(0x8FB0FF),
         buttonDangerBg: Color(0xEE7B74),
         buttonDangerFg: Color(0x0A0A0C),
+        buttonDangerSoftBg: Color(0x352728),
+        buttonDangerSoftBgHover: Color(0x3C2A2B),
+        buttonDangerSoftBgPressed: Color(0x442E2E),
+        buttonDangerSoftFg: Color(0xEE7B74),
         buttonHoverOverlay: Color(0xEFEDE7, 0.071),
         buttonPressedOverlay: Color(0xEFEDE7, 0.122),
         buttonFocusRing: Color(0x8FB0FF),

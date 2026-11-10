@@ -52,10 +52,14 @@ fn config(claude: &Path, home: &Path, persist: bool) -> Config {
         retention_days: 90,
         equipe_binary: Some("/opt/equipe".into()),
         npx: None,
+        design_path: None,
         mac: Box::new(equipe_core::desktop::ThisMac),
         suggest: false,
         browser_host: false,
+        person_home: Some(home.join("person")),
         lang: equipe_core::i18n::Lang::Ko,
+        nemotron: None,
+        watch_disk: false,
     }
 }
 
@@ -63,9 +67,27 @@ fn config(claude: &Path, home: &Path, persist: bool) -> Config {
 fn squad_home() -> (PathBuf, PathBuf) {
     let project = scratch("site").join("site");
     std::fs::create_dir_all(&project).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&project)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["commit", "--allow-empty", "-q", "-m", "start"]);
     let home = scratch("home");
     squads::create(&home, "acme", &project).unwrap();
     (home, project)
+}
+
+async fn pm_squad(home: &Path, project: &Path) -> (Handle, UnboundedReceiver<Event>) {
+    let (handle, mut events) = runtime::start(config(&busy_claude(), home, false));
+    add(&handle, &mut events, 1, member(project, "pm")).await;
+    (handle, events)
 }
 
 async fn until(rx: &mut UnboundedReceiver<Event>, done: impl Fn(&Event) -> bool) -> Vec<Event> {
@@ -132,7 +154,11 @@ async fn the_pm_proposes_the_person_approves_and_the_new_member_takes_the_waitin
     let odd = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "astronaut", "reason": "-" })).await;
     assert!(odd.is_error && odd.text.contains("No role called astronaut"), "{odd:?}");
 
-    let said = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "qa", "reason": "T-2가 기다려요 (qa는 T-1 중)", "unblocks": [2] })).await;
+    // Unasked, a few seconds after T-2 came: too soon — qa takes it as it finishes.
+    let soon = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "qa", "reason": "T-2가 기다려요", "unblocks": [2] })).await;
+    assert!(soon.is_error && soon.text.contains("has waited 0 min"), "{soon:?}");
+    // The person asked for one in words: it goes to them.
+    let said = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "qa", "reason": "T-2가 기다려요 (qa는 T-1 중)", "unblocks": [2], "asked": true })).await;
     assert!(!said.is_error && said.text.starts_with("Proposed — the person decides on a card."), "{said:?}");
     let change = proposed(&until(&mut events, |e| matches!(e, Event::TeamChangeProposed { .. })).await);
     assert_eq!((change.change, change.role.as_str(), change.count, change.unblocks.as_slice(), change.by.as_str(), change.session), (Change::Add, "qa", 1, &[2][..], "pm", 1));
@@ -154,7 +180,7 @@ async fn the_pm_proposes_the_person_approves_and_the_new_member_takes_the_waitin
     assert!(seen.iter().any(|e| matches!(e, Event::WorkStarted { session, ticket: 2, .. } if *session == joined)), "{seen:#?}");
     assert!(matches!(seen.last(), Some(Event::TeamChangeClosed { id, approved: true, members, .. }) if *id == change.id && members == &["qa-2".to_owned()]));
     let news = until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
-    assert!(matches!(news.last(), Some(Event::Notice { text, .. }) if text == "팀에 qa-2을(를) 추가했어요"), "{news:#?}");
+    assert!(matches!(news.last(), Some(Event::Notice { text, .. }) if text == "팀에 qa-2를 추가했어요"), "{news:#?}");
     assert_eq!(names(&handle).await, ["pm", "qa", "qa-2"]);
     assert!(handle.snapshot("acme").await.team_changes.is_empty());
 
@@ -163,6 +189,76 @@ async fn the_pm_proposes_the_person_approves_and_the_new_member_takes_the_waitin
     handle.send(Command::DeclineTeamChange { squad: "acme".into(), id: change.id });
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(names(&handle).await, ["pm", "qa", "qa-2"]);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn approval_prioritizes_ready_unblocks_for_several_new_members_then_uses_board_order() {
+    let (home, project) = squad_home();
+    let (handle, mut events) = pm_squad(&home, &project).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Old frontend work", "body": "-", "owner": "frontend" })).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Wrong role", "body": "-", "owner": "backend" })).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Explicit unblock", "body": "-", "owner": "frontend" })).await;
+    tool(&handle, "pm", "propose_team_change", json!({
+        "change": "add", "role": "frontend", "count": 2, "reason": "two tickets wait", "unblocks": [2, 3], "asked": true
+    })).await;
+    let change = proposed(&until(&mut events, |e| matches!(e, Event::TeamChangeProposed { .. })).await);
+
+    handle.send(Command::ApproveTeamChange { squad: "acme".into(), id: change.id });
+    let seen = until(&mut events, |e| matches!(e, Event::TeamChangeClosed { .. })).await;
+    let started: Vec<(u64, u32)> = seen
+        .iter()
+        .filter_map(|event| match event {
+            Event::WorkStarted { session, ticket, .. } => Some((*session, *ticket)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(started.iter().map(|(_, ticket)| *ticket).collect::<Vec<_>>(), [3, 1], "{seen:#?}");
+    assert_ne!(started[0].0, started[1].0, "each member takes one ticket");
+    let snapshot = handle.snapshot("acme").await;
+    for id in [1, 3] {
+        let ticket = snapshot.tickets.iter().find(|ticket| ticket.id == id).unwrap();
+        assert_eq!(ticket.status, equipe_core::protocol::TicketStatus::InProgress);
+        assert!(ticket.assignee.as_deref().is_some_and(|name| name.starts_with("frontend")));
+        assert!(ticket.branch.is_some());
+    }
+    assert_eq!(snapshot.tickets.iter().find(|ticket| ticket.id == 2).unwrap().status, equipe_core::protocol::TicketStatus::Todo);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn approval_skips_an_unready_unblock_and_starts_the_next_ready_one() {
+    let (home, project) = squad_home();
+    let (handle, mut events) = pm_squad(&home, &project).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Blocker", "body": "-", "owner": "backend" })).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Still waiting", "body": "-", "owner": "frontend", "depends_on": [1] })).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Ready", "body": "-", "owner": "frontend" })).await;
+    tool(&handle, "pm", "propose_team_change", json!({
+        "change": "add", "role": "frontend", "reason": "work waits", "unblocks": [2, 3], "asked": true
+    })).await;
+    let change = proposed(&until(&mut events, |e| matches!(e, Event::TeamChangeProposed { .. })).await);
+
+    handle.send(Command::ApproveTeamChange { squad: "acme".into(), id: change.id });
+    let seen = until(&mut events, |e| matches!(e, Event::TeamChangeClosed { .. })).await;
+    assert!(seen.iter().any(|event| matches!(event, Event::WorkStarted { ticket: 3, .. })), "{seen:#?}");
+    assert!(!seen.iter().any(|event| matches!(event, Event::WorkStarted { ticket: 2, .. })), "{seen:#?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn removal_approval_redispatches_returned_work_to_an_idle_teammate() {
+    let (home, project) = squad_home();
+    let (handle, mut events) = pm_squad(&home, &project).await;
+    add(&handle, &mut events, 2, member(&project, "qa")).await;
+    add(&handle, &mut events, 3, member(&project, "qa")).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "QA work", "body": "-", "owner": "qa" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { session: 2, ticket: 1, .. })).await;
+    tool(&handle, "pm", "propose_team_change", json!({ "change": "remove", "name": "qa", "reason": "handoff" })).await;
+    let change = proposed(&until(&mut events, |e| matches!(e, Event::TeamChangeProposed { .. })).await);
+
+    handle.send(Command::ApproveTeamChange { squad: "acme".into(), id: change.id });
+    let seen = until(&mut events, |e| matches!(e, Event::TeamChangeClosed { .. })).await;
+    assert!(seen.iter().any(|event| matches!(event, Event::WorkStarted { session: 3, ticket: 1, .. })), "{seen:#?}");
     handle.shutdown().await;
 }
 
@@ -231,7 +327,10 @@ async fn letting_go_a_member_that_left_anyway_no_longer_waits_and_nothing_waits_
 fn nothing_adds_or_lets_go_a_member_but_the_persons_commands() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = vec![src.join("runtime.rs")];
-    files.extend(std::fs::read_dir(src.join("runtime")).unwrap().flatten().map(|e| e.path()));
+    // In name order: a folder lists in a different order on Linux than on macOS.
+    let mut rest: Vec<_> = std::fs::read_dir(src.join("runtime")).unwrap().flatten().map(|e| e.path()).collect();
+    rest.sort();
+    files.extend(rest);
     let mut starts = Vec::new();
     let mut start_commands = Vec::new();
     let mut approvals = Vec::new();
@@ -263,11 +362,11 @@ fn nothing_adds_or_lets_go_a_member_but_the_persons_commands() {
         start_commands,
         [
             "runtime.rs: Command::Start { session, spec } => self.start(session, spec).await,",
-            "team.rs: Box::pin(self.handle(Command::Start { session, spec })).await;",
             // A member moving engines is started again under its own name (or,
             // when the other engine can't take it, where it was): nobody joins.
             "engines.rs: Box::pin(self.handle(Command::Start { session: fresh, spec })).await;",
             "engines.rs: Box::pin(self.handle(Command::Start { session: again, spec })).await;",
+            "team.rs: Box::pin(self.handle(Command::Start { session, spec })).await;",
         ],
         "only the approval sends what /add sends, and moving engines restarts a member"
     );

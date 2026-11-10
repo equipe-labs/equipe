@@ -90,11 +90,11 @@ pub enum Reply {
     Text(String),
     /// Done (a thing to do, ticked off).
     Done,
-    /// Handed back: the member does it itself ("대신 해 줘").
+    /// Handed back: the member does it itself ("do it for me").
     Yours,
     /// Not now: the member goes on without it, and it stays open on the ticket.
     Later,
-    /// The member's call ("네가 정해 줘").
+    /// The member's call ("you decide").
     YourCall,
     /// The person doesn't know: the member finds another way, or asks differently.
     DontKnow,
@@ -179,10 +179,10 @@ fn said(reply: &Reply) -> String {
 ///
 /// ```text
 /// Answers to what you asked for:
-/// 1) 심사 연락처를 알려 주세요 → +82 10 1234 5678
-/// 2) EU DSA 상태를 trader로 바꿔 주세요 → do it yourself — the person handed this back to you
-///    Note: 2FA 코드는 제 폰으로 와요
-/// From the person: 이건 너가 직접 해
+/// 1) Tell me the review contact → +1 415 555 0134
+/// 2) Set the EU DSA status to trader → do it yourself — the person handed this back to you
+///    Note: the 2FA code comes to my phone
+/// From the person: do this one yourself
 /// ```
 ///
 /// With nothing asked, their words alone.
@@ -354,29 +354,34 @@ pub enum Want {
 }
 
 /// Words that ask for a look and an OK, in the languages equipe speaks.
-const CONFIRMS: &[&str] = &[
-    "괜찮", "확인해", "확인 부탁", "검토해", "맞는지", "봐 주세요", "봐주세요", "confirm", "looks good", "look over", "check that", "check the",
-    "review the", "is it ok", "ok?", "approve", "確認", "确认", "確認して", "問題な", "没问题", "沒問題", "bestätig", "prüf", "passt", "vérifi",
-    "confirme", "valide", "c'est bon", "revisa", "comprueba", "está bien", "de acuerdo",
-];
+fn confirm_words() -> &'static [&'static str] {
+    crate::words::every("match.confirms")
+}
 
 /// Words that ask for words back.
-const ANSWERS: &[&str] = &[
-    "알려", "정해", "골라", "선택해", "적어", "답해", "말해", "보내 주", "주세요:", "무엇", "어떤", "언제", "누가", "어디", "얼마", "?", "？", "tell me",
-    "let me know", "which", "what ", "when ", "who ", "where ", "how many", "how much", "decide", "choose", "pick", "provide", "share", "send me",
-    "give me", "name the", "教え", "決め", "選ん", "どの", "いつ", "誰", "告诉", "告訴", "决定", "決定", "选择", "選擇", "提供", "哪", "什么", "什麼",
-    "teile", "nenne", "sag mir", "gib mir", "entscheide", "wähle", "welche", "wann", "wer ", "dites", "indiquez", "choisissez", "donnez", "quel",
-    "quand", "dime", "indica", "elige", "decide", "cuál", "cuándo", "quién",
-];
+fn answer_words() -> &'static [&'static str] {
+    crate::words::every("match.answers")
+}
 
 /// What `ask` wants back: an OK when it asks for a look (and says what an OK
 /// would be), words when it asks something, else a thing to do.
 pub fn want_of(ask: &str) -> Want {
-    let lower = ask.to_lowercase();
-    let has = |words: &[&str]| words.iter().any(|w| lower.contains(w));
-    if has(CONFIRMS) {
+    // A link's `?` and words aren't the ask's: `…/new?plan=free` asks nothing.
+    let lower: String = ask.to_lowercase().split_whitespace().filter(|w| !w.contains("://")).collect::<Vec<_>>().join(" ");
+    // A word in a script that spaces its words, ASCII aside, counts at a
+    // word's start only: in Korean, "set it up, please" ends in the word for
+    // "decide, please" and is a thing to do, not an answer.
+    let has = |words: &[&str]| {
+        words.iter().any(|w| {
+            if !w.starts_with(crate::words::spaced_letter) {
+                return lower.contains(w);
+            }
+            lower.match_indices(w).any(|(at, _)| !lower[..at].chars().next_back().is_some_and(crate::words::spaced_letter))
+        })
+    };
+    if has(confirm_words()) {
         Want::Confirm
-    } else if has(ANSWERS) {
+    } else if has(answer_words()) {
         Want::Answer
     } else {
         Want::Do
@@ -388,15 +393,15 @@ pub fn want_of(ask: &str) -> Want {
 /// One of an ask's quiet choices beside its box or tick — one at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Pick {
-    /// 했음: a thing to do, done.
+    /// Done: a thing to do, done.
     Done,
-    /// 대신 해 줘: handed back, the member does it.
+    /// Do it for me: handed back, the member does it.
     Yours,
-    /// 나중에: the member goes on without it; it stays open.
+    /// Later: the member goes on without it; it stays open.
     Later,
-    /// 네가 정해 줘: the member decides.
+    /// You decide: the member decides.
     YourCall,
-    /// 모르겠어요: the member finds another way.
+    /// Don't know: the member finds another way.
     DontKnow,
 }
 
@@ -482,6 +487,14 @@ impl crate::Ticket {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_setting_to_make_is_a_thing_to_do_not_a_question() {
+        assert_eq!(want_of("대상은 '내부(Internal)'로 설정해 주세요."), Want::Do);
+        assert_eq!(want_of("어느 쪽으로 할지 정해 주세요"), Want::Answer);
+        assert_eq!(want_of("이름을 골라 주세요"), Want::Answer);
+        assert_eq!(want_of("https://github.com/account/organizations/new?plan=free 에 들어가 조직을 만들어 주세요"), Want::Do, "a link's ? asks nothing");
+    }
 
     /// The line the person saw, its asks joined with ", ".
     const JOINED: &str = "심사 연락처(App Review Information)를 알려 주세요: 이름, 전화번호(국가번호 포함), 이메일. 심사팀만 보고 공개되지 않습니다., 회사 iOS 엔지니어 리뷰를 언제, 누가 할지 정해 주세요. equipe-app 규칙상 스토어 출시 전에 꼭 받아야 합니다., 스크린샷과 문구를 확인해 주세요: outputs/T-117 앱스토어 제출/screenshots-6.9/ (en·ko 5장씩, 실제 앱 화면) 와 listing.json. ko 스크린샷 속 티켓 제목은 데모 데이터라 영어입니다. 그대로 둬도 되면 '괜찮음'이라고만 답해 주세요.";

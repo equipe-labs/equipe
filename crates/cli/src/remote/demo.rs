@@ -6,6 +6,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
+use equipe_core::i18n::Lang;
 use equipe_core::protocol::rpc::Hello;
 use equipe_core::protocol::{
     Access, Approval, Command, Decision, Engine, Entry, Event, Member, Mode, SessionId, SessionInfo, SessionState, Snapshot, Ticket,
@@ -118,7 +119,7 @@ fn ticket(id: TicketId, title: &str, status: TicketStatus, who: Option<&str>, no
         worktree: None,
         merged: (status == TicketStatus::Done).then_some(true),
         off_main: None,
-        design_qa: None,
+        design_qa: None, plan: None,
         created_by: "pm".into(),
         note: note.map(str::to_owned),
         asks: vec![],
@@ -135,6 +136,7 @@ fn session(id: SessionId, role: &str, project: &str, recent: Vec<Entry>, work: O
         member: Some(Member { role: role.into(), name: role.into() }),
         engine: Engine::Claude,
         model: Some("demo".into()),
+        asked_model: None,
         access: if role == "pm" { Access::ReadOnly } else { Access::EditFiles },
         workspace: None,
         state: SessionState::Ready,
@@ -142,6 +144,7 @@ fn session(id: SessionId, role: &str, project: &str, recent: Vec<Entry>, work: O
         tokens: 0,
         context: None,
         recent,
+        recent_at: Vec::new(),
         queued: vec![],
         queued_project: None,
         queued_in: vec![],
@@ -153,12 +156,9 @@ fn session(id: SessionId, role: &str, project: &str, recent: Vec<Entry>, work: O
         mode: None,
         effort: None,
         subagents: Vec::new(),
+        compacting: None,
+        visuals: Vec::new(),
     }
-}
-
-/// Whether the person wrote in Korean: the members answer in it.
-fn korean(text: &str) -> bool {
-    text.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c) || ('\u{3131}'..='\u{318E}').contains(&c))
 }
 
 impl Scene {
@@ -168,7 +168,7 @@ impl Scene {
             "pm",
             PROJECTS[0],
             vec![
-                Entry::User { text: "We launch the website this month. What's left?".into() },
+                Entry::User { text: "We launch the website this month. What's left?".into(), kept: Vec::new() },
                 Entry::Reply {
                     text: "Here's the plan: the sign-up API (T-2) is handed in for your review, the landing page (T-3) is in progress, \
                            and the pricing page (T-5) follows it. The payment provider (T-4) waits on an API key only you can create."
@@ -177,7 +177,7 @@ impl Scene {
             ],
             None,
         );
-        let frontend = session(FRONTEND, "frontend", PROJECTS[0], vec![Entry::Tool { tool: "Edit".into(), target: Some("src/pages/index.tsx".into()), outcome: None }], Some(3));
+        let frontend = session(FRONTEND, "frontend", PROJECTS[0], vec![Entry::Tool { tool: "Edit".into(), target: Some("src/pages/index.tsx".into()), outcome: None, label: None, background: false }], Some(3));
         let backend = session(BACKEND, "backend", PROJECTS[1], vec![], None);
         let tickets = vec![
             ticket(1, "Set up the project", TicketStatus::Done, Some("backend"), Some("Repository, CI and a first deploy.")),
@@ -254,8 +254,8 @@ impl Scene {
                 self.state(approval.session, SessionState::Working);
             }
             Event::ApprovalResolved { approval, .. } => self.approvals.retain(|a| a.id != *approval),
-            Event::UserMessage { session, text } => {
-                self.entry(*session, Entry::User { text: text.clone() });
+            Event::UserMessage { session, text, .. } => {
+                self.entry(*session, Entry::User { text: text.clone(), kept: Vec::new() });
                 self.state(*session, SessionState::Working);
             }
             Event::TextDelta { session, text } => {
@@ -267,7 +267,7 @@ impl Scene {
                     s.tokens += text.len() as u64 / 4;
                 }
             }
-            Event::ToolUse { session, tool, target } => self.entry(*session, Entry::Tool { tool: tool.clone(), target: target.clone(), outcome: None }),
+            Event::ToolUse { session, tool, target, label, background } => self.entry(*session, Entry::Tool { tool: tool.clone(), target: target.clone(), outcome: None, label: label.clone(), background: *background }),
             Event::Thread { session, project } => self.entry(*session, Entry::Thread { project: project.clone() }),
             Event::TurnEnded { session, .. } => self.state(*session, SessionState::Ready),
             _ => {}
@@ -326,7 +326,7 @@ impl Scene {
                 let end = if decision == Decision::Deny {
                     self.say(s, start, "Understood — I won't do that. I'll leave it for you and carry on with the rest.")
                 } else {
-                    self.at(start, Event::ToolUse { session: s, tool: asked.tool.clone(), target: Some(asked.action.clone()) });
+                    self.at(start, Event::ToolUse { session: s, tool: asked.tool.clone(), target: Some(asked.action.clone()), label: None, background: false });
                     let end = self.say(s, start + 900, "Done. It worked; I'm carrying on with the ticket.");
                     // The landing page, built, is handed in.
                     if let Some(t) = asked.ticket.and_then(|id| self.find(id)).filter(|t| t.id == 3 && t.status == TicketStatus::InProgress) {
@@ -343,11 +343,11 @@ impl Scene {
             Command::Submit { session, text, .. } => {
                 let Some(member) = self.member(session).map(str::to_owned).filter(|_| self.later.len() < LATER) else { return vec![] };
                 let text: String = text.chars().take(MESSAGE).collect();
-                let ko = korean(&text);
+                let lang = reply_lang(&text);
                 let start = self.free_at(session, now) + 800;
-                let reply = if member == "pm" { self.pm_reply(&text, ko, start) } else { member_reply(&member, ko) };
+                let reply = if member == "pm" { self.pm_reply(&text, lang, start) } else { member_reply(&member, lang) };
                 self.say(session, start, &reply);
-                vec![Event::UserMessage { session, text }]
+                vec![Event::UserMessage { session, text, kept: Vec::new() }]
             }
             Command::Interrupt { session } => {
                 if self.sessions.iter().all(|s| s.session != session || s.state != SessionState::Working) {
@@ -399,43 +399,32 @@ impl Scene {
     }
 
     /// The PM's answer. Asked for work, it puts a ticket on the board.
-    fn pm_reply(&mut self, text: &str, ko: bool, at: u64) -> String {
+    fn pm_reply(&mut self, text: &str, lang: Lang, at: u64) -> String {
         let lower = text.to_lowercase();
-        let wants = ["add", "make", "create", "build", "ticket", "need", "추가", "만들", "티켓", "해줘", "해 줘"].iter().any(|w| lower.contains(w));
+        let wants = crate::i18n::every("match.demo_wants").iter().any(|w| lower.contains(w));
         if wants && self.added < ADDED_TICKETS {
             self.added += 1;
             let id = self.tickets.iter().map(|t| t.id).max().unwrap_or(0) + 1;
             let title: String = text.lines().next().unwrap_or(text).chars().take(60).collect();
             let event = self.changed(ticket(id, &title, TicketStatus::Todo, Some("frontend"), None));
             self.at(at + 400, event);
-            return if ko {
-                format!("알겠습니다. 보드에 T-{id}로 올리고 frontend에게 맡겼어요. 랜딩 페이지(T-3)가 끝나는 대로 시작합니다.")
-            } else {
-                format!("Got it — I've put that on the board as T-{id} for frontend. It starts as soon as the landing page (T-3) is done.")
-            };
+            return crate::i18n::of(lang).fill("demo.pm_added", &[("id", id.to_string())]);
         }
         self.replies += 1;
-        let en = [
-            "Here's where we are: T-2 (sign-up API) waits for your review, T-3 (landing page) is in progress, and T-4 needs a test API key from you. Want me to add anything?",
-            "Nothing is blocked except T-4, which needs the payment provider's test key. Everything else is moving; I'll tell you when something is ready to review.",
-            "Good question. I'd ship the landing page and sign-up first, then pricing. Tell me what to add and I'll put it on the board.",
-        ];
-        let ko_replies = [
-            "현재 상황입니다: T-2(가입 API)는 검토를 기다리고, T-3(랜딩 페이지)는 진행 중이며, T-4는 결제사의 테스트 API 키가 필요해요. 더 추가할 일이 있을까요?",
-            "T-4만 결제사 테스트 키를 기다리고 있고, 나머지는 진행 중입니다. 검토할 것이 생기면 알려 드릴게요.",
-            "랜딩 페이지와 가입을 먼저 내고, 그다음 가격 페이지를 하는 게 좋겠습니다. 추가할 일을 말씀해 주시면 보드에 올릴게요.",
-        ];
-        let i = (self.replies - 1) % en.len();
-        (if ko { ko_replies[i] } else { en[i] }).to_owned()
+        const REPLIES: [&str; 3] = ["demo.pm_reply_1", "demo.pm_reply_2", "demo.pm_reply_3"];
+        let i = (self.replies - 1) % REPLIES.len();
+        crate::i18n::of(lang).get(REPLIES[i]).to_owned()
     }
 }
 
-fn member_reply(member: &str, ko: bool) -> String {
-    if ko {
-        format!("{member}: 알겠습니다. 지금 하던 티켓에 반영할게요.")
-    } else {
-        format!("{member}: Noted — I'll take that into the ticket I'm on.")
-    }
+fn member_reply(member: &str, lang: Lang) -> String {
+    crate::i18n::of(lang).fill("demo.member_noted", &[("member", member.to_owned())])
+}
+
+/// The language the members answer in: the one the person wrote in, when
+/// equipe speaks it, else the screen's.
+fn reply_lang(text: &str) -> Lang {
+    equipe_core::language::detect(text).and_then(Lang::from_english_name).unwrap_or_else(crate::i18n::lang)
 }
 
 /// The demo's own place: its relay registration, its code, its devices.
@@ -509,11 +498,11 @@ mod tests {
     fn allowing_the_request_lets_the_member_go_on_and_another_comes_later() {
         let mut demo = Demo::default();
         let id = hello(&mut demo, "a").approvals[0].id;
-        let out = demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Allow }, 1000);
+        let out = demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Allow, words: None, said: None }, 1000);
         assert_eq!(out, vec![Event::ApprovalResolved { squad: SQUAD.into(), approval: id, decision: Decision::Allow }]);
         assert!(hello(&mut demo, "a").approvals.is_empty());
         // The same answer again does nothing.
-        assert!(demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Allow }, 1000).is_empty());
+        assert!(demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Allow, words: None, said: None }, 1000).is_empty());
         let later: Vec<Event> = demo.due(1000 + 60_000).into_iter().map(|(_, e)| e).collect();
         assert!(later.iter().any(|e| matches!(e, Event::ToolUse { tool, .. } if tool == "Bash")));
         assert!(later.iter().any(|e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 3 && ticket.status == TicketStatus::Review)));
@@ -528,7 +517,7 @@ mod tests {
         let mut demo = Demo::default();
         hello(&mut demo, "a");
         let out = demo.command("a", Command::Submit { session: PM, text: "What's the status?".into(), about: None }, 0);
-        assert_eq!(out, vec![Event::UserMessage { session: PM, text: "What's the status?".into() }]);
+        assert_eq!(out, vec![Event::UserMessage { session: PM, text: "What's the status?".into(), kept: Vec::new() }]);
         let later: Vec<Event> = demo.due(30_000).into_iter().map(|(_, e)| e).collect();
         let said: String = later.iter().filter_map(|e| match e { Event::TextDelta { session: PM, text } => Some(text.as_str()), _ => None }).collect();
         assert!(said.contains("T-2"), "{said}");
@@ -538,9 +527,19 @@ mod tests {
         let later: Vec<Event> = demo.due(80_000).into_iter().map(|(_, e)| e).collect();
         assert!(later.iter().any(|e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 7 && ticket.title == "FAQ 페이지 추가해줘")));
         let said: String = later.iter().filter_map(|e| match e { Event::TextDelta { text, .. } => Some(text.as_str()), _ => None }).collect();
-        assert!(said.contains("T-7") && korean(&said), "{said}");
+        assert!(said.contains("T-7") && equipe_core::language::detect(&said) == Some("Korean"), "{said}");
         let s = hello(&mut demo, "a");
         assert!(matches!(s.sessions[0].recent.last(), Some(Entry::Reply { text }) if text.contains("T-7")));
+    }
+
+    #[test]
+    fn the_members_answer_in_the_language_the_person_wrote_in() {
+        assert_eq!(reply_lang("What's the status?"), crate::i18n::lang(), "too short to tell: the screen's");
+        assert_eq!(reply_lang("FAQ 페이지 추가해줘"), Lang::Ko);
+        assert_eq!(reply_lang("FAQページを追加してください"), Lang::Ja);
+        assert_eq!(reply_lang("Ajoute une page FAQ au site, s'il te plaît"), Lang::Fr);
+        assert_eq!(reply_lang("Füge bitte eine FAQ-Seite zur Website hinzu"), Lang::De);
+        assert_eq!(reply_lang("Adicione uma página de perguntas frequentes ao site"), crate::i18n::lang(), "one equipe doesn't speak: the screen's");
     }
 
     #[test]
@@ -549,7 +548,7 @@ mod tests {
         let id = hello(&mut demo, "a").approvals[0].id;
         hello(&mut demo, "b");
         demo.command("a", Command::Accept { squad: SQUAD.into(), ticket: 2 }, 0);
-        demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Deny }, 0);
+        demo.command("a", Command::Decide { squad: SQUAD.into(), approval: id, decision: Decision::Deny, words: None, said: None }, 0);
         assert!(demo.command("nobody", Command::Accept { squad: SQUAD.into(), ticket: 2 }, 0).is_empty());
         let (a, b) = (hello(&mut demo, "a"), hello(&mut demo, "b"));
         assert_eq!(a.tickets[1].status, TicketStatus::Done);

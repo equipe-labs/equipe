@@ -15,9 +15,13 @@ use std::path::{Path, PathBuf};
 use equipe_protocol::rpc::Message;
 use equipe_protocol::{Command, Event, PairEnd, PairedDevice};
 use serde_json::{Value, json};
+#[cfg(unix)]
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+#[cfg(unix)]
 use tokio::net::UnixStream;
-use tokio::sync::mpsc::{self, UnboundedSender};
+#[cfg(unix)]
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::UnboundedSender;
 
 /// Where the phone link answers.
 pub fn socket_path(home: &Path) -> PathBuf {
@@ -77,6 +81,7 @@ pub fn event_of(said: &Value, now_ms: u64) -> Option<Event> {
     Some(Event::PairEnded { why, message })
 }
 
+#[cfg(any(unix, test))]
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
@@ -85,9 +90,11 @@ fn now_ms() -> u64 {
 /// and closed with the screen's connection — which, mid-pairing, closes the
 /// code too.
 pub struct Bridge {
+    #[cfg(unix)]
     home: PathBuf,
     /// The language the screen speaks, for what the bridge itself says.
     pub lang: crate::i18n::Lang,
+    #[cfg(unix)]
     link: Option<UnboundedSender<Value>>,
     /// What reads the link's answers, stopped with the bridge.
     reader: Option<tokio::task::JoinHandle<()>>,
@@ -103,11 +110,29 @@ impl Drop for Bridge {
 
 impl Bridge {
     pub fn new(home: &Path, lang: Option<crate::i18n::Lang>) -> Self {
-        Self { home: home.to_owned(), lang: lang.unwrap_or(crate::i18n::Lang::En), link: None, reader: None }
+        #[cfg(windows)]
+        let _ = home;
+        Self {
+            #[cfg(unix)]
+            home: home.to_owned(),
+            lang: lang.unwrap_or(crate::i18n::Lang::En),
+            #[cfg(unix)]
+            link: None,
+            reader: None,
+        }
     }
 
     /// Carry `command` to the phone link; its answers go to `out` as events.
     pub async fn send(&mut self, command: &Command, out: &UnboundedSender<Message>) {
+        #[cfg(windows)]
+        {
+            if matches!(command, Command::PairStart | Command::Devices | Command::Unpair { .. }) {
+                let event = Event::PairEnded { why: PairEnd::Unavailable, message: "phone pairing is unsupported on Windows yet".to_owned() };
+                let _ = out.send(Message::event(&event));
+            }
+        }
+        #[cfg(unix)]
+        {
         if self.link.as_ref().is_none_or(|l| l.is_closed()) {
             self.link = None;
             match UnixStream::connect(socket_path(&self.home)).await {
@@ -133,8 +158,10 @@ impl Bridge {
                 let _ = link.send(ask);
             }
         }
+        }
     }
 
+    #[cfg(unix)]
     fn open(stream: UnixStream, out: UnboundedSender<Message>) -> (UnboundedSender<Value>, tokio::task::JoinHandle<()>) {
         let (reader, mut writer) = stream.into_split();
         let (tx, mut rx) = mpsc::unbounded_channel::<Value>();

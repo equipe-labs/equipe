@@ -254,11 +254,11 @@ pub struct Fences {
 
 /// The words the cut fences' controls say.
 pub struct Words<'a> {
-    /// "N줄 더 보기", for N hidden lines.
+    /// "Show N more lines", for N hidden lines.
     pub more: &'a dyn Fn(usize) -> String,
-    /// "접기".
+    /// "Show less".
     pub less: &'a str,
-    /// "… N행 더" under a table cut short.
+    /// "… N more rows" under a table cut short.
     pub rows: &'a dyn Fn(usize) -> String,
 }
 

@@ -13,7 +13,7 @@ pub struct Spec {
     pub about: &'static str,
 }
 
-pub const COMMANDS: [Spec; 31] = [
+pub const COMMANDS: [Spec; 32] = [
     Spec { name: "usage", args: "", about: "commands.about_usage" },
     Spec { name: "scale", args: "[0-6|off]", about: "commands.about_scale" },
     Spec { name: "compact", args: "[member]", about: "commands.about_compact" },
@@ -30,6 +30,7 @@ pub const COMMANDS: [Spec; 31] = [
     Spec { name: "cancel", args: "T-n", about: "commands.about_cancel" },
     Spec { name: "board", args: "", about: "commands.about_board" },
     Spec { name: "design", args: "", about: "commands.about_design" },
+    Spec { name: "metrics", args: "", about: "commands.about_metrics" },
     Spec { name: "find", args: "<words>", about: "commands.about_find" },
     Spec { name: "tidy", args: "", about: "commands.about_tidy" },
     Spec { name: "disk", args: "", about: "commands.about_disk" },
@@ -56,9 +57,9 @@ pub struct Choice {
     pub about: String,
     /// The characters of `label` the typed letters matched, to highlight.
     pub hits: Vec<usize>,
-    /// Where it comes from, as a small badge: `equipe`, `터미널`, a project.
+    /// Where it comes from, as a small badge: `equipe`, `terminal`, a project.
     pub badge: Option<String>,
-    /// The heading it is listed under (`멤버`, `파일`, `티켓`).
+    /// The heading it is listed under (`Members`, `Files`, `Tickets`).
     pub group: Option<&'static str>,
     /// The part of `text` that becomes one atomic token in the box once taken
     /// (a command's name), as a byte range.

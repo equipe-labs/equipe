@@ -1,6 +1,6 @@
 //! A ticket's status as a 14px mark, drawn with paths so every one sits on the
-//! same circle: proposed dashed, to do empty, in progress half full (amber),
-//! 내 차례 a pause, 검토 three quarters, done a filled check, cancelled struck.
+//! same circle: proposed dashed, an idea dashed round a seed, to do empty, in progress half full (amber),
+//! Your turn a pause, Review three quarters, done a filled check, cancelled struck.
 
 use equipe_core::protocol::TicketStatus;
 use gpui_kit::*;
@@ -10,6 +10,8 @@ use crate::theme::Palette;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Shape {
     Dashed,
+    /// Dashed round a dot: a seed, kept for later.
+    Seed,
     Empty,
     Half,
     Pause,
@@ -21,6 +23,7 @@ enum Shape {
 fn shape(status: TicketStatus) -> Shape {
     match status {
         TicketStatus::Proposed => Shape::Dashed,
+        TicketStatus::Idea => Shape::Seed,
         TicketStatus::Todo => Shape::Empty,
         TicketStatus::InProgress => Shape::Half,
         TicketStatus::Waiting => Shape::Pause,
@@ -87,6 +90,10 @@ pub fn status(p: Palette, status: TicketStatus, size: f32) -> impl IntoElement {
             };
             match shape {
                 Shape::Dashed => add(ring(true), ink),
+                Shape::Seed => {
+                    add(ring(true), ink);
+                    add(pie(r * 0.32, 1.), ink);
+                }
                 Shape::Empty => add(ring(false), ink),
                 Shape::Half => {
                     add(ring(false), ink);

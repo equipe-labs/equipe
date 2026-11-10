@@ -18,7 +18,6 @@ use std::process::Stdio;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
 
 use crate::error::{Error, Result};
 use crate::turn::{TurnResult, TurnUsage};
@@ -40,6 +39,9 @@ pub struct AuthStatus {
     /// e.g. `pro` or `max`.
     #[serde(default)]
     pub subscription_type: Option<String>,
+    /// The account's email, as Claude Code prints it about itself.
+    #[serde(default)]
+    pub email: Option<String>,
 }
 
 impl AuthStatus {
@@ -60,7 +62,7 @@ const AUTH_STATUS_WAIT: std::time::Duration = std::time::Duration::from_secs(20)
 /// Ask the installed Claude Code whether it is signed in.
 /// `Ok(None)` means the binary isn't installed (or not on PATH).
 pub async fn auth_status(binary: &str) -> Result<Option<AuthStatus>> {
-    let asked = Command::new(binary).args(["auth", "status", "--json"]).stdin(Stdio::null()).kill_on_drop(true).output();
+    let asked = crate::tools_path::command(binary).args(["auth", "status", "--json"]).stdin(Stdio::null()).kill_on_drop(true).output();
     // A sign-in check that never answers must not hold up whoever asked (the daemon's loop).
     let Ok(output) = tokio::time::timeout(AUTH_STATUS_WAIT, asked).await else {
         let secs = AUTH_STATUS_WAIT.as_secs();
@@ -79,6 +81,7 @@ pub async fn auth_status(binary: &str) -> Result<Option<AuthStatus>> {
             auth_method: None,
             api_provider: None,
             subscription_type: None,
+            email: None,
         }));
     }
     parse_auth_status(&stdout).map(Some)
@@ -162,10 +165,23 @@ pub fn turn_args(request: &TurnRequest<'_>) -> Vec<String> {
     // Continue the conversation Claude Code already holds, rather than resending it.
     if let Some(id) = request.resume {
         args.extend(["--resume".to_owned(), id.to_owned()]);
+        // A copy of it, under a new session id: the original stays as it was.
+        if request.fork {
+            args.push("--fork-session".to_owned());
+        }
+    }
+    // Only these of Claude Code's built-in tools exist for the turn.
+    if !request.tools.is_empty() {
+        args.extend(["--tools".to_owned(), request.tools.join(",")]);
     }
     // Added to Claude Code's own system prompt, never replacing it.
     if let Some(charter) = request.charter {
         args.extend(["--append-system-prompt".to_owned(), charter.to_owned()]);
+    }
+    // The member's skills: Claude Code lists each by its name and when to use
+    // it, and reads one only when the work calls for it.
+    for dir in request.plugin_dirs {
+        args.extend(["--plugin-dir".to_owned(), dir.to_string_lossy().into_owned()]);
     }
     // Settings of the unmodified binary, not changes to it: Claude Code's auto
     // memory moved to a directory of the caller's choosing, and its sandbox.
@@ -202,6 +218,10 @@ pub fn turn_args(request: &TurnRequest<'_>) -> Vec<String> {
     if !permissions.is_empty() {
         settings.insert("permissions".into(), Value::Object(permissions));
     }
+    // What runs before each of the turn's tool calls: equipe's guard.
+    if let Some(hooks) = request.hooks {
+        settings.insert("hooks".into(), hooks.clone());
+    }
     if !settings.is_empty() {
         args.extend(["--settings".to_owned(), Value::Object(settings).to_string()]);
     }
@@ -236,8 +256,15 @@ pub struct TurnRequest<'a> {
     pub access: Access,
     /// Claude Code's session id from an earlier turn, to continue that conversation.
     pub resume: Option<&'a str>,
+    /// Continue a copy of `resume`'s conversation under a new session id
+    /// (`--fork-session`), leaving the original as it was.
+    pub fork: bool,
+    /// The only built-in tools the turn has (`--tools`); empty, Claude Code's own set.
+    pub tools: &'a [String],
     /// Who the agent is on the team, appended to Claude Code's system prompt.
     pub charter: Option<&'a str>,
+    /// Claude Code plugins to load for the turn (`--plugin-dir`): the member's skills.
+    pub plugin_dirs: &'a [std::path::PathBuf],
     /// Where Claude Code keeps what it learns (its auto memory). `None` leaves it
     /// where Claude Code would put it — which is per directory and shared with the
     /// person's own sessions there.
@@ -257,6 +284,9 @@ pub struct TurnRequest<'a> {
     /// for reading only.
     pub deny: &'a [String],
     pub sandbox: Option<Sandbox<'a>>,
+    /// Hooks for the turn, as Claude Code's settings take them: equipe's
+    /// guard, asked before each tool call (`equipe_core::guard`).
+    pub hooks: Option<&'a Value>,
     /// The MCP tool that answers permission prompts (`mcp__equipe__approve`).
     pub prompt_tool: Option<&'a str>,
     /// More environment for the turn's process, and so for its commands.
@@ -279,12 +309,16 @@ struct Pending {
     name: String,
     target: Option<String>,
     since: std::time::Instant,
+    /// Runs on in the background: done when its task says so, not when the call answers.
+    background: bool,
     /// The change the call asks for, worked out from its input.
     diff: Option<String>,
 }
 
 /// Past this many lines a diff carried with a tool's outcome is cut.
 const DIFF_LINES: usize = 400;
+/// What a subagent was asked, and what it handed back, kept up to this many characters.
+const SUBAGENT_WORDS: usize = 4000;
 
 /// Folds Claude Code's `stream-json` lines into one turn.
 #[derive(Default)]
@@ -302,8 +336,17 @@ pub struct TurnCollector {
     result: Option<Result<TurnResult>>,
     /// Subagents handed work this turn and not yet back.
     subagents: std::collections::HashSet<String>,
+    /// Subagents' tool uses not answered yet, by call: whose, and the call.
+    sub_pending: std::collections::HashMap<String, (String, Pending)>,
+    /// Commands running on in the background, by their call: done when their task says.
+    background: std::collections::HashMap<String, Pending>,
     /// The person's messages Claude Code has read so far — the prompt first.
     replayed: usize,
+    /// Compacting the conversation now: said once, though its status repeats.
+    compacting: bool,
+    /// The model requests heard (the member's and its subagents'), by message
+    /// id: Claude Code writes a message once per content block.
+    calls: std::collections::HashSet<String>,
 }
 
 /// A subagent run in the background answers its tool call at once with this;
@@ -335,6 +378,47 @@ impl TurnCollector {
                 self.model = event.get("model").and_then(Value::as_str).map(str::to_owned);
                 self.model.clone().map(Activity::Model).into_iter().collect()
             }
+            // A command run in the background finished: its step is done now.
+            "system"
+                if event.get("subtype").and_then(Value::as_str) == Some("task_notification")
+                    && event.get("tool_use_id").and_then(Value::as_str).is_some_and(|id| self.background.contains_key(id)) =>
+            {
+                let id = event.get("tool_use_id").and_then(Value::as_str).unwrap_or_default();
+                let Some(pending) = self.background.remove(id) else { return Vec::new() };
+                let ok = event.get("status").and_then(Value::as_str).is_none_or(|s| s == "completed");
+                let summary = event.get("summary").and_then(Value::as_str).unwrap_or_default().to_owned();
+                vec![Activity::ToolDone(ToolDone {
+                    ok,
+                    exit: None,
+                    ms: u64::try_from(pending.since.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    output: summary,
+                    diff: None,
+                    name: pending.name,
+                    target: pending.target,
+                })]
+            }
+            // Compacting the conversation: `status` `compacting` (repeated, on
+            // an automatic one, as its summary streams), then `status` null
+            // with `compact_result` `success` or `failed` (and
+            // `compact_error`); a `compact_boundary` follows a success.
+            "system" if event.get("subtype").and_then(Value::as_str) == Some("status") => {
+                match (event.get("status").and_then(Value::as_str), event.get("compact_result").and_then(Value::as_str)) {
+                    (Some("compacting"), _) if !self.compacting => {
+                        self.compacting = true;
+                        vec![Activity::Compacting]
+                    }
+                    (_, Some(result)) if self.compacting => {
+                        self.compacting = false;
+                        if result == "success" {
+                            vec![Activity::Compacted]
+                        } else {
+                            let why = event.get("compact_error").and_then(Value::as_str).filter(|e| !e.is_empty()).unwrap_or("Compaction failed");
+                            vec![Activity::CompactFailed(why.to_owned())]
+                        }
+                    }
+                    _ => Vec::new(),
+                }
+            }
             // A subagent at work in the background: where it is, and when it is done.
             "system" => {
                 let id = event.get("tool_use_id").and_then(Value::as_str).filter(|id| self.subagents.contains(*id));
@@ -348,7 +432,9 @@ impl TurnCollector {
                     (Some("task_notification"), Some(id)) => {
                         let id = id.to_owned();
                         self.subagents.remove(&id);
-                        vec![Activity::SubagentEnded { id }]
+                        let failed = event.get("status").and_then(Value::as_str).is_some_and(|s| s != "completed");
+                        let result = event.get("summary").and_then(Value::as_str).filter(|s| !s.is_empty()).map(|s| s.chars().take(SUBAGENT_WORDS).collect());
+                        vec![Activity::SubagentEnded { id, result, failed }]
                     }
                     _ => Vec::new(),
                 }
@@ -392,23 +478,34 @@ impl TurnCollector {
                 (None, None) => Vec::new(),
             },
             "assistant" => {
+                if let Some(id) = event.get("message").and_then(|m| m.get("id")).and_then(Value::as_str) {
+                    self.calls.insert(id.to_owned());
+                }
                 if let Some(u) = event.get("message").and_then(|m| m.get("usage")) {
                     let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
                     self.context = Some(
                         n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens") + n("output_tokens"),
                     );
                 }
-                // Inside a subagent: its steps, as the subagent's.
+                // Inside a subagent: its words and steps, as the subagent's —
+                // each call waiting for its answer, timed from now.
                 if let Some(id) = parent(event) {
-                    return tool_uses(event)
-                        .into_iter()
-                        .filter_map(|a| match a {
-                            Activity::Tool { name, target } => {
-                                Some(Activity::SubagentStep { id: id.to_owned(), step: format!("{name} {}", target.unwrap_or_default()).trim().to_owned() })
-                            }
-                            _ => None,
-                        })
-                        .collect();
+                    let id = id.to_owned();
+                    let now = std::time::Instant::now();
+                    for block in content_blocks(event).filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use")) {
+                        if let (Some(call), Some(name)) = (block.get("id").and_then(Value::as_str), block.get("name").and_then(Value::as_str)) {
+                            let input = block.get("input");
+                            let pending = Pending { name: name.to_owned(), target: tool_target(name, input), since: now, background: false, diff: input.and_then(|i| input_diff(name, i)) };
+                            self.sub_pending.insert(call.to_owned(), (id.clone(), pending));
+                        }
+                    }
+                    let text = message_text(event);
+                    let said = (!text.trim().is_empty()).then(|| Activity::SubagentText { id: id.clone(), text });
+                    let steps = tool_uses(event).into_iter().filter_map(|a| match a {
+                        Activity::Tool { name, target, .. } => Some(Activity::SubagentStep { id: id.clone(), step: format!("{name} {}", target.unwrap_or_default()).trim().to_owned() }),
+                        _ => None,
+                    });
+                    return said.into_iter().chain(steps).collect();
                 }
                 let text = message_text(event);
                 if !text.is_empty() {
@@ -420,7 +517,7 @@ impl TurnCollector {
                 for block in content_blocks(event).filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use")) {
                     if let (Some(id), Some(name)) = (block.get("id").and_then(Value::as_str), block.get("name").and_then(Value::as_str)) {
                         let input = block.get("input");
-                        let pending = Pending { name: name.to_owned(), target: tool_target(name, input), since: now, diff: input.and_then(|i| input_diff(name, i)) };
+                        let pending = Pending { name: name.to_owned(), target: tool_target(name, input), since: now, background: runs_in_background(name, input), diff: input.and_then(|i| input_diff(name, i)) };
                         self.pending.insert(id.to_owned(), pending);
                     }
                 }
@@ -432,9 +529,11 @@ impl TurnCollector {
                         block.get("id").and_then(Value::as_str),
                     ) && matches!(name, "Agent" | "Task")
                     {
-                        let what = block.get("input").and_then(|i| i.get("description")).and_then(Value::as_str).unwrap_or("a subagent");
+                        let input = block.get("input");
+                        let what = input.and_then(|i| i.get("description")).and_then(Value::as_str).unwrap_or("a subagent");
+                        let brief = input.and_then(|i| i.get("prompt")).and_then(Value::as_str).unwrap_or_default().chars().take(SUBAGENT_WORDS).collect();
                         self.subagents.insert(id.to_owned());
-                        out.push(Activity::SubagentStarted { id: id.to_owned(), what: what.chars().take(80).collect() });
+                        out.push(Activity::SubagentStarted { id: id.to_owned(), what: what.chars().take(80).collect(), brief });
                     }
                 }
                 out
@@ -458,11 +557,23 @@ impl TurnCollector {
                 for block in content_blocks(event).filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")) {
                     let Some(id) = block.get("tool_use_id").and_then(Value::as_str) else { continue };
                     let text = result_text(block);
-                    if let Some(pending) = self.pending.remove(id) {
-                        out.push(Activity::ToolDone(tool_done(pending, block, &text, structured)));
+                    // A subagent's call answered: its step, done.
+                    if let Some((sub, pending)) = self.sub_pending.remove(id) {
+                        out.push(Activity::SubagentTool { id: sub, done: tool_done(pending, block, &text, None) });
+                        continue;
+                    }
+                    match self.pending.remove(id) {
+                        // Started in the background: it answers at once, and runs on.
+                        Some(pending) if pending.background && block.get("is_error").and_then(Value::as_bool) != Some(true) => {
+                            self.background.insert(id.to_owned(), pending);
+                        }
+                        Some(pending) => out.push(Activity::ToolDone(tool_done(pending, block, &text, structured))),
+                        None => {}
                     }
                     if !text.starts_with(LAUNCHED_IN_BACKGROUND) && self.subagents.remove(id) {
-                        out.push(Activity::SubagentEnded { id: id.to_owned() });
+                        let failed = block.get("is_error").and_then(Value::as_bool) == Some(true);
+                        let result = (!text.trim().is_empty()).then(|| text.chars().take(SUBAGENT_WORDS).collect());
+                        out.push(Activity::SubagentEnded { id: id.to_owned(), result, failed });
                     }
                 }
                 out
@@ -471,6 +582,7 @@ impl TurnCollector {
                 let mut result = result_from(event, &self.streamed, &self.last_message);
                 if let Ok(TurnResult { usage: Some(usage), .. }) = &mut result {
                     usage.context_tokens = self.context;
+                    usage.calls = (!self.calls.is_empty()).then_some(self.calls.len() as u64);
                 }
                 self.result = Some(result);
                 Vec::new()
@@ -546,18 +658,41 @@ fn tool_uses(event: &Value) -> Vec<Activity> {
         .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
         .filter_map(|block| {
             let name = block.get("name").and_then(Value::as_str)?.to_owned();
-            let target = tool_target(&name, block.get("input"));
-            Some(Activity::Tool { name, target })
+            let input = block.get("input");
+            let target = tool_target(&name, input);
+            let (label, background) = (tool_label(&name, input), runs_in_background(&name, input));
+            Some(Activity::Tool { name, target, label, background })
         })
         .collect()
 }
 
+/// What a command does, in the agent's own words (Bash's `description`):
+/// what a screen shows over the command itself, as Claude Code's does.
+pub(crate) fn tool_label(name: &str, input: Option<&Value>) -> Option<String> {
+    (name == "Bash")
+        .then(|| input?.get("description")?.as_str())
+        .flatten()
+        .map(|d| d.lines().next().unwrap_or("").trim().chars().take(100).collect::<String>())
+        .filter(|d| !d.is_empty())
+}
+
+/// A command started to run on in the background (`run_in_background`).
+fn runs_in_background(name: &str, input: Option<&Value>) -> bool {
+    name == "Bash" && input.and_then(|i| i.get("run_in_background")).and_then(Value::as_bool) == Some(true)
+}
+
 /// The thing a tool use acts on, in one line.
 pub(crate) fn tool_target(name: &str, input: Option<&Value>) -> Option<String> {
+    // A web search: the words it looked for.
+    if name == "WebSearch"
+        && let Some(query) = input.and_then(|i| i.get("query")).and_then(Value::as_str)
+    {
+        return Some(query.lines().next().unwrap_or("").chars().take(120).collect());
+    }
     board_target(name, input).or_else(|| {
         // `element` and `text`: what a browser step clicks or types into, in words;
-        // `app`, `keys`, `window`: a desktop step's.
-        ["file_path", "path", "notebook_path", "pattern", "command", "url", "action", "element", "text", "description", "app", "keys", "window"]
+        // `app`, `keys`, `window`: a desktop step's; `skill`: the skill a Skill step opens.
+        ["file_path", "path", "notebook_path", "pattern", "command", "url", "action", "element", "text", "description", "app", "keys", "window", "skill"]
             .iter()
             .find_map(|key| input?.get(*key).and_then(Value::as_str))
             .map(|t| t.lines().next().unwrap_or("").chars().take(120).collect())
@@ -578,11 +713,56 @@ fn tool_done(pending: Pending, block: &Value, text: &str, structured: Option<&Va
         ms: u64::try_from(pending.since.elapsed().as_millis()).unwrap_or(u64::MAX),
         // What a command printed, and why anything failed. A file read or an
         // edit answers with the file, which the person doesn't need again.
-        output: if !ok || pending.name == "Bash" { output.to_owned() } else { String::new() },
+        // A web search answers with the pages it found: those, as links.
+        output: if !ok || pending.name == "Bash" {
+            output.to_owned()
+        } else if pending.name == "WebSearch" {
+            web_sources(text, structured)
+        } else {
+            String::new()
+        },
         diff: if failed { None } else { patch.or(pending.diff) },
         name: pending.name,
         target: pending.target,
     }
+}
+
+/// The most pages a web search's answer lists.
+const WEB_SOURCES: usize = 12;
+
+/// The pages a web search found, one Markdown link a line (`- [title](url)`):
+/// from Claude Code's structured answer (`results`' `content`), else from the
+/// `Links: [...]` line of its words.
+fn web_sources(text: &str, structured: Option<&Value>) -> String {
+    let from_structured: Vec<Value> = structured
+        .and_then(|s| s.get("results"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r.get("content").and_then(Value::as_array))
+        .flatten()
+        .cloned()
+        .collect();
+    let links = if from_structured.is_empty() {
+        text.lines()
+            .find_map(|l| l.trim().strip_prefix("Links:"))
+            .and_then(|l| serde_json::from_str::<Vec<Value>>(l.trim()).ok())
+            .unwrap_or_default()
+    } else {
+        from_structured
+    };
+    let mut seen = std::collections::HashSet::new();
+    links
+        .iter()
+        .filter_map(|l| {
+            let url = l.get("url").and_then(Value::as_str).filter(|u| u.starts_with("http"))?;
+            let title = l.get("title").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).unwrap_or(url);
+            let title: String = title.chars().filter(|c| !matches!(c, '[' | ']' | '\n')).take(120).collect();
+            seen.insert(url.to_owned()).then(|| format!("- [{title}]({url})"))
+        })
+        .take(WEB_SOURCES)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// `Exit code 2` heading a command's answer: the code, and the rest.
@@ -662,6 +842,9 @@ fn board_target(name: &str, input: Option<&Value>) -> Option<String> {
             needs.into_iter().collect()
         }
         "propose_team_change" => [text("change"), text("name").or_else(|| text("role"))].into_iter().flatten().collect(),
+        "propose_routine" => [text("title"), text("every")].into_iter().flatten().collect(),
+        "propose_signal" | "signals" => [text("name"), text("project")].into_iter().flatten().collect(),
+        "metrics" => [text("metric"), text("project")].into_iter().flatten().collect(),
         "propose_accept" => {
             let tickets = input.get("tickets").and_then(Value::as_array).map(|items| {
                 items.iter().filter_map(|v| v.as_u64().map(|n| format!("T-{n}")).or_else(|| v.as_str().map(str::to_owned))).collect::<Vec<_>>().join(", ")
@@ -702,18 +885,27 @@ fn result_from(event: &Value, streamed: &str, last_message: &str) -> Result<Turn
         .unwrap_or("")
         .to_owned();
     let usage = event.get("usage").and_then(|u| {
-        let input_tokens = u.get("input_tokens").and_then(Value::as_u64);
-        let output_tokens = u.get("output_tokens").and_then(Value::as_u64);
-        let cache = ["cache_read_input_tokens", "cache_creation_input_tokens"].iter().filter_map(|k| u.get(*k).and_then(Value::as_u64)).sum::<u64>();
+        let n = |v: &Value, k: &str| v.get(k).and_then(Value::as_u64);
+        let models = event.get("modelUsage").and_then(Value::as_object);
+        // Every model the turn used, its subagents' among them: what the plan
+        // counts. The turn's own `usage` is the member's alone.
+        let sum = |k: &str| models.map(|m| m.values().filter_map(|v| n(v, k)).sum::<u64>()).filter(|t| *t > 0);
+        let input_tokens = sum("inputTokens").max(n(u, "input_tokens"));
+        let output_tokens = sum("outputTokens").max(n(u, "output_tokens"));
+        let read = sum("cacheReadInputTokens").max(n(u, "cache_read_input_tokens"));
+        let write = sum("cacheCreationInputTokens").max(n(u, "cache_creation_input_tokens"));
+        let long = u.get("cache_creation").and_then(|c| n(c, "ephemeral_1h_input_tokens")).filter(|t| *t > 0).map(|t| t.min(write.unwrap_or(0)));
+        let cache = read.unwrap_or(0) + write.unwrap_or(0);
         // The window of the model that did the work (the first listed).
-        let context_window = event
-            .get("modelUsage")
-            .and_then(Value::as_object)
-            .and_then(|models| models.values().find_map(|m| m.get("contextWindow").and_then(Value::as_u64)));
+        let context_window = models.and_then(|models| models.values().find_map(|m| m.get("contextWindow").and_then(Value::as_u64)));
         (input_tokens.is_some() || output_tokens.is_some()).then_some(TurnUsage {
             input_tokens,
             output_tokens,
             cache_tokens: (cache > 0).then_some(cache),
+            cache_read_tokens: read.filter(|t| *t > 0),
+            cache_write_tokens: write.filter(|t| *t > 0),
+            cache_write_long_tokens: long,
+            calls: None,
             context_tokens: None,
             context_window,
         })
@@ -733,7 +925,7 @@ pub async fn run_turn(
     mut steering: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
     mut on_activity: impl FnMut(Activity),
 ) -> Result<Turn> {
-    let mut command = Command::new(binary);
+    let mut command = crate::tools_path::command(binary);
     // A directory added for reading brings its own CLAUDE.md, so the project's
     // conventions are known from wherever the turn runs.
     if !request.add_dirs.is_empty() {
@@ -755,6 +947,9 @@ pub async fn run_turn(
             _ => err.into(),
         })?;
 
+    if let Some(pid) = child.id() {
+        on_activity(Activity::Engine { pid });
+    }
     let stdout = child.stdout.take().expect("stdout is piped");
     let mut stderr = child.stderr.take().expect("stderr is piped");
     let stderr_task = tokio::spawn(async move {
@@ -764,7 +959,8 @@ pub async fn run_turn(
     });
 
     // The turn's first message; Claude Code reads more until its input ends,
-    // which is once the turn has its result and no subagent is still out.
+    // which is once the turn has its result and no subagent or background
+    // command is still out.
     let mut stdin = child.stdin.take();
     if let Some(input) = &mut stdin {
         let _ = input.write_all(user_message(request.prompt).as_bytes()).await;
@@ -800,8 +996,10 @@ pub async fn run_turn(
         match serde_json::from_str::<Value>(line) {
             Ok(event) => {
                 collector.on_event(&event).into_iter().for_each(&mut on_activity);
-                if event.get("type").and_then(Value::as_str) == Some("result") && collector.subagents.is_empty() {
-                    // Done: its input ends, and so does Claude Code.
+                // Done: its input ends, and so does Claude Code — unless a subagent
+                // or a command runs on in the background. Claude Code is still there
+                // then, waiting for it, and reads what the person says meanwhile.
+                if event.get("type").and_then(Value::as_str) == Some("result") && collector.subagents.is_empty() && collector.background.is_empty() {
                     stdin = None;
                 }
             }
@@ -874,7 +1072,7 @@ pub fn parse_suggestion(json: &str) -> Option<String> {
 /// Guess the person's next message from `conversation` with their own Claude
 /// Code, in `cwd`. Any failure is no guess.
 pub async fn suggest(binary: &str, cwd: &Path, conversation: &str) -> Option<String> {
-    let output = Command::new(binary)
+    let output = crate::tools_path::command(binary)
         .args(suggest_args(conversation))
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -976,7 +1174,7 @@ mod tests {
     // ── auth status ──
 
     #[test]
-    fn parses_a_subscription_login_and_ignores_identifying_fields() {
+    fn parses_a_subscription_login_with_its_email_and_ignores_the_rest() {
         let status = parse_auth_status(
             r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty",
                 "email":"someone@example.com","orgId":"o","subscriptionType":"max"}"#,
@@ -984,6 +1182,8 @@ mod tests {
         .unwrap();
         assert!(status.uses_subscription());
         assert_eq!(status.subscription_type.as_deref(), Some("max"));
+        // The account's email shows on its card, as Codex's does; the organisation isn't kept.
+        assert_eq!(status.email.as_deref(), Some("someone@example.com"));
     }
 
     #[test]
@@ -1019,6 +1219,15 @@ mod tests {
         assert!(args.iter().any(|a| a == "--verbose"));
         assert!(args.iter().any(|a| a == "--include-partial-messages"));
         assert!(!args.iter().any(|a| a == "--model"));
+    }
+
+    #[test]
+    fn a_members_skills_load_as_a_plugin_from_each_folder_given() {
+        let dirs = [std::path::PathBuf::from("/h/skills/1.0/pm-1"), std::path::PathBuf::from("/h/more")];
+        let args = turn_args(&TurnRequest { prompt: "x", plugin_dirs: &dirs, ..Default::default() });
+        let given: Vec<&str> = args.windows(2).filter(|w| w[0] == "--plugin-dir").map(|w| w[1].as_str()).collect();
+        assert_eq!(given, ["/h/skills/1.0/pm-1", "/h/more"]);
+        assert!(!turn_args(&TurnRequest { prompt: "x", ..Default::default() }).iter().any(|a| a == "--plugin-dir"));
     }
 
     #[test]
@@ -1098,10 +1307,46 @@ mod tests {
             { "type": "tool_use", "name": "TodoWrite", "input": { "todos": [] } },
         ]}}));
         assert_eq!(activity, vec![
-            Activity::Tool { name: "Read".into(), target: Some("/repo/README.md".into()) },
-            Activity::Tool { name: "Bash".into(), target: Some("ls -la".into()) },
-            Activity::Tool { name: "TodoWrite".into(), target: None },
+            Activity::Tool { name: "Read".into(), target: Some("/repo/README.md".into()), label: None, background: false },
+            Activity::Tool { name: "Bash".into(), target: Some("ls -la".into()), label: None, background: false },
+            Activity::Tool { name: "TodoWrite".into(), target: None, label: None, background: false },
         ]);
+    }
+
+    #[test]
+    fn a_command_reads_as_its_description_and_one_in_the_background_runs_until_its_task_ends() {
+        let mut collector = TurnCollector::new();
+        let started = collector.on_event(&json!({ "type": "assistant", "message": { "content": [
+            { "type": "tool_use", "id": "toolu_1", "name": "Bash", "input": { "command": "cargo test -p equipe-desktop", "description": "Run the desktop tests" } },
+            { "type": "tool_use", "id": "toolu_2", "name": "Bash", "input": { "command": "until git log -1 | grep -q x; do sleep 30; done", "description": "Watch for a new commit or deployment", "run_in_background": true } },
+            { "type": "tool_use", "id": "toolu_3", "name": "Read", "input": { "file_path": "/w/a.rs", "description": "not a command's" } },
+        ]}}));
+        assert_eq!(started, vec![
+            Activity::Tool { name: "Bash".into(), target: Some("cargo test -p equipe-desktop".into()), label: Some("Run the desktop tests".into()), background: false },
+            Activity::Tool { name: "Bash".into(), target: Some("until git log -1 | grep -q x; do sleep 30; done".into()), label: Some("Watch for a new commit or deployment".into()), background: true },
+            Activity::Tool { name: "Read".into(), target: Some("/w/a.rs".into()), label: None, background: false },
+        ]);
+        // The one in the background answers at once: not done yet.
+        let answered = collector.on_event(&json!({ "type": "user", "message": { "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_1", "content": "ok" },
+            { "type": "tool_result", "tool_use_id": "toolu_2", "content": "Command running in background with ID: b1" },
+        ]}}));
+        let done: Vec<&str> = answered.iter().filter_map(|a| if let Activity::ToolDone(d) = a { d.target.as_deref() } else { None }).collect();
+        assert_eq!(done, ["cargo test -p equipe-desktop"]);
+        // Its task ends: now it is.
+        let other = collector.on_event(&json!({ "type": "system", "subtype": "task_notification", "tool_use_id": "toolu_9", "status": "completed" }));
+        assert!(other.is_empty(), "not one of ours");
+        let ended = collector.on_event(&json!({ "type": "system", "subtype": "task_notification", "task_id": "b1", "tool_use_id": "toolu_2", "status": "completed", "summary": "New commit 6ad5f11" }));
+        let [Activity::ToolDone(done)] = ended.as_slice() else { panic!("{ended:?}") };
+        assert!(done.ok && done.name == "Bash" && done.output == "New commit 6ad5f11", "{done:?}");
+        assert_eq!(done.target.as_deref(), Some("until git log -1 | grep -q x; do sleep 30; done"));
+        let failed = {
+            let mut c = TurnCollector::new();
+            c.on_event(&json!({ "type": "assistant", "message": { "content": [{ "type": "tool_use", "id": "t", "name": "Bash", "input": { "command": "x", "run_in_background": true } }] }}));
+            c.on_event(&json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "tool_use_id": "t", "content": "started" }] }}));
+            c.on_event(&json!({ "type": "system", "subtype": "task_notification", "tool_use_id": "t", "status": "failed" }))
+        };
+        assert!(matches!(failed.as_slice(), [Activity::ToolDone(d)] if !d.ok));
     }
 
     #[test]
@@ -1113,10 +1358,10 @@ mod tests {
         ]}}));
         // The member's own step (shown in its conversation), and the subagent followed.
         assert_eq!(started, vec![
-            Activity::Tool { name: "Agent".into(), target: Some("Run the iOS tests".into()) },
-            Activity::Tool { name: "Task".into(), target: Some("Read the logs".into()) },
-            Activity::SubagentStarted { id: "toolu_1".into(), what: "Run the iOS tests".into() },
-            Activity::SubagentStarted { id: "toolu_2".into(), what: "Read the logs".into() },
+            Activity::Tool { name: "Agent".into(), target: Some("Run the iOS tests".into()), label: None, background: false },
+            Activity::Tool { name: "Task".into(), target: Some("Read the logs".into()), label: None, background: false },
+            Activity::SubagentStarted { id: "toolu_1".into(), what: "Run the iOS tests".into(), brief: "…".into() },
+            Activity::SubagentStarted { id: "toolu_2".into(), what: "Read the logs".into(), brief: "…".into() },
         ]);
         // A subagent's own steps are its, not the member's.
         let step = collector.on_event(&json!({ "type": "assistant", "parent_tool_use_id": "toolu_1", "message": { "content": [
@@ -1130,7 +1375,7 @@ mod tests {
             { "type": "tool_result", "tool_use_id": "toolu_1", "content": "12 passed" },
         ]}}));
         let ended: Vec<Activity> = ended.into_iter().filter(|a| !matches!(a, Activity::ToolDone(_))).collect();
-        assert_eq!(ended, vec![Activity::SubagentEnded { id: "toolu_1".into() }]);
+        assert_eq!(ended, vec![Activity::SubagentEnded { id: "toolu_1".into(), result: Some("12 passed".into()), failed: false }]);
 
         // One run in the background answers at once, and hands back later.
         let launched = collector.on_event(&json!({ "type": "user", "message": { "content": [
@@ -1141,8 +1386,41 @@ mod tests {
         let progress = collector.on_event(&json!({ "type": "system", "subtype": "task_progress", "tool_use_id": "toolu_2", "description": "Reading build.log" }));
         assert_eq!(progress, vec![Activity::SubagentStep { id: "toolu_2".into(), step: "Reading build.log".into() }]);
         let done = collector.on_event(&json!({ "type": "system", "subtype": "task_notification", "tool_use_id": "toolu_2", "status": "completed" }));
-        assert_eq!(done, vec![Activity::SubagentEnded { id: "toolu_2".into() }]);
+        assert_eq!(done, vec![Activity::SubagentEnded { id: "toolu_2".into(), result: None, failed: false }]);
         assert!(collector.on_event(&json!({ "type": "system", "subtype": "task_notification", "tool_use_id": "toolu_2" })).is_empty(), "once");
+    }
+
+    #[test]
+    fn a_subagents_brief_words_steps_and_result_are_kept_for_a_look_inside() {
+        let mut collector = TurnCollector::new();
+        let started = collector.on_event(&json!({ "type": "assistant", "parent_tool_use_id": null, "message": { "content": [
+            { "type": "tool_use", "id": "toolu_1", "name": "Agent", "input": { "description": "Capture 3 landings", "prompt": "Open linear.app, vercel.com and arc.net; capture each hero." } },
+        ]}}));
+        assert!(started.contains(&Activity::SubagentStarted { id: "toolu_1".into(), what: "Capture 3 landings".into(), brief: "Open linear.app, vercel.com and arc.net; capture each hero.".into() }));
+        // Its words and a step, as its own.
+        let said = collector.on_event(&json!({ "type": "assistant", "parent_tool_use_id": "toolu_1", "message": { "content": [
+            { "type": "text", "text": "Starting with linear.app." },
+            { "type": "tool_use", "id": "toolu_9", "name": "Bash", "input": { "command": "ls shots" } },
+        ]}}));
+        assert_eq!(said, vec![
+            Activity::SubagentText { id: "toolu_1".into(), text: "Starting with linear.app.".into() },
+            Activity::SubagentStep { id: "toolu_1".into(), step: "Bash ls shots".into() },
+        ]);
+        // Its call answered: the subagent's, never the member's.
+        let answered = collector.on_event(&json!({ "type": "user", "parent_tool_use_id": "toolu_1", "message": { "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_9", "content": "linear.png" },
+        ]}}));
+        match answered.as_slice() {
+            [Activity::SubagentTool { id, done }] => {
+                assert_eq!((id.as_str(), done.name.as_str(), done.target.as_deref(), done.ok, done.output.as_str()), ("toolu_1", "Bash", Some("ls shots"), true, "linear.png"));
+            }
+            other => panic!("{other:?}"),
+        }
+        // It hands back: what it found, or that it failed.
+        let back = collector.on_event(&json!({ "type": "user", "message": { "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_1", "is_error": true, "content": "couldn't reach arc.net" },
+        ]}}));
+        assert!(back.contains(&Activity::SubagentEnded { id: "toolu_1".into(), result: Some("couldn't reach arc.net".into()), failed: true }), "{back:?}");
     }
 
     #[test]
@@ -1178,6 +1456,47 @@ mod tests {
         assert_eq!(parse_suggestion(&result(&"x".repeat(300))), None, "a speech isn't a suggestion");
         assert_eq!(parse_suggestion(&json!({"is_error": true, "result": "Not logged in"}).to_string()), None);
         assert_eq!(parse_suggestion("not json"), None);
+    }
+
+    #[test]
+    fn a_fork_continues_a_copy_of_the_conversation_with_only_the_tools_named() {
+        let tools = ["Read".to_owned(), "WebSearch".to_owned()];
+        let args = turn_args(&TurnRequest { prompt: "x", resume: Some("sess-1"), fork: true, tools: &tools, ..Default::default() });
+        assert!(args.windows(2).any(|w| w[0] == "--resume" && w[1] == "sess-1"));
+        assert!(args.iter().any(|a| a == "--fork-session"), "a new session; the original's stays as it was: {args:?}");
+        assert!(args.windows(2).any(|w| w[0] == "--tools" && w[1] == "Read,WebSearch"), "no other tool exists for it: {args:?}");
+        // Nothing to fork from: a fresh conversation, still with only those tools.
+        let fresh = turn_args(&TurnRequest { prompt: "x", fork: true, tools: &tools, ..Default::default() });
+        assert!(!fresh.iter().any(|a| a == "--fork-session" || a == "--resume"), "{fresh:?}");
+        // A member's turn: its own conversation, Claude Code's whole tool set.
+        let member = turn_args(&TurnRequest { prompt: "x", resume: Some("sess-1"), ..Default::default() });
+        assert!(!member.iter().any(|a| a == "--fork-session" || a == "--tools"), "{member:?}");
+    }
+
+    #[test]
+    fn a_skill_step_names_the_skill_it_opens() {
+        assert_eq!(tool_target("Skill", Some(&json!({ "skill": "equipe:design-process" }))).as_deref(), Some("equipe:design-process"));
+    }
+
+    #[test]
+    fn a_web_search_says_what_it_looked_for_and_the_pages_it_found() {
+        let mut collector = TurnCollector::new();
+        let started = collector.on_event(&json!({ "type": "assistant", "message": { "content": [
+            { "type": "tool_use", "id": "w1", "name": "WebSearch", "input": { "query": "rust 2027 edition" } },
+            { "type": "tool_use", "id": "w2", "name": "WebSearch", "input": { "query": "gpui text selection" } },
+        ] } }));
+        assert_eq!(started[0], Activity::Tool { name: "WebSearch".into(), target: Some("rust 2027 edition".into()), label: None, background: false });
+        // The pages, from Claude Code's structured answer…
+        let done = done_of(collector.on_event(&json!({ "type": "user",
+            "tool_use_result": { "query": "rust 2027 edition", "results": [
+                { "tool_use_id": "srv1", "content": [{ "title": "Rust Blog", "url": "https://blog.rust-lang.org/x" }, { "title": "The [edition] guide", "url": "https://doc.rust-lang.org/edition-guide/" }] },
+                "A summary the model reads." ] },
+            "message": { "content": [{ "type": "tool_result", "tool_use_id": "w1", "content": "Web search results for query: \"rust 2027 edition\"\n\nLinks: [...]" }] } })));
+        assert_eq!(done[0].output, "- [Rust Blog](https://blog.rust-lang.org/x)\n- [The edition guide](https://doc.rust-lang.org/edition-guide/)");
+        // …or from its words, when that is all there is.
+        let done = done_of(collector.on_event(&json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "tool_use_id": "w2",
+            "content": "Web search results for query: \"gpui text selection\"\n\nLinks: [{\"title\":\"gpui docs\",\"url\":\"https://gpui.rs\"}]\n\nMore words." }] } })));
+        assert_eq!(done[0].output, "- [gpui docs](https://gpui.rs)");
     }
 
     #[test]
@@ -1252,6 +1571,17 @@ mod tests {
         assert!(!args.iter().any(|a| a == "x"));
     }
 
+    #[test]
+    fn equipes_guard_is_asked_before_each_call_in_the_members_settings() {
+        let hooks = json!({ "PreToolUse": [{ "matcher": "Bash|Edit", "hooks": [{ "type": "command", "command": "/opt/equipe hook --work /w" }] }] });
+        let args = turn_args(&TurnRequest { prompt: "x", hooks: Some(&hooks), ..Default::default() });
+        let at = args.iter().position(|a| a == "--settings").expect("settings passed");
+        let settings: Value = serde_json::from_str(&args[at + 1]).unwrap();
+        assert_eq!(settings["hooks"], hooks);
+        let none = turn_args(&TurnRequest { prompt: "x", ..Default::default() });
+        assert!(!none.iter().any(|a| a == "--settings"), "no guard, no settings");
+    }
+
     // ── stream ──
 
     #[test]
@@ -1269,6 +1599,25 @@ mod tests {
         assert_eq!(result.text, "pong");
         assert_eq!(result.status, "completed");
         assert_eq!(result.usage, Some(TurnUsage { input_tokens: Some(10), output_tokens: Some(2), ..Default::default() }));
+    }
+
+    #[test]
+    fn a_turn_counts_its_requests_once_each_and_every_model_it_used() {
+        let message = |id: &str, parent: Option<&str>| json!({ "type": "assistant", "parent_tool_use_id": parent, "message": { "id": id, "content": [{ "type": "text", "text": "x" }], "usage": { "input_tokens": 1, "output_tokens": 1 } } });
+        let result = json!({ "type": "result", "subtype": "success", "is_error": false, "result": "ok",
+            "usage": { "input_tokens": 10, "output_tokens": 20, "cache_read_input_tokens": 900, "cache_creation_input_tokens": 300, "cache_creation": { "ephemeral_1h_input_tokens": 300, "ephemeral_5m_input_tokens": 0 } },
+            "modelUsage": {
+                "claude-opus-5-5": { "inputTokens": 10, "outputTokens": 20, "cacheReadInputTokens": 900, "cacheCreationInputTokens": 300, "contextWindow": 1000000 },
+                "claude-haiku-5-5": { "inputTokens": 5, "outputTokens": 7, "cacheReadInputTokens": 100, "cacheCreationInputTokens": 0 }
+            } });
+        // A message comes once per content block; a subagent's requests count too.
+        let (_, turn) = collect(&[message("m1", None), message("m1", None), message("m2", None), message("s1", Some("toolu_1")), result]);
+        let usage = turn.unwrap().usage.unwrap();
+        assert_eq!(usage.calls, Some(3));
+        assert_eq!((usage.input_tokens, usage.output_tokens), (Some(15), Some(27)), "every model's, the subagent's Haiku among them");
+        assert_eq!((usage.cache_read_tokens, usage.cache_write_tokens, usage.cache_write_long_tokens), (Some(1000), Some(300), Some(300)));
+        assert_eq!(usage.cache_tokens, Some(1300), "the sum, as before");
+        assert_eq!(usage.context_window, Some(1_000_000));
     }
 
     #[test]
@@ -1294,6 +1643,34 @@ mod tests {
         })]);
         let err = result.unwrap_err();
         assert!(err.to_string().contains("Not logged in"));
+    }
+
+    #[test]
+    fn compacting_the_conversation_is_said_once_and_its_end_too() {
+        // As Claude Code 2.1.308 printed them on an automatic compaction (2026-10-27),
+        // ids cut: its status repeats while the summary streams.
+        let lines = [
+            r#"{"type":"system","subtype":"status","status":"compacting","compact_output_chars":0,"session_id":"s"}"#,
+            r#"{"type":"system","subtype":"status","status":"compacting","compact_output_chars":812,"session_id":"s"}"#,
+            r#"{"type":"system","subtype":"status","status":null,"compact_result":"success","session_id":"s"}"#,
+            r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto","pre_tokens":40409,"post_tokens":7753,"duration_ms":12361},"session_id":"s"}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"This session is being continued from a previous conversation"}]},"isSynthetic":true,"session_id":"s"}"#,
+        ];
+        let mut collector = TurnCollector::new();
+        let seen: Vec<Activity> = lines.iter().flat_map(|l| collector.on_event(&serde_json::from_str(l).unwrap())).collect();
+        assert_eq!(seen, vec![Activity::Compacting, Activity::Compacted]);
+        // The summary it goes on from is not a message of the person's: a steer read next is still one.
+        let replay = |text: &str| json!({ "type": "user", "isReplay": true, "message": { "role": "user", "content": text } });
+        assert!(collector.on_event(&replay("the prompt")).is_empty());
+        assert_eq!(collector.on_event(&replay("and the nav")), vec![Activity::Steered("and the nav".into())]);
+
+        let mut collector = TurnCollector::new();
+        let _ = collector.on_event(&json!({ "type": "system", "subtype": "status", "status": "compacting" }));
+        let failed = collector.on_event(&json!({ "type": "system", "subtype": "status", "status": null, "compact_result": "failed", "compact_error": "Not enough messages to compact." }));
+        assert_eq!(failed, vec![Activity::CompactFailed("Not enough messages to compact.".into())]);
+        // Any other status says nothing.
+        assert!(collector.on_event(&json!({ "type": "system", "subtype": "status", "status": "requesting" })).is_empty());
+        assert!(collector.on_event(&json!({ "type": "system", "subtype": "status", "status": null })).is_empty());
     }
 
     #[test]

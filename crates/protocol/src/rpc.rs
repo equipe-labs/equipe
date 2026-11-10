@@ -26,8 +26,26 @@
 //!   whole or as a thumbnail; only after `hello`, for the squad followed
 //! - `list_images` (request): [`ListImages`] → [`ImageList`], the pictures in a
 //!   folder a reply points at; only after `hello`, for the squad followed
+//! - `design_studio` (request): [`crate::studio::StudioAsk`] →
+//!   [`crate::studio::Studio`], what a ticket's worktree holds of its design
+//!   work (checks, directions, critiques, references), read from inside its
+//!   design folder only; only after `hello`, for the squad followed
 //! - `browser_stream` (request): the connection becomes the browser panel's
 //!   picture stream ([`crate::stream`])
+//! - `telemetry` (request): → [`crate::telemetry::TelemetryStatus`], whether
+//!   anonymous usage events are sent (docs/TELEMETRY.md)
+//! - `telemetry_set` (request): [`crate::telemetry::SetTelemetry`] →
+//!   [`crate::telemetry::TelemetryStatus`], the person's yes or no
+//! - `metrics.sources`, `metrics.connect`, `metrics.disconnect`,
+//!   `metrics.refresh`, `metrics.query`, `metrics.summary` (requests): the
+//!   product's numbers, [`crate::metrics`] (docs/METRICS.md)
+//! - `screen_look` (notification, screen → daemon): [`crate::look::ScreenLook`],
+//!   the look the screen shows the app in and which app it is — told after
+//!   `hello` and again when it changes or the person uses the screen; kept
+//!   per machine for the squad followed
+//! - `person_look` (request): → [`crate::look::PersonLook`], the look of the
+//!   screen the person used last, following any squad (none: no screen ever
+//!   said) — the UI map's real view is shot in it
 //! - `attached` (notification, `equipe attach --stdio` → screen): [`Attached`],
 //!   the first line a screen reads through the bridge, before anything the
 //!   daemon says
@@ -49,6 +67,11 @@ pub const UPLOAD: &str = "upload";
 pub const READ_UPLOAD: &str = "read_upload";
 pub const READ_IMAGE: &str = "read_image";
 pub const LIST_IMAGES: &str = "list_images";
+pub const DESIGN_STUDIO: &str = "design_studio";
+pub const TELEMETRY: &str = "telemetry";
+pub const TELEMETRY_SET: &str = "telemetry_set";
+pub const SCREEN_LOOK: &str = "screen_look";
+pub const PERSON_LOOK: &str = "person_look";
 
 /// The wire's version: bumped when a change would break a screen built
 /// against the one before (a method or a field it relies on removed or
@@ -56,8 +79,12 @@ pub const LIST_IMAGES: &str = "list_images";
 pub const PROTOCOL: u32 = 1;
 
 pub const DESKTOP: &str = "desktop";
+/// A member's phone tool call (`mcp__phone__…`): a [`ToolCall`], answered with a [`ToolResult`].
+pub const PHONE: &str = "phone";
 /// Who is busy: members mid-turn and requests waiting for the person.
 pub const BUSY: &str = "busy";
+/// How the daemon runs, as it sees itself: [`Runs`].
+pub const RUNS: &str = "runs";
 /// What uses the disk (`equipe disk`): → [`crate::disk::DiskReport`].
 pub const DISK: &str = "disk";
 /// Give back items of the daemon's look at the disk: [`DiskClean`] →
@@ -118,6 +145,11 @@ pub struct HelloParams {
     /// may be looking at. An older screen, or one without a panel: `false`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub browser_panel: bool,
+    /// The screen is a phone (the equipe app, through the relay): the person
+    /// reads members' answers to what they send from it on a small screen,
+    /// and members are told so ([`crate::Command::OnPhone`]). Others: `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub phone: bool,
 }
 
 /// A member calling one of its board tools.
@@ -266,7 +298,8 @@ pub struct ReadImage {
 /// was asked for smaller, or too big to send whole.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageRead {
-    /// `image/png`, `image/jpeg`, `image/webp`, `image/gif`, `image/svg+xml`.
+    /// `image/png`, `image/jpeg`, `image/webp`, `image/gif`, `image/svg+xml`;
+    /// `text/html` for an HTML card's kept page (docs/VISUALS.md).
     pub mime: String,
     pub size: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -309,6 +342,8 @@ pub enum ImageWhy {
     /// No such file — on disk, or on the ticket's branch.
     Missing,
     TooBig,
+    /// Saved somewhere screens aren't given pictures from.
+    Outside,
     /// Anything else: not a picture, not one the squad shows, no answer.
     Unreadable,
 }
@@ -319,6 +354,8 @@ pub const IMAGE_MISSING: &str = "no such file";
 pub const IMAGE_NOT_ON_BRANCH: &str = "no such file on its branch";
 /// …that is too big ("bigger than 30 MB").
 pub const IMAGE_TOO_BIG: &str = "bigger than";
+/// …that is saved outside every folder screens are given pictures from.
+pub const IMAGE_OUTSIDE: &str = "outside your worktree";
 
 impl ImageWhy {
     pub fn of(message: &str) -> Self {
@@ -326,6 +363,8 @@ impl ImageWhy {
             Self::Missing
         } else if message.contains(IMAGE_TOO_BIG) {
             Self::TooBig
+        } else if message.contains(IMAGE_OUTSIDE) {
+            Self::Outside
         } else {
             Self::Unreadable
         }
@@ -361,6 +400,26 @@ pub struct Busy {
     /// when. The rest is then unknown, and empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stalled: Option<Stall>,
+}
+
+/// How the daemon runs, as it sees itself — what `equipe daemon status`
+/// and a restart tell: a daemon started from an SSH connection runs in that
+/// connection's session, which the Mac's login Keychain is closed to.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Runs {
+    pub pid: u32,
+    /// Its own environment carries an SSH connection's (`SSH_CONNECTION`,
+    /// `SSH_TTY`): it was started from one, not by its login service.
+    pub ssh: bool,
+    /// Started by its login service (launchd's job, systemd's unit).
+    #[serde(default)]
+    pub service: bool,
+    /// Inside the Mac's login session; `None`: not a Mac, or it couldn't tell.
+    #[serde(default)]
+    pub login_session: Option<bool>,
+    /// The login Keychain open to it; `None`: not a Mac, or it couldn't tell.
+    #[serde(default)]
+    pub keychain: Option<bool>,
 }
 
 /// A step of the daemon's core that hasn't ended.
@@ -458,7 +517,7 @@ mod tests {
 
     #[test]
     fn requests_and_responses_pair_by_id() {
-        let req = Message::request(7, HELLO, HelloParams { version: "1".into(), squad: "acme".into(), lang: None, browser_panel: false });
+        let req = Message::request(7, HELLO, HelloParams { version: "1".into(), squad: "acme".into(), lang: None, browser_panel: false, phone: false });
         let res = Message::response(7, Hello { version: "1".into(), snapshot: Default::default() });
         assert_eq!(req.id, res.id);
         assert!(res.result_as::<Hello>().is_some());

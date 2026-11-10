@@ -2,7 +2,8 @@
 //! as the window has them: asked of the daemon (`read_image`), on this Mac
 //! or another alike, so they come only when the daemon says the squad shows
 //! them; a thumbnail first, and the picture whole once it is opened big,
-//! the whole ones kept within a budget. And how they lay out: the options'
+//! the whole ones kept within a budget, and every one ready to draw within
+//! another (what GPUI decoded let go with it). And how they lay out: the options'
 //! grid, a hand-in's gallery, the strip under a news line, the big view's
 //! ←/→. No UI types beyond the image, so the rules are tested without a window.
 //!
@@ -10,9 +11,10 @@
 //! column's width (`Size::Inline`), and the pictures of a folder it names
 //! (`list_images`), listed once.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use equipe_core::protocol::TicketId;
 use equipe_core::protocol::decide::Question;
@@ -40,6 +42,14 @@ pub const STRIP: f32 = 64.;
 pub const STRIP_MAX: usize = 4;
 /// Pictures kept whole, at most this many bytes all told.
 const WHOLE_BUDGET: usize = 96 << 20;
+/// Pictures ready to draw, at most about this many bytes all told as GPUI
+/// holds them — decoded, four bytes a pixel, and once more in each window's
+/// atlas. Past it, those not drawn lately go, least lately drawn first, and
+/// GPUI's copies with them; one drawn again is asked for again. Without it a
+/// long day's pictures stayed decoded for good, 4–16 MB each, twice.
+const DRAWN_BUDGET: usize = 96 << 20;
+/// A picture drawn this recently stays, whatever the budget: it may be on show.
+pub const DRAWN_LATELY: Duration = Duration::from_secs(10);
 /// A picture in a reply: its longer side in pixels, for the column at 2x.
 pub const INLINE: u32 = 1280;
 /// A picture in a reply is never taller than this, in points…
@@ -99,6 +109,22 @@ pub struct Shot {
     pub at: Instant,
 }
 
+impl Shot {
+    /// About how many bytes it takes decoded, asked for at `size`: four a
+    /// pixel, the file's size brought within the size's side.
+    fn decoded(&self, size: Size) -> usize {
+        let side = size.side() as f64;
+        match self.dims {
+            Some((w, h)) if w > 0 && h > 0 => {
+                let k = (side / w.max(h) as f64).min(1.);
+                ((w as f64 * k).ceil() * (h as f64 * k).ceil() * 4.) as usize
+            }
+            // An SVG's size isn't known: as if 4:3 at the side.
+            _ => (side * side * 3.) as usize,
+        }
+    }
+}
+
 /// Every picture the window has asked about, by its path on the daemon's
 /// machine and size; and how wide each grid was last drawn.
 #[derive(Debug, Default)]
@@ -119,6 +145,16 @@ pub struct Visuals {
     rows: HashMap<String, HashSet<u64>>,
     /// Hand-in galleries whose assets the person unfolded.
     pub unfolded: HashSet<u64>,
+    /// When each picture was last asked about at each size — as it is drawn.
+    used: RefCell<HashMap<(String, Size), Instant>>,
+    /// What the ready pictures take decoded, all told ([`DRAWN_BUDGET`]).
+    drawn_bytes: usize,
+    /// Each picture's size, kept when it goes: drawn again, it holds its place.
+    dims: HashMap<String, (u32, u32)>,
+    /// Pictures let go: GPUI's copies of them go too ([`Self::take_released`]).
+    released: Vec<Arc<Image>>,
+    /// A later [`Self::trim`] is on its way.
+    pub trimming: bool,
 }
 
 impl Visuals {
@@ -126,6 +162,7 @@ impl Visuals {
     pub fn look(&mut self, path: &str, size: Size) -> Look {
         let key = (path.to_owned(), size);
         if let Some(look) = self.shown.get(&key) {
+            self.used.borrow_mut().insert(key, Instant::now());
             return look.clone();
         }
         self.shown.insert(key, Look::Loading);
@@ -135,15 +172,35 @@ impl Visuals {
 
     /// What `path` shows at `size` now, without asking for it.
     pub fn known(&self, path: &str, size: Size) -> Option<&Look> {
-        self.shown.get(&(path.to_owned(), size))
+        let key = (path.to_owned(), size);
+        let look = self.shown.get(&key);
+        if look.is_some() {
+            self.used.borrow_mut().insert(key, Instant::now());
+        }
+        look
     }
 
     /// The best of `path` there is: whole when it came, else the reply's, else its thumbnail.
     pub fn best(&self, path: &str) -> Option<Shot> {
         [Size::Full, Size::Inline, Size::Thumb].into_iter().find_map(|size| match self.shown.get(&(path.to_owned(), size)) {
-            Some(Look::Ready(shot)) => Some(shot.clone()),
+            Some(Look::Ready(shot)) => {
+                self.used.borrow_mut().insert((path.to_owned(), size), Instant::now());
+                Some(shot.clone())
+            }
             _ => None,
         })
+    }
+
+    /// `path`'s size in pixels, as any copy of it that came said — kept after
+    /// the copies themselves went.
+    pub fn dims(&self, path: &str) -> Option<(u32, u32)> {
+        self.best(path).and_then(|s| s.dims).or_else(|| self.dims.get(path).copied())
+    }
+
+    /// The pictures let go since last asked: GPUI's decoded copies of them
+    /// and their atlas tiles are to go too.
+    pub fn take_released(&mut self) -> Vec<Arc<Image>> {
+        std::mem::take(&mut self.released)
     }
 
     /// Whether `path` turned out not to be there.
@@ -201,19 +258,80 @@ impl Visuals {
     /// What `path` shows at `size` from now on. Whole pictures past the
     /// budget are let go, oldest first (asked again when opened again).
     pub fn put(&mut self, path: &str, size: Size, look: Look) {
-        if size == Size::Full
-            && let Look::Ready(shot) = &look
-        {
-            self.whole.retain(|p| p != path);
-            self.whole.push_back(path.to_owned());
-            self.whole_bytes += shot.bytes;
+        let key = (path.to_owned(), size);
+        if let Some(Look::Ready(old)) = self.shown.get(&key) {
+            self.drawn_bytes = self.drawn_bytes.saturating_sub(old.decoded(size));
+            if size == Size::Full {
+                self.whole_bytes = self.whole_bytes.saturating_sub(old.bytes);
+            }
+            if !matches!(&look, Look::Ready(new) if new.image.id == old.image.id) {
+                self.released.push(old.image.clone());
+            }
         }
-        self.shown.insert((path.to_owned(), size), look);
+        if let Look::Ready(shot) = &look {
+            if size == Size::Full {
+                self.whole.retain(|p| p != path);
+                self.whole.push_back(path.to_owned());
+                self.whole_bytes += shot.bytes;
+            }
+            self.drawn_bytes += shot.decoded(size);
+            if let Some(dims) = shot.dims {
+                self.dims.insert(path.to_owned(), dims);
+            }
+            self.used.borrow_mut().insert(key.clone(), Instant::now());
+        }
+        self.shown.insert(key.clone(), look);
         while self.whole_bytes > WHOLE_BUDGET && self.whole.len() > 1 {
             let Some(oldest) = self.whole.pop_front() else { break };
-            if let Some(Look::Ready(shot)) = self.shown.remove(&(oldest, Size::Full)) {
+            self.let_go(&(oldest, Size::Full));
+        }
+        self.trim();
+    }
+
+    /// Pictures past the budget not drawn lately go, least lately drawn
+    /// first. Whether it is still past it: what was drawn lately stays, and
+    /// is let go [`DRAWN_LATELY`] later, if it is not drawn again by then.
+    pub fn trim(&mut self) -> bool {
+        while self.drawn_bytes > DRAWN_BUDGET {
+            let now = Instant::now();
+            let used = self.used.borrow();
+            let oldest = self
+                .shown
+                .iter()
+                .filter(|(_, look)| matches!(look, Look::Ready(_)))
+                .map(|(k, _)| (used.get(k).copied(), k))
+                .filter(|(at, _)| at.is_none_or(|at| now.duration_since(at) >= DRAWN_LATELY))
+                .min_by_key(|(at, _)| *at)
+                .map(|(_, k)| k.clone());
+            drop(used);
+            let Some(oldest) = oldest else { break };
+            if oldest.1 == Size::Full {
+                self.whole.retain(|p| *p != oldest.0);
+            }
+            self.let_go(&oldest);
+        }
+        self.drawn_bytes > DRAWN_BUDGET
+    }
+
+    /// The picture at `key` goes: asked for again when drawn again.
+    fn let_go(&mut self, key: &(String, Size)) {
+        self.used.borrow_mut().remove(key);
+        if let Some(Look::Ready(shot)) = self.shown.remove(key) {
+            if key.1 == Size::Full {
                 self.whole_bytes = self.whole_bytes.saturating_sub(shot.bytes);
             }
+            self.drawn_bytes = self.drawn_bytes.saturating_sub(shot.decoded(key.1));
+            self.released.push(shot.image);
+        }
+    }
+
+    /// `paths` were drawn again under the same names: each is asked for again
+    /// the next time it is drawn.
+    pub fn refresh(&mut self, paths: &[String]) {
+        let keys: Vec<(String, Size)> = self.shown.keys().filter(|(p, _)| paths.contains(p)).cloned().collect();
+        for key in keys {
+            self.let_go(&key);
+            self.shown.remove(&key);
         }
     }
 
@@ -230,7 +348,12 @@ impl Visuals {
 
     /// Another machine or squad: nothing known holds.
     pub fn clear(&mut self) {
-        *self = Self { generation: self.generation + 1, ..Self::default() };
+        let mut released = std::mem::take(&mut self.released);
+        released.extend(self.shown.drain().filter_map(|(_, look)| match look {
+            Look::Ready(shot) => Some(shot.image),
+            _ => None,
+        }));
+        *self = Self { generation: self.generation + 1, released, ..Self::default() };
     }
 
     /// How wide grid `key` was last drawn.
@@ -299,6 +422,24 @@ pub fn grid(width: f32, n: usize) -> Grid {
     let fit = columns(width, n);
     Grid { rows: balance(n, fit), tile: tile_width(width, fit) }
 }
+
+/// [`grid`], with every tile short enough that a whole row — its picture and
+/// its caption — fits `room` points high: where the card is short, smaller
+/// tiles (more to a row) rather than captions cut off under the box below.
+/// Never narrower than [`TILE_SHRUNK`].
+pub fn grid_within(width: f32, n: usize, described: bool, room: f32) -> Grid {
+    let grid = grid(width, n);
+    if tile_height(grid.tile, described) <= room {
+        return grid;
+    }
+    let fixed = tile_height(0., described);
+    let tile = ((room - fixed) / RATIO).floor().max(TILE_SHRUNK).min(grid.tile);
+    let per = per_row(width, tile).min(n.max(1));
+    Grid { rows: balance(n, per), tile }
+}
+
+/// The narrowest a tile gets to fit a short card.
+pub const TILE_SHRUNK: f32 = 120.;
 
 /// `n` tiles in rows of at most `per`, as even as they come: the fuller rows first.
 pub fn balance(n: usize, per: usize) -> Vec<usize> {
@@ -447,29 +588,13 @@ pub fn all_failed(looks: &[Option<&Look>]) -> Option<ImageWhy> {
         }
     }
     let count = |w: ImageWhy| whys.iter().filter(|x| **x == w).count();
-    [ImageWhy::Missing, ImageWhy::TooBig, ImageWhy::Unreadable].into_iter().max_by_key(|w| count(*w))
+    [ImageWhy::Missing, ImageWhy::TooBig, ImageWhy::Outside, ImageWhy::Unreadable].into_iter().max_by_key(|w| count(*w))
 }
 
-/// The words members mark the option they recommend with, in the languages
-/// the person may speak — "(Recommended)", "(추천)".
-const RECOMMENDED: [&str; 14] = [
-    "recommended", "추천", "권장", "おすすめ", "推奨", "推荐", "推薦", "recomendado", "recomendada", "recommandé", "recommandée", "empfohlen", "empfehlung", "best",
-];
-
-/// An option's label without its "(Recommended)", and whether it had one.
+/// A label without the "(Recommended)" a member wrote at its end, in any
+/// language the person may speak, and whether it had one.
 pub fn recommended(label: &str) -> (String, bool) {
-    let trimmed = label.trim_end();
-    for (open, close) in [('(', ')'), ('（', '）')] {
-        if let Some(inner) = trimmed.strip_suffix(close)
-            && let Some(at) = inner.rfind(open)
-        {
-            let word = inner[at + open.len_utf8()..].trim().to_lowercase();
-            if RECOMMENDED.contains(&word.as_str()) {
-                return (inner[..at].trim_end().to_owned(), true);
-            }
-        }
-    }
-    (label.to_owned(), false)
+    equipe_core::protocol::decide::recommended(label)
 }
 
 // ── shown big ──
@@ -493,6 +618,74 @@ pub struct Item {
     pub choice: Option<usize>,
     /// What it is called: the option's label, or the file's name.
     pub label: String,
+}
+
+/// How far the big view is zoomed in on its picture, and where: 1 is the
+/// picture whole in the window; past it, `pan` moves it (px, from centred).
+/// Kept for one picture: another shown starts whole again.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Zoom {
+    pub path: String,
+    pub scale: f32,
+    pub pan: (f32, f32),
+    pub drag: Option<Drag>,
+}
+
+/// A drag under way: where it was pressed, the pan then, and whether it moved.
+pub type Drag = ((f32, f32), (f32, f32), bool);
+
+/// The steps `+` and `−` go through.
+pub const ZOOMS: [f32; 8] = [1., 1.5, 2., 3., 4., 6., 8., 12.];
+
+/// Under this when a pinch ends, the picture goes whole.
+pub const PINCH_SETTLE: f32 = 1.03;
+
+impl Zoom {
+    /// Its scale for `path`: 1 for a picture it wasn't zoomed on.
+    pub fn of(&self, path: &str) -> (f32, (f32, f32)) {
+        if self.path == path && self.scale > 0. { (self.scale, self.pan) } else { (1., (0., 0.)) }
+    }
+
+    /// To `scale` on `path`, keeping the point `at` (px from the view's
+    /// centre) where it is — the pointer's, or the centre's.
+    pub fn set(&mut self, path: &str, scale: f32, at: (f32, f32)) {
+        let (old, pan) = self.of(path);
+        let scale = scale.clamp(ZOOMS[0], ZOOMS[ZOOMS.len() - 1]);
+        let k = scale / old;
+        self.path = path.to_owned();
+        self.scale = scale;
+        self.pan = if scale <= 1. { (0., 0.) } else { (at.0 - (at.0 - pan.0) * k, at.1 - (at.1 - pan.1) * k) };
+    }
+
+    /// One step in or out.
+    pub fn step(&mut self, path: &str, inward: bool, at: (f32, f32)) {
+        let (now, _) = self.of(path);
+        let next = if inward { ZOOMS.iter().copied().find(|z| *z > now + 0.01) } else { ZOOMS.iter().rev().copied().find(|z| *z < now - 0.01) };
+        if let Some(next) = next {
+            self.set(path, next, at);
+        }
+    }
+
+    /// A pinch's share, as the trackpad sends one each frame: the scale grows
+    /// by `delta` of itself (0.1: a tenth bigger), the point `at` kept under
+    /// the fingers. Let go a hair past whole, it settles whole, so the bar
+    /// says Fit rather than 101%.
+    pub fn pinch(&mut self, path: &str, delta: f32, at: (f32, f32), ended: bool) {
+        let (now, _) = self.of(path);
+        let next = if delta.is_finite() { now * (1. + delta).max(0.05) } else { now };
+        self.set(path, next, at);
+        if ended && self.scale < PINCH_SETTLE {
+            self.set(path, 1., at);
+        }
+    }
+
+    /// Kept so the picture (`fit` at scale 1) still covers the view (`room`)
+    /// where it is bigger, and stays centred where it isn't.
+    pub fn clamp(&mut self, fit: (f32, f32), room: (f32, f32)) {
+        let reach = |side: f32, room: f32| ((side * self.scale - room) / 2.).max(0.);
+        let (x, y) = (reach(fit.0, room.0), reach(fit.1, room.1));
+        self.pan = (self.pan.0.clamp(-x, x), self.pan.1.clamp(-y, y));
+    }
 }
 
 /// Pictures shown big over the window, one at a time; ←/→ go through them.
@@ -562,6 +755,125 @@ impl Viewer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_short_card_shows_a_whole_row_of_smaller_tiles_rather_than_cut_captions() {
+        let roomy = grid_within(900., 2, true, 2000.);
+        assert_eq!(roomy, grid(900., 2), "room enough: as before");
+        let short = grid_within(900., 2, true, 260.);
+        assert!(tile_height(short.tile, true) <= 260., "{short:?}");
+        assert!(short.tile < roomy.tile && short.rows == vec![2], "{short:?}");
+        // Never smaller than a tile can be read at.
+        assert_eq!(grid_within(900., 3, true, 40.).tile, TILE_SHRUNK);
+    }
+
+    #[test]
+    fn the_big_view_zooms_in_steps_toward_the_pointer_and_never_off_the_picture() {
+        let mut z = Zoom::default();
+        assert_eq!(z.of("a.png"), (1., (0., 0.)), "whole to start");
+        // In a step at the centre: no pan.
+        z.step("a.png", true, (0., 0.));
+        assert_eq!(z.of("a.png"), (1.5, (0., 0.)));
+        // At a point right of centre: that point stays under the pointer.
+        z.set("a.png", 3., (100., 0.));
+        let (scale, pan) = z.of("a.png");
+        assert_eq!(scale, 3.);
+        assert!((pan.0 - -100.).abs() < 0.01, "{pan:?}: the picture moves left by what grew past the pointer");
+        // Kept to the picture: an 800-wide fit at 3× in a 1000 room reaches 700 each way.
+        z.pan = (-5000., 40.);
+        z.clamp((800., 400.), (1000., 600.));
+        assert_eq!(z.pan, (-700., 40.));
+        // A side that still fits stays centred.
+        z.set("a.png", 1.5, (0., 0.));
+        z.pan = (0., 90.);
+        z.clamp((800., 400.), (1000., 600.));
+        assert_eq!(z.pan.1, 0.);
+        // Out to whole: centred again; and never past the ends.
+        z.set("a.png", 0.2, (300., 300.));
+        assert_eq!(z.of("a.png"), (1., (0., 0.)));
+        z.step("a.png", false, (0., 0.));
+        assert_eq!(z.of("a.png").0, 1.);
+        z.set("a.png", 99., (0., 0.));
+        assert_eq!(z.of("a.png").0, 12.);
+        // Another picture starts whole.
+        assert_eq!(z.of("b.png"), (1., (0., 0.)));
+    }
+
+    /// Where the point `at` (px from the view's centre) is on the picture
+    /// itself, at scale 1: what must stay under the fingers.
+    fn on_picture(z: &Zoom, path: &str, at: (f32, f32)) -> (f32, f32) {
+        let (scale, pan) = z.of(path);
+        ((at.0 - pan.0) / scale, (at.1 - pan.1) / scale)
+    }
+
+    #[test]
+    fn a_pinch_zooms_frame_by_frame_keeping_what_is_under_the_fingers() {
+        let mut z = Zoom::default();
+        let (fit, room) = ((800., 500.), (1000., 600.));
+        let at = (150., -60.);
+        let under = on_picture(&z, "a.png", at);
+        // Twenty small frames in: smooth, every one a little further, none a step.
+        let mut last = 1.;
+        for _ in 0..20 {
+            z.pinch("a.png", 0.04, at, false);
+            let (scale, _) = z.of("a.png");
+            assert!(scale > last && scale - last < 0.1 * scale, "{last} → {scale}");
+            last = scale;
+            let now = on_picture(&z, "a.png", at);
+            assert!((now.0 - under.0).abs() < 0.01 && (now.1 - under.1).abs() < 0.01, "{under:?} drifted to {now:?} at {scale}");
+        }
+        assert!((last - 1.04f32.powi(20)).abs() < 0.01, "{last}");
+        // Kept over the view, it still holds where the picture is bigger than the view.
+        z.clamp(fit, room);
+        let under = on_picture(&z, "a.png", at);
+        z.pinch("a.png", 0.04, at, false);
+        z.clamp(fit, room);
+        let now = on_picture(&z, "a.png", at);
+        assert!((now.0 - under.0).abs() < 0.01 && (now.1 - under.1).abs() < 0.01, "{under:?} → {now:?}");
+        // And out again at another point: that one stays put instead.
+        let at = (-200., 100.);
+        let under = on_picture(&z, "a.png", at);
+        z.pinch("a.png", -0.1, at, false);
+        z.clamp(fit, room);
+        let now = on_picture(&z, "a.png", at);
+        assert!((now.0 - under.0).abs() < 0.01 && (now.1 - under.1).abs() < 0.01, "{under:?} → {now:?}");
+        // The + and − steps go on from wherever the pinch left it.
+        let (pinched, _) = z.of("a.png");
+        z.step("a.png", true, (0., 0.));
+        assert_eq!(z.of("a.png").0, ZOOMS.iter().copied().find(|s| *s > pinched).unwrap());
+    }
+
+    #[test]
+    fn a_pinch_stops_at_whole_and_at_the_most_and_settles_whole_when_let_go_near_it() {
+        let mut z = Zoom::default();
+        // Out past whole: whole, centred — the bar says Fit.
+        z.pinch("a.png", -0.5, (300., 200.), false);
+        assert_eq!(z.of("a.png"), (1., (0., 0.)));
+        // In past the most: the most.
+        for _ in 0..200 {
+            z.pinch("a.png", 0.2, (0., 0.), false);
+        }
+        assert_eq!(z.of("a.png").0, ZOOMS[ZOOMS.len() - 1]);
+        // A wild frame (a whole pinch's worth the other way) neither flips nor breaks it.
+        z.pinch("a.png", -5., (0., 0.), false);
+        assert_eq!(z.of("a.png"), (1., (0., 0.)));
+        z.pinch("a.png", f32::NAN, (0., 0.), false);
+        assert_eq!(z.of("a.png").0, 1.);
+        // Let go a hair past whole: whole; let go well in: kept as it is.
+        z.pinch("a.png", 0.02, (100., 0.), false);
+        z.pinch("a.png", 0., (100., 0.), true);
+        assert_eq!(z.of("a.png"), (1., (0., 0.)));
+        z.pinch("a.png", 0.3, (100., 0.), false);
+        z.pinch("a.png", 0., (100., 0.), true);
+        assert!((z.of("a.png").0 - 1.3).abs() < 0.001);
+        // Pinched out near the edge, the picture is kept over the view, not off it.
+        let (fit, room) = ((800., 500.), (1000., 600.));
+        z.set("a.png", 4., (0., 0.));
+        z.pinch("a.png", -0.5, (-450., 0.), false);
+        z.clamp(fit, room);
+        let (scale, pan) = z.of("a.png");
+        assert!(pan.0.abs() <= (fit.0 * scale - room.0) / 2. + 0.01, "{pan:?} at {scale}");
+    }
     use equipe_core::protocol::decide::Choice;
 
     fn shot(bytes: usize) -> Look {
@@ -599,6 +911,71 @@ mod tests {
         assert!(v.whole_bytes() <= WHOLE_BUDGET);
         assert_eq!(v.best("/w/0.png").unwrap().bytes, 1, "let go whole; the thumbnail stays");
         assert_eq!(v.best("/w/3.png").unwrap().bytes, 40 << 20);
+    }
+
+    /// A screenshot as a reply shows it: 1600×1000, asked for at 1280 — 4 MB decoded.
+    fn screenshot(n: u8) -> Look {
+        Look::Ready(Shot { image: Arc::new(Image::from_bytes(ImageFormat::Png, vec![n; 8])), dims: Some((1600, 1000)), bytes: 300 << 10, at: Instant::now() })
+    }
+
+    /// As if `path` was last drawn a minute ago.
+    fn drawn_long_ago(v: &Visuals, path: &str, size: Size) {
+        let ago = Instant::now().checked_sub(Duration::from_secs(60)).unwrap();
+        v.used.borrow_mut().insert((path.to_owned(), size), ago);
+    }
+
+    #[test]
+    fn pictures_not_drawn_lately_go_past_the_budget_least_lately_drawn_first_and_are_released() {
+        let mut v = Visuals::default();
+        assert_eq!(Shot { image: Arc::new(Image::from_bytes(ImageFormat::Png, vec![])), dims: Some((1600, 1000)), bytes: 0, at: Instant::now() }.decoded(Size::Inline), 1280 * 800 * 4);
+        let n = DRAWN_BUDGET / (1280 * 800 * 4) + 8;
+        for i in 0..n {
+            let path = format!("/w/{i}.png");
+            v.put(&path, Size::Inline, screenshot(i as u8));
+            drawn_long_ago(&v, &path, Size::Inline);
+        }
+        assert!(v.drawn_bytes <= DRAWN_BUDGET, "{} > {DRAWN_BUDGET}", v.drawn_bytes);
+        let released = v.take_released();
+        assert_eq!(released.len(), 8);
+        assert_eq!(released[0].id, Image::from_bytes(ImageFormat::Png, vec![0; 8]).id, "the least lately drawn first");
+        assert!(v.known("/w/0.png", Size::Inline).is_none(), "let go");
+        assert_eq!(v.dims("/w/0.png"), Some((1600, 1000)), "its size kept: it holds its place");
+        assert!(matches!(v.look("/w/0.png", Size::Inline), Look::Loading), "drawn again, asked for again");
+        assert!(matches!(v.look(&format!("/w/{}.png", n - 1), Size::Inline), Look::Ready(_)));
+        assert!(v.take_released().is_empty(), "taken once");
+    }
+
+    #[test]
+    fn pictures_past_the_budget_go_once_not_drawn_lately() {
+        let mut v = Visuals::default();
+        let n = DRAWN_BUDGET / (1280 * 800 * 4) + 3;
+        for i in 0..n {
+            v.put(&format!("/w/{i}.png"), Size::Inline, screenshot(i as u8));
+        }
+        assert!(v.trim(), "all drawn lately: past the budget still");
+        assert!(v.take_released().is_empty());
+        for i in 0..n {
+            drawn_long_ago(&v, &format!("/w/{i}.png"), Size::Inline);
+        }
+        assert!(!v.trim(), "a while later, back within it");
+        assert_eq!(v.take_released().len(), 3);
+    }
+
+    #[test]
+    fn pictures_drawn_lately_stay_past_the_budget_and_a_new_copy_releases_the_old() {
+        let mut v = Visuals::default();
+        let n = DRAWN_BUDGET / (1280 * 800 * 4) + 4;
+        for i in 0..n {
+            v.put(&format!("/w/{i}.png"), Size::Inline, screenshot(i as u8));
+        }
+        assert!(v.drawn_bytes > DRAWN_BUDGET, "all may be on show");
+        assert!(v.take_released().is_empty());
+        v.put("/w/0.png", Size::Inline, screenshot(200));
+        assert_eq!(v.take_released().len(), 1, "the copy it replaced");
+        v.put("/w/0.png", Size::Inline, screenshot(200));
+        assert!(v.take_released().is_empty(), "the same copy again: nothing to let go");
+        v.clear();
+        assert_eq!(v.take_released().len(), n, "another machine: every one goes");
     }
 
     #[test]

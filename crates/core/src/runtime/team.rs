@@ -36,6 +36,10 @@ proposes it to the person."
         let mates: Vec<Mate<'_>> = team.iter().map(|(name, role, on)| Mate { name, role, on: *on }).collect();
         let waiting = self.team_changes.get(squad).cloned().unwrap_or_default();
         let proposal = rules::check(args, &mates, &tickets, &waiting)?;
+        let asked = args.get("asked").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        if let Some(why) = rules::too_soon(&proposal, &mates, &tickets, now_secs(), asked) {
+            return Err(why);
+        }
         let reply = rules::proposed_reply(&proposal);
         let change = proposal.into_change(equipe_protocol::new_session_id(), member, id, now_secs());
         self.team_changes(squad).push(change.clone());
@@ -71,7 +75,9 @@ proposes it to the person."
                         squad: Some(squad.to_owned()),
                     };
                     // What `/add` sends.
+                    self.dispatch_deferred.insert(session);
                     Box::pin(self.handle(Command::Start { session, spec })).await;
+                    self.dispatch_deferred.remove(&session);
                     let Some(name) = self.sessions.get(&session).and_then(|s| s.name().map(str::to_owned)) else { continue };
                     if change.effort.is_some() {
                         Box::pin(self.handle(Command::SetEffort { session, effort: change.effort.clone() })).await;
@@ -87,6 +93,13 @@ proposes it to the person."
                 }
             }
         }
+        if change.change == Change::Add {
+            self.dispatch_to(squad, &members, &change.unblocks).await;
+        }
+        // The preferred pass only considers the new members. Everyone still
+        // free afterwards gets the ordinary board ordering; after a removal,
+        // this also hands back the work the departing member returned.
+        self.dispatch(squad).await;
         self.publish(Event::TeamChangeClosed { squad: squad.to_owned(), id, approved: true, members: members.clone() });
         let names = members.join(", ");
         let (line, shown) = match (change.change, members.is_empty()) {

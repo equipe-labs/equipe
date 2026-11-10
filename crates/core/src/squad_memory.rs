@@ -69,6 +69,11 @@ pub fn facts(folder: &Path) -> Vec<Fact> {
         .collect()
 }
 
+/// A fact's file, read: its frontmatter and its body.
+pub fn parse_fact(file: &str, text: &str) -> Fact {
+    parse(file, text)
+}
+
 fn parse(file: &str, text: &str) -> Fact {
     let stem = file.trim_end_matches(".md").to_owned();
     let mut fact = Fact { file: file.to_owned(), name: stem, description: String::new(), kind: "other".into(), updated: String::new(), body: String::new() };
@@ -107,13 +112,8 @@ fn line(fact: &Fact) -> String {
 
 /// `INDEX.md` for these facts, headed in the person's language.
 pub fn index_text(facts: &[Fact], language: Option<&str>) -> String {
-    let head = if language == Some("Korean") {
-        "# 스쿼드 기억\n\n스쿼드가 함께 아는 것들입니다. 파일 하나에 사실 하나이고, 이 목록은 equipe가 파일들로 만듭니다. \
-파일을 고치거나 지우면 다음 대화부터 모든 멤버에게 반영됩니다. 직접 고친 내용이 우선합니다.\n\n"
-    } else {
-        "# The squad's memory\n\nWhat the squad knows together: one fact per file. equipe makes this list from the files; \
-edit or delete one and every member has it from their next turn. What you write wins.\n\n"
-    };
+    let words = crate::i18n::core(squad_home::named(language));
+    let head = format!("# {}\n\n{}\n\n", words.get("squad_memory.index_title"), words.get("squad_memory.index_intro"));
     let lines: Vec<String> = facts.iter().map(line).collect();
     format!("{head}{}\n", lines.join("\n"))
 }
@@ -156,7 +156,7 @@ pub struct Remember<'a> {
 }
 
 /// A fact's file name: its name, lowercased, with anything that isn't a letter
-/// or a digit made a dash. Korean names stay Korean.
+/// or a digit made a dash. A name in any script stays in it.
 pub fn slug(name: &str) -> String {
     let dashed: String = name.trim().to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
     let slug = dashed.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-");
