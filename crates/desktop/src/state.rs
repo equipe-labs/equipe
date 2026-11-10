@@ -369,6 +369,9 @@ pub struct Model {
     /// How many subagents each member runs at once, where its engine has
     /// them, as the person set it; `None`: each engine's own.
     pub subagents_at_once: Option<u32>,
+    /// How many tickets the squad works at once: by the plans' usage, or
+    /// max at the person's caps. Auto from a daemon that predates it.
+    pub parallel: equipe_core::protocol::lanes::Parallel,
     /// Which engine reviews the designer's work, as the squad set it.
     pub design_reviewer: equipe_core::protocol::engines::Reviewer,
     /// The squad's signals, each with its latest readings.
@@ -565,6 +568,7 @@ impl Model {
             catalogs: HashMap::new(),
             idle_wake_hours: equipe_core::protocol::routines::IDLE_WAKE_HOURS,
             subagents_at_once: None,
+            parallel: Default::default(),
             design_reviewer: Default::default(),
             signals: Vec::new(),
             put_away: Vec::new(),
@@ -1175,6 +1179,7 @@ impl Model {
         // An older daemon says nothing: it wakes nobody, but the setting shows its default.
         self.idle_wake_hours = snapshot.idle_wake_hours.unwrap_or(equipe_core::protocol::routines::IDLE_WAKE_HOURS);
         self.subagents_at_once = snapshot.subagents_at_once;
+        self.parallel = snapshot.parallel;
         self.design_reviewer = snapshot.design_reviewer;
         self.signals = snapshot.signals.clone();
         self.put_away = snapshot.put_away.clone();
@@ -1342,6 +1347,10 @@ impl Model {
             }
             Event::SubagentsAtOnceChanged { squad, at_once } if *squad == self.squad => {
                 self.subagents_at_once = *at_once;
+                self.revision += 1;
+            }
+            Event::ParallelChanged { squad, parallel } if *squad == self.squad => {
+                self.parallel = *parallel;
                 self.revision += 1;
             }
             Event::DesignReviewerChanged { squad, reviewer } if *squad == self.squad => {
@@ -3759,6 +3768,21 @@ mod tests {
         assert_eq!(model.subagents_at_once, Some(4), "another squad's");
         assert!(model.apply(Update::Event(Event::SubagentsAtOnceChanged { squad: "acme".into(), at_once: None }), T0));
         assert_eq!(model.subagents_at_once, None, "back to each engine's own");
+    }
+
+    #[test]
+    fn parallel_work_shows_and_follows_the_daemon_and_an_older_one_reads_as_auto() {
+        use equipe_core::protocol::lanes::Parallel;
+        let mut model = needs_model();
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        assert_eq!(model.parallel, Parallel::default(), "an older daemon says nothing: auto");
+        assert!(model.apply(Update::Event(Event::ParallelChanged { squad: "acme".into(), parallel: Parallel::max(8, 20) }), T0));
+        assert_eq!(model.parallel, Parallel::max(8, 20));
+        model.apply(Update::Event(Event::ParallelChanged { squad: "other".into(), parallel: Parallel::default() }), T0);
+        assert_eq!(model.parallel, Parallel::max(8, 20), "another squad's");
+        let snapshot = Snapshot { squad: "acme".into(), parallel: Parallel::max(3, 9), ..Default::default() };
+        model.apply(Update::Attached(Hello { version: "x".into(), snapshot }), T0);
+        assert_eq!(model.parallel, Parallel::max(3, 9), "the snapshot's on attaching");
     }
 
     #[test]

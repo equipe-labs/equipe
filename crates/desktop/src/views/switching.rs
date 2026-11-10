@@ -90,6 +90,15 @@ impl Shell {
         cx.notify();
     }
 
+    /// How many tickets the squad works at once, from settings or `/parallel`.
+    pub fn set_parallel(&mut self, parallel: equipe_core::protocol::lanes::Parallel, cx: &mut Context<Self>) {
+        let parallel = parallel.clamped();
+        self.model.parallel = parallel;
+        let squad = self.model.squad.clone();
+        self.send_command(equipe_core::protocol::Command::SetParallel { squad, parallel });
+        cx.notify();
+    }
+
     /// "See the recommended setup again": the daemon proposes the setup again.
     pub fn show_engine_setup(&mut self, cx: &mut Context<Self>) {
         let squad = self.model.squad.clone();

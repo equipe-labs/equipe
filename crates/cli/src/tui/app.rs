@@ -1800,7 +1800,7 @@ impl App {
                 self.engines.read(engine, usage);
                 return Vec::new();
             }
-            event @ (Event::EngineProposed { .. } | Event::EngineProposalClosed { .. } | Event::EngineSwitchingChanged { .. }) => {
+            event @ (Event::EngineProposed { .. } | Event::EngineProposalClosed { .. } | Event::EngineSwitchingChanged { .. } | Event::ParallelChanged { .. }) => {
                 self.on_engines_event(event);
                 return Vec::new();
             }
@@ -2863,6 +2863,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             "title" => self.retitle(rest),
             "mode" => self.set_mode(rest),
             "engines" => self.engines_command(rest),
+            "parallel" => self.parallel_command(rest),
             "wake" => self.wake_command(rest),
             "lang" => self.set_lang(rest),
             "close" => match self.agents.get_mut(self.selected) {
@@ -4184,6 +4185,24 @@ mod tests {
         let (mut app, id) = ready();
         app.on_event(Event::ModelKnown { session: id, model: "claude-opus-5-5[1m]".into(), asked: None });
         assert_eq!(app.agents[0].short_model().as_deref(), Some("opus-5-5"));
+    }
+
+    #[test]
+    fn parallel_sets_max_with_its_caps_or_auto_and_follows_the_daemon() {
+        use equipe_core::protocol::lanes::{Parallel, ParallelMode};
+        let (mut app, _, _) = team();
+        let mut run = |app: &mut App, text: &str| {
+            type_text(app, text);
+            enter(app)
+        };
+        assert_eq!(run(&mut app, "/parallel max 8"), vec![Command::SetParallel { squad: "acme".into(), parallel: Parallel::max(8, 16) }]);
+        assert!(app.flash.as_deref().is_some_and(|f| f.contains("8")), "{:?}", app.flash);
+        assert_eq!(run(&mut app, "/parallel auto"), vec![Command::SetParallel { squad: "acme".into(), parallel: Parallel { mode: ParallelMode::Auto, ..Parallel::max(8, 16) } }], "max's caps kept");
+        assert!(run(&mut app, "/parallel max 40").is_empty(), "past the bounds: nothing sent");
+        assert!(app.flash.as_deref().is_some_and(|f| f.contains("/parallel")));
+        assert!(run(&mut app, "/parallel").is_empty());
+        app.on_event(Event::ParallelChanged { squad: "acme".into(), parallel: Parallel::max(3, 9) });
+        assert_eq!(app.engines.parallel, Parallel::max(3, 9));
     }
 
     // ── the team ──

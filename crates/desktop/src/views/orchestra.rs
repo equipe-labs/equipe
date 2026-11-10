@@ -182,7 +182,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     list = list
         .child(place(person_strip(shell, &o.for_you, cx), 20.))
         .child(place(stuck_part(shell, &o, cx), 20.))
-        .child(place(heading(p, t!("orchestra.members"), o.lanes.len()).into_any_element(), 6.));
+        .child(place(heading(p, t!("orchestra.members"), o.lanes.len()).w_full().child(div().flex_1()).child(parallel_mode(shell)).into_any_element(), 6.));
     if o.lanes.is_empty() {
         list = list.child(place(div().py_6().text_size(px(13.)).text_color(p.muted).child(t!("orchestra.empty")).into_any_element(), 0.));
     }
@@ -201,6 +201,21 @@ fn heading(p: Palette, label: &'static str, count: usize) -> Div {
         .text_color(p.text2)
         .child(label)
         .child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(count.to_string()))
+}
+
+/// How many run at once, beside the lanes' heading: the squad's parallel
+/// work (Settings › AI platforms), max in the warning colour — it spends the
+/// plan faster.
+fn parallel_mode(shell: &Shell) -> AnyElement {
+    let p = shell.palette;
+    let parallel = shell.model.parallel;
+    div()
+        .flex_none()
+        .text_size(px(12.))
+        .font_weight(FontWeight::NORMAL)
+        .text_color(if parallel.is_max() { p.orange } else { p.muted })
+        .child(crate::switching::parallel_short(&parallel))
+        .into_any_element()
 }
 
 /// What waits on the person, by kind: a dot and a quiet number each, the

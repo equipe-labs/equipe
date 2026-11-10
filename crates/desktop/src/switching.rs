@@ -10,6 +10,7 @@
 //! window. Only the person's click answers a card.
 
 use equipe_core::protocol::engines::{Move, Proposal, Switching, Why, Window};
+use equipe_core::protocol::lanes::{Parallel, ParallelMode};
 use equipe_core::protocol::{Command, Engine, EnginePlan, PlanUsage, PlanWindow, Snapshot};
 use equipe_core::t;
 
@@ -391,6 +392,30 @@ pub fn mode_about(mode: Switching) -> &'static str {
         Switching::Off => t!("engines.mode_off_about"),
         Switching::Suggest => t!("engines.mode_suggest_about"),
         Switching::Auto => t!("engines.mode_auto_about"),
+    }
+}
+
+/// The squad's parallel work as one word: auto or max.
+pub fn parallel_word(mode: ParallelMode) -> &'static str {
+    match mode {
+        ParallelMode::Auto => t!("parallel.auto"),
+        ParallelMode::Max => t!("parallel.max"),
+    }
+}
+
+/// What the squad's parallel work does, in a line.
+pub fn parallel_about(parallel: &Parallel) -> String {
+    match parallel.mode {
+        ParallelMode::Auto => t!("parallel.auto_about").to_owned(),
+        ParallelMode::Max => t!("parallel.max_caps", per_member = parallel.per_member, per_engine = parallel.per_engine),
+    }
+}
+
+/// The squad's parallel work in a few words, where the lanes are shown.
+pub fn parallel_short(parallel: &Parallel) -> String {
+    match parallel.mode {
+        ParallelMode::Auto => t!("parallel.short_auto").to_owned(),
+        ParallelMode::Max => t!("parallel.short_max", per_member = parallel.per_member, per_engine = parallel.per_engine),
     }
 }
 
@@ -826,5 +851,15 @@ mod tests {
         e.load(&snapshot, NOW);
         assert_eq!(e.plans.iter().map(|p| (p.engine, p.at)).collect::<Vec<_>>(), [(Engine::Claude, NOW)]);
         assert_eq!(e.mode, Switching::Suggest);
+    }
+
+    #[test]
+    fn parallel_work_says_its_mode_and_on_max_its_caps() {
+        // The tests' screens speak Korean.
+        assert_eq!((parallel_word(ParallelMode::Auto), parallel_word(ParallelMode::Max)), ("자동", "최대"));
+        assert_eq!(parallel_short(&Parallel::default()), "병렬: 자동");
+        assert_eq!(parallel_short(&Parallel::max(6, 16)), "병렬: 최대 · 멤버당 6 · 엔진당 16");
+        assert!(parallel_about(&Parallel::max(8, 20)).contains("멤버당 최대 8개, 엔진당 최대 20개"));
+        assert_eq!(parallel_about(&Parallel::default()), "플랜 사용량이 늘수록 한 번에 진행하는 티켓을 줄여요");
     }
 }
