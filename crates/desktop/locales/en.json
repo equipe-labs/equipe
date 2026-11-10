@@ -304,6 +304,7 @@
   "card.done_taken": "Taken · added to the to-dos",
   "card.files.one": "{count} file",
   "card.files.other": "{count} files",
+  "card.loading": "Looking…",
   "card.not_found": "Not found",
   "card.open": "Open",
   "card.plan": "Plan",

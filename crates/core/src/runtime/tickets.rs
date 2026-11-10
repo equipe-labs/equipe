@@ -558,6 +558,10 @@ impl Runtime {
         };
         // When its member said it would be done is the retro's to read, not a line to show.
         entries.retain(|e| e.kind != crate::retro::ESTIMATED);
+        // The ticket itself first: a screen that missed it (a card in a conversation) mends its list from this read.
+        if let Some(ticket) = self.journal(squad).and_then(|j| j.ticket(id).ok().flatten()) {
+            self.publish_in(Some(squad), Event::TicketChanged { squad: squad.to_owned(), ticket });
+        }
         self.publish_in(Some(squad), Event::TicketHistory { squad: squad.to_owned(), ticket: id, entries });
     }
 }

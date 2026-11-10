@@ -300,6 +300,7 @@
   "card.done_pushed": "已合并到 main 并推送",
   "card.done_taken": "已接收 · 已加入待办",
   "card.files.other": "{count} 个文件",
+  "card.loading": "查找中…",
   "card.not_found": "找不到",
   "card.open": "打开",
   "card.plan": "计划",

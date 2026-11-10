@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use equipe_core::protocol::{Ticket, TicketId, TicketStatus};
+use equipe_core::protocol::{Command, Ticket, TicketId, TicketStatus};
 use equipe_core::t;
 use gpui_kit::base::ElementExt as _;
 use gpui_kit::component::{h_flex, v_flex};
@@ -466,6 +466,8 @@ pub struct TicketCard {
     result: Option<SharedString>,
     /// Branches whose size was asked for, as they looked then.
     asked: HashMap<TicketId, (Option<String>, String, Option<bool>)>,
+    /// Numbers the daemon was asked for because this window had no such ticket, and when.
+    looked: HashMap<TicketId, Instant>,
     /// Tickets acted on from a card: their undo shows off the work screens.
     acted: HashSet<TicketId>,
     /// Where the card's text, and its middle (when the window is too short
@@ -483,8 +485,13 @@ pub fn layer(cx: &mut Context<Shell>) -> AnyView {
     if let Some(layer) = cx.try_global::<Layer>() {
         return layer.0.clone().into();
     }
-    let shell = cx.entity().downgrade();
-    let card = cx.new(|_| TicketCard { shell, hover: Hover::default(), timer: None, drawn: Rc::new(Cell::new(None)), result: None, asked: HashMap::new(), acted: HashSet::new(), said: (0, ScrollHandle::new(), ScrollHandle::new()) });
+    let owner = cx.entity();
+    let shell = owner.downgrade();
+    let card = cx.new(|cx| {
+        // The daemon's answer to a lookup changes the shell, not the card: redraw with it.
+        cx.observe(&owner, |_, _, cx| cx.notify()).detach();
+        TicketCard { shell, hover: Hover::default(), timer: None, drawn: Rc::new(Cell::new(None)), result: None, asked: HashMap::new(), looked: HashMap::new(), acted: HashSet::new(), said: (0, ScrollHandle::new(), ScrollHandle::new()) }
+    });
     cx.set_global(Layer(card.clone()));
     gpui_kit::base::text::on_link_hover(cx, |url, bounds, _, cx| {
         if let Some(id) = url.strip_prefix(crate::convo::TICKET_SCHEME).and_then(|n| n.parse().ok()) {
@@ -721,6 +728,7 @@ impl Render for TicketCard {
         }
         let shots = super::visuals::Shots::of(shell, self.shell.clone(), cx);
         let held = shell.shots.clone();
+        let mut wake = None;
         let body = match found {
             Some(t) => {
                 // Each card opens at the top of its text.
@@ -729,9 +737,23 @@ impl Render for TicketCard {
                 }
                 content(shell, t, self.result.clone(), &self.shell, &this, &shots, (&self.said.1, &self.said.2))
             }
-            None => missing(p, target.id),
+            None => {
+                // Not in this window's list is not "not on the board": ask the daemon, which sends the ticket if it has it.
+                let at = *self.looked.entry(target.id).or_insert_with(|| {
+                    shell.send_command(Command::TicketHistory { squad: shell.model.squad.clone(), ticket: target.id });
+                    Instant::now()
+                });
+                let gone = shell.model.absent.contains(&target.id) || at.elapsed() >= LOOK_FOR;
+                if !gone {
+                    wake = Some(at + LOOK_FOR);
+                }
+                missing(p, target.id, gone)
+            }
         };
         let found = found.is_some();
+        if let Some(at) = wake {
+            crate::beat::Beat::wake(cx.entity_id(), at, cx);
+        }
         // Its pictures, asked for once the window's state is let go.
         super::visuals::flush(&held, &self.shell, cx);
         // Placed by its size as last drawn; drawn again when that changes.
@@ -771,8 +793,11 @@ impl Render for TicketCard {
     }
 }
 
-/// "T-999 · Not found": a number the squad has no ticket for.
-fn missing(p: Palette, id: TicketId) -> AnyElement {
+/// How long the daemon has to answer before a number reads "Not found" (an older one may not).
+const LOOK_FOR: Duration = Duration::from_secs(4);
+
+/// "T-999 · Not found": a number the squad has no ticket for — "Looking…" until the daemon says so.
+fn missing(p: Palette, id: TicketId, gone: bool) -> AnyElement {
     h_flex()
         .h(px(34.))
         .px_3()
@@ -781,7 +806,7 @@ fn missing(p: Palette, id: TicketId) -> AnyElement {
         .text_size(px(SMALL))
         .child(div().font_family(MONO).text_size(px(12.)).text_color(p.text2).child(format!("T-{id}")))
         .child(div().text_color(p.muted).child("·"))
-        .child(div().text_color(p.muted).child(t!("card.not_found")))
+        .child(div().text_color(p.muted).child(if gone { t!("card.not_found") } else { t!("card.loading") }))
         .into_any_element()
 }
 

@@ -79,6 +79,8 @@ state("conversation/chat/loading", "chat;say:Where are you up to?;wait:1500", {"
 state("conversation/chat/long", "chat;wait:800", {"FAKE_READING": "1"})
 state("conversation/chat/pictures", "chat;wait:800", {"FAKE_REPLY_IMAGES": "1"}, wait=2500)
 state("conversation/chat/ticket-cards", "chat;wait:800", {"FAKE_CARDS": "1"})
+state("conversation/chat/ticket-card-missing", "chat;wait:800;hover:806,432;wait:1500", {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, label="A ticket card for a number not on the board: Not found")
+state("conversation/chat/ticket-card-recovered", "chat;wait:800;hover:421,432;wait:1500", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42"}, label="A ticket card for a ticket the list missed: looked up, shown")
 state("conversation/chat/ask-list", "chat;wait:800", {"FAKE_ASKLIST": "1"})
 state("conversation/chat/diagram", "chat;say:torture 5;wait:5000", {"FAKE_SECONDS": "1"})
 state("conversation/chat/markdown", "chat;say:torture 1;wait:6000", {"FAKE_SECONDS": "1"})
