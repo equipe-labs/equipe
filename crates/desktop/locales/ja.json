@@ -302,6 +302,7 @@
   "card.files.other": "{count}ファイル",
   "card.loading": "確認中…",
   "card.not_found": "見つかりません",
+  "card.unanswered": "確認できませんでした",
   "card.open": "開く",
   "card.plan": "計画",
   "card.see_changes": "変更を見る",

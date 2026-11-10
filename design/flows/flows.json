@@ -555,6 +555,18 @@
               "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42 FAKE_NO_LOOKUP=1; script `chat;wait:800`"
             },
             {
+              "id": "ticket-card-unanswered",
+              "label": "A ticket card the list missed, the daemon silent for good: Couldn't check, not Not found",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42 FAKE_NO_LOOKUP=1; script `chat;wait:800;hover:421,432;wait:5500`"
+            },
+            {
+              "id": "ticket-card-unanswered-narrow",
+              "label": "The same, at the narrowest width",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42 FAKE_NO_LOOKUP=1; script `chat;wait:800`"
+            },
+            {
               "id": "ask-list",
               "label": "A reply asking a numbered list",
               "kind": "default",

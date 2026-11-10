@@ -302,6 +302,7 @@
   "card.files.other": "파일 {count}개",
   "card.loading": "찾는 중…",
   "card.not_found": "찾을 수 없어요",
+  "card.unanswered": "확인하지 못했어요",
   "card.open": "열기",
   "card.plan": "계획",
   "card.see_changes": "변경 보기",

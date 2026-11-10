@@ -302,6 +302,7 @@
   "card.files.other": "{count} 個檔案",
   "card.loading": "查找中…",
   "card.not_found": "找不到",
+  "card.unanswered": "無法確認",
   "card.open": "開啟",
   "card.plan": "計畫",
   "card.see_changes": "查看變更",

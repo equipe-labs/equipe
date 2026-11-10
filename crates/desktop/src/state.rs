@@ -3170,6 +3170,18 @@ mod tests {
     }
 
     #[test]
+    fn a_late_answer_shows_the_ticket_though_the_first_look_got_none() {
+        let mut model = Model::new("acme");
+        model.apply(Update::Attached(Hello { version: "x".into(), snapshot: Snapshot { squad: "acme".into(), tickets: vec![ticket(1, "todo", None)], ..Default::default() } }), T0);
+        // The lookup for T-42 got no answer: nothing said it is gone.
+        assert!(!model.absent.contains(&42) && model.tickets.iter().all(|t| t.id != 42));
+        // Much later the ticket and its record arrive: the card has its ticket, and nothing reads absent.
+        model.apply(Update::Event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(42, "review", None) }), T0);
+        model.apply(Update::Event(Event::TicketHistory { squad: "acme".into(), ticket: 42, entries: Vec::new() }), T0);
+        assert!(model.tickets.iter().any(|t| t.id == 42) && !model.absent.contains(&42));
+    }
+
+    #[test]
     fn what_waits_is_counted_by_its_project_and_the_counts_add_up() {
         let mut model = Model::new("acme");
         model.projects = vec!["/r/web".into(), "/r/app".into()];

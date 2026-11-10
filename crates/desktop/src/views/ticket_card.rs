@@ -739,8 +739,10 @@ impl Render for TicketCard {
         let Some(target) = self.hover.shown() else {
             self.drawn.set(None);
             self.shape = None;
+            forget_looks(&mut self.looked, None);
             return root;
         };
+        forget_looks(&mut self.looked, Some(target.id));
         let p = shell.palette;
         let found = shell.model.tickets.iter().find(|t| t.id == target.id);
         // The size of the branch, asked of git once per look of the ticket.
@@ -770,11 +772,11 @@ impl Render for TicketCard {
                     shell.send_command(Command::TicketHistory { squad: shell.model.squad.clone(), ticket: target.id });
                     Instant::now()
                 });
-                let gone = shell.model.absent.contains(&target.id) || at.elapsed() >= LOOK_FOR;
-                if !gone {
+                let how = look(shell.model.absent.contains(&target.id), at.elapsed());
+                if how == Look::Looking {
                     wake = Some(at + LOOK_FOR);
                 }
-                missing(p, target.id, gone)
+                missing(p, target.id, how)
             }
         };
         let found = found.is_some();
@@ -868,8 +870,42 @@ const MISSING_MIN: f32 = 150.;
 /// How long the daemon has to answer before a number reads "Not found" (an older one may not).
 const LOOK_FOR: Duration = Duration::from_secs(4);
 
-/// "T-999 · Not found": a number the squad has no ticket for — "Looking…" until the daemon says so.
-fn missing(p: Palette, id: TicketId, gone: bool) -> AnyElement {
+/// What was asked of the daemon lasts as long as its card is shown: closed, or moved on to another, the
+/// next look at the number asks again (a first ask that got no answer is not the last word).
+fn forget_looks(looked: &mut HashMap<TicketId, Instant>, shown: Option<TicketId>) {
+    looked.retain(|id, _| Some(*id) == shown);
+}
+
+/// What a card with no ticket in the window's list says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Look {
+    /// Asked, no answer yet.
+    Looking,
+    /// The daemon answered that it has no such ticket: the only time it reads "Not found".
+    Gone,
+    /// No answer in time (a daemon far off, a line down): not known either way, and asked again next time.
+    Unanswered,
+}
+
+/// How a number the window has no ticket for reads: `absent` (the daemon said it has none), after `asked` long.
+pub fn look(absent: bool, asked: Duration) -> Look {
+    if absent {
+        Look::Gone
+    } else if asked >= LOOK_FOR {
+        Look::Unanswered
+    } else {
+        Look::Looking
+    }
+}
+
+/// "T-999 · Not found" — a number the daemon has no ticket for; "Looking…" until it says so, "Couldn't check" if it never does.
+fn missing(p: Palette, id: TicketId, how: Look) -> AnyElement {
+    // Each reads apart by its mark as well as its words: a turning loader, a crossed circle, a plain "i".
+    let (mark, words) = match how {
+        Look::Looking => (crate::motion::spinner(11., p.muted), t!("card.loading")),
+        Look::Gone => (crate::icons::icon(crate::icons::Icon::XCircle, 12., p.muted).into_any_element(), t!("card.not_found")),
+        Look::Unanswered => (crate::icons::icon(crate::icons::Icon::Info, 12., p.muted).into_any_element(), t!("card.unanswered")),
+    };
     h_flex()
         .h(px(34.))
         .px_3()
@@ -878,9 +914,8 @@ fn missing(p: Palette, id: TicketId, gone: bool) -> AnyElement {
         .text_size(px(SMALL))
         .child(div().font_family(MONO).text_size(px(12.)).text_color(p.text2).child(format!("T-{id}")))
         .child(div().text_color(p.muted).child("·"))
-        // Looking turns; gone is a still mark: the two read apart without the words.
-        .child(if gone { crate::icons::icon(crate::icons::Icon::XCircle, 12., p.muted).into_any_element() } else { crate::motion::spinner(11., p.muted) })
-        .child(div().text_color(p.muted).child(if gone { t!("card.not_found") } else { t!("card.loading") }))
+        .child(mark)
+        .child(div().text_color(p.muted).child(words))
         .into_any_element()
 }
 
@@ -1321,6 +1356,31 @@ mod tests {
         assert!((looking.1 + 36. - (300. - 6.)).abs() < 0.01, "{looking:?}");
         // Where the ticket's card fits below (a link high up), the small one goes below too.
         assert_eq!(fit_for(link(100., 40.), (200., 36.), win, Side::Below, false).0.2, Side::Below);
+    }
+
+    #[test]
+    fn only_the_daemons_no_reads_not_found_and_silence_is_not_that() {
+        use super::{LOOK_FOR, Look, look};
+        let late = LOOK_FOR + Duration::from_secs(60);
+        assert_eq!(look(false, Duration::from_secs(1)), Look::Looking);
+        // No answer however long: not "gone" (it may be on the board, the line slow).
+        assert_eq!(look(false, LOOK_FOR), Look::Unanswered);
+        assert_eq!(look(false, late), Look::Unanswered);
+        // The daemon said it has none: gone, at once or later.
+        assert_eq!(look(true, Duration::ZERO), Look::Gone);
+        assert_eq!(look(true, late), Look::Gone);
+    }
+
+    #[test]
+    fn a_number_is_asked_again_at_the_next_hover() {
+        use super::forget_looks;
+        let mut looked = std::collections::HashMap::from([(42, Instant::now()), (7, Instant::now())]);
+        // Still on T-42: its ask stands, the other's goes.
+        forget_looks(&mut looked, Some(42));
+        assert_eq!(looked.keys().copied().collect::<Vec<_>>(), vec![42]);
+        // The card closed: nothing stands, so the next hover on T-42 sends the lookup again.
+        forget_looks(&mut looked, None);
+        assert!(looked.is_empty());
     }
 
     #[test]

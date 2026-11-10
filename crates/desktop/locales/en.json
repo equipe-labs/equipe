@@ -306,6 +306,7 @@
   "card.files.other": "{count} files",
   "card.loading": "Looking…",
   "card.not_found": "Not found",
+  "card.unanswered": "Couldn't check",
   "card.open": "Open",
   "card.plan": "Plan",
   "card.see_changes": "See changes",
