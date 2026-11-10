@@ -1610,7 +1610,7 @@ mod tests {
         assert!(auto.flash.unwrap().contains("자동"));
         assert_eq!(plan(&model, "/engines off").commands, vec![Command::SetEngineSwitching { squad: "acme".into(), mode: Switching::Off }]);
         assert_eq!(plan(&model, "/engines setup").commands, vec![Command::ShowEngineSetup { squad: "acme".into() }]);
-        assert!(plan(&model, "/engines").flash.unwrap().contains("제안"), "suggest unless the person chose");
+        assert!(plan(&model, "/engines").flash.unwrap().contains("자동"), "on its own unless the person chose");
         assert!(plan(&model, "/engines sometimes").commands.is_empty());
     }
 

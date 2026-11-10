@@ -224,7 +224,9 @@ mod tests {
 
     #[test]
     fn an_older_daemons_plan_is_claudes_and_a_reading_replaces_its_engines() {
-        let snapshot = Snapshot { squad: "acme".into(), plan: Some(PlanUsage { five_hour: Some(PlanWindow { used_percent: 40, resets_at: 9 }), seven_day: None }), ..Default::default() };
+        // As an older daemon sends it: no `plans`, and no `engine_switching` (it left out suggest).
+        let snapshot: Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[],"plan":{"five_hour":{"used_percent":40,"resets_at":9}}}"#).unwrap();
+        assert_eq!(snapshot.plan, Some(PlanUsage { five_hour: Some(PlanWindow { used_percent: 40, resets_at: 9 }), seven_day: None }));
         let mut engines = Engines::from(&snapshot);
         assert_eq!(engines.plans.iter().map(|p| p.engine).collect::<Vec<_>>(), [Engine::Claude]);
         assert_eq!(engines.mode, Switching::Suggest);
