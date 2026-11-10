@@ -67,6 +67,9 @@ mod target;
 mod theme;
 mod routine;
 mod retro;
+// The design system's generated file, included from its source (`design/`), never copied or edited here.
+#[path = "../../../design/build/rust/tokens.rs"]
+mod tokens;
 mod team;
 mod term;
 mod tailnet;
@@ -351,6 +354,13 @@ pub struct Shell {
     jobs: tokio::sync::mpsc::UnboundedSender<(sheet::After, Result<Vec<String>, String>)>,
     /// A sheet over the window (usage, help, changes, memory) and a question asked first.
     pub sheet: Option<sheet::Sheet>,
+    /// The sheet's Close button: keys move there when a sheet opens (`sheet_focused` once they have).
+    pub sheet_focus: FocusHandle,
+    sheet_focused: bool,
+    /// The sidebar is away because the browser panel needed the room (`render`).
+    sidebar_squeezed: bool,
+    /// The buttons a sheet's keys can reach, in Tab order (set as it is drawn).
+    pub sheet_stops: std::rc::Rc<std::cell::RefCell<Vec<FocusHandle>>>,
     pub confirm: Option<sheet::Ask>,
     /// The squad this window asked its daemon to delete, until it answers
     /// (`views/delete_squad.rs`).
@@ -512,6 +522,10 @@ impl Shell {
             notices,
             jobs,
             sheet: None,
+            sheet_focus: cx.focus_handle().tab_stop(true),
+            sheet_focused: false,
+            sidebar_squeezed: false,
+            sheet_stops: Default::default(),
             confirm: None,
             deleting_squad: None,
             pending_team: None,
@@ -673,6 +687,10 @@ impl Shell {
                     cx.stop_propagation();
                 } else if key == "tab" && !modifiers.platform && !modifiers.control && !modifiers.alt && this.update(cx, |shell, _| shell.new_squad.open && shell.ask.queue.is_empty()).unwrap_or(false) {
                     this.update(cx, |shell, cx| shell.new_squad_tab(modifiers.shift, window, cx)).ok();
+                    cx.stop_propagation();
+                } else if key == "tab" && !modifiers.platform && !modifiers.control && !modifiers.alt && this.update(cx, |shell, _| shell.sheet.is_some() && shell.ask.queue.is_empty()).unwrap_or(false) {
+                    // Tab turns inside the sheet, never out to the window behind it.
+                    this.update(cx, |shell, cx| shell.sheet_tab(modifiers.shift, window, cx)).ok();
                     cx.stop_propagation();
                 } else if key == "enter" && this.update(cx, |shell, _| shell.confirm.as_ref().is_some_and(|a| !a.destructive()) && shell.ask.queue.is_empty()).unwrap_or(false) {
                     this.update(cx, |shell, cx| shell.answer_question(true, window, cx)).ok();
@@ -1358,6 +1376,21 @@ impl Shell {
     }
 
     // ── questions from ssh ──
+
+    /// Tab, or Shift-Tab, within the open sheet's buttons.
+    fn sheet_tab(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let stops = self.sheet_stops.borrow().clone();
+        let n = stops.len();
+        if n == 0 {
+            return;
+        }
+        let to = match (stops.iter().position(|f| f.is_focused(window)), back) {
+            (Some(i), false) => (i + 1) % n,
+            (Some(i), true) => (i + n - 1) % n,
+            (None, _) => n - 1,
+        };
+        window.focus(&stops[to], cx);
+    }
 
     pub fn overlay_open(&self) -> bool {
         self.connect.open || !self.ask.queue.is_empty() || self.new_squad.open || self.pairing.open || self.disk.open || self.confirm.is_some() || self.sheet.is_some() || self.bell.sheet
@@ -2059,6 +2092,13 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A sheet opened: the keys go into it, once; Esc or Close sends them back to the box.
+        if self.sheet.is_some() != self.sheet_focused {
+            self.sheet_focused = self.sheet.is_some();
+            if self.sheet_focused {
+                self.sheet_focus.focus(window, cx);
+            }
+        }
         // The metrics cards pick their layout by the width the screen has.
         self.metrics.room = f32::from(window.viewport_size().width) - self.board.sidebar_width;
         // A message held for its uploads goes as soon as they're up.
@@ -2234,6 +2274,18 @@ impl Render for Shell {
         // Before the first connection there is nothing to list: no sidebar
         // (it showed only its ⌘N), the connecting or setup screen alone.
         let away = matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting);
+        // The browser panel open in a window too narrow for sidebar, conversation and
+        // panel together: the sidebar steps aside, and comes back when there is room.
+        let squeezed = self.browser.read(cx).open && f32::from(window.viewport_size().width) / window.content_zoom().max(0.01) < self.board.sidebar_width + views::browser::SQUEEZE_REST;
+        if squeezed && !self.board.sidebar_hidden && !self.sidebar_squeezed {
+            self.board.sidebar_hidden = true;
+            self.board.sidebar_shown_at = None;
+            self.sidebar_squeezed = true;
+        } else if !squeezed && self.sidebar_squeezed {
+            self.board.sidebar_hidden = false;
+            self.board.sidebar_shown_at = None;
+            self.sidebar_squeezed = false;
+        }
         let sidebar = if away { None } else { self.sidebar(window, cx) };
         // A document open takes the right side; closed, the browser is back.
         // A project's page opens its briefs and plans there too.
@@ -2263,7 +2315,7 @@ impl Render for Shell {
             .children(views::attached::gallery(self, cx))
             .children(views::visuals::viewer(self, window, cx))
             .children(views::deck::presentation(self, window, cx))
-            .children(views::sheet::sheet(self, cx))
+            .children(views::sheet::sheet(self, window, cx))
             .children(views::sheet::question(self, cx))
             .children(self.connect.open.then(|| views::connect::chooser(self, cx)))
             .children(views::new_squad::sheet(self, cx))

@@ -4,6 +4,8 @@
 
 use gpui_kit::*;
 
+use crate::tokens;
+
 /// Light or dark, as the person picked in settings (kept with the window's
 /// other choices, in `target.rs`); the Mac's by default.
 pub use crate::target::Appearance;
@@ -289,24 +291,24 @@ impl<E: Styled> Sans for E {}
 // wants more leading than Latin: reading text is 15 on 25 (1.65).
 
 /// Reading text: replies, your messages, the composer.
-pub const BODY: f32 = 15.;
-pub const BODY_LINE: f32 = 25.;
+pub const BODY: f32 = tokens::TYPE_BODY.size;
+pub const BODY_LINE: f32 = tokens::TYPE_BODY.line;
 /// The interface: rows, buttons, menus.
-pub const UI: f32 = 14.;
+pub const UI: f32 = tokens::TYPE_UI.size;
 /// Text at the interface size read as text (a ticket's description, an ask).
 pub const UI_PROSE_LINE: f32 = 23.;
 /// Secondary text: notes, tool rows, thoughts, hints.
-pub const SMALL: f32 = 13.;
-pub const SMALL_LINE: f32 = 20.;
+pub const SMALL: f32 = tokens::TYPE_SMALL.size;
+pub const SMALL_LINE: f32 = tokens::TYPE_SMALL.line;
 /// Meta: how long, when, how many.
-pub const META: f32 = 12.;
-pub const META_LINE: f32 = 18.;
+pub const META: f32 = tokens::TYPE_META.size;
+pub const META_LINE: f32 = tokens::TYPE_META.line;
 
 /// The conversation's column, the composer's with it.
-pub const COLUMN: f32 = 720.;
+pub const COLUMN: f32 = tokens::LAYOUT_COLUMN;
 /// The measure: a reply's text is no wider than this — about 40 Korean
 /// characters, or 75 Latin, at 15. Cards, the composer and the column are wider.
-pub const MEASURE: f32 = 600.;
+pub const MEASURE: f32 = tokens::LAYOUT_MEASURE;
 /// Between paragraphs: 0.7 of the body size.
 pub const PARAGRAPH_GAP: f32 = 11.;
 /// Between a list's items: tighter than paragraphs, so a list reads as one,
@@ -333,21 +335,21 @@ pub const MONO: &str = ".AppleSystemUIFontMonospaced";
 // Controls are 28 tall with 16-point icons; a text field is 36; a menu or list
 // row is 32. Motion is short and eases out (`crate::motion`).
 
-pub const S3: f32 = 12.;
-pub const S6: f32 = 24.;
+pub const S3: f32 = tokens::SPACE_3;
+pub const S6: f32 = tokens::SPACE_5;
 
-pub const R_SM: f32 = 6.;
-pub const R_MD: f32 = 8.;
-pub const R_LG: f32 = 12.;
-pub const R_XL: f32 = 16.;
+pub const R_SM: f32 = tokens::RADIUS_SM;
+pub const R_MD: f32 = tokens::RADIUS_MD;
+pub const R_LG: f32 = tokens::RADIUS_LG;
+pub const R_XL: f32 = tokens::RADIUS_XL;
 
 /// Buttons, pickers and icon buttons.
-pub const CONTROL: f32 = 28.;
+pub const CONTROL: f32 = tokens::SIZE_BUTTON;
 /// A one-line text field, and the buttons on its line.
-pub const FIELD: f32 = 36.;
+pub const FIELD: f32 = tokens::SIZE_FIELD;
 /// A row of a menu, a list or a chooser.
-pub const ROW: f32 = 32.;
-pub const ICON: f32 = 16.;
+pub const ROW: f32 = tokens::SIZE_ROW;
+pub const ICON: f32 = tokens::SIZE_ICON_SM;
 pub const ICON_SM: f32 = 14.;
 /// Popovers and tooltips sit this far from what opened them.
 pub const GAP: f32 = 6.;
@@ -593,5 +595,16 @@ mod tests {
         assert!(Palette::new(Appearance::Dark.resolve(WindowAppearance::Light)).is_dark());
         assert!(Appearance::ALL.iter().all(|a| Appearance::parse(a.code()) == Some(*a)));
         assert_eq!(Appearance::parse("sepia"), None);
+    }    /// The window's scale, type and motion come from the design system's
+    /// generated tokens (`design/build/rust/tokens.rs`), not from values kept
+    /// here. The palette is the window's own (see `design/docs/t160-token-notes.md`).
+    #[test]
+    fn scale_type_and_motion_come_from_the_tokens() {
+        use crate::tokens;
+        assert_eq!((super::CONTROL, super::FIELD, super::ROW, super::R_LG, super::BODY, super::BODY_LINE), (28., 36., 32., 12., 15., 25.));
+        assert_eq!(crate::motion::SLOW.as_millis() as u64, tokens::MOTION_DURATION_SLOW_MS);
+        assert_eq!(crate::motion::float_shadow(1.).len(), tokens::ELEVATION_FLOAT.len());
     }
+
+
 }

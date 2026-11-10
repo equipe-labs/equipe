@@ -12,7 +12,8 @@
     "contrast": "node scripts/contrast.mjs",
     "lint:css": "node scripts/lint-css.mjs",
     "sheets": "node scripts/sheets.mjs",
-    "check": "npm run build && npm run contrast && npm run lint:css"
+    "check": "npm run build && npm run contrast && npm run lint:css",
+    "check:copies": "node scripts/check-copies.mjs"
   },
   "overrides": {
     "glob": "^14.0.3"

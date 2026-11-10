@@ -1615,12 +1615,13 @@ impl Journal {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    /// The first message names the session; later ones don't.
-    pub fn set_title_if_empty(&self, id: SessionId, title: &str) -> Result<()> {
+    /// The first finished title wins; later attempts never rename it.
+    pub fn set_title_if_empty(&self, id: SessionId, title: &str) -> Result<bool> {
+        let mut changed = false;
         for table in ["sessions", "conversations"] {
-            self.conn.execute(&format!("UPDATE {table} SET title = ?1 WHERE id = ?2 AND title IS NULL"), params![title, id as i64])?;
+            changed |= self.conn.execute(&format!("UPDATE {table} SET title = ?1 WHERE id = ?2 AND title IS NULL"), params![title, id as i64])? > 0;
         }
-        Ok(())
+        Ok(changed)
     }
 
     pub fn add_tokens(&self, id: SessionId, tokens: u64) -> Result<()> {
@@ -1993,6 +1994,31 @@ mod tests {
         assert_eq!(j.put_away(10).unwrap().iter().map(|c| c.session).collect::<Vec<_>>(), [52]);
         assert!(j.reopen_conversation(50).unwrap().is_none(), "open already");
         assert!(j.reopen_conversation(99).unwrap().is_none(), "no such one");
+    }
+
+    #[test]
+    fn a_generated_topic_is_written_once_and_survives_more_turns_restart_and_put_away() {
+        let home = temp_home();
+        let id = 70;
+        {
+            let j = Journal::for_squad(&home, "acme").unwrap();
+            j.record_conversation(id, Some("desktop"), Path::new("/squad/pm")).unwrap();
+            let question = "대화 첫 메시지를 그대로 제목으로 쓰지 않게 해 줘";
+            j.append(id, &Entry::User { text: question.into(), kept: Vec::new() }).unwrap();
+            j.append(id, &Entry::Reply { text: "첫 교환을 요약해 한 번 저장하겠습니다.".into() }).unwrap();
+            let title = crate::conversation_title::resolve(Some("세션 주제 제목"), question);
+            assert_ne!(title, question);
+            assert!(j.set_title_if_empty(id, &title).unwrap());
+            j.append(id, &Entry::User { text: "두 번째 질문".into(), kept: Vec::new() }).unwrap();
+            j.append(id, &Entry::Reply { text: "두 번째 답변".into() }).unwrap();
+            assert!(!j.set_title_if_empty(id, "바뀌면 안 되는 제목").unwrap());
+            j.close_conversation(id).unwrap();
+        }
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        assert_eq!(j.put_away(10).unwrap()[0].title.as_deref(), Some("세션 주제 제목"));
+        let back = j.reopen_conversation(id).unwrap().expect("conversation back");
+        assert_eq!(back.title.as_deref(), Some("세션 주제 제목"));
+        assert_eq!(j.conversation(id).unwrap().len(), 4);
     }
 
     #[test]

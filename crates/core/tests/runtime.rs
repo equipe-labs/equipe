@@ -5013,6 +5013,35 @@ async fn the_person_taking_a_ticket_over_drops_its_design_qa() {
 }
 
 #[tokio::test]
+async fn a_designers_code_ticket_changes_only_the_design_folder() {
+    let site = repo();
+    let turn = format!(
+        "case \"$*\" in *\"You're on T-\"*) mkdir -p design && echo '{{}}' > design/tokens.json && echo 'a {{}}' > app.css; sleep 2;; esac\n{}",
+        answering("working on it")
+    );
+    let (claude, _recorded) = recording_claude(&turn);
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&site]), false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "designer")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Tokens v1", "body": "-", "owner": "designer" })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    exists(&ws.path.join("app.css")).await;
+
+    // Beyond `design/`: refused, naming what is outside it.
+    let refused = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Tokens v1." })).await;
+    assert!(refused.is_error && refused.text.contains("`app.css`") && refused.text.contains("`design/`"), "{refused:?}");
+    assert!(!refused.text.contains("tokens.json"), "{refused:?}");
+    // Only `design/`: handed in, with no design QA of its own.
+    std::fs::remove_file(ws.path.join("app.css")).unwrap();
+    let handed = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Tokens v1." })).await;
+    assert!(!handed.is_error && handed.text.contains("the person reviews them"), "{handed:?}");
+    let review = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
+    assert_eq!(ticket_changed(&review).pop().map(|t| (t.id, t.design_qa)), Some((1, None)));
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn without_a_designer_changed_screens_go_straight_to_the_person() {
     let site = repo();
     let (claude, _recorded) = recording_claude(&screenshot_turn());
