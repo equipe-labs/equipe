@@ -78,6 +78,9 @@ state("inbox/team-change/default", "menu:inbox;wait:600;tpick:7001", {"FAKE_TEAM
 state("inbox/routine/default", "menu:inbox;wait:600;rpick:8001", {"FAKE_ROUTINE": "1"})
 state("inbox/accept/default", "menu:inbox;wait:600;cpick", {"FAKE_ACCEPT": "1"})
 state("inbox/stalled/default", "menu:inbox;wait:600;ppick:90", {"FAKE_STALLED": "1"})
+TEAM = {"FAKE_RUNS": "1", "FAKE_RESTING": "designer", "FAKE_OLD_WAIT": "1", "FAKE_ASKS": "0"}
+state("inbox/team/default", "team;menu:inbox", TEAM, label="The team open in the sidebar: what each waits for, a single run in its member's row, the rested member last")
+state("inbox/team/menu", "team;menu:inbox;wait:400;memmenu:3,70,330", TEAM, label="A member's menu: rest it, or rest it and stop its work")
 state("inbox/stalled/resume", "menu:inbox;wait:600;ppick:90;bkey:a", {"FAKE_STALLED": "1"})
 state("inbox/stalled/long", "menu:inbox;wait:600;ppick:90;bkey:a", {"FAKE_STALLED": "1"}, lang="de")
 
@@ -292,6 +295,7 @@ SCREENS = {
     "inbox/permission": ("Permission requests", ["views/approvals.rs"], "Allow once (Y/A), always (⇧A), decline (N)."),
     "inbox/your-turn": ("A ticket put down for the person", ["views/yourturn.rs", "yourturn.rs"], None),
     "inbox/team-change": ("A change to the team", ["views/team.rs", "team.rs"], None),
+    "inbox/team": ("The team in the sidebar", ["views/sidebar.rs", "state.rs", "board.rs"], "Each member's row says what it waits on the person for (\"T-73 · Share the production DB…\", all of it on the pointer, amber once it waited past three days); a member on one ticket is that ticket's row, two or more list each under it; the engine shows only on a row whose engine differs from most of the team's. \"N your turn\" opens Needs you. Members the person rested come last, dimmed, under Resting; a right-click rests or wakes one."),
     "inbox/routine": ("A routine the PM proposes", ["views/routine.rs", "routine.rs"], None),
     "inbox/accept": ("Work to confirm", ["views/accept.rs", "accept.rs"], None),
     "inbox/stalled": ("A stalled run brought back (Resume · Requeue · Reassign)", ["views/peek.rs", "board.rs", "state.rs"], "In progress, its run stopped without a hand-in: why, what each way back keeps (branch, worktree, commit, uncommitted files, latest blocker), and each way asked back before it goes. Reassign lists the team to pick from (1–9). The board row and the sidebar's count read the same run state."),

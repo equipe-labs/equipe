@@ -4,6 +4,8 @@
 //! conversation says so; declined, it says that. `FAKE_TEAM=remove` proposes
 //! letting designer go instead (it is on T-60); `FAKE_TEAM=elsewhere`
 //! approves it from "another screen" after `FAKE_TEAM_AFTER` ms (default 5000).
+//! `FAKE_RESTING=designer` has the person's rested members (comma-separated)
+//! rest from the start; resting or waking one moves them as the daemon would.
 
 use std::time::Duration;
 
@@ -78,6 +80,17 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
     match command {
         Command::ApproveTeamChange { id, .. } => decide(*id, true, events),
         Command::DeclineTeamChange { id, .. } => decide(*id, false, events),
+        Command::SetResting { squad, member, resting: on, .. } => {
+            let now = {
+                let mut all = rested().lock().unwrap();
+                all.retain(|m| m != member);
+                if *on {
+                    all.push(member.clone());
+                }
+                all.clone()
+            };
+            let _ = events.send(Event::RestingChanged { squad: squad.clone(), resting: now });
+        }
         _ => return false,
     }
     true
@@ -117,4 +130,17 @@ fn decide(id: u64, approve: bool, events: &broadcast::Sender<Event>) {
     };
     let _ = events.send(Event::TeamChangeClosed { squad: squad(), id, approved: approve, members });
     let _ = events.send(Event::Notice { undo: None, session: PM, text });
+}
+
+/// The members the person rested, by name.
+pub fn resting() -> Vec<String> {
+    rested().lock().unwrap().clone()
+}
+
+fn rested() -> &'static std::sync::Mutex<Vec<String>> {
+    static RESTED: std::sync::OnceLock<std::sync::Mutex<Vec<String>>> = std::sync::OnceLock::new();
+    RESTED.get_or_init(|| {
+        let named = std::env::var("FAKE_RESTING").unwrap_or_default();
+        std::sync::Mutex::new(named.split(',').map(str::trim).filter(|n| !n.is_empty()).map(str::to_owned).collect())
+    })
 }

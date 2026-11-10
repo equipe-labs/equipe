@@ -300,6 +300,33 @@
           ]
         },
         {
+          "id": "team",
+          "title": "The team in the sidebar",
+          "note": "Each member's row says what it waits on the person for (\"T-73 · Share the production DB…\", all of it on the pointer, amber once it waited past three days); a member on one ticket is that ticket's row, two or more list each under it; the engine shows only on a row whose engine differs from most of the team's. \"N your turn\" opens Needs you. Members the person rested come last, dimmed, under Resting; a right-click rests or wakes one.",
+          "source": [
+            "crates/desktop/src/views/sidebar.rs",
+            "crates/desktop/src/state.rs",
+            "crates/desktop/src/board.rs"
+          ],
+          "expects": [
+            "default"
+          ],
+          "states": [
+            {
+              "id": "default",
+              "label": "The team open in the sidebar: what each waits for, a single run in its member's row, the rested member last",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_RUNS=1 FAKE_RESTING=designer FAKE_OLD_WAIT=1 FAKE_ASKS=0; script `team;menu:inbox`"
+            },
+            {
+              "id": "menu",
+              "label": "A member's menu: rest it, or rest it and stop its work",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_RUNS=1 FAKE_RESTING=designer FAKE_OLD_WAIT=1 FAKE_ASKS=0; script `team;menu:inbox;wait:400;memmenu:3,70,330`"
+            }
+          ]
+        },
+        {
           "id": "routine",
           "title": "A routine the PM proposes",
           "source": [
@@ -558,7 +585,7 @@
               "id": "ticket-card-unanswered",
               "label": "A ticket card the list missed, the daemon silent for good: Couldn't check, not Not found",
               "kind": "default",
-              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42 FAKE_NO_LOOKUP=1; script `chat;wait:800;hover:421,432;wait:5500`"
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42 FAKE_NO_LOOKUP=1; script `chat;wait:800;hover:438,468;wait:5500`"
             },
             {
               "id": "ticket-card-unanswered-narrow",

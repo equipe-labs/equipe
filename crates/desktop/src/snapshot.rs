@@ -312,6 +312,17 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                     shell.on_composer_key(&verb, &Modifiers::default(), window, cx);
                 }),
                 "project" => shell.update(cx, |shell, cx| shell.focus_project((arg != "all").then(|| arg.clone()), window, cx)),
+                // The sidebar's team block open (`team`), and a member's menu (`memmenu:<session>,<x>,<y>`).
+                "team" => shell.update(cx, |shell, cx| {
+                    shell.remembered.team_open = true;
+                    cx.notify();
+                }),
+                "memmenu" => shell.update(cx, |shell, cx| {
+                    let n: Vec<f32> = arg.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+                    if let [session, x, y] = n[..] {
+                        shell.open_member_menu(session as u64, point(px(x), px(y)), cx);
+                    }
+                }),
                 "shead" | "sfold" => shell.update(cx, |shell, cx| {
                     let click = if verb == "shead" { crate::board::HeadClick::Name } else { crate::board::HeadClick::Chevron };
                     shell.side_head_click(click, (!arg.is_empty()).then(|| arg.clone()), window, cx);
