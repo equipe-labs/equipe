@@ -1722,12 +1722,11 @@ impl Runtime {
             }
             if self.config.persist
                 && let Some(name) = squad.clone()
+                && let Some(journal) = journal_for(&mut self.journals, &self.config.home, &name)
             {
-                if let Some(journal) = journal_for(&mut self.journals, &self.config.home, &name) {
-                    no_room = !record(journal, id, &event, &finished);
-                    if let Some(turn) = &turn {
-                        let _ = journal.record_turn_use(turn, turn_use.as_ref());
-                    }
+                no_room = !record(journal, id, &event, &finished);
+                if let Some(turn) = &turn {
+                    let _ = journal.record_turn_use(turn, turn_use.as_ref());
                 }
             }
         }
