@@ -750,6 +750,20 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
                 None => Plan::say(t!("engines.cmd_usage")),
             },
         },
+        // `/model-choice [quality|off]`: whether equipe picks each ticket's model.
+        "model-choice" => {
+            use equipe_core::protocol::tiers::ModelChoice;
+            let now = model.model_choice;
+            if rest.is_empty() {
+                return Plan::say(t!("model_choice.now", mode = crate::switching::model_choice_word(now), about = crate::switching::model_choice_about(now)));
+            }
+            let Some(choice) = ModelChoice::parse(rest) else { return Plan::say(t!("model_choice.cmd_usage")) };
+            Plan {
+                commands: vec![Command::SetModelChoice { squad, choice }],
+                flash: Some(t!("model_choice.set", mode = crate::switching::model_choice_word(choice), about = crate::switching::model_choice_about(choice))),
+                ..Plan::default()
+            }
+        }
         // `/parallel [auto|max [per member] [per engine]]`: how many tickets run at once.
         "parallel" => {
             use equipe_core::protocol::lanes::{MOST_PER_ENGINE, MOST_PER_MEMBER, Parallel, ParallelMode};
@@ -1666,6 +1680,18 @@ mod tests {
         assert_eq!(set(&model, "/parallel max"), vec![Command::SetParallel { squad: "acme".into(), parallel: Parallel::max(9, 20) }]);
         assert!(plan(&model, "/parallel").flash.unwrap().contains("20"), "bare: what it is now");
         assert!(set(&model, "/parallel").is_empty());
+    }
+
+    #[test]
+    fn model_choice_sets_quality_first_or_off_and_says_what_it_is() {
+        use equipe_core::protocol::tiers::ModelChoice;
+        let model = team();
+        assert_eq!(plan(&model, "/model-choice off").commands, vec![Command::SetModelChoice { squad: "acme".into(), choice: ModelChoice::Off }]);
+        assert_eq!(plan(&model, "/model-choice quality").commands, vec![Command::SetModelChoice { squad: "acme".into(), choice: ModelChoice::QualityFirst }]);
+        let wrong = plan(&model, "/model-choice cheap");
+        assert!(wrong.commands.is_empty() && wrong.flash.is_some_and(|f| f.contains("/model-choice")));
+        let bare = plan(&model, "/model-choice");
+        assert!(bare.commands.is_empty() && bare.flash.is_some_and(|f| f.contains("품질 우선")), "bare: what it is now");
     }
 
     #[test]

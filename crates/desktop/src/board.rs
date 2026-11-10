@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use equipe_core::protocol::briefs::{DocKind, ProjectDoc};
 use equipe_core::protocol::decide;
+use equipe_core::protocol::tiers::{RiskTag, TicketModel, TierBy, TierReason};
 use equipe_core::protocol::{Command, OffMain, Priority, Recovery, Ticket, TicketId, TicketKind, TicketStatus};
 
 use crate::state::{Model, Need, Section, status_word};
@@ -927,6 +928,94 @@ pub fn ticket_of(model: &Model, need: Need) -> Option<&Ticket> {
     }
 }
 
+// ── a ticket's model ──
+
+/// A model as the person reads it: `claude-opus-5-5` → `Opus 5.5`, `opus` →
+/// `Opus`; another engine's id as it is.
+pub fn model_name(model: &str) -> String {
+    equipe_core::models::name(model).or_else(|| equipe_core::models::family(model).map(|f| f.name.to_owned())).unwrap_or_else(|| model.to_owned())
+}
+
+/// Why a ticket runs where it does, in the person's words.
+pub fn tier_reason(m: &TicketModel) -> String {
+    let risk = || {
+        let tags: Vec<&str> = m
+            .risk
+            .iter()
+            .map(|tag| match tag {
+                RiskTag::Auth => t!("tier.risk_auth"),
+                RiskTag::Payments => t!("tier.risk_payments"),
+                RiskTag::Migration => t!("tier.risk_migration"),
+                RiskTag::Security => t!("tier.risk_security"),
+                RiskTag::Concurrency => t!("tier.risk_concurrency"),
+                RiskTag::Release => t!("tier.risk_release"),
+                RiskTag::Other => t!("tier.risk_other"),
+            })
+            .collect();
+        if tags.is_empty() { t!("tier.risk_other").to_owned() } else { tags.join(", ") }
+    };
+    let reason = match m.reason {
+        TierReason::Code => t!("tier.why_code").to_owned(),
+        TierReason::Risk => risk(),
+        TierReason::Broad => t!("tier.why_broad").to_owned(),
+        TierReason::Design => t!("tier.why_design").to_owned(),
+        TierReason::DesignQa => t!("tier.why_design_qa").to_owned(),
+        TierReason::Review => t!("tier.why_review").to_owned(),
+        TierReason::Pm => t!("tier.why_pm").to_owned(),
+        TierReason::Task => t!("tier.why_task").to_owned(),
+        TierReason::Action => t!("tier.why_action").to_owned(),
+        TierReason::Docs => t!("tier.why_docs").to_owned(),
+        TierReason::Small => t!("tier.why_small").to_owned(),
+        TierReason::ReadOnly => t!("tier.why_read_only").to_owned(),
+        TierReason::MemberFloor => t!("tier.why_member_floor").to_owned(),
+        TierReason::MemberOwn => t!("tier.why_member_own").to_owned(),
+        TierReason::Escalated => t!("tier.why_escalated", count = m.escalations.max(1)),
+        TierReason::Person => t!("tier.why_person").to_owned(),
+        TierReason::Other => t!("tier.why_other").to_owned(),
+    };
+    if m.pinned { t!("tier.pinned", reason = reason) } else { reason }
+}
+
+/// A ticket's model on its card and page: "Opus · high — auth". `None` for
+/// a ticket that runs on its member's own model with nothing said.
+pub fn model_line(t: &Ticket) -> Option<String> {
+    let m = t.model.as_ref()?;
+    let model = m.model.as_deref().map_or_else(|| t!("tier.model_default").to_owned(), model_name);
+    let effort = m.effort.clone().unwrap_or_else(|| t!("tier.effort_default").to_owned());
+    Some(t!("tier.line", model = model, effort = effort, reason = tier_reason(m)))
+}
+
+/// What the person does to a ticket's tier from its page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TierAct {
+    Raise,
+    Lower,
+    /// Pin it where it is, or let a pin go.
+    Pin,
+    /// Give it back to equipe's choice.
+    Auto,
+}
+
+/// The command a tier act sends for `t`, if it changes anything: raising or
+/// lowering by a step from where it is (keeping a pin), pinning it there,
+/// or giving it back.
+pub fn tier_command(squad: &str, t: &Ticket, act: TierAct) -> Option<Command> {
+    let m = t.model.clone().unwrap_or_default();
+    let now = m.tier.unwrap_or_default();
+    let mine = m.by == TierBy::Person;
+    let (tier, pinned) = match act {
+        TierAct::Raise => (Some(now.up()), m.pinned),
+        TierAct::Lower => (Some(now.down()), m.pinned),
+        TierAct::Pin => (Some(now), !m.pinned),
+        TierAct::Auto => (None, false),
+    };
+    let same = match tier {
+        Some(tier) => mine && tier == now && pinned == m.pinned,
+        None => !mine && !m.pinned,
+    };
+    (!same).then(|| Command::SetTicketTier { squad: squad.to_owned(), ticket: t.id, tier, pinned })
+}
+
 /// The person who does a ticket's work: whom C talks to.
 pub fn who(t: &Ticket) -> Option<&str> {
     t.assignee.as_deref().or(t.owner.as_deref())
@@ -1240,6 +1329,40 @@ mod tests {
         let m = model(vec![t.clone()], &["web"]);
         assert_eq!(requeue_role(&m, &t), "frontend");
         assert_eq!(stalled_member(&t), Some("frontend-2"));
+    }
+
+    #[test]
+    fn a_tickets_card_line_says_its_model_effort_and_why() {
+        use equipe_core::protocol::tiers::{ModelTier, RiskTag, TicketModel, TierBy, TierReason};
+        let mut t = ticket(7, "in_progress", "web", &[]);
+        assert_eq!(model_line(&t), None, "an older daemon's ticket: nothing said");
+        // The tests' screens speak Korean.
+        t.model = Some(TicketModel { tier: Some(ModelTier::Deep), reason: TierReason::Risk, risk: vec![RiskTag::Auth, RiskTag::Payments], model: Some("opus".into()), effort: Some("high".into()), ..TicketModel::default() });
+        assert_eq!(model_line(&t).as_deref(), Some("Opus · high — 인증·권한, 결제"));
+        t.model = Some(TicketModel { tier: Some(ModelTier::Max), reason: TierReason::MemberFloor, model: Some("claude-opus-5-5".into()), ..TicketModel::default() });
+        assert_eq!(model_line(&t).as_deref(), Some("Opus 5.5 · 기본 effort — 멤버 설정이 이미 더 강해요"), "the engine's own effort said so");
+        t.model = Some(TicketModel { tier: Some(ModelTier::Deep), by: TierBy::Escalation, reason: TierReason::Escalated, escalations: 1, model: Some("gpt-6.1-sol".into()), effort: Some("high".into()), ..TicketModel::default() });
+        assert_eq!(model_line(&t).as_deref(), Some("gpt-6.1-sol · high — 잘못 돌아와서 올렸어요 (1번)"), "another engine's id as it is");
+        t.model = Some(TicketModel { tier: Some(ModelTier::Standard), by: TierBy::Person, reason: TierReason::Person, pinned: true, model: Some("sonnet".into()), effort: Some("medium".into()), ..TicketModel::default() });
+        assert_eq!(model_line(&t).as_deref(), Some("Sonnet · medium — 직접 고름 · 고정"));
+    }
+
+    #[test]
+    fn the_person_raises_lowers_pins_and_gives_back_a_tickets_tier() {
+        use equipe_core::protocol::tiers::{ModelTier, TicketModel, TierBy};
+        let mut t = ticket(7, "todo", "web", &[]);
+        t.model = Some(TicketModel { tier: Some(ModelTier::Strong), ..TicketModel::default() });
+        let set = |tier, pinned| Some(Command::SetTicketTier { squad: "acme".into(), ticket: 7, tier, pinned });
+        assert_eq!(tier_command("acme", &t, TierAct::Raise), set(Some(ModelTier::Deep), false));
+        assert_eq!(tier_command("acme", &t, TierAct::Lower), set(Some(ModelTier::Standard), false), "lower: the person's call");
+        assert_eq!(tier_command("acme", &t, TierAct::Pin), set(Some(ModelTier::Strong), true));
+        assert_eq!(tier_command("acme", &t, TierAct::Auto), None, "equipe's choice already");
+        // Theirs, pinned at the top: raising changes nothing; a pin keeps through a step down; back to equipe.
+        t.model = Some(TicketModel { tier: Some(ModelTier::Max), by: TierBy::Person, pinned: true, ..TicketModel::default() });
+        assert_eq!(tier_command("acme", &t, TierAct::Raise), None);
+        assert_eq!(tier_command("acme", &t, TierAct::Lower), set(Some(ModelTier::Deep), true));
+        assert_eq!(tier_command("acme", &t, TierAct::Pin), set(Some(ModelTier::Max), false), "a pin let go");
+        assert_eq!(tier_command("acme", &t, TierAct::Auto), set(None, false));
     }
 
     fn ticket(id: u32, status: &str, project: &str, deps: &[u32]) -> Ticket {

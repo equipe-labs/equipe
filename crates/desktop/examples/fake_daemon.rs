@@ -117,7 +117,8 @@
 //! and the card for moving members between them (`fake_daemon/engines.rs`;
 //! `FAKE_SWITCHING=auto|off`, else a squad that chose to be asked; `FAKE_SETUP=1`); `FAKE_ENGINES_MIXED=1` puts
 //! backend on Codex. `FAKE_PARALLEL=max` (or `max:<per member>:<per engine>`)
-//! sets the squad's parallel work to max.
+//! sets the squad's parallel work to max; `FAKE_MODEL_CHOICE=off` turns the
+//! squad's per-ticket model choice off (started tickets then show their member's own).
 //!
 //! `FAKE_BROWSER=1`: the shared Chrome's tabs and a picture stream for the
 //! browser panel (`fake_daemon/browser.rs`); `FAKE_BROWSER=empty`, no tabs;
@@ -898,8 +899,28 @@ fn tickets() -> &'static std::sync::Mutex<Vec<Ticket>> {
                 _ => Priority::Normal,
             };
             t.updated_at = Some(now - u64::from(t.id % 9) * 3_400 - if t.status.is_closed() { u64::from(t.id % 5) * 86_400 } else { 0 });
+            t.model = fake_model(t);
         }
         std::sync::Mutex::new(all)
+    })
+}
+
+/// The model a started ticket's lane runs on, as the daemon would have
+/// picked it: a risky one deep, one raised after coming back wrong, the rest
+/// strong — or `FAKE_MODEL_CHOICE=off`, the member's own.
+fn fake_model(t: &Ticket) -> Option<equipe_core::protocol::tiers::TicketModel> {
+    use equipe_core::protocol::tiers::{ModelTier, RiskTag, TicketModel, TierBy, TierReason};
+    if matches!(t.status, TicketStatus::Proposed | TicketStatus::Idea) || t.assignee.is_none() && t.status == TicketStatus::Todo {
+        return None;
+    }
+    let base = TicketModel { engine: Some(equipe_core::protocol::Engine::Claude), model: Some("opus".into()), ..TicketModel::default() };
+    if switching::model_choice() == equipe_core::protocol::tiers::ModelChoice::Off {
+        return Some(TicketModel { reason: TierReason::MemberOwn, model: Some("sonnet".into()), ..base });
+    }
+    Some(match t.id % 7 {
+        0 => TicketModel { tier: Some(ModelTier::Deep), reason: TierReason::Risk, risk: vec![RiskTag::Auth], effort: Some("high".into()), ..base },
+        3 => TicketModel { tier: Some(ModelTier::Deep), by: TierBy::Escalation, reason: TierReason::Escalated, escalations: 1, effort: Some("high".into()), ..base },
+        _ => TicketModel { tier: Some(ModelTier::Strong), reason: TierReason::Code, shadow: None, ..base },
     })
 }
 
@@ -987,6 +1008,13 @@ fn on_board_command(command: &Command) -> Option<Vec<Event>> {
             all.push(t.clone());
             record(id, "created", &t.title);
             Some(vec![changed(&t)])
+        }
+        // The person's own tier: kept and shown, as the daemon does.
+        Command::SetTicketTier { ticket, tier, pinned, .. } => {
+            let t = all.iter_mut().find(|t| t.id == *ticket)?;
+            let set = equipe_core::tiers::set_by_person(t.model.as_ref(), *tier, *pinned);
+            t.model = Some(set);
+            Some(vec![changed(t)])
         }
         Command::EditTicket { ticket, changes, .. } => {
             if let Some(deps) = &changes.depends_on
@@ -1632,6 +1660,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             plan: switching::claude().or_else(engines::plan),
                             engine_switching: switching::switching(),
                             parallel: switching::parallel(),
+                            model_choice: switching::model_choice(),
                             pm_accepts: true,
                             role_models: switching::role_models(),
                             // `FAKE_SECRET=1`: backend waits for the NAS login, typed into a card.

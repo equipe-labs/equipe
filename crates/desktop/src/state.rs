@@ -372,6 +372,9 @@ pub struct Model {
     /// How many tickets the squad works at once: by the plans' usage, or
     /// max at the person's caps. Auto from a daemon that predates it.
     pub parallel: equipe_core::protocol::lanes::Parallel,
+    /// Whether equipe picks each ticket's model: quality first unless the
+    /// person turned it off. Quality first from a daemon that predates it.
+    pub model_choice: equipe_core::protocol::tiers::ModelChoice,
     /// Which engine reviews the designer's work, as the squad set it.
     pub design_reviewer: equipe_core::protocol::engines::Reviewer,
     /// The squad's signals, each with its latest readings.
@@ -569,6 +572,7 @@ impl Model {
             idle_wake_hours: equipe_core::protocol::routines::IDLE_WAKE_HOURS,
             subagents_at_once: None,
             parallel: Default::default(),
+            model_choice: Default::default(),
             design_reviewer: Default::default(),
             signals: Vec::new(),
             put_away: Vec::new(),
@@ -1180,6 +1184,7 @@ impl Model {
         self.idle_wake_hours = snapshot.idle_wake_hours.unwrap_or(equipe_core::protocol::routines::IDLE_WAKE_HOURS);
         self.subagents_at_once = snapshot.subagents_at_once;
         self.parallel = snapshot.parallel;
+        self.model_choice = snapshot.model_choice;
         self.design_reviewer = snapshot.design_reviewer;
         self.signals = snapshot.signals.clone();
         self.put_away = snapshot.put_away.clone();
@@ -1347,6 +1352,10 @@ impl Model {
             }
             Event::SubagentsAtOnceChanged { squad, at_once } if *squad == self.squad => {
                 self.subagents_at_once = *at_once;
+                self.revision += 1;
+            }
+            Event::ModelChoiceChanged { squad, choice } if *squad == self.squad => {
+                self.model_choice = *choice;
                 self.revision += 1;
             }
             Event::ParallelChanged { squad, parallel } if *squad == self.squad => {
@@ -3783,6 +3792,18 @@ mod tests {
         let snapshot = Snapshot { squad: "acme".into(), parallel: Parallel::max(3, 9), ..Default::default() };
         model.apply(Update::Attached(Hello { version: "x".into(), snapshot }), T0);
         assert_eq!(model.parallel, Parallel::max(3, 9), "the snapshot's on attaching");
+    }
+
+    #[test]
+    fn model_choice_shows_and_follows_the_daemon_and_an_older_one_reads_as_quality_first() {
+        use equipe_core::protocol::tiers::ModelChoice;
+        let mut model = needs_model();
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        assert_eq!(model.model_choice, ModelChoice::QualityFirst, "an older daemon says nothing: the default");
+        assert!(model.apply(Update::Event(Event::ModelChoiceChanged { squad: "acme".into(), choice: ModelChoice::Off }), T0));
+        assert_eq!(model.model_choice, ModelChoice::Off);
+        model.apply(Update::Event(Event::ModelChoiceChanged { squad: "other".into(), choice: ModelChoice::QualityFirst }), T0);
+        assert_eq!(model.model_choice, ModelChoice::Off, "another squad's");
     }
 
     #[test]

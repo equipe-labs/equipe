@@ -1025,6 +1025,10 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
     if let Some(since) = model.in_state_for(t) {
         facts.push(div().child(crate::activity::ago(since)).into_any_element());
     }
+    // The model and effort its lanes run on, and why.
+    if let Some(line) = rules::model_line(t) {
+        facts.push(div().child(line).into_any_element());
+    }
     // The plan it was cut from, or reviews: opened beside the conversation.
     if let Some(plan) = model.ticket_plan(t) {
         let handle = handle.clone();
