@@ -39,7 +39,7 @@ pub const FULL_BELOW: u64 = GB;
 const LEAVE_MARGIN: u64 = 20;
 
 /// Folder names that hold build output, rebuilt when wanted.
-pub const BUILD_DIRS: [&str; 7] = ["target", "node_modules", ".next", "dist", "build", "DerivedData", ".turbo"];
+pub const BUILD_DIRS: [&str; 9] = ["target", "node_modules", ".next", "dist", "build", "DerivedData", ".turbo", ".build", ".gradle"];
 /// How deep in a checkout build output is looked for (`packages/web/node_modules`).
 const BUILD_DEPTH: usize = 3;
 /// A member's build folder nobody built in for this long is stale.
@@ -232,12 +232,16 @@ pub struct Known {
     pub projects: Vec<(String, PathBuf)>,
     /// The person's home folder, for the Mac's caches; `None`: not looked at.
     pub user_home: Option<PathBuf>,
+    /// The system's temporary folders, for finished tickets' scratch folders
+    /// there ([`temp_roots`]); empty: not looked at (a test's daemon, which
+    /// must never touch the machine's real `/tmp`).
+    pub temp: Vec<PathBuf>,
 }
 
 /// What equipe knows, read from the squads' journals — for `equipe disk`
 /// with no daemon running (nothing is in use then).
 pub fn known_from_journals(home: &Path) -> Known {
-    let mut known = Known { home: home.to_owned(), user_home: std::env::var_os("HOME").map(PathBuf::from), ..Known::default() };
+    let mut known = Known { home: home.to_owned(), user_home: std::env::var_os("HOME").map(PathBuf::from), temp: temp_roots(), ..Known::default() };
     for squad in crate::squads::list(home) {
         let Ok(journal) = crate::journal::Journal::for_squad(home, &squad.name) else { continue };
         for t in journal.tickets().unwrap_or_default() {
@@ -628,6 +632,58 @@ impl Scan<'_> {
             }
         }
         self.recordings();
+        self.ticket_temps();
+    }
+
+    /// Scratch folders members made for a ticket in the system's temporary
+    /// folders, once that ticket is done with everywhere it exists. Named
+    /// `equipe-t<N>-…` (equipe's way): given back on equipe's own, after a
+    /// Gradle daemon still running from one is stopped. Named `t<N>-…`: only
+    /// likely a member's, so reported with the command that removes it, for
+    /// the person to run. See [`ticket_temp_name`].
+    fn ticket_temps(&mut self) {
+        let mut seen: Vec<PathBuf> = Vec::new();
+        for root in self.known.temp.clone() {
+            let Ok(canon) = root.canonicalize() else { continue };
+            if seen.contains(&canon) {
+                continue;
+            }
+            seen.push(canon.clone());
+            let mut entries: Vec<(PathBuf, TempName)> = std::fs::read_dir(&canon)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|e| Some((e.path(), ticket_temp_name(&e.file_name().to_string_lossy())?)))
+                .collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            for (path, name) in entries {
+                let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+                if meta.file_type().is_symlink() || !self.budget.left() {
+                    continue;
+                }
+                let id = name.ticket();
+                let Some(why) = ticket_done_everywhere(&self.known.tickets, id) else { continue };
+                let (bytes, whole) = measure(&path, &mut self.budget);
+                if bytes < MB {
+                    continue;
+                }
+                let idle = newest_entry(&path).and_then(|at| at.elapsed().ok()).is_some_and(|ago| ago >= TEMP_IDLE);
+                let label = path.to_string_lossy().into_owned();
+                match name {
+                    TempName::Equipe(_) => {
+                        let (safe, why) = if idle { (true, why) } else { (false, DiskWhy::InUse) };
+                        let at = self.push(DiskGroup::Equipe, DiskKind::TicketTemp, label, &path, bytes, whole, safe, why);
+                        self.items[at].ticket = Some(id);
+                    }
+                    TempName::Bare(_) if idle => {
+                        let at = self.push(DiskGroup::Caches, DiskKind::TicketTemp, label, &path, bytes, whole, false, DiskWhy::NotEquipes);
+                        self.items[at].ticket = Some(id);
+                        self.items[at].command = Some(format!("rm -rf {}", shell_quote(&path)));
+                    }
+                    TempName::Bare(_) => {}
+                }
+            }
+        }
     }
 
     /// Each ticket's phone recordings, in its squad's folder: given back once
@@ -781,6 +837,12 @@ pub fn clean(known: &Known, ids: &[String]) -> DiskCleaned {
             }
             DiskKind::Log if removable(&item.path, &roots) => trim_log(&item.path).is_ok(),
             DiskKind::Recordings if removable(&item.path, &roots) => std::fs::remove_dir_all(&item.path).is_ok(),
+            DiskKind::TicketTemp if temp_removable(&item.path, &known.temp) => {
+                for line in stop_gradle_daemons(&item.path) {
+                    crate::daemon_log!("equipe: {line}");
+                }
+                remove_any(&item.path)
+            }
             // Kept attachments sent long ago: the files go, their names with them.
             DiskKind::Attachments if item.why == DiskWhy::SentLongAgo => {
                 let (files, bytes) = crate::kept::remove_old(&known.home, std::time::SystemTime::now());
@@ -999,6 +1061,152 @@ fn trim_log(path: &Path) -> std::io::Result<()> {
     file.set_len(0)?;
     file.seek(SeekFrom::Start(0))?;
     file.write_all(&tail[from..])
+}
+
+// ── finished tickets' temporary folders ──
+
+/// How long a ticket's temporary folder must be left untouched before it
+/// goes: a member or reviewer may still be finishing with it.
+const TEMP_IDLE: Duration = Duration::from_secs(60 * 60);
+
+/// The system's temporary folders members write scratch copies to: `/tmp`
+/// (`/private/tmp` on a Mac) and the one this process is given (`$TMPDIR`).
+pub fn temp_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    #[cfg(unix)]
+    roots.push(PathBuf::from("/tmp"));
+    roots.push(std::env::temp_dir());
+    let mut seen: Vec<PathBuf> = Vec::new();
+    roots.retain(|r| match r.canonicalize() {
+        Ok(c) if !seen.contains(&c) => {
+            seen.push(c);
+            true
+        }
+        _ => false,
+    });
+    roots
+}
+
+/// How a temporary folder's name ties it to a ticket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TempName {
+    /// `equipe-t<N>`, alone or followed by `-`, `_` or `.` (`equipe-t430-gradle`,
+    /// `equipe-t506-apk.6kf9ay`): equipe's own way of naming one.
+    Equipe(TicketId),
+    /// `t<N>-…` (`t105-design-qa.WXlKO4`): how members often name a branch's
+    /// copy, but a person may name a folder so too.
+    Bare(TicketId),
+}
+
+impl TempName {
+    pub fn ticket(self) -> TicketId {
+        match self {
+            TempName::Equipe(id) | TempName::Bare(id) => id,
+        }
+    }
+}
+
+/// The ticket a temporary folder's name ties it to, if any — never `t16`,
+/// `t17venv` or `t1.png`: a bare name needs a dash right after the number.
+pub fn ticket_temp_name(name: &str) -> Option<TempName> {
+    let number = |rest: &str| -> Option<(TicketId, char)> {
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        if digits.is_empty() || digits.starts_with('0') {
+            return None;
+        }
+        let next = rest[digits.len()..].chars().next().unwrap_or('\0');
+        Some((digits.parse().ok()?, next))
+    };
+    if let Some(rest) = name.strip_prefix("equipe-t") {
+        let (id, next) = number(rest)?;
+        return matches!(next, '\0' | '-' | '_' | '.').then_some(TempName::Equipe(id));
+    }
+    let (id, next) = number(name.strip_prefix('t')?)?;
+    (next == '-').then_some(TempName::Bare(id))
+}
+
+/// Why ticket `id`'s scratch folders may go: it is done (or cancelled) in
+/// every squad that has a T-`id`, and some squad has one. `None` while any
+/// has it open, or none has it.
+fn ticket_done_everywhere(tickets: &[KnownTicket], id: TicketId) -> Option<DiskWhy> {
+    let with: Vec<&KnownTicket> = tickets.iter().filter(|t| t.id == id).collect();
+    if with.is_empty() || with.iter().any(|t| !t.status.is_closed()) {
+        return None;
+    }
+    Some(if with.iter().all(|t| t.status == TicketStatus::Cancelled) { DiskWhy::Cancelled } else { DiskWhy::Merged })
+}
+
+/// When `path` was last written: the newest of it and what is right in it.
+fn newest_entry(path: &Path) -> Option<std::time::SystemTime> {
+    let own = std::fs::symlink_metadata(path).and_then(|m| m.modified()).ok();
+    std::fs::read_dir(path).into_iter().flatten().flatten().filter_map(|e| e.metadata().and_then(|m| m.modified()).ok()).chain(own).max()
+}
+
+/// Whether `path` may go as a ticket's temporary folder: right in one of
+/// `temp` (its folders' links resolved), not a link, and named `equipe-t<N>…`.
+fn temp_removable(path: &Path, temp: &[PathBuf]) -> bool {
+    let Some(at) = real(path) else { return false };
+    let named = at.file_name().and_then(|n| n.to_str()).and_then(ticket_temp_name).is_some_and(|n| matches!(n, TempName::Equipe(_)));
+    let not_link = std::fs::symlink_metadata(&at).is_ok_and(|m| !m.file_type().is_symlink());
+    named && not_link && temp.iter().filter_map(|r| r.canonicalize().ok()).any(|root| at.parent() == Some(root.as_path()))
+}
+
+/// Remove a folder, or a file.
+fn remove_any(path: &Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.is_dir() => std::fs::remove_dir_all(path).is_ok(),
+        Ok(_) => std::fs::remove_file(path).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// Stop the Gradle daemons still running from the Gradle home `home`
+/// (`GRADLE_USER_HOME`; a ticket's `equipe-t<N>-gradle`), so that removing it
+/// doesn't leave them running on files that are gone. A daemon writes
+/// `daemon/<version>/daemon-<pid>.out.log` there; only a live process whose
+/// command is a `GradleDaemon` is stopped — politely, then for good. What was
+/// stopped, for the log.
+pub fn stop_gradle_daemons(home: &Path) -> Vec<String> {
+    let mut done = Vec::new();
+    for pid in gradle_daemon_pids(home) {
+        if !is_gradle_daemon(pid) {
+            continue;
+        }
+        crate::group::end(pid, crate::group::Signal::Terminate);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while is_gradle_daemon(pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if is_gradle_daemon(pid) {
+            crate::group::end(pid, crate::group::Signal::Kill);
+        }
+        done.push(format!("stopped Gradle daemon {pid} of {}", home.display()));
+    }
+    done
+}
+
+/// The pids of the daemons that wrote logs in Gradle home `home`.
+fn gradle_daemon_pids(home: &Path) -> Vec<u32> {
+    let mut pids: Vec<u32> = std::fs::read_dir(home.join("daemon"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .flat_map(|version| std::fs::read_dir(version.path()).into_iter().flatten().flatten())
+        .filter_map(|log| log.file_name().to_str()?.strip_prefix("daemon-")?.strip_suffix(".out.log")?.parse().ok())
+        .collect();
+    pids.sort_unstable();
+    pids.dedup();
+    pids
+}
+
+/// Whether `pid` is a live Gradle daemon.
+fn is_gradle_daemon(pid: u32) -> bool {
+    if !cfg!(unix) || pid <= 1 {
+        return false;
+    }
+    let mut ps = std::process::Command::new("ps");
+    ps.args(["-o", "command=", "-p", &pid.to_string()]);
+    output_within(ps, Duration::from_secs(10)).is_ok_and(|out| out.status.success() && String::from_utf8_lossy(&out.stdout).contains("GradleDaemon"))
 }
 
 /// Build output in a worktree whose ticket is done with — merged or
@@ -1675,5 +1883,143 @@ mod tests {
         fill(&tree.repo.join("target"), 10);
         assert!(clear_builds(&tree.home, &tree.repo).is_empty());
         assert!(tree.repo.join("target").exists());
+    }
+
+    // ── finished tickets' temporary folders ──
+
+    /// Make `path` and what is right in it look untouched for `ago`.
+    fn age(path: &Path, ago: Duration) {
+        let at = std::time::SystemTime::now() - ago;
+        for entry in std::fs::read_dir(path).into_iter().flatten().flatten() {
+            let _ = std::fs::File::open(entry.path()).and_then(|f| f.set_modified(at));
+        }
+        std::fs::File::open(path).and_then(|f| f.set_modified(at)).unwrap();
+    }
+
+    #[test]
+    fn a_temporary_folder_is_a_tickets_only_by_a_name_made_for_it() {
+        assert_eq!(ticket_temp_name("equipe-t430-gradle"), Some(TempName::Equipe(430)));
+        assert_eq!(ticket_temp_name("equipe-t506-apk.6kf9ay"), Some(TempName::Equipe(506)));
+        assert_eq!(ticket_temp_name("equipe-t510.adt4ab"), Some(TempName::Equipe(510)));
+        assert_eq!(ticket_temp_name("equipe-t12"), Some(TempName::Equipe(12)));
+        assert_eq!(ticket_temp_name("t105-design-qa.WXlKO4"), Some(TempName::Bare(105)));
+        assert_eq!(ticket_temp_name("t1-review-9b640aa"), Some(TempName::Bare(1)));
+        for not in ["t16", "t17venv", "t1.png", "equipe-telemetry-1", "equipe-t", "equipe-tx-1", "equipe-t07-x", "t-12", "tmp", "equipe-t12x", "xt12-a"] {
+            assert_eq!(ticket_temp_name(not), None, "{not}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_finished_tickets_temporary_folders_go_on_their_own_and_open_ones_stay() {
+        let tree = Tree::new();
+        let tmp = tree.home.parent().unwrap().join("tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let old = Duration::from_secs(2 * 60 * 60);
+        let folder = |name: &str, age_by: Duration| {
+            let path = tmp.join(name);
+            fill(&path, 2 * MB as usize);
+            age(&path, age_by);
+            path
+        };
+        let gradle = folder("equipe-t1-gradle", old);
+        let reviewing = folder("equipe-t2-shots", old);
+        let fresh = folder("equipe-t3-copy", Duration::ZERO);
+        let cancelled = folder("equipe-t4.x1", old);
+        let bare = folder("t1-design-qa.abc", old);
+        let person = folder("t16", old);
+        let elsewhere_open = folder("equipe-t9-copy", old);
+        let unknown = folder("equipe-t77-copy", old);
+        // A link named like one: never followed, never removed.
+        std::os::unix::fs::symlink(&tree.outside, tmp.join("equipe-t1-link")).unwrap();
+        let mut acme = vec![
+            tree.ticket(1, TicketStatus::Done, Some(true), None),
+            tree.ticket(2, TicketStatus::Review, None, None),
+            tree.ticket(3, TicketStatus::Done, Some(true), None),
+            tree.ticket(4, TicketStatus::Cancelled, None, None),
+            tree.ticket(9, TicketStatus::Done, Some(true), None),
+        ];
+        // Another squad's T-9 is still open: its number's folders are left alone.
+        acme.push(KnownTicket { squad: "other".into(), ..tree.ticket(9, TicketStatus::InProgress, None, None) });
+        let known = Known { home: tree.home.clone(), tickets: acme, temp: vec![tmp.clone()], ..Known::default() };
+
+        let (items, _) = scan(&known, SCAN_BUDGET);
+        let temps: Vec<&DiskItem> = items.iter().filter(|i| i.kind == DiskKind::TicketTemp).collect();
+        let at = |p: &Path| temps.iter().find(|i| i.path == p).copied();
+        assert!(at(&gradle).is_some_and(|i| certain(i) && i.why == DiskWhy::Merged && i.ticket == Some(1) && i.bytes >= 2 * MB));
+        assert!(at(&cancelled).is_some_and(|i| certain(i) && i.why == DiskWhy::Cancelled));
+        assert!(at(&fresh).is_some_and(|i| !i.safe && i.why == DiskWhy::InUse), "touched within the hour: someone may still be on it");
+        let listed = at(&bare).expect("a bare name is reported");
+        assert!(!listed.safe && listed.why == DiskWhy::NotEquipes && listed.command.as_deref() == Some(format!("rm -rf {}", bare.display()).as_str()), "{listed:?}");
+        for left in [&reviewing, &person, &elsewhere_open, &unknown] {
+            assert!(at(left).is_none(), "{} isn't a finished ticket's", left.display());
+        }
+        assert!(at(&tmp.join("equipe-t1-link")).is_none());
+
+        let cleaned = clean_certain(&known);
+        assert!(cleaned.freed >= 4 * MB, "{cleaned:?}");
+        assert!(!gradle.exists() && !cancelled.exists(), "a finished ticket's own folders went");
+        for kept in [&reviewing, &fresh, &bare, &person, &elsewhere_open, &unknown] {
+            assert!(kept.exists(), "{} stays", kept.display());
+        }
+        assert!(tmp.join("equipe-t1-link").exists() && tree.outside.join("blob").exists(), "the link and what it points at stay");
+        // Asked for by id, a bare one isn't equipe's to remove either.
+        let asked = clean(&known, std::slice::from_ref(&listed.id));
+        assert!(asked.removed.is_empty() && bare.exists(), "{asked:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_temporary_folder_is_removed_only_right_in_a_temporary_root() {
+        let tree = Tree::new();
+        let tmp = tree.home.parent().unwrap().join("tmp");
+        let deeper = tmp.join("nested").join("equipe-t1-copy");
+        fill(&deeper, 10);
+        fill(&tmp.join("equipe-t1-copy"), 10);
+        let roots = vec![tmp.clone()];
+        assert!(temp_removable(&tmp.join("equipe-t1-copy"), &roots));
+        assert!(!temp_removable(&deeper, &roots), "only right in the root");
+        assert!(!temp_removable(&tmp.join("equipe-t1-copy"), &[]), "no roots, nothing");
+        fill(&tmp.join("t1-copy"), 10);
+        assert!(!temp_removable(&tmp.join("t1-copy"), &roots), "a bare name is the person's to remove");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_gradle_home_has_its_daemons_stopped_before_it_goes_and_no_other_process_is_touched() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tree = Tree::new();
+        let root = tree.home.parent().unwrap().to_owned();
+        // A stand-in Gradle daemon: its command line names GradleDaemon.
+        let bin = root.join("GradleDaemon");
+        std::fs::write(&bin, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut daemon = std::process::Command::new(&bin).spawn().unwrap();
+        // And a bystander whose pid a log names too, but isn't a Gradle daemon.
+        let mut bystander = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let home = root.join("tmp").join("equipe-t1-gradle");
+        let logs = home.join("daemon").join("8.9");
+        std::fs::create_dir_all(&logs).unwrap();
+        for pid in [daemon.id(), bystander.id(), 999_999] {
+            std::fs::write(logs.join(format!("daemon-{pid}.out.log")), "log").unwrap();
+        }
+        let stopped = stop_gradle_daemons(&home);
+        assert_eq!(stopped.len(), 1, "{stopped:?}");
+        assert!(daemon.wait().is_ok(), "the daemon ended");
+        assert!(bystander.try_wait().unwrap().is_none(), "the bystander runs on");
+        let _ = bystander.kill();
+        let _ = bystander.wait();
+    }
+
+    #[test]
+    fn swift_and_gradle_build_folders_in_a_worktree_are_build_output() {
+        let tree = Tree::new();
+        let path = tree.worktree(1, 10);
+        std::fs::write(path.join(".gitignore"), "target\n.build/\n.gradle/\n").unwrap();
+        fill(&path.join("ios").join("App").join(".build"), 10);
+        fill(&path.join("android").join(".gradle"), 10);
+        let found = build_dirs(&path);
+        assert!(found.contains(&path.join("ios/App/.build")) && found.contains(&path.join("android/.gradle")), "{found:?}");
     }
 }
