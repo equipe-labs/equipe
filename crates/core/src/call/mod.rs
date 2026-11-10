@@ -44,9 +44,6 @@ pub struct Turn {
 /// simpler than adding allocation to every published call update.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
-// Publish is passed straight through the runtime; boxing every event here
-// would only move the already-bounded protocol value to the heap.
-#[allow(clippy::large_enum_variant)]
 pub enum Effect {
     /// Send `text` to the member as an ordinary submit (from the phone).
     Submit { session: SessionId, text: String },

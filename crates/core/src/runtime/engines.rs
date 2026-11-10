@@ -1091,6 +1091,8 @@ impl Runtime {
                 let mut kept = journal.ticket_work(ticket.id).unwrap_or_default();
                 kept.engine_session = None;
                 let _ = journal.set_ticket_work(ticket.id, &kept);
+                // This run is over: the new session starts the next one at once.
+                let _ = journal.finish_execution(ticket.id, work.execution_generation, ExecutionState::Stopped, Some("handed_over"));
                 let what = format!("{from} → {to}, mid-ticket: {}; the conversation before is kept as session {id}", tree.commit.as_deref().map_or_else(|| "nothing uncommitted".to_owned(), |c| format!("work committed as {}", &c[..c.len().min(10)])));
                 let _ = journal.ticket_event(ticket.id, "equipe", "handed over", &what);
             }

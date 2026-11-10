@@ -5386,10 +5386,13 @@ for one project goes to it as tickets for its owners, with that project — and 
     /// were, for the person to resume, requeue or reassign. What its checkout
     /// holds is kept for their card; the PM hears of it when `tell`.
     fn stalled(&mut self, squad: &str, ticket_id: TicketId, tell: bool) {
+        let Some(ticket) = self.journal(squad).and_then(|j| j.ticket(ticket_id).ok().flatten()) else { return };
+        let generation = ticket.execution.as_ref().map(|e| e.generation);
+        // Only the session on that very run lets go.
         let holder = self
             .sessions
             .iter()
-            .find(|(_, s)| s.squad.as_deref() == Some(squad) && s.work.as_ref().is_some_and(|w| w.ticket == ticket_id))
+            .find(|(_, s)| s.squad.as_deref() == Some(squad) && s.work.as_ref().is_some_and(|w| w.ticket == ticket_id && Some(w.execution_generation) == generation))
             .map(|(&id, _)| id);
         if let Some(id) = holder {
             if let Some(session) = self.sessions.get_mut(&id) {
@@ -5399,8 +5402,12 @@ for one project goes to it as tickets for its owners, with that project — and 
             let desk = self.sessions.get(&id).and_then(|s| s.thread.clone());
             self.publish(Event::Thread { session: id, project: desk });
         }
+        // A run whose ticket moved on without it (back on the board, say) only
+        // frees its lease: the board starts it again as usual.
+        if ticket.status != TicketStatus::InProgress {
+            return;
+        }
         let Some(journal) = self.journal(squad) else { return };
-        let Some(ticket) = journal.ticket(ticket_id).ok().flatten() else { return };
         let (head, dirty) = ticket.worktree.as_deref().map(worktree::checkout_facts).unwrap_or_default();
         let _ = journal.set_stalled_checkout(ticket_id, head.as_deref(), dirty);
         let reason = ticket.execution.as_ref().and_then(|e| e.reason.clone()).unwrap_or_default();
