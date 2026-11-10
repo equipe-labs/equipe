@@ -1058,13 +1058,18 @@ fn completion_repeated(news: &News, reply: &str) -> bool {
         return false;
     }
     let reply = reply.to_lowercase();
-    let words: &[&str] = match news.kind {
-        NewsKind::HandedIn => &["handed in", "submitted", "제출", "넘겼", "提出", "提交", "eingereicht", "entregad", "soumis", "remis"],
-        NewsKind::Accepted => &["accepted", "approved", "수락", "승인", "承認", "接受", "akzeptiert", "acept", "accepté"],
-        NewsKind::Merged => &["merged", "병합", "マージ", "合并", "合併", "zusammengeführt", "fusionné", "combinad"],
-        _ => &[],
-    };
-    words.iter().any(|word| reply.contains(word))
+    // "T-58 isn't accepted yet" names the ticket and the word but says the
+    // opposite: a reply that denies anything keeps the news row. The words
+    // are every language's (`match.*` in the locales): a reply may be in any.
+    let said = |key: &str| crate::i18n::every(key).iter().any(|word| reply.contains(&word.to_lowercase()));
+    if said("match.denied") {
+        return false;
+    }
+    said(match news.kind {
+        NewsKind::HandedIn => "match.handed_in",
+        NewsKind::Accepted => "match.accepted",
+        _ => "match.merged",
+    })
 }
 
 /// The conversation's hand-over rows brought up to date: each member's
@@ -1560,6 +1565,11 @@ mod tests {
         assert!(matches!(&other_ticket[..], [Block::News(_), Block::Reply { .. }]));
         let ambiguous = build_blocks(&[Cow::Borrowed(&accepted), Cow::Owned(Entry::Reply { text: "T-58 is ready.".into() })], Path::new("/w"));
         assert!(matches!(&ambiguous[..], [Block::News(_), Block::Reply { .. }]));
+        // The ticket and the word, but denied: both stay.
+        for denied in ["T-58 hasn't been accepted yet.", "T-58 is not accepted.", "T-58은 아직 수락되지 않았어요.", "T-58 wurde nicht akzeptiert."] {
+            let kept = build_blocks(&[Cow::Borrowed(&accepted), Cow::Owned(Entry::Reply { text: denied.into() })], Path::new("/w"));
+            assert!(matches!(&kept[..], [Block::News(_), Block::Reply { .. }]), "{denied}: {kept:#?}");
+        }
     }
 
     #[test]

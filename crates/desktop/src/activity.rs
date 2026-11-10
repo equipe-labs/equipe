@@ -195,6 +195,15 @@ pub fn status(lines: &[ToolLine]) -> Status {
     }
 }
 
+/// The failures a turn went on past: how many of its calls failed while the
+/// turn itself did not (0 while it runs, or when it ended failed).
+pub fn recovered(lines: &[ToolLine]) -> usize {
+    match status(lines) {
+        Status::Done | Status::Declined | Status::Unknown => lines.iter().filter(|l| l.status == Status::Failed).count(),
+        Status::Running | Status::Failed => 0,
+    }
+}
+
 /// How long a group took, its calls added up, once none runs.
 pub fn total_ms(lines: &[ToolLine]) -> Option<u64> {
     if lines.iter().any(|l| l.status == Status::Running) {
@@ -730,7 +739,7 @@ mod tests {
         assert_ne!(de.fill("chat.sum_read", &[("count", "1".into())]), de.fill("chat.sum_read", &[("count", "2".into())]).replace('2', "1"));
         for lang in Lang::ALL {
             let words = equipe_core::i18n::Catalog::load(lang, crate::i18n::FILES);
-            for key in ["chat.activity", "chat.sum_run", "chat.sum_read", "chat.sum_edit", "chat.news_count", "chat.ago_mins"] {
+            for key in ["chat.activity", "chat.activity_retried", "chat.sum_run", "chat.sum_read", "chat.sum_edit", "chat.news_count", "chat.ago_mins"] {
                 let said = words.fill(key, &[("count", "4".into())]);
                 assert!(said.contains('4') && !said.contains('{'), "{lang:?} {key}: {said}");
             }
@@ -762,6 +771,8 @@ mod tests {
         assert_eq!(status(&cut[0]), Status::Done, "the failure remains in detail, but the later successful path decides the activity");
         assert_eq!(status(&[line("read", &["a"], Status::Done), line("run", &["cargo test"], Status::Failed)]), Status::Failed, "a final failure stays visible");
         assert_eq!(groups(vec![]).len(), 0);
+        assert_eq!(recovered(&cut[0]), 1, "the folded row says one failure was got past");
+        assert_eq!(recovered(&[line("read", &["a"], Status::Done), line("run", &["cargo test"], Status::Failed)]), 0, "a failure that stood is not a retry");
     }
 
     #[test]
