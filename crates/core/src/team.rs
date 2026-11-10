@@ -204,15 +204,14 @@ pub fn check(args: &Value, team: &[Mate<'_>], tickets: &[Ticket], waiting: &[Tea
         Some("codex") => Some(Engine::Codex),
         Some(other) => return Err(format!("No engine called {other}: claude or codex.")),
     };
+    // Work a member still on the team owns by name waits for that member: a
+    // new one would never take it, so naming it is no unblock.
     if change == Change::Add
-        && let Some(ticket) = unblocks.iter().filter_map(|id| tickets.iter().find(|t| t.id == *id)).find(|t| {
-            t.owner.as_deref().is_some_and(|owner| owner != role && !team.iter().any(|m| m.name == owner && m.role == role))
-        })
+        && let Some((id, owner)) = unblocks.iter().filter_map(|id| tickets.iter().find(|t| t.id == *id)).find_map(|t| owned_by_name(t, team).map(|o| (t.id, o)))
     {
-        let owner = ticket.owner.as_deref().unwrap_or_default();
         return Err(format!(
-            "T-{} has explicit owner {owner}, so a new {role} would not unblock it. Change the owner in the proposal/approval hand-off before proposing it.",
-            ticket.id
+            "T-{id} is owned by {owner} by name, so a new {role} would not take it: it waits for {owner}. Leave it out of \
+`unblocks`, or ask the person to reassign it on its card first."
         ));
     }
     let model = board::arg_str(args, "model").map(str::to_owned);
@@ -227,6 +226,28 @@ pub fn check(args: &Value, team: &[Mate<'_>], tickets: &[Ticket], waiting: &[Tea
     let (engine, model, effort) = if change == Change::Add { (engine, model, effort) } else { (None, None, None) };
     let unblocks = if change == Change::Add { unblocks } else { Vec::new() };
     Ok(Proposal { change, role, count, member, engine, model, effort, reason, unblocks, busy_on })
+}
+
+/// Whether a new member of `role` would take `ticket` by the board's rules:
+/// owned by the role itself, or by someone no longer on the team whose role
+/// it was (their tickets go to their role). A ticket owned by name by a member
+/// still on the team (`backend-2`) waits for that member, whatever its role;
+/// one owned by another role, for that role. Unowned work is the PM's to give.
+pub fn new_member_takes(ticket: &Ticket, role: &str, team: &[Mate<'_>]) -> bool {
+    match ticket.owner.as_deref() {
+        None => true,
+        Some(owner) if owner == role => true,
+        Some(owner) if team.iter().any(|m| m.name == owner || m.role == owner) => false,
+        Some(owner) => board::role_of(owner) == role,
+    }
+}
+
+/// The member still on the team that owns `ticket` by name (`backend-2`),
+/// if one does. A name that is also a role on the team (`backend`, the
+/// role's first member) stands for the role, as on the board.
+pub fn owned_by_name<'t>(ticket: &'t Ticket, team: &[Mate<'_>]) -> Option<&'t str> {
+    let owner = ticket.owner.as_deref()?;
+    (team.iter().any(|m| m.name == owner) && !team.iter().any(|m| m.role == owner)).then_some(owner)
 }
 
 /// What the PM is told once its proposal waits for the person.
@@ -375,6 +396,36 @@ mod tests {
         assert!(err(json!({ "change": "remove", "name": "ghost", "reason": "r" })).contains("Nobody on the squad is called ghost"));
         assert!(err(json!({ "change": "remove", "role": "data", "reason": "r" })).contains("Nobody on the squad is data"));
         assert!(err(json!({ "change": "remove", "reason": "r" })).contains("Who leaves"));
+    }
+
+    /// T-563 review: work owned by name by a member still on the team
+    /// (`mobile-2`) was let through as if its role owned it, though a new
+    /// `mobile-3` could never take it — no real unblock.
+    #[test]
+    fn an_add_unblocks_only_work_its_role_owns_never_work_a_member_owns_by_name() {
+        let mut team = team();
+        team.push(Mate { name: "mobile-2", role: "mobile", on: Some(140) });
+        let mut tickets = board();
+        let owned = |id: TicketId, owner: &str| {
+            let mut t = ticket(id, TicketStatus::InProgress);
+            t.owner = Some(owner.into());
+            t
+        };
+        tickets.extend([owned(140, "mobile-2"), owned(141, "qa"), owned(142, "mobile-7"), owned(143, "mobile")]);
+        let propose = |unblocks: &[u32]| check(&json!({ "change": "add", "role": "mobile", "reason": "r", "unblocks": unblocks }), &team, &tickets, &[]);
+        let by_name = propose(&[140]).unwrap_err();
+        assert!(by_name.contains("T-140 is owned by mobile-2 by name") && by_name.contains("waits for mobile-2") && by_name.contains("reassign it on its card"), "{by_name}");
+        // Another role's work is no refusal — approved, the board's rules leave it to that role —
+        // and `qa`, a member's name that is also its role, is the role.
+        assert_eq!(propose(&[141]).unwrap().unblocks, [141]);
+        assert_eq!(owned_by_name(&owned(1, "qa"), &team), None);
+        assert_eq!(owned_by_name(&owned(1, "mobile-2"), &team), Some("mobile-2"));
+        // The role's own work, and a departed member's (it goes to its role), are unblocked.
+        assert_eq!(propose(&[142, 143, 117]).unwrap().unblocks, [142, 143, 117]);
+        assert!(new_member_takes(&owned(1, "mobile"), "mobile", &team));
+        assert!(!new_member_takes(&owned(1, "mobile-2"), "mobile", &team));
+        assert!(!new_member_takes(&owned(1, "writer"), "mobile", &team), "a custom role on the team owns its work");
+        assert!(new_member_takes(&owned(1, "writer-2"), "writer", &team), "a departed writer's work goes to the role");
     }
 
     #[test]

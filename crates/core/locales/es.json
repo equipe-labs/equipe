@@ -605,5 +605,14 @@
   "phone.install_action": "Instalar AXe {version} (código abierto, MIT, unos {size} MB) en {folder}, para que los miembros puedan ver el simulador de iOS, tocar y escribir en él. Nada más cambia en el Mac y no necesita ningún permiso.",
   "phone.install_why": "{name} está probando la app en el simulador de iOS propio del ticket.",
   "notice.qa_report": "▶ {name} probó {flow} en T-{ticket}: {passed} de {steps} pasos superados · {video}",
-  "disk.kind.recordings": "grabaciones de pantalla del teléfono"
+  "disk.kind.recordings": "grabaciones de pantalla del teléfono",
+  "news.stalled": "La ejecución de T-{id} se detuvo sin entrega; su rama y su worktree se conservan tal cual. Reanúdalo, ponlo en cola o reasígnalo desde su tarjeta · {title}.",
+  "news.recovery_resume": "T-{id} sigue con {to} en una sesión nueva, en la misma rama y el mismo worktree · {title}.",
+  "news.recovery_requeue": "T-{id} queda en cola para el próximo {to} libre, en la misma rama y el mismo worktree · {title}.",
+  "news.recovery_reassign": "T-{id} pasa a {to}, en la misma rama y el mismo worktree · {title}.",
+  "notice.recovery_applied": "T-{id} ya se recuperó; no pasó nada más.",
+  "error.recovery_not_stalled": "T-{id} ya no está detenido, así que no cambió nada.",
+  "error.recovery_member_gone": "{name} ya no está en el equipo: pon T-{id} en cola para su rol o reasígnalo.",
+  "error.recovery_failed": "No se pudo recuperar T-{id}: {err}",
+  "error.recovery_no_operation": "Para recuperar T-{id} hace falta la clave de la tarjeta; inténtalo de nuevo desde ella."
 }

@@ -94,16 +94,14 @@ proposes it to the person."
             }
         }
         if change.change == Change::Add {
-            // An approved add that explicitly unblocks stalled work is also the
-            // person's approval to hand that same ticket to the new member and
-            // requeue it. Both changes are one journal transaction.
-            if let Some(owner) = members.first()
-                && let Some(journal) = self.journal(squad)
-            {
-                for ticket in &change.unblocks {
-                    let operation = format!("team-change:{}:{ticket}", change.id);
-                    let _ = journal.reserve_requeue(*ticket, &operation, Some(owner), now_secs());
-                }
+            // An approved add that names stalled work in `unblocks` is also the
+            // person's approval to hand that same ticket to the first new
+            // member and requeue it: owner and requeue in one journal
+            // transaction. Work owned by a specific member, or another role,
+            // stays where it is — the proposal was refused for it, and the
+            // board may have changed since.
+            if let Some(owner) = members.first() {
+                self.hand_stalled_unblocks(squad, &change, owner);
             }
             self.dispatch_to(squad, &members, &change.unblocks).await;
         }
@@ -129,6 +127,44 @@ proposes it to the person."
             (Change::Remove, true) => return,
         };
         self.brief_pm(squad, line, Some(shown));
+    }
+
+    /// The stalled tickets an approved add unblocks, handed to `owner` — the
+    /// first member it brought — and requeued: owner and recovery in one
+    /// journal transaction each, the ticket, branch, worktree and note kept.
+    /// Only work the new member's role owns moves, checked against the board
+    /// as it is now; anything else, and work that isn't stalled, is left to
+    /// the board's ordinary rules.
+    fn hand_stalled_unblocks(&mut self, squad: &str, change: &TeamChange, owner: &str) {
+        let team: Vec<(String, String)> = self
+            .sessions
+            .values()
+            .filter(|s| s.squad.as_deref() == Some(squad) && s.lane.is_none())
+            .filter_map(|s| s.member.as_ref().map(|m| (m.name.clone(), m.role.clone())))
+            .collect();
+        let mates: Vec<Mate<'_>> = team.iter().map(|(name, role)| Mate { name, role, on: None }).collect();
+        let tickets = self.tickets(squad);
+        let handed: Vec<TicketId> = change
+            .unblocks
+            .iter()
+            .filter_map(|id| tickets.iter().find(|t| t.id == *id))
+            .filter(|t| t.execution.as_ref().is_some_and(|e| e.state == ExecutionState::Stalled))
+            .filter(|t| rules::new_member_takes(t, &change.role, &mates))
+            .map(|t| t.id)
+            .collect();
+        let Some(journal) = self.journal(squad) else { return };
+        let mut changed = Vec::new();
+        for ticket in handed {
+            // One key per approval and ticket: the same approval twice is one recovery.
+            let operation = format!("team-change:{}:{ticket}", change.id);
+            if journal.reserve_requeue(ticket, &operation, Some(owner), now_secs()) == Ok(Requeued::Reserved) {
+                let _ = journal.ticket_event(ticket, "you", "requeued", &format!("to {owner}, who joined to unblock it"));
+                changed.extend(journal.ticket(ticket).ok().flatten());
+            }
+        }
+        for ticket in changed {
+            self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
+        }
     }
 
     /// The person's no: nothing changes; the PM is told, to plan without it.

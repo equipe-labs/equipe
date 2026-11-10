@@ -5073,6 +5073,7 @@ fn ticket_in(home: &Path, squad: &str, project: &Path, worktree: &Path) {
             depends_on: Vec::new(),
             branch: None,
             worktree: None,
+            execution: None,
             merged: None,
             off_main: None,
             design_qa: None,

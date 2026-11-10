@@ -84,13 +84,16 @@ pub fn assignments_prioritizing(
 
 /// Started work back on the board for its member to go on with: sent back
 /// from review or design QA, or resumed after a wait — the notes
-/// `begin_work` reads as its reopen envelope.
+/// `begin_work` reads as its reopen envelope — or brought back by the person
+/// after its run stalled.
 fn came_back(ticket: &Ticket) -> bool {
-    ticket.branch.is_some() && ticket.note.as_deref().is_some_and(|n| n.starts_with("Reopened") || n.starts_with("Resumed") || n.starts_with("Design QA by "))
+    let recovered = ticket.execution.as_ref().is_some_and(|e| e.state == equipe_protocol::ExecutionState::Queued);
+    recovered
+        || ticket.branch.is_some() && ticket.note.as_deref().is_some_and(|n| n.starts_with("Reopened") || n.starts_with("Resumed") || n.starts_with("Design QA by "))
 }
 
 /// The role a numbered member's name stands for: `frontend-3` → `frontend`.
-fn role_of(name: &str) -> &str {
+pub(crate) fn role_of(name: &str) -> &str {
     match name.rsplit_once('-') {
         Some((role, n)) if !role.is_empty() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => role,
         _ => name,

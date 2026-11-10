@@ -601,5 +601,14 @@
   "phone.install_action": "AXe {version}（オープンソース、MIT、約 {size} MB）を {folder} にインストールします。メンバーが iOS シミュレータの画面を見て、タップし、入力できるようになります。Mac のほかの部分は変わらず、権限も不要です。",
   "phone.install_why": "{name} がチケット専用の iOS シミュレータでアプリをテストしています。",
   "notice.qa_report": "▶ {name} が T-{ticket} で {flow} をテストしました: {steps} ステップ中 {passed} 合格 · {video}",
-  "disk.kind.recordings": "スマホの画面録画"
+  "disk.kind.recordings": "スマホの画面録画",
+  "news.stalled": "T-{id} の実行が提出なしで止まりました。ブランチと作業フォルダはそのままです。カードから再開・再投入・担当変更を選んでください · {title}。",
+  "news.recovery_resume": "T-{id} は {to} が新しいセッションで再開します。ブランチと作業フォルダはそのままです · {title}。",
+  "news.recovery_requeue": "T-{id} を次に空いた {to} に再投入しました。ブランチと作業フォルダはそのままです · {title}。",
+  "news.recovery_reassign": "T-{id} を {to} に渡しました。ブランチと作業フォルダはそのままです · {title}。",
+  "notice.recovery_applied": "T-{id} はすでに再開済みです。ほかに変更はありません。",
+  "error.recovery_not_stalled": "T-{id} はもう停止していないため、何も変更していません。",
+  "error.recovery_member_gone": "{name} はもうスクワッドにいません。T-{id} を同じ役割に再投入するか、担当を変えてください。",
+  "error.recovery_failed": "T-{id} を再開できませんでした: {err}",
+  "error.recovery_no_operation": "T-{id} の再開にはカードのキーが必要です。カードからもう一度試してください。"
 }

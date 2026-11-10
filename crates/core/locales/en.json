@@ -605,5 +605,14 @@
   "phone.install_action": "Install AXe {version} (open source, MIT, about {size} MB) into {folder}, so members can see, tap and type in the iOS Simulator. Nothing else on the Mac changes, and it needs no permission.",
   "phone.install_why": "{name} is testing the app on the ticket's own iOS Simulator.",
   "notice.qa_report": "▶ {name} tested {flow} on T-{ticket}: {passed} of {steps} steps passed · {video}",
-  "disk.kind.recordings": "phone recordings"
+  "disk.kind.recordings": "phone recordings",
+  "news.stalled": "T-{id}'s run stopped without a hand-in; its branch and worktree are kept as they are. Resume, requeue or reassign it on its card · {title}.",
+  "news.recovery_resume": "T-{id} goes on with {to} in a fresh session, on the same branch and worktree · {title}.",
+  "news.recovery_requeue": "T-{id} is queued for the next free {to}, on the same branch and worktree · {title}.",
+  "news.recovery_reassign": "T-{id} goes to {to}, on the same branch and worktree · {title}.",
+  "notice.recovery_applied": "T-{id} was already brought back; nothing more happened.",
+  "error.recovery_not_stalled": "T-{id} isn't stalled any more, so nothing changed.",
+  "error.recovery_member_gone": "{name} isn't on the squad any more: requeue T-{id} for its role, or reassign it.",
+  "error.recovery_failed": "T-{id} couldn't be brought back: {err}",
+  "error.recovery_no_operation": "Bringing T-{id} back needs the card's key; try again from its card."
 }

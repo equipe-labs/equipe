@@ -367,6 +367,11 @@ impl Runtime {
                     None => return Err(say!(self, "error.owner_under_way", id = id)),
                 },
                 _ => {
+                    // In progress with nobody on it (its run stalled): back on
+                    // the board for its new owner, branch and worktree kept.
+                    if t.status == TicketStatus::InProgress && owner.is_some() {
+                        t.status = TicketStatus::Todo;
+                    }
                     t.owner = owner;
                     t.assignee = None;
                 }

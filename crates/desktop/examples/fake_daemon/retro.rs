@@ -51,6 +51,7 @@ fn ticket(id: u32, title: &str, status: TicketStatus, who: &str, project: &str) 
         depends_on: vec![],
         branch: Some(format!("equipe/t-{id}")),
         worktree: None,
+        execution: None,
         merged: Some(status == TicketStatus::Done),
         off_main: None,
         design_qa: None,

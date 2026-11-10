@@ -403,17 +403,115 @@ pub struct TicketExecution {
     pub generation: u64,
     pub heartbeat_at: u64,
     pub lease_expires_at: u64,
+    /// Why it is in its state, as a code screens put in words
+    /// ([`stall_reason`] for a stalled run).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The checkout's commit when the run stalled, abbreviated: what every
+    /// recovery keeps. Left out when unknown or not stalled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    /// How many files in its checkout were changed or untracked when the run
+    /// stalled, kept as they are by every recovery. Left out when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dirty: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionState {
+    /// A runtime session holds the ticket's lease.
     Active,
+    /// The person approved a recovery; its owner starts it when free.
+    Queued,
+    /// The run put the ticket down for the person.
     Waiting,
+    /// The run ended without a hand-in or a wait: only the person recovers it.
     Stalled,
+    /// The run ended as the workflow said: handed in, accepted, cancelled, ….
     Stopped,
+}
+
+impl ExecutionState {
+    pub fn code(self) -> &'static str {
+        match self {
+            ExecutionState::Active => "active",
+            ExecutionState::Queued => "queued",
+            ExecutionState::Waiting => "waiting",
+            ExecutionState::Stalled => "stalled",
+            ExecutionState::Stopped => "stopped",
+        }
+    }
+
+    pub fn parse(code: &str) -> Self {
+        match code {
+            "active" => ExecutionState::Active,
+            "queued" => ExecutionState::Queued,
+            "waiting" => ExecutionState::Waiting,
+            "stalled" => ExecutionState::Stalled,
+            _ => ExecutionState::Stopped,
+        }
+    }
+}
+
+/// Why a run stalled, as [`TicketExecution::reason`] says it.
+pub mod stall_reason {
+    /// Its turn ended without a hand-in or a wait, and nothing ran it again
+    /// before its lease ran out.
+    pub const LEASE_EXPIRED: &str = "lease_expired";
+    /// equipe restarted and the run couldn't carry on: its member is gone, or
+    /// its engine can't resume here.
+    pub const NOT_RESUMED: &str = "not_resumed";
+    /// From before equipe kept runs, and nothing could carry it on.
+    pub const MIGRATED: &str = "migrated";
+}
+
+/// How the person recovers a stalled ticket ([`Command::Requeue`]). Each keeps
+/// the same ticket, branch, worktree, commit and uncommitted files.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "how", content = "member")]
+pub enum Recovery {
+    /// The same member goes on, in a fresh runtime session.
+    #[default]
+    Resume,
+    /// Whoever of its role is free next starts a fresh run.
+    Requeue,
+    /// The named member takes it over.
+    Reassign(String),
+}
+
+/// What a ticket's run looks like on every screen — board, sidebar, terminal
+/// — worked out one way from the daemon's record ([`Ticket::run_view`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunView {
+    /// Its member is at work on it.
+    Active,
+    /// In progress, but nothing runs it right now: its member is idle, or its
+    /// lease ran out. equipe marks it stalled if that lasts.
+    Paused,
+    /// Its run ended without a hand-in: the person resumes, requeues or
+    /// reassigns it.
+    Stalled,
+    /// A recovery the person approved, waiting for its member to be free.
+    Queued,
+}
+
+impl Ticket {
+    /// Its [`RunView`] at unix time `now`. `assignee_working`: whether its
+    /// assignee has a turn running, when the screen knows. `None` when it
+    /// isn't in progress or requeued, or its daemon keeps no runs.
+    pub fn run_view(&self, now: u64, assignee_working: Option<bool>) -> Option<RunView> {
+        let execution = self.execution.as_deref()?;
+        match (self.status, execution.state) {
+            (TicketStatus::Todo, ExecutionState::Queued) => Some(RunView::Queued),
+            (TicketStatus::InProgress, ExecutionState::Stalled) => Some(RunView::Stalled),
+            (TicketStatus::InProgress, ExecutionState::Active) if execution.lease_expires_at > now && assignee_working != Some(false) => {
+                Some(RunView::Active)
+            }
+            (TicketStatus::InProgress, _) => Some(RunView::Paused),
+            _ => None,
+        }
+    }
 }
 
 /// The gap between two tickets' ranks when they are spread out again.
@@ -730,9 +828,17 @@ pub enum Command {
     /// The person did what a `waiting` ticket needed: it goes back to its
     /// member, in the same worktree, with `note` (what was done) to go on from.
     Resume { squad: SquadName, ticket: TicketId, note: String },
-    /// The person approved a fresh runtime session for a stalled ticket.
-    /// `operation` makes retries idempotent.
-    Requeue { squad: SquadName, ticket: TicketId, operation: String },
+    /// The person recovers a stalled ticket: a fresh runtime session on the
+    /// same ticket, branch and worktree — for its member, its role or another
+    /// member (`how`). `operation` makes retries idempotent: the same key twice
+    /// is one recovery.
+    Requeue {
+        squad: SquadName,
+        ticket: TicketId,
+        operation: String,
+        #[serde(default)]
+        how: Recovery,
+    },
     /// The person drops a ticket.
     Cancel { squad: SquadName, ticket: TicketId },
     /// The person puts a ticket of their own on the board, ready (`todo`).
@@ -3395,10 +3501,17 @@ mod tests {
 
     #[test]
     fn requeue_and_execution_lifecycle_are_stable_on_the_wire() {
-        let command = Command::Requeue { squad: "acme".into(), ticket: 7, operation: "approve:9".into() };
+        let command = Command::Requeue { squad: "acme".into(), ticket: 7, operation: "approve:9".into(), how: Recovery::Resume };
         assert_eq!(serde_json::to_value(&command).unwrap(), json!({
-            "type": "requeue", "squad": "acme", "ticket": 7, "operation": "approve:9"
+            "type": "requeue", "squad": "acme", "ticket": 7, "operation": "approve:9", "how": { "how": "resume" }
         }));
+        // Sent without `how`: the same member goes on.
+        let bare: Command = serde_json::from_value(json!({ "type": "requeue", "squad": "acme", "ticket": 7, "operation": "approve:9" })).unwrap();
+        assert_eq!(bare, command);
+        let reassign = Command::Requeue { squad: "acme".into(), ticket: 7, operation: "o".into(), how: Recovery::Reassign("backend-3".into()) };
+        let wire = serde_json::to_value(&reassign).unwrap();
+        assert_eq!(wire["how"], json!({ "how": "reassign", "member": "backend-3" }));
+        assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), reassign);
         let execution = TicketExecution {
             state: ExecutionState::Stalled,
             session: 11,
@@ -3406,9 +3519,49 @@ mod tests {
             generation: 2,
             heartbeat_at: 100,
             lease_expires_at: 0,
-            reason: Some("runtime ended".into()),
+            reason: Some(stall_reason::LEASE_EXPIRED.into()),
+            head: Some("1a2b3c4".into()),
+            dirty: Some(2),
         };
         assert_eq!(serde_json::from_value::<TicketExecution>(serde_json::to_value(&execution).unwrap()).unwrap(), execution);
+        for state in [ExecutionState::Active, ExecutionState::Queued, ExecutionState::Waiting, ExecutionState::Stalled, ExecutionState::Stopped] {
+            assert_eq!(ExecutionState::parse(state.code()), state);
+            assert_eq!(serde_json::to_value(state).unwrap(), json!(state.code()));
+        }
+    }
+
+    #[test]
+    fn every_screen_reads_a_tickets_run_the_same_way() {
+        let run = |state: ExecutionState, lease_expires_at: u64| {
+            Some(Box::new(TicketExecution {
+                state,
+                session: 1,
+                operation: "start:1".into(),
+                generation: 1,
+                heartbeat_at: 0,
+                lease_expires_at,
+                reason: None,
+                head: None,
+                dirty: None,
+            }))
+        };
+        let mut t = ticket(1);
+        t.status = TicketStatus::InProgress;
+        assert_eq!(t.run_view(100, None), None, "an older daemon keeps no runs: nothing is said");
+        t.execution = run(ExecutionState::Active, 200);
+        assert_eq!(t.run_view(100, None), Some(RunView::Active));
+        assert_eq!(t.run_view(100, Some(true)), Some(RunView::Active));
+        assert_eq!(t.run_view(100, Some(false)), Some(RunView::Paused), "its member idle while it says active: paused");
+        assert_eq!(t.run_view(300, Some(true)), Some(RunView::Paused), "its lease ran out");
+        t.execution = run(ExecutionState::Stalled, 0);
+        assert_eq!(t.run_view(100, Some(true)), Some(RunView::Stalled));
+        t.status = TicketStatus::Todo;
+        assert_eq!(t.run_view(100, None), None);
+        t.execution = run(ExecutionState::Queued, 0);
+        assert_eq!(t.run_view(100, None), Some(RunView::Queued));
+        t.status = TicketStatus::Review;
+        t.execution = run(ExecutionState::Stopped, 0);
+        assert_eq!(t.run_view(100, None), None, "work handed in has no run to show");
     }
 
     #[test]

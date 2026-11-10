@@ -95,6 +95,18 @@ fn git_within(dir: &Path, args: &[&str], timeout: Duration) -> Result<String> {
     }
 }
 
+/// What a checkout holds, only looked at: its commit, abbreviated, and how
+/// many files are changed or untracked. `None` for what git couldn't say —
+/// a checkout that is gone, say.
+pub fn checkout_facts(path: &Path) -> (Option<String>, Option<u32>) {
+    if !path.exists() {
+        return (None, None);
+    }
+    let head = git(path, &["rev-parse", "--short", "HEAD"]).ok().filter(|h| !h.is_empty());
+    let dirty = git(path, &["status", "--porcelain", "--untracked-files=all"]).ok().map(|s| s.lines().filter(|l| !l.trim().is_empty()).count() as u32);
+    (head, dirty)
+}
+
 /// The top of the git repository containing `dir`.
 pub fn repo_root(dir: &Path) -> Result<PathBuf> {
     git(dir, &["rev-parse", "--show-toplevel"])
