@@ -1,0 +1,88 @@
+{
+  "screen": "conversation/rename",
+  "at": 1794276664,
+  "files": [
+    {
+      "path": "design/specs/rename-conversation/prototype.html",
+      "modified": 1794276545
+    }
+  ],
+  "rendered": true,
+  "summary": {
+    "floor": [
+      11,
+      11
+    ],
+    "habits": 0,
+    "finish": 1,
+    "widths": [
+      360,
+      390,
+      768,
+      1024,
+      1280,
+      1440,
+      1920
+    ],
+    "notes": [
+      [
+        "touch-target",
+        "span#title is 44×8"
+      ]
+    ],
+    "screen": "conversation/rename"
+  },
+  "findings": [
+    {
+      "rule": "touch-target",
+      "tier": "finish",
+      "file": "design/specs/rename-conversation/prototype.html",
+      "width": 360,
+      "evidence": "span#title is 44×8"
+    },
+    {
+      "rule": "touch-target",
+      "tier": "finish",
+      "file": "design/specs/rename-conversation/prototype.html",
+      "width": 390,
+      "evidence": "span#title is 48×9"
+    }
+  ],
+  "pictures": [
+    "/Users/abel/.equipe/worktrees/equipe/t642-6af27364/design/checks/conversation/rename/360.png",
+    "/Users/abel/.equipe/worktrees/equipe/t642-6af27364/design/checks/conversation/rename/390.png",
+    "/Users/abel/.equipe/worktrees/equipe/t642-6af27364/design/checks/conversation/rename/768.png",
+    "/Users/abel/.equipe/worktrees/equipe/t642-6af27364/design/checks/conversation/rename/1024.png",
+    "/Users/abel/.equipe/worktrees/equipe/t642-6af27364/design/checks/conversation/rename/1280.png",
+    "/Users/abel/.equipe/worktrees/equipe/t642-6af27364/design/checks/conversation/rename/1440.png",
+    "/Users/abel/.equipe/worktrees/equipe/t642-6af27364/design/checks/conversation/rename/1920.png"
+  ],
+  "new": true,
+  "first": null,
+  "verdict": {
+    "pass": true,
+    "fixes": [],
+    "summary": "헤더 제목에서 연 이름 바꾸기 팝오버가 제목 바로 아래에 붙어 있어요. 눈은 먼저 선택된 제목 입력칸에 가고, 그다음 하나뿐인 주 동작 '저장 ↩'에 가요. 헤더 제목·사이드바 행·입력값이 같은 문구로 이어져서 대화 맥락이 끊기지 않아요. 레이블·입력칸·버튼 줄은 한 간격 리듬과 오른쪽 정렬을 지키고, 제품의 기존 팝오버·버튼 모양(text 색 채움 주 버튼, 테두리 보조 버튼)과 단축키 표기도 그대로 써서 출시 전에 고칠 곳은 보이지 않아요.",
+    "at": 1794276702,
+    "by": "claude",
+    "widths": [
+      360,
+      390,
+      768,
+      1024,
+      1280,
+      1440,
+      1920
+    ],
+    "first": false,
+    "reviewer": {
+      "engine": "claude",
+      "member": "claude",
+      "why": {
+        "kind": "used_up",
+        "window": "weekly"
+      }
+    }
+  },
+  "fixes_in_a_row": 0
+}

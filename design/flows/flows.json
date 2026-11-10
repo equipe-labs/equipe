@@ -439,6 +439,97 @@
           ]
         },
         {
+          "id": "rename",
+          "title": "Rename a conversation",
+          "note": "T-642 HTML mockups drawn over real snapshot shots (design/specs/rename-conversation/prototype.html, render.mjs) until the GPUI state is built (T-643). The 760 pictures are a 760×760 window so the sidebar row shows. Contract: design/specs/rename-conversation/spec.md.",
+          "source": [
+            "crates/desktop/src/views/header.rs",
+            "crates/desktop/src/views/sidebar.rs",
+            "design/specs/rename-conversation/prototype.html",
+            "design/specs/rename-conversation/spec.md"
+          ],
+          "expects": [
+            "default",
+            "error",
+            "long",
+            "success"
+          ],
+          "states": [
+            {
+              "id": "entry-title",
+              "label": "Entry · header title hover",
+              "kind": "default",
+              "note": "T-642 mockup: pencil after the title, tooltip Rename (full title first when cut)"
+            },
+            {
+              "id": "entry-menu",
+              "label": "Entry · This conversation ⋯",
+              "kind": "default",
+              "note": "T-642 mockup: Rename is the menu's first item, focused; the menu stays inside the window"
+            },
+            {
+              "id": "entry-sidebar",
+              "label": "Entry · sidebar row hover",
+              "kind": "default",
+              "note": "T-642 mockup: pencil and × (24pt each), tooltip Rename; opens the conversation and the same card"
+            },
+            {
+              "id": "editing",
+              "label": "Editing · title selected",
+              "kind": "default",
+              "note": "T-642 mockup: the card under the header title; the whole title selected, Cancel Esc / Save ↩"
+            },
+            {
+              "id": "composing",
+              "label": "Korean IME composing",
+              "kind": "default",
+              "note": "T-642 mockup: 카 committed, 피 still composing: Return only commits it"
+            },
+            {
+              "id": "empty",
+              "label": "Empty name · after Return",
+              "kind": "error",
+              "note": "T-642 mockup: after Return: after Return: message, Save disabled; Esc still restores the title"
+            },
+            {
+              "id": "too-long",
+              "label": "Pasted past 40 characters",
+              "kind": "error",
+              "note": "T-642 mockup: nothing cut: the 8 over are marked, n/40 in the field, Save disabled"
+            },
+            {
+              "id": "saved",
+              "label": "Saved",
+              "kind": "success",
+              "note": "T-642 mockup: header and sidebar show the new title at once; keyboard focus back on the header title"
+            },
+            {
+              "id": "failed",
+              "label": "Save failed (Mac disconnected)",
+              "kind": "error",
+              "note": "T-642 mockup: title back to the old one, the typed name kept, Try again ↩"
+            },
+            {
+              "id": "long",
+              "label": "Long title (German)",
+              "kind": "long",
+              "note": "T-642 mockup: the bar gives way (context, then the place to its mark); the cut sidebar row shows the full title on the pointer"
+            },
+            {
+              "id": "large",
+              "label": "150% text",
+              "kind": "default",
+              "note": "T-642 mockup: at 760 the place and its slash give way, ⋯ stays; the card keeps inside the conversation pane"
+            },
+            {
+              "id": "large-failed",
+              "label": "150% text · save failed (English)",
+              "kind": "error",
+              "note": "T-642 mockup: Mac disconnected; the card is narrower than 300, so the key hints go and both buttons stay on one line"
+            }
+          ]
+        },
+        {
           "id": "engine-switch",
           "title": "Engine switching card (over the composer)",
           "note": "Error: Claude's week used up; Done: what equipe did in auto, with Undo.",
