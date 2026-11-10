@@ -344,9 +344,17 @@ impl Scene {
             Command::Submit { session, text, .. } => {
                 let Some(member) = self.member(session).map(str::to_owned).filter(|_| self.later.len() < LATER) else { return vec![] };
                 let text: String = text.chars().take(MESSAGE).collect();
-                let lang = reply_lang(&text);
+                let (words, attached) = attachments(&text);
+                // A path tells nothing of the language: the words do.
+                let lang = reply_lang(if words.is_empty() { &text } else { &words });
                 let start = self.free_at(session, now) + 800;
-                let reply = if member == "pm" { self.pm_reply(&text, lang, start) } else { member_reply(&member, lang) };
+                let reply = match (member == "pm", attached.is_empty(), words.is_empty()) {
+                    (true, false, true) => attached_reply(&attached, lang, true),
+                    (true, false, false) => format!("{} {}", attached_reply(&attached, lang, false), self.pm_reply(&words, lang, start)),
+                    (true, true, _) => self.pm_reply(&words, lang, start),
+                    (false, false, _) => format!("{member}: {}", attached_reply(&attached, lang, false)),
+                    (false, true, _) => member_reply(&member, lang),
+                };
                 self.say(session, start, &reply);
                 vec![Event::UserMessage { session, text, kept: Vec::new() }]
             }
@@ -416,6 +424,50 @@ impl Scene {
         let i = (self.replies - 1) % REPLIES.len();
         crate::i18n::of(lang).get(REPLIES[i]).to_owned()
     }
+}
+
+/// What a phone's message attached — `[image: …]` and the like, which the
+/// phone puts first — and its words without them.
+fn attachments(text: &str) -> (String, Vec<&'static str>) {
+    const KINDS: [&str; 5] = ["image", "video", "audio", "pdf", "file"];
+    let mut words = String::new();
+    let mut attached = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let tag = &rest[open + 1..];
+        let kind = KINDS.iter().find(|k| tag.strip_prefix(**k).is_some_and(|t| t.starts_with(": ")));
+        match (kind, tag.find(']')) {
+            (Some(kind), Some(close)) => {
+                words.push_str(&rest[..open]);
+                // A sound's or a video's transcript comes as a file beside it: not one more.
+                if !(*kind == "file" && matches!(attached.last(), Some(&"audio" | &"video"))) {
+                    attached.push(*kind);
+                }
+                rest = &tag[close + 1..];
+            }
+            _ => {
+                words.push_str(&rest[..=open]);
+                rest = tag;
+            }
+        }
+    }
+    words.push_str(rest);
+    (words.split_whitespace().collect::<Vec<_>>().join(" "), attached)
+}
+
+/// The answer to what was attached; `alone`, when nothing was said with it.
+fn attached_reply(attached: &[&str], lang: Lang, alone: bool) -> String {
+    let words = crate::i18n::of(lang);
+    let n = attached.len();
+    let kind = if attached.iter().all(|k| *k == "image") {
+        "photo"
+    } else if attached.iter().all(|k| *k == "video") {
+        "video"
+    } else {
+        "file"
+    };
+    let got = if n == 1 { words.get(&format!("demo.got_{kind}")).to_owned() } else { words.fill(&format!("demo.got_{kind}s"), &[("count", n.to_string())]) };
+    if alone { format!("{got} {}", words.get("demo.got_pass_on")) } else { got }
 }
 
 fn member_reply(member: &str, lang: Lang) -> String {
@@ -544,6 +596,28 @@ mod tests {
     }
 
     #[test]
+    fn the_pm_says_it_got_what_was_attached() {
+        let (words, attached) = attachments("[image: /u/1-a.png] [image: /u/2-b.jpg] see [x] these");
+        assert_eq!((words.as_str(), attached), ("see [x] these", vec!["image", "image"]));
+        let (_, attached) = attachments("[audio: /u/a.m4a · 0:31] [file: /u/a-transcript.txt · 2 lines] ");
+        assert_eq!(attached, vec!["audio"]);
+        let mut demo = Demo::default();
+        hello(&mut demo, "a");
+        let said = |demo: &mut Demo, text: &str, at: u64| -> String {
+            demo.command("a", Command::Submit { session: PM, text: text.into(), about: None }, at);
+            demo.due(at + 30_000).into_iter().filter_map(|(_, e)| match e { Event::TextDelta { text, .. } => Some(text), _ => None }).collect()
+        };
+        let alone = said(&mut demo, "[image: /u/1-IMG_0001.jpg] ", 0);
+        assert!(alone.contains("Got your photo") && alone.contains("T-3"), "{alone}");
+        // Asked for work with a picture: the ticket's title is the words, not the path.
+        let both = said(&mut demo, "[image: /u/1-a.png] [image: /u/2-b.png] 이걸로 FAQ 페이지 만들어줘", 40_000);
+        assert!(both.starts_with("사진 2장 잘 받았어요.") && both.contains("T-7"), "{both}");
+        assert_eq!(demo.scenes["a"].tickets.iter().find(|t| t.id == 7).map(|t| t.title.as_str()), Some("이걸로 FAQ 페이지 만들어줘"));
+        let file = said(&mut demo, "[pdf: /u/spec.pdf · 3 pages]", 80_000);
+        assert!(file.contains("Got your file"), "{file}");
+    }
+
+    #[test]
     fn each_phone_has_its_own_squad_and_reset_starts_over() {
         let mut demo = Demo::default();
         let id = hello(&mut demo, "a").approvals[0].id;
@@ -641,9 +715,19 @@ mod tests {
                 if rpc["id"] == 1 {
                     let approval = &rpc["result"]["snapshot"]["approvals"][0];
                     assert_eq!(approval["member"], "frontend", "{rpc}");
+                    // It takes the phone's files.
+                    assert!(rpc["result"]["uploads"]["chunk"].as_u64().is_some_and(|c| c > 0), "{rpc}");
                     let decide = json!({ "type": "decide", "squad": SQUAD, "approval": approval["id"], "decision": "allow" });
                     ws.send(ask(&mut phone, json!({ "jsonrpc": "2.0", "method": "command", "params": decide }))).await.unwrap();
-                    let submit = json!({ "type": "submit", "session": PM, "text": "What's left before launch?" });
+                    let png = super::super::b64(b"\x89PNG\r\n\x1a\n a reviewer's photo");
+                    let piece = json!({ "upload_id": format!("e2e-photo-{n}"), "name": "IMG_0001.png", "kind": "image", "total": 27, "offset": 0, "data": png });
+                    ws.send(ask(&mut phone, json!({ "jsonrpc": "2.0", "id": 2, "method": "upload", "params": piece }))).await.unwrap();
+                    continue;
+                }
+                if rpc["id"] == 2 {
+                    let tag = rpc["result"]["tag"].as_str().unwrap_or_else(|| panic!("{rpc}"));
+                    assert!(tag.starts_with("[image: ") && tag.contains("uploads"), "{tag}");
+                    let submit = json!({ "type": "submit", "session": PM, "text": format!("{tag} What's left before launch?") });
                     ws.send(ask(&mut phone, json!({ "jsonrpc": "2.0", "method": "command", "params": submit }))).await.unwrap();
                     continue;
                 }
@@ -655,7 +739,7 @@ mod tests {
                     _ => {}
                 }
             }
-            assert!(said.contains("T-2"), "{said}");
+            assert!(said.contains("Got your photo") && said.contains("T-2"), "{said}");
         }
     }
 
