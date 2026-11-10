@@ -420,6 +420,7 @@
   "chat.side_back": "戻る",
   "chat.side_close": "閉じる",
   "chat.side_expand": "ボードで開く",
+  "chat.activity.other": "作業内容 · {count}ステップ",
   "chat.sum_board.other": "ボード操作{count}件",
   "chat.sum_browse.other": "ブラウザ操作{count}件",
   "chat.sum_delegate.other": "エージェント{count}件を実行",

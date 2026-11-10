@@ -420,6 +420,7 @@
   "chat.side_back": "返回",
   "chat.side_close": "關閉",
   "chat.side_expand": "在看板中打開",
+  "chat.activity.other": "工作記錄 · {count} 步",
   "chat.sum_board.other": "看板操作 {count} 項",
   "chat.sum_browse.other": "瀏覽器操作 {count} 步",
   "chat.sum_delegate.other": "執行了 {count} 個代理",

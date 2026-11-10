@@ -433,6 +433,8 @@
   "chat.side_back": "Retour",
   "chat.side_close": "Fermer",
   "chat.side_expand": "Ouvrir dans le tableau",
+  "chat.activity.one": "Détails du travail · {count} étape",
+  "chat.activity.other": "Détails du travail · {count} étapes",
   "chat.sum_board.one": "{count} action sur le tableau",
   "chat.sum_board.other": "{count} actions sur le tableau",
   "chat.sum_browse.one": "{count} étape dans le navigateur",

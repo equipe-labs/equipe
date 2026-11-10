@@ -433,6 +433,8 @@
   "chat.side_back": "Atrás",
   "chat.side_close": "Cerrar",
   "chat.side_expand": "Abrir en el tablero",
+  "chat.activity.one": "Detalles del trabajo · {count} paso",
+  "chat.activity.other": "Detalles del trabajo · {count} pasos",
   "chat.sum_board.one": "{count} acción en el tablero",
   "chat.sum_board.other": "{count} acciones en el tablero",
   "chat.sum_browse.one": "{count} paso en el navegador",

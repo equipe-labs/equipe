@@ -1771,6 +1771,7 @@ fn disclosure_head(rows: &Rows, id: (&'static str, u64), part: u32, key: u64, fi
         .line_height(px(SMALL_LINE))
         .text_color(p.muted)
         .cursor_pointer()
+        .role(Role::Button)
         .hover(move |s| if fill { s.bg(p.wash) } else { s.text_color(p.text2) })
         .when(focused, |d| {
             let out = if fill { 0. } else { -6. };
@@ -1849,10 +1850,9 @@ fn named_ticket(text: Option<String>) -> Option<u32> {
     text[at + 2..at + len].parse().ok()
 }
 
-/// A group of tool calls: one quiet line — the call under way, the one call,
-/// or what they did counted — opening to a card of the calls, each a line
-/// that opens to its command, output or change. A failed call is a group of
-/// its own, open, in red.
+/// One assistant turn's tool activity: while it runs, one quiet line names
+/// the current call; once done, one localized work-details line stays folded.
+/// Opening it reuses the calls' command, output, diff and document views.
 fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mut App) -> AnyElement {
     let p = rows.p;
     let t = rows.tones;
@@ -1861,7 +1861,7 @@ fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mu
     let single = lines.len() == 1;
     // One call: the group is the call, and opens to what it has.
     let openable = !single || activity::has_more(&lines[0]);
-    let open = openable && (rows.expanded || rows.is_open(key, PART_GROUP, failed));
+    let open = openable && (rows.expanded || rows.is_open(key, PART_GROUP, activity_opens_by_default(status)));
     let progress = motion::openness(("group-open", key), open, window, cx);
     let tone = if failed { t.danger } else { p.muted };
     let mark: Option<AnyElement> = match status {
@@ -1871,14 +1871,23 @@ fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mu
         Status::Declined => Some(icon(Icon::Info, 13., p.muted).into_any_element()),
         _ => None,
     };
-    let title: AnyElement = match activity::title(lines) {
-        activity::Title::Call { phrase, object } => h_flex()
+    let title: AnyElement = match status {
+        Status::Running => match activity::title(lines) {
+            activity::Title::Call { phrase, object } => h_flex()
+                .min_w_0()
+                .gap(px(6.))
+                .child(div().flex_none().child(phrase))
+                .child(linked(rows, ("group-object", key), &object, p.text2, false))
+                .into_any_element(),
+            activity::Title::Summary(summary) => div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(summary).into_any_element(),
+        },
+        _ => div()
             .min_w_0()
-            .gap(px(6.))
-            .child(div().flex_none().child(phrase))
-            .child(linked(rows, ("group-object", key), &object, if failed { t.danger } else { p.text2 }, false))
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .child(t!("chat.activity", count = lines.len()))
             .into_any_element(),
-        activity::Title::Summary(summary) => div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(summary).into_any_element(),
     };
     let one = single.then(|| &lines[0]);
     // A document read or written: a look at it in the panel, one click away.
@@ -1948,6 +1957,12 @@ fn group(rows: &Rows, key: u64, lines: &[ToolLine], window: &mut Window, cx: &mu
         .filter(|_| rows.step_since.is_some_and(|since| since.elapsed() >= super::watch::AFTER))
         .map(|shown| super::watch::under_step(shown, p, t, key, rows.handle.clone()));
     v_flex().child(head).children(watch).children(body).into_any_element()
+}
+
+/// A final failure opens so it cannot be missed. Recovered failures have a
+/// successful final status and start folded with the rest of completed work.
+fn activity_opens_by_default(status: Status) -> bool {
+    status == Status::Failed
 }
 
 /// `+12 −3`, an edit's change counted.
@@ -2946,6 +2961,13 @@ mod tests {
         let said = vec![Block::User("research".into()), Block::Note(stopped), Block::User("why did it stop?".into())];
         assert!(!super::resumable(&said, 1), "they spoke since: their words lead");
         assert!(!super::resumable(&[Block::Note("other".into())], 0));
+    }
+
+    #[test]
+    fn completed_activity_folds_but_a_final_failure_opens() {
+        assert!(!super::activity_opens_by_default(crate::convo::Status::Done));
+        assert!(!super::activity_opens_by_default(crate::convo::Status::Running));
+        assert!(super::activity_opens_by_default(crate::convo::Status::Failed));
     }
 
     use super::{Block, changed, escape_markdown, find_hits, occurrences, turn_ends};
