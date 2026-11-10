@@ -67,3 +67,12 @@ Example sources: "frontend is waiting…" comes from a desktop screen (`desktop-
 - **Locked:** existing warm-neutral palette, system typography, current Markdown/Mermaid renderer, 760/1200pt support, light/dark, quiet tool density, no decorative AI effects, no macOS fullscreen change.
 - **Free:** focus header structure, entry/exit placement and labels, body measure and responsive header wrapping.
 - **Visual thesis:** A reading surface that feels like the same document gently taking the room, with the way back always clearer than the mode itself.
+
+## T-642 binding brief — renaming a conversation
+
+- **Problem:** The auto title (T-578) can miss what a PM conversation turned out to be about, and the person can't fix it; with several conversations open, the title is how they find one again.
+- **Success:** Rename is found from the title itself, the `This conversation` ⋯ menu and the sidebar row; it starts, saves (↩), cancels (Esc) and recovers from a failed save by pointer or keyboard alone, without leaving the conversation; header and sidebar always show the same title. Holds at 760/1200pt, light/dark, 150% text, 8 languages and Korean IME.
+- **Reference:** macOS Finder / Notes inline rename (click the name you see, ↩ keeps, Esc reverts, the text arrives selected) and Linear's issue title editing (no separate page, no modal). Take the in-context, keyboard-first edit; leave their brands and copy.
+- **Locked:** the current header path and ⋯ popover, the sidebar row, the app's popover look (raised · hairline · 8 radius · large shadow), ui::button kinds with key hints, warm neutrals, system type, no new colours.
+- **Free:** the edit surface (in place vs anchored card), entry affordances, messages, limits and what an outside click does.
+- **Visual thesis:** A small, quiet card that hangs from the title you clicked — the conversation stays in view behind it, and the way out (Esc) is always as clear as the way in.

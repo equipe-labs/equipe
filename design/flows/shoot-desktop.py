@@ -229,6 +229,7 @@ SCREENS = {
     "inbox/routine": ("A routine the PM proposes", ["views/routine.rs", "routine.rs"], None),
     "inbox/accept": ("Work to confirm", ["views/accept.rs", "accept.rs"], None),
     "conversation/chat": ("PM conversation", ["views/chat.rs", "views/header.rs", "render/view.rs", "render/prose.rs", "render/raster.rs", "views/compact.rs", "views/asklist.rs", "convo.rs"], "Diagrams (```mermaid) are drawn by the app itself (render/raster.rs). HTML cards (```html card) are off until the T-340 security review: the app shows such a block as code, like the code blocks in the Markdown state, so no state of its own yet — add one when cards are turned on."),
+    "conversation/rename": ("Rename a conversation", ["views/header.rs", "views/sidebar.rs"], "T-642 mockups over real snapshot shots (design/specs/rename-conversation/) until T-643 builds it; 760 is a 760×760 window. Contract: design/specs/rename-conversation/spec.md."),
     "conversation/engine-switch": ("Engine switching card (over the composer)", ["views/switching.rs", "switching.rs", "usage.rs"], "Error: Claude's week used up; Done: what equipe did in auto, with Undo."),
     "conversation/composer": ("Composer", ["views/composer.rs", "views/attached.rs", "attach.rs", "compose.rs"], None),
     "board/board": ("Board", ["views/tickets.rs", "views/ticket_card.rs", "views/sidebar.rs", "tickets.rs"], None),
@@ -279,7 +280,20 @@ RECORDED = {"first-run"}
 
 # States that no fake daemon or snapshot step reaches: drawn as HTML mockups
 # (design/flows/mockups/) and rendered to the same paths.
-MOCKUPS = {}
+MOCKUPS = {
+    "conversation/rename/entry-title": ("Entry · header title hover", "default", "T-642, design/specs/rename-conversation/render.mjs — pencil after the title, tooltip Rename (full title first when cut)"),
+    "conversation/rename/entry-menu": ("Entry · This conversation ⋯", "default", "T-642, design/specs/rename-conversation/render.mjs — Rename is the menu's first item, focused; the menu stays inside the window"),
+    "conversation/rename/entry-sidebar": ("Entry · sidebar row hover", "default", "T-642, design/specs/rename-conversation/render.mjs — pencil and × (24pt each), tooltip Rename; opens the conversation and the same card"),
+    "conversation/rename/editing": ("Editing · title selected", "default", "T-642, design/specs/rename-conversation/render.mjs — the card under the header title; the whole title selected, Cancel Esc / Save ↩"),
+    "conversation/rename/composing": ("Korean IME composing", "default", "T-642, design/specs/rename-conversation/render.mjs — 카 committed, 피 still composing: Return only commits it"),
+    "conversation/rename/empty": ("Empty name · after Return", "error", "T-642, design/specs/rename-conversation/render.mjs — after Return: after Return: message, Save disabled; Esc still restores the title"),
+    "conversation/rename/too-long": ("Pasted past 40 characters", "error", "T-642, design/specs/rename-conversation/render.mjs — nothing cut: the 8 over are marked, n/40 in the field, Save disabled"),
+    "conversation/rename/saved": ("Saved", "success", "T-642, design/specs/rename-conversation/render.mjs — header and sidebar show the new title at once; keyboard focus back on the header title"),
+    "conversation/rename/failed": ("Save failed (Mac disconnected)", "error", "T-642, design/specs/rename-conversation/render.mjs — title back to the old one, the typed name kept, Try again ↩"),
+    "conversation/rename/long": ("Long title (German)", "long", "T-642, design/specs/rename-conversation/render.mjs — the bar gives way (context, then the place to its mark); the cut sidebar row shows the full title on the pointer"),
+    "conversation/rename/large": ("150% text", "default", "T-642, design/specs/rename-conversation/render.mjs — at 760 the place and its slash give way, ⋯ stays; the card keeps inside the conversation pane"),
+    "conversation/rename/large-failed": ("150% text · save failed (English)", "error", "T-642, design/specs/rename-conversation/render.mjs — Mac disconnected; under 300 wide the key hints go and both buttons stay on one line"),
+}
 NOTES = {}
 
 

@@ -2,6 +2,7 @@
 
 One line each: version · date · what · why · platforms affected. Version rules are in `README.md`'s governance.
 
+- **1.1.0 (2026-11-10)** — Conversation rename contract, prototype over real app shots and 12 UI map states `conversation/rename` (T-642). No new tokens. Why: auto titles (T-578) can miss what a conversation became and couldn't be fixed. Affects: desktop design handoff (T-643 builds it, T-644 checks it).
 - **1.1.0 (2026-11-09)** — Document focus view contract, selected return-first header prototype and default/focus UI map states (T-617). No new tokens. Why: long Markdown and Mermaid output was confined to the narrow right panel and did not preserve an explicit return target. Affects: desktop design handoff; implementation follows separately.
 - **1.1.0 (2026-11-07)** — New `color.err-fill` (light `#EEE0DE` · dark `#352728`) with `err-fill-hover`·`err-fill-pressed`, primitives `red.100/150/200/850/875/900`, and `button.danger-soft-*` (T-492). Why: the iOS Deny button's translucent red fill over the glass bar dropped to 4.27:1 when content scrolled behind it (T-491); an opaque fill holds 5.12 / 5.24:1 whatever is behind. 6 new contrast pairs, all AA. Affects: iOS (T-484 Deny), then Android·desktop·site wherever a soft destructive button appears.
 - **1.0.0 (2026-11-05)** — Count rule (`components.md` §5): one filled `wait` pill for the total, the breakdown as `muted` numbers + status-colour dots. No new tokens. Why: when nearly every project was waiting, the sidebar turned all orange. Affects: the equipe desktop sidebar.

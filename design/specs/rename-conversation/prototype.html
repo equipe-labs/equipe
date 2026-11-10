@@ -1,0 +1,293 @@
+<!doctype html>
+<!--
+  T-642 · Renaming a conversation — the UI map's states, drawn over the real
+  app (snapshot shots in base/, taken from the T-578 build) until the GPUI
+  state exists. Only the header's right part and the sidebar's conversation
+  row are redrawn; values come from crates/desktop/src/theme.rs.
+  ?state=<id>&lang=<code>&mode=light|dark&w=1200|760&zoom=1|1.5
+  Rendered by render.mjs. Contract: spec.md beside this file.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../../build/css/tokens.css">
+<style>
+  /* Colours, type and spacing from the design system's tokens. The shot's own
+     surfaces stay (they were cleared with their own colours), so nothing
+     here paints the bar or the sidebar. */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; overflow: hidden; background: var(--eq-color-sunken); }
+  body { font-family: var(--eq-font-family-sans); color: var(--eq-color-text); -webkit-font-smoothing: antialiased; }
+  #app { position: relative; overflow: hidden; }
+  #base { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  svg { display: block; flex: none; }
+
+  .hdr { position: absolute; left: 260px; right: 0; top: 0; height: 43px; display: flex; align-items: center; gap: var(--eq-space-2); padding: 0 var(--eq-space-3); }
+  .crumb { display: flex; align-items: center; gap: var(--eq-space-1); min-width: 0; flex: 0 1 auto; }
+  .place { flex: none; max-width: 200px; padding: 0 var(--eq-space-2); font: var(--eq-type-small); color: var(--eq-color-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .place.folded { display: flex; align-items: center; height: 28px; }
+  .slash { flex: none; color: var(--eq-color-muted); font: var(--eq-type-small); }
+  .title { flex: 0 1 auto; min-width: 96px; max-width: 420px; height: 28px; padding: 0 var(--eq-space-2); border-radius: var(--eq-radius-md);
+           display: flex; align-items: center; gap: var(--eq-space-2); color: var(--eq-color-text); font: var(--eq-type-small); font-weight: 600; }
+  .title .t { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .title .pen { color: var(--eq-color-muted); display: none; }
+  .title.hover, .title.active { background: var(--eq-color-hover); }
+  .title.hover .pen { display: block; }
+  .title.focus { outline: var(--eq-focus-ring-width) solid var(--eq-color-focus); outline-offset: 0; }
+  .ib { flex: none; width: 28px; height: 28px; border-radius: var(--eq-radius-md); display: flex; align-items: center; justify-content: center; color: var(--eq-color-muted); }
+  .ib.on { background: var(--eq-color-hover); }
+  .gapx { flex: 1 1 0; min-width: 0; }
+  .ctx { flex: none; font: var(--eq-type-meta); color: var(--eq-color-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .pop { position: absolute; background: var(--eq-color-raised); border: var(--eq-border-1) solid var(--eq-color-line); border-radius: var(--eq-radius-md); box-shadow: var(--eq-elevation-float); z-index: var(--eq-z-dropdown); }
+  .menu { width: 240px; padding: var(--eq-space-1); font: var(--eq-type-small); color: var(--eq-color-text); }
+  .menu .head { padding: var(--eq-space-1) var(--eq-space-2) 0; font: var(--eq-type-meta); color: var(--eq-color-muted); }
+  .menu .it { height: 30px; padding: 0 var(--eq-space-2); display: flex; align-items: center; gap: var(--eq-space-2); border-radius: var(--eq-radius-sm); }
+  .menu .it .m { width: 14px; display: flex; justify-content: center; color: var(--eq-color-muted); }
+  .menu .it .l { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .menu .it.on .l { font-weight: 600; }
+  .menu .it.hover { background: var(--eq-color-hover); }
+  .menu .it.focus { outline: var(--eq-focus-ring-width) solid var(--eq-color-focus); outline-offset: -2px; }
+  .menu .sep { height: 1px; margin: var(--eq-space-1) 0; background: var(--eq-color-line); }
+  .ring7 { width: 7px; height: 7px; border-radius: var(--eq-radius-full); border: var(--eq-border-1) solid var(--eq-color-muted); }
+
+  .card { box-shadow: var(--eq-elevation-overlay); width: 360px; padding: var(--eq-space-3); display: flex; flex-direction: column; gap: var(--eq-space-2); }
+  .card .lbl { font: var(--eq-type-meta); color: var(--eq-color-muted); }
+  .field { height: 36px; padding: 0 var(--eq-space-3); display: flex; align-items: center; border-radius: var(--eq-radius-sm); background: var(--eq-color-bg);
+           border: var(--eq-border-1) solid var(--eq-color-line); font: var(--eq-type-small); color: var(--eq-color-text); white-space: nowrap; overflow: hidden; }
+  .field.focus { border-color: var(--eq-color-focus); box-shadow: 0 0 0 3px var(--eq-color-accent-bg); }
+  .field.err { border-color: var(--eq-color-err); box-shadow: 0 0 0 3px var(--eq-color-err-bg); }
+  .field .v { min-width: 0; overflow: hidden; white-space: pre; display: flex; align-items: center; }
+  .field .scroll { white-space: pre; }
+  .field .selected { background: color-mix(in srgb, var(--eq-color-focus) 30%, transparent); }
+  .field .marked { text-decoration: underline; text-underline-offset: 4px; text-decoration-thickness: 2px; text-decoration-color: var(--eq-color-text); background: var(--eq-color-hover); }
+  .field .caret { width: 2px; height: 18px; background: var(--eq-color-focus); flex: none; }
+  .meta { display: flex; align-items: flex-start; gap: var(--eq-space-3); font: var(--eq-type-meta); color: var(--eq-color-muted); min-height: 18px; }
+  .meta .msg { flex: 1; min-width: 0; display: flex; gap: var(--eq-space-1); align-items: flex-start; word-break: keep-all; overflow-wrap: anywhere; text-wrap: pretty; }
+  .meta .msg svg { margin-top: 2px; }
+  .meta .err { color: var(--eq-color-err); }
+  .meta .count { flex: none; font-variant-numeric: tabular-nums; }
+  .meta .count.err { color: var(--eq-color-err); }
+  .field .count { flex: none; margin-left: var(--eq-space-2); font: var(--eq-type-meta); color: var(--eq-color-muted); font-variant-numeric: tabular-nums; }
+  .field .count.err { color: var(--eq-color-err); }
+  .field .v { flex: 1; }
+  .field .v.scrolled { -webkit-mask-image: linear-gradient(to right, transparent 0, transparent var(--eq-space-2), var(--eq-color-text) var(--eq-space-7)); mask-image: linear-gradient(to right, transparent 0, transparent var(--eq-space-2), var(--eq-color-text) var(--eq-space-7)); }
+  .field .over { background: var(--eq-color-err-bg); color: var(--eq-color-err); border-radius: 2px; }
+  .btns { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: var(--eq-space-2); }
+  .btns.stack { flex-direction: column-reverse; align-items: stretch; }
+  .btns.stack .btn { justify-content: center; }
+  :lang(ja) .meta .msg { word-break: auto-phrase; }
+  .btn { height: 28px; padding: 0 var(--eq-space-3); border-radius: var(--eq-radius-md); display: flex; align-items: center; gap: var(--eq-space-2); font: var(--eq-type-small); font-weight: 600; white-space: nowrap; }
+  .btn .k { font: var(--eq-type-meta); }
+  .btn.sec .k { color: var(--eq-color-muted); }
+  .btn.pri .k { opacity: .8; }
+  .btn.sec { border: var(--eq-border-1) solid var(--eq-color-line); color: var(--eq-color-text); }
+  .btn.pri { background: var(--eq-color-action); color: var(--eq-color-on-action); }
+  .btn.pri.off { background: var(--eq-color-hover); color: var(--eq-color-muted); }
+
+  .tip { position: absolute; z-index: var(--eq-z-overlay); max-width: 380px; padding: var(--eq-space-1) var(--eq-space-2); border-radius: var(--eq-radius-sm);
+         background: var(--eq-color-inverse); color: var(--eq-color-on-inverse); font: var(--eq-type-meta); box-shadow: var(--eq-elevation-float); }
+  .tip .sub { opacity: .72; }
+
+  .srow { position: absolute; left: 8px; top: 418px; width: 244px; height: 30px; display: flex; align-items: center; gap: var(--eq-space-1); padding: 0 var(--eq-space-1) 0 var(--eq-space-2); font: var(--eq-type-small); color: var(--eq-color-text); }
+  .srow .ind { width: 44px; flex: none; }
+  .srow .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .srow .act + .act { margin-left: var(--eq-space-1); }
+  .srow .act { flex: none; width: 24px; height: 24px; border-radius: var(--eq-radius-sm); display: flex; align-items: center; justify-content: center; color: var(--eq-color-muted); }
+  .srow .act.hover { background: var(--eq-color-hover); outline: var(--eq-border-1) solid var(--eq-color-line); }
+</style>
+</head>
+<body>
+<div id="app"><img id="base" alt="" width="1200" height="760"></div>
+<script>
+const Q = new URLSearchParams(location.search);
+const state = Q.get('state') || 'editing', lang = Q.get('lang') || 'ko', mode = Q.get('mode') || 'light';
+const W = +(Q.get('w') || 1200), Z = +(Q.get('zoom') || 1);
+document.body.lang = lang; document.documentElement.lang = lang;
+document.documentElement.dataset.theme = mode;
+
+// Copy: existing keys where the app has them (sidebar.outside, header.context, header.move_to,
+// sidebar.put_away, peek.cancel, board.save); the rest are the new talk.rename_* keys of spec.md.
+const C = {
+  ko: { outside: '프로젝트 밖', ctx: '컨텍스트 31%', move: '다른 프로젝트로 옮기기', away: '대화 치우기', rename: '이름 바꾸기', label: '대화 이름', save: '저장', cancel: '취소', retry: '다시 시도',
+        empty: '이름을 입력해 주세요.', long: (m, o) => `${m}자까지 쓸 수 있어요. ${o}자를 줄여 주세요.`, failed: '이름을 저장하지 못했어요. 입력한 이름은 그대로 있어요.', offline: 'Mac과 연결이 끊겨 저장하지 못했어요. 입력한 이름은 그대로 있어요.',
+        auto: '가격 페이지 문구 다듬기', next: '11월 가격 페이지 카피', typing: '11월 가격 페이지 카', marked: '피',
+        pasted: '11월 가격 페이지 카피 — 첫 화면 헤드라인과 요금표 설명, 자주 묻는 질문까지 정리' },
+  en: { outside: 'Outside projects', ctx: 'context 31%', move: 'Move to another project', away: 'Put away', rename: 'Rename', label: 'Conversation name', save: 'Save', cancel: 'Cancel', retry: 'Try again',
+        empty: 'Enter a name.', long: (m, o) => `Up to ${m} characters. Remove ${o}.`, failed: 'Couldn’t save the name. What you typed is kept.', offline: 'Lost the connection to your Mac, so the name wasn’t saved. What you typed is kept.',
+        auto: 'Pricing page copy', next: 'November pricing page copy', typing: 'November pricing page copy', marked: '',
+        pasted: 'November pricing page copy — hero headline, plan table and FAQ' },
+  de: { outside: 'Außerhalb der Projekte', ctx: 'Kontext 31 %', move: 'In ein anderes Projekt verschieben', away: 'Weglegen', rename: 'Umbenennen', label: 'Name des Gesprächs', save: 'Sichern', cancel: 'Abbrechen', retry: 'Erneut versuchen',
+        empty: 'Gib einen Namen ein.', long: (m, o) => `Höchstens ${m} Zeichen. Entferne ${o}.`, failed: 'Name nicht gesichert. Deine Eingabe bleibt erhalten.', offline: 'Keine Verbindung zum Mac – Name nicht gesichert. Deine Eingabe bleibt erhalten.',
+        auto: 'Preisseite: Texte für den Novemberstart', next: 'Preisseite: Texte für den Novemberstart', typing: 'Preisseite: Texte für den Novemberstart', marked: '',
+        pasted: 'Preisseite: Texte für den Novemberstart, FAQ und Tarife' },
+  ja: { outside: 'プロジェクト外', ctx: 'コンテキスト 31%', move: '別のプロジェクトへ移す', away: '会話を片付ける', rename: '名前を変更', label: '会話の名前', save: '保存', cancel: 'キャンセル', retry: '再試行',
+        empty: '名前を入力してください。', long: (m, o) => `${m}文字までです。あと${o}文字減らしてください。`, failed: '名前を保存できませんでした。入力した名前はそのままです。', offline: 'Macとの接続が切れたため保存できませんでした。入力した名前はそのままです。',
+        auto: '料金ページの文言を整える', next: '11月の料金ページ文言', typing: '11月の料金ページ文言', marked: '', pasted: '11月の料金ページ文言 — ヒーロー見出し、料金表の説明、よくある質問までまとめて整理する' },
+  'zh-Hans': { outside: '项目之外', ctx: '上下文 31%', move: '移到其他项目', away: '收起对话', rename: '重命名', label: '对话名称', save: '保存', cancel: '取消', retry: '重试',
+        empty: '请输入名称。', long: (m, o) => `最多 ${m} 个字符，请删去 ${o} 个。`, failed: '未能保存名称，已保留你输入的内容。', offline: '与 Mac 的连接已断开，未能保存名称。已保留你输入的内容。',
+        auto: '润色定价页面文案', next: '11 月定价页文案', typing: '11 月定价页文案', marked: '', pasted: '11 月定价页文案 — 首屏标题、价格表说明和常见问题一次整理完毕，并补充下一步要做的事和负责人' },
+  'zh-Hant': { outside: '專案之外', ctx: '上下文 31%', move: '移到其他專案', away: '收起對話', rename: '重新命名', label: '對話名稱', save: '儲存', cancel: '取消', retry: '重試',
+        empty: '請輸入名稱。', long: (m, o) => `最多 ${m} 個字元，請刪去 ${o} 個。`, failed: '未能儲存名稱，已保留你輸入的內容。', offline: '與 Mac 的連線已中斷，未能儲存名稱。已保留你輸入的內容。',
+        auto: '潤飾定價頁面文案', next: '11 月定價頁文案', typing: '11 月定價頁文案', marked: '', pasted: '11 月定價頁文案 — 首屏標題、價格表說明和常見問題一次整理完畢，並補充下一步要做的事和負責人' },
+  fr: { outside: 'Hors projets', ctx: 'contexte 31 %', move: 'Déplacer vers un autre projet', away: 'Ranger', rename: 'Renommer', label: 'Nom de la conversation', save: 'Enregistrer', cancel: 'Annuler', retry: 'Réessayer',
+        empty: 'Saisissez un nom.', long: (m, o) => `${m} caractères au maximum. Retirez-en ${o}.`, failed: 'Nom non enregistré. Votre saisie est conservée.', offline: 'Connexion au Mac perdue : nom non enregistré. Votre saisie est conservée.',
+        auto: 'Textes de la page tarifs', next: 'Textes tarifs de novembre', typing: 'Textes tarifs de novembre', marked: '', pasted: 'Textes tarifs de novembre — titre, grille et FAQ' },
+  es: { outside: 'Fuera de proyectos', ctx: 'contexto 31%', move: 'Mover a otro proyecto', away: 'Guardar', rename: 'Cambiar nombre', label: 'Nombre de la conversación', save: 'Guardar', cancel: 'Cancelar', retry: 'Reintentar',
+        empty: 'Escribe un nombre.', long: (m, o) => `Máximo ${m} caracteres. Quita ${o}.`, failed: 'No se guardó el nombre. Lo que escribiste se conserva.', offline: 'Se perdió la conexión con el Mac y no se guardó el nombre. Lo que escribiste se conserva.',
+        auto: 'Textos de la página de precios', next: 'Textos de precios de noviembre', typing: 'Textos de precios de noviembre', marked: '', pasted: 'Textos de precios de noviembre — titular, tabla y FAQ' },
+};
+const L = C[lang] || C.en;
+const MAX = 40;
+const chars = s => [...new Intl.Segmenter(lang, { granularity: 'grapheme' }).segment(s)].length;
+
+const ICON = {
+  pencil: '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
+  ellipsis: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
+  x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  alert: '<circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/>',
+  term: '<path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>',
+  globe: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+};
+const svg = (n, s, c = 'currentColor', w = 2) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n]}</svg>`;
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+
+// What each state shows. title: header and sidebar; card: the rename card or none.
+const S = {
+  'entry-title':   { title: L.auto, titleCls: 'hover', tip: 'title', cursorAt: 'title' },
+  'entry-menu':    { title: L.auto, titleCls: '', menu: true },
+  'entry-sidebar': { title: L.auto, sideHover: true, tip: 'side', cursorAt: 'pen' },
+  'editing':       { title: L.auto, titleCls: 'active', card: { value: L.auto, sel: true } },
+  'composing':     { title: L.auto, titleCls: 'active', card: { value: L.typing, marked: L.marked } },
+  'empty':         { title: L.auto, titleCls: 'active', card: { value: '', msg: 'empty' } },
+  'too-long':      { title: L.auto, titleCls: 'active', card: { value: L.pasted, msg: 'long' } },
+  'saved':         { title: L.next, titleCls: 'focus' },
+  'failed':        { title: L.auto, titleCls: 'active', card: { value: L.next, msg: 'offline' } },
+  'long':          { title: L.auto, sideHover: true, tip: 'side-full' },
+  'large':         { title: L.auto, titleCls: 'active', card: { value: L.next, caretEnd: true } },
+  'large-failed':  { title: L.auto, titleCls: 'active', card: { value: L.next, msg: 'offline' } },
+}[state];
+
+// The window is drawn at its own size (the shot's, in points); any other viewport
+// (a lint at phone or wide widths) sees the whole window scaled to fit, one system.
+const vw = Math.round(W / Z), vh = Math.round(760 / Z);
+const fit = Math.min(window.innerWidth / vw, window.innerHeight / vh);
+const app = document.getElementById('app');
+app.style.width = vw + 'px'; app.style.height = vh + 'px';
+const baseName = { ko: 'ko', en: 'en', de: 'de' }[lang] || 'en';
+const kind = W === 1200 ? (Z > 1 ? 'large' : 'base') : (Z > 1 ? 'talllarge' : 'tall');
+document.getElementById('base').src = `base/${kind}-${baseName}.${mode}.${W}.png`;
+
+// Narrow bar (760 at 150%): the context figure gives way first, then the place, then the title.
+const narrow = vw - 260 < 360;
+const hdr = document.createElement('div');
+hdr.className = 'hdr';
+hdr.innerHTML = `
+  <div class="crumb">
+    <span class="place" title="${esc(L.outside)}">${esc(L.outside)}</span><span class="slash">/</span>
+    <span class="title ${S.titleCls || ''}" id="title" role="button" aria-label="${esc(S.title)}" aria-description="${esc(L.rename)}"><span class="t">${esc(S.title)}</span>${svg('pencil', 12)}</span>
+    <span class="ib ${S.menu ? 'on' : ''}" id="more" aria-label="this conversation">${svg('ellipsis', 15)}</span>
+  </div>
+  <div class="gapx"></div>
+  ${narrow ? '' : `<span class="ctx">${esc(L.ctx)}</span>`}
+  <span class="ib">${svg('term', 16)}</span><span class="ib">${svg('globe', 16)}</span>`;
+hdr.querySelector('.title svg').classList.add('pen');
+app.appendChild(hdr);
+// The title has the bar first: while it is cut, the context figure goes, then
+// the place folds to its mark (its name on the pointer), and where even that
+// doesn't fit (760 at 150%) the place and its slash go. The ⋯ always stays.
+{
+  const t = hdr.querySelector('.title .t'), cut = () => t.scrollWidth > t.clientWidth + 1;
+  const ctx = hdr.querySelector('.ctx'), place = hdr.querySelector('.place');
+  if (cut() && ctx) ctx.remove();
+  if (cut() && place && S.card && narrow) { place.remove(); hdr.querySelector('.slash').remove(); }
+  if (cut() && hdr.contains(place)) { place.innerHTML = '<span class="ring7"></span>'; place.classList.add('folded'); }
+  const over = () => hdr.scrollWidth > hdr.clientWidth + 1;
+  if (over() && hdr.contains(place)) { place.remove(); hdr.querySelector('.slash').remove(); }
+}
+
+// The sidebar row, where the shot shows it (100% only; at 150% it sits below the fold).
+let srow = null;
+if (Z === 1) {
+  srow = document.createElement('div');
+  srow.className = 'srow on';
+  srow.setAttribute('aria-label', S.title);
+  srow.innerHTML = `<span class="ind"></span><span class="t">${esc(S.title)}</span>` + (S.sideHover ? `<span class="act ${S.tip === 'side' ? 'hover' : ''}" id="spen">${svg('pencil', 12)}</span><span class="act">${svg('x', 12)}</span>` : '');
+  app.appendChild(srow);
+}
+
+const rect = el => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height, r: r.right, b: r.bottom }; };
+const title = document.getElementById('title');
+
+function tip(html, anchor) {
+  const t = document.createElement('div');
+  t.className = 'tip'; t.innerHTML = html; app.appendChild(t);
+  const a = rect(anchor), tr = rect(t);
+  t.style.left = Math.max(8, Math.min(a.x + a.w / 2 - tr.w / 2, vw - tr.w - 8)) + 'px';
+  t.style.top = (a.b + 6) + 'px';
+}
+const truncated = el => { const t = el.querySelector('.t'); return t.scrollWidth > t.clientWidth + 1; };
+if (S.tip === 'title') tip((truncated(title) ? `${esc(S.title)}<br><span class="sub">${esc(L.rename)}</span>` : esc(L.rename)), title);
+if (S.tip === 'side' && srow) tip(esc(L.rename), document.getElementById('spen'));
+if (S.tip === 'side-full' && srow) tip(truncated(srow) ? esc(S.title) : esc(L.rename), srow.querySelector('.t'));
+
+if (S.menu) {
+  const m = document.createElement('div');
+  m.className = 'pop menu'; m.setAttribute('role', 'menu');
+  const item = (icon, label, cls = '', tail = '') => `<div class="it ${cls}" role="menuitem"><span class="m">${icon}</span><span class="l">${esc(label)}</span>${tail}</div>`;
+  m.innerHTML = item(svg('pencil', 12), L.rename, 'hover focus') + '<div class="sep"></div>' +
+    `<div class="head">${esc(L.move)}</div>` +
+    ['web', 'app', 'api'].map(n => item(svg('folder', 12), n)).join('') +
+    item('<span class="ring7"></span>', L.outside, 'on', svg('check', 13)) +
+    '<div class="sep"></div>' + item(svg('x', 12), L.away);
+  app.appendChild(m);
+  const a = rect(document.getElementById('more'));
+  m.style.left = Math.max(8, Math.min(a.x, vw - 240 - 8)) + 'px'; m.style.top = (a.y + 32) + 'px';
+}
+
+if (S.card) {
+  const c = S.card, v = c.value + (c.marked || '');
+  const n = chars(v), over = n - MAX;
+  const failed = c.msg === 'failed' || c.msg === 'offline';
+  const slim = Math.min(360, vw - Math.max(268, document.getElementById('title').getBoundingClientRect().left) - 8) < 300;
+  const count = n >= 30 && !failed ? `<span class="count ${over > 0 ? 'err' : ''}">${n}/${MAX}</span>` : '';
+  const card = document.createElement('div');
+  card.className = 'pop card'; card.setAttribute('role', 'dialog'); card.setAttribute('aria-label', L.rename);
+  let val;
+  if (!v) val = '<span class="caret"></span>';
+  else if (c.sel) val = `<span class="scroll selected">${esc(c.value)}</span>`;
+  else if (over > 0) { const g = [...new Intl.Segmenter(lang, { granularity: 'grapheme' }).segment(c.value)].map(x => x.segment); val = `<span class="scroll">${esc(g.slice(0, MAX).join(''))}</span><span class="scroll over">${esc(g.slice(MAX).join(''))}</span><span class="caret"></span>`; }
+  else val = `<span class="scroll">${esc(c.value)}</span>${c.marked ? `<span class="scroll marked">${esc(c.marked)}</span>` : ''}<span class="caret"></span>`;
+  const msg = c.msg === 'empty' ? `<span class="msg err">${svg('alert', 13)}<span>${esc(L.empty)}</span></span>`
+            : c.msg === 'long' ? `<span class="msg err">${svg('alert', 13)}<span>${esc(L.long(MAX, over))}</span></span>`
+            : c.msg === 'failed' ? `<span class="msg err" role="alert">${svg('alert', 13)}<span>${esc(L.failed)}</span></span>`
+            : c.msg === 'offline' ? `<span class="msg err" role="alert">${svg('alert', 13)}<span>${esc(L.offline)}</span></span>`
+            : '';
+  const canSave = !(c.msg === 'empty' || c.msg === 'long');
+  card.innerHTML = `
+    <label class="lbl">${esc(L.label)}</label>
+    <div class="field ${c.msg === 'empty' || c.msg === 'long' ? 'err' : 'focus'}"><span class="v" id="v">${val}</span>${slim || over > 0 ? '' : count}</div>
+    ${msg || ((slim || over > 0) && count) ? `<div class="meta">${msg || '<span class="msg"></span>'}${slim || over > 0 ? count : ''}</div>` : ''}
+    <div class="btns"><span class="btn sec">${esc(L.cancel)}${slim ? '' : ' <span class="k">Esc</span>'}</span><span class="btn pri ${canSave ? '' : 'off'}" data-primary>${esc(failed ? L.retry : L.save)}${slim ? '' : ' <span class="k">↩</span>'}</span></div>`;
+  app.appendChild(card);
+  // Under the title, its left edge on the title's; kept 8 inside the window.
+  const a = rect(title);
+  const left = Math.max(260 + 8, Math.min(a.x, vw - 240 - 8)), width = Math.min(360, vw - left - 8);
+  card.style.width = width + 'px';
+  card.style.left = left + 'px';
+  card.style.top = (a.b + 6) + 'px';
+  const bt = card.querySelector('.btns');
+  if (bt.getBoundingClientRect().height > 40) bt.classList.add('stack');
+  // A long value scrolls to its end, as a field does while typing.
+  const vv = document.getElementById('v');
+  if (!c.sel) vv.scrollLeft = vv.scrollWidth;
+  if (!c.sel && vv.scrollWidth > vv.clientWidth) { vv.style.justifyContent = 'flex-end'; vv.classList.add('scrolled'); }
+}
+
+if (Math.abs(fit - 1) > 0.01) { app.style.transformOrigin = '0 0'; app.style.transform = `scale(${fit})`; }
+document.body.dataset.ready = '1';
+</script>
+</body>
+</html>
