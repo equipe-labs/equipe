@@ -2637,7 +2637,7 @@ pub mod keys {
 
     #[cfg(test)]
     mod tests {
-        use super::*;
+        use super::super::{MIN_WIDTH, fit_width};
 
         #[test]
         fn a_narrow_window_holds_the_panel_inside_it() {
