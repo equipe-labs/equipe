@@ -708,6 +708,7 @@ pub mod label {
             K::Yarn => "disk.kind.yarn",
             K::Docker => "disk.kind.docker",
             K::Recordings => "disk.kind.recordings",
+            K::TicketTemp => "disk.kind.ticket_temp",
             K::Attachments => "disk.kind.attachments",
         })
     }

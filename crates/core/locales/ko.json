@@ -607,6 +607,7 @@
   "phone.install_why": "티켓 전용 iOS 시뮬레이터에서 앱을 테스트하려고 해요 ({name}).",
   "notice.qa_report": "▶ {name} · T-{ticket} {flow} 테스트: {steps}단계 중 {passed}단계 통과 · {video}",
   "disk.kind.recordings": "휴대폰 화면 녹화",
+  "disk.kind.ticket_temp": "끝난 티켓의 임시 폴더",
   "news.stalled": "T-{id} 실행이 제출 없이 멈췄어요. 브랜치와 작업 폴더는 그대로예요. 카드에서 이어서 하기·다시 맡기기·담당 바꾸기 중에 골라 주세요 · {title}.",
   "news.recovery_resume": "T-{id}을(를) {to}이(가) 새 세션에서 이어서 해요. 브랜치와 작업 폴더는 그대로예요 · {title}.",
   "news.recovery_requeue": "T-{id}을(를) 다음에 한가해지는 {to}에게 다시 맡겼어요. 브랜치와 작업 폴더는 그대로예요 · {title}.",

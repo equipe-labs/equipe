@@ -287,7 +287,11 @@ impl Runtime {
     /// What equipe knows, for a look at the disk: cheap, from what it holds.
     fn disk_known(&mut self) -> disk::Known {
         let squads: Vec<String> = self.journals.keys().cloned().collect();
-        let mut known = disk::Known { home: self.config.home.clone(), user_home: std::env::var_os("HOME").map(PathBuf::from), ..Default::default() };
+        // The system's temporary folders are the person's machine's: a daemon
+        // given a home of its own for the person (a test's, a demo's) never
+        // looks there, let alone removes anything.
+        let temp = if self.config.person_home.is_none() { disk::temp_roots() } else { Vec::new() };
+        let mut known = disk::Known { home: self.config.home.clone(), user_home: std::env::var_os("HOME").map(PathBuf::from), temp, ..Default::default() };
         for squad in &squads {
             let tickets = self.journal(squad).map(|j| (j.tickets().unwrap_or_default(), j.projects().unwrap_or_default()));
             let Some((tickets, projects)) = tickets else { continue };

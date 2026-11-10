@@ -607,6 +607,7 @@
   "phone.install_why": "{name} 正在工单专用的 iOS 模拟器上测试应用。",
   "notice.qa_report": "▶ {name} 在 T-{ticket} 上测试了 {flow}：{steps} 个步骤中通过 {passed} 个 · {video}",
   "disk.kind.recordings": "手机录屏",
+  "disk.kind.ticket_temp": "已结束工单的临时文件夹",
   "news.stalled": "T-{id} 的运行未提交就停止了；分支和工作目录保持原样。请在卡片上选择继续、重新排队或改派 · {title}。",
   "news.recovery_resume": "T-{id} 由 {to} 在新会话中继续，分支和工作目录不变 · {title}。",
   "news.recovery_requeue": "T-{id} 已重新排队，交给下一位空闲的 {to}，分支和工作目录不变 · {title}。",

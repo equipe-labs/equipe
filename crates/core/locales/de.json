@@ -611,6 +611,7 @@
   "phone.install_why": "{name} testet die App im eigenen iOS-Simulator des Tickets.",
   "notice.qa_report": "▶ {name} hat {flow} auf T-{ticket} getestet: {passed} von {steps} Schritten bestanden · {video}",
   "disk.kind.recordings": "Handy-Aufnahmen",
+  "disk.kind.ticket_temp": "temporärer Ordner eines erledigten Tickets",
   "news.stalled": "Der Lauf von T-{id} hat ohne Abgabe aufgehört; Branch und Worktree bleiben, wie sie sind. Fortsetzen, neu einreihen oder neu zuweisen auf seiner Karte · {title}.",
   "news.recovery_resume": "T-{id} geht mit {to} in einer neuen Sitzung weiter, auf demselben Branch und Worktree · {title}.",
   "news.recovery_requeue": "T-{id} ist für den nächsten freien {to} eingereiht, auf demselben Branch und Worktree · {title}.",
