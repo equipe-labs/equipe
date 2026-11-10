@@ -2338,6 +2338,9 @@ impl Interactivity {
 
         if let Some(focus_handle) = self.tracked_focus_handle.as_ref() {
             window.set_focus_handle(focus_handle, cx);
+            if focus_handle.is_focused(window) {
+                window.focused_bounds = Some((focus_handle.id, bounds));
+            }
 
             if window.a11y.is_active() {
                 if let Some(global_id) = global_id {

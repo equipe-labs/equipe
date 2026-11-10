@@ -2313,6 +2313,9 @@ impl Render for Shell {
         if window.focused(cx).is_none() {
             self.root_focus.focus(window, cx);
         }
+        if self.screen == Screen::Settings {
+            self.follow_focus(window, cx);
+        }
         // A sheet opened: the keys go into it, once; Esc or Close sends them back to the box.
         if self.sheet.is_some() != self.sheet_focused {
             self.sheet_focused = self.sheet.is_some();

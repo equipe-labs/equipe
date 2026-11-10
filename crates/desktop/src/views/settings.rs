@@ -94,6 +94,8 @@ pub struct SettingsUi {
     /// Where each control that opens a pop-up was last drawn.
     anchors: Rc<RefCell<HashMap<Pop, Bounds<Pixels>>>>,
     pub scroll: ScrollHandle,
+    /// The control the page last scrolled to (`follow_focus`).
+    revealed: Option<FocusHandle>,
     /// The AI platforms' buttons, for Tab (`super::engines::KEYS` a card).
     pub engine_keys: Vec<FocusHandle>,
     /// Accounts' form and second clicks.
@@ -124,6 +126,7 @@ impl SettingsUi {
             pop: None,
             anchors: Rc::default(),
             scroll: ScrollHandle::new(),
+            revealed: None,
             engine_keys: (0..crate::engines::PLATFORMS.len() * super::engines::KEYS).map(|_| cx.focus_handle().tab_stop(true)).collect(),
             accounts: super::accounts::AccountsUi::new(window, cx),
             nebius_key: cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("engines.nebius_key_placeholder"))),
@@ -1638,6 +1641,49 @@ impl Shell {
         }
         cx.notify();
         true
+    }
+
+    /// Scrolls the page so the control focus just moved to shows whole, its ring
+    /// and a margin included (WCAG 2.4.11), however it got there: Tab inside the
+    /// page is the window's own, not ours. Runs each frame on the settings page;
+    /// the bounds are those the control was last drawn at, so it acts once per
+    /// control, on the frame after the one that drew it.
+    pub fn follow_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        const MARGIN: f32 = 16.;
+        let Some(id) = window.focused(cx) else {
+            self.settings.revealed = None;
+            return;
+        };
+        if self.settings.revealed.as_ref() == Some(&id) {
+            return;
+        }
+        // Not drawn yet since focus moved here: look again next frame.
+        let Some(at) = window.focused_bounds() else {
+            cx.notify();
+            return;
+        };
+        self.settings.revealed = Some(id);
+        let view = self.settings.scroll.bounds();
+        // The side list and the search box aren't in the scrolling page.
+        if at.right() <= view.left() || at.left() >= view.right() {
+            return;
+        }
+        let margin = px(MARGIN);
+        let offset = self.settings.scroll.offset();
+        let by = if at.bottom() + margin > view.bottom() {
+            view.bottom() - margin - at.bottom()
+        } else if at.top() - margin < view.top() {
+            view.top() + margin - at.top()
+        } else {
+            return;
+        };
+        // Offsets are 0 at the top and negative below; never past either end.
+        let max = self.settings.scroll.max_offset().y;
+        let y = (offset.y + by).clamp(-max, px(0.));
+        if y != offset.y {
+            self.settings.scroll.set_offset(point(offset.x, y));
+            cx.notify();
+        }
     }
 
     fn run_pop(&mut self, act: Act, window: &mut Window, cx: &mut Context<Self>) {
