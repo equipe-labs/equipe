@@ -238,44 +238,106 @@ pub(super) fn switch(shell: &Shell, id: &str, name: &str, on: bool, enabled: boo
         .into_any_element()
 }
 
-/// A few fixed choices side by side, the one in use raised.
+/// A few fixed choices side by side, the one in use raised. One Tab stop (the
+/// one in use); ←/→ move the focus among the choices, Space/Enter pick it.
 pub(crate) fn segmented<T: Copy + PartialEq + 'static>(shell: &Shell, id: &str, options: Vec<(T, String)>, now: T, set: impl Fn(&mut Shell, T, &mut Window, &mut Context<Shell>) + 'static, cx: &mut Context<Shell>) -> AnyElement {
-    let p = shell.palette;
-    let set = Rc::new(set);
-    let raised = if p.is_dark() { p.side_sel } else { p.raised };
-    h_flex()
-        .flex_none()
-        .h(px(CONTROL))
-        .p(px(2.))
-        .gap(px(2.))
-        .rounded(px(R_MD))
-        .bg(if p.is_dark() { p.wash } else { p.code_bg })
-        .children(options.into_iter().enumerate().map(|(ix, (value, label))| {
-            let on = value == now;
-            let set = set.clone();
-            let seg = h_flex()
-                .id(SharedString::from(format!("{id}-{ix}")))
-                .role(Role::RadioButton)
-                .aria_label(label.clone())
-                .aria_toggled(if on { Toggled::True } else { Toggled::False })
-                .h_full()
-                .px_3()
-                .items_center()
-                .rounded(px(R_SM))
-                .text_size(px(SMALL))
-                .whitespace_nowrap()
-                .text_color(if on { p.text } else { p.text2 })
-                .when(on, |s| s.bg(raised).shadow(motion::float_shadow(0.18)))
-                .when(!on, |s| s.cursor_pointer())
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    set(this, value, window, cx);
-                    cx.notify();
-                }))
-                // As wide picked as not: the pill doesn't shift under the pointer.
-                .child(ui::steady(label, FontWeight::MEDIUM, on, false));
-            if on { seg.into_any_element() } else { motion::hover_fill(seg, SharedString::from(format!("{id}-{ix}-fill")), p.wash, false).into_any_element() }
-        }))
-        .into_any_element()
+    let handle = cx.entity().downgrade();
+    let values: Vec<T> = options.iter().map(|(v, _)| *v).collect();
+    let on = values.iter().position(|v| *v == now);
+    let pick: Rc<dyn Fn(usize, &mut Window, &mut App)> = Rc::new(move |ix, window, cx| {
+        let Some(value) = values.get(ix).copied() else { return };
+        handle
+            .update(cx, |this, cx| {
+                set(this, value, window, cx);
+                cx.notify();
+            })
+            .ok();
+    });
+    Segmented { p: shell.palette, id: SharedString::from(id.to_owned()), labels: options.into_iter().map(|(_, l)| l).collect(), on, pick }.into_any_element()
+}
+
+#[derive(IntoElement)]
+struct Segmented {
+    p: Palette,
+    id: SharedString,
+    labels: Vec<String>,
+    on: Option<usize>,
+    pick: Rc<dyn Fn(usize, &mut Window, &mut App)>,
+}
+
+impl RenderOnce for Segmented {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = self.p;
+        let id = self.id;
+        let n = self.labels.len();
+        // The one in use is the Tab stop; with none in use, the first.
+        let stop = self.on.unwrap_or(0);
+        let handles: Vec<FocusHandle> = (0..n)
+            .map(|ix| window.use_keyed_state(SharedString::from(format!("{id}-{ix}-focus")), cx, |_, cx| cx.focus_handle()).read(cx).clone().tab_stop(ix == stop))
+            .collect();
+        let raised = if p.is_dark() { p.side_sel } else { p.raised };
+        let ring = Rgba { a: 0.55, ..p.accent };
+        let on_ix = self.on;
+        let pick = self.pick;
+        h_flex()
+            .id(SharedString::from(format!("{id}-group")))
+            .role(Role::RadioGroup)
+            .flex_none()
+            .h(px(CONTROL))
+            .p(px(2.))
+            .gap(px(2.))
+            .rounded(px(R_MD))
+            .bg(if p.is_dark() { p.wash } else { p.code_bg })
+            .children(self.labels.into_iter().enumerate().map(|(ix, label)| {
+                let on = on_ix == Some(ix);
+                let (click, keys) = (pick.clone(), pick.clone());
+                let (clicked, siblings) = (handles[ix].clone(), handles.clone());
+                let seg = h_flex()
+                    .id(SharedString::from(format!("{id}-{ix}")))
+                    .role(Role::RadioButton)
+                    .aria_label(label.clone())
+                    .aria_toggled(if on { Toggled::True } else { Toggled::False })
+                    .track_focus(&handles[ix])
+                    // The ring only when the keys moved here, as the web's :focus-visible.
+                    .focus_visible(move |s| s.shadow(vec![BoxShadow { color: ring.into(), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(2.), inset: false }]))
+                    .h_full()
+                    .px_3()
+                    .items_center()
+                    .rounded(px(R_SM))
+                    .text_size(px(SMALL))
+                    .whitespace_nowrap()
+                    .text_color(if on { p.text } else { p.text2 })
+                    .when(on, |s| s.bg(raised).shadow(motion::float_shadow(0.18)))
+                    .when(!on, |s| s.cursor_pointer())
+                    .on_click(move |_, window, cx| {
+                        clicked.focus(window, cx);
+                        click(ix, window, cx);
+                    })
+                    .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                        let k = &event.keystroke;
+                        if k.modifiers.modified() && !k.modifiers.shift {
+                            return;
+                        }
+                        match k.key.as_str() {
+                            "space" | "enter" if !k.modifiers.shift => keys(ix, window, cx),
+                            "left" | "up" if !k.modifiers.shift => siblings[(ix + n - 1) % n].focus(window, cx),
+                            "right" | "down" if !k.modifiers.shift => siblings[(ix + 1) % n].focus(window, cx),
+                            "home" => siblings[0].focus(window, cx),
+                            "end" => siblings[n - 1].focus(window, cx),
+                            // Leave the group from its one stop, not from a sibling.
+                            "tab" => {
+                                siblings[stop].focus(window, cx);
+                                if k.modifiers.shift { window.focus_prev(cx) } else { window.focus_next(cx) }
+                            }
+                            _ => return,
+                        }
+                        cx.stop_propagation();
+                    })
+                    // As wide picked as not: the pill doesn't shift under the pointer.
+                    .child(ui::steady(label, FontWeight::MEDIUM, on, false));
+                if on { seg.into_any_element() } else { motion::hover_fill(seg, SharedString::from(format!("{id}-{ix}-fill")), p.wash, false).into_any_element() }
+            }))
+    }
 }
 
 /// The window's size: − and + either side of it, as the segmented control's
