@@ -1066,6 +1066,7 @@ pub fn remove_ask(model: &Model, name: &str, path: std::path::PathBuf) -> crate:
         body,
         yes: t!("sidebar.remove_yes").into(),
         then: crate::sheet::Then::Send(vec![equipe_core::protocol::Command::RemoveProject { squad: model.squad.clone(), path }]),
+        option: None,
     }
 }
 

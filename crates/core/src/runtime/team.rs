@@ -171,6 +171,131 @@ proposes it to the person."
         }
     }
 
+    /// Member `name`, a `role`, left the squad (`/close`, or an approved
+    /// removal): every unfinished ticket that still names it goes to its
+    /// role, so that the role's members still on the team take it as runs of
+    /// their own and nothing waits for a member who is gone. Work in progress
+    /// in its hands is requeued as the person's recovery is — its note,
+    /// branch, worktree and committed work kept; work in review stays in
+    /// review, owned by the role, so it can be accepted or sent back; waiting
+    /// and other work only loses the name. With no member of the role left,
+    /// nothing moves, and the PM hears it when `tell_kept`. Returns how many
+    /// tickets moved.
+    pub(super) fn hand_to_role(&mut self, squad: &str, name: &str, role: &str, tell_kept: bool) -> usize {
+        let tickets = self.tickets(squad);
+        let left = rules::left_behind(&tickets, name);
+        if left.is_empty() {
+            return 0;
+        }
+        let list = |ids: &[TicketId]| ids.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
+        if !self.team(squad).iter().any(|(_, _, r)| r == role) {
+            let kept = list(&left.iter().map(|(t, _)| *t).collect::<Vec<_>>());
+            crate::daemon_log!("equipe: {squad}: {name} left and no {role} is on the team: {kept} stay as they are");
+            if tell_kept {
+                let line = format!(
+                    "{name} left the squad, and no {role} is left on the team: {kept} still name {name} and wait. Propose adding a {role} \
+to the person, or reassign them."
+                );
+                let shown = say!(self, "news.member_work_kept", name = name, role = role, tickets = kept);
+                self.brief_pm(squad, line, Some(shown));
+            }
+            return 0;
+        }
+        let Some(journal) = self.journal(squad) else { return 0 };
+        let at = now_secs();
+        let (mut requeued, mut rehomed, mut changed) = (Vec::new(), Vec::new(), Vec::new());
+        for (id, how) in left {
+            let Some(mut ticket) = tickets.iter().find(|t| t.id == id).cloned() else { continue };
+            let owner = rules::owner_after(ticket.owner.as_deref(), name, role).map(str::to_owned);
+            let to = owner.clone().unwrap_or_else(|| role.to_owned());
+            let moved = match how {
+                rules::Left::Requeue => {
+                    // Nothing runs it any more: a run still marked active is stalled first.
+                    let _ = journal.stall_execution(id, equipe_protocol::stall_reason::NOT_RESUMED, at);
+                    let generation = journal.execution(id).ok().flatten().map_or(0, |e| e.generation);
+                    // One key per member, ticket and run: the same departure twice is one requeue.
+                    let operation = format!("member-left:{name}:{id}:{generation}");
+                    let changed_owner = (owner != ticket.owner).then_some(to.as_str());
+                    match journal.reserve_requeue(id, &operation, changed_owner, at) {
+                        Ok(Requeued::Reserved) => true,
+                        Ok(Requeued::AlreadyApplied) => false,
+                        // A run in no state to requeue: back on the board as it is, branch and worktree kept.
+                        Ok(Requeued::NotStalled) | Err(_) => {
+                            ticket.status = TicketStatus::Todo;
+                            ticket.assignee = None;
+                            ticket.owner = owner;
+                            journal.save_ticket(&ticket).is_ok()
+                        }
+                    }
+                }
+                rules::Left::Rehome => {
+                    if ticket.assignee.as_deref() == Some(name) {
+                        ticket.assignee = None;
+                    }
+                    ticket.owner = owner;
+                    journal.save_ticket(&ticket).is_ok()
+                }
+            };
+            if !moved {
+                continue;
+            }
+            let (kind, text) = match how {
+                rules::Left::Requeue => ("requeued", format!("to {to}, on the same branch and worktree: {name} left the squad")),
+                rules::Left::Rehome => ("reassigned", format!("to {to}: {name} left the squad")),
+            };
+            let _ = journal.ticket_event(id, "equipe", kind, &text);
+            match how {
+                rules::Left::Requeue => requeued.push(id),
+                rules::Left::Rehome => rehomed.push(id),
+            }
+            changed.extend(journal.ticket(id).ok().flatten());
+        }
+        for ticket in changed {
+            self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
+        }
+        let count = requeued.len() + rehomed.len();
+        if count == 0 {
+            return 0;
+        }
+        let all = list(&[requeued.clone(), rehomed].concat());
+        crate::daemon_log!("equipe: {squad}: {name} left; {all} went to {role} ({} requeued)", requeued.len());
+        let requeued = match requeued.as_slice() {
+            [] => String::new(),
+            ids => format!(" {} — in progress in its hands — start again for a {role} on the same branch and worktree.", list(ids)),
+        };
+        let line = format!("{name} left the squad: {all} now belong to {role}, and nothing waits for {name}.{requeued}");
+        let shown = say!(self, "news.member_work_moved", name = name, role = role, tickets = all);
+        self.brief_pm(squad, line, Some(shown));
+        count
+    }
+
+    /// At the daemon's start: work that still names members who left — closed
+    /// before [`Self::hand_to_role`] was there — goes to their roles the same
+    /// way. Once by nature: a member that left has no open session, and a
+    /// ticket handed on no longer names it.
+    pub(super) fn hand_on_work_of_departed(&mut self) {
+        let squads: Vec<String> = self.journals.keys().cloned().collect();
+        for squad in squads {
+            let on_team: Vec<String> = self.team(&squad).into_iter().map(|(_, name, _)| name).collect();
+            let Some(journal) = self.journal(&squad) else { continue };
+            let tickets = journal.tickets().unwrap_or_default();
+            let gone: Vec<(String, String)> = journal
+                .members_ever()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(name, _)| !on_team.contains(name))
+                .filter(|(name, _)| !rules::left_behind(&tickets, name).is_empty())
+                .collect();
+            let mut moved = 0;
+            for (name, role) in gone {
+                moved += self.hand_to_role(&squad, &name, &role, false);
+            }
+            if moved > 0 {
+                let _ = self.internal.send(Internal::Dispatch);
+            }
+        }
+    }
+
     /// The person's no: nothing changes; the PM is told, to plan without it.
     pub(super) fn decline_team_change(&mut self, squad: &str, id: u64) {
         let Some(change) = self.take_team_change(squad, id) else { return };

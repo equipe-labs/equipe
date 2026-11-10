@@ -481,6 +481,7 @@ impl Shell {
             body: vec![t!("design.versions_confirm_body", date = cm::local_date(v.at), subject = subject), t!("design.versions_confirm_review").to_owned()],
             yes: t!("design.versions_confirm_yes").to_owned(),
             then: Then::Send(vec![command]),
+            option: None,
         });
         self.design.versions_open = false;
         cx.notify();

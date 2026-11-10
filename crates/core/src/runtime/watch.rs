@@ -25,6 +25,13 @@ pub(super) struct Commands {
     looking: bool,
 }
 
+impl Commands {
+    /// The engines' processes of the sessions' turns, as reported.
+    pub(super) fn engine_pids(&self) -> Vec<u32> {
+        self.by.values().filter_map(|w| w.pid).collect()
+    }
+}
+
 /// One session's turn, as watched.
 struct Watched {
     engine: Engine,

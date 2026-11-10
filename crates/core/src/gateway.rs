@@ -194,6 +194,8 @@ async fn serve_until(
 
 /// How long a stop waits for the core to put its turns down.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(10);
+/// How long measuring what deleting a squad would give back may take.
+const FOOTPRINT_FOR: Duration = Duration::from_secs(15);
 /// How long a hello waits for the core's snapshot before it says the daemon is stuck.
 const HELLO_WAIT: Duration = Duration::from_secs(30);
 /// A screen that takes longer than this to read one line is gone: it is let go.
@@ -433,6 +435,22 @@ async fn serve_client(
                 let _ = out_tx.send(match crate::telemetry::set(&home, ask.on) {
                     Ok(status) => Message::response(id, status),
                     Err(why) => Message::failure(id, -32000, why),
+                });
+            }
+            // What deleting a squad would give back: folders measured, off the loop.
+            (Some(rpc::SQUAD_FOOTPRINT), Some(id)) => {
+                let Some(ask) = message.params_as::<rpc::SquadFootprintAsk>() else {
+                    let _ = out_tx.send(Message::failure(id, -32602, "squad_footprint needs { squad }"));
+                    continue;
+                };
+                let (home, out) = (home.clone(), out_tx.clone());
+                tokio::spawn(async move {
+                    let looked = tokio::task::spawn_blocking(move || crate::squads::footprint(&home, &ask.squad, FOOTPRINT_FOR)).await;
+                    let _ = out.send(match looked {
+                        Ok(Ok(footprint)) => Message::response(id, footprint),
+                        Ok(Err(why)) => Message::failure(id, -32000, why),
+                        Err(_) => Message::failure(id, -32000, "the look at the squad's folders stopped"),
+                    });
                 });
             }
             (Some(rpc::SQUADS), Some(id)) => {

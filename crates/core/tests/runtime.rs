@@ -2286,6 +2286,44 @@ async fn the_pm_reads_and_changes_subagents_at_once_with_a_card_only_for_an_incr
 }
 
 #[tokio::test]
+async fn the_pm_sets_parallel_work_to_max_only_on_the_persons_tap_and_back_to_auto_at_once() {
+    use equipe_core::protocol::lanes::{Parallel, ParallelMode};
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let home = squad_home(&[&repo]);
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+
+    let read = tool(&handle, "pm", "settings", serde_json::json!({})).await;
+    assert!(read.text.contains("Parallel work (parallel): auto"), "{}", read.text);
+    let out_of_range = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "parallel", "value": "max", "per_member": 40 })).await;
+    assert!(out_of_range.is_error && out_of_range.text.contains("1 through 12"), "{}", out_of_range.text);
+
+    // Max spends the plan faster: the person's card, applied on their yes alone.
+    let handle2 = handle.clone();
+    let asking = tokio::spawn(async move {
+        tool(&handle2, "pm", "change_setting", serde_json::json!({ "setting": "parallel", "value": "max", "per_member": 8, "why": "run flat out" })).await
+    });
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    assert_eq!(approval.tool, "Change setting");
+    assert!(approval.action.contains("8 tickets per member and 16 per engine"), "{}", approval.action);
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().parallel(), Parallel::default(), "not before the tap");
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None, said: None });
+    until(&mut events, |e| matches!(e, Event::ParallelChanged { parallel, .. } if *parallel == Parallel::max(8, 16))).await;
+    assert!(asking.await.unwrap().text.starts_with("The person said yes"));
+    let read = tool(&handle, "pm", "settings", serde_json::json!({})).await;
+    assert!(read.text.contains("Parallel work (parallel): max — up to 8 tickets per member and 16 per engine"), "{}", read.text);
+
+    // Auto only narrows: at once, max's caps kept.
+    let narrowed = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "parallel", "value": "auto" })).await;
+    assert!(!narrowed.is_error && narrowed.text.starts_with("Done:"), "{}", narrowed.text);
+    until(&mut events, |e| matches!(e, Event::ParallelChanged { parallel, .. } if parallel.mode == ParallelMode::Auto)).await;
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().parallel(), Parallel { mode: ParallelMode::Auto, ..Parallel::max(8, 16) });
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn the_pm_moves_members_to_another_engine_only_on_the_persons_tap_and_never_through_their_model() {
     use equipe_core::protocol::Engine;
     use equipe_core::protocol::engines::Why;
@@ -5233,11 +5271,12 @@ async fn a_deleted_squad_stops_its_members_and_its_folder_moves_whole_leaving_pr
     let claude = fake_claude(true, &answering("ok"));
     let (handle, mut events) = runtime::start(config(&claude, &home, true));
     add(&handle, &mut events, 1, member(&site, "pm")).await;
-    handle.send(Command::DeleteSquad { squad: "acme".into() });
+    handle.send(Command::DeleteSquad { squad: "acme".into(), purge: false });
     let seen = until(&mut events, |e| matches!(e, Event::SquadDeleted { .. } | Event::SquadNotDeleted { .. })).await;
     assert!(seen.iter().any(|e| matches!(e, Event::SessionClosed { session: 1 })), "its member stopped: {seen:#?}");
-    let Some(Event::SquadDeleted { squad, moved_to, next }) = seen.last() else { panic!("{seen:#?}") };
+    let Some(Event::SquadDeleted { squad, moved_to, next, freed, purged }) = seen.last() else { panic!("{seen:#?}") };
     assert_eq!((squad.as_str(), next.as_deref()), ("acme", Some("beta")), "beta opens next");
+    assert!(*freed > 0 && !purged, "its worktree's room given back, its folder kept to restore");
 
     // The folder moved whole, its journal closed with its member still on it: moved back, the squad is as it was.
     assert!(moved_to.starts_with(squads::deleted_dir(&home)) && moved_to.file_name().unwrap().to_string_lossy().starts_with("acme-"), "{moved_to:?}");
@@ -5260,7 +5299,7 @@ async fn a_deleted_squad_stops_its_members_and_its_folder_moves_whole_leaving_pr
     // A screen still on it doesn't make it anew; deleting it again is refused.
     let _ = handle.snapshot("acme").await;
     assert!(!home.join("squads").join("acme").exists(), "not made anew by a late look");
-    handle.send(Command::DeleteSquad { squad: "acme".into() });
+    handle.send(Command::DeleteSquad { squad: "acme".into(), purge: false });
     let again = until(&mut events, |e| matches!(e, Event::SquadNotDeleted { .. })).await;
     assert!(matches!(again.last(), Some(Event::SquadNotDeleted { squad, .. }) if squad == "acme"));
     handle.shutdown().await;
@@ -5271,15 +5310,16 @@ async fn a_deleted_squad_stops_its_members_and_its_folder_moves_whole_leaving_pr
 }
 
 #[tokio::test]
-async fn the_last_squad_may_be_deleted_and_nothing_is_left_to_open() {
+async fn the_last_squad_may_be_deleted_for_good_and_nothing_is_left_to_open() {
     let site = repo();
     let home = squad_home(&[&site]);
     squads::remember_last(&home, "acme").unwrap();
     let claude = fake_claude(true, &answering("ok"));
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
-    handle.send(Command::DeleteSquad { squad: "acme".into() });
+    handle.send(Command::DeleteSquad { squad: "acme".into(), purge: true });
     let seen = until(&mut events, |e| matches!(e, Event::SquadDeleted { .. } | Event::SquadNotDeleted { .. })).await;
-    assert!(matches!(seen.last(), Some(Event::SquadDeleted { next: None, .. })), "{seen:#?}");
+    assert!(matches!(seen.last(), Some(Event::SquadDeleted { next: None, purged: true, .. })), "{seen:#?}");
+    assert_eq!(std::fs::read_dir(squads::deleted_dir(&home)).map(|d| d.count()).unwrap_or(0), 0, "nothing kept to restore");
     assert!(squads::list(&home).is_empty() && squads::last_squad(&home).is_none() && squads::default_squad(&home).is_none());
     assert!(site.join(".git").exists());
     handle.shutdown().await;

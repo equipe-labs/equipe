@@ -85,8 +85,24 @@ pub fn claude() -> Option<PlanUsage> {
     plans().into_iter().find(|p| p.engine == Engine::Claude).map(|p| p.usage)
 }
 
+/// Unless named, a squad that chose to be asked: its cards wait for an answer.
 pub fn switching() -> Switching {
-    env("FAKE_SWITCHING").and_then(|v| Switching::parse(&v)).unwrap_or_default()
+    env("FAKE_SWITCHING").and_then(|v| Switching::parse(&v)).unwrap_or(Switching::Suggest)
+}
+
+/// The squad's parallel work: `FAKE_PARALLEL=max` (max's default caps) or
+/// `max:<per member>:<per engine>`; else auto.
+pub fn parallel() -> equipe_core::protocol::lanes::Parallel {
+    use equipe_core::protocol::lanes::Parallel;
+    let Some(v) = env("FAKE_PARALLEL") else { return Parallel::default() };
+    let mut parts = v.split(':');
+    if parts.next() != Some("max") {
+        return Parallel::default();
+    }
+    let defaults = Parallel::default();
+    let per_member = parts.next().and_then(|n| n.parse().ok()).unwrap_or(defaults.per_member);
+    let per_engine = parts.next().and_then(|n| n.parse().ok()).unwrap_or(defaults.per_engine);
+    Parallel::max(per_member, per_engine)
 }
 
 fn mv(name: &str, from: Engine, to: Engine, was: &str) -> Move {
@@ -226,6 +242,9 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
         }
         Command::SetDesignReviewer { reviewer, .. } => {
             let _ = events.send(Event::DesignReviewerChanged { squad: squad(), reviewer: *reviewer });
+        }
+        Command::SetParallel { parallel, .. } => {
+            let _ = events.send(Event::ParallelChanged { squad: squad(), parallel: parallel.clamped() });
         }
         Command::ApplyEngineProposal { id, now, .. } => {
             // On moves made already, "Move now" marks those waiting; the card stays.

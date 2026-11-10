@@ -1013,6 +1013,8 @@ fn render_usage(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     }
     let mode = app.engines.mode;
     lines.extend(row(t!("engines.switching"), format!("{} — {} · /engines", super::app::engines::mode_word(mode), super::app::engines::mode_about(mode))));
+    let parallel = app.engines.parallel;
+    lines.extend(row(t!("parallel.heading"), format!("{} — {} · /parallel", super::app::engines::parallel_word(parallel.mode), super::app::engines::parallel_about(&parallel))));
     lines.push(Line::raw(""));
     lines.push(heading(t!("view.usage_members")));
     for agent in app.agents.iter().filter(|a| a.is_open()) {

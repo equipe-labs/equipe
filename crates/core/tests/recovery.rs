@@ -595,3 +595,215 @@ async fn an_approved_recovery_waiting_across_a_restart_starts_exactly_once() {
     assert_eq!(ids(&handle.snapshot("acme").await), before, "no recovery ticket");
     handle.shutdown().await;
 }
+
+/// A ticket as an older equipe, or the board before now, left it: written
+/// straight into the squad's journal, its kind a task unless changed.
+fn plain(title: &str, status: TicketStatus, owner: &str, assignee: Option<&str>, depends_on: &[u32]) -> Ticket {
+    Ticket {
+        id: 0,
+        title: title.into(),
+        body: "-".into(),
+        status,
+        owner: Some(owner.into()),
+        assignee: assignee.map(Into::into),
+        project: None,
+        depends_on: depends_on.to_vec(),
+        branch: None,
+        worktree: None,
+        execution: None,
+        merged: None,
+        off_main: None,
+        design_qa: None,
+        plan: None,
+        kind: equipe_core::protocol::TicketKind::Task,
+        created_by: "pm".into(),
+        note: None,
+        asks: vec![],
+        remaining: Vec::new(),
+        images: Vec::new(),
+        updated_at: None,
+        priority: Default::default(),
+        rank: 0,
+    }
+}
+
+fn put(home: &Path, ticket: &Ticket) -> u32 {
+    Journal::for_squad(home, "acme").unwrap().create_ticket(ticket).unwrap()
+}
+
+/// What the PM's screen was told, among `seen`.
+fn told(seen: &[Event], wanted: &str) -> bool {
+    seen.iter().any(|e| matches!(e, Event::Notice { text, .. } if text.contains(wanted)))
+}
+
+/// A numbered member closed with work in every state. What it held in
+/// progress is requeued for the frontend still on the team, on the same
+/// branch and worktree, its commit and files kept; what it handed in stays
+/// in review for the role, and a send-back goes to the role; waiting and
+/// to-do work loses its name. Finished work, and work naming someone else,
+/// stay as they were; the PM hears what moved.
+#[tokio::test]
+async fn closing_a_numbered_member_hands_what_still_names_it_to_its_role() {
+    let engine = Engine0::new();
+    let (home, repo) = squad();
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm", None)).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend", Some(Engine::Claude))).await;
+    add(&handle, &mut events, 3, member(&repo, "frontend", Some(Engine::Claude))).await;
+    let made = tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "Build the hero.", "owner": "frontend-2" })).await;
+    assert!(!made.is_error, "{made:?}");
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(3), ticket: 1, .. })).await;
+    idle_on_its_ticket(&handle, 3).await;
+    let worktree = ticket(&handle, 1).await.worktree.expect("its own worktree");
+    std::fs::write(worktree.join("hero.txt"), "the hero, committed\n").unwrap();
+    git(&worktree, &["add", "-A"]);
+    git(&worktree, &["commit", "-q", "-m", "hero so far"]);
+    std::fs::write(worktree.join("notes.txt"), "untracked notes\n").unwrap();
+    let disk = checkout(&worktree);
+    handle.check_leases_at(now() + 1_000).await;
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.execution.as_ref().is_some_and(|x| x.state == ExecutionState::Stalled))).await;
+    let stalled = ticket(&handle, 1).await;
+    assert_eq!((stalled.status, stalled.assignee.as_deref()), (TicketStatus::InProgress, Some("frontend-2")));
+
+    let review = put(&home, &plain("Footer", TicketStatus::Review, "frontend-2", Some("frontend-2"), &[]));
+    let waiting = put(&home, &plain("Login", TicketStatus::Waiting, "frontend", Some("frontend-2"), &[]));
+    let todo = put(&home, &plain("Menu", TicketStatus::Todo, "frontend-2", None, &[review]));
+    let done = put(&home, &plain("Logo", TicketStatus::Done, "frontend-2", Some("frontend-2"), &[]));
+    let other = put(&home, &plain("Search", TicketStatus::Todo, "frontend-3", None, &[review]));
+
+    handle.send(Command::Close { session: 3 });
+    let seen = until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
+    assert!(told(&seen, "frontend-2 left: T-1, T-2, T-3, T-4 went to frontend"), "{seen:#?}");
+
+    // In progress in its hands: requeued for frontend, nothing lost.
+    let taken = ticket(&handle, 1).await;
+    let run = execution(&taken);
+    assert_eq!((taken.status, taken.owner.as_deref(), taken.assignee.as_deref()), (TicketStatus::InProgress, Some("frontend"), Some("frontend")));
+    assert_eq!((taken.branch.clone(), taken.worktree.clone()), (stalled.branch.clone(), stalled.worktree.clone()), "the same branch and worktree");
+    assert!(run.operation.starts_with("member-left:frontend-2:1:"), "{run:?}");
+    assert_eq!(run.generation, execution(&stalled).generation + 1);
+    assert_eq!(checkout(&worktree), disk, "its commit and every file as they were");
+    let branch = stalled.branch.clone().expect("a branch");
+    assert!(git(&repo, &["log", "--format=%s", &branch]).contains("hero so far"), "the committed work survives");
+    engine.prompt_with("brought it back").await;
+
+    // In review: still in review, the role's — accepted or sent back by it.
+    let in_review = ticket(&handle, review).await;
+    assert_eq!((in_review.status, in_review.owner.as_deref(), in_review.assignee.as_deref()), (TicketStatus::Review, Some("frontend"), None));
+    // Waiting, and to do: the name gone, the state kept.
+    let w = ticket(&handle, waiting).await;
+    assert_eq!((w.status, w.owner.as_deref(), w.assignee.as_deref()), (TicketStatus::Waiting, Some("frontend"), None));
+    let t = ticket(&handle, todo).await;
+    assert_eq!((t.status, t.owner.as_deref(), t.assignee.as_deref()), (TicketStatus::Todo, Some("frontend"), None));
+    // Finished work, and someone else's, untouched.
+    let d = ticket(&handle, done).await;
+    assert_eq!((d.status, d.owner.as_deref(), d.assignee.as_deref()), (TicketStatus::Done, Some("frontend-2"), Some("frontend-2")));
+    assert_eq!(ticket(&handle, other).await.owner.as_deref(), Some("frontend-3"));
+
+    // A send-back from review reaches a member still on the team.
+    let back = tool(&handle, "pm", "comment", json!({ "id": review, "text": "The footer overlaps at 760px.", "review": "changes" })).await;
+    assert!(!back.is_error && back.text.contains(&format!("Sent T-{review} back to frontend ")), "{back:?}");
+    handle.shutdown().await;
+}
+
+/// Members closed before equipe handed their work on: at the daemon's
+/// start, what still names them goes to their roles the same way — and
+/// only once, however often it starts again.
+#[tokio::test]
+async fn at_start_work_still_naming_a_member_that_left_goes_to_its_role_once() {
+    let engine = Engine0::new();
+    let (home, repo) = squad();
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm", None)).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend", Some(Engine::Claude))).await;
+    add(&handle, &mut events, 3, member(&repo, "frontend", Some(Engine::Claude))).await;
+    handle.shutdown().await;
+    drop(events);
+
+    // As an older equipe left it: frontend-2 closed, its work still naming it.
+    Journal::for_squad(&home, "acme").unwrap().close_session(3).unwrap();
+    let review = put(&home, &plain("Footer", TicketStatus::Review, "frontend-2", Some("frontend-2"), &[]));
+    let held = put(&home, &Ticket { kind: equipe_core::protocol::TicketKind::Code, project: Some(repo.clone()), ..plain("Hero", TicketStatus::InProgress, "frontend-2", Some("frontend-2"), &[]) });
+    let todo = put(&home, &plain("Menu", TicketStatus::Todo, "frontend-2", None, &[review]));
+    let waiting = put(&home, &plain("Login", TicketStatus::Waiting, "frontend", Some("frontend-2"), &[]));
+
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home));
+    let seen = until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket, .. } if *ticket == held)).await;
+    assert!(told(&seen, "frontend-2 left: T-2, T-1, T-3, T-4 went to frontend"), "{seen:#?}");
+    let h = ticket(&handle, held).await;
+    assert_eq!((h.status, h.owner.as_deref(), h.assignee.as_deref()), (TicketStatus::InProgress, Some("frontend"), Some("frontend")));
+    let r = ticket(&handle, review).await;
+    assert_eq!((r.status, r.owner.as_deref(), r.assignee.as_deref()), (TicketStatus::Review, Some("frontend"), None));
+    let t = ticket(&handle, todo).await;
+    assert_eq!((t.status, t.owner.as_deref(), t.assignee.as_deref()), (TicketStatus::Todo, Some("frontend"), None));
+    let w = ticket(&handle, waiting).await;
+    assert_eq!((w.status, w.owner.as_deref(), w.assignee.as_deref()), (TicketStatus::Waiting, Some("frontend"), None));
+    handle.shutdown().await;
+    drop(events);
+
+    // Started again: nothing names frontend-2 any more, so nothing moves.
+    let record = |id: u32| Journal::for_squad(&home, "acme").unwrap().ticket_history(id).unwrap();
+    let before: Vec<_> = [review, held, todo, waiting].map(record).to_vec();
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home));
+    let later = within(&mut events, Duration::from_millis(800)).await;
+    assert!(!told(&later, "went to frontend"), "{later:#?}");
+    for (i, id) in [review, held, todo, waiting].into_iter().enumerate() {
+        let moved = |h: &[(String, String, String)]| h.iter().filter(|(_, _, text)| text.contains("frontend-2 left the squad")).count();
+        assert_eq!(moved(&record(id)), moved(&before[i]), "T-{id} moved once");
+        assert_eq!(moved(&before[i]), 1, "T-{id} moved");
+    }
+    handle.shutdown().await;
+}
+
+/// With no member of its role left, what a member that left still names
+/// stays as it is, and the PM is told.
+#[tokio::test]
+async fn nothing_moves_when_no_member_of_the_role_is_left() {
+    let engine = Engine0::new();
+    let (home, repo) = squad();
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm", None)).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend", Some(Engine::Claude))).await;
+    add(&handle, &mut events, 3, member(&repo, "frontend", Some(Engine::Claude))).await;
+    handle.send(Command::Close { session: 2 });
+    until(&mut events, |e| matches!(e, Event::SessionClosed { session: 2 })).await;
+    let review = put(&home, &plain("Footer", TicketStatus::Review, "frontend-2", Some("frontend-2"), &[]));
+    let todo = put(&home, &plain("Menu", TicketStatus::Todo, "frontend-2", None, &[review]));
+    let before = [ticket(&handle, review).await, ticket(&handle, todo).await];
+
+    handle.send(Command::Close { session: 3 });
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("no frontend is left"))).await;
+    assert!(told(&seen, "frontend-2 left and no frontend is left on the team: T-1, T-2 wait for one"), "{seen:#?}");
+    assert!(!seen.iter().any(|e| matches!(e, Event::TicketChanged { .. })), "{seen:#?}");
+    assert_eq!([ticket(&handle, review).await, ticket(&handle, todo).await], before);
+    handle.shutdown().await;
+}
+
+/// A member closed while its run works: the ticket goes on with a frontend
+/// still on the team, in the same worktree — not removed and checked out
+/// again, which held the daemon for seconds a ticket.
+#[tokio::test]
+async fn a_member_closed_at_work_leaves_its_worktree_to_the_next_member() {
+    let engine = Engine0::new();
+    engine.hang(true);
+    let (home, repo) = squad();
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm", None)).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend", Some(Engine::Claude))).await;
+    add(&handle, &mut events, 3, member(&repo, "frontend", Some(Engine::Claude))).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend-2" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(3), ticket: 1, .. })).await;
+    engine.prompt_with("You're on T-1").await;
+    let first = ticket(&handle, 1).await;
+    let worktree = first.worktree.clone().expect("its own worktree");
+    std::fs::write(worktree.join("hero.txt"), "half a hero\n").unwrap();
+
+    handle.send(Command::Close { session: 3 });
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
+    let taken = ticket(&handle, 1).await;
+    assert_eq!((taken.owner.as_deref(), taken.assignee.as_deref()), (Some("frontend"), Some("frontend")));
+    assert_eq!((taken.branch.clone(), taken.worktree.clone()), (first.branch.clone(), first.worktree.clone()), "the same branch and worktree");
+    assert_eq!(std::fs::read_to_string(worktree.join("hero.txt")).unwrap(), "half a hero\n");
+    assert!(git(&repo, &["log", "--format=%s", first.branch.as_deref().unwrap()]).contains("T-1 Hero"), "what it did is committed on its branch");
+    handle.shutdown().await;
+}

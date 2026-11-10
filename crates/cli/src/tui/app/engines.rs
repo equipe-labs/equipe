@@ -3,10 +3,12 @@
 //! auto|suggest|off`, `/engines setup` for the recommended setup again), and
 //! the card over the composer — `y` makes the moves, `n` leaves things as they
 //! are; for moves equipe made on its own, `u` undoes them and `n` closes it.
-//! Only the person's key answers a card.
+//! Only the person's key answers a card. Beside it, how many tickets the squad
+//! works at once (`/parallel auto|max [per member] [per engine]`).
 
 use crossterm::event::KeyCode;
 use equipe_core::protocol::engines::{Move, Proposal, Switching, Why, Window};
+use equipe_core::protocol::lanes::{MOST_PER_ENGINE, MOST_PER_MEMBER, Parallel, ParallelMode};
 use equipe_core::protocol::{Command, Engine, EnginePlan, Event, PlanUsage, Snapshot};
 use equipe_core::t;
 
@@ -20,6 +22,8 @@ pub struct Engines {
     pub mode: Switching,
     /// Cards waiting, oldest first.
     pub proposals: Vec<Proposal>,
+    /// How many tickets the squad works at once.
+    pub parallel: Parallel,
 }
 
 fn now() -> i64 {
@@ -42,7 +46,7 @@ impl Engines {
         {
             plans.push(EnginePlan { engine: Engine::Claude, usage, plan_type: None, at: now() });
         }
-        let mut engines = Engines { plans, mode: snapshot.engine_switching, proposals: snapshot.engine_proposals.clone() };
+        let mut engines = Engines { plans, mode: snapshot.engine_switching, proposals: snapshot.engine_proposals.clone(), parallel: snapshot.parallel };
         engines.plans.sort_by_key(|p| p.engine != Engine::Claude);
         engines
     }
@@ -72,6 +76,21 @@ pub fn mode_about(mode: Switching) -> &'static str {
         Switching::Off => t!("engines.mode_off_about"),
         Switching::Suggest => t!("engines.mode_suggest_about"),
         Switching::Auto => t!("engines.mode_auto_about"),
+    }
+}
+
+pub fn parallel_word(mode: ParallelMode) -> &'static str {
+    match mode {
+        ParallelMode::Auto => t!("parallel.auto"),
+        ParallelMode::Max => t!("parallel.max"),
+    }
+}
+
+/// What the squad's parallel work does: on max, its caps.
+pub fn parallel_about(parallel: &Parallel) -> String {
+    match parallel.mode {
+        ParallelMode::Auto => t!("parallel.auto_about").to_owned(),
+        ParallelMode::Max => t!("parallel.max_about", per_member = parallel.per_member, per_engine = parallel.per_engine),
     }
 }
 
@@ -139,6 +158,7 @@ impl App {
             },
             Event::EngineProposalClosed { id, .. } => self.engines.proposals.retain(|p| p.id != id),
             Event::EngineSwitchingChanged { mode, .. } => self.engines.mode = mode,
+            Event::ParallelChanged { parallel, .. } => self.engines.parallel = parallel,
             _ => {}
         }
     }
@@ -163,6 +183,34 @@ impl App {
         // Out of sight at once, so a second key can't answer it twice.
         self.engines.proposals.retain(|p| p.id != id);
         Some(vec![command])
+    }
+
+    /// `/parallel [auto|max [per member] [per engine]]`: max keeps the caps
+    /// it doesn't name, auto keeps max's for next time.
+    pub(super) fn parallel_command(&mut self, rest: &str) -> Vec<Command> {
+        let now = self.engines.parallel;
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        let Some((word, caps)) = words.split_first() else {
+            self.flash = Some(t!("parallel.now", mode = parallel_word(now.mode), about = parallel_about(&now)));
+            return Vec::new();
+        };
+        let caps: Option<Vec<u32>> = caps.iter().map(|c| c.parse().ok()).collect();
+        let parallel = match (ParallelMode::parse(word), caps.as_deref()) {
+            (Some(ParallelMode::Auto), Some([])) => Some(Parallel { mode: ParallelMode::Auto, ..now }),
+            (Some(ParallelMode::Max), Some(caps)) if caps.len() <= 2 => {
+                let per_member = caps.first().copied().unwrap_or(now.per_member);
+                let per_engine = caps.get(1).copied().unwrap_or(now.per_engine);
+                ((1..=MOST_PER_MEMBER).contains(&per_member) && (1..=MOST_PER_ENGINE).contains(&per_engine)).then(|| Parallel::max(per_member, per_engine))
+            }
+            _ => None,
+        };
+        let Some(parallel) = parallel else {
+            self.flash = Some(t!("parallel.usage").into());
+            return Vec::new();
+        };
+        self.engines.parallel = parallel;
+        self.flash = Some(t!("parallel.set", mode = parallel_word(parallel.mode), about = parallel_about(&parallel)));
+        vec![Command::SetParallel { squad: self.squad.clone(), parallel }]
     }
 
     /// `/engines [auto|suggest|off|setup]`.
@@ -224,7 +272,9 @@ mod tests {
 
     #[test]
     fn an_older_daemons_plan_is_claudes_and_a_reading_replaces_its_engines() {
-        let snapshot = Snapshot { squad: "acme".into(), plan: Some(PlanUsage { five_hour: Some(PlanWindow { used_percent: 40, resets_at: 9 }), seven_day: None }), ..Default::default() };
+        // As an older daemon sends it: no `plans`, and no `engine_switching` (it left out suggest).
+        let snapshot: Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[],"plan":{"five_hour":{"used_percent":40,"resets_at":9}}}"#).unwrap();
+        assert_eq!(snapshot.plan, Some(PlanUsage { five_hour: Some(PlanWindow { used_percent: 40, resets_at: 9 }), seven_day: None }));
         let mut engines = Engines::from(&snapshot);
         assert_eq!(engines.plans.iter().map(|p| p.engine).collect::<Vec<_>>(), [Engine::Claude]);
         assert_eq!(engines.mode, Switching::Suggest);
@@ -232,5 +282,13 @@ mod tests {
         engines.read(Engine::Claude, PlanUsage::default());
         assert_eq!(engines.plans.iter().map(|p| p.engine).collect::<Vec<_>>(), [Engine::Claude, Engine::Codex], "Claude first");
         assert_eq!(engines.plan(Engine::Claude).unwrap().usage, PlanUsage::default());
+        assert_eq!(engines.parallel, Parallel::default(), "no parallel work said: auto");
+    }
+
+    #[test]
+    fn parallel_work_says_its_mode_and_max_says_its_caps() {
+        assert_eq!(parallel_word(ParallelMode::Max), "max");
+        assert_eq!(parallel_about(&Parallel::max(8, 20)), "up to 8 tickets per member and 20 per engine at once, whatever the plan usage — uses the plan faster");
+        assert_eq!(parallel_about(&Parallel::default()), "fewer tickets at once as a plan runs low");
     }
 }

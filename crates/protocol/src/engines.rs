@@ -3,8 +3,9 @@
 //! tickets, or at the end of a turn mid-ticket with the ticket handed over
 //! ([`Move::now`]); never mid-turn. How it does is the squad's choice
 //! ([`Switching`]): only showing, proposing on a card the person answers, or
-//! moving on its own and saying so, with one click to undo. A move is never
-//! paid for: equipe doesn't spend credits or overage on its own.
+//! — unless the squad chose otherwise — moving on its own and saying so, with
+//! one click to undo. A move is never paid for: equipe doesn't spend credits
+//! or overage on its own.
 //!
 //! The same card proposes the squad's setup once, for a person signed in to
 //! both engines whose team runs on one: who writes, who reviews, on which
@@ -14,16 +15,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::Engine;
 
-/// How a squad moves its members between engines.
+/// How a squad moves its members between engines. A squad that never chose
+/// moves on its own: members waiting hours for a click while an engine is out
+/// cost more than a move the person can undo.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Switching {
     /// Show the plans' usage; never propose, never move.
     Off,
     /// Propose moves on a card; only the person's click makes them.
-    #[default]
     Suggest,
     /// Move at ticket boundaries on its own, and tell the person, who may undo.
+    #[default]
     Auto,
 }
 
@@ -48,8 +51,14 @@ impl Switching {
         }
     }
 
-    pub fn is_default(&self) -> bool {
-        *self == Switching::default()
+    /// What a snapshot leaves out: `suggest`, the default before `auto` was.
+    /// Kept so that screens and daemons of either age read each other alike.
+    pub fn unsaid() -> Self {
+        Switching::Suggest
+    }
+
+    pub fn is_unsaid(&self) -> bool {
+        *self == Switching::unsaid()
     }
 }
 
@@ -401,8 +410,9 @@ mod tests {
     }
 
     #[test]
-    fn the_squads_choice_reads_as_people_type_it_and_suggests_by_default() {
-        assert_eq!(Switching::default(), Switching::Suggest);
+    fn the_squads_choice_reads_as_people_type_it_and_moves_on_its_own_by_default() {
+        assert_eq!(Switching::default(), Switching::Auto);
+        assert!(Switching::Suggest.is_unsaid() && !Switching::Auto.is_unsaid(), "on the wire, as before");
         assert_eq!(Switching::parse(" Auto "), Some(Switching::Auto));
         assert_eq!(Switching::parse("off"), Some(Switching::Off));
         assert_eq!(Switching::parse("sometimes"), None);

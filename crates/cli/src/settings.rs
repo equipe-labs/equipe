@@ -96,51 +96,85 @@ pub fn squad(home: &Path, cwd: &Path, current: Option<String>, words: &[&str], d
 }
 
 /// `equipe squad delete <name>`: asked first at a terminal (`yes` doesn't
-/// ask; with no terminal to ask at, `--yes` is needed). Through the daemon at
-/// `socket` when it runs — it stops the squad's members first, and its
-/// screens move on — else right here, with no member running. What to tell
-/// the person.
-pub async fn delete_squad(home: &Path, socket: &Path, name: &str, yes: bool) -> Result<Vec<String>, String> {
+/// ask; with no terminal to ask at, `--yes` is needed), saying how much room
+/// it gives back. Through the daemon at `socket` when it runs — it stops the
+/// squad's members first, and its screens move on — else right here, with no
+/// member running. What can be made again goes at once; the rest is kept for
+/// a week to restore, or — `purge` — deleted now too. What to tell the person.
+pub async fn delete_squad(home: &Path, socket: &Path, name: &str, yes: bool, purge: bool) -> Result<Vec<String>, String> {
     use equipe_core::t;
     if !equipe_core::squads::exists(home, name) {
         return Err(t!("squad.delete_no_squad", name = name));
     }
     let place = shown(&equipe_core::squads::deleted_dir(home));
+    let days = equipe_core::squads::KEPT_DAYS.to_string();
     if !yes {
         if !crate::ui::interactive() {
             return Err(t!("squad.delete_needs_yes", name = name));
         }
-        eprintln!("{}", t!("squad.delete_what", name = name, path = place));
+        eprintln!("{}", if purge { t!("squad.delete_what_purge", name = name) } else { t!("squad.delete_what", name = name, path = place, days = days) });
+        let (home_for, name_for) = (home.to_owned(), name.to_owned());
+        let look = tokio::task::spawn_blocking(move || equipe_core::squads::footprint(&home_for, &name_for, FOOTPRINT_FOR)).await.ok().and_then(Result::ok);
+        if let Some(look) = look {
+            eprintln!("{}", space_words(&look, purge, &days));
+        }
         let go = dialoguer::Confirm::new().with_prompt(t!("squad.delete_confirm", name = name)).default(false).interact().map_err(|e| e.to_string())?;
         if !go {
             return Ok(vec![t!("squad.delete_cancelled").to_owned()]);
         }
     }
-    let (moved_to, next) = if equipe_core::gateway::is_running(socket).await {
-        through_daemon(socket, name).await?
+    let done = if equipe_core::gateway::is_running(socket).await {
+        through_daemon(socket, name, purge).await?
     } else {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default();
-        let deleted = equipe_core::squads::delete(home, name, now)?;
-        (deleted.moved_to, deleted.next)
+        let deleted = equipe_core::squads::delete(home, name, now, purge)?;
+        Done { moved_to: deleted.moved_to, next: deleted.next, freed: deleted.freed, purged: deleted.purged }
     };
-    let mut lines = vec![t!("squad.delete_done", name = name, path = shown(&moved_to))];
-    lines.push(match next {
+    let freed = equipe_core::disk::size(done.freed);
+    let mut lines = vec![if done.purged {
+        t!("squad.delete_done_purge", name = name, freed = freed)
+    } else {
+        t!("squad.delete_done", name = name, path = shown(&done.moved_to), freed = freed, days = days)
+    }];
+    lines.push(match done.next {
         Some(next) => t!("squad.delete_next", next = next),
         None => t!("squad.delete_none_left").to_owned(),
     });
     Ok(lines)
 }
 
+/// How long the question waits for a look at what deleting gives back.
+const FOOTPRINT_FOR: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How much room deleting gives back, as the question says it.
+fn space_words(look: &equipe_core::protocol::rpc::SquadFootprint, purge: bool, days: &str) -> String {
+    use equipe_core::t;
+    let at_least = |bytes: u64| format!("{}{}", if look.complete { "" } else { "≥ " }, equipe_core::disk::size(bytes));
+    if purge {
+        t!("squad.delete_space_purge", freed = at_least(look.freed + look.kept))
+    } else {
+        t!("squad.delete_space", freed = at_least(look.freed), kept = at_least(look.kept), days = days)
+    }
+}
+
+/// What deleting did, as the daemon or this process says it.
+struct Done {
+    moved_to: std::path::PathBuf,
+    next: Option<String>,
+    freed: u64,
+    purged: bool,
+}
+
 /// Ask the daemon to delete `name`, and wait for its answer.
-async fn through_daemon(socket: &Path, name: &str) -> Result<(std::path::PathBuf, Option<String>), String> {
+async fn through_daemon(socket: &Path, name: &str, purge: bool) -> Result<Done, String> {
     use equipe_core::protocol::{Command, Event};
     use equipe_core::t;
     let (mut client, _) = equipe_core::gateway::Client::connect(socket, &crate::daemon::build_id(), name).await.map_err(|e| e.to_string())?;
-    client.send(Command::DeleteSquad { squad: name.to_owned() });
+    client.send(Command::DeleteSquad { squad: name.to_owned(), purge });
     let answer = async {
         while let Some(event) = client.next_event().await {
             match event {
-                Event::SquadDeleted { squad, moved_to, next } if squad == name => return Ok((moved_to, next)),
+                Event::SquadDeleted { squad, moved_to, next, freed, purged } if squad == name => return Ok(Done { moved_to, next, freed, purged }),
                 Event::SquadNotDeleted { squad, why } if squad == name => return Err(why),
                 _ => {}
             }
@@ -212,9 +246,9 @@ mod tests {
         equipe_core::squads::create_without_project(&home, "acme").unwrap();
         equipe_core::squads::create_without_project(&home, "beta").unwrap();
         equipe_core::squads::remember_last(&home, "acme").unwrap();
-        let err = delete_squad(&home, &socket, "nope", true).await.unwrap_err();
+        let err = delete_squad(&home, &socket, "nope", true, false).await.unwrap_err();
         assert!(err.contains("nope"), "{err}");
-        let lines = delete_squad(&home, &socket, "acme", true).await.unwrap();
+        let lines = delete_squad(&home, &socket, "acme", true, false).await.unwrap();
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert!(lines[0].contains("acme") && lines[0].contains("deleted"), "{lines:?}");
         assert!(lines[1].contains("beta"), "what opens next: {lines:?}");
@@ -223,8 +257,11 @@ mod tests {
         let moved: Vec<_> = std::fs::read_dir(equipe_core::squads::deleted_dir(&home)).unwrap().flatten().collect();
         assert_eq!(moved.len(), 1);
         assert!(moved[0].path().join("squad.db").exists(), "the folder, whole");
-        let lines = delete_squad(&home, &socket, "beta", true).await.unwrap();
+        assert!(lines[0].contains('7'), "kept for a week: {lines:?}");
+        let lines = delete_squad(&home, &socket, "beta", true, true).await.unwrap();
         assert!(lines[1].contains("equipe"), "none left: how to start one: {lines:?}");
+        let kept: Vec<_> = std::fs::read_dir(equipe_core::squads::deleted_dir(&home)).unwrap().flatten().collect();
+        assert_eq!(kept.len(), 1, "deleted for good: nothing kept of beta");
         let _ = std::fs::remove_dir_all(&home);
     }
 }

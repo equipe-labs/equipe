@@ -22,6 +22,7 @@ pub mod disk;
 pub mod metrics;
 pub mod plan_use;
 pub mod engines;
+pub mod lanes;
 pub mod harness;
 pub mod design;
 pub mod look;
@@ -335,6 +336,10 @@ impl Priority {
 }
 
 fn is_zero_i64(n: &i64) -> bool {
+    *n == 0
+}
+
+fn is_zero_u64(n: &u64) -> bool {
     *n == 0
 }
 
@@ -838,6 +843,9 @@ pub enum Command {
     Interrupt { session: SessionId },
     /// End the session. With [`Access::EditFiles`] this lands the branch first.
     /// For a member: it leaves the squad, and a ticket it was on goes back to the board.
+    /// Every unfinished ticket still naming it goes to its role while the squad
+    /// has a member of that role: work it held in progress is requeued on the
+    /// same branch and worktree, work in review stays in review.
     /// Answered by [`Event::SessionClosed`].
     Close { session: SessionId },
     /// The person accepts a ticket's work: it is done, its branch stays to merge.
@@ -1047,13 +1055,19 @@ pub enum Command {
     /// [`Event::ProjectsChanged`].
     SetHq { squad: SquadName, path: Option<PathBuf> },
     /// The person deletes the squad: its members stop, its journal closes,
-    /// the worktrees its tickets used and no other squad's ticket does are
-    /// removed (their branches stay), and its folder — board, history, home —
-    /// moves to `<equipe home>/deleted/<squad>-<YYYYMMDD-HHMMSS>`, from where
-    /// moving it back restores it. The projects' repositories are never
-    /// touched. Answered, to every screen, with [`Event::SquadDeleted`] or
-    /// [`Event::SquadNotDeleted`].
-    DeleteSquad { squad: SquadName },
+    /// and what can be made again goes at once — the worktrees its tickets
+    /// used and no other squad's ticket does (their branches stay), its build
+    /// cache, and build output in its folder. The rest of its folder — board,
+    /// history, memory, home — moves to
+    /// `<equipe home>/deleted/<squad>-<YYYYMMDD-HHMMSS>`, from where moving it
+    /// back restores it, for a week; `purge` deletes that too, now. The
+    /// projects' checkouts are never touched. Answered, to every screen, with
+    /// [`Event::SquadDeleted`] or [`Event::SquadNotDeleted`].
+    DeleteSquad {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        purge: bool,
+    },
     /// The person makes a routine (`id` 0) or changes one: regular work the
     /// PM is handed on its schedule. Answered with [`Event::RoutinesChanged`].
     SaveRoutine { squad: SquadName, routine: routines::Routine },
@@ -1303,6 +1317,10 @@ pub enum Command {
     /// each engine's own ([`engine_subagents_at_once`]), nothing given to it.
     /// Answered by [`Event::SubagentsAtOnceChanged`].
     SetSubagentsAtOnce { squad: SquadName, at_once: Option<u32> },
+    /// How many tickets the squad works at once ([`lanes::Parallel`]): by
+    /// the plans' usage, or max at the person's caps. Answered by
+    /// [`Event::ParallelChanged`].
+    SetParallel { squad: SquadName, parallel: lanes::Parallel },
     /// Which engine reviews the designer's work ([`engines::Reviewer`]).
     /// Answered by [`Event::DesignReviewerChanged`].
     SetDesignReviewer { squad: SquadName, reviewer: engines::Reviewer },
@@ -2604,6 +2622,8 @@ pub enum Event {
     /// How many subagents a member runs at once now ([`Command::SetSubagentsAtOnce`]);
     /// `None`: each engine's own.
     SubagentsAtOnceChanged { squad: SquadName, at_once: Option<u32> },
+    /// How many tickets the squad works at once now ([`Command::SetParallel`]).
+    ParallelChanged { squad: SquadName, parallel: lanes::Parallel },
     /// Which engine reviews the designer's work now ([`Command::SetDesignReviewer`]).
     DesignReviewerChanged { squad: SquadName, reviewer: engines::Reviewer },
     /// The squad's signals now, each with its latest readings: on a new
@@ -2614,10 +2634,16 @@ pub enum Event {
     /// machine remembers it — or, with none left, to starting a new one.
     SquadDeleted {
         squad: SquadName,
-        /// Where its folder went, on the daemon's machine.
+        /// Where its folder went, on the daemon's machine — gone too when `purged`.
         moved_to: PathBuf,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next: Option<SquadName>,
+        /// The bytes given back on the disk.
+        #[serde(default, skip_serializing_if = "is_zero_u64")]
+        freed: u64,
+        /// Deleted for good: nothing was kept to restore.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        purged: bool,
     },
     /// A squad couldn't be deleted, and why: told every screen; the one that
     /// asked says it.
@@ -2735,6 +2761,7 @@ impl Event {
             | Event::RoutineProposalClosed { squad, .. }
             | Event::IdleWakeChanged { squad, .. }
             | Event::SubagentsAtOnceChanged { squad, .. }
+            | Event::ParallelChanged { squad, .. }
             | Event::DesignReviewerChanged { squad, .. }
             | Event::SignalsChanged { squad, .. }
             | Event::PutAwayChanged { squad, .. }
@@ -2832,6 +2859,7 @@ impl Event {
             | Event::RoutineProposalClosed { .. }
             | Event::IdleWakeChanged { .. }
             | Event::SubagentsAtOnceChanged { .. }
+            | Event::ParallelChanged { .. }
             | Event::DesignReviewerChanged { .. }
             | Event::SignalsChanged { .. }
             | Event::Logins { .. }
@@ -3203,6 +3231,11 @@ pub struct Snapshot {
     /// `None`: each engine's own — as on a daemon that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagents_at_once: Option<u32>,
+    /// How many tickets the squad works at once ([`Command::SetParallel`]);
+    /// left out when auto at max's defaults, and auto from a daemon that
+    /// predates it.
+    #[serde(default, skip_serializing_if = "lanes::Parallel::is_default")]
+    pub parallel: lanes::Parallel,
     /// Which engine reviews the designer's work ([`Command::SetDesignReviewer`]);
     /// auto from a daemon that predates it.
     #[serde(default, skip_serializing_if = "engines::Reviewer::is_default")]
@@ -3222,8 +3255,9 @@ pub struct Snapshot {
     /// Every engine's plan usage, as last read: Claude's (as `plan`) and Codex's.
     #[serde(default)]
     pub plans: Vec<EnginePlan>,
-    /// How the squad moves members between engines.
-    #[serde(default, skip_serializing_if = "engines::Switching::is_default")]
+    /// How the squad moves members between engines. Left out when `suggest`,
+    /// as daemons did when that was the default; an older screen reads it so.
+    #[serde(default = "engines::Switching::unsaid", skip_serializing_if = "engines::Switching::is_unsaid")]
     pub engine_switching: engines::Switching,
     /// The squad's latest moves to the other engine, oldest first: which
     /// closed session each open member carries on from.
@@ -3417,17 +3451,20 @@ mod tests {
 
     #[test]
     fn a_deleted_squad_is_told_every_screen_with_where_it_went_and_where_to_go() {
-        let cmd = Command::DeleteSquad { squad: "acme".into() };
-        assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "delete_squad", "squad": "acme" }));
-        let gone = Event::SquadDeleted { squad: "acme".into(), moved_to: "/h/.equipe/deleted/acme-20261110-090000".into(), next: Some("beta".into()) };
+        let cmd = Command::DeleteSquad { squad: "acme".into(), purge: false };
+        assert_eq!(serde_json::to_value(&cmd).unwrap(), json!({ "type": "delete_squad", "squad": "acme" }), "as an older daemon reads it");
+        let purge = Command::DeleteSquad { squad: "acme".into(), purge: true };
+        assert_eq!(serde_json::to_value(&purge).unwrap(), json!({ "type": "delete_squad", "squad": "acme", "purge": true }));
+        let gone = Event::SquadDeleted { squad: "acme".into(), moved_to: "/h/.equipe/deleted/acme-20261110-090000".into(), next: Some("beta".into()), freed: 12_000_000_000, purged: false };
+        let purged = Event::SquadDeleted { squad: "acme".into(), moved_to: "/h/.equipe/deleted/acme-20261110-090000".into(), next: None, freed: 1, purged: true };
         let failed = Event::SquadNotDeleted { squad: "acme".into(), why: "no such squad".into() };
-        for event in [gone, failed] {
+        for event in [gone, purged, failed] {
             assert!(event.for_everyone(), "screens on other squads drop it from their lists too");
             assert_eq!(event.session(), None);
             assert_eq!(serde_json::from_value::<Event>(serde_json::to_value(&event).unwrap()).unwrap(), event);
         }
         let last: Event = serde_json::from_value(json!({ "type": "squad_deleted", "squad": "acme", "moved_to": "/x" })).unwrap();
-        assert_eq!(last, Event::SquadDeleted { squad: "acme".into(), moved_to: "/x".into(), next: None }, "none left: no next");
+        assert_eq!(last, Event::SquadDeleted { squad: "acme".into(), moved_to: "/x".into(), next: None, freed: 0, purged: false }, "an older daemon's: none left, nothing said freed");
     }
 
     #[test]
@@ -3712,6 +3749,7 @@ mod tests {
             }],
             idle_wake_hours: Some(24),
             subagents_at_once: Some(8),
+            parallel: lanes::Parallel::max(8, 20),
             design_reviewer: engines::Reviewer::Same,
             signals: Vec::new(),
             scale: Some(2),
@@ -4025,6 +4063,28 @@ mod tests {
         assert_eq!((old.engine_switching, old.engine_proposals.len(), old.plans.len()), (Switching::Suggest, 0, 0));
         let wire = serde_json::to_value(&old).unwrap();
         assert!(wire.get("engine_switching").is_none() && wire.get("engine_proposals").is_none(), "{wire}");
+    }
+
+    #[test]
+    fn parallel_work_is_set_and_told_as_json_and_older_snapshots_read_as_auto() {
+        use lanes::{Parallel, ParallelMode};
+        let command = Command::SetParallel { squad: "acme".into(), parallel: Parallel::max(8, 20) };
+        assert_eq!(serde_json::to_value(&command).unwrap(), json!({ "type": "set_parallel", "squad": "acme", "parallel": { "mode": "max", "per_member": 8, "per_engine": 20 } }));
+        assert_eq!(serde_json::from_value::<Command>(serde_json::to_value(&command).unwrap()).unwrap(), command);
+        let event = Event::ParallelChanged { squad: "acme".into(), parallel: Parallel::default() };
+        assert_eq!((event.squad(), event.session(), event.for_everyone()), (Some("acme"), None, false));
+        let json = serde_json::to_string(&event).unwrap();
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event, "{json}");
+        // A screen that predates the caps sends the mode alone: max's defaults.
+        let bare: Command = serde_json::from_value(json!({ "type": "set_parallel", "squad": "acme", "parallel": { "mode": "max" } })).unwrap();
+        assert_eq!(bare, Command::SetParallel { squad: "acme".into(), parallel: Parallel::max(6, 16) });
+        // A daemon that predates it says nothing: auto. Auto at the defaults is left out again.
+        let old: Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[]}"#).unwrap();
+        assert_eq!(old.parallel.mode, ParallelMode::Auto);
+        assert!(serde_json::to_value(&old).unwrap().get("parallel").is_none());
+        let max = Snapshot { parallel: Parallel::max(12, 32), ..old };
+        let back: Snapshot = serde_json::from_value(serde_json::to_value(&max).unwrap()).unwrap();
+        assert_eq!(back.parallel, Parallel::max(12, 32));
     }
 
     #[test]

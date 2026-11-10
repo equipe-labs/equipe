@@ -167,6 +167,9 @@ enum Command {
         /// Delete without asking (`delete`)
         #[arg(long, short)]
         yes: bool,
+        /// Delete it for good now, keeping nothing to restore (`delete`)
+        #[arg(long)]
+        purge: bool,
     },
     /// Apps where a member's send waits for your yes: `add|remove <app>`, `reset`
     SendApps {
@@ -661,8 +664,8 @@ async fn run(cli: Cli) -> ExitCode {
         },
         Command::Browser { url, forget, .. } => sign_in(url, forget).await,
         // `delete <name>`: asked first at a terminal; through the daemon when it runs.
-        Command::Squad { words, yes, .. } if words.first().is_some_and(|w| w == "delete") => match words.as_slice() {
-            [_, name] => match settings::delete_squad(&equipe_providers::credentials::equipe_home(), &daemon::socket(), name, yes).await {
+        Command::Squad { words, yes, purge, .. } if words.first().is_some_and(|w| w == "delete") => match words.as_slice() {
+            [_, name] => match settings::delete_squad(&equipe_providers::credentials::equipe_home(), &daemon::socket(), name, yes, purge).await {
                 Ok(lines) => {
                     for line in lines {
                         println!("  {line}");
@@ -1704,6 +1707,7 @@ impl App {
                 | Event::BrowserProfiles { .. }
                 | Event::PmAcceptsChanged { .. }
                 | Event::SubagentsAtOnceChanged { .. }
+                | Event::ParallelChanged { .. }
                 | Event::DesignReviewerChanged { .. }
                 | Event::RoleModelsChanged { .. }
                 | Event::Models { .. }
@@ -1926,6 +1930,9 @@ mod tests {
         assert_eq!(parsed(&["equipe", "squad", "delete", "acme"]), Some((vec!["delete".to_owned(), "acme".to_owned()], false, false)), "asked first");
         assert_eq!(parsed(&["equipe", "squad", "delete", "acme", "--yes"]), Some((vec!["delete".to_owned(), "acme".to_owned()], true, false)));
         assert_eq!(parsed(&["equipe", "squad", "delete", "acme", "-y"]).map(|p| p.1), Some(true));
+        let purge = |args: &[&str]| matches!(Cli::try_parse_from(args).map(|c| c.command), Ok(Some(Command::Squad { purge: true, .. })));
+        assert!(purge(&["equipe", "squad", "delete", "acme", "--purge"]), "for good, now");
+        assert!(!purge(&["equipe", "squad", "delete", "acme"]), "kept for a week unless asked");
         assert_eq!(parsed(&["equipe", "squad", "new", "acme"]).map(|p| p.1), Some(false), "the other words as ever");
     }
 

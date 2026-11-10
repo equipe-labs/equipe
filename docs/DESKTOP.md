@@ -258,12 +258,14 @@ a state: `nogit · gitasked · missing · confirm · installing · signedout · 
 switcher, and Settings › Squad & machine, act on the window's squad. The question is the one
 every destructive action asks (`sheet::Ask`, its yes in red and never answered by ⏎): it names
 the squad and says what happens — how many members stop and tickets are open, that the folder
-moves to `~/.equipe/deleted/` on the daemon's machine, that projects aren't touched, and, for
-the only squad, that a new one comes next. Yes sends `Command::DeleteSquad` over the window's
+moves to `~/.equipe/deleted/` on the daemon's machine for 7 days, that what can be made again
+goes at once and projects aren't touched, how much space that frees (measured by the daemon,
+`rpc::SQUAD_FOOTPRINT`), and, for the only squad, that a new one comes next. A switch, "Delete
+permanently now", keeps nothing to restore. Yes sends `Command::DeleteSquad` over the window's
 connection, so a squad on another machine is deleted by that machine's daemon. Every window
 hears `SquadDeleted`: the squad leaves its switcher, and a window on it attaches to the squad
 the daemon names next, or to the first-run screen when none is left. `EQUIPE_SCRIPT=popup:account`
-shows the item; `delsquad[:far]`, the question.
+shows the item; `delsquad[:far]`, the question; `delsquad:purge` after it, its switch on.
 
 **Trying it.** `cargo run -p equipe-desktop --example remote_probe -- user@host[:port]
 [--trust]` runs the same link without a window and prints what it says (a password from
