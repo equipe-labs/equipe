@@ -1290,5 +1290,10 @@
   "app.ask_resume_run": "Reprendre T-{id} avec {who} dans une nouvelle session, sur la même branche et le même worktree ? y / n",
   "app.ask_requeue_run": "Relancer T-{id} pour le prochain {role} libre, sur la même branche et le même worktree ? y / n",
   "app.ask_reassign_run": "Qui reprend T-{id}, sur la même branche et le même worktree ? {members} · n",
-  "app.recovered": "T-{id} repris"
+  "app.recovered": "T-{id} repris",
+  "commands.rest": "Mettre un membre au repos : aucun nouveau travail jusqu’à son réveil",
+  "commands.rest_stop": "et arrêter le travail en cours",
+  "commands.rest_off": "le réveiller : il reprend du nouveau travail",
+  "app.rest_usage": "/rest <membre> — aucun nouveau travail, le travail en cours est terminé · /rest <membre> stop — l’arrête aussi · /rest <membre> off — le réveille",
+  "app.pm_rests": "Le PM reste en poste : il ne peut pas se mettre au repos."
 }

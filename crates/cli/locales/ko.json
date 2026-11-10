@@ -1267,5 +1267,10 @@
   "app.ask_resume_run": "T-{id}을(를) {who}이(가) 새 세션에서 이어서 할까요? 브랜치와 작업 폴더는 그대로예요. y / n",
   "app.ask_requeue_run": "T-{id}을(를) 다음에 비는 {role}에게 다시 맡길까요? 브랜치와 작업 폴더는 그대로예요. y / n",
   "app.ask_reassign_run": "T-{id}을(를) 누가 이어받을까요? 브랜치와 작업 폴더는 그대로예요. {members} · n",
-  "app.recovered": "T-{id}을(를) 다시 시작해요"
+  "app.recovered": "T-{id}을(를) 다시 시작해요",
+  "commands.rest": "멤버 휴식: 다시 깨울 때까지 새 일을 받지 않아요",
+  "commands.rest_stop": "하던 일도 멈춰요",
+  "commands.rest_off": "휴식 끝내기: 다시 새 일을 받아요",
+  "app.rest_usage": "/rest <멤버> — 새 일은 받지 않고 하던 일은 마쳐요 · /rest <멤버> stop — 하던 일도 멈춰요 · /rest <멤버> off — 휴식을 끝내요",
+  "app.pm_rests": "PM은 쉴 수 없어요. 항상 자리를 지켜요."
 }

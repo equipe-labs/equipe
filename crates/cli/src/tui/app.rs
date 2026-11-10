@@ -2862,6 +2862,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             "new" => self.new_ticket(rest),
             "title" => self.retitle(rest),
             "mode" => self.set_mode(rest),
+            "rest" => self.rest(rest),
             "engines" => self.engines_command(rest),
             "parallel" => self.parallel_command(rest),
             "model-choice" => self.model_choice_command(rest),
@@ -3559,6 +3560,31 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
         }
     }
 
+    /// `/rest <member>`: it takes no new work, finishing what it holds;
+    /// `/rest <member> stop` stops that too; `/rest <member> off` wakes it.
+    fn rest(&mut self, rest: &str) -> Vec<Command> {
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        let squad = self.squad.clone();
+        let (name, resting, stop) = match words.as_slice() {
+            [name] => (*name, true, false),
+            [name, "stop"] => (*name, true, true),
+            [name, "off" | "wake"] => (*name, false, false),
+            _ => {
+                self.flash = Some(t!("app.rest_usage").into());
+                return Vec::new();
+            }
+        };
+        let Some(agent) = self.agents.iter().find(|a| a.member.as_ref().is_some_and(|m| m.name == name)) else {
+            self.flash = Some(t!("app.no_one_called", name = name));
+            return Vec::new();
+        };
+        if resting && agent.is_pm() {
+            self.flash = Some(t!("app.pm_rests").into());
+            return Vec::new();
+        }
+        vec![Command::SetResting { squad, member: name.to_owned(), resting, stop }]
+    }
+
     /// `/add designer frontend`, `/add qa codex`, `/add custom writer`,
     /// `/add custom writer --edits`.
     fn add(&mut self, rest: &str) -> Vec<Command> {
@@ -4204,6 +4230,23 @@ mod tests {
         assert!(run(&mut app, "/parallel").is_empty());
         app.on_event(Event::ParallelChanged { squad: "acme".into(), parallel: Parallel::max(3, 9) });
         assert_eq!(app.engines.parallel, Parallel::max(3, 9));
+    }
+
+    #[test]
+    fn rest_stops_new_work_for_a_member_and_off_wakes_it() {
+        let (mut app, _, _) = team();
+        let run = |app: &mut App, text: &str| {
+            type_text(app, text);
+            enter(app)
+        };
+        let rest = |member: &str, resting: bool, stop: bool| vec![Command::SetResting { squad: "acme".into(), member: member.into(), resting, stop }];
+        assert_eq!(run(&mut app, "/rest frontend"), rest("frontend", true, false), "its work in progress finishes");
+        assert_eq!(run(&mut app, "/rest frontend stop"), rest("frontend", true, true));
+        assert_eq!(run(&mut app, "/rest frontend off"), rest("frontend", false, false));
+        assert!(run(&mut app, "/rest ghost").is_empty(), "nobody by that name: nothing sent");
+        assert!(run(&mut app, "/rest pm").is_empty(), "the PM stays on duty");
+        assert!(run(&mut app, "/rest").is_empty());
+        assert!(app.flash.as_deref().is_some_and(|f| f.contains("/rest")), "{:?}", app.flash);
     }
 
     #[test]
