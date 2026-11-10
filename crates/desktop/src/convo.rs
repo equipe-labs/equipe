@@ -1310,7 +1310,7 @@ mod tests {
         feed(&mut c, &[
             Event::UserMessage { session: 1, text: "go".into(), kept: Vec::new() },
             tool("Bash", "cp /a/logo.png img/"),
-            refused("cp /a/logo.png img/", "cp to '/Users/abel/Abel/equipe-site/public/logo.png' was blocked by a deny rule."),
+            refused("cp /a/logo.png img/", "cp to '/Users/you/Abel/equipe-site/public/logo.png' was blocked by a deny rule."),
             tool("Bash", "cp x y"),
             refused("cp x y", "cp: y: Permission denied"),
         ]);
