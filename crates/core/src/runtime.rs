@@ -629,6 +629,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         runtime.restore_stopped();
         // Change requests the PM once left as plain comments: to their members, once.
         runtime.recover_change_requests();
+        // Work that still names members who left: to their roles.
+        runtime.hand_on_work_of_departed();
         // Chrome's first start, off the loop, before a reply's card waits on it.
         let _ = crate::visuals::card::warm_up(&runtime.config.home);
     }
@@ -5344,11 +5346,11 @@ for one project goes to it as tickets for its owners, with that project — and 
             return self.error(Some(id), say!(self, "error.no_session", id = id), None);
         };
         let squad = session.squad.clone();
-        let leaving = session.name().filter(|_| session.is_member_itself()).map(str::to_owned);
+        let leaving = session.member.clone().filter(|_| session.is_member_itself());
         if session.work.is_some() {
             self.end_work(id, WorkEnd::Left);
         }
-        if let (Some(squad), Some(name)) = (&squad, leaving) {
+        if let (Some(squad), Some(name)) = (&squad, leaving.as_ref().map(|m| m.name.clone())) {
             self.drop_questions(squad, |set| set.member == name);
             // Letting it go no longer waits on the person: it left.
             self.drop_team_changes(squad, |c| c.member.as_deref() == Some(name.as_str()));
@@ -5362,6 +5364,13 @@ for one project goes to it as tickets for its owners, with that project — and 
             && self.desktop.leave(&who)
         {
             self.publish_desktop();
+        }
+        // What still names it goes to its role — not when it only moves
+        // engines, coming back at once under the same name.
+        if let (Some(squad), Some(member)) = (&squad, &leaving)
+            && !self.engines.keeps_name(&member.name)
+        {
+            self.hand_to_role(squad, &member.name, &member.role, true);
         }
         // Someone else may take over what it left.
         if let Some(squad) = squad {
@@ -5832,7 +5841,8 @@ todo); or drop it if it's no longer wanted.]"
 
     /// Member `id` puts its ticket down. Changes are committed to the ticket's
     /// branch; the worktree stays while the work is in review, so it can be sent
-    /// back, and goes otherwise — the branch stays to merge.
+    /// back, while it waits, and when its member left, for the next one; it
+    /// goes otherwise — the branch stays to merge.
     fn end_work(&mut self, id: SessionId, how: WorkEnd) {
         self.put_down(id, how);
         // A run is its ticket's: put down, it closes.
@@ -5866,7 +5876,11 @@ todo); or drop it if it's no longer wanted.]"
                 let message = say!(self, "error.ticket_not_committed", id = ticket.id, err = err, path = sandbox.path.display());
                 self.error(Some(id), message, None);
             }
-            if matches!(how, WorkEnd::HandedIn | WorkEnd::Waiting) {
+            // Work its member left stays checked out for whoever takes it
+            // next: removing gigabytes of worktree, and checking the branch
+            // out again for the next member, held the daemon's loop for
+            // seconds per ticket.
+            if matches!(how, WorkEnd::HandedIn | WorkEnd::Waiting | WorkEnd::Left) {
                 kept_worktree = Some(sandbox.path.clone());
             } else if matches!(how, WorkEnd::Accepted | WorkEnd::Checked) && ticket.kind.in_home() {
                 if how == WorkEnd::Checked {

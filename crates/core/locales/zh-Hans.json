@@ -313,6 +313,8 @@
   "ticket.design_qa_body": "{name} 在 T-{id} 中修改了界面。请在审查前对照规格、设计系统和无障碍要求检查，然后通过，或写明要改的地方退回。",
   "news.helper_left": "{name} 完成工作后离开了：它的角色继续保留",
   "news.left": "{name} 离开了 T-{id}；它回到了看板上 · {title}。",
+  "news.member_work_kept": "{name} 已离开，团队中已没有 {role}：{tickets} 等待新的 {role}",
+  "news.member_work_moved": "{name} 已离开：{tickets} 已交给 {role}",
   "news.merge_declined": "你没有接受并合并 {tickets} — 保持原样",
   "news.merge_conflict_owner": "T-{id} 与 main 冲突：已请其合入 main 并解决冲突。",
   "news.merged": "你把 T-{id} · {title} 合并进了 {branch}。",

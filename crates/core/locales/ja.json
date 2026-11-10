@@ -313,6 +313,8 @@
   "ticket.design_qa_body": "{name} が T-{id} で画面を変更しました。レビューの前に仕様・デザインシステム・アクセシビリティと照らして確認し、通すか、直す点を添えて差し戻します。",
   "news.helper_left": "{name} は仕事を終えて抜けました。役割はそのまま続きます",
   "news.left": "{name} が T-{id} から抜けました。ボードに戻っています · {title}。",
+  "news.member_work_kept": "{name} が抜けましたが、チームに {role} がいません。{tickets} は {role} を待っています",
+  "news.member_work_moved": "{name} が抜けたため、{tickets} を {role} に渡しました",
   "news.merge_declined": "{tickets} の承認とマージはしませんでした — そのままです",
   "news.merge_conflict_owner": "T-{id} が main と衝突したため、main を取り込んで衝突を解くよう頼みました。",
   "news.merged": "T-{id} · {title} を {branch} にマージしました。",

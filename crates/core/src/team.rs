@@ -4,7 +4,7 @@
 //! their command's (`Command::ApproveTeamChange`), never an agent's.
 
 use equipe_protocol::team::{Change, MOST_ADDED, TeamChange};
-use equipe_protocol::{Engine, Ticket, TicketId};
+use equipe_protocol::{Engine, Ticket, TicketId, TicketStatus};
 use serde_json::{Value, json};
 
 use crate::board;
@@ -236,6 +236,39 @@ pub fn owned_by_name<'t>(ticket: &'t Ticket, team: &[Mate<'_>]) -> Option<&'t st
     (team.iter().any(|m| m.name == owner) && !team.iter().any(|m| m.role == owner)).then_some(owner)
 }
 
+/// What becomes of a ticket that still names a member who left the squad
+/// ([`left_behind`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Left {
+    /// In progress in its hands: requeued for whoever takes it next, its
+    /// note, branch and worktree kept, as the person's recovery does.
+    Requeue,
+    /// Anything else unfinished — in review, waiting, to do: it stays as it
+    /// is, without the name.
+    Rehome,
+}
+
+/// The unfinished tickets that still name `name`, a member who left: owned
+/// by it, or in its hands.
+pub fn left_behind(tickets: &[Ticket], name: &str) -> Vec<(TicketId, Left)> {
+    tickets
+        .iter()
+        .filter(|t| !t.status.is_closed())
+        .filter(|t| t.owner.as_deref() == Some(name) || t.assignee.as_deref() == Some(name))
+        .map(|t| {
+            let held = t.status == TicketStatus::InProgress && t.assignee.as_deref() == Some(name);
+            (t.id, if held { Left::Requeue } else { Left::Rehome })
+        })
+        .collect()
+}
+
+/// Who owns a ticket owned by `owner` once member `name`, a `role`, left:
+/// the role for what it owned by name; anything else as it was. A member
+/// named after its role (`backend`) owned its tickets for the role already.
+pub fn owner_after<'a>(owner: Option<&'a str>, name: &str, role: &'a str) -> Option<&'a str> {
+    if owner == Some(name) && name != role { Some(role) } else { owner }
+}
+
 /// What the PM is told once its proposal waits for the person.
 pub fn proposed_reply(p: &Proposal) -> String {
     let what = match p.change {
@@ -426,5 +459,36 @@ mod tests {
         assert!(said.contains("1 mobile join, and pick up T-117 first") && said.contains("Don't ask them to type a command"), "{said}");
         assert_eq!(tool()["name"], PROPOSE_TEAM_CHANGE);
         assert_eq!(tool()["inputSchema"]["required"], json!(["change", "role", "reason"]));
+    }
+
+    /// What a member that left leaves behind: work in its hands requeued,
+    /// anything else it owned rehomed; finished work, and work that names
+    /// someone else, untouched.
+    #[test]
+    fn what_a_member_that_left_leaves_behind() {
+        let named = |id: u32, status: TicketStatus, owner: &str, assignee: Option<&str>| Ticket {
+            owner: Some(owner.into()),
+            assignee: assignee.map(Into::into),
+            ..ticket(id, status)
+        };
+        let board = [
+            named(1, TicketStatus::InProgress, "frontend-2", Some("frontend-2")),
+            named(2, TicketStatus::InProgress, "frontend", Some("frontend-2")),
+            named(3, TicketStatus::InProgress, "frontend-2", Some("frontend")),
+            named(4, TicketStatus::Review, "frontend-2", Some("frontend-2")),
+            named(5, TicketStatus::Waiting, "frontend", Some("frontend-2")),
+            named(6, TicketStatus::Todo, "frontend-2", None),
+            named(7, TicketStatus::Idea, "frontend-2", None),
+            named(8, TicketStatus::Done, "frontend-2", Some("frontend-2")),
+            named(9, TicketStatus::Todo, "frontend-3", None),
+        ];
+        assert_eq!(
+            left_behind(&board, "frontend-2"),
+            [(1, Left::Requeue), (2, Left::Requeue), (3, Left::Rehome), (4, Left::Rehome), (5, Left::Rehome), (6, Left::Rehome), (7, Left::Rehome)]
+        );
+        assert_eq!(owner_after(Some("frontend-2"), "frontend-2", "frontend"), Some("frontend"));
+        assert_eq!(owner_after(Some("frontend"), "frontend-2", "frontend"), Some("frontend"), "the role's already");
+        assert_eq!(owner_after(Some("designer"), "frontend-2", "frontend"), Some("designer"), "another's stays");
+        assert_eq!(owner_after(Some("backend"), "backend", "backend"), Some("backend"), "named after its role: the role's");
     }
 }

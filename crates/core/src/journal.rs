@@ -1027,6 +1027,17 @@ impl Journal {
         tx.commit()
     }
 
+    /// `ticket`'s run, still active although nothing runs it any more — its
+    /// member left the squad — stalled now (`reason`), so that it can be
+    /// requeued ([`Self::reserve_requeue`]). Whether it was active.
+    pub fn stall_execution(&self, ticket: TicketId, reason: &str, at: u64) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE ticket_executions SET state = 'stalled', lease_expires_at = 0, reason = ?1, updated_at = ?2
+             WHERE ticket = ?3 AND state = 'active'",
+            params![reason, at as i64, ticket],
+        )? == 1)
+    }
+
     /// What a stalled run left in its checkout — its commit and how many
     /// files are changed or untracked — for the person's recovery card.
     pub fn set_stalled_checkout(&self, ticket: TicketId, head: Option<&str>, dirty: Option<u32>) -> Result<()> {
@@ -1841,6 +1852,18 @@ impl Journal {
                 mode: r.get::<_, Option<String>>(14)?.as_deref().and_then(Mode::stored),
             })
         })?;
+        rows.collect()
+    }
+
+    /// Every member that was ever on the squad, open or closed, as
+    /// `(name, role)`, each name once with the role it held last.
+    pub fn members_ever(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT name, role FROM sessions s WHERE name IS NOT NULL AND role IS NOT NULL
+               AND id = (SELECT id FROM sessions t WHERE t.name = s.name AND t.role IS NOT NULL ORDER BY t.updated_at DESC, t.id DESC LIMIT 1)
+             ORDER BY name",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         rows.collect()
     }
 

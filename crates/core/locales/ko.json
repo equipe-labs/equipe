@@ -313,6 +313,8 @@
   "ticket.design_qa_body": "{name}이(가) T-{id}에서 화면을 바꿨어요. 사람이 리뷰하기 전에 스펙·디자인 시스템·접근성과 대조해 검수하고, 통과시키거나 고칠 점을 적어 돌려보내요.",
   "news.helper_left": "{name}이(가) 일을 마치고 나갔어요. 역할은 그대로 이어져요",
   "news.left": "{name}이(가) T-{id}에서 빠졌어요. 다시 보드에 있어요 · {title}.",
+  "news.member_work_kept": "{name}이(가) 떠났는데 팀에 {role}이(가) 없어요. {tickets}은(는) {role}을(를) 기다려요",
+  "news.member_work_moved": "{name}이(가) 떠나서 {tickets}을(를) {role}에게 넘겼어요",
   "news.merge_declined": "{tickets} 수락·머지하지 않았어요 — 그대로 둬요",
   "news.merge_conflict_owner": "T-{id}이(가) main과 충돌해서, main을 받아 충돌을 푸는 일을 맡겼어요.",
   "news.merged": "T-{id} · {title}을(를) {branch}에 병합했어요.",

@@ -206,6 +206,12 @@ impl Engines {
         self.names.remove(&id)
     }
 
+    /// Whether a member called `name` is moving engines: it closes only to
+    /// start again at once under the same name, and what it owns stays its.
+    pub(super) fn keeps_name(&self, name: &str) -> bool {
+        self.names.values().any(|n| n == name)
+    }
+
     /// The brief a moved member's first turn opens with.
     pub(super) fn brief_for(&mut self, id: SessionId) -> Option<String> {
         self.briefs.remove(&id)

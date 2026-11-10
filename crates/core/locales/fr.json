@@ -316,6 +316,8 @@
   "ticket.design_qa_body": "{name} a modifié des écrans dans T-{id}. Vérifiez-les par rapport à la spécification, au design system et à l’accessibilité avant la revue de la personne, puis validez ou renvoyez avec ce qu’il faut changer.",
   "news.helper_left": "{name} est parti, son travail fini : son rôle continue",
   "news.left": "{name} a quitté T-{id} ; il est de retour sur le tableau · {title}.",
+  "news.member_work_kept": "{name} est parti et il ne reste aucun {role} dans l’équipe : {tickets} en attendent un",
+  "news.member_work_moved": "{name} est parti : {tickets} passent à {role}",
   "news.merge_declined": "Vous n’avez ni accepté ni fusionné {tickets} : rien ne change",
   "news.merge_conflict_owner": "T-{id} est en conflit avec main : il faut intégrer main et résoudre le conflit.",
   "news.merged": "Vous avez fusionné T-{id} · {title} dans {branch}.",

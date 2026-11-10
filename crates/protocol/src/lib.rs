@@ -842,6 +842,9 @@ pub enum Command {
     Interrupt { session: SessionId },
     /// End the session. With [`Access::EditFiles`] this lands the branch first.
     /// For a member: it leaves the squad, and a ticket it was on goes back to the board.
+    /// Every unfinished ticket still naming it goes to its role while the squad
+    /// has a member of that role: work it held in progress is requeued on the
+    /// same branch and worktree, work in review stays in review.
     /// Answered by [`Event::SessionClosed`].
     Close { session: SessionId },
     /// The person accepts a ticket's work: it is done, its branch stays to merge.
