@@ -277,6 +277,8 @@ impl RenderOnce for Segmented {
             .collect();
         let raised = if p.is_dark() { p.side_sel } else { p.raised };
         let ring = Rgba { a: 0.55, ..p.accent };
+        // Under the ring's shadow the choice needs a fill of its own, or it shows through.
+        let track = if p.is_dark() { p.wash } else { p.code_bg };
         let on_ix = self.on;
         let pick = self.pick;
         h_flex()
@@ -308,7 +310,7 @@ impl RenderOnce for Segmented {
                     .whitespace_nowrap()
                     .text_color(if on { p.text } else { p.text2 })
                     .when(on, |s| s.bg(raised).shadow(motion::float_shadow(0.18)))
-                    .when(!on, |s| s.cursor_pointer())
+                    .when(!on, |s| s.bg(track).cursor_pointer())
                     .on_click(move |_, window, cx| {
                         clicked.focus(window, cx);
                         click(ix, window, cx);
