@@ -59,6 +59,8 @@ pub const WIDTH: f32 = 560.;
 const MIN_WIDTH: f32 = 360.;
 /// Room the conversation keeps beside it.
 const CHAT_MIN: f32 = 420.;
+/// What the window needs beside the sidebar for the conversation and the panel at its least.
+pub const SQUEEZE_REST: f32 = CHAT_MIN + MIN_WIDTH;
 /// Mouse moves go no more often than this (60 a second).
 const MOVE_EVERY: Duration = Duration::from_millis(16);
 /// How long the word that the person took or gave back a browser stays; and
@@ -2216,7 +2218,7 @@ impl Render for BrowserPanel {
         let dragging = self.drag.is_some();
         // A window narrower than the width kept (or dragged wide before it
         // shrank) holds the panel to what it can give: never past the edge.
-        let fit = fit_width(self.width, f32::from(window.viewport_size().width));
+        let fit = fit_width(self.width, f32::from(window.viewport_size().width) / window.content_zoom().max(0.01));
         h_flex()
             .h_full()
             .w(px(fit))
@@ -2316,7 +2318,7 @@ impl BrowserPanel {
             self.drag = None;
             cx.emit(PanelEvent::Resized(self.width));
         } else {
-            self.width = (w0 + x0 - x).clamp(MIN_WIDTH, widest(f32::from(window.viewport_size().width)));
+            self.width = (w0 + x0 - x).clamp(MIN_WIDTH, widest(f32::from(window.viewport_size().width) / window.content_zoom().max(0.01)));
         }
         cx.notify();
         true
