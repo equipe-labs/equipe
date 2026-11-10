@@ -970,12 +970,31 @@ impl Sandbox {
     }
 
     /// The files the worktree differs in from where the branch started —
-    /// committed or not, new files included — by path.
+    /// committed or not, new files included — by path. Once main has been
+    /// merged or rebased in, where the branch started is also where it meets
+    /// main (or `origin`'s main) now: what main's own commits brought in is
+    /// not the branch's, so a file counts only when it differs from each.
     pub fn touched_files(&self) -> Result<Vec<String>> {
         let quiet = ["-c", "core.quotePath=false"];
-        let tracked = git(&self.path, &[&quiet[..], &["diff", "--name-only", &self.base]].concat())?;
+        let diff = |from: &str| -> Result<Vec<String>> {
+            let out = git(&self.path, &[&quiet[..], &["diff", "--name-only", from]].concat())?;
+            Ok(out.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect())
+        };
+        let mut tracked = diff(&self.base)?;
+        if let Ok(main) = main_branch(&self.repo) {
+            let starts = [main.clone(), format!("origin/{main}")]
+                .iter()
+                .filter_map(|target| git(&self.path, &["merge-base", "HEAD", target]).ok())
+                .filter(|start| *start != self.base)
+                .collect::<Vec<_>>();
+            for start in starts {
+                if let Ok(since) = diff(&start) {
+                    tracked.retain(|f| since.contains(f));
+                }
+            }
+        }
         let new = git(&self.path, &[&quiet[..], &["ls-files", "--others", "--exclude-standard"]].concat())?;
-        let mut files: Vec<String> = tracked.lines().chain(new.lines()).filter(|l| !l.is_empty()).map(str::to_owned).collect();
+        let mut files: Vec<String> = tracked.into_iter().chain(new.lines().filter(|l| !l.is_empty()).map(str::to_owned)).collect();
         files.sort();
         files.dedup();
         Ok(files)
@@ -1267,6 +1286,35 @@ mod tests {
         let done = trim_builds(&home, &[member("backend")], u64::MAX, 100);
         assert!(!member("frontend").exists() && member("backend").exists(), "a build under way is never taken: {done:?}");
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn main_merged_or_rebased_in_is_not_counted_among_the_branchs_touched_files() {
+        let repo = repo();
+        let home = scratch("touched");
+        let commit = |dir: &Path, file: &str, message: &str| {
+            let path = dir.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, format!("{message}\n")).unwrap();
+            git(dir, &["add", "-A"]).unwrap();
+            git(dir, &["commit", "-qm", message]).unwrap();
+        };
+        let s = create(&repo, &home, "t1", "designer").unwrap();
+        commit(&s.path, "design/tokens.json", "tokens");
+        // main moves on, and the branch merges it in.
+        commit(&repo, "Cargo.toml", "main one");
+        git(&s.path, &["merge", "-q", "--no-edit", "main"]).unwrap();
+        assert_eq!(s.touched_files().unwrap(), vec!["design/tokens.json".to_owned()]);
+        // main moves on again, and the branch is rebased onto it.
+        commit(&repo, "crates/cli/src/main.rs", "main two");
+        git(&s.path, &["rebase", "-q", "main"]).unwrap();
+        assert_eq!(s.touched_files().unwrap(), vec!["design/tokens.json".to_owned()]);
+        // A file the branch itself changes outside design/ still counts, committed or not.
+        commit(&s.path, "README.md", "designer edit");
+        std::fs::write(s.path.join("Cargo.toml"), "loose\n").unwrap();
+        assert_eq!(s.touched_files().unwrap(), ["Cargo.toml", "README.md", "design/tokens.json"].map(str::to_owned));
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
