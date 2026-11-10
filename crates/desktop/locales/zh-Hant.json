@@ -1577,6 +1577,7 @@
   "talk.rename_count": "{n}/{max}",
   "main.banner_needs_you": "需要你的注意",
   "main.banner_reconnecting": "正在重新連線 — 恢復後會自動接上",
+  "main.banner_short": "已中斷",
   "main.connecting_local": "正在連接常駐程式…",
   "main.connecting_ssh": "正在透過 SSH 連線至 {name}…",
   "main.copy_command": "拷貝指令",

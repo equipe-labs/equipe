@@ -1628,6 +1628,7 @@
   "talk.rename_count": "{n}/{max}",
   "main.banner_needs_you": "Requiert votre attention",
   "main.banner_reconnecting": "Reconnexion — reprend d'elle-même dès le retour",
+  "main.banner_short": "Déconnecté",
   "main.connecting_local": "Connexion au démon…",
   "main.connecting_ssh": "Connexion à {name} via SSH…",
   "main.copy_command": "Copier la commande",
