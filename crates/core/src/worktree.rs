@@ -987,6 +987,23 @@ pub fn tidy(home: &Path, in_use: &[PathBuf], kept: &[PathBuf]) -> Vec<String> {
     done
 }
 
+/// Remove the worktree at `path` whatever is in it — through git, from its
+/// repository, when it is one (locked or not); a folder that isn't, as a
+/// folder. Its branch stays. Gigabytes: off the loop.
+pub fn remove_at(path: &Path) -> Result<()> {
+    off_the_loop("remove_at");
+    // `<repo>/.git/worktrees/<name>`: git runs from `<repo>/.git`.
+    let git_dir = admin_dir(path).filter(|a| a.is_dir()).and_then(|a| a.parent().and_then(Path::parent).map(Path::to_owned));
+    match git_dir {
+        Some(git_dir) => {
+            git_within(&git_dir, &["worktree", "remove", "-f", "-f", &path.to_string_lossy()], WORKTREE_ADD_TIMEOUT)?;
+            let _ = git(&git_dir, &["worktree", "prune"]);
+            Ok(())
+        }
+        None => std::fs::remove_dir_all(path).map_err(|e| format!("{}: {e}", path.display())),
+    }
+}
+
 /// Whether `name` is how equipe names a ticket's worktree: `t<digits>-…`.
 fn is_ticket_named(name: &str) -> bool {
     name.strip_prefix('t').and_then(|rest| rest.split_once('-')).is_some_and(|(digits, _)| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
@@ -1561,6 +1578,23 @@ mod tests {
         std::fs::create_dir_all(repo.join("a/b")).unwrap();
         let root = repo_root(&repo.join("a/b")).unwrap();
         assert_eq!(root.canonicalize().unwrap(), repo.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn a_worktree_removed_where_it_is_goes_with_what_is_in_it_and_its_branch_stays() {
+        let repo = repo();
+        let home = scratch("rm-home");
+        let sandbox = create(&repo, &home, "t7-x", "dev").unwrap();
+        std::fs::write(sandbox.path.join("WIP.md"), "half").unwrap();
+        remove_at(&sandbox.path).unwrap();
+        assert!(!sandbox.path.exists());
+        assert!(!git(&repo, &["branch", "--list", &sandbox.branch]).unwrap().is_empty(), "its branch stays");
+        assert!(!git(&repo, &["worktree", "list"]).unwrap().contains("t7-x"), "git forgot it");
+        // A folder that isn't a worktree goes as a folder.
+        let plain = home.join("worktrees").join("x").join("t8-y");
+        std::fs::create_dir_all(plain.join("src")).unwrap();
+        remove_at(&plain).unwrap();
+        assert!(!plain.exists());
     }
 
     #[test]

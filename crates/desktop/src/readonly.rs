@@ -141,6 +141,7 @@ pub fn reads(command: &Command) -> bool {
         | C::AddProject { .. }
         | C::RemoveProject { .. }
         | C::SetHq { .. }
+        | C::DeleteSquad { .. }
         | C::SaveRoutine { .. }
         | C::DeleteRoutine { .. }
         | C::RunRoutine { .. }
@@ -530,6 +531,7 @@ mod tests {
             Command::AddProject { squad: s(), path: "/p".into() },
             Command::RemoveProject { squad: s(), path: "/p".into() },
             Command::SetHq { squad: s(), path: None },
+            Command::DeleteSquad { squad: s() },
             Command::SaveRoutine { squad: s(), routine },
             Command::DeleteRoutine { squad: s(), id: 1 },
             Command::RunRoutine { squad: s(), id: 1 },

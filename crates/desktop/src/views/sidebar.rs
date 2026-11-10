@@ -1884,6 +1884,27 @@ fn popup(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
                     .on_click(cx.listener(|this, _, window, cx| this.open_new_squad(window, cx)))
                     .into_any_element(),
             });
+            // The window's squad, deleted — asked first (`views/delete_squad.rs`).
+            if !shell.model.squad.is_empty() {
+                let can = shell.can_delete_squad();
+                let tone = if can { p.red } else { p.muted };
+                let delete = h_flex()
+                    .id("delete-squad")
+                    .h(px(30.))
+                    .px_2()
+                    .gap_2()
+                    .items_center()
+                    .rounded(px(6.))
+                    .text_size(px(TEXT))
+                    .text_color(tone)
+                    .child(div().w(px(14.)).flex_none().child(crate::icons::icon(crate::icons::Icon::Trash, 13., tone)))
+                    .child(div().flex_1().min_w_0().truncate().child(t!("sidebar.delete_squad", name = shell.model.squad)));
+                rows.push(if can {
+                    delete.cursor_pointer().hover(move |s| s.bg(p.side_hover)).on_click(cx.listener(|this, _, _, cx| this.open_delete_squad(cx))).into_any_element()
+                } else {
+                    delete.into_any_element()
+                });
+            }
             rows.push(div().h(px(1.)).my_1().bg(p.hair).into_any_element());
             // One more window, on this machine and squad, to point elsewhere.
             rows.push(

@@ -352,6 +352,9 @@ pub struct Shell {
     /// A sheet over the window (usage, help, changes, memory) and a question asked first.
     pub sheet: Option<sheet::Sheet>,
     pub confirm: Option<sheet::Ask>,
+    /// The squad this window asked its daemon to delete, until it answers
+    /// (`views/delete_squad.rs`).
+    pub deleting_squad: Option<String>,
     /// The roles a squad just started joins with, once it is open and empty.
     pending_team: Option<Vec<String>>,
     /// A squad just made on another machine, and how much it does alone: set
@@ -510,6 +513,7 @@ impl Shell {
             jobs,
             sheet: None,
             confirm: None,
+            deleting_squad: None,
             pending_team: None,
             pending_mode: None,
             connecting_shown: false,
@@ -1013,6 +1017,15 @@ impl Shell {
                             }
                             daemon::Update::Event(Event::DocCopyKept { squad, kept, removed, undo }) => {
                                 changed |= this.doc_copy_kept(squad, kept, removed, undo);
+                                continue;
+                            }
+                            // A squad deleted, here or from another screen: the switcher's, and the window's if it was on it.
+                            daemon::Update::Event(Event::SquadDeleted { squad, moved_to, next }) => {
+                                changed |= this.squad_deleted(&squad, &moved_to, next, window, cx);
+                                continue;
+                            }
+                            daemon::Update::Event(Event::SquadNotDeleted { squad, why }) => {
+                                changed |= this.squad_not_deleted(&squad, &why);
                                 continue;
                             }
                             other => other,

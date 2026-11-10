@@ -20,10 +20,10 @@ pub struct Ask {
 
 impl Ask {
     /// Whether yes takes something away — a project off the squad, a member,
-    /// a ticket: its button says so in red.
+    /// a ticket, the squad itself: its button says so in red.
     pub fn destructive(&self) -> bool {
         use equipe_core::protocol::Command;
-        matches!(&self.then, Then::Send(commands) if commands.iter().any(|c| matches!(c, Command::RemoveProject { .. } | Command::Close { .. } | Command::Cancel { .. } | Command::ClearWordsLog { .. })))
+        matches!(&self.then, Then::Send(commands) if commands.iter().any(|c| matches!(c, Command::RemoveProject { .. } | Command::Close { .. } | Command::Cancel { .. } | Command::ClearWordsLog { .. } | Command::DeleteSquad { .. })))
     }
 }
 

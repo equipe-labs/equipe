@@ -482,6 +482,7 @@
   "squad_memory.index_title": "La mémoire de l'équipe",
   "squad_memory.index_intro": "Ce que l'équipe sait ensemble : un fait par fichier. equipe dresse cette liste à partir des fichiers ; modifiez-en ou supprimez-en un et chaque membre l'a dès son prochain tour. Ce que vous écrivez l'emporte.",
   "error.project_not_removed": "Le projet n'a pas été retiré : {why}",
+  "error.squad_not_deleted": "L'escouade n'a pas été supprimée : {why}. Ses membres reviennent au redémarrage du daemon.",
   "error.push_conflicts.one": "Fusionné dans {branch}, mais pas poussé. Le {branch} distant a des commits absents de cet ordinateur, et {count} fichier est en conflit : {files}. Demandez au PM de le résoudre.",
   "error.push_conflicts.other": "Fusionné dans {branch}, mais pas poussé. Le {branch} distant a des commits absents de cet ordinateur, et {count} fichiers sont en conflit : {files}. Demandez au PM de les résoudre.",
   "news.routine_declined": "Vous avez refusé la routine · {title}",

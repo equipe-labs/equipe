@@ -11,7 +11,7 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     Chosen,
     [
-        ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CornerDownRight, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, Eye, FileText, Flag, Folder, Globe, Hand, Inbox, Info, Keyboard, Laptop, Lightbulb, Locate, Lock, Maximize2, MessageSquare, Mic, Reply, Minimize2, Minus, Paperclip, Pencil, Play, Plug, Plus, RotateCcw, RotateCw, Search, Server, Settings, Compass, AppWindow, PenTool, Bug, ChartNoAxesColumn, Megaphone, ShieldCheck, Smartphone, Sparkles, SquareSlash, SquareTerminal, Ticket, TriangleAlert, Undo2, Users, X
+        ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CornerDownRight, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, Eye, FileText, Flag, Folder, Globe, Hand, Inbox, Info, Keyboard, Laptop, Lightbulb, Locate, Lock, Maximize2, MessageSquare, Mic, Reply, Minimize2, Minus, Paperclip, Pencil, Play, Plug, Plus, RotateCcw, RotateCw, Search, Server, Settings, Compass, AppWindow, PenTool, Bug, ChartNoAxesColumn, Megaphone, ShieldCheck, Smartphone, Sparkles, SquareSlash, SquareTerminal, Ticket, Trash, TriangleAlert, Undo2, Users, X
     ]
 );
 
@@ -119,11 +119,13 @@ pub enum Icon {
     Megaphone,
     /// A second look: fresh eyes on a screen.
     Eye,
+    /// Deleting a squad.
+    Trash,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 67] = [
+    pub const ALL: [Icon; 68] = [
         Icon::ArrowDown,
         Icon::ArrowLeft,
         Icon::ArrowRight,
@@ -191,6 +193,7 @@ impl Icon {
         Icon::Chart,
         Icon::Megaphone,
         Icon::Eye,
+        Icon::Trash,
     ];
 
     pub fn path(self) -> &'static str {
@@ -233,6 +236,7 @@ impl Icon {
             Icon::Chart => "icons/chart-no-axes-column.svg",
             Icon::Megaphone => "icons/megaphone.svg",
             Icon::Eye => "icons/eye.svg",
+            Icon::Trash => "icons/trash.svg",
             Icon::Settings => "icons/settings.svg",
             Icon::Shield => "icons/shield-check.svg",
             Icon::Users => "icons/users.svg",

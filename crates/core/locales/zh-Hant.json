@@ -478,6 +478,7 @@
   "squad_memory.index_title": "小隊的記憶",
   "squad_memory.index_intro": "小隊共同知道的事：一個檔案一條事實，這份清單由 equipe 依檔案產生。修改或刪除檔案後，從下一輪對話起所有成員都會知道。你寫的內容優先。",
   "error.project_not_removed": "無法移除專案：{why}",
+  "error.squad_not_deleted": "無法刪除小隊：{why}。重新啟動常駐程式後成員會回來。",
   "error.push_conflicts.one": "已合併到 {branch}，但未能推送到遠端。遠端 {branch} 有這台電腦上沒有的提交，{count} 個檔案衝突：{files}。請讓 PM 解決衝突。",
   "error.push_conflicts.other": "已合併到 {branch}，但未能推送到遠端。遠端 {branch} 有這台電腦上沒有的提交，{count} 個檔案衝突：{files}。請讓 PM 解決衝突。",
   "news.routine_declined": "已拒絕定期任務提議 · {title}",
