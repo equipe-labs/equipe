@@ -2365,6 +2365,22 @@ impl TextSelection {
         WindowSelectionState::existing(window, cx)?.read(cx).ends(cx)
     }
 
+    /// equipe: every row of selectable text in the window, as painted last
+    /// frame (or replayed from a cached view) — where a floating card must not
+    /// sit over the text.
+    pub fn text_rows(window: &Window, cx: &App) -> Vec<Bounds<Pixels>> {
+        let Some(state) = WindowSelectionState::existing(window, cx) else {
+            return Vec::new();
+        };
+        state
+            .read(cx)
+            .participants
+            .values()
+            .filter(|registration| registration.participant.upgrade().is_some())
+            .flat_map(|registration| registration.registration.text_bounds.iter().copied())
+            .collect()
+    }
+
     /// equipe: whether the pointer is still dragging a selection out.
     pub fn is_selecting(window: &Window, cx: &App) -> bool {
         WindowSelectionState::existing(window, cx).is_some_and(|state| state.read(cx).is_selecting)
