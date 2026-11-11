@@ -596,6 +596,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         design_reviews: HashMap::new(),
         retros: HashMap::new(),
         approvals_asked: HashMap::new(),
+        closed_seen: std::collections::HashSet::new(),
+        lane_tmp_tidied: std::time::Instant::now(),
         signals_running: std::collections::HashSet::new(),
         accepts: HashMap::new(),
         accepts_declined: HashMap::new(),
@@ -1162,6 +1164,11 @@ struct Runtime {
     /// When each permission waiting for the person was asked, by its id: how
     /// long it waited goes to the retro once answered.
     approvals_asked: HashMap<u64, u64>,
+    /// Tickets seen closed (done or cancelled) since the daemon started, by
+    /// squad: a ticket closing is noticed once, however it closed.
+    closed_seen: std::collections::HashSet<(String, TicketId)>,
+    /// When lanes' temporary folders were last tidied.
+    lane_tmp_tidied: std::time::Instant,
     /// Signals whose command runs now, by squad and key (`signals`).
     signals_running: std::collections::HashSet<(String, String)>,
     /// Decisions in the person's words waiting on them (`words`).
@@ -1621,6 +1628,9 @@ impl Runtime {
                 if self.settled_at.is_none_or(|at| at.elapsed() >= SETTLE_EVERY) {
                     self.settle_all_merged();
                 }
+                if self.config.persist && self.lane_tmp_tidied.elapsed() >= LANE_TMP_TIDY_EVERY {
+                    self.tidy_lane_tmp();
+                }
                 self.look_at_disk();
                 self.read_codex_usage(false);
             }
@@ -1640,6 +1650,15 @@ impl Runtime {
         // A permission put to the person: from now it waits on them.
         if let Event::ApprovalRequested { approval, .. } = &event {
             self.approvals_asked.insert(approval.id, now_secs());
+        }
+        // A ticket closing, however it closed (the person's word, the PM's, a
+        // designer's verdict, a member leaving): its lane's temporary folder goes.
+        if let Event::TicketChanged { squad, ticket } = &event {
+            if !ticket.status.is_closed() {
+                self.closed_seen.remove(&(squad.clone(), ticket.id));
+            } else if self.closed_seen.insert((squad.clone(), ticket.id)) {
+                self.clear_lane_tmp_of(squad, ticket.id);
+            }
         }
         self.publish_in(None, event);
         // A card to confirm about it may have nothing left to confirm.
@@ -5955,6 +5974,7 @@ don't open a new ticket for it."
     /// A ticket that can't start (its project isn't a repository, say) goes back
     /// to a proposal with the reason, for the PM or the person to sort out.
     fn cannot_start(&mut self, squad: &str, mut ticket: Ticket, name: &str, reason: &str) {
+        let reason = &output_excerpt(reason, OUTPUT_NOTE_MAX);
         ticket.status = TicketStatus::Proposed;
         ticket.note = Some(format!("{}{reason}", crate::protocol::COULD_NOT_START));
         let id = ticket.id;
@@ -6420,8 +6440,7 @@ with what else waits.]"
             _ => "news.cancelled",
         };
         let shown = self.said(news, &[("id", ticket.id.to_string()), ("title", ticket.title.clone())]);
-        // Its lane has ended: the temporary folder it worked in goes now, not at the merge.
-        self.clear_lane_tmp_of(squad, ticket.id);
+        // Its lane has ended: publishing it closed clears the temporary folder it worked in, not the merge.
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
         self.brief_pm(squad, line, Some(shown));
     }
@@ -8837,12 +8856,33 @@ check what is already done in your worktree first."
         }
     }
 
+    /// Lanes' temporary folders of tickets that are not open go, off the loop:
+    /// the safety net for a close that was missed (a crash, an older daemon).
+    /// At start, daily by the prune, and hourly.
+    fn tidy_lane_tmp(&mut self) {
+        self.lane_tmp_tidied = std::time::Instant::now();
+        let home = self.config.home.clone();
+        // Lanes' temporary folders: each squad's own open tickets say which stay.
+        let open: Vec<(String, Vec<TicketId>)> = self
+            .journals
+            .iter()
+            .filter_map(|(squad, j)| Some((squad.clone(), j.tickets().ok()?.into_iter().filter(|t| !t.status.is_closed()).map(|t| t.id).collect())))
+            .collect();
+        let keep: Vec<u32> = self.commands.engine_pids();
+        std::thread::spawn(move || {
+            for line in crate::disk::tidy_lane_tmp(&home, &open, &keep) {
+                crate::daemon_log!("equipe: {line}");
+            }
+        });
+    }
+
     /// Prune conversations past the retention window in every journal.
     fn prune(&mut self) {
         let cutoff = now_secs() as i64 - (self.config.retention_days as i64) * 86_400;
         for journal in self.journals.values() {
             let _ = journal.prune(cutoff);
         }
+        self.tidy_lane_tmp();
         // Tickets' worktrees give back their space: builds where no one works,
         // the worktrees no ticket keeps any more. Gigabytes: off the loop.
         let in_use: Vec<PathBuf> = self.sessions.values().filter_map(|s| s.work.as_ref()?.sandbox.as_ref().map(|w| w.path.clone())).collect();
@@ -8856,17 +8896,7 @@ check what is already done in your worktree first."
         let home = self.config.home.clone();
         // What checks that never finished left (the daemon stopped mid-run): only while none run.
         let checks_left = self.gates.is_empty().then(|| gate::checks_scratch(&home));
-        // Lanes' temporary folders: each squad's own open tickets say which stay.
-        let open: Vec<(String, Vec<TicketId>)> = self
-            .journals
-            .iter()
-            .filter_map(|(squad, j)| Some((squad.clone(), j.tickets().ok()?.into_iter().filter(|t| !t.status.is_closed()).map(|t| t.id).collect())))
-            .collect();
-        let keep: Vec<u32> = self.commands.engine_pids();
         std::thread::spawn(move || {
-            for line in crate::disk::tidy_lane_tmp(&home, &open, &keep) {
-                crate::daemon_log!("equipe: {line}");
-            }
             for line in worktree::tidy(&home, &in_use, &kept) {
                 crate::daemon_log!("equipe: {line}");
             }
@@ -9227,6 +9257,43 @@ fn clip(text: &str, max: usize) -> String {
         return text.to_owned();
     }
     format!("{}…", text.chars().take(max).collect::<String>())
+}
+
+/// How often lanes' temporary folders of tickets that are not open are tidied.
+const LANE_TMP_TIDY_EVERY: Duration = Duration::from_secs(60 * 60);
+
+/// The most a note made of a command's output keeps.
+const OUTPUT_NOTE_MAX: usize = 4096;
+
+/// A command's `output` for a note: as it is when it is short, else its first
+/// lines, how many were left out, and its last ones. A failing `git worktree
+/// add` can print a line for each of thousands of files.
+fn output_excerpt(output: &str, max: usize) -> String {
+    const HEAD: usize = 5;
+    const TAIL: usize = 2;
+    const LINE: usize = 400;
+    if output.len() <= max {
+        return output.to_owned();
+    }
+    let lines: Vec<&str> = output.lines().collect();
+    let mut kept = Vec::new();
+    if lines.len() > HEAD + TAIL {
+        kept.extend(lines[..HEAD].iter().map(|l| clip(l, LINE)));
+        kept.push(format!("[{} lines left out]", lines.len() - HEAD - TAIL));
+        kept.extend(lines[lines.len() - TAIL..].iter().map(|l| clip(l, LINE)));
+    } else {
+        kept.extend(lines.iter().map(|l| clip(l, LINE)));
+    }
+    let text = kept.join("\n");
+    if text.len() <= max {
+        return text;
+    }
+    // A few very long lines: cut on a character boundary.
+    let mut at = max;
+    while !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    format!("{}…", &text[..at])
 }
 
 /// Messages of a Codex conversation kept in memory.
@@ -9922,6 +9989,20 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failure_made_of_thousands_of_lines_is_kept_as_an_excerpt() {
+        let lines: Vec<String> = (0..5000).map(|n| format!("error: failed to truncate file 'f{n}': No space left on device")).collect();
+        let out = format!("git worktree add failed:\n{}", lines.join("\n"));
+        let note = output_excerpt(&out, OUTPUT_NOTE_MAX);
+        assert!(note.len() <= OUTPUT_NOTE_MAX, "{}", note.len());
+        assert!(note.starts_with("git worktree add failed:") && note.contains("[4994 lines left out]") && note.ends_with("f4999': No space left on device"), "{note}");
+        // Short output stays whole, and one very long line is cut on a boundary.
+        assert_eq!(output_excerpt("a\nb", OUTPUT_NOTE_MAX), "a\nb");
+        let long = "é".repeat(20_000);
+        let note = output_excerpt(&long, OUTPUT_NOTE_MAX);
+        assert!(note.len() <= OUTPUT_NOTE_MAX + 3 && note.ends_with('…'));
+    }
 
     #[test]
     fn only_the_first_completed_exchange_can_name_a_conversation() {

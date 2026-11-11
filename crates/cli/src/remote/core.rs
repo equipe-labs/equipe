@@ -26,6 +26,49 @@ const PUSH_LABEL: usize = 60;
 /// the relay's longest (10 minutes).
 const STANDING_REFRESH_MS: u64 = 4 * 60 * 1000;
 const STANDING_SLOT_MS: u64 = 10 * 60 * 1000;
+/// How far a ticket's note and body are cut for a phone, one step after the
+/// other until the answer fits: the longest a note may be (`None`: dropped),
+/// the same for a closed ticket's note, and for the body.
+#[derive(Clone, Copy)]
+struct TicketStep {
+    note: Option<usize>,
+    closed_note: Option<usize>,
+    body: Option<usize>,
+}
+const TICKET_STEPS: [TicketStep; 5] = [
+    TicketStep { note: Some(4096), closed_note: Some(4096), body: Some(16 * 1024) },
+    TicketStep { note: Some(4096), closed_note: None, body: Some(4096) },
+    TicketStep { note: Some(512), closed_note: None, body: Some(1024) },
+    TicketStep { note: None, closed_note: None, body: Some(256) },
+    TicketStep { note: None, closed_note: None, body: None },
+];
+
+/// `text` cut to at most `max` bytes, on a character boundary, with a mark.
+fn cut_text(text: &mut String, max: usize) {
+    if text.len() <= max {
+        return;
+    }
+    let mut at = max;
+    while !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    text.truncate(at);
+    text.push('…');
+}
+
+fn shrink_ticket(ticket: &mut equipe_core::protocol::Ticket, step: TicketStep) {
+    let limit = if ticket.status.is_closed() { step.closed_note } else { step.note };
+    match (&mut ticket.note, limit) {
+        (Some(_), None) => ticket.note = None,
+        (Some(note), Some(max)) => cut_text(note, max),
+        _ => {}
+    }
+    match step.body {
+        Some(max) => cut_text(&mut ticket.body, max),
+        None => ticket.body.clear(),
+    }
+}
+
 /// The largest frame the relay takes (`relay/src/frames.ts`, `MAX_FRAME_BYTES`).
 pub const RELAY_FRAME_MAX: usize = 1024 * 1024;
 /// About the most a message to a phone can say and still fit in one frame:
@@ -480,9 +523,9 @@ impl Core {
         // large": dropped here instead, said once for what it was.
         let size = frame.to_string().len();
         if size > RELAY_FRAME_MAX {
-            let what = rpc.method.clone().unwrap_or_else(|| "an answer".into());
+            let what = rpc.method.clone().map_or_else(|| "an answer".to_owned(), |method| format!("`{method}` message"));
             if self.too_large.insert(what.clone()) {
-                equipe_core::daemon_log!("remote: a {what} for a phone came to {} KB, more than the relay carries; not sent", size >> 10);
+                equipe_core::daemon_log!("remote: {what} for a phone came to {} KB, more than the relay carries; not sent", size >> 10);
             }
             return None;
         }
@@ -688,6 +731,19 @@ impl Core {
                 // A squad's snapshot can outgrow what the relay carries: its
                 // conversations go with less of their past until it fits —
                 // never not at all, or the phone asks again, and again.
+                let fits = |hello: &Hello| Message::response(id, hello).to_line().len() <= RELAY_PLAIN_MAX;
+                // Tickets first: a failure note can run to megabytes. Notes and
+                // bodies are cut, then closed tickets' notes go, then more.
+                let mut fitted = fits(&hello);
+                for step in TICKET_STEPS {
+                    if fitted {
+                        break;
+                    }
+                    for ticket in &mut hello.snapshot.tickets {
+                        shrink_ticket(ticket, step);
+                    }
+                    fitted = fits(&hello);
+                }
                 for keep in [None, Some(50), Some(10), Some(0)] {
                     if let Some(keep) = keep {
                         for session in &mut hello.snapshot.sessions {
@@ -695,9 +751,14 @@ impl Core {
                             session.recent.drain(..cut);
                         }
                     }
-                    if Message::response(id, &hello).to_line().len() <= RELAY_PLAIN_MAX {
+                    if fits(&hello) {
                         break;
                     }
+                }
+                // The last resort: tickets go, from the end, until it fits.
+                while !fits(&hello) && !hello.snapshot.tickets.is_empty() {
+                    let keep = hello.snapshot.tickets.len() / 2;
+                    hello.snapshot.tickets.truncate(keep);
                 }
                 // A phone learns here that this daemon takes its files, and how big.
                 let mut result = serde_json::to_value(&hello).unwrap_or_default();
@@ -746,6 +807,17 @@ impl Core {
         // sign-in's one-time code: it is for the person's screens.
         if !self.online.contains(device) || matches!(event, Event::BrowserFrame { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. } | Event::SignIn { .. } | Event::WordsLog { .. }) {
             return vec![];
+        }
+        // A ticket's note can be megabytes: cut for the phone, or its updates would vanish.
+        if let Event::TicketChanged { squad: of, ticket } = event {
+            let mut ticket = ticket.clone();
+            for step in TICKET_STEPS {
+                if Message::event(&Event::TicketChanged { squad: of.clone(), ticket: ticket.clone() }).to_line().len() <= RELAY_PLAIN_MAX {
+                    break;
+                }
+                shrink_ticket(&mut ticket, step);
+            }
+            return self.frame_for(device, Some(squad), &Message::event(&Event::TicketChanged { squad: of.clone(), ticket })).into_iter().collect();
         }
         self.frame_for(device, Some(squad), &Message::event(event)).into_iter().collect()
     }
@@ -1104,6 +1176,54 @@ pub(crate) mod tests {
         let huge = Event::TextDelta { session: 1, text: "y".repeat(2 * RELAY_FRAME_MAX) };
         assert!(core.on_event(&phone.id, "acme", &huge).is_empty());
         assert_eq!(core.on_event(&phone.id, "acme", &Event::TextDelta { session: 1, text: "ok".into() }).len(), 1);
+    }
+
+    fn big_ticket(id: TicketId, status: TicketStatus, note: String) -> equipe_core::protocol::Ticket {
+        equipe_core::protocol::Ticket { id, title: format!("t{id}"), body: "b".repeat(100), status, owner: Some("backend".into()), assignee: None, kind: equipe_core::protocol::TicketKind::Task, project: None, depends_on: vec![], branch: None, worktree: None, execution: None, merged: None, off_main: None, design_qa: None, plan: None, model: None, created_by: "pm".into(), note: Some(note), asks: vec![], remaining: vec![], images: vec![], updated_at: None, priority: Default::default(), rank: 0 }
+    }
+
+    #[test]
+    fn tickets_with_megabyte_notes_still_get_a_hello_that_fits_with_the_notes_cut() {
+        let (mut core, phone, _) = core_with_phone();
+        let c = core.config.clone().unwrap();
+        // Two failure notes of megabytes, and a hundred closed reports of 300 KB.
+        let mut tickets = vec![big_ticket(1, TicketStatus::Proposed, "x".repeat(4_300_000)), big_ticket(2, TicketStatus::Proposed, "é".repeat(1_500_000))];
+        tickets.extend((3..=100).map(|id| big_ticket(id, TicketStatus::Done, "r".repeat(300_000))));
+        let snapshot = Snapshot { squad: "acme".into(), tickets, ..Snapshot::default() };
+        let answered = core.opened(&phone.id, "acme", &json!(2), Ok(Hello { version: "v".into(), snapshot }));
+        let [Action::Relay(frame)] = &answered[..] else { panic!("{answered:?}") };
+        assert!(frame.to_string().len() <= RELAY_FRAME_MAX, "fits the relay");
+        let got = phone.open(&c, &answered[0]);
+        let tickets = got["rpc"]["result"]["snapshot"]["tickets"].as_array().unwrap();
+        assert!(!tickets.is_empty(), "the board is there");
+        let note = tickets[0]["note"].as_str().unwrap();
+        assert!(note.len() <= 4096 + 3 && note.ends_with('…'), "cut and marked: {}", note.len());
+        // A squad of small tickets goes untouched.
+        let small = Snapshot { squad: "acme".into(), tickets: vec![big_ticket(1, TicketStatus::Done, "short".into())], ..Snapshot::default() };
+        let answered = core.opened(&phone.id, "acme", &json!(3), Ok(Hello { version: "v".into(), snapshot: small }));
+        let got = phone.open(&c, &answered[0]);
+        assert_eq!(got["rpc"]["result"]["snapshot"]["tickets"][0]["note"], "short");
+    }
+
+    #[test]
+    fn a_huge_ticket_update_reaches_the_phone_with_its_note_cut() {
+        let (mut core, phone, _) = core_with_phone();
+        let c = core.config.clone().unwrap();
+        let event = Event::TicketChanged { squad: "acme".into(), ticket: big_ticket(7, TicketStatus::Todo, "n".repeat(3_000_000)) };
+        let sent = core.on_event(&phone.id, "acme", &event);
+        let [Action::Relay(frame)] = &sent[..] else { panic!("{sent:?}") };
+        assert!(frame.to_string().len() <= RELAY_FRAME_MAX);
+        let got = phone.open(&c, &sent[0]);
+        let note = got["rpc"]["params"]["ticket"]["note"].as_str().unwrap_or_else(|| panic!("{got}"));
+        assert!(note.len() <= 4096 + 3 && note.ends_with('…'));
+    }
+
+    #[test]
+    fn a_frame_too_large_is_logged_as_a_method_or_an_answer() {
+        let (mut core, phone, _) = core_with_phone();
+        let huge = Event::TextDelta { session: 1, text: "y".repeat(2 * RELAY_FRAME_MAX) };
+        assert!(core.on_event(&phone.id, "acme", &huge).is_empty());
+        assert!(core.too_large.iter().all(|what| what.contains("message") || what == "an answer"), "{:?}", core.too_large);
     }
 
     #[test]
