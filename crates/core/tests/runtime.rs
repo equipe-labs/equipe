@@ -2994,8 +2994,8 @@ async fn at_its_desk_the_projects_are_only_read_and_other_squads_folders_not_at_
     // And, before each `Read`, the one that keeps a picture it already viewed out of its context a second time.
     let images = &settings["hooks"]["PreToolUse"][1];
     assert_eq!(images["matcher"], equipe_core::image_repeat::MATCHER);
-    let command = images["hooks"][0]["command"].as_str().unwrap();
-    assert!(command.starts_with("/opt/equipe hook --images ") && command.contains("/tmp/"), "{command}");
+    let images_command = images["hooks"][0]["command"].as_str().unwrap();
+    assert!(images_command.starts_with("/opt/equipe hook --images ") && images_command.ends_with("/tmp/acme/frontend"), "{images_command}");
     for project in [&site, &app] {
         assert!(command.contains(&format!("--read-only {}", project.display())) || command.contains(&format!("--read-only '{}'", project.display())), "{command}");
         assert!(!deny.iter().any(|r| r.contains(project.to_str().unwrap())), "{deny:?}");
