@@ -209,6 +209,15 @@ fn fold_memory(from: &Path, to: &Path, who: &str) -> std::io::Result<usize> {
 /// The most lines of a ticket's work [`Journal::ticket_lines`] reads.
 pub const TICKET_WORK_MOST: usize = 4000;
 
+/// The reason an active run carries while it is still starting: its
+/// workspace is being made off the daemon's loop, and no session runs it yet
+/// ([`Journal::set_execution_starting`]).
+pub const STARTING: &str = "starting";
+
+/// How the operation key of a run the board started (not a recovery the
+/// person approved, nor a restart) begins.
+pub const START_OPERATION: &str = "start:";
+
 /// A ticket's work as its conversation kept it ([`Journal::ticket_lines`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TicketWorkLines {
@@ -1145,6 +1154,52 @@ impl Journal {
              WHERE ticket = ?3 AND state = 'active'",
             params![reason, at as i64, ticket],
         )? == 1)
+    }
+
+    /// Mark generation `generation` of `ticket`'s active run as still starting
+    /// — its workspace being made off the daemon's loop ([`STARTING`]) — or,
+    /// with `starting` false, as started. Whether that very run was active.
+    pub fn set_execution_starting(&self, ticket: TicketId, generation: u64, starting: bool) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE ticket_executions SET reason = ?1, updated_at = ?2 WHERE ticket = ?3 AND generation = ?4 AND state = 'active'",
+            params![starting.then_some(STARTING), now(), ticket, generation as i64],
+        )? == 1)
+    }
+
+    /// A daemon start, before anything else looks at runs: a run still
+    /// starting when the daemon stopped never had a session, so nothing
+    /// carries it on. Its ticket goes back on the board (`todo`, no
+    /// assignee; owner, note, branch and work kept), and the run is let go:
+    /// a recovery the person approved is queued again under the operation and
+    /// generation it reserved, to start exactly once; any other start is
+    /// stopped (`not_started`). What its workspace held half-made is left to
+    /// [`crate::worktree::tidy`]. Returns the tickets put back.
+    pub fn release_starting_executions(&self, at: u64) -> Result<Vec<TicketId>> {
+        let tx = self.conn.unchecked_transaction()?;
+        let starting: Vec<(TicketId, String)> = {
+            let mut stmt = tx.prepare("SELECT ticket, operation FROM ticket_executions WHERE state = 'active' AND reason = ?1")?;
+            let rows = stmt.query_map([STARTING], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<Result<Vec<_>>>()?
+        };
+        for (ticket, operation) in &starting {
+            if operation.starts_with(START_OPERATION) {
+                tx.execute(
+                    "UPDATE ticket_executions SET state = 'stopped', lease_expires_at = 0, reason = 'not_started', updated_at = ?1 WHERE ticket = ?2",
+                    params![at as i64, ticket],
+                )?;
+            } else {
+                tx.execute(
+                    "UPDATE ticket_executions SET state = 'queued', session = 0, lease_expires_at = 0, reason = NULL, updated_at = ?1 WHERE ticket = ?2",
+                    params![at as i64, ticket],
+                )?;
+            }
+            tx.execute(
+                "UPDATE tickets SET status = 'todo', assignee = NULL, updated_at = ?1 WHERE id = ?2 AND status = 'in_progress'",
+                params![at as i64, ticket],
+            )?;
+        }
+        tx.commit()?;
+        Ok(starting.into_iter().map(|(ticket, _)| ticket).collect())
     }
 
     /// What a stalled run left in its checkout — its commit and how many
@@ -2830,6 +2885,45 @@ mod tests {
         assert_eq!(j.reserve_requeue(7, "approved:one", None, 10_001).unwrap(), Requeued::AlreadyApplied);
         assert_eq!(j.execution(7).unwrap().unwrap().state, ExecutionState::Stalled);
         assert_eq!(j.acquire_execution(7, 33, "approved:one", 10_002, 30).unwrap(), None, "a used operation never starts another run");
+    }
+
+    #[test]
+    fn a_run_still_starting_when_the_daemon_stopped_goes_back_on_the_board() {
+        let j = Journal::for_squad(&temp_home(), "starting").unwrap();
+        for id in [1, 2, 3] {
+            j.conn.execute(
+                "INSERT INTO tickets (id,title,body,status,depends_on,created_by,created_at,updated_at,kind,assignee,owner,note)
+                 VALUES (?1,'t','','in_progress','','you',1,1,'code','frontend','frontend','Reopened: again')",
+                params![id],
+            ).unwrap();
+        }
+        // T-2: a recovery the person approved, still making its workspace.
+        j.acquire_execution(2, 12, "start:two", 100, 30).unwrap();
+        j.recover_executions(&[], 200).unwrap();
+        assert_eq!(j.reserve_requeue(2, "approved:two", None, 201).unwrap(), Requeued::Reserved);
+        assert_eq!(j.acquire_execution(2, 22, "approved:two", 202, 30).unwrap(), Some(2));
+        assert!(j.set_execution_starting(2, 2, true).unwrap());
+        assert!(!j.set_execution_starting(2, 1, true).unwrap(), "only the very generation");
+        // T-1: a board start, still making its workspace (after T-2's stall, which would stall it too).
+        assert_eq!(j.acquire_execution(1, 11, &format!("{START_OPERATION}one"), 202, 30).unwrap(), Some(1));
+        assert!(j.set_execution_starting(1, 1, true).unwrap());
+        assert_eq!(j.execution(1).unwrap().unwrap().reason.as_deref(), Some(STARTING));
+        // T-3: started; its session ran.
+        j.acquire_execution(3, 13, "start:three", 100, 30).unwrap();
+        j.set_execution_starting(3, 1, true).unwrap();
+        assert!(j.set_execution_starting(3, 1, false).unwrap());
+        assert_eq!(j.execution(3).unwrap().unwrap().reason, None);
+
+        assert_eq!(j.release_starting_executions(300).unwrap(), vec![1, 2]);
+        let one = j.ticket(1).unwrap().unwrap();
+        assert_eq!((one.status, one.assignee.as_deref(), one.owner.as_deref(), one.note.as_deref()), (TicketStatus::Todo, None, Some("frontend"), Some("Reopened: again")));
+        let run = j.execution(1).unwrap().unwrap();
+        assert_eq!((run.state, run.reason.as_deref()), (ExecutionState::Stopped, Some("not_started")));
+        let two = j.execution(2).unwrap().unwrap();
+        assert_eq!((two.state, two.generation, two.operation.as_str()), (ExecutionState::Queued, 2, "approved:two"), "the approval starts exactly once");
+        assert_eq!(j.acquire_execution(2, 32, "approved:two", 301, 30).unwrap(), Some(2), "under the generation it reserved");
+        assert_eq!(j.ticket(3).unwrap().unwrap().status, TicketStatus::InProgress, "a run that started is the restart's to carry on");
+        assert_eq!(j.release_starting_executions(302).unwrap(), Vec::<TicketId>::new(), "safe to run again");
     }
 
     #[test]

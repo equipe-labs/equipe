@@ -97,6 +97,7 @@ mod providers;
 mod phone;
 mod call;
 mod tiers;
+mod workspace;
 
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
@@ -620,6 +621,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         design_watch: HashMap::new(),
         design_busy: std::collections::HashSet::new(),
         review_nudged: HashMap::new(),
+        workspaces: Default::default(),
     };
     let mut memos = Vec::new();
     // What waited on the person in words when the daemon stopped: logged as dropped.
@@ -696,6 +698,9 @@ struct Work {
     /// What a designer's last hand-in was refused for: the same again goes
     /// in with it marked, rather than round and round.
     refused: Option<Vec<String>>,
+    /// Its workspace is still being made off the loop ([`workspace`]): no
+    /// turn runs yet, and what is said to it waits as a memo does.
+    preparing: bool,
 }
 
 /// One of the PM's conversations at its desk, while another is the current one.
@@ -851,6 +856,12 @@ impl Session {
         self.turn.as_ref().is_some_and(|t| !t.is_finished())
     }
 
+    /// A run whose workspace is still being made: it holds its ticket and
+    /// its lease, and takes its first turn once the workspace is ready.
+    fn is_preparing(&self) -> bool {
+        self.work.as_ref().is_some_and(|w| w.preparing)
+    }
+
     /// The member itself: neither a lane of it nor one of its ticket runs.
     fn is_member_itself(&self) -> bool {
         self.lane.is_none() && self.run_of.is_none()
@@ -952,6 +963,9 @@ enum Internal {
     Wake { session: SessionId, prompt: String },
     /// Hand ready work out in every squad again (the disk has room once more).
     Dispatch,
+    /// A task on a folder's worktrees ended off the loop: a run's workspace
+    /// made (or why not), or a worktree made too late removed (`None`).
+    Workspace { folder: PathBuf, prepared: Option<Box<workspace::Prepared>> },
     /// A turn failed for want of `engine`'s sign-in: kept to carry on.
     SignInLost { engine: Engine, session: SessionId, prompt: String },
     /// Why `engine` can't serve members here, as just looked at.
@@ -1205,6 +1219,8 @@ struct Runtime {
     design_busy: std::collections::HashSet<String>,
     /// Handed-in work the PM was reminded of, by squad: when (`heartbeat`).
     review_nudged: HashMap<String, HashMap<TicketId, u64>>,
+    /// Runs' workspaces being made off the loop ([`workspace`]).
+    workspaces: workspace::Workspaces,
     /// Secrets members asked the person for (`ask_secret`), by squad — read
     /// from its journal when first wanted.
     secret_asks: HashMap<String, Vec<crate::protocol::secrets::SecretAsk>>,
@@ -1276,6 +1292,7 @@ impl Wake {
             Wake::Internal(Internal::Wake { .. }) => Borrowed("work waits for a conversation"),
             Wake::Internal(Internal::DiskTrimmed(..)) => Borrowed("a trim of the build caches"),
             Wake::Internal(Internal::Dispatch) => Borrowed("handing out work again"),
+            Wake::Internal(Internal::Workspace { .. }) => Borrowed("a run's workspace made"),
             Wake::Internal(Internal::SignInLost { .. }) => Borrowed("a turn stopped by a lost sign-in"),
             Wake::Internal(Internal::AuthChecked(..)) => Borrowed("why an engine can't sign in"),
             Wake::Internal(Internal::AuthRecheck(_)) => Borrowed("an engine's sign-in looked at again"),
@@ -1506,6 +1523,7 @@ impl Runtime {
                         self.dispatch(&squad).await;
                     }
                 }
+                Internal::Workspace { folder, prepared } => self.workspace_done(folder, prepared).await,
                 Internal::Engines(engines) => self.publish_engines(engines),
                 Internal::SignInLost { engine, session, prompt } => self.sign_in_lost(engine, session, prompt),
                 Internal::AuthChecked(engine, state, detail) => self.auth_checked(engine, state, detail).await,
@@ -3685,7 +3703,7 @@ runbooks and reports live there, and work across the projects or on running them
         let Some(session) = self.sessions.get_mut(&id) else {
             return self.error(Some(id), say!(self, "error.no_session", id = id), None);
         };
-        if session.is_working() {
+        if session.is_working() || session.is_preparing() {
             // Said while it works: it reads it at its next step and carries on,
             // steered (what is said mid-work is mostly a correction); an engine
             // that can't take it mid-turn gets it as a memo.
@@ -4322,6 +4340,15 @@ for one project goes to it as tickets for its owners, with that project — and 
     /// Run a turn with `prompt` in the session's current place: its ticket's
     /// project when it has one, its desk otherwise.
     fn start_turn(&mut self, id: SessionId, prompt: String) {
+        // A run whose workspace is still being made takes no turn yet: what
+        // comes for it waits, as a memo does, for its first turn's end.
+        if let Some(session) = self.sessions.get_mut(&id)
+            && session.is_preparing()
+        {
+            session.queued.push(prompt);
+            session.memo_threads.push(None);
+            return;
+        }
         if let Some(session) = self.sessions.get_mut(&id) {
             session.answers_person = false;
             session.turn_began = Some(now_secs());
@@ -5468,7 +5495,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         // A member moving engines moves before it picks up its next ticket.
         self.apply_engine_moves(squad).await;
         let mut tickets = self.tickets(squad);
-        tickets.retain(|ticket| !self.held_for_room(ticket.kind));
+        tickets.retain(|ticket| !self.held_for_room(ticket.kind) && !self.workspaces.busy(squad, ticket.id));
         let single_project = self.projects(squad).len() == 1;
         // Members equipe once brought in for a rush finish what they hold and take nothing new.
         let helpers = self.journals.get(squad).map(Journal::helpers).unwrap_or_default();
@@ -5589,7 +5616,12 @@ for one project goes to it as tickets for its owners, with that project — and 
     }
 
     /// Put member `id` on `ticket`: a worktree on the ticket's branch when it
-    /// edits, the ticket's project otherwise; then its first turn.
+    /// edits, the ticket's project otherwise; then its first turn. On the
+    /// loop the ticket is only reserved — its run's generation and lease, the
+    /// ticket in progress for the member, the run's session open and counted
+    /// by the lane policy — and its worktree is made off the loop
+    /// ([`workspace`]); the run's first turn starts once that is ready
+    /// ([`Runtime::start_run`]). A run with no worktree to make starts at once.
     fn begin_work(&mut self, id: SessionId, ticket_id: TicketId) {
         let home = self.config.home.clone();
         let Some(session) = self.sessions.get(&id) else {
@@ -5604,6 +5636,11 @@ for one project goes to it as tickets for its owners, with that project — and 
         let board_tools = has_tools(session) && self.config.equipe_binary.is_some();
         let projects = self.projects(&squad);
         let home_dir = squad_home::path(&home, &squad);
+        // One start of a ticket at a time: not while its workspace is still
+        // being made, nor while a run holds it.
+        if self.workspaces.busy(&squad, ticket_id) || self.worker_on(&squad, ticket_id).is_some() {
+            return;
+        }
         let Some(journal) = self.journal(&squad) else {
             return;
         };
@@ -5626,61 +5663,38 @@ for one project goes to it as tickets for its owners, with that project — and 
         let workplace = if kind.in_home() { home_dir.clone() } else { project.clone() };
         // In the squad home every role writes, in its own worktree; on a code
         // ticket a role that edits does — and the PM, when the project is a
-        // repository: on a plain folder it reads, as it always did.
-        let edits = role_edits || kind.in_home() || (pm_codes && worktree::repo_root(&workplace).is_ok());
-
-        let sandbox = if edits {
-            // A squad home's copy leaves out other tickets' outputs: gigabytes in a home that has done much work.
-            let only = if kind.in_home() {
-                worktree::home_patterns(&std::iter::once(&ticket_id).chain(&ticket.depends_on).collect::<Vec<_>>())
-            } else {
-                Vec::new()
-            };
-            let mut made = false;
-            let checkout = worktree::repo_root(&workplace).and_then(|repo| {
-                let id_part = format!("t{ticket_id}-{:x}", now_secs());
-                match (&saved.worktree, &ticket.branch, &saved.base) {
-                    // In review and sent back: the worktree is still there.
-                    (Some(path), Some(branch), Some(base)) if path.exists() => {
-                        Ok(Sandbox { repo, path: path.clone(), branch: branch.clone(), base: base.clone() })
-                    }
-                    // Its worktree went away: check its branch out again.
-                    (_, Some(branch), Some(base)) => {
-                        made = true;
-                        worktree::resume(&repo, &home, &id_part, branch, base, &only)
-                    }
-                    // New: from HEAD, with the finished work it depends on.
-                    _ => {
-                        made = true;
-                        worktree::create_after(&repo, &home, &id_part, &name, &after, &only)
-                    }
-                }
-            });
-            match checkout {
-                Ok(sandbox) => {
-                    // Its dependencies cloned from a checkout that has them installed, off the loop.
-                    if made {
-                        worktree::seed_in_background(sandbox.path.clone());
-                    }
-                    Some(sandbox)
-                }
-                Err(err) => return self.cannot_start(&squad, ticket, &name, &err),
-            }
+        // repository (looked at off the loop): on a plain folder it reads, as
+        // it always did.
+        let may_edit = role_edits || kind.in_home() || pm_codes;
+        let checkout = may_edit.then(|| match (&saved.worktree, &ticket.branch, &saved.base) {
+            // In review and sent back: the worktree is still there.
+            (Some(path), Some(branch), Some(base)) if path.exists() => workspace::Checkout::Kept { path: path.clone(), branch: branch.clone(), base: base.clone() },
+            // Its worktree went away: check its branch out again.
+            (_, Some(branch), Some(base)) => workspace::Checkout::Resume { branch: branch.clone(), base: base.clone() },
+            // New: from HEAD, with the finished work it depends on.
+            _ => workspace::Checkout::New { label: name.clone(), after: after.clone() },
+        });
+        // A squad home's copy leaves out other tickets' outputs: gigabytes in a home that has done much work.
+        let only = if kind.in_home() {
+            worktree::home_patterns(&std::iter::once(&ticket_id).chain(&ticket.depends_on).collect::<Vec<_>>())
         } else {
-            None
+            Vec::new()
         };
         // A recovery the person approved starts under the operation and
         // generation it reserved; any other start takes a fresh one. Either
         // way the run gets a runtime session of its own, even on the same
         // member and engine as the run before.
         let recovered = ticket.execution.as_ref().filter(|e| e.state == ExecutionState::Queued).map(|e| e.operation.clone());
-        let operation = recovered.clone().unwrap_or_else(|| format!("start:{}", equipe_protocol::new_session_id()));
+        let operation = recovered.clone().unwrap_or_else(|| format!("{}{}", journal::START_OPERATION, equipe_protocol::new_session_id()));
         let execution_session = equipe_protocol::new_session_id();
         let Some(execution_generation) = journal.acquire_execution(ticket_id, execution_session, &operation, now_secs(), EXECUTION_LEASE_SECS).ok().flatten()
         else {
             return;
         };
-        let cwd = sandbox.as_ref().map_or_else(|| project.clone(), |s| within(s, &project));
+        // Until its session runs, a daemon stopped meanwhile puts the ticket back on the board.
+        if checkout.is_some() {
+            let _ = journal.set_execution_starting(ticket_id, execution_generation, true);
+        }
 
         // Its model and effort, picked once as its lane starts. A tier
         // changed since its last lane starts a fresh conversation, with a
@@ -5703,10 +5717,9 @@ for one project goes to it as tickets for its owners, with that project — and 
             ticket.model = Some(choice.ticket);
         }
 
+        let assignee_before = ticket.assignee.clone();
         ticket.status = TicketStatus::InProgress;
         ticket.assignee = Some(name.clone());
-        ticket.branch = sandbox.as_ref().map(|s| s.branch.clone()).or(ticket.branch);
-        ticket.worktree = sandbox.as_ref().map(|s| s.path.clone());
         let reopened = ticket
             .note
             .as_ref()
@@ -5714,25 +5727,19 @@ for one project goes to it as tickets for its owners, with that project — and 
             .cloned();
         if let Some(journal) = self.journal(&squad) {
             let _ = journal.save_ticket(&ticket);
-            let _ = journal.set_ticket_work(
-                ticket_id,
-                &TicketWork {
-                    base: sandbox.as_ref().map(|s| s.base.clone()),
-                    worktree: sandbox.as_ref().map(|s| s.path.clone()),
-                    engine_session: saved.engine_session.clone(),
-                },
-            );
             let _ = journal.ticket_event(ticket_id, "equipe", "assigned", &name);
         }
+        let preparing = checkout.is_some();
         let work = Work {
             ticket: ticket_id,
             execution_session,
             execution_generation,
             kind,
             project: project.clone(),
-            cwd,
-            sandbox: sandbox.clone(),
-            claude_session: saved.engine_session,
+            // Where its turns run is known once its workspace is ready.
+            cwd: project.clone(),
+            sandbox: None,
+            claude_session: saved.engine_session.clone(),
             history: Vec::new(),
             handed_in: None,
             shown: Vec::new(),
@@ -5740,10 +5747,74 @@ for one project goes to it as tickets for its owners, with that project — and 
             screens: false,
             verdict: None,
             refused: None,
+            preparing,
         };
         // The ticket runs in a session of its own, beside the member's
         // conversation and its other runs: from here `id` is the run.
         let Some(id) = self.open_run(id, work) else { return };
+        let plan_repo = ticket.plan.as_deref().filter(|plan| !Path::new(plan).is_absolute()).and(ticket.project.clone());
+        let start = workspace::Start {
+            squad: squad.clone(),
+            name,
+            ticket: ticket_id,
+            run: id,
+            generation: execution_generation,
+            project,
+            after,
+            fresh,
+            recovered: recovered.is_some(),
+            reopened,
+            handoff,
+            board_tools,
+            engine_session: saved.engine_session,
+            assignee_before,
+            began: std::time::Instant::now(),
+        };
+        let job = workspace::Job {
+            start,
+            workplace,
+            checkout,
+            only_in_repo: !role_edits && !kind.in_home(),
+            only,
+            home,
+            id_part: format!("t{ticket_id}-{:x}-{execution_generation}", now_secs()),
+            plan_repo,
+        };
+        if preparing {
+            self.publish(Event::TicketChanged { squad, ticket });
+            let text = say!(self, "notice.preparing_workspace");
+            self.publish(Event::Notice { undo: None, session: id, text });
+            self.prepare_workspace(job);
+        } else {
+            // Nothing to make: it starts now, its plan's main branch one quick look.
+            let main = job.plan_repo.as_deref().and_then(|r| worktree::main_branch(r).ok());
+            self.start_run(job.start, None, main);
+        }
+    }
+
+    /// Reserved run `start` has its workspace — `sandbox`, its worktree when
+    /// it edits — and starts: the ticket names its branch and worktree, the
+    /// screens are told the work started, and its first turn goes.
+    /// `main`: its plan's repository's main branch, when it has one.
+    fn start_run(&mut self, start: workspace::Start, sandbox: Option<Sandbox>, main: Option<String>) {
+        let workspace::Start { squad, name, ticket: ticket_id, run: id, generation, project, after, fresh, recovered, reopened, handoff, board_tools, engine_session, .. } = start;
+        let Some(mut ticket) = self.journal(&squad).and_then(|j| j.ticket(ticket_id).ok().flatten()) else { return };
+        let cwd = sandbox.as_ref().map_or_else(|| project.clone(), |s| within(s, &project));
+        ticket.branch = sandbox.as_ref().map(|s| s.branch.clone()).or(ticket.branch);
+        ticket.worktree = sandbox.as_ref().map(|s| s.path.clone());
+        if let Some(journal) = self.journal(&squad) {
+            let _ = journal.save_ticket(&ticket);
+            let _ = journal.set_ticket_work(
+                ticket_id,
+                &TicketWork { base: sandbox.as_ref().map(|s| s.base.clone()), worktree: sandbox.as_ref().map(|s| s.path.clone()), engine_session },
+            );
+            let _ = journal.set_execution_starting(ticket_id, generation, false);
+        }
+        if let Some(work) = self.sessions.get_mut(&id).and_then(|s| s.work.as_mut()) {
+            work.cwd = cwd;
+            work.sandbox = sandbox.clone();
+            work.preparing = false;
+        }
         self.publish(Event::TicketChanged { squad: squad.clone(), ticket: ticket.clone() });
         // What follows in its conversation is about the ticket's project.
         self.publish(Event::Thread { session: id, project: ticket.project.as_deref().map(board::project_name) });
@@ -5758,7 +5829,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         });
         self.brief_pm(&squad, format!("{name} picked up T-{ticket_id} ({}).", ticket.title), None);
         let language = self.journal(&squad).and_then(Journal::language);
-        let mut prompt = work_prompt(&ticket, &project, sandbox.as_ref(), reopened.as_deref(), recovered.is_some(), board_tools, language.as_deref());
+        let mut prompt = work_prompt(&ticket, &project, sandbox.as_ref(), reopened.as_deref(), recovered, board_tools, language.as_deref());
         if let Some(checked) = self.checked_by(&squad, ticket_id) {
             prompt.push_str(&design_qa::qa_prompt(ticket_id, &checked));
         }
@@ -5769,8 +5840,6 @@ for one project goes to it as tickets for its owners, with that project — and 
         }
         if let Some(plan) = &ticket.plan {
             let repo = ticket.project.as_deref().filter(|_| !Path::new(plan).is_absolute());
-            // One quick look, beside the worktree this start already made.
-            let main = repo.and_then(|r| worktree::main_branch(r).ok());
             prompt.push_str(&crate::plan::work_note(plan, repo.zip(main.as_deref())));
         }
         if let Some(note) = &handoff {
@@ -5792,7 +5861,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         let active: Vec<(String, SessionId, TicketId, u64)> = self
             .sessions
             .iter()
-            .filter(|(_, session)| session.is_working())
+            .filter(|(_, session)| session.is_working() || session.is_preparing())
             .filter_map(|(_, session)| {
                 let work = session.work.as_ref()?;
                 Some((session.squad.clone()?, work.execution_session, work.ticket, work.execution_generation))
@@ -5816,7 +5885,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             let live: Vec<SessionId> = self
                 .sessions
                 .values()
-                .filter(|session| session.squad.as_deref() == Some(squad.as_str()) && session.is_working())
+                .filter(|session| session.squad.as_deref() == Some(squad.as_str()) && (session.is_working() || session.is_preparing()))
                 .filter_map(|session| session.work.as_ref().map(|work| work.execution_session))
                 .collect();
             let stalled = self.journal(&squad).and_then(|j| j.recover_executions(&live, at).ok()).unwrap_or_default();
@@ -8228,7 +8297,7 @@ it back there once they have done it.{again} End your turn now with a short line
                     asked_model: s.model.clone().filter(|m| s.ran.as_ref().is_some_and(|r| r != m)),
                     access: s.access,
                     workspace: s.sandbox.as_ref().map(workspace_of),
-                    state: if s.is_working() { SessionState::Working } else { SessionState::Ready },
+                    state: if s.is_working() || s.is_preparing() { SessionState::Working } else { SessionState::Ready },
                     title: s.title.clone(),
                     tokens: s.tokens,
                     context: s.context,
@@ -8348,6 +8417,15 @@ it back there once they have done it.{again} End your turn now with a short line
             let Some(squad) = journal.squad() else {
                 continue;
             };
+            // A run still making its workspace when the daemon stopped never
+            // ran: its ticket goes back on the board, to start afresh. What it
+            // left half-made, tidy clears as it always did.
+            let unstarted = journal.release_starting_executions(now_secs()).unwrap_or_default();
+            if !unstarted.is_empty() {
+                let ids: Vec<String> = unstarted.iter().map(|t| format!("T-{t}")).collect();
+                crate::daemon_log!("equipe: {squad}: {} still preparing a workspace when equipe stopped; back on the board", ids.join(", "));
+                let _ = self.internal.send(Internal::Dispatch);
+            }
             // No runtime session outlives the process that ran it: every run
             // still active when the daemon stopped — and in-progress work from
             // before runs were kept — is stalled now. A member brought back
@@ -8878,6 +8956,7 @@ fn restore_work(journal: &Journal, ticket: &Ticket, projects: &[PathBuf], home: 
         screens: false,
         verdict: None,
         refused: None,
+        preparing: false,
     })
 }
 

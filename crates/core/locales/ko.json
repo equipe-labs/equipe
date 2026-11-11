@@ -390,6 +390,7 @@
   "notice.pm_accepted": "✓ PM이 {ids}을(를) 수락하고 main에 합쳤어요 — {checked}",
   "notice.pm_accepted_checked": "✓ 합친 결과에서 프로젝트 검사가 통과해 PM이 {ids}을(를) 수락하고 main에 합쳤어요 — {checked}",
   "notice.pm_accepted_unchecked": "✓ PM이 {ids}을(를) 수락하고 main에 합쳤어요 — {checked}. 프로젝트 검사는 돌리지 않았어요: {file}에 정해 둔 검사가 없어요",
+  "notice.preparing_workspace": "작업 공간을 준비하고 있어요…",
   "news.checks_sent_back": "T-{id} · {title}을(를) main과 합쳐 보니 프로젝트 검사({command})를 통과하지 못해 {name}에게 돌려보냈어요. main은 그대로예요.",
   "error.checks_main_fails": "T-{id} 없이도 main이 프로젝트 검사({command})를 통과하지 못해서 T-{id}은(는) 합치지 않고 검토 중으로 두었어요. main부터 고쳐야 해요.",
   "error.checks_not_run": "T-{id}은(는) 합치지 않았어요: 검사를 돌리지 못했어요({err}). 검토 중으로 남아 있어요.",

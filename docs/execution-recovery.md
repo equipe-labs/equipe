@@ -32,8 +32,23 @@ late message from an older run can't revive, extend or close a newer one.
 
 `reason` is a code: `lease_expired`, `not_resumed` or `migrated` for a stalled
 run (`equipe_protocol::stall_reason`), and `waiting_for_person`, `handed_in`,
-`accepted`, `cancelled`, `design_qa_ended`, `member_left`, `reassigned` or
-`handed_over` for the others. Screens put the codes in words.
+`accepted`, `cancelled`, `design_qa_ended`, `member_left`, `reassigned`,
+`handed_over`, `could_not_start` (its worktree couldn't be made) or
+`not_started` (the daemon stopped before it started) for the others. Screens put
+the codes in words.
+
+## Starting
+
+A start reserves the ticket on the daemon's loop and makes its worktree off it
+(docs/ARCHITECTURE.md, "Execution: git worktrees"). The run is `active` from the
+reservation, with its runtime session and lease, and carries the reason
+`starting` until its session's first turn starts; the lease is renewed while the
+worktree is made. A completion counts only for the run that still holds that
+generation as reserved: one that comes after the run was cancelled, reassigned
+or its member left starts nothing, and a worktree it made for nothing is
+removed (with its branch when it cut one). A worktree that couldn't be made
+stops the run (`could_not_start`) and sends the ticket back to the proposals with
+the reason.
 
 ## Schema and migration
 
@@ -103,6 +118,13 @@ a new member would never take it. Work owned by another role is left to the
 board's rules.
 
 ## Restart
+
+A run still `starting` when the daemon stopped never ran: before anything else,
+its ticket goes back to `todo` (no assignee; owner, note, branch and work kept)
+and the board starts it afresh. A recovery the person approved is `queued` again
+under its operation and generation, to start exactly once; any other start is
+`stopped` (`not_started`). What its worktree left half-made, tidy clears as
+always.
 
 No runtime session outlives the daemon process, so a start first stalls every
 active run (`not_resumed`). Each member brought back on the ticket it ran —

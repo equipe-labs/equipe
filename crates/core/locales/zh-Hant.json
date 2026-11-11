@@ -390,6 +390,7 @@
   "notice.pm_accepted": "✓ PM 已接受 {ids} 並合併到 main — {checked}",
   "notice.pm_accepted_checked": "✓ 合併後的結果通過了專案檢查，PM 已接受 {ids} 並合併到 main — {checked}",
   "notice.pm_accepted_unchecked": "✓ PM 已接受 {ids} 並合併到 main — {checked}。未執行專案檢查：{file} 中沒有定義檢查",
+  "notice.preparing_workspace": "正在準備工作區…",
   "news.checks_sent_back": "T-{id} · {title} 與 main 合併後未通過專案檢查（{command}），已退回給 {name}。main 未變動。",
   "error.checks_main_fails": "即使沒有 T-{id}，main 也未通過專案檢查（{command}），因此 T-{id} 未合併，仍在審查中。需要先修復 main。",
   "error.checks_not_run": "T-{id} 未合併：檢查無法執行（{err}）。仍在審查中。",
