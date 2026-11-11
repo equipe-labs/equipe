@@ -252,7 +252,7 @@ impl Runtime {
                 self.start_run(start, sandbox, main);
             }
             Err(reason) => {
-                crate::daemon_log!("equipe: {squad}: T-{}'s workspace for {} failed after {took:.1}s: {reason}", start.ticket, start.name);
+                crate::daemon_log!("equipe: {squad}: T-{}'s workspace for {} failed after {took:.1}s: {}", start.ticket, start.name, super::output_excerpt(&reason, super::OUTPUT_NOTE_MAX));
                 self.start_failed(start, &reason);
                 Box::pin(self.dispatch(&squad)).await;
             }

@@ -5071,6 +5071,36 @@ fn text_of_notices(events: &[Event]) -> Vec<String> {
 }
 
 #[tokio::test]
+async fn a_design_qa_ticket_closed_by_the_designers_verdict_clears_its_lane_tmp_like_an_accept() {
+    let site = repo();
+    let (claude, recorded) = recording_claude(&screenshot_turn());
+    let home = squad_home(&[&site]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    screens_in_design_qa(&recorded, &handle, &mut events, &site).await;
+    let lane = home.join("tmp").join("acme").join("t2");
+    std::fs::create_dir_all(&lane).unwrap();
+    std::fs::write(lane.join("big.bin"), b"x").unwrap();
+    let passed = tool(&handle, "designer", "design_qa", serde_json::json!({
+        "verdict": "pass",
+        "findings": "Matches the spec.",
+        "compared": true,
+        "checked": ["390", "1280", "dark"],
+        "polish": ["Section gaps 40 and 48 alternate; the scale says 48"],
+        "images": ["shot.png", "built-390.png"],
+    })).await;
+    assert!(!passed.is_error, "{passed:?}");
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.status == TicketStatus::Done)).await;
+    for _ in 0..200 {
+        if !lane.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!lane.exists(), "the QA ticket's lane folder goes when the verdict closes it");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn changed_screens_pass_design_qa_before_the_person_reviews_them() {
     let site = repo();
     let (claude, recorded) = recording_claude(&screenshot_turn());
