@@ -4,6 +4,10 @@
 //! and their answers go to the member as their next message, starting a
 //! turn the way anything they say does. Closed unanswered, the member is told
 //! to go on without them; a member that leaves takes its questions with it.
+//! A member on a ticket that ends its turn with a question still open puts the
+//! ticket down as waiting ([`Runtime::asked_waiting_note`]); the answer takes
+//! it back to the member ([`Runtime::resume_asked`]) rather than leaving it to
+//! run out its lease as stalled.
 //! Never a way to permission: that stays [`Runtime::ask_permission`]'s.
 
 use equipe_protocol::decide::{self, Answer, QuestionSet, Reaction};
@@ -104,6 +108,65 @@ with a short line, or carry on with work that doesn't depend on the answer.";
         })
     }
 
+    /// What `ticket` still asks of the person through open questions and
+    /// secret cards, one line each: what it waits on when its member ended its
+    /// turn after asking.
+    pub(super) fn asked_of_person(&mut self, squad: &str, ticket: TicketId) -> Vec<String> {
+        let mut needs: Vec<String> = Vec::new();
+        for set in self.question_sets(squad).iter().filter(|s| s.ticket == Some(ticket)) {
+            needs.extend(set.questions.iter().map(|q| one_line(&q.question)));
+        }
+        needs.extend(self.secret_asks(squad).iter().filter(|a| a.ticket == Some(ticket)).map(|a| one_line(&a.why)));
+        needs.retain(|n| !n.is_empty());
+        needs
+    }
+
+    /// The note of a waiting ticket whose member, on session `id`, asked the
+    /// person something that is still open and ended its turn without a
+    /// hand-in or a wait of its own; `None` when it asked nothing, or the
+    /// answers came while its turn ran.
+    pub(super) fn asked_waiting_note(&mut self, id: SessionId) -> Option<String> {
+        let session = self.sessions.get(&id)?;
+        let (squad, work) = (session.squad.clone()?, session.work.as_ref()?);
+        if work.handed_in.is_some() || work.preparing {
+            return None;
+        }
+        let ticket = work.ticket;
+        let needs = self.asked_of_person(&squad, ticket);
+        (!needs.is_empty()).then(|| board::waiting_note(&needs, None))
+    }
+
+    /// The person settled `set` (answered or dismissed): when its ticket
+    /// waited on exactly what it asked and nothing else is open, the ticket
+    /// goes back to its member with `message` — the same conversation,
+    /// worktree and engine session — and starts again. Whether it did.
+    pub(super) async fn resume_asked(&mut self, squad: &str, set: &QuestionSet, message: &str) -> bool {
+        let settled: Vec<String> = set.questions.iter().map(|q| one_line(&q.question)).collect();
+        match set.ticket {
+            Some(ticket) => self.resume_waiting_on(squad, ticket, &settled, message).await,
+            None => false,
+        }
+    }
+
+    /// `ticket` is waiting on `settled` alone — each item of its note is one
+    /// of them — and nothing else it asked is open: resumed with `message`.
+    pub(super) async fn resume_waiting_on(&mut self, squad: &str, ticket: TicketId, settled: &[String], message: &str) -> bool {
+        let Some(found) = self.journal(squad).and_then(|j| j.ticket(ticket).ok().flatten()) else { return false };
+        if found.status != TicketStatus::Waiting {
+            return false;
+        }
+        let needs: Vec<String> = found.note.as_deref().map(board::waiting_needs).unwrap_or_default().iter().map(|n| one_line(n)).collect();
+        if needs.is_empty() || !needs.iter().all(|n| settled.contains(n)) || !self.asked_of_person(squad, ticket).is_empty() {
+            return false;
+        }
+        let found = self.resumed(squad, found, "you", message);
+        let line = format!("The person answered what T-{} · {} waited on; it is back with {}", found.id, found.title, found.owner.as_deref().unwrap_or("its member"));
+        let shown = say!(self, "news.resumed", id = found.id, title = found.title);
+        self.brief_pm(squad, line, Some(shown));
+        self.dispatch(squad).await;
+        true
+    }
+
     /// Take set `id` out of what waits, if it still does.
     fn take_questions(&mut self, squad: &str, id: u64) -> Option<QuestionSet> {
         let sets = self.question_sets(squad);
@@ -147,6 +210,10 @@ with a short line, or carry on with work that doesn't depend on the answer.";
         }
         self.decision_settled(squad, &set, Some(&answers));
         self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id, answers: Some(answers) });
+        // Its ticket waited for this answer: it goes back to its member with the answers.
+        if self.resume_asked(squad, &set, &message).await {
+            return;
+        }
         if let Some(to) = self.asker(squad, &set) {
             self.note_screen(to);
             Box::pin(self.submit(to, message)).await;
@@ -171,8 +238,12 @@ with a short line, or carry on with work that doesn't depend on the answer.";
         let Some(set) = self.take_questions(squad, id) else { return };
         self.decision_settled(squad, &set, None);
         self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id, answers: None });
+        let message = decide::dismissed_message(&set);
+        if self.resume_asked(squad, &set, &message).await {
+            return;
+        }
         if let Some(to) = self.asker(squad, &set) {
-            Box::pin(self.submit(to, decide::dismissed_message(&set))).await;
+            Box::pin(self.submit(to, message)).await;
         }
     }
 
@@ -189,6 +260,11 @@ with a short line, or carry on with work that doesn't depend on the answer.";
             self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id: set.id, answers: None });
         }
     }
+}
+
+/// `text` on one line, its runs of white space as single spaces.
+pub(super) fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Answers made to fit their questions: one each (missing ones skipped),

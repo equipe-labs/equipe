@@ -5331,6 +5331,15 @@ for one project goes to it as tickets for its owners, with that project — and 
             self.end_work(id, WorkEnd::HandedIn);
         } else if session.work.as_ref().is_some_and(|w| w.waiting.is_some()) {
             self.end_work(id, WorkEnd::Waiting);
+        } else if let Some(note) = self.asked_waiting_note(id) {
+            // The member put a question (or a secret) to the person and ended
+            // its turn, as `ask_decision` tells it to: the ticket waits for
+            // the answer. Left as it was, its lease would run out and it
+            // would show as stalled, to be resumed by hand and run again.
+            if let Some(work) = self.sessions.get_mut(&id).and_then(|s| s.work.as_mut()) {
+                work.waiting = Some(note);
+            }
+            self.end_work(id, WorkEnd::Waiting);
         }
         // Off a ticket, the turn's end is the work's: what was expected is done.
         if self.sessions.get(&id).is_some_and(|s| s.work.is_none()) {

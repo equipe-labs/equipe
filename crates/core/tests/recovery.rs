@@ -19,6 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use equipe_core::journal::Journal;
 use equipe_core::protocol::rpc::{ToolCall, ToolResult};
+use equipe_core::protocol::decide::Answer;
 use equipe_core::protocol::{
     Access, Command, Engine, Event, ExecutionState, Recovery, RunView, SessionSpec, SessionState, Snapshot, Ticket, TicketStatus, stall_reason,
 };
@@ -372,6 +373,84 @@ async fn a_turn_still_running_is_never_stalled_however_late_the_check() {
     let t = ticket(&handle, 1).await;
     assert_eq!(execution(&t).state, ExecutionState::Active);
     assert_eq!(run_seen(&handle.snapshot("acme").await, 1), Some(RunView::Active));
+    handle.shutdown().await;
+}
+
+/// The session running member `of`'s ticket.
+async fn run_session(handle: &Handle, of: u64) -> u64 {
+    handle.snapshot("acme").await.sessions.iter().find(|s| s.run.is_some_and(|r| r.of == of)).map(|s| s.session).expect("its run is open")
+}
+
+/// A member that puts a question to the person and ends its turn is not stalled:
+/// its ticket waits for the answer, however late the lease check, and the
+/// answer takes it back to the same member without anyone resuming it by hand.
+#[tokio::test]
+async fn a_member_that_asked_the_person_and_ended_its_turn_waits_and_is_resumed_by_the_answer() {
+    let engine = Engine0::new();
+    engine.hang(true);
+    let (home, repo) = squad();
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm", None)).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend", Some(Engine::Claude))).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "Build the hero.", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
+    engine.prompt_with("You're on T-1").await;
+    let run = run_session(&handle, 2).await;
+
+    let asked = tool(&handle, "frontend", "ask_decision", json!({ "questions": [{ "question": "Which hero layout?", "options": ["Airy", "Dense"] }] })).await;
+    assert!(!asked.is_error, "{asked:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await;
+    let set = seen.iter().find_map(|e| if let Event::QuestionsAsked { questions, .. } = e { Some(questions.clone()) } else { None }).unwrap();
+    assert_eq!(set.ticket, Some(1));
+
+    // Its turn ends with the question open and no hand-in: the ticket waits.
+    engine.hang(false);
+    handle.send(Command::Interrupt { session: run });
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Waiting)).await;
+    let waiting = ticket(&handle, 1).await;
+    assert_eq!(execution(&waiting).state, ExecutionState::Waiting);
+    assert_eq!(waiting.asks, ["Which hero layout?"]);
+
+    // However late the check, a ticket waiting on the person is not a stall.
+    handle.check_leases_at(now() + 100_000).await;
+    let later = within(&mut events, Duration::from_millis(300)).await;
+    assert!(!later.iter().any(|e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status != TicketStatus::Waiting)), "{later:#?}");
+    let still = ticket(&handle, 1).await;
+    assert_eq!((still.status, execution(&still).state), (TicketStatus::Waiting, ExecutionState::Waiting));
+
+    // The answer takes it back to its member, with the answer in its prompt.
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: vec![Answer { picked: vec![1], ..Answer::default() }], about: None });
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
+    let prompt = engine.prompt_with("Which hero layout? → Dense").await;
+    assert!(prompt.contains("You put this ticket down to wait for the person; it is back."), "{prompt}");
+    let back = ticket(&handle, 1).await;
+    assert_eq!(back.assignee.as_deref(), Some("frontend"));
+    handle.shutdown().await;
+}
+
+/// A question answered while the member's turn still runs leaves the ticket
+/// in its hands: when that turn ends without a hand-in it is not waiting.
+#[tokio::test]
+async fn a_question_answered_during_the_turn_does_not_put_the_ticket_down() {
+    let engine = Engine0::new();
+    engine.hang(true);
+    let (home, repo) = squad();
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm", None)).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend", Some(Engine::Claude))).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
+    engine.prompt_with("You're on T-1").await;
+    let run = run_session(&handle, 2).await;
+    tool(&handle, "frontend", "ask_decision", json!({ "questions": [{ "question": "Which hero layout?", "options": ["Airy", "Dense"] }] })).await;
+    let seen = until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await;
+    let set = seen.iter().find_map(|e| if let Event::QuestionsAsked { questions, .. } = e { Some(questions.clone()) } else { None }).unwrap();
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: vec![Answer { picked: vec![0], ..Answer::default() }], about: None });
+    engine.hang(false);
+    handle.send(Command::Interrupt { session: run });
+    let after = within(&mut events, Duration::from_millis(500)).await;
+    assert!(!after.iter().any(|e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Waiting)), "{after:#?}");
+    assert_ne!(ticket(&handle, 1).await.status, TicketStatus::Waiting);
     handle.shutdown().await;
 }
 
