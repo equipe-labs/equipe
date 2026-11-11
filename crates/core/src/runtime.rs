@@ -606,6 +606,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         settled_at: None,
         merging: std::collections::HashSet::new(),
         gates: HashMap::new(),
+        prechecks: HashMap::new(),
         disk: Default::default(),
         plan_use: Default::default(),
         commands: Default::default(),
@@ -1012,6 +1013,9 @@ enum Internal {
     DesignVersions { squad: String, project: Option<String>, versions: Vec<equipe_protocol::design::DesignVersion> },
     /// The version the person asked to go back to, looked up off the loop (`None`: not one).
     DesignRestore { squad: String, project: Option<String>, commit: String, version: Option<equipe_protocol::design::DesignVersion> },
+    /// A design QA precheck ended off the loop: its report is in the
+    /// ticket's design QA folder, or why there is none.
+    Prechecked { squad: String, qa: TicketId, result: Result<(), String>, secs: u64 },
     /// Nemotron's review of a code ticket handed in by `member`, or why there is none.
     Reviewed { squad: String, ticket: TicketId, member: SessionId, result: Result<Box<crate::nemotron::Reviewed>, crate::nemotron::ReviewError> },
     /// A subagent of a turn's engine was heard from on its own thread.
@@ -1189,6 +1193,9 @@ struct Runtime {
     /// by repository: the first of each runs off the loop, the rest wait
     /// their turn (`gate.rs`).
     gates: HashMap<PathBuf, std::collections::VecDeque<gate::Gate>>,
+    /// Design QA tickets held off the board while their precheck runs, by
+    /// squad and ticket, with when it started (`design_qa.rs`).
+    prechecks: HashMap<(String, TicketId), std::time::Instant>,
     /// The disk's room, as last looked at or as a write said (`room.rs`).
     disk: room::DiskWatch,
     /// Where the plans went, as followed (`plan_use.rs`).
@@ -1323,6 +1330,7 @@ impl Wake {
             Wake::Internal(Internal::DesignVersions { .. }) => Borrowed("a design system's versions"),
             Wake::Internal(Internal::DesignRestore { .. }) => Borrowed("a design version to go back to"),
             Wake::Internal(Internal::Reviewed { .. }) => Borrowed("a Nemotron review"),
+            Wake::Internal(Internal::Prechecked { .. }) => Borrowed("a design QA precheck"),
             Wake::Internal(Internal::SubagentHeard { .. }) => Borrowed("a subagent heard from"),
             Wake::Internal(Internal::Helper { .. }) => Borrowed("a helper's step"),
             Wake::Internal(Internal::HelperEnded { .. }) => Borrowed("a helper's end"),
@@ -1577,6 +1585,7 @@ impl Runtime {
                 Internal::DesignVersions { squad, project, versions } => self.on_design_versions(squad, project, versions),
                 Internal::DesignRestore { squad, project, commit, version } => self.on_design_restore(squad, project, commit, version).await,
                 Internal::Reviewed { squad, ticket, member, result } => self.on_reviewed(&squad, ticket, member, result),
+                Internal::Prechecked { squad, qa, result, secs } => Box::pin(self.on_prechecked(&squad, qa, result, secs)).await,
                 Internal::SubagentHeard { session, id } => self.subagent_heard(session, &id),
                 Internal::Helper { session, id, activity } => self.helper_did(session, &id, activity),
                 Internal::HelperEnded { session, id, outcome } => self.helper_ended(session, &id, outcome),
@@ -2183,8 +2192,13 @@ impl Runtime {
                     // Its engine names what this runs as at its next turn.
                     s.ran = None;
                     let squad = s.squad.clone();
+                    let member = s.member.as_ref().map(|m| m.name.clone());
                     if let Some(journal) = squad.as_deref().and_then(|q| journal_for(&mut self.journals, &self.config.home, q)) {
                         let _ = journal.set_model(session, &model);
+                        // The person's choice: equipe's tier policies keep it as the member's floor.
+                        if let Some(member) = &member {
+                            let _ = journal.mark_person_model(member);
+                        }
                     }
                     self.publish(Event::ModelKnown { session, model: model.clone(), asked: Some(model.clone()) });
                     let text = say!(self, "notice.model", model = model);
@@ -4576,11 +4590,13 @@ for one project goes to it as tickets for its owners, with that project — and 
             Some(work) => {
                 // On a code ticket a member also reads the squad's home; on a task or
                 // action, worked in a worktree of the home, it reads every project too.
-                let read: Vec<PathBuf> = match &session.member {
+                let mut read: Vec<PathBuf> = match &session.member {
                     Some(_) if work.kind.in_home() => projects.iter().chain(home.iter()).cloned().collect(),
                     Some(_) => home.iter().cloned().collect(),
                     None => Vec::new(),
                 };
+                // A design QA ticket's precheck report and pictures, kept beside the squad's journal.
+                read.extend(squad.as_deref().map(|s| design_qa::precheck_dir(&self.config.home, s, work.ticket)).filter(|d| d.is_dir()));
                 let writes = (edits_code || work.kind.in_home()) && work.sandbox.is_some();
                 (work.cwd.clone(), access_for(mode, writes), work.claude_session.clone(), work.history.clone(), Some(work.ticket), read)
             }
@@ -5528,7 +5544,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         // A member moving engines moves before it picks up its next ticket.
         self.apply_engine_moves(squad).await;
         let mut tickets = self.tickets(squad);
-        tickets.retain(|ticket| !self.held_for_room(ticket.kind) && !self.workspaces.busy(squad, ticket.id));
+        tickets.retain(|ticket| !self.held_for_room(ticket.kind) && !self.workspaces.busy(squad, ticket.id) && !self.prechecking(squad, ticket.id));
         let single_project = self.projects(squad).len() == 1;
         // Members equipe once brought in for a rush finish what they hold and take nothing new.
         let helpers = self.journals.get(squad).map(Journal::helpers).unwrap_or_default();
@@ -5864,7 +5880,8 @@ for one project goes to it as tickets for its owners, with that project — and 
         let language = self.journal(&squad).and_then(Journal::language);
         let mut prompt = work_prompt(&ticket, &project, sandbox.as_ref(), reopened.as_deref(), recovered, board_tools, language.as_deref());
         if let Some(checked) = self.checked_by(&squad, ticket_id) {
-            prompt.push_str(&design_qa::qa_prompt(ticket_id, &checked));
+            let precheck = self.precheck_brief(&squad, ticket_id);
+            prompt.push_str(&design_qa::qa_prompt(ticket_id, &checked, precheck.as_ref()));
         }
         // Brand work, and only it, takes the designer's full reference pass.
         let designer = self.sessions.get(&id).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role == design_qa::DESIGNER);

@@ -271,6 +271,8 @@
   "news.design_qa_asked": "{name} 提交了 T-{id}；審查前由 {to} 檢查介面 · {title}。",
   "news.design_qa_passed": "{name} 通過了 T-{id} 的介面檢查，可以審查了 · {title}。",
   "news.design_qa_changes": "{name} 把 T-{id} 退回給 {to}：介面需要修改 · {title}。",
+  "news.design_qa_precheck_passed": "equipe 的預檢在沒有設計師的情況下通過了 T-{id} 的介面檢查：沒有介面變化，也沒有新問題，可以審查了 · {title}。",
+  "news.design_qa_precheck_changes": "equipe 的預檢在沒有設計師的情況下把 T-{id} 退回給 {to}：發現了明確的介面或無障礙問題 · {title}。",
   "news.plan_reviewed": "{name} 已把審查寫進計畫 · {path}",
   "notice.doc_copy_kept": "只保留了「{title}」的一份副本：{what} · 可以復原",
   "plan.review_body.designer": "對照 UI 地圖和設計系統，審查計畫 `{path}` 中使用者會看到的部分：新增或改變了哪些流程、畫面和狀態，地圖缺少哪些狀態，應使用哪些 token 和元件；並為每個設計面向打 0 到 10 分，說明達到 10 分需要什麼。把審查寫進計畫的審查意見，然後提交。",

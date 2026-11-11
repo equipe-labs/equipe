@@ -107,7 +107,7 @@ fn source_of(found: &system::Detected, name: &str) -> Option<String> {
 }
 
 /// Where axe-core's browser build is in the design kit, set up once.
-async fn axe() -> Result<PathBuf, String> {
+pub(crate) async fn axe() -> Result<PathBuf, String> {
     let dir = crate::design::kit_dir();
     let file = dir.join("node_modules").join("axe-core").join("axe.min.js");
     if file.is_file() {

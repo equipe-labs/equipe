@@ -274,6 +274,8 @@
   "news.design_qa_asked": "{name} entregó T-{id}; {to} revisa sus pantallas antes de tu revisión · {title}.",
   "news.design_qa_passed": "{name} aprobó las pantallas de T-{id}: ya puedes revisarlo · {title}.",
   "news.design_qa_changes": "{name} devolvió T-{id} a {to}: sus pantallas necesitan cambios · {title}.",
+  "news.design_qa_precheck_passed": "La revisión previa de equipe aprobó las pantallas de T-{id} sin diseñador: ninguna pantalla cambió y no encontró nada nuevo. Ya puedes revisarlo · {title}.",
+  "news.design_qa_precheck_changes": "La revisión previa de equipe devolvió T-{id} a {to} sin diseñador: encontró un fallo claro de pantalla o de accesibilidad · {title}.",
   "news.plan_reviewed": "{name} escribió su revisión en el plan · {path}",
   "notice.doc_copy_kept": "Se conservó una copia de «{title}»: {what} · puedes deshacerlo",
   "plan.review_body.designer": "Revisa lo que la gente verá del plan `{path}` frente al mapa de la UI y el sistema de diseño: qué flujos, pantallas y estados añade o cambia, qué estados le faltan al mapa, qué tokens y componentes debería usar — y puntúa cada dimensión de diseño de 0 a 10 con lo que necesita un 10. Escribe tu revisión en las notas de revisión del plan y entrégala.",

@@ -5176,6 +5176,117 @@ async fn the_person_taking_a_ticket_over_drops_its_design_qa() {
     handle.shutdown().await;
 }
 
+/// A stand-in for `equipe design precheck` that writes `report` as its
+/// report into the folder it is given; the squad's gate set to `gate`.
+fn precheck_stand_in(home: &Path, gate: equipe_core::design_qa::GateMode, report: serde_json::Value) -> PathBuf {
+    let fixture = home.join("precheck-report.json");
+    std::fs::write(&fixture, report.to_string()).unwrap();
+    let bin = home.join("bin").join("equipe");
+    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    let script = format!(
+        "#!/bin/sh\n[ \"$1 $2\" = \"design precheck\" ] || exit 0\nout=\"\"\nwhile [ $# -gt 0 ]; do [ \"$1\" = \"--out\" ] && out=\"$2\"; shift; done\nmkdir -p \"$out\" && cp '{}' \"$out/report.json\"\n",
+        fixture.display()
+    );
+    std::fs::write(&bin, script).unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    Journal::for_squad(home, "acme").unwrap().set_design_qa_gate(gate).unwrap();
+    bin
+}
+
+/// A precheck report: one state of `settings/main`, its picture at 390 light
+/// changed or not, and `findings`.
+fn precheck_report(changed: bool, findings: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "schema": 1,
+        "touched": ["settings/main"],
+        "conditions": ["390.light.normal"],
+        "shots": [{ "key": "settings/main/default", "condition": "390.light.normal", "picture": "/tmp/settings.png",
+                    "diff": { "share": if changed { 0.3 } else { 0.0 }, "changed": changed, "resized": false } }],
+        "findings": findings,
+    })
+}
+
+/// The squad of `screens_in_design_qa`, with T-1 handed in with changed
+/// screens and its precheck stood in for by `report` under `gate`.
+async fn hand_in_with_precheck(gate: equipe_core::design_qa::GateMode, report: serde_json::Value) -> (Handle, UnboundedReceiver<Event>, PathBuf, PathBuf) {
+    let site = repo();
+    let (claude, recorded) = recording_claude(&screenshot_turn());
+    let home = squad_home(&[&site]);
+    let bin = precheck_stand_in(&home, gate, report);
+    let (handle, mut events) = runtime::start(Config { equipe_binary: Some(bin), ..config(&claude, &home, false) });
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "frontend")).await;
+    add(&handle, &mut events, 3, member(&site, "designer")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Settings screen", "body": "Per the spec in design/settings.md.", "owner": "frontend" })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    exists(&ws.path.join("shot.png")).await;
+    let handed = tool(&handle, "frontend", "submit_for_review", serde_json::json!({
+        "summary": "Settings built.",
+        "changes_screens": true,
+        "images": ["shot.png"],
+        "screen_checks": ["languages", "widths", "light_dark", "large_text"],
+    })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    (handle, events, recorded, home)
+}
+
+#[tokio::test]
+async fn in_shadow_the_designer_gets_the_precheck_report_and_what_the_gate_would_do_is_kept_beside_its_verdict() {
+    use equipe_core::design_qa::GateMode;
+    let (handle, mut events, recorded, home) = hand_in_with_precheck(GateMode::Shadow, precheck_report(false, serde_json::json!([]))).await;
+    // Nothing changed and clean: the gate would pass it — in shadow the designer still checks, with the report.
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
+    let call = latest_call(&recorded, |p| p.contains("This is design QA of T-1")).await;
+    let prompt = arg(&call, "-p").unwrap();
+    assert!(prompt.contains("equipe's precheck already rendered") && prompt.contains("The gate would pass this without a designer turn"), "{prompt}");
+    assert!(prompt.contains("don't shoot every condition"), "{prompt}");
+    let run = Journal::for_squad(&home, "acme").unwrap().design_qa_run(2).unwrap();
+    assert_eq!((run.checked, run.round, run.gate.as_str(), run.precheck.as_str(), run.decision.as_deref(), run.acted), (1, 1, "shadow", "done", Some("auto_pass"), false));
+    // The designer's verdict is kept beside it.
+    let passed = tool(&handle, "designer", "design_qa", serde_json::json!({
+        "verdict": "pass", "findings": "Matches the spec.", "compared": true, "checked": ["390", "1280", "dark"], "images": ["shot.png", "built-390.png"],
+    })).await;
+    assert!(!passed.is_error, "{passed:?}");
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.status == TicketStatus::Done)).await;
+    let run = Journal::for_squad(&home, "acme").unwrap().design_qa_run(2).unwrap();
+    assert_eq!((run.verdict.as_deref(), run.verdict_by.as_deref()), (Some("pass"), Some("designer")));
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn with_the_gate_on_nothing_changed_and_clean_passes_without_a_designer_turn() {
+    use equipe_core::design_qa::GateMode;
+    let (handle, mut events, _recorded, home) = hand_in_with_precheck(GateMode::On, precheck_report(false, serde_json::json!([]))).await;
+    let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.status == TicketStatus::Done)).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })), "no designer turn");
+    let told = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("precheck passed the screens of T-1"))).await;
+    assert!(!told.is_empty());
+    let checked = Journal::for_squad(&home, "acme").unwrap().ticket(1).unwrap().unwrap();
+    assert_eq!((checked.status, checked.design_qa), (TicketStatus::Review, None), "on to the person");
+    assert!(checked.note.as_deref().is_some_and(|n| n.contains("Design QA by equipe (T-2): passed.") && n.contains("Passed without a designer turn")), "{:?}", checked.note);
+    let run = Journal::for_squad(&home, "acme").unwrap().design_qa_run(2).unwrap();
+    assert_eq!((run.decision.as_deref(), run.acted, run.verdict.as_deref(), run.verdict_by.as_deref()), (Some("auto_pass"), true, Some("pass"), Some("equipe")));
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn with_the_gate_on_a_definite_failure_goes_back_to_its_engineer_without_a_designer_turn() {
+    use equipe_core::design_qa::GateMode;
+    let blocker = serde_json::json!([{ "rule": "text-clipped", "severity": "blocker", "class": "content", "key": "settings/main/default",
+        "conditions": ["390.light.text-200"], "selector": "button.save", "text": "Save", "evidence": "cut short with an ellipsis (a control's label)", "new": true }]);
+    let (handle, mut events, recorded, home) = hand_in_with_precheck(GateMode::On, precheck_report(true, blocker)).await;
+    let again = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    assert!(!again.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })), "no designer turn");
+    let call = latest_call(&recorded, |p| p.contains("sent it back")).await;
+    let prompt = arg(&call, "-p").unwrap();
+    assert!(prompt.contains("text-clipped") && prompt.contains("button.save"), "the engineer gets what failed: {prompt}");
+    let run = Journal::for_squad(&home, "acme").unwrap().design_qa_run(2).unwrap();
+    assert_eq!((run.decision.as_deref(), run.acted, run.verdict.as_deref()), (Some("send_back"), true, Some("changes")));
+    handle.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_designers_code_ticket_changes_only_the_design_folder() {
     let site = repo();

@@ -144,6 +144,14 @@ pub enum DesignAction {
         #[command(subcommand)]
         action: FlowsAction,
     },
+    /// Design QA's deterministic precheck of a ticket's screens: rendered from its worktree at each width, light and dark, normal, text 200% and zoom 200%, measured, and compared with the UI map's pictures at the base — a report and what the gate makes of it
+    Precheck(crate::design_qa::PrecheckArgs),
+    /// What design QA costs and decides in a squad: tickets, pass rate, the gate's agreement with designers, tokens by model tier
+    QaStats(crate::design_qa::QaStatsArgs),
+    /// A squad's design QA settings: whether the precheck's gate is off, in shadow or on, and which model tiers design QA runs on
+    QaConfig(crate::design_qa::QaConfigArgs),
+    /// Replay past design QA tickets through the precheck and its gate (and, without --dry-run, a cheaper-tier designer) in temporary worktrees, against their recorded verdicts and tokens
+    QaReplay(crate::design_qa::QaReplayArgs),
     /// A brief's reference board: pages from galleries and tools, each with what to learn from it, as one contact sheet
     Refs {
         #[command(subcommand)]
@@ -313,6 +321,10 @@ pub async fn command(action: DesignAction) -> Result<(), String> {
         DesignAction::SecondLook(args) => crate::design_lint::second_look(args).await,
         DesignAction::Direction { action } => crate::design_lint::direction(action),
         DesignAction::Kept { action } => crate::design_lint::kept(action).await,
+        DesignAction::Precheck(args) => crate::design_qa::precheck_command(args).await,
+        DesignAction::QaStats(args) => crate::design_qa::qa_stats_command(args),
+        DesignAction::QaConfig(args) => crate::design_qa::qa_config_command(args),
+        DesignAction::QaReplay(args) => crate::design_qa::qa_replay_command(args).await,
         DesignAction::Refs { action } => crate::design_taste::refs_command(action).await,
         DesignAction::Palette(args) => crate::design_taste::palette_command(args).await,
         DesignAction::Type(args) => crate::design_taste::type_command(args).await,
@@ -915,7 +927,7 @@ async fn shoot_one(run: &Run, repo: &Path, limit: Duration) -> Result<PathBuf, S
 
 /// What a command is to write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Want {
+pub(crate) enum Want {
     Png,
     Mp4,
 }
@@ -950,7 +962,7 @@ impl Want {
 /// `command` run at the root of `repo` with `env`, stopped after `limit`,
 /// and what it was to write at `out` checked: `Err` says why it didn't
 /// come out, with the last lines it printed to stderr.
-async fn made_by(command: &str, out: &Path, repo: &Path, env: &[(String, String)], limit: Duration, want: Want) -> Result<(), String> {
+pub(crate) async fn made_by(command: &str, out: &Path, repo: &Path, env: &[(String, String)], limit: Duration, want: Want) -> Result<(), String> {
     let ran = run_command(command, repo, env, limit).await?;
     let why = match ran.ended {
         Ended::TimedOut => Err(t!("design.flows.command_timed_out", secs = limit.as_secs_f32())),
@@ -1302,7 +1314,7 @@ pub(crate) fn node_tools() -> Result<(PathBuf, PathBuf), String> {
     Ok((bin.join("node"), bin.join("npm")))
 }
 
-async fn ensure_kit() -> Result<PathBuf, String> {
+pub(crate) async fn ensure_kit() -> Result<PathBuf, String> {
     let dir = kit_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     // Two first runs at once (a member's parallel commands) installed over each other.
@@ -1331,6 +1343,7 @@ async fn ensure_kit() -> Result<PathBuf, String> {
         ("lint.mjs", include_str!("../assets/design/lint.mjs")),
         ("refs.mjs", include_str!("../assets/design/refs.mjs")),
         ("matrix.mjs", include_str!("../assets/design/matrix.mjs")),
+        ("precheck.mjs", include_str!("../assets/design/precheck.mjs")),
     ] {
         std::fs::write(dir.join(name), body).map_err(|e| e.to_string())?;
     }
