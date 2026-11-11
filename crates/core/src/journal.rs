@@ -521,7 +521,8 @@ impl Journal {
         for column in ["role TEXT", "name TEXT", "joined INTEGER", "mode TEXT"] {
             let _ = conn.execute(&format!("ALTER TABLE sessions ADD COLUMN {column}"), []);
         }
-        for column in ["head TEXT", "dirty INTEGER"] {
+        // Why an active run is paused, while it is (JSON, `RunPause`).
+        for column in ["head TEXT", "dirty INTEGER", "pause TEXT"] {
             let _ = conn.execute(&format!("ALTER TABLE ticket_executions ADD COLUMN {column}"), []);
         }
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN merged INTEGER", []);
@@ -558,6 +559,12 @@ impl Journal {
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN model TEXT", []);
         // The effort a member's turn ran at; `NULL`: the engine's own, or a turn from before.
         let _ = conn.execute("ALTER TABLE turns ADD COLUMN effort TEXT", []);
+        // How turns on tickets ended when they didn't end as they should: no
+        // hand-in, a failed engine, a plan's limit (`crate::runtime` counts them).
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS turn_endings (at INTEGER NOT NULL, kind TEXT NOT NULL, ticket INTEGER, member TEXT)",
+            [],
+        );
         // Work sent back, and why: what decides whether a stronger model would
         // help (`tiers::after_send_back`). Send-backs from before have none:
         // none counted.
@@ -953,7 +960,7 @@ impl Journal {
     pub fn execution(&self, ticket: TicketId) -> Result<Option<TicketExecution>> {
         self.conn
             .query_row(
-                "SELECT state, session, operation, generation, heartbeat_at, lease_expires_at, reason, head, dirty
+                "SELECT state, session, operation, generation, heartbeat_at, lease_expires_at, reason, head, dirty, pause
                  FROM ticket_executions WHERE ticket = ?1",
                 [ticket],
                 |r| {
@@ -965,6 +972,7 @@ impl Journal {
                         heartbeat_at: r.get::<_, i64>(4)?.max(0) as u64,
                         lease_expires_at: r.get::<_, i64>(5)?.max(0) as u64,
                         reason: r.get(6)?,
+                        pause: r.get::<_, Option<String>>(9)?.and_then(|p| serde_json::from_str(&p).ok()),
                         head: r.get(7)?,
                         dirty: r.get::<_, Option<i64>>(8)?.map(|n| n.clamp(0, i64::from(u32::MAX)) as u32),
                     })
@@ -991,7 +999,7 @@ impl Journal {
         if let Some(generation) = queued {
             tx.execute(
                 "UPDATE ticket_executions SET state = 'active', session = ?1, heartbeat_at = ?2,
-                   lease_expires_at = ?3, reason = NULL, head = NULL, dirty = NULL, updated_at = ?2
+                   lease_expires_at = ?3, reason = NULL, head = NULL, dirty = NULL, pause = NULL, updated_at = ?2
                  WHERE ticket = ?4 AND operation = ?5 AND state = 'queued'",
                 params![session as i64, at as i64, lease, ticket, operation],
             )?;
@@ -1019,7 +1027,7 @@ impl Journal {
              ON CONFLICT(ticket) DO UPDATE SET state = excluded.state, session = excluded.session,
                operation = excluded.operation, generation = excluded.generation,
                heartbeat_at = excluded.heartbeat_at, lease_expires_at = excluded.lease_expires_at,
-               reason = NULL, updated_at = excluded.updated_at, head = NULL, dirty = NULL",
+               reason = NULL, updated_at = excluded.updated_at, head = NULL, dirty = NULL, pause = NULL",
             params![ticket, session as i64, operation, at as i64, lease],
         )?;
         let generation: i64 = tx.query_row("SELECT generation FROM ticket_executions WHERE ticket = ?1", [ticket], |r| r.get(0))?;
@@ -1059,7 +1067,7 @@ impl Journal {
         tx.execute(
             "UPDATE ticket_executions SET state = 'queued', session = 0, operation = ?1,
                generation = generation + 1, heartbeat_at = ?2, lease_expires_at = 0,
-               reason = NULL, updated_at = ?2 WHERE ticket = ?3",
+               reason = NULL, pause = NULL, updated_at = ?2 WHERE ticket = ?3",
             params![operation, at as i64, ticket],
         )?;
         tx.execute(
@@ -1088,7 +1096,7 @@ impl Journal {
     /// it; a newer generation is left alone.
     pub fn finish_execution(&self, ticket: TicketId, generation: u64, state: ExecutionState, reason: Option<&str>) -> Result<bool> {
         Ok(self.conn.execute(
-            "UPDATE ticket_executions SET state = ?1, lease_expires_at = 0, reason = ?2, updated_at = ?3
+            "UPDATE ticket_executions SET state = ?1, lease_expires_at = 0, reason = ?2, pause = NULL, updated_at = ?3
              WHERE ticket = ?4 AND generation = ?5",
             params![state.code(), reason, now(), ticket, generation as i64],
         )? == 1)
@@ -1112,7 +1120,7 @@ impl Journal {
                 continue;
             }
             tx.execute(
-                "UPDATE ticket_executions SET state = 'stalled', lease_expires_at = 0, reason = ?1, updated_at = ?2
+                "UPDATE ticket_executions SET state = 'stalled', lease_expires_at = 0, reason = ?1, pause = NULL, updated_at = ?2
                  WHERE ticket = ?3 AND state = 'active'",
                 params![equipe_protocol::stall_reason::LEASE_EXPIRED, at as i64, ticket],
             )?;
@@ -1131,7 +1139,7 @@ impl Journal {
     pub fn stall_all_executions(&self, at: u64) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
-            "UPDATE ticket_executions SET state = 'stalled', lease_expires_at = 0, reason = ?1, updated_at = ?2 WHERE state = 'active'",
+            "UPDATE ticket_executions SET state = 'stalled', lease_expires_at = 0, reason = ?1, pause = NULL, updated_at = ?2 WHERE state = 'active'",
             params![equipe_protocol::stall_reason::NOT_RESUMED, at as i64],
         )?;
         tx.execute(
@@ -1150,10 +1158,38 @@ impl Journal {
     /// requeued ([`Self::reserve_requeue`]). Whether it was active.
     pub fn stall_execution(&self, ticket: TicketId, reason: &str, at: u64) -> Result<bool> {
         Ok(self.conn.execute(
-            "UPDATE ticket_executions SET state = 'stalled', lease_expires_at = 0, reason = ?1, updated_at = ?2
+            "UPDATE ticket_executions SET state = 'stalled', lease_expires_at = 0, reason = ?1, pause = NULL, updated_at = ?2
              WHERE ticket = ?3 AND state = 'active'",
             params![reason, at as i64, ticket],
         )? == 1)
+    }
+
+    /// Say why generation `generation` of `ticket`'s active run is paused —
+    /// or, with `None`, that it goes on. Whether that very run was active.
+    pub fn set_execution_pause(&self, ticket: TicketId, generation: u64, pause: Option<&equipe_protocol::RunPause>) -> Result<bool> {
+        let pause = pause.and_then(|p| serde_json::to_string(p).ok());
+        Ok(self.conn.execute(
+            "UPDATE ticket_executions SET pause = ?1, updated_at = ?2 WHERE ticket = ?3 AND generation = ?4 AND state = 'active'",
+            params![pause, now(), ticket, generation as i64],
+        )? == 1)
+    }
+
+    /// Count a turn on a ticket that ended other than as it should (`kind`:
+    /// [`crate::runtime::turn_ending`]'s codes), for the squad's numbers.
+    pub fn count_turn_ending(&self, kind: &str, ticket: Option<TicketId>, member: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO turn_endings (at, kind, ticket, member) VALUES (?1, ?2, ?3, ?4)",
+            params![now(), kind, ticket, member],
+        )?;
+        self.conn.execute("DELETE FROM turn_endings WHERE at < ?1", [now() - KEPT_FOR_RETROS])?;
+        Ok(())
+    }
+
+    /// How many turns ended each way since `since`, by kind, most first.
+    pub fn turn_endings_since(&self, since: u64) -> Result<Vec<(String, u64)>> {
+        let mut stmt = self.conn.prepare("SELECT kind, COUNT(*) FROM turn_endings WHERE at >= ?1 GROUP BY kind ORDER BY COUNT(*) DESC, kind")?;
+        let rows = stmt.query_map([since as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.max(0) as u64)))?;
+        rows.collect()
     }
 
     /// Mark generation `generation` of `ticket`'s active run as still starting

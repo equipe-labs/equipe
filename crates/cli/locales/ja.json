@@ -1272,5 +1272,11 @@
   "commands.rest_stop": "今の作業も止めます",
   "commands.rest_off": "休憩を終える: また新しい仕事を受けます",
   "app.rest_usage": "/rest <メンバー> — 新しい仕事は受けず、今の作業は終わらせます · /rest <メンバー> stop — 今の作業も止めます · /rest <メンバー> off — 休憩を終えます",
-  "app.pm_rests": "PM は休めません。常に持ち場にいます。"
+  "app.pm_rests": "PM は休めません。常に持ち場にいます。",
+  "app.run_pause_limit": "一時停止：{engine} が使用上限に達しました。{engine} に余裕ができると自動で再開します。",
+  "app.run_pause_limit_at": "一時停止：{engine} が使用上限に達しました。{span}後に自動で再開します。",
+  "app.run_pause_limit_moves": "一時停止：{engine} が使用上限に達しました。{to} で続けます。",
+  "app.run_pause_retry": "エンジンが失敗しました（{cause}）。{span}後に equipe が自動で再試行します。",
+  "app.run_pause_squad": "スクワッドごと一時停止：複数のエンジンが一度に失敗しました（{cause}）。テストのターンが成功すると再開します。",
+  "app.run_pause_sign_in": "一時停止：この Mac で {engine} のサインインが使えなくなりました。サインインし直すと再開します。"
 }

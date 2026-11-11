@@ -348,6 +348,32 @@ impl Runtime {
             .collect()
     }
 
+    /// When `engine`'s plan is out of its limit for `squad`, as last read: the
+    /// time it starts over. `None` while it has room, or nobody read it.
+    pub(super) fn engine_out(&self, squad: &str, engine: Engine) -> Option<i64> {
+        let fallback = Memory::default();
+        let memory = self.engines.squads.get(squad).map_or(&fallback, |s| &s.memory);
+        let reading = self.readings().into_iter().find(|r| r.engine == engine)?;
+        let assessed = rules::assess(&reading, memory, unix_now());
+        (assessed.level == Level::Exhausted).then_some(assessed.resets_at)
+    }
+
+    /// Whether `engine` was read after unix time `at`, fresh, with room.
+    pub(super) fn engine_room_since(&self, squad: &str, engine: Engine, at: u64) -> bool {
+        let fallback = Memory::default();
+        let memory = self.engines.squads.get(squad).map_or(&fallback, |s| &s.memory);
+        self.readings().into_iter().find(|r| r.engine == engine).is_some_and(|reading| {
+            let assessed = rules::assess(&reading, memory, unix_now());
+            reading.at > at as i64 && !assessed.stale && assessed.level != Level::Exhausted
+        })
+    }
+
+    /// The engine member `name` of `squad` is moving to, when a move to
+    /// another engine waits for it.
+    pub(super) fn moving_to(&self, squad: &str, name: &str) -> Option<Engine> {
+        self.engines.squads.get(squad)?.due.iter().find(|d| d.mv.member == name && !d.mv.in_place()).map(|d| d.mv.to)
+    }
+
     /// An engine's plan just read: kept with the time, and each squad looks again.
     pub(super) fn on_plan(&mut self, engine: Engine, usage: PlanUsage) {
         let at = unix_now();
@@ -358,6 +384,10 @@ impl Runtime {
         for squad in self.squads_with_members() {
             self.engines_of(&squad).memory.observe(&reading);
             self.consider_engines(&squad);
+        }
+        // A run paused for this engine's limit may go on now: looked at on the loop.
+        if self.sessions.values().any(Runtime::is_parked) {
+            let _ = self.internal.send(Internal::TurnEndsDue);
         }
     }
 
@@ -844,7 +874,7 @@ impl Runtime {
     /// Read the Claude plan's usage off the loop, with one tiny turn of the
     /// person's Claude Code ([`claude_code::read_plan`]): no member's turn
     /// told it lately. At most every [`CLAUDE_USAGE_EVERY`]. Whether a read started.
-    fn read_claude_usage(&mut self) -> bool {
+    pub(super) fn read_claude_usage(&mut self) -> bool {
         if self.engines.claude_reading || self.engines.claude_read.is_some_and(|at| at.elapsed() < CLAUDE_USAGE_EVERY) {
             return false;
         }

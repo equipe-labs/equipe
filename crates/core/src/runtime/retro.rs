@@ -44,6 +44,10 @@ impl Runtime {
         if let Some(line) = self.words_week(squad, from) {
             facts.push_str(&format!("\n\n{line}"));
         }
+        // How turns on tickets ended other than as they should — only when any did.
+        if let Some(line) = self.journal(squad).and_then(|j| j.turn_endings_since(from).ok()).and_then(|counts| endings_line(&counts)) {
+            facts.push_str(&format!("\n\n{line}"));
+        }
         rules::message(routine, &facts)
     }
 
@@ -88,5 +92,31 @@ impl Runtime {
             Err(why) if !why.starts_with("Nothing changed") => crate::daemon_log!("equipe: {squad}'s lessons weren't kept: {why}"),
             _ => {}
         }
+    }
+}
+
+/// The week's turn endings that weren't as they should be, in a line:
+/// `None` when there were none.
+fn endings_line(counts: &[(String, u64)]) -> Option<String> {
+    if counts.is_empty() {
+        return None;
+    }
+    let listed: Vec<String> = counts.iter().map(|(kind, n)| format!("{} {n}", kind.replace('_', " "))).collect();
+    Some(format!(
+        "Turns on tickets that didn't end as they should (counted by equipe): {}. Each was carried on by equipe; many of one \
+kind say something in how the squad works needs a change.",
+        listed.join(", ")
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::endings_line;
+
+    #[test]
+    fn the_weeks_turn_endings_are_one_line_when_there_were_any() {
+        assert_eq!(endings_line(&[]), None);
+        let line = endings_line(&[("no_end".into(), 4), ("failed_fast".into(), 2)]).unwrap();
+        assert!(line.contains("no end 4, failed fast 2"), "{line}");
     }
 }

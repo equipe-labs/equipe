@@ -1272,5 +1272,11 @@
   "commands.rest_stop": "하던 일도 멈춰요",
   "commands.rest_off": "휴식 끝내기: 다시 새 일을 받아요",
   "app.rest_usage": "/rest <멤버> — 새 일은 받지 않고 하던 일은 마쳐요 · /rest <멤버> stop — 하던 일도 멈춰요 · /rest <멤버> off — 휴식을 끝내요",
-  "app.pm_rests": "PM은 쉴 수 없어요. 항상 자리를 지켜요."
+  "app.pm_rests": "PM은 쉴 수 없어요. 항상 자리를 지켜요.",
+  "app.run_pause_limit": "멈춤: {engine} 사용 한도에 도달했어요. {engine}에 여유가 생기면 알아서 이어져요.",
+  "app.run_pause_limit_at": "멈춤: {engine} 사용 한도에 도달했어요. {span} 뒤 알아서 이어져요.",
+  "app.run_pause_limit_moves": "멈춤: {engine} 사용 한도에 도달했어요. {to}에서 이어서 진행해요.",
+  "app.run_pause_retry": "엔진이 실패했어요({cause}). {span} 뒤 equipe가 알아서 다시 시도해요.",
+  "app.run_pause_squad": "스쿼드와 함께 멈춤: 여러 엔진이 한꺼번에 실패했어요({cause}). 시험 턴이 성공하면 이어져요.",
+  "app.run_pause_sign_in": "멈춤: 이 Mac에서 {engine} 로그인이 작동하지 않아요. 다시 로그인하면 이어져요."
 }

@@ -3633,5 +3633,11 @@
   "sidebar.wake_hint": "重新接新工作",
   "sidebar.open_ticket": "打开",
   "board.flag_stale": "搁置",
-  "board.flag_stale_tip": "已等待 {span}：还需要吗，还是可以关闭？"
+  "board.flag_stale_tip": "已等待 {span}：还需要吗，还是可以关闭？",
+  "run.pause_limit": "已暂停：{engine} 达到了用量上限。{engine} 有余量后会自动继续。",
+  "run.pause_limit_at": "已暂停：{engine} 达到了用量上限。{span}后自动继续。",
+  "run.pause_limit_moves": "已暂停：{engine} 达到了用量上限。将在 {to} 上继续。",
+  "run.pause_retry": "引擎失败了（{cause}）。equipe 会在 {span}后自动重试。",
+  "run.pause_squad": "随小队暂停：多个引擎同时失败（{cause}）。测试轮成功后继续。",
+  "run.pause_sign_in": "已暂停：{engine} 在这台 Mac 上的登录失效了。重新登录后继续。"
 }

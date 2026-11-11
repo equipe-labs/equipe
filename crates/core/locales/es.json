@@ -644,5 +644,15 @@
   "news.resting": "{name} está descansando · sin trabajo nuevo hasta que lo despiertes",
   "news.awake": "{name} ha vuelto · acepta trabajo nuevo otra vez",
   "control.resting_on": "Poner a {member} en descanso: sin trabajo nuevo hasta que lo despiertes; termina lo que tiene entre manos",
-  "control.resting_off": "Despertar a {member}: acepta trabajo nuevo otra vez"
+  "control.resting_off": "Despertar a {member}: acepta trabajo nuevo otra vez",
+  "notice.nudged": "El turno en T-{id} terminó sin cerrar el trabajo; equipe le recordó cómo terminarlo.",
+  "news.handed_back_waiting": "{name} dejó T-{id} en espera hasta que termine aquello de lo que depende; luego le vuelve · {title}.",
+  "news.handed_back_duplicate": "{name} devolvió T-{id} por duplicado; el PM se encarga · {title}.",
+  "news.handed_back_role": "{name} devolvió T-{id}: es trabajo de otro rol; el PM se encarga · {title}.",
+  "news.handed_back_cannot": "{name} devolvió T-{id}: no se puede hacer como se pidió; el PM se encarga · {title}.",
+  "news.handed_back_unfinished": "Los turnos de {name} en T-{id} seguían terminando sin entrega, así que pasó al PM · {title}.",
+  "news.squad_paused": "Los motores de varios miembros fallaron a la vez ({cause}). El equipo no empieza nada nuevo hasta que funcione un turno de prueba; equipe lo reintenta solo, o envía cualquier mensaje para probar ya.",
+  "news.squad_resumed": "Los motores vuelven a funcionar: los tickets en pausa continúan solos.",
+  "news.ticket_failing": "El motor de T-{id} sigue fallando ({cause}); equipe sigue intentándolo, esperando más cada vez · {title}.",
+  "news.limit_paused": "{engine} alcanzó su límite de uso durante T-{id}: lo que se cortó queda en pausa donde estaba y continuará solo — en el otro motor si los miembros se pasan a él, o cuando {engine} tenga margen."
 }

@@ -11,8 +11,8 @@ use std::time::Instant;
 use equipe_core::protocol::engines::HandOver;
 use equipe_core::protocol::rpc::{Hello, SquadEntry};
 use equipe_core::protocol::{
-    DesktopState, Engine, Entry, Estimate, Event, HumanCheck, Mode, OffMain, PlanUsage, RunView, SessionId, SessionState, Ticket, TicketEntry, TicketId, TicketKind, TicketStatus, TurnOutcome,
-    stall_reason,
+    DesktopState, Engine, Entry, Estimate, Event, HumanCheck, Mode, OffMain, PauseWhy, PlanUsage, RunPause, RunView, SessionId, SessionState, Ticket, TicketEntry, TicketId, TicketKind,
+    TicketStatus, TurnOutcome, stall_reason,
 };
 
 use crate::convo::Convo;
@@ -287,6 +287,21 @@ pub fn stall_reason_words(code: Option<&str>) -> &'static str {
         Some(stall_reason::NOT_RESUMED) => t!("run.reason_not_resumed"),
         Some(stall_reason::MIGRATED) => t!("run.reason_migrated"),
         _ => t!("run.reason_unknown"),
+    }
+}
+
+/// Why equipe paused a run, and when it goes on, in the person's words.
+pub fn pause_words(pause: &RunPause, now: i64) -> String {
+    use crate::switching::{engine_name, span};
+    let engine = pause.engine.map(engine_name).unwrap_or_default();
+    let cause = pause.cause.clone().unwrap_or_default();
+    match (pause.why, pause.moves_to, pause.resumes_at) {
+        (PauseWhy::EngineLimit, Some(to), _) => t!("run.pause_limit_moves", engine = engine, to = engine_name(to)),
+        (PauseWhy::EngineLimit, None, Some(at)) => t!("run.pause_limit_at", engine = engine, span = span(at as i64, now)),
+        (PauseWhy::EngineLimit, None, None) => t!("run.pause_limit", engine = engine),
+        (PauseWhy::Retrying, _, at) => t!("run.pause_retry", cause = cause, span = span(at.map_or(now, |at| at as i64), now)),
+        (PauseWhy::SquadPaused, _, _) => t!("run.pause_squad", cause = cause),
+        (PauseWhy::SignIn, _, _) => t!("run.pause_sign_in", engine = engine),
     }
 }
 
@@ -2217,6 +2232,8 @@ impl Model {
         Some(match self.run_view(t)? {
             RunView::Active => return None,
             RunView::Stalled => stall_reason_words(t.execution.as_ref().and_then(|e| e.reason.as_deref())).to_owned(),
+            // Paused by equipe: why, and when it goes on by itself.
+            RunView::Paused if let Some(pause) = t.execution.as_ref().and_then(|e| e.pause.as_ref()) => pause_words(pause, self.unix as i64),
             RunView::Paused if self.member_on(t.id).is_none_or(|m| m.presence != Presence::Working) => t!("run.paused_idle", who = who),
             RunView::Paused => t!("run.paused_lease").to_owned(),
             RunView::Queued => t!("run.queued_for", who = who),
@@ -3169,11 +3186,24 @@ mod tests {
         assert_eq!(model.state_word_of(&queued), "다시 대기 중");
         assert!(model.run_reason(&stalled).is_some_and(|r| r.contains("제출이나 요청 없이")), "{:?}", model.run_reason(&stalled));
         assert_eq!(stall_reason_words(Some("something_new")), stall_reason_words(None), "a code this screen doesn't know is said plainly");
+        // A run equipe paused says why, and what it goes on with.
+        let pause = |why, moves_to, cause: Option<&str>| RunPause { why, engine: Some(Engine::Claude), resumes_at: Some(10_000), moves_to, cause: cause.map(str::to_owned), attempt: 1 };
+        assert!(pause_words(&pause(PauseWhy::EngineLimit, Some(Engine::Codex), None), 100).contains("Codex"));
+        assert!(pause_words(&pause(PauseWhy::EngineLimit, None, None), 100).contains("Claude"));
+        assert!(pause_words(&pause(PauseWhy::Retrying, None, Some("disk full")), 100).contains("disk full"));
+        assert!(pause_words(&pause(PauseWhy::SquadPaused, None, Some("disk full")), 100).contains("disk full"));
+        assert!(pause_words(&pause(PauseWhy::SignIn, None, None), 100).contains("Claude"));
+        let mut limited = stalled.clone();
+        if let Some(run) = limited.execution.as_mut() {
+            run.state = equipe_core::protocol::ExecutionState::Active;
+            run.pause = Some(pause(PauseWhy::EngineLimit, Some(Engine::Codex), None));
+        }
+        assert!(model.run_reason(&limited).is_some_and(|r| r.contains("Codex")), "{:?}", model.run_reason(&limited));
         // Only the stalled one waits for the person — in Needs you, and so on the sidebar's count.
         assert_eq!(model.needs_you(), vec![(Section::Stalled, Need::Ticket(3))]);
         assert_eq!(model.needs_by_project().values().sum::<usize>(), 1);
         for lang in equipe_core::i18n::Lang::ALL {
-            for key in ["run.paused", "run.stalled", "run.queued", "state.section_stalled", "recover.resume", "recover.requeue", "recover.reassign", "recover.kept", "run.reason_lease_expired"] {
+            for key in ["run.paused", "run.stalled", "run.queued", "state.section_stalled", "recover.resume", "recover.requeue", "recover.reassign", "recover.kept", "run.reason_lease_expired", "run.pause_limit", "run.pause_limit_at", "run.pause_limit_moves", "run.pause_retry", "run.pause_squad", "run.pause_sign_in"] {
                 assert!(crate::i18n::of(lang).own(key).is_some_and(|w| !w.trim().is_empty()), "{lang:?} {key}");
             }
         }

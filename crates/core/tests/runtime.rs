@@ -2712,24 +2712,30 @@ async fn in_auto_a_member_on_a_ticket_is_fenced_in_and_asks_for_the_rest() {
 #[tokio::test]
 async fn the_mode_decides_how_a_ticket_runs_and_a_member_can_differ_from_the_squad() {
     let repo = repo();
-    let (claude, recorded) = recording_claude(&answering("ok"));
+    // Its ticket's first turn works on until the person stops it: the run stays
+    // open for what is said to it next (a turn that ended on its own without a
+    // hand-in would be reminded, then handed to the PM).
+    let (claude, recorded) = recording_claude(&format!("case \"$*\" in *\"You're on T-\"*) exec sleep 30;; esac\n{}", answering("ok")));
     let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&repo])));
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
     add(&handle, &mut events, 2, member(&repo, "frontend")).await;
 
     handle.send(Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::ReadOnly) });
     until(&mut events, |e| matches!(e, Event::ModeChanged { member: None, .. })).await;
-    let call = first_ticket_turn(&handle, &mut events, &recorded, "frontend").await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
+    let run = run_in(&until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await, 2);
+    let call = latest_call(&recorded, |p| p.contains("You're on T-1")).await;
     assert_eq!(arg(&call, "--permission-mode"), Some("dontAsk"), "plan reads, even on a ticket");
     assert_eq!(arg(&call, "--permission-prompt-tool"), None);
 
     handle.send(Command::SetMode { squad: "acme".into(), member: Some("frontend".into()), mode: Some(Mode::Ask) });
     until(&mut events, |e| matches!(e, Event::ModeChanged { member: Some(_), .. })).await;
+    handle.send(Command::Interrupt { session: run });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == run)).await;
     // Said to its ticket's run, the next turn there runs in the member's mode.
-    let run = handle.snapshot("acme").await.sessions.iter().find(|s| s.run.is_some_and(|r| r.of == 2)).map(|s| s.session).expect("its run");
     handle.send(Command::Submit { session: run, text: "go on".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == run)).await;
-    let call = calls(&recorded).pop().unwrap();
+    let call = calls(&recorded).into_iter().rev().find(|c| arg(c, "-p").is_some_and(|p| p.contains("go on"))).expect("its turn on what was said");
     assert_eq!(arg(&call, "--permission-mode"), Some("manual"), "ask me: every change is asked");
     assert_eq!(arg(&call, "--permission-prompt-tool"), Some("mcp__equipe__approve"));
 

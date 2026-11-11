@@ -420,6 +420,12 @@ pub const COMMENT: &str = "comment";
 pub const SUBMIT_FOR_REVIEW: &str = "submit_for_review";
 /// A member puts its ticket down until the person does something only they can.
 pub const BLOCK_ON_PERSON: &str = "block_on_person";
+/// A member hands its ticket back: it waits on other tickets, duplicates one,
+/// is another role's work, or can't be done as asked.
+pub const HAND_BACK: &str = "hand_back";
+/// How a ticket handed back to wait on others says so in its note, for its
+/// member when it comes back: the tickets, then the member's note.
+pub const WAITED_ON: &str = "Resumed after waiting on ";
 /// A member asks the person's yes before something done in their name.
 pub const ASK_PERSON: &str = "ask_person";
 /// A member puts a decision to the person: questions with options to pick.
@@ -653,6 +659,24 @@ backticks (`outputs/T-12/shots/`), so the person can open it from the card they 
                     "why": { "type": "string", "description": "What it is for, in one line — in the person's language." },
                 },
                 "required": ["needs"],
+            },
+        }),
+        json!({
+            "name": HAND_BACK,
+            "description": "Hand back the ticket you are on when it isn't yours to finish now — never end a turn with \
+only a comment saying so. `waiting_on`: it can't start until other tickets are done (name them in `tickets`): it waits on \
+the board and comes back to you, in the same worktree, once they are. `duplicate`: another ticket does or did the same \
+(name it). `not_my_role`: it is another role's work (`suggest` who). `cannot`: it can't be done as asked. Those three go \
+to the PM with your note, to cancel, reassign or reshape. Your changes so far stay on its branch. Then end your turn.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "reason": { "type": "string", "enum": ["waiting_on", "duplicate", "not_my_role", "cannot"] },
+                    "tickets": { "type": "array", "items": { "type": "integer" }, "description": "The tickets it waits on (waiting_on), or duplicates (duplicate)." },
+                    "suggest": { "type": "string", "description": "not_my_role: the role or member that should take it." },
+                    "note": { "type": "string", "description": "Why, in a line or two — what you found, what it needs. The PM reads it." },
+                },
+                "required": ["reason", "note"],
             },
         }),
     ];

@@ -644,5 +644,15 @@
   "news.resting": "{name} est au repos · aucun nouveau travail tant que vous ne le réveillez pas",
   "news.awake": "{name} est de retour · reprend du nouveau travail",
   "control.resting_on": "Mettre {member} au repos : aucun nouveau travail jusqu’à son réveil ; le travail en cours est terminé",
-  "control.resting_off": "Réveiller {member} : reprend du nouveau travail"
+  "control.resting_off": "Réveiller {member} : reprend du nouveau travail",
+  "notice.nudged": "Le tour sur T-{id} s'est terminé sans finir le travail ; equipe a rappelé comment le terminer.",
+  "news.handed_back_waiting": "{name} a mis T-{id} de côté en attendant ce dont il dépend ; il lui revient ensuite · {title}.",
+  "news.handed_back_duplicate": "{name} a rendu T-{id} comme doublon ; le PM s'en occupe · {title}.",
+  "news.handed_back_role": "{name} a rendu T-{id} : c'est le travail d'un autre rôle ; le PM s'en occupe · {title}.",
+  "news.handed_back_cannot": "{name} a rendu T-{id} : impossible tel que demandé ; le PM s'en occupe · {title}.",
+  "news.handed_back_unfinished": "Les tours de {name} sur T-{id} se terminaient sans remise ; il est donc passé au PM · {title}.",
+  "news.squad_paused": "Les moteurs de plusieurs membres ont échoué en même temps ({cause}). L'équipe ne commence rien de nouveau tant qu'un tour d'essai n'a pas réussi ; equipe réessaie tout seul, ou envoyez n'importe quel message pour réessayer tout de suite.",
+  "news.squad_resumed": "Les moteurs fonctionnent de nouveau : les tickets en pause reprennent tout seuls.",
+  "news.ticket_failing": "Le moteur de T-{id} échoue sans cesse ({cause}) ; equipe continue d'essayer, en attendant plus longtemps à chaque fois · {title}.",
+  "news.limit_paused": "{engine} a atteint sa limite d'utilisation pendant T-{id} : ce qui a été interrompu est en pause sur place et reprendra tout seul — sur l'autre moteur si des membres y passent, ou dès que {engine} aura de la marge."
 }

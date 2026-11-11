@@ -2628,6 +2628,8 @@ fn ticket_detail(app: &App, theme: Theme, width: usize) -> Vec<Line<'static>> {
         let why = match view {
             RunView::Stalled => stall_reason_words(t.execution.as_ref().and_then(|e| e.reason.as_deref())).to_owned(),
             RunView::Queued => t!("app.run_queued_for", who = who),
+            // Paused by equipe: why, and when it goes on by itself.
+            RunView::Paused if let Some(pause) = t.execution.as_ref().and_then(|e| e.pause.as_ref()) => super::app::pause_words(pause),
             _ => t!("app.run_paused_why", who = who),
         };
         lines.extend(wrapped(Vec::new(), &why, theme.accent(), 0, width));

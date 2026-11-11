@@ -3722,5 +3722,11 @@
   "sidebar.wake_hint": "Takes new work again",
   "sidebar.open_ticket": "Open",
   "board.flag_stale": "Stale",
-  "board.flag_stale_tip": "Waiting {span}: still needed, or can it be closed?"
+  "board.flag_stale_tip": "Waiting {span}: still needed, or can it be closed?",
+  "run.pause_limit": "Paused: {engine} reached its usage limit. It goes on by itself once {engine} has room.",
+  "run.pause_limit_at": "Paused: {engine} reached its usage limit. It goes on by itself in {span}.",
+  "run.pause_limit_moves": "Paused: {engine} reached its usage limit. It carries on on {to}.",
+  "run.pause_retry": "Its engine failed ({cause}). equipe tries again by itself in {span}.",
+  "run.pause_squad": "Paused with the squad: several engines failed at once ({cause}). It goes on once a test turn works.",
+  "run.pause_sign_in": "Paused: {engine}'s sign-in stopped working here. It goes on once signed in again."
 }

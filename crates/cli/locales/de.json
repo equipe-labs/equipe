@@ -1295,5 +1295,11 @@
   "commands.rest_stop": "und laufende Arbeit stoppen",
   "commands.rest_off": "zurückholen: nimmt wieder neue Arbeit an",
   "app.rest_usage": "/rest <Mitglied> — keine neue Arbeit, Laufendes wird fertig · /rest <Mitglied> stop — stoppt auch das · /rest <Mitglied> off — holt es zurück",
-  "app.pm_rests": "Der PM bleibt im Dienst: Er kann nicht pausieren."
+  "app.pm_rests": "Der PM bleibt im Dienst: Er kann nicht pausieren.",
+  "app.run_pause_limit": "Pausiert: {engine} hat sein Nutzungslimit erreicht. Es geht von selbst weiter, sobald {engine} wieder Luft hat.",
+  "app.run_pause_limit_at": "Pausiert: {engine} hat sein Nutzungslimit erreicht. Es geht in {span} von selbst weiter.",
+  "app.run_pause_limit_moves": "Pausiert: {engine} hat sein Nutzungslimit erreicht. Es geht auf {to} weiter.",
+  "app.run_pause_retry": "Seine Engine ist ausgefallen ({cause}). equipe versucht es in {span} von selbst erneut.",
+  "app.run_pause_squad": "Mit der Squad pausiert: Mehrere Engines sind gleichzeitig ausgefallen ({cause}). Es geht weiter, sobald ein Testzug klappt.",
+  "app.run_pause_sign_in": "Pausiert: Die Anmeldung bei {engine} funktioniert hier nicht mehr. Es geht weiter, sobald wieder angemeldet."
 }
