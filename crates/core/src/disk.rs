@@ -1390,6 +1390,7 @@ pub fn clear_lane_tmp(home: &Path, dir: &Path, keep: &[u32]) -> Vec<String> {
         return Vec::new();
     }
     let mut done = crate::leftovers::stop_in(std::slice::from_ref(&dir.to_owned()), keep);
+    done.extend(crate::image_repeat::saved(dir));
     done.extend(stop_gradle_daemons(dir));
     if remove_any(dir) {
         done.push(format!("removed {}", dir.display()));

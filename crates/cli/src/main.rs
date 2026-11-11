@@ -183,7 +183,7 @@ enum Command {
     #[command(hide = true)]
     Hook {
         /// The member's working directory: never refused
-        #[arg(long, required_unless_present = "side_chat")]
+        #[arg(long, required_unless_present_any = ["side_chat", "images"])]
         work: Option<std::path::PathBuf>,
         /// A folder the member only reads in this work
         #[arg(long = "read-only")]
@@ -191,6 +191,9 @@ enum Command {
         /// A side chat's call: refused unless it only reads files or the web
         #[arg(long = "side-chat")]
         side_chat: bool,
+        /// A picture it already read isn't read again: the lane's temporary folder, where each session's state is kept
+        #[arg(long)]
+        images: Option<std::path::PathBuf>,
     },
     /// Serve a member's board tools over MCP (equipe starts this for its engines)
     #[command(hide = true)]
@@ -452,8 +455,8 @@ fn install_tls() {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     // Asked before each of a member's calls: answered at once, nothing else started.
-    if let Some(Command::Hook { work, read_only, side_chat }) = &cli.command {
-        return hook(work.as_deref(), read_only, *side_chat);
+    if let Some(Command::Hook { work, read_only, side_chat, images }) = &cli.command {
+        return hook(work.as_deref(), read_only, *side_chat, images.as_deref());
     }
     // Before any thread: opened from Finder, the app's equipe (and the daemon
     // it starts) has launchd's bare PATH, where no member's tool is found.
@@ -464,7 +467,7 @@ fn main() -> ExitCode {
 /// Claude Code's `PreToolUse` hook for a member: equipe's guard's answer to
 /// the call on stdin — a refusal, or nothing for the engine's own rules to
 /// decide. A call it can't read is let through: the guard only refuses.
-fn hook(work: Option<&std::path::Path>, read_only: &[std::path::PathBuf], side_chat: bool) -> ExitCode {
+fn hook(work: Option<&std::path::Path>, read_only: &[std::path::PathBuf], side_chat: bool, images: Option<&std::path::Path>) -> ExitCode {
     let mut input = String::new();
     if std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).is_err() {
         return ExitCode::SUCCESS;
@@ -474,6 +477,7 @@ fn hook(work: Option<&std::path::Path>, read_only: &[std::path::PathBuf], side_c
     };
     let answer = match work {
         _ if side_chat => equipe_core::guard::side_chat_answer(&call),
+        _ if images.is_some() => images.and_then(|dir| equipe_core::image_repeat::answer(&call, dir)),
         Some(work) => equipe_core::guard::answer(&call, work, read_only),
         None => None,
     };

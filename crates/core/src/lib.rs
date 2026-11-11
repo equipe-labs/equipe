@@ -52,6 +52,7 @@ pub mod plan;
 pub mod plan_use;
 pub mod quality;
 pub mod mock;
+pub mod image_repeat;
 pub mod models;
 pub mod model_providers;
 pub mod nemotron;
