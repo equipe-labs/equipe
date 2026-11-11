@@ -71,6 +71,10 @@ line what you're waiting for.",
         self.publish(Event::SecretClosed { squad: squad.to_owned(), id, saved: true });
         let keys = ask.fields.iter().map(|f| f.key.clone()).collect::<Vec<_>>().join(", ");
         self.publish(Event::Notice { undo: None, session: ask.session, text: say!(self, "notice.secret_saved", keys = keys, path = ask.save_to) });
+        let note = format!("The person saved {keys} to {} (readable only by them).", ask.save_to);
+        if self.resume_waiting_on(squad, ask.ticket.unwrap_or_default(), &[super::decide::one_line(&ask.why)], &note).await {
+            return;
+        }
         let prompt = format!(
             "[equipe: the person saved {keys} to {} (readable only by them). Use it from there — read the file in your code \
 or `source` it in a command — and never print, echo or copy a value into chat, tickets, commits or logs. Carry on.]",
@@ -86,6 +90,10 @@ or `source` it in a command — and never print, echo or copy a value into chat,
         self.keep_secret_asks(squad);
         self.publish(Event::SecretClosed { squad: squad.to_owned(), id, saved: false });
         let keys = ask.fields.iter().map(|f| f.key.clone()).collect::<Vec<_>>().join(", ");
+        let note = format!("The person didn't give {keys} for now. Go on without it, or say in a line what it would let you do.");
+        if self.resume_waiting_on(squad, ask.ticket.unwrap_or_default(), &[super::decide::one_line(&ask.why)], &note).await {
+            return;
+        }
         let prompt = format!("[equipe: the person didn't give {keys} for now. Go on without it, or say in a line what it would let you do.]");
         self.set_going(ask.session, prompt).await;
     }
