@@ -4645,7 +4645,12 @@ for one project goes to it as tickets for its owners, with that project — and 
         } else {
             Vec::new()
         };
-        let hooks = guarded.then(|| self.config.equipe_binary.as_deref().map(|binary| guard::hooks(binary, &cwd, &add_dirs))).flatten();
+        let mut hooks = guarded.then(|| self.config.equipe_binary.as_deref().map(|binary| guard::hooks(binary, &cwd, &add_dirs))).flatten();
+        // A screenshot it already looked at isn't read again: it is in its
+        // context, and each model call pays for it again (`image_repeat`).
+        if let (Some(hooks), Some(binary), Some(dir)) = (hooks.as_mut(), self.config.equipe_binary.as_deref(), scratch.as_deref()) {
+            crate::image_repeat::add_hook(hooks, binary, dir);
+        }
         let read_only: Vec<String> = add_dirs.iter().map(|p| p.to_string_lossy().into_owned()).collect();
         let prompt_tool = (mcp_config.is_some() && matches!(access, claude_code::Access::EditFiles | claude_code::Access::Ask))
             .then(|| format!("mcp__{MCP_SERVER}__{}", permissions::APPROVE_TOOL));
