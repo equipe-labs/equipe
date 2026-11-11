@@ -394,6 +394,7 @@
   "notice.pm_accepted": "✓ Der PM hat {ids} angenommen und in main gemergt — {checked}",
   "notice.pm_accepted_checked": "✓ Der PM hat {ids} angenommen und in main gemergt, nachdem die Prüfungen des Projekts auf dem gemergten Stand bestanden waren — {checked}",
   "notice.pm_accepted_unchecked": "✓ Der PM hat {ids} angenommen und in main gemergt — {checked}. Keine Projektprüfungen liefen: Das Projekt legt in {file} keine fest",
+  "notice.preparing_workspace": "Arbeitsbereich wird vorbereitet…",
   "news.checks_sent_back": "T-{id} · {title} hat mit main gemergt die Prüfungen des Projekts ({command}) nicht bestanden und ging an {name} zurück. main ist unverändert.",
   "error.checks_main_fails": "main besteht die eigenen Prüfungen des Projekts ({command}) auch ohne T-{id} nicht, daher wurde T-{id} nicht gemergt und bleibt in Prüfung. Zuerst muss main repariert werden.",
   "error.checks_not_run": "T-{id} wurde nicht gemergt: Die Prüfungen konnten nicht laufen ({err}). Es bleibt in Prüfung.",

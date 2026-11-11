@@ -394,6 +394,7 @@
   "notice.pm_accepted": "✓ The PM accepted {ids} and merged it into main — {checked}",
   "notice.pm_accepted_checked": "✓ The PM accepted {ids} and merged it into main once the project's checks passed on the merged result — {checked}",
   "notice.pm_accepted_unchecked": "✓ The PM accepted {ids} and merged it into main — {checked}. No project checks ran: the project declares none in {file}",
+  "notice.preparing_workspace": "Preparing workspace…",
   "news.checks_sent_back": "T-{id} · {title} failed the project's checks ({command}) merged with main, so it went back to {name}. Main is untouched.",
   "error.checks_main_fails": "Main fails the project's own checks ({command}) without T-{id}, so T-{id} wasn't merged and stays in review. Main needs fixing first.",
   "error.checks_not_run": "T-{id} wasn't merged: its checks couldn't run ({err}). It stays in review.",

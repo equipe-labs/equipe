@@ -390,6 +390,7 @@
   "notice.pm_accepted": "✓ PM 已接受 {ids} 并合并到 main — {checked}",
   "notice.pm_accepted_checked": "✓ 合并后的结果通过了项目检查，PM 已接受 {ids} 并合并到 main — {checked}",
   "notice.pm_accepted_unchecked": "✓ PM 已接受 {ids} 并合并到 main — {checked}。未运行项目检查：{file} 中没有定义检查",
+  "notice.preparing_workspace": "正在准备工作区…",
   "news.checks_sent_back": "T-{id} · {title} 与 main 合并后未通过项目检查（{command}），已退回给 {name}。main 未改动。",
   "error.checks_main_fails": "即使没有 T-{id}，main 也未通过项目检查（{command}），因此 T-{id} 未合并，仍在评审中。需要先修复 main。",
   "error.checks_not_run": "T-{id} 未合并：检查无法运行（{err}）。仍在评审中。",

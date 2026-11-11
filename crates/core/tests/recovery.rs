@@ -471,7 +471,9 @@ async fn an_approved_add_hands_its_roles_stalled_ticket_to_the_new_member_but_ne
     assert!(!said.is_error, "{said:?}");
     let change = handle.snapshot("acme").await.team_changes.first().cloned().expect("waits for the person");
     handle.send(Command::ApproveTeamChange { squad: "acme".into(), id: change.id });
-    let seen = until(&mut events, |e| matches!(e, Event::TeamChangeClosed { .. })).await;
+    // It takes T-1 at once: its run starts as soon as its worktree is ready.
+    let seen = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::TeamChangeClosed { .. })), "{seen:#?}");
     let joined = seen
         .iter()
         .find_map(|e| match e {

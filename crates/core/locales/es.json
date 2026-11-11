@@ -394,6 +394,7 @@
   "notice.pm_accepted": "✓ El PM aceptó {ids} y lo fusionó en main — {checked}",
   "notice.pm_accepted_checked": "✓ El PM aceptó {ids} y lo fusionó en main después de que las comprobaciones del proyecto pasaran sobre el resultado fusionado — {checked}",
   "notice.pm_accepted_unchecked": "✓ El PM aceptó {ids} y lo fusionó en main — {checked}. No se ejecutaron comprobaciones del proyecto: el proyecto no declara ninguna en {file}",
+  "notice.preparing_workspace": "Preparando el espacio de trabajo…",
   "news.checks_sent_back": "T-{id} · {title}, fusionado con main, no pasó las comprobaciones del proyecto ({command}) y volvió a {name}. main no cambió.",
   "error.checks_main_fails": "main no pasa las comprobaciones del propio proyecto ({command}) ni siquiera sin T-{id}, así que T-{id} no se fusionó y sigue en revisión. Primero hay que arreglar main.",
   "error.checks_not_run": "T-{id} no se fusionó: sus comprobaciones no se pudieron ejecutar ({err}). Sigue en revisión.",

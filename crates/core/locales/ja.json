@@ -390,6 +390,7 @@
   "notice.pm_accepted": "✓ PM が {ids} を承認して main にマージしました — {checked}",
   "notice.pm_accepted_checked": "✓ マージ後の結果でプロジェクトのチェックが通ったので、PM が {ids} を承認して main にマージしました — {checked}",
   "notice.pm_accepted_unchecked": "✓ PM が {ids} を承認して main にマージしました — {checked}。プロジェクトのチェックは実行していません: {file} にチェックが定義されていません",
+  "notice.preparing_workspace": "作業スペースを準備しています…",
   "news.checks_sent_back": "T-{id} · {title} は main とマージした状態でプロジェクトのチェック ({command}) に通らなかったため、{name} に差し戻しました。main は変更していません。",
   "error.checks_main_fails": "T-{id} がなくても main がプロジェクトのチェック ({command}) に通らないため、T-{id} はマージせずレビュー中のままです。先に main を直す必要があります。",
   "error.checks_not_run": "T-{id} はマージしていません: チェックを実行できませんでした ({err})。レビュー中のままです。",

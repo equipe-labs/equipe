@@ -210,7 +210,14 @@ async fn approval_prioritizes_ready_unblocks_for_several_new_members_then_uses_b
     let change = proposed(&until(&mut events, |e| matches!(e, Event::TeamChangeProposed { .. })).await);
 
     handle.send(Command::ApproveTeamChange { squad: "acme".into(), id: change.id });
-    let seen = until(&mut events, |e| matches!(e, Event::TeamChangeClosed { .. })).await;
+    // Each run starts once its worktree is ready, after the change closes.
+    let runs = std::cell::Cell::new(0);
+    let seen = until(&mut events, |e| {
+        runs.set(runs.get() + usize::from(matches!(e, Event::WorkStarted { of: Some(_), .. })));
+        runs.get() == 2
+    })
+    .await;
+    assert!(seen.iter().any(|e| matches!(e, Event::TeamChangeClosed { .. })), "{seen:#?}");
     let started: Vec<(u64, u32)> = seen
         .iter()
         .filter_map(|event| match event {
@@ -244,7 +251,9 @@ async fn approval_skips_an_unready_unblock_and_starts_the_next_ready_one() {
     let change = proposed(&until(&mut events, |e| matches!(e, Event::TeamChangeProposed { .. })).await);
 
     handle.send(Command::ApproveTeamChange { squad: "acme".into(), id: change.id });
-    let seen = until(&mut events, |e| matches!(e, Event::TeamChangeClosed { .. })).await;
+    // Its run starts once its worktree is ready, after the change closes.
+    let seen = until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::TeamChangeClosed { .. })), "{seen:#?}");
     assert!(seen.iter().any(|event| matches!(event, Event::WorkStarted { ticket: 3, .. })), "{seen:#?}");
     assert!(!seen.iter().any(|event| matches!(event, Event::WorkStarted { ticket: 2, .. })), "{seen:#?}");
     handle.shutdown().await;
