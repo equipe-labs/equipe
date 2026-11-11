@@ -608,6 +608,11 @@ impl TurnCollector {
     pub fn finish(self, diagnostics: &str) -> Result<Turn> {
         let session_id = self.session_id;
         let result = match self.result {
+            // An error result that says nothing but its kind: what the process
+            // printed besides says why, if anything does.
+            Some(Err(Error::Backend { message, code })) if !diagnostics.is_empty() && message.starts_with("Claude Code reported ") && !message.contains(':') => {
+                Err(Error::Backend { message: format!("{message}: {diagnostics}"), code })
+            }
             Some(result) => result,
             None if !self.streamed.is_empty() => Ok(TurnResult {
                 text: self.streamed,
@@ -853,6 +858,10 @@ fn board_target(name: &str, input: Option<&Value>) -> Option<String> {
             });
             needs.into_iter().collect()
         }
+        "hand_back" => {
+            let tickets = input.get("tickets").and_then(Value::as_array).map(|items| items.iter().filter_map(Value::as_u64).map(|n| format!("T-{n}")).collect::<Vec<_>>().join(", "));
+            [text("reason"), tickets.filter(|t| !t.is_empty()), text("note")].into_iter().flatten().collect()
+        }
         "propose_team_change" => [text("change"), text("name").or_else(|| text("role"))].into_iter().flatten().collect(),
         "propose_routine" => [text("title"), text("every")].into_iter().flatten().collect(),
         "propose_signal" | "signals" => [text("name"), text("project")].into_iter().flatten().collect(),
@@ -887,10 +896,14 @@ fn result_from(event: &Value, streamed: &str, last_message: &str, subagents: [u6
     let subtype = event.get("subtype").and_then(Value::as_str).unwrap_or("success");
     // Failures inside the run, such as a missing login, arrive as an error result.
     if event.get("is_error").and_then(Value::as_bool).unwrap_or(false) || subtype.starts_with("error") {
-        return Err(Error::Backend {
-            message: if text.is_empty() { format!("Claude Code reported {subtype}") } else { text.to_owned() },
-            code: Some(subtype.to_owned()),
-        });
+        // An error result without words may still list what went wrong.
+        let listed: Vec<&str> = event.get("errors").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).filter(|e| !e.trim().is_empty()).collect();
+        let message = match (text.is_empty(), listed.is_empty()) {
+            (false, _) => text.to_owned(),
+            (true, false) => format!("Claude Code reported {subtype}: {}", listed.join(" · ")),
+            (true, true) => format!("Claude Code reported {subtype}"),
+        };
+        return Err(Error::Backend { message, code: Some(subtype.to_owned()) });
     }
     let text = [text, last_message, streamed]
         .into_iter()
@@ -1892,6 +1905,21 @@ EOF"#,
             .to_string();
         assert!(err.contains("boom: config is broken"), "{err}");
         assert!(err.contains("exit status"), "{err}");
+    }
+
+    /// An error result that names only its kind says why: what it lists, or
+    /// what the process printed besides.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_error_result_without_words_says_why() {
+        let listed = r#"echo '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["No conversation found with session ID: abc"]}'"#;
+        let (bin, dir) = fake_claude(listed);
+        let err = run_turn(bin.to_str().unwrap(), &dir, TurnRequest { prompt: "ping", ..Default::default() }, None, |_| {}).await.unwrap_err().to_string();
+        assert_eq!(err, "Claude Code reported error_during_execution: No conversation found with session ID: abc");
+        let printed = "echo 'ENOSPC: no space left on device' >&2\necho '{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true}'\nexit 1";
+        let (bin, dir) = fake_claude(printed);
+        let err = run_turn(bin.to_str().unwrap(), &dir, TurnRequest { prompt: "ping", ..Default::default() }, None, |_| {}).await.unwrap_err().to_string();
+        assert!(err.starts_with("Claude Code reported error_during_execution: ") && err.contains("no space left on device"), "{err}");
     }
 
     #[cfg(unix)]

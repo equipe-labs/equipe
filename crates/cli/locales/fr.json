@@ -1295,5 +1295,11 @@
   "commands.rest_stop": "et arrêter le travail en cours",
   "commands.rest_off": "le réveiller : il reprend du nouveau travail",
   "app.rest_usage": "/rest <membre> — aucun nouveau travail, le travail en cours est terminé · /rest <membre> stop — l’arrête aussi · /rest <membre> off — le réveille",
-  "app.pm_rests": "Le PM reste en poste : il ne peut pas se mettre au repos."
+  "app.pm_rests": "Le PM reste en poste : il ne peut pas se mettre au repos.",
+  "app.run_pause_limit": "En pause : {engine} a atteint sa limite d'utilisation. Il reprendra tout seul dès que {engine} aura de la marge.",
+  "app.run_pause_limit_at": "En pause : {engine} a atteint sa limite d'utilisation. Il reprendra tout seul dans {span}.",
+  "app.run_pause_limit_moves": "En pause : {engine} a atteint sa limite d'utilisation. Il continue sur {to}.",
+  "app.run_pause_retry": "Son moteur a échoué ({cause}). equipe réessaiera tout seul dans {span}.",
+  "app.run_pause_squad": "En pause avec l'équipe : plusieurs moteurs ont échoué en même temps ({cause}). Il reprendra dès qu'un tour d'essai réussira.",
+  "app.run_pause_sign_in": "En pause : la connexion à {engine} ne fonctionne plus ici. Il reprendra une fois reconnecté."
 }

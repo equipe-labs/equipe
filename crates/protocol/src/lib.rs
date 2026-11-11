@@ -64,6 +64,10 @@ pub const WHY_NOW: &str = "Why now: ";
 /// in its note: equipe hands it to nobody until the PM releases it
 /// (`update_ticket`, status todo).
 pub const OFFICE_HOURS_FIRST: &str = "Office hours first: the PM releases it.";
+/// How a ticket its member handed back says so, in its note: back among the
+/// proposals, for the PM (or the person) to cancel, reassign or reshape —
+/// the reason and the member's words after it.
+pub const HANDED_BACK: &str = "Handed back: ";
 pub mod rpc;
 pub mod runs;
 pub mod stream;
@@ -445,6 +449,11 @@ pub struct TicketExecution {
     /// ([`stall_reason`] for a stalled run).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Why its run is paused, while it is: the engine's limit, a retry after
+    /// the engine failed, the whole squad held. Equipe resumes it on its own;
+    /// left out when it isn't paused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause: Option<RunPause>,
     /// The checkout's commit when the run stalled, abbreviated: what every
     /// recovery keeps. Left out when unknown or not stalled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -490,6 +499,44 @@ impl ExecutionState {
             _ => ExecutionState::Stopped,
         }
     }
+}
+
+/// Why an active run sits without a turn, and when it goes on — equipe's own
+/// pause, never a stall: it resumes the same run itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunPause {
+    pub why: PauseWhy,
+    /// The engine it is about: the one out of its limit, or that failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<Engine>,
+    /// When it goes on by itself, if known (unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumes_at: Option<u64>,
+    /// The other engine its member is moving to, where it carries on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moves_to: Option<Engine>,
+    /// What the engine said, in a line, with anything like a key blanked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<String>,
+    /// How many times in a row the engine failed (a retry).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub attempt: u32,
+}
+
+/// Why a run is paused ([`RunPause`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PauseWhy {
+    /// Its engine reached its plan's usage limit during the turn.
+    EngineLimit,
+    /// Its engine failed the turn; equipe tries again after a wait.
+    Retrying,
+    /// Several members' engines failed at once — likely one cause (a full
+    /// disk, a lost sign-in, a missing tool): the squad starts nothing until
+    /// a test turn works or the person acts.
+    SquadPaused,
+    /// Its engine's sign-in stopped working here; it goes on once signed in.
+    SignIn,
 }
 
 /// Why a run stalled, as [`TicketExecution::reason`] says it.
@@ -577,6 +624,13 @@ impl Ticket {
     /// An idea the PM put to the person as a proposal: why its time has come.
     pub fn why_now(&self) -> Option<&str> {
         self.note.as_deref().filter(|_| self.status == TicketStatus::Proposed)?.strip_prefix(WHY_NOW).map(str::trim)
+    }
+
+    /// A ticket its member handed back (`hand_back`), or equipe did for it
+    /// when its turns kept ending without a hand-in: back among the
+    /// proposals, the reason in its note.
+    pub fn handed_back(&self) -> bool {
+        self.status == TicketStatus::Proposed && self.note.as_deref().is_some_and(|n| n.starts_with(HANDED_BACK))
     }
 
     /// A ticket that was taken on but couldn't start (its workplace couldn't
@@ -3671,10 +3725,21 @@ mod tests {
             heartbeat_at: 100,
             lease_expires_at: 0,
             reason: Some(stall_reason::LEASE_EXPIRED.into()),
+            pause: None,
             head: Some("1a2b3c4".into()),
             dirty: Some(2),
         };
         assert_eq!(serde_json::from_value::<TicketExecution>(serde_json::to_value(&execution).unwrap()).unwrap(), execution);
+        // A paused run says why and when it goes on; a run that isn't says nothing of it.
+        let paused = TicketExecution {
+            state: ExecutionState::Active,
+            pause: Some(RunPause { why: PauseWhy::EngineLimit, engine: Some(Engine::Claude), resumes_at: Some(500), moves_to: Some(Engine::Codex), cause: None, attempt: 0 }),
+            ..execution.clone()
+        };
+        let wire = serde_json::to_value(&paused).unwrap();
+        assert_eq!(wire["pause"], json!({ "why": "engine_limit", "engine": "claude", "resumes_at": 500, "moves_to": "codex" }));
+        assert_eq!(serde_json::from_value::<TicketExecution>(wire).unwrap(), paused);
+        assert!(serde_json::to_value(&execution).unwrap().get("pause").is_none());
         for state in [ExecutionState::Active, ExecutionState::Queued, ExecutionState::Waiting, ExecutionState::Stalled, ExecutionState::Stopped] {
             assert_eq!(ExecutionState::parse(state.code()), state);
             assert_eq!(serde_json::to_value(state).unwrap(), json!(state.code()));
@@ -3692,6 +3757,7 @@ mod tests {
                 heartbeat_at: 0,
                 lease_expires_at,
                 reason: None,
+                pause: None,
                 head: None,
                 dirty: None,
             }))

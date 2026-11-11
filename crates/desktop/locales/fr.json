@@ -3722,5 +3722,11 @@
   "sidebar.wake_hint": "Reprend du nouveau travail",
   "sidebar.open_ticket": "Ouvrir",
   "board.flag_stale": "Ancien",
-  "board.flag_stale_tip": "En attente depuis {span} : toujours utile, ou peut-on le fermer ?"
+  "board.flag_stale_tip": "En attente depuis {span} : toujours utile, ou peut-on le fermer ?",
+  "run.pause_limit": "En pause : {engine} a atteint sa limite d'utilisation. Il reprendra tout seul dès que {engine} aura de la marge.",
+  "run.pause_limit_at": "En pause : {engine} a atteint sa limite d'utilisation. Il reprendra tout seul dans {span}.",
+  "run.pause_limit_moves": "En pause : {engine} a atteint sa limite d'utilisation. Il continue sur {to}.",
+  "run.pause_retry": "Son moteur a échoué ({cause}). equipe réessaiera tout seul dans {span}.",
+  "run.pause_squad": "En pause avec l'équipe : plusieurs moteurs ont échoué en même temps ({cause}). Il reprendra dès qu'un tour d'essai réussira.",
+  "run.pause_sign_in": "En pause : la connexion à {engine} ne fonctionne plus ici. Il reprendra une fois reconnecté."
 }

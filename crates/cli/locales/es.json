@@ -1295,5 +1295,11 @@
   "commands.rest_stop": "y detener lo que tiene entre manos",
   "commands.rest_off": "despertarlo: acepta trabajo nuevo otra vez",
   "app.rest_usage": "/rest <miembro> — sin trabajo nuevo, termina lo que tiene · /rest <miembro> stop — lo detiene también · /rest <miembro> off — lo despierta",
-  "app.pm_rests": "El PM sigue de guardia: no puede descansar."
+  "app.pm_rests": "El PM sigue de guardia: no puede descansar.",
+  "app.run_pause_limit": "En pausa: {engine} alcanzó su límite de uso. Continuará solo cuando {engine} tenga margen.",
+  "app.run_pause_limit_at": "En pausa: {engine} alcanzó su límite de uso. Continuará solo en {span}.",
+  "app.run_pause_limit_moves": "En pausa: {engine} alcanzó su límite de uso. Continúa en {to}.",
+  "app.run_pause_retry": "Su motor falló ({cause}). equipe lo reintentará solo en {span}.",
+  "app.run_pause_squad": "En pausa con el equipo: varios motores fallaron a la vez ({cause}). Continuará cuando funcione un turno de prueba.",
+  "app.run_pause_sign_in": "En pausa: el inicio de sesión de {engine} dejó de funcionar aquí. Continuará al volver a iniciar sesión."
 }

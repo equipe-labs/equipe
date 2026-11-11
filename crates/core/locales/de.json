@@ -644,5 +644,15 @@
   "news.resting": "{name} pausiert · keine neue Arbeit, bis du sie zurückholst",
   "news.awake": "{name} ist zurück · nimmt wieder neue Arbeit an",
   "control.resting_on": "{member} pausieren: keine neue Arbeit, bis du sie zurückholst; Laufendes wird fertig",
-  "control.resting_off": "{member} zurückholen: nimmt wieder neue Arbeit an"
+  "control.resting_off": "{member} zurückholen: nimmt wieder neue Arbeit an",
+  "notice.nudged": "Der Zug an T-{id} endete, ohne die Arbeit abzuschließen; equipe hat daran erinnert, wie er abgeschlossen wird.",
+  "news.handed_back_waiting": "{name} hat T-{id} zurückgelegt, bis das fertig ist, worauf es wartet; dann kommt es zurück · {title}.",
+  "news.handed_back_duplicate": "{name} hat T-{id} als Duplikat zurückgegeben; der PM regelt es · {title}.",
+  "news.handed_back_role": "{name} hat T-{id} zurückgegeben: Es ist die Arbeit einer anderen Rolle; der PM regelt es · {title}.",
+  "news.handed_back_cannot": "{name} hat T-{id} zurückgegeben: So wie verlangt geht es nicht; der PM regelt es · {title}.",
+  "news.handed_back_unfinished": "Die Züge von {name} an T-{id} endeten immer wieder ohne Abgabe, daher ging es an den PM · {title}.",
+  "news.squad_paused": "Die Engines mehrerer Mitglieder sind gleichzeitig ausgefallen ({cause}). Die Squad beginnt nichts Neues, bis ein Testzug klappt; equipe versucht es selbst erneut – oder schick eine beliebige Nachricht, um es sofort zu versuchen.",
+  "news.squad_resumed": "Die Engines laufen wieder: Die pausierten Tickets gehen von selbst weiter.",
+  "news.ticket_failing": "Die Engine von T-{id} fällt immer wieder aus ({cause}); equipe versucht es weiter, mit jedes Mal längeren Pausen · {title}.",
+  "news.limit_paused": "{engine} hat während T-{id} sein Nutzungslimit erreicht: Was dadurch unterbrochen wurde, pausiert an Ort und Stelle und geht von selbst weiter – auf der anderen Engine, wenn Mitglieder dorthin wechseln, oder sobald {engine} wieder Luft hat."
 }

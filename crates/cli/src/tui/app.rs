@@ -232,6 +232,22 @@ pub fn stall_reason_words(code: Option<&str>) -> &'static str {
     }
 }
 
+/// Why equipe paused a run, and when it goes on, in the person's words.
+pub fn pause_words(pause: &equipe_core::protocol::RunPause) -> String {
+    use equipe_core::protocol::PauseWhy;
+    use engines::{engine_name, span};
+    let engine = pause.engine.map(engine_name).unwrap_or_default();
+    let cause = pause.cause.clone().unwrap_or_default();
+    match (pause.why, pause.moves_to, pause.resumes_at) {
+        (PauseWhy::EngineLimit, Some(to), _) => t!("app.run_pause_limit_moves", engine = engine, to = engine_name(to)),
+        (PauseWhy::EngineLimit, None, Some(at)) => t!("app.run_pause_limit_at", engine = engine, span = span(at as i64)),
+        (PauseWhy::EngineLimit, None, None) => t!("app.run_pause_limit", engine = engine),
+        (PauseWhy::Retrying, _, at) => t!("app.run_pause_retry", cause = cause, span = span(at.unwrap_or_default() as i64)),
+        (PauseWhy::SquadPaused, _, _) => t!("app.run_pause_squad", cause = cause),
+        (PauseWhy::SignIn, _, _) => t!("app.run_pause_sign_in", engine = engine),
+    }
+}
+
 /// The person's three ways back for a stalled ticket, each on the same
 /// ticket, branch and worktree — never a new ticket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

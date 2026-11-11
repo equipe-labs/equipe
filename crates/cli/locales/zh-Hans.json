@@ -1272,5 +1272,11 @@
   "commands.rest_stop": "并停止手头的工作",
   "commands.rest_off": "唤醒：重新接新工作",
   "app.rest_usage": "/rest <成员> — 不接新工作，手头的做完 · /rest <成员> stop — 手头的也停止 · /rest <成员> off — 唤醒",
-  "app.pm_rests": "PM 不能休息，它始终在岗。"
+  "app.pm_rests": "PM 不能休息，它始终在岗。",
+  "app.run_pause_limit": "已暂停：{engine} 达到了用量上限。{engine} 有余量后会自动继续。",
+  "app.run_pause_limit_at": "已暂停：{engine} 达到了用量上限。{span}后自动继续。",
+  "app.run_pause_limit_moves": "已暂停：{engine} 达到了用量上限。将在 {to} 上继续。",
+  "app.run_pause_retry": "引擎失败了（{cause}）。equipe 会在 {span}后自动重试。",
+  "app.run_pause_squad": "随小队暂停：多个引擎同时失败（{cause}）。测试轮成功后继续。",
+  "app.run_pause_sign_in": "已暂停：{engine} 在这台 Mac 上的登录失效了。重新登录后继续。"
 }

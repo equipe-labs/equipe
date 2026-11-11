@@ -3722,5 +3722,11 @@
   "sidebar.wake_hint": "Acepta trabajo nuevo otra vez",
   "sidebar.open_ticket": "Abrir",
   "board.flag_stale": "Antiguo",
-  "board.flag_stale_tip": "Esperando desde hace {span}: ¿sigue haciendo falta o se puede cerrar?"
+  "board.flag_stale_tip": "Esperando desde hace {span}: ¿sigue haciendo falta o se puede cerrar?",
+  "run.pause_limit": "En pausa: {engine} alcanzó su límite de uso. Continuará solo cuando {engine} tenga margen.",
+  "run.pause_limit_at": "En pausa: {engine} alcanzó su límite de uso. Continuará solo en {span}.",
+  "run.pause_limit_moves": "En pausa: {engine} alcanzó su límite de uso. Continúa en {to}.",
+  "run.pause_retry": "Su motor falló ({cause}). equipe lo reintentará solo en {span}.",
+  "run.pause_squad": "En pausa con el equipo: varios motores fallaron a la vez ({cause}). Continuará cuando funcione un turno de prueba.",
+  "run.pause_sign_in": "En pausa: el inicio de sesión de {engine} dejó de funcionar aquí. Continuará al volver a iniciar sesión."
 }

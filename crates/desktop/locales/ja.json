@@ -3633,5 +3633,11 @@
   "sidebar.wake_hint": "また新しい仕事を受けます",
   "sidebar.open_ticket": "開く",
   "board.flag_stale": "放置",
-  "board.flag_stale_tip": "{span}待機中: まだ必要ですか、それとも閉じてよいですか？"
+  "board.flag_stale_tip": "{span}待機中: まだ必要ですか、それとも閉じてよいですか？",
+  "run.pause_limit": "一時停止：{engine} が使用上限に達しました。{engine} に余裕ができると自動で再開します。",
+  "run.pause_limit_at": "一時停止：{engine} が使用上限に達しました。{span}後に自動で再開します。",
+  "run.pause_limit_moves": "一時停止：{engine} が使用上限に達しました。{to} で続けます。",
+  "run.pause_retry": "エンジンが失敗しました（{cause}）。{span}後に equipe が自動で再試行します。",
+  "run.pause_squad": "スクワッドごと一時停止：複数のエンジンが一度に失敗しました（{cause}）。テストのターンが成功すると再開します。",
+  "run.pause_sign_in": "一時停止：この Mac で {engine} のサインインが使えなくなりました。サインインし直すと再開します。"
 }

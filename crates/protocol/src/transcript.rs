@@ -404,6 +404,7 @@ pub fn tool_verb(name: &str) -> &str {
             Some("comment") => "comment",
             Some("submit_for_review") => "hand in",
             Some("block_on_person") => "wait on you",
+            Some("hand_back") => "ticket",
             Some("ask_person") => "ask you",
             // The member's browser: every step reads as browsing.
             _ if other.starts_with("mcp__browser__") => "browse",

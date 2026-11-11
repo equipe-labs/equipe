@@ -644,5 +644,15 @@
   "news.resting": "{name} is resting · no new work until you wake them",
   "news.awake": "{name} is back · takes new work again",
   "control.resting_on": "Rest {member}: no new work until you wake them; what they work on now, they finish",
-  "control.resting_off": "Wake {member}: they take new work again"
+  "control.resting_off": "Wake {member}: they take new work again",
+  "notice.nudged": "T-{id}'s turn ended without finishing the work; equipe reminded it how to finish.",
+  "news.handed_back_waiting": "{name} put T-{id} down until what it waits on is done; it comes back to them then · {title}.",
+  "news.handed_back_duplicate": "{name} handed T-{id} back as a duplicate; the PM settles it · {title}.",
+  "news.handed_back_role": "{name} handed T-{id} back: it is another role's work; the PM settles it · {title}.",
+  "news.handed_back_cannot": "{name} handed T-{id} back: it can't be done as asked; the PM settles it · {title}.",
+  "news.handed_back_unfinished": "{name}'s turns on T-{id} kept ending without a hand-in, so it went to the PM · {title}.",
+  "news.squad_paused": "Several members' engines failed at once ({cause}). The squad starts nothing new until a test turn works; equipe tries again by itself, or send any message to try now.",
+  "news.squad_resumed": "The engines work again: the paused tickets go on by themselves.",
+  "news.ticket_failing": "T-{id}'s engine keeps failing ({cause}); equipe keeps trying, waiting longer each time · {title}.",
+  "news.limit_paused": "{engine} reached its usage limit during T-{id}: what it cut short is paused where it was and goes on by itself — on the other engine if members move there, or once {engine} has room."
 }

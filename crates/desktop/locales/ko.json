@@ -3634,5 +3634,11 @@
   "sidebar.wake_hint": "다시 새 일을 받아요",
   "sidebar.open_ticket": "열기",
   "board.flag_stale": "오래됨",
-  "board.flag_stale_tip": "{span}째 기다리는 중: 아직 필요한가요, 닫아도 되나요?"
+  "board.flag_stale_tip": "{span}째 기다리는 중: 아직 필요한가요, 닫아도 되나요?",
+  "run.pause_limit": "멈춤: {engine} 사용 한도에 도달했어요. {engine}에 여유가 생기면 알아서 이어져요.",
+  "run.pause_limit_at": "멈춤: {engine} 사용 한도에 도달했어요. {span} 뒤 알아서 이어져요.",
+  "run.pause_limit_moves": "멈춤: {engine} 사용 한도에 도달했어요. {to}에서 이어서 진행해요.",
+  "run.pause_retry": "엔진이 실패했어요({cause}). {span} 뒤 equipe가 알아서 다시 시도해요.",
+  "run.pause_squad": "스쿼드와 함께 멈춤: 여러 엔진이 한꺼번에 실패했어요({cause}). 시험 턴이 성공하면 이어져요.",
+  "run.pause_sign_in": "멈춤: 이 Mac에서 {engine} 로그인이 작동하지 않아요. 다시 로그인하면 이어져요."
 }

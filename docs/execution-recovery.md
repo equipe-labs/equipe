@@ -33,9 +33,10 @@ late message from an older run can't revive, extend or close a newer one.
 `reason` is a code: `lease_expired`, `not_resumed` or `migrated` for a stalled
 run (`equipe_protocol::stall_reason`), and `waiting_for_person`, `handed_in`,
 `accepted`, `cancelled`, `design_qa_ended`, `member_left`, `reassigned`,
-`handed_over`, `could_not_start` (its worktree couldn't be made) or
-`not_started` (the daemon stopped before it started) for the others. Screens put
-the codes in words.
+`handed_over`, `handed_back`, `could_not_start` (its worktree couldn't be made)
+or `not_started` (the daemon stopped before it started) for the others. Screens
+put the codes in words. An `active` run equipe paused itself carries `pause`
+(`RunPause`): why, the engine, when it goes on and what the engine said.
 
 ## Starting
 
@@ -70,9 +71,10 @@ file remain untouched. Re-running it is a no-op.
 
 The lease is 150 seconds. The minute tick renews it for every run whose turn
 is running, then stalls the active runs whose lease ran out and whose session
-has no running turn. A running turn is never stalled, however long a tool
-call takes; a turn that ended without a board call is stalled two to three
-minutes later.
+has no running turn, nor a pause of equipe's (below). A running turn is never
+stalled, however long a tool call takes; a turn that ended without a board call
+and that equipe didn't carry on — one the person stopped, say — is stalled two
+to three minutes later.
 
 A stalled run's member lets go of the ticket in memory only: nothing is
 committed, reset or cleaned, so HEAD and the uncommitted and untracked files
@@ -80,6 +82,48 @@ stay exactly as they were. The member is free for other work. The ticket stays
 `in_progress` with its assignee, branch and worktree; its card shows the
 commit and the dirty-file count, and the PM is told it can't recover the
 ticket and must not open a new one.
+
+## Turns that end without ending the work
+
+The lease is the last net, not the way work is carried on. When a turn on a
+ticket ends with no hand-in, wait, question, hand-back or design QA verdict,
+equipe acts at once (`runtime/turn_end.rs`):
+
+- **The engine failed the turn.** The run is paused (`pause.why = retrying`)
+  and goes again by itself after 30 seconds, 2 minutes, 10 minutes, then every
+  30 minutes — never at once. A turn that failed with nothing done (no tool
+  call, no token) within 20 seconds is a fast failure. Three of a squad's
+  tickets failing fast within five minutes open the squad's breaker
+  (`squad_paused`): nothing new starts and nothing retries; the person is told
+  once with what the engine said (secrets blanked); a test turn goes after two
+  minutes (doubling to half an hour while it fails), at once when the person
+  says anything to a member, the disk has room again or an engine signs in
+  again. When it works, every paused run goes on. A conversation the engine
+  can't resume ("No conversation found") is dropped, and the next try starts a
+  fresh one with the ticket's brief, same branch and worktree. A lost sign-in
+  is paused (`sign_in`) for `engine_auth`'s carry-on.
+- **The engine reached its plan's limit** (its error, a limit line it ended on,
+  or its plan read as out). The turn is kept as `limited` in the journal's
+  turns, not completed. The run is paused (`engine_limit`) with the ticket as
+  it is; the switching rules may move the member to the other engine, which
+  hands the paused ticket over at once; otherwise it goes on in the same
+  conversation when the engine is read with room, or at its reset.
+- **No end to the work.** A member with the board's tools is resumed once in
+  the same conversation with the ways to end a turn; ended the same way again,
+  the ticket goes back among the proposals for the PM (`Ticket::handed_back`),
+  with the member's last comment (or words) as the reason, and the PM is woken.
+  A turn whose member handed its browser or a sign-in to the person, has a
+  permission pending, or has messages waiting is left as it is.
+
+A member hands a ticket back itself with `hand_back`: `waiting_on` (named
+tickets) puts it back on the board depending on them, for the same member, in
+the same worktree, once they are closed; `duplicate`, `not_my_role` and
+`cannot` put it among the proposals with the note, and wake the PM to cancel,
+reassign or reshape it. A turn the person stopped is left alone; its lease
+still stalls it later. Each of these endings is counted in the squad's journal
+(`turn_endings`: `no_end`, `nudged`, `handed_to_pm`, `handed_back`, `failed`,
+`failed_fast`, `limited`, `squad_paused`), logged, and summed in the weekly
+retro's facts.
 
 ## Recovery: the person's command only
 

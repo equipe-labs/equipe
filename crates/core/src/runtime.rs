@@ -98,6 +98,9 @@ mod phone;
 mod call;
 mod tiers;
 mod workspace;
+mod turn_end;
+pub use turn_end::turn_ending;
+use turn_end::{RunEnd, TurnEnds, TurnWatch};
 
 /// How many recent lines a snapshot carries per session.
 const SNAPSHOT_LINES: usize = 200;
@@ -266,6 +269,8 @@ enum Request {
     Usage(Engine, equipe_protocol::PlanUsage),
     /// The lease check, as if at this unix time (tests).
     CheckLeases(u64, oneshot::Sender<()>),
+    /// Paused runs looked at, as if at this unix time (tests).
+    TurnEndsDue(u64, oneshot::Sender<()>),
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -516,6 +521,15 @@ impl Handle {
         }
     }
 
+    /// Look at the runs equipe paused — a retry after the engine failed, an
+    /// engine's limit — as if at unix time `at` (tests), instead of waiting.
+    pub async fn turn_ends_due_at(&self, at: u64) {
+        let (tx, rx) = oneshot::channel();
+        if self.requests.send(Request::TurnEndsDue(at, tx)).is_ok() {
+            let _ = rx.await;
+        }
+    }
+
     /// Stop running turns and the runtime. Open sessions stay journaled.
     pub async fn shutdown(&self) {
         let (tx, rx) = oneshot::channel();
@@ -620,6 +634,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         installs: std::collections::HashSet::new(),
         codex_binary: crate::engines::codex_binary(),
         engines: Default::default(),
+        turn_ends: Default::default(),
         design_watch: HashMap::new(),
         design_busy: std::collections::HashSet::new(),
         review_nudged: HashMap::new(),
@@ -703,6 +718,9 @@ struct Work {
     /// Its workspace is still being made off the loop ([`workspace`]): no
     /// turn runs yet, and what is said to it waits as a memo does.
     preparing: bool,
+    /// How its turns end when they don't end the work: paused by equipe,
+    /// reminded how to finish, handed back ([`turn_end`]).
+    end: RunEnd,
 }
 
 /// One of the PM's conversations at its desk, while another is the current one.
@@ -830,6 +848,8 @@ struct Session {
     /// How hard it thinks (`--effort` for Claude Code, reasoning effort for
     /// Codex); `None`: the engine's default.
     effort: Option<String>,
+    /// What its turn running now does and says, for how it ends ([`turn_end`]).
+    watch: TurnWatch,
 }
 
 impl Session {
@@ -970,6 +990,8 @@ enum Internal {
     Workspace { folder: PathBuf, prepared: Option<Box<workspace::Prepared>> },
     /// A turn failed for want of `engine`'s sign-in: kept to carry on.
     SignInLost { engine: Engine, session: SessionId, prompt: String },
+    /// A run paused by equipe may go on now ([`turn_end`]).
+    TurnEndsDue,
     /// Why `engine` can't serve members here, as just looked at.
     AuthChecked(Engine, equipe_protocol::AuthState, String),
     /// Time to look at `engine` again while its turns wait.
@@ -1061,6 +1083,10 @@ enum WorkEnd {
     /// A designer finished a design QA ticket (`design_qa`): it is done, its
     /// files in the squad's folder, and the ticket it checked moves on.
     Checked,
+    /// It called `hand_back` (or equipe did, its turns ending with no end to
+    /// the work): the ticket waits on others, or goes to the PM; its work so
+    /// far stays on its branch and worktree.
+    HandedBack,
 }
 
 struct Runtime {
@@ -1215,6 +1241,8 @@ struct Runtime {
     codex_binary: String,
     /// Both engines' plans, and members moving between them (`engines`).
     engines: engines::Engines,
+    /// Failing engines, per ticket and per squad ([`turn_end`]).
+    turn_ends: TurnEnds,
     /// Squads whose design systems a screen looks at, and their stamp as
     /// last sent; those being looked at off the loop now (`design`).
     design_watch: HashMap<String, u64>,
@@ -1274,6 +1302,7 @@ impl Wake {
             Wake::Request(Some(Request::Phone(_))) => Borrowed("phone tool"),
             Wake::Request(Some(Request::Usage(..))) => Borrowed("an engine's plan usage"),
             Wake::Request(Some(Request::CheckLeases(..))) => Borrowed("lease check"),
+            Wake::Request(Some(Request::TurnEndsDue(..))) => Borrowed("paused runs' time"),
             Wake::Request(Some(Request::Shutdown(_))) | Wake::Request(None) => Borrowed("shutdown"),
             Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
             Wake::Internal(Internal::EngineStarted { .. }) => Borrowed("an engine's start"),
@@ -1302,6 +1331,7 @@ impl Wake {
             Wake::Internal(Internal::Workspace { .. }) => Borrowed("a run's workspace made"),
             Wake::Internal(Internal::SignInLost { .. }) => Borrowed("a turn stopped by a lost sign-in"),
             Wake::Internal(Internal::AuthChecked(..)) => Borrowed("why an engine can't sign in"),
+            Wake::Internal(Internal::TurnEndsDue) => Borrowed("a paused run's time"),
             Wake::Internal(Internal::AuthRecheck(_)) => Borrowed("an engine's sign-in looked at again"),
             Wake::Internal(Internal::SignalRead { .. }) => Borrowed("a signal's reading"),
             Wake::Request(Some(Request::Disk(_))) => Borrowed("a look at the disk"),
@@ -1464,6 +1494,10 @@ impl Runtime {
                     self.recover_execution_leases(at).await;
                     let _ = reply.send(());
                 }
+                Some(Request::TurnEndsDue(at, reply)) => {
+                    self.turn_ends_due(at);
+                    let _ = reply.send(());
+                }
                 Some(Request::Shutdown(reply)) => {
                     self.stop_all_turns();
                     let _ = reply.send(());
@@ -1524,7 +1558,10 @@ impl Runtime {
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
                 Internal::DiskTrimmed(freed, lines) => self.on_disk_trimmed(freed, lines),
+                Internal::TurnEndsDue => self.turn_ends_due(now_secs()),
                 Internal::Dispatch => {
+                    // The disk has room again: a squad held by failing engines tries at once.
+                    self.try_breakers_now();
                     let squads: Vec<String> = self.journals.keys().cloned().collect();
                     for squad in squads {
                         self.dispatch(&squad).await;
@@ -1602,6 +1639,7 @@ impl Runtime {
                 self.keep_awake();
                 self.renew_execution_leases();
                 self.recover_execution_leases(now_secs()).await;
+                self.turn_ends_due(now_secs());
                 self.plan_use_pass();
                 pulse.step("minute tick: idle lanes");
                 self.fold_idle_lanes();
@@ -1703,6 +1741,8 @@ impl Runtime {
             crate::kept::keep(&self.config.home, text);
             *kept = crate::kept::words(&self.config.home, text);
         }
+        // How the turn goes, for how it ends: a turn its engine's limit ended is kept as limited.
+        let limited = self.watch_turn(&event);
         // A run making the same call over and over: its ticket's next lane goes up a tier.
         if let Event::ToolUse { session, tool, target: Some(target), .. } = &event {
             self.watch_loop(*session, tool, target);
@@ -1739,7 +1779,11 @@ impl Runtime {
                     ticket: session.work.as_ref().map(|w| w.ticket),
                     began,
                     ended: now_secs().max(began),
-                    outcome: serde_json::to_value(outcome).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default(),
+                    outcome: if limited {
+                        turn_ending::LIMITED.to_owned()
+                    } else {
+                        serde_json::to_value(outcome).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()
+                    },
                     tokens: usage.as_ref().map_or(0, |u| u.total()),
                 }),
                 _ => None,
@@ -2034,7 +2078,14 @@ impl Runtime {
         // What the person sends keeps its attachments from the moment it is
         // sent, even while it waits for a member (`crate::kept`).
         match &command {
-            Command::Submit { text, .. } | Command::SubmitLater { text, .. } | Command::SideChatSubmit { text, .. } => {
+            Command::Submit { text, session, .. } | Command::SubmitLater { text, session, .. } => {
+                crate::kept::keep(&self.config.home, text);
+                // The person at work in a squad that failing engines hold: it tries a test turn now.
+                if let Some(squad) = self.sessions.get(session).and_then(|s| s.squad.clone()) {
+                    self.person_acted(&squad);
+                }
+            }
+            Command::SideChatSubmit { text, .. } => {
                 crate::kept::keep(&self.config.home, text);
             }
             Command::SendNow { texts, .. } => {
@@ -2084,7 +2135,10 @@ impl Runtime {
             Command::KeepOnBranch { squad, ticket } => self.keep_on_branch(&squad, ticket),
             Command::Reopen { squad, ticket, note } => self.reopen(&squad, ticket, note).await,
             Command::Resume { squad, ticket, note } => self.resume(&squad, ticket, note).await,
-            Command::Requeue { squad, ticket, operation, how } => self.requeue(&squad, ticket, &operation, how).await,
+            Command::Requeue { squad, ticket, operation, how } => {
+                self.person_acted(&squad);
+                self.requeue(&squad, ticket, &operation, how).await
+            }
             Command::Cancel { squad, ticket } => self.cancel(&squad, ticket).await,
             Command::CreateTicket { squad, draft } => self.person_creates(&squad, draft).await,
             Command::EditTicket { squad, ticket, changes } => self.person_edits(&squad, ticket, changes).await,
@@ -2613,6 +2667,8 @@ impl Runtime {
                     resumed += 1;
                 }
             }
+            // A squad held by engines failing at once — a lost sign-in, likely — tries again now.
+            self.try_breakers_now();
             let Some(fix) = self.auth.get_mut(&engine) else { return };
             (fix.state, fix.detail) = (AuthState::SignedIn { resumed }, String::new());
             let event = fix.event(engine);
@@ -3663,6 +3719,7 @@ runbooks and reports live there, and work across the projects or on running them
                 slot: 0,
                 estimate: None,
                 turn_began: None,
+                watch: TurnWatch::default(),
             },
         );
         self.publish(Event::SessionStarted { session: id, project, engine, model: model.clone(), workspace, member, squad: squad.clone() });
@@ -4371,7 +4428,14 @@ for one project goes to it as tickets for its owners, with that project — and 
         if let Some(session) = self.sessions.get_mut(&id) {
             session.answers_person = false;
             session.turn_began = Some(now_secs());
+            session.watch.begin(&prompt);
+            if let Some(work) = session.work.as_mut() {
+                work.end.nudged = false;
+                work.end.with_person = false;
+            }
         }
+        // A run equipe paused goes on with this turn, however it was asked.
+        self.unpark_on_turn(id);
         self.guess_estimate(id);
         // A desk conversation grown too large, or gone cold, starts afresh.
         let prompt = match self.refresh_desk(id) {
@@ -5087,6 +5151,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         let Some(turn) = session.turn.take_if(|t| !t.is_finished()) else {
             return false;
         };
+        session.watch.stopped = true;
         // Codex winds its turn down itself, keeping its thread whole; one that
         // doesn't in time is cut. Its end is said here, not by it.
         if session.stop.take().is_some_and(|stop| stop.send(()).is_ok()) {
@@ -5323,10 +5388,19 @@ for one project goes to it as tickets for its owners, with that project — and 
         for (text, project) in unread.unwrap_or_default() {
             self.leave_memo_about(id, text, project);
         }
+        // How the turn that just ended went, if one did: one that went well
+        // ends its ticket's failures in a row, and passes a breaker's test.
+        let ending = self.sessions.get_mut(&id).and_then(|s| s.watch.ended.take());
+        if ending.as_ref().is_some_and(|e| !e.limit && !matches!(e.outcome, TurnOutcome::Failed | TurnOutcome::Interrupted)) {
+            self.ended_well(id);
+        }
         let Some(session) = self.sessions.get(&id) else {
             return;
         };
         let squad = session.squad.clone();
+        let handed_back = session.work.as_ref().is_some_and(|w| w.end.handed_back.is_some());
+        // Paused by equipe, or resumed with a reminder: what waits for it waits too.
+        let mut held = false;
         if session.work.as_ref().is_some_and(|w| w.handed_in.is_some()) {
             self.end_work(id, WorkEnd::HandedIn);
         } else if session.work.as_ref().is_some_and(|w| w.waiting.is_some()) {
@@ -5340,12 +5414,18 @@ for one project goes to it as tickets for its owners, with that project — and 
                 work.waiting = Some(note);
             }
             self.end_work(id, WorkEnd::Waiting);
+        } else if handed_back {
+            self.end_work(id, WorkEnd::HandedBack);
+        } else {
+            // No end to the work, or the engine failed or ran out: equipe
+            // carries it on rather than leave it for its lease to run out.
+            held = self.unfinished_turn(id, ending);
         }
         // Off a ticket, the turn's end is the work's: what was expected is done.
         if self.sessions.get(&id).is_some_and(|s| s.work.is_none()) {
             self.estimate_done(id);
         }
-        if let Some(text) = self.sessions.get_mut(&id).and_then(Session::next_memos) {
+        if !held && let Some(text) = self.sessions.get_mut(&id).and_then(Session::next_memos) {
             self.save_waiting(id);
             Box::pin(self.submit(id, text)).await;
         }
@@ -5527,6 +5607,10 @@ for one project goes to it as tickets for its owners, with that project — and 
     async fn dispatch_to(&mut self, squad: &str, only: &[String], first: &[TicketId]) {
         // A member moving engines moves before it picks up its next ticket.
         self.apply_engine_moves(squad).await;
+        // Several engines failed at once: nothing new starts until a test turn works.
+        if self.turn_ends.paused(squad) {
+            return;
+        }
         let mut tickets = self.tickets(squad);
         tickets.retain(|ticket| !self.held_for_room(ticket.kind) && !self.workspaces.busy(squad, ticket.id));
         let single_project = self.projects(squad).len() == 1;
@@ -5781,6 +5865,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             verdict: None,
             refused: None,
             preparing,
+            end: RunEnd::default(),
         };
         // The ticket runs in a session of its own, beside the member's
         // conversation and its other runs: from here `id` is the run.
@@ -5894,7 +5979,8 @@ for one project goes to it as tickets for its owners, with that project — and 
         let active: Vec<(String, SessionId, TicketId, u64)> = self
             .sessions
             .iter()
-            .filter(|(_, session)| session.is_working() || session.is_preparing())
+            // A run equipe paused holds its lease while it waits to go on.
+            .filter(|(_, session)| session.is_working() || session.is_preparing() || Runtime::is_parked(session))
             .filter_map(|(_, session)| {
                 let work = session.work.as_ref()?;
                 Some((session.squad.clone()?, work.execution_session, work.ticket, work.execution_generation))
@@ -5918,7 +6004,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             let live: Vec<SessionId> = self
                 .sessions
                 .values()
-                .filter(|session| session.squad.as_deref() == Some(squad.as_str()) && (session.is_working() || session.is_preparing()))
+                .filter(|session| session.squad.as_deref() == Some(squad.as_str()) && (session.is_working() || session.is_preparing() || Runtime::is_parked(session)))
                 .filter_map(|session| session.work.as_ref().map(|work| work.execution_session))
                 .collect();
             let stalled = self.journal(&squad).and_then(|j| j.recover_executions(&live, at).ok()).unwrap_or_default();
@@ -6034,7 +6120,7 @@ todo); or drop it if it's no longer wanted.]"
         let Some(mut ticket) = self.journal(&squad).and_then(|j| j.ticket(work.ticket).ok().flatten()) else {
             return;
         };
-        let summary = work.handed_in.clone().or_else(|| work.waiting.clone());
+        let summary = work.handed_in.clone().or_else(|| work.waiting.clone()).or_else(|| work.end.handed_back.as_ref().map(|h| h.note.clone()));
         let mut kept_worktree = None;
         // A task or action accepted goes into the squad's folder now; `Err` when the folder changed under it.
         let mut landed: Option<Result<(), String>> = None;
@@ -6050,7 +6136,7 @@ todo); or drop it if it's no longer wanted.]"
             // next: removing gigabytes of worktree, and checking the branch
             // out again for the next member, held the daemon's loop for
             // seconds per ticket.
-            if matches!(how, WorkEnd::HandedIn | WorkEnd::Waiting | WorkEnd::Left) {
+            if matches!(how, WorkEnd::HandedIn | WorkEnd::Waiting | WorkEnd::Left | WorkEnd::HandedBack) {
                 kept_worktree = Some(sandbox.path.clone());
             } else if matches!(how, WorkEnd::Accepted | WorkEnd::Checked) && ticket.kind.in_home() {
                 if how == WorkEnd::Checked {
@@ -6092,6 +6178,8 @@ todo); or drop it if it's no longer wanted.]"
         }
         // What the hand-in's news is about: the ticket, or the one a design QA checked.
         let (mut about, mut to): (Option<(TicketId, String)>, Option<String>) = (None, None);
+        // Handed back: why, and what the PM is told to do about it.
+        let mut handed_back: Option<(turn_end::Reason, String)> = None;
         // What the PM is told, in English, and what the person reads (`news`).
         let (by, event, line, news) = match how {
             WorkEnd::HandedIn => {
@@ -6163,6 +6251,12 @@ todo); or drop it if it's no longer wanted.]"
                 });
                 ("equipe", "released", format!("{name} left T-{}; it is back on the board", ticket.id), "news.left")
             }
+            WorkEnd::HandedBack => {
+                let hand = work.end.handed_back.clone().unwrap_or(turn_end::HandBack { reason: turn_end::Reason::Cannot, tickets: Vec::new(), suggest: None, note: String::new() });
+                let (event, line, news) = self.handed_back(&squad, &mut ticket, &name, &hand);
+                handed_back = Some((hand.reason, line.clone()));
+                (name.as_str(), event, line, news)
+            }
             WorkEnd::Reassigned { ref to } => {
                 ticket.status = TicketStatus::Todo;
                 ticket.assignee = None;
@@ -6191,6 +6285,7 @@ todo); or drop it if it's no longer wanted.]"
                     WorkEnd::Checked => "design_qa_ended",
                     WorkEnd::Left => "member_left",
                     WorkEnd::Reassigned { .. } => "reassigned",
+                    WorkEnd::HandedBack => "handed_back",
                 };
                 let _ = journal.finish_execution(ticket.id, work.execution_generation, state, Some(reason));
             }
@@ -6219,6 +6314,8 @@ todo); or drop it if it's no longer wanted.]"
         self.publish(Event::Thread { session: id, project: desk });
         self.publish(Event::Notice { undo: None, session: id, text: shown.clone() });
         let briefing = match &summary {
+            // A hand-back's line says its note already.
+            Some(_) if handed_back.is_some() => line.clone(),
             Some(summary) => format!("{line}: {summary}"),
             None => format!("{line}."),
         };
@@ -6235,6 +6332,13 @@ todo); or drop it if it's no longer wanted.]"
 person — put it to them with `propose_accept`. A branch only behind main is no reason to send it back. Then carry on \
 with what else waits.]"
                 );
+                let _ = self.internal.send(Internal::Wake { session: pm, prompt });
+            }
+            // A ticket handed back to the PM is its to settle now, not when next spoken to.
+            if let Some((_, line)) = handed_back.filter(|(r, _)| *r != turn_end::Reason::WaitingOn)
+                && let Some(pm) = self.pm_of(&squad)
+            {
+                let prompt = format!("[equipe: {line} Settle it now, then carry on with what else waits.]");
                 let _ = self.internal.send(Internal::Wake { session: pm, prompt });
             }
         }
@@ -6884,6 +6988,7 @@ It starts when {owner} is free."
             return self.propose_signal(call, reply);
         }
         if call.name == board::SIGN_IN {
+            self.with_person(&call);
             return self.ask_sign_in(call, reply);
         }
         if call.name == crate::helpers::SPAWN_HELPER {
@@ -6896,6 +7001,7 @@ It starts when {owner} is free."
             return self.helper_result(call, reply);
         }
         if call.name == board::SHOW_BROWSER {
+            self.with_person(&call);
             let url = call.arguments["url"].as_str().map(str::to_owned);
             let why = call.arguments["why"].as_str().unwrap_or_default().to_owned();
             if self.ask_in_panel(&call.squad, &call.member, url.as_deref(), &why) {
@@ -6962,6 +7068,14 @@ there, end your turn, and carry on when they say they're done."
             Ok(text) => ToolResult { text, is_error: false, image: None },
             Err(text) => ToolResult { text, is_error: true, image: None },
         });
+    }
+
+    /// The member that made `call` put something in the person's hands —
+    /// its browser, a sign-in: its turn may end waiting on them.
+    fn with_person(&mut self, call: &ToolCall) {
+        if let Some(work) = self.caller_id(call).and_then(|id| self.sessions.get_mut(&id)).and_then(|s| s.work.as_mut()) {
+            work.end.with_person = true;
+        }
     }
 
     // ── permission ──
@@ -8085,8 +8199,13 @@ there, end your turn, and carry on when they say they're done."
                     return self.pm_comment(&squad, &member, &ticket, text, word, why);
                 }
                 journal.ticket_event(ticket_id, &member, board::COMMENT, text).map_err(|e| e.to_string())?;
+                // Its last word on its own ticket: what the PM reads if its turns end with no end to the work.
+                if let Some(work) = self.sessions.get_mut(&id).and_then(|s| s.work.as_mut()).filter(|w| w.ticket == ticket_id) {
+                    work.end.last_comment = Some(text.to_owned());
+                }
                 Ok(format!("Noted on T-{ticket_id}."))
             }
+            board::HAND_BACK => self.hand_back_tool(&squad, id, &args),
             board::SUBMIT_FOR_REVIEW => {
                 let summary = board::arg_str(&args, "summary").ok_or("Summarize what you did.")?.to_owned();
                 // Its pictures, found where it works; one that isn't there is said, to fix.
@@ -8643,6 +8762,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         thread,
                         estimate: None,
                         turn_began: None,
+                        watch: TurnWatch::default(),
                         threads,
                         lane: None,
                         kept: false,
@@ -9001,6 +9121,7 @@ fn restore_work(journal: &Journal, ticket: &Ticket, projects: &[PathBuf], home: 
         verdict: None,
         refused: None,
         preparing: false,
+        end: RunEnd::default(),
     })
 }
 
@@ -9110,6 +9231,11 @@ check what is already done in your worktree first.\n"
             out.push_str(crate::roles::ANSWERS_GUIDE);
             out.push('\n');
         }
+    } else if let Some(note) = reopened.and_then(|n| n.strip_prefix(board::WAITED_ON)) {
+        out.push_str(&format!(
+            "You handed this ticket back to wait on {note}\nCarry on from where you left off — check what is already done in \
+your worktree first, and what those tickets changed.\n"
+        ));
     } else if let Some(note) = reopened.filter(|n| n.starts_with("Design QA by ")) {
         out.push_str(&format!(
             "The squad's designer checked its screens and sent it back. {note}\nFix each difference it lists in your \
@@ -9155,7 +9281,9 @@ If you can't go on without something only the person can do (a token, an account
 with what they need to do — each ask its own item, a full sentence, files by their path in backticks — and end your \
 turn: you are free for other work until they have. If you need a decision or an answer you can go on without for \
 now, ask it with ask_decision (options to pick, or none for an answer in their own words) — never as a numbered list \
-of questions in your reply."
+of questions in your reply. If it can't start until other tickets are done, duplicates another, is another role's \
+work, or can't be done as asked, call hand_back with that reason and a note, and end your turn. Every turn on this \
+ticket ends in exactly one of these ways, or goes on working: a turn that ends otherwise leaves it unfinished."
     } else {
         "\nWhen it's done, say so plainly; the person accepts it. If you are blocked or need a decision, say so."
     });
@@ -9510,6 +9638,7 @@ fn lane_of(main: SessionId, m: &Session, project: Option<String>, thread: DeskTh
         threads: HashMap::new(),
         estimate: None,
         turn_began: None,
+        watch: TurnWatch::default(),
         lane: Some((main, project)),
         kept,
         run_of: None,

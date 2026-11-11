@@ -640,5 +640,15 @@
   "news.resting": "{name} 正在休息 · 在你喚醒之前不接新工作",
   "news.awake": "{name} 回來了 · 重新接新工作",
   "control.resting_on": "讓 {member} 休息：在你喚醒之前不接新工作，手頭的工作會做完",
-  "control.resting_off": "喚醒 {member}：重新接新工作"
+  "control.resting_off": "喚醒 {member}：重新接新工作",
+  "notice.nudged": "T-{id} 的這一輪沒有收尾就結束了，equipe 已再次告訴它如何收尾。",
+  "news.handed_back_waiting": "{name} 暫時放下 T-{id}，等它依賴的工作完成後再回來接手 · {title}。",
+  "news.handed_back_duplicate": "{name} 以重複為由退回了 T-{id}，由 PM 處理 · {title}。",
+  "news.handed_back_role": "{name} 退回了 T-{id}：這是其他角色的工作，由 PM 處理 · {title}。",
+  "news.handed_back_cannot": "{name} 退回了 T-{id}：無法依要求完成，由 PM 處理 · {title}。",
+  "news.handed_back_unfinished": "{name} 在 T-{id} 上的幾輪都沒有提交就結束了，已交給 PM · {title}。",
+  "news.squad_paused": "多位成員的引擎同時失敗（{cause}）。在測試輪成功之前，小隊不會開始新工作；equipe 會自動重試，傳送任何訊息即可立即重試。",
+  "news.squad_resumed": "引擎恢復正常，暫停的工單會自動繼續。",
+  "news.ticket_failing": "T-{id} 的引擎一直失敗（{cause}）；equipe 會逐漸拉長間隔繼續重試 · {title}。",
+  "news.limit_paused": "T-{id} 進行中 {engine} 達到了用量上限：被中斷的工作原地暫停，並會自動繼續——成員換到另一個引擎就在那裡繼續，否則等 {engine} 有餘量時繼續。"
 }

@@ -640,5 +640,15 @@
   "news.resting": "{name} 휴식 중 · 다시 깨울 때까지 새 일을 받지 않아요",
   "news.awake": "{name} 복귀 · 다시 새 일을 받아요",
   "control.resting_on": "{member} 휴식: 다시 깨울 때까지 새 일을 받지 않고, 지금 하던 일은 마쳐요",
-  "control.resting_off": "{member} 휴식 끝내기: 다시 새 일을 받아요"
+  "control.resting_off": "{member} 휴식 끝내기: 다시 새 일을 받아요",
+  "notice.nudged": "T-{id} 턴이 마무리 없이 끝나서, equipe가 마무리하는 방법을 다시 알려 줬어요.",
+  "news.handed_back_waiting": "{name}이(가) 기다리는 작업이 끝날 때까지 T-{id}을(를) 내려놨어요. 끝나면 다시 맡아요 · {title}.",
+  "news.handed_back_duplicate": "{name}이(가) T-{id}을(를) 중복이라며 돌려줬어요. PM이 정리해요 · {title}.",
+  "news.handed_back_role": "{name}이(가) T-{id}을(를) 돌려줬어요. 다른 역할의 일이에요. PM이 정리해요 · {title}.",
+  "news.handed_back_cannot": "{name}이(가) T-{id}을(를) 돌려줬어요. 요청대로는 할 수 없어요. PM이 정리해요 · {title}.",
+  "news.handed_back_unfinished": "{name}의 T-{id} 턴이 계속 제출 없이 끝나서 PM에게 넘겼어요 · {title}.",
+  "news.squad_paused": "여러 멤버의 엔진이 한꺼번에 실패했어요({cause}). 시험 턴이 성공할 때까지 스쿼드는 새 일을 시작하지 않아요. equipe가 알아서 다시 시도하고, 아무 메시지나 보내면 바로 시도해요.",
+  "news.squad_resumed": "엔진이 다시 작동해요. 멈췄던 티켓은 알아서 이어서 진행돼요.",
+  "news.ticket_failing": "T-{id}의 엔진이 계속 실패해요({cause}). equipe가 간격을 늘려 가며 계속 시도해요 · {title}.",
+  "news.limit_paused": "T-{id} 진행 중 {engine} 사용 한도에 도달했어요. 끊긴 작업은 그 자리에서 멈췄다가 알아서 이어져요. 멤버가 다른 엔진으로 옮기면 거기서, 아니면 {engine}에 여유가 생기면 이어져요."
 }

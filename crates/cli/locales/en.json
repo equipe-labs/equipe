@@ -1295,5 +1295,11 @@
   "commands.rest_stop": "and stop what it works on now",
   "commands.rest_off": "wake it: it takes new work again",
   "app.rest_usage": "/rest <member> — no new work, what it works on finishes · /rest <member> stop — stops that too · /rest <member> off — wakes it",
-  "app.pm_rests": "The PM stays on duty: it can't rest."
+  "app.pm_rests": "The PM stays on duty: it can't rest.",
+  "app.run_pause_limit": "Paused: {engine} reached its usage limit. It goes on by itself once {engine} has room.",
+  "app.run_pause_limit_at": "Paused: {engine} reached its usage limit. It goes on by itself in {span}.",
+  "app.run_pause_limit_moves": "Paused: {engine} reached its usage limit. It carries on on {to}.",
+  "app.run_pause_retry": "Its engine failed ({cause}). equipe tries again by itself in {span}.",
+  "app.run_pause_squad": "Paused with the squad: several engines failed at once ({cause}). It goes on once a test turn works.",
+  "app.run_pause_sign_in": "Paused: {engine}'s sign-in stopped working here. It goes on once signed in again."
 }

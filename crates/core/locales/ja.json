@@ -640,5 +640,15 @@
   "news.resting": "{name} は休憩中 · 起こすまで新しい仕事を受けません",
   "news.awake": "{name} が復帰 · また新しい仕事を受けます",
   "control.resting_on": "{member} を休ませる: 起こすまで新しい仕事を受けず、今の作業は終わらせます",
-  "control.resting_off": "{member} の休憩を終える: また新しい仕事を受けます"
+  "control.resting_off": "{member} の休憩を終える: また新しい仕事を受けます",
+  "notice.nudged": "T-{id} のターンが仕上げずに終わったので、equipe が終え方をもう一度伝えました。",
+  "news.handed_back_waiting": "{name} は待っている作業が終わるまで T-{id} を置きました。終わったら再び担当します · {title}。",
+  "news.handed_back_duplicate": "{name} が T-{id} を重複として戻しました。PM が整理します · {title}。",
+  "news.handed_back_role": "{name} が T-{id} を戻しました。別の役割の仕事です。PM が整理します · {title}。",
+  "news.handed_back_cannot": "{name} が T-{id} を戻しました。依頼どおりにはできません。PM が整理します · {title}。",
+  "news.handed_back_unfinished": "{name} の T-{id} のターンが提出なしで終わり続けたため、PM に渡しました · {title}。",
+  "news.squad_paused": "複数のメンバーのエンジンが一度に失敗しました（{cause}）。テストのターンが成功するまで、スクワッドは新しい作業を始めません。equipe が自動で再試行します。何かメッセージを送るとすぐに試します。",
+  "news.squad_resumed": "エンジンが再び動いています。止まっていたチケットは自動で再開します。",
+  "news.ticket_failing": "T-{id} のエンジンが失敗し続けています（{cause}）。equipe は間隔を延ばしながら再試行を続けます · {title}。",
+  "news.limit_paused": "T-{id} の途中で {engine} が使用上限に達しました。中断された作業はその場で止まり、自動で再開します。メンバーが別のエンジンに移ればそこで、そうでなければ {engine} に余裕ができたときに再開します。"
 }

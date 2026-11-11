@@ -3722,5 +3722,11 @@
   "sidebar.wake_hint": "Nimmt wieder neue Arbeit an",
   "sidebar.open_ticket": "Öffnen",
   "board.flag_stale": "Veraltet",
-  "board.flag_stale_tip": "Wartet seit {span}: noch nötig, oder kann es geschlossen werden?"
+  "board.flag_stale_tip": "Wartet seit {span}: noch nötig, oder kann es geschlossen werden?",
+  "run.pause_limit": "Pausiert: {engine} hat sein Nutzungslimit erreicht. Es geht von selbst weiter, sobald {engine} wieder Luft hat.",
+  "run.pause_limit_at": "Pausiert: {engine} hat sein Nutzungslimit erreicht. Es geht in {span} von selbst weiter.",
+  "run.pause_limit_moves": "Pausiert: {engine} hat sein Nutzungslimit erreicht. Es geht auf {to} weiter.",
+  "run.pause_retry": "Seine Engine ist ausgefallen ({cause}). equipe versucht es in {span} von selbst erneut.",
+  "run.pause_squad": "Mit der Squad pausiert: Mehrere Engines sind gleichzeitig ausgefallen ({cause}). Es geht weiter, sobald ein Testzug klappt.",
+  "run.pause_sign_in": "Pausiert: Die Anmeldung bei {engine} funktioniert hier nicht mehr. Es geht weiter, sobald wieder angemeldet."
 }
