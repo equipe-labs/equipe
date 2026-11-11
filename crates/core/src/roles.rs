@@ -2130,7 +2130,9 @@ invent one."), "{id}: true numbers");
             "Finish it with `design_qa`",
             // On its own look at the built screens, polish never left out.
             "never pass on the engineer's screenshots alone",
-            "is polish, always written down, even on a pass",
+            "is polish (S3/S4): always written down, even on a pass, and never a reason to send it back",
+            // Started from equipe's precheck report, when there is one.
+            "Don't shoot every condition again",
         ] {
             assert!(text.contains(part), "{part}: {text}");
         }

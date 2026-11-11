@@ -16,7 +16,7 @@
 //! | Ticket | Tier | Claude | Codex | Cheaper tier recorded |
 //! |---|---|---|---|---|
 //! | PM work | the PM's own | — | — | never |
-//! | Design QA review | deep | Opus · high | Sol · high | never |
+//! | Design QA review (squad policy `economy`, the default; `crate::design_qa::tier_for`) | standard; deep for a redesign, round 2+, or a precheck that needs judgment | Sonnet · medium (Opus · high) | Sol · low (Sol · high) | below the member's own unless the person set its model |
 //! | QA, security review | strong (deep with a risk tag) | Opus · medium | Sol · medium | never |
 //! | Risk tag (auth, payments, migration, security, concurrency, release) | deep | Opus · high | Sol · high | never |
 //! | Design work | deep | Opus · high | Sol · high | never |
@@ -31,7 +31,9 @@
 //! Sonnet runs a feature on Opus, a backend member on Opus at its own effort
 //! keeps it. A ticket with no check to run never goes on a light tier and
 //! never records a cheaper one. Only the person goes below the floor, by
-//! setting a ticket's tier themselves ([`TierBy::Person`]).
+//! setting a ticket's tier themselves ([`TierBy::Person`]) — and design QA's
+//! policy ([`QaTier`]), where nobody but equipe set the designer's model: a
+//! model the person set for the member is its floor there too.
 //!
 //! When work comes back wrong ([`after_send_back`]): the first correctness
 //! send-back carries on in the same conversation, warm; the second (failed
@@ -65,8 +67,21 @@ pub struct Work<'a> {
     pub body: &'a str,
     /// It is a design QA ticket: a designer checks an engineer's screens.
     pub design_qa: bool,
+    /// A design QA ticket's own tier, as the squad's policy reads it
+    /// (`crate::design_qa::tier_for`); `None`: design QA's fixed cell.
+    pub qa_tier: Option<QaTier>,
     /// The member changes files on its tickets.
     pub edits: bool,
+}
+
+/// The tier design QA's policy picked for a design QA ticket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QaTier {
+    pub tier: ModelTier,
+    /// It may run below its member's own model and effort: nobody but equipe
+    /// set the member's model. `false`: the person set it, so the member's
+    /// own is the floor and the policy's tier is only recorded beside it.
+    pub below_floor: bool,
 }
 
 /// What the rules ask for a ticket.
@@ -77,6 +92,9 @@ pub struct Rule {
     pub risk: Vec<RiskTag>,
     /// A cell no tier is ever lowered in: a cheaper one is never recorded.
     pub never_lower: bool,
+    /// It runs at exactly its tier, below its member's own model included:
+    /// design QA's policy, where nobody but equipe set the member's model.
+    pub below_floor: bool,
 }
 
 /// What the rules ask for `w`. `None` for the PM, whose work keeps its own model.
@@ -87,8 +105,11 @@ pub fn rule(w: &Work<'_>) -> Option<Rule> {
     let text = format!("{}\n{}", w.title, w.body);
     let risk = risk_tags(&text);
     let checked = checkable(w.body);
-    let at = |tier, reason, never_lower: bool| Rule { tier, reason, risk: risk.clone(), never_lower: never_lower || !risk.is_empty() || !checked };
-    Some(if w.design_qa {
+    let at = |tier, reason, never_lower: bool| Rule { tier, reason, risk: risk.clone(), never_lower: never_lower || !risk.is_empty() || !checked, below_floor: false };
+    Some(if let (true, Some(q)) = (w.design_qa, w.qa_tier) {
+        // Kept at the member's own where the person set it, the policy's tier recorded beside it.
+        Rule { tier: q.tier, reason: TierReason::DesignQa, risk: risk.clone(), never_lower: q.below_floor, below_floor: q.below_floor }
+    } else if w.design_qa {
         at(ModelTier::Deep, TierReason::DesignQa, true)
     } else if REVIEWERS.contains(&w.role) {
         at(if risk.is_empty() { ModelTier::Strong } else { ModelTier::Deep }, TierReason::Review, true)
@@ -354,6 +375,8 @@ pub fn choose(prev: Option<&TicketModel>, rule: Option<&Rule>, m: &Member<'_>, c
             (Some(rule), Some(floor)) => {
                 // Once raised, a ticket never comes back down mid-way.
                 let raised = prev.tier.filter(|_| prev.by == TierBy::Escalation);
+                // A rule that may go below the member's own has no floor.
+                let floor = if rule.below_floor { ModelTier::Light } else { floor };
                 let tier = rule.tier.max(floor).max(raised.unwrap_or(ModelTier::Light));
                 let escalated = raised.is_some_and(|r| r >= rule.tier.max(floor));
                 let reason = if escalated {
@@ -365,7 +388,7 @@ pub fn choose(prev: Option<&TicketModel>, rule: Option<&Rule>, m: &Member<'_>, c
                 };
                 let shadow = (!rule.never_lower && rule.tier < tier).then_some(rule.tier);
                 let by = if escalated { TierBy::Escalation } else { TierBy::Rule };
-                (TicketModel { tier: Some(tier), by, reason, shadow, ..base }, resolve(tier, m, true))
+                (TicketModel { tier: Some(tier), by, reason, shadow, ..base }, resolve(tier, m, !rule.below_floor))
             }
         },
     };
@@ -425,7 +448,7 @@ mod tests {
     use super::*;
 
     fn work<'a>(role: &'a str, kind: TicketKind, title: &'a str, body: &'a str) -> Work<'a> {
-        Work { role, kind, title, body, design_qa: false, edits: !matches!(role, "qa" | "security" | "data" | "pm") }
+        Work { role, kind, title, body, design_qa: false, qa_tier: None, edits: !matches!(role, "qa" | "security" | "data" | "pm") }
     }
 
     fn tier(role: &str, kind: TicketKind, title: &str, body: &str) -> (ModelTier, TierReason, bool) {
@@ -560,6 +583,33 @@ mod tests {
         // The PM: its own model and effort, whatever it is.
         let c = choose(None, None, &CLAUDE, ModelChoice::QualityFirst);
         assert_eq!((c.model.as_deref(), c.effort.as_deref(), c.ticket.reason), (Some("sonnet"), None, TierReason::Pm));
+    }
+
+    #[test]
+    fn design_qa_runs_at_its_policys_tier_below_the_member_unless_the_person_set_its_model() {
+        let opus = Member { model: Some("opus"), effort: Some("high"), ..CLAUDE };
+        let qa = |tier, below_floor| rule(&Work { design_qa: true, qa_tier: Some(QaTier { tier, below_floor }), ..work("designer", TicketKind::Task, "Design QA of T-4", "") }).unwrap();
+        // Nobody but equipe set the designer's Opus: Sonnet at medium.
+        let c = choose(None, Some(&qa(ModelTier::Standard, true)), &opus, ModelChoice::QualityFirst);
+        assert_eq!((c.ticket.tier, c.model.as_deref(), c.effort.as_deref(), c.ticket.reason), (Some(ModelTier::Standard), Some("sonnet"), Some("medium"), TierReason::DesignQa));
+        // Escalated by the policy: Opus at high.
+        let c = choose(None, Some(&qa(ModelTier::Deep, true)), &opus, ModelChoice::QualityFirst);
+        assert_eq!((c.model.as_deref(), c.effort.as_deref()), (Some("opus"), Some("high")));
+        // The person set the member's model: kept, the cheaper tier only recorded.
+        let c = choose(None, Some(&qa(ModelTier::Standard, false)), &opus, ModelChoice::QualityFirst);
+        assert_eq!((c.model.as_deref(), c.effort.as_deref(), c.ticket.shadow), (Some("opus"), Some("high"), Some(ModelTier::Standard)));
+        // The person's tier on the ticket, and off, win over the policy.
+        let pinned = set_by_person(None, Some(ModelTier::Max), false);
+        let c = choose(Some(&pinned), Some(&qa(ModelTier::Standard, true)), &opus, ModelChoice::QualityFirst);
+        assert_eq!((c.ticket.tier, c.ticket.reason), (Some(ModelTier::Max), TierReason::Person));
+        let c = choose(None, Some(&qa(ModelTier::Standard, true)), &opus, ModelChoice::Off);
+        assert_eq!((c.model.as_deref(), c.ticket.reason), (Some("opus"), TierReason::MemberOwn));
+        // On Codex the same step is its own engine's.
+        let catalog = codex_catalog();
+        let offers = offers(&catalog);
+        let sol = Member { engine: Engine::Codex, model: Some("gpt-6.1-sol"), effort: Some("high"), catalog: &offers };
+        let c = choose(None, Some(&qa(ModelTier::Standard, true)), &sol, ModelChoice::QualityFirst);
+        assert_eq!((c.model.as_deref(), c.effort.as_deref()), (Some("gpt-6.1-sol"), Some("low")));
     }
 
     #[test]

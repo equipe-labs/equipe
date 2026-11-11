@@ -18,8 +18,9 @@ impl Runtime {
     pub(super) fn choose_model(&mut self, squad: &str, id: SessionId, ticket: &Ticket) -> Option<rules::Choice> {
         let design_qa = self.checked_by(squad, ticket.id).is_some();
         let choice = self.journal(squad).map(Journal::model_choice).unwrap_or_default();
+        let (name, role, engine) = self.sessions.get(&id).and_then(|s| s.member.as_ref().map(|m| (m.name.clone(), m.role.clone(), s.engine)))?;
+        let qa_tier = if design_qa { self.qa_tier(squad, ticket, &name, &role, engine) } else { None };
         let s = self.sessions.get(&id)?;
-        let role = s.member.as_ref()?.role.clone();
         let effort = effort_of(s);
         let infos: Vec<codex_app::ModelInfo> = match s.engine {
             Engine::Codex => self.codex_models.as_ref().map(|(_, models)| models.clone()).unwrap_or_default(),
@@ -27,7 +28,7 @@ impl Runtime {
         };
         let catalog: Vec<rules::Offer<'_>> = infos.iter().map(|m| rules::Offer { id: &m.id, efforts: &m.efforts, default_effort: m.default_effort.as_deref() }).collect();
         let member = rules::Member { engine: s.engine, model: s.model.as_deref(), effort: effort.as_deref(), catalog: &catalog };
-        let work = rules::Work { role: &role, kind: ticket.kind, title: &ticket.title, body: &ticket.body, design_qa, edits: s.edits() };
+        let work = rules::Work { role: &role, kind: ticket.kind, title: &ticket.title, body: &ticket.body, design_qa, qa_tier, edits: s.edits() };
         let rule = rules::rule(&work);
         Some(rules::choose(ticket.model.as_ref(), rule.as_ref(), &member, choice))
     }

@@ -271,6 +271,8 @@
   "news.design_qa_asked": "{name}이(가) T-{id}을(를) 넘겼어요. 리뷰 전에 {to}이(가) 화면을 검수해요 · {title}.",
   "news.design_qa_passed": "{name}이(가) T-{id}의 화면 검수를 통과시켰어요. 이제 리뷰하실 수 있어요 · {title}.",
   "news.design_qa_changes": "{name}이(가) T-{id}을(를) {to}에게 돌려보냈어요. 화면을 고쳐야 해요 · {title}.",
+  "news.design_qa_precheck_passed": "equipe 사전 점검이 디자이너 없이 T-{id}의 화면 검수를 통과시켰어요. 바뀐 화면도, 새로 생긴 문제도 없어요. 이제 리뷰하실 수 있어요 · {title}.",
+  "news.design_qa_precheck_changes": "equipe 사전 점검이 디자이너 없이 T-{id}을(를) {to}에게 돌려보냈어요. 화면이나 접근성에 분명한 문제가 있어요 · {title}.",
   "news.plan_reviewed": "{name}이(가) 계획 리뷰를 남겼어요 · {path}",
   "notice.doc_copy_kept": "“{title}”의 사본 하나만 남겼어요: {what} · 되돌릴 수 있어요",
   "plan.review_body.designer": "`{path}` 계획에서 사람이 보는 부분을 UI 맵과 디자인 시스템에 대조해 리뷰해요. 어떤 흐름·화면·상태가 생기거나 바뀌는지, 맵에 빠진 상태는 무엇인지, 써야 할 토큰과 컴포넌트는 무엇인지 적고, 디자인 항목마다 0~10점과 10점이 되려면 무엇이 필요한지 적어요. 리뷰는 계획의 내 리뷰 노트에 남기고 제출해요.",

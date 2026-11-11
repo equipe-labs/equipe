@@ -274,6 +274,8 @@
   "news.design_qa_asked": "{name} handed in T-{id}; {to} checks its screens before your review · {title}.",
   "news.design_qa_passed": "{name} passed the screens of T-{id}: it is ready for your review · {title}.",
   "news.design_qa_changes": "{name} sent T-{id} back to {to}: its screens need changes · {title}.",
+  "news.design_qa_precheck_passed": "equipe's precheck passed the screens of T-{id} without a designer: no screen changed and nothing new was found. It is ready for your review · {title}.",
+  "news.design_qa_precheck_changes": "equipe's precheck sent T-{id} back to {to} without a designer: it found a definite screen or accessibility failure · {title}.",
   "news.plan_reviewed": "{name} wrote its review into the plan · {path}",
   "notice.doc_copy_kept": "Kept one copy of “{title}”: {what} · you can take this back",
   "plan.review_body.designer": "Review what people will see in the plan `{path}` against the UI map and the design system: which flows, screens and states it adds or changes, what states the map is missing, which tokens and components it should use — and score each design dimension 0 to 10 with what a 10 needs. Write your review into the plan's review notes, then hand in.",

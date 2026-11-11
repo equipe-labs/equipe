@@ -282,6 +282,39 @@ pub struct ModelChoiceKept {
     pub shadow: Option<String>,
 }
 
+/// A design QA ticket's way through the precheck, its gate and the
+/// designer ([`Journal::design_qa_run`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DesignQaRun {
+    pub qa: TicketId,
+    /// The ticket it checks.
+    pub checked: TicketId,
+    /// 1 for the first design QA of the ticket it checks.
+    pub round: u32,
+    /// `off`, `shadow` or `on`, as the squad's gate stood when it was made.
+    pub gate: String,
+    /// `skipped`, `running`, `done` or `failed`.
+    pub precheck: String,
+    /// What the gate decided (`auto_pass`, `send_back`, `designer`) — or, in
+    /// shadow, would have.
+    pub decision: Option<String>,
+    /// Why the designer's judgment is needed ([`crate::design_qa::Judgment`]).
+    pub judgment: Option<String>,
+    /// The gate's decision was carried out.
+    pub acted: bool,
+    /// The report's folder.
+    pub report: Option<String>,
+    pub head: Option<String>,
+    pub base: Option<String>,
+    pub precheck_secs: Option<u64>,
+    /// `pass`, `changes` or `cancelled`, once it ended.
+    pub verdict: Option<String>,
+    /// Who gave it: a designer, `equipe` (the gate), `you`.
+    pub verdict_by: Option<String>,
+    pub created_at: i64,
+    pub finished_at: Option<i64>,
+}
+
 /// What a turn ran on, as kept ([`Journal::ticket_turns`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnRan {
@@ -594,6 +627,28 @@ impl Journal {
                shadow TEXT
              );
              CREATE INDEX IF NOT EXISTS model_choices_ticket ON model_choices(ticket);",
+        )?;
+        // Each design QA ticket's way through the precheck, its gate and the
+        // designer, for measuring them (`crate::design::qa_stats`).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS design_qa_runs (
+               qa INTEGER PRIMARY KEY,
+               checked INTEGER NOT NULL,
+               round INTEGER NOT NULL,
+               gate TEXT NOT NULL,
+               precheck TEXT NOT NULL,
+               decision TEXT,
+               judgment TEXT,
+               acted INTEGER NOT NULL DEFAULT 0,
+               report TEXT,
+               head TEXT,
+               base TEXT,
+               precheck_secs INTEGER,
+               verdict TEXT,
+               verdict_by TEXT,
+               created_at INTEGER NOT NULL,
+               finished_at INTEGER
+             );",
         )?;
         // Tickets from before kinds: `code` with a project, `task` without — once,
         // when the column arrives.
@@ -1516,6 +1571,113 @@ impl Journal {
 
     pub fn set_model_choice(&self, choice: equipe_protocol::tiers::ModelChoice) -> Result<()> {
         self.set_meta("model_choice", choice.code())
+    }
+
+    /// Whether the squad's design QA precheck runs and its gate acts: shadow
+    /// unless the person said otherwise.
+    pub fn design_qa_gate(&self) -> crate::design_qa::GateMode {
+        self.meta("design_qa_gate").and_then(|v| crate::design_qa::GateMode::parse(&v)).unwrap_or_default()
+    }
+
+    pub fn set_design_qa_gate(&self, mode: crate::design_qa::GateMode) -> Result<()> {
+        self.set_meta("design_qa_gate", mode.code())
+    }
+
+    /// The tiers design QA runs on: economy unless the person said otherwise.
+    pub fn design_qa_tiers(&self) -> crate::design_qa::TierPolicy {
+        self.meta("design_qa_tiers").and_then(|v| crate::design_qa::TierPolicy::parse(&v)).unwrap_or_default()
+    }
+
+    pub fn set_design_qa_tiers(&self, policy: crate::design_qa::TierPolicy) -> Result<()> {
+        self.set_meta("design_qa_tiers", &policy.code())
+    }
+
+    /// The members whose model the person set (`/model`, a move they made):
+    /// equipe's policies never run them below it.
+    pub fn person_models(&self) -> Vec<String> {
+        self.meta("person_models").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    pub fn mark_person_model(&self, member: &str) -> Result<()> {
+        let mut all = self.person_models();
+        if !all.iter().any(|m| m == member) {
+            all.push(member.to_owned());
+            self.set_meta("person_models", &serde_json::to_string(&all).unwrap_or_default())?;
+        }
+        Ok(())
+    }
+
+    /// How many design QA tickets `checked` has had, the ones from before
+    /// this table included.
+    pub fn design_qa_rounds(&self, checked: TicketId) -> Result<u32> {
+        self.conn.query_row(
+            "SELECT COUNT(*) FROM ticket_events WHERE kind = 'created' AND by = 'equipe' AND text = ?1",
+            [format!("design QA of T-{checked}")],
+            |r| r.get(0),
+        )
+    }
+
+    /// Keep that design QA ticket `qa` of `checked` was made, in its `round`,
+    /// under gate `gate`, its precheck `precheck`.
+    pub fn start_design_qa_run(&self, qa: TicketId, checked: TicketId, round: u32, gate: &str, precheck: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO design_qa_runs (qa, checked, round, gate, precheck, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![qa, checked, round, gate, precheck, now()],
+        )?;
+        Ok(())
+    }
+
+    /// Keep how `qa`'s precheck went: `run` with its precheck, decision,
+    /// judgment, whether it acted, report, commits and time filled in.
+    pub fn set_design_qa_precheck(&self, run: &DesignQaRun) -> Result<()> {
+        self.conn.execute(
+            "UPDATE design_qa_runs SET precheck = ?2, decision = ?3, judgment = ?4, acted = ?5, report = ?6, head = ?7, base = ?8, precheck_secs = ?9 WHERE qa = ?1",
+            params![run.qa, run.precheck, run.decision, run.judgment, run.acted, run.report, run.head, run.base, run.precheck_secs.map(|s| s as i64)],
+        )?;
+        Ok(())
+    }
+
+    /// Keep how `qa` ended: `pass`, `changes` or `cancelled`, and by whom.
+    /// The first verdict stays.
+    pub fn set_design_qa_verdict(&self, qa: TicketId, verdict: &str, by: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE design_qa_runs SET verdict = ?2, verdict_by = ?3, finished_at = ?4 WHERE qa = ?1 AND verdict IS NULL",
+            params![qa, verdict, by, now()],
+        )?;
+        Ok(())
+    }
+
+    /// Design QA ticket `qa`'s run, if it was kept.
+    pub fn design_qa_run(&self, qa: TicketId) -> Option<DesignQaRun> {
+        self.conn
+            .query_row(
+                "SELECT qa, checked, round, gate, precheck, decision, judgment, acted, report, head, base, precheck_secs, verdict, verdict_by, created_at, finished_at
+                 FROM design_qa_runs WHERE qa = ?1",
+                [qa],
+                |r| {
+                    Ok(DesignQaRun {
+                        qa: r.get(0)?,
+                        checked: r.get(1)?,
+                        round: r.get(2)?,
+                        gate: r.get(3)?,
+                        precheck: r.get(4)?,
+                        decision: r.get(5)?,
+                        judgment: r.get(6)?,
+                        acted: r.get(7)?,
+                        report: r.get(8)?,
+                        head: r.get(9)?,
+                        base: r.get(10)?,
+                        precheck_secs: r.get::<_, Option<i64>>(11)?.map(|s| s.max(0) as u64),
+                        verdict: r.get(12)?,
+                        verdict_by: r.get(13)?,
+                        created_at: r.get(14)?,
+                        finished_at: r.get(15)?,
+                    })
+                },
+            )
+            .optional()
+            .ok()
+            .flatten()
     }
 
     pub fn ticket(&self, id: TicketId) -> Result<Option<Ticket>> {

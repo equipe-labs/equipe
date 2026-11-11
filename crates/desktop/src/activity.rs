@@ -263,6 +263,8 @@ const NEWS: &[(&str, NewsKind)] = &[
     ("news.design_qa_asked", NewsKind::HandedIn),
     ("news.design_qa_passed", NewsKind::HandedIn),
     ("news.design_qa_changes", NewsKind::SentBack),
+    ("news.design_qa_precheck_passed", NewsKind::HandedIn),
+    ("news.design_qa_precheck_changes", NewsKind::SentBack),
     ("news.handed_in", NewsKind::HandedIn),
     ("news.accepted_home", NewsKind::Accepted),
     ("news.accepted", NewsKind::Accepted),

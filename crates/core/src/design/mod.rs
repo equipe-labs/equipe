@@ -41,12 +41,18 @@
 //!   the registry checked and installed into a scratch project.
 //! - `versions`: the accepted versions of a folder, from its history, and
 //!   the ticket that asks for one back.
+//! - `precheck`: design QA's deterministic look at a hand-in's screens —
+//!   rendered at each condition, measured, compared with the map's pictures —
+//!   before any designer turn (docs/DESIGN-QA.md).
+//! - `qa_stats`: what design QA costs and decides, read from a squad's journal.
 
 pub mod brand;
 pub mod check;
 pub mod component;
 pub mod fonts;
 pub mod palette;
+pub mod precheck;
+pub mod qa_stats;
 pub mod refs;
 pub mod kit;
 pub mod lint;

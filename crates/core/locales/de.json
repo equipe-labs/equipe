@@ -274,6 +274,8 @@
   "news.design_qa_asked": "{name} hat T-{id} abgegeben; {to} prüft die Screens vor deiner Review · {title}.",
   "news.design_qa_passed": "{name} hat die Screens von T-{id} abgenommen: bereit für deine Review · {title}.",
   "news.design_qa_changes": "{name} hat T-{id} an {to} zurückgegeben: die Screens müssen angepasst werden · {title}.",
+  "news.design_qa_precheck_passed": "equipes Vorprüfung hat die Screens von T-{id} ohne Designer abgenommen: kein Screen hat sich geändert, nichts Neues gefunden. Bereit für deine Review · {title}.",
+  "news.design_qa_precheck_changes": "equipes Vorprüfung hat T-{id} ohne Designer an {to} zurückgegeben: ein eindeutiger Fehler an Screens oder Barrierefreiheit · {title}.",
   "news.plan_reviewed": "{name} hat seine Review in den Plan geschrieben · {path}",
   "notice.doc_copy_kept": "Eine Kopie von „{title}“ behalten: {what} · lässt sich zurücknehmen",
   "plan.review_body.designer": "Prüfe, was Menschen vom Plan `{path}` sehen werden, gegen die UI-Map und das Designsystem: welche Abläufe, Screens und Zustände er hinzufügt oder ändert, welche Zustände der Map fehlen, welche Tokens und Komponenten er nutzen sollte — und bewerte jede Design-Dimension von 0 bis 10 mit dem, was eine 10 braucht. Schreib deine Review in die Review-Notizen des Plans und reiche dann ein.",

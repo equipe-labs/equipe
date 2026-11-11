@@ -271,6 +271,8 @@
   "news.design_qa_asked": "{name} 提交了 T-{id}；审查前由 {to} 检查界面 · {title}。",
   "news.design_qa_passed": "{name} 通过了 T-{id} 的界面检查，可以审查了 · {title}。",
   "news.design_qa_changes": "{name} 把 T-{id} 退回给 {to}：界面需要修改 · {title}。",
+  "news.design_qa_precheck_passed": "equipe 的预检在没有设计师的情况下通过了 T-{id} 的界面检查：没有界面变化，也没有新问题，可以审查了 · {title}。",
+  "news.design_qa_precheck_changes": "equipe 的预检在没有设计师的情况下把 T-{id} 退回给 {to}：发现了明确的界面或无障碍问题 · {title}。",
   "news.plan_reviewed": "{name} 已把评审写进计划 · {path}",
   "notice.doc_copy_kept": "只保留了“{title}”的一份副本：{what} · 可以撤回",
   "plan.review_body.designer": "对照 UI 地图和设计系统，评审计划 `{path}` 中用户会看到的部分：新增或改变了哪些流程、页面和状态，地图缺少哪些状态，应使用哪些 token 和组件；并为每个设计维度打 0 到 10 分，说明达到 10 分需要什么。把评审写进计划的评审意见，然后提交。",

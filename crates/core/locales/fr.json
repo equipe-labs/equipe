@@ -274,6 +274,8 @@
   "news.design_qa_asked": "{name} a rendu T-{id} ; {to} vérifie ses écrans avant votre revue · {title}.",
   "news.design_qa_passed": "{name} a validé les écrans de T-{id} : il est prêt pour votre revue · {title}.",
   "news.design_qa_changes": "{name} a renvoyé T-{id} à {to} : ses écrans sont à corriger · {title}.",
+  "news.design_qa_precheck_passed": "La pré-vérification d’equipe a validé les écrans de T-{id} sans designer : aucun écran n’a changé et rien de nouveau n’a été trouvé. Il est prêt pour votre revue · {title}.",
+  "news.design_qa_precheck_changes": "La pré-vérification d’equipe a renvoyé T-{id} à {to} sans designer : elle a trouvé un défaut certain d’écran ou d’accessibilité · {title}.",
   "news.plan_reviewed": "{name} a écrit sa revue dans le plan · {path}",
   "notice.doc_copy_kept": "Une seule copie de « {title} » gardée : {what} · vous pouvez annuler",
   "plan.review_body.designer": "Relis ce que les gens verront du plan `{path}` face à la carte de l'UI et au design system : quels parcours, écrans et états il ajoute ou change, quels états manquent à la carte, quels tokens et composants il devrait utiliser — et note chaque dimension du design de 0 à 10 avec ce qu'il faut pour un 10. Écris ta revue dans les notes de revue du plan, puis rends-la.",

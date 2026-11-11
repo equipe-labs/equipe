@@ -14,6 +14,7 @@ mod clip;
 mod daemon;
 mod design;
 mod design_lint;
+mod design_qa;
 mod design_taste;
 mod design_system;
 mod desktop;

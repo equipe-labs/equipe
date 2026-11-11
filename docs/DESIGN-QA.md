@@ -1,0 +1,163 @@
+# Design QA: precheck, gate, tiers and measurement
+
+When an engineer hands in a code ticket that changes what users see (`changes_screens: true`), equipe puts a design
+QA ticket on the board for the squad's designer, and the hand-in waits in review until the designer passes it or sends
+it back. Much of what a designer checks there is deterministic — text cut off, overlaps, sideways scroll, contrast, and
+whether a screen changed at all — and checking it by looking at dozens of screenshots is the most expensive work a
+squad does. So before any designer turn, equipe runs a **precheck** that needs no model, a **gate** decides what the
+report settles, the designer works on what is left on a **cheaper model tier**, and every design QA ticket is
+**measured** so the change can be judged on numbers.
+
+## The precheck
+
+`equipe design precheck` (run by the daemon on each hand-in, off its loop, with the design QA ticket held off the
+board meanwhile):
+
+1. Reads the ticket's worktree: the files changed since it met the main branch (and any not committed), and the UI
+   map (`design/flows/flows.json`). The screens it **touches** are those whose `source` lists a changed file (a file, a
+   folder ending in `/`, or a pattern with one `*`), or whose map pictures changed. Changed files that can change what
+   users see (styles, markup, components, locale files) and that no screen lists are **unmapped**.
+2. Renders each state of the touched screens — default states first, at most `maxStates` (12) — at **18 conditions**:
+   390, 768 and 1280 px × light and dark × normal, text at 200% (`text-200`, WCAG 1.4.4) and the page zoomed to 200%
+   (`zoom-200`, half the CSS width: WCAG 1.4.10 reflow). States shot by URL are rendered in the Mac's own Chrome,
+   headless (`precheck.mjs`), on a preview of the worktree; states shot by a `command` run it, at normal size, in light,
+   dark and the map's extra `modes`.
+3. Measures each rendered page: whether it scrolls sideways and what reaches past the window; text cut off at the left
+   edge; text its box cuts off, with what it is (a control's label, a heading, a number, its whole text in a `title`
+   or `aria-label`, decoration); text drawn over text; and axe-core's WCAG 2.x A/AA rules.
+4. Compares each normal picture, pixel by pixel, with the map's picture committed at the base, and cuts crops of what
+   changed (base beside new) and of each finding.
+
+Findings are classed by `crates/core/src/design/precheck.rs`:
+
+| Finding | Blocker (S1/S2) when | Otherwise |
+|---|---|---|
+| `reflow` — the page scrolls sideways | the viewport is at least 320 CSS px | polish (e.g. 390 px zoomed to 195) |
+| `offscreen` — text cut off at the left edge | the viewport is at least 320 CSS px | polish |
+| `text-clipped` | content is lost: a control's label, a heading, a number, or any text cut hard without an ellipsis — and its whole text isn't in a `title`/`aria-label` | cosmetic: secondary text cut with an ellipsis or a line clamp |
+| `text-overlap` / `overlap` | two texts overlap by 30% of the smaller | cosmetic |
+| `axe/<rule>` | impact serious or critical and tagged WCAG A/AA | polish |
+
+A finding is **new** — this change's — when the picture it is on (at normal size, the same width and scheme) changed
+against the base and, at normal size, it lies in the part that changed. On an unchanged screen it was there before
+and never sends work back.
+
+The report goes in `~/.equipe/squads/<squad>/design-qa/T-<qa>/`: `report.json`, `report.md` (a short summary with the
+flagged pictures), `shots/`, `base/` and `crops/`. Reports older than 30 days are removed.
+
+### What the map says
+
+`flows.json` may carry a `precheck` object:
+
+```json
+{ "precheck": { "preview": "npm run dev -- --port {port}", "origin": "http://localhost:3000",
+                "ready": "/", "modes": ["light-large", "dark-large"], "widths": [390, 768, 1280], "maxStates": 12 },
+  "flows": [] }
+```
+
+- `preview` — a shell command run at the root of the ticket's worktree that serves the app on `{port}` (also in
+  `$PORT`). The map's URLs written against `origin` are opened on it. Without a preview (or `--url`), states shot by URL
+  aren't rendered: the report says so and the designer takes it.
+- `modes` — extra modes a state's `command` is run in, beside `light` and `dark`. A command is also given the
+  preview's origin as `{origin}` / `EQUIPE_SHOT_ORIGIN`.
+
+Run it by hand on any worktree: `equipe design precheck --worktree . --base main --out /tmp/precheck`.
+
+## The gate
+
+`crate::design_qa::gate` reads the report:
+
+- **Send back** — one or more new blockers: back to the engineer with the findings and the report, as a designer's
+  send-back would (it counts as a correctness send-back for model escalation).
+- **Designer** with judgment — the precheck couldn't run or rendered nothing, unmapped UI files changed, pictures
+  failed or states were left out, or 8 or more states changed.
+- **Auto-pass** — everything rendered, nothing unmapped, no picture changed against the base, nothing new found:
+  passed without a designer turn. The ticket's note says `Design QA by equipe (T-…): passed.` with the headline, and
+  the person and the PM are told it passed by the precheck.
+- **Designer** — otherwise: the changed states and what the report flags.
+
+Each squad sets whether the gate acts:
+
+| Mode | What happens |
+|---|---|
+| `off` | No precheck. Design QA as before. |
+| `shadow` (default) | The precheck runs; the designer gets the report; what the gate would have decided is kept beside the designer's verdict, never acted on. |
+| `on` | The gate passes and sends back by itself; the designer gets the rest with the report. |
+
+```sh
+equipe design qa-config                      # what the squad has now
+equipe design qa-config --gate on            # off | shadow | on
+equipe design qa-config --tiers economy      # economy | quality | <cheap>/<top>
+```
+
+With a report, the designer's brief (`qa_prompt`, and the `design-qa` skill) starts from its summary and flagged
+pictures, doesn't re-shoot or re-measure, and spends its look on the spec, the states and what truly costs the person
+something; it renders only what the precheck couldn't. The precheck's pictures count as the designer's own for the
+pass's proof.
+
+## Model tiers
+
+Design QA tickets run on the squad's tier policy (`crate::design_qa::tier_for`), through the same tier machinery as
+every ticket (`crate::tiers`):
+
+- `economy` (default): **standard** (Claude: Sonnet · medium; Codex: Sol · low) — **deep** (Opus · high / Sol · high)
+  for a redesign (the checked ticket says redesign, restyle, …), a second round or more, or a precheck that left
+  judgment to the designer (including no report at all, so with the gate `off` design QA stays on the top tier).
+- `quality`: deep always, as before.
+- `<cheap>/<top>`, e.g. `strong/max`.
+
+Precedence, strongest first: the tier the person set on the ticket; the squad's model choice `off` (members' own
+models); a model the person set for the member (`/model`, a move they made, or the squad's default for the role) —
+then the member's own model is the floor and the cheaper tier is only recorded beside it (`shadow` in
+`model_choices`); otherwise the policy's tier, below the member's own model included.
+
+## Measurement
+
+Every design QA ticket is kept in the squad journal's `design_qa_runs` table: gate mode, precheck state and time,
+the gate's decision (would-be in shadow), why it needs judgment, whether it acted, the report, the commits checked,
+the round, and the verdict with who gave it. Tokens, tool calls, time and model come from the `turns` table.
+
+```sh
+equipe design qa-stats                       # the last 30 days, the squad of this folder
+equipe design qa-stats --squad acme --since 7d
+equipe design qa-stats --since 2026-11-01 --json
+```
+
+It prints the count, verdicts and pass rate; tokens in all and per ticket (cache read and write, input, output); turns,
+tool calls and time; rounds; the same by model tier and by gate mode (`before` for tickets from before the precheck,
+found by their record); and the gate's agreement with designers — would pass and passed, would pass but sent back
+(the risky miss), would send back and sent back, would send back but passed — plus what the gate did by itself. It
+opens the journal read-only, so it is safe while the daemon runs.
+
+## Replaying past design QA
+
+`equipe design qa-replay` re-runs past design QA tickets through the new pipeline, read only, to measure it before
+switching the gate on:
+
+```sh
+# Free: the precheck and its gate only, no model. Start here.
+equipe design qa-replay --squad acme --last 30 --dry-run
+equipe design qa-replay --squad acme --tickets 2077,2065 --dry-run --json
+
+# With a cheaper-tier designer through Claude Code (uses the plan).
+equipe design qa-replay --squad acme --last 10 --designer-model sonnet --designer-effort medium
+```
+
+For each design QA ticket with a verdict it finds the commit that was checked (kept since this change; for older ones
+the latest `equipe: T-<n> …` commit made by the time of the design QA) and where it met the main branch then, checks
+it out **detached in a temporary worktree** under the replay folder (dependencies cloned copy-on-write as live
+worktrees get them), runs the precheck and the gate there, and removes the worktree. Live tickets, branches and
+worktrees are never touched; the journal is opened read-only. Without `--dry-run` a designer on the given model reads
+the report, its pictures and the diff (read-only tools: Read, Glob, Grep, `git diff/log/show`) and gives a verdict; its
+tokens are compared with the recorded ones. Everything is kept in `~/.equipe/design-qa-replay/<when>/replay.json`
+(or `--out`).
+
+## Limitations
+
+- Change detection compares fresh renders with the map's committed pictures; a map whose pictures were shot with other
+  data, fonts or a moving clock reads as changed, which only ever sends the ticket to a designer, never past one.
+- A finding on a changed screen at 200% text or zoom can't be placed against the change's region (the layouts differ),
+  so it counts as new whenever its screen changed.
+- States shot by a `command` get pictures only: no DOM checks, and no 200% conditions unless the map's `modes` give
+  them.
+- Redesign detection reads English words in the checked ticket.
