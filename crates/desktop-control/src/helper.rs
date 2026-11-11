@@ -27,6 +27,8 @@ use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
 use crate::controller::{Controller, Desktop};
 #[cfg(any(unix, windows))]
+use crate::engine::Engine;
+#[cfg(any(unix, windows))]
 use crate::controller::{Reply, SETUP};
 
 /// The helper's folder in equipe's home: socket, token, signing key, bundles.
@@ -128,6 +130,7 @@ pub fn serve<D: Desktop>(home: &Path, controller: &mut Controller<D>, status: im
     let listener = std::os::unix::net::UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
     eprintln!("equipe desktop helper: listening at {}", socket.display());
+    let engine = engine(home);
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
@@ -135,11 +138,65 @@ pub fn serve<D: Desktop>(home: &Path, controller: &mut Controller<D>, status: im
         if io::BufReader::new(&stream).read_line(&mut line).is_err() {
             continue;
         }
-        let result = answer(home, controller, &line, &status, &request);
+        // The accessibility tools run on a thread of their own: they take
+        // no screen, so one member's slow snapshot holds nobody else up.
+        if let Some(engine) = engine.as_ref().filter(|_| for_engine(home, &line)) {
+            let engine = std::sync::Arc::clone(engine);
+            std::thread::spawn(move || {
+                let result = engine_answer(&engine, &line);
+                let mut out = &stream;
+                let _ = out.write_all(format!("{}\n", serde_json::to_string(&result).unwrap_or_default()).as_bytes());
+            });
+            continue;
+        }
+        let result = answer(home, controller, engine.as_deref(), &line, &status, &request);
         let mut out = &stream;
         let _ = out.write_all(format!("{}\n", serde_json::to_string(&result).unwrap_or_default()).as_bytes());
     }
     Ok(())
+}
+
+/// The accessibility engine, when this machine has a release pinned.
+#[cfg(any(unix, windows))]
+fn engine(home: &Path) -> Option<std::sync::Arc<Engine>> {
+    crate::engine::Cli::installed(home).map(|cli| std::sync::Arc::new(Engine::new(Box::new(cli))))
+}
+
+/// The tool a request names, and for `_scene` the tool it is about.
+#[cfg(any(unix, windows))]
+fn engine_tool(message: &Value) -> Option<&str> {
+    let tool = message["tool"].as_str()?;
+    let tool = if tool == SCENE { message["arguments"]["tool"].as_str()? } else { tool };
+    crate::engine::handles(tool).then_some(tool)
+}
+
+/// Whether `line` is an authenticated request for the engine.
+#[cfg(unix)]
+fn for_engine(home: &Path, line: &str) -> bool {
+    let Ok(message) = serde_json::from_str::<Value>(line) else { return false };
+    let token = message["token"].as_str().unwrap_or_default();
+    read_token(home).is_some_and(|t| same(&t, token)) && engine_tool(&message).is_some()
+}
+
+/// An engine request's answer (its token already checked).
+#[cfg(any(unix, windows))]
+fn engine_answer(engine: &Engine, line: &str) -> ToolResult {
+    let Ok(message) = serde_json::from_str::<Value>(line) else {
+        return ToolResult::error("unreadable request");
+    };
+    let member = message["member"].as_str().unwrap_or("someone");
+    let tool = message["tool"].as_str().unwrap_or_default();
+    if tool == SCENE {
+        let arguments = &message["arguments"];
+        return match engine.scene(member, arguments["tool"].as_str().unwrap_or_default(), &arguments["arguments"]) {
+            Ok(scene) => ToolResult::ok(scene.to_string()),
+            Err(refused) => ToolResult::error(refused),
+        };
+    }
+    let answer = engine.call(member, tool, &message["arguments"]);
+    // The tool's name only: what it read or typed stays out of the log.
+    eprintln!("equipe desktop helper: {member} {tool}{}", if answer.is_error { " (refused)" } else { "" });
+    ToolResult { text: answer.text, is_error: answer.is_error, image: None }
 }
 
 #[cfg(windows)]
@@ -151,6 +208,7 @@ pub fn serve<D: Desktop>(home: &Path, controller: &mut Controller<D>, status: im
     runtime.block_on(async move {
         use tokio::net::windows::named_pipe::ServerOptions;
 
+        let engine = engine(home);
         let mut first = true;
         loop {
             let mut options = ServerOptions::new();
@@ -163,7 +221,7 @@ pub fn serve<D: Desktop>(home: &Path, controller: &mut Controller<D>, status: im
             if tokio::time::timeout(Duration::from_secs(10), stream.read_line(&mut line)).await.is_err() {
                 continue;
             }
-            let result = answer(home, controller, &line, &status, &request);
+            let result = answer(home, controller, engine.as_deref(), &line, &status, &request);
             let output = format!("{}\n", serde_json::to_string(&result).unwrap_or_default());
             let mut server = stream.into_inner();
             let _ = server.write_all(output.as_bytes()).await;
@@ -176,6 +234,7 @@ pub fn serve<D: Desktop>(home: &Path, controller: &mut Controller<D>, status: im
 fn answer<D: Desktop>(
     home: &Path,
     controller: &mut Controller<D>,
+    engine: Option<&Engine>,
     line: &str,
     status: &impl Fn(&D) -> Value,
     request: &impl Fn(&D),
@@ -187,13 +246,26 @@ fn answer<D: Desktop>(
     if read_token(home).is_none_or(|t| !same(&t, token)) {
         return ToolResult::error("wrong token");
     }
+    if engine_tool(&message).is_some() {
+        return match engine {
+            Some(engine) => engine_answer(engine, line),
+            None => ToolResult::error("The accessibility tools aren't available on this platform yet: use screenshot, elements and click."),
+        };
+    }
     let member = message["member"].as_str().unwrap_or("someone");
     let tool = message["tool"].as_str().unwrap_or_default();
+    // The helper's own state, and the engine's beside it.
+    let with_engine = |mut status: Value| {
+        if let (Some(engine), Some(object)) = (engine, status.as_object_mut()) {
+            object.insert("engine".into(), engine.status());
+        }
+        status
+    };
     match tool {
-        STATUS => ToolResult::ok(status(&controller.desktop).to_string()),
+        STATUS => ToolResult::ok(with_engine(status(&controller.desktop)).to_string()),
         REQUEST => {
             request(&controller.desktop);
-            ToolResult::ok(status(&controller.desktop).to_string())
+            ToolResult::ok(with_engine(status(&controller.desktop)).to_string())
         }
         SCENE => {
             let arguments = &message["arguments"];

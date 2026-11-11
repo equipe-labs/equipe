@@ -303,20 +303,38 @@ tools without a prompt. A Codex member's thread gets the same servers through it
 config (`mcp_servers`, the board's tools approved), and the person's own — which a
 config override adds to rather than replaces — switched off by name.
 
-### Desktop tools (experimental, macOS)
+### Desktop tools (experimental, macOS and Windows)
 
-Members can work the Mac's desktop apps the way they work the browser — the
+Members can work the computer's desktop apps the way they work the browser — the
 design and what the T-20 spike proved are in [DESKTOP-CONTROL.md](./DESKTOP-CONTROL.md).
 Off for everyone until the person runs `equipe desktop on <member>
---experimental`; until the screen lease (T-22) and the send approval (T-23)
-exist, it stays behind that flag.
+--experimental`.
 
 ```
 member's claude ──stdio──▶ equipe mcp --server desktop ──socket: desktop──▶ daemon
-                                                     (is this member allowed?)
+                                     (is this member allowed? its turn? the send gate)
 daemon ──~/.equipe/desktop/helper.sock + token──▶ equipe Desktop Helper.app
                                                    (LaunchAgent im.equipe.desktop-helper, Aqua)
+helper ──child process, stdin for text──▶ agent-desktop 1.2.0 (pinned, checksum-verified)
 ```
+
+- **Two kinds of tools.** The accessibility tools (`snapshot`, `find`, `act`,
+  `apps`, `windows`, `wait`, `notifications`, `clipboard`;
+  `crates/desktop-control/src/engine`) read an app's accessibility tree as a
+  compact text tree with refs and act on refs headless — no pointer, no
+  keystrokes, no focus — through [agent-desktop](https://github.com/vercel-labs/agent-desktop)
+  (Apache-2.0, see THIRD_PARTY_NOTICES.md), which the helper runs as a child
+  process under its own Accessibility grant. They take no screen lease
+  (`desktop::Use::Read`/`Headless`), so members work side by side and beside
+  the person; headless actions still stop while the Mac is locked and after
+  `/desktop stop`. The screenshot tools below are the fallback for pixels and
+  physical input, one member at a time.
+- **The send gate covers both.** For a ref action the helper answers the
+  daemon's `_scene` from what the member's snapshot showed — the ref's app,
+  window, role and name, and the draft in the same window — and the daemon's
+  `desktop_gate` judges it as it judges a click. After the person's yes the
+  helper re-reads the conversation and the draft live; agent-desktop
+  re-identifies the element itself (`STALE_REF` if it changed).
 
 - **Only the helper holds the permissions.** A TCC grant belongs to the process
   launchd started and every child inherits it: granted to the daemon, every
@@ -333,7 +351,8 @@ daemon ──~/.equipe/desktop/helper.sock + token──▶ equipe Desktop Helpe
 - **Reached through the daemon.** The helper answers only requests carrying the
   token beside its socket, which fenced members can't read (`deny_read`, like the
   credentials). The runtime checks the member is turned on; the call itself runs
-  outside the runtime's loop. The helper serves one request at a time.
+  outside the runtime's loop. The helper serves the screenshot tools one request
+  at a time and each accessibility call on a thread of its own.
 - **Aimed, not just placed.** Coordinates are pixels of the member's last
   screenshot (captured at the model's size, ≤1568 px and ≈1.15 MP); the helper
   maps them to points. Before a click it brings the app forward (AX
@@ -347,12 +366,16 @@ daemon ──~/.equipe/desktop/helper.sock + token──▶ equipe Desktop Helpe
 - **No images kept.** A screenshot is a JPEG in memory, passed back as the tool
   result; the journal records the tool call's one line. (Claude Code's own
   transcript keeps tool-result images — equipe can't stop that.)
-- `equipe desktop setup` installs the helper, asks macOS for the permissions,
-  opens the two Settings panes and checks: a GUI session, the daemon as a login
-  service there, Screen Recording, Accessibility (which takes the person's
-  password or Touch ID to switch on), sending input, the display. `equipe
-  desktop status` checks without changing anything; members without the
-  permissions are told to ask the person for `equipe desktop setup`.
+- `equipe desktop setup` installs the helper, downloads and verifies the pinned
+  agent-desktop release, asks macOS for the permissions, opens the Settings
+  panes and checks: a GUI session, the daemon as a login service there,
+  Accessibility (which takes the person's password or Touch ID to switch on),
+  sending input, the engine working under the helper's grant, Screen Recording
+  (optional: screenshots only), the display. `equipe desktop status` checks
+  without changing anything, and Settings › Squad › Desktop apps shows the same
+  in the app (`Command::DesktopCheck`, with "Allow…" asking macOS on the daemon's
+  machine); members without the permissions are told to ask the person for
+  `equipe desktop setup`.
 
 ### Phone tools (mobile QA)
 

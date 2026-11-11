@@ -11,6 +11,7 @@ pub mod lease;
 #[cfg(target_os = "macos")]
 pub mod mac;
 pub mod presence;
+pub mod ready;
 
 use std::time::Instant;
 
@@ -72,23 +73,65 @@ impl Probe for ThisMac {
 /// What a desktop tool call does with the screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Use {
-    /// Only looks: a screenshot, the window list, the accessibility tree.
+    /// Only looks, at what the screen shows: a screenshot, the window list,
+    /// the screenshot tools' element list. Takes the lease, since the
+    /// coordinates it hands out are for the input that follows.
     Look,
-    /// Clicks, types, scrolls, opens or brings forward an app.
+    /// Clicks, types, scrolls, opens or brings forward an app: the real
+    /// pointer and keyboard, or focus taken.
     Input,
     /// An input the person has just said yes to (a send): their being at the
     /// Mac — where they likely answered — doesn't hold it back. The lease, a
     /// locked screen and /desktop stop still do.
     Approved,
+    /// Reads through Accessibility (a snapshot, a find, the app list, a wait):
+    /// nothing on screen moves, so no lease and no waiting for the person.
+    /// Only /desktop stop refuses it.
+    Read,
+    /// Acts through Accessibility without the pointer, the keyboard or focus
+    /// (a headless ref action): several members at once and beside the
+    /// person, so no lease and no waiting for their hands. Still never while
+    /// the Mac is locked or nobody is logged in, nor after /desktop stop.
+    Headless,
 }
 
 impl Use {
-    /// What the desktop tool `tool` (`screenshot`, `mcp__desktop__click`) does.
-    pub fn of(tool: &str) -> Use {
+    /// What the desktop tool `tool` (`screenshot`, `mcp__desktop__click`) does
+    /// with `input` (an accessibility tool's `action`, `headed`…). A tool not
+    /// named here is taken for an input.
+    pub fn of(tool: &str, input: &serde_json::Value) -> Use {
+        let text = |key: &str| input.get(key).and_then(serde_json::Value::as_str).unwrap_or_default();
+        let headed = input.get("headed").and_then(serde_json::Value::as_bool).unwrap_or(false);
         match tool.rsplit("__").next().unwrap_or(tool) {
             "screenshot" | "list_windows" | "elements" => Use::Look,
+            "snapshot" | "find" | "wait" => Use::Read,
+            // A double click is physical; a context menu opens on screen and
+            // holds the pointer until it closes: both wait for the screen.
+            "act" if headed || matches!(text("action"), "double_click" | "right_click") => Use::Input,
+            "act" => Use::Headless,
+            "apps" => match text("action") {
+                "" | "list" => Use::Read,
+                // In the background: nothing comes forward.
+                "launch" if !input.get("activate").and_then(serde_json::Value::as_bool).unwrap_or(false) => Use::Headless,
+                _ => Use::Input,
+            },
+            "windows" | "notifications" => match text("action") {
+                "" | "list" => Use::Read,
+                _ => Use::Input,
+            },
+            // The person's clipboard: read freely, written only while they
+            // aren't using the Mac (they may be about to paste).
+            "clipboard" => match text("action") {
+                "" | "get" => Use::Read,
+                _ => Use::Input,
+            },
             _ => Use::Input,
         }
+    }
+
+    /// Whether it posts real mouse or keyboard events.
+    pub fn physical(self) -> bool {
+        matches!(self, Use::Input | Use::Approved)
     }
 }
 
@@ -167,6 +210,21 @@ impl Desktop {
     }
 
     fn ask_at(&mut self, who: &MemberRef, what: Use, now: f64) -> Result<(), Refusal> {
+        // Through Accessibility only: nobody's pointer or keyboard, so no
+        // line to stand in, and the person keeps working meanwhile.
+        if matches!(what, Use::Read | Use::Headless) {
+            if self.lease.stopped() {
+                return Err(Refusal::Stopped);
+            }
+            if what == Use::Read {
+                return Ok(());
+            }
+            return match self.probe.screen() {
+                Screen::Open => Ok(()),
+                Screen::Locked => Err(Refusal::Locked),
+                Screen::NoSession => Err(Refusal::NoSession),
+            };
+        }
         match self.lease.ask(who, now) {
             Turn::Yours => {}
             Turn::Waiting { holder, place } => return Err(Refusal::Busy { holder, place }),
@@ -313,6 +371,62 @@ mod tests {
         // Input with no way to tell whether the person is there: no.
         *mac.0.lock().unwrap() = (None, Screen::Open);
         assert_eq!(d.ask(&a, Use::Input), Err(Refusal::NoSession));
+    }
+
+    #[test]
+    fn headless_work_runs_side_by_side_and_beside_the_person_but_never_locked() {
+        // The person is typing, and one member holds the screen.
+        let (mut d, mac) = desktop(Some(1.0), Screen::Open);
+        let (a, b, c) = (member("frontend"), member("backend"), member("designer"));
+        mac.0.lock().unwrap().0 = Some(600.0);
+        assert_eq!(d.ask(&a, Use::Input), Ok(()));
+        mac.0.lock().unwrap().0 = Some(1.0);
+        for who in [&b, &c] {
+            assert_eq!(d.ask(who, Use::Headless), Ok(()), "no line for a headless ref action");
+            assert_eq!(d.ask(who, Use::Read), Ok(()));
+        }
+        assert_eq!(d.state().queue, Vec::<MemberRef>::new(), "nobody was queued");
+        assert_eq!(d.state().holder, Some(a.clone()));
+        // Locked: reading still goes, acting doesn't.
+        mac.0.lock().unwrap().1 = Screen::Locked;
+        assert_eq!(d.ask(&b, Use::Headless), Err(Refusal::Locked));
+        assert_eq!(d.ask(&b, Use::Read), Ok(()));
+        mac.0.lock().unwrap().1 = Screen::NoSession;
+        assert_eq!(d.ask(&b, Use::Headless), Err(Refusal::NoSession));
+        // Taken back: nothing at all.
+        mac.0.lock().unwrap().1 = Screen::Open;
+        d.stop();
+        assert_eq!(d.ask(&b, Use::Headless), Err(Refusal::Stopped));
+        assert_eq!(d.ask(&c, Use::Read), Err(Refusal::Stopped));
+    }
+
+    #[test]
+    fn what_each_tool_does_with_the_screen() {
+        use serde_json::json;
+        let of = |tool: &str, input: serde_json::Value| Use::of(tool, &input);
+        assert_eq!(of("mcp__desktop__screenshot", json!({})), Use::Look);
+        assert_eq!(of("click", json!({ "x": 1, "y": 2 })), Use::Input);
+        assert_eq!(of("snapshot", json!({ "app": "Slack" })), Use::Read);
+        assert_eq!(of("act", json!({ "ref": "e1" })), Use::Headless);
+        assert_eq!(of("act", json!({ "ref": "e1", "action": "type", "text": "hi" })), Use::Headless);
+        assert_eq!(of("act", json!({ "ref": "e1", "headed": true })), Use::Input, "physical input takes the screen");
+        assert_eq!(of("act", json!({ "ref": "e1", "action": "double_click" })), Use::Input);
+        assert_eq!(of("act", json!({ "ref": "e1", "action": "right_click" })), Use::Input, "a context menu takes the screen");
+        assert_eq!(of("apps", json!({})), Use::Read);
+        assert_eq!(of("apps", json!({ "action": "launch", "app": "Notes" })), Use::Headless);
+        assert_eq!(of("apps", json!({ "action": "launch", "app": "Notes", "activate": true })), Use::Input);
+        assert_eq!(of("apps", json!({ "action": "close", "app": "Notes" })), Use::Input);
+        assert_eq!(of("windows", json!({ "action": "focus" })), Use::Input);
+        assert_eq!(of("notifications", json!({ "action": "act", "index": 1 })), Use::Input);
+        assert_eq!(of("clipboard", json!({})), Use::Read);
+        assert_eq!(of("clipboard", json!({ "action": "set", "text": "x" })), Use::Input);
+        assert_eq!(of("something_new", json!({})), Use::Input);
+        // Every tool a member is offered is one this knows.
+        for tool in equipe_desktop_control::tools::tools() {
+            let name = tool["name"].as_str().unwrap();
+            let known = ["screenshot", "list_windows", "elements", "click", "double_click", "drag", "scroll", "type_text", "key", "open_app", "focus_window"];
+            assert!(known.contains(&name) || equipe_desktop_control::engine::handles(name), "{name}");
+        }
     }
 
     #[test]

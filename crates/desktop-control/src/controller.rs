@@ -739,6 +739,11 @@ impl<D: Desktop> Controller<D> {
 /// The argument a checked input carries: the scene the daemon judged.
 pub const EXPECT: &str = "_expect";
 
+/// Set by the daemon beside [`EXPECT`] when the person was asked and said
+/// yes: the input then re-reads what the person saw (the conversation, the
+/// draft) live before it goes ahead.
+pub const ASKED: &str = "_asked";
+
 /// Whether the screen is still `expected`. An element's text counts only when
 /// `expected` has it — the draft the person said yes to; elsewhere text
 /// changes by itself (a log, a clock) and means nothing here.

@@ -1202,6 +1202,14 @@ pub enum Command {
     /// `/desktop stop`): whoever had it loses it at once and nobody gets it
     /// until they open it again (`open: true`, `/desktop resume`). For every squad.
     Desktop { open: bool },
+    /// Whether members can work the desktop apps of the daemon's machine:
+    /// answered by [`Event::DesktopReady`]. `guide`: also ask macOS for the
+    /// desktop helper's permissions there (its prompts, and System Settings
+    /// open at the pane to switch) — what the person does once, at that machine.
+    DesktopCheck {
+        #[serde(default)]
+        guide: bool,
+    },
     /// Whether the squad's empty composer offers a guess at the person's next
     /// message after a member answers them ([`Event::Suggestion`]). On unless
     /// turned off; kept for the squad.
@@ -1986,6 +1994,44 @@ impl DesktopState {
     }
 }
 
+/// What members working the desktop need on the daemon's machine, and what
+/// it has: the desktop helper and its permissions, the accessibility engine
+/// (agent-desktop) and the session. Nothing in it is private.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesktopReadiness {
+    /// The daemon's machine can run the desktop helper at all (macOS, Windows).
+    #[serde(default)]
+    pub supported: bool,
+    /// The helper is installed and answers.
+    #[serde(default)]
+    pub helper: bool,
+    /// Accessibility, for the helper: reading apps and acting in them.
+    #[serde(default)]
+    pub accessibility: Option<bool>,
+    /// Screen Recording, for the helper: only for screenshots.
+    #[serde(default)]
+    pub screen: Option<bool>,
+    /// The accessibility engine's pinned version.
+    #[serde(default)]
+    pub engine_version: String,
+    /// The engine is installed and its checksum verified.
+    #[serde(default)]
+    pub engine: bool,
+    /// The engine, run by the helper, works under the helper's permission.
+    #[serde(default)]
+    pub engine_grant: Option<bool>,
+    /// The screen is locked: nothing acts until the person unlocks it.
+    #[serde(default)]
+    pub locked: bool,
+}
+
+impl DesktopReadiness {
+    /// Members can read apps and act in them.
+    pub fn ready(&self) -> bool {
+        self.supported && self.helper && self.accessibility == Some(true) && self.engine && self.engine_grant != Some(false)
+    }
+}
+
 /// Token counts for one turn.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
@@ -2278,6 +2324,9 @@ pub enum Event {
     },
     /// Who has the Mac's screen and who waits for it changed — for every screen.
     Desktop { desktop: DesktopState },
+    /// What working the desktop needs and has, as [`Command::DesktopCheck`]
+    /// asked — for every screen.
+    DesktopReady { ready: DesktopReadiness },
     /// Output a member's turn has produced so far, in tokens.
     Output { session: SessionId, tokens: u64 },
     /// What the person asked — sent to every screen, not only the one it was typed in.
@@ -2963,6 +3012,7 @@ impl Event {
             | Event::DesignVersions { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
+            | Event::DesktopReady { .. }
             // A browser's own: never part of a conversation.
             | Event::BrowserTabs { .. }
             | Event::BrowserControl { .. }
@@ -3002,6 +3052,7 @@ impl Event {
             self,
             Event::PlanUsage { .. }
                 | Event::Desktop { .. }
+                | Event::DesktopReady { .. }
                 | Event::DiskLevel { .. }
                 | Event::DiskReport { .. }
                 | Event::DiskCleaned { .. }

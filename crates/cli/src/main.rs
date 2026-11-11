@@ -1674,6 +1674,7 @@ impl App {
                 Event::MessageQueued { .. }
                 | Event::PlanUsage { .. }
                 | Event::Desktop { .. }
+                | Event::DesktopReady { .. }
                 | Event::Output { .. }
                 | Event::Notice { .. }
                 | Event::WorkStarted { .. }

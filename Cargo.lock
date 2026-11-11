@@ -2306,6 +2306,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-screen-capture-kit",
  "serde_json",
+ "sha2 0.11.1",
  "tokio",
  "windows 0.62.2",
  "windows-capture",

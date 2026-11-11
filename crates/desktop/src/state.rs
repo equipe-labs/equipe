@@ -486,6 +486,9 @@ pub struct Model {
     pub desktop_stopped: bool,
     /// Who has the Mac's screen, and who waits for it.
     pub desktop: DesktopState,
+    /// What members working the desktop need on the daemon's machine, as last
+    /// checked (Settings › Squad); `None` before the first check.
+    pub desktop_ready: Option<equipe_core::protocol::DesktopReadiness>,
     /// What the person answered tickets that waited for them with, here or on
     /// another screen (`crate::yourturn`), for the cards that asked.
     pub answers: HashMap<TicketId, crate::yourturn::Answered>,
@@ -633,6 +636,7 @@ impl Model {
             suggestions_off: false,
             browsers_shown: false,
             desktop_stopped: false,
+            desktop_ready: None,
             desktop: DesktopState::default(),
             answers: HashMap::new(),
             browser_waits: Vec::new(),
@@ -1581,6 +1585,7 @@ impl Model {
                 self.desktop_stopped = desktop.stopped;
                 self.desktop = desktop;
             }
+            Event::DesktopReady { ready } => self.desktop_ready = Some(ready),
             Event::LaneOpened { session, of, project, kept } => self.open_lane(session, of, project, kept),
             // A ticket run: listed under its member, never as one of its own.
             Event::RunOpened { session, of, ticket, .. } => {

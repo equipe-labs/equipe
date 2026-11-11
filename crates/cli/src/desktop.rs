@@ -3,6 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
+use equipe_core::t;
+use equipe_desktop_control::engine::pin;
 use equipe_desktop_control::helper;
 use equipe_desktop_control::install::{self, Signer};
 use serde_json::Value;
@@ -113,44 +115,96 @@ fn line(ok: bool, label: &str, detail: &str) {
     }
 }
 
-/// Print every check; `true` when the desktop is ready to use.
+/// Print every check; `true` when the desktop is ready to use. Accessibility
+/// is what members need (the tree, ref actions, input); Screen Recording is
+/// only for screenshots and the picture shown when the person is asked.
 async fn report(home: &Path) -> bool {
     let gui = install::gui_session();
-    line(gui, "Someone is logged in at the Mac's screen", "log in at the Mac (or over Screen Sharing / Jump Desktop): the helper only runs in that session");
-    line(
-        install::daemon_in_aqua(DAEMON_LABEL),
-        "The daemon runs as a login service in that session",
-        "equipe daemon install (while logged in at the Mac)",
-    );
+    line(gui, t!("desktop.check_session"), t!("desktop.fix_session"));
+    line(install::daemon_in_aqua(DAEMON_LABEL), t!("desktop.check_daemon"), t!("desktop.fix_daemon"));
+    engine_line(home);
     let loaded = install::loaded();
-    line(loaded, "The desktop helper is installed and running", "equipe desktop setup");
+    line(loaded, t!("desktop.check_helper"), "equipe desktop setup");
     let status = if loaded { helper_status(home, helper::STATUS).await } else { None };
     if loaded && status.is_none() {
-        line(false, "The helper answers", &format!("see {}", helper::log_path(home).display()));
+        line(false, t!("desktop.check_answers"), &t!("desktop.fix_answers", path = helper::log_path(home).display()));
     }
     let Some(status) = status else { return false };
     let yes = |key: &str| status[key].as_bool().unwrap_or(false);
-    line(yes("screen"), "Screen & System Audio Recording", "switch on \"equipe Desktop Helper\"");
-    line(yes("accessibility"), "Accessibility", "switch on \"equipe Desktop Helper\" and confirm with your password or Touch ID");
-    line(yes("post_events"), "Sending input (comes with Accessibility)", "switch Accessibility on, then run setup again");
+    line(yes("accessibility"), t!("desktop.check_accessibility"), t!("desktop.fix_accessibility"));
+    line(yes("post_events"), t!("desktop.check_post_events"), t!("desktop.fix_post_events"));
+    // The engine, run by the helper: proof that its grant reaches agent-desktop.
+    if let Some(state) = status["engine"]["accessibility"].as_str() {
+        line(state == "granted", t!("desktop.check_engine_grant"), t!("desktop.fix_engine_grant"));
+    }
+    optional(yes("screen"), t!("desktop.check_screen"), t!("desktop.fix_screen"));
     match status["display"].as_object() {
         Some(d) => {
             let (w, h, s) = (d["width"].as_f64().unwrap_or(0.0), d["height"].as_f64().unwrap_or(0.0), d["scale"].as_f64().unwrap_or(1.0));
-            line(true, &format!("Display {w}×{h} pt at {s}×"), "");
+            line(true, &t!("desktop.check_display", width = w, height = h, scale = s), "");
         }
-        None => line(false, "A display", "no screen attached: plug in a monitor or an HDMI dummy plug, or use a virtual display"),
+        None => line(false, t!("desktop.check_no_display"), t!("desktop.fix_no_display")),
     }
     if status["session"]["locked"].as_bool() == Some(true) {
-        line(false, "The screen is unlocked", "the Mac is locked: members can't work until it is unlocked");
+        line(false, t!("desktop.check_unlocked"), t!("desktop.fix_unlocked"));
     }
     let members = desktop_members(home);
     let p = ui::out();
     if members.is_empty() {
-        println!("\n{}", p.note(2, "No member works the desktop yet: equipe desktop on <member> --experimental"));
+        println!("\n{}", p.note(2, t!("desktop.no_members")));
     } else {
-        println!("\n{}", p.note(2, &format!("Working the desktop: {}", members.join(", "))));
+        println!("\n{}", p.note(2, &t!("desktop.members", names = members.join(", "))));
     }
-    gui && yes("screen") && yes("accessibility") && yes("post_events")
+    gui && yes("accessibility") && yes("post_events")
+}
+
+/// A check that doesn't hold the desktop back when it fails.
+fn optional(ok: bool, label: &str, detail: &str) {
+    let p = ui::out();
+    if ok {
+        println!("  {}", p.ok(label));
+    } else {
+        println!("  {}{}", p.dim(&format!("○ {label}")), p.dim(&format!(" — {detail}")));
+    }
+}
+
+/// The accessibility engine on disk: there, and the pinned release.
+fn engine_line(home: &Path) {
+    let version = pin::VERSION;
+    match pin::check(home, pin::this_machine()) {
+        pin::Installed::Ready(_) => line(true, &t!("desktop.check_engine", version = version), ""),
+        pin::Installed::Missing => line(false, &t!("desktop.check_engine_missing", version = version), t!("desktop.fix_engine_missing")),
+        pin::Installed::Tampered(_) => line(false, &t!("desktop.check_engine_missing", version = version), t!("desktop.fix_engine_tampered")),
+        pin::Installed::Unsupported => {}
+    }
+}
+
+/// Download the pinned agent-desktop release when it isn't installed (or
+/// doesn't verify), check it against its pinned checksums, keep it in the
+/// helper's folder. A failure leaves the screenshot tools working.
+async fn install_engine(home: &Path) {
+    let p = ui::out();
+    let Some(archive) = pin::this_machine() else { return };
+    let version = pin::VERSION;
+    if matches!(pin::check(home, Some(archive)), pin::Installed::Ready(_)) {
+        println!("{}", p.ok_line(&t!("desktop.engine_ready", version = version)));
+        return;
+    }
+    println!("{}", p.note(2, &t!("desktop.engine_installing", version = version)));
+    let fetched = async {
+        let client = reqwest::Client::builder()
+            .user_agent(concat!("equipe/", env!("CARGO_PKG_VERSION")))
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let response = client.get(archive.url()).send().await.map_err(|e| e.to_string())?;
+        let response = response.error_for_status().map_err(|e| e.to_string())?;
+        response.bytes().await.map_err(|e| e.to_string())
+    };
+    match fetched.await.and_then(|bytes| pin::install_from_archive(home, archive, &bytes)) {
+        Ok(_) => println!("{}", p.ok_line(&t!("desktop.engine_installed", version = version))),
+        Err(why) => println!("{}", p.fail_line(&t!("desktop.engine_failed", why = why))),
+    }
 }
 
 fn desktop_members(home: &Path) -> Vec<String> {
@@ -182,6 +236,8 @@ async fn setup(home: &Path, sign: Option<String>) -> Result<(), String> {
         println!("{}", p.ok_line("The desktop helper is up to date."));
     }
     println!("{}", p.note(2, &p.dim(&installed.requirement)));
+    // The helper looks for the engine at each call: no restart needed.
+    install_engine(home).await;
     // The helper takes a moment to start listening.
     let mut status = None;
     for _ in 0..40 {
@@ -194,7 +250,9 @@ async fn setup(home: &Path, sign: Option<String>) -> Result<(), String> {
     let Some(status) = status else {
         return Err(format!("The helper didn't start: see {}", helper::log_path(home).display()));
     };
-    let granted = |s: &Value| ["screen", "accessibility", "post_events"].iter().all(|k| s[*k].as_bool() == Some(true));
+    // Accessibility is what members need; Screen Recording is asked for
+    // too, but only screenshots wait for it.
+    let granted = |s: &Value| ["accessibility", "post_events"].iter().all(|k| s[*k].as_bool() == Some(true));
     if !granted(&status) {
         // Asking puts the helper in both lists (and shows macOS's prompts).
         let _ = helper_status(home, helper::REQUEST).await;
@@ -231,16 +289,16 @@ async fn setup(home: &Path, sign: Option<String>) -> Result<(), String> {
 fn guide(status: &Value) {
     let p = ui::out();
     let yes = |key: &str| status[key].as_bool() == Some(true);
-    println!("\n{}", p.note(2, "macOS asks you — at the Mac's own screen — to allow \"equipe Desktop Helper\". Only it gets these permissions; equipe and its members never do."));
+    println!("\n{}", p.note(2, t!("desktop.guide_intro")));
     let mut step = 1;
-    if !yes("screen") {
-        println!("{}", p.note(2, &format!("{step}. System Settings › Privacy & Security › Screen & System Audio Recording: switch on \"equipe Desktop Helper\". If macOS asks whether it may bypass the private window picker, choose Allow.")));
-        let _ = equipe_providers::platform::open_status(SCREEN_PANE);
+    if !yes("accessibility") || !yes("post_events") {
+        println!("{}", p.note(2, &t!("desktop.guide_accessibility", step = step)));
+        let _ = equipe_providers::platform::open_status(ACCESSIBILITY_PANE);
         step += 1;
     }
-    if !yes("accessibility") || !yes("post_events") {
-        println!("{}", p.note(2, &format!("{step}. System Settings › Privacy & Security › Accessibility: switch on \"equipe Desktop Helper\". The switch only takes once you confirm with your password or Touch ID.")));
-        let _ = equipe_providers::platform::open_status(ACCESSIBILITY_PANE);
+    if !yes("screen") {
+        println!("{}", p.note(2, &t!("desktop.guide_screen", step = step)));
+        let _ = equipe_providers::platform::open_status(SCREEN_PANE);
     }
-    println!("{}", p.note(2, "Already listed and switched on, but still ✗? It was signed differently before: remove it with −, then run equipe desktop setup again."));
+    println!("{}", p.note(2, t!("desktop.guide_signed")));
 }

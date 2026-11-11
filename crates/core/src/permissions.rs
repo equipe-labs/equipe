@@ -96,7 +96,9 @@ pub fn person_only(command: &Command) -> bool {
         | C::SetEffort { .. }
         | C::Disallow { .. }
         | C::SetSignalOn { .. }
-        | C::Desktop { .. } => true,
+        | C::Desktop { .. }
+        // Asking macOS for the helper's permissions: the person's, at their machine.
+        | C::DesktopCheck { .. } => true,
         // Projects, HQ and the squad's routines: the shape of the work.
         C::AddProject { .. }
         | C::RemoveProject { .. }
@@ -529,6 +531,7 @@ mod tests {
             Command::DeleteLogin { id: 1 },
             Command::SetNebiusKey { key: None },
             Command::Desktop { open: true },
+            Command::DesktopCheck { guide: true },
             Command::PairStart,
             Command::Unpair { device: "phone".into() },
             Command::UndoHomeChange { squad: "a".into(), session: 1, change: "abc".into() },
