@@ -403,6 +403,18 @@ tickets get worktrees of it under `~/.equipe/worktrees/<squad>.home/` (named by
 squad, since every home's folder is called `home`), cut and merged by the same
 functions.
 
+A ticket's worktree is made off the daemon's core loop (`runtime/workspace.rs`):
+`git worktree add`, a squad home's sparse checkout and the finished work it builds
+on merged in can take seconds on a busy machine. Starting a run reserves the
+ticket on the loop at once — its run's generation and lease, the ticket in
+progress for the member, the run's session open (screens show it preparing its
+workspace, and the lane policy counts it) — and the worktree is made in the
+background, one at a time per project in the board's order. When it is ready the
+run's first turn starts; when it fails the reservation goes and the ticket goes
+back to the proposals with the reason, as before. A worktree that comes after its
+run ended (cancelled, its member gone) starts nothing and is removed; the ticket
+starts again only once that job is back. The daemon logs how long each took.
+
 ## Terminal
 
 The command line is a product surface, styled per [BRAND.md](./BRAND.md):
