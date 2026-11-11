@@ -1,5 +1,11 @@
 # Desktop control
 
+> **Now:** members read apps through the accessibility tree and act on refs
+> headless, with agent-desktop as the engine — see
+> [Architecture now](#architecture-now-the-accessibility-tree-first-agent-desktop).
+> The rest of this page is how the screenshot path came to be, and still holds
+> for it.
+
 > **Windows:** the same tools use Windows Graphics Capture for display/window
 > images and UI Automation for the element tree, focus checks, Invoke actions,
 > and window targeting. Text goes through Unicode `SendInput` (including Korean
@@ -21,6 +27,211 @@ Probe: [`research/desktop-control/probe`](./research/desktop-control/probe) (not
 product code, not in the workspace). `agent.sh` loads it as a throwaway
 LaunchAgent (`im.equipe.probe-t20`) in `gui/<uid>`, the way `equipe daemon
 install` loads the daemon, runs it once and unloads it.
+
+## Architecture now: the accessibility tree first (agent-desktop)
+
+Members read and operate desktop apps mainly through the OS accessibility tree,
+with [agent-desktop](https://github.com/vercel-labs/agent-desktop) 1.2.0
+(Apache-2.0, Vercel Labs; THIRD_PARTY_NOTICES.md) as the engine. The
+screenshot, coordinate and keyboard tools below stay as the fallback for apps
+with a thin tree, canvases, shortcuts, and whenever a member truly needs pixels.
+
+```
+member ──mcp__desktop__snapshot / act / …──▶ daemon: may it? (desktop on) → its turn
+   (Use::Read / Headless: no lease) → send gate on the scene → helper
+helper (signed bundle, the one Accessibility grant) ──spawns──▶ agent-desktop --session eq-<hash> …
+   text on stdin · AGENT_DESKTOP_HOME=~/.equipe/desktop/agent-desktop/state (0700) · stderr dropped
+```
+
+### The integration choice: the CLI, run by the helper
+
+Three ways in were weighed: the C library (`libagent_desktop_ffi`) in the
+helper's process, the CLI as a child process, or `agent-desktop mcp`.
+
+- **The CLI, chosen.** macOS charges a child's Accessibility use to its
+  responsible process, so agent-desktop launched by the helper runs under the
+  helper's grant — the one switch the person already turns on. The person
+  never grants agent-desktop itself (the release binaries are ad-hoc signed, so
+  a grant to them would not survive an update anyway). The CLI has everything
+  the members' loop needs: `--skeleton` and `--root` drill-down, `--window-id`,
+  surfaces, `find`, `wait`, notifications, the clipboard, and `--stdin` for
+  text. A crash or a hang costs one call (killed after its deadline), never the
+  helper. One process per call is tens of milliseconds next to the AX walk
+  itself.
+- **Not the C library.** In process it would also keep the single grant, but
+  at 1.2.0 its `ad_snapshot` targets only the focused window and exposes no
+  skeleton, no `--root` drill-down and no window targeting — exactly what makes
+  big apps cheap to read. Binding it means hand-written layouts for a few dozen
+  size-pinned C structs in a crate equipe can't test against the real library
+  here, a `panic = "unwind"` cdylib in the process that holds the person's
+  grants, and a crash taking the helper down.
+- **Not MCP.** `agent-desktop mcp` applies `--session` to the whole server, so
+  per-member namespaces would mean a long-lived server per member, and its
+  envelopes would still need equipe's gate, compaction and stdin handling in
+  front of them. Per-call CLI is simpler and testable with a stand-in binary.
+
+### Pinned, verified, private
+
+- One release: `engine::pin::VERSION` = 1.2.0. `equipe desktop setup`
+  downloads the upstream archive for the machine (macOS arm64/x86_64, Windows
+  x64/arm64), checks its SHA-256 against the value pinned in code (from the
+  release's `checksums.txt`; each archive's Sigstore attestation was checked with
+  `gh attestation verify` when pinning), unpacks only the pinned files with the
+  system `tar`, checks each file's SHA-256, and installs them with a copy of the
+  Apache-2.0 license in `~/.equipe/desktop/agent-desktop/1.2.0/` — inside the
+  helper's folder, which members' sandboxed commands can neither read nor write.
+  The helper hashes the executable again before its first run and whenever the
+  file changes; a binary that isn't the pinned one never runs.
+- **Upgrading:** change `VERSION` and every hash in `pin.rs` from the new
+  release's `checksums.txt` and its unpacked files (`shasum -a 256`), run
+  `gh attestation verify <archive> --repo vercel-labs/agent-desktop`, re-read
+  the release's JSON-output changes against `engine/compact.rs`, and run the
+  engine tests.
+- **Private content stays on the Mac.** Snapshots, clipboard text and
+  notifications go back to the member as the tool's answer and nowhere else:
+  the helper logs only the tool's name, discards agent-desktop's stderr, never
+  turns on its tracing (`--session` without a manifest records nothing), and
+  empties its state root (each member's refmaps) whenever the helper starts.
+  Nothing reaches telemetry. Text a member types (`act` type/set_value,
+  `clipboard` set) goes in on stdin — never in process arguments, which any
+  local process can read — and a password field's value is never shown.
+
+### Tools
+
+| Tool | What | Screen |
+|---|---|---|
+| `snapshot` | the app's tree, interactive elements only by default, as compact text (`e12 button "Send"`); `skeleton` then `root` to drill; `surface` for menus, sheets, alerts | none (`Use::Read`) |
+| `find` | elements by role / name / text / value | none |
+| `act` | on a ref: click, type, set_value, clear, focus, select, check, uncheck, toggle, expand, collapse, scroll, scroll_to — headless | none (`Use::Headless`) |
+| `act` with `headed`, double_click, right_click | physical pointer/keys via agent-desktop (it focuses the window and hit-tests); a context menu opens on screen and holds the pointer | lease + person first |
+| `apps` | list; launch (background); launch with `activate`, close | none / none / lease |
+| `windows` | list; focus, minimize, maximize, restore, resize, move | none / lease |
+| `wait` | an element's state, a window, text, a menu, an event (`window-opened`…), a pause | none |
+| `notifications` | list (when Notification Center is open); act on a button, dismiss — by the listing's index, the listing's app as agent-desktop's fingerprint | none / lease |
+| `clipboard` | get text; set (stdin), clear | none / lease (the person may be about to paste) |
+
+Refs are printed short (`e12`, meaning the member's last snapshot) and passed
+back as printed or qualified (`s8f3k2p9:e12`). A ref no snapshot of this
+member's showed in this helper run is refused before anything runs; each
+member has its own agent-desktop session (`eq-` + a hash, so no names on disk).
+Errors come back as one line that says whether a retry is safe
+(`disposition.retry`), and what to do (`STALE_REF` → snapshot again). The
+member skill `desktop-apps` teaches the loop: snapshot → act on a ref →
+snapshot the same region to verify; retry only when safe.
+
+### Freedom and concurrency
+
+- `desktop::Use` gained `Read` and `Headless`. Neither takes the lease or
+  queues, and neither waits for the person's hands: a headless ref action
+  moves no pointer and takes no focus, so several members work different apps
+  at once, beside the person. `Headless` is still refused while the Mac is
+  locked or nobody is logged in (`Screen::Locked`/`NoSession`); `/desktop stop`
+  refuses both. Physical input — the screenshot tools, `act` with `headed`,
+  double-click and right-click (a context menu holds the pointer), focusing or moving windows, launching with `activate`,
+  notification buttons, writing the clipboard — keeps the one-member lease and
+  waits for the person to leave the Mac alone (`PERSON_QUIET`).
+- In the helper, each accessibility call runs on a thread of its own; the
+  screenshot tools stay one at a time. agent-desktop serializes its own
+  mutations across processes (its interaction lock), and re-identifies a ref
+  before acting, so two members can't act on a stale picture of each other's work.
+- A member's headless work doesn't count as the person's input
+  (`desktop_done(.., physical = false)`).
+
+### The person's gates, on ref actions
+
+The send gate (`desktop_gate`, unchanged rules) judges ref actions by code:
+`Act::of("act", …)` makes click/select/check/toggle a `Click`, type/set_value a
+`Type` (clear an empty one), focus/expand/collapse/scroll a `Look`; a
+notification's button press is a `Click`. The helper's `_scene` for a ref comes
+from the member's snapshot: the snapshot's app (and its bundle id, from
+`list-apps`, so a localised Mail still counts as Mail), its window title, the
+ref's role mapped to the AX role the gate reads (`button` → `AXButton`, a
+`secure` text field → `AXSecureTextField`) and name, and the draft — the
+focused or last non-empty text field of the same snapshot. So:
+
+- pressing Send / Join / Share by its ref in a messaging app asks the person,
+  every time, with the draft and a screenshot (when Screen Recording is on);
+  writing the draft goes ahead; a line break in typed text asks;
+- payment, account deletion, passwords and security settings, password
+  managers, password fields and equipe's own windows take no input;
+- after a yes the daemon passes `_asked`, and the helper re-reads the window
+  title (the conversation) and the draft live before acting — another
+  conversation or another draft than the person read, and nothing is sent.
+
+### Permissions UX
+
+- **One grant matters: Accessibility for "equipe Desktop Helper".** It covers
+  the tree, ref actions and input, and agent-desktop under it. Screen
+  Recording is optional now — only screenshots and the send-approval picture.
+- `equipe desktop setup` installs the helper and the engine and walks the person
+  through the grant; `equipe desktop status` lists every check (GUI session,
+  daemon, engine installed and verified, helper, Accessibility, input, the
+  engine working under the helper's grant, Screen Recording, display, lock) — in
+  the person's language (8 locales).
+- **Settings › Squad › Desktop apps** in the app shows the same
+  (`Command::DesktopCheck` → `Event::DesktopReady`), with **Allow…**: the
+  daemon asks the helper to request its permissions (macOS's prompts) and opens
+  System Settings at the missing pane — on the daemon's machine, which is where
+  the switch must be flipped, even when the app is connected over SSH.
+
+### Cost: tree versus screenshot
+
+`engine::tests::snapshot_costs_a_fraction_of_a_screenshot`
+(`cargo test -p equipe-desktop-control snapshot_costs -- --nocapture`), on a
+hand-written chat window in agent-desktop's documented shape (a Slack-like
+channel: 20 conversations, 8 messages with their buttons, a composer with a
+draft; 75 refs):
+
+| What the member reads | Bytes | ≈ Tokens |
+|---|---|---|
+| agent-desktop's raw JSON, `-i --compact` | 10,270 | 2,568 |
+| equipe's compact tree, whole window (92 lines) | 2,749 | 688 |
+| equipe's compact tree, `skeleton` | 271 | 68 |
+| one screenshot, 1330×865 (a 1470×956 pt display at 2×) | — | ≈1,534 (w×h/750), plus the base64 JPEG the engine keeps in its transcript |
+
+Text at ~4 bytes a token. The usual loop — skeleton (68), drill into the
+composer (~100), act, re-read the composer (~100) — costs a few hundred tokens
+where screenshots cost ~1,500 for every look, and the answer says exactly what
+changed instead of leaving the model to find it in pixels. The raw JSON alone
+would cost more than a screenshot: compaction (short refs, no
+`available_actions`, empty wrappers folded, values cut) is what makes the tree cheap.
+
+### What needs the person on a real Mac
+
+Not run against a live desktop while building this (by rule): everything above
+is tested with a stand-in agent-desktop and recorded-shape JSON. On a real Mac,
+the person:
+
+1. runs `equipe desktop setup` while logged in at the Mac (downloads and
+   verifies agent-desktop; installs or updates the helper bundle);
+2. switches on **Accessibility** for "equipe Desktop Helper" (password or Touch
+   ID) — or clicks **Allow…** in Settings › Squad › Desktop apps;
+3. optionally switches on **Screen Recording** for it (screenshots);
+4. checks `equipe desktop status`: "The engine works under the helper's
+   Accessibility permission" must be ✓. If macOS lists `agent-desktop`
+   separately and the line stays ✗, the responsible-process attribution didn't
+   hold on that macOS version: grant the listed binary too and report it.
+
+To verify end to end: a member with the desktop on snapshots TextEdit, types
+into its text area by ref, re-reads it; then in a messaging app, a ref click on
+Send must ask.
+
+### Limits and follow-ups
+
+- **Sandboxes (separate desktops): follow-up.** agent-desktop's `sandbox`
+  command (a macOS VM provider) landed upstream after 1.2.0 and isn't in a
+  release yet; its guest needs a person to finish setup and its own
+  Accessibility grant. When a release ships it: pin it, expose `sandbox`
+  create/start/status/stop to the person (not members), and route a member's
+  calls through `sandbox exec <name> --` so risky or long app work runs off the
+  person's desktop.
+- Headless delivery depends on the app: Electron/Chromium apps may need a long
+  `timeout_ms` to expose their web tree, some controls only take `headed` input,
+  and macOS notifications list headless only while Notification Center is open.
+- On Windows the helper runs accessibility calls inline (one at a time); the
+  daemon still lets them run without the lease.
+- The helper keeps up to 12 snapshots' refs per member in memory for the gate,
+  and forgets them when it restarts; members then snapshot again.
 
 ## What the probe showed
 

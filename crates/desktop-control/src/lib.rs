@@ -13,6 +13,7 @@
 //! behind the screen lease (T-22) and the send approval (T-23) in the daemon.
 
 pub mod controller;
+pub mod engine;
 pub mod geometry;
 pub mod helper;
 pub mod install;

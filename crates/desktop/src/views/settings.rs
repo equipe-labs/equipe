@@ -717,7 +717,67 @@ fn squad(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         phones(shell, connected, cx),
         Section::new(t!("settings.section_daemon"), vec![daemon_version, restart, disk]),
         Section::new(t!("settings.section_squad"), vec![suggestions, screen, delete]).foot(t!("settings.squad_foot")),
+        desktop_apps(shell, connected, cx),
     ]
+}
+
+/// Desktop apps: whether members can work the daemon machine's desktop apps,
+/// what is missing, and the one click that asks macOS for it there.
+fn desktop_apps(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Section {
+    let p = shell.palette;
+    let words = "desktop apps accessibility agent-desktop permission screen recording computer use";
+    let state = |on: bool| -> AnyElement {
+        h_flex()
+            .gap_2()
+            .items_center()
+            .child(dot(if on { p.accent } else { p.amber }, 7.))
+            .child(value(p, if on { t!("settings.desktop_granted") } else { t!("settings.desktop_missing") }))
+            .into_any_element()
+    };
+    let allow = |id: &'static str| -> AnyElement {
+        ui::button(p, id, Kind::Secondary, t!("settings.desktop_allow"))
+            .icon(Icon::Shield)
+            .disabled(!connected)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.send_command(Command::DesktopCheck { guide: true });
+                cx.notify();
+            }))
+            .into_any_element()
+    };
+    let check = ui::button(p, "desktop-check", Kind::Ghost, t!("settings.desktop_check")).icon(Icon::Retry).disabled(!connected).on_click(cx.listener(|this, _, _, cx| {
+        this.send_command(Command::DesktopCheck { guide: false });
+        cx.notify();
+    }));
+    let section = |lines: Vec<Line>| Section::new(t!("settings.section_desktop_apps"), lines).foot(t!("settings.desktop_foot"));
+    let Some(ready) = shell.model.desktop_ready.as_ref() else {
+        return section(vec![Line::new(t!("settings.desktop_status"), t!("settings.desktop_unknown")).words(words).control(check)]);
+    };
+    if !ready.supported {
+        return section(vec![Line::new(t!("settings.desktop_status"), t!("settings.desktop_unsupported")).words(words)]);
+    }
+    let ok = ready.ready();
+    let mut lines = vec![Line::new(t!("settings.desktop_status"), if ok { t!("settings.desktop_ready_desc") } else { t!("settings.desktop_not_ready_desc") }).warn(!ok).words(words).control(check)];
+    if !ready.helper {
+        lines.push(Line::new(t!("settings.desktop_helper"), t!("settings.desktop_helper_missing")).warn(true).words(words).control(command_chip(p, "copy-desktop-setup", "equipe desktop setup")));
+    } else {
+        let ax = ready.accessibility == Some(true);
+        lines.push(Line::new(t!("settings.desktop_accessibility"), t!("settings.desktop_accessibility_desc")).warn(!ax).words(words).control(if ax { state(true) } else { allow("desktop-allow-ax") }));
+    }
+    let engine_desc = match (ready.engine, ready.engine_grant) {
+        (false, _) => t!("settings.desktop_engine_missing", version = ready.engine_version),
+        (true, Some(false)) => t!("settings.desktop_engine_no_grant").to_owned(),
+        (true, _) => t!("settings.desktop_engine_desc", version = ready.engine_version),
+    };
+    let engine_ok = ready.engine && ready.engine_grant != Some(false);
+    lines.push(Line::new(t!("settings.desktop_engine"), engine_desc).warn(!engine_ok).words(words).control(if ready.engine { state(engine_ok) } else { command_chip(p, "copy-desktop-engine", "equipe desktop setup") }));
+    if ready.helper {
+        let screen = ready.screen == Some(true);
+        lines.push(Line::new(t!("settings.desktop_screen"), t!("settings.desktop_screen_desc")).words(words).control(if screen || ready.accessibility != Some(true) { state(screen) } else { allow("desktop-allow-screen") }));
+    }
+    if ready.locked {
+        lines.push(Line::new(t!("settings.desktop_locked"), t!("settings.desktop_locked_desc")).warn(true).words(words));
+    }
+    section(lines)
 }
 
 /// Phones: pair one by QR code (the sheet), and the ones paired, each with
@@ -1554,7 +1614,10 @@ impl Shell {
     pub fn open_settings(&mut self, category: Option<Category>, window: &mut Window, cx: &mut Context<Self>) {
         crate::tips::hide(cx);
         match category.unwrap_or(self.settings.category) {
-            Category::Squad => self.ask_devices(cx),
+            Category::Squad => {
+                self.ask_devices(cx);
+                self.send_command(Command::DesktopCheck { guide: false });
+            }
             Category::Engines => self.ask_engines(cx),
             Category::Accounts => self.send_command(Command::Logins),
             Category::Browser => self.send_command(Command::BrowserProfiles),
@@ -1597,7 +1660,10 @@ impl Shell {
 
     pub fn settings_go(&mut self, category: Category, cx: &mut Context<Self>) {
         match category {
-            Category::Squad => self.ask_devices(cx),
+            Category::Squad => {
+                self.ask_devices(cx);
+                self.send_command(Command::DesktopCheck { guide: false });
+            }
             Category::Engines => self.ask_engines(cx),
             Category::Accounts => self.send_command(Command::Logins),
             Category::Browser => self.send_command(Command::BrowserProfiles),

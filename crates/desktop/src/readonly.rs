@@ -162,6 +162,7 @@ pub fn reads(command: &Command) -> bool {
         | C::SetModel { .. }
         | C::ShowBrowser { .. }
         | C::Desktop { .. }
+        | C::DesktopCheck { .. }
         | C::Suggestions { .. }
         | C::Unqueue { .. }
         | C::SendNow { .. }
@@ -562,6 +563,7 @@ mod tests {
             Command::SetModel { session: 1, model: "m".into() },
             Command::ShowBrowser { squad: s(), member: None, show: true },
             Command::Desktop { open: false },
+            Command::DesktopCheck { guide: true },
             Command::Suggestions { squad: s(), on: false },
             Command::Unqueue { session: 1, text: "x".into() },
             Command::SendNow { session: 1, texts: vec![] },

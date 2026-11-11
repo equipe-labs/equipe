@@ -333,7 +333,7 @@ impl Handle {
         };
         let who = MemberRef { squad: call.squad.clone(), member: call.member.clone() };
         let member = format!("{}/{}", call.squad, call.member);
-        let what = desktop::Use::of(&call.name);
+        let what = desktop::Use::of(&call.name, &call.arguments);
         let mut start = match self.desktop_ask(who.clone(), what).await {
             Ok(start) => start,
             Err(refused) => return ToolResult::error(refused),
@@ -353,9 +353,12 @@ impl Handle {
                     }
                     arguments[equipe_desktop_control::controller::EXPECT] = scene;
                     // The person took their time: the screen may have gone on
-                    // to another member, or been taken back, meanwhile.
+                    // to another member, or been taken back, meanwhile. A
+                    // headless ref action still takes no screen after a yes.
                     if asked {
-                        start = match self.desktop_ask(who.clone(), desktop::Use::Approved).await {
+                        arguments[equipe_desktop_control::controller::ASKED] = json!(true);
+                        let again = if what == desktop::Use::Headless { desktop::Use::Headless } else { desktop::Use::Approved };
+                        start = match self.desktop_ask(who.clone(), again).await {
                             Ok(start) => start,
                             Err(refused) => return ToolResult::error(format!("The person said yes, but nothing was sent: {refused}")),
                         };
@@ -368,7 +371,7 @@ impl Handle {
             }
         }
         let result = helper::call(&home, &member, &call.name, &arguments).await;
-        self.desktop_done(who, start, what != desktop::Use::Look);
+        self.desktop_done(who, start, what.physical());
         result
     }
 
@@ -2162,6 +2165,14 @@ impl Runtime {
                 if changed {
                     self.publish_desktop();
                 }
+            }
+            Command::DesktopCheck { guide } => {
+                // Off the loop: the helper may take a moment to answer.
+                let (home, internal) = (self.config.home.clone(), self.internal.clone());
+                tokio::spawn(async move {
+                    let ready = desktop::ready::readiness(&home, guide).await;
+                    let _ = internal.send(Internal::Event(Box::new(Event::DesktopReady { ready })));
+                });
             }
             Command::WatchBrowser { squad, session } => match session {
                 Some(id) => {

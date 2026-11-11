@@ -155,8 +155,26 @@ impl Act {
     pub fn of(tool: &str, input: &Value) -> Act {
         let name = tool.rsplit("__").next().unwrap_or(tool);
         let text = |key: &str| input.get(key).and_then(Value::as_str).unwrap_or_default().to_owned();
+        let action = text("action");
         match name {
             "screenshot" | "elements" | "ui_tree" | "scroll" | "list_windows" | "focus_window" | "open_app" | "release" => Act::Look,
+            // The accessibility tools: reading, waiting, apps, windows and the
+            // clipboard send nothing to anyone.
+            "snapshot" | "find" | "wait" | "apps" | "windows" | "clipboard" => Act::Look,
+            // A ref action, by what it does to the element.
+            "act" => match action.as_str() {
+                "focus" | "expand" | "collapse" | "scroll" | "scroll_to" => Act::Look,
+                "type" | "set_value" => Act::Type(input.get("text").or_else(|| input.get("value")).and_then(Value::as_str).unwrap_or_default().to_owned()),
+                // Emptying a field writes nothing anyone receives.
+                "clear" => Act::Type(String::new()),
+                _ => Act::Click,
+            },
+            // Pressing a notification's button (Reply, Join, Accept…) may reach
+            // someone; listing or dismissing doesn't.
+            "notifications" => match action.as_str() {
+                "act" => Act::Click,
+                _ => Act::Look,
+            },
             "type" | "type_text" => Act::Type(text("text")),
             "key" => Act::Key(text(if input.get("keys").is_some() { "keys" } else { "key" })),
             "drag" => Act::Drag,
@@ -415,6 +433,44 @@ mod tests {
         matches!(v, Verdict::Ask(_))
     }
 
+    /// A Slack scene as the helper builds it from a member's snapshot, for a
+    /// headless ref action (`engine::scene`).
+    fn slack(target: Element) -> Scene {
+        Scene {
+            app: App { name: "Slack".into(), bundle_id: Some("com.tinyspeck.slackmacgap".into()) },
+            window: Some("launch-plan (Channel) - Acme - Slack".into()),
+            focused: Some(Element { role: "AXTextField".into(), title: Some("Message #launch-plan".into()), value: Some("Moving the review to 3pm".into()), ..Default::default() }),
+            target: Some(target),
+        }
+    }
+
+    #[test]
+    fn a_headless_ref_action_meets_the_same_gate_as_a_click() {
+        let apps = apps();
+        let act = |input: serde_json::Value| Act::of("mcp__desktop__act", &input);
+        // Pressing Send by its ref asks, every time.
+        assert!(asks(judge(&act(json!({ "ref": "e74" })), &slack(button("Send now")), &apps)));
+        // A channel in the sidebar doesn't.
+        let channel = Element { role: "AXTreeItem".into(), title: Some("design".into()), ..Default::default() };
+        assert_eq!(judge(&act(json!({ "ref": "e5" })), &slack(channel), &apps), Verdict::Free);
+        // A draft goes ahead; a line break in it asks.
+        let field = Element { role: "AXTextField".into(), title: Some("Message".into()), ..Default::default() };
+        let mut typing = slack(field.clone());
+        typing.focused = Some(field);
+        assert_eq!(judge(&act(json!({ "ref": "e70", "action": "type", "text": "see you at 3" })), &typing, &apps), Verdict::Free);
+        assert!(asks(judge(&act(json!({ "ref": "e70", "action": "type", "text": "see you\n" })), &typing, &apps)));
+        // Into a password field: never.
+        let secret = Element { role: "AXSecureTextField".into(), title: Some("Password".into()), ..Default::default() };
+        let mut login = textedit();
+        login.focused = Some(secret.clone());
+        login.target = Some(secret);
+        assert!(matches!(judge(&act(json!({ "ref": "e1", "action": "set_value", "text": "x" })), &login, &apps), Verdict::Blocked(_)));
+        // A notification's Join asks; its Reply only opens the reply field.
+        let notification = |name: &str| Act::of("notifications", &json!({ "action": "act", "index": 1, "name": name }));
+        assert!(asks(judge(&notification("Join"), &slack(button("Join")), &apps)));
+        assert_eq!(judge(&notification("Reply"), &slack(button("Reply")), &apps), Verdict::Free);
+    }
+
     #[test]
     fn looking_is_free_everywhere() {
         for tool in ["mcp__desktop__screenshot", "scroll", "elements", "focus_window", "open_app", "list_windows"] {
@@ -586,6 +642,16 @@ mod tests {
         assert_eq!(Act::of("key", &json!({ "key": "return" })), Act::Key("return".into()));
         assert_eq!(Act::of("double_click", &json!({})), Act::Click);
         assert_eq!(Act::of("something_new", &json!({})), Act::Click);
+        // The accessibility tools.
+        assert_eq!(Act::of("mcp__desktop__snapshot", &json!({ "app": "Slack" })), Act::Look);
+        assert_eq!(Act::of("act", &json!({ "ref": "e1" })), Act::Click);
+        assert_eq!(Act::of("act", &json!({ "ref": "e1", "action": "toggle" })), Act::Click);
+        assert_eq!(Act::of("act", &json!({ "ref": "e1", "action": "type", "text": "hi\n" })), Act::Type("hi\n".into()));
+        assert_eq!(Act::of("act", &json!({ "ref": "e1", "action": "set_value", "text": "x" })), Act::Type("x".into()));
+        assert_eq!(Act::of("act", &json!({ "ref": "e1", "action": "scroll" })), Act::Look);
+        assert_eq!(Act::of("notifications", &json!({ "action": "act", "index": 1, "name": "Reply" })), Act::Click);
+        assert_eq!(Act::of("notifications", &json!({})), Act::Look);
+        assert_eq!(Act::of("clipboard", &json!({ "action": "set", "text": "x" })), Act::Look);
     }
 
     #[test]

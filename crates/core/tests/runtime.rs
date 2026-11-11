@@ -4996,6 +4996,65 @@ async fn a_members_send_from_teams_waits_for_the_persons_yes_and_a_password_fiel
     let _ = std::fs::remove_dir_all(home);
 }
 
+#[tokio::test]
+async fn headless_ref_actions_run_beside_the_person_and_other_members_and_still_meet_the_send_gate() {
+    let (handle, mut events, helper, hands, home) = at_the_desktop().await;
+    let call = |member: &str, tool: &str, args: serde_json::Value| desktop_call(member, tool, args);
+
+    // frontend holds the screen for physical input; then the person starts typing.
+    assert!(!handle.desktop(call("frontend", "click", serde_json::json!({ "x": 10, "y": 10, "app": "TextEdit" }))).await.is_error);
+    *hands.lock().unwrap() = 0.5;
+    // backend reads and acts through Accessibility all the same: no line, no waiting.
+    let (read, acted) = tokio::join!(
+        handle.desktop(call("backend", "snapshot", serde_json::json!({ "app": "TextEdit" }))),
+        handle.desktop(call("backend", "act", serde_json::json!({ "ref": "e3", "action": "type", "text": "notes" }))),
+    );
+    assert_eq!((read.text.as_str(), acted.text.as_str()), ("snapshot done", "act done"));
+    // Physical input still waits for its turn and for the person.
+    let held = handle.desktop(call("backend", "act", serde_json::json!({ "ref": "e3", "headed": true }))).await;
+    assert!(held.is_error, "{}", held.text);
+    let mut reached = helper.tools();
+    reached.sort();
+    assert_eq!(reached, ["act", "click", "snapshot"]);
+    let act = helper.reached.lock().unwrap().iter().find(|(t, _)| t == "act").unwrap().1.clone();
+    assert_eq!(act["_expect"]["app"]["name"], "TextEdit", "a ref action is checked like any input");
+
+    // In a messaging app, pressing Send by its ref asks the person, every time.
+    let slack = serde_json::json!({
+        "app": { "name": "Slack", "bundle_id": "com.tinyspeck.slackmacgap" },
+        "window": "launch-plan (Channel) - Acme - Slack",
+        "ref": "@s4k9m2qa:e74",
+        "target": { "role": "AXButton", "title": "Send now" },
+        "focused": { "role": "AXTextField", "value": "Moving the review to 3pm" },
+        "draft_ref": "@s4k9m2qa:e70",
+    });
+    *helper.scene.lock().unwrap() = slack.clone();
+    let unsaid = handle.desktop(call("backend", "act", serde_json::json!({ "ref": "e74" }))).await;
+    assert!(unsaid.is_error && unsaid.text.contains("`why`"), "{}", unsaid.text);
+    let send = {
+        let handle = handle.clone();
+        let call = call("backend", "act", serde_json::json!({ "ref": "e74", "why": "the review time, to #launch-plan" }));
+        tokio::spawn(async move { handle.desktop(call).await })
+    };
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    assert_eq!(approval.action, "click \"Send now\" in Slack · launch-plan (Channel) - Acme - Slack\nMoving the review to 3pm");
+    assert_eq!(helper.tools().iter().filter(|t| *t == "act").count(), 1, "nothing pressed while the person decides");
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: equipe_core::protocol::Decision::Allow, words: None, said: None });
+    let answer = send.await.unwrap();
+    assert_eq!(answer.text, "act done");
+    let sent = helper.reached.lock().unwrap().last().unwrap().1.clone();
+    assert_eq!(sent["_asked"], true, "after a yes the helper re-reads the conversation and the draft");
+    assert_eq!(sent["_expect"]["target"]["title"], "Send now");
+    assert_eq!(sent["_expect"]["focused"]["value"], "Moving the review to 3pm", "the draft the person read");
+
+    // /desktop stop: not even reading.
+    handle.send(Command::Desktop { open: false });
+    let stopped = handle.desktop(call("backend", "snapshot", serde_json::json!({ "app": "TextEdit" }))).await;
+    assert!(stopped.is_error && stopped.text.contains("/desktop stop"), "{}", stopped.text);
+    let _ = std::fs::remove_dir_all(home);
+}
+
 // ── design QA ──
 
 /// A ticket's turn that saves a screenshot, `shot.png`, in its worktree, then works on a while.

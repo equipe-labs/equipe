@@ -37,9 +37,10 @@ pub const BOARD: Server =
 /// The Mac's desktop: `mcp__desktop__…`.
 pub const DESKTOP: Server = Server {
     name: "desktop",
-    instructions: "The Mac's desktop, as the person sees it: screenshot, elements, click, type. Coordinates are pixels \
-of your last screenshot. Each click and keystroke is checked against the app you mean; when one is refused, look again \
-instead of retrying.",
+    instructions: "The computer's desktop apps. First choice: the accessibility tree — snapshot an app (refs like e12), act \
+on a ref headless (no pointer, no focus, no waiting for the screen), snapshot again to verify; retry only when the answer \
+says it is safe. Screenshots, coordinates and the real keyboard are the fallback, one member at a time. Sending in the \
+person's name waits for their yes.",
 };
 
 /// The ticket's phone: `mcp__phone__…`.
