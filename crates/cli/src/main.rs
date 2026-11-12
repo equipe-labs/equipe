@@ -1723,6 +1723,7 @@ impl App {
                 | Event::SignalsChanged { .. }
                 | Event::Logins { .. }
                 | Event::Autopilot { .. }
+                | Event::LoginInsights { .. }
                 | Event::LoginOffered { .. }
                 | Event::LoginOfferClosed { .. }
                 | Event::BrowserProfiles { .. }

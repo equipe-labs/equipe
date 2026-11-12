@@ -75,6 +75,7 @@ pub fn reads(command: &Command) -> bool {
         | C::HandOver { .. }
         | C::Logins
         | C::Autopilot
+        | C::LoginInsights { .. }
         | C::BrowserProfiles
         | C::Devices
         | C::Engines
@@ -168,6 +169,8 @@ pub fn reads(command: &Command) -> bool {
         | C::SetKeepAlive { .. }
         | C::SaveCliLogin { .. }
         | C::DeleteCliLogin { .. }
+        | C::SetLoginScope { .. }
+        | C::ForgetNeverOffer { .. }
         | C::DismissLoginOffer { .. }
         | C::SaveBrowserProfile { .. }
         | C::DeleteBrowserProfile { .. }
@@ -580,9 +583,12 @@ mod tests {
             Command::SetKeepAlive { hours: 6 },
             Command::SaveCliLogin { draft: equipe_core::protocol::vault::CliLoginDraft { id: None, kind: equipe_core::protocol::vault::CliKind::Env, name: "NPM_TOKEN".into(), host: String::new(), public: String::new(), squad: None, secret: None } },
             Command::DeleteCliLogin { id: 1 },
+            Command::SetLoginScope { id: 1, squads: vec!["acme".into()] },
+            Command::ForgetNeverOffer { site: "github.com".into() },
             Command::DismissLoginOffer { id: 1, never: true },
             Command::Logins,
             Command::Autopilot,
+            Command::LoginInsights { days: 7 },
             Command::SaveBrowserProfile { profile: BrowserProfile { name: "b".into(), label: String::new() } },
             Command::DeleteBrowserProfile { name: "b".into() },
             Command::BrowserProfiles,
@@ -698,7 +704,7 @@ mod tests {
         variants.sort();
         assert_eq!(sampled, variants, "each command once: a new one is sampled here, and placed in `reads`");
         let going: Vec<String> = commands.iter().filter(|c| reads(c)).map(name).collect();
-        assert_eq!(going, ["ticket_history", "hand_over", "logins", "autopilot", "browser_profiles", "watch_browser", "devices", "disk_scan", "plan_use", "words_log", "engines", "providers", "models", "design", "project_docs", "search_docs", "design_versions"]);
+        assert_eq!(going, ["ticket_history", "hand_over", "logins", "autopilot", "login_insights", "browser_profiles", "watch_browser", "devices", "disk_scan", "plan_use", "words_log", "engines", "providers", "models", "design", "project_docs", "search_docs", "design_versions"]);
         // What a screen does as the person works is never among them.
         for kept in ["submit", "say", "undo_words", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "start_side_chat", "side_chat_submit", "taste", "disk_clean", "add_provider", "remove_provider", "test_provider", "keep_doc_copy"] {
             assert!(!going.iter().any(|g| g == kept), "{kept} changes something");

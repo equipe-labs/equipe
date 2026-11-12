@@ -194,7 +194,7 @@ mod tests {
     #[test]
     fn every_script_parses() {
         use std::io::Write as _;
-        let login = crate::protocol::vault::Login { id: 1, site: "github.com".into(), url: None, username: "a".into(), note: None, allowed: Vec::new(), auto: true, stopped: None, created_at: 0, uses: Vec::new(), autopilot: Default::default() };
+        let login = crate::protocol::vault::Login { id: 1, site: "github.com".into(), url: None, username: "a".into(), note: None, allowed: Vec::new(), auto: true, stopped: None, created_at: 0, password_at: None, uses: Vec::new(), autopilot: Default::default() };
         let scripts = [code_script("123456", &guard()), passkey_script(&guard()), device_script(Some("ABCD-1234"), &guard()), device_script(None, &guard()), crate::vault::fill_script("a", "p", &FillGuard::exact(&login)), remember_js()];
         for script in scripts {
             let Ok(mut node) = std::process::Command::new("node").args(["-e", "new Function('return (' + require('fs').readFileSync(0, 'utf8') + ')')"]).stdin(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn() else { return };

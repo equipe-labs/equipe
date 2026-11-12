@@ -1,5 +1,5 @@
-//! Login autopilot in Settings › Accounts (`equipe_core::autopilot`): under
-//! each login, the switches for what equipe may do by itself around its
+//! Login autopilot on the Logins page (`equipe_core::autopilot`): under
+//! each login's row, the switches for what equipe may do by itself around its
 //! sign-in — each with what it does in a line, each the person's alone — and
 //! the authenticator seed (pasted, or read off the site's QR code in equipe's
 //! browser) and equipe's own passkey; and one card for autopilot as a whole:
@@ -99,11 +99,11 @@ fn switches() -> [(&'static str, &'static str, &'static str, fn(&Autopilot) -> b
 /// The button on a login's row that opens its autopilot switches.
 pub fn toggle(shell: &Shell, login: &Login, cx: &mut Context<Shell>) -> AnyElement {
     let id = login.id;
-    let open = shell.settings.accounts.autopilot.open.contains(&id);
+    let open = shell.logins_ui.autopilot.open.contains(&id);
     ui::button(shell.palette, SharedString::from(format!("login-autopilot-{id}")), Kind::Ghost, t!("autopilot.open"))
         .selected(open)
         .on_click(cx.listener(move |this, _, _, cx| {
-            let open = &mut this.settings.accounts.autopilot.open;
+            let open = &mut this.logins_ui.autopilot.open;
             if !open.remove(&id) {
                 open.insert(id);
             }
@@ -115,7 +115,7 @@ pub fn toggle(shell: &Shell, login: &Login, cx: &mut Context<Shell>) -> AnyEleme
 /// Under a login's row, when open: its autopilot switches, each with what it
 /// does, and its seed and passkey.
 pub fn below(shell: &Shell, login: &Login, cx: &mut Context<Shell>) -> Option<AnyElement> {
-    let ui = &shell.settings.accounts.autopilot;
+    let ui = &shell.logins_ui.autopilot;
     if !ui.open.contains(&login.id) {
         return None;
     }
@@ -155,7 +155,7 @@ pub fn below(shell: &Shell, login: &Login, cx: &mut Context<Shell>) -> Option<An
             .items_center()
             .child(div().flex_1().child(boxed(p, &ui.seed)))
             .child(ui::button(p, SharedString::from(format!("login-seed-save-{id}")), Kind::Secondary, t!("autopilot.seed_save")).on_click(cx.listener(move |this, _, window, cx| {
-                let input = this.settings.accounts.autopilot.seed.clone();
+                let input = this.logins_ui.autopilot.seed.clone();
                 let secret = input.read(cx).value().trim().to_owned();
                 input.update(cx, |i, cx| i.set_value(String::new(), window, cx));
                 if !secret.is_empty() {
@@ -217,10 +217,10 @@ fn kind_word(kind: CliKind) -> &'static str {
 pub(super) fn section(shell: &Shell, cx: &mut Context<Shell>) -> Section {
     let p = shell.palette;
     let status = &shell.model.autopilot;
-    let ui = &shell.settings.accounts.autopilot;
+    let ui = &shell.logins_ui.autopilot;
     let resolved: u64 = status.resolved.iter().map(|(_, n)| n).sum();
     let summary = if resolved == 0 && status.asked == 0 { t!("autopilot.summary_none").to_owned() } else { t!("autopilot.summary", resolved = resolved, minutes = status.minutes_saved, asked = status.asked) };
-    let mut lines = vec![Line::new(t!("autopilot.title"), summary).words(t!("autopilot.words"))];
+    let mut lines = vec![Line::new(t!("autopilot.week"), summary).words(t!("autopilot.words"))];
     // The mailbox codes are read from.
     let mailbox_desc = status.mailbox.as_ref().map_or_else(|| t!("autopilot.mailbox_none").to_owned(), |m| t!("autopilot.mailbox_desc", user = m.username, host = m.host));
     let mut mailbox = Line::new(t!("autopilot.mailbox"), mailbox_desc);
@@ -233,7 +233,7 @@ pub(super) fn section(shell: &Shell, cx: &mut Context<Shell>) -> Section {
                 .pt_1()
                 .child(h_flex().w_full().gap_2().child(field(&ui.imap_host)).child(field(&ui.imap_user)).child(field(&ui.imap_password)))
                 .child(h_flex().w_full().gap_2().items_center().child(small(p, t!("autopilot.mailbox_note")).flex_1()).child(ui::button(p, "ap-mailbox-cancel", Kind::Ghost, t!("accounts.cancel")).on_click(cx.listener(|this, _, _, cx| {
-                    this.settings.accounts.autopilot.mailbox_open = false;
+                    this.logins_ui.autopilot.mailbox_open = false;
                     cx.notify();
                 }))).child(ui::button(p, "ap-mailbox-save", Kind::Primary, t!("accounts.save")).on_click(cx.listener(|this, _, window, cx| this.save_mailbox_form(window, cx))))),
         );
@@ -243,7 +243,7 @@ pub(super) fn section(shell: &Shell, cx: &mut Context<Shell>) -> Section {
             h_flex()
                 .gap_2()
                 .child(ui::button(p, "ap-mailbox-open", Kind::Secondary, t!("autopilot.mailbox_connect")).on_click(cx.listener(|this, _, _, cx| {
-                    this.settings.accounts.autopilot.mailbox_open = true;
+                    this.logins_ui.autopilot.mailbox_open = true;
                     cx.notify();
                 })))
                 .when(connected, |row| {
@@ -286,7 +286,7 @@ pub(super) fn section(shell: &Shell, cx: &mut Context<Shell>) -> Section {
             let field = |input: &Entity<InputState>| div().flex_1().child(boxed(p, input));
             let picks = h_flex().gap_1().flex_wrap().children(kinds().into_iter().map(|(k, word)| {
                 ui::button(p, SharedString::from(format!("ap-cli-kind-{k:?}")), Kind::Ghost, word).selected(k == kind).on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings.accounts.autopilot.cli_kind = Some(k);
+                    this.logins_ui.autopilot.cli_kind = Some(k);
                     cx.notify();
                 }))
             }));
@@ -301,24 +301,25 @@ pub(super) fn section(shell: &Shell, cx: &mut Context<Shell>) -> Section {
                     .when(kind != CliKind::DeviceLogin, |form| form.child(field(&ui.cli_secret)))
                     .children(ui.problem.clone().map(|why| div().text_size(px(SMALL)).text_color(p.danger()).child(why)))
                     .child(h_flex().w_full().gap_2().items_center().child(small(p, t!("autopilot.cli_note")).flex_1()).child(ui::button(p, "ap-cli-cancel", Kind::Ghost, t!("accounts.cancel")).on_click(cx.listener(|this, _, _, cx| {
-                        this.settings.accounts.autopilot.cli_kind = None;
+                        this.logins_ui.autopilot.cli_kind = None;
                         cx.notify();
                     }))).child(ui::button(p, "ap-cli-save", Kind::Primary, t!("accounts.save")).on_click(cx.listener(|this, _, window, cx| this.save_cli_form(window, cx))))),
             )
         }
         None => add.control(ui::button(p, "ap-cli-add", Kind::Secondary, t!("accounts.add_button")).on_click(cx.listener(|this, _, _, cx| {
-            this.settings.accounts.autopilot.cli_kind = Some(CliKind::GhToken);
-            this.settings.accounts.autopilot.problem = None;
+            this.logins_ui.autopilot.cli_kind = Some(CliKind::GhToken);
+            this.logins_ui.autopilot.problem = None;
             cx.notify();
         }))),
     };
     lines.push(add);
-    Section::new(t!("autopilot.title"), lines).foot(t!("autopilot.foot", machine = shell.endpoint.label()))
+    // Untitled: the Logins page heads it as its other sections.
+    Section::new("", lines).foot(t!("autopilot.foot", machine = shell.endpoint.label()))
 }
 
 impl Shell {
     fn save_mailbox_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let ui = &self.settings.accounts.autopilot;
+        let ui = &self.logins_ui.autopilot;
         let (h, u, pw) = (ui.imap_host.clone(), ui.imap_user.clone(), ui.imap_password.clone());
         let host = h.read(cx).value().trim().to_owned();
         let username = u.read(cx).value().trim().to_owned();
@@ -328,18 +329,18 @@ impl Shell {
             return cx.notify();
         }
         self.send_command(Command::SaveMailbox { mailbox: Some(MailboxDraft { host, port: 993, username, password: (!password.is_empty()).then_some(password) }) });
-        self.settings.accounts.autopilot.mailbox_open = false;
+        self.logins_ui.autopilot.mailbox_open = false;
         cx.notify();
     }
 
     fn save_cli_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let ui = &self.settings.accounts.autopilot;
+        let ui = &self.logins_ui.autopilot;
         let Some(kind) = ui.cli_kind else { return };
         let read = |input: &Entity<InputState>, cx: &Context<Self>| input.read(cx).value().trim().to_owned();
         let (name, host, public, squad, secret) = (read(&ui.cli_name, cx), read(&ui.cli_host, cx), read(&ui.cli_public, cx), read(&ui.cli_squad, cx), read(&ui.cli_secret, cx));
         let inputs = [ui.cli_name.clone(), ui.cli_host.clone(), ui.cli_public.clone(), ui.cli_squad.clone(), ui.cli_secret.clone()];
         if name.is_empty() || (kind != CliKind::DeviceLogin && secret.is_empty()) {
-            self.settings.accounts.autopilot.problem = Some(t!("autopilot.cli_missing").to_owned());
+            self.logins_ui.autopilot.problem = Some(t!("autopilot.cli_missing").to_owned());
             return cx.notify();
         }
         for input in inputs {
@@ -347,8 +348,8 @@ impl Shell {
         }
         let draft = CliLoginDraft { id: None, kind, name, host, public, squad: (!squad.is_empty()).then_some(squad), secret: (!secret.is_empty()).then_some(secret) };
         self.send_command(Command::SaveCliLogin { draft });
-        self.settings.accounts.autopilot.cli_kind = None;
-        self.settings.accounts.autopilot.problem = None;
+        self.logins_ui.autopilot.cli_kind = None;
+        self.logins_ui.autopilot.problem = None;
         cx.notify();
     }
 }

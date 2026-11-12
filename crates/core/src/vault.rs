@@ -529,7 +529,7 @@ impl Vault {
                 // Saving a login is the person's leave for equipe to sign in
                 // with it by itself: on unless they turned it off on the form.
                 let auto = draft.auto.unwrap_or(true);
-                self.logins.push(Login { id, site, url, username, note, allowed: Vec::new(), auto, stopped: None, created_at: now, uses: Vec::new(), autopilot: Default::default() });
+                self.logins.push(Login { id, site, url, username, note, allowed: Vec::new(), auto, stopped: None, created_at: now, password_at: None, uses: Vec::new(), autopilot: Default::default() });
                 id
             }
         };
@@ -540,6 +540,9 @@ impl Vault {
                 self.logins.retain(|l| l.id != id);
             }
             return Err(e);
+        }
+        if new_password && let Some(l) = self.logins.iter_mut().find(|l| l.id == id) {
+            l.password_at = Some(now);
         }
         self.keep()?;
         Ok(id)
@@ -743,6 +746,27 @@ impl Vault {
         self.keep()
     }
 
+    /// Where `login` may be used without asking: exactly `squads` (names, or
+    /// [`EVERY_SQUAD`]; empty: asks every time). One change, so the page's
+    /// "this squad / all squads / ask first" never passes through a state
+    /// between.
+    pub fn set_scope(&mut self, id: u32, squads: &[String]) -> Result<(), String> {
+        let login = self.logins.iter_mut().find(|l| l.id == id).ok_or("that login is gone")?;
+        let mut scope: Vec<String> = Vec::new();
+        for who in squads {
+            let who = scope_of(who);
+            if !who.is_empty() && !scope.contains(&who) {
+                scope.push(who);
+            }
+        }
+        // Every squad covers any one squad.
+        if scope.iter().any(|w| w == EVERY_SQUAD) {
+            scope = vec![EVERY_SQUAD.to_owned()];
+        }
+        login.allowed = scope;
+        self.keep()
+    }
+
     pub fn forget(&mut self, id: u32, who: &str) -> Result<(), String> {
         let scope = scope_of(who);
         if let Some(l) = self.logins.iter_mut().find(|l| l.id == id) {
@@ -785,6 +809,13 @@ impl Vault {
         if !site.is_empty() && !self.never_offer.contains(&site) {
             self.never_offer.push(site);
         }
+        write_private(&self.never_file, &serde_json::to_string_pretty(&self.never_offer).map_err(|e| e.to_string())?)
+    }
+
+    /// Offer keeping a login for `site` again: the person took the "never" back.
+    pub fn forget_never(&mut self, site: &str) -> Result<(), String> {
+        let site = site_of(site);
+        self.never_offer.retain(|s| *s != site);
         write_private(&self.never_file, &serde_json::to_string_pretty(&self.never_offer).map_err(|e| e.to_string())?)
     }
 
@@ -961,7 +992,7 @@ mod tests {
     }
 
     fn login(site: &str, url: Option<&str>, auto: bool) -> Login {
-        Login { id: 1, site: site.into(), url: url.map(Into::into), username: "abel".into(), note: None, allowed: Vec::new(), auto, stopped: None, created_at: 0, uses: Vec::new(), autopilot: Default::default() }
+        Login { id: 1, site: site.into(), url: url.map(Into::into), username: "abel".into(), note: None, allowed: Vec::new(), auto, stopped: None, created_at: 0, password_at: None, uses: Vec::new(), autopilot: Default::default() }
     }
 
     #[test]
@@ -1116,6 +1147,52 @@ mod tests {
         let again = Vault::open(&home, Box::new(InMemory::default()));
         assert!(again.refused_offer("github.com") && again.refused_offer("https://www.github.com/x"));
         assert!(!again.refused_offer("gitlab.com"));
+    }
+
+    #[test]
+    fn a_never_is_taken_back_and_stays_taken_back() {
+        let home = home();
+        let mut vault = Vault::open(&home, Box::new(InMemory::default()));
+        vault.never_offer("github.com").unwrap();
+        vault.never_offer("gitlab.com").unwrap();
+        vault.forget_never("https://www.github.com/login").unwrap();
+        assert!(!vault.refused_offer("github.com") && vault.refused_offer("gitlab.com"));
+        let again = Vault::open(&home, Box::new(InMemory::default()));
+        assert_eq!(again.never_offer, ["gitlab.com"]);
+        // A site never said no to: nothing to take back, nothing breaks.
+        vault.forget_never("example.com").unwrap();
+    }
+
+    #[test]
+    fn scope_is_set_in_one_change_and_every_squad_covers_the_rest() {
+        let home = home();
+        let mut vault = Vault::open(&home, Box::new(InMemory::default()));
+        let id = vault.save(draft("github.com", "abel", Some("pw")), 100).unwrap();
+        vault.set_scope(id, &["acme".into(), "acme/qa".into(), "shop".into()]).unwrap();
+        assert_eq!(vault.logins[0].allowed, ["acme", "shop"], "an old squad/member entry is its squad, once");
+        vault.set_scope(id, &["acme".into(), EVERY_SQUAD.into()]).unwrap();
+        assert_eq!(vault.logins[0].allowed, ["*"]);
+        vault.set_scope(id, &[]).unwrap();
+        assert!(vault.logins[0].allowed.is_empty(), "empty: asks every time");
+        assert!(vault.set_scope(99, &[]).is_err());
+        assert!(Vault::open(&home, Box::new(InMemory::default())).logins[0].allowed.is_empty(), "kept");
+    }
+
+    #[test]
+    fn a_new_password_is_dated_and_changing_the_rest_leaves_the_date() {
+        let home = home();
+        let mut vault = Vault::open(&home, Box::new(InMemory::default()));
+        let id = vault.save(draft("github.com", "abel", Some("pw")), 100).unwrap();
+        assert_eq!(vault.logins[0].password_at, Some(100));
+        let mut change = draft("github.com", "abel2", None);
+        change.id = Some(id);
+        vault.save(change, 200).unwrap();
+        assert_eq!((vault.logins[0].username.as_str(), vault.logins[0].password_at), ("abel2", Some(100)));
+        let mut replace = draft("github.com", "abel2", Some("new"));
+        replace.id = Some(id);
+        vault.save(replace, 300).unwrap();
+        assert_eq!(vault.logins[0].password_at, Some(300));
+        assert_eq!(vault.password(id).unwrap(), "new");
     }
 
     #[test]

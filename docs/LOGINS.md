@@ -9,8 +9,8 @@ signs in once and isn't asked again for the same thing. The pieces:
 | Why the person was asked to sign in, and the measures | `crates/core/src/logins.rs`, `equipe logins stats` |
 | Offers to keep a login, signing in by itself, one card per site | `crates/core/src/runtime/logins.rs` |
 | The browser host's fill and session cookies | `crates/core/assets/browser-host.cjs`, `keep-sessions.js`, `gate.js` |
-| Cards and Settings › Accounts | `crates/desktop/src/views/login_offers.rs`, `views/accounts.rs` |
-| Login autopilot: codes, passkey, keep-alive, command-line sign-ins | `crates/core/src/autopilot/`, `crates/core/src/runtime/autopilot.rs`, `views/autopilot.rs` |
+| Cards, the Logins page, Settings › Accounts | `crates/desktop/src/views/login_offers.rs`, `views/logins.rs` (logic: `crates/desktop/src/logins.rs`), `views/accounts.rs` |
+| Login autopilot: codes, passkey, keep-alive, command-line sign-ins | `crates/core/src/autopilot/`, `crates/core/src/runtime/autopilot.rs`, `views/autopilot.rs` (on the Logins page) |
 
 ## Invariants
 
@@ -20,12 +20,57 @@ signs in once and isn't asked again for the same thing. The pieces:
   record keeps hosts, member names and causes only.
 - Every allowance is the person's: a card's answer or a Settings control,
   sent as a person-only command (`SaveLogin`, `AllowLogin`, `SetLoginAuto`,
-  `ForgetLoginAllowance`, `DismissLoginOffer`; `permissions.rs`). Nothing a
+  `SetLoginScope`, `ForgetLoginAllowance`, `DismissLoginOffer`, `ForgetNeverOffer`; `permissions.rs`). Nothing a
   member says or a page shows turns one on.
 - Passwords live in the system's secret store only — the Keychain on macOS,
   Credential Manager on Windows, the Secret Service (libsecret's
   `secret-tool`) on Linux. Where there is none, saving a login fails and
   says why; nothing falls back to a file.
+
+## The Logins page
+
+One page for everything about the logins, reached from the sidebar's "More"
+(Logins), `/logins` in the command palette, a "Manage logins" link on every
+"Save this login?" card, and Settings › Accounts (which keeps one line that
+opens it). Top to bottom:
+
+- **Waiting for you now** — one row per site members wait on a sign-in for
+  (members joined into one row, as the cards are), with "Open browser to log
+  in" (the browser panel on that page) and "Save this login" when none is kept.
+- **Saved logins** — a search (site, username, note, sign-in page) and a row
+  each: a letter tile (no icon is fetched from the site, so opening the page
+  tells no one which sites have logins), site, username and note, a scope
+  chip (all squads, this squad, another squad, several, or "asks first"),
+  the "Signs in by itself" switch, an "Autopilot" button (the login's
+  autopilot switches, seed and passkey open under its row; see "Login
+  autopilot" below), a health badge (OK; password failed last
+  time — equipe stopped signing in with it, or its last use failed and no
+  newer password was saved; never used) and when it was last used. A row
+  opens to change the scope (one `SetLoginScope`, so no state in between),
+  edit the username, sign-in page and note, replace the password, or delete.
+  Replacing and adding use equipe's own masked box; the stored password is
+  never shown, copied out or read back, not even to the person. Delete asks
+  once more, then hides the row for a few seconds with Undo; the daemon is
+  told only when the time is up, so nothing is lost to a quit meanwhile.
+- **Asked again** (7 or 30 days) — from `Command::LoginInsights`, the record of
+  every squad read without writing: times asked, the share of sign-ins equipe
+  did with no one's hand, how long a sign-in usually lasts before a site asks
+  again, asks per day, by cause, by site, and "Top sites to fix" with the one
+  step that would help: Save this login (a site with none kept, not on the
+  never list, on a machine with a secret store), Turn on sign in by itself,
+  or Replace password (it stopped working).
+- **Never save** — the sites marked "Never for this site", each with "Offer
+  again" (`ForgetNeverOffer`).
+- **Login autopilot** — what equipe finished by itself this week, the
+  mailbox codes are read from, codes from Messages, keep-alive looks and
+  command-line sign-ins (`Command::Autopilot`, answered by `Event::Autopilot`).
+
+New protocol: `Command::LoginInsights { days }` (read-only, shared) answered
+by `Event::LoginInsights` (counts, hosts, causes, the never list, whether a
+secret store is here), `Command::SetLoginScope` and `Command::ForgetNeverOffer`
+(person-only). `Login::password_at` dates the last password. Logic without
+drawing, tested with plain values: `crates/desktop/src/logins.rs`; the read
+model: `equipe_core::logins::insights`.
 
 ## What is recorded, and the measures
 
@@ -63,17 +108,16 @@ and touched by them — the person finished a sign-in. equipe then offers,
 once per site, to keep the login: a card with equipe's own username and
 password boxes (the password masked), a switch to let equipe sign in there by
 itself, and Save / Not now / Never for this site. "Never" is kept in
-`vault-never-offer.json`. Logins can also be added and changed in Settings ›
-Accounts. equipe never reads what the person typed into the site. A sign-in
+`vault-never-offer.json`. Logins can also be added and changed on the Logins page. equipe never reads what the person typed into the site. A sign-in
 done in the real Chrome window (popped out, or on the Mac's screen with no
 browser panel attached) isn't seen as the person's hand, so no offer comes
-then; Settings › Accounts still takes the login.
+then; the Logins page still takes the login.
 
 ## Signing in by itself
 
 The person's to turn on or off for each login (on the offer's card, the
-form, or the switch on its row in Settings › Accounts); a login they save
-now has it on unless they turn it off there (below), and logins saved before
+form, or the switch on its row on the Logins page); a login they save now
+has it on unless they turn it off there (below), and logins saved before
 keep what they had.
 With it on, when a member's page in the shared browser waits on a sign-in,
 equipe types the login in itself instead of handing the browser over, only
@@ -159,7 +203,7 @@ cargo test -p equipe-core --test relogin_live -- --ignored --nocapture
 
 ## Saving a login is the person's leave
 
-A login saved from the offer's card or Settings › Accounts signs in by itself
+A login saved from the offer's card or the Logins page signs in by itself
 unless the person turns the switch off on the form (the switch is shown, on).
 Logins saved before keep the setting they had. An "always" on a card, and a
 login's switches, last until the person takes them back; nothing expires them.
@@ -167,8 +211,8 @@ login's switches, last until the person takes them back; nothing expires them.
 ## Login autopilot
 
 Beyond typing the password, equipe can finish the rest of a sign-in itself —
-each capability off until the person turns it on for that login (Settings ›
-Accounts › a login's "Autopilot"), through person-only commands
+each capability off until the person turns it on for that login (the Logins
+page › a login's "Autopilot"), through person-only commands
 (`SetLoginAutopilot`, `SetLoginTotp`, `ScanLoginTotp`, `RegisterLoginPasskey`,
 `ForgetLoginPasskey`, `SaveMailbox`, `SetSmsCodes`, `SetKeepAlive`,
 `SaveCliLogin`, `DeleteCliLogin`; `permissions.rs`). Every one acts only on the
@@ -187,11 +231,11 @@ names of their own (`vault::account`); `vault.json`, `autopilot.json` and
 | `sms` | Reads the newest text from Messages (`~/Library/Messages/chat.db`, read-only) that is bound to the site's host (WebOTP `@host #code`) or names it, within 3 minutes. | Turns it on, and grants equipe Full Disk Access (System Settings › Privacy & Security › Full Disk Access). Without the grant it refuses and says so. | macOS with Text Message Forwarding only; Windows and Linux refuse. |
 | `passkey` | Gives the page equipe's own passkey for the moment (Chrome's virtual authenticator, CDP `WebAuthn`) and presses its passkey button; the credential's counter is kept up to date. | Presses "Add equipe's passkey", then adds a passkey on the site's security page in equipe's browser within 10 minutes. It is a separate device on the site, revocable there. | The person's own Touch ID passkeys are never used. A site that offers no passkey button, or only a conditional prompt, stays the person's. |
 | `remember` | Ticks "Remember me", "Keep me signed in", "Trust this device" boxes on the forms equipe fills (words of every locale, `match.remember_words`). | Nothing: on by default for a login equipe signs in with; one switch turns it off. | Only boxes on the site's own form. |
-| `keepalive` | Every few hours (Settings: off, 3, 6, 12 or 24; jittered ±20 %, one site at a time, at most one look every 3 minutes), opens the site's check page in a tab of equipe's own (`visit`/`look`, a lane no member has) and signs back in with the steps above when it finds the site signed out; records the look on the login. | Turns it on for the login (and lets it sign in by itself). | A CAPTCHA or a code equipe can't get is left for when a member needs the site. |
+| `keepalive` | Every few hours (the Logins page's autopilot card: off, 3, 6, 12 or 24; jittered ±20 %, one site at a time, at most one look every 3 minutes), opens the site's check page in a tab of equipe's own (`visit`/`look`, a lane no member has) and signs back in with the steps above when it finds the site signed out; records the look on the login. | Turns it on for the login (and lets it sign in by itself). | A CAPTCHA or a code equipe can't get is left for when a member needs the site. |
 | `relogin` | Signing in by itself (above), now also when a member's page shows its sign-in ran out without a form: the site answered one of the page's own requests 401/419/440, or the page says the session expired (`match.session_expired_words`). equipe takes that page to the login's sign-in page, signs in, and brings it back where it was. | Saves the login. | Only for a page on the login's exact host. |
 | `device_code` | A member's reply asking the person to run `gh auth login`, `aws sso login`/`aws login` or `vercel login` (a ```bash block) is run by equipe itself — so the code is the one its own CLI printed, never one a member or a page passed on — with `BROWSER=echo`; the printed page is opened in a tab of equipe's own in the shared, signed-in browser, the code typed where the page asks, and the approve button pressed only on the hosts the person named and only where the page shows that very code. The member is told when the CLI is signed in; the desktop doesn't open a terminal for it. | Turns on "Approve device sign-ins" on the github.com or vercel.com login, or adds a "Device sign-in" for `aws` with its hosts (`*.awsapps.com, device.sso.<region>.amazonaws.com`). | Anything off those hosts (an identity provider elsewhere, a CAPTCHA) goes back to the person with the command to run. |
 
-Command-line credentials (Settings › Accounts › Login autopilot › Command-line
+Command-line credentials (the Logins page › Login autopilot › Command-line
 sign-ins), kept in the secret store:
 
 - **GitHub token**: given to `gh` over its standard input (`gh auth login
@@ -230,7 +274,7 @@ themselves once it is solved. It is recorded with `cause=captcha`.
 `login_events` rows of sign-ins equipe finished carry the step that did it
 (`step`: `relogin`, `totp`, `email`, `sms`, `passkey`, `device_code`,
 `keepalive`; a column added to journals from before). `equipe logins stats`,
-the PM's retro line and the Settings card show them with a rough count of the
+the PM's retro line and the Logins page's autopilot card show them with a rough count of the
 person's minutes saved (2 for a typed password or a keep-alive, 3 for a code or
 passkey from equipe's own store, 4 for a code from mail or Messages, 5 for a
 device sign-in). The goal: handoffs per site per week near zero, CAPTCHAs aside.

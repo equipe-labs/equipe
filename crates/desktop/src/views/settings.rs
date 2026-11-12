@@ -1256,7 +1256,7 @@ fn draw_line(p: Palette, line: Line, first: bool) -> AnyElement {
     }
 }
 
-fn draw_section(p: Palette, section: Section) -> AnyElement {
+pub(super) fn draw_section(p: Palette, section: Section) -> AnyElement {
     let card_bg = p.raised;
     v_flex()
         .w_full()

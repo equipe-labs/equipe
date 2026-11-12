@@ -1038,7 +1038,7 @@ mod tests {
     use crate::protocol::vault::Autopilot;
 
     fn login(id: u32, site: &str, autopilot: Autopilot) -> Login {
-        Login { id, site: site.into(), url: None, username: "a".into(), note: None, allowed: Vec::new(), auto: true, stopped: None, created_at: 0, uses: Vec::new(), autopilot }
+        Login { id, site: site.into(), url: None, username: "a".into(), note: None, allowed: Vec::new(), auto: true, stopped: None, created_at: 0, password_at: None, uses: Vec::new(), autopilot }
     }
 
     #[test]

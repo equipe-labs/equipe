@@ -605,6 +605,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         login_offers: Vec::new(),
         next_login_offer: 1,
         login_offered: std::collections::HashSet::new(),
+        login_insights_days: 7,
         signing_in: Default::default(),
         relogins: HashMap::new(),
         relogin_tries: HashMap::new(),
@@ -1039,6 +1040,8 @@ enum Internal {
     SquadDeleted { squad: String, result: Result<crate::squads::Deleted, String> },
     /// The logins changed (or couldn't): what screens see of them now.
     Logins(Result<Vec<crate::protocol::vault::Login>, String>),
+    /// What the Logins page shows of the sign-in record, read off the loop.
+    LoginInsights(Box<crate::protocol::vault::LoginInsights>),
     /// equipe's own sign-in in a member's browser (by lane) ended: what the fill did.
     Relogin { lane: String, outcome: Result<vault::Filled, String> },
     /// Login autopilot's work off the loop came back ([`autopilot::Note`]).
@@ -1334,6 +1337,8 @@ struct Runtime {
     next_login_offer: u64,
     /// Sites offered since the daemon started: once is enough.
     login_offered: std::collections::HashSet<String>,
+    /// The look-back the Logins page asked for last, kept to read it again after a change.
+    login_insights_days: u32,
     /// Members' pages seen on a sign-in, by page id ([`logins`]).
     signing_in: crate::logins::SignInWatch,
     /// Members' browsers equipe is signing in by itself now, by lane.
@@ -1429,6 +1434,7 @@ impl Wake {
             Wake::Internal(Internal::ProjectAdded { .. }) => Borrowed("a project added"),
             Wake::Internal(Internal::SquadDeleted { .. }) => Borrowed("a squad deleted"),
             Wake::Internal(Internal::Logins(_)) => Borrowed("the logins changed"),
+            Wake::Internal(Internal::LoginInsights(_)) => Borrowed("the sign-in record read"),
             Wake::Internal(Internal::Relogin { .. }) => Borrowed("equipe's own sign-in ending"),
             Wake::Internal(Internal::Autopilot(_)) => Borrowed("login autopilot"),
             Wake::Internal(Internal::LoginRecord { .. }) => Borrowed("a sign-in kept on the record"),
@@ -1670,6 +1676,7 @@ impl Runtime {
                 Internal::ProjectAdded { squad, result } => self.project_added(&squad, result),
                 Internal::SquadDeleted { squad, result } => self.squad_deleted(&squad, result),
                 Internal::Logins(result) => self.logins_changed(result),
+                Internal::LoginInsights(insights) => self.publish(Event::LoginInsights { insights: *insights }),
                 Internal::Relogin { lane, outcome } => self.relogin_done(lane, outcome).await,
                 Internal::Autopilot(note) => self.autopilot_note(note).await,
                 Internal::LoginRecord { squad, entry } => self.login_record(&squad, entry),
@@ -2469,6 +2476,9 @@ impl Runtime {
             Command::ForgetLoginAllowance { id, who } => self.with_vault(move |vault| vault.forget(id, &who)),
             Command::AllowLogin { id, who } => self.allow_login(id, who),
             Command::SetLoginAuto { id, auto } => self.set_login_auto(id, auto),
+            Command::SetLoginScope { id, squads } => self.with_vault(move |vault| vault.set_scope(id, &squads)),
+            Command::ForgetNeverOffer { site } => self.forget_never_offer(site),
+            Command::LoginInsights { days } => self.read_login_insights(days),
             Command::DismissLoginOffer { id, never } => self.dismiss_login_offer(id, never),
             Command::Logins => {
                 let logins = self.logins.clone();

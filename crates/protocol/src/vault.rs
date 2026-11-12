@@ -40,6 +40,10 @@ pub struct Login {
     pub stopped: Option<String>,
     /// When it was saved, unix seconds.
     pub created_at: u64,
+    /// When its password was last set or replaced, unix seconds (`None`: it
+    /// was kept before equipe noted that).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_at: Option<u64>,
     /// Its latest uses, newest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uses: Vec<Use>,
@@ -250,6 +254,97 @@ pub struct AutopilotStatus {
 /// [`Login::allowed`]: every squad.
 pub const EVERY_SQUAD: &str = "*";
 
+/// How a login stands, for the Logins page's badge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Health {
+    /// Used, and its last use didn't fail.
+    Ok,
+    /// The password didn't get past the form last time (or equipe stopped
+    /// signing in with it): worth replacing.
+    Failed,
+    /// Kept, never used yet.
+    NeverUsed,
+}
+
+impl Login {
+    /// When it was last used, unix seconds.
+    pub fn last_used(&self) -> Option<u64> {
+        self.uses.first().map(|u| u.at)
+    }
+
+    /// Its standing: failed when equipe stopped signing in with it, or its
+    /// latest use failed and no new password was saved since.
+    pub fn health(&self) -> Health {
+        let failed_last = self.uses.first().is_some_and(|u| u.outcome == "failed" && self.password_at.is_none_or(|at| u.at >= at));
+        if self.stopped.is_some() || failed_last {
+            Health::Failed
+        } else if self.uses.is_empty() {
+            Health::NeverUsed
+        } else {
+            Health::Ok
+        }
+    }
+
+    /// Where it is used without asking, as the page names it: `*` is every squad.
+    pub fn everywhere(&self) -> bool {
+        self.allowed.iter().any(|w| w == EVERY_SQUAD)
+    }
+}
+
+/// Why and where members sent the person to a site's sign-in, over the last
+/// days — what the Logins page shows under "Asked again". Counts, hosts and
+/// causes only: never a password, a code or a page's text.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoginInsights {
+    /// How many days it looks back (7 or 30).
+    pub days: u32,
+    /// When it was read, unix seconds.
+    pub at: u64,
+    /// Every time the person was asked (handoffs and cards).
+    pub asked: u64,
+    /// By cause (`session_expired`, `captcha`, …), most first.
+    pub by_cause: Vec<CauseCount>,
+    /// Per site, most asked first.
+    pub sites: Vec<SiteAsks>,
+    /// Asks per day, the oldest day first, one entry per day.
+    pub trend: Vec<u64>,
+    /// Sign-ins finished in the period: in all, and by equipe with no one's hand.
+    pub signed_in: u64,
+    pub signed_in_by_equipe: u64,
+    /// Sites the person said "Never for this site" to: no offer to keep a login.
+    pub never: Vec<String>,
+    /// Whether this machine has a secret store to keep passwords in.
+    pub can_keep: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CauseCount {
+    pub cause: String,
+    pub count: u64,
+}
+
+/// One site's asks in the period.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiteAsks {
+    pub site: String,
+    pub asked: u64,
+    pub by_cause: Vec<CauseCount>,
+    /// How long a sign-in usually lasted before this site asked again (the
+    /// median, seconds) — `None` when it never asked again after one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reask_after: Option<u64>,
+    /// Sign-ins finished for it, and how many of them by equipe itself.
+    pub signed_in: u64,
+    pub signed_in_by_equipe: u64,
+}
+
+impl LoginInsights {
+    /// The share of sign-ins equipe finished with no one's hand, 0–100.
+    pub fn by_equipe_percent(&self) -> Option<u64> {
+        (self.signed_in > 0).then(|| self.signed_in_by_equipe * 100 / self.signed_in)
+    }
+}
+
 /// One time a member signed in with a login, or was refused.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Use {
@@ -318,6 +413,52 @@ impl std::fmt::Debug for LoginDraft {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn login(auto: bool) -> Login {
+        Login { id: 1, site: "github.com".into(), url: None, username: "abel".into(), note: None, allowed: Vec::new(), auto, stopped: None, created_at: 10, password_at: None, uses: Vec::new(), autopilot: Default::default() }
+    }
+
+    fn used(at: u64, outcome: &str) -> Use {
+        Use { at, squad: "acme".into(), member: "qa".into(), outcome: outcome.into() }
+    }
+
+    #[test]
+    fn a_logins_health_reads_its_uses_and_its_stop() {
+        let mut l = login(false);
+        assert_eq!(l.health(), Health::NeverUsed);
+        l.uses = vec![used(50, "signed_in")];
+        assert_eq!(l.health(), Health::Ok);
+        assert_eq!(l.last_used(), Some(50));
+        l.uses.insert(0, used(60, "failed"));
+        assert_eq!(l.health(), Health::Failed);
+        // A new password saved after the failure: worth a try again, not a failure.
+        l.password_at = Some(70);
+        assert_eq!(l.health(), Health::Ok);
+        // Declined or no form isn't a bad password.
+        l.uses.insert(0, used(80, "declined"));
+        assert_eq!(l.health(), Health::Ok);
+        l.stopped = Some("form came back".into());
+        assert_eq!(l.health(), Health::Failed);
+    }
+
+    #[test]
+    fn everywhere_is_the_star_scope() {
+        let mut l = login(false);
+        assert!(!l.everywhere());
+        l.allowed = vec!["acme".into()];
+        assert!(!l.everywhere());
+        l.allowed.push(EVERY_SQUAD.into());
+        assert!(l.everywhere());
+    }
+
+    #[test]
+    fn insights_share_is_none_without_sign_ins() {
+        let mut i = LoginInsights::default();
+        assert_eq!(i.by_equipe_percent(), None);
+        i.signed_in = 4;
+        i.signed_in_by_equipe = 3;
+        assert_eq!(i.by_equipe_percent(), Some(75));
+    }
 
     #[test]
     fn a_drafts_password_is_never_printed() {

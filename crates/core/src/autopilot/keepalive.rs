@@ -76,6 +76,7 @@ mod tests {
             auto: true,
             stopped: None,
             created_at: 0,
+            password_at: None,
             uses: Vec::new(),
             autopilot: Autopilot { keepalive, checked: checked.map(|at| Use { at, squad: String::new(), member: String::new(), outcome: "signed_in".into() }), ..Autopilot::default() },
         }

@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn a_logins_own_switch_approves_gh_and_vercel_but_aws_needs_its_hosts_named() {
-        let mut login = Login { id: 3, site: "github.com".into(), url: None, username: "a".into(), note: None, allowed: Vec::new(), auto: true, stopped: None, created_at: 0, uses: Vec::new(), autopilot: Default::default() };
+        let mut login = Login { id: 3, site: "github.com".into(), url: None, username: "a".into(), note: None, allowed: Vec::new(), auto: true, stopped: None, created_at: 0, password_at: None, uses: Vec::new(), autopilot: Default::default() };
         assert!(approval_for(&[], std::slice::from_ref(&login), "gh").is_none(), "off by default");
         login.autopilot.device_code = true;
         let logins = [login];

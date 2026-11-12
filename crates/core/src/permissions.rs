@@ -125,6 +125,8 @@ pub fn person_only(command: &Command) -> bool {
         | C::SetKeepAlive { .. }
         | C::SaveCliLogin { .. }
         | C::DeleteCliLogin { .. }
+        | C::SetLoginScope { .. }
+        | C::ForgetNeverOffer { .. }
         | C::DismissLoginOffer { .. }
         | C::SaveBrowserProfile { .. }
         | C::DeleteBrowserProfile { .. }
@@ -187,6 +189,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::Language { .. }
         | C::Logins
         | C::Autopilot
+        | C::LoginInsights { .. }
         | C::WordsLog { .. }
         | C::BrowserProfiles
         | C::Models { .. }
@@ -580,6 +583,7 @@ mod tests {
             Command::PlanUse { engine: crate::protocol::Engine::Claude, span: crate::protocol::plan_use::Span::Week },
             Command::Language { lang: "ko".into() },
             Command::Logins,
+            Command::LoginInsights { days: 7 },
             Command::SearchDocs { squad: "a".into(), query: "checkout".into() },
             Command::OnPhone { command: Box::new(Command::Submit { session: 1, text: "hi".into(), about: None }) },
         ];
