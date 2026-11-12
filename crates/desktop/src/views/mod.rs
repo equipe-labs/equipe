@@ -45,6 +45,7 @@ pub mod metrics;
 pub mod model_picker;
 pub mod roadmap;
 pub mod secrets;
+pub mod login_offers;
 pub mod routine;
 pub mod routines;
 pub mod sheet;

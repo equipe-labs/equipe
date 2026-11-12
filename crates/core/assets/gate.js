@@ -4,7 +4,8 @@
 //
 // `lane`: { control: 'person' | null, reason: 'check' | 'hand' | null,
 //           touched: bool, page: the tab the hold is about (the page that
-//           waits for a person, or the one the person is on), since: ms }
+//           waits for a person, or the one the person is on), since: ms,
+//           filling: the tab equipe is typing a kept login into, or null }
 // `call`: { tool, args, targets: the tabs the call acts on }
 //
 // `null`: go ahead. Otherwise `{ text, wants, page }`: what the member is
@@ -16,7 +17,18 @@
 //   its to dismiss (the daemon then lets the hold go).
 // - The person's own hand (they took it, or touched the page) makes that one
 //   tab theirs: the member's other tabs, and closing them, stay its own.
+// - While equipe types a kept login into a tab (signing it back in by
+//   itself), nothing of the member's touches that tab — not even a read: a
+//   password sits in a field there for a moment. Its other tabs stay its own.
 function gate(lane, call) {
+  if (lane && lane.filling != null && (call.targets || []).includes(lane.filling)) {
+    return {
+      text: 'equipe is signing this tab back in to the site for you right now. Wait a few seconds, then carry on here; '
+        + 'your other tabs are yours meanwhile.',
+      wants: null,
+      page: lane.filling,
+    };
+  }
   if (!lane || lane.control !== 'person') return null;
   const targets = call.targets || [];
   const held = lane.page ?? null;

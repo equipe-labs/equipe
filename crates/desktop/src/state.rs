@@ -232,6 +232,8 @@ pub enum Need {
     /// A member's browser page waiting for the person's own hand (a human
     /// check, a sign-in), by its page id ([`BrowserWait`]).
     Browser(u64),
+    /// equipe's offer to keep a login the person just signed in with, by its id.
+    LoginOffer(u64),
 }
 
 /// What a status is called, everywhere: one word each.
@@ -400,6 +402,8 @@ pub struct Model {
     pub put_away: Vec<equipe_core::protocol::PutAway>,
     /// Secrets members asked the person to type, oldest first.
     pub secret_asks: Vec<equipe_core::protocol::secrets::SecretAsk>,
+    /// equipe's offers to keep a login the person just signed in with by hand.
+    pub login_offers: Vec<equipe_core::protocol::vault::LoginOffer>,
     /// The browser profiles besides the main one (other people's accounts).
     pub browser_profiles: Vec<equipe_core::protocol::BrowserProfile>,
     /// The squad's mode, for completion's sake.
@@ -598,6 +602,7 @@ impl Model {
             signals: Vec::new(),
             put_away: Vec::new(),
             secret_asks: Vec::new(),
+            login_offers: Vec::new(),
             browser_profiles: Vec::new(),
             mode: Mode::default(),
             plan: None,
@@ -1219,6 +1224,7 @@ impl Model {
         self.signals = snapshot.signals.clone();
         self.put_away = snapshot.put_away.clone();
         self.secret_asks = snapshot.secret_asks.clone();
+        self.login_offers = snapshot.login_offers.clone();
         self.routines = snapshot.routines.clone();
         self.reviews = snapshot.reviews.iter().map(|r| (r.ticket, r.clone())).collect();
         self.order_projects();
@@ -1362,6 +1368,16 @@ impl Model {
             }
             Event::SecretClosed { squad, id, .. } if *squad == self.squad => {
                 self.secret_asks.retain(|a| a.id != *id);
+                self.revision += 1;
+            }
+            Event::LoginOffered { offer } => {
+                if !self.login_offers.iter().any(|o| o.id == offer.id) {
+                    self.login_offers.push(offer.clone());
+                    self.revision += 1;
+                }
+            }
+            Event::LoginOfferClosed { id } => {
+                self.login_offers.retain(|o| o.id != *id);
                 self.revision += 1;
             }
             Event::PmAcceptsChanged { squad, on } if *squad == self.squad => {
@@ -1951,7 +1967,9 @@ impl Model {
                         let name = self.lane_member(lane);
                         let site = crate::browse::site(&page.url).unwrap_or_default();
                         let wait = BrowserWait { page: page.id, lane: lane.clone(), session: *session, member: name, site, check: page.check, why: None };
-                        if kept.is_none() {
+                        // A sign-in another member's page waits on already: announced once, for the site.
+                        let told = page.check == Some(HumanCheck::SignIn) && self.browser_waits.iter().any(|w| w.lane != *lane && w.check == Some(HumanCheck::SignIn) && w.site == wait.site);
+                        if kept.is_none() && !told {
                             self.alerts.push(Alert::Browser { page: wait.page, session: wait.session, member: wait.member.clone(), site: wait.site.clone(), check: wait.check, why: None });
                         }
                         self.browser_waits.push(wait);
@@ -1992,6 +2010,23 @@ impl Model {
             }
             self.browser_waits.push(wait);
         }
+    }
+
+    /// Whether `wait` is the first of the waits for a sign-in to its site (or
+    /// isn't a sign-in): the others wait on the same sign-in, shown with it.
+    pub fn first_for_site(&self, wait: &BrowserWait) -> bool {
+        if wait.check != Some(HumanCheck::SignIn) || wait.site.is_empty() {
+            return true;
+        }
+        self.browser_waits.iter().find(|w| w.check == Some(HumanCheck::SignIn) && w.site == wait.site).is_none_or(|first| first.page == wait.page)
+    }
+
+    /// How many members wait on the sign-in `wait` is for, itself among them.
+    pub fn waiting_for_site(&self, wait: &BrowserWait) -> usize {
+        if wait.check != Some(HumanCheck::SignIn) {
+            return 1;
+        }
+        self.browser_waits.iter().filter(|w| w.check == Some(HumanCheck::SignIn) && w.site == wait.site).count()
     }
 
     /// Whose a member's browser is, by name: its conversation's member, else
@@ -2066,8 +2101,11 @@ impl Model {
         out.extend(self.accepts.open().map(|c| (Section::Decide, Need::Accept(c.id))));
         // A secret a member waits for: theirs to type.
         out.extend(self.secret_asks.iter().map(|a| (Section::Waiting, Need::Secret(a.id))));
-        // A page that waits for the person's own hand: their turn, first.
-        out.extend(self.browser_waits.iter().map(|w| (Section::Waiting, Need::Browser(w.page))));
+        // A page that waits for the person's own hand: their turn, first —
+        // one row per site a sign-in waits on, however many members wait.
+        out.extend(self.browser_waits.iter().filter(|w| self.first_for_site(w)).map(|w| (Section::Waiting, Need::Browser(w.page))));
+        // A login they just signed in with, to keep if they like.
+        out.extend(self.login_offers.iter().map(|o| (Section::Waiting, Need::LoginOffer(o.id))));
         for section in &Section::TICKETS {
             let mut tickets: Vec<&Ticket> = self.tickets.iter().filter(|t| self.section_of(t) == Some(*section) && self.in_focus(t) && !self.is_acted(t)).collect();
             let since = |t: &Ticket| self.since.get(&t.id).copied().unwrap_or(0);
@@ -2583,6 +2621,46 @@ mod tests {
         // The mark taken off: back where it was dragged.
         model.apply(Update::Event(Event::ProjectsChanged { squad: "acme".into(), projects: model.projects.clone(), hq: None }), T0);
         assert_eq!(model.project_names(), ["website", "mcp", "hq"]);
+    }
+
+    #[test]
+    fn members_waiting_on_one_sites_sign_in_are_one_row_announced_once() {
+        use equipe_core::protocol::{BrowserPage, HumanCheck};
+        let mut model = Model::new("acme");
+        let tabs = |lane: &str, page: u64, url: &str| Event::BrowserTabs {
+            squad: Some("acme".into()),
+            lane: lane.into(),
+            session: None,
+            member: None,
+            color: None,
+            pages: vec![BrowserPage { id: page, url: url.into(), title: "Sign in".into(), check: Some(HumanCheck::SignIn), ..Default::default() }],
+            agent_page: Some(page),
+        };
+        model.on_browser(&tabs("acme/qa-2", 1, "https://github.com/login"));
+        model.on_browser(&tabs("acme/backend", 2, "https://github.com/login?return_to=%2Fbilling"));
+        model.on_browser(&tabs("acme/pm", 3, "https://slack.com/signin"));
+        let rows: Vec<Need> = model.needs_you().into_iter().map(|(_, n)| n).filter(|n| matches!(n, Need::Browser(_))).collect();
+        assert_eq!(rows, [Need::Browser(1), Need::Browser(3)], "one row for github.com, one for slack.com");
+        assert_eq!(model.waiting_for_site(&model.browser_waits[0]), 2);
+        let alerts = model.take_alerts();
+        assert_eq!(alerts.iter().filter(|a| matches!(a, Alert::Browser { .. })).count(), 2, "github.com announced once: {alerts:?}");
+        // The first passes: the other is the row now.
+        model.on_browser(&Event::BrowserTabs { squad: Some("acme".into()), lane: "acme/qa-2".into(), session: None, member: None, color: None, pages: vec![BrowserPage { id: 1, url: "https://github.com/".into(), ..Default::default() }], agent_page: Some(1) });
+        let rows: Vec<Need> = model.needs_you().into_iter().map(|(_, n)| n).filter(|n| matches!(n, Need::Browser(_))).collect();
+        assert_eq!(rows, [Need::Browser(2), Need::Browser(3)]);
+    }
+
+    #[test]
+    fn an_offer_to_keep_a_login_is_the_persons_until_answered() {
+        use equipe_core::protocol::vault::LoginOffer;
+        let mut model = Model::new("acme");
+        let offer = LoginOffer { id: 4, site: "github.com".into(), url: Some("https://github.com/login".into()), squad: Some("acme".into()), member: Some("qa-2".into()), at: 1 };
+        model.apply(Update::Event(Event::LoginOffered { offer: offer.clone() }), T0);
+        model.apply(Update::Event(Event::LoginOffered { offer }), T0);
+        assert_eq!(model.login_offers.len(), 1, "once");
+        assert!(model.needs_you().contains(&(Section::Waiting, Need::LoginOffer(4))));
+        model.apply(Update::Event(Event::LoginOfferClosed { id: 4 }), T0);
+        assert!(model.login_offers.is_empty() && !model.needs_you().iter().any(|(_, n)| matches!(n, Need::LoginOffer(_))));
     }
 
     #[test]

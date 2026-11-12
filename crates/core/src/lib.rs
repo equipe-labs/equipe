@@ -41,6 +41,7 @@ pub mod gateway;
 pub mod i18n;
 pub mod journal;
 pub mod lanes;
+pub mod logins;
 pub mod kept;
 pub mod language;
 pub mod looks;

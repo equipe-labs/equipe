@@ -1165,8 +1165,19 @@ pub enum Command {
     /// ([`Event::Logins`]).
     SaveLogin { draft: vault::LoginDraft },
     DeleteLogin { id: u32 },
-    /// The person takes back a member's "always" for a login (`squad/member`).
+    /// The person takes back an "always" for a login: a squad's name, or
+    /// [`vault::EVERY_SQUAD`] (an old `squad/member` is taken as its squad).
     ForgetLoginAllowance { id: u32, who: String },
+    /// The person lets members use a login without asking: in squad `who`,
+    /// or in every squad ([`vault::EVERY_SQUAD`]).
+    AllowLogin { id: u32, who: String },
+    /// The person lets equipe sign in with a login by itself when a member's
+    /// browser is logged out of its site ([`vault::Login::auto`]), or stops it.
+    SetLoginAuto { id: u32, auto: bool },
+    /// The person answers equipe's offer to keep a login ([`Event::LoginOffered`])
+    /// with "not now", or `never` for that site. Saving it is a [`Command::SaveLogin`],
+    /// which closes the offer too.
+    DismissLoginOffer { id: u64, never: bool },
     /// Every screen's list of logins, again.
     Logins,
     /// The person adds a browser profile — another person's accounts in a
@@ -2732,6 +2743,11 @@ pub enum Event {
     /// The squad's projects now ([`Command::AddProject`]): their folders.
     /// The logins kept, without their passwords: every screen's.
     Logins { logins: Vec<vault::Login> },
+    /// The person just finished signing in to a site by hand in a member's
+    /// browser, and no login is kept for it: equipe offers, once, to keep one.
+    LoginOffered { offer: vault::LoginOffer },
+    /// The offer was answered, or the login saved: the card closes everywhere.
+    LoginOfferClosed { id: u64 },
     /// The browser profiles besides the main one: every screen's.
     BrowserProfiles { profiles: Vec<BrowserProfile> },
     /// A member asks the person for a secret on a card ([`Command::SaveSecret`]).
@@ -3000,6 +3016,8 @@ impl Event {
             | Event::DesignReviewerChanged { .. }
             | Event::SignalsChanged { .. }
             | Event::Logins { .. }
+            | Event::LoginOffered { .. }
+            | Event::LoginOfferClosed { .. }
             | Event::BrowserProfiles { .. }
             | Event::Design { .. }
             | Event::ProjectDocs { .. }
@@ -3067,6 +3085,8 @@ impl Event {
                 | Event::EngineInstall { .. }
                 | Event::Models { .. }
                 | Event::Logins { .. }
+                | Event::LoginOffered { .. }
+                | Event::LoginOfferClosed { .. }
                 | Event::BrowserProfiles { .. }
                 | Event::BrowserDialogClosed { .. }
                 | Event::SquadDeleted { .. }
@@ -3421,6 +3441,10 @@ pub struct Snapshot {
     /// Secrets members asked for that wait for the person.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secret_asks: Vec<secrets::SecretAsk>,
+    /// equipe's offers to keep a login the person just signed in with by
+    /// hand, waiting for an answer (every squad's: logins are the machine's).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub login_offers: Vec<vault::LoginOffer>,
     /// Moves between engines waiting for the person, or made and not yet
     /// seen, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -3921,6 +3945,7 @@ mod tests {
             pm_accepts: true,
             role_models: vec![RoleModel { role: "qa".into(), engine: Engine::Codex, model: Some("gpt-6.1-sol".into()), effort: Some("high".into()) }],
             secret_asks: Vec::new(),
+            login_offers: Vec::new(),
             engine_proposals: Vec::new(),
             desktop: DesktopState::default(),
             sessions: vec![SessionInfo {

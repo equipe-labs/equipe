@@ -79,6 +79,7 @@ mod accept;
 mod gate;
 pub(crate) use gate::checks_scratch;
 mod secrets;
+mod logins;
 mod design_qa;
 mod team;
 mod heartbeat;
@@ -578,15 +579,29 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     if config.persist && config.nemotron.is_none() {
         crate::daemon_log!("equipe: no Nebius key yet (Settings › AI platforms, or `equipe login nebius`): handed-in work isn't reviewed by Nemotron");
     }
-    // The logins: their passwords in the Keychain (in memory for tests).
-    let secrets: Box<dyn vault::Secrets> = if std::env::var_os("EQUIPE_VAULT_IN_MEMORY").is_some() { Box::new(vault::InMemory::default()) } else { Box::new(vault::Keychain) };
+    // The logins: their passwords in the system's secret store (in memory for tests).
+    let secrets: Box<dyn vault::Secrets> = if std::env::var_os("EQUIPE_VAULT_IN_MEMORY").is_some() { Box::new(vault::InMemory::default()) } else { vault::system_store() };
     let vault = vault::Vault::open(&config.home, secrets);
     let logins = vault.logins.clone();
+    let (never_offer, can_keep_logins) = (vault.never_offer.clone(), vault.can_keep());
     let telemetry = if config.persist { crate::telemetry::Telemetry::start(&config.home, &config.client_version) } else { crate::telemetry::Telemetry::off() };
     let mut runtime = Runtime {
         telemetry,
         vault: std::sync::Arc::new(std::sync::Mutex::new(vault)),
         logins,
+        never_offer,
+        can_keep_logins,
+        login_offers: Vec::new(),
+        next_login_offer: 1,
+        login_offered: std::collections::HashSet::new(),
+        signing_in: Default::default(),
+        relogins: HashMap::new(),
+        relogin_tries: HashMap::new(),
+        sign_in_joined: HashMap::new(),
+        login_waiters: HashMap::new(),
+        asked_site: HashMap::new(),
+        fill_waits: Default::default(),
+        next_fill: 0,
         secret_asks: HashMap::new(),
         calls: HashMap::new(),
         call_llm: crate::call::judge::LlmConfig::from_env(),
@@ -1011,6 +1026,10 @@ enum Internal {
     SquadDeleted { squad: String, result: Result<crate::squads::Deleted, String> },
     /// The logins changed (or couldn't): what screens see of them now.
     Logins(Result<Vec<crate::protocol::vault::Login>, String>),
+    /// equipe's own sign-in in a member's browser (by lane) ended: what the fill did.
+    Relogin { lane: String, outcome: Result<vault::Filled, String> },
+    /// A row of the sign-in record, from work done off the loop.
+    LoginRecord { squad: String, entry: crate::logins::Entry },
     /// Something waits for a conversation to act on — work handed in for the
     /// PM to accept: it is woken with `prompt` (read at its next step, at work).
     Wake { session: SessionId, prompt: String },
@@ -1288,6 +1307,33 @@ struct Runtime {
     vault: std::sync::Arc<std::sync::Mutex<vault::Vault>>,
     /// What the screens are told of them, as last kept.
     logins: Vec<crate::protocol::vault::Login>,
+    /// Sites the person said never to offer keeping a login for, as last kept.
+    never_offer: Vec<String>,
+    /// Whether this machine has a secret store to keep a password in.
+    can_keep_logins: bool,
+    /// Offers to keep a login the person just signed in with by hand,
+    /// waiting for their answer ([`logins`]).
+    login_offers: Vec<crate::protocol::vault::LoginOffer>,
+    next_login_offer: u64,
+    /// Sites offered since the daemon started: once is enough.
+    login_offered: std::collections::HashSet<String>,
+    /// Members' pages seen on a sign-in, by page id ([`logins`]).
+    signing_in: crate::logins::SignInWatch,
+    /// Members' browsers equipe is signing in by itself now, by lane.
+    relogins: HashMap<String, logins::Relogin>,
+    /// When equipe last tried signing in with each login by itself.
+    relogin_tries: HashMap<u32, Vec<std::time::Instant>>,
+    /// Members that asked to sign in with a login a card already asks the
+    /// person about: they wait on that card (by its id), not one of their own.
+    sign_in_joined: HashMap<u64, Vec<Pending>>,
+    /// Members waiting on a sign-in the person does in another member's
+    /// browser, by that browser's lane: who, and for which site.
+    login_waiters: HashMap<String, Vec<(SessionId, String)>>,
+    /// The site a browser was handed to the person to sign in to, by lane.
+    asked_site: HashMap<String, String>,
+    /// equipe's fills of a kept login waiting for the browser host's answer, by token.
+    fill_waits: logins::FillWaits,
+    next_fill: u64,
     design_busy: std::collections::HashSet<String>,
     /// Handed-in work the PM was reminded of, by squad: when (`heartbeat`).
     review_nudged: HashMap<String, HashMap<TicketId, u64>>,
@@ -1363,6 +1409,8 @@ impl Wake {
             Wake::Internal(Internal::ProjectAdded { .. }) => Borrowed("a project added"),
             Wake::Internal(Internal::SquadDeleted { .. }) => Borrowed("a squad deleted"),
             Wake::Internal(Internal::Logins(_)) => Borrowed("the logins changed"),
+            Wake::Internal(Internal::Relogin { .. }) => Borrowed("equipe's own sign-in ending"),
+            Wake::Internal(Internal::LoginRecord { .. }) => Borrowed("a sign-in kept on the record"),
             Wake::Internal(Internal::DeskSaved { .. }) => Borrowed("a desk turn's changes saved"),
             Wake::Internal(Internal::Wake { .. }) => Borrowed("work waits for a conversation"),
             Wake::Internal(Internal::DiskTrimmed(..)) => Borrowed("a trim of the build caches"),
@@ -1600,6 +1648,8 @@ impl Runtime {
                 Internal::ProjectAdded { squad, result } => self.project_added(&squad, result),
                 Internal::SquadDeleted { squad, result } => self.squad_deleted(&squad, result),
                 Internal::Logins(result) => self.logins_changed(result),
+                Internal::Relogin { lane, outcome } => self.relogin_done(lane, outcome).await,
+                Internal::LoginRecord { squad, entry } => self.login_record(&squad, entry),
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
                 Internal::DiskTrimmed(freed, lines) => self.on_disk_trimmed(freed, lines),
@@ -2353,9 +2403,21 @@ impl Runtime {
             Command::RemoveProject { squad, path } => self.remove_project(&squad, &path),
             Command::SetHq { squad, path } => self.set_hq(&squad, path),
             Command::DeleteSquad { squad, purge } => self.delete_squad(&squad, purge),
-            Command::SaveLogin { draft } => self.with_vault(move |vault| vault.save(draft, now_secs()).map(|_| ())),
+            Command::SaveLogin { draft } => {
+                // A login for a site offered: the offer is answered.
+                self.close_login_offers(&vault::site_of(&draft.site));
+                if let Some(id) = draft.id
+                    && (draft.auto == Some(true) || draft.password.as_deref().is_some_and(|p| !p.is_empty()))
+                {
+                    self.relogin_tries.remove(&id);
+                }
+                self.with_vault(move |vault| vault.save(draft, now_secs()).map(|_| ()))
+            }
             Command::DeleteLogin { id } => self.with_vault(move |vault| vault.delete(id)),
             Command::ForgetLoginAllowance { id, who } => self.with_vault(move |vault| vault.forget(id, &who)),
+            Command::AllowLogin { id, who } => self.allow_login(id, who),
+            Command::SetLoginAuto { id, auto } => self.set_login_auto(id, auto),
+            Command::DismissLoginOffer { id, never } => self.dismiss_login_offer(id, never),
             Command::Logins => {
                 let logins = self.logins.clone();
                 self.publish(Event::Logins { logins });
@@ -7126,6 +7188,12 @@ It starts when {owner} is free."
             self.with_person(&call);
             let url = call.arguments["url"].as_str().map(str::to_owned);
             let why = call.arguments["why"].as_str().unwrap_or_default().to_owned();
+            // Kept with its cause — or, the person signing in to the same site
+            // in another member's browser now, this one waits on that.
+            if let Some(text) = self.handoff_asked(&call, url.as_deref(), &why) {
+                let _ = reply.send(ToolResult { text, is_error: false, image: None });
+                return;
+            }
             if self.ask_in_panel(&call.squad, &call.member, url.as_deref(), &why) {
                 if let Some(id) = self.caller_id(&call) {
                     let text = say!(self, "notice.browser_in_panel", name = call.member, why = why);
@@ -7423,7 +7491,8 @@ there, end your turn, and carry on when they say they're done."
         }
         if approval.tool == SIGN_IN_TOOL {
             self.publish(Event::ApprovalResolved { squad: squad.clone(), approval: approval_id, decision });
-            return self.sign_in_answered(squad, approval, input, decision, reply);
+            let joined = self.sign_in_joined.remove(&approval_id).unwrap_or_default();
+            return self.sign_in_answered(squad, approval, input, decision, reply, true, joined);
         }
         if approval.tool == crate::controls::SETTING_TOOL || approval.tool == crate::controls::ENGINE_TOOL {
             self.publish(Event::ApprovalResolved { squad: squad.clone(), approval: approval_id, decision });
@@ -7547,6 +7616,7 @@ there, end your turn, and carry on when they say they're done."
         let kept: Vec<&crate::protocol::vault::Login> = self.logins.iter().filter(|l| vault::serves(&l.site, &site)).collect();
         let login = match (kept.as_slice(), account.is_empty()) {
             ([], _) => {
+                self.login_record(&call.squad, crate::logins::Entry::new(now_secs(), &site, &call.member, crate::logins::Kind::NoLogin, Some(crate::logins::Cause::NoLoginKept), None));
                 let _ = reply.send(ToolResult::error(format!(
                     "The person keeps no login for {}. Ask them to add one in equipe (Settings › Accounts), or hand them your browser with `show_my_browser` to sign in themselves.",
                     vault::site_of(&site)
@@ -7569,7 +7639,6 @@ there, end your turn, and carry on when they say they're done."
             },
         };
         let input = json!({ "login": login.id, "site": site });
-        let who = format!("{}/{}", call.squad, call.member);
         let ticket = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
         let approval = Approval {
             id: self.next_approval,
@@ -7581,10 +7650,18 @@ there, end your turn, and carry on when they say they're done."
             reason: (!why.is_empty()).then_some(why),
             preview: None,
         };
-        // Let through already: no card, straight to the form.
-        if login.allowed.contains(&who) {
-            return self.sign_in_answered(call.squad, approval, input, Decision::Allow, reply);
+        // Let through already, in this squad or every squad: no card, straight to the form.
+        if vault::allows(&login, &call.squad) {
+            return self.sign_in_answered(call.squad, approval, input, Decision::Allow, reply, false, Vec::new());
         }
+        // A card asks the person about this login already: this member waits
+        // on that one — one question, and every member waiting carries on.
+        let asking = self.pending.iter().find(|(_, p)| p.squad == call.squad && p.approval.tool == SIGN_IN_TOOL && p.input["login"].as_u64() == Some(u64::from(login.id))).map(|(id, _)| *id);
+        if let Some(card) = asking {
+            self.sign_in_joined.entry(card).or_default().push(Pending { squad: call.squad.clone(), approval, input, reply });
+            return;
+        }
+        self.login_record(&call.squad, crate::logins::Entry::new(now_secs(), &login.site, &call.member, crate::logins::Kind::Card, Some(crate::logins::Cause::SessionExpired), None));
         self.next_approval += 1;
         self.pending.insert(approval.id, Pending { squad: call.squad.clone(), approval: approval.clone(), input, reply });
         self.publish(Event::ApprovalRequested { squad: call.squad.clone(), approval: approval.clone() });
@@ -7597,14 +7674,20 @@ there, end your turn, and carry on when they say they're done."
 
     /// The person answered a sign-in card (or the member may already): on a
     /// yes, equipe opens the member's browser on the site and types the login
-    /// in itself — the member hears only how it went.
-    fn sign_in_answered(&mut self, squad: String, approval: Approval, input: Value, decision: Decision, reply: oneshot::Sender<ToolResult>) {
+    /// in itself — the member hears only how it went. `asked`: a card asked
+    /// the person; `joined`: members that waited on the same card, told as
+    /// the first one is (their browsers share its sign-in).
+    #[allow(clippy::too_many_arguments)]
+    fn sign_in_answered(&mut self, squad: String, approval: Approval, input: Value, decision: Decision, reply: oneshot::Sender<ToolResult>, asked: bool, joined: Vec<Pending>) {
         let id = input["login"].as_u64().unwrap_or_default() as u32;
         let member = approval.member.clone();
-        let who = format!("{squad}/{member}");
         let login = self.logins.iter().find(|l| l.id == id).cloned();
         let Some(login) = login.filter(|_| decision != Decision::Deny) else {
-            let _ = reply.send(ToolResult { text: "The person said no: don't sign in there; carry on without it, or say what you need.".into(), is_error: false, image: None });
+            let no = "The person said no: don't sign in there; carry on without it, or say what you need.";
+            let _ = reply.send(ToolResult { text: no.into(), is_error: false, image: None });
+            for other in joined {
+                let _ = other.reply.send(ToolResult { text: no.into(), is_error: false, image: None });
+            }
             let declined_in = squad.clone();
             self.with_vault(move |v| {
                 v.used(id, now_secs(), &declined_in, &member, "declined");
@@ -7613,26 +7696,43 @@ there, end your turn, and carry on when they say they're done."
             self.audit(&squad, approval.ticket, "you", "declined", &approval.action);
             return;
         };
+        // "Always": the login, for the whole squad — every member and lane of it.
         if decision == Decision::Always {
-            let who = who.clone();
-            self.with_vault(move |v| v.allow(id, &who));
+            let squad = squad.clone();
+            self.with_vault(move |v| v.allow(id, &squad));
         }
         self.audit(&squad, approval.ticket, "you", if decision == Decision::Always { "always allowed" } else { "allowed" }, &approval.action);
         let Some(port) = self.browser_key(approval.session).and_then(|(sq, key)| self.open_browser(&sq, &key, false)) else {
             let _ = reply.send(ToolResult::error("Your browser couldn't be started."));
+            for other in joined {
+                let _ = other.reply.send(ToolResult::error("Your browser couldn't be started."));
+            }
             return;
         };
         let (client, vault, internal) = (self.client.clone(), self.vault.clone(), self.internal.clone());
         let start = login.url.clone().unwrap_or_else(|| format!("https://{}", login.site));
-        let (site, username) = (login.site.clone(), login.username.clone());
         tokio::spawn(async move {
-            let outcome = sign_in_page(&client, port, &vault, id, &site, &start, &username).await;
+            let (site, username) = (login.site.clone(), login.username.clone());
+            let outcome = sign_in_page(&client, port, &vault, &login, &start).await;
             let (text, is_error, kept) = match &outcome {
                 Ok(step) => (format!("Signed in to {site} as {username} — the form was filled and submitted ({step}). Look at the page to confirm, then carry on."), false, "signed_in"),
                 Err(SignIn::NoForm) => (format!("No sign-in form on the page equipe opened for {site}. Open the page with the form yourself, then call `sign_in` again."), true, "no_form"),
                 Err(SignIn::Failed(why)) => (format!("Couldn't sign in to {site}: {why}"), true, "failed"),
             };
-            let _ = reply.send(ToolResult { text, is_error, image: None });
+            let _ = reply.send(ToolResult { text: text.clone(), is_error, image: None });
+            for other in joined {
+                let text = if is_error {
+                    text.clone()
+                } else {
+                    format!("Signed in to {site} as {username} in another member's browser, on the same yes from the person — every member shares the browser's sign-ins. Reload your page there and carry on.")
+                };
+                let _ = other.reply.send(ToolResult { text, is_error, image: None });
+            }
+            let entry = match outcome {
+                Ok(_) => crate::logins::Entry::new(now_secs(), &site, &member, crate::logins::Kind::SignedIn, None, Some(if asked { crate::logins::BY_PERSON } else { crate::logins::BY_EQUIPE })),
+                Err(_) => crate::logins::Entry::new(now_secs(), &site, &member, crate::logins::Kind::FillFailed, None, Some(crate::logins::BY_EQUIPE)),
+            };
+            let _ = internal.send(Internal::LoginRecord { squad: squad.clone(), entry });
             let result = tokio::task::spawn_blocking(move || match vault.lock() {
                 Ok(mut v) => {
                     v.used(id, now_secs(), &squad, &member, kept);
@@ -7872,8 +7972,10 @@ there, end your turn, and carry on when they say they're done."
         use browser::HostEvent;
         match said {
             HostEvent::Ready => {}
-            HostEvent::Tabs { lane, member, color, pages, agent, .. } => {
+            HostEvent::Tabs { lane, member, color, pages, agent, touched, .. } => {
                 let (squad, session) = self.lane_session(&lane);
+                // A sign-in page that turned into its site: a sign-in finished.
+                self.follow_sign_ins(&lane, &pages, touched).await;
                 let pages: Vec<equipe_protocol::BrowserPage> = pages.into_iter().map(browser::HostPage::page).collect();
                 self.watch_checks(&lane, session, &pages, agent);
                 let event = Event::BrowserTabs { squad, lane: lane.clone(), session, member, color, pages, agent_page: agent };
@@ -7890,6 +7992,15 @@ there, end your turn, and carry on when they say they're done."
                     && self.waits_for_person(&lane, *page)
                 {
                     self.let_go.insert((lane.clone(), *page, url.clone()));
+                }
+                // Back from the person: whoever waited on a sign-in in it looks
+                // again — its pages on that site reloaded, its members told.
+                if by.is_none() {
+                    let site = checked.as_ref().map(|(_, url, _)| vault::site_of(url)).or_else(|| self.asked_site.get(&lane).cloned());
+                    if let Some(site) = site {
+                        self.reload_waiting(&site, &lane);
+                    }
+                    self.release_login_waiters(&lane).await;
                 }
                 let check = self.checking.get(&lane).map(|c| c.2);
                 match &by {
@@ -7943,6 +8054,7 @@ there, end your turn, and carry on when they say they're done."
                 self.publish(Event::BrowserDialog { squad, lane, page, kind, message, default });
             }
             HostEvent::DialogClosed { page } => self.publish(Event::BrowserDialogClosed { page }),
+            HostEvent::Filled { token, answer, .. } => self.filled(token, answer),
             HostEvent::Wants { lane, page, action } => {
                 let (squad, _) = self.lane_session(&lane);
                 self.publish(Event::BrowserWants { squad, lane, page, action });
@@ -7958,6 +8070,14 @@ there, end your turn, and carry on when they say they're done."
                 self.held.clear();
                 self.checking.clear();
                 self.let_go.clear();
+                self.signing_in.clear();
+                self.relogins.clear();
+                self.fill_waits.lock().map(|mut w| w.clear()).unwrap_or_default();
+                let waiting: Vec<String> = self.login_waiters.keys().cloned().collect();
+                for lane in waiting {
+                    self.release_login_waiters(&lane).await;
+                }
+                self.asked_site.clear();
             }
         }
     }
@@ -7970,13 +8090,24 @@ there, end your turn, and carry on when they say they're done."
         if lane.is_empty() {
             return;
         }
+        // equipe is signing it in by itself: what its pages say waits for that.
+        if self.relogins.contains_key(lane) {
+            return;
+        }
         let let_go = |page: u64, url: &str| self.let_go.contains(&(lane.to_owned(), page, url.to_owned()));
         match browser::check_step(pages, agent, self.checking.contains_key(lane), self.held.contains_key(lane), let_go) {
             browser::CheckStep::Pause { page, url, check } => {
+                // A sign-in the person lets equipe do by itself: no one is asked.
+                if check == equipe_protocol::HumanCheck::SignIn && self.try_relogin(lane, page, &url) {
+                    return;
+                }
                 self.hub.op(&json!({ "op": "control", "lane": lane, "by": "person", "why": "check", "page": page }));
+                // Kept with its cause — or, the person on the same sign-in for
+                // another member already, waiting on that one.
+                let joined = self.check_paused(lane, &url, check);
                 if let Some(session) = session {
                     let site = browser::site_of(&url).to_owned();
-                    let text = say!(self, "notice.browser_check", site = site);
+                    let text = if joined { say!(self, "notice.browser_check_joined", site = site) } else { say!(self, "notice.browser_check", site = site) };
                     self.publish(Event::Notice { undo: None, session, text });
                 }
                 self.checking.insert(lane.to_owned(), (page, url, check));
@@ -8674,6 +8805,7 @@ it back there once they have done it.{again} End your turn now with a short line
             resting: self.journals.get(squad).map(Journal::resting).unwrap_or_default(),
             role_models: self.journals.get(squad).map(Journal::role_models).unwrap_or_default(),
             secret_asks: self.secret_asks(squad).clone(),
+            login_offers: self.login_offers_now(),
             engine_proposals: self.engines.proposals(squad),
             hand_overs,
             desktop: self.desktop.state(),
@@ -10208,29 +10340,29 @@ enum SignIn {
 /// Sign in on the member's browser at `port`: to the site's sign-in page
 /// unless it is on the site already, then the fill script — twice for a
 /// sign-in that asks the username and the password on pages of their own.
-/// The password is fetched off the loop and goes nowhere but the page.
-async fn sign_in_page(client: &reqwest::Client, port: u16, vault: &std::sync::Arc<std::sync::Mutex<vault::Vault>>, id: u32, site: &str, start: &str, username: &str) -> Result<&'static str, SignIn> {
+/// It types only on the login's site (or a subdomain of it), checked in the
+/// page as it types. The password is fetched off the loop and goes nowhere
+/// but the page.
+async fn sign_in_page(client: &reqwest::Client, port: u16, vault: &std::sync::Arc<std::sync::Mutex<vault::Vault>>, login: &crate::protocol::vault::Login, start: &str) -> Result<&'static str, SignIn> {
     let text_of = |items: Option<Vec<Value>>| -> String { items.unwrap_or_default().iter().filter_map(|i| i.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n") };
     let here = text_of(browser::call(client, port, "browser_evaluate", json!({ "function": "() => location.href" })).await);
-    if !here.lines().any(|l| vault::serves(site, l.trim().trim_matches('"'))) {
+    if !here.lines().any(|l| vault::serves(&login.site, l.trim().trim_matches('"'))) {
         browser::navigate(client, port, start).await;
         tokio::time::sleep(Duration::from_millis(1500)).await;
     }
-    let vault = vault.clone();
+    let (id, vault) = (login.id, vault.clone());
     let password = tokio::task::spawn_blocking(move || vault.lock().map_err(|_| "the logins are unreadable".to_owned()).and_then(|v| v.password(id)))
         .await
         .map_err(|_| SignIn::Failed("stopped".into()))?
-        .map_err(|why| SignIn::Failed(format!("the password couldn't be read from the Keychain ({why})")))?;
+        .map_err(|why| SignIn::Failed(format!("the password couldn't be read from the secret store ({why})")))?;
+    let guard = vault::FillGuard::serving(login);
     let mut last = "";
     for _ in 0..2 {
-        let answer = text_of(browser::call(client, port, "browser_evaluate", json!({ "function": vault::fill_script(username, &password) })).await);
-        let step = if answer.contains(r#""step":"password""#) || answer.contains(r#"\"step\":\"password\""#) {
-            "password"
-        } else if answer.contains("username") {
-            "username"
-        } else {
-            ""
-        };
+        let answer = vault::fill_answer(&text_of(browser::call(client, port, "browser_evaluate", json!({ "function": vault::fill_script(&login.username, &password, &guard) })).await));
+        if let Some(refused) = answer.as_ref().and_then(|a| a.refused.as_deref()) {
+            return Err(SignIn::Failed(format!("the page isn't on {} (or isn't secure: {refused}), so nothing was typed", login.site)));
+        }
+        let step = answer.as_ref().filter(|a| !a.filled.is_empty()).and_then(|a| a.step.as_deref()).unwrap_or_default();
         match step {
             "" if last.is_empty() => return Err(SignIn::NoForm),
             "" => return Ok("username, then password"),

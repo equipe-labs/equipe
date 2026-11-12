@@ -2392,7 +2392,11 @@ pub fn need_row(shell: &crate::Shell, page: u64) -> Option<(String, String, Rgba
     let wait = shell.model.browser_waits.iter().find(|w| w.page == page)?;
     let member = wait.session.and_then(|s| shell.model.members.iter().find(|m| m.session == s || shell.model.lanes.iter().any(|l| l.session == s && l.of == m.session)));
     let color = member.map_or(shell.palette.muted, |m| shell.palette.member(crate::theme::look(&m.role, &m.name).1));
-    Some((need_words(wait), wait.member.clone(), color))
+    let words = match shell.model.waiting_for_site(wait) {
+        n if n > 1 => t!("browser.need_sign_in_many", site = wait.site, n = n),
+        _ => need_words(wait),
+    };
+    Some((words, wait.member.clone(), color))
 }
 
 /// What waits, in a few words: what its member asked, else what the page asks.

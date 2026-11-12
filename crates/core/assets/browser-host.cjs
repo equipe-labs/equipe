@@ -36,6 +36,10 @@
 //   {"op":"control","lane":"squad/name","by":"person"|null,"why":"check"?,"ifUntouched":true?}
 //   {"op":"goto","lane":"squad/name","url":"…"}  {"op":"dialog","page":3,"accept":true,"text":"…"}
 //   {"op":"popout","page":3,"bounds":{"left":0,"top":0,"width":900,"height":800}}
+//   {"op":"fill","lane":"squad/name","page":3,"script":"() => …","token":7}
+//     (equipe types a kept login into a member's tab: the tab is held from its
+//     member's tools meanwhile, and `filled` answers what the script said —
+//     never the request, which carries the password, written anywhere)
 // Page ids start at $EQUIPE_FIRST_PAGE. A member's tab is told with what the
 // daemon reads to tell whether it waits for a person (`signals`), and its icon.
 // Its standard output is binary: messages of `u32be length | u8 kind | payload`
@@ -63,6 +67,8 @@ const [profile, STATE] = process.argv.slice(2);
 __DRIVING__
 
 __GATE__
+
+__KEEP_SESSIONS__
 
 // Google's sign-in is this browser's own; the sign-ins file never carries it.
 const own = (domain) => /(^|\.)(google\.[a-z]{2,3}(\.[a-z]{2})?|youtube\.com|googleusercontent\.com)$/.test(String(domain).replace(/^\./, ''));
@@ -147,15 +153,21 @@ let wheel = null;
 /// profile's own tabs are lane "#name", and its members' lanes end in it too.
 const startProfile = async (name, profile, STATE) => {
   const PERSON = name ? `#${name}` : '';
+  // Sign-ins kept "for the session" survive this Chrome's restart (`keep-sessions.js`).
+  const kept = keepSessions(profile, fs, path);
+  if (kept !== 'marked' && kept !== 'kept' && kept !== 'none') console.error(`equipe browser host: session sign-ins of ${name || 'main'} not kept: ${kept}`);
   const context = await chromium.launchPersistentContext(profile, {
     channel: process.env.EQUIPE_BROWSER_CHANNEL || 'chrome',
-    headless: false,
+    // Out of sight only for equipe's own live tests (`tests/relogin_live.rs`).
+    headless: process.env.EQUIPE_BROWSER_HEADLESS === '1',
     viewport: null,
     // An ordinary browser, as far as sites can tell: Google refuses to sign
     // anyone in to one that says it is automated. --test-type keeps Chrome from
     // warning about the flag that hides it, in a bar across every window.
+    // --hide-crash-restore-bubble: the last exit is marked as a crash to keep
+    // session sign-ins (above); no "Restore pages?" bubble for that.
     ignoreDefaultArgs: ['--enable-automation'],
-    args: ['--disable-blink-features=AutomationControlled', '--test-type'],
+    args: ['--disable-blink-features=AutomationControlled', '--test-type', '--hide-crash-restore-bubble'],
   });
 
   const owner = new Map(); // page -> lane id ("" for the person's own)
@@ -273,7 +285,9 @@ const startProfile = async (name, profile, STATE) => {
       pending.delete(lane);
       const info = lanes.get(lane);
       const list = await Promise.all(tabsOf(lane).map(describe));
-      emit({ type: 'tabs', lane, member: info?.member ?? null, color: info?.color ?? null, shown: !!info?.shown, pages: list, agent: info?.agent ?? null });
+      // `touched`: in the person's hands, and they put a hand on it — what
+      // tells a sign-in they finished from a page its member left.
+      emit({ type: 'tabs', lane, member: info?.member ?? null, color: info?.color ?? null, shown: !!info?.shown, pages: list, agent: info?.agent ?? null, touched: !!info && info.control === 'person' && !!info.touched });
     }, 80));
   };
 
@@ -592,7 +606,7 @@ const startProfile = async (name, profile, STATE) => {
     // it; `touched`, they put a hand on it since; `refused`, its tools were
     // turned away meanwhile; `page`, the tab the hold is about (the waiting page,
     // or the one the person is on) and `since`, when it began (`gate.js`).
-    const lane = { events: new EventEmitter(), member, color, shown: !!shown, control: null, reason: null, touched: false, refused: false, lastInput: 0, agent: null, busy: 0, page: null, since: 0 };
+    const lane = { events: new EventEmitter(), member, color, shown: !!shown, control: null, reason: null, touched: false, refused: false, lastInput: 0, agent: null, busy: 0, page: null, since: 0, filling: null };
     lanes.set(id, lane);
     const config = await tools.resolveCLIConfigForMCP({ outputDir: output }, process.env);
     const toolset = tools.filteredTools(config);
@@ -941,6 +955,28 @@ const startProfile = async (name, profile, STATE) => {
     }
     return setControl(lane, by || null, why, page);
   };
+  // equipe signs a member's tab back in with a kept login: its member's tools
+  // keep off that tab while the script types and submits, and a moment after
+  // (`gate.js`). Whatever happens, only the script's own answer goes back.
+  const FILL_SETTLE_MS = 3000;
+  const fill = async ({ lane: laneId, page: pid, script, token }) => {
+    const lane = lanes.get(laneId);
+    const page = pages.get(pid);
+    let answer = null;
+    if (lane && page && owner.get(page) === laneId && typeof script === 'string' && lane.filling === null) {
+      lane.filling = pid;
+      try {
+        const said = await page.evaluate(`(${script})()`);
+        answer = typeof said === 'string' ? said : null;
+        await new Promise((r) => setTimeout(r, FILL_SETTLE_MS));
+      } catch {
+        answer = null;
+      } finally {
+        lane.filling = null;
+      }
+    }
+    emit({ type: 'filled', lane: laneId, page: pid, token, answer });
+  };
   const dialog = async ({ page, accept, text }) => {
     const d = dialogs.get(page);
     if (!d) return;
@@ -990,7 +1026,7 @@ const startProfile = async (name, profile, STATE) => {
 
   await ensureParking();
 
-  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, unfit, input, nav, goto, newtab, closetab, control, dialog, popout };
+  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, unfit, input, nav, goto, newtab, closetab, control, dialog, popout, fill };
   // Its Chrome closed (the person quit it): the host goes, and the daemon starts it again.
   context.on('close', () => process.exit(0));
   return { ops, context, scrolling, owns: (pid) => pages.has(pid), hasLane: (id) => lanes.has(id) };
@@ -1014,7 +1050,7 @@ const target = async (request) => {
   switch (request.op) {
     case 'lane': case 'person': case 'newtab': return profileOf(request);
     case 'show': case 'close': return byLane(request.id);
-    case 'control': case 'goto': return byLane(request.lane);
+    case 'control': case 'goto': case 'fill': return byLane(request.lane);
     default: return byPage(request.page);
   }
 };

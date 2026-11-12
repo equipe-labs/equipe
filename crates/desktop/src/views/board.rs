@@ -579,7 +579,7 @@ impl Shell {
             // A page waiting for the person: the panel, on it, in their hands.
             Need::Browser(page) => self.reveal_browser(page, cx),
             // Typed into its card, in the peek.
-            Need::Secret(_) => {
+            Need::Secret(_) | Need::LoginOffer(_) => {
                 self.board.view.peek = true;
                 cx.notify();
             }
@@ -602,7 +602,7 @@ impl Shell {
                     self.board_yes(cx);
                 }
             }
-            Some(Need::Questions(_) | Need::Team(_) | Need::Routine(_) | Need::Accept(_) | Need::Browser(_) | Need::Secret(_)) | None => {}
+            Some(Need::Questions(_) | Need::Team(_) | Need::Routine(_) | Need::Accept(_) | Need::Browser(_) | Need::Secret(_) | Need::LoginOffer(_)) | None => {}
         }
     }
 
@@ -831,6 +831,7 @@ impl Shell {
             // Closed on its card (✕), where what it closes is in sight.
             Some(Need::Questions(_) | Need::Browser(_)) | None => {}
             Some(Need::Secret(id)) => self.dismiss_secret_card(id, cx),
+            Some(Need::LoginOffer(id)) => self.dismiss_login_offer(id, false, cx),
         }
     }
 
@@ -2088,6 +2089,21 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .child(div().flex_1().min_w(px(120.)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
                 .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
+                .child(cell(eta_w))
+                .child(cell(34.))
+                .into_any_element()
+        }
+        Need::LoginOffer(id) => {
+            let Some((title, name)) = super::login_offers::row_text(shell, id) else { return div().into_any_element() };
+            base(SharedString::from(format!("login-offer-{id}")), format!("{title}, {name}"), cx)
+                .pl_2()
+                .child(div().w(px(14.)).flex_none())
+                .child(super::login_offers::mark(p))
+                .child(div().w(px(44.)).flex_none())
+                .when(show_project, |r| r.child(project_col(None)))
+                .child(div().flex_1().min_w(px(120.)).truncate().text_color(p.text).child(title))
+                .child(div().w(px(flags_w)).flex_none())
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(p.muted).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()

@@ -100,7 +100,7 @@ async fn a_member_signs_in_only_with_the_persons_yes_and_never_sees_the_password
     assert!(none.is_error && none.text.contains("Settings › Accounts"), "{none:?}");
 
     // The person saves one: every screen hears it, without the password.
-    let draft = LoginDraft { id: None, site: "https://dash.cloudflare.com/login".into(), username: "abel@ironact.net".into(), password: Some("s3cr3t-pw".into()), note: None };
+    let draft = LoginDraft { id: None, site: "https://dash.cloudflare.com/login".into(), username: "abel@ironact.net".into(), password: Some("s3cr3t-pw".into()), note: None, auto: None };
     handle.send(Command::SaveLogin { draft });
     let seen = until(&mut events, |e| matches!(e, Event::Logins { .. })).await;
     let Some(Event::Logins { logins }) = seen.last() else { panic!() };
@@ -173,4 +173,91 @@ async fn a_secret_the_person_types_goes_to_its_file_and_never_to_the_member() {
     assert!(!all.contains("s3cr3t-nas"), "no event carries the value");
     assert!(handle.snapshot("acme").await.secret_asks.is_empty());
     handle.shutdown().await;
+}
+
+async fn sign_in_as(handle: &Handle, member: &str, site: &str) -> equipe_core::protocol::rpc::ToolResult {
+    handle.tool(ToolCall { run: None, squad: "acme".into(), member: member.into(), name: "sign_in".into(), arguments: json!({ "site": site, "why": "Check the billing page" }) }).await
+}
+
+/// One card per login however many members ask at once; "always" is the
+/// whole squad's; and every handoff, card and sign-in is kept with its
+/// cause — hosts and names only.
+#[tokio::test]
+async fn members_asking_at_once_share_one_card_and_always_is_the_whole_squads() {
+    // SAFETY: set once, before the runtime starts, and only by this test binary.
+    unsafe { std::env::set_var("EQUIPE_VAULT_IN_MEMORY", "1") };
+    let project = scratch("shared").join("shared");
+    std::fs::create_dir_all(&project).unwrap();
+    let home = scratch("home");
+    squads::create(&home, "acme", &project).unwrap();
+    let (handle, mut events) = runtime::start(config(&idle_claude(), &home));
+    for (id, role) in [(1, "pm"), (2, "frontend"), (3, "backend")] {
+        let spec = SessionSpec { engine: None, model: None, access: Access::ReadOnly, cwd: project.clone(), role: Some(role.into()), squad: Some("acme".into()) };
+        handle.send(Command::Start { session: id, spec });
+        until(&mut events, |e| matches!(e, Event::SessionStarted { session, .. } if *session == id)).await;
+    }
+    // No login yet: kept on the record as such.
+    let none = sign_in_as(&handle, "backend", "https://github.com/login?return_to=%2Fsecret").await;
+    assert!(none.is_error, "{none:?}");
+    let draft = LoginDraft { id: None, site: "github.com".into(), username: "abel".into(), password: Some("pw-github-1".into()), note: None, auto: None };
+    handle.send(Command::SaveLogin { draft });
+    until(&mut events, |e| matches!(e, Event::Logins { logins } if !logins.is_empty())).await;
+
+    // Two members at once: one card, both wait on it.
+    let first = {
+        let handle = handle.clone();
+        tokio::spawn(async move { sign_in_as(&handle, "frontend", "github.com").await })
+    };
+    let seen = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = seen.last().cloned() else { panic!() };
+    let second = {
+        let handle = handle.clone();
+        tokio::spawn(async move { sign_in_as(&handle, "backend", "https://github.com/settings/billing").await })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The person says no once: both hear it.
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None, said: None });
+    let (first, second) = (first.await.unwrap(), second.await.unwrap());
+    assert!(first.text.contains("said no") && second.text.contains("said no"), "{first:?} {second:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::Logins { logins } if logins[0].uses.iter().any(|u| u.outcome == "declined"))).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::ApprovalRequested { .. })), "no second card: {seen:#?}");
+
+    // "Always" from one member's card: the squad's.
+    let asking = {
+        let handle = handle.clone();
+        tokio::spawn(async move { sign_in_as(&handle, "frontend", "github.com").await })
+    };
+    let seen = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = seen.last().cloned() else { panic!() };
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Always, words: None, said: None });
+    let _ = asking.await.unwrap();
+    until(&mut events, |e| matches!(e, Event::Logins { logins } if logins[0].allowed == ["acme"])).await;
+    // Another member of the squad: no card at all (no browser here, so it stops there).
+    let other = sign_in_as(&handle, "backend", "github.com").await;
+    assert!(other.is_error && other.text.contains("browser couldn't be started"), "straight to the form, no card: {other:?}");
+
+    // The person's own changes: every squad, signing in by itself.
+    handle.send(Command::AllowLogin { id: 1, who: "*".into() });
+    until(&mut events, |e| matches!(e, Event::Logins { logins } if logins[0].allowed.contains(&"*".to_owned()))).await;
+    handle.send(Command::SetLoginAuto { id: 1, auto: true });
+    let seen = until(&mut events, |e| matches!(e, Event::Logins { logins } if logins[0].auto)).await;
+    handle.send(Command::ForgetLoginAllowance { id: 1, who: "acme/frontend".into() });
+    until(&mut events, |e| matches!(e, Event::Logins { logins } if logins[0].allowed == ["*"])).await;
+    for e in &seen {
+        assert!(!format!("{e:?}").contains("pw-github-1"));
+    }
+    // An offer nobody made: answering it does nothing.
+    handle.send(Command::DismissLoginOffer { id: 99, never: true });
+    assert!(handle.snapshot("acme").await.login_offers.is_empty());
+    handle.shutdown().await;
+
+    // On the record: the no-login, one card for the two who asked at once and
+    // one for the "always", the signs-in tried — github.com only, never the path.
+    let rows = equipe_core::logins::read(&equipe_core::journal::squad_dir(&home, "acme").join("squad.db"), 0).unwrap();
+    let kinds: Vec<&str> = rows.iter().map(|r| r.kind.code()).collect();
+    assert_eq!(kinds.iter().filter(|k| **k == "no_login").count(), 1, "{rows:#?}");
+    assert_eq!(kinds.iter().filter(|k| **k == "card").count(), 2, "one card for two members, one for the always: {rows:#?}");
+    assert!(rows.iter().all(|r| r.site == "github.com"), "{rows:#?}");
+    let file = std::fs::read(equipe_core::journal::squad_dir(&home, "acme").join("squad.db")).unwrap();
+    assert!(!String::from_utf8_lossy(&file).contains("pw-github-1"));
 }

@@ -663,6 +663,8 @@ impl Journal {
                finished_at INTEGER
              );",
         )?;
+        // Why the person was asked to sign in, and sign-ins finished (`crate::logins`).
+        crate::logins::create_table(&conn)?;
         // Tickets from before kinds: `code` with a project, `task` without — once,
         // when the column arrives.
         if conn.execute("ALTER TABLE tickets ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'", []).is_ok() {
@@ -1975,6 +1977,23 @@ impl Journal {
         )?;
         self.conn.execute("DELETE FROM waits WHERE answered < ?1", [now() - KEPT_FOR_RETROS])?;
         Ok(())
+    }
+
+    /// Keep a sign-in handoff, card or sign-in (`crate::logins`): hosts,
+    /// names and causes only.
+    pub fn record_login(&self, entry: &crate::logins::Entry) -> Result<()> {
+        crate::logins::insert(&self.conn, entry, now() - KEPT_FOR_RETROS)?;
+        Ok(())
+    }
+
+    /// The sign-in record since `since`, oldest first.
+    pub fn logins_since(&self, since: u64) -> Result<Vec<crate::logins::Entry>> {
+        crate::logins::select(&self.conn, since)
+    }
+
+    /// Whether `site` was signed in to before, as far as the record goes.
+    pub fn signed_in_before(&self, site: &str) -> bool {
+        crate::logins::signed_in_before(&self.conn, site)
     }
 
     /// The waits answered at or after `since`, oldest first.

@@ -23,6 +23,7 @@ mod home;
 mod i18n;
 mod lang;
 mod launchd;
+mod logins;
 mod onboard;
 mod remote;
 mod review;
@@ -324,6 +325,11 @@ enum Command {
         #[command(subcommand)]
         action: DaemonAction,
     },
+    /// Sign-ins members' browsers needed you for: `stats` (per site, by cause)
+    Logins {
+        #[command(subcommand)]
+        action: logins::LoginsAction,
+    },
     /// The PM's briefs: a second opinion on one from the other engine
     Brief {
         #[command(subcommand)]
@@ -557,6 +563,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Daemon { action } => daemon_command(action).await,
         Command::Design { action } => design::command(action).await.map_err(Failure::new),
         Command::Brief { action } => brief::command(action).await.map_err(Failure::new),
+        Command::Logins { action } => logins::command(action).map_err(Failure::new),
         Command::CallSim { squad, no_llm } => call_sim::run(squad, no_llm).await.map_err(Failure::new),
         Command::Disk { words, squad, yes } => disk::command(&words, squad, yes).await.map_err(Failure::new),
         Command::Update => update().await,
@@ -1711,6 +1718,8 @@ impl App {
                 | Event::RestingChanged { .. }
                 | Event::SignalsChanged { .. }
                 | Event::Logins { .. }
+                | Event::LoginOffered { .. }
+                | Event::LoginOfferClosed { .. }
                 | Event::BrowserProfiles { .. }
                 | Event::PmAcceptsChanged { .. }
                 | Event::SubagentsAtOnceChanged { .. }

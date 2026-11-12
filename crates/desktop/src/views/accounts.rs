@@ -1,15 +1,18 @@
 //! Settings › Accounts: the logins members sign in with (`protocol::vault`). A row
-//! per login — its site and username, who may use it without asking (each
-//! taken back with ×), its last use — with change and delete (a second
-//! click); a form to add one or change it, the password masked and never
-//! shown again; and the latest uses. The password goes once, to the daemon
-//! machine's Keychain: no screen gets it back.
+//! per login — its site and username, where it may be used without asking
+//! (a squad, or every squad; each taken back with ×), whether equipe signs in
+//! with it by itself when a member's browser is logged out (a switch — the
+//! person's alone), its last use — with change and delete (a second click);
+//! a form to add one or change it, the password masked and never shown
+//! again; and the latest uses. The password goes once, to the daemon
+//! machine's secret store: no screen gets it back.
 
 use equipe_core::protocol::Command;
-use equipe_core::protocol::vault::{Login, LoginDraft};
+use equipe_core::protocol::vault::{EVERY_SQUAD, Login, LoginDraft};
 use equipe_core::t;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::settings::{Line, Section};
@@ -26,6 +29,8 @@ pub struct AccountsUi {
     pub note: Entity<InputState>,
     /// The form open: `Some(None)` for a new login, `Some(Some(id))` to change one.
     pub editing: Option<Option<u32>>,
+    /// The form's "sign in by itself" switch.
+    pub auto: bool,
     pub problem: Option<String>,
     pub deleting: Option<u32>,
     /// A browser profile being added: its name and whose accounts it holds.
@@ -44,6 +49,7 @@ impl AccountsUi {
             password: cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("accounts.password_placeholder"))),
             note: cx.new(|cx| InputState::new(window, cx).placeholder(t!("accounts.note_placeholder"))),
             editing: None,
+            auto: false,
             problem: None,
             deleting: None,
             profile_name: cx.new(|cx| InputState::new(window, cx).placeholder(t!("accounts.profile_name_placeholder"))),
@@ -64,6 +70,7 @@ fn outcome_word(outcome: &str) -> &'static str {
         "signed_in" => t!("accounts.used_signed_in"),
         "declined" => t!("accounts.used_declined"),
         "no_form" => t!("accounts.used_no_form"),
+        "signed_in_auto" => t!("accounts.used_signed_in_auto"),
         _ => t!("accounts.used_failed"),
     }
 }
@@ -72,6 +79,11 @@ fn outcome_word(outcome: &str) -> &'static str {
 fn use_words(login: &Login, now: u64) -> Option<String> {
     let u = login.uses.first()?;
     Some(format!("{} · {} · {}", u.member, crate::activity::ago(now.saturating_sub(u.at)), outcome_word(&u.outcome)))
+}
+
+/// The row's "sign in by itself" switch, with what it does on hover.
+fn tip_wrap(p: Palette, id: u32, switch: ui::Switch) -> AnyElement {
+    crate::tips::tip(div().id(SharedString::from(format!("login-auto-tip-{id}"))).child(switch), p, t!("accounts.auto_tip"), None).into_any_element()
 }
 
 fn boxed(p: Palette, input: &Entity<InputState>) -> AnyElement {
@@ -106,8 +118,24 @@ pub(super) fn sections(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             desc = format!("{desc} · {}", t!("accounts.last_used", what = used));
         }
         let deleting = ui.deleting == Some(id);
+        let handle = cx.entity().downgrade();
+        let auto = ui::switch(p, SharedString::from(format!("login-auto-{id}")), login.auto).name(t!("accounts.auto", site = login.site)).on_flip(move |on, _, cx| {
+            let _ = handle.update(cx, |this, cx| {
+                this.send_command(Command::SetLoginAuto { id, auto: on });
+                cx.notify();
+            });
+        });
+        let everywhere = login.allowed.iter().any(|w| w == EVERY_SQUAD);
         let controls = h_flex()
             .gap_2()
+            .items_center()
+            .child(tip_wrap(p, id, auto))
+            .when(!everywhere, |row| {
+                row.child(ui::button(p, SharedString::from(format!("login-every-{id}")), Kind::Ghost, t!("accounts.allow_everywhere")).on_click(cx.listener(move |this, _, _, cx| {
+                    this.send_command(Command::AllowLogin { id, who: EVERY_SQUAD.into() });
+                    cx.notify();
+                })))
+            })
             .child(ui::button(p, SharedString::from(format!("login-edit-{id}")), Kind::Ghost, t!("accounts.edit")).on_click(cx.listener(move |this, _, window, cx| this.open_login_form(Some(id), window, cx))))
             .child(if deleting {
                 ui::button(p, SharedString::from(format!("login-del-{id}")), Kind::Danger, t!("accounts.delete_sure")).on_click(cx.listener(move |this, _, _, cx| {
@@ -124,7 +152,9 @@ pub(super) fn sections(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         // Who may use it without asking: each taken back with ×.
         let allowed = (!login.allowed.is_empty()).then(|| {
             h_flex().gap_1p5().flex_wrap().items_center().child(div().text_size(px(12.)).text_color(p.muted).child(t!("accounts.allowed"))).children(login.allowed.iter().map(|who| {
-                let (who_shown, who_taken) = (who.rsplit('/').next().unwrap_or(who).to_owned(), who.clone());
+                let scope = equipe_core::vault::scope_of(who);
+                let who_shown = if scope == EVERY_SQUAD { t!("accounts.every_squad").to_owned() } else { scope };
+                let who_taken = who.clone();
                 h_flex()
                     .id(SharedString::from(format!("login-allowed-{id}-{who}")))
                     .h(px(22.))
@@ -149,8 +179,14 @@ pub(super) fn sections(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             }))
         });
         let mut line = Line::new(login.site.clone(), desc).words(format!("{} {}", login.username, login.note.clone().unwrap_or_default())).control(controls);
-        if let Some(allowed) = allowed {
-            line = line.below(allowed);
+        // Signing in by itself stopped after a try that didn't get past the form: said, with the way on.
+        let stopped = login.stopped.as_ref().filter(|_| login.auto).map(|_| div().text_size(px(12.)).line_height(px(18.)).text_color(p.danger()).child(t!("accounts.auto_stopped")));
+        let below = match (allowed, stopped) {
+            (None, None) => None,
+            (a, s) => Some(v_flex().gap_1().children(a).children(s)),
+        };
+        if let Some(below) = below {
+            line = line.below(below);
         }
         lines.push(line);
     }
@@ -163,6 +199,19 @@ pub(super) fn sections(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             .pt_1()
             .child(h_flex().w_full().gap_3().child(div().flex_1().child(field(t!("accounts.site"), &ui.site))).child(div().flex_1().child(field(t!("accounts.username"), &ui.username))))
             .child(h_flex().w_full().gap_3().child(div().flex_1().child(field(if editing.is_some() { t!("accounts.password_new") } else { t!("accounts.password") }, &ui.password))).child(div().flex_1().child(field(t!("accounts.note"), &ui.note))))
+            .child({
+                let handle = cx.entity().downgrade();
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(ui::switch(p, "login-form-auto", ui.auto).name(t!("accounts.auto_form")).on_flip(move |on, _, cx| {
+                        let _ = handle.update(cx, |this, cx| {
+                            this.settings.accounts.auto = on;
+                            cx.notify();
+                        });
+                    }))
+                    .child(v_flex().gap_0p5().child(div().text_size(px(SMALL)).text_color(p.text2).child(t!("accounts.auto_form"))).child(div().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(t!("accounts.auto_form_note"))))
+            })
             .children(ui.problem.clone().map(|why| div().text_size(px(SMALL)).text_color(p.danger()).child(why)))
             .child(
                 h_flex()
@@ -315,6 +364,7 @@ impl Shell {
         pw.update(cx, |i, cx| i.set_value(String::new(), window, cx));
         n.update(cx, |i, cx| i.set_value(note, window, cx));
         self.settings.accounts.editing = Some(id);
+        self.settings.accounts.auto = login.as_ref().is_some_and(|l| l.auto);
         self.settings.accounts.problem = None;
         if id.is_some() { pw.update(cx, |i, cx| i.focus(window, cx)) } else { s.update(cx, |i, cx| i.focus(window, cx)) }
         cx.notify();
@@ -350,7 +400,8 @@ impl Shell {
             self.settings.accounts.problem = Some(why.to_owned());
             return cx.notify();
         }
-        let draft = LoginDraft { id: editing, site, username, password: (!password.is_empty()).then_some(password), note: (!note.is_empty()).then_some(note) };
+        let auto = Some(self.settings.accounts.auto);
+        let draft = LoginDraft { id: editing, site, username, password: (!password.is_empty()).then_some(password), note: (!note.is_empty()).then_some(note), auto };
         self.send_command(Command::SaveLogin { draft });
         self.close_login_form(window, cx);
     }

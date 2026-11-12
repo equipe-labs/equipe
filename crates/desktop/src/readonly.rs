@@ -155,6 +155,9 @@ pub fn reads(command: &Command) -> bool {
         | C::SaveLogin { .. }
         | C::DeleteLogin { .. }
         | C::ForgetLoginAllowance { .. }
+        | C::AllowLogin { .. }
+        | C::SetLoginAuto { .. }
+        | C::DismissLoginOffer { .. }
         | C::SaveBrowserProfile { .. }
         | C::DeleteBrowserProfile { .. }
         | C::SaveSecret { .. }
@@ -497,7 +500,7 @@ mod tests {
         let s = || "acme".to_owned();
         let spec = SessionSpec { engine: None, model: None, access: Access::ReadOnly, cwd: "/".into(), role: None, squad: None };
         let routine = routines::Routine { id: 0, title: "t".into(), prompt: "p".into(), when: routines::Schedule::Daily { hour: 9, minute: 0 }, on: true, last_run: None, next_run: None };
-        let login = vault::LoginDraft { id: None, site: "x".into(), username: "u".into(), password: None, note: None };
+        let login = vault::LoginDraft { id: None, site: "x".into(), username: "u".into(), password: None, note: None, auto: None };
         vec![
             Command::Start { session: 1, spec },
             Command::Submit { session: 1, text: "x".into(), about: None },
@@ -553,6 +556,9 @@ mod tests {
             Command::SaveLogin { draft: login },
             Command::DeleteLogin { id: 1 },
             Command::ForgetLoginAllowance { id: 1, who: "acme/pm".into() },
+            Command::AllowLogin { id: 1, who: "acme".into() },
+            Command::SetLoginAuto { id: 1, auto: true },
+            Command::DismissLoginOffer { id: 1, never: true },
             Command::Logins,
             Command::SaveBrowserProfile { profile: BrowserProfile { name: "b".into(), label: String::new() } },
             Command::DeleteBrowserProfile { name: "b".into() },
