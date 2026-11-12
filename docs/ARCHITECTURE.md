@@ -366,7 +366,10 @@ helper ──child process, stdin for text──▶ agent-desktop 1.2.0 (pinned,
 - **No images kept.** A screenshot is a JPEG in memory, passed back as the tool
   result; the journal records the tool call's one line. (Claude Code's own
   transcript keeps tool-result images — equipe can't stop that.)
-- `equipe desktop setup` installs the helper, downloads and verifies the pinned
+- The daemon does this by itself (`core/src/desktop/auto.rs`: engine in the
+  background, helper once a member works the desktop, macOS's prompt once, a
+  card for the one switch, a light watch for it; see DESKTOP-CONTROL.md
+  "Automatic setup"). `equipe desktop setup` is the same, now: it installs the helper, downloads and verifies the pinned
   agent-desktop release, asks macOS for the permissions, opens the Settings
   panes and checks: a GUI session, the daemon as a login service there,
   Accessibility (which takes the person's password or Touch ID to switch on),

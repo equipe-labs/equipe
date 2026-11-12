@@ -70,6 +70,10 @@ pub struct Setup {
     /// macOS couldn't be asked.
     pub git_failed: bool,
     pub git_watch: Option<gpui_kit::Task<()>>,
+    /// The first run's optional step: desktop apps. `Some` once the person said yes.
+    pub desktop: Option<equipe_core::desktop::auto::Auto>,
+    pub desktop_ready: Option<equipe_core::protocol::DesktopReadiness>,
+    pub desktop_skipped: bool,
 }
 
 impl Setup {

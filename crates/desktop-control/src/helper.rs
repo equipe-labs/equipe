@@ -114,6 +114,17 @@ pub const NOT_RUNNING: &str =
 /// and asking macOS for the permissions (which puts the helper in both lists).
 pub const STATUS: &str = "_status";
 pub const REQUEST: &str = "_request";
+/// Asks macOS for Accessibility only (its system prompt, once): what the
+/// daemon does by itself when a member needs the desktop. `REQUEST` asks for
+/// everything, Screen Recording included, and is the person's "Allow…".
+pub const REQUEST_ACCESSIBILITY: &str = "_request_accessibility";
+
+/// What a permission request asks macOS for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ask {
+    Everything,
+    Accessibility,
+}
 
 /// Requests the daemon makes before a member's input, for the send gate: what
 /// the input would act on (`arguments`: `{ tool, arguments }`), and the screen.
@@ -122,7 +133,7 @@ pub const CAPTURE: &str = "_capture";
 
 /// Serve on the socket until the process ends, one request at a time.
 #[cfg(unix)]
-pub fn serve<D: Desktop>(home: &Path, controller: &mut Controller<D>, status: impl Fn(&D) -> Value, request: impl Fn(&D)) -> io::Result<()> {
+pub fn serve<D: Desktop>(home: &Path, controller: &mut Controller<D>, status: impl Fn(&D) -> Value, request: impl Fn(&D, Ask)) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     ensure_dir(home)?;
     let socket = socket_path(home);
@@ -200,7 +211,7 @@ fn engine_answer(engine: &Engine, line: &str) -> ToolResult {
 }
 
 #[cfg(windows)]
-pub fn serve<D: Desktop>(home: &Path, controller: &mut Controller<D>, status: impl Fn(&D) -> Value, request: impl Fn(&D)) -> io::Result<()> {
+pub fn serve<D: Desktop>(home: &Path, controller: &mut Controller<D>, status: impl Fn(&D) -> Value, request: impl Fn(&D, Ask)) -> io::Result<()> {
     ensure_dir(home)?;
     ensure_token(home)?;
     let name = pipe_name(home);
@@ -237,7 +248,7 @@ fn answer<D: Desktop>(
     engine: Option<&Engine>,
     line: &str,
     status: &impl Fn(&D) -> Value,
-    request: &impl Fn(&D),
+    request: &impl Fn(&D, Ask),
 ) -> ToolResult {
     let Ok(message) = serde_json::from_str::<Value>(line) else {
         return ToolResult::error("unreadable request");
@@ -263,8 +274,8 @@ fn answer<D: Desktop>(
     };
     match tool {
         STATUS => ToolResult::ok(with_engine(status(&controller.desktop)).to_string()),
-        REQUEST => {
-            request(&controller.desktop);
+        REQUEST | REQUEST_ACCESSIBILITY => {
+            request(&controller.desktop, if tool == REQUEST { Ask::Everything } else { Ask::Accessibility });
             ToolResult::ok(with_engine(status(&controller.desktop)).to_string())
         }
         SCENE => {

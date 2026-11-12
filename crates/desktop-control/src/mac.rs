@@ -314,15 +314,21 @@ impl Mac {
         })
     }
 
-    /// Ask macOS for every permission: puts the helper in both lists, with a
-    /// prompt where macOS shows one.
-    pub fn request(&self) {
+    /// Ask macOS for the permissions: every one puts the helper in both lists,
+    /// with a prompt where macOS shows one; `Ask::Accessibility` only for the
+    /// Accessibility prompt (which comes with sending input).
+    pub fn request(&self, ask: crate::helper::Ask) {
         // SAFETY: these show the system's prompts and return the current state.
         unsafe {
-            CGRequestScreenCaptureAccess();
+            if ask == crate::helper::Ask::Everything {
+                CGRequestScreenCaptureAccess();
+            }
             CGRequestPostEventAccess();
             let options = NSDictionary::from_slices(&[&*ns("AXTrustedCheckOptionPrompt")], &[&*NSNumber::new_bool(true)]);
             AXIsProcessTrustedWithOptions(ptr(&options));
+        }
+        if ask == crate::helper::Ask::Accessibility {
+            return;
         }
         // On macOS 26 asking isn't enough to be listed under Screen Recording:
         // an attempt to capture is what puts the helper there.

@@ -42,7 +42,7 @@ pub async fn readiness(home: &Path, guide: bool) -> DesktopReadiness {
 }
 
 /// What the helper's `_status` says, into `ready`.
-fn apply(ready: &mut DesktopReadiness, status: &Value) {
+pub(super) fn apply(ready: &mut DesktopReadiness, status: &Value) {
     ready.helper = true;
     ready.accessibility = status["accessibility"].as_bool().map(|ax| ax && status["post_events"].as_bool().unwrap_or(true));
     ready.screen = status["screen"].as_bool();

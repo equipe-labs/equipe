@@ -1349,8 +1349,8 @@
   "desktop.fix_post_events": "activa Accesibilidad y vuelve a ejecutar setup",
   "desktop.check_engine": "Motor de accesibilidad: agent-desktop {version}, suma de verificación comprobada",
   "desktop.check_engine_missing": "Motor de accesibilidad (agent-desktop {version})",
-  "desktop.fix_engine_missing": "equipe desktop setup lo descarga y comprueba su suma de verificación",
-  "desktop.fix_engine_tampered": "no coincide con su suma de verificación fijada y no se ejecutará: vuelve a ejecutar equipe desktop setup",
+  "desktop.fix_engine_missing": "equipe lo descarga solo y comprueba su suma de verificación (o ahora: equipe desktop setup)",
+  "desktop.fix_engine_tampered": "no coincide con su suma de verificación fijada y no se ejecutará: equipe lo vuelve a instalar solo (o ahora: equipe desktop setup)",
   "desktop.check_engine_grant": "El motor funciona con el permiso de Accesibilidad del asistente",
   "desktop.fix_engine_grant": "activa Accesibilidad para \"equipe Desktop Helper\" y vuelve a ejecutar equipe desktop setup",
   "desktop.check_screen": "Grabación de pantalla y audio del sistema (solo para capturas)",
@@ -1365,9 +1365,14 @@
   "desktop.engine_installing": "Descargando agent-desktop {version} (Apache-2.0), el motor de accesibilidad…",
   "desktop.engine_installed": "agent-desktop {version} instalado: suma de verificación comprobada.",
   "desktop.engine_ready": "agent-desktop {version} está instalado y comprobado.",
-  "desktop.engine_failed": "No se pudo instalar agent-desktop: {why}. Las herramientas de captura siguen funcionando; vuelve a ejecutar equipe desktop setup para reintentarlo.",
+  "desktop.engine_failed": "No se pudo instalar agent-desktop: {why}. Las herramientas de captura siguen funcionando; equipe lo reintenta solo, o ejecuta equipe desktop setup para reintentarlo ya.",
   "desktop.guide_intro": "macOS te pide, en la pantalla del Mac, que permitas \"equipe Desktop Helper\". Solo él recibe estos permisos; equipe y sus miembros nunca. El motor de accesibilidad funciona con el mismo permiso, así que no hay nada más que permitir.",
   "desktop.guide_accessibility": "{step}. Ajustes del Sistema › Privacidad y seguridad › Accesibilidad: activa \"equipe Desktop Helper\". El interruptor solo se aplica cuando confirmas con tu contraseña o Touch ID.",
   "desktop.guide_screen": "{step}. Opcional, para capturas: Ajustes del Sistema › Privacidad y seguridad › Grabación de pantalla y audio del sistema: activa \"equipe Desktop Helper\". Si macOS pregunta si puede omitir el selector de ventanas privado, elige Permitir.",
-  "desktop.guide_signed": "¿Ya aparece y está activado, pero sigue en ✗? Antes estaba firmado de otra forma: quítalo con − y vuelve a ejecutar equipe desktop setup."
+  "desktop.guide_signed": "¿Ya aparece y está activado, pero sigue en ✗? Antes estaba firmado de otra forma: quítalo con − y vuelve a ejecutar equipe desktop setup.",
+  "desktop.auto_note": "Desde ahora el daemon lo hace solo: instala el motor y el asistente, y te muestra el único interruptor. Este comando solo lo hace al instante.",
+  "onboard.desktop_note": "Opcional: dejar que los miembros usen las apps de este Mac. equipe instala solo lo necesario; macOS solo te pide un interruptor (Accesibilidad para «equipe Desktop Helper»). Si lo omites, equipe lo ofrece de nuevo cuando un miembro lo necesite por primera vez.",
+  "onboard.desktop_prompt": "¿Configurar las apps de escritorio ahora?",
+  "onboard.desktop_skipped": "Omitido. equipe lo ofrecerá de nuevo cuando un miembro necesite por primera vez las apps de escritorio.",
+  "onboard.desktop_later": "Las apps de escritorio aún no están listas: {why} equipe sigue por su cuenta; puedes terminar luego en Ajustes › Squad › Apps de escritorio."
 }

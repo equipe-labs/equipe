@@ -1326,8 +1326,8 @@
   "desktop.fix_post_events": "손쉬운 사용을 켠 다음 setup을 다시 실행하세요",
   "desktop.check_engine": "접근성 엔진: agent-desktop {version}, 체크섬 확인됨",
   "desktop.check_engine_missing": "접근성 엔진 (agent-desktop {version})",
-  "desktop.fix_engine_missing": "equipe desktop setup이 내려받고 체크섬을 확인해요",
-  "desktop.fix_engine_tampered": "고정된 체크섬과 달라서 실행하지 않아요: equipe desktop setup을 다시 실행하세요",
+  "desktop.fix_engine_missing": "equipe가 알아서 내려받고 체크섬을 확인해요(지금 하려면 equipe desktop setup)",
+  "desktop.fix_engine_tampered": "고정된 체크섬과 달라서 실행하지 않아요: equipe가 알아서 다시 설치해요(지금 하려면 equipe desktop setup)",
   "desktop.check_engine_grant": "엔진이 도우미의 손쉬운 사용 권한으로 동작해요",
   "desktop.fix_engine_grant": "\"equipe Desktop Helper\"의 손쉬운 사용을 켠 다음 equipe desktop setup을 다시 실행하세요",
   "desktop.check_screen": "화면 및 시스템 오디오 녹음 (스크린샷에만 필요)",
@@ -1342,9 +1342,14 @@
   "desktop.engine_installing": "접근성 엔진 agent-desktop {version}(Apache-2.0)을 내려받는 중…",
   "desktop.engine_installed": "agent-desktop {version}을(를) 설치했어요: 체크섬 확인됨.",
   "desktop.engine_ready": "agent-desktop {version}이(가) 설치되어 있고 확인됐어요.",
-  "desktop.engine_failed": "agent-desktop을 설치하지 못했어요: {why}. 스크린샷 도구는 계속 쓸 수 있어요. 다시 하려면 equipe desktop setup을 실행하세요.",
+  "desktop.engine_failed": "agent-desktop을 설치하지 못했어요: {why}. 스크린샷 도구는 계속 쓸 수 있어요. equipe가 알아서 다시 시도하고, 지금 다시 하려면 equipe desktop setup을 실행하세요.",
   "desktop.guide_intro": "macOS가 Mac 화면에서 \"equipe Desktop Helper\"를 허용할지 물어요. 이 권한은 도우미만 받고, equipe와 멤버는 받지 않아요. 접근성 엔진도 같은 권한으로 동작하니 따로 허용할 건 없어요.",
   "desktop.guide_accessibility": "{step}. 시스템 설정 › 개인정보 보호 및 보안 › 손쉬운 사용: \"equipe Desktop Helper\"를 켜세요. 암호나 Touch ID로 확인해야 적용돼요.",
   "desktop.guide_screen": "{step}. 선택, 스크린샷용: 시스템 설정 › 개인정보 보호 및 보안 › 화면 및 시스템 오디오 녹음: \"equipe Desktop Helper\"를 켜세요. 비공개 윈도우 선택기를 건너뛸지 물으면 허용을 고르세요.",
-  "desktop.guide_signed": "이미 목록에 있고 켜져 있는데도 ✗인가요? 예전에 다르게 서명된 거예요: −로 지운 다음 equipe desktop setup을 다시 실행하세요."
+  "desktop.guide_signed": "이미 목록에 있고 켜져 있는데도 ✗인가요? 예전에 다르게 서명된 거예요: −로 지운 다음 equipe desktop setup을 다시 실행하세요.",
+  "desktop.auto_note": "이제 데몬이 이 일을 알아서 해요. 엔진과 도우미를 설치하고, 직접 켜야 하는 스위치 하나만 알려 드려요. 이 명령은 그것을 지금 바로 해요.",
+  "onboard.desktop_note": "선택 사항: 멤버가 이 Mac의 앱을 다루게 해요. 필요한 것은 equipe가 알아서 설치하고, macOS가 스위치 하나(\"equipe Desktop Helper\"의 손쉬운 사용)만 직접 켜 달라고 해요. 건너뛰면 멤버가 처음 필요해질 때 다시 물어봐요.",
+  "onboard.desktop_prompt": "지금 데스크톱 앱을 설정할까요?",
+  "onboard.desktop_skipped": "건너뛰었어요. 멤버가 데스크톱 앱이 처음 필요해지면 equipe가 다시 물어봐요.",
+  "onboard.desktop_later": "데스크톱 앱이 아직 준비되지 않았어요: {why} equipe가 알아서 이어 가고, 나머지는 설정 › 스쿼드 › 데스크톱 앱에서 마칠 수 있어요."
 }

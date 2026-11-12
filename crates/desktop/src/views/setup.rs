@@ -83,6 +83,47 @@ impl Shell {
         cx.notify();
     }
 
+    /// "Set up desktop apps" in the first run: equipe installs the engine and the
+    /// helper by itself, on a thread of its own (there is no daemon to do it yet),
+    /// asks macOS's prompt once, and tells this card where it stands.
+    pub fn setup_desktop_on(&mut self, cx: &mut Context<Self>) {
+        if self.setup.desktop.is_some() {
+            return;
+        }
+        use equipe_core::desktop::auto::{Auto, ThisMachine};
+        let home = equipe_providers::credentials::equipe_home();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink: equipe_core::desktop::auto::Sink = std::sync::Arc::new(move |ready| drop(tx.send(ready)));
+        let auto = Auto::start_on_thread(home.clone(), std::sync::Arc::new(ThisMachine { home }), sink);
+        auto.wanted();
+        self.setup.desktop = Some(auto);
+        self.setup.desktop_skipped = false;
+        cx.spawn(async move |this, cx| {
+            while let Some(ready) = rx.recv().await {
+                if this.update(cx, |this, cx| {
+                    this.setup.desktop_ready = Some(ready);
+                    cx.notify();
+                }).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// "Skip for now": nothing is set up for the desktop, and equipe offers it
+    /// again when a member first needs it.
+    pub fn setup_desktop_skip(&mut self, cx: &mut Context<Self>) {
+        equipe_core::desktop::auto::skip(&equipe_providers::credentials::equipe_home());
+        if let Some(auto) = self.setup.desktop.take() {
+            auto.dismiss();
+        }
+        self.setup.desktop_ready = None;
+        self.setup.desktop_skipped = true;
+        cx.notify();
+    }
+
     /// Ask macOS to install its developer tools, then watch until git runs.
     pub fn setup_install_git(&mut self, cx: &mut Context<Self>) {
         if !crate::install::install_git() {
@@ -145,6 +186,65 @@ fn connected(p: Palette) -> Div {
 
 fn cancel(shell: &Shell, id: &'static str, cx: &mut Context<Shell>) -> ui::Button {
     ui::button(shell.palette, id, Kind::Ghost, t!("setup.cancel")).on_click(cx.listener(|this, _, _, cx| this.setup_cancel(cx)))
+}
+
+/// The first run's one optional step on a Mac: desktop apps. equipe does all
+/// of it but the one switch macOS keeps for the person, and says so.
+fn desktop_card(shell: &Shell, cx: &mut Context<Shell>) -> Option<Div> {
+    use equipe_core::protocol::DesktopSetup;
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let p = shell.palette;
+    let s = &shell.setup;
+    let head = |c: Div| c.child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("setup.desktop_title")));
+    let ready = s.desktop_ready.as_ref();
+    let body: AnyElement = if s.desktop_skipped {
+        desc(p, t!("setup.desktop_skipped")).into_any_element()
+    } else if s.desktop.is_none() {
+        v_flex()
+            .gap_2()
+            .child(desc(p, t!("setup.desktop_text")))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(ui::button(p, "setup-desktop-on", Kind::Secondary, t!("setup.desktop_on")).icon(Icon::Shield).on_click(cx.listener(|this, _, _, cx| this.setup_desktop_on(cx))))
+                    .child(ui::button(p, "setup-desktop-skip", Kind::Ghost, t!("setup.desktop_skip")).on_click(cx.listener(|this, _, _, cx| this.setup_desktop_skip(cx)))),
+            )
+            .into_any_element()
+    } else if ready.is_some_and(|r| r.ready()) {
+        h_flex().gap_2().items_center().text_size(px(SMALL)).text_color(p.text2).child(icon(Icon::Check, ICON_SM, p.accent)).child(t!("desktop_setup.ready")).into_any_element()
+    } else {
+        match ready.map(|r| &r.setup) {
+            Some(DesktopSetup::Failed { reason, .. }) => v_flex()
+                .gap_2()
+                .child(h_flex().gap_2().items_start().text_size(px(SMALL)).line_height(px(20.)).text_color(p.danger()).child(div().flex_none().pt(px(3.)).child(icon(Icon::Warning, ICON_SM, p.danger()))).child(div().flex_1().min_w_0().child(super::desktop_setup::failure_words(*reason))))
+                .child(h_flex().child(ui::button(p, "setup-desktop-retry", Kind::Secondary, t!("desktop_setup.retry")).icon(Icon::Retry).on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(auto) = &this.setup.desktop {
+                        auto.retry();
+                    }
+                    cx.notify();
+                }))))
+                .into_any_element(),
+            Some(DesktopSetup::Grant) => v_flex()
+                .gap_2()
+                .child(div().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("desktop_setup.grant_title")))
+                .child(desc(p, t!("desktop_setup.grant_body")))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(ui::button(p, "setup-desktop-open", Kind::Primary, t!("desktop_setup.grant_button")).icon(Icon::Shield).on_click(cx.listener(|_, _, _, cx| {
+                            // The same pane the daemon's "Allow…" opens: Accessibility, with the helper listed.
+                            let _ = equipe_providers::platform::open_status(equipe_core::desktop::ready::ACCESSIBILITY_PANE);
+                            cx.notify();
+                        })))
+                        .child(ui::button(p, "setup-desktop-skip", Kind::Ghost, t!("setup.desktop_skip")).on_click(cx.listener(|this, _, _, cx| this.setup_desktop_skip(cx)))),
+                )
+                .into_any_element(),
+            _ => waiting(p, t!("desktop_setup.installing")).into_any_element(),
+        }
+    };
+    Some(head(card(p)).child(body))
 }
 
 pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
@@ -227,6 +327,8 @@ pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
             .when(*doing == Doing::Installing, |c| c.child(h_flex().child(ui::button(p, "setup-guide", Kind::Ghost, t!("setup.open_guide")).icon(Icon::External).on_click(|_, _, cx| cx.open_url(setup::CLAUDE_GUIDE)))))
     });
 
+    let desktop = desktop_card(shell, cx);
+
     // Next: the squad form, once an AI is connected.
     let next = h_flex().pt_1().child(ui::button(p, "setup-next", Kind::Primary, t!("setup.next")).disabled(busy || !s.can_go_on()).on_click(cx.listener(|this, _, _, cx| {
         this.setup.squad_step = true;
@@ -252,6 +354,7 @@ pub fn screen(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 .child(chatgpt)
                 .child(claude)
                 .children(failed)
+                .children(desktop)
                 .child(next)
                 .child(div().text_size(px(SMALL)).line_height(px(20.)).text_color(p.muted).child(t!("setup.foot"))),
             "setup-in",

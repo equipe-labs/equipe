@@ -1326,8 +1326,8 @@
   "desktop.fix_post_events": "打開輔助使用,然後再次執行 setup",
   "desktop.check_engine": "無障礙引擎:agent-desktop {version},檢查碼已驗證",
   "desktop.check_engine_missing": "無障礙引擎(agent-desktop {version})",
-  "desktop.fix_engine_missing": "equipe desktop setup 會下載並驗證它",
-  "desktop.fix_engine_tampered": "與固定的檢查碼不符,不會執行:請再次執行 equipe desktop setup",
+  "desktop.fix_engine_missing": "equipe 會自動下載並驗證它(想立刻進行,執行 equipe desktop setup)",
+  "desktop.fix_engine_tampered": "與固定的檢查碼不符,不會執行:equipe 會自動重新安裝(想立刻進行,執行 equipe desktop setup)",
   "desktop.check_engine_grant": "引擎在助手的輔助使用權限下運作",
   "desktop.fix_engine_grant": "為「equipe Desktop Helper」打開輔助使用,然後再次執行 equipe desktop setup",
   "desktop.check_screen": "螢幕與系統錄音(僅截圖需要)",
@@ -1342,9 +1342,14 @@
   "desktop.engine_installing": "正在下載無障礙引擎 agent-desktop {version}(Apache-2.0)…",
   "desktop.engine_installed": "已安裝 agent-desktop {version}:檢查碼已驗證。",
   "desktop.engine_ready": "agent-desktop {version} 已安裝並驗證。",
-  "desktop.engine_failed": "無法安裝 agent-desktop:{why}。截圖工具仍然可用;要重試,請再次執行 equipe desktop setup。",
+  "desktop.engine_failed": "無法安裝 agent-desktop:{why}。截圖工具仍然可用;equipe 會自動重試,想立刻重試請執行 equipe desktop setup。",
   "desktop.guide_intro": "macOS 會在這台 Mac 的螢幕上請你允許「equipe Desktop Helper」。只有它獲得這些權限,equipe 和成員都不會。無障礙引擎也在同一權限下執行,不需另外允許。",
   "desktop.guide_accessibility": "{step}. 系統設定 › 隱私權與安全性 › 輔助使用:打開「equipe Desktop Helper」。用密碼或 Touch ID 確認後才會生效。",
   "desktop.guide_screen": "{step}. 可選,用於截圖:系統設定 › 隱私權與安全性 › 螢幕與系統錄音:打開「equipe Desktop Helper」。如果 macOS 詢問能否略過私密視窗選擇器,請選擇「允許」。",
-  "desktop.guide_signed": "已在列表中且已打開,但仍是 ✗?它之前的簽名不同:用 − 移除,然後再次執行 equipe desktop setup。"
+  "desktop.guide_signed": "已在列表中且已打開,但仍是 ✗?它之前的簽名不同:用 − 移除,然後再次執行 equipe desktop setup。",
+  "desktop.auto_note": "從現在起,常駐程式會自動完成這些:安裝引擎和助手,並只提示你那一個需要自己開啟的開關。這個指令只是立刻執行。",
+  "onboard.desktop_note": "選用:讓成員操作這台 Mac 上的 App。需要的東西 equipe 會自動安裝;macOS 只會請你開啟一個開關(「equipe Desktop Helper」的輔助使用)。略過的話,成員第一次需要時 equipe 會再次詢問。",
+  "onboard.desktop_prompt": "現在設定桌面 App 嗎?",
+  "onboard.desktop_skipped": "已略過。成員第一次需要桌面 App 時,equipe 會再次詢問。",
+  "onboard.desktop_later": "桌面 App 尚未就緒:{why} equipe 會自動繼續,其餘可稍後在設定 › 小隊 › 桌面 App 中完成。"
 }

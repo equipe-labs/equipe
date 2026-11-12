@@ -1349,8 +1349,8 @@
   "desktop.fix_post_events": "activez l'Accessibilité, puis relancez setup",
   "desktop.check_engine": "Moteur d'accessibilité : agent-desktop {version}, somme de contrôle vérifiée",
   "desktop.check_engine_missing": "Moteur d'accessibilité (agent-desktop {version})",
-  "desktop.fix_engine_missing": "equipe desktop setup le télécharge et vérifie sa somme de contrôle",
-  "desktop.fix_engine_tampered": "il ne correspond pas à sa somme de contrôle fixée et ne tournera pas : relancez equipe desktop setup",
+  "desktop.fix_engine_missing": "equipe le télécharge tout seul et vérifie sa somme de contrôle (ou maintenant : equipe desktop setup)",
+  "desktop.fix_engine_tampered": "il ne correspond pas à sa somme de contrôle fixée et ne tournera pas : equipe le réinstalle tout seul (ou maintenant : equipe desktop setup)",
   "desktop.check_engine_grant": "Le moteur fonctionne avec l'autorisation d'Accessibilité de l'assistant",
   "desktop.fix_engine_grant": "activez l'Accessibilité pour « equipe Desktop Helper », puis relancez equipe desktop setup",
   "desktop.check_screen": "Enregistrement de l'écran et de l'audio système (seulement pour les captures)",
@@ -1365,9 +1365,14 @@
   "desktop.engine_installing": "Téléchargement d'agent-desktop {version} (Apache-2.0), le moteur d'accessibilité…",
   "desktop.engine_installed": "agent-desktop {version} installé : somme de contrôle vérifiée.",
   "desktop.engine_ready": "agent-desktop {version} est installé et vérifié.",
-  "desktop.engine_failed": "Impossible d'installer agent-desktop : {why}. Les outils de capture fonctionnent toujours ; relancez equipe desktop setup pour réessayer.",
+  "desktop.engine_failed": "Impossible d'installer agent-desktop : {why}. Les outils de capture fonctionnent toujours ; equipe réessaie tout seul, ou lancez equipe desktop setup pour réessayer maintenant.",
   "desktop.guide_intro": "macOS vous demande, sur l'écran du Mac, d'autoriser « equipe Desktop Helper ». Lui seul reçoit ces autorisations, jamais equipe ni ses membres. Le moteur d'accessibilité tourne sous la même autorisation : rien d'autre à autoriser.",
   "desktop.guide_accessibility": "{step}. Réglages Système › Confidentialité et sécurité › Accessibilité : activez « equipe Desktop Helper ». Le réglage ne prend effet qu'une fois confirmé avec votre mot de passe ou Touch ID.",
   "desktop.guide_screen": "{step}. Facultatif, pour les captures : Réglages Système › Confidentialité et sécurité › Enregistrement de l'écran et de l'audio système : activez « equipe Desktop Helper ». Si macOS demande s'il peut contourner le sélecteur de fenêtres privé, choisissez Autoriser.",
-  "desktop.guide_signed": "Déjà listé et activé, mais toujours ✗ ? Il était signé autrement avant : retirez-le avec −, puis relancez equipe desktop setup."
+  "desktop.guide_signed": "Déjà listé et activé, mais toujours ✗ ? Il était signé autrement avant : retirez-le avec −, puis relancez equipe desktop setup.",
+  "desktop.auto_note": "Désormais le démon s'en charge tout seul : il installe le moteur et l'assistant, et ne vous montre que l'unique interrupteur. Cette commande le fait simplement tout de suite.",
+  "onboard.desktop_note": "Facultatif : laisser les membres utiliser les apps de ce Mac. equipe installe seul ce qu'il faut ; macOS ne vous demande qu'un interrupteur (Accessibilité pour « equipe Desktop Helper »). Si vous ignorez, equipe le reproposera au premier besoin d'un membre.",
+  "onboard.desktop_prompt": "Configurer les apps de bureau maintenant ?",
+  "onboard.desktop_skipped": "Ignoré. equipe le proposera de nouveau quand un membre aura besoin des apps de bureau pour la première fois.",
+  "onboard.desktop_later": "Les apps de bureau ne sont pas encore prêtes : {why} equipe continue tout seul ; vous pourrez finir plus tard dans Réglages › Squad › Apps de bureau."
 }

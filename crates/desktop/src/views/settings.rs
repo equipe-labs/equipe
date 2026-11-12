@@ -748,6 +748,17 @@ fn desktop_apps(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Sect
         this.send_command(Command::DesktopCheck { guide: false });
         cx.notify();
     }));
+    // equipe sets the engine and the helper up by itself; this tries again now.
+    let retry = |id: &'static str| -> AnyElement {
+        ui::button(p, id, Kind::Secondary, t!("desktop_setup.retry"))
+            .icon(Icon::Retry)
+            .disabled(!connected)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.send_command(Command::DesktopAuto { action: equipe_core::protocol::DesktopAutoAction::Retry });
+                cx.notify();
+            }))
+            .into_any_element()
+    };
     let section = |lines: Vec<Line>| Section::new(t!("settings.section_desktop_apps"), lines).foot(t!("settings.desktop_foot"));
     let Some(ready) = shell.model.desktop_ready.as_ref() else {
         return section(vec![Line::new(t!("settings.desktop_status"), t!("settings.desktop_unknown")).words(words).control(check)]);
@@ -758,7 +769,7 @@ fn desktop_apps(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Sect
     let ok = ready.ready();
     let mut lines = vec![Line::new(t!("settings.desktop_status"), if ok { t!("settings.desktop_ready_desc") } else { t!("settings.desktop_not_ready_desc") }).warn(!ok).words(words).control(check)];
     if !ready.helper {
-        lines.push(Line::new(t!("settings.desktop_helper"), t!("settings.desktop_helper_missing")).warn(true).words(words).control(command_chip(p, "copy-desktop-setup", "equipe desktop setup")));
+        lines.push(Line::new(t!("settings.desktop_helper"), t!("settings.desktop_helper_missing")).warn(true).words(words).control(retry("desktop-retry-helper")));
     } else {
         let ax = ready.accessibility == Some(true);
         lines.push(Line::new(t!("settings.desktop_accessibility"), t!("settings.desktop_accessibility_desc")).warn(!ax).words(words).control(if ax { state(true) } else { allow("desktop-allow-ax") }));
@@ -769,7 +780,7 @@ fn desktop_apps(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Sect
         (true, _) => t!("settings.desktop_engine_desc", version = ready.engine_version),
     };
     let engine_ok = ready.engine && ready.engine_grant != Some(false);
-    lines.push(Line::new(t!("settings.desktop_engine"), engine_desc).warn(!engine_ok).words(words).control(if ready.engine { state(engine_ok) } else { command_chip(p, "copy-desktop-engine", "equipe desktop setup") }));
+    lines.push(Line::new(t!("settings.desktop_engine"), engine_desc).warn(!engine_ok).words(words).control(if ready.engine { state(engine_ok) } else { retry("desktop-retry-engine") }));
     if ready.helper {
         let screen = ready.screen == Some(true);
         lines.push(Line::new(t!("settings.desktop_screen"), t!("settings.desktop_screen_desc")).words(words).control(if screen || ready.accessibility != Some(true) { state(screen) } else { allow("desktop-allow-screen") }));

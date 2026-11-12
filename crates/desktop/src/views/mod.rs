@@ -22,6 +22,7 @@ pub mod design;
 pub mod design_setup;
 pub mod design_talk;
 pub mod design_taste;
+pub mod desktop_setup;
 pub mod diffview;
 pub mod disk;
 pub mod doc;
