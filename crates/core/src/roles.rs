@@ -590,6 +590,12 @@ light and dark, and large text. Attach them to `submit_for_review` in `images` a
 hand-in without them is refused with what is missing. Immediately before handing in, refresh main from its remote, \
 rebase your branch onto the latest main, prove there are no conflicts, and run the relevant tests on that rebased tree.";
 
+/// …and, with a designer on the squad, the self-check that follows the hand-in.
+const ENGINEER_SELF_CHECK: &str = "With a designer on the squad, equipe's design precheck then checks the changed screens on \
+your worktree; a new S1/S2 finding — content cut off, a WCAG AA failure, sideways scroll, text over text — sends the \
+hand-in back to you with the findings: fix each, or hand in again with `waive_findings` saying why one isn't a real \
+problem, and a designer judges it. You can run it yourself first: `equipe design precheck --worktree .`.";
+
 pub fn charter(role: &Role, name: &str, ctx: &Context<'_>) -> String {
     let title = if role.id == CUSTOM.id { format!("{name} (a custom role)") } else { role.title.to_owned() };
     let duties = match (role.id == CUSTOM.id, ctx.edits) {
@@ -601,7 +607,8 @@ pub fn charter(role: &Role, name: &str, ctx: &Context<'_>) -> String {
         (false, _) => role.duties.to_owned(),
     };
     let duties = if matches!(role.id, "frontend" | "backend" | "mobile") {
-        format!("{duties}\n{ENGINEER_HAND_IN}")
+        let designer = ctx.team.iter().any(|m| m.role == "designer");
+        if designer { format!("{duties}\n{ENGINEER_HAND_IN} {ENGINEER_SELF_CHECK}") } else { format!("{duties}\n{ENGINEER_HAND_IN}") }
     } else {
         duties
     };

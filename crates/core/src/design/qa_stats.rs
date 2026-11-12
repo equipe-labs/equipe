@@ -3,7 +3,9 @@
 //! QA ticket — the ones from before the precheck too, found by their record —
 //! with its verdict, round, gate, and what its turns used (the `turns`
 //! table), summed overall and by model tier, so a squad can compare before
-//! and after.
+//! and after. Risk-based design QA (`risk_batch`) adds its routes, the
+//! engineer's self-check refusals, the daily reviews and audits with their
+//! own tokens, and design QA's share of all the squad's tokens.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -44,6 +46,18 @@ pub struct QaRow {
     /// Its turns' time, in seconds.
     pub secs: u64,
     pub precheck_secs: Option<u64>,
+    /// `per_ticket` or `risk_batch`; `None` for one from before modes.
+    pub mode: Option<String>,
+    /// In `risk_batch`: `refused`, `per_ticket` or `batch`.
+    pub route: Option<String>,
+    /// Why it was high-risk ([`crate::design_qa::Risk`] codes).
+    pub risk: Option<String>,
+    /// Judged in a light session.
+    pub lite: bool,
+    /// The engineer waived its self-check's findings.
+    pub waived: bool,
+    /// What an audit found of it: `ok` or `miss`.
+    pub audit_verdict: Option<String>,
 }
 
 impl QaRow {
@@ -75,9 +89,77 @@ fn has_table(conn: &Connection, name: &str) -> bool {
     conn.query_row("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1", [name], |_| Ok(())).optional().ok().flatten().is_some()
 }
 
+fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
+    conn.prepare(&format!("SELECT {column} FROM {table} LIMIT 0")).is_ok()
+}
+
+/// A daily design review or audit, with what its turns used.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct BatchRow {
+    pub ticket: u64,
+    /// `review` or `audit`.
+    pub kind: String,
+    pub created: i64,
+    /// Changes it covered.
+    pub items: u32,
+    pub finished: bool,
+    pub blockers: u32,
+    pub fixes: u32,
+    pub polish: u32,
+    pub turns: u32,
+    pub tokens: u64,
+    pub calls: u64,
+}
+
+/// Every daily review and audit made at or after `since` and before `until`, read only.
+pub fn read_batches(db: &Path, since: i64, until: i64) -> Result<Vec<BatchRow>, String> {
+    let conn = read_only(db)?;
+    if !has_table(&conn, "design_qa_batches") {
+        return Ok(Vec::new());
+    }
+    let e = |e: rusqlite::Error| e.to_string();
+    let mut stmt = conn
+        .prepare(
+            "SELECT b.ticket, b.kind, b.created_at, b.items, b.finished_at IS NOT NULL, COALESCE(b.blockers, 0), COALESCE(b.fixes, 0), COALESCE(b.polish, 0),
+                    (SELECT COUNT(*) FROM turns t WHERE t.ticket = b.ticket), (SELECT COALESCE(SUM(t.tokens), 0) FROM turns t WHERE t.ticket = b.ticket),
+                    (SELECT COALESCE(SUM(t.calls), 0) FROM turns t WHERE t.ticket = b.ticket)
+             FROM design_qa_batches b WHERE b.created_at >= ?1 AND b.created_at < ?2 ORDER BY b.ticket",
+        )
+        .map_err(e)?;
+    let rows = stmt
+        .query_map(params![since, until], |r| {
+            Ok(BatchRow {
+                ticket: r.get(0)?,
+                kind: r.get(1)?,
+                created: r.get(2)?,
+                items: r.get(3)?,
+                finished: r.get(4)?,
+                blockers: r.get(5)?,
+                fixes: r.get(6)?,
+                polish: r.get(7)?,
+                turns: r.get(8)?,
+                tokens: r.get::<_, i64>(9)?.max(0) as u64,
+                calls: r.get::<_, i64>(10)?.max(0) as u64,
+            })
+        })
+        .map_err(e)?;
+    Ok(rows.filter_map(Result::ok).collect())
+}
+
+/// Every token the squad's turns used between `since` and `until` (by when they ended).
+pub fn squad_tokens(db: &Path, since: i64, until: i64) -> Result<u64, String> {
+    let conn = read_only(db)?;
+    conn.query_row("SELECT COALESCE(SUM(tokens), 0) FROM turns WHERE ended >= ?1 AND ended < ?2", params![since, until], |r| r.get::<_, i64>(0)).map(|n| n.max(0) as u64).map_err(|e| e.to_string())
+}
+
 /// Every design QA ticket in the journal at `db` made at or after `since`
 /// (unix seconds), oldest first — read only.
 pub fn read(db: &Path, since: i64) -> Result<Vec<QaRow>, String> {
+    read_between(db, since, i64::MAX)
+}
+
+/// Every design QA ticket made at or after `since` and before `until`.
+pub fn read_between(db: &Path, since: i64, until: i64) -> Result<Vec<QaRow>, String> {
     let conn = read_only(db)?;
     let e = |e: rusqlite::Error| e.to_string();
     // Every one, for the rounds; those since are kept.
@@ -99,7 +181,7 @@ pub fn read(db: &Path, since: i64) -> Result<Vec<QaRow>, String> {
             *n += 1;
             *n
         });
-        if created < since {
+        if created < since || created >= until {
             continue;
         }
         let mut row = QaRow { qa, checked, created, round, ..QaRow::default() };
@@ -119,10 +201,24 @@ pub fn read(db: &Path, since: i64) -> Result<Vec<QaRow>, String> {
         }
         .to_owned();
         if runs {
+            let routed = has_column(&conn, "design_qa_runs", "route");
+            let sql = if routed {
+                "SELECT round, gate, decision, judgment, acted, verdict, verdict_by, precheck_secs, mode, route, risk, lite, waived, audit_verdict FROM design_qa_runs WHERE qa = ?1"
+            } else {
+                "SELECT round, gate, decision, judgment, acted, verdict, verdict_by, precheck_secs FROM design_qa_runs WHERE qa = ?1"
+            };
             conn.query_row(
-                "SELECT round, gate, decision, judgment, acted, verdict, verdict_by, precheck_secs FROM design_qa_runs WHERE qa = ?1",
+                sql,
                 [qa],
                 |r| {
+                    if routed {
+                        row.mode = r.get(8)?;
+                        row.route = r.get(9)?;
+                        row.risk = r.get(10)?;
+                        row.lite = r.get::<_, Option<bool>>(11)?.unwrap_or(false);
+                        row.waived = r.get::<_, Option<String>>(12)?.is_some();
+                        row.audit_verdict = r.get(13)?;
+                    }
                     row.round = r.get::<_, u32>(0)?.max(1);
                     row.gate = Some(r.get(1)?);
                     row.decision = r.get(2)?;
@@ -216,8 +312,10 @@ impl Sums {
     fn add(&mut self, r: &QaRow) {
         self.tickets += 1;
         match r.verdict.as_str() {
-            "pass" => self.passed += 1,
-            "changes" => self.changes += 1,
+            // Let through into the daily review: a pass by equipe.
+            "pass" | "batched" => self.passed += 1,
+            // Refused by the engineer's self-check: back to the engineer.
+            "changes" | "refused" => self.changes += 1,
             "cancelled" => self.cancelled += 1,
             _ => self.open += 1,
         }
@@ -285,6 +383,105 @@ pub struct Stats {
     pub by_judgment: BTreeMap<String, Sums>,
     /// Rounds: how many were a ticket's first design QA, second, third or more.
     pub rounds: BTreeMap<u32, u32>,
+    /// By design QA mode (`per_ticket`, `risk_batch`; `before` for those from before modes).
+    pub by_mode: BTreeMap<String, Sums>,
+    /// In `risk_batch`, by route: `refused` (the engineer's self-check), `per_ticket`, `batch`.
+    pub by_route: BTreeMap<String, Sums>,
+    /// Hand-ins the engineer's self-check refused, and hand-ins with findings waived.
+    pub refused: u32,
+    pub waived: u32,
+    /// Of the designer turns per ticket in `risk_batch`, how many were light sessions.
+    pub lite: u32,
+    /// The daily reviews and audits.
+    pub reviews: BatchSums,
+    pub audits: BatchSums,
+    /// What audits found of changes let through without a designer.
+    pub audited: u32,
+    pub misses: u32,
+    /// All the squad's tokens over the same time; 0 when not read.
+    pub squad_tokens: u64,
+}
+
+/// Sums over daily reviews or audits.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct BatchSums {
+    pub tickets: u32,
+    pub items: u32,
+    pub tokens: u64,
+    pub calls: u64,
+    pub blockers: u32,
+    pub fixes: u32,
+    pub polish: u32,
+}
+
+impl BatchSums {
+    pub fn per_ticket(&self) -> u64 {
+        if self.tickets == 0 { 0 } else { self.tokens / u64::from(self.tickets) }
+    }
+
+    /// Tokens per change covered.
+    pub fn per_item(&self) -> u64 {
+        if self.items == 0 { 0 } else { self.tokens / u64::from(self.items) }
+    }
+}
+
+impl Stats {
+    /// With the daily reviews and audits of the same time, and the squad's tokens.
+    pub fn with_batches(mut self, batches: &[BatchRow], squad_tokens: u64) -> Stats {
+        for b in batches {
+            let sums = if b.kind == "audit" { &mut self.audits } else { &mut self.reviews };
+            sums.tickets += 1;
+            sums.items += b.items;
+            sums.tokens += b.tokens;
+            sums.calls += b.calls;
+            sums.blockers += b.blockers;
+            sums.fixes += b.fixes;
+            sums.polish += b.polish;
+        }
+        self.squad_tokens = squad_tokens;
+        self
+    }
+
+    /// Everything design QA used: its tickets, reviews and audits.
+    pub fn tokens(&self) -> u64 {
+        self.all.tokens + self.reviews.tokens + self.audits.tokens
+    }
+
+    /// Design QA's share of the squad's tokens, in percent; `None` without them.
+    pub fn share(&self) -> Option<f64> {
+        (self.squad_tokens > 0).then(|| self.tokens() as f64 * 100. / self.squad_tokens as f64)
+    }
+
+    /// Audited changes where the audit found an S1/S2 the routing let through, in percent.
+    pub fn miss_rate(&self) -> Option<f64> {
+        (self.audited > 0).then(|| f64::from(self.misses) * 100. / f64::from(self.audited))
+    }
+
+    /// Hand-ins that went three rounds or more.
+    pub fn long_rounds(&self) -> u32 {
+        self.rounds.get(&3).copied().unwrap_or(0)
+    }
+}
+
+/// The week's design QA in a line for the retro, in English; `None` when there was none.
+pub fn retro_line(s: &Stats) -> Option<String> {
+    if s.all.tickets == 0 && s.reviews.tickets == 0 {
+        return None;
+    }
+    let share = s.share().map(|p| format!(" ({p:.1}% of the squad's tokens)")).unwrap_or_default();
+    let routes = ["refused", "per_ticket", "batch"].iter().map(|r| format!("{} {}", r.replace('_', "-"), s.by_route.get(*r).map_or(0, |x| x.tickets))).collect::<Vec<_>>().join(", ");
+    let audit = match s.miss_rate() {
+        Some(rate) => format!(" Audits: {} change(s) audited, {} S1/S2 miss(es) ({rate:.0}%).", s.audited, s.misses),
+        None => String::new(),
+    };
+    Some(format!(
+        "Design QA this week (counted by equipe): {} ticket(s) — {routes}; {} daily review(s) covering {} change(s); {} design QA tokens in all{share}; {} hand-in(s) took three rounds or more.{audit}",
+        s.all.tickets,
+        s.reviews.tickets,
+        s.reviews.items,
+        crate::retro::tokens(s.tokens()),
+        s.long_rounds()
+    ))
 }
 
 pub fn summarize(rows: &[QaRow]) -> Stats {
@@ -302,6 +499,21 @@ pub fn summarize(rows: &[QaRow]) -> Stats {
             s.by_judgment.entry(key.to_owned()).or_default().add(r);
         }
         *s.rounds.entry(r.round.min(3)).or_default() += 1;
+        s.by_mode.entry(r.mode.clone().unwrap_or_else(|| "before".into())).or_default().add(r);
+        if let Some(route) = &r.route {
+            s.by_route.entry(route.clone()).or_default().add(r);
+        }
+        s.refused += u32::from(r.verdict == "refused");
+        s.waived += u32::from(r.waived);
+        s.lite += u32::from(r.lite);
+        match r.audit_verdict.as_deref() {
+            Some("miss") => {
+                s.audited += 1;
+                s.misses += 1;
+            }
+            Some(_) => s.audited += 1,
+            None => {}
+        }
         let a = &mut s.agreement;
         match (r.decision.as_deref(), r.acted, r.verdict.as_str()) {
             (Some("auto_pass"), true, _) => a.acted_pass += 1,
@@ -409,6 +621,34 @@ mod tests {
     }
 
     #[test]
+    fn risk_batch_is_counted_by_route_with_its_reviews_audits_and_share_of_the_squad() {
+        let routed = |qa: u64, route: &str, verdict: &str, tokens: u64| QaRow { mode: Some("risk_batch".into()), route: Some(route.into()), ..row(qa, verdict, Some("shadow"), Some("designer"), false, "standard", tokens) };
+        let rows = vec![
+            QaRow { mode: Some("per_ticket".into()), ..row(1, "pass", Some("shadow"), Some("designer"), false, "deep", 6_000) },
+            routed(2, "refused", "refused", 0),
+            QaRow { waived: true, lite: true, ..routed(3, "per_ticket", "pass", 300) },
+            QaRow { audit_verdict: Some("miss".into()), ..routed(4, "batch", "batched", 0) },
+            QaRow { audit_verdict: Some("ok".into()), ..routed(5, "batch", "batched", 0) },
+        ];
+        let batches = [
+            BatchRow { ticket: 9, kind: "review".into(), items: 2, tokens: 400, calls: 8, blockers: 1, fixes: 1, polish: 2, ..BatchRow::default() },
+            BatchRow { ticket: 10, kind: "audit".into(), items: 2, tokens: 300, ..BatchRow::default() },
+        ];
+        let s = summarize(&rows).with_batches(&batches, 100_000);
+        assert_eq!((s.by_mode["per_ticket"].tickets, s.by_mode["risk_batch"].tickets), (1, 4));
+        assert_eq!((s.by_route["refused"].tickets, s.by_route["per_ticket"].tickets, s.by_route["batch"].tickets), (1, 1, 2));
+        assert_eq!((s.refused, s.waived, s.lite), (1, 1, 1));
+        assert_eq!((s.all.passed, s.all.changes), (4, 1), "let into the review is a pass, refused is sent back");
+        assert_eq!((s.reviews.per_ticket(), s.reviews.per_item(), s.audits.tokens), (400, 200, 300));
+        assert_eq!((s.audited, s.misses), (2, 1));
+        assert_eq!(s.tokens(), 6_300 + 700);
+        assert!((s.share().unwrap() - 7.0).abs() < 1e-9);
+        let line = retro_line(&s).unwrap();
+        assert!(line.contains("refused 1, per-ticket 1, batch 2") && line.contains("7.0% of the squad's tokens") && line.contains("1 S1/S2 miss"), "{line}");
+        assert_eq!(retro_line(&Stats::default()), None);
+    }
+
+    #[test]
     fn the_journal_is_read_without_writing_with_old_and_new_design_qa_tickets() {
         let home = std::env::temp_dir().join(format!("equipe-qa-stats-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
@@ -450,6 +690,8 @@ mod tests {
         assert_eq!(j.design_qa_rounds(checked).unwrap(), 2);
         j.start_design_qa_run(new, checked, 2, "shadow", "running").unwrap();
         j.set_design_qa_precheck(&crate::journal::DesignQaRun { qa: new, precheck: "done".into(), decision: Some("auto_pass".into()), ..Default::default() }).unwrap();
+        j.set_design_qa_mode_of(new, "risk_batch", Some("decorative")).unwrap();
+        j.set_design_qa_route(new, "per_ticket", "waived", true).unwrap();
         j.set_design_qa_verdict(new, "pass", "designer").unwrap();
         j.set_design_qa_verdict(new, "changes", "you").unwrap();
         assert_eq!(j.design_qa_run(new).unwrap().verdict.as_deref(), Some("pass"), "the first verdict stays");
@@ -463,6 +705,9 @@ mod tests {
         assert_eq!(rows.iter().map(|r| (r.qa, r.verdict.as_str(), r.round)).collect::<Vec<_>>(), [(u64::from(old), "changes", 1), (u64::from(new), "pass", 2)]);
         let r = &rows[1];
         assert_eq!((r.gate.as_deref(), r.decision.as_deref(), r.tokens(), r.calls, r.secs, r.turns), (Some("shadow"), Some("auto_pass"), 370, 5, 60, 1));
+        assert_eq!((r.mode.as_deref(), r.route.as_deref(), r.risk.as_deref(), r.lite, r.waived), (Some("risk_batch"), Some("per_ticket"), Some("waived"), true, true));
+        assert_eq!(squad_tokens(&db, 0, i64::MAX).unwrap(), 370);
+        assert!(read_batches(&db, 0, i64::MAX).unwrap().is_empty());
         assert!(read(&db, now + 10).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(home);
     }
