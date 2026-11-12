@@ -25,9 +25,12 @@ pub mod card;
 pub mod diagram;
 pub mod markdown;
 mod theme;
+pub mod thumbs;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::protocol::decide::Question;
 use crate::protocol::rpc::{self, ImageList, ImageRead, ListImages, ReadImage};
@@ -128,8 +131,11 @@ pub fn check(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, String> {
     }
     std::fs::symlink_metadata(path).map_err(|_| refused(path, "no such file"))?;
     let real = std::fs::canonicalize(path).map_err(|_| refused(path, "no such file"))?;
-    let roots: Vec<PathBuf> = roots.iter().filter_map(|r| std::fs::canonicalize(r).ok()).collect();
-    if !roots.iter().any(|root| real.starts_with(root)) {
+    // A root `real` starts with as it is written is a real folder already
+    // (every folder `real` runs through is): only when none is are the roots'
+    // links resolved — a board's worth of worktrees, each looked up on disk.
+    let inside = roots.iter().any(|root| real.starts_with(root)) || roots.iter().filter_map(|r| std::fs::canonicalize(r).ok()).any(|root| real.starts_with(root));
+    if !inside {
         return Err(refused(path, &format!("{} and the squad's folder", rpc::IMAGE_OUTSIDE)));
     }
     if mime_of(&real).is_none() {
@@ -179,11 +185,60 @@ pub fn resolve_all(given: &[String], cwd: &Path, roots: &[PathBuf], most: usize)
 /// pixels on its longer side. One too big to send whole goes as a copy no
 /// bigger than [`BIG_SIDE`]; an SVG goes as it is.
 pub fn read(path: &Path, roots: &[PathBuf], max: Option<u32>) -> Result<ImageRead, String> {
-    use std::io::Read as _;
     let real = check(path, roots)?;
+    picture(path, &real, read_bytes(path, &real)?).and_then(|(bytes, mime)| sized(path, bytes, mime, max))
+}
+
+/// [`read`], through the copies kept on disk ([`thumbs`]): a picture scaled
+/// once is a file read after, until it changes.
+pub fn read_cached(home: &Path, path: &Path, roots: &[PathBuf], max: Option<u32>) -> Result<ImageRead, String> {
+    let real = check(path, roots)?;
+    let svg = mime_of(&real) == Some("image/svg+xml");
+    // The side a copy would be kept at: the one asked, or the big copy of one too big to send whole.
+    let too_big = || std::fs::metadata(&real).is_ok_and(|m| m.len() > WHOLE_MAX);
+    let side = max.map(|m| m.clamp(SMALLEST, BIG_SIDE)).or_else(|| too_big().then_some(BIG_SIDE)).filter(|_| !svg);
+    if let Some(side) = side
+        && let Some(kept) = thumbs::get(home, &real, side)
+    {
+        return Ok(kept);
+    }
+    // One decode of a picture at a time: a card asks for its tiny preview and
+    // its thumbnail together, and the second finds what the first kept.
+    let _decoding = side.map(|_| thumbs::decoding(&real));
+    if let Some(side) = side
+        && let Some(kept) = thumbs::get(home, &real, side)
+    {
+        return Ok(kept);
+    }
+    let (bytes, mime) = picture(path, &real, read_bytes(path, &real)?)?;
+    let companion = match side {
+        Some(thumbs::TINY_SIDE) => Some(thumbs::THUMB_SIDE),
+        Some(thumbs::THUMB_SIDE) => Some(thumbs::TINY_SIDE),
+        _ => None,
+    };
+    let (read, raw, scaled) = sized_with(path, bytes, mime, max, companion)?;
+    if let Some((side, also)) = scaled {
+        thumbs::put(home, &real, side, &read, &raw);
+        if let Some((side, read, raw)) = also {
+            thumbs::put(home, &real, side, &read, &raw);
+        }
+    }
+    Ok(with_data(read, &raw))
+}
+
+/// The bytes of `real` (asked for as `path`), at most one past [`FILE_MAX`].
+fn read_bytes(path: &Path, real: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
     let mut bytes = Vec::new();
-    std::fs::File::open(&real).and_then(|f| f.take(FILE_MAX + 1).read_to_end(&mut bytes)).map_err(|_| refused(path, "couldn't be read"))?;
-    picture(path, &real, bytes).and_then(|(bytes, mime)| sized(path, bytes, mime, max))
+    std::fs::File::open(real).and_then(|f| f.take(FILE_MAX + 1).read_to_end(&mut bytes)).map_err(|_| refused(path, "couldn't be read"))?;
+    Ok(bytes)
+}
+
+/// `read` with `raw` as its data, as a screen gets it.
+fn with_data(mut read: ImageRead, raw: &[u8]) -> ImageRead {
+    use base64::Engine as _;
+    read.data = base64::engine::general_purpose::STANDARD.encode(raw);
+    read
 }
 
 /// The bytes of picture `path` (named `named`, links resolved), when they
@@ -204,10 +259,29 @@ fn picture(path: &Path, named: &Path, bytes: Vec<u8>) -> Result<(Vec<u8>, &'stat
 /// its longer side; a copy no bigger than [`BIG_SIDE`] when too big to send
 /// whole; an SVG as it is.
 fn sized(path: &Path, bytes: Vec<u8>, mime: &'static str, max: Option<u32>) -> Result<ImageRead, String> {
-    use base64::Engine as _;
+    let (read, raw, _) = sized_parts(path, bytes, mime, max)?;
+    Ok(with_data(read, &raw))
+}
+
+/// [`sized`], its data apart (the [`ImageRead`]'s left empty): and the side
+/// it was scaled to, when it was.
+fn sized_parts(path: &Path, bytes: Vec<u8>, mime: &'static str, max: Option<u32>) -> Result<(ImageRead, Vec<u8>, Option<u32>), String> {
+    let (read, raw, scaled) = sized_with(path, bytes, mime, max, None)?;
+    Ok((read, raw, scaled.map(|(side, _)| side)))
+}
+
+/// A copy of a picture already decoded: `side` asked, its encoded bytes.
+type Companion = (u32, ImageRead, Vec<u8>);
+/// The side a picture was scaled to, and a companion copy made beside it.
+type Scaled = Option<(u32, Option<Companion>)>;
+
+/// [`sized_parts`]; and, when the picture is decoded to be scaled and
+/// `companion` names another side it is bigger than, a copy at that side
+/// too, from the same decode.
+fn sized_with(path: &Path, bytes: Vec<u8>, mime: &'static str, max: Option<u32>, companion: Option<u32>) -> Result<(ImageRead, Vec<u8>, Scaled), String> {
     let size = bytes.len() as u64;
     let svg = mime == "image/svg+xml";
-    let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+    let whole = |width, height| ImageRead { mime: mime.into(), size, width, height, data: String::new(), scaled: false };
     if svg {
         if size > SVG_MAX {
             return Err(refused(path, &format!("an SVG bigger than {} KB", SVG_MAX >> 10)));
@@ -215,7 +289,7 @@ fn sized(path: &Path, bytes: Vec<u8>, mime: &'static str, max: Option<u32>) -> R
         if !svg_is_closed(&String::from_utf8_lossy(&bytes)) {
             return Err(refused(path, "an SVG that loads other files or runs a script"));
         }
-        return Ok(ImageRead { mime: mime.into(), size, width: None, height: None, data: encode(&bytes), scaled: false });
+        return Ok((whole(None, None), bytes, None));
     }
     let reader = || {
         let mut reader = image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format().map_err(|_| refused(path, "couldn't be read"))?;
@@ -233,19 +307,33 @@ fn sized(path: &Path, bytes: Vec<u8>, mime: &'static str, max: Option<u32>) -> R
         None => None,
     };
     let Some(side) = side.filter(|side| width > *side || height > *side || size > WHOLE_MAX) else {
-        return Ok(ImageRead { mime: mime.into(), size, width: Some(width), height: Some(height), data: encode(&bytes), scaled: false });
+        return Ok((whole(Some(width), Some(height)), bytes, None));
     };
     let decoded = reader()?.decode().map_err(|_| refused(path, "not a picture it can read"))?;
+    let (read, raw) = scaled(&decoded, side, size)?;
+    let also = companion.filter(|c| *c != side && (width > *c || height > *c)).and_then(|c| scaled(&decoded, c, size).ok().map(|(read, raw)| (c, read, raw)));
+    Ok((read, raw, Some((side, also))))
+}
+
+/// `decoded` (a picture of `size` bytes) no bigger than `side` on its longer
+/// side, encoded for a screen; its data apart.
+fn scaled(decoded: &image::DynamicImage, side: u32, size: u64) -> Result<(ImageRead, Vec<u8>), String> {
     let small = decoded.thumbnail(side, side);
     let mut out = std::io::Cursor::new(Vec::new());
-    let mime = if small.color().has_alpha() {
+    // A picture with an alpha channel it never uses (most renders and
+    // screenshots) goes as a JPEG too: a fraction of the PNG's bytes.
+    let see_through = small.color().has_alpha() && small.to_rgba8().pixels().any(|p| p[3] != u8::MAX);
+    let mime = if see_through {
         small.to_rgba8().write_to(&mut out, image::ImageFormat::Png).map_err(|e| e.to_string())?;
         "image/png"
     } else {
-        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 86).encode_image(&small.to_rgb8()).map_err(|e| e.to_string())?;
+        // A thumbnail is looked at small: fewer bytes do.
+        let quality = if side <= PHONE_SIDE { 80 } else { 86 };
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality).encode_image(&small.to_rgb8()).map_err(|e| e.to_string())?;
         "image/jpeg"
     };
-    Ok(ImageRead { mime: mime.into(), size, width: Some(width), height: Some(height), data: encode(&out.into_inner()), scaled: true })
+    let read = ImageRead { mime: mime.into(), size, width: Some(decoded.width()), height: Some(decoded.height()), data: String::new(), scaled: true };
+    Ok((read, out.into_inner()))
 }
 
 /// What a squad shows now: the pictures its waiting decisions, its tickets
@@ -276,11 +364,15 @@ pub struct Kept {
     pub merged: bool,
 }
 
+/// `home` as given and with its links resolved: where a worktree's path may start.
+fn homes(home: &Path) -> [PathBuf; 2] {
+    [home.to_owned(), home.canonicalize().unwrap_or_else(|_| home.to_owned())]
+}
+
 /// Where a picture of a ticket's hand-in was in its worktree (gone now): the
 /// repository and the path from its top — when it was in one of `repo`'s
-/// worktrees under `home` at all.
-fn in_worktree(image: &str, repo: &Path, home: &Path) -> Option<PathBuf> {
-    let homes = [home.to_owned(), home.canonicalize().unwrap_or_else(|_| home.to_owned())];
+/// worktrees under one of `homes` at all.
+fn in_worktree(image: &str, repo: &Path, homes: &[PathBuf]) -> Option<PathBuf> {
     let rest = homes.iter().find_map(|h| Path::new(image).strip_prefix(crate::worktree::worktrees_of(repo, h)).ok())?;
     let mut parts = rest.components();
     let Some(Component::Normal(_)) = parts.next() else { return None };
@@ -290,7 +382,7 @@ fn in_worktree(image: &str, repo: &Path, home: &Path) -> Option<PathBuf> {
 }
 
 /// What git has of a ticket's pictures, once its worktree is gone.
-fn kept_of(ticket: &Ticket, home: &Path, squad: &str) -> Vec<(String, Kept)> {
+fn kept_of(ticket: &Ticket, home: &Path, homes: &[PathBuf], squad: &str) -> Vec<(String, Kept)> {
     if ticket.images.is_empty() || ticket.worktree.as_ref().is_some_and(|w| w.is_dir()) {
         return Vec::new();
     }
@@ -300,7 +392,7 @@ fn kept_of(ticket: &Ticket, home: &Path, squad: &str) -> Vec<(String, Kept)> {
     ticket
         .images
         .iter()
-        .filter_map(|image| Some((image.clone(), Kept { repo: repo.clone(), rel: in_worktree(image, &repo, home)?, branch: ticket.branch.clone(), merged })))
+        .filter_map(|image| Some((image.clone(), Kept { repo: repo.clone(), rel: in_worktree(image, &repo, homes)?, branch: ticket.branch.clone(), merged })))
         .collect()
 }
 
@@ -318,9 +410,10 @@ pub fn shown(home: &Path, squad: &str) -> Shown {
     let tickets = journal.tickets().unwrap_or_default();
     // What a ticket still at work keeps in its design folder: the designer studio's pictures.
     out.paths.extend(crate::design::studio::shown(&tickets));
+    let homes = homes(home);
     for ticket in tickets {
         out.paths.extend(ticket.images.iter().cloned());
-        out.kept.extend(kept_of(&ticket, home, squad));
+        out.kept.extend(kept_of(&ticket, home, &homes, squad));
         out.roots.extend(ticket.worktree);
     }
     let (design, folders) = crate::design::folder::shown(home, squad);
@@ -425,6 +518,47 @@ fn scratch_folders() -> Vec<PathBuf> {
     vec![std::env::temp_dir(), PathBuf::from("/tmp"), PathBuf::from("/private/tmp")]
 }
 
+/// How long what a squad shows ([`shown`]) is trusted, once worked out, for
+/// the asks that follow: a card's pictures come a dozen at once, and working
+/// it out reads the whole board and walks its design folders. A picture it
+/// doesn't name is looked for afresh at once, so one just shown is given; one
+/// no longer shown may still be given for this long.
+const SHOWN_FOR: Duration = Duration::from_secs(5);
+
+/// What each squad was last found to show, by home and squad: one look at a
+/// time per squad, the asks meanwhile waiting for it rather than each making
+/// its own.
+type ShownSlot = Arc<Mutex<Option<(Instant, Arc<Shown>)>>>;
+type ShownSlots = Mutex<HashMap<(PathBuf, String), ShownSlot>>;
+
+fn shown_slots() -> &'static ShownSlots {
+    static SLOTS: OnceLock<ShownSlots> = OnceLock::new();
+    SLOTS.get_or_init(Default::default)
+}
+
+/// What `squad` shows, as found within [`SHOWN_FOR`] when that names what
+/// `enough` looks for, else found afresh; and whether it was found afresh.
+fn shown_lately(home: &Path, squad: &str, enough: impl Fn(&Shown) -> bool) -> (Arc<Shown>, bool) {
+    let slot = shown_slots().lock().unwrap_or_else(|e| e.into_inner()).entry((home.to_owned(), squad.to_owned())).or_default().clone();
+    let mut held = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, shown)) = held.as_ref()
+        && at.elapsed() < SHOWN_FOR
+        && enough(shown)
+    {
+        return (shown.clone(), false);
+    }
+    let fresh = Arc::new(shown(home, squad));
+    *held = Some((Instant::now(), fresh.clone()));
+    (fresh, true)
+}
+
+/// Forget what `squad` was found to show: the next ask looks afresh.
+fn forget_shown(home: &Path, squad: &str) {
+    if let Some(slot) = shown_slots().lock().unwrap_or_else(|e| e.into_inner()).get(&(home.to_owned(), squad.to_owned())) {
+        *slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
 /// [`serve`], with `scratch` as the scratch folders: a picture a line embeds
 /// by name is given from the squad's projects and those too.
 pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[PathBuf]) -> Result<ImageRead, String> {
@@ -440,25 +574,49 @@ pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[Pat
     // A diagram the daemon drew for the squad (`visuals_rendered`).
     if diagram::is_drawn(home, &ask.squad, Path::new(&ask.path)) {
         cache::touch(Path::new(&ask.path));
-        return read(Path::new(&ask.path), &[diagram::dir(home, &ask.squad)], max);
+        return read_cached(home, Path::new(&ask.path), &[diagram::dir(home, &ask.squad)], max);
     }
-    let mut shown = shown(home, &ask.squad);
-    // A picture of a ticket's work the designer studio named lately (`crate::design::studio`).
-    if crate::design::studio::given(home, &ask.squad, &ask.path) {
-        shown.paths.insert(ask.path.clone());
-        if let Some(dir) = Path::new(&ask.path).parent() {
-            shown.roots.push(dir.to_path_buf());
+    let (shown, fresh) = shown_lately(home, &ask.squad, |shown| allows(home, shown, ask));
+    match serve_from(home, &shown, ask, max, scratch) {
+        // Found a moment ago, and the board may have moved since (a worktree
+        // gone with its acceptance): once more, from what it shows now.
+        Err(_) if !fresh => {
+            forget_shown(home, &ask.squad);
+            let (shown, _) = shown_lately(home, &ask.squad, |_| true);
+            serve_from(home, &shown, ask, max, scratch)
         }
+        read => read,
     }
-    // A line that embeds a picture by its name alone, read against another
-    // folder than the screen's: the same name said counts as said.
-    let named = file_name(&ask.path).is_some_and(|name| shown.said.iter().any(|s| file_name(s) == Some(name)));
-    if !shown.paths.contains(&ask.path) && !in_folder(&shown, &ask.path) && !named {
+}
+
+/// Whether `ask.path` is a picture `shown` lets a screen have: one it names,
+/// one right in a folder its conversation points at, one a line names by its
+/// name alone, or one the designer studio named lately.
+fn allows(home: &Path, shown: &Shown, ask: &ReadImage) -> bool {
+    shown.paths.contains(&ask.path) || in_folder(shown, &ask.path) || said_by_name(shown, &ask.path) || crate::design::studio::given(home, &ask.squad, &ask.path)
+}
+
+/// A line that embeds a picture by its name alone, read against another
+/// folder than the screen's: the same name said counts as said.
+fn said_by_name(shown: &Shown, path: &str) -> bool {
+    file_name(path).is_some_and(|name| shown.said.iter().any(|s| file_name(s) == Some(name)))
+}
+
+/// Answer `ask` from what the squad shows.
+fn serve_from(home: &Path, shown: &Shown, ask: &ReadImage, max: Option<u32>, scratch: &[PathBuf]) -> Result<ImageRead, String> {
+    let mut roots = shown.roots.clone();
+    // A picture of a ticket's work the designer studio named lately (`crate::design::studio`).
+    let given = crate::design::studio::given(home, &ask.squad, &ask.path);
+    if given && let Some(dir) = Path::new(&ask.path).parent() {
+        roots.push(dir.to_path_buf());
+    }
+    let named = said_by_name(shown, &ask.path);
+    if !given && !shown.paths.contains(&ask.path) && !in_folder(shown, &ask.path) && !named {
         return Err(format!("{} isn't a picture {} shows", ask.path, ask.squad));
     }
     if shown.said.contains(&ask.path) || named {
-        shown.roots.extend(shown.projects.iter().cloned());
-        shown.roots.extend(scratch.iter().cloned());
+        roots.extend(shown.projects.iter().cloned());
+        roots.extend(scratch.iter().cloned());
     }
     let asked = Path::new(&ask.path);
     // Not where it was read against (a member named a file it saved in a
@@ -466,10 +624,10 @@ pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[Pat
     // Said in a ticket's worktree that went with its acceptance: the same place
     // in the repository it was merged into, before any search by name.
     let found = (std::fs::symlink_metadata(asked).is_err() && !shown.kept.contains_key(&ask.path))
-        .then(|| merged_copy(home, &ask.squad, &shown.projects, asked).or_else(|| by_name(&shown.roots, asked)))
+        .then(|| merged_copy(home, &ask.squad, &shown.projects, asked).or_else(|| by_name(&roots, asked)))
         .flatten();
     let path = found.as_deref().unwrap_or(asked);
-    match read(path, &shown.roots, max) {
+    match read_cached(home, path, &roots, max) {
         // Its worktree went with its acceptance: git still has it.
         Err(why) if std::fs::symlink_metadata(path).is_err() => match shown.kept.get(&ask.path) {
             Some(kept) => read_kept(path, kept, max),
@@ -486,7 +644,7 @@ fn merged_copy(home: &Path, squad: &str, projects: &[PathBuf], asked: &Path) -> 
     let image = asked.to_str()?;
     std::iter::once(crate::squad_home::path(home, squad))
         .chain(projects.iter().cloned())
-        .find_map(|repo| in_worktree(image, &repo, home).map(|rel| repo.join(rel)))
+        .find_map(|repo| in_worktree(image, &repo, &homes(home)).map(|rel| repo.join(rel)))
         .filter(|path| path.is_file())
 }
 
@@ -535,9 +693,9 @@ fn by_name(roots: &[PathBuf], asked: &Path) -> Option<PathBuf> {
 /// conversation points at — inside its folder or a member's worktree, each
 /// passing [`check`] — by name, at most [`LIST_MAX`].
 pub fn list(home: &Path, ask: &ListImages) -> Result<ImageList, String> {
-    let shown = shown(home, &ask.squad);
     let folder = markdown::lexical(&ask.folder, Path::new("/")).filter(|_| Path::new(ask.folder.trim()).is_absolute()).ok_or_else(|| format!("{}: give the folder's full path, without `..`", ask.folder))?;
     let key = folder.to_string_lossy().into_owned();
+    let (shown, _) = shown_lately(home, &ask.squad, |shown| shown.folders.contains(&key));
     if !shown.folders.contains(&key) {
         return Err(format!("{key} isn't a folder {} shows", ask.squad));
     }

@@ -269,6 +269,8 @@ enum Request {
     Usage(Engine, equipe_protocol::PlanUsage),
     /// The lease check, as if at this unix time (tests).
     CheckLeases(u64, oneshot::Sender<()>),
+    /// The minute tick, now (a measurement's).
+    Minute(oneshot::Sender<()>),
     /// Paused runs looked at, as if at this unix time (tests).
     TurnEndsDue(u64, oneshot::Sender<()>),
     Shutdown(oneshot::Sender<()>),
@@ -524,6 +526,29 @@ impl Handle {
         }
     }
 
+    /// The minute tick, run now and answered once done: for measuring what
+    /// it holds the loop for, without waiting for it.
+    #[doc(hidden)]
+    pub async fn minute_now(&self) {
+        let (tx, rx) = oneshot::channel();
+        if self.requests.send(Request::Minute(tx)).is_ok() {
+            let _ = rx.await;
+        }
+    }
+
+    /// Keep each step of the loop at least `after` long, with its parts, for
+    /// [`Self::slow_steps`] (those past [`watchdog::SLOW_LOGGED`] always are).
+    #[doc(hidden)]
+    pub fn keep_steps_from(&self, after: Duration) {
+        self.pulse.keep_steps_from(after);
+    }
+
+    /// The latest steps of the loop that took long, oldest first, taken.
+    #[doc(hidden)]
+    pub fn slow_steps(&self) -> Vec<watchdog::SlowStep> {
+        self.pulse.slow_steps()
+    }
+
     /// Look at the runs equipe paused — a retry after the engine failed, an
     /// engine's limit — as if at unix time `at` (tests), instead of waiting.
     pub async fn turn_ends_due_at(&self, at: u64) {
@@ -661,7 +686,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     }
     let pulse = watchdog::Pulse::new();
     watchdog::watch(&pulse);
-    tokio::spawn(CORE_LOOP.scope((), run(runtime, req_rx, internal_rx, host_rx, pulse.clone())));
+    tokio::spawn(CORE_LOOP.scope((), watchdog::scoped(pulse.clone(), run(runtime, req_rx, internal_rx, host_rx, pulse.clone()))));
     let handle = Handle { requests: req_tx, pulse };
     // Memos for a turn the restart ended go in first, as if just sent.
     for (session, text) in memos {
@@ -941,6 +966,8 @@ type MergeResult = Result<(String, Option<Result<(), String>>), String>;
 
 enum Internal {
     Event(Box<Event>),
+    /// A member's desk turn's changes to the squad's folder, saved off the loop.
+    DeskSaved { session: SessionId, name: String, saved: Result<Option<squad_home::Change>, String> },
     /// A turn's engine started, as this process.
     EngineStarted { session: SessionId, pid: u32 },
     /// Every process, as a look at members' commands found them (`None`: `ps` couldn't say).
@@ -1312,6 +1339,7 @@ impl Wake {
             Wake::Request(Some(Request::Phone(_))) => Borrowed("phone tool"),
             Wake::Request(Some(Request::Usage(..))) => Borrowed("an engine's plan usage"),
             Wake::Request(Some(Request::CheckLeases(..))) => Borrowed("lease check"),
+            Wake::Request(Some(Request::Minute(_))) => Borrowed("minute tick"),
             Wake::Request(Some(Request::TurnEndsDue(..))) => Borrowed("paused runs' time"),
             Wake::Request(Some(Request::Shutdown(_))) | Wake::Request(None) => Borrowed("shutdown"),
             Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
@@ -1335,6 +1363,7 @@ impl Wake {
             Wake::Internal(Internal::ProjectAdded { .. }) => Borrowed("a project added"),
             Wake::Internal(Internal::SquadDeleted { .. }) => Borrowed("a squad deleted"),
             Wake::Internal(Internal::Logins(_)) => Borrowed("the logins changed"),
+            Wake::Internal(Internal::DeskSaved { .. }) => Borrowed("a desk turn's changes saved"),
             Wake::Internal(Internal::Wake { .. }) => Borrowed("work waits for a conversation"),
             Wake::Internal(Internal::DiskTrimmed(..)) => Borrowed("a trim of the build caches"),
             Wake::Internal(Internal::Dispatch) => Borrowed("handing out work again"),
@@ -1500,6 +1529,10 @@ impl Runtime {
                         self.apply_engine_moves(&squad).await;
                     }
                 }
+                Some(Request::Minute(reply)) => {
+                    self.minute(pulse).await;
+                    let _ = reply.send(());
+                }
                 Some(Request::CheckLeases(at, reply)) => {
                     self.renew_execution_leases();
                     self.recover_execution_leases(at).await;
@@ -1539,6 +1572,7 @@ impl Runtime {
                         }
                     }
                 }
+                Internal::DeskSaved { session, name, saved } => self.desk_saved(session, &name, saved),
                 Internal::EngineStarted { session, pid } => self.engine_started(session, pid),
                 Internal::Processes(procs) => self.on_processes(procs),
                 Internal::Done(done) => self.on_turn_done(done).await,
@@ -1647,45 +1681,55 @@ impl Runtime {
             }
             Wake::Frames => self.take_frames(),
             Wake::DesignTick => self.design_tick(),
-            Wake::Minute => {
-                self.keep_awake();
-                self.renew_execution_leases();
-                self.recover_execution_leases(now_secs()).await;
-                self.turn_ends_due(now_secs());
-                self.plan_use_pass();
-                pulse.step("minute tick: idle lanes");
-                self.fold_idle_lanes();
-                self.trim_builds();
-                self.expire_estimates();
-                pulse.step("minute tick: idle browsers");
-                self.close_idle_browsers();
-                pulse.step("minute tick: helpers");
-                self.let_helpers_go().await;
-                self.let_side_chats_go();
-                pulse.step("minute tick: stale tickets");
-                self.tidy_check();
-                pulse.step("minute tick: routines");
-                self.run_due_routines().await;
-                pulse.step("minute tick: idle boards");
-                self.wake_idle_pms().await;
-                pulse.step("minute tick: signals");
-                self.run_due_signals();
-                pulse.step("minute tick: engines");
-                self.engines_tick().await;
-                self.calls_tick().await;
-                // Work that reached main outside equipe: every ten minutes is soon
-                // enough (a merge or an accept looks at once), and off the loop.
-                if self.settled_at.is_none_or(|at| at.elapsed() >= SETTLE_EVERY) {
-                    self.settle_all_merged();
-                }
-                if self.config.persist && self.lane_tmp_tidied.elapsed() >= LANE_TMP_TIDY_EVERY {
-                    self.tidy_lane_tmp();
-                }
-                self.look_at_disk();
-                self.read_codex_usage(false);
-            }
+            Wake::Minute => self.minute(pulse).await,
         }
         true
+    }
+}
+
+impl Runtime {
+    /// The minute tick: the board's and the machine's upkeep, each part named
+    /// to the watchdog as it starts.
+    async fn minute(&mut self, pulse: &watchdog::Pulse) {
+        self.keep_awake();
+        pulse.step("minute tick: leases");
+        self.renew_execution_leases();
+        self.recover_execution_leases(now_secs()).await;
+        pulse.step("minute tick: paused runs");
+        self.turn_ends_due(now_secs());
+        self.plan_use_pass();
+        pulse.step("minute tick: idle lanes");
+        self.fold_idle_lanes();
+        self.trim_builds();
+        self.expire_estimates();
+        pulse.step("minute tick: idle browsers");
+        self.close_idle_browsers();
+        pulse.step("minute tick: helpers");
+        self.let_helpers_go().await;
+        self.let_side_chats_go();
+        pulse.step("minute tick: stale tickets");
+        self.tidy_check();
+        pulse.step("minute tick: routines");
+        self.run_due_routines().await;
+        pulse.step("minute tick: idle boards");
+        self.wake_idle_pms().await;
+        pulse.step("minute tick: signals");
+        self.run_due_signals();
+        pulse.step("minute tick: engines");
+        self.engines_tick().await;
+        pulse.step("minute tick: calls");
+        self.calls_tick().await;
+        pulse.step("minute tick: upkeep");
+        // Work that reached main outside equipe: every ten minutes is soon
+        // enough (a merge or an accept looks at once), and off the loop.
+        if self.settled_at.is_none_or(|at| at.elapsed() >= SETTLE_EVERY) {
+            self.settle_all_merged();
+        }
+        if self.config.persist && self.lane_tmp_tidied.elapsed() >= LANE_TMP_TIDY_EVERY {
+            self.tidy_lane_tmp();
+        }
+        self.look_at_disk();
+        self.read_codex_usage(false);
     }
 }
 
@@ -4460,6 +4504,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             }
         }
         // A run equipe paused goes on with this turn, however it was asked.
+        watchdog::mark("turn start: estimate");
         self.unpark_on_turn(id);
         self.guess_estimate(id);
         // A desk conversation grown too large, or gone cold, starts afresh.
@@ -4478,8 +4523,11 @@ for one project goes to it as tickets for its owners, with that project — and 
         };
         // The squad's memory as its files say now — the person's edits in Finder
         // included, its index brought up to date before their changes are saved.
+        watchdog::mark("turn start: squad memory");
         let facts = self.squad_memory(id);
-        self.save_persons_changes(id);
+        watchdog::mark("turn start: person's changes saved");
+        let saved_first = self.save_persons_changes(id);
+        watchdog::mark("turn start: browser");
         let Some(session) = self.sessions.get(&id) else {
             return;
         };
@@ -4615,6 +4663,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         // With none, and the board's tools: equipe's helpers stand in.
         let helped = board_tools && subagents.is_none() && self.helpers_offered(session);
         let mut skill_plugin: Option<(PathBuf, Vec<skills::Skill>)> = None;
+        watchdog::mark("turn start: charter and skills");
         let charter = session.member.as_ref().map(|m| {
             let team = squad.as_deref().map(|s| self.team(s)).unwrap_or_default();
             let mates: Vec<Teammate> = team.iter().map(|(_, name, role)| Teammate { name, role }).collect();
@@ -4661,6 +4710,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             skill_plugin = Some((dir, offered));
             charter
         });
+        watchdog::mark("turn start: engine");
         let (cwd, access, resume, history, ticket, add_dirs) = match &session.work {
             Some(work) => {
                 // On a code ticket a member also reads the squad's home; on a task or
@@ -4887,6 +4937,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                         provider: provider.as_ref(),
                         subagents: subagents.and(set_at_once),
                     };
+                    // The person's changes to the squad's folder saved first (off the loop): what it writes is its own.
+                    if let Some(saved) = saved_first {
+                        let _ = saved.await;
+                    }
                     if let Some(port) = browser {
                         browser::ready(port, Duration::from_secs(90)).await;
                     }
@@ -5052,6 +5106,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                         effort: effort.as_deref(),
                         hooks: hooks.as_ref(),
                     };
+                    // The person's changes to the squad's folder saved first (off the loop): what it writes is its own.
+                    if let Some(saved) = saved_first {
+                        let _ = saved.await;
+                    }
                     // A browser just started may still be loading.
                     if let Some(port) = browser {
                         browser::ready(port, Duration::from_secs(90)).await;
@@ -5107,17 +5165,26 @@ for one project goes to it as tickets for its owners, with that project — and 
 
     /// Before a member's desk turn: whatever changed in the squad's home while no
     /// member was writing there is the person's own, and is saved as theirs.
-    fn save_persons_changes(&mut self, id: SessionId) {
-        let Some(session) = self.sessions.get(&id).filter(|s| s.member.is_some() && s.work.is_none()) else {
-            return;
-        };
-        let Some(squad) = session.squad.clone() else {
-            return;
-        };
+    /// Saved off the loop; the answer says when, for the turn's engine to wait on.
+    fn save_persons_changes(&mut self, id: SessionId) -> Option<oneshot::Receiver<()>> {
+        let session = self.sessions.get(&id).filter(|s| s.member.is_some() && s.work.is_none())?;
+        let squad = session.squad.clone()?;
         let busy = self.sessions.values().any(|s| s.squad.as_ref() == Some(&squad) && s.work.is_none() && s.is_working());
         if !busy {
-            let _ = squad_home::save_persons(&squad_home::path(&self.config.home, &squad));
+            // Off the loop: a home of tens of thousands of files, and what was
+            // just put in it, took git seconds to save — every screen waited.
+            // The engine takes longer to start than this takes to begin.
+            let dir = squad_home::path(&self.config.home, &squad);
+            let (saved, told) = oneshot::channel();
+            squad_home::in_order(&dir.clone(), move || {
+                if let Err(err) = squad_home::save_persons(&dir) {
+                    crate::daemon_log!("equipe: {squad}: the person's changes to the squad's folder weren't saved: {err}");
+                }
+                let _ = saved.send(());
+            });
+            return Some(told);
         }
+        None
     }
 
     /// After a member's desk turn: what it changed in the squad's home is saved
@@ -5130,8 +5197,19 @@ for one project goes to it as tickets for its owners, with that project — and 
         let (Some(squad), Some(name)) = (session.squad.clone(), session.name().map(str::to_owned)) else {
             return;
         };
-        let dir = squad_home::path(&self.config.home, &squad);
-        match squad_home::save(&dir, &name, &asked_for(prompt)) {
+        // Saved off the loop (git in a big home takes seconds); told once saved.
+        // After the person's changes saved before the turn: each is told as whose it is.
+        let (dir, why, internal) = (squad_home::path(&self.config.home, &squad), asked_for(prompt), self.internal.clone());
+        squad_home::in_order(&dir.clone(), move || {
+            let saved = squad_home::save(&dir, &name, &why);
+            let _ = internal.send(Internal::DeskSaved { session: id, name, saved });
+        });
+    }
+
+    /// A member's desk turn's changes to the squad's folder were saved: the
+    /// person is told, with a way to take them back.
+    fn desk_saved(&mut self, id: SessionId, name: &str, saved: Result<Option<squad_home::Change>, String>) {
+        match saved {
             Ok(Some(change)) => {
                 let text = say!(self, "news.desk_saved", name = name, what = change.said(self.config.lang));
                 self.publish(Event::Notice { undo: Some(change.id), session: id, text });
@@ -5274,8 +5352,10 @@ for one project goes to it as tickets for its owners, with that project — and 
             self.publish_desktop();
         }
         if done.ticket.is_none() {
+            watchdog::mark("turn end: desk changes saved");
             self.save_desk_changes(done.session, &done.prompt);
         }
+        watchdog::mark("turn end: told");
         // The answer is already on every screen. Naming it is a separate,
         // tool-less side turn and can never hold up or fail that answer.
         self.start_conversation_title(done.session);
@@ -5286,6 +5366,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         }
         self.after_turn(done.session).await;
         if answered_person {
+            watchdog::mark("turn end: next suggested");
             self.suggest_next(done.session);
         }
     }
@@ -5427,6 +5508,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         let squad = session.squad.clone();
         let handed_back = session.work.as_ref().is_some_and(|w| w.end.handed_back.is_some());
         // Paused by equipe, or resumed with a reminder: what waits for it waits too.
+        watchdog::mark("turn end: its work's end");
         let mut held = false;
         if session.work.as_ref().is_some_and(|w| w.handed_in.is_some()) {
             self.end_work(id, WorkEnd::HandedIn);
@@ -5453,10 +5535,12 @@ for one project goes to it as tickets for its owners, with that project — and 
             self.estimate_done(id);
         }
         if !held && let Some(text) = self.sessions.get_mut(&id).and_then(Session::next_memos) {
+            watchdog::mark("turn end: memos");
             self.save_waiting(id);
             Box::pin(self.submit(id, text)).await;
         }
         if let Some(squad) = squad {
+            watchdog::mark("turn end: dispatch");
             Box::pin(self.dispatch(&squad)).await;
         }
     }
@@ -5633,11 +5717,13 @@ for one project goes to it as tickets for its owners, with that project — and 
     /// runtime-only engine and room holds are applied here as usual.
     async fn dispatch_to(&mut self, squad: &str, only: &[String], first: &[TicketId]) {
         // A member moving engines moves before it picks up its next ticket.
+        watchdog::mark("dispatch: engine moves");
         self.apply_engine_moves(squad).await;
         // Several engines failed at once: nothing new starts until a test turn works.
         if self.turn_ends.paused(squad) {
             return;
         }
+        watchdog::mark("dispatch: board");
         let mut tickets = self.tickets(squad);
         tickets.retain(|ticket| !self.held_for_room(ticket.kind) && !self.workspaces.busy(squad, ticket.id) && !self.prechecking(squad, ticket.id));
         let single_project = self.projects(squad).len() == 1;
@@ -5717,6 +5803,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 self.tell_held(squad, engine, &ids);
             }
         }
+        watchdog::mark("dispatch: work begun");
         for (ticket, name) in assigned {
             if let Some(id) = self.member_id(squad, &name) {
                 self.begin_work(id, ticket);
@@ -6156,6 +6243,7 @@ todo); or drop it if it's no longer wanted.]"
             let body = summary.clone().unwrap_or_else(|| ticket.body.clone());
             let message =
                 format!("equipe: T-{} {}\n\n{body}\n\nRun by {name} on equipe through Claude Code.", ticket.id, ticket.title);
+            watchdog::mark("work's end: commit");
             if let Err(err) = sandbox.commit_all(&message) {
                 let message = say!(self, "error.ticket_not_committed", id = ticket.id, err = err, path = sandbox.path.display());
                 self.error(Some(id), message, None);
@@ -6197,7 +6285,10 @@ todo); or drop it if it's no longer wanted.]"
         let images = match &work.sandbox {
             Some(sandbox) if how == WorkEnd::HandedIn => {
                 let roots = [squad_home::path(&self.config.home, &squad), sandbox.path.clone()];
-                crate::visuals::hand_in(&work.shown, &sandbox.changed_files().unwrap_or_default(), &sandbox.path, &roots)
+                {
+                    watchdog::mark("work's end: hand-in pictures");
+                    crate::visuals::hand_in(&work.shown, &sandbox.changed_files().unwrap_or_default(), &sandbox.path, &roots)
+                }
             }
             _ => work.shown.clone(),
         };
@@ -6464,9 +6555,11 @@ with what else waits.]"
     fn land_in_home(&mut self, squad: &str, ticket: &mut Ticket, sandbox: &Sandbox) -> Result<(), String> {
         // What changed there while no member was writing at its desk is the person's.
         let desk_busy = self.sessions.values().any(|s| s.squad.as_deref() == Some(squad) && s.work.is_none() && s.is_working());
+        watchdog::mark("landing in the squad's folder: the person's changes saved");
         if !desk_busy {
             let _ = squad_home::save_persons(&sandbox.repo);
         }
+        watchdog::mark("landing in the squad's folder: merge");
         let message = format!("{}: T-{} {}", ticket.assignee.as_deref().unwrap_or("equipe"), ticket.id, ticket.title);
         // The worktree goes once merged: its pictures are shown from the folder they landed in.
         let from = sandbox.path.canonicalize().unwrap_or_else(|_| sandbox.path.clone());
@@ -6478,6 +6571,7 @@ with what else waits.]"
         }
         let folder = squad_home::path(&self.config.home, squad);
         ticket.images = crate::visuals::moved(&ticket.images, &from, &folder.canonicalize().unwrap_or(folder));
+        watchdog::mark("landing in the squad's folder: worktree removed");
         let _ = sandbox.discard();
         ticket.branch = None;
         ticket.worktree = None;
@@ -8240,6 +8334,8 @@ there, end your turn, and carry on when they say they're done."
                 let (cwd, roots) = self.picture_places(&squad, id);
                 let shown = crate::visuals::resolve_all(&board::arg_strs(&args, "images"), &cwd, &roots, crate::visuals::HAND_IN)
                     .map_err(|e| format!("{e}. Save the pictures in your worktree and give their paths, then hand in again."))?;
+                // Their thumbnails made now, off the loop: the hand-in's card shows them at once.
+                crate::visuals::thumbs::warm(&self.config.home, shown.clone());
                 let screens = self.screens_handed_in(&squad, id, &args, shown.len())?;
                 let gap = self.designer_hand_in(id)?;
                 let session = self.sessions.get_mut(&id).ok_or("You're not on the squad.")?;
@@ -8393,6 +8489,7 @@ it back there once they have done it.{again} End your turn now with a short line
                         confirmed: args.get("confirmed").and_then(Value::as_bool).unwrap_or(false),
                     };
                     let today = squad_memory::date(now_secs());
+                    watchdog::mark("remember: saved in the squad's folder");
                     let (change, new) = squad_memory::remember(&folder, &member, &fact, &today, language.as_deref())?;
                     let what = clip(fact.description.trim(), 80);
                     let text = if new {
@@ -8453,12 +8550,14 @@ it back there once they have done it.{again} End your turn now with a short line
     }
 
     fn snapshot(&mut self, squad: &str) -> Snapshot {
+        watchdog::mark("snapshot: board");
         let projects = self.projects(squad);
         let mut tickets = self.tickets(squad);
         // Open tickets, and the latest closed ones.
         let recent_closed: Vec<TicketId> =
             tickets.iter().rev().filter(|t| t.status.is_closed()).map(|t| t.id).take(CLOSED_TICKETS_SHOWN).collect();
         tickets.retain(|t| !t.status.is_closed() || recent_closed.contains(&t.id));
+        watchdog::mark("snapshot: members");
         let mut sessions: Vec<SessionInfo> = self
             .sessions
             .iter()
@@ -8521,6 +8620,7 @@ it back there once they have done it.{again} End your turn now with a short line
             let s = &self.sessions[&info.session];
             (!s.is_pm(), s.joined)
         });
+        watchdog::mark("snapshot: settings and cards");
         let mode = self.journal(squad).map(Journal::mode).unwrap_or_default();
         let mut approvals: Vec<Approval> =
             self.pending.values().filter(|p| p.squad == squad).map(|p| p.approval.clone()).collect();

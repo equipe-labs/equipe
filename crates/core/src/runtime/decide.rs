@@ -64,6 +64,8 @@ impl Runtime {
                 option.images = visuals::resolve_all(&option.images, &cwd, &roots, visuals::PER_OPTION).map_err(|e| format!("Question {}, option {}: {e}. {fix}", n + 1, m + 1))?;
             }
         }
+        // Their thumbnails made now, off the loop: the card shows them the moment it opens.
+        visuals::thumbs::warm(&self.config.home, questions.iter().flat_map(|q| q.images().map(str::to_owned)).collect());
         let nudge = visuals::nudge(&questions);
         // Asked in a conversation beside the member's own: answered there.
         let session = if self.sessions.get(&id).is_some_and(Session::is_working) {

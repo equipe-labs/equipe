@@ -106,6 +106,19 @@ pub struct Stats {
 pub struct Journal {
     conn: Connection,
     path: PathBuf,
+    /// The board as last read whole, and the [`BoardVersion`] it was read at:
+    /// [`Self::tickets`] reads it again only once a ticket or a run changed.
+    board: std::cell::RefCell<Option<(BoardVersion, Vec<Ticket>)>>,
+}
+
+/// Where a squad's board stands: the changes this connection made to its
+/// tickets and their runs (counted by temporary triggers), and SQLite's
+/// `data_version`, which moves when another connection writes. The same
+/// version, the same board.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BoardVersion {
+    ours: i64,
+    others: i64,
 }
 
 /// `<home>/squads/<squad>`: everything a squad keeps.
@@ -659,7 +672,23 @@ impl Journal {
             // No bigger than it is now: SQLite answers SQLITE_FULL, as on a full disk.
             conn.query_row("PRAGMA max_page_count = 1", [], |_| Ok(()))?;
         }
-        Ok(Self { conn, path: path.to_owned() })
+        // This connection's changes to the board, counted (`BoardVersion`):
+        // temporary, so nothing is written to the squad's file. Without them
+        // the board is read afresh every time, as before.
+        let mut counted = String::from(
+            "CREATE TEMP TABLE IF NOT EXISTS board_writes (n INTEGER NOT NULL);
+             INSERT INTO board_writes SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM board_writes);",
+        );
+        for table in ["tickets", "ticket_executions"] {
+            for change in ["INSERT", "UPDATE", "DELETE"] {
+                counted.push_str(&format!(
+                    "CREATE TEMP TRIGGER IF NOT EXISTS board_{table}_{name} AFTER {change} ON main.{table} BEGIN UPDATE board_writes SET n = n + 1; END;",
+                    name = change.to_ascii_lowercase()
+                ));
+            }
+        }
+        let _ = conn.execute_batch(&counted);
+        Ok(Self { conn, path: path.to_owned(), board: std::cell::RefCell::new(None) })
     }
 
     /// The squad this journal belongs to.
@@ -1681,7 +1710,7 @@ impl Journal {
     }
 
     pub fn ticket(&self, id: TicketId) -> Result<Option<Ticket>> {
-        Ok(self.query_tickets("WHERE id = ?1", params![id])?.into_iter().next())
+        Ok(self.query_tickets("WHERE t.id = ?1", params![id])?.into_iter().next())
     }
 
     /// Every ticket, oldest first.
@@ -1705,15 +1734,39 @@ impl Journal {
         self.set_meta("tidied_at", &now().to_string())
     }
 
+    /// Every ticket, oldest first. Read whole once, then given again from
+    /// memory until a ticket or a run changes ([`BoardVersion`]): a big
+    /// board is megabytes, and the daemon's loop asks for it many times a
+    /// minute — on a busy disk each read took seconds.
     pub fn tickets(&self) -> Result<Vec<Ticket>> {
-        self.query_tickets("", [])
+        let version = self.board_version();
+        if let (Some(version), Some((at, board))) = (version, self.board.borrow().as_ref())
+            && *at == version
+        {
+            return Ok(board.clone());
+        }
+        let board = self.query_tickets("", [])?;
+        // What the read itself might have moved is looked at again: kept only when nothing did.
+        if let Some(version) = version.filter(|v| self.board_version() == Some(*v)) {
+            *self.board.borrow_mut() = Some((version, board.clone()));
+        }
+        Ok(board)
+    }
+
+    /// Where the board stands now; `None` when it can't be told (no triggers).
+    fn board_version(&self) -> Option<BoardVersion> {
+        let ours = self.conn.query_row("SELECT n FROM temp.board_writes", [], |r| r.get(0)).ok()?;
+        let others = self.conn.query_row("PRAGMA data_version", [], |r| r.get(0)).ok()?;
+        Some(BoardVersion { ours, others })
     }
 
     fn query_tickets(&self, filter: &str, args: impl rusqlite::Params) -> Result<Vec<Ticket>> {
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT id, title, body, status, owner, assignee, project, depends_on, branch, created_by, note, worktree, merged, kind, off_main, updated_at,
-                    priority, rank, remaining, images, design_qa, plan, model
-             FROM tickets {filter} ORDER BY id"
+        // Each ticket with its run, in one read.
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT t.id, t.title, t.body, t.status, t.owner, t.assignee, t.project, t.depends_on, t.branch, t.created_by, t.note, t.worktree, t.merged, t.kind, t.off_main, t.updated_at,
+                    t.priority, t.rank, t.remaining, t.images, t.design_qa, t.plan, t.model,
+                    e.state, e.session, e.operation, e.generation, e.heartbeat_at, e.lease_expires_at, e.reason, e.head, e.dirty, e.pause
+             FROM tickets t LEFT JOIN ticket_executions e ON e.ticket = t.id {filter} ORDER BY t.id"
         ))?;
         let rows = stmt.query_map(args, |r| {
             let mut t = Ticket {
@@ -1746,13 +1799,24 @@ impl Journal {
             };
             // A waiting ticket's asks are kept in its note; they travel as a list.
             t.asks = t.asks();
+            t.execution = match r.get::<_, Option<String>>(23)? {
+                Some(state) => Some(Box::new(TicketExecution {
+                    state: ExecutionState::parse(&state),
+                    session: r.get::<_, i64>(24)?.max(0) as u64,
+                    operation: r.get(25)?,
+                    generation: r.get::<_, i64>(26)?.max(0) as u64,
+                    heartbeat_at: r.get::<_, i64>(27)?.max(0) as u64,
+                    lease_expires_at: r.get::<_, i64>(28)?.max(0) as u64,
+                    reason: r.get(29)?,
+                    pause: r.get::<_, Option<String>>(32)?.and_then(|p| serde_json::from_str(&p).ok()),
+                    head: r.get(30)?,
+                    dirty: r.get::<_, Option<i64>>(31)?.map(|n| n.clamp(0, i64::from(u32::MAX)) as u32),
+                })),
+                None => None,
+            };
             Ok(t)
         })?;
-        let mut tickets: Vec<Ticket> = rows.collect::<Result<_>>()?;
-        for ticket in &mut tickets {
-            ticket.execution = self.execution(ticket.id)?.map(Box::new);
-        }
-        Ok(tickets)
+        rows.collect()
     }
 
     pub fn ticket_work(&self, id: TicketId) -> Result<TicketWork> {
@@ -2723,6 +2787,36 @@ mod tests {
             priority: Default::default(), rank: 0,
             kind: TicketKind::Code,
         }
+    }
+
+    #[test]
+    fn the_board_read_from_memory_follows_every_change_to_it() {
+        let home = temp_home();
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        let a = j.create_ticket(&ticket("Checkout")).unwrap();
+        assert_eq!(j.tickets().unwrap().len(), 1);
+        // Read again unchanged: the same board.
+        assert_eq!(j.tickets().unwrap(), j.tickets().unwrap());
+        // Changed through this connection: a ticket, then its run.
+        let mut t = j.ticket(a).unwrap().unwrap();
+        t.status = TicketStatus::InProgress;
+        j.save_ticket(&t).unwrap();
+        assert_eq!(j.tickets().unwrap()[0].status, TicketStatus::InProgress);
+        assert!(j.tickets().unwrap()[0].execution.is_none());
+        let generation = j.acquire_execution(a, 7, "op-1", 100, 60).unwrap().expect("acquired");
+        let run = j.tickets().unwrap()[0].execution.clone().expect("its run");
+        assert_eq!((run.session, run.generation, run.lease_expires_at), (7, generation, 160));
+        assert!(j.heartbeat_execution(a, generation, 7, 130, 60).unwrap());
+        assert_eq!(j.tickets().unwrap()[0].execution.as_ref().unwrap().lease_expires_at, 190);
+        // Changed through another connection, as another process would.
+        let other = Journal::for_squad(&home, "acme").unwrap();
+        other.create_ticket(&ticket("Search")).unwrap();
+        let mut first = other.ticket(a).unwrap().unwrap();
+        first.title = "Checkout, again".into();
+        other.save_ticket(&first).unwrap();
+        let board = j.tickets().unwrap();
+        assert_eq!(board.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(), ["Checkout, again", "Search"]);
+        assert_eq!(board, other.tickets().unwrap(), "both see one board");
     }
 
     #[test]

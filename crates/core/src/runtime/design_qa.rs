@@ -477,6 +477,7 @@ screen_checks value; missing: {}. Then hand in again.",
         roots.push(precheck_dir(&self.config.home, squad, on));
         let shown = crate::visuals::resolve_all(&board::arg_strs(args, "images"), &cwd, &roots, crate::visuals::HAND_IN)
             .map_err(|e| format!("{e}. Save the pictures in your worktree and give their paths, then finish again."))?;
+        crate::visuals::thumbs::warm(&self.config.home, shown.clone());
         // Its own look, not the engineer's screenshots handed on.
         let own = shown.iter().filter(|s| !checked.images.contains(s)).count();
         let proof = crate::design_qa::Proof::read(args, own);

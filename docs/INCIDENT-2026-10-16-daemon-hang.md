@@ -210,3 +210,41 @@ work is handed in, the squad home's saves, and landing a task in the squad
 home. Each of these is a few local git commands, run once per action, not on
 a timer. The watchdog names any of them that stalls. Moving them off the loop
 is the next step if one ever shows up in `daemon.log`.
+
+## Follow-up 2026-11: a big squad on a busy Mac
+
+A squad with about 2,000 tickets (13 MB of ticket text, a 114 MB journal), a
+squad folder of 74,000 files with a 7 GB git history, and 20 members running
+several lanes each on a Mac mini at load average 35–50 held the loop for
+15–90 s at a time: `minute tick: idle boards`, `a turn's end`, `hello`,
+`accept_work`, `confirm_accept`, `say`. Worktrees took up to 115 s to make off
+the loop at the same moments: the disk was most likely the bottleneck, and anything the
+loop read or wrote waited on it.
+
+* **The board was read whole, over and over.** `Journal::tickets` read every
+  ticket (and ran one query per ticket for its run) each time the loop asked:
+  four times per minute for the idle-board checks alone, again for every
+  dispatch, snapshot and many tools. It is now read once and kept in memory
+  until a ticket or a run changes — this connection's changes are counted by
+  temporary triggers, another connection's by SQLite's `data_version` — and
+  the runs come in the same query. On a synthetic 2,000-ticket board
+  (`crates/core/tests/big_squad.rs`): a full read 15.6 → 1.1 ms, a hello
+  39.5 → 1.4 ms, the minute tick 79 → 13 ms, `create_ticket` 46 → 11 ms.
+* **The squad folder's saves around a desk turn** (`save_persons_changes`
+  before it, `save_desk_changes` after it) ran git in the squad folder on the
+  loop; one took 2.5 s on the synthetic squad's first save. Both run off the
+  loop now; the person hears of a desk turn's change once it is saved. Saves of
+  one folder made in this process wait for each other instead of failing on
+  git's index lock.
+* **The watchdog names the part of a step that is slow.** The loop marks the
+  parts of a step as it goes (`watchdog::mark`: `turn start: squad memory`,
+  `turn end: dispatch`, `work's end: commit`, `landing in the squad's folder:
+  merge`, …). A step that takes 2 s or more is logged when it ends, with its
+  slowest parts:
+  `equipe: slow: command submit took 2.5s (turn start: person's changes saved 2.5s)`.
+  A stall line names the parts before the current one that took a second or
+  more.
+
+Still on the loop, and named by the watchdog when slow: `commit_all` at a
+run's end, landing a task in the squad folder on acceptance (a merge in the
+folder), and `remember` (two saves of the memory folder).

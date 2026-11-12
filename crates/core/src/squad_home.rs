@@ -164,8 +164,104 @@ pub fn save(dir: &Path, by: &str, why: &str) -> Result<Option<Change>, String> {
     save_in(dir, by, why, &[])
 }
 
+/// The homes whose git a thread of this process is using now.
+static IN_USE: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+static FREED: std::sync::Condvar = std::sync::Condvar::new();
+
+std::thread_local! {
+    /// The homes this thread holds ([`one_at_a_time`]): it may go on in them.
+    static HELD: std::cell::RefCell<Vec<std::path::PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Run `f` as the only one of this process using `dir`'s git: a save made off
+/// the daemon's loop and one made on it wait for each other rather than one
+/// failing on git's index lock. A thread already holding `dir` goes on.
+fn one_at_a_time<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
+    if HELD.with(|held| held.borrow().iter().any(|d| d == dir)) {
+        return f();
+    }
+    {
+        let mut in_use = IN_USE.lock().unwrap_or_else(|e| e.into_inner());
+        while in_use.iter().any(|d| d == dir) {
+            in_use = FREED.wait(in_use).unwrap_or_else(|e| e.into_inner());
+        }
+        in_use.push(dir.to_owned());
+    }
+    HELD.with(|held| held.borrow_mut().push(dir.to_owned()));
+    struct Release<'a>(&'a Path);
+    impl Drop for Release<'_> {
+        fn drop(&mut self) {
+            HELD.with(|held| held.borrow_mut().retain(|d| d != self.0));
+            IN_USE.lock().unwrap_or_else(|e| e.into_inner()).retain(|d| d != self.0);
+            FREED.notify_all();
+        }
+    }
+    let _release = Release(dir);
+    f()
+}
+
+type Job = Box<dyn FnOnce() + Send>;
+
+/// Each folder's saves waiting to be made off the loop, in order.
+static QUEUED: std::sync::Mutex<Vec<(std::path::PathBuf, std::collections::VecDeque<Job>)>> = std::sync::Mutex::new(Vec::new());
+
+/// Run `job` (a save of the folder `dir`) on a thread of its own, after the
+/// jobs asked for `dir` before it: the person's changes saved before a desk
+/// turn are saved before what the turn changed, so each is told as whose it is.
+pub fn in_order(dir: &Path, job: impl FnOnce() + Send + 'static) {
+    let mut queued = QUEUED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, jobs)) = queued.iter_mut().find(|(d, _)| d == dir) {
+        jobs.push_back(Box::new(job));
+        return;
+    }
+    queued.push((dir.to_owned(), std::collections::VecDeque::from([Box::new(job) as Job])));
+    drop(queued);
+    let dir = dir.to_owned();
+    let worker = dir.clone();
+    let spawned = std::thread::Builder::new().name("equipe-folder-saves".into()).spawn(move || {
+        loop {
+            let next = {
+                let mut queued = QUEUED.lock().unwrap_or_else(|e| e.into_inner());
+                let Some(at) = queued.iter().position(|(d, _)| *d == worker) else { return };
+                match queued[at].1.pop_front() {
+                    Some(job) => job,
+                    None => {
+                        queued.remove(at);
+                        return;
+                    }
+                }
+            };
+            // A job that panics loses only itself: the folder's later saves still run.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(next));
+        }
+    });
+    // No thread to be had: saved here and now, as before.
+    if spawned.is_err() {
+        let jobs = {
+            let mut queued = QUEUED.lock().unwrap_or_else(|e| e.into_inner());
+            queued.iter().position(|(d, _)| *d == dir).map(|at| queued.remove(at).1).unwrap_or_default()
+        };
+        for job in jobs {
+            job();
+        }
+    }
+}
+
+/// Wait until the saves of `dir` asked for so far ([`in_order`]) are made.
+pub fn saves_done(dir: &Path) {
+    let (done, made) = std::sync::mpsc::channel();
+    in_order(dir, move || {
+        let _ = done.send(());
+    });
+    let _ = made.recv();
+}
+
 /// Save whatever changed under `paths` only (all of the home when empty).
 pub fn save_in(dir: &Path, by: &str, why: &str, paths: &[&str]) -> Result<Option<Change>, String> {
+    one_at_a_time(dir, || save_in_now(dir, by, why, paths))
+}
+
+fn save_in_now(dir: &Path, by: &str, why: &str, paths: &[&str]) -> Result<Option<Change>, String> {
     let with_paths = |args: &[&'static str]| -> Vec<&str> { args.iter().copied().chain(["--"]).chain(paths.iter().copied()).collect() };
     if !dir.join(".git").exists() || git(dir, &with_paths(&["status", "--porcelain"]))?.trim().is_empty() {
         return Ok(None);
@@ -229,6 +325,10 @@ pub fn changes_in(dir: &Path, n: usize, paths: &[&str]) -> Result<Vec<Change>, S
 /// the person — so an undo can be undone too. The person's own unsaved edits are
 /// saved first. A change that later ones built on is left as it is.
 pub fn undo(dir: &Path, nth: usize) -> Result<Change, String> {
+    one_at_a_time(dir, || undo_now(dir, nth))
+}
+
+fn undo_now(dir: &Path, nth: usize) -> Result<Change, String> {
     save_persons(dir)?;
     let recent = changes(dir, nth.max(1))?;
     let Some(target) = recent.get(nth.max(1) - 1).cloned() else {
@@ -244,6 +344,10 @@ const UNDO_REACH: usize = 200;
 /// other revision — as [`undo`] does. Returns the change taken back and the
 /// person's change that took it back.
 pub fn undo_change(dir: &Path, id: &str) -> Result<(Change, Change), String> {
+    one_at_a_time(dir, || undo_change_now(dir, id))
+}
+
+fn undo_change_now(dir: &Path, id: &str) -> Result<(Change, Change), String> {
     save_persons(dir)?;
     let target = changes(dir, UNDO_REACH)?.into_iter().find(|c| c.id == id).ok_or("There is no such change to take back.")?;
     let undo = take_back(dir, &target)?;
