@@ -261,3 +261,66 @@ async fn members_asking_at_once_share_one_card_and_always_is_the_whole_squads() 
     let file = std::fs::read(equipe_core::journal::squad_dir(&home, "acme").join("squad.db")).unwrap();
     assert!(!String::from_utf8_lossy(&file).contains("pw-github-1"));
 }
+
+#[tokio::test]
+async fn the_logins_page_changes_scope_in_one_step_reads_the_record_and_takes_a_never_back() {
+    use equipe_core::logins::{BY_EQUIPE, Cause, Entry, Kind};
+    unsafe { std::env::set_var("EQUIPE_VAULT_IN_MEMORY", "1") };
+    let project = scratch("page").join("site");
+    std::fs::create_dir_all(&project).unwrap();
+    let home = scratch("home");
+    squads::create(&home, "acme", &project).unwrap();
+    let other = scratch("page-shop").join("shop");
+    std::fs::create_dir_all(&other).unwrap();
+    squads::create(&home, "shop", &other).unwrap();
+    // A record from before, in two squads' journals, and a site said never to.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    for (squad, row) in [
+        ("acme", Entry::new(now - 3_600, "github.com", "qa", Kind::Handoff, Some(Cause::SessionExpired), None)),
+        ("shop", Entry::new(now - 1_800, "github.com", "pm", Kind::Card, Some(Cause::SessionExpired), None)),
+        ("shop", Entry::new(now - 600, "github.com", "pm", Kind::SignedIn, None, Some(BY_EQUIPE))),
+    ] {
+        equipe_core::journal::Journal::for_squad(&home, squad).unwrap().record_login(&row).unwrap();
+    }
+    std::fs::write(home.join("vault-never-offer.json"), r#"["slack.com","erp.example.com"]"#).unwrap();
+    let (handle, mut events) = runtime::start(config(&idle_claude(), &home));
+
+    let draft = LoginDraft { id: None, site: "github.com".into(), username: "abel".into(), password: Some("pw-page-1".into()), note: Some("work".into()), auto: None };
+    handle.send(Command::SaveLogin { draft });
+    until(&mut events, |e| matches!(e, Event::Logins { logins } if !logins.is_empty())).await;
+
+    // Scope, in one command each: every squad, then one squad, then ask each time.
+    for (squads, expect) in [(vec!["*".to_owned()], vec!["*"]), (vec!["shop".to_owned()], vec!["shop"]), (vec![], vec![])] {
+        handle.send(Command::SetLoginScope { id: 1, squads });
+        until(&mut events, |e| matches!(e, Event::Logins { logins } if logins[0].allowed == expect)).await;
+    }
+    // A login that isn't there: said, not made up.
+    handle.send(Command::SetLoginScope { id: 42, squads: vec!["*".into()] });
+    until(&mut events, |e| matches!(e, Event::Error { .. })).await;
+
+    // The record of every squad, and the vault's own facts — read-only.
+    handle.send(Command::LoginInsights { days: 7 });
+    let seen = until(&mut events, |e| matches!(e, Event::LoginInsights { .. })).await;
+    let Some(Event::LoginInsights { insights }) = seen.last() else { panic!() };
+    assert_eq!((insights.days, insights.asked, insights.signed_in, insights.signed_in_by_equipe), (7, 2, 1, 1), "{insights:#?}");
+    assert_eq!(insights.sites[0].site, "github.com");
+    assert_eq!(insights.never, ["erp.example.com", "slack.com"]);
+    assert!(insights.can_keep);
+    assert_eq!(insights.trend.len(), 7);
+
+    // A never taken back: the list read again with it gone, and kept.
+    handle.send(Command::ForgetNeverOffer { site: "https://www.slack.com/signin".into() });
+    let seen = until(&mut events, |e| matches!(e, Event::LoginInsights { .. })).await;
+    let Some(Event::LoginInsights { insights }) = seen.last() else { panic!() };
+    assert_eq!(insights.never, ["erp.example.com"]);
+    assert_eq!(insights.days, 7, "read again over the look-back the page last asked for");
+    handle.send(Command::LoginInsights { days: 30 });
+    let seen = until(&mut events, |e| matches!(e, Event::LoginInsights { .. })).await;
+    let Some(Event::LoginInsights { insights }) = seen.last() else { panic!() };
+    assert_eq!((insights.days, insights.trend.len()), (30, 30));
+    for e in &seen {
+        assert!(!format!("{e:?}").contains("pw-page-1"));
+    }
+    handle.shutdown().await;
+    assert!(!std::fs::read_to_string(home.join("vault-never-offer.json")).unwrap().contains("slack.com"));
+}

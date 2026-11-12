@@ -365,10 +365,56 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
         self.with_vault(move |v| v.set_auto(id, on));
     }
 
+    /// The person takes back a "Never for this site": offers there may come
+    /// again. The page's list is read again once the vault has it.
+    pub(super) fn forget_never_offer(&mut self, site: String) {
+        let site = vault::site_of(&site);
+        self.never_offer.retain(|s| *s != site);
+        // Offered again at the next sign-in by hand, not only after a restart.
+        self.login_offered.remove(&site);
+        let (vault, internal, home) = (self.vault.clone(), self.internal.clone(), self.config.home.clone());
+        let now = now_secs();
+        let days = self.login_insights_days;
+        tokio::task::spawn_blocking(move || {
+            if let Ok(mut v) = vault.lock()
+                && let Err(why) = v.forget_never(&site)
+            {
+                crate::daemon_log!("equipe: a never-offer wasn't taken back: {why}");
+            }
+            let _ = internal.send(Internal::LoginInsights(Box::new(login_insights(&home, &vault, now, days))));
+        });
+    }
+
+    /// The page's read model over the last `days` days (clamped to 1–90),
+    /// read off the loop: the journals are opened read-only.
+    pub(super) fn read_login_insights(&mut self, days: u32) {
+        let days = days.clamp(1, 90);
+        self.login_insights_days = days;
+        let (vault, internal, home) = (self.vault.clone(), self.internal.clone(), self.config.home.clone());
+        let now = now_secs();
+        tokio::task::spawn_blocking(move || {
+            let _ = internal.send(Internal::LoginInsights(Box::new(login_insights(&home, &vault, now, days))));
+        });
+    }
+
     /// The offers waiting, for a screen that attaches.
     pub(super) fn login_offers_now(&self) -> Vec<LoginOffer> {
         self.login_offers.clone()
     }
+}
+
+/// The record's insights with the vault's own facts — the sites never
+/// offered, whether a secret store is here — added.
+fn login_insights(home: &std::path::Path, vault: &std::sync::Arc<std::sync::Mutex<vault::Vault>>, now: u64, days: u32) -> crate::protocol::vault::LoginInsights {
+    let days = days.clamp(1, 90);
+    let rows = logins::read_all(home, now.saturating_sub(u64::from(days) * 24 * 60 * 60));
+    let mut insights = logins::insights(&rows, now, days);
+    if let Ok(v) = vault.lock() {
+        insights.never = v.never_offer.clone();
+        insights.never.sort();
+        insights.can_keep = v.can_keep();
+    }
+    insights
 }
 
 /// equipe types a login into the member's page by itself, through the

@@ -1718,6 +1718,7 @@ impl App {
                 | Event::RestingChanged { .. }
                 | Event::SignalsChanged { .. }
                 | Event::Logins { .. }
+                | Event::LoginInsights { .. }
                 | Event::LoginOffered { .. }
                 | Event::LoginOfferClosed { .. }
                 | Event::BrowserProfiles { .. }

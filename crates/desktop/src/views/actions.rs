@@ -54,6 +54,7 @@ impl Shell {
             Effect::ShowBoard => self.show(Screen::Board, cx),
             Effect::ShowDesign => self.open_design(cx),
             Effect::ShowMetrics => self.open_metrics(cx),
+            Effect::ShowLogins => self.open_logins(cx),
             Effect::Find(words) => self.board_find(&words, cx),
             Effect::Focus(project) => self.set_focus(project, window, cx),
             Effect::SwitchSquad(name) => self.select_squad(&name, window, cx),

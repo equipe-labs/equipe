@@ -146,6 +146,7 @@ pub fn card(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> Option<AnyElemen
     let save = ui::button(p, ("login-offer-save", id), Kind::Primary, t!("accounts.save")).key("⏎").icon(Icon::Lock).on_click(cx.listener(move |this, _, window, cx| this.save_login_offer(id, window, cx)));
     let later = ui::button(p, ("login-offer-later", id), Kind::Ghost, t!("secrets.not_now")).on_click(cx.listener(move |this, _, _, cx| this.dismiss_login_offer(id, false, cx)));
     let never = ui::button(p, ("login-offer-never", id), Kind::Ghost, t!("logins.offer_never")).on_click(cx.listener(move |this, _, _, cx| this.dismiss_login_offer(id, true, cx)));
+    let manage = ui::button(p, ("login-offer-manage", id), Kind::Ghost, t!("logins.offer_manage")).on_click(cx.listener(|this, _, _, cx| this.open_logins(cx)));
     let whose = offer.member.as_deref().map(|m| t!("logins.offer_whose", name = m));
     Some(
         v_flex()
@@ -156,7 +157,7 @@ pub fn card(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> Option<AnyElemen
             .child(h_flex().w_full().gap_3().child(field(t!("accounts.username"), &u)).child(field(t!("accounts.password"), &pw)))
             .child(h_flex().gap_2().items_center().child(switch).child(div().text_size(px(SMALL)).text_color(p.text2).child(t!("logins.offer_auto", site = offer.site))))
             .child(div().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(t!("logins.offer_where", machine = shell.endpoint.label())))
-            .child(h_flex().gap_2().items_center().child(save).child(later).child(never))
+            .child(h_flex().gap_2().items_center().child(save).child(later).child(never).child(div().flex_1()).child(manage))
             .into_any_element(),
     )
 }

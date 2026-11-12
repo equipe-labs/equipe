@@ -74,6 +74,7 @@ pub fn reads(command: &Command) -> bool {
         // What a member was handed when it moved to the other engine, and what came before.
         | C::HandOver { .. }
         | C::Logins
+        | C::LoginInsights { .. }
         | C::BrowserProfiles
         | C::Devices
         | C::Engines
@@ -157,6 +158,8 @@ pub fn reads(command: &Command) -> bool {
         | C::ForgetLoginAllowance { .. }
         | C::AllowLogin { .. }
         | C::SetLoginAuto { .. }
+        | C::SetLoginScope { .. }
+        | C::ForgetNeverOffer { .. }
         | C::DismissLoginOffer { .. }
         | C::SaveBrowserProfile { .. }
         | C::DeleteBrowserProfile { .. }
@@ -559,8 +562,11 @@ mod tests {
             Command::ForgetLoginAllowance { id: 1, who: "acme/pm".into() },
             Command::AllowLogin { id: 1, who: "acme".into() },
             Command::SetLoginAuto { id: 1, auto: true },
+            Command::SetLoginScope { id: 1, squads: vec!["acme".into()] },
+            Command::ForgetNeverOffer { site: "github.com".into() },
             Command::DismissLoginOffer { id: 1, never: true },
             Command::Logins,
+            Command::LoginInsights { days: 7 },
             Command::SaveBrowserProfile { profile: BrowserProfile { name: "b".into(), label: String::new() } },
             Command::DeleteBrowserProfile { name: "b".into() },
             Command::BrowserProfiles,
@@ -676,7 +682,7 @@ mod tests {
         variants.sort();
         assert_eq!(sampled, variants, "each command once: a new one is sampled here, and placed in `reads`");
         let going: Vec<String> = commands.iter().filter(|c| reads(c)).map(name).collect();
-        assert_eq!(going, ["ticket_history", "hand_over", "logins", "browser_profiles", "watch_browser", "devices", "disk_scan", "plan_use", "words_log", "engines", "providers", "models", "design", "project_docs", "search_docs", "design_versions"]);
+        assert_eq!(going, ["ticket_history", "hand_over", "logins", "login_insights", "browser_profiles", "watch_browser", "devices", "disk_scan", "plan_use", "words_log", "engines", "providers", "models", "design", "project_docs", "search_docs", "design_versions"]);
         // What a screen does as the person works is never among them.
         for kept in ["submit", "say", "undo_words", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "start_side_chat", "side_chat_submit", "taste", "disk_clean", "add_provider", "remove_provider", "test_provider", "keep_doc_copy"] {
             assert!(!going.iter().any(|g| g == kept), "{kept} changes something");
