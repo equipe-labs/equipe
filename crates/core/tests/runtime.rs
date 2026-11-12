@@ -3821,9 +3821,18 @@ async fn the_pm_on_a_ticket_of_its_own_is_still_reached_beside_it() {
     let prompt = arg(call, "-p").unwrap();
     assert!(prompt.contains("- site: pm on T-1 (Translate the site), at work"), "{prompt}");
     assert!(prompt.contains("- app: no one on it now; 1 to do or in progress"), "{prompt}");
-    // Its browser is its own, not the ticket's.
-    let ticket = all.iter().find(|c| arg(c, "-p").is_some_and(|p| p.contains("slow-work"))).unwrap();
-    assert_ne!(browser_of(call)["url"], browser_of(ticket)["url"]);
+    // Its browser is its own, not the ticket's. On a slow runner the ticket's
+    // call can still be on its way into the record: wait for it a little.
+    let mut ticket = None;
+    for _ in 0..100 {
+        ticket = calls(&recorded).into_iter().find(|c| arg(c, "-p").is_some_and(|p| p.contains("slow-work")));
+        if ticket.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let ticket = ticket.expect("the ticket's call is recorded");
+    assert_ne!(browser_of(call)["url"], browser_of(&ticket)["url"]);
     // Team news shows where the PM talks now.
     tool(&handle, "designer", "create_ticket", serde_json::json!({ "title": "Hero", "body": "-", "owner": "designer", "project": "site" })).await;
     let news = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("proposed"))).await;
