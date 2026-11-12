@@ -1180,6 +1180,34 @@ pub enum Command {
     DismissLoginOffer { id: u64, never: bool },
     /// Every screen's list of logins, again.
     Logins,
+    /// The person sets what equipe may do by itself around a login's sign-in
+    /// ([`vault::Autopilot`]): its switches only — whether a seed or passkey
+    /// is kept is equipe's to say.
+    SetLoginAutopilot { id: u32, autopilot: vault::Autopilot },
+    /// The person keeps a login's authenticator seed (an `otpauth://` address
+    /// or the bare base32 secret), or takes it away (`None`). To the secret
+    /// store only; never shown again.
+    SetLoginTotp { id: u32, secret: Option<secrets::SecretValue> },
+    /// The person asks equipe to read the authenticator QR code the site shows
+    /// in equipe's browser (its own tab on the login's site), and keep its seed.
+    ScanLoginTotp { id: u32 },
+    /// The person registers equipe's own passkey for a login's site: equipe's
+    /// browser answers the site's "add a passkey" as a separate device, and the
+    /// key is kept in the secret store.
+    RegisterLoginPasskey { id: u32 },
+    /// The person drops equipe's passkey for a login (revoke it on the site too).
+    ForgetLoginPasskey { id: u32 },
+    /// The person connects the mailbox sites' codes come to (`None`: forgets it).
+    SaveMailbox { mailbox: Option<vault::MailboxDraft> },
+    /// The person lets equipe read sites' codes from Messages on this Mac, or stops it.
+    SetSmsCodes { on: bool },
+    /// Hours between keep-alive looks at sites that have it on; 0 stops them.
+    SetKeepAlive { hours: u32 },
+    /// The person keeps a command-line credential ([`vault::CliLogin`]), or changes one.
+    SaveCliLogin { draft: vault::CliLoginDraft },
+    DeleteCliLogin { id: u32 },
+    /// Login autopilot's state again ([`Event::Autopilot`]).
+    Autopilot,
     /// The person adds a browser profile — another person's accounts in a
     /// Chrome of their own — or names one again ([`Event::BrowserProfiles`]).
     SaveBrowserProfile { profile: BrowserProfile },
@@ -2800,6 +2828,9 @@ pub enum Event {
     /// The squad's projects now ([`Command::AddProject`]): their folders.
     /// The logins kept, without their passwords: every screen's.
     Logins { logins: Vec<vault::Login> },
+    /// Login autopilot as a whole: the mailbox, Messages, keep-alive, the
+    /// command-line credentials (no secrets) and this week's measures.
+    Autopilot { status: vault::AutopilotStatus },
     /// The person just finished signing in to a site by hand in a member's
     /// browser, and no login is kept for it: equipe offers, once, to keep one.
     LoginOffered { offer: vault::LoginOffer },
@@ -3073,6 +3104,7 @@ impl Event {
             | Event::DesignReviewerChanged { .. }
             | Event::SignalsChanged { .. }
             | Event::Logins { .. }
+            | Event::Autopilot { .. }
             | Event::LoginOffered { .. }
             | Event::LoginOfferClosed { .. }
             | Event::BrowserProfiles { .. }
@@ -3142,6 +3174,7 @@ impl Event {
                 | Event::EngineInstall { .. }
                 | Event::Models { .. }
                 | Event::Logins { .. }
+                | Event::Autopilot { .. }
                 | Event::LoginOffered { .. }
                 | Event::LoginOfferClosed { .. }
                 | Event::BrowserProfiles { .. }

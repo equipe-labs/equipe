@@ -80,6 +80,7 @@ mod gate;
 pub(crate) use gate::checks_scratch;
 mod secrets;
 mod logins;
+mod autopilot;
 mod design_qa;
 mod team;
 mod heartbeat;
@@ -612,6 +613,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         asked_site: HashMap::new(),
         fill_waits: Default::default(),
         next_fill: 0,
+        autopilot: Default::default(),
         secret_asks: HashMap::new(),
         calls: HashMap::new(),
         call_llm: crate::call::judge::LlmConfig::from_env(),
@@ -1039,6 +1041,8 @@ enum Internal {
     Logins(Result<Vec<crate::protocol::vault::Login>, String>),
     /// equipe's own sign-in in a member's browser (by lane) ended: what the fill did.
     Relogin { lane: String, outcome: Result<vault::Filled, String> },
+    /// Login autopilot's work off the loop came back ([`autopilot::Note`]).
+    Autopilot(autopilot::Note),
     /// A row of the sign-in record, from work done off the loop.
     LoginRecord { squad: String, entry: crate::logins::Entry },
     /// Something waits for a conversation to act on — work handed in for the
@@ -1347,6 +1351,8 @@ struct Runtime {
     /// equipe's fills of a kept login waiting for the browser host's answer, by token.
     fill_waits: logins::FillWaits,
     next_fill: u64,
+    /// Login autopilot: codes, keep-alive, command-line credentials ([`autopilot`]).
+    autopilot: autopilot::State,
     design_busy: std::collections::HashSet<String>,
     /// Handed-in work the PM was reminded of, by squad: when (`heartbeat`).
     review_nudged: HashMap<String, HashMap<TicketId, u64>>,
@@ -1424,6 +1430,7 @@ impl Wake {
             Wake::Internal(Internal::SquadDeleted { .. }) => Borrowed("a squad deleted"),
             Wake::Internal(Internal::Logins(_)) => Borrowed("the logins changed"),
             Wake::Internal(Internal::Relogin { .. }) => Borrowed("equipe's own sign-in ending"),
+            Wake::Internal(Internal::Autopilot(_)) => Borrowed("login autopilot"),
             Wake::Internal(Internal::LoginRecord { .. }) => Borrowed("a sign-in kept on the record"),
             Wake::Internal(Internal::DeskSaved { .. }) => Borrowed("a desk turn's changes saved"),
             Wake::Internal(Internal::Wake { .. }) => Borrowed("work waits for a conversation"),
@@ -1664,6 +1671,7 @@ impl Runtime {
                 Internal::SquadDeleted { squad, result } => self.squad_deleted(&squad, result),
                 Internal::Logins(result) => self.logins_changed(result),
                 Internal::Relogin { lane, outcome } => self.relogin_done(lane, outcome).await,
+                Internal::Autopilot(note) => self.autopilot_note(note).await,
                 Internal::LoginRecord { squad, entry } => self.login_record(&squad, entry),
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
@@ -1757,6 +1765,8 @@ impl Runtime {
     /// to the watchdog as it starts.
     async fn minute(&mut self, pulse: &watchdog::Pulse) {
         self.keep_awake();
+        pulse.step("minute tick: login autopilot");
+        self.autopilot_minute();
         pulse.step("minute tick: leases");
         self.renew_execution_leases();
         self.recover_execution_leases(now_secs()).await;
@@ -2464,6 +2474,17 @@ impl Runtime {
                 let logins = self.logins.clone();
                 self.publish(Event::Logins { logins });
             }
+            command @ (Command::SetLoginAutopilot { .. }
+            | Command::SetLoginTotp { .. }
+            | Command::ScanLoginTotp { .. }
+            | Command::RegisterLoginPasskey { .. }
+            | Command::ForgetLoginPasskey { .. }
+            | Command::SaveMailbox { .. }
+            | Command::SetSmsCodes { .. }
+            | Command::SetKeepAlive { .. }
+            | Command::SaveCliLogin { .. }
+            | Command::DeleteCliLogin { .. }
+            | Command::Autopilot) => self.autopilot_command(command),
             Command::SaveBrowserProfile { profile } => {
                 match browser::save_profile(&self.config.home, &profile.name, &profile.label) {
                     Ok(_) => {}
@@ -4872,6 +4893,13 @@ for one project goes to it as tickets for its owners, with that project — and 
         {
             env.push(("CARGO_PROFILE_DEV_DEBUG".to_owned(), debug.to_owned()));
         }
+        // The person's kept values for members' commands (login autopilot):
+        // in the environment of this run only, never in a file or a prompt.
+        if session.member.is_some()
+            && let Some(squad) = squad.as_deref()
+        {
+            env.extend(self.member_run_env(squad));
+        }
         // A member's commands know they are a member's: `equipe browser` refuses there.
         if let Some(m) = &session.member {
             env.push((guard::MEMBER_ENV.to_owned(), m.name.to_string()));
@@ -5392,6 +5420,12 @@ for one project goes to it as tickets for its owners, with that project — and 
         // A turn that answered: whatever its engine's sign-in stopped of it is over.
         if done.reply.is_some() {
             self.no_longer_stopped(done.session);
+        }
+        // A member asking the person to run a CLI sign-in equipe may approve itself: run by equipe.
+        if let Some(reply) = &done.reply
+            && self.sessions.get(&done.session).is_some_and(|s| s.member.is_some())
+        {
+            self.device_login_from_reply(done.session, reply);
         }
         // A browser asked onto the screen during the turn comes up now.
         if let Some(session) = self.sessions.get_mut(&done.session) {
@@ -8021,6 +8055,8 @@ there, end your turn, and carry on when they say they're done."
             HostEvent::Ready => {}
             HostEvent::Tabs { lane, member, color, pages, agent, touched, .. } => {
                 let (squad, session) = self.lane_session(&lane);
+                // What login autopilot reads off the pages; a sign-in that ran out, signed back in.
+                self.see_pages(&lane, &pages);
                 // A sign-in page that turned into its site: a sign-in finished.
                 self.follow_sign_ins(&lane, &pages, touched).await;
                 let pages: Vec<equipe_protocol::BrowserPage> = pages.into_iter().map(browser::HostPage::page).collect();
@@ -8102,6 +8138,9 @@ there, end your turn, and carry on when they say they're done."
             }
             HostEvent::DialogClosed { page } => self.publish(Event::BrowserDialogClosed { page }),
             HostEvent::Filled { token, answer, .. } => self.filled(token, answer),
+            HostEvent::Visited { token, page } => self.on_visited(token, page),
+            HostEvent::Passkey { token, credential } => self.on_passkey(token, credential),
+            HostEvent::Snap { token, png } => self.on_snap(token, png),
             HostEvent::Wants { lane, page, action } => {
                 let (squad, _) = self.lane_session(&lane);
                 self.publish(Event::BrowserWants { squad, lane, page, action });
@@ -8144,8 +8183,8 @@ there, end your turn, and carry on when they say they're done."
         let let_go = |page: u64, url: &str| self.let_go.contains(&(lane.to_owned(), page, url.to_owned()));
         match browser::check_step(pages, agent, self.checking.contains_key(lane), self.held.contains_key(lane), let_go) {
             browser::CheckStep::Pause { page, url, check } => {
-                // A sign-in the person lets equipe do by itself: no one is asked.
-                if check == equipe_protocol::HumanCheck::SignIn && self.try_relogin(lane, page, &url) {
+                // A sign-in, a code or a passkey the person lets equipe do by itself: no one is asked.
+                if self.try_autopilot(lane, page, &url, check) {
                     return;
                 }
                 self.hub.op(&json!({ "op": "control", "lane": lane, "by": "person", "why": "check", "page": page }));

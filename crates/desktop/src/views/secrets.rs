@@ -165,7 +165,7 @@ pub fn card(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> Option<AnyElemen
             )
             .child(div().text_size(px(15.)).text_color(p.text).child(ask.why.clone()))
             .child(v_flex().gap_2().children(boxes))
-            .child(div().text_size(px(SMALL)).line_height(px(18.)).text_color(p.muted).child(t!("secrets.where", path = ask.save_to)))
+            .child(div().text_size(px(SMALL)).line_height(px(18.)).text_color(p.muted).child(if ask.save_to.is_empty() { t!("secrets.vault", machine = shell.endpoint.label()) } else { t!("secrets.where", path = ask.save_to) }))
             .child(h_flex().gap_2().items_center().child(save).child(later))
             .into_any_element(),
     )

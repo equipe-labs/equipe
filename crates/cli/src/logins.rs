@@ -17,6 +17,26 @@ pub enum LoginsAction {
     Stats(StatsArgs),
 }
 
+/// `equipe credential aws <profile>`: what an AWS CLI profile's
+/// `credential_process` runs (login autopilot set it up): the profile's key
+/// from the secret store, as the AWS CLI reads it. Refused to a member's
+/// command calling it directly — only the AWS CLI itself gets it there.
+pub fn credential(kind: &str, name: &str) -> Result<(), String> {
+    if kind != "aws" {
+        return Err(t!("credential.unknown", kind = kind));
+    }
+    let member = equipe_core::guard::run_by_member(std::env::var_os(equipe_core::guard::MEMBER_ENV));
+    if member && !equipe_core::autopilot::cli_logins::parent_is_aws() {
+        return Err(t!("credential.refused").to_owned());
+    }
+    let home = equipe_providers::credentials::equipe_home();
+    let vault = equipe_core::vault::Vault::open(&home, equipe_core::vault::system_store());
+    let login = vault.cli.iter().find(|c| c.kind == equipe_core::protocol::vault::CliKind::AwsKeys && c.name == name).ok_or_else(|| t!("credential.missing", name = name))?;
+    let secret = vault.secret(&equipe_core::vault::account::cli(login.id))?;
+    println!("{}", equipe_core::autopilot::cli_logins::aws_process_output(&login.public, &secret));
+    Ok(())
+}
+
 #[derive(Args)]
 pub struct StatsArgs {
     /// One squad (default: every squad — they share one browser)
@@ -109,6 +129,10 @@ pub(crate) fn text(since: &str, s: &Stats) -> String {
         Some(percent) => t!("logins.signed_in", count = s.signed_in, equipe = s.signed_in_by_equipe, percent = percent),
         None => t!("logins.signed_in_none").to_owned(),
     });
+    if !s.resolved.is_empty() {
+        let steps: Vec<String> = s.resolved.iter().map(|(step, n)| format!("{} {n}", step.replace('_', " "))).collect();
+        out.push(t!("logins.autopilot", steps = steps.join(", "), minutes = s.minutes_saved));
+    }
     out.join("\n")
 }
 
@@ -132,5 +156,6 @@ mod tests {
         assert!(report.contains("session expired 2"), "{report}");
         assert!(report.contains("1 (github.com 1)") || report.contains("github.com 1"), "{report}");
         assert!(report.contains("50%"), "{report}");
+        assert!(report.contains("relogin 1"), "equipe's own steps: {report}");
     }
 }

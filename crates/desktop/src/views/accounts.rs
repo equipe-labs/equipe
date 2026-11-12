@@ -39,6 +39,8 @@ pub struct AccountsUi {
     pub adding_profile: bool,
     pub profile_problem: Option<String>,
     pub deleting_profile: Option<String>,
+    /// Login autopilot's switches and boxes (`views::autopilot`).
+    pub autopilot: super::autopilot::AutopilotUi,
 }
 
 impl AccountsUi {
@@ -49,7 +51,7 @@ impl AccountsUi {
             password: cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("accounts.password_placeholder"))),
             note: cx.new(|cx| InputState::new(window, cx).placeholder(t!("accounts.note_placeholder"))),
             editing: None,
-            auto: false,
+            auto: true,
             problem: None,
             deleting: None,
             profile_name: cx.new(|cx| InputState::new(window, cx).placeholder(t!("accounts.profile_name_placeholder"))),
@@ -57,6 +59,7 @@ impl AccountsUi {
             adding_profile: false,
             profile_problem: None,
             deleting_profile: None,
+            autopilot: super::autopilot::AutopilotUi::new(window, cx),
         }
     }
 }
@@ -130,6 +133,7 @@ pub(super) fn sections(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             .gap_2()
             .items_center()
             .child(tip_wrap(p, id, auto))
+            .child(super::autopilot::toggle(shell, login, cx))
             .when(!everywhere, |row| {
                 row.child(ui::button(p, SharedString::from(format!("login-every-{id}")), Kind::Ghost, t!("accounts.allow_everywhere")).on_click(cx.listener(move |this, _, _, cx| {
                     this.send_command(Command::AllowLogin { id, who: EVERY_SQUAD.into() });
@@ -181,9 +185,10 @@ pub(super) fn sections(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         let mut line = Line::new(login.site.clone(), desc).words(format!("{} {}", login.username, login.note.clone().unwrap_or_default())).control(controls);
         // Signing in by itself stopped after a try that didn't get past the form: said, with the way on.
         let stopped = login.stopped.as_ref().filter(|_| login.auto).map(|_| div().text_size(px(12.)).line_height(px(18.)).text_color(p.danger()).child(t!("accounts.auto_stopped")));
-        let below = match (allowed, stopped) {
-            (None, None) => None,
-            (a, s) => Some(v_flex().gap_1().children(a).children(s)),
+        let autopilot = super::autopilot::below(shell, login, cx);
+        let below = match (allowed, stopped, autopilot) {
+            (None, None, None) => None,
+            (a, s, ap) => Some(v_flex().gap_1().children(a).children(s).children(ap)),
         };
         if let Some(below) = below {
             line = line.below(below);
@@ -232,7 +237,7 @@ pub(super) fn sections(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         lines.push(Line::new(t!("accounts.none"), t!("accounts.none_desc")));
     }
     lines.push(add);
-    let mut out = vec![Section::new(t!("accounts.section_logins"), lines).foot(t!("accounts.foot", machine = machine))];
+    let mut out = vec![Section::new(t!("accounts.section_logins"), lines).foot(t!("accounts.foot", machine = machine)), super::autopilot::section(shell, cx)];
     // The latest uses, across every login.
     let mut uses: Vec<(&Login, &equipe_core::protocol::vault::Use)> = shell.model.logins.iter().flat_map(|l| l.uses.iter().map(move |u| (l, u))).collect();
     uses.sort_by_key(|(_, u)| std::cmp::Reverse(u.at));
@@ -364,7 +369,8 @@ impl Shell {
         pw.update(cx, |i, cx| i.set_value(String::new(), window, cx));
         n.update(cx, |i, cx| i.set_value(note, window, cx));
         self.settings.accounts.editing = Some(id);
-        self.settings.accounts.auto = login.as_ref().is_some_and(|l| l.auto);
+        // A new login signs in by itself unless the person turns it off: saving it is their leave.
+        self.settings.accounts.auto = login.as_ref().is_none_or(|l| l.auto);
         self.settings.accounts.problem = None;
         if id.is_some() { pw.update(cx, |i, cx| i.focus(window, cx)) } else { s.update(cx, |i, cx| i.focus(window, cx)) }
         cx.notify();

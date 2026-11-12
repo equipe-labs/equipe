@@ -124,11 +124,22 @@ pub struct Entry {
     /// Filled in when rows of several squads are read together.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub squad: String,
+    /// For a sign-in equipe finished, or a fill that failed: which autopilot
+    /// step did it (`crate::autopilot::Step`: `relogin`, `totp`, `email`,
+    /// `sms`, `passkey`, `device_code`, `keepalive`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
 }
 
 impl Entry {
     pub fn new(at: u64, site: &str, member: &str, kind: Kind, cause: Option<Cause>, by: Option<&str>) -> Self {
-        Entry { at, site: crate::vault::site_of(site), member: member.to_owned(), kind, cause, by: by.map(str::to_owned), squad: String::new() }
+        Entry { at, site: crate::vault::site_of(site), member: member.to_owned(), kind, cause, by: by.map(str::to_owned), squad: String::new(), step: None }
+    }
+
+    /// The autopilot step that did it.
+    pub fn by_step(mut self, step: crate::autopilot::Step) -> Self {
+        self.step = Some(step.code().to_owned());
+        self
     }
 }
 
@@ -275,28 +286,37 @@ pub(crate) fn create_table(conn: &Connection) -> rusqlite::Result<()> {
            by TEXT
          );
          CREATE INDEX IF NOT EXISTS login_events_at ON login_events(at);",
-    )
+    )?;
+    // Which autopilot step finished a sign-in: a column journals from before lack.
+    let has_step = conn.prepare("SELECT step FROM login_events LIMIT 0").is_ok();
+    if !has_step {
+        conn.execute_batch("ALTER TABLE login_events ADD COLUMN step TEXT")?;
+    }
+    Ok(())
 }
 
 pub(crate) fn insert(conn: &Connection, e: &Entry, keep_from: i64) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO login_events (at, site, member, kind, cause, by) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![e.at as i64, e.site, e.member, e.kind.code(), e.cause.map(Cause::code), e.by],
+        "INSERT INTO login_events (at, site, member, kind, cause, by, step) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![e.at as i64, e.site, e.member, e.kind.code(), e.cause.map(Cause::code), e.by, e.step],
     )?;
     conn.execute("DELETE FROM login_events WHERE at < ?1", [keep_from])?;
     Ok(())
 }
 
 pub(crate) fn select(conn: &Connection, since: u64) -> rusqlite::Result<Vec<Entry>> {
-    let mut stmt = conn.prepare("SELECT at, site, member, kind, cause, by FROM login_events WHERE at >= ?1 ORDER BY at, rowid")?;
+    // A journal read without writing (`read`) may be older than the step column.
+    let has_step = conn.prepare("SELECT step FROM login_events LIMIT 0").is_ok();
+    let sql = if has_step { "SELECT at, site, member, kind, cause, by, step FROM login_events WHERE at >= ?1 ORDER BY at, rowid" } else { "SELECT at, site, member, kind, cause, by, NULL FROM login_events WHERE at >= ?1 ORDER BY at, rowid" };
+    let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map([since as i64], |r| {
         let kind: String = r.get(3)?;
         let cause: Option<String> = r.get(4)?;
-        Ok((r.get::<_, i64>(0)?.max(0) as u64, r.get::<_, String>(1)?, r.get::<_, String>(2)?, kind, cause, r.get::<_, Option<String>>(5)?))
+        Ok((r.get::<_, i64>(0)?.max(0) as u64, r.get::<_, String>(1)?, r.get::<_, String>(2)?, kind, cause, r.get::<_, Option<String>>(5)?, r.get::<_, Option<String>>(6)?))
     })?;
     Ok(rows
         .filter_map(Result::ok)
-        .filter_map(|(at, site, member, kind, cause, by)| Some(Entry { at, site, member, kind: Kind::parse(&kind)?, cause: cause.as_deref().and_then(Cause::parse), by, squad: String::new() }))
+        .filter_map(|(at, site, member, kind, cause, by, step)| Some(Entry { at, site, member, kind: Kind::parse(&kind)?, cause: cause.as_deref().and_then(Cause::parse), by, squad: String::new(), step }))
         .collect())
 }
 
@@ -361,6 +381,10 @@ pub struct Stats {
     /// Sign-ins finished: in all, and by equipe with no one's hand.
     pub signed_in: u64,
     pub signed_in_by_equipe: u64,
+    /// Sign-ins equipe finished, by the autopilot step that did it.
+    pub resolved: BTreeMap<String, u64>,
+    /// Roughly how many minutes of the person's those saved.
+    pub minutes_saved: u64,
 }
 
 impl Stats {
@@ -426,6 +450,10 @@ pub fn summarize(entries: &[Entry]) -> Stats {
         stats.signed_in += 1;
         if e.by.as_deref() == Some(BY_EQUIPE) {
             stats.signed_in_by_equipe += 1;
+            // A sign-in from before steps were kept: the kept password.
+            let step = e.step.as_deref().and_then(crate::autopilot::Step::parse).unwrap_or(crate::autopilot::Step::Relogin);
+            *stats.resolved.entry(step.code().to_owned()).or_default() += 1;
+            stats.minutes_saved += step.minutes_saved();
         }
     }
     stats
@@ -476,9 +504,13 @@ pub fn retro_line(stats: &Stats) -> Option<String> {
     if let Some(percent) = stats.by_equipe_percent() {
         line.push_str(&format!(" Sign-ins finished: {}, {percent}% by equipe itself with a kept login.", stats.signed_in));
     }
+    if !stats.resolved.is_empty() {
+        let steps: Vec<String> = stats.resolved.iter().map(|(s, n)| format!("{} {n}", s.replace('_', " "))).collect();
+        line.push_str(&format!(" equipe's own steps: {} — about {} minutes of the person's saved.", steps.join(", "), stats.minutes_saved));
+    }
     line.push_str(
-        " Sites asked for again and again are worth a kept login the person lets equipe sign in with by itself (Settings › Accounts); \
-CAPTCHAs, codes and passkeys stay the person's.",
+        " Sites asked for again and again are worth a kept login the person lets equipe sign in with by itself, and its login autopilot \
+(codes, keep-alive) in Settings › Accounts; CAPTCHAs stay the person's.",
     );
     Some(line)
 }
@@ -599,7 +631,7 @@ mod tests {
     #[test]
     fn equipes_own_sign_in_is_judged_by_where_the_page_went() {
         use crate::vault::Filled;
-        let filled = Filled { refused: None, filled: vec!["username".into(), "password".into()], submitted: true, step: Some("password".into()) };
+        let filled = Filled { refused: None, filled: vec!["username".into(), "password".into()], submitted: true, step: Some("password".into()), remembered: 0 };
         let page = |url: &str, check: Option<HumanCheck>, loading: bool| equipe_protocol::BrowserPage { id: 7, url: url.into(), title: String::new(), loading, favicon: None, check, crashed: false };
         assert_eq!(relogin_outcome(&filled, Some(&page("https://github.com/acme", None, false)), "github.com"), Relogin::SignedIn);
         assert_eq!(relogin_outcome(&filled, Some(&page("https://github.com/session", Some(HumanCheck::SignIn), false)), "github.com"), Relogin::FormCameBack);
@@ -608,7 +640,7 @@ mod tests {
         assert_eq!(relogin_outcome(&filled, None, "github.com"), Relogin::Person);
         let username_only = Filled { step: Some("username".into()), filled: vec!["username".into()], ..filled.clone() };
         assert_eq!(relogin_outcome(&username_only, Some(&page("https://github.com/login", Some(HumanCheck::SignIn), false)), "github.com"), Relogin::Person, "no password typed: nothing says it is wrong");
-        let refused = Filled { refused: Some("host".into()), filled: Vec::new(), submitted: false, step: None };
+        let refused = Filled { refused: Some("host".into()), filled: Vec::new(), submitted: false, step: None, remembered: 0 };
         assert_eq!(relogin_outcome(&refused, Some(&page("https://github.com/acme", None, false)), "github.com"), Relogin::Person);
     }
 
@@ -618,10 +650,37 @@ mod tests {
         assert!(offer_wanted("github.com", &[], &[], &offered, true));
         assert!(!offer_wanted("github.com", &[], &[], &offered, false), "nothing to keep it in");
         assert!(!offer_wanted("github.com", &[], &["github.com".into()], &offered, true), "never");
-        let kept = crate::protocol::vault::Login { id: 1, site: "github.com".into(), url: None, username: "a".into(), note: None, allowed: Vec::new(), auto: false, stopped: None, created_at: 0, uses: Vec::new() };
+        let kept = crate::protocol::vault::Login { id: 1, site: "github.com".into(), url: None, username: "a".into(), note: None, allowed: Vec::new(), auto: false, stopped: None, created_at: 0, uses: Vec::new(), autopilot: Default::default() };
         assert!(!offer_wanted("https://www.github.com/x", &[kept], &[], &offered, true), "kept already");
         offered.insert("github.com".to_owned());
         assert!(!offer_wanted("github.com", &[], &[], &offered, true), "once");
+    }
+
+    #[test]
+    fn what_equipe_finished_is_counted_by_step_with_the_minutes_it_saved() {
+        use crate::autopilot::Step;
+        let t = 1_794_000_000;
+        let rows = [
+            e(t, "github.com", "qa", Kind::SignedIn, None, Some(BY_EQUIPE)),
+            e(t + 10, "github.com", "qa", Kind::SignedIn, None, Some(BY_EQUIPE)).by_step(Step::Totp),
+            e(t + 20, "aws.amazon.com", "be", Kind::SignedIn, None, Some(BY_EQUIPE)).by_step(Step::Email),
+            e(t + 30, "github.com", "pm", Kind::SignedIn, None, Some(BY_PERSON)),
+            e(t + 40, "github.com", "pm", Kind::Handoff, Some(Cause::Captcha), None),
+        ];
+        let stats = summarize(&rows);
+        assert_eq!(stats.resolved.get("relogin"), Some(&1), "from before steps: the kept password");
+        assert_eq!((stats.resolved.get("totp"), stats.resolved.get("email")), (Some(&1), Some(&1)));
+        assert_eq!(stats.minutes_saved, Step::Relogin.minutes_saved() + Step::Totp.minutes_saved() + Step::Email.minutes_saved());
+        let line = retro_line(&stats).unwrap();
+        assert!(line.contains("email 1, relogin 1, totp 1") && line.contains("minutes"), "{line}");
+        // Kept and read back, and an old journal without the column still reads.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE login_events (at INTEGER NOT NULL, site TEXT NOT NULL, member TEXT NOT NULL, kind TEXT NOT NULL, cause TEXT, by TEXT); INSERT INTO login_events VALUES (1, 'github.com', 'qa', 'signed_in', NULL, 'equipe');").unwrap();
+        assert_eq!(select(&conn, 0).unwrap()[0].step, None);
+        create_table(&conn).unwrap();
+        create_table(&conn).unwrap();
+        insert(&conn, &rows[1], 0).unwrap();
+        assert_eq!(select(&conn, 0).unwrap()[1].step.as_deref(), Some("totp"));
     }
 
     #[test]

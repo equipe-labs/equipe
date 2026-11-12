@@ -660,5 +660,16 @@
   "news.squad_paused": "여러 멤버의 엔진이 한꺼번에 실패했어요({cause}). 시험 턴이 성공할 때까지 스쿼드는 새 일을 시작하지 않아요. equipe가 알아서 다시 시도하고, 아무 메시지나 보내면 바로 시도해요.",
   "news.squad_resumed": "엔진이 다시 작동해요. 멈췄던 티켓은 알아서 이어서 진행돼요.",
   "news.ticket_failing": "T-{id}의 엔진이 계속 실패해요({cause}). equipe가 간격을 늘려 가며 계속 시도해요 · {title}.",
-  "news.limit_paused": "T-{id} 진행 중 {engine} 사용 한도에 도달했어요. 끊긴 작업은 그 자리에서 멈췄다가 알아서 이어져요. 멤버가 다른 엔진으로 옮기면 거기서, 아니면 {engine}에 여유가 생기면 이어져요."
+  "news.limit_paused": "T-{id} 진행 중 {engine} 사용 한도에 도달했어요. 끊긴 작업은 그 자리에서 멈췄다가 알아서 이어져요. 멤버가 다른 엔진으로 옮기면 거기서, 아니면 {engine}에 여유가 생기면 이어져요.",
+  "error.autopilot": "로그인 오토파일럿: {why}",
+  "error.autopilot_totp": "인증 앱 시드를 저장하지 못했어요: {why}",
+  "error.autopilot_no_qr": "equipe가 인증 앱 QR 코드를 찾지 못했어요. equipe 브라우저에서 그 사이트의 2단계 인증 설정 페이지를 열고(그 사이트의 내 탭이에요) 다시 시도해 주세요. 아니면 사이트에 보이는 비밀 키를 직접 붙여 넣어 주세요.",
+  "error.autopilot_no_passkey": "10분 안에 equipe 브라우저에서 패스키가 추가되지 않았어요. equipe 브라우저에서 그 사이트의 보안 설정을 열고, 버튼을 누른 직후에 패스키를 추가해 주세요.",
+  "error.autopilot_device": "equipe가 {cli} 로그인을 직접 승인하지 못했어요. 직접 진행해 주세요.",
+  "notice.autopilot_device": "🔑 equipe가 {cli}에 직접 로그인하고, 공유 브라우저에서 직접 승인하는 중이에요.",
+  "notice.autopilot_device_done": "🔑 {cli}에 다시 로그인했어요. equipe가 로그인을 진행하고 직접 승인했어요.",
+  "match.remember_words": "로그인 상태 유지|로그인 유지|자동 로그인|아이디 저장|이 기기 신뢰|이 기기를 신뢰|신뢰할 수 있는 기기|이 브라우저 신뢰|이 기기 기억|다시 묻지 않기|다시 확인하지 않기",
+  "match.session_expired_words": "세션이 만료|로그인 시간이 만료|로그아웃되었|로그아웃 되었|다시 로그인해 주세요|다시 로그인하세요|장시간 사용하지 않아|로그인이 만료",
+  "match.approve_words": "승인|허용|동의|확인|계속|예|수락|인증하기",
+  "notice.secret_store": "이 컴퓨터의 보안 저장소"
 }

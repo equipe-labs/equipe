@@ -664,5 +664,16 @@
   "news.squad_paused": "Les moteurs de plusieurs membres ont échoué en même temps ({cause}). L'équipe ne commence rien de nouveau tant qu'un tour d'essai n'a pas réussi ; equipe réessaie tout seul, ou envoyez n'importe quel message pour réessayer tout de suite.",
   "news.squad_resumed": "Les moteurs fonctionnent de nouveau : les tickets en pause reprennent tout seuls.",
   "news.ticket_failing": "Le moteur de T-{id} échoue sans cesse ({cause}) ; equipe continue d'essayer, en attendant plus longtemps à chaque fois · {title}.",
-  "news.limit_paused": "{engine} a atteint sa limite d'utilisation pendant T-{id} : ce qui a été interrompu est en pause sur place et reprendra tout seul — sur l'autre moteur si des membres y passent, ou dès que {engine} aura de la marge."
+  "news.limit_paused": "{engine} a atteint sa limite d'utilisation pendant T-{id} : ce qui a été interrompu est en pause sur place et reprendra tout seul — sur l'autre moteur si des membres y passent, ou dès que {engine} aura de la marge.",
+  "error.autopilot": "Pilote automatique de connexion : {why}",
+  "error.autopilot_totp": "Cette clé d’authentification n’a pas été gardée : {why}",
+  "error.autopilot_no_qr": "equipe n’a trouvé aucun QR code d’authentification : ouvrez la page de configuration de la double authentification du site dans le navigateur d’equipe (votre propre onglet sur ce site), puis réessayez — ou collez plutôt le secret que le site affiche.",
+  "error.autopilot_no_passkey": "Aucune clé d’accès n’a été ajoutée dans le navigateur d’equipe en 10 minutes. Ouvrez les paramètres de sécurité du site dans le navigateur d’equipe et ajoutez-y une clé d’accès juste après avoir appuyé sur le bouton.",
+  "error.autopilot_device": "equipe n’a pas pu approuver tout seul la connexion de {cli} : c’est à vous de la faire.",
+  "notice.autopilot_device": "🔑 equipe connecte {cli} tout seul et l’approuve dans le navigateur partagé.",
+  "notice.autopilot_device_done": "🔑 {cli} est de nouveau connecté : equipe a lancé la connexion et l’a approuvée tout seul.",
+  "match.remember_words": "rester connecté|restez connecté|garder ma session ouverte|se souvenir de moi|se souvenir de ce navigateur|mémoriser cet appareil|faire confiance à cet appareil|faire confiance à ce navigateur|ne plus demander sur cet appareil|ne plus me demander",
+  "match.session_expired_words": "session expirée|votre session a expiré|vous avez été déconnecté|vous avez été déconnectée|veuillez vous reconnecter|veuillez vous connecter à nouveau|déconnecté pour cause d’inactivité|déconnecté pour inactivité",
+  "match.approve_words": "autoriser|permettre|approuver|valider|confirmer|continuer|oui|accepter",
+  "notice.secret_store": "le coffre de secrets de cette machine"
 }

@@ -1371,5 +1371,10 @@
   "onboard.desktop_note": "任意: メンバーがこのMacのアプリを扱えるようにします。必要なものはequipeが自動でインストールし、macOSがスイッチ1つ(\"equipe Desktop Helper\"のアクセシビリティ)だけをお願いします。スキップすると、メンバーが初めて必要としたときに再度お尋ねします。",
   "onboard.desktop_prompt": "今デスクトップアプリを設定しますか?",
   "onboard.desktop_skipped": "スキップしました。メンバーが初めてデスクトップアプリを必要としたときに、equipeがもう一度お尋ねします。",
-  "onboard.desktop_later": "デスクトップアプリはまだ準備できていません: {why} equipeは自動で続け、残りは設定 › スクワッド › デスクトップアプリであとから完了できます。"
+  "onboard.desktop_later": "デスクトップアプリはまだ準備できていません: {why} equipeは自動で続け、残りは設定 › スクワッド › デスクトップアプリであとから完了できます。",
+  "logins.autopilot": "equipe が自分で済ませた手順: {steps} — あなたの時間を約 {minutes} 分節約しました。",
+  "credential.refused": "equipe credential は AWS CLI の credential_process にだけキーを渡し、メンバーのコマンドには渡しません。",
+  "credential.missing": "プロファイル {name} の AWS キーは保管されていません(設定 › アカウント › ログインオートパイロット)。",
+  "credential.unknown": "equipe credential が扱えるのは aws だけで、{kind} は扱えません。",
+  "telegram.captcha": "{member} のブラウザで CAPTCHA があなたを待っています。equipe を開いて解いてください。解けば {member} が自分で続けます。"
 }

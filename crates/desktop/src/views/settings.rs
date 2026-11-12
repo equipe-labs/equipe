@@ -1630,7 +1630,10 @@ impl Shell {
                 self.send_command(Command::DesktopCheck { guide: false });
             }
             Category::Engines => self.ask_engines(cx),
-            Category::Accounts => self.send_command(Command::Logins),
+            Category::Accounts => {
+                self.send_command(Command::Logins);
+                self.send_command(Command::Autopilot);
+            }
             Category::Browser => self.send_command(Command::BrowserProfiles),
             _ => {}
         }
@@ -1676,7 +1679,10 @@ impl Shell {
                 self.send_command(Command::DesktopCheck { guide: false });
             }
             Category::Engines => self.ask_engines(cx),
-            Category::Accounts => self.send_command(Command::Logins),
+            Category::Accounts => {
+                self.send_command(Command::Logins);
+                self.send_command(Command::Autopilot);
+            }
             Category::Browser => self.send_command(Command::BrowserProfiles),
             _ => {}
         }

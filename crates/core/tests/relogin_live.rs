@@ -106,7 +106,7 @@ async fn the_host_types_a_kept_login_into_a_members_tab_and_nowhere_else() {
     .await
     .expect("the sign-in page is seen");
 
-    let login = Login { id: 1, site: "127.0.0.1".into(), url: None, username: "abel".into(), note: None, allowed: Vec::new(), auto: true, stopped: None, created_at: 0, uses: Vec::new() };
+    let login = Login { id: 1, site: "127.0.0.1".into(), url: None, username: "abel".into(), note: None, allowed: Vec::new(), auto: true, stopped: None, created_at: 0, uses: Vec::new(), autopilot: Default::default() };
     assert!(vault::auto_login_for(std::slice::from_ref(&login), &login_url).is_some());
     let fill = |token: u64, page: u64| json!({ "op": "fill", "lane": "acme/qa", "page": page, "script": vault::fill_script("abel", "pw-live-1", &FillGuard::exact(&login)), "token": token });
     host.lock().unwrap().op(&fill(1, page));

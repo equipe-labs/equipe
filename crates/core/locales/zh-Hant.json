@@ -660,5 +660,16 @@
   "news.squad_paused": "多位成員的引擎同時失敗（{cause}）。在測試輪成功之前，小隊不會開始新工作；equipe 會自動重試，傳送任何訊息即可立即重試。",
   "news.squad_resumed": "引擎恢復正常，暫停的工單會自動繼續。",
   "news.ticket_failing": "T-{id} 的引擎一直失敗（{cause}）；equipe 會逐漸拉長間隔繼續重試 · {title}。",
-  "news.limit_paused": "T-{id} 進行中 {engine} 達到了用量上限：被中斷的工作原地暫停，並會自動繼續——成員換到另一個引擎就在那裡繼續，否則等 {engine} 有餘量時繼續。"
+  "news.limit_paused": "T-{id} 進行中 {engine} 達到了用量上限：被中斷的工作原地暫停，並會自動繼續——成員換到另一個引擎就在那裡繼續，否則等 {engine} 有餘量時繼續。",
+  "error.autopilot": "登入自動駕駛：{why}",
+  "error.autopilot_totp": "未能儲存該驗證器金鑰：{why}",
+  "error.autopilot_no_qr": "equipe 沒有找到驗證器 QR 碼：請在 equipe 的瀏覽器中開啟該網站的兩步驟驗證設定頁（你自己在該網站上的分頁），然後重試——或者直接貼上網站顯示的金鑰。",
+  "error.autopilot_no_passkey": "10 分鐘內 equipe 的瀏覽器中沒有新增通行密鑰。請在 equipe 的瀏覽器中開啟該網站的安全性設定，並在按下按鈕後立即新增通行密鑰。",
+  "error.autopilot_device": "equipe 未能自動核准 {cli} 的登入，需要你自己來完成。",
+  "notice.autopilot_device": "🔑 equipe 正在自動登入 {cli}，並在共用瀏覽器中自動核准。",
+  "notice.autopilot_device_done": "🔑 {cli} 已重新登入：equipe 自行完成了登入並核准。",
+  "match.remember_words": "記住我|保持登入|保持登入狀態|記住登入狀態|下次自動登入|信任此裝置|信任此瀏覽器|記住此裝置|記住此瀏覽器|在此裝置上不再詢問|七天內免登入",
+  "match.session_expired_words": "工作階段已過期|登入已過期|登入已失效|登入逾時|您已登出|你已登出|請重新登入|請重新登錄|長時間未操作",
+  "match.approve_words": "授權|允許|同意|核准|確認|繼續|下一步|是|接受",
+  "notice.secret_store": "本機的密鑰庫"
 }

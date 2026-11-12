@@ -664,5 +664,16 @@
   "news.squad_paused": "Los motores de varios miembros fallaron a la vez ({cause}). El equipo no empieza nada nuevo hasta que funcione un turno de prueba; equipe lo reintenta solo, o envía cualquier mensaje para probar ya.",
   "news.squad_resumed": "Los motores vuelven a funcionar: los tickets en pausa continúan solos.",
   "news.ticket_failing": "El motor de T-{id} sigue fallando ({cause}); equipe sigue intentándolo, esperando más cada vez · {title}.",
-  "news.limit_paused": "{engine} alcanzó su límite de uso durante T-{id}: lo que se cortó queda en pausa donde estaba y continuará solo — en el otro motor si los miembros se pasan a él, o cuando {engine} tenga margen."
+  "news.limit_paused": "{engine} alcanzó su límite de uso durante T-{id}: lo que se cortó queda en pausa donde estaba y continuará solo — en el otro motor si los miembros se pasan a él, o cuando {engine} tenga margen.",
+  "error.autopilot": "Piloto automático de acceso: {why}",
+  "error.autopilot_totp": "No se guardó esa semilla del autenticador: {why}",
+  "error.autopilot_no_qr": "equipe no encontró ningún código QR de autenticador: abre la página de configuración de la verificación en dos pasos del sitio en el navegador de equipe (tu propia pestaña en ese sitio) e inténtalo de nuevo, o pega en su lugar el secreto que muestra el sitio.",
+  "error.autopilot_no_passkey": "No se añadió ninguna llave de acceso en el navegador de equipe en 10 minutos. Abre los ajustes de seguridad del sitio en el navegador de equipe y añade ahí una llave de acceso justo después de pulsar el botón.",
+  "error.autopilot_device": "equipe no pudo aprobar por sí mismo el inicio de sesión de {cli}, así que te toca hacerlo a ti.",
+  "notice.autopilot_device": "🔑 equipe está iniciando sesión en {cli} por sí mismo y aprobándolo en el navegador compartido.",
+  "notice.autopilot_device_done": "🔑 {cli} volvió a iniciar sesión: equipe hizo el inicio de sesión y lo aprobó por sí mismo.",
+  "match.remember_words": "mantener la sesión iniciada|mantener sesión iniciada|no cerrar sesión|recordarme|recuérdame|recordar sesión|confiar en este dispositivo|confiar en este navegador|recordar este dispositivo|recordar este navegador|no volver a preguntar en este",
+  "match.session_expired_words": "sesión caducada|la sesión ha caducado|su sesión ha caducado|sesión expirada|la sesión ha expirado|se ha cerrado tu sesión|se cerró tu sesión|vuelve a iniciar sesión|inicia sesión de nuevo|por inactividad",
+  "match.approve_words": "autorizar|permitir|aprobar|confirmar|continuar|sí|aceptar",
+  "notice.secret_store": "el almacén de secretos de este equipo"
 }

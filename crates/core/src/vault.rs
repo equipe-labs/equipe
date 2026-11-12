@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::protocol::vault::{EVERY_SQUAD, Login, LoginDraft, Use};
+use crate::protocol::vault::{CliKind, CliLogin, CliLoginDraft, EVERY_SQUAD, Login, LoginDraft, Mailbox, MailboxDraft, Use};
 
 /// The service the passwords are kept under, in every secret store.
 pub const SERVICE: &str = "equipe.vault";
@@ -27,13 +27,46 @@ const USES_KEPT: usize = 20;
 /// interface for every platform; a platform without a store refuses — a
 /// password is never written to a file instead.
 pub trait Secrets: Send {
-    fn set(&mut self, id: u32, password: &str) -> Result<(), String>;
-    fn get(&self, id: u32) -> Result<String, String>;
-    fn delete(&mut self, id: u32) -> Result<(), String>;
+    /// Keep `value` under `account` (a login's password under its id; its
+    /// authenticator seed, passkey, the mailbox's and command-line
+    /// credentials under names of their own, [`account`]).
+    fn set_named(&mut self, account: &str, value: &str) -> Result<(), String>;
+    fn get_named(&self, account: &str) -> Result<String, String>;
+    /// Gone already is fine.
+    fn delete_named(&mut self, account: &str) -> Result<(), String>;
     /// Whether a password can be kept here at all: offering to keep a login
     /// where it can't be would only end in an error.
     fn available(&self) -> bool {
         true
+    }
+    fn set(&mut self, id: u32, password: &str) -> Result<(), String> {
+        self.set_named(&id.to_string(), password)
+    }
+    fn get(&self, id: u32) -> Result<String, String> {
+        self.get_named(&id.to_string())
+    }
+    fn delete(&mut self, id: u32) -> Result<(), String> {
+        self.delete_named(&id.to_string())
+    }
+}
+
+/// The names secrets other than a login's password are kept under, in the
+/// same secret store and service.
+pub mod account {
+    /// A login's authenticator (TOTP) seed, as an `otpauth://` address.
+    pub fn totp(id: u32) -> String {
+        format!("{id}.totp")
+    }
+    /// equipe's own passkey for a login's site: the credential as Chrome's
+    /// virtual authenticator gave it (its private key in it).
+    pub fn passkey(id: u32) -> String {
+        format!("{id}.passkey")
+    }
+    /// The app password of the mailbox sites' codes come to.
+    pub const MAILBOX: &str = "mailbox";
+    /// A command-line credential's token or key.
+    pub fn cli(id: u32) -> String {
+        format!("cli.{id}")
     }
 }
 
@@ -47,17 +80,17 @@ pub fn system_store() -> Box<dyn Secrets> {
 
 #[cfg(target_os = "macos")]
 impl Secrets for SecretStore {
-    fn set(&mut self, id: u32, password: &str) -> Result<(), String> {
-        security_framework::passwords::set_generic_password(SERVICE, &id.to_string(), password.as_bytes()).map_err(|e| e.to_string())
+    fn set_named(&mut self, account: &str, password: &str) -> Result<(), String> {
+        security_framework::passwords::set_generic_password(SERVICE, account, password.as_bytes()).map_err(|e| e.to_string())
     }
 
-    fn get(&self, id: u32) -> Result<String, String> {
-        let bytes = security_framework::passwords::get_generic_password(SERVICE, &id.to_string()).map_err(|e| e.to_string())?;
+    fn get_named(&self, account: &str) -> Result<String, String> {
+        let bytes = security_framework::passwords::get_generic_password(SERVICE, account).map_err(|e| e.to_string())?;
         String::from_utf8(bytes).map_err(|_| "the kept password isn't text".into())
     }
 
-    fn delete(&mut self, id: u32) -> Result<(), String> {
-        match security_framework::passwords::delete_generic_password(SERVICE, &id.to_string()) {
+    fn delete_named(&mut self, account: &str) -> Result<(), String> {
+        match security_framework::passwords::delete_generic_password(SERVICE, account) {
             Ok(()) => Ok(()),
             // Gone already: nothing to take away.
             Err(e) if e.code() == -25300 => Ok(()),
@@ -67,7 +100,8 @@ impl Secrets for SecretStore {
 }
 
 /// Windows: Credential Manager, a generic credential per login
-/// (`equipe.vault/<id>`), kept for this user on this machine.
+/// (`equipe.vault/<id>`, and `equipe.vault/<name>` for the rest), kept for
+/// this user on this machine.
 #[cfg(windows)]
 mod credential_manager {
     use windows_sys::Win32::Security::Credentials::{CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredDeleteW, CredFree, CredReadW, CredWriteW};
@@ -75,7 +109,7 @@ mod credential_manager {
     /// "Element not found": no credential of that name.
     const NOT_FOUND: i32 = 1168;
 
-    fn target(id: u32) -> Vec<u16> {
+    fn target(id: &str) -> Vec<u16> {
         format!("{}/{id}", super::SERVICE).encode_utf16().chain(std::iter::once(0)).collect()
     }
 
@@ -83,7 +117,7 @@ mod credential_manager {
         std::io::Error::last_os_error().to_string()
     }
 
-    pub fn set(id: u32, password: &str) -> Result<(), String> {
+    pub fn set(id: &str, password: &str) -> Result<(), String> {
         let mut name = target(id);
         let mut blob = password.as_bytes().to_vec();
         let credential = CREDENTIALW {
@@ -100,7 +134,7 @@ mod credential_manager {
         if ok { Ok(()) } else { Err(last_error()) }
     }
 
-    pub fn get(id: u32) -> Result<String, String> {
+    pub fn get(id: &str) -> Result<String, String> {
         let name = target(id);
         let mut found: *mut CREDENTIALW = std::ptr::null_mut();
         // SAFETY: `name` is a NUL-terminated wide string; on success `found` is
@@ -116,7 +150,7 @@ mod credential_manager {
         }
     }
 
-    pub fn delete(id: u32) -> Result<(), String> {
+    pub fn delete(id: &str) -> Result<(), String> {
         let name = target(id);
         // SAFETY: `name` is a NUL-terminated wide string alive for the call.
         if unsafe { CredDeleteW(name.as_ptr(), CRED_TYPE_GENERIC, 0) } != 0 {
@@ -130,16 +164,16 @@ mod credential_manager {
 
 #[cfg(windows)]
 impl Secrets for SecretStore {
-    fn set(&mut self, id: u32, password: &str) -> Result<(), String> {
-        credential_manager::set(id, password)
+    fn set_named(&mut self, account: &str, password: &str) -> Result<(), String> {
+        credential_manager::set(account, password)
     }
 
-    fn get(&self, id: u32) -> Result<String, String> {
-        credential_manager::get(id)
+    fn get_named(&self, account: &str) -> Result<String, String> {
+        credential_manager::get(account)
     }
 
-    fn delete(&mut self, id: u32) -> Result<(), String> {
-        credential_manager::delete(id)
+    fn delete_named(&mut self, account: &str) -> Result<(), String> {
+        credential_manager::delete(account)
     }
 }
 
@@ -162,11 +196,11 @@ mod secret_service {
         "logins need the system's secret store (the Secret Service, through libsecret's `secret-tool`), which this machine doesn't have".into()
     }
 
-    fn attributes(id: u32) -> [String; 4] {
-        ["service".into(), super::SERVICE.into(), "account".into(), id.to_string()]
+    fn attributes(id: &str) -> [String; 4] {
+        ["service".into(), super::SERVICE.into(), "account".into(), id.to_owned()]
     }
 
-    pub fn set(id: u32, password: &str) -> Result<(), String> {
+    pub fn set(id: &str, password: &str) -> Result<(), String> {
         if !available() {
             return Err(missing());
         }
@@ -186,7 +220,7 @@ mod secret_service {
         if out.status.success() { Ok(()) } else { Err(format!("the secret store refused it: {}", String::from_utf8_lossy(&out.stderr).trim())) }
     }
 
-    pub fn get(id: u32) -> Result<String, String> {
+    pub fn get(id: &str) -> Result<String, String> {
         if !available() {
             return Err(missing());
         }
@@ -197,7 +231,7 @@ mod secret_service {
         String::from_utf8(out.stdout).map_err(|_| "the kept password isn't text".into())
     }
 
-    pub fn delete(id: u32) -> Result<(), String> {
+    pub fn delete(id: &str) -> Result<(), String> {
         if !available() {
             return Ok(());
         }
@@ -208,16 +242,16 @@ mod secret_service {
 
 #[cfg(all(unix, not(target_os = "macos")))]
 impl Secrets for SecretStore {
-    fn set(&mut self, id: u32, password: &str) -> Result<(), String> {
-        secret_service::set(id, password)
+    fn set_named(&mut self, account: &str, password: &str) -> Result<(), String> {
+        secret_service::set(account, password)
     }
 
-    fn get(&self, id: u32) -> Result<String, String> {
-        secret_service::get(id)
+    fn get_named(&self, account: &str) -> Result<String, String> {
+        secret_service::get(account)
     }
 
-    fn delete(&mut self, id: u32) -> Result<(), String> {
-        secret_service::delete(id)
+    fn delete_named(&mut self, account: &str) -> Result<(), String> {
+        secret_service::delete(account)
     }
 
     fn available(&self) -> bool {
@@ -227,15 +261,15 @@ impl Secrets for SecretStore {
 
 #[cfg(not(any(unix, windows)))]
 impl Secrets for SecretStore {
-    fn set(&mut self, _: u32, _: &str) -> Result<(), String> {
+    fn set_named(&mut self, _: &str, _: &str) -> Result<(), String> {
         Err("logins need the system's secret store, which this machine doesn't have".into())
     }
 
-    fn get(&self, _: u32) -> Result<String, String> {
+    fn get_named(&self, _: &str) -> Result<String, String> {
         Err("logins need the system's secret store, which this machine doesn't have".into())
     }
 
-    fn delete(&mut self, _: u32) -> Result<(), String> {
+    fn delete_named(&mut self, _: &str) -> Result<(), String> {
         Ok(())
     }
 
@@ -246,20 +280,20 @@ impl Secrets for SecretStore {
 
 /// Passwords in memory, for tests.
 #[derive(Default)]
-pub struct InMemory(pub std::collections::HashMap<u32, String>);
+pub struct InMemory(pub std::collections::HashMap<String, String>);
 
 impl Secrets for InMemory {
-    fn set(&mut self, id: u32, password: &str) -> Result<(), String> {
-        self.0.insert(id, password.to_owned());
+    fn set_named(&mut self, account: &str, password: &str) -> Result<(), String> {
+        self.0.insert(account.to_owned(), password.to_owned());
         Ok(())
     }
 
-    fn get(&self, id: u32) -> Result<String, String> {
-        self.0.get(&id).cloned().ok_or_else(|| "no password kept".into())
+    fn get_named(&self, account: &str) -> Result<String, String> {
+        self.0.get(account).cloned().ok_or_else(|| "no password kept".into())
     }
 
-    fn delete(&mut self, id: u32) -> Result<(), String> {
-        self.0.remove(&id);
+    fn delete_named(&mut self, account: &str) -> Result<(), String> {
+        self.0.remove(account);
         Ok(())
     }
 }
@@ -273,6 +307,12 @@ pub struct Vault {
     never_file: PathBuf,
     /// Sites equipe never offers to keep a login for: the person said so.
     pub never_offer: Vec<String>,
+    /// Login autopilot's own settings (`autopilot.json`).
+    pub settings: crate::autopilot::Settings,
+    settings_file: PathBuf,
+    /// Command-line credentials, without their secrets (`cli-logins.json`).
+    pub cli: Vec<CliLogin>,
+    cli_file: PathBuf,
 }
 
 /// A site as logins name it: its host, lower-case, without `www.`.
@@ -406,7 +446,11 @@ impl Vault {
         let never_file = home.join("vault-never-offer.json");
         let logins = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
         let never_offer = std::fs::read_to_string(&never_file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-        let mut vault = Self { file, logins, secrets, never_file, never_offer };
+        let settings_file = home.join("autopilot.json");
+        let cli_file = home.join("cli-logins.json");
+        let settings = std::fs::read_to_string(&settings_file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let cli = std::fs::read_to_string(&cli_file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let mut vault = Self { file, logins, secrets, never_file, never_offer, settings, settings_file, cli, cli_file };
         if vault.squad_wide() {
             let _ = vault.keep();
         }
@@ -482,8 +526,10 @@ impl Vault {
                     return Err("a new login needs its password".into());
                 }
                 let id = self.logins.iter().map(|l| l.id).max().unwrap_or(0) + 1;
-                let auto = draft.auto.unwrap_or(false);
-                self.logins.push(Login { id, site, url, username, note, allowed: Vec::new(), auto, stopped: None, created_at: now, uses: Vec::new() });
+                // Saving a login is the person's leave for equipe to sign in
+                // with it by itself: on unless they turned it off on the form.
+                let auto = draft.auto.unwrap_or(true);
+                self.logins.push(Login { id, site, url, username, note, allowed: Vec::new(), auto, stopped: None, created_at: now, uses: Vec::new(), autopilot: Default::default() });
                 id
             }
         };
@@ -501,8 +547,181 @@ impl Vault {
 
     pub fn delete(&mut self, id: u32) -> Result<(), String> {
         self.secrets.delete(id)?;
+        // Its seed and passkey go with it.
+        let _ = self.secrets.delete_named(&account::totp(id));
+        let _ = self.secrets.delete_named(&account::passkey(id));
         self.logins.retain(|l| l.id != id);
         self.keep()
+    }
+
+    /// The person's autopilot switches for a login ([`Autopilot::switches_from`]).
+    pub fn set_autopilot(&mut self, id: u32, asked: &crate::protocol::vault::Autopilot) -> Result<(), String> {
+        let login = self.logins.iter_mut().find(|l| l.id == id).ok_or("that login is gone")?;
+        login.autopilot = login.autopilot.switches_from(asked);
+        self.keep()
+    }
+
+    /// Keep a login's authenticator seed (already checked: an `otpauth://`
+    /// address), or take it away. Keeping one turns its code autopilot on:
+    /// the person gave it for nothing else.
+    pub fn set_totp(&mut self, id: u32, seed: Option<&str>) -> Result<(), String> {
+        let login = self.logins.iter().position(|l| l.id == id).ok_or("that login is gone")?;
+        match seed {
+            Some(seed) => self.secrets.set_named(&account::totp(id), seed)?,
+            None => self.secrets.delete_named(&account::totp(id))?,
+        }
+        let a = &mut self.logins[login].autopilot;
+        a.has_totp = seed.is_some();
+        a.totp = seed.is_some();
+        self.keep()
+    }
+
+    /// The authenticator seed, to make a code from — never to be handed on.
+    pub fn totp(&self, id: u32) -> Result<String, String> {
+        self.secrets.get_named(&account::totp(id))
+    }
+
+    /// Keep equipe's own passkey for a login's site, or take it away.
+    pub fn set_passkey(&mut self, id: u32, credential: Option<&str>) -> Result<(), String> {
+        let login = self.logins.iter().position(|l| l.id == id).ok_or("that login is gone")?;
+        match credential {
+            Some(c) => self.secrets.set_named(&account::passkey(id), c)?,
+            None => self.secrets.delete_named(&account::passkey(id))?,
+        }
+        let a = &mut self.logins[login].autopilot;
+        a.has_passkey = credential.is_some();
+        a.passkey = credential.is_some();
+        self.keep()
+    }
+
+    /// equipe's passkey for a login's site — to give to the browser, never on.
+    pub fn passkey(&self, id: u32) -> Result<String, String> {
+        self.secrets.get_named(&account::passkey(id))
+    }
+
+    /// The latest keep-alive look at a login's site.
+    pub fn checked(&mut self, id: u32, look: Use) {
+        if let Some(l) = self.logins.iter_mut().find(|l| l.id == id) {
+            l.autopilot.checked = Some(look);
+        }
+        let _ = self.keep();
+    }
+
+    fn keep_settings(&self) -> Result<(), String> {
+        write_private(&self.settings_file, &serde_json::to_string_pretty(&self.settings).map_err(|e| e.to_string())?)
+    }
+
+    /// The mailbox sites' codes come to: its app password to the secret
+    /// store, the rest to `autopilot.json`; `None` forgets both.
+    pub fn save_mailbox(&mut self, draft: Option<MailboxDraft>) -> Result<(), String> {
+        let Some(draft) = draft else {
+            self.secrets.delete_named(account::MAILBOX)?;
+            self.settings.mailbox = None;
+            return self.keep_settings();
+        };
+        let host = draft.host.trim().trim_start_matches("imaps://").trim_end_matches('/').to_ascii_lowercase();
+        let username = draft.username.trim().to_owned();
+        if host.is_empty() || username.is_empty() || host.contains(['/', ' ']) {
+            return Err("a mailbox needs its IMAP server and username".into());
+        }
+        let new_password = draft.password.as_deref().is_some_and(|p| !p.is_empty());
+        if !new_password && self.settings.mailbox.is_none() {
+            return Err("a mailbox needs its app password".into());
+        }
+        if let Some(password) = draft.password.filter(|p| !p.is_empty()) {
+            self.secrets.set_named(account::MAILBOX, &password)?;
+        }
+        self.settings.mailbox = Some(Mailbox { host, port: if draft.port == 0 { 993 } else { draft.port }, username });
+        self.keep_settings()
+    }
+
+    pub fn set_sms(&mut self, on: bool) -> Result<(), String> {
+        self.settings.sms = on;
+        self.keep_settings()
+    }
+
+    pub fn set_keepalive_hours(&mut self, hours: u32) -> Result<(), String> {
+        self.settings.keepalive_hours = hours.min(24 * 7);
+        self.keep_settings()
+    }
+
+    fn keep_cli(&self) -> Result<(), String> {
+        write_private(&self.cli_file, &serde_json::to_string_pretty(&self.cli).map_err(|e| e.to_string())?)
+    }
+
+    /// A command-line credential made or changed from the person's draft:
+    /// its id. Its secret goes to the secret store alone.
+    pub fn save_cli(&mut self, draft: CliLoginDraft, now: u64) -> Result<u32, String> {
+        let name = draft.name.trim().to_owned();
+        let host = draft.host.trim().to_ascii_lowercase();
+        let public = draft.public.trim().to_owned();
+        match draft.kind {
+            CliKind::Env if !crate::autopilot::cli_logins::env_name(&name) => return Err("an environment variable's name is uppercase letters, digits and _ (NPM_TOKEN)".into()),
+            CliKind::AwsKeys if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) || public.is_empty() => {
+                return Err("an AWS key needs its profile's name and its access key id".into());
+            }
+            CliKind::GhApp if !public.contains('/') => return Err("a GitHub App needs <app id>/<installation id>".into()),
+            CliKind::DeviceLogin if !["gh", "aws", "vercel"].contains(&name.as_str()) || host.is_empty() => {
+                return Err("a device sign-in names its CLI (gh, aws or vercel) and the hosts of its approval page".into());
+            }
+            _ => {}
+        }
+        let host = if host.is_empty() && matches!(draft.kind, CliKind::GhToken | CliKind::GhApp) { "github.com".to_owned() } else { host };
+        let squad = draft.squad.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+        let secret = draft.secret.filter(|s| !s.trim().is_empty());
+        let needs_secret = draft.kind != CliKind::DeviceLogin;
+        let id = match draft.id {
+            Some(id) => {
+                let c = self.cli.iter_mut().find(|c| c.id == id).ok_or("that credential is gone")?;
+                (c.name, c.host, c.public, c.squad, c.kind) = (name, host, public, squad, draft.kind);
+                id
+            }
+            None => {
+                if needs_secret && secret.is_none() {
+                    return Err("give its token or key".into());
+                }
+                let id = self.cli.iter().map(|c| c.id).max().unwrap_or(0) + 1;
+                self.cli.push(CliLogin { id, kind: draft.kind, name, host, public, squad, created_at: now, last: None });
+                id
+            }
+        };
+        if let Some(secret) = secret
+            && needs_secret
+            && let Err(e) = self.secrets.set_named(&account::cli(id), secret.trim())
+        {
+            if draft.id.is_none() {
+                self.cli.retain(|c| c.id != id);
+            }
+            return Err(e);
+        }
+        self.keep_cli()?;
+        Ok(id)
+    }
+
+    pub fn delete_cli(&mut self, id: u32) -> Result<(), String> {
+        let _ = self.secrets.delete_named(&account::cli(id));
+        self.cli.retain(|c| c.id != id);
+        self.keep_cli()
+    }
+
+    /// How a command-line credential's latest use went.
+    pub fn cli_used(&mut self, id: u32, last: &str) {
+        if let Some(c) = self.cli.iter_mut().find(|c| c.id == id) {
+            c.last = Some(last.to_owned());
+        }
+        let _ = self.keep_cli();
+    }
+
+    /// Any other secret: the mailbox's, a command-line credential's.
+    pub fn secret(&self, account: &str) -> Result<String, String> {
+        self.secrets.get_named(account)
+    }
+
+    pub fn set_secret(&mut self, account: &str, value: Option<&str>) -> Result<(), String> {
+        match value {
+            Some(v) => self.secrets.set_named(account, v),
+            None => self.secrets.delete_named(account),
+        }
     }
 
     /// The logins for `site`.
@@ -611,13 +830,16 @@ pub struct FillGuard {
     pub hosts: Vec<String>,
     pub subdomains: bool,
     pub http: bool,
+    /// Tick the form's "Remember me" / "Keep me signed in" / "Trust this
+    /// device" box (the login's [`Autopilot::remember`]).
+    pub remember: bool,
 }
 
 impl FillGuard {
     /// A member's `sign_in`: the login's site and its subdomains, as
     /// [`serves`] has it.
     pub fn serving(login: &Login) -> Self {
-        Self { hosts: auto_hosts(login), subdomains: true, http: true }
+        Self { hosts: auto_hosts(login), subdomains: true, http: true, remember: login.autopilot.remember }
     }
 
     /// equipe by itself: those exact hosts, https unless the login's own
@@ -625,14 +847,14 @@ impl FillGuard {
     pub fn exact(login: &Login) -> Self {
         let hosts = auto_hosts(login);
         let http = login.url.as_deref().is_some_and(|u| u.trim().to_ascii_lowercase().starts_with("http://")) || hosts.iter().any(|h| local(h));
-        Self { hosts, subdomains: false, http }
+        Self { hosts, subdomains: false, http, remember: login.autopilot.remember }
     }
 }
 
 /// The mark the fill script's answer starts with: put together when the
 /// script runs, so the script's own text (which a browser tool may echo
 /// back beside the answer) never carries it.
-const ANSWER_MARK: &str = "EQUIPE_FILL:";
+pub(crate) const ANSWER_MARK: &str = "EQUIPE_FILL:";
 
 /// What equipe runs in a member's page (Playwright's `browser_evaluate`) to
 /// sign in: first checks the page is where `guard` lets it type (its host,
@@ -653,7 +875,7 @@ pub fn fill_script(username: &str, password: &str, guard: &FillGuard) -> String 
         r#"() => {{
   const MARK = {mark_a:?} + {mark_b:?};
   const say = (what) => MARK + JSON.stringify(what);
-  const HOSTS = {hosts}, SUB = {sub}, HTTP = {http};
+  const HOSTS = {hosts}, SUB = {sub}, HTTP = {http}, REMEMBER = {remember};
   const host = location.hostname.toLowerCase().replace(/^www\./, '');
   const here = HOSTS.some((h) => host === h || (SUB && (host.endsWith('.' + h) || h.endsWith('.' + host))));
   if (!here) return say({{ refused: 'host', filled: [], submitted: false }});
@@ -676,15 +898,18 @@ pub fn fill_script(username: &str, password: &str, guard: &FillGuard) -> String 
   const filled = [];
   if (user && !user.value) {{ user.focus(); set(user, U); filled.push('username'); }} else if (user) {{ filled.push('username (already there)'); }}
   if (pass) {{ pass.focus(); set(pass, P); filled.push('password'); }}
+  const remembered = REMEMBER ? ({remember_js})((pass || user).form || document) : 0;
   const form = (pass || user).form;
   const button = (form || document).querySelector('button[type=submit], input[type=submit], button:not([type])');
   let submitted = false;
   if (form && form.requestSubmit) {{ try {{ form.requestSubmit(button || undefined); submitted = true; }} catch (e) {{}} }}
   if (!submitted && button) {{ button.click(); submitted = true; }}
-  return say({{ filled, submitted, step: pass ? 'password' : 'username' }});
+  return say({{ filled, submitted, step: pass ? 'password' : 'username', remembered }});
 }}"#,
         sub = guard.subdomains,
         http = guard.http,
+        remember = guard.remember,
+        remember_js = crate::autopilot::fill::remember_js(),
     )
 }
 
@@ -696,8 +921,10 @@ pub struct Filled {
     pub refused: Option<String>,
     pub filled: Vec<String>,
     pub submitted: bool,
-    /// `password` or `username`: which step of a sign-in it was.
+    /// `password`, `username`, `code` or `passkey`: which step of a sign-in it was.
     pub step: Option<String>,
+    /// "Remember me" / "Trust this device" boxes it ticked.
+    pub remembered: u32,
 }
 
 /// The fill script's answer in a browser tool's text — which may quote the
@@ -734,7 +961,7 @@ mod tests {
     }
 
     fn login(site: &str, url: Option<&str>, auto: bool) -> Login {
-        Login { id: 1, site: site.into(), url: url.map(Into::into), username: "abel".into(), note: None, allowed: Vec::new(), auto, stopped: None, created_at: 0, uses: Vec::new() }
+        Login { id: 1, site: site.into(), url: url.map(Into::into), username: "abel".into(), note: None, allowed: Vec::new(), auto, stopped: None, created_at: 0, uses: Vec::new(), autopilot: Default::default() }
     }
 
     #[test]
@@ -800,7 +1027,11 @@ mod tests {
         let home = home();
         let mut vault = Vault::open(&home, Box::new(InMemory::default()));
         let id = vault.save(draft("github.com", "abel", Some("pw")), 1).unwrap();
-        assert!(!vault.logins[0].auto, "off for a new login");
+        assert!(vault.logins[0].auto, "saving it is the person's leave: on for a new login");
+        let off = vault.save(LoginDraft { auto: Some(false), ..draft("gitlab.com", "abel", Some("pw")) }, 1).unwrap();
+        assert!(!vault.logins.iter().find(|l| l.id == off).unwrap().auto, "unless they turned it off on the form");
+        vault.set_auto(id, false).unwrap();
+        assert!(auto_login_for(&vault.logins, "https://github.com/login").is_none());
         vault.set_auto(id, true).unwrap();
         assert!(auto_login_for(&vault.logins, "https://github.com/login").is_some());
         vault.stop_auto(id, "the form came back").unwrap();
@@ -842,6 +1073,41 @@ mod tests {
     }
 
     #[test]
+    fn autopilot_secrets_live_in_the_secret_store_and_the_files_say_only_whether() {
+        let home = home();
+        let mut vault = Vault::open(&home, Box::new(InMemory::default()));
+        let id = vault.save(draft("github.com", "abel", Some("pw")), 1).unwrap();
+        let seed = "otpauth://totp/equipe?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&algorithm=SHA1&digits=6&period=30";
+        vault.set_totp(id, Some(seed)).unwrap();
+        vault.set_passkey(id, Some(r#"{"privateKey":"PRIVATE"}"#)).unwrap();
+        vault.save_mailbox(Some(MailboxDraft { host: "imap.example.com".into(), port: 993, username: "me".into(), password: Some("app-pass".into()) })).unwrap();
+        let cli = vault.save_cli(CliLoginDraft { id: None, kind: CliKind::Env, name: "NPM_TOKEN".into(), host: String::new(), public: String::new(), squad: None, secret: Some("npm_x".into()) }, 1).unwrap();
+        for file in ["vault.json", "autopilot.json", "cli-logins.json"] {
+            let text = std::fs::read_to_string(home.join(file)).unwrap();
+            for secret in ["GEZDGNBV", "PRIVATE", "app-pass", "npm_x"] {
+                assert!(!text.contains(secret), "{file}: {text}");
+            }
+        }
+        let a = &vault.logins[0].autopilot;
+        assert!(a.has_totp && a.totp && a.has_passkey && a.passkey, "giving a seed or a passkey is turning it on");
+        assert_eq!(vault.totp(id).unwrap(), seed);
+        assert_eq!(vault.secret(&account::cli(cli)).unwrap(), "npm_x");
+        assert_eq!(vault.secret(account::MAILBOX).unwrap(), "app-pass");
+        // A screen's command can't say a seed is kept.
+        vault.set_autopilot(id, &crate::protocol::vault::Autopilot { totp: false, has_totp: false, keepalive: true, ..Default::default() }).unwrap();
+        let a = &vault.logins[0].autopilot;
+        assert!(a.has_totp && !a.totp && a.keepalive);
+        // Kept across a restart; deleting the login takes its seed and passkey.
+        let again = Vault::open(&home, Box::new(InMemory::default()));
+        assert_eq!((again.settings.mailbox.as_ref().map(|m| m.host.as_str()), again.cli.len()), (Some("imap.example.com"), 1));
+        vault.delete(id).unwrap();
+        assert!(vault.totp(id).is_err() && vault.passkey(id).is_err());
+        assert!(vault.save_cli(CliLoginDraft { id: None, kind: CliKind::Env, name: "bad name".into(), host: String::new(), public: String::new(), squad: None, secret: Some("x".into()) }, 1).is_err());
+        vault.save_mailbox(None).unwrap();
+        assert!(vault.secret(account::MAILBOX).is_err() && vault.settings.mailbox.is_none());
+    }
+
+    #[test]
     fn never_offering_a_site_is_kept() {
         let home = home();
         let mut vault = Vault::open(&home, Box::new(InMemory::default()));
@@ -858,7 +1124,7 @@ mod tests {
         let script = fill_script("a\"b", "p'w\\</script>", &guard);
         assert!(script.contains(r#"const U = "a\"b", P = "p'w\\</script>";"#), "{script}");
         assert!(script.contains("requestSubmit"));
-        assert!(script.contains(r#"const HOSTS = ["github.com"], SUB = false, HTTP = false;"#), "{script}");
+        assert!(script.contains(r#"const HOSTS = ["github.com"], SUB = false, HTTP = false, REMEMBER = true;"#), "{script}");
         assert!(!script.contains(ANSWER_MARK), "the script never carries the mark it answers with");
         // The host and scheme are checked before the values are even set.
         assert!(script.find("refused: 'host'").unwrap() < script.find("const U =").unwrap());

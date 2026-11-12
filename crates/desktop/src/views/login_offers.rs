@@ -31,8 +31,9 @@ pub struct LoginOffersUi {
     pub open: HashSet<u64>,
     inputs: HashMap<u64, (Entity<InputState>, Entity<InputState>)>,
     subscriptions: HashMap<u64, Subscription>,
-    /// Offers whose "sign in by itself" switch is on.
-    auto: HashSet<u64>,
+    /// Offers whose "sign in by itself" switch the person turned off (on by
+    /// default: saving the login is their leave).
+    manual: HashSet<u64>,
 }
 
 impl LoginOffersUi {
@@ -50,7 +51,7 @@ impl Shell {
         ui.inputs.retain(|id, _| offers.iter().any(|o| o.id == *id));
         ui.subscriptions.retain(|id, _| offers.iter().any(|o| o.id == *id));
         ui.open.retain(|id| offers.iter().any(|o| o.id == *id));
-        ui.auto.retain(|id| offers.iter().any(|o| o.id == *id));
+        ui.manual.retain(|id| offers.iter().any(|o| o.id == *id));
         for offer in offers {
             if self.login_offers.inputs.contains_key(&offer.id) {
                 continue;
@@ -84,7 +85,7 @@ impl Shell {
         for input in [&u, &p] {
             input.update(cx, |s, cx| s.set_value(String::new(), window, cx));
         }
-        let auto = self.login_offers.auto.contains(&id);
+        let auto = !self.login_offers.manual.contains(&id);
         let draft = LoginDraft { id: None, site: offer.site.clone(), username, password: Some(password), note: None, auto: Some(auto) };
         self.send_command(Command::SaveLogin { draft });
         self.model.login_offers.retain(|o| o.id != id);
@@ -130,15 +131,15 @@ pub fn card(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> Option<AnyElemen
     let p = shell.palette;
     let offer: LoginOffer = shell.model.login_offers.iter().find(|o| o.id == id)?.clone();
     let (u, pw) = shell.login_offers.inputs.get(&id)?.clone();
-    let auto = shell.login_offers.auto.contains(&id);
+    let auto = !shell.login_offers.manual.contains(&id);
     let field = |label: &'static str, input: &Entity<InputState>| v_flex().flex_1().gap_1().child(div().text_size(px(12.)).text_color(p.muted).child(label)).child(boxed(p, input));
     let handle = cx.entity().downgrade();
     let switch = ui::switch(p, SharedString::from(format!("login-offer-auto-{id}")), auto).name(t!("logins.offer_auto", site = offer.site)).on_flip(move |on, _, cx| {
         let _ = handle.update(cx, |shell, cx| {
             if on {
-                shell.login_offers.auto.insert(id);
+                shell.login_offers.manual.remove(&id);
             } else {
-                shell.login_offers.auto.remove(&id);
+                shell.login_offers.manual.insert(id);
             }
             cx.notify();
         });
