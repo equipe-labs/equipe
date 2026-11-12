@@ -7,6 +7,7 @@
 //! taken for the person's. Kept in memory only: a restarted daemon starts with
 //! a free screen.
 
+pub mod auto;
 pub mod lease;
 #[cfg(target_os = "macos")]
 pub mod mac;

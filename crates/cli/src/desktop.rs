@@ -68,9 +68,18 @@ pub async fn run(action: Option<Action>) -> Result<(), String> {
     }
 }
 
+/// macOS and Windows run the desktop helper; Linux doesn't yet (see docs/DESKTOP-CONTROL.md).
 fn mac_only() -> Result<(), String> {
-    if cfg!(target_os = "macos") { Ok(()) } else { Err("Desktop control works on macOS only.".into()) }
+    if cfg!(any(target_os = "macos", windows)) {
+        Ok(())
+    } else {
+        Err("Desktop control works on macOS and Windows only; Linux isn't supported yet (docs/DESKTOP-CONTROL.md lists what it will need).".into())
+    }
 }
+
+/// A Mac's checks (a login session, the login service, the helper's bundle)
+/// mean nothing on Windows, whose helper needs no permission.
+const MAC: bool = cfg!(target_os = "macos");
 
 fn set(home: &Path, member: &str, on: bool, squad: Option<String>) -> Result<(), String> {
     let cwd = std::env::current_dir().unwrap_or_default();
@@ -119,12 +128,16 @@ fn line(ok: bool, label: &str, detail: &str) {
 /// is what members need (the tree, ref actions, input); Screen Recording is
 /// only for screenshots and the picture shown when the person is asked.
 async fn report(home: &Path) -> bool {
-    let gui = install::gui_session();
-    line(gui, t!("desktop.check_session"), t!("desktop.fix_session"));
-    line(install::daemon_in_aqua(DAEMON_LABEL), t!("desktop.check_daemon"), t!("desktop.fix_daemon"));
+    let gui = !MAC || install::gui_session();
+    if MAC {
+        line(gui, t!("desktop.check_session"), t!("desktop.fix_session"));
+        line(install::daemon_in_aqua(DAEMON_LABEL), t!("desktop.check_daemon"), t!("desktop.fix_daemon"));
+    }
     engine_line(home);
-    let loaded = install::loaded();
-    line(loaded, t!("desktop.check_helper"), "equipe desktop setup");
+    let loaded = !MAC || install::loaded();
+    if MAC {
+        line(loaded, t!("desktop.check_helper"), "equipe desktop setup");
+    }
     let status = if loaded { helper_status(home, helper::STATUS).await } else { None };
     if loaded && status.is_none() {
         line(false, t!("desktop.check_answers"), &t!("desktop.fix_answers", path = helper::log_path(home).display()));
@@ -181,29 +194,22 @@ fn engine_line(home: &Path) {
 
 /// Download the pinned agent-desktop release when it isn't installed (or
 /// doesn't verify), check it against its pinned checksums, keep it in the
-/// helper's folder. A failure leaves the screenshot tools working.
+/// helper's folder. The daemon does the same by itself in the background; this
+/// is the same step, now. A failure leaves the screenshot tools working.
 async fn install_engine(home: &Path) {
     let p = ui::out();
-    let Some(archive) = pin::this_machine() else { return };
+    if pin::this_machine().is_none() {
+        return;
+    }
     let version = pin::VERSION;
-    if matches!(pin::check(home, Some(archive)), pin::Installed::Ready(_)) {
+    if matches!(pin::check(home, pin::this_machine()), pin::Installed::Ready(_)) {
         println!("{}", p.ok_line(&t!("desktop.engine_ready", version = version)));
         return;
     }
     println!("{}", p.note(2, &t!("desktop.engine_installing", version = version)));
-    let fetched = async {
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("equipe/", env!("CARGO_PKG_VERSION")))
-            .timeout(std::time::Duration::from_secs(120))
-            .build()
-            .map_err(|e| e.to_string())?;
-        let response = client.get(archive.url()).send().await.map_err(|e| e.to_string())?;
-        let response = response.error_for_status().map_err(|e| e.to_string())?;
-        response.bytes().await.map_err(|e| e.to_string())
-    };
-    match fetched.await.and_then(|bytes| pin::install_from_archive(home, archive, &bytes)) {
-        Ok(_) => println!("{}", p.ok_line(&t!("desktop.engine_installed", version = version))),
-        Err(why) => println!("{}", p.fail_line(&t!("desktop.engine_failed", why = why))),
+    match equipe_core::desktop::auto::install_engine(home).await {
+        Ok(()) => println!("{}", p.ok_line(&t!("desktop.engine_installed", version = version))),
+        Err(why) => println!("{}", p.fail_line(&t!("desktop.engine_failed", why = why.detail))),
     }
 }
 
@@ -219,6 +225,10 @@ async fn setup(home: &Path, sign: Option<String>) -> Result<(), String> {
     mac_only()?;
     let p = ui::out();
     println!("{}\n", p.kicker("desktop setup"));
+    println!("{}\n", p.note(2, t!("desktop.auto_note")));
+    if !MAC {
+        return setup_windows(home).await;
+    }
     if !install::gui_session() {
         return Err("Nobody is logged in at this Mac's screen. Log in there (or over Screen Sharing / Jump Desktop), then run equipe desktop setup again.".into());
     }
@@ -282,6 +292,31 @@ async fn setup(home: &Path, sign: Option<String>) -> Result<(), String> {
         Ok(())
     } else {
         Err("Not ready yet: switch on what's marked ✗, then run equipe desktop setup again.".into())
+    }
+}
+
+/// Windows needs no permission: the engine, then the helper, started if it isn't running.
+async fn setup_windows(home: &Path) -> Result<(), String> {
+    use equipe_core::desktop::auto::{Ops as _, ThisMachine};
+    let p = ui::out();
+    install_engine(home).await;
+    let machine = ThisMachine { home: home.to_owned() };
+    let answering = helper_status(home, helper::STATUS).await.is_some();
+    if !answering {
+        machine.sync_helper(false).await.map_err(|f| f.detail)?;
+        for _ in 0..40 {
+            if helper_status(home, helper::STATUS).await.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    }
+    println!();
+    if report(home).await {
+        println!("\n{}", p.ok_line("The desktop is ready."));
+        Ok(())
+    } else {
+        Err(format!("Not ready yet: see what's marked ✗ (the helper's log: {}).", helper::log_path(home).display()))
     }
 }
 

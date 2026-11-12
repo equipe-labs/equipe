@@ -1349,8 +1349,8 @@
   "desktop.fix_post_events": "switch Accessibility on, then run setup again",
   "desktop.check_engine": "Accessibility engine: agent-desktop {version}, checksum verified",
   "desktop.check_engine_missing": "Accessibility engine (agent-desktop {version})",
-  "desktop.fix_engine_missing": "equipe desktop setup downloads it and checks its checksum",
-  "desktop.fix_engine_tampered": "it doesn't match its pinned checksum and won't run: run equipe desktop setup again",
+  "desktop.fix_engine_missing": "equipe downloads it by itself and checks its checksum (or run equipe desktop setup now)",
+  "desktop.fix_engine_tampered": "it doesn't match its pinned checksum and won't run: equipe installs it again by itself, or run equipe desktop setup now",
   "desktop.check_engine_grant": "The engine works under the helper's Accessibility permission",
   "desktop.fix_engine_grant": "switch Accessibility on for \"equipe Desktop Helper\", then run equipe desktop setup again",
   "desktop.check_screen": "Screen & System Audio Recording (only for screenshots)",
@@ -1365,7 +1365,7 @@
   "desktop.engine_installing": "Downloading agent-desktop {version} (Apache-2.0), the accessibility engine…",
   "desktop.engine_installed": "Installed agent-desktop {version}: checksum verified.",
   "desktop.engine_ready": "agent-desktop {version} is installed and verified.",
-  "desktop.engine_failed": "Couldn't install agent-desktop: {why}. The screenshot tools still work; run equipe desktop setup again to retry.",
+  "desktop.engine_failed": "Couldn't install agent-desktop: {why}. The screenshot tools still work; equipe tries again by itself, or run equipe desktop setup to retry now.",
   "desktop.guide_intro": "macOS asks you — at the Mac's own screen — to allow \"equipe Desktop Helper\". Only it gets these permissions; equipe and its members never do. The accessibility engine runs under the same permission, so there is nothing else to allow.",
   "desktop.guide_accessibility": "{step}. System Settings › Privacy & Security › Accessibility: switch on \"equipe Desktop Helper\". The switch only takes once you confirm with your password or Touch ID.",
   "desktop.guide_screen": "{step}. Optional, for screenshots: System Settings › Privacy & Security › Screen & System Audio Recording: switch on \"equipe Desktop Helper\". If macOS asks whether it may bypass the private window picker, choose Allow.",
@@ -1389,5 +1389,10 @@
   "logins.cause_passkey": "passkey",
   "logins.cause_device_code": "device code",
   "logins.cause_consent": "consent",
-  "logins.cause_other": "other"
+  "logins.cause_other": "other",
+  "desktop.auto_note": "From now on the daemon does this by itself: it installs the engine and the helper, and shows you the one switch. This command just does it right away.",
+  "onboard.desktop_note": "Optional: let members work the apps on this Mac. equipe installs what it needs by itself; macOS asks you for one switch (Accessibility for \"equipe Desktop Helper\"). Skip it and equipe offers it again when a member first needs it.",
+  "onboard.desktop_prompt": "Set up desktop apps now?",
+  "onboard.desktop_skipped": "Skipped. equipe offers it again when a member first needs desktop apps.",
+  "onboard.desktop_later": "Desktop apps aren't ready yet: {why} equipe carries on by itself, and you can finish later in Settings › Squad › Desktop apps."
 }

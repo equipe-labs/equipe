@@ -275,6 +275,8 @@ enum Request {
     /// Paused runs looked at, as if at this unix time (tests).
     TurnEndsDue(u64, oneshot::Sender<()>),
     Shutdown(oneshot::Sender<()>),
+    /// Set the Mac's desktop up by itself, from now on (the person's daemon).
+    DesktopAuto,
 }
 
 /// Where screens send commands. Cheap to clone.
@@ -559,6 +561,14 @@ impl Handle {
         }
     }
 
+    /// Have the daemon set the desktop up by itself: the accessibility engine
+    /// in the background, the helper and its one macOS switch once a member
+    /// works the desktop ([`desktop::auto`]). The person's daemon asks for it;
+    /// a test's runtime doesn't, and so downloads and installs nothing.
+    pub fn start_desktop_auto(&self) {
+        let _ = self.requests.send(Request::DesktopAuto);
+    }
+
     /// Stop running turns and the runtime. Open sessions stay journaled.
     pub async fn shutdown(&self) {
         let (tx, rx) = oneshot::channel();
@@ -607,6 +617,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         call_llm: crate::call::judge::LlmConfig::from_env(),
         calls_ended_at: HashMap::new(),
         desktop: desktop::Desktop::new(mac),
+        desktop_auto: None,
         config,
         // A server that never answers a connection must not hold anything up.
         client: reqwest::Client::builder().connect_timeout(Duration::from_secs(15)).build().unwrap_or_default(),
@@ -1228,6 +1239,8 @@ struct Runtime {
     providers: HashMap<String, providers::Listed>,
     /// The Mac's screen, one member at a time, across squads.
     desktop: desktop::Desktop,
+    /// The desktop's own setup, once asked for ([`Handle::start_desktop_auto`]).
+    desktop_auto: Option<desktop::auto::Auto>,
     /// Members' questions waiting for the person, by squad (`decide`).
     questions: HashMap<String, Vec<equipe_protocol::decide::QuestionSet>>,
     /// Changes to the team the PM proposed, waiting for the person, by squad (`team`).
@@ -1388,6 +1401,7 @@ impl Wake {
             Wake::Request(Some(Request::Minute(_))) => Borrowed("minute tick"),
             Wake::Request(Some(Request::TurnEndsDue(..))) => Borrowed("paused runs' time"),
             Wake::Request(Some(Request::Shutdown(_))) | Wake::Request(None) => Borrowed("shutdown"),
+            Wake::Request(Some(Request::DesktopAuto)) => Borrowed("desktop setup"),
             Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
             Wake::Internal(Internal::EngineStarted { .. }) => Borrowed("an engine's start"),
             Wake::Internal(Internal::Processes(_)) => Borrowed("what members' commands run"),
@@ -1590,6 +1604,7 @@ impl Runtime {
                     self.turn_ends_due(at);
                     let _ = reply.send(());
                 }
+                Some(Request::DesktopAuto) => self.start_desktop_auto(),
                 Some(Request::Shutdown(reply)) => {
                     self.stop_all_turns();
                     let _ = reply.send(());
@@ -2149,6 +2164,17 @@ impl Runtime {
         }
     }
 
+    /// The desktop sets itself up: [`desktop::auto`], told to every screen.
+    fn start_desktop_auto(&mut self) {
+        if self.desktop_auto.is_some() {
+            return;
+        }
+        let internal = self.internal.clone();
+        let sink: desktop::auto::Sink = std::sync::Arc::new(move |ready| drop(internal.send(Internal::Event(Box::new(Event::DesktopReady { ready })))));
+        let ops = std::sync::Arc::new(desktop::auto::ThisMachine { home: self.config.home.clone() });
+        self.desktop_auto = Some(desktop::auto::Auto::start(self.config.home.clone(), ops, sink));
+    }
+
     fn publish_desktop(&mut self) {
         let desktop = self.desktop.state();
         self.publish(Event::Desktop { desktop });
@@ -2263,10 +2289,26 @@ impl Runtime {
             Command::DesktopCheck { guide } => {
                 // Off the loop: the helper may take a moment to answer.
                 let (home, internal) = (self.config.home.clone(), self.internal.clone());
+                let auto = self.desktop_auto.clone();
                 tokio::spawn(async move {
-                    let ready = desktop::ready::readiness(&home, guide).await;
+                    let mut ready = desktop::ready::readiness(&home, guide).await;
+                    if let Some(auto) = auto {
+                        auto.decorate(&mut ready);
+                        // The person pressed "Allow…": the card has done its job.
+                        if guide {
+                            auto.wanted();
+                        }
+                    }
                     let _ = internal.send(Internal::Event(Box::new(Event::DesktopReady { ready })));
                 });
+            }
+            Command::DesktopAuto { action } => {
+                if let Some(auto) = &self.desktop_auto {
+                    match action {
+                        equipe_protocol::DesktopAutoAction::Retry => auto.retry(),
+                        equipe_protocol::DesktopAutoAction::Dismiss => auto.dismiss(),
+                    }
+                }
             }
             Command::WatchBrowser { squad, session } => match session {
                 Some(id) => {
@@ -7764,6 +7806,11 @@ there, end your turn, and carry on when they say they're done."
         let journal = self.journals.get(&call.squad);
         let on = self.team(&call.squad).iter().any(|(_, name, _)| *name == call.member) && journal.is_some_and(|j| j.desktop_enabled(&call.member));
         if on {
+            // Still being set up, or waiting on the person's one switch: said
+            // short, so the member neither retries nor guesses; the person is shown the card.
+            if let Some(refused) = self.desktop_auto.as_ref().and_then(|auto| auto.refusal(&call.name)) {
+                return Err(ToolResult::error(refused));
+            }
             Ok((self.config.home.clone(), journal.map(Journal::messaging_apps).unwrap_or_default()))
         } else {
             Err(ToolResult::error(format!(

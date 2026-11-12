@@ -1349,8 +1349,8 @@
   "desktop.fix_post_events": "Bedienungshilfen einschalten, dann setup erneut ausführen",
   "desktop.check_engine": "Bedienungshilfen-Engine: agent-desktop {version}, Prüfsumme bestätigt",
   "desktop.check_engine_missing": "Bedienungshilfen-Engine (agent-desktop {version})",
-  "desktop.fix_engine_missing": "equipe desktop setup lädt sie herunter und prüft die Prüfsumme",
-  "desktop.fix_engine_tampered": "sie passt nicht zur festgelegten Prüfsumme und läuft nicht: equipe desktop setup erneut ausführen",
+  "desktop.fix_engine_missing": "equipe lädt sie von selbst herunter und prüft die Prüfsumme (oder jetzt: equipe desktop setup)",
+  "desktop.fix_engine_tampered": "sie passt nicht zur festgelegten Prüfsumme und läuft nicht: equipe installiert sie von selbst neu (oder jetzt: equipe desktop setup)",
   "desktop.check_engine_grant": "Die Engine arbeitet mit der Bedienungshilfen-Berechtigung des Helfers",
   "desktop.fix_engine_grant": "Bedienungshilfen für „equipe Desktop Helper“ einschalten, dann equipe desktop setup erneut ausführen",
   "desktop.check_screen": "Bildschirm- & System-Audioaufnahme (nur für Bildschirmfotos)",
@@ -1365,7 +1365,7 @@
   "desktop.engine_installing": "Lade agent-desktop {version} (Apache-2.0), die Bedienungshilfen-Engine, herunter…",
   "desktop.engine_installed": "agent-desktop {version} installiert: Prüfsumme bestätigt.",
   "desktop.engine_ready": "agent-desktop {version} ist installiert und geprüft.",
-  "desktop.engine_failed": "agent-desktop konnte nicht installiert werden: {why}. Die Bildschirmfoto-Werkzeuge funktionieren weiter; für einen neuen Versuch equipe desktop setup erneut ausführen.",
+  "desktop.engine_failed": "agent-desktop konnte nicht installiert werden: {why}. Die Bildschirmfoto-Werkzeuge funktionieren weiter; equipe versucht es von selbst erneut, oder führe equipe desktop setup für einen sofortigen Versuch aus.",
   "desktop.guide_intro": "macOS fragt dich – am Bildschirm des Mac –, ob du „equipe Desktop Helper“ erlaubst. Nur er bekommt diese Berechtigungen, equipe und die Mitglieder nie. Die Bedienungshilfen-Engine läuft unter derselben Berechtigung, mehr ist nicht zu erlauben.",
   "desktop.guide_accessibility": "{step}. Systemeinstellungen › Datenschutz & Sicherheit › Bedienungshilfen: „equipe Desktop Helper“ einschalten. Der Schalter greift erst, wenn du mit Passwort oder Touch ID bestätigst.",
   "desktop.guide_screen": "{step}. Optional, für Bildschirmfotos: Systemeinstellungen › Datenschutz & Sicherheit › Bildschirm- & System-Audioaufnahme: „equipe Desktop Helper“ einschalten. Fragt macOS, ob er die private Fensterauswahl umgehen darf, wähle Erlauben.",
@@ -1389,5 +1389,10 @@
   "logins.cause_passkey": "Passkey",
   "logins.cause_device_code": "Gerätecode",
   "logins.cause_consent": "Zustimmung",
-  "logins.cause_other": "anderes"
+  "logins.cause_other": "anderes",
+  "desktop.auto_note": "Ab jetzt erledigt der Daemon das von selbst: Er installiert Engine und Helfer und zeigt dir den einen Schalter. Dieser Befehl tut es nur sofort.",
+  "onboard.desktop_note": "Optional: Mitglieder dürfen die Apps auf diesem Mac bedienen. equipe installiert alles Nötige selbst; macOS bittet dich nur um einen Schalter (Bedienungshilfen für „equipe Desktop Helper“). Überspringst du ihn, fragt equipe wieder, sobald ein Mitglied es erstmals braucht.",
+  "onboard.desktop_prompt": "Desktop-Apps jetzt einrichten?",
+  "onboard.desktop_skipped": "Übersprungen. equipe fragt wieder, sobald ein Mitglied erstmals Desktop-Apps braucht.",
+  "onboard.desktop_later": "Desktop-Apps sind noch nicht bereit: {why} equipe macht von selbst weiter; den Rest kannst du später unter Einstellungen › Squad › Desktop-Apps erledigen."
 }

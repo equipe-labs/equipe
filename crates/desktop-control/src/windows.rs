@@ -706,7 +706,7 @@ pub fn serve(home: &Path) -> std::io::Result<()> {
                 .map(|d| json!({ "width": d.frame.w, "height": d.frame.h, "scale": d.backing }));
             json!({ "screen": true, "accessibility": true, "post_events": true, "display": display, "session": { "locked": false } })
         },
-        |_| {},
+        |_, _| {},
     )
 }
 

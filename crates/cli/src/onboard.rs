@@ -295,7 +295,31 @@ async fn onboard(home: &Path, repo: Option<Folder>) -> Result<Start, String> {
     }
     let members: Vec<String> = team.iter().map(|r| (*r).to_owned()).collect();
     eprintln!();
+    desktop_step(home, &*theme, menu).await;
     Ok(Start { squad, members, offer: None })
+}
+
+/// The first run's one optional step on a Mac: members working its desktop
+/// apps. equipe installs the engine and the helper itself; the person is asked
+/// only for the one switch macOS keeps for them. Skipping asks again when a
+/// member first needs the desktop.
+async fn desktop_step(home: &Path, theme: &dyn dialoguer::theme::Theme, menu: usize) {
+    if !cfg!(target_os = "macos") || !ui::interactive() {
+        return;
+    }
+    let e = ui::err();
+    eprintln!("{}", e.note(2, t!("onboard.desktop_note")));
+    let yes = dialoguer::Confirm::with_theme(theme).with_prompt(ui::fit(t!("onboard.desktop_prompt"), menu)).default(true).interact_opt().ok().flatten().unwrap_or(false);
+    if !yes {
+        equipe_core::desktop::auto::skip(home);
+        eprintln!("{}\n", e.note(2, t!("onboard.desktop_skipped")));
+        return;
+    }
+    // The same walk-through `equipe desktop setup` gives; whatever stops it never stops onboarding.
+    if let Err(why) = crate::desktop::run(Some(crate::desktop::Action::Setup { sign: None })).await {
+        eprintln!("{}", e.note(2, &t!("onboard.desktop_later", why = why)));
+    }
+    eprintln!();
 }
 
 /// A menu line that never wraps. dialoguer measures its items in bytes when it

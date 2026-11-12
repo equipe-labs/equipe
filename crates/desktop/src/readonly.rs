@@ -166,6 +166,7 @@ pub fn reads(command: &Command) -> bool {
         | C::ShowBrowser { .. }
         | C::Desktop { .. }
         | C::DesktopCheck { .. }
+        | C::DesktopAuto { .. }
         | C::Suggestions { .. }
         | C::Unqueue { .. }
         | C::SendNow { .. }
@@ -570,6 +571,7 @@ mod tests {
             Command::ShowBrowser { squad: s(), member: None, show: true },
             Command::Desktop { open: false },
             Command::DesktopCheck { guide: true },
+            Command::DesktopAuto { action: equipe_core::protocol::DesktopAutoAction::Retry },
             Command::Suggestions { squad: s(), on: false },
             Command::Unqueue { session: 1, text: "x".into() },
             Command::SendNow { session: 1, texts: vec![] },

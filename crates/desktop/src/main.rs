@@ -5,6 +5,7 @@
 //! It draws only when the daemon says something changed or the person acts —
 //! see docs/DESKTOP.md. `EQUIPE_LOG_RENDER=1` prints a line per frame, to see that.
 
+
 mod asklist;
 #[cfg(unix)]
 mod askpass;
@@ -1174,6 +1175,12 @@ impl Shell {
                             }
                             continue;
                         }
+                        // The desktop is ready, newly: said once, in a line. The model keeps it for settings and the card.
+                        if let daemon::Update::Event(Event::DesktopReady { ready }) = &update
+                            && ready.setup == equipe_core::protocol::DesktopSetup::JustReady
+                        {
+                            this.composer.flash = Some(t!("desktop_setup.ready").into());
+                        }
                         // The engines: settings' AI platforms, never the model's.
                         if let daemon::Update::Event(event @ (Event::Engines { .. } | Event::Nebius { .. } | Event::Providers { .. } | Event::ProviderTested { .. } | Event::SignIn { .. } | Event::EngineAuth { .. } | Event::EngineInstall { .. })) = &update {
                             let effect = this.engines.on_event(event);
@@ -1306,6 +1313,8 @@ impl Shell {
                             }
                         }
                         if attached {
+                            // Where the desktop's own setup stands: the card, if there is one.
+                            this.send_command(Command::DesktopCheck { guide: false });
                             this.start_team();
                             this.apply_pending_mode();
                             // A new connection: the design system is asked for again, if on screen.
@@ -2012,7 +2021,7 @@ impl Shell {
                     Screen::Docs => views::docs::render(self, cx),
                     Screen::Studio => views::studio::render(self, cx),
                 };
-                v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).children(views::usage::banner(self, cx)).child(screen).into_any_element()
+                v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).children(views::desktop_setup::banner(self, cx)).children(views::usage::banner(self, cx)).child(screen).into_any_element()
             }
         }
     }

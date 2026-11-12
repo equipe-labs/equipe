@@ -17,7 +17,7 @@ crates.io; the patched GPUI crates under `vendor/` keep their own license files.
   identical to the `LICENSE` file of the upstream repository at tag `v1.2.0`.
   The upstream project publishes no `NOTICE` file at that version.
 - **How equipe uses it:** equipe neither bundles nor modifies agent-desktop, and
-  links none of its code. `equipe desktop setup` downloads the unmodified
+  links none of its code. equipe's daemon (or `equipe desktop setup`) downloads the unmodified
   upstream release archive for the machine from GitHub Releases, checks its
   SHA-256 against the value pinned in equipe (the release's `checksums.txt`;
   the archives also carry a Sigstore build attestation), checks each unpacked

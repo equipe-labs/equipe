@@ -1326,8 +1326,8 @@
   "desktop.fix_post_events": "アクセシビリティをオンにして、setup をもう一度実行してください",
   "desktop.check_engine": "アクセシビリティエンジン: agent-desktop {version}(チェックサム確認済み)",
   "desktop.check_engine_missing": "アクセシビリティエンジン(agent-desktop {version})",
-  "desktop.fix_engine_missing": "equipe desktop setup がダウンロードしてチェックサムを確認します",
-  "desktop.fix_engine_tampered": "固定されたチェックサムと一致しないため実行しません: equipe desktop setup をもう一度実行してください",
+  "desktop.fix_engine_missing": "equipe が自動でダウンロードしてチェックサムを確認します(今すぐなら equipe desktop setup)",
+  "desktop.fix_engine_tampered": "固定されたチェックサムと一致しないため実行しません: equipe が自動でインストールし直します(今すぐなら equipe desktop setup)",
   "desktop.check_engine_grant": "エンジンはヘルパーのアクセシビリティ権限で動きます",
   "desktop.fix_engine_grant": "「equipe Desktop Helper」のアクセシビリティをオンにして、equipe desktop setup をもう一度実行してください",
   "desktop.check_screen": "画面とシステムオーディオの録音(スクリーンショットにだけ必要)",
@@ -1342,7 +1342,7 @@
   "desktop.engine_installing": "アクセシビリティエンジン agent-desktop {version}(Apache-2.0)をダウンロード中…",
   "desktop.engine_installed": "agent-desktop {version} をインストールしました: チェックサム確認済み。",
   "desktop.engine_ready": "agent-desktop {version} はインストール済みで、確認済みです。",
-  "desktop.engine_failed": "agent-desktop をインストールできませんでした: {why}。スクリーンショットのツールは使えます。やり直すには equipe desktop setup を実行してください。",
+  "desktop.engine_failed": "agent-desktop をインストールできませんでした: {why}。スクリーンショットのツールは使えます。equipe が自動で再試行します。今すぐやり直すには equipe desktop setup を実行してください。",
   "desktop.guide_intro": "macOS が Mac の画面で「equipe Desktop Helper」を許可するか尋ねます。この権限を得るのはヘルパーだけで、equipe やメンバーは得ません。アクセシビリティエンジンも同じ権限で動くので、ほかに許可するものはありません。",
   "desktop.guide_accessibility": "{step}. システム設定 › プライバシーとセキュリティ › アクセシビリティ: 「equipe Desktop Helper」をオンにしてください。パスワードか Touch ID で確認すると有効になります。",
   "desktop.guide_screen": "{step}. 任意(スクリーンショット用): システム設定 › プライバシーとセキュリティ › 画面とシステムオーディオの録音: 「equipe Desktop Helper」をオンにしてください。プライベートウインドウピッカーの回避を尋ねられたら「許可」を選んでください。",
@@ -1366,5 +1366,10 @@
   "logins.cause_passkey": "パスキー",
   "logins.cause_device_code": "デバイスコード",
   "logins.cause_consent": "同意",
-  "logins.cause_other": "その他"
+  "logins.cause_other": "その他",
+  "desktop.auto_note": "今後はデーモンが自動で行います。エンジンとヘルパーをインストールし、ご自身でオンにするスイッチ1つだけをご案内します。このコマンドはそれを今すぐ行います。",
+  "onboard.desktop_note": "任意: メンバーがこのMacのアプリを扱えるようにします。必要なものはequipeが自動でインストールし、macOSがスイッチ1つ(\"equipe Desktop Helper\"のアクセシビリティ)だけをお願いします。スキップすると、メンバーが初めて必要としたときに再度お尋ねします。",
+  "onboard.desktop_prompt": "今デスクトップアプリを設定しますか?",
+  "onboard.desktop_skipped": "スキップしました。メンバーが初めてデスクトップアプリを必要としたときに、equipeがもう一度お尋ねします。",
+  "onboard.desktop_later": "デスクトップアプリはまだ準備できていません: {why} equipeは自動で続け、残りは設定 › スクワッド › デスクトップアプリであとから完了できます。"
 }

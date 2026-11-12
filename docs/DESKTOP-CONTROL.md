@@ -72,8 +72,7 @@ helper's process, the CLI as a child process, or `agent-desktop mcp`.
 
 ### Pinned, verified, private
 
-- One release: `engine::pin::VERSION` = 1.2.0. `equipe desktop setup`
-  downloads the upstream archive for the machine (macOS arm64/x86_64, Windows
+- One release: `engine::pin::VERSION` = 1.2.0. equipe downloads the upstream archive for the machine (macOS arm64/x86_64, Windows
   x64/arm64), checks its SHA-256 against the value pinned in code (from the
   release's `checksums.txt`; each archive's Sigstore attestation was checked with
   `gh attestation verify` when pinning), unpacks only the pinned files with the
@@ -163,7 +162,8 @@ focused or last non-empty text field of the same snapshot. So:
 - **One grant matters: Accessibility for "equipe Desktop Helper".** It covers
   the tree, ref actions and input, and agent-desktop under it. Screen
   Recording is optional now — only screenshots and the send-approval picture.
-- `equipe desktop setup` installs the helper and the engine and walks the person
+- The daemon sets all of it up by itself — see [Automatic setup](#automatic-setup)
+  below. `equipe desktop setup` does the same right away and walks the person
   through the grant; `equipe desktop status` lists every check (GUI session,
   daemon, engine installed and verified, helper, Accessibility, input, the
   engine working under the helper's grant, Screen Recording, display, lock) — in
@@ -196,18 +196,84 @@ changed instead of leaving the model to find it in pixels. The raw JSON alone
 would cost more than a screenshot: compaction (short refs, no
 `available_actions`, empty wrappers folded, values cut) is what makes the tree cheap.
 
+### Automatic setup
+
+The person's only step is the one switch macOS keeps for them. Everything else
+is the daemon's (`equipe-core`, `desktop::auto`; every machine-touching call
+sits behind its `Ops` trait, so the whole of it is tested with fakes that touch
+no permission, no screen and no network).
+
+| Step | Who | When |
+|---|---|---|
+| Engine: download, verify the pinned SHA-256s, install | daemon, in the background, off the main loop (15 s after it starts) | the engine is missing, doesn't verify, or `VERSION` changed (`equipe update` restarts the daemon) — for every user, from the first daemon start |
+| Helper: install and sign the bundle, load its LaunchAgent, keep it current | daemon | once a member works the desktop (turned on for someone, or a desktop tool was called) and someone is logged in at the Mac |
+| macOS's Accessibility prompt for the helper | daemon, **once** (`_request_accessibility`) | engine ready, helper answering, grant missing, desktop wanted |
+| The switch | **the person** | the card below, or the first-run step |
+| Watching for the switch, the status check, "Desktop apps ready" | daemon: a light poll (4 s for 10 minutes, then 30 s) while the card is up | the grant appears |
+
+equipe never tries to get around TCC: no `tccutil`, no edits to the permission
+database, no clicks on System Settings. The card's button opens System Settings
+at Privacy & Security › Accessibility (the same pane "Allow…" opens, on the
+daemon's machine even over SSH) with the helper already listed; the system's
+own prompt was shown once before it.
+
+- **A failure** (offline, a checksum that doesn't match, the helper can't be
+  installed) is shown once as a card in plain words with **Try again**, and
+  tried again quietly with a growing wait (2 min, 10 min, 1 h, 6 h). It never
+  blocks the daemon, and the screenshot tools keep working. It is only shown
+  when the desktop is wanted.
+- **No nagging.** "Not now" puts the card away (`~/.equipe/desktop/setup.json`).
+  It comes back only when a member actually needs the desktop and can't have it
+  (a tool call refused because the switch is off), and then at most once in six
+  hours — except after skipping in the first run, which is undone by the first
+  member who needs the desktop.
+- **Members** are told in one short line what is missing and whether to retry:
+  "equipe is still setting up the engine, call again in a minute", or "needs one
+  switch only the person can flip — don't retry, do something else". Screenshots
+  need neither the engine nor Accessibility and are never held back by it.
+- **First run.** The desktop app's first-run screen (and the terminal's
+  onboarding, on a Mac) has one optional step, "Desktop apps": it explains in
+  two sentences, then sets up on a thread of its own (no daemon is in the loop
+  yet), shows macOS's prompt, and offers **Open System Settings** until the
+  switch is on. **Skip for now** is a full answer.
+- **Managed Macs (MDM).** Accessibility can be pre-approved by a configuration
+  profile on a supervised or MDM-managed Mac, so nobody flips anything: push a
+  Privacy Preferences Policy Control (PPPC) payload (`com.apple.TCC.configuration-profile-policy`)
+  with an `Accessibility` entry for the helper, `Authorization` = `Allow`, with
+  `Identifier` = `im.equipe.desktop-helper`, `IdentifierType` = `bundleID` and
+  the `CodeRequirement` that `codesign -d -r- "~/Applications/equipe Desktop
+  Helper.app"` prints (`equipe desktop setup` prints it as well). The
+  requirement depends on how the helper is signed — a Developer ID
+  (`equipe desktop setup --sign "<identity>"`) is the right choice for a fleet,
+  since a self-signed certificate is different on every Mac. When the profile
+  is in place the daemon sees the grant on its first look and says "Desktop
+  apps ready" without a card. Only Accessibility can be pre-approved this way;
+  Screen Recording can only be allowed by the person (a profile can merely let
+  standard users approve it). equipe ships no profile of its own.
+- **Windows** needs no grant: UI Automation works in the person's session. The
+  daemon downloads the engine automatically and starts the helper
+  (`equipe desktop serve`, detached) when a member first needs the desktop; a
+  helper left over from an older equipe isn't replaced automatically yet.
+- **Linux** has no helper yet. agent-desktop itself ships for Linux; to bring it
+  here equipe will need an X11 or Wayland session with a running AT-SPI bus
+  (the desktop's accessibility service, `at-spi2-core`) and toolkits' accessibility
+  switched on (`gsettings set org.gnome.desktop.interface toolkit-accessibility true`
+  on GNOME), a user session rather than a bare SSH shell, and, on Wayland, the
+  compositor's portal for screen capture. None of that is set up or checked
+  today: `equipe desktop` says so and exits.
+- Opt out of all of it with `EQUIPE_NO_DESKTOP_AUTO=1` in the daemon's environment.
+
 ### What needs the person on a real Mac
 
 Not run against a live desktop while building this (by rule): everything above
-is tested with a stand-in agent-desktop and recorded-shape JSON. On a real Mac,
-the person:
+is tested with fakes and a stand-in agent-desktop. On a real Mac, the person:
 
-1. runs `equipe desktop setup` while logged in at the Mac (downloads and
-   verifies agent-desktop; installs or updates the helper bundle);
+1. does nothing for the engine and the helper;
 2. switches on **Accessibility** for "equipe Desktop Helper" (password or Touch
-   ID) — or clicks **Allow…** in Settings › Squad › Desktop apps;
-3. optionally switches on **Screen Recording** for it (screenshots);
-4. checks `equipe desktop status`: "The engine works under the helper's
+   ID) when the card, the first-run step or macOS's prompt asks — the one switch;
+3. optionally switches on **Screen Recording** for it (screenshots), from
+   Settings › Squad › Desktop apps › Allow…;
+4. can check `equipe desktop status`: "The engine works under the helper's
    Accessibility permission" must be ✓. If macOS lists `agent-desktop`
    separately and the line stays ✗, the responsible-process attribution didn't
    hold on that macOS version: grant the listed binary too and report it.

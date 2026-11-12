@@ -143,6 +143,11 @@ async fn serve_until(
     let (core, own_events) = runtime::start(config);
     // Screens subscribe for themselves; an unread receiver would only pile up events.
     drop(own_events);
+    // The person's own daemon sets the Mac's desktop up by itself; a test's or
+    // a check's (one that leaves on its own) installs nothing.
+    if leave.hung.is_some() && !leave.home_gone && std::env::var_os("EQUIPE_NO_DESKTOP_AUTO").is_none() {
+        core.start_desktop_auto();
+    }
     let healing = leave.hung.map(|after| core.heal_when_hung(after, Some(home.join("daemon-hang.txt"))));
     let (stop_tx, mut stop_rx) = mpsc::unbounded_channel::<oneshot::Sender<()>>();
     let screens = Screens::new();

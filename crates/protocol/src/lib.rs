@@ -1221,6 +1221,9 @@ pub enum Command {
         #[serde(default)]
         guide: bool,
     },
+    /// The person answers the desktop setup equipe runs by itself
+    /// ([`DesktopSetup`]): try again after a failure, or put its card away.
+    DesktopAuto { action: DesktopAutoAction },
     /// Whether the squad's empty composer offers a guess at the person's next
     /// message after a member answers them ([`Event::Suggestion`]). On unless
     /// turned off; kept for the squad.
@@ -2005,6 +2008,58 @@ impl DesktopState {
     }
 }
 
+/// What the person does with the desktop setup's card ([`Command::DesktopAuto`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopAutoAction {
+    /// Set up again now, after a failure.
+    Retry,
+    /// Put the card away. It stays away until a member needs the desktop.
+    Dismiss,
+}
+
+/// Why equipe's own desktop setup stopped, in a word a screen can say in the
+/// person's language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopFailure {
+    /// The engine couldn't be downloaded (offline, a proxy, GitHub down).
+    Download,
+    /// What came down isn't the pinned release: nothing was installed.
+    Checksum,
+    /// The desktop helper couldn't be installed or started.
+    Helper,
+    /// Nobody is logged in at the Mac's screen.
+    Session,
+    Other,
+}
+
+/// Where equipe's own desktop setup stands — the part that needs no one — and
+/// the one thing it may ask of the person. The daemon installs the engine and
+/// the helper itself and watches for the one switch macOS keeps for the
+/// person; a screen shows what is here and nothing else.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum DesktopSetup {
+    /// Nothing to say: set up, not wanted yet, or the person put the card away.
+    #[default]
+    Idle,
+    /// Downloading and checking the engine, or installing the helper.
+    Installing,
+    /// It could not be set up. Told once; `Retry` tries again.
+    Failed {
+        reason: DesktopFailure,
+        /// What went wrong, as the machine said it (English, for the curious).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        detail: String,
+    },
+    /// The one switch: Accessibility for "equipe Desktop Helper", in System
+    /// Settings. macOS keeps it for the person.
+    Grant,
+    /// It just became ready: told once.
+    JustReady,
+}
+
 /// What members working the desktop need on the daemon's machine, and what
 /// it has: the desktop helper and its permissions, the accessibility engine
 /// (agent-desktop) and the session. Nothing in it is private.
@@ -2034,6 +2089,9 @@ pub struct DesktopReadiness {
     /// The screen is locked: nothing acts until the person unlocks it.
     #[serde(default)]
     pub locked: bool,
+    /// Where the daemon's own setup stands, and the card it asks for.
+    #[serde(default)]
+    pub setup: DesktopSetup,
 }
 
 impl DesktopReadiness {
@@ -3482,6 +3540,26 @@ pub struct Snapshot {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_desktop_setups_state_travels_and_an_older_daemons_readiness_still_reads() {
+        for setup in [
+            DesktopSetup::Idle,
+            DesktopSetup::Installing,
+            DesktopSetup::Failed { reason: DesktopFailure::Download, detail: "offline".into() },
+            DesktopSetup::Grant,
+            DesktopSetup::JustReady,
+        ] {
+            let ready = DesktopReadiness { supported: true, setup: setup.clone(), ..Default::default() };
+            let back: DesktopReadiness = serde_json::from_str(&serde_json::to_string(&ready).unwrap()).unwrap();
+            assert_eq!(back.setup, setup);
+        }
+        // A daemon from before the setup was automatic sends none of it.
+        let old: DesktopReadiness = serde_json::from_value(json!({ "supported": true, "helper": true, "accessibility": false })).unwrap();
+        assert_eq!(old.setup, DesktopSetup::Idle);
+        let command: Command = serde_json::from_value(json!({ "type": "desktop_auto", "action": "dismiss" })).unwrap();
+        assert!(matches!(command, Command::DesktopAuto { action: DesktopAutoAction::Dismiss }));
+    }
 
     #[test]
     fn the_screens_line_names_other_squads_members_in_full() {
