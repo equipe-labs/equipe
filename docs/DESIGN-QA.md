@@ -8,6 +8,64 @@ squad does. So before any designer turn, equipe runs a **precheck** that needs n
 report settles, the designer works on what is left on a **cheaper model tier**, and every design QA ticket is
 **measured** so the change can be judged on numbers.
 
+## Modes: risk-based (default) or per ticket
+
+A squad runs design QA in one of two modes (`equipe design qa-config --mode risk_batch | per_ticket`):
+
+- **`risk_batch`** (the default; a squad that ran design QA before moves to it once, and the person is told how to go
+  back) — the precheck below runs on every screen-changing hand-in as the engineer's **self-check**, and
+  [the route](#risk-based-routing) decides what happens next: refused back to the engineer, a designer now in a
+  **light session**, or on without a designer turn into the **daily design review**, a random sample of which is
+  **audited** on the top tier.
+- **`per_ticket`** — every screen-changing hand-in gets its own design QA ticket, with the precheck and its gate as
+  described from [The precheck](#the-precheck) on. This is how design QA ran before modes.
+
+### Risk-based routing
+
+`crate::design_qa::route` reads the precheck's report and the ticket's structure — never its words:
+
+| Route | When |
+|---|---|
+| **refused** | the report has new S1/S2 findings (content lost, AA failures, sideways scroll, text over text) and the engineer didn't waive them. The hand-in goes straight back with the findings, no designer turn and no model escalation; the engineer fixes them, or hands in again with `waive_findings` and a reason. |
+| **per ticket** | high risk: findings the engineer **waived**; **new screens or states** (rendered states the map had no picture of at the base); **6 or more changed screens**; a designer's **spec attached** (its plan is a design file, or its body names a mockup under `design/` or a written spec in a `specs/`, `mockups/`, `screens/` or `redesign/` folder there — not the map, design QA's reports, the checks or the system's own `guidelines.md` / `tokens.json`, which every ticket names; who wrote the ticket says nothing by itself); a **re-check** after a designer's send-back; or the precheck **couldn't see it** (no report, nothing or half the pictures rendered); or 10+ unmapped UI files. |
+| **batch** | everything else: on to the person's (or PM's) review now, and into the next daily design review. |
+
+The engineer can run the self-check itself before handing in: `equipe design precheck --worktree .`.
+
+### The light session
+
+A per-ticket design QA whose report shows enough (and every daily review and audit) runs as a **light session**: its
+working folder is the report's folder — no repository checkout, no squad home — with a short QA-only charter instead
+of the designer's, no skills, and only `design_qa` / `design_review`, `qa_pictures` and `comment` as board tools (on
+Claude Code, only `Read`, `Glob` and `Grep` built in). Its brief holds the ticket's body and hand-in (clipped), why it is
+high-risk, the engineer's waiver, excerpts of the spec files the ticket names (pictures copied beside the report), the
+report's summary and the flagged crops to look at first. `qa_pictures` gives the precheck's pictures of a state at the
+conditions asked for, and renders a state it left out from the change's worktree (`equipe design precheck --states`)
+outside the engine's sandbox. It runs on the cheap tier (the top one from a ticket's third round on); a model the person
+set for the designer is still the floor.
+
+### The daily design review and the audit
+
+Once a day at `--batch-at` (default 18:00, local) — or as soon as `--batch-size` (default 12) changes wait — equipe
+puts **one** review ticket on the board for the designer with every change let through since the last one (up to 20, so one review stays small; the rest wait for the next),
+and runs the precheck on **main** (a detached worktree of main's head, compared with where the last review left main)
+for each project. The designer looks at them together and finishes with `design_review`: one entry per change (it is
+refused until every change has one); each S1/S2 becomes a high-priority fix ticket for that change's engineer, and all
+S3/S4 go into one proposed polish ticket.
+
+Beside it, a **random sample** (`--sample`, default 15%, rounded up, reproducible from the review's ticket number) of
+the same changes goes into an **audit** ticket on the top tier, audited as its own design QA would be. An S1/S2 the
+audit finds is a **miss** of the routing: it is recorded (`design_qa_runs.audit_verdict`) and files a fix ticket. When
+more than `--audit-miss` (default 10%) of the latest 20 audited changes (at least 5) missed, routing **tightens** — 2
+changed screens already make a change high-risk, any new finding does, and the sample doubles (up to 50%) — and the
+person is told; after 10 audited changes in a row with no miss it relaxes, and the person is told again
+(`--relax` relaxes it by hand).
+
+```sh
+equipe design qa-config --mode risk_batch --batch-at 18:00 --batch-size 12 --sample 15 --audit-miss 10
+equipe design qa-config --mode per_ticket          # back to a designer turn on every change
+```
+
 ## The precheck
 
 `equipe design precheck` (run by the daemon on each hand-in, off its loop, with the design QA ticket held off the
@@ -139,6 +197,9 @@ equipe design qa-config --gate on            # off | shadow | on
 equipe design qa-config --tiers economy      # economy | quality | <cheap>/<top>
 ```
 
+In `risk_batch` the gate's setting only decides whether the precheck runs (`off`: no precheck, so every change gets a
+designer's full look); `shadow` and `on` both let the route act.
+
 With a report, the designer's brief (`qa_prompt`, and the `design-qa` skill) starts from its summary and flagged
 pictures, doesn't re-shoot or re-measure, and spends its look on the spec, the states and what truly costs the person
 something; it renders only what the precheck couldn't. The precheck's pictures count as the designer's own for the
@@ -173,12 +234,21 @@ equipe design qa-stats --squad acme --since 7d
 equipe design qa-stats --since 2026-11-01 --json
 ```
 
-It prints the count, verdicts and pass rate; tokens in all and per ticket (cache read and write, input, output); turns,
+It prints the count, verdicts and pass rate (a change let into the daily review counts as passed, a self-check refusal as
+sent back); tokens in all and per ticket (cache read and write, input, output); turns,
 tool calls and time; rounds; the same by model tier and by gate mode (`before` for tickets from before the precheck,
 found by their record); and a count, with tokens per ticket, **per judgment reason** (`capped`, `unmapped`, `not_rendered`…, `none` for a
 designer's plain look, `auto_pass`, `send_back`) so the distribution is visible directly; and the gate's agreement with designers — would pass and passed, would pass but sent back
 (the risky miss), would send back and sent back, would send back but passed — plus what the gate did by itself. It
 opens the journal read-only, so it is safe while the daemon runs.
+
+It also prints, by mode (`per_ticket`, `risk_batch`, `before`) and in `risk_batch` by route (`refused`, `per_ticket`,
+`batch`), the same sums; the self-check's refusals and waivers and how many designer looks were light sessions; the
+daily reviews and audits with their own tokens (per review and per change covered), their S1/S2s, fix tickets and
+polish; the audits' miss rate; and **design QA's share of all the squad's tokens** over the same time (design QA
+tickets, reviews and audits against every turn's tokens). `--compare <day or span>` splits the window there and prints
+before and after side by side — tokens per ticket, share, pass rate, hand-ins at three rounds or more, tool calls per
+ticket. The weekly retro gets the week's line (routes, reviews, tokens and share, long rounds, audit misses).
 
 ## Replaying past design QA
 
@@ -211,7 +281,12 @@ tokens are compared with the recorded ones. Everything is kept in `~/.equipe/des
   so it counts as new whenever its screen changed.
 - States shot by a `command` get pictures only: no DOM checks, and no 200% conditions unless the map's `modes` give
   them.
-- Redesign detection reads English words in the checked ticket.
+- In `per_ticket` mode, redesign detection (for the tier) reads English words in the checked ticket; `risk_batch`'s
+  routing reads only the map and the ticket's structure.
+- Main's precheck for the daily review needs the map's `precheck.preview` to serve main; when it can't run, the review
+  is judged from each change's own report.
+- `qa_pictures` renders a state the precheck left out only for a per-ticket session whose change still has its
+  worktree; in a review or audit it gives what was taken.
 - The UI-file heuristics read paths and file contents, not import graphs: a shared helper nobody's `source` lists, with
   no JSX, whose change moves a layout is only seen if a touched screen's pictures change.
 - Past the time budget a state is left out whole (and so never passes); a repo whose preview is slow gets more

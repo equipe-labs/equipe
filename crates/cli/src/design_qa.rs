@@ -37,6 +37,9 @@ pub struct PrecheckArgs {
     /// How long rendering may take in all, in seconds
     #[arg(long, default_value_t = 900)]
     pub budget_secs: u64,
+    /// Only these states, `flow/screen/state`, whatever the change touched (pictures a designer asked for)
+    #[arg(long, value_delimiter = ',')]
+    pub states: Vec<String>,
     /// Print the report as JSON
     #[arg(long)]
     pub json: bool,
@@ -50,6 +53,9 @@ pub struct QaStatsArgs {
     /// From when: 7d, 24h, 2w, or a day (2026-11-01)
     #[arg(long, default_value = "30d")]
     pub since: String,
+    /// Compare before and after this day or span back (e.g. the day risk_batch started): 2026-11-10, 3d
+    #[arg(long)]
+    pub compare: Option<String>,
     /// Every ticket and the sums, as JSON
     #[arg(long)]
     pub json: bool,
@@ -66,6 +72,24 @@ pub struct QaConfigArgs {
     /// Design QA's model tiers: economy (standard, deep when it takes judgment), quality (deep always), or <cheap>/<top>
     #[arg(long)]
     pub tiers: Option<String>,
+    /// How design QA runs: risk_batch (only high-risk changes get a designer turn; the rest go into a daily review) or per_ticket (every change, as before)
+    #[arg(long)]
+    pub mode: Option<String>,
+    /// The daily design review's local time, HH:MM
+    #[arg(long)]
+    pub batch_at: Option<String>,
+    /// A review is made as soon as this many changes wait
+    #[arg(long)]
+    pub batch_size: Option<usize>,
+    /// The share of changes let through without a designer that is audited on the top tier, in percent (10 to 20 is usual)
+    #[arg(long)]
+    pub sample: Option<u8>,
+    /// Audit misses over this share, in percent, tighten the routing
+    #[arg(long)]
+    pub audit_miss: Option<u8>,
+    /// Relax tightened routing now
+    #[arg(long)]
+    pub relax: bool,
 }
 
 #[derive(Args)]
@@ -219,6 +243,8 @@ pub(crate) struct Run {
     pub url: Option<String>,
     pub ticket: Option<u64>,
     pub budget: Duration,
+    /// Only these states (`flow/screen/state`); empty: what the change touched.
+    pub states: Vec<String>,
 }
 
 fn key_of(s: &flows::Shot) -> String {
@@ -269,8 +295,13 @@ pub(crate) async fn run(r: &Run) -> Result<precheck::Report, String> {
     // The most relevant first: screens whose own source changed, each one's default state before its others.
     precheck::prioritize(&mut states, &touched.source_hits, |s| (format!("{}/{}", s.flow, s.screen), s.state == "default"));
     let (kept, cut) = precheck::take_most_relevant(states, config.max_states());
-    let states = kept;
+    let mut states = kept;
     let mut left_out: Vec<String> = cut.iter().map(key_of).collect();
+    // A designer asked for these: rendered whatever the change touched, nothing else.
+    if !r.states.is_empty() {
+        states = flows::shots(&design).into_iter().filter(|s| r.states.contains(&key_of(s))).collect();
+        left_out.clear();
+    }
     let (by_command, rest): (Vec<flows::Shot>, Vec<flows::Shot>) = states.into_iter().partition(|s| s.command.is_some());
     let (by_url, neither): (Vec<flows::Shot>, Vec<flows::Shot>) = rest.into_iter().partition(|s| s.url.is_some());
     let mut taken: Vec<precheck::Taken> = Vec::new();
@@ -439,7 +470,7 @@ async fn shoot_by_command(s: &flows::Shot, root: &Path, path: &Path, width: u32,
 }
 
 pub async fn precheck_command(a: PrecheckArgs) -> Result<(), String> {
-    let report = run(&Run { worktree: a.worktree, base: a.base, out: a.out.clone(), url: a.url, ticket: a.ticket, budget: Duration::from_secs(a.budget_secs) }).await?;
+    let report = run(&Run { worktree: a.worktree, base: a.base, out: a.out.clone(), url: a.url, ticket: a.ticket, budget: Duration::from_secs(a.budget_secs), states: a.states }).await?;
     if a.json {
         println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
         return Ok(());
@@ -527,18 +558,89 @@ pub(crate) fn stats_text(squad: &str, since: &str, s: &qa_stats::Stats) -> Strin
     if g.acted_pass + g.acted_back > 0 {
         out.push(t!("design.qa_stats.acted", pass = g.acted_pass, back = g.acted_back));
     }
+    out.extend(risk_lines(s));
     out.join("\n")
+}
+
+/// What `qa-stats` says of modes, routes, reviews, audits and the squad's share.
+fn risk_lines(s: &qa_stats::Stats) -> Vec<String> {
+    let mut out = Vec::new();
+    if !s.by_mode.is_empty() {
+        out.push(t!("design.qa_stats.by_mode").to_owned());
+        out.extend(s.by_mode.iter().map(|(mode, sums)| row_line(mode, sums)));
+    }
+    if !s.by_route.is_empty() {
+        out.push(t!("design.qa_stats.by_route").to_owned());
+        out.extend(s.by_route.iter().map(|(route, sums)| row_line(route, sums)));
+        out.push(t!("design.qa_stats.self_check", refused = s.refused, waived = s.waived, lite = s.lite));
+    }
+    for (key, b) in [("design.qa_stats.reviews", &s.reviews), ("design.qa_stats.audits", &s.audits)] {
+        if b.tickets > 0 {
+            let line = if key == "design.qa_stats.reviews" {
+                t!("design.qa_stats.reviews", count = b.tickets, items = b.items, total = amount(b.tokens), per = amount(b.per_ticket()), per_item = amount(b.per_item()), calls = per(b.calls, b.tickets), blockers = b.blockers, fixes = b.fixes, polish = b.polish)
+            } else {
+                t!("design.qa_stats.audits", count = b.tickets, items = b.items, total = amount(b.tokens), per_item = amount(b.per_item()), blockers = b.blockers)
+            };
+            out.push(line);
+        }
+    }
+    if s.audited > 0 {
+        out.push(t!("design.qa_stats.misses", audited = s.audited, misses = s.misses, rate = rate(s.miss_rate())));
+    }
+    if let Some(share) = s.share() {
+        out.push(t!("design.qa_stats.share", total = amount(s.tokens()), squad = amount(s.squad_tokens), share = format!("{share:.1}%")));
+    }
+    out
+}
+
+/// Before and after `at`, side by side: what changed.
+fn compare_text(at: &str, before: &qa_stats::Stats, after: &qa_stats::Stats) -> String {
+    let share = |s: &qa_stats::Stats| s.share().map_or_else(|| "—".to_owned(), |p| format!("{p:.1}%"));
+    let line = |name: &str, s: &qa_stats::Stats| {
+        t!(
+            "design.qa_stats.compare_row",
+            name = name,
+            count = s.all.tickets,
+            per = amount(s.all.per_ticket()),
+            total = amount(s.tokens()),
+            share = share(s),
+            rate = rate(s.all.pass_rate()),
+            long = s.long_rounds(),
+            calls = per(s.all.calls, s.all.tickets)
+        )
+    };
+    [t!("design.qa_stats.compare", at = at), line(t!("design.qa_stats.before"), before), line(t!("design.qa_stats.after"), after)].join("\n")
+}
+
+/// The stats of `db` between `since` and `until`, with reviews, audits and the squad's tokens.
+fn stats_between(db: &Path, since: i64, until: i64) -> Result<(Vec<qa_stats::QaRow>, qa_stats::Stats), String> {
+    let rows = qa_stats::read_between(db, since, until)?;
+    let batches = qa_stats::read_batches(db, since, until)?;
+    let squad = qa_stats::squad_tokens(db, since, until).unwrap_or(0);
+    let stats = qa_stats::summarize(&rows).with_batches(&batches, squad);
+    Ok((rows, stats))
 }
 
 pub fn qa_stats_command(a: QaStatsArgs) -> Result<(), String> {
     let (squad, db) = squad_db(a.squad)?;
-    let since = qa_stats::since(&a.since, now()).ok_or_else(|| t!("design.qa.bad_since", since = a.since))?;
-    let rows = qa_stats::read(&db, since)?;
-    let stats = qa_stats::summarize(&rows);
+    let now = now();
+    let since = qa_stats::since(&a.since, now).ok_or_else(|| t!("design.qa.bad_since", since = a.since))?;
+    let (rows, stats) = stats_between(&db, since, i64::MAX)?;
+    let compared = match &a.compare {
+        Some(at_text) => {
+            let at = qa_stats::since(at_text, now).ok_or_else(|| t!("design.qa.bad_since", since = at_text))?;
+            Some((at_text.clone(), stats_between(&db, since, at)?.1, stats_between(&db, at, i64::MAX)?.1))
+        }
+        None => None,
+    };
     if a.json {
-        println!("{}", serde_json::to_string_pretty(&json!({ "squad": squad, "since": since, "stats": stats, "tickets": rows })).unwrap_or_default());
+        let compare = compared.as_ref().map(|(at, before, after)| json!({ "at": at, "before": before, "after": after }));
+        println!("{}", serde_json::to_string_pretty(&json!({ "squad": squad, "since": since, "stats": stats, "tickets": rows, "compare": compare })).unwrap_or_default());
     } else {
         println!("{}", stats_text(&squad, &a.since, &stats));
+        if let Some((at, before, after)) = &compared {
+            println!("{}", compare_text(at, before, after));
+        }
     }
     Ok(())
 }
@@ -550,19 +652,89 @@ pub fn qa_config_command(a: QaConfigArgs) -> Result<(), String> {
     let journal = equipe_core::journal::Journal::for_squad(&home, &squad).map_err(|e| e.to_string())?;
     let gate = a.gate.as_deref().map(|g| GateMode::parse(g).ok_or_else(|| t!("design.qa_config.bad_gate").to_owned())).transpose()?;
     let tiers = a.tiers.as_deref().map(|p| TierPolicy::parse(p).ok_or_else(|| t!("design.qa_config.bad_tiers").to_owned())).transpose()?;
+    let mode = a.mode.as_deref().map(|m| design_qa::Mode::parse(m).ok_or_else(|| t!("design.qa_config.bad_mode").to_owned())).transpose()?;
+    let batch_at = a.batch_at.as_deref().map(|b| design_qa::parse_time(b).ok_or_else(|| t!("design.qa_config.bad_time").to_owned())).transpose()?;
+    if a.sample.is_some_and(|n| n > 100) || a.audit_miss.is_some_and(|n| n > 100) {
+        return Err(t!("design.qa_config.bad_percent").to_owned());
+    }
+    fn e(err: impl std::fmt::Display) -> String {
+        err.to_string()
+    }
     if let Some(gate) = gate {
-        journal.set_design_qa_gate(gate).map_err(|e| e.to_string())?;
+        journal.set_design_qa_gate(gate).map_err(e)?;
     }
     if let Some(tiers) = tiers {
-        journal.set_design_qa_tiers(tiers).map_err(|e| e.to_string())?;
+        journal.set_design_qa_tiers(tiers).map_err(e)?;
     }
+    if let Some(mode) = mode {
+        journal.set_design_qa_mode(mode).map_err(e)?;
+    }
+    if let Some(at) = batch_at {
+        journal.set_design_qa_batch_at(at).map_err(e)?;
+    }
+    if let Some(n) = a.batch_size {
+        journal.set_design_qa_batch_size(n).map_err(e)?;
+    }
+    if let Some(n) = a.sample {
+        journal.set_design_qa_sample(n).map_err(e)?;
+    }
+    if let Some(n) = a.audit_miss {
+        journal.set_design_qa_audit_miss(n).map_err(e)?;
+    }
+    if a.relax {
+        journal.set_design_qa_tight(false).map_err(e)?;
+    }
+    let changed = gate.is_some() || tiers.is_some() || mode.is_some() || batch_at.is_some() || a.batch_size.is_some() || a.sample.is_some() || a.audit_miss.is_some() || a.relax;
     let (now_gate, now_tiers) = (journal.design_qa_gate().code(), journal.design_qa_tiers().code());
-    if gate.is_some() || tiers.is_some() {
+    if changed {
         println!("{}", t!("design.qa_config.set", squad = squad, gate = now_gate, tiers = now_tiers));
     } else {
         println!("{}", t!("design.qa_config.now", squad = squad, gate = now_gate, tiers = now_tiers));
     }
+    println!("{}", settings_line(&journal.design_qa_settings()));
     Ok(())
+}
+
+/// The squad's design QA mode, daily review and audit settings, in a line.
+fn settings_line(s: &design_qa::Settings) -> String {
+    let line = t!(
+        "design.qa_config.mode",
+        mode = s.mode.code(),
+        at = design_qa::time_code(s.batch_at),
+        size = s.batch_size,
+        sample = s.sample_now(),
+        miss = s.audit_miss
+    );
+    if s.tight { format!("{line}\n{}", t!("design.qa_config.tight")) } else { line }
+}
+
+/// `qa_pictures` for a light design QA session, run by its board server:
+/// the daemon finds what the precheck took; what it didn't take is rendered
+/// here, from the change's worktree, outside the engine's sandbox.
+pub(crate) async fn pictures_from_board(socket: &Path, squad: &str, member: &str, run_key: Option<equipe_core::protocol::rpc::RunKey>, arguments: &Value) -> equipe_core::protocol::rpc::ToolResult {
+    use equipe_core::protocol::rpc::{ToolCall, ToolResult};
+    let failed = |text: String| ToolResult { text, is_error: true, image: None };
+    let mut asked = arguments.clone();
+    asked["_server"] = json!(true);
+    let call = ToolCall { squad: squad.to_owned(), member: member.to_owned(), name: equipe_core::board::QA_PICTURES.to_owned(), arguments: asked, run: run_key };
+    let answer = match equipe_core::gateway::call_tool(socket, &call).await {
+        Ok(answer) if answer.is_error => return answer,
+        Ok(answer) => answer,
+        Err(err) => return failed(format!("equipe's daemon didn't answer: {err}")),
+    };
+    let Ok(found) = serde_json::from_str::<Value>(&answer.text) else { return answer };
+    let strs = |key: &str| -> Vec<String> { found[key].as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default() };
+    let (mut pictures, mut missing, conditions) = (strs("found"), strs("missing"), strs("conditions"));
+    if let (false, Some(worktree), Some(out)) = (missing.is_empty(), found["render"]["worktree"].as_str(), found["render"]["out"].as_str()) {
+        let out = PathBuf::from(out);
+        let rendered = run(&Run { worktree: PathBuf::from(worktree), base: None, out: out.clone(), url: None, ticket: None, budget: Duration::from_secs(240), states: missing.clone() }).await;
+        if rendered.is_ok() {
+            let (more, still) = design_qa::find_pictures(std::slice::from_ref(&out), &missing, &conditions);
+            pictures.extend(more);
+            missing = still;
+        }
+    }
+    ToolResult { text: design_qa::pictures_said(&pictures, &missing), is_error: false, image: None }
 }
 
 // ── replay ──
@@ -698,7 +870,7 @@ async fn replay_one(db: &Path, row: &qa_stats::QaRow, a: &QaReplayArgs, out: &Pa
     let seeded = wt.clone();
     let _ = tokio::task::spawn_blocking(move || equipe_core::worktree::seed_dependencies(&seeded)).await;
     let dir = out.join(format!("T-{}", row.qa));
-    let result = run(&Run { worktree: wt.clone(), base: base.clone().or_else(|| equipe_core::worktree::main_branch(&repo).ok()), out: dir.clone(), url: None, ticket: Some(checked_id), budget: Duration::from_secs(a.budget_secs) }).await;
+    let result = run(&Run { worktree: wt.clone(), base: base.clone().or_else(|| equipe_core::worktree::main_branch(&repo).ok()), out: dir.clone(), url: None, ticket: Some(checked_id), budget: Duration::from_secs(a.budget_secs), states: Vec::new() }).await;
     let call = design_qa::gate(result.as_ref().ok());
     r.decision = Some(call.decision.code().to_owned());
     r.judgment = call.judgment.map(|j| j.code().to_owned());
@@ -847,12 +1019,12 @@ mod tests {
             std::fs::write(repo.join(format!("src/many/{n}.css")), "a{}").unwrap();
         }
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let report = rt.block_on(run(&Run { worktree: repo.clone(), base: Some("main".into()), out: dir.join("out"), url: None, ticket: Some(3), budget: Duration::from_secs(60) })).unwrap();
+        let report = rt.block_on(run(&Run { worktree: repo.clone(), base: Some("main".into()), out: dir.join("out"), url: None, ticket: Some(3), budget: Duration::from_secs(60), states: Vec::new() })).unwrap();
         assert_eq!(report.touched, ["f/many", "f/own"]);
         assert!(report.shots.iter().all(|s| s.key == "f/many/default"), "the screen with the most changed source files, its default state: {:?}", report.shots.iter().map(|s| &s.key).collect::<Vec<_>>());
         assert_eq!((report.left_out, report.left_out_states), (2, vec!["f/own/default".to_owned(), "f/own/error".to_owned()]));
         // Out of time before the first state: all are left out and the report says nothing was rendered.
-        let late = rt.block_on(run(&Run { worktree: repo.clone(), base: Some("main".into()), out: dir.join("late"), url: None, ticket: Some(3), budget: Duration::ZERO })).unwrap();
+        let late = rt.block_on(run(&Run { worktree: repo.clone(), base: Some("main".into()), out: dir.join("late"), url: None, ticket: Some(3), budget: Duration::ZERO, states: Vec::new() })).unwrap();
         assert_eq!((late.shots.len(), late.left_out), (0, 3));
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -870,7 +1042,7 @@ mod tests {
         std::fs::write(repo.join("src/format.tsx"), "export const format = (n: number) => n.toFixed(2);\n").unwrap();
         let out = dir.join("out");
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let report = rt.block_on(run(&Run { worktree: repo.clone(), base: Some("main".into()), out: out.clone(), url: None, ticket: Some(3), budget: Duration::from_secs(5) })).unwrap();
+        let report = rt.block_on(run(&Run { worktree: repo.clone(), base: Some("main".into()), out: out.clone(), url: None, ticket: Some(3), budget: Duration::from_secs(5), states: Vec::new() })).unwrap();
         assert!(report.errors.iter().any(|e| e.contains("no UI map")), "{:?}", report.errors);
         assert_eq!(report.unmapped, ["src/page.tsx"], "an uncommitted UI file counts");
         assert_eq!(report.unmapped_quiet, ["src/format.tsx"], "a .tsx that draws nothing doesn't");

@@ -469,6 +469,61 @@ can't split, carry on alone.",
 /// A designer finishes a design QA ticket: the screens pass, or go back to their engineer.
 pub const DESIGN_QA: &str = "design_qa";
 
+/// A designer finishes a daily design review or audit: a word on each change.
+/// Offered only in a light design QA session ([`lite_tools`]).
+pub const DESIGN_REVIEW: &str = "design_review";
+
+/// A designer in a light design QA session asks for pictures of a state it
+/// wasn't given. Offered only there ([`lite_tools`]).
+pub const QA_PICTURES: &str = "qa_pictures";
+
+/// The few tools of a light design QA session (`equipe mcp --qa-lite`):
+/// finishing a design QA or a review, asking for pictures, and a note.
+pub fn lite_tools() -> Vec<Value> {
+    let mut tools: Vec<Value> = tools(false).into_iter().filter(|t| t["name"] == DESIGN_QA || t["name"] == COMMENT).collect();
+    tools.push(json!({
+        "name": DESIGN_REVIEW,
+        "description": "Designers, on a daily design review or a design QA audit: your word on every change it lists. Each S1/S2 in \
+`blockers` becomes a fix ticket for that change's engineer; `polish` (S3/S4) is gathered into one polish ticket for later. Give \
+every change its entry, even when it is fine. Then end your turn.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "findings": { "type": "string", "description": "In a few lines, in the person's language: what you looked at and how the changes stand." },
+                "items": {
+                    "type": "array",
+                    "description": "One per change listed in your brief.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "ticket": { "type": "integer", "description": "The change's ticket number, as your brief lists it." },
+                            "blockers": { "type": "array", "items": { "type": "string" }, "description": "Each S1/S2: where, what is wrong, what it should be." },
+                            "polish": { "type": "array", "items": { "type": "string" }, "description": "Each S3/S4: where and how to fix it." },
+                        },
+                        "required": ["ticket"],
+                    },
+                },
+                "checked": { "type": "array", "items": { "type": "string" }, "description": "The conditions you looked at: widths, light and dark, states." },
+            },
+            "required": ["findings", "items"],
+        },
+    }));
+    tools.push(json!({
+        "name": QA_PICTURES,
+        "description": "Pictures of a state you weren't given: equipe finds them among the precheck's, or renders them from the \
+change's worktree when it can. Read each picture it names once.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "states": { "type": "array", "items": { "type": "string" }, "minItems": 1, "maxItems": 4, "description": "`flow/screen/state`, as the report writes them." },
+                "conditions": { "type": "array", "items": { "type": "string" }, "maxItems": 6, "description": "`<width>.<light|dark>.<normal|text-200|zoom-200>`, e.g. `390.dark.normal`. Default: 390 and 1280, light, normal." },
+            },
+            "required": ["states"],
+        },
+    }));
+    tools
+}
+
 /// A designer's reference and taste tools (`equipe design refs | palette |
 /// type | component`) on a brand ticket, run for it by its board server
 /// outside its engine's sandbox, in its worktree, reading only the listed
@@ -624,7 +679,9 @@ visual — a logo, a screen, a mockup, an illustration, colours, a layout — na
 screenshots you saved in your worktree), so the person sees them above your summary; images your branch changes \
 are shown too. On a code ticket, say whether it changes what users see (`changes_screens`). When it does, attach \
 fresh screenshots and confirm their coverage in `screen_checks`; a squad's designer checks those screens before the \
-person reviews when it has one.",
+person reviews when it has one. equipe's precheck then checks the changed screens: a new S1/S2 finding (content cut off, \
+an AA failure, sideways scroll, text over text) sends the hand-in back to you with the findings — fix them, or hand in \
+again with `waive_findings` saying why they aren't real.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -636,6 +693,7 @@ person reviews when it has one.",
                         "items": { "type": "string", "enum": ["languages", "widths", "light_dark", "large_text"] },
                         "description": "Screen-changing code tickets: confirm that the attached screenshots cover every relevant language, supported width, light and dark appearance, and large text by giving all four values: languages, widths, light_dark, large_text."
                     },
+                    "waive_findings": { "type": "string", "description": "Only after equipe's precheck sent this hand-in back: why each of its S1/S2 findings isn't a real problem for the person. A designer then judges them before the person reviews." },
                 },
                 "required": ["summary"],
             },

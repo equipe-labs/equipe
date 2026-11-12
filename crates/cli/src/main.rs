@@ -217,6 +217,9 @@ enum Command {
         /// A designer on brand work: its reference tools (`design_tools`) too
         #[arg(long)]
         branding: bool,
+        /// A light design QA session: only its few tools (`design_qa`, `design_review`, `qa_pictures`, `comment`)
+        #[arg(long)]
+        qa_lite: bool,
         /// The ticket run this server serves (`session:ticket:generation`):
         /// every call says it, and the daemon takes a call that changes the
         /// ticket only from the run that holds it now
@@ -721,9 +724,9 @@ async fn run(cli: Cli) -> ExitCode {
                 },
             }
         }
-        Command::Mcp { server, squad, member, role, home, helpers, branding, run } => {
+        Command::Mcp { server, squad, member, role, home, helpers, branding, qa_lite, run } => {
             let run = run.as_deref().and_then(protocol::rpc::RunKey::parse);
-            serve_mcp(&server, squad, member, role, home, helpers, branding, run).await
+            serve_mcp(&server, squad, member, role, home, helpers, branding, qa_lite, run).await
         }
         // Answered in `main`, before anything starts.
         Command::Hook { .. } => Ok(()),
@@ -829,7 +832,7 @@ async fn run(cli: Cli) -> ExitCode {
 /// `equipe mcp`: a member's board tools, as a stdio MCP server. Every call goes
 /// to the daemon, which decides; stdout carries only the protocol.
 #[allow(clippy::too_many_arguments)]
-async fn serve_mcp(server: &str, squad: String, member: String, role: String, home: std::path::PathBuf, helpers: bool, branding: bool, run: Option<protocol::rpc::RunKey>) -> CmdResult {
+async fn serve_mcp(server: &str, squad: String, member: String, role: String, home: std::path::PathBuf, helpers: bool, branding: bool, qa_lite: bool, run: Option<protocol::rpc::RunKey>) -> CmdResult {
     use equipe_core::mcp::{self, Step};
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
@@ -840,6 +843,8 @@ async fn serve_mcp(server: &str, squad: String, member: String, role: String, ho
         (mcp::DESKTOP, equipe_desktop_control::tools::tools())
     } else if phone {
         (mcp::PHONE, equipe_core::phone::tools())
+    } else if qa_lite {
+        (mcp::BOARD, equipe_core::board::lite_tools())
     } else {
         let mut tools = equipe_core::helpers::with_board(&role, helpers);
         if branding && role == "designer" {
@@ -855,6 +860,10 @@ async fn serve_mcp(server: &str, squad: String, member: String, role: String, ho
             // A designer's reference tools run here, outside its engine's sandbox.
             Step::Call { id, name, arguments } if !desktop && !phone && name == equipe_core::board::DESIGN_TOOLS => {
                 mcp::call_reply(id, &design_taste::from_board(&socket, &home, &squad, &member, run, &arguments).await)
+            }
+            // Pictures a light design QA session asks for: found by the daemon, rendered here when they must be.
+            Step::Call { id, name, arguments } if qa_lite && name == equipe_core::board::QA_PICTURES => {
+                mcp::call_reply(id, &design_qa::pictures_from_board(&socket, &squad, &member, run, &arguments).await)
             }
             // The design system's checks run here, outside the member's engine's sandbox.
             Step::Call { id, name, arguments } if !desktop && !phone && name == equipe_core::board::SYSTEM_TOOLS => {

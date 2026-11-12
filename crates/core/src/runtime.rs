@@ -82,6 +82,7 @@ mod secrets;
 mod logins;
 mod autopilot;
 mod design_qa;
+mod design_review;
 mod team;
 mod heartbeat;
 mod signals;
@@ -770,6 +771,12 @@ struct Work {
     screens: bool,
     /// Set by `design_qa` on a design QA ticket: the designer's word.
     verdict: Option<design_qa::Verdict>,
+    /// Set by `submit_for_review`'s `waive_findings`: why the engineer's
+    /// self-check findings aren't real problems; a designer judges it.
+    waive: Option<String>,
+    /// A light design QA session (`design_review`): the precheck's report
+    /// as its only folder, a short charter, few tools.
+    lite: bool,
     /// What a designer's last hand-in was refused for: the same again goes
     /// in with it marked, rather than round and round.
     refused: Option<Vec<String>>,
@@ -1105,6 +1112,9 @@ enum Internal {
     /// A design QA precheck ended off the loop: its report is in the
     /// ticket's design QA folder, or why there is none.
     Prechecked { squad: String, qa: TicketId, result: Result<(), String>, secs: u64 },
+    /// Main's precheck for a daily design review ended off the loop: main's
+    /// commit per project, or why there is none.
+    ReviewPrechecked { squad: String, review: TicketId, heads: Vec<(PathBuf, Result<String, String>)>, secs: u64 },
     /// Nemotron's review of a code ticket handed in by `member`, or why there is none.
     Reviewed { squad: String, ticket: TicketId, member: SessionId, result: Result<Box<crate::nemotron::Reviewed>, crate::nemotron::ReviewError> },
     /// A subagent of a turn's engine was heard from on its own thread.
@@ -1468,6 +1478,7 @@ impl Wake {
             Wake::Internal(Internal::DesignRestore { .. }) => Borrowed("a design version to go back to"),
             Wake::Internal(Internal::Reviewed { .. }) => Borrowed("a Nemotron review"),
             Wake::Internal(Internal::Prechecked { .. }) => Borrowed("a design QA precheck"),
+            Wake::Internal(Internal::ReviewPrechecked { .. }) => Borrowed("a daily design review's precheck of main"),
             Wake::Internal(Internal::SubagentHeard { .. }) => Borrowed("a subagent heard from"),
             Wake::Internal(Internal::Helper { .. }) => Borrowed("a helper's step"),
             Wake::Internal(Internal::HelperEnded { .. }) => Borrowed("a helper's end"),
@@ -1740,6 +1751,7 @@ impl Runtime {
                 Internal::DesignRestore { squad, project, commit, version } => self.on_design_restore(squad, project, commit, version).await,
                 Internal::Reviewed { squad, ticket, member, result } => self.on_reviewed(&squad, ticket, member, result),
                 Internal::Prechecked { squad, qa, result, secs } => Box::pin(self.on_prechecked(&squad, qa, result, secs)).await,
+                Internal::ReviewPrechecked { squad, review, heads, secs } => Box::pin(self.on_review_prechecked(&squad, review, heads, secs)).await,
                 Internal::SubagentHeard { session, id } => self.subagent_heard(session, &id),
                 Internal::Helper { session, id, activity } => self.helper_did(session, &id, activity),
                 Internal::HelperEnded { session, id, outcome } => self.helper_ended(session, &id, outcome),
@@ -1793,6 +1805,8 @@ impl Runtime {
         self.tidy_check();
         pulse.step("minute tick: routines");
         self.run_due_routines().await;
+        pulse.step("minute tick: design reviews");
+        self.design_qa_tick(now_secs()).await;
         pulse.step("minute tick: idle boards");
         self.wake_idle_pms().await;
         pulse.step("minute tick: signals");
@@ -4662,6 +4676,13 @@ for one project goes to it as tickets for its owners, with that project — and 
         let facts = self.squad_memory(id);
         watchdog::mark("turn start: person's changes saved");
         let saved_first = self.save_persons_changes(id);
+        // A light design QA session: its report's folder, and a review's changes' reports.
+        let lite_on = self.sessions.get(&id).and_then(|s| s.work.as_ref().filter(|w| w.lite).map(|w| w.ticket).zip(s.squad.clone()));
+        let lite = lite_on.is_some();
+        let lite_reads = match &lite_on {
+            Some((ticket, squad)) => self.lite_reads(squad, *ticket),
+            None => Vec::new(),
+        };
         watchdog::mark("turn start: browser");
         let Some(session) = self.sessions.get(&id) else {
             return;
@@ -4678,15 +4699,15 @@ for one project goes to it as tickets for its owners, with that project — and 
         // A browser in any mode that may change things — signed in wherever the
         // person (or a teammate) signed in, if anywhere yet. In Auto and Full
         // it browses freely; in Ask each step comes to the person.
-        let wants_browser = board_tools && mode != Mode::ReadOnly;
+        let wants_browser = board_tools && mode != Mode::ReadOnly && !lite;
         // The Mac's desktop: experimental, for the members the person turned it on for.
         let desktop = wants_browser
             && cfg!(target_os = "macos")
             && squad.as_deref().zip(session.member.as_ref()).is_some_and(|(s, m)| self.journals.get(s).is_some_and(|j| j.desktop_enabled(&m.name)));
         // A squad's mobile app: its QA and mobile members test it on the ticket's own phone.
-        let phone = board_tools && squad.as_deref().zip(session.member.as_ref()).is_some_and(|(s, m)| self.phone_offered(s, &m.role, mode));
+        let phone = board_tools && !lite && squad.as_deref().zip(session.member.as_ref()).is_some_and(|(s, m)| self.phone_offered(s, &m.role, mode));
         // A designer's `design` tools, when equipe-design is installed: never installed for it.
-        let design = (board_tools && session.member.as_ref().is_some_and(|m| m.role == "designer"))
+        let design = (board_tools && !lite && session.member.as_ref().is_some_and(|m| m.role == "designer"))
             .then(|| self.config.design_path.as_deref().and_then(|path| std::env::split_paths(path).map(|d| d.join("equipe-design")).find(|p| p.is_file())))
             .flatten();
         let browser = match (self.config.npx.clone(), self.browser_key(id), session.member.as_ref().map(|m| m.name.clone())) {
@@ -4745,6 +4766,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                 if branding && let Some(args) = servers[MCP_SERVER]["args"].as_array_mut() {
                     args.push(json!("--branding"));
                 }
+                // A light design QA session's few tools.
+                if lite && let Some(args) = servers[MCP_SERVER]["args"].as_array_mut() {
+                    args.push(json!("--qa-lite"));
+                }
                 if let Some(run) = &run_arg && let Some(args) = servers[MCP_SERVER]["args"].as_array_mut() {
                     args.extend([json!("--run"), json!(run)]);
                 }
@@ -4800,6 +4825,10 @@ for one project goes to it as tickets for its owners, with that project — and 
         let mut skill_plugin: Option<(PathBuf, Vec<skills::Skill>)> = None;
         watchdog::mark("turn start: charter and skills");
         let charter = session.member.as_ref().map(|m| {
+            // A light design QA session: a short charter of its own, no skills.
+            if lite {
+                return crate::design_qa::lite_charter(&m.name, language.as_deref());
+            }
             let team = squad.as_deref().map(|s| self.team(s)).unwrap_or_default();
             let mates: Vec<Teammate> = team.iter().map(|(_, name, role)| Teammate { name, role }).collect();
             let names: Vec<String> = projects.iter().map(|p| board::project_name(p)).collect();
@@ -4851,12 +4880,14 @@ for one project goes to it as tickets for its owners, with that project — and 
                 // On a code ticket a member also reads the squad's home; on a task or
                 // action, worked in a worktree of the home, it reads every project too.
                 let mut read: Vec<PathBuf> = match &session.member {
+                    // A light session reads its report's folder (its cwd) and a review's changes' reports, nothing more.
+                    Some(_) if work.lite => lite_reads.clone(),
                     Some(_) if work.kind.in_home() => projects.iter().chain(home.iter()).cloned().collect(),
                     Some(_) => home.iter().cloned().collect(),
                     None => Vec::new(),
                 };
                 // A design QA ticket's precheck report and pictures, kept beside the squad's journal.
-                read.extend(squad.as_deref().map(|s| design_qa::precheck_dir(&self.config.home, s, work.ticket)).filter(|d| d.is_dir()));
+                read.extend(squad.as_deref().map(|s| design_qa::precheck_dir(&self.config.home, s, work.ticket)).filter(|d| d.is_dir() && *d != work.cwd));
                 let writes = (edits_code || work.kind.in_home()) && work.sandbox.is_some();
                 (work.cwd.clone(), access_for(mode, writes), work.claude_session.clone(), work.history.clone(), Some(work.ticket), read)
             }
@@ -4996,6 +5027,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                             }
                             args.extend(["--squad", squad, "--member", &m.name, "--role", &m.role, "--home"].map(str::to_owned));
                             args.push(self.config.home.to_string_lossy().into_owned());
+                            if lite && server.is_none() {
+                                args.push("--qa-lite".to_owned());
+                            }
                             if let Some(run) = &run_arg {
                                 args.extend(["--run".to_owned(), run.clone()]);
                             }
@@ -5215,6 +5249,8 @@ for one project goes to it as tickets for its owners, with that project — and 
                     .chain(&other_homes)
                     .map(|p| p.to_string_lossy().into_owned())
                     .collect();
+                // A light design QA session looks at pictures and reads its report: nothing else.
+                let builtin: Vec<String> = if lite { ["Read", "Glob", "Grep"].map(str::to_owned).to_vec() } else { Vec::new() };
                 tokio::spawn(async move {
                     let emit = |event| {
                         let _ = internal.send(Internal::Event(Box::new(event)));
@@ -5226,7 +5262,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         access,
                         resume: resume.as_deref(),
                         fork: false,
-                        tools: &[],
+                        tools: &builtin,
                         charter: charter.as_deref(),
                         plugin_dirs: &plugin_dirs,
                         memory: memory.as_deref(),
@@ -6020,6 +6056,11 @@ for one project goes to it as tickets for its owners, with that project — and 
         if self.workspaces.busy(&squad, ticket_id) || self.worker_on(&squad, ticket_id).is_some() {
             return;
         }
+        // A light design QA session works in its report's folder, with no checkout.
+        let lite = self.lite_dir(&squad, ticket_id);
+        if let Some(dir) = &lite {
+            let _ = std::fs::create_dir_all(dir);
+        }
         let Some(journal) = self.journal(&squad) else {
             return;
         };
@@ -6035,8 +6076,13 @@ for one project goes to it as tickets for its owners, with that project — and 
         let fresh = ticket.branch.is_none() || saved.base.is_none();
         let kind = ticket.kind;
         // A task or action is worked in the squad home; what it is about, if anything, is only read.
-        let Some(project) = (if kind.in_home() { ticket.project.clone().or_else(|| Some(home_dir.clone())) } else { ticket.project.clone().or_else(|| projects.first().cloned()) })
-        else {
+        let Some(project) = (if let Some(dir) = &lite {
+            Some(dir.clone())
+        } else if kind.in_home() {
+            ticket.project.clone().or_else(|| Some(home_dir.clone()))
+        } else {
+            ticket.project.clone().or_else(|| projects.first().cloned())
+        }) else {
             return;
         };
         let workplace = if kind.in_home() { home_dir.clone() } else { project.clone() };
@@ -6044,7 +6090,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         // ticket a role that edits does — and the PM, when the project is a
         // repository (looked at off the loop): on a plain folder it reads, as
         // it always did.
-        let may_edit = role_edits || kind.in_home() || pm_codes;
+        let may_edit = (role_edits || kind.in_home() || pm_codes) && lite.is_none();
         let checkout = may_edit.then(|| match (&saved.worktree, &ticket.branch, &saved.base) {
             // In review and sent back: the worktree is still there.
             (Some(path), Some(branch), Some(base)) if path.exists() => workspace::Checkout::Kept { path: path.clone(), branch: branch.clone(), base: base.clone() },
@@ -6125,6 +6171,8 @@ for one project goes to it as tickets for its owners, with that project — and 
             waiting: None,
             screens: false,
             verdict: None,
+            waive: None,
+            lite: lite.is_some(),
             refused: None,
             preparing,
             end: RunEnd::default(),
@@ -6209,10 +6257,18 @@ for one project goes to it as tickets for its owners, with that project — and 
         });
         self.brief_pm(&squad, format!("{name} picked up T-{ticket_id} ({}).", ticket.title), None);
         let language = self.journal(&squad).and_then(Journal::language);
-        let mut prompt = work_prompt(&ticket, &project, sandbox.as_ref(), reopened.as_deref(), recovered, board_tools, language.as_deref());
-        if let Some(checked) = self.checked_by(&squad, ticket_id) {
+        let lite = self.sessions.get(&id).and_then(|s| s.work.as_ref()).is_some_and(|w| w.lite);
+        let batch = if lite { self.journal(&squad).and_then(|j| j.design_qa_batch(ticket_id)) } else { None };
+        let checked = self.checked_by(&squad, ticket_id);
+        let mut prompt = match (&batch, &checked) {
+            // A light session's brief is the whole of it: no checkout to be told about.
+            (Some(batch), _) => self.batch_prompt(&squad, batch),
+            (None, Some(checked)) if lite => self.lite_prompt(&squad, ticket_id, checked),
+            _ => work_prompt(&ticket, &project, sandbox.as_ref(), reopened.as_deref(), recovered, board_tools, language.as_deref()),
+        };
+        if let (Some(checked), false) = (&checked, lite) {
             let precheck = self.precheck_brief(&squad, ticket_id);
-            prompt.push_str(&design_qa::qa_prompt(ticket_id, &checked, precheck.as_ref()));
+            prompt.push_str(&design_qa::qa_prompt(ticket_id, checked, precheck.as_ref()));
         }
         // Brand work, and only it, takes the designer's full reference pass.
         let designer = self.sessions.get(&id).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role == design_qa::DESIGNER);
@@ -6454,7 +6510,7 @@ todo); or drop it if it's no longer wanted.]"
                 ticket.status = TicketStatus::Review;
                 ticket.note = handed_in;
                 ticket.images = images;
-                match work.screens.then(|| self.ask_design_qa(&squad, &mut ticket, &name)).flatten() {
+                match work.screens.then(|| self.ask_design_qa(&squad, &mut ticket, &name, work.waive.as_deref())).flatten() {
                     Some(qa) => {
                         to = Some(design_qa::DESIGNER.to_owned());
                         let line = format!("{name} handed in T-{}; the designer checks its screens on T-{qa} before the person reviews it", ticket.id);
@@ -6471,13 +6527,16 @@ todo); or drop it if it's no longer wanted.]"
                 if ticket.status == TicketStatus::Done {
                     ticket.merged = merged_state(&ticket);
                 }
-                let checked = self.design_qa_checked(&squad, &ticket, &name, &verdict);
+                let checked = self.design_qa_checked(&squad, &ticket, &name, &verdict, true);
                 let (id, engineer) = checked.as_ref().map_or((ticket.id, String::new()), |(t, e)| (t.id, e.clone()));
+                let reviewed = checked.is_none() && self.design_batch_kind(&squad, ticket.id).is_some();
                 if let Some((checked, engineer)) = checked {
                     about = Some((checked.id, checked.title));
                     to = Some(engineer);
                 }
-                if verdict.passed {
+                if reviewed {
+                    (name.as_str(), "design review done", format!("{name} finished the design review T-{id}: {}", verdict.findings.lines().last().unwrap_or_default()), "news.design_review_done")
+                } else if verdict.passed {
                     (name.as_str(), "design QA passed", format!("{name} passed the design QA of T-{id}: it is ready for the person's review"), "news.design_qa_passed")
                 } else {
                     (name.as_str(), "design QA: changes", format!("{name}'s design QA sent T-{id} back to {engineer}: its screens need changes"), "news.design_qa_changes")
@@ -8576,6 +8635,8 @@ there, end your turn, and carry on when they say they're done."
                 work.shown = shown;
                 work.waiting = None;
                 work.screens = screens;
+                // Findings of its self-check it says aren't real: a designer judges them.
+                work.waive = board::arg_str(&args, "waive_findings").map(str::trim).filter(|w| !w.is_empty()).map(str::to_owned);
                 if let Some(gap) = &gap {
                     let n = gap.len();
                     let line = move |name: &str| format!("{name} handed in T-{ticket} with {n} design check(s) it couldn't clear, marked in its hand-in for the person: look at why before they review it.");
@@ -8630,6 +8691,8 @@ it back there once they have done it.{again} End your turn now with a short line
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
             crate::secrets::ASK_SECRET => self.ask_secret(&squad, &member, id, &args),
             board::DESIGN_QA => self.finish_design_qa(&squad, id, &args),
+            board::DESIGN_REVIEW => self.finish_design_review(&squad, id, &args),
+            board::QA_PICTURES => self.qa_pictures(&squad, id, &args),
             // Asked by a designer's or frontend engineer's board server, which runs `system_tools` itself, in this folder.
             board::WORKDIR => {
                 let session = self.sessions.get(&id).ok_or("You're not on the squad.")?;
@@ -9475,6 +9538,8 @@ fn restore_work(journal: &Journal, ticket: &Ticket, projects: &[PathBuf], home: 
         waiting: None,
         screens: false,
         verdict: None,
+        waive: None,
+        lite: false,
         refused: None,
         preparing: false,
         end: RunEnd::default(),

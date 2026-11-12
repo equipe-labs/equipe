@@ -12,13 +12,18 @@
 //! and clean: passed without a designer; a definite S1/S2 failure: back to
 //! the engineer; otherwise the designer, with the report. Each squad says
 //! whether that gate acts ([`GateMode`]), and on which model tier the
-//! designer checks ([`TierPolicy`], [`tier_for`]).
+//! designer checks ([`TierPolicy`], [`tier_for`]). In `risk_batch` mode
+//! ([`Mode`]) only high-risk changes get a designer turn of their own; the
+//! rest go into a daily review ([`route`]).
 
 use equipe_protocol::tiers::ModelTier;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::design::precheck::{Report, Severity};
+
+mod risk;
+pub use risk::*;
 
 /// The designer's own pictures of the built screens a pass needs at least.
 pub const OWN_SHOTS: usize = 2;

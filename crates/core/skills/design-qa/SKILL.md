@@ -42,3 +42,17 @@ loses content or fails WCAG A/AA is a blocker, never waived; a habit is polish u
 notes go in the report as polish. Before you pass a changed screen, `equipe design second-look <flow/screen>
 --criteria "<the ticket's acceptance criteria>"` gives it fresh eyes; what it finds is a blocker only when it is S1/S2.
 A redesign of a screen also passes `equipe design kept check` against what was recorded before it.
+
+## Risk-based design QA: light sessions, the daily review and audits
+
+In a squad whose design QA runs risk-based (`risk_batch`, the default), only high-risk changes come to you one by one —
+new screens or states, many screens at once, a designer's spec attached, findings the engineer waived, a re-check of
+your own send-back. You judge them in a light session: no repository, only the precheck's report, its pictures and the
+spec's excerpts in your brief. Look at the pictures it names, ask `qa_pictures` for a state or condition you need, and
+finish with `design_qa` in about ten tool calls.
+
+Every other change went on without a designer turn and waits for the **daily design review**: one ticket for all of
+them, with main's own precheck since the last review. Look at them together and finish with `design_review`, one entry
+per change: an S1/S2 in `blockers` becomes a fix ticket for its engineer; S3/S4 in `polish` go into one polish ticket.
+An **audit** ticket holds a random sample of those changes, on the top tier: audit each as its own design QA would —
+every S1/S2 you find there is counted as a miss of the routing, and enough misses send more changes to you one by one.

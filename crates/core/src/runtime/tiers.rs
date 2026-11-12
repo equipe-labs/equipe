@@ -16,10 +16,16 @@ impl Runtime {
     /// What `ticket`'s next lane on member `id` starts on, under the squad's
     /// model choice; `None` when `id` isn't a member of `squad`.
     pub(super) fn choose_model(&mut self, squad: &str, id: SessionId, ticket: &Ticket) -> Option<rules::Choice> {
-        let design_qa = self.checked_by(squad, ticket.id).is_some();
+        let batch = self.design_batch_kind(squad, ticket.id);
+        let design_qa = batch.is_some() || self.checked_by(squad, ticket.id).is_some();
         let choice = self.journal(squad).map(Journal::model_choice).unwrap_or_default();
         let (name, role, engine) = self.sessions.get(&id).and_then(|s| s.member.as_ref().map(|m| (m.name.clone(), m.role.clone(), s.engine)))?;
-        let qa_tier = if design_qa { self.qa_tier(squad, ticket, &name, &role, engine) } else { None };
+        let qa_tier = match (&batch, design_qa) {
+            // A daily review on the cheap tier, its audit on the top one.
+            (Some(kind), _) => self.batch_tier(squad, kind, &name, &role, engine),
+            (None, true) => self.qa_tier(squad, ticket, &name, &role, engine),
+            (None, false) => None,
+        };
         let s = self.sessions.get(&id)?;
         let effort = effort_of(s);
         let infos: Vec<codex_app::ModelInfo> = match s.engine {

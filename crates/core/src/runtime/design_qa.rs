@@ -17,12 +17,19 @@
 //! flags. Each design QA ticket's way through is kept (`design_qa_runs`) for
 //! `equipe design qa-stats`; its tier follows the squad's policy
 //! (`crate::design_qa::tier_for`).
+//!
+//! In `risk_batch` mode (`crate::design_qa::Mode`, the default) the precheck
+//! is also the engineer's self-check: a new S1/S2 finding refuses the hand-in
+//! back to its engineer at once, unless waived with a reason; a low-risk
+//! change goes on without a designer turn into the daily review
+//! (`super::design_review`); only a high-risk one gets a designer turn of
+//! its own, in a light session when the report shows enough.
 
 use std::time::Duration;
 
 use super::*;
 use crate::design::precheck;
-use crate::design_qa::{Decision, GateMode};
+use crate::design_qa::{Decision, GateMode, Mode, Route, RouteCall};
 
 /// The role that checks screens.
 pub(super) const DESIGNER: &str = "designer";
@@ -69,6 +76,19 @@ pub(super) struct PrecheckBrief {
 pub(super) struct Verdict {
     pub passed: bool,
     pub findings: String,
+}
+
+/// How equipe ended a design QA ticket by itself, without a designer turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GateEnd {
+    /// The gate passed it (`per_ticket` with the gate on).
+    Passed,
+    /// The gate sent it back (`per_ticket` with the gate on).
+    SentBack,
+    /// The engineer's self-check found new S1/S2s it didn't waive (`risk_batch`).
+    Refused,
+    /// Low risk: on to review, into the daily design review (`risk_batch`).
+    Batched,
 }
 
 impl Runtime {
@@ -146,6 +166,9 @@ Undo them, propose that work as a ticket for an engineer (create_ticket), and ha
         if self.checked_by(squad, ticket).is_some() {
             return Err(format!("T-{ticket} is a design QA ticket: finish it with design_qa — pass, or changes with your findings."));
         }
+        if self.design_batch_kind(squad, ticket).is_some() {
+            return Err(format!("T-{ticket} is a daily design review or audit: finish it with design_review, one entry per change."));
+        }
         // A designer's own work has its stricter design ledger; non-code work
         // has no built screen to prove here.
         if kind != TicketKind::Code || role == DESIGNER {
@@ -181,7 +204,7 @@ screen_checks value; missing: {}. Then hand in again.",
 
     /// `ticket`, just handed in with changed screens, gets its design QA: a
     /// task for the squad's designer, which it waits on in review.
-    pub(super) fn ask_design_qa(&mut self, squad: &str, ticket: &mut Ticket, engineer: &str) -> Option<TicketId> {
+    pub(super) fn ask_design_qa(&mut self, squad: &str, ticket: &mut Ticket, engineer: &str, waived: Option<&str>) -> Option<TicketId> {
         let qa = Ticket {
             id: 0,
             title: say!(self, "ticket.design_qa_title", id = ticket.id, title = ticket.title),
@@ -219,6 +242,12 @@ screen_checks value; missing: {}. Then hand in again.",
         let runs = gate != GateMode::Off && can_run && ticket.worktree.as_deref().is_some_and(Path::exists) && ticket.project.is_some();
         if let Err(err) = journal.start_design_qa_run(qa_id, ticket.id, round, gate.code(), if runs { "running" } else { "skipped" }) {
             crate::daemon_log!("equipe: {squad}: T-{qa_id}'s design QA run not kept: {err}");
+        }
+        let mode = journal.design_qa_settings().mode;
+        let _ = journal.set_design_qa_mode_of(qa_id, mode.code(), waived);
+        // In risk_batch without a precheck nothing is known of the change: a designer's full look.
+        if mode == Mode::RiskBatch && !runs {
+            let _ = journal.set_design_qa_route(qa_id, Route::PerTicket.code(), crate::design_qa::Risk::Unverified.code(), false);
         }
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: made });
         if runs {
@@ -266,10 +295,28 @@ screen_checks value; missing: {}. Then hand in again.",
         let Some(journal) = self.journal(squad) else { return };
         let mut run = journal.design_qa_run(qa).unwrap_or(journal::DesignQaRun { qa, ..Default::default() });
         let mode = GateMode::parse(&run.gate).unwrap_or_default();
+        let tight = journal.design_qa_settings().tight;
+        let recheck = journal.design_qa_before(run.checked, qa).is_some_and(|(verdict, by)| verdict.as_deref() == Some("changes") && by.as_deref().is_some_and(|b| b != PRECHECK_BY));
+        let risk_batch = run.mode.as_deref() == Some(Mode::RiskBatch.code());
         let open = journal.ticket(qa).ok().flatten().filter(|t| t.status == TicketStatus::Todo);
         let checked = self.checked_by(squad, qa);
-        let act = mode == GateMode::On && call.decision != Decision::Designer && open.is_some() && checked.is_some() && self.worker_on(squad, qa).is_none();
-        let headline = call.headline(act);
+        let free = open.is_some() && checked.is_some() && self.worker_on(squad, qa).is_none();
+        // In risk_batch the route decides: refused, a designer now, or the daily review.
+        let routed: Option<RouteCall> = match (risk_batch, &checked) {
+            (true, Some(c)) => {
+                let spec = self.spec_of(c);
+                Some(crate::design_qa::route(&crate::design_qa::RouteAsk { report: report.as_ref(), waived: run.waived.is_some(), spec, recheck, tight }))
+            }
+            _ => None,
+        };
+        let act = match &routed {
+            Some(r) => free && r.route != Route::PerTicket,
+            None => mode == GateMode::On && call.decision != Decision::Designer && free,
+        };
+        let headline = match &routed {
+            Some(r) => route_headline(r, &call),
+            None => call.headline(act),
+        };
         let flagged = report.as_ref().map(precheck::Report::flagged).unwrap_or_default();
         if let Some(r) = &report {
             let _ = precheck::write(&dir, r, &r.summary(&headline));
@@ -284,13 +331,19 @@ screen_checks value; missing: {}. Then hand in again.",
         run.precheck_secs = Some(secs);
         let Some(journal) = self.journal(squad) else { return };
         let _ = journal.set_design_qa_precheck(&run);
+        if let Some(r) = &routed {
+            let _ = journal.set_design_qa_route(qa, r.route.code(), &r.risk_codes(), r.lite && r.route == Route::PerTicket);
+        }
         let said = match (&report, &result) {
             (Some(_), _) => format!("{headline} Report: {}", dir.join(precheck::REPORT_MD).display()),
             (None, Err(why)) => format!("The precheck couldn't run ({why}); the designer checks it as before."),
             (None, Ok(())) => "The precheck wrote no report; the designer checks it as before.".to_owned(),
         };
         let _ = journal.ticket_event(qa, "equipe", "precheck", &said);
-        crate::daemon_log!("equipe: {squad}: design QA T-{qa} precheck: {} ({}, {secs}s)", call.decision.code(), if act { "acted" } else { mode.code() });
+        match &routed {
+            Some(r) => crate::daemon_log!("equipe: {squad}: design QA T-{qa} precheck: {} [{}] ({secs}s)", r.route.code(), r.risk_codes()),
+            None => crate::daemon_log!("equipe: {squad}: design QA T-{qa} precheck: {} ({}, {secs}s)", call.decision.code(), if act { "acted" } else { mode.code() }),
+        }
         let (Some(mut qa_ticket), Some(_)) = (open, checked) else { return };
         // What it flags, shown on the design QA ticket.
         if !flagged.is_empty() {
@@ -301,14 +354,25 @@ screen_checks value; missing: {}. Then hand in again.",
             self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: qa_ticket.clone() });
         }
         if act {
-            let findings = match (call.decision, &report) {
-                (Decision::SendBack, Some(r)) => {
-                    let lines: Vec<String> = r.new_blockers().iter().take(8).map(|f| format!("- {} on {} [{}]: {} {}", f.rule, f.key, f.conditions.join(", "), f.selector, f.evidence)).collect();
-                    format!("{headline}\n{}\nReport: {}", lines.join("\n"), dir.join(precheck::REPORT_MD).display())
-                }
-                _ => format!("{headline}\nReport: {}", dir.join(precheck::REPORT_MD).display()),
+            let report_line = format!("Report: {}", dir.join(precheck::REPORT_MD).display());
+            let blockers = |r: &precheck::Report| -> String {
+                r.new_blockers().iter().take(8).map(|f| format!("- {} on {} [{}]: {} {}", f.rule, f.key, f.conditions.join(", "), f.selector, f.evidence)).collect::<Vec<_>>().join("\n")
             };
-            self.precheck_verdict(squad, qa_ticket, Verdict { passed: call.decision == Decision::AutoPass, findings });
+            let (how, findings) = match (routed.as_ref().map(|r| r.route), call.decision, &report) {
+                (Some(Route::Refused), _, Some(r)) => (
+                    GateEnd::Refused,
+                    format!(
+                        "{headline}\n{}\nFix each, then hand in again. If one isn't a real problem for the person (a decorative label, a deliberate \
+truncation with the whole text available), hand in again with `waive_findings` saying why — a designer then judges it.\n{report_line}",
+                        blockers(r)
+                    ),
+                ),
+                (Some(_), _, _) => (GateEnd::Batched, format!("{headline}\n{report_line}")),
+                (None, Decision::SendBack, Some(r)) => (GateEnd::SentBack, format!("{headline}\n{}\n{report_line}", blockers(r))),
+                (None, Decision::SendBack, None) => (GateEnd::SentBack, format!("{headline}\n{report_line}")),
+                (None, _, _) => (GateEnd::Passed, format!("{headline}\n{report_line}")),
+            };
+            self.precheck_verdict(squad, qa_ticket, Verdict { passed: matches!(how, GateEnd::Passed | GateEnd::Batched), findings }, how);
         }
         self.dispatch(squad).await;
     }
@@ -316,26 +380,45 @@ screen_checks value; missing: {}. Then hand in again.",
     /// The gate's verdict on design QA ticket `qa`, without a designer turn:
     /// it closes, and the ticket it checked goes on as a designer's verdict
     /// would send it — to the person's review, or back to its engineer.
-    fn precheck_verdict(&mut self, squad: &str, mut qa: Ticket, verdict: Verdict) {
+    fn precheck_verdict(&mut self, squad: &str, mut qa: Ticket, verdict: Verdict, how: GateEnd) {
         qa.status = TicketStatus::Done;
         qa.note = Some(verdict.findings.clone());
         let event = if verdict.passed { "design QA passed" } else { "design QA: changes" };
         if let Some(journal) = self.journal(squad) {
             let _ = journal.save_ticket(&qa);
             let _ = journal.ticket_event(qa.id, PRECHECK_BY, event, &verdict.findings);
+            // Its own verdict first: the first one kept stays.
+            match how {
+                GateEnd::Refused => {
+                    let _ = journal.set_design_qa_verdict(qa.id, "refused", PRECHECK_BY);
+                }
+                GateEnd::Batched => {
+                    let _ = journal.set_design_qa_verdict(qa.id, "batched", PRECHECK_BY);
+                }
+                GateEnd::Passed | GateEnd::SentBack => {}
+            }
         }
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: qa.clone() });
-        let Some((checked, engineer)) = self.design_qa_checked(squad, &qa, PRECHECK_BY, &verdict) else { return };
-        let (line, shown) = if verdict.passed {
-            (
+        // A self-check refusal is a lint, not a send-back: it never raises the engineer's model.
+        let Some((checked, engineer)) = self.design_qa_checked(squad, &qa, PRECHECK_BY, &verdict, how != GateEnd::Refused) else { return };
+        let first = verdict.findings.lines().next().unwrap_or_default();
+        let (line, shown) = match how {
+            GateEnd::Passed => (
                 format!("equipe's precheck passed the design QA of T-{} (T-{}): no screen changed and nothing new was found; it is ready for the person's review", checked.id, qa.id),
                 say!(self, "news.design_qa_precheck_passed", id = checked.id, title = checked.title),
-            )
-        } else {
-            (
-                format!("equipe's precheck sent T-{} back to {engineer} without a designer turn (design QA T-{}): {}", checked.id, qa.id, verdict.findings.lines().next().unwrap_or_default()),
+            ),
+            GateEnd::SentBack => (
+                format!("equipe's precheck sent T-{} back to {engineer} without a designer turn (design QA T-{}): {first}", checked.id, qa.id),
                 say!(self, "news.design_qa_precheck_changes", id = checked.id, title = checked.title, to = engineer),
-            )
+            ),
+            GateEnd::Refused => (
+                format!("equipe's self-check refused T-{}'s hand-in back to {engineer} without a designer turn (T-{}): {first}", checked.id, qa.id),
+                say!(self, "news.design_qa_refused", id = checked.id, title = checked.title, to = engineer),
+            ),
+            GateEnd::Batched => (
+                format!("T-{}'s screens are low risk by equipe's precheck (T-{}): no designer turn now, it goes into the daily design review; it is ready for the person's review", checked.id, qa.id),
+                say!(self, "news.design_qa_batched", id = checked.id, title = checked.title),
+            ),
         };
         self.brief_pm(squad, line, Some(shown));
         // Where the PM accepts, work ready for review is its to act on now.
@@ -346,8 +429,9 @@ screen_checks value; missing: {}. Then hand in again.",
         {
             let pm_name = self.sessions.get(&pm).and_then(|s| s.name().map(str::to_owned)).unwrap_or_default();
             if crate::accept::own_code(&checked, &pm_name).is_none() {
+                let how = if how == GateEnd::Batched { "is low risk by equipe's precheck (its screens go into the daily design review)" } else { "passed design QA by equipe's precheck" };
                 let prompt = format!(
-                    "[equipe: T-{} passed design QA by equipe's precheck and is ready for you. Check it and accept it with `accept_work`, send it back with `comment` and `review: changes`, or put it to the person with `propose_accept`.]",
+                    "[equipe: T-{} {how} and is ready for you. Check it and accept it with `accept_work`, send it back with `comment` and `review: changes`, or put it to the person with `propose_accept`.]",
                     checked.id
                 );
                 let _ = self.internal.send(Internal::Wake { session: pm, prompt });
@@ -378,15 +462,29 @@ screen_checks value; missing: {}. Then hand in again.",
         // The top tier for what leaves too little seen; what only left some states unseen stays cheap.
         let judgment = run.as_ref().is_none_or(|r| r.precheck != "done" || r.judgment.as_deref().is_some_and(crate::design_qa::Judgment::text_needs_top));
         let person = journal.person_models().iter().any(|m| m == member) || journal.role_models().iter().any(|r| r.role == role && r.engine == engine && r.model.is_some());
+        // A light per-ticket session: the cheap tier, the top one from a third round on.
+        if run.as_ref().is_some_and(|r| r.lite) {
+            return Some(crate::tiers::QaTier { tier: crate::design_qa::lite_tier(policy, round), below_floor: !person });
+        }
         let redesign = checked.as_ref().is_some_and(|c| crate::design_qa::redesign(&c.title, &c.body));
         let (tier, _) = crate::design_qa::tier_for(policy, crate::design_qa::TierAsk { round, redesign, judgment });
+        Some(crate::tiers::QaTier { tier, below_floor: !person })
+    }
+
+    /// A daily review's tier (the cheap one) or an audit's (the top one),
+    /// below the member's own model only where the person set none for it.
+    pub(super) fn batch_tier(&mut self, squad: &str, kind: &str, member: &str, role: &str, engine: Engine) -> Option<crate::tiers::QaTier> {
+        let journal = self.journal(squad)?;
+        let policy = journal.design_qa_tiers();
+        let person = journal.person_models().iter().any(|m| m == member) || journal.role_models().iter().any(|r| r.role == role && r.engine == engine && r.model.is_some());
+        let tier = if kind == super::design_review::AUDIT { policy.top } else { policy.cheap };
         Some(crate::tiers::QaTier { tier, below_floor: !person })
     }
 
     /// The designer's verdict on design QA ticket `qa`: the ticket it checked
     /// goes on to the person's review, or back to its engineer. The ticket as
     /// it now is, and who had it.
-    pub(super) fn design_qa_checked(&mut self, squad: &str, qa: &Ticket, designer: &str, verdict: &Verdict) -> Option<(Ticket, String)> {
+    pub(super) fn design_qa_checked(&mut self, squad: &str, qa: &Ticket, designer: &str, verdict: &Verdict, escalate: bool) -> Option<(Ticket, String)> {
         let mut checked = self.checked_by(squad, qa.id)?;
         checked.design_qa = None;
         let engineer = checked.assignee.clone().or_else(|| checked.owner.clone()).unwrap_or_default();
@@ -416,7 +514,7 @@ screen_checks value; missing: {}. Then hand in again.",
         }
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: checked.clone() });
         // Blockers are differences from the spec: the work isn't right yet.
-        if !verdict.passed {
+        if !verdict.passed && escalate {
             self.after_send_back(squad, checked.id, designer, equipe_protocol::tiers::SendBackReason::Correctness);
         }
         Some((checked, engineer))
@@ -514,13 +612,24 @@ async fn run_precheck(bin: &Path, worktree: &Path, project: &Path, dir: &Path, i
     .await
     .ok()
     .flatten();
+    precheck_process(bin, worktree, dir, Some(id), main.as_deref()).await
+}
+
+/// `equipe design precheck` on `worktree` against `base`, writing into
+/// `dir` (emptied first); what it says goes to `dir/precheck.log`. `Ok`
+/// once its report is there; stopped, with what it started, after
+/// [`PRECHECK_LIMIT`].
+pub(super) async fn precheck_process(bin: &Path, worktree: &Path, dir: &Path, id: Option<TicketId>, main: Option<&str>) -> Result<(), String> {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let log = std::fs::File::create(dir.join("precheck.log")).map_err(|e| e.to_string())?;
     let mut command = tokio::process::Command::new(bin);
-    command.args(["design", "precheck", "--worktree"]).arg(worktree).arg("--out").arg(dir).args(["--ticket", &id.to_string()]);
+    command.args(["design", "precheck", "--worktree"]).arg(worktree).arg("--out").arg(dir);
+    if let Some(id) = id {
+        command.args(["--ticket", &id.to_string()]);
+    }
     if let Some(main) = main {
-        command.args(["--base", &main]);
+        command.args(["--base", main]);
     }
     command.current_dir(worktree).stdin(std::process::Stdio::null()).stdout(log.try_clone().map_err(|e| e.to_string())?).stderr(log).kill_on_drop(true);
     #[cfg(unix)]
@@ -541,6 +650,20 @@ async fn run_precheck(bin: &Path, worktree: &Path, project: &Path, dir: &Path, i
         }
     }
     if dir.join(precheck::REPORT_JSON).is_file() { Ok(()) } else { Err(format!("it wrote no report{}", precheck::log_head(&dir.join("precheck.log")))) }
+}
+
+/// What the route made of a precheck, in a sentence: the report's headline
+/// in `risk_batch`.
+fn route_headline(r: &RouteCall, call: &crate::design_qa::GateCall) -> String {
+    let why = call.reasons.join(" ");
+    match r.route {
+        Route::Refused => format!("**Refused back to the engineer by its self-check, without a designer turn.** {why}"),
+        Route::Batch => format!("**Low risk: on to review without a designer turn; its screens go into the daily design review.** {why}"),
+        Route::PerTicket => {
+            let risks: Vec<&str> = r.risks.iter().map(|k| k.said()).collect();
+            format!("**A designer checks this change now: {}.** {why}", risks.join("; "))
+        }
+    }
 }
 
 /// What a designer on design QA ticket `qa` is told about the ticket it

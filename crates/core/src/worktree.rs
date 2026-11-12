@@ -604,6 +604,14 @@ pub fn main_branch(repo: &Path) -> Result<String> {
         .ok_or_else(|| "the repository has neither a main nor a master branch".to_owned())
 }
 
+/// The commit main is at in `repo`, and main's name.
+pub fn main_head(repo: &Path) -> Result<(String, String)> {
+    off_the_loop("main_head");
+    let main = main_branch(repo)?;
+    let head = git(repo, &["rev-parse", &format!("refs/heads/{main}^{{commit}}")])?;
+    Ok((main, head))
+}
+
 /// Whether `branch` has nothing left to bring to the main branch: it is in
 /// main already, or merging it would change nothing there (`+0 −0` — its
 /// changes landed another way, or it made none).

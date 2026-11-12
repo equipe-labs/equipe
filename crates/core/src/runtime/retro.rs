@@ -52,6 +52,10 @@ impl Runtime {
         if let Some(line) = self.journal(squad).and_then(|j| j.logins_since(from).ok()).and_then(|rows| crate::logins::retro_line(&crate::logins::summarize(&rows))) {
             facts.push_str(&format!("\n\n{line}"));
         }
+        // What design QA cost and decided this week, with its share of the squad's tokens — only when there was any.
+        if let Some(line) = design_qa_week(&journal::squad_dir(&self.config.home, squad).join("squad.db"), from as i64, now as i64) {
+            facts.push_str(&format!("\n\n{line}"));
+        }
         rules::message(routine, &facts)
     }
 
@@ -97,6 +101,16 @@ impl Runtime {
             _ => {}
         }
     }
+}
+
+/// The week's design QA in a line (`crate::design::qa_stats`), read from
+/// the journal at `db` without writing to it; `None` when there was none.
+fn design_qa_week(db: &std::path::Path, from: i64, to: i64) -> Option<String> {
+    use crate::design::qa_stats;
+    let rows = qa_stats::read_between(db, from, to).ok()?;
+    let batches = qa_stats::read_batches(db, from, to).ok()?;
+    let squad = qa_stats::squad_tokens(db, from, to).unwrap_or(0);
+    qa_stats::retro_line(&qa_stats::summarize(&rows).with_batches(&batches, squad))
 }
 
 /// The week's turn endings that weren't as they should be, in a line:

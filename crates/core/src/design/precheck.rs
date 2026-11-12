@@ -761,6 +761,24 @@ impl Report {
         self.shots.iter().filter(|s| s.error.is_some()).count()
     }
 
+    /// Pictures that were taken.
+    pub fn taken(&self) -> usize {
+        self.shots.len() - self.failed()
+    }
+
+    /// The states (`flow/screen/state`) this change adds to what users see:
+    /// rendered at normal size, and the map had no picture of them at the
+    /// base in any condition — a new screen, flow or state. Read from the
+    /// map's committed pictures, not from words.
+    pub fn new_states(&self) -> Vec<String> {
+        let mut seen: BTreeMap<&str, bool> = BTreeMap::new();
+        for s in self.shots.iter().filter(|s| is_normal(&s.condition) && s.error.is_none()) {
+            let new = s.baseline.is_none() && s.diff.is_none();
+            seen.entry(s.key.as_str()).and_modify(|all| *all &= new).or_insert(new);
+        }
+        seen.into_iter().filter(|(_, new)| *new).map(|(k, _)| k.to_owned()).collect()
+    }
+
     /// The findings that send work back: blockers this change brought.
     pub fn new_blockers(&self) -> Vec<&Finding> {
         self.findings.iter().filter(|f| f.severity == Severity::Blocker && f.new).collect()

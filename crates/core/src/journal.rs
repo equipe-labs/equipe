@@ -326,6 +326,41 @@ pub struct DesignQaRun {
     pub verdict_by: Option<String>,
     pub created_at: i64,
     pub finished_at: Option<i64>,
+    /// `per_ticket` or `risk_batch`, as the squad's mode stood when it was made.
+    pub mode: Option<String>,
+    /// In `risk_batch`: `refused`, `per_ticket` or `batch` ([`crate::design_qa::Route`]).
+    pub route: Option<String>,
+    /// Why it is high-risk, comma-separated ([`crate::design_qa::Risk`] codes).
+    pub risk: Option<String>,
+    /// The designer judged it in a light session: the report, no repository.
+    pub lite: bool,
+    /// The engineer's reason for waiving the precheck's findings.
+    pub waived: Option<String>,
+    /// The daily review that covered it.
+    pub batch: Option<TicketId>,
+    /// The audit that sampled it.
+    pub audit: Option<TicketId>,
+    /// What the audit found: `ok`, or `miss` (an S1/S2 the routing let through).
+    pub audit_verdict: Option<String>,
+}
+
+/// A daily design review or audit ticket, as kept (`design_qa_batches`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DesignQaBatch {
+    pub ticket: TicketId,
+    /// `review` or `audit`.
+    pub kind: String,
+    pub created_at: i64,
+    /// How many changes it covers.
+    pub items: u32,
+    /// Its folder: main's precheck, the pictures handed to it.
+    pub dir: Option<String>,
+    /// Main's commit it looked at, per project: `project=commit` lines.
+    pub heads: Option<String>,
+    pub finished_at: Option<i64>,
+    pub blockers: Option<u32>,
+    pub fixes: Option<u32>,
+    pub polish: Option<u32>,
 }
 
 /// What a turn ran on, as kept ([`Journal::ticket_turns`]).
@@ -661,6 +696,24 @@ impl Journal {
                verdict_by TEXT,
                created_at INTEGER NOT NULL,
                finished_at INTEGER
+             );",
+        )?;
+        // Risk-based design QA (`crate::design_qa::route`): how each was routed, and the reviews and audits.
+        for column in ["mode TEXT", "route TEXT", "risk TEXT", "lite INTEGER NOT NULL DEFAULT 0", "waived TEXT", "batch INTEGER", "audit INTEGER", "audit_verdict TEXT"] {
+            let _ = conn.execute(&format!("ALTER TABLE design_qa_runs ADD COLUMN {column}"), []);
+        }
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS design_qa_batches (
+               ticket INTEGER PRIMARY KEY,
+               kind TEXT NOT NULL,
+               created_at INTEGER NOT NULL,
+               items INTEGER NOT NULL,
+               dir TEXT,
+               heads TEXT,
+               finished_at INTEGER,
+               blockers INTEGER,
+               fixes INTEGER,
+               polish INTEGER
              );",
         )?;
         // Why the person was asked to sign in, and sign-ins finished (`crate::logins`).
@@ -1623,6 +1676,215 @@ impl Journal {
         self.set_meta("design_qa_tiers", &policy.code())
     }
 
+    /// How the squad runs design QA, its daily review and audits:
+    /// `risk_batch` with the defaults unless the person said otherwise.
+    pub fn design_qa_settings(&self) -> crate::design_qa::Settings {
+        use crate::design_qa::{Mode, Settings, parse_time};
+        let d = Settings::default();
+        Settings {
+            mode: self.meta("design_qa_mode").and_then(|v| Mode::parse(&v)).unwrap_or(d.mode),
+            batch_at: self.meta("design_qa_batch_at").and_then(|v| parse_time(&v)).unwrap_or(d.batch_at),
+            batch_size: self.meta("design_qa_batch_size").and_then(|v| v.parse().ok()).filter(|n| *n > 0).unwrap_or(d.batch_size),
+            sample: self.meta("design_qa_sample").and_then(|v| v.parse().ok()).map(|n: u8| n.min(100)).unwrap_or(d.sample),
+            audit_miss: self.meta("design_qa_audit_miss").and_then(|v| v.parse().ok()).map(|n: u8| n.min(100)).unwrap_or(d.audit_miss),
+            tight: self.meta("design_qa_tight").is_some_and(|v| v == "1"),
+        }
+    }
+
+    /// Whether the person (or `qa-config`) set the squad's design QA mode:
+    /// one never set follows equipe's default, and is told when it changes.
+    pub fn design_qa_mode_set(&self) -> bool {
+        self.meta("design_qa_mode").is_some()
+    }
+
+    pub fn set_design_qa_mode(&self, mode: crate::design_qa::Mode) -> Result<()> {
+        self.set_meta("design_qa_mode", mode.code())
+    }
+
+    pub fn set_design_qa_batch_at(&self, at: (u8, u8)) -> Result<()> {
+        self.set_meta("design_qa_batch_at", &crate::design_qa::time_code(at))
+    }
+
+    pub fn set_design_qa_batch_size(&self, n: usize) -> Result<()> {
+        self.set_meta("design_qa_batch_size", &n.max(1).to_string())
+    }
+
+    pub fn set_design_qa_sample(&self, percent: u8) -> Result<()> {
+        self.set_meta("design_qa_sample", &percent.min(100).to_string())
+    }
+
+    pub fn set_design_qa_audit_miss(&self, percent: u8) -> Result<()> {
+        self.set_meta("design_qa_audit_miss", &percent.min(100).to_string())
+    }
+
+    /// Tighten design QA's routing (`true`, as of now) or relax it.
+    pub fn set_design_qa_tight(&self, tight: bool) -> Result<()> {
+        if tight {
+            self.set_meta("design_qa_tight_at", &now().to_string())?;
+        }
+        self.set_meta("design_qa_tight", if tight { "1" } else { "0" })
+    }
+
+    /// When the routing was last tightened, in unix seconds.
+    pub fn design_qa_tight_at(&self) -> i64 {
+        self.meta("design_qa_tight_at").and_then(|v| v.parse().ok()).unwrap_or(0)
+    }
+
+    /// A one-time flag kept in the squad's journal under `key`: `true` the
+    /// first time it is asked for, `false` ever after.
+    pub fn first_time(&self, key: &str) -> bool {
+        let key = format!("once:{key}");
+        if self.meta(&key).is_some() {
+            return false;
+        }
+        self.set_meta(&key, &now().to_string()).is_ok()
+    }
+
+    /// When the last daily design review was made, in unix seconds; 0 for never.
+    pub fn design_qa_last_batch(&self) -> i64 {
+        self.meta("design_qa_last_batch").and_then(|v| v.parse().ok()).unwrap_or(0)
+    }
+
+    /// Main's commit in `project` the last daily review looked at.
+    pub fn design_qa_batch_base(&self, project: &Path) -> Option<String> {
+        self.meta(&format!("design_qa_batch_base:{}", project.display()))
+    }
+
+    pub fn set_design_qa_batch_base(&self, project: &Path, commit: &str) -> Result<()> {
+        self.set_meta(&format!("design_qa_batch_base:{}", project.display()), commit)
+    }
+
+    /// Keep how design QA ticket `qa` was routed in `risk_batch`.
+    pub fn set_design_qa_route(&self, qa: TicketId, route: &str, risk: &str, lite: bool) -> Result<()> {
+        self.conn.execute("UPDATE design_qa_runs SET route = ?2, risk = ?3, lite = ?4 WHERE qa = ?1", params![qa, route, (!risk.is_empty()).then_some(risk), lite])?;
+        Ok(())
+    }
+
+    /// Keep design QA ticket `qa`'s mode and the engineer's waiver, if any.
+    pub fn set_design_qa_mode_of(&self, qa: TicketId, mode: &str, waived: Option<&str>) -> Result<()> {
+        self.conn.execute("UPDATE design_qa_runs SET mode = ?2, waived = ?3 WHERE qa = ?1", params![qa, mode, waived])?;
+        Ok(())
+    }
+
+    /// The last design QA of `checked` before `qa`: its verdict and who gave it.
+    pub fn design_qa_before(&self, checked: TicketId, qa: TicketId) -> Option<(Option<String>, Option<String>)> {
+        self.conn
+            .query_row("SELECT verdict, verdict_by FROM design_qa_runs WHERE checked = ?1 AND qa < ?2 ORDER BY qa DESC LIMIT 1", params![checked, qa], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    /// Whether the squad has had any design QA under the precheck.
+    pub fn has_design_qa_runs(&self) -> bool {
+        self.conn.query_row("SELECT 1 FROM design_qa_runs LIMIT 1", [], |_| Ok(())).optional().ok().flatten().is_some()
+    }
+
+    /// The changes waiting for the daily review: let through without a
+    /// designer turn and not reviewed yet, oldest first.
+    pub fn design_qa_waiting_for_batch(&self) -> Vec<DesignQaRun> {
+        let ids: Vec<TicketId> = self
+            .conn
+            .prepare("SELECT qa FROM design_qa_runs WHERE route = 'batch' AND batch IS NULL ORDER BY qa")
+            .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<TicketId>>>())
+            .unwrap_or_default();
+        ids.into_iter().filter_map(|qa| self.design_qa_run(qa)).collect()
+    }
+
+    /// Keep a daily review or audit ticket and the changes it covers.
+    pub fn start_design_qa_batch(&self, batch: &DesignQaBatch, covers: &[TicketId]) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO design_qa_batches (ticket, kind, created_at, items, dir, heads) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![batch.ticket, batch.kind, now(), covers.len() as i64, batch.dir, batch.heads],
+        )?;
+        let column = if batch.kind == "audit" { "audit" } else { "batch" };
+        for qa in covers {
+            self.conn.execute(&format!("UPDATE design_qa_runs SET {column} = ?2 WHERE qa = ?1"), params![qa, batch.ticket])?;
+        }
+        if batch.kind != "audit" {
+            self.set_meta("design_qa_last_batch", &now().to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Keep main's commits a review looked at, once its precheck ran.
+    pub fn set_design_qa_batch_heads(&self, ticket: TicketId, heads: &str) -> Result<()> {
+        self.conn.execute("UPDATE design_qa_batches SET heads = ?2 WHERE ticket = ?1", params![ticket, heads])?;
+        Ok(())
+    }
+
+    /// Keep how a review or audit ended.
+    pub fn finish_design_qa_batch(&self, ticket: TicketId, blockers: u32, fixes: u32, polish: u32) -> Result<()> {
+        self.conn.execute(
+            "UPDATE design_qa_batches SET finished_at = ?2, blockers = ?3, fixes = ?4, polish = ?5 WHERE ticket = ?1 AND finished_at IS NULL",
+            params![ticket, now(), blockers, fixes, polish],
+        )?;
+        Ok(())
+    }
+
+    /// Daily review or audit ticket `ticket`, if it is one.
+    pub fn design_qa_batch(&self, ticket: TicketId) -> Option<DesignQaBatch> {
+        self.conn
+            .query_row("SELECT ticket, kind, created_at, items, dir, heads, finished_at, blockers, fixes, polish FROM design_qa_batches WHERE ticket = ?1", [ticket], |r| {
+                Ok(DesignQaBatch {
+                    ticket: r.get(0)?,
+                    kind: r.get(1)?,
+                    created_at: r.get(2)?,
+                    items: r.get(3)?,
+                    dir: r.get(4)?,
+                    heads: r.get(5)?,
+                    finished_at: r.get(6)?,
+                    blockers: r.get(7)?,
+                    fixes: r.get(8)?,
+                    polish: r.get(9)?,
+                })
+            })
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    /// The changes daily review or audit `ticket` covers, oldest first.
+    pub fn design_qa_batch_items(&self, ticket: TicketId) -> Vec<DesignQaRun> {
+        let ids: Vec<TicketId> = self
+            .conn
+            .prepare("SELECT qa FROM design_qa_runs WHERE batch = ?1 OR audit = ?1 ORDER BY qa")
+            .and_then(|mut stmt| stmt.query_map([ticket], |r| r.get(0))?.collect::<rusqlite::Result<Vec<TicketId>>>())
+            .unwrap_or_default();
+        ids.into_iter().filter_map(|qa| self.design_qa_run(qa)).collect()
+    }
+
+    /// The daily reviews and audits nobody has finished.
+    pub fn design_qa_open_batches(&self) -> Vec<TicketId> {
+        self.conn
+            .prepare("SELECT ticket FROM design_qa_batches WHERE finished_at IS NULL ORDER BY ticket")
+            .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<TicketId>>>())
+            .unwrap_or_default()
+    }
+
+    /// Whether a daily review or audit is still open: nobody has finished it.
+    pub fn design_qa_batch_open(&self) -> bool {
+        self.conn.query_row("SELECT 1 FROM design_qa_batches WHERE finished_at IS NULL LIMIT 1", [], |_| Ok(())).optional().ok().flatten().is_some()
+    }
+
+    /// Keep what an audit found of the change design QA ticket `qa` let through.
+    pub fn set_design_qa_audit_verdict(&self, qa: TicketId, verdict: &str) -> Result<()> {
+        self.conn.execute("UPDATE design_qa_runs SET audit_verdict = ?2 WHERE qa = ?1", params![qa, verdict])?;
+        Ok(())
+    }
+
+    /// The latest audited changes, newest first: `true` for an S1/S2 miss;
+    /// only those audited after `after` (unix seconds) when given.
+    pub fn design_qa_audits(&self, after: i64, max: usize) -> Vec<bool> {
+        self.conn
+            .prepare(
+                "SELECT r.audit_verdict FROM design_qa_runs r JOIN design_qa_batches b ON b.ticket = r.audit
+                 WHERE r.audit_verdict IS NOT NULL AND COALESCE(b.finished_at, 0) >= ?1 ORDER BY b.finished_at DESC, r.qa DESC LIMIT ?2",
+            )
+            .and_then(|mut stmt| stmt.query_map(params![after, max as i64], |r| Ok(r.get::<_, String>(0)? == "miss"))?.collect::<rusqlite::Result<Vec<bool>>>())
+            .unwrap_or_default()
+    }
+
     /// The members whose model the person set (`/model`, a move they made):
     /// equipe's policies never run them below it.
     pub fn person_models(&self) -> Vec<String> {
@@ -1682,7 +1944,8 @@ impl Journal {
     pub fn design_qa_run(&self, qa: TicketId) -> Option<DesignQaRun> {
         self.conn
             .query_row(
-                "SELECT qa, checked, round, gate, precheck, decision, judgment, acted, report, head, base, precheck_secs, verdict, verdict_by, created_at, finished_at
+                "SELECT qa, checked, round, gate, precheck, decision, judgment, acted, report, head, base, precheck_secs, verdict, verdict_by, created_at, finished_at,
+                        mode, route, risk, lite, waived, batch, audit, audit_verdict
                  FROM design_qa_runs WHERE qa = ?1",
                 [qa],
                 |r| {
@@ -1703,6 +1966,14 @@ impl Journal {
                         verdict_by: r.get(13)?,
                         created_at: r.get(14)?,
                         finished_at: r.get(15)?,
+                        mode: r.get(16)?,
+                        route: r.get(17)?,
+                        risk: r.get(18)?,
+                        lite: r.get(19)?,
+                        waived: r.get(20)?,
+                        batch: r.get(21)?,
+                        audit: r.get(22)?,
+                        audit_verdict: r.get(23)?,
                     })
                 },
             )
@@ -2443,6 +2714,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn design_qa_settings_default_to_risk_batch_and_reviews_audits_are_kept() {
+        use crate::design_qa::{Mode, Settings};
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        assert_eq!(j.design_qa_settings(), Settings::default());
+        assert!(!j.design_qa_mode_set() && !j.has_design_qa_runs());
+        j.set_design_qa_mode(Mode::PerTicket).unwrap();
+        j.set_design_qa_batch_at((9, 30)).unwrap();
+        j.set_design_qa_sample(20).unwrap();
+        let s = j.design_qa_settings();
+        assert_eq!((s.mode, s.batch_at, s.sample, j.design_qa_mode_set()), (Mode::PerTicket, (9, 30), 20, true));
+        assert!(j.first_time("x") && !j.first_time("x"), "once");
+        // Two changes let through, one reviewed and audited.
+        for (qa, checked) in [(10, 1), (11, 2)] {
+            j.start_design_qa_run(qa, checked, 1, "shadow", "done").unwrap();
+            j.set_design_qa_route(qa, "batch", "", true).unwrap();
+        }
+        assert_eq!(j.design_qa_waiting_for_batch().iter().map(|r| r.qa).collect::<Vec<_>>(), [10, 11]);
+        j.start_design_qa_batch(&DesignQaBatch { ticket: 20, kind: "review".into(), ..DesignQaBatch::default() }, &[10, 11]).unwrap();
+        j.start_design_qa_batch(&DesignQaBatch { ticket: 21, kind: "audit".into(), ..DesignQaBatch::default() }, &[11]).unwrap();
+        assert!(j.design_qa_waiting_for_batch().is_empty() && j.design_qa_batch_open() && j.design_qa_last_batch() > 0);
+        assert_eq!(j.design_qa_batch_items(21).iter().map(|r| r.qa).collect::<Vec<_>>(), [11]);
+        j.set_design_qa_audit_verdict(11, "miss").unwrap();
+        j.finish_design_qa_batch(21, 1, 1, 0).unwrap();
+        j.finish_design_qa_batch(20, 0, 0, 2).unwrap();
+        assert!(!j.design_qa_batch_open());
+        assert_eq!(j.design_qa_audits(0, 20), [true]);
+        assert_eq!(j.design_qa_run(11).unwrap().audit, Some(21));
+        j.set_design_qa_tight(true).unwrap();
+        assert!(j.design_qa_settings().tight && j.design_qa_tight_at() > 0);
+        assert_eq!(j.design_qa_before(2, 30), Some((None, None)));
     }
 
     #[test]

@@ -5254,8 +5254,9 @@ async fn the_person_taking_a_ticket_over_drops_its_design_qa() {
 }
 
 /// A stand-in for `equipe design precheck` that writes `report` as its
-/// report into the folder it is given; the squad's gate set to `gate`.
-fn precheck_stand_in(home: &Path, gate: equipe_core::design_qa::GateMode, report: serde_json::Value) -> PathBuf {
+/// report into the folder it is given; the squad's gate set to `gate` and
+/// its design QA to `mode`.
+fn precheck_stand_in_for(home: &Path, mode: equipe_core::design_qa::Mode, gate: equipe_core::design_qa::GateMode, report: serde_json::Value) -> PathBuf {
     let fixture = home.join("precheck-report.json");
     std::fs::write(&fixture, report.to_string()).unwrap();
     let bin = home.join("bin").join("equipe");
@@ -5267,7 +5268,9 @@ fn precheck_stand_in(home: &Path, gate: equipe_core::design_qa::GateMode, report
     std::fs::write(&bin, script).unwrap();
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    Journal::for_squad(home, "acme").unwrap().set_design_qa_gate(gate).unwrap();
+    let journal = Journal::for_squad(home, "acme").unwrap();
+    journal.set_design_qa_gate(gate).unwrap();
+    journal.set_design_qa_mode(mode).unwrap();
     bin
 }
 
@@ -5287,15 +5290,24 @@ fn precheck_report(changed: bool, findings: serde_json::Value) -> serde_json::Va
 /// The squad of `screens_in_design_qa`, with T-1 handed in with changed
 /// screens and its precheck stood in for by `report` under `gate`.
 async fn hand_in_with_precheck(gate: equipe_core::design_qa::GateMode, report: serde_json::Value) -> (Handle, UnboundedReceiver<Event>, PathBuf, PathBuf) {
+    hand_in_in_mode(equipe_core::design_qa::Mode::PerTicket, gate, report, SPEC_BODY, |_| {}).await
+}
+
+/// The body of the ticket handed in, as the per-ticket tests have it.
+const SPEC_BODY: &str = "Per the spec in design/settings.md.";
+
+/// The same with the squad's design QA in `mode`, its journal set up by `setup` first.
+async fn hand_in_in_mode(mode: equipe_core::design_qa::Mode, gate: equipe_core::design_qa::GateMode, report: serde_json::Value, body: &str, setup: impl FnOnce(&Journal)) -> (Handle, UnboundedReceiver<Event>, PathBuf, PathBuf) {
     let site = repo();
     let (claude, recorded) = recording_claude(&screenshot_turn());
     let home = squad_home(&[&site]);
-    let bin = precheck_stand_in(&home, gate, report);
+    let bin = precheck_stand_in_for(&home, mode, gate, report);
+    setup(&Journal::for_squad(&home, "acme").unwrap());
     let (handle, mut events) = runtime::start(Config { equipe_binary: Some(bin), ..config(&claude, &home, false) });
     add(&handle, &mut events, 1, member(&site, "pm")).await;
     add(&handle, &mut events, 2, member(&site, "frontend")).await;
     add(&handle, &mut events, 3, member(&site, "designer")).await;
-    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Settings screen", "body": "Per the spec in design/settings.md.", "owner": "frontend" })).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Settings screen", "body": body, "owner": "frontend" })).await;
     let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
     let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
     exists(&ws.path.join("shot.png")).await;
@@ -5361,6 +5373,103 @@ async fn with_the_gate_on_a_definite_failure_goes_back_to_its_engineer_without_a
     assert!(prompt.contains("text-clipped") && prompt.contains("button.save"), "the engineer gets what failed: {prompt}");
     let run = Journal::for_squad(&home, "acme").unwrap().design_qa_run(2).unwrap();
     assert_eq!((run.decision.as_deref(), run.acted, run.verdict.as_deref()), (Some("send_back"), true, Some("changes")));
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn in_risk_batch_a_definite_failure_is_refused_to_its_engineer_and_a_waiver_takes_it_to_a_light_designer_session() {
+    use equipe_core::design_qa::{GateMode, Mode};
+    let blocker = serde_json::json!([{ "rule": "text-clipped", "severity": "blocker", "class": "content", "key": "settings/main/default",
+        "conditions": ["390.light.text-200"], "selector": "button.save", "text": "Save", "evidence": "cut short with an ellipsis (a control's label)", "new": true }]);
+    let (handle, mut events, recorded, home) = hand_in_in_mode(Mode::RiskBatch, GateMode::Shadow, precheck_report(true, blocker), SPEC_BODY, |_| {}).await;
+    // Refused by its self-check: straight back to the engineer, no designer turn, even in shadow.
+    let again = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    assert!(!again.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })), "no designer turn");
+    let call = latest_call(&recorded, |p| p.contains("button.save")).await;
+    let prompt = arg(&call, "-p").unwrap();
+    assert!(prompt.contains("text-clipped") && prompt.contains("waive_findings"), "the engineer gets what failed and how to waive it: {prompt}");
+    let run = Journal::for_squad(&home, "acme").unwrap().design_qa_run(2).unwrap();
+    assert_eq!((run.mode.as_deref(), run.route.as_deref(), run.verdict.as_deref(), run.verdict_by.as_deref()), (Some("risk_batch"), Some("refused"), Some("refused"), Some("equipe")));
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().send_backs(1, equipe_core::protocol::tiers::SendBackReason::Correctness).unwrap(), 0, "a lint, not a send-back: no model escalation");
+
+    // Handed in again with the findings waived: a designer judges them, in a light session.
+    let waived = tool(&handle, "frontend", "submit_for_review", serde_json::json!({
+        "summary": "Settings built; the label is decorative.",
+        "changes_screens": true,
+        "images": ["shot.png"],
+        "screen_checks": ["languages", "widths", "light_dark", "large_text"],
+        "waive_findings": "The clipped label is a decorative badge; its full text is in aria-label.",
+    })).await;
+    assert!(!waived.is_error, "{waived:?}");
+    let qa = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 3, .. })).await;
+    assert!(matches!(qa.last(), Some(Event::WorkStarted { of: Some(3), .. })), "{qa:#?}");
+    let run = Journal::for_squad(&home, "acme").unwrap().design_qa_run(3).unwrap();
+    assert_eq!((run.route.as_deref(), run.risk.as_deref(), run.lite), (Some("per_ticket"), Some("waived"), true));
+    let call = latest_call(&recorded, |p| p.contains("You're on T-3")).await;
+    let prompt = arg(&call, "-p").unwrap();
+    assert!(prompt.contains("decorative badge") && prompt.contains("The precheck's report") && prompt.contains("Finish with design_qa"), "{prompt}");
+    assert!(!prompt.contains("worktree of your own") && !prompt.contains("start the preview"), "no checkout to be told about: {prompt}");
+    let charter = arg(&call, "--append-system-prompt").unwrap();
+    assert!(charter.contains("short design QA session") && charter.len() < 3_000, "a short charter of its own: {charter}");
+    assert_eq!(arg(&call, "--tools"), Some("Read,Glob,Grep"), "only looking");
+    assert!(arg(&call, "--mcp-config").is_some_and(|c| c.contains("--qa-lite")), "only the light session's board tools");
+    assert!(!call.iter().any(|a| a.contains("--plugin-dir")), "no skills");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn in_risk_batch_a_low_risk_change_skips_the_designer_and_the_daily_review_files_fixes_and_audits_a_sample() {
+    use equipe_core::design_qa::{GateMode, Mode};
+    let (handle, mut events, recorded, home) = hand_in_in_mode(Mode::RiskBatch, GateMode::Shadow, precheck_report(true, serde_json::json!([])), "Add the settings screen.", |j| {
+        j.set_design_qa_batch_size(1).unwrap();
+        j.set_design_qa_sample(100).unwrap();
+    })
+    .await;
+    // Low risk: closed by equipe, on to review, no designer turn.
+    let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.status == TicketStatus::Done)).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })), "no designer turn");
+    let told = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("daily design review"))).await;
+    assert!(!told.is_empty());
+    let journal = Journal::for_squad(&home, "acme").unwrap();
+    let checked = journal.ticket(1).unwrap().unwrap();
+    assert_eq!((checked.status, checked.design_qa), (TicketStatus::Review, None), "on to the person");
+    let run = journal.design_qa_run(2).unwrap();
+    assert_eq!((run.route.as_deref(), run.verdict.as_deref(), run.batch), (Some("batch"), Some("batched"), None));
+    assert_eq!(journal.design_qa_waiting_for_batch().len(), 1);
+    drop(journal);
+
+    // The minute's look: one review of it, and its audit, for the designer.
+    handle.minute_now().await;
+    let review = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 3 | 4, .. })).await;
+    let made = ticket_changed(&review);
+    assert!(made.iter().any(|t| t.id == 3 && t.title.contains("1")), "{made:#?}");
+    let journal = Journal::for_squad(&home, "acme").unwrap();
+    assert_eq!(journal.design_qa_run(2).unwrap().batch, Some(3));
+    assert_eq!(journal.design_qa_run(2).unwrap().audit, Some(4), "a 100% sample audits it");
+    assert_eq!(journal.design_qa_batch(4).unwrap().kind, "audit");
+    drop(journal);
+    let first = match review.last() { Some(Event::WorkStarted { ticket, .. }) => *ticket, _ => unreachable!() };
+    let call = latest_call(&recorded, |p| p.contains(&format!("You're on T-{first}"))).await;
+    let prompt = arg(&call, "-p").unwrap();
+    assert!(prompt.contains("T-1 Settings screen") && prompt.contains("design_review"), "{prompt}");
+    // Every change needs its entry.
+    let empty = tool(&handle, "designer", "design_review", serde_json::json!({ "findings": "Looked.", "items": [] })).await;
+    assert!(empty.is_error && empty.text.contains("T-1"), "{empty:?}");
+    let done = tool(&handle, "designer", "design_review", serde_json::json!({
+        "findings": "One real problem.",
+        "items": [{ "ticket": 1, "blockers": ["Save is cut off at 390 dark."], "polish": ["Gap 12px; the scale says 16."] }],
+    })).await;
+    assert!(!done.is_error, "{done:?}");
+    let filed = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.title.contains("T-1") && ticket.kind == equipe_core::protocol::TicketKind::Code && ticket.id > 4)).await;
+    let fix = ticket_changed(&filed).into_iter().rev().find(|t| t.id > 4 && t.kind == equipe_core::protocol::TicketKind::Code).unwrap();
+    assert!(fix.body.contains("Save is cut off at 390 dark.") && fix.owner.as_deref() == Some("frontend"), "{fix:#?}");
+    let journal = Journal::for_squad(&home, "acme").unwrap();
+    let batch = journal.design_qa_batch(first).unwrap();
+    assert_eq!((batch.blockers, batch.fixes, batch.polish), (Some(1), Some(1), Some(1)));
+    if first == 4 {
+        assert_eq!(journal.design_qa_run(2).unwrap().audit_verdict.as_deref(), Some("miss"), "an S1/S2 the audit found is a miss");
+        assert_eq!(journal.design_qa_audits(0, 20), [true]);
+    }
     handle.shutdown().await;
 }
 
