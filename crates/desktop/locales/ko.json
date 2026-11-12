@@ -3703,6 +3703,8 @@
   "autopilot.keepalive_tip": "가끔 사이트를 확인하고, 멤버가 필요하기 전에 다시 로그인해 둬요.",
   "autopilot.device_code": "기기 로그인 승인",
   "autopilot.device_code_tip": "멤버가 gh나 vercel에 로그인해야 할 때 equipe가 로그인을 진행하고 공유 브라우저에서 승인해요.",
+  "autopilot.idp": "다른 사이트의 “{provider}로 로그인”에 이 계정 사용",
+  "autopilot.idp_tip": "다른 사이트가 로그인하려고 {provider}로 보내면 equipe가 {provider}의 자체 페이지에서 이 계정을 고르고 이메일, 비밀번호, 인증 앱 코드를 입력합니다. 동의·권한 화면이나 계정 설정은 절대 건드리지 않고, 낯선 화면은 당신에게 넘깁니다.",
   "autopilot.seed_placeholder": "otpauth://… 또는 사이트에 보이는 비밀 키",
   "autopilot.seed_save": "시드 저장",
   "autopilot.seed_scan": "equipe 브라우저에서 QR 읽기",

@@ -143,6 +143,20 @@ pub fn below(shell: &Shell, login: &Login, cx: &mut Context<Shell>) -> Option<An
         });
         h_flex().w_full().gap_3().items_start().child(switch).child(v_flex().flex_1().gap_0p5().child(div().text_size(px(SMALL)).text_color(p.text2).child(name)).child(small(p, tip)))
     });
+    // "Sign in with …" on other sites: only for an identity provider's own login, off until turned on.
+    let idp = equipe_core::vault::idp_provider(&login.site).map(|provider| {
+        let handle = cx.entity().downgrade();
+        let now = a.clone();
+        let name = t!("autopilot.idp", provider = provider);
+        let switch = ui::switch(p, SharedString::from(format!("login-ap-idp-{id}")), a.idp).name(name.clone()).on_flip(move |on, _, cx| {
+            let changed = Autopilot { idp: on, ..now.clone() };
+            let _ = handle.update(cx, |this, cx| {
+                this.send_command(Command::SetLoginAutopilot { id, autopilot: changed.clone() });
+                cx.notify();
+            });
+        });
+        h_flex().w_full().gap_3().items_start().child(switch).child(v_flex().flex_1().gap_0p5().child(div().text_size(px(SMALL)).text_color(p.text2).child(name)).child(small(p, t!("autopilot.idp_tip", provider = provider))))
+    });
     let seed = if a.has_totp {
         h_flex().gap_2().items_center().child(small(p, t!("autopilot.seed_kept"))).child(ui::button(p, SharedString::from(format!("login-seed-forget-{id}")), Kind::Ghost, t!("autopilot.seed_forget")).on_click(cx.listener(move |this, _, _, cx| {
             this.send_command(Command::SetLoginTotp { id, secret: None });
@@ -186,6 +200,7 @@ pub fn below(shell: &Shell, login: &Login, cx: &mut Context<Shell>) -> Option<An
             .gap_2()
             .pt_1()
             .children(rows)
+            .children(idp)
             .child(seed)
             .child(h_flex().gap_2().items_center().child(passkey).when(!a.has_passkey, |row| row.child(small(p, t!("autopilot.passkey_add_note")))))
             .children(checked)

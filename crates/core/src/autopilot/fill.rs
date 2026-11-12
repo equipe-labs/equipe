@@ -48,6 +48,45 @@ pub fn remember_js() -> String {
     )
 }
 
+/// What a "Sign in with …" fill ([`FillGuard::idp`]) checks before it
+/// touches anything on an identity provider's page, and what it may do there
+/// that a site's own sign-in doesn't need: defines `IDP`, `ACCOUNT`,
+/// `SHOWS_ACCOUNT` (the page names the account) and `pick()` (the account's
+/// tile in a chooser, matched only by its exact address in the tile's own
+/// `data-identifier` / `data-email` / `data-test-id`, never by text). It
+/// refuses, first, a consent or permission screen — a grant path, a visible
+/// Allow / Accept / Authorize / Grant / Approve / Agree / "Continue as" /
+/// Confirm / Yes button, or consent words in what the page says — and a page
+/// that sets a password (a new-password field, two password fields). For
+/// any other guard: `IDP` false and nothing checked.
+pub fn idp_js(guard: &FillGuard) -> String {
+    let Some(account) = guard.account.as_deref() else {
+        return "  const IDP = false, ACCOUNT = '', SHOWS_ACCOUNT = true;\n  const pick = () => ({ filled: [], submitted: false });\n".to_owned();
+    };
+    let account = serde_json::to_string(&account.to_lowercase()).unwrap_or_default();
+    let buttons = serde_json::to_string(&alternatives("match.consent_words", &["allow", "accept", "authorize", "authorise", "grant", "approve", "agree", "i agree", "continue as", "confirm", "yes"])).unwrap_or_default();
+    let words = serde_json::to_string(&alternatives("match.consent_words", &["authorize", "grant access", "allow access", "consent", "permissions requested", "wants to access", "wants access"])).unwrap_or_default();
+    format!(
+        r#"  const IDP = true, ACCOUNT = {account};
+  const IDP_SEEN = (el) => {{ const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none'; }};
+  const IDP_TEXT = ((document.body && document.body.innerText) || '').toLowerCase();
+  const IDP_BUTTON = new RegExp('^\s*(' + {buttons} + ')', 'i');
+  const IDP_WORDS = new RegExp({words}, 'i');
+  const IDP_PRESSABLE = Array.from(document.querySelectorAll('button, [role=button], input[type=submit], input[type=button]')).filter(IDP_SEEN);
+  if (/consent|approv|grant|permission/.test(location.pathname.toLowerCase()) || IDP_WORDS.test(IDP_TEXT) || IDP_PRESSABLE.some((b) => IDP_BUTTON.test(String(b.innerText || b.value || b.getAttribute('aria-label') || '').trim()))) return say({{ refused: 'grant', filled: [], submitted: false }});
+  const IDP_FIELDS = Array.from(document.querySelectorAll('input')).filter(IDP_SEEN);
+  if (IDP_FIELDS.some((i) => String(i.autocomplete || '').includes('new-password')) || IDP_FIELDS.filter((i) => i.type === 'password').length > 1) return say({{ refused: 'unfamiliar', filled: [], submitted: false }});
+  const SHOWS_ACCOUNT = IDP_TEXT.includes(ACCOUNT);
+  const pick = () => {{
+    const tile = Array.from(document.querySelectorAll('[data-identifier], [data-email], [data-test-id]')).filter(IDP_SEEN).find((e) => ['data-identifier', 'data-email', 'data-test-id'].some((a) => String(e.getAttribute(a) || '').trim().toLowerCase() === ACCOUNT));
+    if (!tile) return {{ filled: [], submitted: false }};
+    tile.click();
+    return {{ filled: ['account'], submitted: true, step: 'account' }};
+  }};
+"#
+    )
+}
+
 /// The guard's checks, opening a script: refuse where it may not act.
 fn guard_js(guard: &FillGuard) -> String {
     let hosts = serde_json::to_string(&guard.hosts).unwrap_or_default();
@@ -73,10 +112,12 @@ fn guard_js(guard: &FillGuard) -> String {
     if (button) {{ button.click(); return true; }}
     return false;
   }};
+{idp}  if (IDP && !SHOWS_ACCOUNT) return say({{ refused: 'account', filled: [], submitted: false }});
 "#,
         sub = guard.subdomains,
         http = guard.http,
         remember = guard.remember,
+        idp = idp_js(guard),
     )
 }
 
@@ -175,7 +216,36 @@ mod tests {
     use super::*;
 
     fn guard() -> FillGuard {
-        FillGuard { hosts: vec!["github.com".into()], subdomains: false, http: false, remember: true }
+        FillGuard { hosts: vec!["github.com".into()], subdomains: false, http: false, remember: true, account: None }
+    }
+
+    fn google() -> crate::protocol::vault::Login {
+        let autopilot = crate::protocol::vault::Autopilot { idp: true, ..Default::default() };
+        crate::protocol::vault::Login { id: 1, site: "accounts.google.com".into(), url: None, username: "Abel@Example.com".into(), note: None, allowed: Vec::new(), auto: true, stopped: None, created_at: 0, password_at: None, uses: Vec::new(), autopilot }
+    }
+
+    #[test]
+    fn a_sign_in_with_fill_refuses_grants_and_strange_steps_before_it_types() {
+        let idp = FillGuard::idp(&google());
+        assert_eq!((idp.hosts.as_slice(), idp.subdomains, idp.http, idp.remember), (&["accounts.google.com".to_owned()][..], false, false, false));
+        assert_eq!(idp.account.as_deref(), Some("abel@example.com"));
+        for script in [crate::vault::fill_script("Abel@Example.com", "pw", &idp), code_script("123456", &idp)] {
+            let grant = script.find("refused: 'grant'").unwrap();
+            let unfamiliar = script.find("refused: 'unfamiliar'").unwrap();
+            let typed = script.find("set(").unwrap();
+            assert!(script.find("refused: 'host'").unwrap() < grant && grant < unfamiliar, "{script}");
+            assert!(typed > unfamiliar, "nothing is typed before the checks: {script}");
+            assert!(script.contains(r#"const IDP = true, ACCOUNT = "abel@example.com";"#));
+            assert!(script.contains("continue as") && script.contains("allow"), "consent buttons are refused");
+            assert!(script.contains("REMEMBER = false"), "no remember box on a provider's page");
+        }
+        assert!(code_script("123456", &idp).contains("if (IDP && !SHOWS_ACCOUNT) return say({ refused: 'account'"), "a code only where the page names the account");
+        // The chooser: only an exact address in the tile's own attribute.
+        let fill = crate::vault::fill_script("a", "p", &idp);
+        assert!(fill.contains("'data-identifier', 'data-email', 'data-test-id'") && fill.contains("=== ACCOUNT"));
+        // Any other guard checks none of it.
+        let plain = code_script("123456", &guard());
+        assert!(plain.contains("const IDP = false") && !plain.contains("refused: 'grant'"));
     }
 
     #[test]
@@ -195,7 +265,7 @@ mod tests {
     fn every_script_parses() {
         use std::io::Write as _;
         let login = crate::protocol::vault::Login { id: 1, site: "github.com".into(), url: None, username: "a".into(), note: None, allowed: Vec::new(), auto: true, stopped: None, created_at: 0, password_at: None, uses: Vec::new(), autopilot: Default::default() };
-        let scripts = [code_script("123456", &guard()), passkey_script(&guard()), device_script(Some("ABCD-1234"), &guard()), device_script(None, &guard()), crate::vault::fill_script("a", "p", &FillGuard::exact(&login)), remember_js()];
+        let scripts = [code_script("123456", &guard()), passkey_script(&guard()), device_script(Some("ABCD-1234"), &guard()), device_script(None, &guard()), crate::vault::fill_script("a", "p", &FillGuard::exact(&login)), remember_js(), crate::vault::fill_script("a", "p", &FillGuard::idp(&google())), code_script("123456", &FillGuard::idp(&google()))];
         for script in scripts {
             let Ok(mut node) = std::process::Command::new("node").args(["-e", "new Function('return (' + require('fs').readFileSync(0, 'utf8') + ')')"]).stdin(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn() else { return };
             node.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();

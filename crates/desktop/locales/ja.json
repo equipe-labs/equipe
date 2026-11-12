@@ -3702,6 +3702,8 @@
   "autopilot.keepalive_tip": "ときどきサイトを確認し、メンバーが必要になる前に再サインインします。",
   "autopilot.device_code": "デバイスのサインインを承認",
   "autopilot.device_code_tip": "メンバーが gh や vercel にサインインする必要があるとき、equipe がサインインを実行し、共有ブラウザで承認します。",
+  "autopilot.idp": "他のサイトの「{provider} でログイン」にこのアカウントを使う",
+  "autopilot.idp_tip": "他のサイトがログインのために {provider} へ移動させたとき、equipe は {provider} 自身のページでこのアカウントを選び、メール・パスワード・認証アプリのコードを入力します。同意や権限の画面、アカウント設定には決して触れず、見慣れない画面はあなたに渡します。",
   "autopilot.seed_placeholder": "otpauth://… またはサイトに表示されるシークレット",
   "autopilot.seed_save": "シードを保存",
   "autopilot.seed_scan": "equipe のブラウザで QR を読み取る",

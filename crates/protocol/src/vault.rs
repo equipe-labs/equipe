@@ -84,6 +84,13 @@ pub struct Autopilot {
     /// Approve device-code sign-ins (`gh auth login`, `aws sso login`, …) for
     /// this account in the shared browser, when equipe started them itself.
     pub device_code: bool,
+    /// Use this account on its identity provider's own sign-in page when
+    /// another site sends the browser there ("Sign in with Google" …): only
+    /// for a login whose site is the provider's host, only identity steps
+    /// (the account chooser, email, password, authenticator code), never a
+    /// consent or permission screen. Off unless the person turns it on.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub idp: bool,
     /// The domain the site's code mail comes from, when not its own.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mail_from: Option<String>,
@@ -103,7 +110,7 @@ pub struct Autopilot {
 
 impl Default for Autopilot {
     fn default() -> Self {
-        Self { totp: false, email: false, sms: false, passkey: false, remember: true, keepalive: false, device_code: false, mail_from: None, check_url: None, has_totp: false, has_passkey: false, checked: None }
+        Self { totp: false, email: false, sms: false, passkey: false, remember: true, keepalive: false, device_code: false, idp: false, mail_from: None, check_url: None, has_totp: false, has_passkey: false, checked: None }
     }
 }
 
@@ -243,7 +250,7 @@ pub struct AutopilotStatus {
     pub keepalive_hours: u32,
     pub cli: Vec<CliLogin>,
     /// This week: what equipe did by itself, by step (`totp`, `email`, `sms`,
-    /// `passkey`, `device_code`, `keepalive`, `relogin`), …
+    /// `passkey`, `device_code`, `keepalive`, `relogin`, `idp`), …
     pub resolved: Vec<(String, u64)>,
     /// … what the person was still asked for, …
     pub asked: u64,

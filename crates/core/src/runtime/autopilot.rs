@@ -80,6 +80,9 @@ pub(super) struct State {
     /// Pages whose code equipe typed and the site didn't take: never tried again.
     code_failed: HashSet<u64>,
     expiry_tried: HashMap<u64, std::time::Instant>,
+    /// "Sign in with …" pages (a provider's account chooser or email page)
+    /// equipe tried, by page: the address it tried there.
+    idp_tried: HashMap<u64, String>,
     code_tries: HashMap<u32, Vec<std::time::Instant>>,
     hints: HashMap<u64, Hints>,
     /// Device-code sign-ins running, by credential id: the member to tell.
@@ -269,6 +272,7 @@ impl Runtime {
             self.autopilot.hints.clear();
             self.autopilot.expiry_tried.clear();
             self.autopilot.code_failed.clear();
+            self.autopilot.idp_tried.clear();
         }
         for page in pages {
             let ran_out = browser::session_ran_out(&page.title, page.signals.as_ref());
@@ -299,6 +303,22 @@ impl Runtime {
             crate::daemon_log!("equipe: {}'s sign-in looks to have run out in a member's page; looking again", login.site);
             self.autopilot.returns.insert(page.id, (page.url.clone(), now));
             self.hub.op(&json!({ "op": "nav", "page": page.id, "action": "reload" }));
+        }
+        // "Sign in with …" steps without a password field — the provider's
+        // account chooser, its email page — aren't sign-in walls to the page
+        // checks: equipe looks at them itself, once per page and address,
+        // where the person opted the provider's login in.
+        for page in pages {
+            if page.loading || !vault::hands_off_elsewhere(&page.url) || browser::human_check(&page.url, &page.title, page.signals.as_ref()).is_some() {
+                continue;
+            }
+            if vault::idp_login_for(&self.logins, &page.url).is_none() || self.autopilot.idp_tried.get(&page.id) == Some(&page.url) {
+                continue;
+            }
+            self.autopilot.idp_tried.insert(page.id, page.url.clone());
+            if self.try_relogin(lane, page.id, &page.url) {
+                break;
+            }
         }
     }
 
@@ -364,16 +384,25 @@ impl Runtime {
         if self.autopilot.code_failed.contains(&page) {
             return false;
         }
-        let Some(login) = autopilot_login_for(&self.logins, url).cloned() else { return false };
+        // On a provider's page for another site ("Sign in with …"): only the
+        // authenticator code, of an opted-in provider login.
+        let (login, idp) = match autopilot_login_for(&self.logins, url) {
+            Some(login) => (login.clone(), false),
+            None => match vault::idp_login_for(&self.logins, url).filter(|l| l.autopilot.totp && l.autopilot.has_totp) {
+                Some(login) => (login.clone(), true),
+                None => return false,
+            },
+        };
         let offered = self.autopilot.hints.get(&page).is_some_and(|h| h.passkey);
-        let Some(step) = self.code_step(&login, offered, sign_in_page) else { return false };
+        let step = if idp { (!sign_in_page).then_some(Step::Totp) } else { self.code_step(&login, offered, sign_in_page) };
+        let Some(step) = step else { return false };
         if !self.code_try_allowed(login.id) {
             return false;
         }
         let Some(host) = self.host.clone() else { return false };
         let site = vault::site_of(url);
-        self.relogins.insert(lane.to_owned(), logins::Relogin::new(login.id, page, site.clone(), squad, browser::member_of(key), step));
-        let job = self.code_job(&login, step);
+        self.relogins.insert(lane.to_owned(), logins::Relogin::new(login.id, page, site.clone(), squad, browser::member_of(key), step).via_idp(idp));
+        let job = CodeJob { idp, ..self.code_job(&login, step) };
         let (internal, waits, lane) = (self.internal.clone(), self.fill_waits.clone(), lane.to_owned());
         let token = self.next_fill_token();
         if step == Step::Passkey {
@@ -408,6 +437,7 @@ impl Runtime {
             mailbox: settings.mailbox,
             home: self.person_home(),
             since: now_secs().saturating_sub(120),
+            idp: false,
         }
     }
 
@@ -577,7 +607,7 @@ impl Runtime {
         tokio::spawn(async move {
             let _ = match job {
                 Some(job) => code_fill(&host, &waits, lane, page, job, fill_token).await,
-                None => logins::relogin_fill(&host, &waits, &vault, lane, page, &login, fill_token).await,
+                None => logins::relogin_fill(&host, &waits, &vault, lane, page, &login, fill_token, false).await,
             };
             let _ = internal.send(Internal::Autopilot(Note::Look { token }));
         });
@@ -653,7 +683,7 @@ impl Runtime {
             return;
         }
         let Some(host) = self.host.clone() else { return };
-        let guard = vault::FillGuard { hosts: vec![vault::site_of(&page.url)], subdomains: false, http: false, remember: false };
+        let guard = vault::FillGuard { hosts: vec![vault::site_of(&page.url)], subdomains: false, http: false, remember: false, account: None };
         let script = ap::fill::device_script(code.as_deref(), &guard);
         if let Some(v) = self.autopilot.visits.get_mut(&token) {
             v.rounds += 1;
@@ -893,6 +923,8 @@ pub(super) struct CodeJob {
     mailbox: Option<crate::protocol::vault::Mailbox>,
     home: Option<PathBuf>,
     since: u64,
+    /// On an identity provider's page for another site ([`vault::FillGuard::idp`]).
+    idp: bool,
 }
 
 /// Run one script in a page through the browser host's `fill`, and read its answer.
@@ -913,7 +945,7 @@ async fn fill_once(host: &browser::SharedHost, waits: &logins::FillWaits, lane: 
 /// to the page for the moment. Secrets are read off the loop and go nowhere
 /// but the page.
 async fn code_fill(host: &browser::SharedHost, waits: &logins::FillWaits, lane: &str, page: u64, job: CodeJob, token: u64) -> Result<vault::Filled, String> {
-    let guard = vault::FillGuard::exact(&job.login);
+    let guard = if job.idp { vault::FillGuard::idp(&job.login) } else { vault::FillGuard::exact(&job.login) };
     let id = job.login.id;
     let read = |what: fn(&vault::Vault, u32) -> Result<String, String>| {
         let vault = job.vault.clone();
@@ -961,7 +993,7 @@ async fn code_fill(host: &browser::SharedHost, waits: &logins::FillWaits, lane: 
             }
             found.ok_or("no code came in time")?
         }
-        Step::Relogin | Step::Keepalive | Step::DeviceCode => return Err("not a code step".into()),
+        Step::Relogin | Step::Keepalive | Step::DeviceCode | Step::Idp => return Err("not a code step".into()),
     };
     fill_once(host, waits, lane, page, ap::fill::code_script(&code, &guard), token).await
 }

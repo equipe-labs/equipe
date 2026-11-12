@@ -43,10 +43,14 @@ pub enum Step {
     DeviceCode,
     /// A keep-alive look found the site signed out and signed it back in.
     Keepalive,
+    /// An identity provider's own sign-in step for another site ("Sign in
+    /// with Google" …): the account picked, the email, password or
+    /// authenticator code typed on the provider's page (`Autopilot::idp`).
+    Idp,
 }
 
 impl Step {
-    pub const ALL: [Step; 7] = [Step::Relogin, Step::Totp, Step::Email, Step::Sms, Step::Passkey, Step::DeviceCode, Step::Keepalive];
+    pub const ALL: [Step; 8] = [Step::Relogin, Step::Totp, Step::Email, Step::Sms, Step::Passkey, Step::DeviceCode, Step::Keepalive, Step::Idp];
 
     pub fn code(self) -> &'static str {
         match self {
@@ -57,6 +61,7 @@ impl Step {
             Step::Passkey => "passkey",
             Step::DeviceCode => "device_code",
             Step::Keepalive => "keepalive",
+            Step::Idp => "idp",
         }
     }
 
@@ -70,7 +75,7 @@ impl Step {
     /// purpose; the record keeps the count, this only weighs it.
     pub fn minutes_saved(self) -> u64 {
         match self {
-            Step::Relogin | Step::Keepalive => 2,
+            Step::Relogin | Step::Keepalive | Step::Idp => 2,
             Step::Totp | Step::Passkey => 3,
             Step::Email | Step::Sms => 4,
             Step::DeviceCode => 5,

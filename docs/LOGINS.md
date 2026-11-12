@@ -130,7 +130,9 @@ when all of these hold:
 - the address isn't an OAuth, SAML or SSO hand-off and doesn't send the
   browser to another host afterwards (`client_id`, `redirect_uri`,
   `/oauth/authorize`, a return address on another host): what comes after
-  such a sign-in — granting an app access — is the person's to see;
+  such a sign-in — granting an app access — is the person's to see (one
+  narrow exception, for an identity provider's own login the person opted
+  in: "Sign in with …" below);
 - exactly one login matches (two accounts for a site: the person's choice);
 - the browser is the person's main one, not another person's profile;
 - fewer than three tries for that login in the last hour, a minute apart.
@@ -151,6 +153,72 @@ After the submit equipe looks at where the page went:
   new password or turns it on again;
 - a code, a CAPTCHA, a passkey, or anything else: handed to the person as
   before, with the cause recorded.
+
+## "Sign in with …" on other sites
+
+Most re-asks members hit came from one place: a site's "Sign in with Google"
+(Microsoft, Apple, GitHub, Okta) sends the browser to the provider, and the
+provider asks for its own password again. Those pages are hand-offs by
+definition (`client_id`, `redirect_uri`), so the rule above hands them over.
+The exception is narrow, and only where ALL of these hold
+(`vault::idp_login_for`):
+
+- the saved login's site is the identity provider's own sign-in host
+  (`vault::idp_provider`: `accounts.google.com`, `login.microsoftonline.com`,
+  `login.live.com`, `appleid.apple.com`, `github.com`, or an Okta tenant's own
+  `<tenant>.okta.com`) — a login saved for `google.com` doesn't qualify;
+- the person turned on that login's "Use this account for 'Sign in with …' on
+  other sites" (`Autopilot::idp`, off by default, under the login's Autopilot
+  on the Logins page, a person-only `SetLoginAutopilot`), and "Signs in by
+  itself" is on and not stopped;
+- the page's host is exactly that provider host, over https (no http
+  exception, no sign-in page host, no subdomain);
+- the address isn't a grant step (`vault::idp_grant_page`: a path naming
+  consent, approval, grant or permissions);
+- exactly one such login.
+
+What equipe does there is identity only (`FillGuard::idp`, the script in
+`vault::fill_script` and `autopilot::fill::idp_js`):
+
+- picks the account in the provider's account chooser — only a tile whose own
+  `data-identifier` / `data-email` / `data-test-id` is exactly the login's
+  username, never by text;
+- types the email into the provider's own identity field (`type=email`,
+  `autocomplete=username|email`, or a field named `identifier`, `loginfmt`,
+  `email`, `username`, `login`), and refuses when that field already holds
+  another account;
+- types the password only when the page shows the login's own account (so it
+  never goes to another account's password page), and never into a page with
+  a new-password field or two password fields (changing a password, account
+  settings);
+- types the authenticator code (autopilot `totp` only — no mail, Messages or
+  passkey there) on the provider's code page, again only where the page shows
+  the account;
+- never ticks "remember" or "trust this device" boxes there, never presses a
+  button: before anything, the script refuses (`refused: grant`) a page with a
+  visible Allow / Accept / Authorize / Grant / Approve / Agree / "Continue as"
+  / Confirm / Yes button (and `match.consent_words` in every language) or such
+  words in its text, and anything it doesn't recognize is left alone and goes
+  to the person as before (`refused: unfamiliar`, `refused: account`, or
+  nothing filled).
+
+The chooser and email steps have no password field, so they are not sign-in
+walls to the page checks; equipe looks at them itself (`see_pages`): a
+hand-off page on the provider's exact host, not loading, once per page and
+address, within the usual tries (three an hour, a minute apart). A fill
+there continues to the password page in the same run (up to three rounds).
+equipe calls it signed in only once the provider sends the page back to the
+site that asked; still on the provider afterwards (a consent screen, a step it
+doesn't take) is left to the member or the person, not recorded as done.
+These sign-ins are recorded with `step=idp` — the password and the code steps
+alike — so the measures show what the exception saves.
+
+The risk, said plainly: the provider account is the key to every site that
+uses it, and a page that asks for it on another site's behalf is where an
+app gets granted access. equipe never grants: consent and permission screens,
+scopes, "Allow", account settings and recovery prompts stay the person's (or
+the member's, who asks the person), and the switch is per login, off until
+the person turns it on, and taken back with one click.
 
 ## One card per site
 
@@ -273,9 +341,10 @@ themselves once it is solved. It is recorded with `cause=captcha`.
 
 `login_events` rows of sign-ins equipe finished carry the step that did it
 (`step`: `relogin`, `totp`, `email`, `sms`, `passkey`, `device_code`,
-`keepalive`; a column added to journals from before). `equipe logins stats`,
+`keepalive`, `idp`; a column added to journals from before). `equipe logins stats`,
 the PM's retro line and the Logins page's autopilot card show them with a rough count of the
-person's minutes saved (2 for a typed password or a keep-alive, 3 for a code or
+person's minutes saved (2 for a typed password, a keep-alive or a "Sign in
+with …" step, 3 for a code or
 passkey from equipe's own store, 4 for a code from mail or Messages, 5 for a
 device sign-in). The goal: handoffs per site per week near zero, CAPTCHAs aside.
 
@@ -289,7 +358,7 @@ cargo test -p equipe-core --lib autopilot
 
 CAPTCHAs and "verify you are human" walls; push approvals and codes only a
 phone shows; the person's own passkeys and security keys; sign-ins handed off
-to another host (OAuth, SAML, "Sign in with Google" on another site's behalf —
-including Google's password check for another site); consent screens, account
-creation and billing. equipe records them so the measures show what is left,
+to another host (OAuth, SAML, "Sign in with Google" on another site's behalf),
+except the provider's own identity steps for a login the person opted in
+("Sign in with …" above); consent screens, account creation and billing. equipe records them so the measures show what is left,
 and never gets around them.

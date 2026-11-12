@@ -3702,6 +3702,8 @@
   "autopilot.keepalive_tip": "时不时查看该网站，并在成员需要之前重新登录。",
   "autopilot.device_code": "批准设备登录",
   "autopilot.device_code_tip": "成员需要登录 gh 或 vercel 时，equipe 会执行登录并在共享浏览器中批准。",
+  "autopilot.idp": "在其他网站的“使用 {provider} 登录”中使用此账号",
+  "autopilot.idp_tip": "当其他网站把你转到 {provider} 登录时，equipe 会在 {provider} 自己的页面上选择此账号并输入邮箱、密码和身份验证器代码——从不处理同意或权限页面，也从不更改账号设置。不熟悉的页面交给你。",
   "autopilot.seed_placeholder": "otpauth://… 或网站显示的密钥",
   "autopilot.seed_save": "保存密钥",
   "autopilot.seed_scan": "在 equipe 的浏览器中读取二维码",

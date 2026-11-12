@@ -3791,6 +3791,8 @@
   "autopilot.keepalive_tip": "Schaut ab und zu auf die Website und meldet wieder an, bevor ein Mitglied es braucht.",
   "autopilot.device_code": "Geräteanmeldungen freigeben",
   "autopilot.device_code_tip": "Braucht ein Mitglied eine Anmeldung bei gh oder vercel, führt equipe sie durch und gibt sie im gemeinsamen Browser frei.",
+  "autopilot.idp": "Dieses Konto für „Mit {provider} anmelden“ auf anderen Websites verwenden",
+  "autopilot.idp_tip": "Schickt dich eine andere Website zur Anmeldung zu {provider}, wählt equipe dieses Konto und gibt E-Mail, Passwort und Authenticator-Code auf der eigenen Seite von {provider} ein – nie auf Zustimmungs- oder Berechtigungsseiten, nie in den Kontoeinstellungen. Alles Unbekannte kommt zu dir.",
   "autopilot.seed_placeholder": "otpauth://… oder das Geheimnis, das die Website anzeigt",
   "autopilot.seed_save": "Seed speichern",
   "autopilot.seed_scan": "QR im Browser von equipe lesen",

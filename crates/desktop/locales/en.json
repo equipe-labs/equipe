@@ -3791,6 +3791,8 @@
   "autopilot.keepalive_tip": "Looks at the site now and then and signs back in before a member needs it.",
   "autopilot.device_code": "Approve device sign-ins",
   "autopilot.device_code_tip": "When a member needs gh or vercel signed in, equipe runs the sign-in and approves it in the shared browser.",
+  "autopilot.idp": "Use this account for “Sign in with {provider}” on other sites",
+  "autopilot.idp_tip": "When another site sends you to {provider} to sign in, equipe picks this account and types its email, password and authenticator code on {provider}'s own page — never a consent or permission screen, never account settings. Anything unfamiliar comes to you.",
   "autopilot.seed_placeholder": "otpauth://… or the secret the site shows",
   "autopilot.seed_save": "Keep seed",
   "autopilot.seed_scan": "Read QR in equipe's browser",

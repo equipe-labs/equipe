@@ -3702,6 +3702,8 @@
   "autopilot.keepalive_tip": "不時查看該網站，並在成員需要之前重新登入。",
   "autopilot.device_code": "核准裝置登入",
   "autopilot.device_code_tip": "成員需要登入 gh 或 vercel 時，equipe 會執行登入並在共用瀏覽器中核准。",
+  "autopilot.idp": "在其他網站的「使用 {provider} 登入」中使用此帳號",
+  "autopilot.idp_tip": "當其他網站把你轉到 {provider} 登入時，equipe 會在 {provider} 自己的頁面上選擇此帳號並輸入電子郵件、密碼和驗證器代碼——從不處理同意或權限頁面，也從不變更帳號設定。不熟悉的頁面交給你。",
   "autopilot.seed_placeholder": "otpauth://… 或網站顯示的金鑰",
   "autopilot.seed_save": "儲存金鑰",
   "autopilot.seed_scan": "在 equipe 的瀏覽器中讀取 QR 碼",

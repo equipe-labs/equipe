@@ -440,6 +440,59 @@ pub fn auto_login_for<'a>(logins: &'a [Login], url: &str) -> Option<&'a Login> {
     if found.next().is_some() { None } else { Some(one) }
 }
 
+/// Identity providers whose own sign-in page equipe may fill when another
+/// site sends the browser there ("Sign in with Google" …), by host, and the
+/// name they go by. Only these exact hosts (and an Okta tenant's own
+/// `<tenant>.okta.com`): a login saved for `google.com` isn't one.
+const IDP_HOSTS: [(&str, &str); 5] = [
+    ("accounts.google.com", "Google"),
+    ("login.microsoftonline.com", "Microsoft"),
+    ("login.live.com", "Microsoft"),
+    ("appleid.apple.com", "Apple"),
+    ("github.com", "GitHub"),
+];
+
+/// The identity provider whose own sign-in host `site` is, by name: `None`
+/// for any other site.
+pub fn idp_provider(site: &str) -> Option<&'static str> {
+    let host = site_of(site);
+    if let Some((_, name)) = IDP_HOSTS.iter().find(|(h, _)| *h == host) {
+        return Some(name);
+    }
+    // An Okta tenant: one label before okta.com, nothing deeper.
+    host.strip_suffix(".okta.com").filter(|t| !t.is_empty() && !t.contains('.')).map(|_| "Okta")
+}
+
+/// Whether an identity provider's page grants another site something — a
+/// consent or permission screen, an approval — rather than asking who you
+/// are: never equipe's, even with the person's leave for "Sign in with …".
+pub fn idp_grant_page(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    let rest = lower.split_once("://").map_or(lower.as_str(), |(_, r)| r);
+    let path = rest.split(['?', '#']).next().unwrap_or_default();
+    let path = path.find('/').map_or("", |at| &path[at..]);
+    ["consent", "approv", "grant", "permission"].iter().any(|w| path.contains(w))
+}
+
+/// The identity-provider login equipe may use at `url` when that page signs
+/// in on another site's behalf ("Sign in with Google" on a company
+/// dashboard) — a narrow exception to [`hands_off_elsewhere`]. Only when all
+/// hold: the login's site is the provider's own host ([`idp_provider`]),
+/// the person turned "Use this account for 'Sign in with …'" on for it
+/// (`Autopilot::idp`) and lets it sign in by itself, it isn't stopped, the
+/// page is on exactly that host over https, the page isn't a grant step
+/// ([`idp_grant_page`]) — and exactly one login matches. What equipe may do
+/// there is narrower still ([`FillGuard::idp`]).
+pub fn idp_login_for<'a>(logins: &'a [Login], url: &str) -> Option<&'a Login> {
+    let host = site_of(url);
+    if host.is_empty() || !url.trim().to_ascii_lowercase().starts_with("https://") || idp_grant_page(url) {
+        return None;
+    }
+    let mut found = logins.iter().filter(|l| l.auto && l.stopped.is_none() && l.autopilot.idp && idp_provider(&l.site).is_some() && site_of(&l.site) == host);
+    let one = found.next()?;
+    if found.next().is_some() { None } else { Some(one) }
+}
+
 impl Vault {
     pub fn open(home: &Path, secrets: Box<dyn Secrets>) -> Self {
         let file = home.join("vault.json");
@@ -864,13 +917,19 @@ pub struct FillGuard {
     /// Tick the form's "Remember me" / "Keep me signed in" / "Trust this
     /// device" box (the login's [`Autopilot::remember`]).
     pub remember: bool,
+    /// A "Sign in with …" fill on an identity provider's own page
+    /// ([`FillGuard::idp`]): the account (lowercased) the page must be
+    /// about. The scripts then refuse consent and permission screens and
+    /// steps they don't recognize, pick the account in a chooser only by
+    /// its exact address, and type only into the provider's identity fields.
+    pub account: Option<String>,
 }
 
 impl FillGuard {
     /// A member's `sign_in`: the login's site and its subdomains, as
     /// [`serves`] has it.
     pub fn serving(login: &Login) -> Self {
-        Self { hosts: auto_hosts(login), subdomains: true, http: true, remember: login.autopilot.remember }
+        Self { hosts: auto_hosts(login), subdomains: true, http: true, remember: login.autopilot.remember, account: None }
     }
 
     /// equipe by itself: those exact hosts, https unless the login's own
@@ -878,7 +937,14 @@ impl FillGuard {
     pub fn exact(login: &Login) -> Self {
         let hosts = auto_hosts(login);
         let http = login.url.as_deref().is_some_and(|u| u.trim().to_ascii_lowercase().starts_with("http://")) || hosts.iter().any(|h| local(h));
-        Self { hosts, subdomains: false, http, remember: login.autopilot.remember }
+        Self { hosts, subdomains: false, http, remember: login.autopilot.remember, account: None }
+    }
+
+    /// equipe on an identity provider's page for another site
+    /// ([`idp_login_for`]): the provider's host alone, https only, no
+    /// "remember" box, and identity only — for this login's account.
+    pub fn idp(login: &Login) -> Self {
+        Self { hosts: vec![site_of(&login.site)], subdomains: false, http: false, remember: false, account: Some(login.username.trim().to_lowercase()) }
     }
 }
 
@@ -913,7 +979,7 @@ pub fn fill_script(username: &str, password: &str, guard: &FillGuard) -> String 
   if (location.protocol !== 'https:' && !(HTTP && location.protocol === 'http:')) return say({{ refused: 'insecure', filled: [], submitted: false }});
   const U = {u}, P = {p};
   const shown = (el) => {{ const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none' && !el.disabled && !el.readOnly; }};
-  const set = (el, v) => {{
+{idp}  const set = (el, v) => {{
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
     el.dispatchEvent(new Event('input', {{ bubbles: true }}));
@@ -924,8 +990,12 @@ pub fn fill_script(username: &str, password: &str, guard: &FillGuard) -> String 
   const textual = (i) => ['text', 'email', 'tel', ''].includes(i.type) || i.type === undefined;
   const named = inputs.find((i) => textual(i) && new RegExp({field}, 'i').test([i.autocomplete, i.name, i.id, i.placeholder, i.getAttribute('aria-label')].join(' ')));
   let user = named;
-  if (pass && !user) {{ const before = inputs.slice(0, inputs.indexOf(pass)).filter(textual); user = before[before.length - 1]; }}
-  if (!pass && !user) return say({{ filled: [], submitted: false }});
+  // On a provider's page: only its own identity field, never a guess.
+  if (IDP) user = inputs.find((i) => textual(i) && (i.type === 'email' || /username|email/i.test(i.autocomplete || '') || /^(identifier|loginfmt|email|username|login)$/i.test(i.name || i.id || '')));
+  if (pass && !user && !IDP) {{ const before = inputs.slice(0, inputs.indexOf(pass)).filter(textual); user = before[before.length - 1]; }}
+  if (!pass && !user) return say(IDP ? pick() : {{ filled: [], submitted: false }});
+  if (IDP && user && user.value && user.value.trim().toLowerCase() !== ACCOUNT) return say({{ refused: 'account', filled: [], submitted: false }});
+  if (IDP && pass && !user && !SHOWS_ACCOUNT) return say({{ refused: 'account', filled: [], submitted: false }});
   const filled = [];
   if (user && !user.value) {{ user.focus(); set(user, U); filled.push('username'); }} else if (user) {{ filled.push('username (already there)'); }}
   if (pass) {{ pass.focus(); set(pass, P); filled.push('password'); }}
@@ -941,6 +1011,7 @@ pub fn fill_script(username: &str, password: &str, guard: &FillGuard) -> String 
         http = guard.http,
         remember = guard.remember,
         remember_js = crate::autopilot::fill::remember_js(),
+        idp = crate::autopilot::fill::idp_js(guard),
     )
 }
 
@@ -1101,6 +1172,52 @@ mod tests {
         // Plain http only on this machine, or where the login's own page is.
         assert!(auto_login_for(&[login("localhost", None, true)], "http://localhost/login").is_some());
         assert!(auto_login_for(&[login("intranet.lan", Some("http://intranet.lan/login"), true)], "http://intranet.lan/login").is_some());
+    }
+
+    #[test]
+    fn identity_providers_are_their_own_exact_hosts() {
+        assert_eq!(idp_provider("https://accounts.google.com/v3/signin"), Some("Google"));
+        assert_eq!(idp_provider("login.microsoftonline.com"), Some("Microsoft"));
+        assert_eq!(idp_provider("acme.okta.com"), Some("Okta"));
+        for not in ["google.com", "mail.google.com", "accounts.google.com.evil.io", "evil.acme.okta.com", "okta.com", "example.com"] {
+            assert_eq!(idp_provider(not), None, "{not}");
+        }
+        assert!(idp_grant_page("https://accounts.google.com/signin/oauth/consent?authuser=0"));
+        assert!(idp_grant_page("https://accounts.google.com/o/oauth2/approval/v2"));
+        assert!(idp_grant_page("https://login.microsoftonline.com/common/Consent/Set"));
+        assert!(!idp_grant_page("https://accounts.google.com/v3/signin/challenge/pwd?redirect_uri=https%3A%2F%2Fapp.example.com%2Fconsent"), "only the path counts");
+    }
+
+    #[test]
+    fn sign_in_with_a_provider_needs_its_own_login_the_persons_switch_and_its_exact_host() {
+        let google = |idp: bool| Login { site: "accounts.google.com".into(), username: "abel@example.com".into(), autopilot: crate::protocol::vault::Autopilot { idp, ..Default::default() }, ..login("accounts.google.com", None, true) };
+        // Google asking its password again for a company dashboard's "Sign in with Google".
+        let handoff = "https://accounts.google.com/v3/signin/challenge/pwd?client_id=123.apps.googleusercontent.com&redirect_uri=https%3A%2F%2Fdash.example.com%2Fauth&response_type=code";
+        assert!(hands_off_elsewhere(handoff));
+        assert!(auto_login_for(&[google(true)], handoff).is_none(), "the general rule still hands it off");
+        assert_eq!(idp_login_for(&[google(true)], handoff).map(|l| l.id), Some(1));
+        assert!(idp_login_for(&[google(false)], handoff).is_none(), "off by default: the person's switch");
+        assert!(idp_login_for(&[Login { auto: false, ..google(true) }], handoff).is_none(), "and it signs in by itself");
+        assert!(idp_login_for(&[Login { stopped: Some("x".into()), ..google(true) }], handoff).is_none(), "not stopped");
+        assert!(idp_login_for(&[google(true), Login { id: 2, username: "other@example.com".into(), ..google(true) }], handoff).is_none(), "two accounts: the person's choice");
+        // A login for any other site never qualifies, switch or not.
+        let dash = Login { autopilot: crate::protocol::vault::Autopilot { idp: true, ..Default::default() }, ..login("google.com", None, true) };
+        assert!(idp_login_for(&[dash], handoff).is_none());
+        for elsewhere in [
+            "http://accounts.google.com/v3/signin/challenge/pwd?client_id=x",
+            "https://accounts.google.com.evil.io/v3/signin/challenge/pwd?client_id=x",
+            "https://myaccount.google.com/signin?client_id=x",
+            "https://evil.io/accounts.google.com?client_id=x",
+            "https://accounts.google.com/signin/oauth/consent?client_id=x",
+        ] {
+            assert!(idp_login_for(&[google(true)], elsewhere).is_none(), "{elsewhere}");
+        }
+        // What it may do there: the provider's host alone, https, no remember box, this account.
+        let guard = FillGuard::idp(&google(true));
+        assert_eq!(guard, FillGuard { hosts: vec!["accounts.google.com".into()], subdomains: false, http: false, remember: false, account: Some("abel@example.com".into()) });
+        let script = fill_script("abel@example.com", "pw", &guard);
+        assert!(script.contains("const IDP = true") && script.contains("refused: 'grant'") && script.contains("refused: 'account'"));
+        assert!(fill_script("a", "p", &FillGuard::exact(&login("github.com", None, true))).contains("const IDP = false"), "a site's own sign-in is as before");
     }
 
     #[test]

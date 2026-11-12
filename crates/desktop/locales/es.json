@@ -3791,6 +3791,8 @@
   "autopilot.keepalive_tip": "Mira el sitio de vez en cuando y vuelve a iniciar sesión antes de que un miembro lo necesite.",
   "autopilot.device_code": "Aprobar inicios de sesión de dispositivo",
   "autopilot.device_code_tip": "Cuando un miembro necesita gh o vercel con sesión iniciada, equipe hace el inicio de sesión y lo aprueba en el navegador compartido.",
+  "autopilot.idp": "Usar esta cuenta para «Iniciar sesión con {provider}» en otros sitios",
+  "autopilot.idp_tip": "Cuando otro sitio te envía a {provider} para iniciar sesión, equipe elige esta cuenta y escribe el correo, la contraseña y el código del autenticador en la propia página de {provider}; nunca en una pantalla de consentimiento o permisos, nunca en la configuración de la cuenta. Lo que no reconozca pasa a ti.",
   "autopilot.seed_placeholder": "otpauth://… o el secreto que muestra el sitio",
   "autopilot.seed_save": "Guardar semilla",
   "autopilot.seed_scan": "Leer el QR en el navegador de equipe",

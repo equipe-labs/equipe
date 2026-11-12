@@ -3791,6 +3791,8 @@
   "autopilot.keepalive_tip": "Regarde le site de temps en temps et reconnecte avant qu’un membre en ait besoin.",
   "autopilot.device_code": "Approuver les connexions d’appareil",
   "autopilot.device_code_tip": "Quand un membre a besoin de gh ou vercel connecté, equipe lance la connexion et l’approuve dans le navigateur partagé.",
+  "autopilot.idp": "Utiliser ce compte pour « Se connecter avec {provider} » sur d’autres sites",
+  "autopilot.idp_tip": "Quand un autre site vous envoie vers {provider} pour vous connecter, equipe choisit ce compte et saisit l’e-mail, le mot de passe et le code d’authentification sur la page de {provider} elle-même — jamais sur un écran de consentement ou d’autorisations, jamais dans les paramètres du compte. Tout ce qui est inhabituel vous revient.",
   "autopilot.seed_placeholder": "otpauth://… ou le secret affiché par le site",
   "autopilot.seed_save": "Garder la clé",
   "autopilot.seed_scan": "Lire le QR dans le navigateur d’equipe",
