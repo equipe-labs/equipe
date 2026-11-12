@@ -1268,6 +1268,7 @@
   "design.qa_stats.rounds": "Rounds: {first} first, {second} second, {more} third or later",
   "design.qa_stats.by_tier": "By model tier:",
   "design.qa_stats.by_gate": "By gate mode:",
+  "design.qa_stats.by_judgment": "By what the gate made of the precheck (judgment reason, `none` for a plain look):",
   "design.qa_stats.row": "  {name}: {count} tickets · pass rate {rate} · {per} tokens per ticket, {total} in all · {calls} tool calls and {minutes} min per ticket",
   "design.qa_stats.agreement": "Gate agreement: {rate} of {judged} it could be checked on — would pass and passed {pa}, would pass but sent back {pm}, would send back and sent back {ba}, would send back but passed {bw} · left to the designer {deferred}",
   "design.qa_stats.acted": "The gate acted by itself: {pass} passed and {back} sent back without a designer turn",

@@ -151,38 +151,64 @@ impl Decision {
     }
 }
 
-/// Why a designer's judgment is needed beyond the report's: what takes
-/// design QA to the top tier.
+/// Why a designer's judgment is needed beyond the report's. Some reasons
+/// take design QA to the top tier ([`Judgment::needs_top`]); the rest leave
+/// the designer on the cheap tier, with the report, for what wasn't seen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Judgment {
-    /// The precheck couldn't run, or rendered nothing.
+    /// The precheck couldn't run, or its setup is broken.
     PrecheckFailed,
-    /// UI files changed that no screen of the map lists.
-    Unmapped,
-    /// Some states couldn't be rendered, or were left out over the cap.
+    /// Nothing, or most of what the change touches, could be rendered.
     NotRendered,
+    /// A few pictures failed; the rest were rendered.
+    Partial,
+    /// Touched states were left out over the cap or the time budget; the rest were rendered.
+    Capped,
+    /// A few changed UI files no screen of the map lists; the rest rendered.
+    Unmapped,
+    /// Many changed UI files no screen of the map lists.
+    UnmappedLarge,
     /// Many screens changed at once.
     Broad,
 }
 
 impl Judgment {
+    pub const ALL: [Judgment; 7] = [Judgment::PrecheckFailed, Judgment::NotRendered, Judgment::Partial, Judgment::Capped, Judgment::Unmapped, Judgment::UnmappedLarge, Judgment::Broad];
+
     pub fn code(self) -> &'static str {
         match self {
             Judgment::PrecheckFailed => "precheck_failed",
-            Judgment::Unmapped => "unmapped",
             Judgment::NotRendered => "not_rendered",
+            Judgment::Partial => "partial",
+            Judgment::Capped => "capped",
+            Judgment::Unmapped => "unmapped",
+            Judgment::UnmappedLarge => "unmapped_large",
             Judgment::Broad => "broad",
         }
     }
 
     pub fn parse(text: &str) -> Option<Self> {
-        [Judgment::PrecheckFailed, Judgment::Unmapped, Judgment::NotRendered, Judgment::Broad].into_iter().find(|j| j.code() == text)
+        Judgment::ALL.into_iter().find(|j| j.code() == text)
+    }
+
+    /// Whether this takes the designer to the top tier: the report leaves
+    /// too little seen (or too much changed) for a cheaper look.
+    pub fn needs_top(self) -> bool {
+        matches!(self, Judgment::PrecheckFailed | Judgment::NotRendered | Judgment::UnmappedLarge | Judgment::Broad)
+    }
+
+    /// Whether a journal's `judgment` text (none, or one this version
+    /// doesn't know) takes the top tier: an unknown one does.
+    pub fn text_needs_top(text: &str) -> bool {
+        Judgment::parse(text).is_none_or(Judgment::needs_top)
     }
 }
 
-/// So many changed states make a change broad: a designer's whole look.
-pub const BROAD_STATES: usize = 8;
+/// So many changed screens make a change broad: a designer's whole look.
+/// Screens, not states: with the higher state cap one screen with many
+/// states would otherwise look broad by itself.
+pub const BROAD_SCREENS: usize = 6;
 
 /// The gate's call on a report.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,7 +237,8 @@ impl GateCall {
 /// What the gate makes of `report` (`None`: the precheck didn't give one).
 /// Definite failures this change brought send it back whatever else is
 /// unknown; a pass needs everything rendered, nothing unmapped and no
-/// picture changed.
+/// picture changed — states left out, over the cap or the time budget,
+/// never pass, but they only need the designer on the cheap tier.
 pub fn gate(report: Option<&Report>) -> GateCall {
     let designer = |judgment: Option<Judgment>, reason: String| GateCall { decision: Decision::Designer, judgment, reasons: vec![reason] };
     let Some(r) = report else {
@@ -225,27 +252,50 @@ pub fn gate(report: Option<&Report>) -> GateCall {
         return GateCall { decision: Decision::SendBack, judgment: None, reasons: vec![format!("{} S1/S2 finding(s) this change brought: {}.", blockers.len(), rules.join(", "))] };
     }
     let taken = r.shots.len() - r.failed();
+    let mut notes: Vec<(Judgment, String)> = Vec::new();
     if taken == 0 {
-        if r.touched.is_empty() && r.unmapped.is_empty() && r.errors.is_empty() {
+        if !r.errors.is_empty() {
+            let why = r.errors.iter().take(3).cloned().collect::<Vec<_>>().join("; ");
+            return designer(Some(Judgment::PrecheckFailed), format!("The precheck rendered nothing: {why}."));
+        }
+        if !r.touched.is_empty() {
+            return designer(Some(Judgment::NotRendered), "The precheck rendered nothing: no picture of the touched screens could be taken.".into());
+        }
+        if r.unmapped.is_empty() {
             return designer(None, "No screen of the UI map lists the files this change touched.".into());
         }
-        let why = r.errors.first().cloned().unwrap_or_else(|| "nothing could be rendered".into());
-        return designer(Some(Judgment::PrecheckFailed), format!("The precheck rendered nothing: {why}."));
     }
     if !r.unmapped.is_empty() {
-        return designer(Some(Judgment::Unmapped), format!("{} changed UI file(s) no screen of the map lists.", r.unmapped.len()));
+        let large = r.unmapped.len() >= r.unmapped_large_at();
+        let kind = if large { Judgment::UnmappedLarge } else { Judgment::Unmapped };
+        notes.push((kind, format!("{} changed UI file(s) no screen of the map lists.", r.unmapped.len())));
     }
-    if r.failed() > 0 || r.left_out > 0 || !r.errors.is_empty() {
-        return designer(Some(Judgment::NotRendered), format!("{} picture(s) failed and {} state(s) were left out.", r.failed(), r.left_out));
+    if r.failed() > 0 {
+        // Most pictures failed: little was seen; a few: the designer renders those.
+        let kind = if r.failed() * 2 >= r.shots.len() { Judgment::NotRendered } else { Judgment::Partial };
+        let why = r.failure_causes(1).into_iter().next().map(|(why, _)| format!(" Most common cause: {why}")).unwrap_or_default();
+        notes.push((kind, format!("{} picture(s) failed.{why}", r.failed())));
+    }
+    if r.left_out > 0 {
+        notes.push((Judgment::Capped, format!("{} touched state(s) were left out over the cap and are not covered by the report.", r.left_out)));
+    }
+    if !r.errors.is_empty() && taken > 0 {
+        let why = r.errors.iter().take(3).cloned().collect::<Vec<_>>().join("; ");
+        notes.push((Judgment::Partial, format!("The precheck reported problems: {why}.")));
     }
     let changed = r.changed();
+    let screens = r.changed_screens();
+    if screens.len() >= BROAD_SCREENS {
+        notes.push((Judgment::Broad, format!("{} screens changed ({} states).", screens.len(), changed.len())));
+    }
+    if !notes.is_empty() {
+        let judgment = notes.iter().map(|(j, _)| *j).find(|j| j.needs_top()).or_else(|| notes.first().map(|(j, _)| *j));
+        return GateCall { decision: Decision::Designer, judgment, reasons: notes.into_iter().map(|(_, why)| why).collect() };
+    }
     if changed.is_empty() {
         let before = r.findings.iter().filter(|f| f.severity == Severity::Blocker).count();
         let also = if before > 0 { format!(" ({before} finding(s) were there before and are unchanged.)") } else { String::new() };
         return GateCall { decision: Decision::AutoPass, judgment: None, reasons: vec![format!("No picture of the {} touched screen(s) changed against the base, and nothing new was found.{also}", r.touched.len())] };
-    }
-    if changed.len() >= BROAD_STATES {
-        return designer(Some(Judgment::Broad), format!("{} states changed.", changed.len()));
     }
     designer(None, format!("{} state(s) changed: {}.", changed.len(), changed.join(", ")))
 }
@@ -375,7 +425,7 @@ mod tests {
         assert_eq!((gate(Some(&failed)).decision, gate(Some(&failed)).judgment), (Decision::Designer, Some(Judgment::NotRendered)), "no pass on half the pictures");
         let unmapped = Report { unmapped: vec!["src/components/Nav.tsx".into()], ..report(vec![shot("auth/login/default", false, false)], vec![]) };
         assert_eq!(gate(Some(&unmapped)).judgment, Some(Judgment::Unmapped));
-        let broad = report((0..BROAD_STATES).map(|n| shot(&format!("auth/login/s{n}"), true, false)).collect(), vec![]);
+        let broad = report((0..BROAD_SCREENS).map(|n| shot(&format!("auth/s{n}/default"), true, false)).collect(), vec![]);
         assert_eq!(gate(Some(&broad)).judgment, Some(Judgment::Broad));
         let nothing = Report { touched: vec![], ..report(vec![], vec![]) };
         assert_eq!((gate(Some(&nothing)).decision, gate(Some(&nothing)).judgment), (Decision::Designer, None), "nothing on the map to render: a plain look");
@@ -383,6 +433,81 @@ mod tests {
         assert_eq!(gate(Some(&broken)).judgment, Some(Judgment::PrecheckFailed));
         assert!(GateMode::ALL.iter().all(|m| GateMode::parse(m.code()) == Some(*m)));
         assert_eq!(GateMode::default(), GateMode::Shadow, "measured before it acts");
+    }
+
+    fn judged(r: &Report) -> (Decision, Option<Judgment>) {
+        let call = gate(Some(r));
+        (call.decision, call.judgment)
+    }
+
+    #[test]
+    fn states_left_out_over_the_cap_never_pass_and_only_need_the_cheap_tier() {
+        let seen = vec![shot("auth/login/default", false, false)];
+        let capped = Report { left_out: 44, left_out_states: vec!["auth/login/error".into()], ..report(seen.clone(), vec![]) };
+        let call = gate(Some(&capped));
+        assert_eq!((call.decision, call.judgment), (Decision::Designer, Some(Judgment::Capped)), "rendered and unchanged, yet 44 states unseen: no pass");
+        assert!(call.reasons[0].contains("44") && !Judgment::Capped.needs_top());
+        // The same with changes: still capped, cheap.
+        let changed = Report { left_out: 2, ..report(vec![shot("auth/login/default", true, false)], vec![]) };
+        assert_eq!(judged(&changed), (Decision::Designer, Some(Judgment::Capped)));
+        // Nothing left out and nothing changed: the pass is back.
+        assert_eq!(judged(&report(seen, vec![])).0, Decision::AutoPass);
+        // A new blocker still goes back whatever was left out.
+        let new = Finding::bare("reflow", Severity::Blocker, "auth/login/default", "390.light.normal", true);
+        assert_eq!(gate(Some(&Report { left_out: 9, ..report(vec![shot("auth/login/default", true, false)], vec![new]) })).decision, Decision::SendBack);
+    }
+
+    #[test]
+    fn not_rendered_means_nothing_or_most_pictures_failed_and_a_few_failures_are_partial() {
+        let none = report(vec![shot("auth/login/default", false, true), shot("auth/login/error", false, true)], vec![]);
+        assert_eq!(judged(&none), (Decision::Designer, Some(Judgment::NotRendered)));
+        let few = report((0..6).map(|n| shot(&format!("auth/login/s{n}"), false, n == 0)).collect(), vec![]);
+        assert_eq!(judged(&few), (Decision::Designer, Some(Judgment::Partial)));
+        assert!(!Judgment::Partial.needs_top() && Judgment::NotRendered.needs_top());
+        assert!(gate(Some(&none)).reasons[0].contains("timed out") || gate(Some(&few)).reasons[0].contains("timed out"), "the cause of the failures is said");
+        assert!(gate(Some(&few)).reasons[0].contains("Most common cause: timed out"), "{:?}", gate(Some(&few)).reasons);
+        assert!(few.summary("x").contains("Why pictures failed: timed out (x1)"));
+        let half = report(vec![shot("auth/login/default", false, false), shot("auth/login/error", false, true)], vec![]);
+        assert_eq!(judged(&half).1, Some(Judgment::NotRendered), "half of what was asked unseen is too little");
+    }
+
+    #[test]
+    fn unmapped_ui_files_need_the_top_tier_only_when_many_and_the_threshold_is_the_maps() {
+        let unmapped = |n: usize| Report { unmapped: (0..n).map(|i| format!("src/components/C{i}.tsx")).collect(), ..report(vec![shot("auth/login/default", false, false)], vec![]) };
+        assert_eq!(judged(&unmapped(2)), (Decision::Designer, Some(Judgment::Unmapped)));
+        assert_eq!(judged(&unmapped(crate::design::precheck::UNMAPPED_LARGE)).1, Some(Judgment::UnmappedLarge));
+        let strict = Report { unmapped_large: 2, ..unmapped(2) };
+        assert_eq!(judged(&strict).1, Some(Judgment::UnmappedLarge));
+        assert!(!Judgment::Unmapped.needs_top() && Judgment::UnmappedLarge.needs_top());
+        // Changed code users never see is quiet: it neither blocks the pass nor asks for judgment.
+        let quiet = Report { unmapped_quiet: vec!["src/lib/api.ts".into()], ..report(vec![shot("auth/login/default", false, false)], vec![]) };
+        assert_eq!(judged(&quiet).0, Decision::AutoPass);
+        // Nothing rendered, only unmapped UI files: unmapped, not a failure.
+        let only = Report { touched: vec![], unmapped: vec!["src/components/A.tsx".into()], ..report(vec![], vec![]) };
+        assert_eq!(judged(&only).1, Some(Judgment::Unmapped));
+    }
+
+    #[test]
+    fn the_strongest_reason_wins_and_all_are_said() {
+        let r = Report { left_out: 3, unmapped: (0..12).map(|i| format!("src/components/C{i}.tsx")).collect(), ..report(vec![shot("auth/login/default", false, false)], vec![]) };
+        let call = gate(Some(&r));
+        assert_eq!(call.judgment, Some(Judgment::UnmappedLarge));
+        assert_eq!(call.reasons.len(), 2, "{:?}", call.reasons);
+        let broad_and_capped = Report { left_out: 1, ..report((0..BROAD_SCREENS).map(|n| shot(&format!("auth/s{n}/default"), true, false)).collect(), vec![]) };
+        assert_eq!(judged(&broad_and_capped).1, Some(Judgment::Broad));
+    }
+
+    #[test]
+    fn a_failed_precheck_says_why_and_judgments_read_back_from_the_journal() {
+        let broken = Report { errors: vec!["the preview didn't start: `npm run dev` stopped (exit 1) — Error: EADDRINUSE".into(), "second".into()], ..report(vec![], vec![]) };
+        let call = gate(Some(&broken));
+        assert_eq!(call.judgment, Some(Judgment::PrecheckFailed));
+        assert!(call.reasons[0].contains("EADDRINUSE") && call.reasons[0].contains("second"), "{:?}", call.reasons);
+        for j in Judgment::ALL {
+            assert_eq!(Judgment::parse(j.code()), Some(j));
+            assert_eq!(Judgment::text_needs_top(j.code()), j.needs_top());
+        }
+        assert!(Judgment::text_needs_top("something_from_a_newer_version"), "unknown: the safe top tier");
     }
 
     #[test]

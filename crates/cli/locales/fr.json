@@ -1268,6 +1268,7 @@
   "design.qa_stats.rounds": "Rondes : {first} premières, {second} deuxièmes, {more} troisièmes ou plus",
   "design.qa_stats.by_tier": "Par niveau de modèle :",
   "design.qa_stats.by_gate": "Par mode de barrière :",
+  "design.qa_stats.by_judgment": "Selon ce que la barrière a conclu du précontrôle (motif de jugement, `none` pour un simple regard) :",
   "design.qa_stats.row": "  {name} : {count} tickets · taux de validation {rate} · {per} jetons par ticket, {total} au total · {calls} appels d’outils et {minutes} min par ticket",
   "design.qa_stats.agreement": "Accord de la barrière : {rate} sur {judged} vérifiables — validerait et validé {pa}, validerait mais renvoyé {pm}, renverrait et renvoyé {ba}, renverrait mais validé {bw} · laissés au designer {deferred}",
   "design.qa_stats.acted": "La barrière a agi seule : {pass} validés et {back} renvoyés sans tour de designer",

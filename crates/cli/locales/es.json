@@ -1268,6 +1268,7 @@
   "design.qa_stats.rounds": "Rondas: {first} primeras, {second} segundas, {more} terceras o más",
   "design.qa_stats.by_tier": "Por nivel de modelo:",
   "design.qa_stats.by_gate": "Por modo de barrera:",
+  "design.qa_stats.by_judgment": "Según lo que la barrera concluyó del precontrol (motivo de juicio, `none` para una revisión simple):",
   "design.qa_stats.row": "  {name}: {count} tickets · tasa de aprobación {rate} · {per} tokens por ticket, {total} en total · {calls} llamadas a herramientas y {minutes} min por ticket",
   "design.qa_stats.agreement": "Acuerdo de la barrera: {rate} de {judged} comprobables — aprobaría y se aprobó {pa}, aprobaría pero se devolvió {pm}, devolvería y se devolvió {ba}, devolvería pero se aprobó {bw} · dejados al diseñador {deferred}",
   "design.qa_stats.acted": "La barrera actuó sola: {pass} aprobados y {back} devueltos sin turno de diseñador",

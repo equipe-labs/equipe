@@ -1245,6 +1245,7 @@
   "design.qa_stats.rounds": "回合：第一次 {first}，第二次 {second}，第三次及以后 {more}",
   "design.qa_stats.by_tier": "按模型层级：",
   "design.qa_stats.by_gate": "按关卡模式：",
+  "design.qa_stats.by_judgment": "按关卡对预检的判断分类（判断原因，普通查看为 `none`）：",
   "design.qa_stats.row": "  {name}：{count} 个工单 · 通过率 {rate} · 每个工单 {per} 令牌，共 {total} · 每个工单 {calls} 次工具调用、{minutes} 分钟",
   "design.qa_stats.agreement": "关卡一致率：在可核对的 {judged} 个中为 {rate} — 预计通过且通过 {pa}，预计通过但被退回 {pm}，预计退回且被退回 {ba}，预计退回但通过 {bw} · 交给设计师 {deferred}",
   "design.qa_stats.acted": "关卡自行处理：无需设计师轮次，通过 {pass} 个，退回 {back} 个",
