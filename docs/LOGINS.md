@@ -9,7 +9,7 @@ signs in once and isn't asked again for the same thing. The pieces:
 | Why the person was asked to sign in, and the measures | `crates/core/src/logins.rs`, `equipe logins stats` |
 | Offers to keep a login, signing in by itself, one card per site | `crates/core/src/runtime/logins.rs` |
 | The browser host's fill and session cookies | `crates/core/assets/browser-host.cjs`, `keep-sessions.js`, `gate.js` |
-| Cards and Settings › Accounts | `crates/desktop/src/views/login_offers.rs`, `views/accounts.rs` |
+| Cards, the Logins page, Settings › Accounts | `crates/desktop/src/views/login_offers.rs`, `views/logins.rs` (logic: `crates/desktop/src/logins.rs`), `views/accounts.rs` |
 
 ## Invariants
 
@@ -19,12 +19,52 @@ signs in once and isn't asked again for the same thing. The pieces:
   record keeps hosts, member names and causes only.
 - Every allowance is the person's: a card's answer or a Settings control,
   sent as a person-only command (`SaveLogin`, `AllowLogin`, `SetLoginAuto`,
-  `ForgetLoginAllowance`, `DismissLoginOffer`; `permissions.rs`). Nothing a
+  `SetLoginScope`, `ForgetLoginAllowance`, `DismissLoginOffer`, `ForgetNeverOffer`; `permissions.rs`). Nothing a
   member says or a page shows turns one on.
 - Passwords live in the system's secret store only — the Keychain on macOS,
   Credential Manager on Windows, the Secret Service (libsecret's
   `secret-tool`) on Linux. Where there is none, saving a login fails and
   says why; nothing falls back to a file.
+
+## The Logins page
+
+One page for everything about the logins, reached from the sidebar's "More"
+(Logins), `/logins` in the command palette, a "Manage logins" link on every
+"Save this login?" card, and Settings › Accounts (which keeps one line that
+opens it). Top to bottom:
+
+- **Waiting for you now** — one row per site members wait on a sign-in for
+  (members joined into one row, as the cards are), with "Open browser to log
+  in" (the browser panel on that page) and "Save this login" when none is kept.
+- **Saved logins** — a search (site, username, note, sign-in page) and a row
+  each: a letter tile (no icon is fetched from the site, so opening the page
+  tells no one which sites have logins), site, username and note, a scope
+  chip (all squads, this squad, another squad, several, or "asks first"),
+  the "Signs in by itself" switch, a health badge (OK; password failed last
+  time — equipe stopped signing in with it, or its last use failed and no
+  newer password was saved; never used) and when it was last used. A row
+  opens to change the scope (one `SetLoginScope`, so no state in between),
+  edit the username, sign-in page and note, replace the password, or delete.
+  Replacing and adding use equipe's own masked box; the stored password is
+  never shown, copied out or read back, not even to the person. Delete asks
+  once more, then hides the row for a few seconds with Undo; the daemon is
+  told only when the time is up, so nothing is lost to a quit meanwhile.
+- **Asked again** (7 or 30 days) — from `Command::LoginInsights`, the record of
+  every squad read without writing: times asked, the share of sign-ins equipe
+  did with no one's hand, how long a sign-in usually lasts before a site asks
+  again, asks per day, by cause, by site, and "Top sites to fix" with the one
+  step that would help: Save this login (a site with none kept, not on the
+  never list, on a machine with a secret store), Turn on sign in by itself,
+  or Replace password (it stopped working).
+- **Never save** — the sites marked "Never for this site", each with "Offer
+  again" (`ForgetNeverOffer`).
+
+New protocol: `Command::LoginInsights { days }` (read-only, shared) answered
+by `Event::LoginInsights` (counts, hosts, causes, the never list, whether a
+secret store is here), `Command::SetLoginScope` and `Command::ForgetNeverOffer`
+(person-only). `Login::password_at` dates the last password. Logic without
+drawing, tested with plain values: `crates/desktop/src/logins.rs`; the read
+model: `equipe_core::logins::insights`.
 
 ## What is recorded, and the measures
 
@@ -62,16 +102,15 @@ and touched by them — the person finished a sign-in. equipe then offers,
 once per site, to keep the login: a card with equipe's own username and
 password boxes (the password masked), a switch to let equipe sign in there by
 itself, and Save / Not now / Never for this site. "Never" is kept in
-`vault-never-offer.json`. Logins can also be added and changed in Settings ›
-Accounts. equipe never reads what the person typed into the site. A sign-in
+`vault-never-offer.json`. Logins can also be added and changed on the Logins page. equipe never reads what the person typed into the site. A sign-in
 done in the real Chrome window (popped out, or on the Mac's screen with no
 browser panel attached) isn't seen as the person's hand, so no offer comes
-then; Settings › Accounts still takes the login.
+then; the Logins page still takes the login.
 
 ## Signing in by itself
 
 Off for every login until the person turns it on for that login (on the
-offer's card, the form, or the switch on its row in Settings › Accounts).
+offer's card, the form, or the switch on its row on the Logins page).
 With it on, when a member's page in the shared browser waits on a sign-in,
 equipe types the login in itself instead of handing the browser over, only
 when all of these hold:

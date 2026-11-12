@@ -431,6 +431,84 @@ pub fn summarize(entries: &[Entry]) -> Stats {
     stats
 }
 
+/// The Logins page's read model over the rows of the last `days` days
+/// (`now` is unix seconds): totals by cause, per site, asks per day, and the
+/// share of sign-ins equipe finished by itself. `never` and `can_keep` are
+/// the vault's to fill in. Counts, hosts and causes only.
+pub fn insights(entries: &[Entry], now: u64, days: u32) -> equipe_protocol::vault::LoginInsights {
+    use equipe_protocol::vault::{CauseCount, LoginInsights, SiteAsks};
+    let days = days.max(1);
+    let from = now.saturating_sub(u64::from(days) * DAY);
+    let rows: Vec<Entry> = entries.iter().filter(|e| e.at >= from && e.at <= now).cloned().collect();
+    let stats = summarize(&rows);
+    let counted = |by: &BTreeMap<Cause, u64>| {
+        let mut v: Vec<CauseCount> = by.iter().map(|(c, n)| CauseCount { cause: c.code().to_owned(), count: *n }).collect();
+        v.sort_by(|a, b| b.count.cmp(&a.count).then(a.cause.cmp(&b.cause)));
+        v
+    };
+    let mut per_site: BTreeMap<&str, (BTreeMap<Cause, u64>, u64, u64)> = BTreeMap::new();
+    for e in &rows {
+        let site = per_site.entry(e.site.as_str()).or_default();
+        if e.kind.asks() {
+            *site.0.entry(e.cause.unwrap_or(Cause::Other)).or_default() += 1;
+        } else if e.kind == Kind::SignedIn {
+            site.1 += 1;
+            if e.by.as_deref() == Some(BY_EQUIPE) {
+                site.2 += 1;
+            }
+        }
+    }
+    let mut sites: Vec<SiteAsks> = per_site
+        .into_iter()
+        .filter(|(_, (causes, signed, _))| !causes.is_empty() || *signed > 0)
+        .map(|(site, (causes, signed_in, signed_in_by_equipe))| SiteAsks {
+            site: site.to_owned(),
+            asked: causes.values().sum(),
+            by_cause: counted(&causes),
+            reask_after: stats.lasts.iter().find(|(s, _, _)| s == site).map(|(_, median, _)| *median),
+            signed_in,
+            signed_in_by_equipe,
+        })
+        .collect();
+    sites.sort_by(|a, b| b.asked.cmp(&a.asked).then(a.site.cmp(&b.site)));
+    // Asks per day, the oldest day first; the last bar is the day that holds `now`.
+    let mut trend = vec![0u64; days as usize];
+    for e in rows.iter().filter(|e| e.kind.asks()) {
+        let last = trend.len() - 1;
+        let ago = (((now - e.at) / DAY) as usize).min(last);
+        trend[last - ago] += 1;
+    }
+    LoginInsights {
+        days,
+        at: now,
+        asked: stats.asked,
+        by_cause: counted(&stats.by_cause),
+        sites,
+        trend,
+        signed_in: stats.signed_in,
+        signed_in_by_equipe: stats.signed_in_by_equipe,
+        never: Vec::new(),
+        can_keep: false,
+    }
+}
+
+/// Every squad's rows since `since` (they share one browser), each marked
+/// with its squad, read without writing to a journal. A squad whose journal
+/// can't be read is skipped: the page shows what it can.
+pub fn read_all(home: &Path, since: u64) -> Vec<Entry> {
+    let mut rows = Vec::new();
+    for squad in crate::squads::list(home) {
+        let db = crate::journal::squad_dir(home, &squad.name).join("squad.db");
+        if let Ok(found) = read(&db, since) {
+            rows.extend(found.into_iter().map(|mut row| {
+                row.squad = squad.name.clone();
+                row
+            }));
+        }
+    }
+    rows
+}
+
 /// A span of seconds as a person reads it: `40m`, `5h`, `3d`.
 pub fn span(secs: u64) -> String {
     match secs {
@@ -491,6 +569,58 @@ mod tests {
 
     fn e(at: u64, site: &str, member: &str, kind: Kind, cause: Option<Cause>, by: Option<&str>) -> Entry {
         Entry::new(at, site, member, kind, cause, by)
+    }
+
+    #[test]
+    fn the_logins_page_reads_causes_sites_a_trend_and_equipes_share() {
+        let now = 1_794_000_000;
+        let rows = [
+            // Outside the 7 days: only the 30-day look has it.
+            e(now - 20 * DAY, "slack.com", "pm", Kind::Handoff, Some(Cause::NoLoginKept), None),
+            e(now - 6 * DAY - 10, "github.com", "qa", Kind::SignedIn, None, Some(BY_PERSON)),
+            e(now - 2 * DAY, "github.com", "qa", Kind::Handoff, Some(Cause::SessionExpired), None),
+            e(now - 2 * DAY + 5, "github.com", "backend", Kind::Card, Some(Cause::SessionExpired), None),
+            e(now - 100, "github.com", "backend", Kind::Handoff, Some(Cause::TwoFactor), None),
+            e(now - 90, "github.com", "backend", Kind::SignedIn, None, Some(BY_EQUIPE)),
+            e(now - 50, "erp.example.com", "pm", Kind::Handoff, None, None),
+            // A `sign_in` without a login asks the person nothing yet.
+            e(now - 40, "erp.example.com", "pm", Kind::NoLogin, Some(Cause::NoLoginKept), None),
+        ];
+        let week = insights(&rows, now, 7);
+        assert_eq!((week.days, week.asked), (7, 4));
+        assert_eq!(week.by_cause[0].cause, "session_expired");
+        assert_eq!(week.by_cause[0].count, 2);
+        assert_eq!(week.sites.iter().map(|s| (s.site.as_str(), s.asked)).collect::<Vec<_>>(), [("github.com", 3), ("erp.example.com", 1)]);
+        let github = &week.sites[0];
+        assert_eq!((github.signed_in, github.signed_in_by_equipe), (2, 1));
+        assert_eq!(github.reask_after, Some(6 * DAY + 10 - 2 * DAY), "from the sign-in to the first ask again");
+        assert_eq!(week.sites[1].by_cause[0].cause, "other", "no cause on record reads as other");
+        assert_eq!(week.sites[1].reask_after, None);
+        assert_eq!(week.trend.len(), 7);
+        assert_eq!(week.trend.iter().sum::<u64>(), 4);
+        assert_eq!((week.trend[6], week.trend[5], week.trend[4]), (2, 1, 1), "today's two, then the day-and-a-bit-ago one and the two-days-ago one");
+        assert_eq!(week.by_equipe_percent(), Some(50));
+        let month = insights(&rows, now, 30);
+        assert_eq!((month.trend.len(), month.asked), (30, 5));
+        assert!(month.sites.iter().any(|s| s.site == "slack.com"));
+        let empty = insights(&[], now, 0);
+        assert_eq!((empty.days, empty.trend.len(), empty.asked, empty.by_equipe_percent()), (1, 1, 0, None));
+    }
+
+    #[test]
+    fn rows_of_every_squad_are_read_without_writing() {
+        let home = std::env::temp_dir().join(format!("equipe-logins-all-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        for (squad, site) in [("acme", "github.com"), ("shop", "slack.com")] {
+            let journal = crate::journal::Journal::for_squad(&home, squad).unwrap();
+            journal.record_login(&e(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()), site, "qa", Kind::Handoff, Some(Cause::Captcha), None)).unwrap();
+        }
+        let rows = read_all(&home, 0);
+        let mut found: Vec<(String, String)> = rows.iter().map(|r| (r.squad.clone(), r.site.clone())).collect();
+        found.sort();
+        assert_eq!(found, [("acme".to_owned(), "github.com".to_owned()), ("shop".to_owned(), "slack.com".to_owned())]);
+        assert!(read_all(&home.join("nowhere"), 0).is_empty());
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
@@ -618,7 +748,7 @@ mod tests {
         assert!(offer_wanted("github.com", &[], &[], &offered, true));
         assert!(!offer_wanted("github.com", &[], &[], &offered, false), "nothing to keep it in");
         assert!(!offer_wanted("github.com", &[], &["github.com".into()], &offered, true), "never");
-        let kept = crate::protocol::vault::Login { id: 1, site: "github.com".into(), url: None, username: "a".into(), note: None, allowed: Vec::new(), auto: false, stopped: None, created_at: 0, uses: Vec::new() };
+        let kept = crate::protocol::vault::Login { id: 1, site: "github.com".into(), url: None, username: "a".into(), note: None, allowed: Vec::new(), auto: false, stopped: None, created_at: 0, password_at: None, uses: Vec::new() };
         assert!(!offer_wanted("https://www.github.com/x", &[kept], &[], &offered, true), "kept already");
         offered.insert("github.com".to_owned());
         assert!(!offer_wanted("github.com", &[], &[], &offered, true), "once");

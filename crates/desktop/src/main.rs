@@ -94,6 +94,7 @@ mod render;
 mod settings;
 #[cfg(target_os = "macos")]
 mod update;
+mod logins;
 mod usage;
 mod views;
 mod visuals;
@@ -218,6 +219,8 @@ pub enum Screen {
     Progress,
     /// Usage: where the plans went (`views/usage.rs`).
     Usage,
+    /// Logins: everything about the logins members sign in with (`views/logins.rs`).
+    Logins,
     /// Orchestration: who is doing what, who waits on whom, where work is stuck (`views/orchestra.rs`).
     Orchestration,
     /// Briefs and plans: every project's and the squad's own, in one place (`views/docs.rs`).
@@ -349,6 +352,8 @@ pub struct Shell {
     pub disk: disk::DiskUi,
     /// Usage: where the plans went, and the notice of a fast burn (`usage.rs`).
     pub plan_use: usage::PlanUseUi,
+    /// The Logins page: its boxes and what is open.
+    pub logins_ui: views::logins::LoginsUi,
     /// The window's size, shown for a moment after it changes (`zoom.rs`).
     pub zoom_hud: Option<zoom::Hud>,
     _pair_tick: Option<Task<()>>,
@@ -537,6 +542,7 @@ impl Shell {
             forgetting: None,
             disk: Default::default(),
             plan_use: Default::default(),
+            logins_ui: views::logins::LoginsUi::new(window, cx),
             zoom_hud: None,
             _pair_tick: None,
             notices,
@@ -686,6 +692,7 @@ impl Shell {
                 this.docs_typed(cx);
             }
         }));
+        views::logins::subscribe(&mut shell, window, cx);
         let settings_search = shell.settings.search.clone();
         shell._subscriptions.push(cx.subscribe_in(&settings_search, window, |_, _, event: &InputEvent, _, cx| {
             if matches!(event, InputEvent::Change) {
@@ -765,7 +772,7 @@ impl Shell {
             }
             // Typing in a "your turn" card's box or one of the browser panel's: T, N,
             // y, 1… are letters there, not shortcuts. Esc still leaves; Tab and ⌘⏎ are the card's own.
-            if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx) || shell.secrets.typing(window, cx) || shell.login_offers.typing(window, cx) || shell.browser.read(cx).typing(window, cx) || shell.design_taste.typing(window, cx)).unwrap_or(false) {
+            if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx) || shell.secrets.typing(window, cx) || shell.login_offers.typing(window, cx) || shell.logins_ui.typing(window, cx) || shell.browser.read(cx).typing(window, cx) || shell.design_taste.typing(window, cx)).unwrap_or(false) {
                 return;
             }
             // Writing to a member on its request: Esc closes the box; every other
@@ -2017,6 +2024,7 @@ impl Shell {
                     Screen::Project => views::project::render(self, cx),
                     Screen::Progress => views::progress::render(self, cx),
                     Screen::Usage => views::usage::render(self, cx),
+                    Screen::Logins => views::logins::render(self, cx),
                     Screen::Orchestration => views::orchestra::render(self, cx),
                     Screen::Docs => views::docs::render(self, cx),
                     Screen::Studio => views::studio::render(self, cx),
@@ -2316,6 +2324,7 @@ impl Shell {
         self.ask.input.update(cx, |s, cx| s.set_placeholder(t!("connect.secret_placeholder"), window, cx));
         self.design_redo.update(cx, |s, cx| s.set_placeholder(t!("design.compare_redo_placeholder"), window, cx));
         self.docs_search.update(cx, |s, cx| s.set_placeholder(t!("docs.search_placeholder"), window, cx));
+        self.logins_relocalize(window, cx);
         self.browser.update(cx, |b, cx| b.relocalize(window, cx));
     }
 }

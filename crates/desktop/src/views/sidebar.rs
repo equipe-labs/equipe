@@ -447,7 +447,7 @@ enum Glyph {
 /// person sees where they are.
 fn on_more(shell: &Shell) -> bool {
     let menu = shell.board.view.menu;
-    matches!(shell.screen, Screen::Roadmap | Screen::Metrics | Screen::Design | Screen::Docs)
+    matches!(shell.screen, Screen::Roadmap | Screen::Metrics | Screen::Design | Screen::Docs | Screen::Logins)
         || (shell.screen == Screen::Board && matches!(menu, Menu::All | Menu::View(_)))
 }
 
@@ -529,6 +529,15 @@ fn more_rows(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
             .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                 if !this.open_elsewhere(e, super::elsewhere::Goal::Place(place(Screen::Design, this.board.view.menu)), window, cx) {
                     this.open_design(cx);
+                }
+            }))
+            .into_any_element(),
+    );
+    rows.push(
+        tool("nav-logins", Glyph::Own(crate::icons::Icon::Lock), t!("loginspage.title").into(), shell.screen == Screen::Logins)
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                if !this.open_elsewhere(e, super::elsewhere::Goal::Place(place(Screen::Logins, this.board.view.menu)), window, cx) {
+                    this.open_logins(cx);
                 }
             }))
             .into_any_element(),
@@ -2703,6 +2712,7 @@ impl Shell {
             Screen::Metrics => self.open_metrics(cx),
             Screen::Progress => self.open_progress(cx),
             Screen::Usage => self.open_usage(cx),
+            Screen::Logins => self.open_logins(cx),
             Screen::Orchestration => self.open_orchestra(cx),
             Screen::Docs => self.open_docs(cx),
             Screen::Studio => match place.ticket.or(self.studio.ticket) {

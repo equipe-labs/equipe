@@ -1180,6 +1180,17 @@ pub enum Command {
     DismissLoginOffer { id: u64, never: bool },
     /// Every screen's list of logins, again.
     Logins,
+    /// The person sets where a login may be used without asking, in one
+    /// change: exactly `squads` (names, or [`vault::EVERY_SQUAD`]); empty,
+    /// it asks every time. Answered by [`Event::Logins`].
+    SetLoginScope { id: u32, squads: Vec<String> },
+    /// The person takes back a "Never for this site": equipe may offer to keep
+    /// a login there again. Answered by [`Event::LoginInsights`].
+    ForgetNeverOffer { site: String },
+    /// Why members sent the person to sign in over the last `days` days (7 or
+    /// 30), from every squad's record, and the sites never offered: answered
+    /// by [`Event::LoginInsights`]. Read-only — counts, hosts and causes.
+    LoginInsights { days: u32 },
     /// The person adds a browser profile — another person's accounts in a
     /// Chrome of their own — or names one again ([`Event::BrowserProfiles`]).
     SaveBrowserProfile { profile: BrowserProfile },
@@ -2803,6 +2814,9 @@ pub enum Event {
     /// The person just finished signing in to a site by hand in a member's
     /// browser, and no login is kept for it: equipe offers, once, to keep one.
     LoginOffered { offer: vault::LoginOffer },
+    /// What the Logins page shows about why the person was asked to sign in,
+    /// and the sites never offered ([`Command::LoginInsights`]).
+    LoginInsights { insights: vault::LoginInsights },
     /// The offer was answered, or the login saved: the card closes everywhere.
     LoginOfferClosed { id: u64 },
     /// The browser profiles besides the main one: every screen's.
@@ -3073,6 +3087,7 @@ impl Event {
             | Event::DesignReviewerChanged { .. }
             | Event::SignalsChanged { .. }
             | Event::Logins { .. }
+            | Event::LoginInsights { .. }
             | Event::LoginOffered { .. }
             | Event::LoginOfferClosed { .. }
             | Event::BrowserProfiles { .. }
@@ -3142,6 +3157,7 @@ impl Event {
                 | Event::EngineInstall { .. }
                 | Event::Models { .. }
                 | Event::Logins { .. }
+                | Event::LoginInsights { .. }
                 | Event::LoginOffered { .. }
                 | Event::LoginOfferClosed { .. }
                 | Event::BrowserProfiles { .. }

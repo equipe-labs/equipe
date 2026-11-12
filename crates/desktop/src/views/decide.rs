@@ -299,7 +299,7 @@ impl Shell {
                 },
                 _ => return Took::Pass,
             },
-            Screen::Settings | Screen::Design | Screen::Roadmap | Screen::Metrics | Screen::Project | Screen::Progress | Screen::Orchestration | Screen::Usage | Screen::Docs | Screen::Studio => return Took::Pass,
+            Screen::Settings | Screen::Design | Screen::Roadmap | Screen::Metrics | Screen::Project | Screen::Progress | Screen::Orchestration | Screen::Usage | Screen::Logins | Screen::Docs | Screen::Studio => return Took::Pass,
         };
         // The list of them open: ↑↓ through it, ⏎ to the one picked, Esc away.
         if !peek && let Some(at) = self.decide.listing && self.composer.text(cx).is_empty() {
