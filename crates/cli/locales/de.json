@@ -1268,6 +1268,7 @@
   "design.qa_stats.rounds": "Runden: {first} erste, {second} zweite, {more} dritte oder spätere",
   "design.qa_stats.by_tier": "Nach Modellstufe:",
   "design.qa_stats.by_gate": "Nach Schrankenmodus:",
+  "design.qa_stats.by_judgment": "Nach dem Urteil der Schranke über den Vorabcheck (Grund der Beurteilung, `none` für einen einfachen Blick):",
   "design.qa_stats.row": "  {name}: {count} Tickets · Abnahmequote {rate} · {per} Tokens pro Ticket, {total} insgesamt · {calls} Tool-Aufrufe und {minutes} Min. pro Ticket",
   "design.qa_stats.agreement": "Übereinstimmung der Schranke: {rate} von {judged} prüfbaren — würde abnehmen und abgenommen {pa}, würde abnehmen, aber zurückgegeben {pm}, würde zurückgeben und zurückgegeben {ba}, würde zurückgeben, aber abgenommen {bw} · dem Designer überlassen {deferred}",
   "design.qa_stats.acted": "Die Schranke hat selbst entschieden: {pass} abgenommen und {back} zurückgegeben ohne Designer-Turn",

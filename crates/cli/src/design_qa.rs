@@ -170,7 +170,7 @@ impl Preview {
                 return Ok(Preview { child, origin: format!("http://localhost:{port}") });
             }
             if let Ok(Some(status)) = child.try_wait() {
-                return Err(format!("`{command}` stopped ({status}); see {}", out.join("preview.log").display()));
+                return Err(format!("`{command}` stopped ({status}){}; see {}", precheck::log_head(&out.join("preview.log")), out.join("preview.log").display()));
             }
             if Instant::now() > deadline {
                 let preview = Preview { child, origin: String::new() };
@@ -189,6 +189,11 @@ impl Preview {
         }
         let _ = self.child.wait().await;
     }
+}
+
+/// A changed file's text in the worktree, when it is there and readable.
+fn read_changed(root: &Path, file: &str) -> Option<String> {
+    std::fs::read_to_string(root.join(file)).ok()
 }
 
 /// Whether something serves HTTP on `port` at `path` — the first answer
@@ -248,21 +253,24 @@ pub(crate) async fn run(r: &Run) -> Result<precheck::Report, String> {
     let Some(map) = map else {
         errors.push(format!("no UI map in the worktree ({flows_rel}/{}): nothing to render", flows::FILE));
         input.errors = errors;
-        input.touched.unmapped = changed.iter().filter(|f| precheck::ui_file(f)).cloned().collect();
+        (input.touched.unmapped, input.touched.quiet) = precheck::split_unmapped(changed.iter().filter(|f| precheck::ui_file(f)).cloned().collect(), |f| read_changed(&root, f));
         input.secs = started.elapsed().as_secs();
         return keep(precheck::assemble(input, &out), &out);
     };
     let config = precheck::Config::of(&map);
-    let touched = precheck::touched(&map, &flows_rel, &changed);
+    let mut touched = precheck::touched(&map, &flows_rel, &changed);
+    // Unmapped files that draw nothing (helpers, type files) aren't held against the change.
+    (touched.unmapped, touched.quiet) = precheck::split_unmapped(std::mem::take(&mut touched.unmapped), |f| read_changed(&root, f));
+    input.unmapped_large = config.unmapped_large();
     let widths = config.widths();
     let conditions = precheck::conditions(&widths, &precheck::SCHEMES);
     let screens: HashSet<(String, String)> = touched.screens.iter().map(|s| (s.flow.clone(), s.screen.clone())).collect();
     let mut states: Vec<flows::Shot> = flows::shots(&design).into_iter().filter(|s| screens.contains(&(s.flow.clone(), s.screen.clone()))).collect();
-    // Each screen's default state first: what is rendered when there are too many.
-    states.sort_by_key(|s| s.state != "default");
-    let max = config.max_states();
-    input.left_out = states.len().saturating_sub(max);
-    states.truncate(max);
+    // The most relevant first: screens whose own source changed, each one's default state before its others.
+    precheck::prioritize(&mut states, &touched.source_hits, |s| (format!("{}/{}", s.flow, s.screen), s.state == "default"));
+    let (kept, cut) = precheck::take_most_relevant(states, config.max_states());
+    let states = kept;
+    let mut left_out: Vec<String> = cut.iter().map(key_of).collect();
     let (by_command, rest): (Vec<flows::Shot>, Vec<flows::Shot>) = states.into_iter().partition(|s| s.command.is_some());
     let (by_url, neither): (Vec<flows::Shot>, Vec<flows::Shot>) = rest.into_iter().partition(|s| s.url.is_some());
     let mut taken: Vec<precheck::Taken> = Vec::new();
@@ -324,15 +332,16 @@ pub(crate) async fn run(r: &Run) -> Result<precheck::Report, String> {
     let modes: Vec<String> = precheck::SCHEMES.iter().map(|m| (*m).to_owned()).chain(config.modes.iter().cloned()).collect();
     let origin = preview.as_ref().map(|p| p.origin.clone()).or_else(|| r.url.clone());
     for s in &by_command {
+        // Past the time budget no state is started: it is left out whole, told as such, not half shot.
+        if started.elapsed() > r.budget {
+            left_out.push(key_of(s));
+            continue;
+        }
         for &width in &widths {
             for mode in &modes {
                 let condition = precheck::Condition::new(width, mode, precheck::Variant::Normal).code();
                 let path = out.join("shots").join(&s.flow).join(&s.screen).join(flows::picture_name(&s.state, mode, width));
-                let error = if started.elapsed() > r.budget {
-                    Some("not taken: over the time budget".to_owned())
-                } else {
-                    shoot_by_command(s, &root, &path, width, mode, origin.as_deref()).await.err()
-                };
+                let error = shoot_by_command(s, &root, &path, width, mode, origin.as_deref()).await.err();
                 taken.push(precheck::Taken { key: key_of(s), condition, path: error.is_none().then(|| path.to_string_lossy().into_owned()), dpr: 0., error, dom: None });
             }
         }
@@ -358,6 +367,8 @@ pub(crate) async fn run(r: &Run) -> Result<precheck::Report, String> {
         }
     }
     input.touched = touched;
+    input.left_out = left_out.len();
+    input.left_out_states = left_out;
     input.conditions = conditions;
     input.taken = taken;
     input.errors = errors;
@@ -504,6 +515,10 @@ pub(crate) fn stats_text(squad: &str, since: &str, s: &qa_stats::Stats) -> Strin
     out.extend(s.by_tier.iter().map(|(tier, sums)| row_line(tier, sums)));
     out.push(t!("design.qa_stats.by_gate").to_owned());
     out.extend(s.by_gate.iter().map(|(gate, sums)| row_line(gate, sums)));
+    if !s.by_judgment.is_empty() {
+        out.push(t!("design.qa_stats.by_judgment").to_owned());
+        out.extend(s.by_judgment.iter().map(|(why, sums)| row_line(why, sums)));
+    }
     let g = &s.agreement;
     let judged = g.pass_agreed + g.pass_missed + g.back_agreed + g.back_wrong;
     if judged + g.deferred > 0 {
@@ -789,12 +804,14 @@ mod tests {
             row(1, "pass", None, None, "deep", 6_400_000),
             row(2, "changes", Some("shadow"), Some("send_back"), "standard", 900_000),
             row(3, "pass", Some("shadow"), Some("auto_pass"), "standard", 700_000),
+            qa_stats::QaRow { judgment: Some("capped".into()), ..row(4, "pass", Some("shadow"), Some("designer"), "standard", 800_000) },
         ]);
         let text = stats_text("acme", "7d", &stats);
-        assert!(text.contains("acme") && text.contains('3'), "{text}");
-        assert!(text.contains("67%"), "pass rate 2 of 3: {text}");
+        assert!(text.contains("acme") && text.contains('4'), "{text}");
+        assert!(text.contains("75%"), "pass rate 3 of 4: {text}");
         assert!(text.contains("6.4M") && text.contains("deep") && text.contains("standard"), "tokens by tier: {text}");
         assert!(text.contains("100%"), "the gate agreed with both verdicts: {text}");
+        assert!(text.contains(t!("design.qa_stats.by_judgment")) && text.contains(&row_line("capped", &stats.by_judgment["capped"])) && stats.by_judgment.contains_key("send_back"), "a count per judgment reason: {text}");
         assert_eq!(stats_text("acme", "7d", &qa_stats::Stats::default()), t!("design.qa_stats.none", squad = "acme", since = "7d"));
         assert_eq!((amount(950), amount(640_000), amount(12_300_000)), ("950".to_owned(), "640k".to_owned(), "12.3M".to_owned()));
     }
@@ -808,6 +825,39 @@ mod tests {
     }
 
     #[test]
+    fn a_precheck_over_the_cap_shoots_the_most_relevant_state_and_names_what_it_left_out() {
+        let dir = std::env::temp_dir().join(format!("equipe-precheck-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(repo.join("design/flows")).unwrap();
+        std::fs::create_dir_all(repo.join("src/own")).unwrap();
+        std::fs::create_dir_all(repo.join("src/many")).unwrap();
+        let state = |id: &str| serde_json::json!({ "id": id, "command": "false" });
+        let map = serde_json::json!({ "precheck": { "maxStates": 1 }, "flows": [ { "id": "f", "screens": [
+            { "id": "untouched", "source": ["src/nowhere/"], "states": [state("default")] },
+            { "id": "own", "source": ["src/own/"], "states": [state("error"), state("default")] },
+            { "id": "many", "source": ["src/many/"], "states": [state("default")] } ] } ] });
+        std::fs::write(repo.join("design/flows/flows.json"), map.to_string()).unwrap();
+        let g = |args: &[&str]| assert!(git_cmd(&repo).args(args).output().unwrap().status.success(), "{args:?}");
+        g(&["init", "-q", "-b", "main"]);
+        g(&["add", "."]);
+        g(&["-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "first"]);
+        std::fs::write(repo.join("src/own/a.css"), "a{}").unwrap();
+        for n in 0..3 {
+            std::fs::write(repo.join(format!("src/many/{n}.css")), "a{}").unwrap();
+        }
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let report = rt.block_on(run(&Run { worktree: repo.clone(), base: Some("main".into()), out: dir.join("out"), url: None, ticket: Some(3), budget: Duration::from_secs(60) })).unwrap();
+        assert_eq!(report.touched, ["f/many", "f/own"]);
+        assert!(report.shots.iter().all(|s| s.key == "f/many/default"), "the screen with the most changed source files, its default state: {:?}", report.shots.iter().map(|s| &s.key).collect::<Vec<_>>());
+        assert_eq!((report.left_out, report.left_out_states), (2, vec!["f/own/default".to_owned(), "f/own/error".to_owned()]));
+        // Out of time before the first state: all are left out and the report says nothing was rendered.
+        let late = rt.block_on(run(&Run { worktree: repo.clone(), base: Some("main".into()), out: dir.join("late"), url: None, ticket: Some(3), budget: Duration::ZERO })).unwrap();
+        assert_eq!((late.shots.len(), late.left_out), (0, 3));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn a_precheck_of_a_worktree_without_a_map_says_so_and_leaves_it_to_a_designer() {
         let dir = std::env::temp_dir().join(format!("equipe-precheck-cli-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -816,12 +866,14 @@ mod tests {
         let g = |args: &[&str]| assert!(git_cmd(&repo).args(args).output().unwrap().status.success(), "{args:?}");
         g(&["init", "-q", "-b", "main"]);
         g(&["-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "--allow-empty", "-m", "first"]);
-        std::fs::write(repo.join("src/page.tsx"), "export default 1;\n").unwrap();
+        std::fs::write(repo.join("src/page.tsx"), "export default () => <main>Hi</main>;\n").unwrap();
+        std::fs::write(repo.join("src/format.tsx"), "export const format = (n: number) => n.toFixed(2);\n").unwrap();
         let out = dir.join("out");
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let report = rt.block_on(run(&Run { worktree: repo.clone(), base: Some("main".into()), out: out.clone(), url: None, ticket: Some(3), budget: Duration::from_secs(5) })).unwrap();
         assert!(report.errors.iter().any(|e| e.contains("no UI map")), "{:?}", report.errors);
         assert_eq!(report.unmapped, ["src/page.tsx"], "an uncommitted UI file counts");
+        assert_eq!(report.unmapped_quiet, ["src/format.tsx"], "a .tsx that draws nothing doesn't");
         let call = design_qa::gate(Some(&report));
         assert_eq!((call.decision, call.judgment), (Decision::Designer, Some(design_qa::Judgment::PrecheckFailed)));
         assert!(out.join(precheck::REPORT_JSON).is_file() && out.join(precheck::REPORT_MD).is_file());

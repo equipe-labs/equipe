@@ -32,7 +32,13 @@
 //!   reported as not rendered.
 //! - `modes`: more modes a state's `command` is run in, beside light and dark.
 //! - `widths`, `maxStates`: the widths, and how many states at most are
-//!   rendered (default states first); more are reported as left out.
+//!   rendered; more are reported as left out. The states are taken in order
+//!   of relevance ([`prioritize`]): those of screens whose `source` lists a
+//!   changed file first, each screen's default state before its others.
+//!   Without `maxStates`, [`MAX_STATES`] is the ceiling and the time budget
+//!   (`--budget-secs`) the real limit: no state is started past it.
+//! - `unmappedLarge`: how many changed UI files no screen lists make that
+//!   a large change a designer's top tier looks at ([`UNMAPPED_LARGE`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -57,8 +63,14 @@ pub const REFLOW_MIN: u32 = 320;
 pub const CHANGED_SHARE: f64 = 0.001;
 /// A colour channel differing by more than this makes a pixel differ.
 const PIXEL_TOLERANCE: u8 = 24;
-/// How many states are rendered at most unless the map says.
-pub const MAX_STATES: usize = 12;
+/// How many states are rendered at most unless the map says. High on
+/// purpose: the render time budget is what stops a big change, and what it
+/// leaves out is reported, never passed.
+pub const MAX_STATES: usize = 40;
+/// So many changed UI files no screen lists make an unmapped change large.
+pub const UNMAPPED_LARGE: usize = 10;
+/// How many left-out states a report names.
+const MAX_LEFT_OUT_LISTED: usize = 200;
 /// How many crops a report cuts at most.
 const MAX_CROPS: usize = 24;
 /// How many flagged pictures the designer is pointed at.
@@ -161,6 +173,7 @@ pub struct Config {
     pub modes: Vec<String>,
     pub widths: Vec<u32>,
     pub max_states: Option<usize>,
+    pub unmapped_large: Option<usize>,
 }
 
 impl Config {
@@ -175,6 +188,10 @@ impl Config {
 
     pub fn max_states(&self) -> usize {
         self.max_states.unwrap_or(MAX_STATES).max(1)
+    }
+
+    pub fn unmapped_large(&self) -> usize {
+        self.unmapped_large.unwrap_or(UNMAPPED_LARGE).max(1)
     }
 
     /// `url` written against the map's origin, opened on `preview` instead.
@@ -215,6 +232,13 @@ pub struct Touched {
     pub screens: Vec<ScreenRef>,
     /// Changed files that can change what users see and that no screen lists.
     pub unmapped: Vec<String>,
+    /// Changed files no screen lists that look like code or config users
+    /// never see (told apart by what is in them: [`split_unmapped`]).
+    pub quiet: Vec<String>,
+    /// Per screen (`flow/screen`), how many changed files its `source` lists:
+    /// the screens whose own code changed, as against those only a picture of
+    /// which changed.
+    pub source_hits: BTreeMap<String, usize>,
 }
 
 /// What of `map` (`flows.json`, its flows folder at `flows_dir` from the
@@ -223,6 +247,7 @@ pub fn touched(map: &Value, flows_dir: &str, changed: &[String]) -> Touched {
     let flows_dir = flows_dir.trim_end_matches('/');
     let mut screens = BTreeSet::new();
     let mut mapped = BTreeSet::new();
+    let mut source_hits: BTreeMap<String, usize> = BTreeMap::new();
     for flow in map.get("flows").and_then(Value::as_array).into_iter().flatten() {
         let Some(flow_id) = flow.get("id").and_then(Value::as_str) else { continue };
         for screen in flow.get("screens").and_then(Value::as_array).into_iter().flatten() {
@@ -230,6 +255,9 @@ pub fn touched(map: &Value, flows_dir: &str, changed: &[String]) -> Touched {
             let sources: Vec<&str> = screen.get("source").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
             let pictures = format!("{flows_dir}/{flow_id}/{screen_id}/");
             for file in changed {
+                if sources.iter().any(|s| source_matches(s, file)) {
+                    *source_hits.entry(format!("{flow_id}/{screen_id}")).or_default() += 1;
+                }
                 if file.starts_with(&pictures) || sources.iter().any(|s| source_matches(s, file)) {
                     screens.insert(ScreenRef { flow: flow_id.to_owned(), screen: screen_id.to_owned() });
                     mapped.insert(file.clone());
@@ -238,7 +266,26 @@ pub fn touched(map: &Value, flows_dir: &str, changed: &[String]) -> Touched {
         }
     }
     let unmapped = changed.iter().filter(|f| !mapped.contains(*f) && !f.starts_with(&format!("{flows_dir}/")) && ui_file(f)).cloned().collect();
-    Touched { screens: screens.into_iter().collect(), unmapped }
+    Touched { screens: screens.into_iter().collect(), unmapped, quiet: Vec::new(), source_hits }
+}
+
+/// Order `items` by how relevant they are to the change, most first: the
+/// states of screens whose own `source` changed (most changed files first),
+/// each screen's default state before its others, the rest in their order.
+/// `key` gives an item's screen (`flow/screen`) and whether it is a default state.
+pub fn prioritize<T>(items: &mut [T], hits: &BTreeMap<String, usize>, key: impl Fn(&T) -> (String, bool)) {
+    items.sort_by_cached_key(|item| {
+        let (screen, default) = key(item);
+        let hit = hits.get(&screen).copied().unwrap_or(0);
+        (hit == 0, !default, std::cmp::Reverse(hit))
+    });
+}
+
+/// Keep the first `max` of the already prioritized `items`: what is kept,
+/// and what was left out.
+pub fn take_most_relevant<T>(mut items: Vec<T>, max: usize) -> (Vec<T>, Vec<T>) {
+    let rest = items.split_off(max.min(items.len()));
+    (items, rest)
 }
 
 /// Whether `file` is what `source` names: the file itself, a folder it is
@@ -255,26 +302,146 @@ pub fn source_matches(source: &str, file: &str) -> bool {
     file == source || (source.ends_with('/') && file.starts_with(source)) || file.starts_with(&format!("{source}/"))
 }
 
-/// Whether a changed file can change what users see: styles, markup,
-/// components, the words shown — never tests or docs.
-pub fn ui_file(path: &str) -> bool {
+/// What a changed file's path says of whether users see it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Visual {
+    /// Styles, markup, templates, the words shown: users see it.
+    Yes,
+    /// Tests, docs, config, server code, type declarations: they don't.
+    No,
+    /// Code that may or may not draw anything (a `.tsx` without JSX is a
+    /// helper, a `.ts` of types only is declarations): [`shows_ui`] reads it.
+    Maybe,
+}
+
+/// Files that are styles or markup whatever their folder: users see them.
+const MARKUP: [&str; 38] = [
+    "css", "scss", "sass", "less", "styl", "vue", "svelte", "astro", "html", "htm", "erb", "haml", "slim", "hbs", "ejs", "twig", "liquid", "swift", "kt", "dart", "xaml", "xib", "pug", "jade", "njk", "jinja", "jinja2", "j2",
+    "mustache", "phtml", "cshtml", "razor", "jsp", "xhtml", "leaf", "storyboard", "mdx", "svg",
+];
+/// Script files: whether one is UI depends on where it is and what is in it.
+const SCRIPT: [&str; 8] = ["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"];
+/// Folders whose code is the server's, a script or a migration, even inside an `app/` folder.
+const SERVER_DIRS: [&str; 14] = ["api/", "server/", "functions/", "middleware/", "migrations/", "db/", "prisma/", "scripts/", "workers/", "jobs/", "cron/", "e2e/", "mocks/", "fixtures/"];
+/// Folders of shared logic: not UI unless a UI folder is also in the path.
+const LOGIC_DIRS: [&str; 10] = ["lib/", "utils/", "util/", "helpers/", "services/", "types/", "config/", "constants/", "schemas/", "models/"];
+/// Folders of what users see.
+const UI_DIRS: [&str; 8] = ["components/", "app/", "pages/", "views/", "ui/", "screens/", "layouts/", "src/routes/"];
+/// Folders of the words shown.
+const WORD_DIRS: [&str; 5] = ["locales/", "i18n/", "messages/", "lang/", "translations/"];
+
+fn in_dir(lower: &str, dir: &str) -> bool {
+    lower.starts_with(dir) || lower.contains(&format!("/{dir}"))
+}
+
+/// Whether the path of a changed file says users see it, by its name and
+/// folders alone, for any language or framework: styles, markup and
+/// templates always; script code only outside server and shared-logic
+/// folders (and then [`shows_ui`] has the last word); locale files; design
+/// tokens; never tests, docs, config or type declarations.
+pub fn visual_path(path: &str) -> Visual {
     let lower = path.to_ascii_lowercase();
     let name = lower.rsplit('/').next().unwrap_or(&lower);
-    let test = name.contains(".test.") || name.contains(".spec.") || name.contains(".stories.") || lower.contains("__tests__/") || lower.starts_with("tests/") || lower.contains("/tests/") || lower.starts_with("test/") || lower.contains("/test/");
-    if test || name.ends_with(".md") {
-        return false;
+    let test = name.contains(".test.") || name.contains(".spec.") || name.contains(".stories.") || lower.contains("__tests__/") || lower.contains("__mocks__/") || in_dir(&lower, "tests/") || in_dir(&lower, "test/");
+    let docs = name.ends_with(".md") || name.ends_with(".txt") || name.ends_with(".rst") || in_dir(&lower, "docs/") || name.starts_with("readme") || name.starts_with("changelog") || name.starts_with("license");
+    if test || docs {
+        return Visual::No;
     }
     let ext = name.rsplit_once('.').map_or("", |(_, e)| e);
-    const MARKUP: [&str; 24] = [
-        "css", "scss", "sass", "less", "styl", "tsx", "jsx", "vue", "svelte", "astro", "html", "htm", "erb", "haml", "slim", "hbs", "ejs", "twig", "liquid", "swift", "kt", "dart", "xaml", "xib",
-    ];
-    if MARKUP.contains(&ext) || ext == "storyboard" || name.starts_with("tailwind.config") || name == "tokens.json" || name.ends_with(".tokens.json") {
-        return true;
+    if MARKUP.contains(&ext) || name.starts_with("tailwind.config") || name == "tokens.json" || name.ends_with(".tokens.json") {
+        return Visual::Yes;
     }
-    let dirs = ["components/", "app/", "pages/", "views/", "ui/", "screens/", "layouts/", "src/routes/"];
-    let in_ui = |d: &&str| lower.starts_with(*d) || lower.contains(&format!("/{d}"));
-    let words = ["locales/", "i18n/", "messages/", "lang/", "translations/"];
-    (matches!(ext, "ts" | "js" | "mjs") && dirs.iter().any(in_ui)) || (matches!(ext, "json" | "yaml" | "yml" | "po" | "strings" | "xliff") && words.iter().any(in_ui))
+    if matches!(ext, "json" | "yaml" | "yml" | "po" | "strings" | "xliff" | "arb" | "resx") {
+        return if WORD_DIRS.iter().any(|d| in_dir(&lower, d)) { Visual::Yes } else { Visual::No };
+    }
+    if !SCRIPT.contains(&ext) {
+        return Visual::No;
+    }
+    // Type declarations and tool config are never what users see.
+    let config = name.ends_with(".d.ts") || name.contains(".config.") || name.contains(".setup.") || name.contains(".conf.") || name.starts_with("jest.") || name.starts_with("vitest.") || name.starts_with("vite.") || name.starts_with("next.config");
+    if config || SERVER_DIRS.iter().any(|d| in_dir(&lower, d)) {
+        return Visual::No;
+    }
+    if matches!(ext, "tsx" | "jsx") {
+        return Visual::Maybe;
+    }
+    // Other scripts are UI code only when a UI folder is nearer the file than any shared-logic folder.
+    match (last_dir(&lower, &UI_DIRS), last_dir(&lower, &LOGIC_DIRS)) {
+        (Some(ui), Some(logic)) if logic > ui => Visual::No,
+        (Some(_), _) => Visual::Maybe,
+        _ => Visual::No,
+    }
+}
+
+/// Where the deepest of `dirs` that `lower` is in starts, if it is in one.
+fn last_dir(lower: &str, dirs: &[&str]) -> Option<usize> {
+    dirs.iter().filter_map(|d| if lower.starts_with(d) { Some(0) } else { lower.rfind(&format!("/{d}")).map(|i| i + 1) }).max()
+}
+
+/// Whether a changed file's path can change what users see — [`visual_path`]
+/// without reading the file: a `.tsx` or a script in a UI folder counts.
+pub fn ui_file(path: &str) -> bool {
+    visual_path(path) != Visual::No
+}
+
+/// Whether the contents of a script file `path` (one [`visual_path`] said
+/// `Maybe` of) draw something: JSX/markup in a `.tsx`/`.jsx`, and in other
+/// scripts anything but type declarations.
+pub fn shows_ui(path: &str, text: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".tsx") || lower.ends_with(".jsx") {
+        return text.contains("/>") || text.contains("</") || text.contains("<>");
+    }
+    !type_only(text)
+}
+
+/// Whether script `text` declares types and nothing else: every top-level
+/// (unindented) statement is an import, a type, an interface or a re-export.
+fn type_only(text: &str) -> bool {
+    let mut in_block = false;
+    let mut any = false;
+    for line in text.lines() {
+        let head = line.trim_start();
+        if in_block {
+            in_block = !head.contains("*/");
+            continue;
+        }
+        if head.is_empty() || head.starts_with("//") {
+            continue;
+        }
+        if head.starts_with("/*") {
+            in_block = !head.contains("*/");
+            continue;
+        }
+        if line.starts_with(char::is_whitespace) || line.starts_with(['}', ')', ']', '|', '&']) {
+            continue;
+        }
+        any = true;
+        let rest = head.strip_prefix("export ").map_or(head, |r| r.strip_prefix("default ").unwrap_or(r));
+        let rest = rest.strip_prefix("declare ").unwrap_or(rest);
+        if !["import ", "import{", "type ", "interface ", "namespace ", "{", "*"].iter().any(|k| rest.starts_with(k)) {
+            return false;
+        }
+    }
+    any
+}
+
+/// Split the changed UI-looking files no screen lists into those users do
+/// see and those they don't, by reading each (`read` gives a file's text,
+/// `None` when it can't be read — a deleted file stays visual, to be safe):
+/// `(visual, quiet)`.
+pub fn split_unmapped(unmapped: Vec<String>, read: impl Fn(&str) -> Option<String>) -> (Vec<String>, Vec<String>) {
+    let mut visual = Vec::new();
+    let mut quiet = Vec::new();
+    for file in unmapped {
+        let shows = match visual_path(&file) {
+            Visual::Yes => true,
+            Visual::No => false,
+            Visual::Maybe => read(&file).is_none_or(|text| shows_ui(&file, &text)),
+        };
+        if shows { visual.push(file) } else { quiet.push(file) }
+    }
+    (visual, quiet)
 }
 
 // ── what precheck.mjs measures ──
@@ -525,9 +692,21 @@ pub struct Report {
     pub changed_files: usize,
     /// `flow/screen`, each the change touches.
     pub touched: Vec<String>,
+    /// Changed UI files (components, pages, styles, markup) no screen lists.
     pub unmapped: Vec<String>,
-    /// States the change touches that weren't rendered: past the cap.
+    /// Changed code or config no screen lists that users never see, so it
+    /// is not held against the change (`.ts` helpers, type files, tests…).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unmapped_quiet: Vec<String>,
+    /// How many unmapped UI files make the change large (0: [`UNMAPPED_LARGE`]).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub unmapped_large: usize,
+    /// States the change touches that weren't rendered: past the cap or
+    /// the time budget. The report says nothing of them.
     pub left_out: usize,
+    /// Which (`flow/screen/state`), most relevant first, up to a limit.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub left_out_states: Vec<String>,
     pub conditions: Vec<String>,
     pub shots: Vec<Shot>,
     pub findings: Vec<Finding>,
@@ -537,7 +716,16 @@ pub struct Report {
     pub secs: u64,
 }
 
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
 impl Report {
+    /// How many unmapped UI files make the change large.
+    pub fn unmapped_large_at(&self) -> usize {
+        if self.unmapped_large == 0 { UNMAPPED_LARGE } else { self.unmapped_large }
+    }
+
     /// The states (`flow/screen/state`) this change changed: any picture at
     /// normal size differs from the base's, or has none to compare with.
     pub fn changed(&self) -> Vec<String> {
@@ -546,6 +734,26 @@ impl Report {
             out.insert(s.key.clone());
         }
         out.into_iter().collect()
+    }
+
+    /// Why pictures failed, the most common cause first, each with how many
+    /// it took: the error's lines joined and cut short, so a squad can fix its setup.
+    pub fn failure_causes(&self, max: usize) -> Vec<(String, usize)> {
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for e in self.shots.iter().filter_map(|s| s.error.as_deref()) {
+            let flat = e.split(['\n', '|']).map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ");
+            *counts.entry(clip(&flat, 200)).or_default() += 1;
+        }
+        let mut out: Vec<(String, usize)> = counts.into_iter().collect();
+        out.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        out.truncate(max);
+        out
+    }
+
+    /// The screens (`flow/screen`) with a changed state.
+    pub fn changed_screens(&self) -> Vec<String> {
+        let screens: BTreeSet<String> = self.changed().iter().filter_map(|k| k.rsplit_once('/').map(|(screen, _)| screen.to_owned())).collect();
+        screens.into_iter().collect()
     }
 
     /// Pictures that couldn't be taken.
@@ -594,11 +802,19 @@ impl Report {
         facts.push(format!("- Changed states (pixels against the base): {}", if changed.is_empty() { "none".to_owned() } else { changed.join(", ") }));
         let taken = self.shots.len() - self.failed();
         facts.push(format!("- Pictures: {taken} taken across {} conditions, {} failed", self.conditions.len(), self.failed()));
+        let causes = self.failure_causes(3);
+        if !causes.is_empty() {
+            facts.push(format!("- Why pictures failed: {}", causes.iter().map(|(why, n)| format!("{why} (x{n})")).collect::<Vec<_>>().join("; ")));
+        }
         if !self.unmapped.is_empty() {
             facts.push(format!("- Changed UI files no screen lists: {}", clip_list(&self.unmapped, 8)));
         }
+        if !self.unmapped_quiet.is_empty() {
+            facts.push(format!("- Changed code no screen lists and users don't see (not held against the change): {}", clip_list(&self.unmapped_quiet, 4)));
+        }
         if self.left_out > 0 {
-            facts.push(format!("- States left out (over the cap): {}", self.left_out));
+            let which = if self.left_out_states.is_empty() { String::new() } else { format!(": {}", clip_list(&self.left_out_states, 12)) };
+            facts.push(format!("- States left out (over the cap or the time budget; this report says nothing of them, the designer checks them): {}{which}", self.left_out));
         }
         match &self.axe.skipped {
             Some(why) => facts.push(format!("- axe-core: not run ({why})")),
@@ -638,6 +854,17 @@ fn is_normal(condition: &str) -> bool {
 
 fn clip(text: &str, max: usize) -> String {
     if text.chars().count() <= max { text.to_owned() } else { format!("{}…", text.chars().take(max).collect::<String>()) }
+}
+
+/// The first lines of what a log says, to put beside an error so a squad
+/// can fix its setup: ` — line | line`, or nothing when the log is empty.
+pub fn log_head(path: &Path) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).take(4).collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!(" — {}", clip(&lines.join(" | "), 400))
 }
 
 fn clip_list(items: &[String], max: usize) -> String {
@@ -814,6 +1041,8 @@ pub struct Input {
     pub changed_files: usize,
     pub touched: Touched,
     pub left_out: usize,
+    pub left_out_states: Vec<String>,
+    pub unmapped_large: usize,
     pub conditions: Vec<Condition>,
     pub taken: Vec<Taken>,
     /// The map's picture at the base, by `(key, condition)` (normal size).
@@ -904,7 +1133,10 @@ pub fn assemble(input: Input, out: &Path) -> Report {
         changed_files: input.changed_files,
         touched: input.touched.screens.iter().map(ScreenRef::key).collect(),
         unmapped: input.touched.unmapped,
+        unmapped_quiet: input.touched.quiet,
+        unmapped_large: input.unmapped_large,
         left_out: input.left_out,
+        left_out_states: input.left_out_states.into_iter().take(MAX_LEFT_OUT_LISTED).collect(),
         conditions: input.conditions.iter().map(Condition::code).collect(),
         shots,
         findings,
@@ -1021,6 +1253,105 @@ mod tests {
     }
 
     #[test]
+    fn a_path_says_whether_users_see_it_in_any_language_or_framework() {
+        use Visual::{Maybe, No, Yes};
+        for (path, want) in [
+            ("src/styles/app.css", Yes),
+            ("src/lib/Card.svelte", Yes),
+            ("templates/index.html.erb", Yes),
+            ("app/views/users/show.html.slim", Yes),
+            ("locales/de.json", Yes),
+            ("tokens.json", Yes),
+            ("src/components/Nav.tsx", Maybe),
+            ("src/lib/icons.tsx", Maybe),
+            ("src/components/format.ts", Maybe),
+            ("src/lib/format.ts", No),
+            ("src/utils/dates.js", No),
+            ("app/lib/session.ts", No),
+            ("lib/components/format.ts", Maybe),
+            ("src/types/user.ts", No),
+            ("src/components/Button.d.ts", No),
+            ("app/api/users/route.ts", No),
+            ("app/api/users/route.tsx", No),
+            ("server/index.ts", No),
+            ("tests/nav.test.tsx", No),
+            ("src/components/Nav.stories.tsx", No),
+            ("docs/DESIGN.md", No),
+            ("README.md", No),
+            ("package.json", No),
+            ("next.config.js", No),
+            ("tailwind.config.ts", Yes),
+            ("main.go", No),
+            ("app/models/user.rb", No),
+            ("config/locales/en.yml", Yes),
+            ("db/migrate/001_init.sql", No),
+        ] {
+            assert_eq!(visual_path(path), want, "{path}");
+        }
+    }
+
+    #[test]
+    fn a_script_that_draws_nothing_is_not_ui_by_what_is_in_it() {
+        let jsx = "export function Nav() {\n  return <nav><a href=\"/\">Home</a></nav>;\n}\n";
+        let helper = "import { x } from './x';\nexport function nav() {\n  return [1, 2].map((n) => n * 2);\n}\n";
+        assert!(shows_ui("src/components/Nav.tsx", jsx) && !shows_ui("src/components/nav.tsx", helper));
+        assert!(shows_ui("src/components/Frag.jsx", "export default () => <>hi</>;"));
+        let types = "// Props of the card.\n/* a block\n comment */\nimport type { Tone } from './tone';\nexport interface CardProps {\n  tone: Tone;\n  onClick: () => void;\n}\nexport type Size = 'sm' | 'lg';\nexport type Long =\n  | 'a'\n  | 'b';\n";
+        assert!(!shows_ui("src/components/types.ts", types), "type declarations draw nothing");
+        assert!(shows_ui("src/components/theme.ts", "export const theme = { radius: 8 };\n"), "a value a component reads may change what is drawn");
+        assert!(!type_only("") && !type_only("// nothing but a comment\n"));
+        let read = |f: &str| match f {
+            "src/components/Nav.tsx" => Some(jsx.to_owned()),
+            "src/components/useNav.tsx" => Some(helper.to_owned()),
+            "src/components/types.ts" => Some(types.to_owned()),
+            _ => None,
+        };
+        let all: Vec<String> = ["src/components/Nav.tsx", "src/components/useNav.tsx", "src/components/types.ts", "src/styles/a.css", "src/components/Gone.tsx"].map(str::to_owned).to_vec();
+        let (visual, quiet) = split_unmapped(all, read);
+        assert_eq!(visual, ["src/components/Nav.tsx", "src/styles/a.css", "src/components/Gone.tsx"], "styles are visual and a file that can't be read is held against the change");
+        assert_eq!(quiet, ["src/components/useNav.tsx", "src/components/types.ts"]);
+    }
+
+    #[test]
+    fn states_are_taken_by_relevance_and_what_is_cut_is_named() {
+        // (screen, state): `a/own` has a changed source file, `b/shared` only a picture that changed.
+        let mut states: Vec<(&str, &str)> = vec![("b/shared", "default"), ("b/shared", "error"), ("a/own", "error"), ("a/own", "default"), ("c/many", "default"), ("c/many", "empty")];
+        let hits: BTreeMap<String, usize> = [("a/own".to_owned(), 1), ("c/many".to_owned(), 3)].into();
+        prioritize(&mut states, &hits, |(screen, state)| ((*screen).to_owned(), *state == "default"));
+        assert_eq!(states, [("c/many", "default"), ("a/own", "default"), ("c/many", "empty"), ("a/own", "error"), ("b/shared", "default"), ("b/shared", "error")]);
+        let (kept, cut) = take_most_relevant(states, 4);
+        assert_eq!((kept.len(), cut), (4, vec![("b/shared", "default"), ("b/shared", "error")]));
+        assert_eq!(take_most_relevant(vec![1, 2], 9), (vec![1, 2], vec![]));
+        // The change's own source files are counted per screen.
+        let map = json!({ "flows": [ { "id": "a", "screens": [ { "id": "own", "source": ["src/a/"] }, { "id": "other", "source": ["src/b/"] } ] } ] });
+        let t = touched(&map, "design/flows", &["src/a/x.tsx".to_owned(), "src/a/y.css".to_owned(), "design/flows/a/other/default.light.390.png".to_owned()]);
+        assert_eq!(t.source_hits.get("a/own"), Some(&2));
+        assert_eq!(t.source_hits.get("a/other"), None);
+        assert_eq!(t.screens.len(), 2, "a changed picture still touches its screen");
+    }
+
+    #[test]
+    fn the_cap_is_high_by_default_and_the_map_can_move_it_and_the_unmapped_threshold() {
+        assert_eq!((Config::default().max_states(), Config::default().unmapped_large()), (MAX_STATES, UNMAPPED_LARGE));
+        let c = Config::of(&json!({ "precheck": { "maxStates": 5, "unmappedLarge": 3 } }));
+        assert_eq!((c.max_states(), c.unmapped_large()), (5, 3));
+        assert_eq!(Report::default().unmapped_large_at(), UNMAPPED_LARGE);
+        assert_eq!(Report { unmapped_large: 3, ..Report::default() }.unmapped_large_at(), 3);
+    }
+
+    #[test]
+    fn the_summary_names_what_was_left_out_and_what_was_not_held_against_the_change() {
+        let r = Report { left_out: 3, left_out_states: vec!["a/b/default".into(), "a/c/default".into(), "a/c/error".into()], unmapped_quiet: vec!["src/lib/api.ts".into()], ..Report::default() };
+        let md = r.summary("x");
+        assert!(md.contains("States left out") && md.contains("a/c/error") && md.contains("the designer checks them"), "{md}");
+        assert!(md.contains("src/lib/api.ts") && md.contains("not held against"), "{md}");
+        let dir = temp("log-head");
+        std::fs::write(dir.join("p.log"), "\n  first line\nsecond\n\nthird\nfourth\nfifth\n").unwrap();
+        assert_eq!(log_head(&dir.join("p.log")), " — first line | second | third | fourth");
+        assert_eq!(log_head(&dir.join("none.log")), "");
+    }
+
+    #[test]
     fn the_maps_urls_are_opened_on_the_preview() {
         let c = Config { origin: Some("http://localhost:3780".into()), ..Config::default() };
         assert_eq!(c.rebase("http://localhost:3780/guide?x=1", "http://127.0.0.1:41234/"), "http://127.0.0.1:41234/guide?x=1");
@@ -1122,7 +1453,7 @@ mod tests {
         let lost = |text: &str, x: f64| Clip { rect: Rect { x, y: 2., w: 20., h: 10. }, ..clip(text, true, false) };
         let input = Input {
             ticket: Some(7),
-            touched: Touched { screens: vec![ScreenRef { flow: "a".into(), screen: "b".into() }, ScreenRef { flow: "a".into(), screen: "c".into() }], unmapped: vec![] },
+            touched: Touched { screens: vec![ScreenRef { flow: "a".into(), screen: "b".into() }, ScreenRef { flow: "a".into(), screen: "c".into() }], unmapped: vec![], ..Touched::default() },
             conditions: vec![normal.clone(), large.clone()],
             taken: vec![
                 // In the part that changed, and out of it.

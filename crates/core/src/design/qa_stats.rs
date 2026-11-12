@@ -278,6 +278,11 @@ pub struct Stats {
     /// By gate mode (`before` for those from before the precheck).
     pub by_gate: BTreeMap<String, Sums>,
     pub agreement: Agreement,
+    /// By what the gate made of the precheck: its judgment reason
+    /// (`capped`, `unmapped`, `not_rendered`…), `none` for a designer's plain
+    /// look, or the decision itself (`auto_pass`, `send_back`). Tickets
+    /// without a gate decision are left out.
+    pub by_judgment: BTreeMap<String, Sums>,
     /// Rounds: how many were a ticket's first design QA, second, third or more.
     pub rounds: BTreeMap<u32, u32>,
 }
@@ -288,6 +293,14 @@ pub fn summarize(rows: &[QaRow]) -> Stats {
         s.all.add(r);
         s.by_tier.entry(r.tier_key()).or_default().add(r);
         s.by_gate.entry(r.gate.clone().unwrap_or_else(|| "before".into())).or_default().add(r);
+        if let Some(decision) = r.decision.as_deref() {
+            let key = match (r.judgment.as_deref(), decision) {
+                (Some(j), _) => j,
+                (None, "designer") => "none",
+                (None, other) => other,
+            };
+            s.by_judgment.entry(key.to_owned()).or_default().add(r);
+        }
         *s.rounds.entry(r.round.min(3)).or_default() += 1;
         let a = &mut s.agreement;
         match (r.decision.as_deref(), r.acted, r.verdict.as_str()) {
@@ -353,6 +366,23 @@ mod tests {
 
     fn row(qa: u64, verdict: &str, gate: Option<&str>, decision: Option<&str>, acted: bool, tier: &str, tokens: u64) -> QaRow {
         QaRow { qa, verdict: verdict.into(), gate: gate.map(str::to_owned), decision: decision.map(str::to_owned), acted, tier: Some(tier.into()), turns: 1, cache_read: tokens, round: 1, ..QaRow::default() }
+    }
+
+    #[test]
+    fn stats_count_tickets_and_tokens_per_judgment_reason() {
+        let with = |qa: u64, decision: &str, judgment: Option<&str>, tokens: u64| QaRow { judgment: judgment.map(str::to_owned), ..row(qa, "pass", Some("shadow"), Some(decision), false, "standard", tokens) };
+        let rows = vec![
+            row(1, "pass", None, None, false, "deep", 9_000),
+            with(2, "designer", Some("capped"), 1_000),
+            with(3, "designer", Some("capped"), 3_000),
+            with(4, "designer", Some("not_rendered"), 8_000),
+            with(5, "designer", None, 500),
+            with(6, "auto_pass", None, 0),
+        ];
+        let s = summarize(&rows);
+        let counts: Vec<(&str, u32)> = s.by_judgment.iter().map(|(k, v)| (k.as_str(), v.tickets)).collect();
+        assert_eq!(counts, [("auto_pass", 1), ("capped", 2), ("none", 1), ("not_rendered", 1)], "tickets from before the gate have no reason");
+        assert_eq!(s.by_judgment["capped"].per_ticket(), 2_000);
     }
 
     #[test]

@@ -1245,6 +1245,7 @@
   "design.qa_stats.rounds": "ラウンド: 1 回目 {first}、2 回目 {second}、3 回目以降 {more}",
   "design.qa_stats.by_tier": "モデル階層別:",
   "design.qa_stats.by_gate": "ゲートモード別:",
+  "design.qa_stats.by_judgment": "ゲートが事前チェックをどう判断したか別（判断理由、通常の確認は `none`）：",
   "design.qa_stats.row": "  {name}: チケット {count} 件 · 合格率 {rate} · チケットあたり {per} トークン、合計 {total} · チケットあたりツール呼び出し {calls} 回、{minutes} 分",
   "design.qa_stats.agreement": "ゲート一致率: 確認できた {judged} 件中 {rate} — 合格予想で合格 {pa}、合格予想で差し戻し {pm}、差し戻し予想で差し戻し {ba}、差し戻し予想で合格 {bw} · デザイナーに委ねた {deferred}",
   "design.qa_stats.acted": "ゲートが自ら処理しました: デザイナーのターンなしで合格 {pass}、差し戻し {back}",

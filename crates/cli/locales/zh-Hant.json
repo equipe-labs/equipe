@@ -1245,6 +1245,7 @@
   "design.qa_stats.rounds": "回合：第一次 {first}，第二次 {second}，第三次以後 {more}",
   "design.qa_stats.by_tier": "依模型層級：",
   "design.qa_stats.by_gate": "依關卡模式：",
+  "design.qa_stats.by_judgment": "依關卡對預檢的判斷分類（判斷原因，一般查看為 `none`）：",
   "design.qa_stats.row": "  {name}：{count} 個工單 · 通過率 {rate} · 每個工單 {per} 權杖，共 {total} · 每個工單 {calls} 次工具呼叫、{minutes} 分鐘",
   "design.qa_stats.agreement": "關卡一致率：在可核對的 {judged} 個中為 {rate} — 預計通過且通過 {pa}，預計通過但被退回 {pm}，預計退回且被退回 {ba}，預計退回但通過 {bw} · 交給設計師 {deferred}",
   "design.qa_stats.acted": "關卡自行處理：無需設計師輪次，通過 {pass} 個，退回 {back} 個",

@@ -375,7 +375,8 @@ screen_checks value; missing: {}. Then hand in again.",
         let policy = journal.design_qa_tiers();
         let run = journal.design_qa_run(qa.id);
         let round = run.as_ref().map(|r| r.round).or_else(|| checked.as_ref().and_then(|c| journal.design_qa_rounds(c.id).ok())).unwrap_or(1);
-        let judgment = run.as_ref().is_none_or(|r| r.precheck != "done" || r.judgment.is_some());
+        // The top tier for what leaves too little seen; what only left some states unseen stays cheap.
+        let judgment = run.as_ref().is_none_or(|r| r.precheck != "done" || r.judgment.as_deref().is_some_and(crate::design_qa::Judgment::text_needs_top));
         let person = journal.person_models().iter().any(|m| m == member) || journal.role_models().iter().any(|r| r.role == role && r.engine == engine && r.model.is_some());
         let redesign = checked.as_ref().is_some_and(|c| crate::design_qa::redesign(&c.title, &c.body));
         let (tier, _) = crate::design_qa::tier_for(policy, crate::design_qa::TierAsk { round, redesign, judgment });
@@ -528,7 +529,7 @@ async fn run_precheck(bin: &Path, worktree: &Path, project: &Path, dir: &Path, i
     let pid = child.id();
     match tokio::time::timeout(PRECHECK_LIMIT, child.wait()).await {
         Ok(Ok(status)) if status.success() => {}
-        Ok(Ok(status)) => return Err(format!("it stopped ({status}); see {}", dir.join("precheck.log").display())),
+        Ok(Ok(status)) => return Err(format!("it stopped ({status}){}; see {}", precheck::log_head(&dir.join("precheck.log")), dir.join("precheck.log").display())),
         Ok(Err(err)) => return Err(err.to_string()),
         Err(_) => {
             if let Some(pid) = pid {
@@ -539,7 +540,7 @@ async fn run_precheck(bin: &Path, worktree: &Path, project: &Path, dir: &Path, i
             return Err(format!("it ran past {} minutes and was stopped", PRECHECK_LIMIT.as_secs() / 60));
         }
     }
-    if dir.join(precheck::REPORT_JSON).is_file() { Ok(()) } else { Err("it wrote no report".into()) }
+    if dir.join(precheck::REPORT_JSON).is_file() { Ok(()) } else { Err(format!("it wrote no report{}", precheck::log_head(&dir.join("precheck.log")))) }
 }
 
 /// What a designer on design QA ticket `qa` is told about the ticket it

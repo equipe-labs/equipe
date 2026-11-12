@@ -1245,6 +1245,7 @@
   "design.qa_stats.rounds": "라운드: 첫 번째 {first}, 두 번째 {second}, 세 번째 이상 {more}",
   "design.qa_stats.by_tier": "모델 등급별:",
   "design.qa_stats.by_gate": "게이트 모드별:",
+  "design.qa_stats.by_judgment": "게이트가 사전 점검을 어떻게 봤는지별(판단 사유, 단순 확인은 `none`):",
   "design.qa_stats.row": "  {name}: 티켓 {count}개 · 통과율 {rate} · 티켓당 토큰 {per}, 모두 {total} · 티켓당 도구 호출 {calls}번, {minutes}분",
   "design.qa_stats.agreement": "게이트 일치율: 확인할 수 있던 {judged}건 중 {rate} — 통과 예상·통과 {pa}, 통과 예상·돌려보냄 {pm}, 돌려보냄 예상·돌려보냄 {ba}, 돌려보냄 예상·통과 {bw} · 디자이너에게 넘김 {deferred}",
   "design.qa_stats.acted": "게이트가 직접 처리했어요: 디자이너 턴 없이 통과 {pass}, 돌려보냄 {back}",
