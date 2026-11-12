@@ -112,6 +112,9 @@ pub fn person_only(command: &Command) -> bool {
         C::SaveLogin { .. }
         | C::DeleteLogin { .. }
         | C::ForgetLoginAllowance { .. }
+        | C::AllowLogin { .. }
+        | C::SetLoginAuto { .. }
+        | C::DismissLoginOffer { .. }
         | C::SaveBrowserProfile { .. }
         | C::DeleteBrowserProfile { .. }
         | C::SaveSecret { .. }

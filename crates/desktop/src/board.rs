@@ -368,7 +368,7 @@ pub fn inbox(model: &Model, filter: &Filter) -> Vec<Row> {
                 *s == section
                     && match need {
                         Need::Ticket(id) => model.tickets.iter().find(|t| t.id == *id).is_some_and(|t| filter.matches(model, t)),
-                        Need::Permission(_) | Need::Questions(_) | Need::Team(_) | Need::Routine(_) | Need::Accept(_) | Need::Browser(_) | Need::Secret(_) => filter.is_empty(),
+                        Need::Permission(_) | Need::Questions(_) | Need::Team(_) | Need::Routine(_) | Need::Accept(_) | Need::Browser(_) | Need::Secret(_) | Need::LoginOffer(_) => filter.is_empty(),
                     }
             })
             .map(|(_, need)| need)
@@ -924,7 +924,7 @@ pub fn ticket_of(model: &Model, need: Need) -> Option<&Ticket> {
             let ticket = model.asked.get(id)?.ticket?;
             model.tickets.iter().find(|t| t.id == ticket)
         }
-        Need::Team(_) | Need::Routine(_) | Need::Accept(_) | Need::Browser(_) | Need::Secret(_) => None,
+        Need::Team(_) | Need::Routine(_) | Need::Accept(_) | Need::Browser(_) | Need::Secret(_) | Need::LoginOffer(_) => None,
     }
 }
 

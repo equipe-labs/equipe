@@ -32,8 +32,12 @@ whatlang = "0.18.0"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.190"
 
-# Logins' passwords, in the Keychain only (`vault`).
+# Logins' passwords on Windows, in Credential Manager only (`vault`).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Credentials"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
+# Logins' passwords, in the Keychain only (`vault`).
 security-framework = "3"
 # Frames of a phone recording (`phone::frames`), read with AVFoundation: the same bindings and features the desktop uses.
 objc2 = "0.6"

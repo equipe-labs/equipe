@@ -2257,6 +2257,7 @@ dependencies = [
  "sys-locale",
  "tokio",
  "whatlang",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

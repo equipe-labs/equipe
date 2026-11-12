@@ -48,6 +48,10 @@ impl Runtime {
         if let Some(line) = self.journal(squad).and_then(|j| j.turn_endings_since(from).ok()).and_then(|counts| endings_line(&counts)) {
             facts.push_str(&format!("\n\n{line}"));
         }
+        // What the person was asked to sign in to in members' browsers, and why — only when they were.
+        if let Some(line) = self.journal(squad).and_then(|j| j.logins_since(from).ok()).and_then(|rows| crate::logins::retro_line(&crate::logins::summarize(&rows))) {
+            facts.push_str(&format!("\n\n{line}"));
+        }
         rules::message(routine, &facts)
     }
 

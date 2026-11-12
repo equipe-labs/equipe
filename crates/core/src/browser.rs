@@ -55,6 +55,11 @@ const DRIVING: &str = include_str!("../assets/driving.js");
 /// person's hands: written into the browser host.
 const GATE: &str = include_str!("../assets/gate.js");
 
+/// Marks the host Chrome's last exit as Chrome marks a crash before it
+/// starts, so the sign-ins it keeps only for the session survive a restart:
+/// written into the browser host.
+pub const KEEP_SESSIONS: &str = include_str!("../assets/keep-sessions.js");
+
 /// The script that hands a member's sign-ins back, with the state file's path
 /// written in. Written next to the state when it changed.
 const KEEP_SIGN_INS: &str = include_str!("../assets/keep-sign-ins.ts");
@@ -235,6 +240,9 @@ pub enum HostEvent {
         /// The tab its member's tools last worked in.
         #[serde(default)]
         agent: Option<u64>,
+        /// In the person's hands, and they put a hand on it.
+        #[serde(default)]
+        touched: bool,
     },
     /// Who has a lane in hand: `"person"`, or the member again. `refused`:
     /// its member's tools were turned away while the person had it.
@@ -256,6 +264,15 @@ pub enum HostEvent {
     /// A member's tool call was refused on a tab the person is on, for
     /// something the person can allow at a click (`close`).
     Wants { lane: String, page: u64, action: String },
+    /// equipe's fill of a kept login into a member's tab (`fill`) ran: what
+    /// the script answered (`vault::fill_answer` reads it), or `None`.
+    Filled {
+        lane: String,
+        page: u64,
+        token: u64,
+        #[serde(default)]
+        answer: Option<String>,
+    },
     /// The host is gone (its Chrome closed, or it failed).
     #[serde(skip)]
     Exited,
@@ -376,6 +393,31 @@ pub fn human_check(url: &str, title: &str, signals: Option<&Signals>) -> Option<
     None
 }
 
+/// Whether a page is part of signing in: a sign-in wall, or the code or
+/// checkpoint step that follows the password.
+pub fn signing_in(url: &str, title: &str, signals: Option<&Signals>) -> bool {
+    use equipe_protocol::HumanCheck;
+    match human_check(url, title, signals) {
+        Some(HumanCheck::SignIn | HumanCheck::TwoFactor) => true,
+        Some(HumanCheck::Challenge) => CHALLENGE_PATHS.iter().any(|p| url.to_lowercase().contains(p)),
+        _ => false,
+    }
+}
+
+/// Whether a page is past signing in: nothing on it waits for a person, no
+/// password or code field in sight, and its address isn't a sign-in one.
+/// A page still loading says nothing yet.
+pub fn past_sign_in(url: &str, title: &str, signals: Option<&Signals>, loading: bool) -> bool {
+    let Some(s) = signals else { return false };
+    let url_l = url.to_lowercase();
+    !loading
+        && (url_l.starts_with("https://") || url_l.starts_with("http://"))
+        && human_check(url, title, signals).is_none()
+        && !s.password
+        && !s.otp
+        && !sign_in_words().any(|w| url_l.contains(w))
+}
+
 /// What equipe does with a member's browser when its tabs change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckStep {
@@ -426,7 +468,7 @@ impl Host {
     pub fn start(npx: &Path, home: &Path, hub: &std::sync::Arc<Hub>, events: tokio::sync::mpsc::UnboundedSender<HostEvent>) -> std::io::Result<SharedHost> {
         let state = ensure_state(home);
         let script = home.join("browser").join("browser-host.cjs");
-        let text = HOST.replace("__DRIVING__", DRIVING).replace("__GATE__", GATE);
+        let text = HOST.replace("__DRIVING__", DRIVING).replace("__GATE__", GATE).replace("__KEEP_SESSIONS__", KEEP_SESSIONS);
         if std::fs::read_to_string(&script).ok().as_deref() != Some(text.as_str()) {
             std::fs::write(&script, text)?;
         }
@@ -1443,6 +1485,11 @@ mod tests {
             (hand.clone(), call("browser_tabs", json!({ "action": "new" }), &[]), "go"),
             (touched_check.clone(), close(&[7]), "ask"),
             (touched_check, call("browser_navigate", json!({ "url": "https://example.com" }), &[7]), "no"),
+            // equipe typing a kept login into tab 7: nothing of the member's touches it, not even a read.
+            (json!({ "control": null, "filling": 7 }), call("browser_snapshot", json!({}), &[7]), "no"),
+            (json!({ "control": null, "filling": 7 }), call("browser_evaluate", json!({ "function": "() => 1" }), &[7]), "no"),
+            (json!({ "control": null, "filling": 7 }), call("browser_click", json!({}), &[8]), "go"),
+            (json!({ "control": null, "filling": null }), call("browser_click", json!({}), &[7]), "go"),
         ];
         let input: Vec<Value> = cases.iter().map(|(lane, call, _)| json!({ "lane": lane, "call": call })).collect();
         let script = format!("{GATE}\nconst cases = {};\nprocess.stdout.write(JSON.stringify(cases.map((c) => gate(c.lane, c.call))));", Value::Array(input));
@@ -1465,6 +1512,7 @@ mod tests {
         assert!(regex_lite_like(refused), "{refused}");
         assert!(said[7]["text"].as_str().unwrap().contains("close this tab or go elsewhere"), "{}", said[7]);
         assert!(said[10]["text"].as_str().unwrap().contains("asked whether to let you close it"), "{}", said[10]);
+        assert!(said[17]["text"].as_str().unwrap().contains("signing this tab back in"), "{}", said[17]);
     }
 
     /// `The person is using this tab since HH:MM — ask them in words, or wait.`
@@ -1522,6 +1570,62 @@ mod tests {
         let mut s = Signals::default();
         f(&mut s);
         s
+    }
+
+    #[test]
+    fn a_sign_in_page_and_the_site_past_it_are_told_apart() {
+        let form = signals(|s| s.password = true);
+        let code = signals(|s| s.otp = true);
+        let plain = signals(|_| {});
+        assert!(signing_in("https://github.com/login", "Sign in to GitHub", Some(&form)));
+        assert!(signing_in("https://github.com/sessions/two-factor/app", "GitHub", Some(&code)), "the code after the password is part of it");
+        assert!(signing_in("https://www.linkedin.com/checkpoint/challenge/x", "LinkedIn", Some(&plain)));
+        assert!(!signing_in("https://github.com/acme", "acme", Some(&plain)));
+        assert!(past_sign_in("https://github.com/acme/settings", "Settings", Some(&plain), false));
+        assert!(!past_sign_in("https://github.com/acme/settings", "Settings", Some(&plain), true), "still loading says nothing yet");
+        assert!(!past_sign_in("https://github.com/login", "Sign in", Some(&plain), false), "a sign-in address");
+        assert!(!past_sign_in("https://github.com/x", "x", Some(&form), false), "a password field still in sight");
+        assert!(!past_sign_in("https://github.com/x", "x", None, false), "nothing read off the page yet");
+        assert!(!past_sign_in("about:blank", "", Some(&plain), false));
+    }
+
+    /// The step that keeps "for the session" sign-ins across the host
+    /// Chrome's restarts (`assets/keep-sessions.js`), run in Node as the
+    /// browser host runs it, on a profile of its own. (What Chrome does with
+    /// the mark is `tests/session_cookies_live.rs`, on a real Chrome.)
+    #[test]
+    fn the_host_marks_its_chromes_last_exit_so_session_sign_ins_come_back() {
+        let Some(node) = std::env::var_os("PATH").and_then(|path| std::env::split_paths(&path).map(|d| d.join("node")).find(|p| p.is_file())) else {
+            return; // No Node here: the smoke test covers it where there is.
+        };
+        let dir = std::env::temp_dir().join(format!("equipe-keep-sessions-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let run = |profile: &Path| {
+            let script = format!("{KEEP_SESSIONS}\nprocess.stdout.write(keepSessions({}, require('fs'), require('path')));", serde_json::to_string(&profile.to_string_lossy()).unwrap());
+            let out = std::process::Command::new(&node).arg("-e").arg(script).output().expect("node runs");
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8(out.stdout).unwrap()
+        };
+        // A profile Chrome never ran: nothing to mark.
+        assert_eq!(run(&dir), "none");
+        let prefs = dir.join("Default").join("Preferences");
+        std::fs::create_dir_all(prefs.parent().unwrap()).unwrap();
+        std::fs::write(&prefs, r#"{"profile":{"exit_type":"Normal","name":"Person 1"},"session":{"restore_on_startup":5},"browser":{"x":1}}"#).unwrap();
+        assert_eq!(run(&dir), "marked");
+        let kept: Value = serde_json::from_str(&std::fs::read_to_string(&prefs).unwrap()).unwrap();
+        assert_eq!(kept["profile"]["exit_type"], "Crashed");
+        assert_eq!((kept["profile"]["name"].as_str(), kept["session"]["restore_on_startup"].as_u64(), kept["browser"]["x"].as_u64()), (Some("Person 1"), Some(5), Some(1)), "nothing else changes: no tab comes back");
+        assert_eq!(run(&dir), "kept");
+        // Not Chrome's JSON: left as it is.
+        std::fs::write(&prefs, "not json").unwrap();
+        assert_eq!(run(&dir), "unreadable");
+        assert_eq!(std::fs::read_to_string(&prefs).unwrap(), "not json");
+        let _ = std::fs::remove_dir_all(&dir);
+        // The host as written: Node reads it whole.
+        let host = HOST.replace("__DRIVING__", DRIVING).replace("__GATE__", GATE).replace("__KEEP_SESSIONS__", KEEP_SESSIONS);
+        assert!(host.contains("keepSessions(profile, fs, path)") && host.contains("--hide-crash-restore-bubble"));
+        let parsed = std::process::Command::new(&node).arg("-e").arg(format!("new Function({})", serde_json::to_string(&format!("return async () => {{ {host} }}")).unwrap())).output().expect("node runs");
+        assert!(parsed.status.success(), "{}", String::from_utf8_lossy(&parsed.stderr));
     }
 
     #[test]
