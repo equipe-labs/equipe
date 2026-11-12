@@ -651,10 +651,14 @@ async fn a_phone_screens_words_reach_the_member_as_read_on_a_phone_and_it_takes_
 
     // A member's change to the squad's folder, taken back from the phone.
     let folder = equipe_core::squad_home::path(&home, "acme");
+    // The desk turns' own saves, made off the loop, done first.
+    let settled = folder.clone();
+    tokio::task::spawn_blocking(move || equipe_core::squad_home::saves_done(&settled)).await.unwrap();
     std::fs::write(folder.join("notes/e2e.md"), "x\n").unwrap();
     let change = equipe_core::squad_home::save(&folder, "designer", "a note").unwrap().unwrap();
     phone.send(Command::UndoHomeChange { squad: "acme".into(), session: 4, change: change.id });
-    let seen = until(&mut phone, |e| matches!(e, Event::Notice { undo: Some(_), .. })).await;
+    // The desk turns' own changes are told once saved, off the loop: the notice looked for is the one taking it back.
+    let seen = until(&mut phone, |e| matches!(e, Event::Notice { undo: Some(_), text, .. } if text.starts_with("Taken back"))).await;
     assert!(matches!(seen.last(), Some(Event::Notice { session: 4, text, .. }) if text == "Taken back: saved notes/e2e.md · you can take this back too"), "{seen:#?}");
     assert!(!folder.join("notes/e2e.md").exists());
 }

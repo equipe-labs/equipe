@@ -23,6 +23,11 @@ use equipe_protocol::rpc::Stall;
 
 /// A step longer than this is written to the log.
 pub const STALL_LOGGED: Duration = Duration::from_secs(15);
+/// A step that took this long is written to the log once it ends, with how
+/// long each of its parts took: no step should hold every screen this long.
+pub const SLOW_LOGGED: Duration = Duration::from_secs(2);
+/// How many of the latest slow steps are kept to be looked at.
+const SLOW_KEPT: usize = 32;
 /// While it lasts, said again this often.
 const STALL_REPEATED: Duration = Duration::from_secs(60);
 /// How often the watchdog looks.
@@ -69,6 +74,50 @@ struct State {
     /// Watched for a hang (the daemon's, not a test's): after how long, and
     /// where the dump goes.
     heal: Option<(Duration, Option<PathBuf>)>,
+    /// The part of the step under way, and since when.
+    part: Instant,
+    /// The parts of the step under way that are over, and how long each took.
+    parts: Vec<(Cow<'static, str>, Duration)>,
+    /// A step at least this long is kept in `slow` (and logged past [`SLOW_LOGGED`]).
+    slow_after: Duration,
+    /// The latest slow steps, oldest first.
+    slow: std::collections::VecDeque<SlowStep>,
+}
+
+/// A step of the loop that took long, and how long each of its parts took.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SlowStep {
+    pub doing: String,
+    pub took: Duration,
+    /// Its parts, as the loop named them, in order; the first is the step's own start.
+    pub parts: Vec<(String, Duration)>,
+}
+
+impl SlowStep {
+    /// The parts that took longest, for a log line: `idle boards 12.3s, …`.
+    pub fn slowest_parts(&self, most: usize) -> String {
+        let mut parts: Vec<&(String, Duration)> = self.parts.iter().filter(|(_, d)| *d >= Duration::from_millis(50)).collect();
+        parts.sort_by_key(|p| std::cmp::Reverse(p.1));
+        parts.iter().take(most).map(|(part, took)| format!("{part} {:.1}s", took.as_secs_f64())).collect::<Vec<_>>().join(", ")
+    }
+}
+
+tokio::task_local! {
+    /// The pulse of the loop this task is: what runs on it marks its parts.
+    static ON_LOOP: Arc<Pulse>;
+}
+
+/// Run `work` as the loop `pulse` tells of: [`mark`] inside it names the
+/// part under way.
+pub async fn scoped<F: std::future::Future>(pulse: Arc<Pulse>, work: F) -> F::Output {
+    ON_LOOP.scope(pulse, work).await
+}
+
+/// On the core loop, the step under way goes on to part `doing` (see
+/// [`Pulse::step`]): a slow step's log line, and a stall's, then say which
+/// part held it. Elsewhere, nothing.
+pub fn mark(doing: &'static str) {
+    let _ = ON_LOOP.try_with(|pulse| pulse.step(doing));
 }
 
 /// What a look of the watchdog finds.
@@ -87,7 +136,18 @@ impl Pulse {
 
     fn with_clock(clock: Clock) -> Arc<Self> {
         let now = clock();
-        let state = State { doing: Cow::Borrowed("starting"), since: None, logged: None, ended: now, answered: now, heal: None };
+        let state = State {
+            doing: Cow::Borrowed("starting"),
+            since: None,
+            logged: None,
+            ended: now,
+            answered: now,
+            heal: None,
+            part: now,
+            parts: Vec::new(),
+            slow_after: SLOW_LOGGED,
+            slow: std::collections::VecDeque::new(),
+        };
         Arc::new(Self { state: Mutex::new(state), clock })
     }
 
@@ -106,25 +166,65 @@ impl Pulse {
         state.doing = doing.into();
         state.since = Some((now, SystemTime::now()));
         state.logged = None;
+        state.part = now;
+        state.parts.clear();
     }
 
-    /// The step under way goes on to a part of it: said instead, its start kept.
+    /// The step under way goes on to a part of it: said instead, its start
+    /// kept, and how long the part before took kept with its name.
     pub fn step(&self, doing: &'static str) {
-        self.state().doing = Cow::Borrowed(doing);
+        let now = self.now();
+        let mut state = self.state();
+        if state.since.is_some() {
+            let took = now.saturating_duration_since(state.part);
+            let before = std::mem::replace(&mut state.doing, Cow::Borrowed(doing));
+            state.parts.push((before, took));
+            state.part = now;
+        } else {
+            state.doing = Cow::Borrowed(doing);
+        }
     }
 
-    /// The step is over. One the log heard about says it is over too.
+    /// The step is over. One the log heard about says it is over too; a
+    /// slow one is kept, and logged with its slowest parts.
     pub fn end(&self) {
         let now = self.now();
         let mut state = self.state();
-        if state.logged.is_some()
-            && let Some((at, _)) = state.since
-        {
-            crate::daemon_log!("equipe: watchdog: the daemon answers again — {} took {}s", state.doing, now.saturating_duration_since(at).as_secs());
+        if let Some((at, _)) = state.since {
+            let took = now.saturating_duration_since(at);
+            if state.logged.is_some() {
+                crate::daemon_log!("equipe: watchdog: the daemon answers again — {} took {}s", state.doing, took.as_secs());
+            }
+            if took >= state.slow_after {
+                let last = now.saturating_duration_since(state.part);
+                let mut parts: Vec<(String, Duration)> = state.parts.iter().map(|(p, d)| (p.to_string(), *d)).collect();
+                parts.push((state.doing.to_string(), last));
+                let first = parts.first().map_or_else(|| state.doing.to_string(), |(p, _)| p.clone());
+                let slow = SlowStep { doing: first, took, parts };
+                if took >= SLOW_LOGGED {
+                    crate::daemon_log!("equipe: slow: {} took {:.1}s ({})", slow.doing, took.as_secs_f64(), slow.slowest_parts(4));
+                }
+                if state.slow.len() >= SLOW_KEPT {
+                    state.slow.pop_front();
+                }
+                state.slow.push_back(slow);
+            }
         }
         state.since = None;
         state.logged = None;
         state.ended = now;
+        state.parts.clear();
+    }
+
+    /// Keep each step at least `after` long to be looked at ([`Self::slow_steps`]),
+    /// not only those past [`SLOW_LOGGED`] — for a measurement.
+    pub fn keep_steps_from(&self, after: Duration) {
+        self.state().slow_after = after;
+    }
+
+    /// The latest steps that took long, oldest first, taken.
+    pub fn slow_steps(&self) -> Vec<SlowStep> {
+        self.state().slow.drain(..).collect()
     }
 
     /// The loop answered the daemon's own ask.
@@ -153,8 +253,16 @@ impl Pulse {
         let state = self.state();
         let (at, wall) = state.since?;
         let secs = now.saturating_duration_since(at);
+        // What held it: the part under way, and the parts before it that took long.
+        let mut doing = state.doing.to_string();
+        let mut before: Vec<&(Cow<'static, str>, Duration)> = state.parts.iter().filter(|(_, d)| *d >= Duration::from_secs(1)).collect();
+        before.sort_by_key(|p| std::cmp::Reverse(p.1));
+        if !before.is_empty() {
+            let said: Vec<String> = before.iter().take(3).map(|(p, d)| format!("{p} {}s", d.as_secs())).collect();
+            doing = format!("{doing} (after {})", said.join(", "));
+        }
         (secs >= after).then(|| Stall {
-            doing: state.doing.to_string(),
+            doing,
             since: wall.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()),
             secs: secs.as_secs(),
         })
@@ -318,6 +426,48 @@ mod tests {
     fn moved(secs: &Arc<AtomicU64>) -> Clock {
         let (base, secs) = (Instant::now(), secs.clone());
         Box::new(move || base + Duration::from_secs(secs.load(Ordering::SeqCst)))
+    }
+
+    #[test]
+    fn a_slow_step_is_kept_with_how_long_each_of_its_parts_took() {
+        let secs = Arc::new(AtomicU64::new(0));
+        let to = |n: u64| secs.store(n, Ordering::SeqCst);
+        let pulse = Pulse::with_clock(moved(&secs));
+        pulse.begin("minute tick");
+        pulse.step("minute tick: idle boards");
+        to(12);
+        pulse.step("minute tick: engines");
+        // Under way: the stall names the part it is on, and the long one before it.
+        let stall = pulse.stall(Duration::ZERO).unwrap();
+        assert_eq!(stall.doing, "minute tick: engines (after minute tick: idle boards 12s)");
+        to(16);
+        pulse.end();
+        let slow = pulse.slow_steps();
+        assert_eq!(slow.len(), 1);
+        assert_eq!(slow[0].doing, "minute tick");
+        assert_eq!(slow[0].took, Duration::from_secs(16));
+        let parts: Vec<(&str, u64)> = slow[0].parts.iter().map(|(p, d)| (p.as_str(), d.as_secs())).collect();
+        assert_eq!(parts, [("minute tick", 0), ("minute tick: idle boards", 12), ("minute tick: engines", 4)]);
+        assert_eq!(slow[0].slowest_parts(2), "minute tick: idle boards 12.0s, minute tick: engines 4.0s");
+        assert!(pulse.slow_steps().is_empty(), "taken");
+        // A quick step isn't kept, unless asked to keep shorter ones.
+        pulse.begin("busy");
+        pulse.end();
+        assert!(pulse.slow_steps().is_empty());
+        pulse.keep_steps_from(Duration::ZERO);
+        pulse.begin("busy");
+        pulse.end();
+        assert_eq!(pulse.slow_steps().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_mark_names_the_part_only_on_the_loop() {
+        let pulse = Pulse::new();
+        pulse.begin("a turn's end");
+        mark("turn end: dispatch");
+        assert_eq!(pulse.stall(Duration::ZERO).unwrap().doing, "a turn's end", "not on the loop: nothing");
+        scoped(pulse.clone(), async { mark("turn end: dispatch") }).await;
+        assert_eq!(pulse.stall(Duration::ZERO).unwrap().doing, "turn end: dispatch");
     }
 
     #[test]

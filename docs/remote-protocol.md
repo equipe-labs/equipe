@@ -117,8 +117,14 @@ The bytes come only through the daemon, with the request `read_image`
 `{ "squad", "path", "max"? }` (`id` set, the frame's `squad` the same and followed):
 `result` `{ "mime", "size", "width"?, "height"?, "data", "scaled"? }` — `data` base64 of the
 picture, or of a copy no bigger than `max` pixels on its longer side (`scaled: true`, PNG when
-it has transparency, else JPEG); `width`/`height` are the file's own (absent for an SVG, which
-goes as it is, at most 1 MB). The daemon answers only for a path a waiting question set, one
+it has pixels that are see-through, else JPEG); `width`/`height` are the file's own (absent for
+an SVG, which goes as it is, at most 1 MB). Scaled copies are kept on the daemon's disk
+(`~/.equipe/cache/thumbs`, by the file's real path, size, modified time and the side asked;
+the least recently used go past 4000 files or 512 MB), and the daemon makes the 640-pixel
+thumbnail and a 48-pixel preview of each picture a member names (`ask_decision`, a hand-in)
+before any screen asks — so a screen should ask for the tiny `max: 48` first and draw it,
+scaled up, until the thumbnail comes. Pictures are read off the daemon's core loop, so a busy
+squad never holds them up. The daemon answers only for a path a waiting question set, one
 of the squad's tickets or one of its design systems (an asset, see below) names now, that is
 still an image file (by name and by its first bytes) inside the squad's folder, a ticket's
 worktree or a design folder once links are resolved — no `..`, at most

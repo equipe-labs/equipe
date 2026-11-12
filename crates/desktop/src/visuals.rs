@@ -22,8 +22,12 @@ use equipe_core::protocol::rpc::{ImageList, ImageRead, ImageWhy};
 use gpui_kit::{Image, ImageFormat};
 
 /// A thumbnail's longer side, in pixels: a tile is at most [`TILE_MAX`]
-/// points wide, drawn at 2x.
-pub const THUMB: u32 = 640;
+/// points wide, drawn at 2x. The daemon makes these ahead of any screen.
+pub const THUMB: u32 = equipe_core::visuals::thumbs::THUMB_SIDE;
+/// A tiny preview's longer side: asked for beside each thumbnail and drawn,
+/// blurred by its scaling, until the thumbnail comes — a card shows its
+/// pictures at once, even over a slow line.
+pub const TINY: u32 = equipe_core::visuals::thumbs::TINY_SIDE;
 /// A picture opened big: no more than this many pixels on its longer side.
 pub const FULL: u32 = 2560;
 /// A tile's picture box: this high for its width (4:3), whatever the picture.
@@ -64,6 +68,8 @@ pub const COLUMN_KEY: u64 = u64::MAX;
 /// How big a picture is asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Size {
+    /// A thumbnail's stand-in while it comes ([`TINY`]).
+    Tiny,
     Thumb,
     /// As wide as the conversation's column, at 2x.
     Inline,
@@ -73,6 +79,7 @@ pub enum Size {
 impl Size {
     pub fn side(self) -> u32 {
         match self {
+            Size::Tiny => TINY,
             Size::Thumb => THUMB,
             Size::Inline => INLINE,
             Size::Full => FULL,
@@ -159,11 +166,26 @@ pub struct Visuals {
 
 impl Visuals {
     /// What `path` shows at `size` now; the first time, it is asked for.
+    /// A thumbnail on its way shows its tiny preview meanwhile, once that came.
     pub fn look(&mut self, path: &str, size: Size) -> Look {
         let key = (path.to_owned(), size);
         if let Some(look) = self.shown.get(&key) {
+            if matches!(look, Look::Loading)
+                && size == Size::Thumb
+                && let Some(Look::Ready(tiny)) = self.shown.get(&(path.to_owned(), Size::Tiny))
+            {
+                self.used.borrow_mut().insert((path.to_owned(), Size::Tiny), Instant::now());
+                return Look::Ready(tiny.clone());
+            }
             self.used.borrow_mut().insert(key, Instant::now());
             return look.clone();
+        }
+        // The tiny preview first: asked for before the thumbnail, it comes
+        // first. An SVG comes as it is, whatever the size: none for it.
+        let tiny = (path.to_owned(), Size::Tiny);
+        if size == Size::Thumb && !self.shown.contains_key(&tiny) && !path.to_ascii_lowercase().ends_with(".svg") {
+            self.shown.insert(tiny.clone(), Look::Loading);
+            self.wanted.push(tiny);
         }
         self.shown.insert(key, Look::Loading);
         self.wanted.push((path.to_owned(), size));
@@ -182,7 +204,7 @@ impl Visuals {
 
     /// The best of `path` there is: whole when it came, else the reply's, else its thumbnail.
     pub fn best(&self, path: &str) -> Option<Shot> {
-        [Size::Full, Size::Inline, Size::Thumb].into_iter().find_map(|size| match self.shown.get(&(path.to_owned(), size)) {
+        [Size::Full, Size::Inline, Size::Thumb, Size::Tiny].into_iter().find_map(|size| match self.shown.get(&(path.to_owned(), size)) {
             Some(Look::Ready(shot)) => {
                 self.used.borrow_mut().insert((path.to_owned(), size), Instant::now());
                 Some(shot.clone())
@@ -257,8 +279,25 @@ impl Visuals {
 
     /// What `path` shows at `size` from now on. Whole pictures past the
     /// budget are let go, oldest first (asked again when opened again).
-    pub fn put(&mut self, path: &str, size: Size, look: Look) {
+    pub fn put(&mut self, path: &str, size: Size, mut look: Look) {
         let key = (path.to_owned(), size);
+        let tiny = (path.to_owned(), Size::Tiny);
+        match (&mut look, size) {
+            // A tiny preview after its thumbnail: no longer wanted.
+            (Look::Ready(_), Size::Tiny) if matches!(self.shown.get(&(path.to_owned(), Size::Thumb)), Some(Look::Ready(_))) => {
+                self.let_go(&tiny);
+                return;
+            }
+            // The thumbnail takes its preview's place, without fading in again.
+            (Look::Ready(shot), Size::Thumb) => {
+                if let Some(Look::Ready(preview)) = self.shown.get(&tiny) {
+                    shot.at = shot.at.min(preview.at);
+                }
+                self.let_go(&tiny);
+                self.shown.insert(tiny, Look::Gone(ImageWhy::Unreadable));
+            }
+            _ => {}
+        }
         if let Some(Look::Ready(old)) = self.shown.get(&key) {
             self.drawn_bytes = self.drawn_bytes.saturating_sub(old.decoded(size));
             if size == Size::Full {
@@ -885,7 +924,7 @@ mod tests {
         let mut v = Visuals::default();
         assert!(matches!(v.look("/w/a.png", Size::Thumb), Look::Loading));
         assert!(matches!(v.look("/w/a.png", Size::Thumb), Look::Loading));
-        assert_eq!(v.take_wanted(), [("/w/a.png".to_owned(), Size::Thumb)], "once");
+        assert_eq!(v.take_wanted(), [("/w/a.png".to_owned(), Size::Tiny), ("/w/a.png".to_owned(), Size::Thumb)], "once, its tiny preview first");
         assert!(v.best("/w/a.png").is_none());
         v.put("/w/a.png", Size::Thumb, shot(10));
         assert_eq!(v.best("/w/a.png").unwrap().bytes, 10);
@@ -898,6 +937,33 @@ mod tests {
         let generation = v.generation;
         v.clear();
         assert!(v.best("/w/a.png").is_none() && v.generation == generation + 1);
+    }
+
+    #[test]
+    fn a_tiny_preview_shows_until_its_thumbnail_comes_and_then_goes() {
+        let mut v = Visuals::default();
+        assert!(matches!(v.look("/w/a.png", Size::Thumb), Look::Loading));
+        v.take_wanted();
+        v.put("/w/a.png", Size::Tiny, shot(1));
+        // The thumbnail still on its way: the preview stands in.
+        assert!(matches!(v.look("/w/a.png", Size::Thumb), Look::Ready(s) if s.bytes == 1));
+        let preview_at = match v.known("/w/a.png", Size::Tiny) {
+            Some(Look::Ready(s)) => s.at,
+            other => panic!("{other:?}"),
+        };
+        v.put("/w/a.png", Size::Thumb, shot(10));
+        match v.look("/w/a.png", Size::Thumb) {
+            Look::Ready(s) => assert!(s.bytes == 10 && s.at == preview_at, "the thumbnail, without fading in again"),
+            other => panic!("{other:?}"),
+        }
+        assert!(!matches!(v.known("/w/a.png", Size::Tiny), Some(Look::Ready(_))), "the preview let go");
+        assert!(v.take_wanted().is_empty(), "nor asked for again");
+        // A preview that comes after its thumbnail is not kept.
+        v.put("/w/a.png", Size::Tiny, shot(1));
+        assert!(!matches!(v.known("/w/a.png", Size::Tiny), Some(Look::Ready(_))));
+        // An SVG comes whole at any size: no preview is asked for.
+        v.look("/w/logo.svg", Size::Thumb);
+        assert_eq!(v.take_wanted(), [("/w/logo.svg".to_owned(), Size::Thumb)]);
     }
 
     #[test]

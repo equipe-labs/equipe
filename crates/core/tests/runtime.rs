@@ -95,9 +95,9 @@ fn calls(dir: &Path) -> Vec<Vec<String>> {
 /// machine. After ten seconds, the latest anyway, for the test to show.
 async fn latest_call(dir: &Path, wanted: impl Fn(&str) -> bool) -> Vec<String> {
     for _ in 0..200 {
-        if let Some(call) = calls(dir).pop()
-            && arg(&call, "-p").is_some_and(&wanted)
-        {
+        // Two turns that start at once can number their calls alike, and then
+        // sort by process id: the latest two are looked at.
+        if let Some(call) = calls(dir).into_iter().rev().take(2).find(|call| arg(call, "-p").is_some_and(&wanted)) {
             return call;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -3355,6 +3355,9 @@ async fn what_one_member_learns_the_next_one_knows_and_the_person_has_the_last_w
     assert!(charter.contains(&format!("The squad's memory is {}/memory", folder.display())), "{charter}");
 
     // The person fixes it in Finder: the next turn has their words, and their change is saved as theirs.
+    // (After the last desk turn's own save, made off the loop.)
+    let settled = folder.clone();
+    tokio::task::spawn_blocking(move || squad_home::saves_done(&settled)).await.unwrap();
     let file = folder.join("memory/tax-filing.md");
     let fixed = std::fs::read_to_string(&file).unwrap().replace("직접 신고한다", "세무사에게 맡긴다");
     std::fs::write(&file, fixed).unwrap();
