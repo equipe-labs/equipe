@@ -660,5 +660,16 @@
   "news.squad_paused": "多位成员的引擎同时失败（{cause}）。在测试轮成功之前，小队不会开始新工作；equipe 会自动重试，发送任何消息即可立即重试。",
   "news.squad_resumed": "引擎恢复正常，暂停的工单会自动继续。",
   "news.ticket_failing": "T-{id} 的引擎一直失败（{cause}）；equipe 会逐渐拉长间隔继续重试 · {title}。",
-  "news.limit_paused": "T-{id} 进行中 {engine} 达到了用量上限：被中断的工作原地暂停，并会自动继续——成员换到另一个引擎就在那里继续，否则等 {engine} 有余量时继续。"
+  "news.limit_paused": "T-{id} 进行中 {engine} 达到了用量上限：被中断的工作原地暂停，并会自动继续——成员换到另一个引擎就在那里继续，否则等 {engine} 有余量时继续。",
+  "error.autopilot": "登录自动驾驶：{why}",
+  "error.autopilot_totp": "未能保存该验证器密钥：{why}",
+  "error.autopilot_no_qr": "equipe 没有找到验证器二维码：请在 equipe 的浏览器中打开该网站的两步验证设置页（你自己在该网站上的标签页），然后重试——或者直接粘贴网站显示的密钥。",
+  "error.autopilot_no_passkey": "10 分钟内 equipe 的浏览器中没有添加通行密钥。请在 equipe 的浏览器中打开该网站的安全设置，并在点击按钮后立即添加通行密钥。",
+  "error.autopilot_device": "equipe 未能自动批准 {cli} 的登录，需要你自己来完成。",
+  "notice.autopilot_device": "🔑 equipe 正在自动登录 {cli}，并在共享浏览器中自动批准。",
+  "notice.autopilot_device_done": "🔑 {cli} 已重新登录：equipe 自行完成了登录并批准。",
+  "match.remember_words": "记住我|保持登录|保持登录状态|记住登录状态|下次自动登录|信任此设备|信任此浏览器|记住此设备|记住此浏览器|在此设备上不再询问|七天内免登录",
+  "match.session_expired_words": "会话已过期|登录已过期|登录已失效|登录超时|您已退出登录|你已退出登录|您已登出|请重新登录|请重新登陆|长时间未操作",
+  "match.approve_words": "授权|允许|同意|批准|确认|继续|下一步|是|接受",
+  "notice.secret_store": "本机的密钥库"
 }

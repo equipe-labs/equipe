@@ -664,5 +664,16 @@
   "news.squad_paused": "Several members' engines failed at once ({cause}). The squad starts nothing new until a test turn works; equipe tries again by itself, or send any message to try now.",
   "news.squad_resumed": "The engines work again: the paused tickets go on by themselves.",
   "news.ticket_failing": "T-{id}'s engine keeps failing ({cause}); equipe keeps trying, waiting longer each time · {title}.",
-  "news.limit_paused": "{engine} reached its usage limit during T-{id}: what it cut short is paused where it was and goes on by itself — on the other engine if members move there, or once {engine} has room."
+  "news.limit_paused": "{engine} reached its usage limit during T-{id}: what it cut short is paused where it was and goes on by itself — on the other engine if members move there, or once {engine} has room.",
+  "error.autopilot": "Login autopilot: {why}",
+  "error.autopilot_totp": "That authenticator seed wasn't kept: {why}",
+  "error.autopilot_no_qr": "equipe found no authenticator QR code: open the site's two-factor setup page in equipe's browser (your own tab on that site), then try again — or paste the secret the site shows instead.",
+  "error.autopilot_no_passkey": "No passkey was added in equipe's browser within 10 minutes. Open the site's security settings in equipe's browser and add a passkey there right after pressing the button.",
+  "error.autopilot_device": "equipe couldn't approve {cli}'s sign-in by itself, so it's yours to run.",
+  "notice.autopilot_device": "🔑 equipe is signing {cli} in by itself and approving it in the shared browser.",
+  "notice.autopilot_device_done": "🔑 {cli} is signed in again: equipe ran the sign-in and approved it itself.",
+  "match.remember_words": "remember me|keep me signed in|stay signed in|keep me logged in|trust this device|trust this browser|remember this device|remember this browser|don't ask again on this",
+  "match.session_expired_words": "session expired|session has expired|you have been signed out|you've been signed out|you have been logged out|please sign in again|please log in again|signed out due to inactivity",
+  "match.approve_words": "authorize|allow|approve|confirm|continue|yes|accept",
+  "notice.secret_store": "this machine's secret store"
 }

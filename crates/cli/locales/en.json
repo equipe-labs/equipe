@@ -1394,5 +1394,10 @@
   "onboard.desktop_note": "Optional: let members work the apps on this Mac. equipe installs what it needs by itself; macOS asks you for one switch (Accessibility for \"equipe Desktop Helper\"). Skip it and equipe offers it again when a member first needs it.",
   "onboard.desktop_prompt": "Set up desktop apps now?",
   "onboard.desktop_skipped": "Skipped. equipe offers it again when a member first needs desktop apps.",
-  "onboard.desktop_later": "Desktop apps aren't ready yet: {why} equipe carries on by itself, and you can finish later in Settings › Squad › Desktop apps."
+  "onboard.desktop_later": "Desktop apps aren't ready yet: {why} equipe carries on by itself, and you can finish later in Settings › Squad › Desktop apps.",
+  "logins.autopilot": "equipe's own steps: {steps} — about {minutes} minutes of yours saved.",
+  "credential.refused": "equipe credential gives a key only to the AWS CLI's credential_process, never to a member's command.",
+  "credential.missing": "No AWS key is kept for the profile {name} (Settings › Accounts › Login autopilot).",
+  "credential.unknown": "equipe credential knows aws only, not {kind}.",
+  "telegram.captcha": "A CAPTCHA waits for you in {member}'s browser. Open equipe and solve it; {member} carries on by itself afterwards."
 }

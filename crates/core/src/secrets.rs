@@ -1,10 +1,13 @@
 //! `ask_secret`: a member needs a password, a key or a token for a command or
 //! a config, and the person types it into a card instead of a conversation
-//! (see `equipe_protocol::secrets`). Checked here — the keys, how many, and
-//! where it may be saved: a file under the person's home, never one of the
-//! places keys and logins live (`~/.ssh`, equipe's own) — and written there as
-//! `KEY="value"` lines, readable by the person alone. The values go to the
-//! file and nowhere else: not the member, not an event, not a log.
+//! (see `equipe_protocol::secrets`). Checked here — the keys, how many, and,
+//! only when the member names one, the file it is also saved to: under the
+//! person's home, never one of the places keys and logins live (`~/.ssh`,
+//! equipe's own) — as `KEY="value"` lines, readable by the person alone. The
+//! values are kept in the system's secret store (login autopilot's
+//! command-line values, `crate::vault`) and given to that squad's members'
+//! commands as environment variables at run time: not the member's context,
+//! not an event, not a log.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -22,11 +25,12 @@ pub fn tool() -> Value {
     json!({
         "name": ASK_SECRET,
         "description": "Ask the person for a password, key or token a command or a config needs — a NAS login, an API key, \
-a database password. They type it into a card in equipe, and equipe saves it straight to a file for you (`save_to`, \
-`KEY=\"value\"` lines, readable only by them): you never see the values, and they never pass through the conversation. \
-You hear where it is once they save it — then use it from there (read the file in your code, or `source` it in a \
-command), and never print, echo or copy a value into chat, tickets, commits or logs. Never ask for one in words, and \
-never have the person run a command to type it. A website sign-in is `sign_in`, not this.",
+a database password. They type it into a card in equipe, and equipe keeps it in this machine's secret store: you never \
+see the values, and they never pass through the conversation. Once they save it, your commands get each value as an \
+environment variable named by its key (`$NAS_PASSWORD`) from your next turn on — use it from there, and never print, \
+echo or copy a value into chat, tickets, commits or logs. Only for a program equipe doesn't run (a scheduled job) that \
+must read a file, give `save_to`: equipe saves it there too (`KEY=\"value\"` lines, readable only by them). Never ask \
+for one in words, and never have the person run a command to type it. A website sign-in is `sign_in`, not this.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -44,9 +48,9 @@ never have the person run a command to type it. A website sign-in is `sign_in`, 
                     },
                     "description": "What to ask for, 1 to 6.",
                 },
-                "save_to": { "type": "string", "description": "The file to save it to, under the person's home: `~/.config/atinum/nas.env`. Keys already in it are replaced, the rest kept." },
+                "save_to": { "type": "string", "description": "Only for a program equipe doesn't run that must read a file: the file to save it to as well, under the person's home: `~/.config/atinum/nas.env`. Keys already in it are replaced, the rest kept." },
             },
-            "required": ["why", "fields", "save_to"],
+            "required": ["why", "fields"],
         },
     })
 }
@@ -56,9 +60,9 @@ never have the person run a command to type it. A website sign-in is `sign_in`, 
 pub struct Asked {
     pub why: String,
     pub fields: Vec<SecretField>,
-    /// The file, whole.
-    pub path: PathBuf,
-    /// The file as the person reads it: `~/.config/atinum/nas.env`.
+    /// The file it is saved to as well, whole — only when the member named one.
+    pub path: Option<PathBuf>,
+    /// The file as the person reads it: `~/.config/atinum/nas.env`; empty: none.
     pub shown: String,
 }
 
@@ -85,7 +89,8 @@ pub fn check(args: &Value, home: &Path) -> Result<Asked, String> {
         let label = f.get("label").and_then(Value::as_str).map(str::trim).filter(|l| !l.is_empty()).unwrap_or(&key).to_owned();
         fields.push(SecretField { key, label, secret: f.get("secret").and_then(Value::as_bool).unwrap_or(false) });
     }
-    let (path, shown) = place(&text("save_to"), home)?;
+    let save_to = text("save_to");
+    let (path, shown) = if save_to.is_empty() { (None, String::new()) } else { place(&save_to, home).map(|(p, s)| (Some(p), s))? };
     Ok(Asked { why, fields, path, shown })
 }
 
@@ -176,7 +181,7 @@ mod tests {
     #[test]
     fn ask_secrets_description_says_the_person_types_it_into_a_card_never_in_words() {
         let said = tool()["description"].as_str().unwrap().to_owned();
-        for part in ["They type it into a card in equipe", "saves it straight to a file for you", "Never ask for one in words", "never have the person run a command to type it", "never print, echo or copy a value"] {
+        for part in ["They type it into a card in equipe", "keeps it in this machine's secret store", "Never ask for one in words", "never have the person run a command to type it", "never print, echo or copy a value"] {
             assert!(said.contains(part), "{part}: {said}");
         }
     }
@@ -188,12 +193,15 @@ mod tests {
             { "key": "NAS_USER", "label": "NAS 아이디" }, { "key": "NAS_PASSWORD", "label": "비밀번호", "secret": true } ] });
         let asked = check(&args, &home).unwrap();
         assert_eq!(asked.shown, "~/.config/atinum/nas.env");
-        assert_eq!(asked.path, home.join(".config/atinum/nas.env"));
+        assert_eq!(asked.path, Some(home.join(".config/atinum/nas.env")));
         assert_eq!(asked.fields.iter().map(|f| (f.key.as_str(), f.secret)).collect::<Vec<_>>(), [("NAS_USER", false), ("NAS_PASSWORD", true)]);
         let with = |save_to: &str| check(&json!({ "why": "x", "save_to": save_to, "fields": [{ "key": "K", "label": "k" }] }), &home);
-        for bad in ["~/.ssh/config", "~/.equipe/vault.json", "/etc/passwd", "~/../x.env", "relative.env", "~/notes.env", ""] {
+        for bad in ["~/.ssh/config", "~/.equipe/vault.json", "/etc/passwd", "~/../x.env", "relative.env", "~/notes.env"] {
             assert!(with(bad).is_err(), "{bad:?}");
         }
+        // No file named: the secret store alone.
+        let kept = check(&json!({ "why": "x", "fields": [{ "key": "K", "label": "k" }] }), &home).unwrap();
+        assert_eq!((kept.path, kept.shown.as_str()), (None, ""));
         assert!(with("~/.atinum.env").is_ok(), "a dotfile of its own in home");
         assert!(check(&json!({ "why": "x", "save_to": "~/.config/a.env", "fields": [{ "key": "lower", "label": "k" }] }), &home).is_err());
         assert!(check(&json!({ "why": "", "save_to": "~/.config/a.env", "fields": [{ "key": "K" }] }), &home).is_err());

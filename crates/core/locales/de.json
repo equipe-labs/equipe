@@ -664,5 +664,16 @@
   "news.squad_paused": "Die Engines mehrerer Mitglieder sind gleichzeitig ausgefallen ({cause}). Die Squad beginnt nichts Neues, bis ein Testzug klappt; equipe versucht es selbst erneut – oder schick eine beliebige Nachricht, um es sofort zu versuchen.",
   "news.squad_resumed": "Die Engines laufen wieder: Die pausierten Tickets gehen von selbst weiter.",
   "news.ticket_failing": "Die Engine von T-{id} fällt immer wieder aus ({cause}); equipe versucht es weiter, mit jedes Mal längeren Pausen · {title}.",
-  "news.limit_paused": "{engine} hat während T-{id} sein Nutzungslimit erreicht: Was dadurch unterbrochen wurde, pausiert an Ort und Stelle und geht von selbst weiter – auf der anderen Engine, wenn Mitglieder dorthin wechseln, oder sobald {engine} wieder Luft hat."
+  "news.limit_paused": "{engine} hat während T-{id} sein Nutzungslimit erreicht: Was dadurch unterbrochen wurde, pausiert an Ort und Stelle und geht von selbst weiter – auf der anderen Engine, wenn Mitglieder dorthin wechseln, oder sobald {engine} wieder Luft hat.",
+  "error.autopilot": "Anmelde-Autopilot: {why}",
+  "error.autopilot_totp": "Der Authenticator-Seed wurde nicht gespeichert: {why}",
+  "error.autopilot_no_qr": "equipe hat keinen Authenticator-QR-Code gefunden: Öffne die Seite für die Zwei-Faktor-Einrichtung der Website im Browser von equipe (dein eigener Tab auf dieser Website) und versuche es erneut – oder füge stattdessen das Geheimnis ein, das die Website anzeigt.",
+  "error.autopilot_no_passkey": "Im Browser von equipe wurde innerhalb von 10 Minuten kein Passkey hinzugefügt. Öffne die Sicherheitseinstellungen der Website im Browser von equipe und füge dort direkt nach dem Klick auf die Schaltfläche einen Passkey hinzu.",
+  "error.autopilot_device": "equipe konnte die Anmeldung von {cli} nicht selbst freigeben – das musst du übernehmen.",
+  "notice.autopilot_device": "🔑 equipe meldet {cli} selbst an und gibt die Anmeldung im gemeinsamen Browser frei.",
+  "notice.autopilot_device_done": "🔑 {cli} ist wieder angemeldet: equipe hat die Anmeldung selbst durchgeführt und freigegeben.",
+  "match.remember_words": "angemeldet bleiben|eingeloggt bleiben|anmeldung merken|login merken|diesem gerät vertrauen|diesem browser vertrauen|diesen browser merken|dieses gerät merken|auf diesem gerät nicht erneut fragen|nicht mehr fragen",
+  "match.session_expired_words": "sitzung abgelaufen|sitzung ist abgelaufen|sie wurden abgemeldet|du wurdest abgemeldet|sie wurden ausgeloggt|bitte erneut anmelden|bitte melden sie sich erneut an|wegen inaktivität abgemeldet",
+  "match.approve_words": "autorisieren|zulassen|erlauben|genehmigen|bestätigen|weiter|fortfahren|ja|akzeptieren",
+  "notice.secret_store": "den Geheimnisspeicher dieses Rechners"
 }

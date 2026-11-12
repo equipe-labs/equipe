@@ -40,6 +40,20 @@
 //     (equipe types a kept login into a member's tab: the tab is held from its
 //     member's tools meanwhile, and `filled` answers what the script said —
 //     never the request, which carries the password, written anywhere)
+//   {"op":"visit","lane":"equipe:visit","url":"https://…","token":8}  {"op":"look","page":3,"token":8}
+//     (a tab equipe opens for itself, behind the others, in a lane of its own
+//     no member has: a keep-alive look, a device-code approval; `visited`
+//     answers how the page is — the same `fill` then works on it)
+//   {"op":"passkey_add","hosts":["github.com"],"token":9,"minutes":10}
+//     (the person adds a passkey on the site in one of their own tabs: Chrome's
+//     virtual authenticator answers it as equipe's own device; `passkey` hands
+//     the credential to the daemon, for the secret store, and nothing else)
+//   {"op":"passkey_use","lane":"squad/name","page":3,"credential":{…},"script":"() => …","token":10}
+//     (that passkey given to the tab for one sign-in, the tab held as for a
+//     fill; `filled` answers, `passkey` gives back the credential's new count)
+//   {"op":"snap","hosts":["github.com"],"token":11}
+//     (a picture of the person's tab on that site, for its authenticator QR
+//     code; `snap` answers it, PNG in base64, to the daemon alone)
 // Page ids start at $EQUIPE_FIRST_PAGE. A member's tab is told with what the
 // daemon reads to tell whether it waits for a person (`signals`), and its icon.
 // Its standard output is binary: messages of `u32be length | u8 kind | payload`
@@ -243,7 +257,7 @@ const startProfile = async (name, profile, STATE) => {
     if (owner.get(page) !== PERSON && probed) {
       const frames = page.frames().slice(1).map((f) => f.url()).filter((u) => u && u !== 'about:blank').slice(0, 24);
       const { icon, ...signals } = probed;
-      out.signals = { ...signals, frames };
+      out.signals = { ...signals, frames, unauthorized: Date.now() - (page.__equipeUnauth || 0) < 60000 };
       page.__equipeSig = signature(signals, frames);
       // Whether it waits for a person, roughly as the daemon tells
       // (`human_check`): for how long the person's hand on it lasts.
@@ -280,6 +294,8 @@ const startProfile = async (name, profile, STATE) => {
     }
   }, 1000);
   const report = (lane) => {
+    // equipe's own tabs (`visit`) are told only when asked (`look`).
+    if (typeof lane === 'string' && lane.startsWith('equipe:')) return;
     if (pending.has(lane)) return;
     pending.set(lane, setTimeout(async () => {
       pending.delete(lane);
@@ -496,6 +512,18 @@ const startProfile = async (name, profile, STATE) => {
       // A frame coming or going may be a CAPTCHA's: told too (in a moment, with the rest).
       if (frame !== page.mainFrame()) return report(id);
       page.__equipeLoading = true;
+      page.__equipeUnauth = 0;
+      report(id);
+    });
+    // The site saying "not signed in" to the page's own requests: a sign-in
+    // that ran out, though the page shows no form (`session_ran_out`).
+    page.on('response', (response) => {
+      if (![401, 419, 440].includes(response.status())) return;
+      try {
+        const site = (h) => h.toLowerCase().split('.').slice(-2).join('.');
+        if (site(new URL(response.url()).hostname) !== site(new URL(page.url()).hostname)) return;
+      } catch { return; }
+      page.__equipeUnauth = Date.now();
       report(id);
     });
     page.on('framedetached', () => report(id));
@@ -977,6 +1005,109 @@ const startProfile = async (name, profile, STATE) => {
     }
     emit({ type: 'filled', lane: laneId, page: pid, token, answer });
   };
+  // ── equipe's own tabs, passkeys and pictures (login autopilot) ──
+
+  /// A lane of equipe's own: no member, no tools — only its tabs.
+  const ownLane = (id) => {
+    if (!lanes.has(id)) lanes.set(id, { events: new EventEmitter(), member: 'equipe', color: null, shown: false, control: null, reason: null, touched: false, refused: false, lastInput: 0, agent: null, busy: 0, page: null, since: 0, filling: null });
+    return lanes.get(id);
+  };
+  const VISIT_SETTLE_MS = 2500;
+  const visited = async (token, page) => {
+    let described = null;
+    if (page && !page.isClosed()) {
+      await page.waitForLoadState('load', { timeout: 20000 }).catch(() => {});
+      await new Promise((r) => setTimeout(r, VISIT_SETTLE_MS));
+      described = await describe(page).catch(() => null);
+    }
+    emit({ type: 'visited', token, page: described });
+  };
+  const visit = async ({ lane: laneId, url, token }) => {
+    if (typeof laneId !== 'string' || !laneId.startsWith('equipe:') || !/^https:\/\//.test(String(url || ''))) return emit({ type: 'visited', token, page: null });
+    ownLane(laneId);
+    const page = await openTab(laneId, url).catch(() => null);
+    await visited(token, page);
+  };
+  const look = async ({ page: pid, token }) => visited(token, pages.get(pid));
+  const hostOf = (page) => { try { return new URL(page.url()).hostname.toLowerCase().replace(/^www\./, ''); } catch { return ''; } };
+  const authenticator = async (page) => {
+    const cdp = await cdpOf(page);
+    await cdp.send('WebAuthn.enable', { enableUI: false });
+    const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', {
+      options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true },
+    });
+    return { cdp, authenticatorId };
+  };
+  const dropAuthenticator = async (a) => {
+    if (!a) return;
+    await a.cdp.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId: a.authenticatorId }).catch(() => {});
+    await a.cdp.send('WebAuthn.disable').catch(() => {});
+  };
+  // The person's own tabs on one of `hosts` get equipe's virtual authenticator
+  // while they add a passkey there; the first credential made is handed over,
+  // and every authenticator is taken away again.
+  const passkeyAdd = async ({ hosts, token, minutes }) => {
+    const want = new Set((hosts || []).map((h) => String(h).toLowerCase()));
+    const attached = new Map();
+    const until = Date.now() + Math.min(Number(minutes) || 10, 15) * 60000;
+    let credential = null;
+    while (!credential && Date.now() < until) {
+      for (const page of context.pages()) {
+        if (owner.get(page) !== PERSON || page.isClosed() || attached.has(page) || !want.has(hostOf(page))) continue;
+        attached.set(page, await authenticator(page).catch(() => null));
+      }
+      for (const [page, a] of attached) {
+        if (!a || page.isClosed()) continue;
+        const { credentials } = await a.cdp.send('WebAuthn.getCredentials', { authenticatorId: a.authenticatorId }).catch(() => ({ credentials: [] }));
+        if (credentials && credentials.length) { credential = credentials[0]; break; }
+      }
+      if (!credential) await new Promise((r) => setTimeout(r, 1500));
+    }
+    for (const a of attached.values()) await dropAuthenticator(a);
+    emit({ type: 'passkey', token, credential });
+  };
+  // equipe's passkey given to a member's tab for one sign-in: the tab held from
+  // the member's tools, the passkey button pressed, the authenticator taken away.
+  const passkeyUse = async ({ lane: laneId, page: pid, credential, script, token }) => {
+    const lane = lanes.get(laneId);
+    const page = pages.get(pid);
+    let answer = null;
+    let after = null;
+    if (lane && page && owner.get(page) === laneId && credential && typeof script === 'string' && lane.filling === null) {
+      lane.filling = pid;
+      let a = null;
+      try {
+        a = await authenticator(page);
+        await a.cdp.send('WebAuthn.addCredential', { authenticatorId: a.authenticatorId, credential });
+        const said = await page.evaluate(`(${script})()`);
+        answer = typeof said === 'string' ? said : null;
+        for (let i = 0; i < 10; i++) {
+          await new Promise((r) => setTimeout(r, 800));
+          const { credentials } = await a.cdp.send('WebAuthn.getCredentials', { authenticatorId: a.authenticatorId }).catch(() => ({ credentials: [] }));
+          const now = (credentials || []).find((c) => c.credentialId === credential.credentialId);
+          if (now && now.signCount > (credential.signCount || 0)) { after = now; break; }
+        }
+        await new Promise((r) => setTimeout(r, FILL_SETTLE_MS));
+      } catch {
+        answer = null;
+      } finally {
+        await dropAuthenticator(a);
+        lane.filling = null;
+      }
+    }
+    if (after) emit({ type: 'passkey', token, credential: after });
+    emit({ type: 'filled', lane: laneId, page: pid, token, answer });
+  };
+  // A picture of the person's tab (else a member's) on one of `hosts`.
+  const snap = async ({ hosts, token }) => {
+    const want = new Set((hosts || []).map((h) => String(h).toLowerCase()));
+    const on = context.pages().filter((p) => owner.has(p) && !p.isClosed() && want.has(hostOf(p)) && !String(owner.get(p)).startsWith('equipe:'));
+    const page = on.find((p) => owner.get(p) === PERSON) || on[0];
+    let png = null;
+    if (page) png = await page.screenshot({ type: 'png' }).then((b) => b.toString('base64')).catch(() => null);
+    emit({ type: 'snap', token, png });
+  };
+
   const dialog = async ({ page, accept, text }) => {
     const d = dialogs.get(page);
     if (!d) return;
@@ -1026,7 +1157,7 @@ const startProfile = async (name, profile, STATE) => {
 
   await ensureParking();
 
-  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, unfit, input, nav, goto, newtab, closetab, control, dialog, popout, fill };
+  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, unfit, input, nav, goto, newtab, closetab, control, dialog, popout, fill, visit, look, passkey_add: passkeyAdd, passkey_use: passkeyUse, snap };
   // Its Chrome closed (the person quit it): the host goes, and the daemon starts it again.
   context.on('close', () => process.exit(0));
   return { ops, context, scrolling, owns: (pid) => pages.has(pid), hasLane: (id) => lanes.has(id) };
@@ -1049,8 +1180,10 @@ const byLane = async (id) => (await started()).find((i) => i.hasLane(id)) || nul
 const target = async (request) => {
   switch (request.op) {
     case 'lane': case 'person': case 'newtab': return profileOf(request);
+    // equipe's own tabs, passkeys and pictures: the person's main Chrome only.
+    case 'visit': case 'passkey_add': case 'snap': return profileOf({});
     case 'show': case 'close': return byLane(request.id);
-    case 'control': case 'goto': case 'fill': return byLane(request.lane);
+    case 'control': case 'goto': case 'fill': case 'passkey_use': return byLane(request.lane);
     default: return byPage(request.page);
   }
 };

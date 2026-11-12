@@ -1256,7 +1256,7 @@ fn draw_line(p: Palette, line: Line, first: bool) -> AnyElement {
     }
 }
 
-fn draw_section(p: Palette, section: Section) -> AnyElement {
+pub(super) fn draw_section(p: Palette, section: Section) -> AnyElement {
     let card_bg = p.raised;
     v_flex()
         .w_full()
@@ -1630,7 +1630,10 @@ impl Shell {
                 self.send_command(Command::DesktopCheck { guide: false });
             }
             Category::Engines => self.ask_engines(cx),
-            Category::Accounts => self.send_command(Command::Logins),
+            Category::Accounts => {
+                self.send_command(Command::Logins);
+                self.send_command(Command::Autopilot);
+            }
             Category::Browser => self.send_command(Command::BrowserProfiles),
             _ => {}
         }
@@ -1676,7 +1679,10 @@ impl Shell {
                 self.send_command(Command::DesktopCheck { guide: false });
             }
             Category::Engines => self.ask_engines(cx),
-            Category::Accounts => self.send_command(Command::Logins),
+            Category::Accounts => {
+                self.send_command(Command::Logins);
+                self.send_command(Command::Autopilot);
+            }
             Category::Browser => self.send_command(Command::BrowserProfiles),
             _ => {}
         }

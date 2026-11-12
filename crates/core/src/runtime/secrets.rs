@@ -1,7 +1,10 @@
 //! `ask_secret` on the daemon: the request kept (in the squad's journal, so a
 //! restart doesn't lose it) and shown on every screen; the person's values
-//! written to its file (`crate::secrets::write`) and nowhere else; the member
-//! told where they are — or that the person said no — and set going again.
+//! kept in the system's secret store (login autopilot's command-line values:
+//! the squad's members' commands get them as environment variables at run
+//! time) and written to a file only where the member named one for a
+//! program equipe doesn't run; the member told — or that the person said
+//! no — and set going again.
 
 use crate::protocol::secrets::{SecretAsk, SecretValue};
 
@@ -49,11 +52,11 @@ impl Runtime {
         self.secret_asks(squad).push(ask.clone());
         self.keep_secret_asks(squad);
         self.publish(Event::SecretAsked { squad: squad.to_owned(), ask });
+        let kept = if asked.shown.is_empty() { "keeps what they type in this machine's secret store".to_owned() } else { format!("keeps what they type in this machine's secret store and saves it to {}", asked.shown) };
         Ok(format!(
-            "The person is asked on a card for {keys}; equipe saves what they type to {} — you never see the values. When they \
-save it you are told, and carry on from there. Meanwhile go on with what doesn't need it, or end your turn saying in a \
-line what you're waiting for.",
-            asked.shown
+            "The person is asked on a card for {keys}; equipe {kept} — you never see the values. When they save it you are \
+told, and carry on from there. Meanwhile go on with what doesn't need it, or end your turn saying in a line what you're \
+waiting for."
         ))
     }
 
@@ -61,24 +64,52 @@ line what you're waiting for.",
     pub(super) async fn save_secret(&mut self, squad: &str, id: u64, values: Vec<SecretValue>) {
         let Some(ask) = self.secret_asks(squad).iter().find(|a| a.id == id).cloned() else { return };
         let Some(home) = self.person_home() else { return };
-        let written = crate::secrets::place(&ask.save_to, &home).and_then(|(path, _)| crate::secrets::write(&path, &ask.fields, &values));
-        drop(values);
-        if let Err(why) = written {
-            return self.squad_error(squad, say!(self, "error.secret_not_saved", path = ask.save_to, why = why));
+        if values.len() != ask.fields.len() || values.iter().any(|v| v.0.contains(['\n', '\r', '\0'])) {
+            return self.squad_error(squad, say!(self, "error.secret_not_saved", path = ask.save_to, why = "a value can't hold a line break"));
         }
+        // A file only where the member named one, for a program equipe doesn't run.
+        if !ask.save_to.is_empty() {
+            let written = crate::secrets::place(&ask.save_to, &home).and_then(|(path, _)| crate::secrets::write(&path, &ask.fields, &values));
+            if let Err(why) = written {
+                return self.squad_error(squad, say!(self, "error.secret_not_saved", path = ask.save_to, why = why));
+            }
+        }
+        // The secret store, for the squad's members' commands (as `$KEY`).
+        let (vault, owner) = (self.vault.clone(), squad.to_owned());
+        let pairs: Vec<(String, String)> = ask.fields.iter().map(|f| f.key.clone()).zip(values.into_iter().map(|v| v.0)).collect();
+        let kept = tokio::task::spawn_blocking(move || {
+            let mut v = vault.lock().map_err(|_| "the logins are unreadable".to_owned())?;
+            let mut ids = Vec::new();
+            for (key, value) in pairs {
+                let id = v.cli.iter().find(|c| c.kind == crate::protocol::vault::CliKind::Env && c.name == key && c.squad.as_deref() == Some(owner.as_str())).map(|c| c.id);
+                let draft = crate::protocol::vault::CliLoginDraft { id, kind: crate::protocol::vault::CliKind::Env, name: key, host: String::new(), public: String::new(), squad: Some(owner.clone()), secret: Some(value.clone()) };
+                ids.push((v.save_cli(draft, now_secs())?, value));
+            }
+            Ok::<Vec<(u32, String)>, String>(ids)
+        })
+        .await
+        .unwrap_or_else(|_| Err("stopped".into()));
+        match kept {
+            // In the members' next runs at once: the turn it is woken for among them.
+            Ok(ids) => self.keep_run_values(ids),
+            Err(why) => return self.squad_error(squad, say!(self, "error.secret_not_saved", path = ask.save_to, why = why)),
+        }
+        let _ = self.internal.send(Internal::Autopilot(super::autopilot::Note::Changed(Ok(()))));
         self.secret_asks(squad).retain(|a| a.id != id);
         self.keep_secret_asks(squad);
         self.publish(Event::SecretClosed { squad: squad.to_owned(), id, saved: true });
         let keys = ask.fields.iter().map(|f| f.key.clone()).collect::<Vec<_>>().join(", ");
-        self.publish(Event::Notice { undo: None, session: ask.session, text: say!(self, "notice.secret_saved", keys = keys, path = ask.save_to) });
-        let note = format!("The person saved {keys} to {} (readable only by them).", ask.save_to);
+        let shown = if ask.save_to.is_empty() { say!(self, "notice.secret_store") } else { ask.save_to.clone() };
+        self.publish(Event::Notice { undo: None, session: ask.session, text: say!(self, "notice.secret_saved", keys = keys, path = shown) });
+        let vars = ask.fields.iter().map(|f| format!("${}", f.key)).collect::<Vec<_>>().join(", ");
+        let file = if ask.save_to.is_empty() { String::new() } else { format!(" It is in {} too (readable only by them), for the program that reads it.", ask.save_to) };
+        let note = format!("The person saved {keys}: your commands get them as {vars} in every turn that starts from now.{file}");
         if self.resume_waiting_on(squad, ask.ticket.unwrap_or_default(), &[super::decide::one_line(&ask.why)], &note).await {
             return;
         }
         let prompt = format!(
-            "[equipe: the person saved {keys} to {} (readable only by them). Use it from there — read the file in your code \
-or `source` it in a command — and never print, echo or copy a value into chat, tickets, commits or logs. Carry on.]",
-            ask.save_to
+            "[equipe: the person saved {keys}. Your commands get them as {vars} (environment variables of every turn that starts from now) — \
+use them from there, and never print, echo or copy a value into chat, tickets, commits or logs.{file} Carry on.]"
         );
         self.set_going(ask.session, prompt).await;
     }

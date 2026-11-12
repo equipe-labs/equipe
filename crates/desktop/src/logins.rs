@@ -272,7 +272,7 @@ mod tests {
     use equipe_core::protocol::vault::{CauseCount, SiteAsks, Use};
 
     fn login(id: u32, site: &str, user: &str) -> Login {
-        Login { id, site: site.into(), url: None, username: user.into(), note: None, allowed: Vec::new(), auto: false, stopped: None, created_at: 0, password_at: None, uses: Vec::new() }
+        Login { id, site: site.into(), url: None, username: user.into(), note: None, allowed: Vec::new(), auto: false, stopped: None, created_at: 0, password_at: None, uses: Vec::new(), autopilot: Default::default() }
     }
 
     fn wait(page: u64, member: &str, site: &str, check: Option<HumanCheck>) -> BrowserWait {

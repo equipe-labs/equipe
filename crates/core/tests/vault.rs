@@ -249,6 +249,31 @@ async fn members_asking_at_once_share_one_card_and_always_is_the_whole_squads() 
     // An offer nobody made: answering it does nothing.
     handle.send(Command::DismissLoginOffer { id: 99, never: true });
     assert!(handle.snapshot("acme").await.login_offers.is_empty());
+
+    // Login autopilot: the person's seed goes to the secret store; screens hear only that one is kept.
+    let seed = "otpauth://totp/GitHub:abel?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=GitHub";
+    handle.send(Command::SetLoginTotp { id: 1, secret: Some(SecretValue(seed.into())) });
+    let seen = until(&mut events, |e| matches!(e, Event::Logins { logins } if logins[0].autopilot.has_totp)).await;
+    let Some(Event::Logins { logins }) = seen.last() else { panic!() };
+    assert!(logins[0].autopilot.totp, "keeping a seed is turning its codes on");
+    // A bad one is refused, saying why.
+    handle.send(Command::SetLoginTotp { id: 1, secret: Some(SecretValue("not a seed!".into())) });
+    until(&mut events, |e| matches!(e, Event::Error { message, .. } if message.contains("authenticator"))).await;
+    // The switches are the person's; a screen can't claim a seed or passkey.
+    let mut asked = logins[0].autopilot.clone();
+    (asked.keepalive, asked.has_passkey) = (true, true);
+    handle.send(Command::SetLoginAutopilot { id: 1, autopilot: asked });
+    let seen = until(&mut events, |e| matches!(e, Event::Logins { logins } if logins[0].autopilot.keepalive)).await;
+    let Some(Event::Logins { logins }) = seen.last() else { panic!() };
+    assert!(!logins[0].autopilot.has_passkey && logins[0].autopilot.has_totp);
+    handle.send(Command::Autopilot);
+    let seen = until(&mut events, |e| matches!(e, Event::Autopilot { .. })).await;
+    for e in &seen {
+        assert!(!format!("{e:?}").contains("GEZDGNBV"), "{e:?}");
+    }
+    for file in ["vault.json", "autopilot.json"] {
+        assert!(!std::fs::read_to_string(home.join(file)).unwrap_or_default().contains("GEZDGNBV"), "{file}");
+    }
     handle.shutdown().await;
 
     // On the record: the no-login, one card for the two who asked at once and

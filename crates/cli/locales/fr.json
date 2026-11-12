@@ -1394,5 +1394,10 @@
   "onboard.desktop_note": "Facultatif : laisser les membres utiliser les apps de ce Mac. equipe installe seul ce qu'il faut ; macOS ne vous demande qu'un interrupteur (Accessibilité pour « equipe Desktop Helper »). Si vous ignorez, equipe le reproposera au premier besoin d'un membre.",
   "onboard.desktop_prompt": "Configurer les apps de bureau maintenant ?",
   "onboard.desktop_skipped": "Ignoré. equipe le proposera de nouveau quand un membre aura besoin des apps de bureau pour la première fois.",
-  "onboard.desktop_later": "Les apps de bureau ne sont pas encore prêtes : {why} equipe continue tout seul ; vous pourrez finir plus tard dans Réglages › Squad › Apps de bureau."
+  "onboard.desktop_later": "Les apps de bureau ne sont pas encore prêtes : {why} equipe continue tout seul ; vous pourrez finir plus tard dans Réglages › Squad › Apps de bureau.",
+  "logins.autopilot": "Étapes faites par equipe elle-même : {steps} — environ {minutes} minutes de votre temps économisées.",
+  "credential.refused": "equipe credential ne donne une clé qu'au credential_process de l'AWS CLI, jamais à la commande d'un membre.",
+  "credential.missing": "Aucune clé AWS n'est gardée pour le profil {name} (Réglages › Comptes › Pilote automatique de connexion).",
+  "credential.unknown": "equipe credential ne connaît que aws, pas {kind}.",
+  "telegram.captcha": "Un CAPTCHA vous attend dans le navigateur de {member}. Ouvrez equipe et résolvez-le ; {member} continue ensuite tout seul."
 }

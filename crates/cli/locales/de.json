@@ -1394,5 +1394,10 @@
   "onboard.desktop_note": "Optional: Mitglieder dürfen die Apps auf diesem Mac bedienen. equipe installiert alles Nötige selbst; macOS bittet dich nur um einen Schalter (Bedienungshilfen für „equipe Desktop Helper“). Überspringst du ihn, fragt equipe wieder, sobald ein Mitglied es erstmals braucht.",
   "onboard.desktop_prompt": "Desktop-Apps jetzt einrichten?",
   "onboard.desktop_skipped": "Übersprungen. equipe fragt wieder, sobald ein Mitglied erstmals Desktop-Apps braucht.",
-  "onboard.desktop_later": "Desktop-Apps sind noch nicht bereit: {why} equipe macht von selbst weiter; den Rest kannst du später unter Einstellungen › Squad › Desktop-Apps erledigen."
+  "onboard.desktop_later": "Desktop-Apps sind noch nicht bereit: {why} equipe macht von selbst weiter; den Rest kannst du später unter Einstellungen › Squad › Desktop-Apps erledigen.",
+  "logins.autopilot": "Schritte, die equipe selbst erledigt hat: {steps} — etwa {minutes} Minuten für dich gespart.",
+  "credential.refused": "equipe credential gibt einen Schlüssel nur an den credential_process der AWS CLI, nie an den Befehl eines Mitglieds.",
+  "credential.missing": "Für das Profil {name} ist kein AWS-Schlüssel gespeichert (Einstellungen › Konten › Anmelde-Autopilot).",
+  "credential.unknown": "equipe credential kennt nur aws, nicht {kind}.",
+  "telegram.captcha": "Im Browser von {member} wartet ein CAPTCHA auf dich. Öffne equipe und löse es; danach macht {member} von selbst weiter."
 }

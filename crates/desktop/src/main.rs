@@ -1263,6 +1263,9 @@ impl Shell {
                                 this.shots.borrow_mut().retry_gone();
                                 // The daemon tells its browser's tabs afresh: none held from before.
                                 this.browser.update(cx, |b, cx| b.reattached(window, cx));
+                                // Which CLI sign-ins equipe runs itself (login autopilot), and the accounts they go by.
+                                this.send_command(Command::Logins);
+                                this.send_command(Command::Autopilot);
                             }
                             _ => {}
                         }
@@ -1591,6 +1594,13 @@ impl Shell {
             return;
         }
         self.term_offered = Some(key);
+        // A CLI sign-in equipe runs and approves by itself (login autopilot): no terminal for the person.
+        if let Some(cli) = equipe_core::autopilot::cli_logins::cli_of(&term::command_of(&block))
+            && equipe_core::autopilot::cli_logins::approval_for(&self.model.autopilot.cli, &self.model.logins, &cli).is_some()
+        {
+            self.composer.flash = Some(t!("term.autopilot", cli = cli).into());
+            return;
+        }
         self.open_terminal(Some(term::command_of(&block)), window, cx);
         self.composer.flash = Some(t!("term.offered").into());
     }

@@ -2,6 +2,7 @@
 
 pub mod accept;
 pub mod accounts;
+pub mod autopilot;
 pub mod actions;
 pub mod approvals;
 pub mod asklist;

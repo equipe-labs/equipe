@@ -1371,5 +1371,10 @@
   "onboard.desktop_note": "선택 사항: 멤버가 이 Mac의 앱을 다루게 해요. 필요한 것은 equipe가 알아서 설치하고, macOS가 스위치 하나(\"equipe Desktop Helper\"의 손쉬운 사용)만 직접 켜 달라고 해요. 건너뛰면 멤버가 처음 필요해질 때 다시 물어봐요.",
   "onboard.desktop_prompt": "지금 데스크톱 앱을 설정할까요?",
   "onboard.desktop_skipped": "건너뛰었어요. 멤버가 데스크톱 앱이 처음 필요해지면 equipe가 다시 물어봐요.",
-  "onboard.desktop_later": "데스크톱 앱이 아직 준비되지 않았어요: {why} equipe가 알아서 이어 가고, 나머지는 설정 › 스쿼드 › 데스크톱 앱에서 마칠 수 있어요."
+  "onboard.desktop_later": "데스크톱 앱이 아직 준비되지 않았어요: {why} equipe가 알아서 이어 가고, 나머지는 설정 › 스쿼드 › 데스크톱 앱에서 마칠 수 있어요.",
+  "logins.autopilot": "equipe가 직접 처리한 단계: {steps} — 약 {minutes}분을 아꼈어요.",
+  "credential.refused": "equipe credential은 AWS CLI의 credential_process에만 키를 주고, 멤버의 명령에는 주지 않아요.",
+  "credential.missing": "{name} 프로필에 보관된 AWS 키가 없어요(설정 › 계정 › 로그인 오토파일럿).",
+  "credential.unknown": "equipe credential은 aws만 알아요. {kind}는 몰라요.",
+  "telegram.captcha": "{member}의 브라우저에서 CAPTCHA가 기다리고 있어요. equipe를 열어 풀어 주세요. 풀고 나면 {member}가 알아서 이어가요."
 }

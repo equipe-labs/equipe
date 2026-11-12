@@ -346,6 +346,13 @@ impl Bridge {
                 let name = self.name_of(squad, *session);
                 outs.push(Out::Send { text: format!("⚠️ <b>{}</b>: {}", escape(&name), escape(message)), buttons: vec![], ask: None, key: None });
             }
+            // A CAPTCHA in a member's browser: the person's, in one tap — the
+            // member carries on by itself once it is solved (login autopilot
+            // never solves one).
+            Event::BrowserControl { lane, by: Some(_), check: Some(equipe_core::protocol::HumanCheck::Captcha | equipe_core::protocol::HumanCheck::Challenge), .. } => {
+                let member = lane.split_once('/').map_or(lane.as_str(), |(_, key)| equipe_core::browser::member_of(key));
+                outs.push(Out::Send { text: format!("🧩 {}", escape(&t!("telegram.captcha", member = member))), buttons: vec![], ask: None, key: None });
+            }
             Event::ApprovalRequested { approval, .. } => {
                 let key = Key::Approval(squad.to_owned(), approval.id);
                 state!().approvals.insert(approval.id, approval.clone());

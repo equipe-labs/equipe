@@ -115,6 +115,16 @@ pub fn person_only(command: &Command) -> bool {
         | C::ForgetLoginAllowance { .. }
         | C::AllowLogin { .. }
         | C::SetLoginAuto { .. }
+        | C::SetLoginAutopilot { .. }
+        | C::SetLoginTotp { .. }
+        | C::ScanLoginTotp { .. }
+        | C::RegisterLoginPasskey { .. }
+        | C::ForgetLoginPasskey { .. }
+        | C::SaveMailbox { .. }
+        | C::SetSmsCodes { .. }
+        | C::SetKeepAlive { .. }
+        | C::SaveCliLogin { .. }
+        | C::DeleteCliLogin { .. }
         | C::SetLoginScope { .. }
         | C::ForgetNeverOffer { .. }
         | C::DismissLoginOffer { .. }
@@ -178,6 +188,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::BrowserPopOut { .. }
         | C::Language { .. }
         | C::Logins
+        | C::Autopilot
         | C::LoginInsights { .. }
         | C::WordsLog { .. }
         | C::BrowserProfiles

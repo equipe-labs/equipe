@@ -34,6 +34,28 @@ pub(super) struct Relogin {
     member: String,
     /// Times its page was looked at again while still loading.
     looks: u8,
+    /// What it is doing: typing the password, or a code or passkey step
+    /// (`crate::autopilot`).
+    step: crate::autopilot::Step,
+    /// On an identity provider's page for another site ("Sign in with …",
+    /// [`vault::idp_login_for`]): recorded as `step=idp`, and done only once
+    /// the provider sends the page back to the site that asked.
+    idp: bool,
+}
+
+impl Relogin {
+    pub(super) fn new(login: u32, page: u64, site: String, squad: &str, member: &str, step: crate::autopilot::Step) -> Self {
+        Relogin { login, page, site, squad: squad.to_owned(), member: member.to_owned(), looks: 0, step, idp: false }
+    }
+
+    pub(super) fn via_idp(self, idp: bool) -> Self {
+        Relogin { idp, ..self }
+    }
+
+    /// The step the sign-in record keeps for it.
+    fn recorded(&self) -> crate::autopilot::Step {
+        if self.idp { crate::autopilot::Step::Idp } else { self.step }
+    }
 }
 
 /// equipe's fills waiting for the browser host's answer, by token: shared
@@ -238,14 +260,22 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
     /// A member's page waits on a sign-in at `url`: equipe signs in by itself
     /// when the person lets it for a login of that exact host, it is the
     /// person's main browser (a lane of the shared Chrome), and it hasn't
-    /// tried too often. `true`: under way — the person isn't asked.
+    /// tried too often. `true`: under way — the person isn't asked. On an
+    /// identity provider's page for another site, only an opted-in provider
+    /// login, and only its identity steps ([`vault::idp_login_for`]).
     pub(super) fn try_relogin(&mut self, lane: &str, page: u64, url: &str) -> bool {
         let Some((squad, key)) = lane.split_once('/') else { return false };
         // Another person's browser: not equipe's to type in.
         if browser::split_profile(key).1.is_some() || self.relogins.contains_key(lane) {
             return false;
         }
-        let Some(login) = vault::auto_login_for(&self.logins, url).cloned() else { return false };
+        let (login, idp) = match vault::auto_login_for(&self.logins, url) {
+            Some(login) => (login.clone(), false),
+            None => match vault::idp_login_for(&self.logins, url) {
+                Some(login) => (login.clone(), true),
+                None => return false,
+            },
+        };
         if !self.browsers.get(&(squad.to_owned(), key.to_owned())).is_some_and(|b| b.is_lane()) {
             return false;
         }
@@ -258,19 +288,23 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
         }
         tries.push(now);
         let site = vault::site_of(url);
-        self.relogins.insert(lane.to_owned(), Relogin { login: login.id, page, site, squad: squad.to_owned(), member: browser::member_of(key).to_owned(), looks: 0 });
+        if idp {
+            crate::daemon_log!("equipe: signing in on {site} for another site by itself (\"Sign in with …\")");
+        }
+        self.relogins.insert(lane.to_owned(), Relogin::new(login.id, page, site, squad, browser::member_of(key), crate::autopilot::Step::Relogin).via_idp(idp));
         let (vault, internal, waits, lane) = (self.vault.clone(), self.internal.clone(), self.fill_waits.clone(), lane.to_owned());
         let first_token = self.next_fill_token();
         tokio::spawn(async move {
-            let outcome = relogin_fill(&host, &waits, &vault, &lane, page, &login, first_token).await;
+            let outcome = relogin_fill(&host, &waits, &vault, &lane, page, &login, first_token, idp).await;
             let _ = internal.send(Internal::Relogin { lane, outcome });
         });
         true
     }
 
-    /// Tokens for fills: two each (a sign-in may ask on two pages).
-    fn next_fill_token(&mut self) -> u64 {
-        self.next_fill += 2;
+    /// Tokens for fills: three each (a sign-in may ask on up to three
+    /// pages: a provider's account chooser, the email, the password).
+    pub(super) fn next_fill_token(&mut self) -> u64 {
+        self.next_fill += 3;
         self.next_fill
     }
 
@@ -312,8 +346,16 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
                 vault::Filled::default()
             }
         };
-        match logins::relogin_outcome(&filled, page, &r.site) {
-            logins::Relogin::FormCameBack => {
+        let step = r.step;
+        let mut outcome = logins::relogin_outcome(&filled, page, &r.site);
+        // "Sign in with …": done only once the provider sends the page back
+        // to the site that asked. Still on the provider (a consent screen, a
+        // step equipe doesn't take) is the member's or the person's.
+        if r.idp && outcome == logins::Relogin::SignedIn && page.is_some_and(|p| vault::site_of(&p.url) == r.site) {
+            outcome = logins::Relogin::Person;
+        }
+        match outcome {
+            logins::Relogin::FormCameBack if step == crate::autopilot::Step::Relogin => {
                 crate::daemon_log!("equipe: signing in to {} by itself didn't get past the form; stopped until the person changes the login", r.site);
                 let why = "the sign-in form came back after equipe typed the password in";
                 if let Some(login) = self.logins.iter_mut().find(|l| l.id == r.login) {
@@ -324,7 +366,7 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
                     v.used(id, now_secs(), &squad, &member, "failed");
                     v.stop_auto(id, why)
                 });
-                self.login_record(&r.squad, Entry::new(now_secs(), &r.site, &r.member, Kind::FillFailed, None, Some(BY_EQUIPE)));
+                self.login_record(&r.squad, Entry::new(now_secs(), &r.site, &r.member, Kind::FillFailed, None, Some(BY_EQUIPE)).by_step(r.recorded()));
                 let message = say!(self, "error.login_auto_stopped", site = r.site, username = username);
                 self.publish(Event::Error { session: None, message, next: None });
             }
@@ -334,17 +376,25 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
                     v.used(id, now_secs(), &squad, &member, "signed_in_auto");
                     Ok(())
                 });
-                self.login_record(&r.squad, Entry::new(now_secs(), &r.site, &r.member, Kind::SignedIn, None, Some(BY_EQUIPE)));
+                self.login_record(&r.squad, Entry::new(now_secs(), &r.site, &r.member, Kind::SignedIn, None, Some(BY_EQUIPE)).by_step(r.recorded()));
                 if let Some(session) = session {
                     let text = say!(self, "notice.signed_back_in", site = r.site, username = username);
                     self.publish(Event::Notice { undo: None, session, text });
                 }
+                // A page equipe reloaded because its sign-in ran out: back where it was.
+                self.signed_back(r.page, page.map(|p| p.url.as_str()));
                 self.reload_waiting(&r.site, &lane);
                 self.release_login_waiters(&lane).await;
             }
-            // Nothing typed (another page now, no form), or a step after the
-            // password: the person's, as any page that waits on them.
-            logins::Relogin::Person => {}
+            // A code that didn't take, nothing typed (another page now, no
+            // form), or a step after the password: the person's, as any page
+            // that waits on them — or the next autopilot step's.
+            logins::Relogin::FormCameBack | logins::Relogin::Person => {
+                if step != crate::autopilot::Step::Relogin && filled.submitted && page.is_some_and(|p| p.check.is_some() && vault::site_of(&p.url) == r.site) {
+                    self.login_record(&r.squad, Entry::new(now_secs(), &r.site, &r.member, Kind::FillFailed, None, Some(BY_EQUIPE)).by_step(r.recorded()));
+                    self.code_failed(r.page);
+                }
+            }
         }
         // The lane's pages as they are now: one still waiting goes to the person.
         if !pages.is_empty() {
@@ -425,16 +475,21 @@ fn login_insights(home: &std::path::Path, vault: &std::sync::Arc<std::sync::Mute
 /// types. Twice for a sign-in that asks the username and the password on
 /// pages of their own. The password is fetched off the loop and goes nowhere
 /// but the page.
-async fn relogin_fill(host: &browser::SharedHost, waits: &FillWaits, vault: &std::sync::Arc<std::sync::Mutex<vault::Vault>>, lane: &str, page: u64, login: &Login, first_token: u64) -> Result<vault::Filled, String> {
+///
+/// `idp`: on an identity provider's page for another site
+/// ([`vault::FillGuard::idp`]) — up to three pages (the account chooser,
+/// the email, the password), identity only.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn relogin_fill(host: &browser::SharedHost, waits: &FillWaits, vault: &std::sync::Arc<std::sync::Mutex<vault::Vault>>, lane: &str, page: u64, login: &Login, first_token: u64, idp: bool) -> Result<vault::Filled, String> {
     let id = login.id;
     let vault = vault.clone();
     let password = tokio::task::spawn_blocking(move || vault.lock().map_err(|_| "the logins are unreadable".to_owned()).and_then(|v| v.password(id)))
         .await
         .map_err(|_| "stopped".to_owned())?
         .map_err(|why| format!("the password couldn't be read from the secret store ({why})"))?;
-    let guard = vault::FillGuard::exact(login);
+    let guard = if idp { vault::FillGuard::idp(login) } else { vault::FillGuard::exact(login) };
     let mut last = vault::Filled::default();
-    for round in 0..2u64 {
+    for round in 0..if idp { 3u64 } else { 2 } {
         let token = first_token + round;
         let (tx, rx) = oneshot::channel();
         waits.lock().map_err(|_| "stopped".to_owned())?.insert(token, tx);
@@ -448,12 +503,12 @@ async fn relogin_fill(host: &browser::SharedHost, waits: &FillWaits, vault: &std
         // No answer read back (the submit's page change can cut the script's
         // own answer off): typed and submitted as far as anyone can tell.
         let filled = answer.as_deref().and_then(vault::fill_answer).unwrap_or_else(|| vault::Filled { filled: vec!["unknown".into()], submitted: true, ..Default::default() });
-        let username_only = filled.step.as_deref() == Some("username") && filled.submitted;
+        let username_only = filled.submitted && (filled.step.as_deref() == Some("username") || (idp && filled.step.as_deref() == Some("account")));
         last = filled;
         if !username_only {
             break;
         }
-        // The username alone: its next page asks the password.
+        // The username alone (or the account picked): its next page asks the password.
         tokio::time::sleep(Duration::from_millis(2500)).await;
     }
     Ok(last)

@@ -67,6 +67,8 @@ pub struct LoginsUi {
     /// The look-back of "Asked again", in days.
     pub days: u32,
     pub scroll: ScrollHandle,
+    /// Login autopilot's switches and boxes (`views::autopilot`).
+    pub autopilot: super::autopilot::AutopilotUi,
     stops: RefCell<HashMap<String, FocusHandle>>,
 }
 
@@ -80,13 +82,15 @@ impl LoginsUi {
             note: cx.new(|cx| InputState::new(window, cx).placeholder(t!("accounts.note_placeholder"))),
             password: cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("accounts.password_placeholder"))),
             form: None,
-            auto: false,
+            // A new login signs in by itself unless the person turns it off: saving it is their leave.
+            auto: true,
             problem: None,
             open: None,
             confirm: None,
             pending: None,
             days: rules::RANGES[0],
             scroll: ScrollHandle::new(),
+            autopilot: super::autopilot::AutopilotUi::new(window, cx),
             stops: RefCell::new(HashMap::new()),
         }
     }
@@ -258,7 +262,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 .child(div().flex_1().min_w_0().child(t!("loginspage.no_store", machine = shell.endpoint.label()))),
         );
     }
-    column = column.child(waiting_section(shell, cx)).child(saved_section(shell, cx)).child(asked_section(shell, cx)).child(never_section(shell, cx));
+    column = column.child(waiting_section(shell, cx)).child(saved_section(shell, cx)).child(autopilot_section(shell, cx)).child(asked_section(shell, cx)).child(never_section(shell, cx));
     column = column.child(div().w_full().px_1().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(t!("loginspage.foot", machine = shell.endpoint.label())));
 
     let body = div().id("logins-body").flex_1().min_h_0().overflow_y_scroll().track_scroll(&ui.scroll).child(div().w_full().px_5().py_5().flex().justify_center().child(column));
@@ -416,13 +420,17 @@ fn login_row(shell: &Shell, login: &Login, divider: bool, now: u64, cx: &mut Con
                 .child(scope_chip(p, login, &shell.model.squad))
                 .child(v_flex().w(px(200.)).gap_0p5().child(health_badge(p, login)).children(used.map(|u| div().truncate().text_size(px(11.5)).text_color(p.muted).child(u))))
                 .child(auto)
+                .child(super::autopilot::toggle(shell, login, cx))
                 .child(toggle),
         );
+    // The login's autopilot switches, when its "Autopilot" is pressed.
+    let autopilot = super::autopilot::below(shell, login, cx).map(|switches| div().w_full().px_4().pb_4().pl(px(16. + 32. + 12.)).child(switches));
     v_flex()
         .id(SharedString::from(format!("login-block-{id}")))
         .w_full()
         .when(divider, |b| b.border_t_1().border_color(p.hair))
         .child(line)
+        .children(autopilot)
         .children(open.then(|| login_panel(shell, login, now, cx)))
         .into_any_element()
 }
@@ -550,6 +558,15 @@ fn add_form(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 .child(ui::button(p, "login-form-save", Kind::Primary, t!("accounts.save")).icon(Icon::Lock).focus(&ui.stop("login-form-save", cx)).on_click(cx.listener(|this, _, window, cx| this.logins_submit(window, cx)))),
         )
         .into_any_element()
+}
+
+// ── login autopilot ──
+
+/// What equipe may finish by itself beyond the password: this week, the
+/// mailbox, Messages, keep-alive, command-line sign-ins.
+fn autopilot_section(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
+    let card = super::settings::draw_section(shell.palette, super::autopilot::section(shell, cx));
+    section(shell.palette, "logins-autopilot", t!("autopilot.title"), None, card)
 }
 
 // ── asked again ──
@@ -746,6 +763,7 @@ impl Shell {
     pub fn open_logins(&mut self, cx: &mut Context<Self>) {
         self.send_command(Command::Logins);
         self.send_command(Command::LoginInsights { days: self.logins_ui.days });
+        self.send_command(Command::Autopilot);
         self.show(Screen::Logins, cx);
         cx.notify();
     }
@@ -788,7 +806,8 @@ impl Shell {
         let ui = &mut self.logins_ui;
         ui.form = Some(form);
         ui.problem = None;
-        ui.auto = false;
+        // A new login signs in by itself unless the person turns it off.
+        ui.auto = true;
         ui.confirm = None;
         match form {
             Form::Add => {
@@ -944,7 +963,7 @@ impl Shell {
         use equipe_core::protocol::vault::{CauseCount, LoginInsights, SiteAsks, Use};
         let now = now_secs();
         let used = |ago: u64, outcome: &str| Use { at: now - ago, squad: "demo".into(), member: "backend".into(), outcome: outcome.into() };
-        let login = |id: u32, site: &str, user: &str| Login { id, site: site.into(), url: None, username: user.into(), note: None, allowed: Vec::new(), auto: false, stopped: None, created_at: now - 86_400 * 30, password_at: Some(now - 86_400 * 12), uses: Vec::new() };
+        let login = |id: u32, site: &str, user: &str| Login { id, site: site.into(), url: None, username: user.into(), note: None, allowed: Vec::new(), auto: false, stopped: None, created_at: now - 86_400 * 30, password_at: Some(now - 86_400 * 12), uses: Vec::new(), autopilot: Default::default() };
         let mut cloudflare = login(1, "dash.cloudflare.com", "abel@example.com");
         cloudflare.note = Some("DNS".into());
         cloudflare.url = Some("https://dash.cloudflare.com/login".into());

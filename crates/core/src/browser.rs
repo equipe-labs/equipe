@@ -273,9 +273,44 @@ pub enum HostEvent {
         #[serde(default)]
         answer: Option<String>,
     },
+    /// A page equipe opened for itself (`visit`, `look`: a keep-alive look,
+    /// a device-code approval) as it is now; `None`: it couldn't be opened.
+    Visited {
+        token: u64,
+        #[serde(default)]
+        page: Option<HostPage>,
+    },
+    /// equipe's own passkey for a site, from Chrome's virtual authenticator
+    /// (`passkey_add` after the person added it on the site, `passkey_use`
+    /// with its counter moved on): the credential, private key and all —
+    /// straight to the secret store. `None`: none came.
+    Passkey {
+        token: u64,
+        #[serde(default)]
+        credential: Option<Hidden>,
+    },
+    /// A picture of the person's tab on a login's site, for its
+    /// authenticator QR code (`snap`): PNG, base64. `None`: no such tab.
+    Snap {
+        token: u64,
+        #[serde(default)]
+        png: Option<Hidden>,
+    },
     /// The host is gone (its Chrome closed, or it failed).
     #[serde(skip)]
     Exited,
+}
+
+/// Text the host hands the daemon that holds a secret (a passkey's private
+/// key, a picture of a QR code): never printed, whoever prints it.
+#[derive(Clone, PartialEq, serde::Deserialize)]
+#[serde(transparent)]
+pub struct Hidden(pub serde_json::Value);
+
+impl std::fmt::Debug for Hidden {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Hidden(•••)")
+    }
 }
 
 /// A tab as the host tells it: what a screen is told ([`HostPage::page`]),
@@ -315,6 +350,26 @@ pub struct Signals {
     pub code: bool,
     /// The start of what the page says, lowercased.
     pub text: String,
+    /// The site answered one of the page's own requests with "not signed in"
+    /// (401, 419, 440) in the last minute.
+    pub unauthorized: bool,
+}
+
+/// Whether a page that waits for no one says its sign-in ran out: the site
+/// answered "not signed in" to one of its own requests, or the page opens
+/// with "your session expired", "you've been signed out" (in any of
+/// equipe's languages) — in its title or its first lines, not anywhere in
+/// an article that happens to mention it.
+pub fn session_ran_out(title: &str, signals: Option<&Signals>) -> bool {
+    let Some(s) = signals else { return false };
+    let head: String = s.text.chars().take(160).collect();
+    let title = title.to_lowercase();
+    s.unauthorized
+        || crate::i18n::every("match.session_expired_words")
+            .iter()
+            .copied()
+            .chain(["session expired", "session has expired", "you have been signed out", "you've been signed out", "you have been logged out", "please sign in again", "please log in again"])
+            .any(|w| !w.is_empty() && (head.contains(&w.to_lowercase()) || title.contains(&w.to_lowercase())))
 }
 
 impl HostPage {
@@ -1265,6 +1320,17 @@ pub fn sites(state: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sign_in_that_ran_out_is_told_by_the_sites_answer_or_the_pages_opening_words() {
+        let page = |text: &str, unauthorized: bool| Signals { text: text.into(), unauthorized, ..Default::default() };
+        assert!(session_ran_out("Dashboard", Some(&page("", true))), "the site answered 401");
+        assert!(session_ran_out("Dashboard", Some(&page("your session has expired. sign in to continue", false))));
+        assert!(session_ran_out("Session expired", Some(&page("", false))), "in its title");
+        let article = format!("{} how to fix session expired errors in your app", "a long article. ".repeat(20));
+        assert!(!session_ran_out("Fixing auth bugs", Some(&page(&article, false))), "an article mentioning it further down");
+        assert!(!session_ran_out("Dashboard", None));
+    }
 
     #[test]
     fn a_host_that_stops_reading_never_holds_up_whoever_asks() {

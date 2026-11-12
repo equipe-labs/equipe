@@ -1371,5 +1371,10 @@
   "onboard.desktop_note": "可选:让成员操作这台 Mac 上的应用。需要的东西 equipe 会自动安装;macOS 只会请你打开一个开关(“equipe Desktop Helper”的辅助功能)。跳过的话,成员第一次需要时 equipe 会再次询问。",
   "onboard.desktop_prompt": "现在设置桌面应用吗?",
   "onboard.desktop_skipped": "已跳过。成员第一次需要桌面应用时,equipe 会再次询问。",
-  "onboard.desktop_later": "桌面应用尚未就绪:{why} equipe 会自动继续,其余可稍后在设置 › 小队 › 桌面应用中完成。"
+  "onboard.desktop_later": "桌面应用尚未就绪:{why} equipe 会自动继续,其余可稍后在设置 › 小队 › 桌面应用中完成。",
+  "logins.autopilot": "equipe 自己完成的步骤：{steps} — 为你节省了约 {minutes} 分钟。",
+  "credential.refused": "equipe credential 只把密钥交给 AWS CLI 的 credential_process，绝不交给成员的命令。",
+  "credential.missing": "没有为配置文件 {name} 保存 AWS 密钥（设置 › 账户 › 登录自动驾驶）。",
+  "credential.unknown": "equipe credential 只支持 aws，不支持 {kind}。",
+  "telegram.captcha": "{member} 的浏览器里有个 CAPTCHA 等你处理。打开 equipe 完成它，之后 {member} 会自己继续。"
 }

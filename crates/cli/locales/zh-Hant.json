@@ -1371,5 +1371,10 @@
   "onboard.desktop_note": "選用:讓成員操作這台 Mac 上的 App。需要的東西 equipe 會自動安裝;macOS 只會請你開啟一個開關(「equipe Desktop Helper」的輔助使用)。略過的話,成員第一次需要時 equipe 會再次詢問。",
   "onboard.desktop_prompt": "現在設定桌面 App 嗎?",
   "onboard.desktop_skipped": "已略過。成員第一次需要桌面 App 時,equipe 會再次詢問。",
-  "onboard.desktop_later": "桌面 App 尚未就緒:{why} equipe 會自動繼續,其餘可稍後在設定 › 小隊 › 桌面 App 中完成。"
+  "onboard.desktop_later": "桌面 App 尚未就緒:{why} equipe 會自動繼續,其餘可稍後在設定 › 小隊 › 桌面 App 中完成。",
+  "logins.autopilot": "equipe 自己完成的步驟：{steps} — 為你省下約 {minutes} 分鐘。",
+  "credential.refused": "equipe credential 只把金鑰交給 AWS CLI 的 credential_process，絕不交給成員的命令。",
+  "credential.missing": "沒有為設定檔 {name} 保存 AWS 金鑰（設定 › 帳號 › 登入自動駕駛）。",
+  "credential.unknown": "equipe credential 只支援 aws，不支援 {kind}。",
+  "telegram.captcha": "{member} 的瀏覽器裡有個 CAPTCHA 等你處理。打開 equipe 完成它，之後 {member} 會自己繼續。"
 }

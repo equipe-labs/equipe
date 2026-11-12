@@ -330,6 +330,9 @@ enum Command {
         #[command(subcommand)]
         action: logins::LoginsAction,
     },
+    /// What an AWS CLI profile's credential_process runs (login autopilot sets it up)
+    #[command(hide = true)]
+    Credential { kind: String, name: String },
     /// The PM's briefs: a second opinion on one from the other engine
     Brief {
         #[command(subcommand)]
@@ -564,6 +567,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Design { action } => design::command(action).await.map_err(Failure::new),
         Command::Brief { action } => brief::command(action).await.map_err(Failure::new),
         Command::Logins { action } => logins::command(action).map_err(Failure::new),
+        Command::Credential { kind, name } => logins::credential(&kind, &name).map_err(Failure::new),
         Command::CallSim { squad, no_llm } => call_sim::run(squad, no_llm).await.map_err(Failure::new),
         Command::Disk { words, squad, yes } => disk::command(&words, squad, yes).await.map_err(Failure::new),
         Command::Update => update().await,
@@ -1718,6 +1722,7 @@ impl App {
                 | Event::RestingChanged { .. }
                 | Event::SignalsChanged { .. }
                 | Event::Logins { .. }
+                | Event::Autopilot { .. }
                 | Event::LoginInsights { .. }
                 | Event::LoginOffered { .. }
                 | Event::LoginOfferClosed { .. }
