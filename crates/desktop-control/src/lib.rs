@@ -34,6 +34,6 @@ pub fn serve(home: &std::path::Path) -> std::io::Result<()> {
     #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = home;
-        return Err(std::io::Error::other("desktop control is macOS only"));
+        Err(std::io::Error::other("desktop control is macOS only"))
     }
 }
