@@ -167,6 +167,12 @@ pub(super) struct Park {
     prompt: String,
 }
 
+/// Whether a turn's end is the engine's limit: it said so, or the engine is out
+/// as last read — however the turn failed, except by its sign-in.
+fn limit_ending(said: bool, signed_out: bool, engine_out: bool) -> bool {
+    said || (engine_out && !signed_out)
+}
+
 enum ParkWhy {
     Failed { attempt: u32, cause: String },
     Limit { engine: Engine },
@@ -234,6 +240,10 @@ pub(super) struct TurnEnds {
     told: HashSet<(String, TicketId)>,
     /// Engines out of their limit the person was told of, per squad: until when.
     told_limit: HashMap<(String, Engine), u64>,
+    /// What a conversation without a ticket was asked while its engine was out
+    /// of its limit: kept, not sent to fail again, and started when the engine
+    /// has room or its member moved.
+    pub(super) desk_held: HashMap<SessionId, Vec<String>>,
 }
 
 impl TurnEnds {
@@ -377,8 +387,11 @@ impl Runtime {
         }
         let (ticket, engine) = (work.ticket, s.engine);
         let failed = ending.outcome == TurnOutcome::Failed;
-        let out = !failed && self.engine_out(&squad, engine).is_some();
-        if ending.limit || out {
+        // An engine out of its limit fails every turn: that is the limit, not a
+        // failure to retry — unless the failure is its sign-in.
+        let signed_out = failed && ending.error.as_ref().is_some_and(|(_, next)| crate::engine_auth::lost_by(next.as_deref()).is_some());
+        let out = self.engine_out(&squad, engine).is_some();
+        if limit_ending(ending.limit, signed_out, out) {
             self.park_for_limit(id, &squad, &name, ticket, engine, &ending);
             return true;
         }
@@ -717,6 +730,7 @@ kept; it goes on by itself — on the other engine if {name} moves there, or onc
     /// that engine has room and its member isn't moving off it — and each
     /// open breaker's test turn, when due.
     pub(super) fn turn_ends_due(&mut self, now: u64) {
+        self.release_desks();
         let parked: Vec<(SessionId, String)> = self
             .sessions
             .iter()
@@ -781,6 +795,51 @@ kept; it goes on by itself — on the other engine if {name} moves there, or onc
                 }
                 // Nothing left to test with: the squad goes on, and the next failure tells.
                 None => self.close_breaker(&squad),
+            }
+        }
+    }
+
+    /// A turn about to start on an engine that is out of its limit isn't
+    /// started: it would only fail again. A run pauses for the limit, to go on
+    /// where its member moves or once there is room; a conversation without a
+    /// ticket keeps what it was asked ([`TurnEnds::desk_held`]). Whether the
+    /// turn was held.
+    pub(super) fn hold_for_limit(&mut self, id: SessionId, prompt: &str) -> bool {
+        let Some(s) = self.sessions.get(&id) else { return false };
+        let (Some(squad), true) = (s.squad.clone(), s.member.is_some()) else { return false };
+        let engine = s.engine;
+        let Some(resets) = self.engine_out(&squad, engine) else { return false };
+        let now = now_secs();
+        let due = (resets.max(0) as u64).max(now + 1);
+        if s.work.is_some() {
+            let prompt = prompt.to_owned();
+            self.park(id, Park { why: ParkWhy::Limit { engine }, at: now, due: Some(due), prompt });
+            self.show_pause(id);
+            self.consider_engines(&squad);
+            return true;
+        }
+        let name = s.name().unwrap_or_default().to_owned();
+        self.turn_ends.desk_held.entry(id).or_default().push(prompt.to_owned());
+        self.wake_at(due);
+        self.log_engines(&squad, format!("{name}: a turn waits — {} is out of its usage limit", engine_name(engine)));
+        true
+    }
+
+    /// Conversations that waited for an engine's limit start now where it has
+    /// room (or their member moved to another engine), with all they were asked.
+    fn release_desks(&mut self) {
+        let ids: Vec<SessionId> = self.turn_ends.desk_held.keys().copied().collect();
+        for id in ids {
+            let Some(s) = self.sessions.get(&id) else {
+                self.turn_ends.desk_held.remove(&id);
+                continue;
+            };
+            let squad = s.squad.clone().unwrap_or_default();
+            if s.is_working() || self.engine_out(&squad, s.engine).is_some() {
+                continue;
+            }
+            if let Some(asked) = self.turn_ends.desk_held.remove(&id) {
+                self.start_turn(id, asked.join("\n\n"));
             }
         }
     }
@@ -921,6 +980,14 @@ with what to do next in `body`, cancel it, or ask the person.",
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_turn_on_an_engine_out_of_its_limit_is_limited_not_a_fast_failure() {
+        assert!(limit_ending(false, false, true), "failed on an exhausted engine: the limit");
+        assert!(limit_ending(true, false, false), "it said so");
+        assert!(!limit_ending(false, false, false), "failed with room: a failure to retry");
+        assert!(!limit_ending(false, true, true), "its sign-in lost: carried on by the sign-in");
+    }
 
     #[test]
     fn a_failing_engine_waits_longer_each_time_up_to_half_an_hour() {
