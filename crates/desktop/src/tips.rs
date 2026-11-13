@@ -57,9 +57,18 @@ impl Render for Tip {
         let p = self.p;
         // A long label (a ticket's whole title) wraps within a readable width.
         let long = self.label.chars().count() > 48;
+        // A long second part (a run's status line) isn't a shortcut: it goes
+        // under the label instead of squeezing it to a sliver beside it.
+        let stacked = self.keys.as_ref().is_some_and(|k| k.chars().count() > 16);
+        let wide = long || stacked;
+        let body = if stacked {
+            div().flex_col().flex_1().min_w_0().child(self.label.clone()).when_some(self.keys.clone(), |d, more| d.child(div().text_color(p.tip_muted()).child(more))).into_any_element()
+        } else {
+            div().when(long, |d| d.flex_1().min_w_0()).child(self.label.clone()).into_any_element()
+        };
         h_flex()
             .min_h(px(24.))
-            .when(long, |chip| chip.max_w(px(380.)).py(px(4.)))
+            .when(wide, |chip| chip.max_w(px(360.)).py(px(4.)))
             .px_2()
             .gap_2()
             .items_center()
@@ -69,10 +78,10 @@ impl Render for Tip {
             .border_color(rgba(0xFFFFFF14))
             .shadow(motion::float_shadow(0.6))
             .text_size(px(SMALL - 1.))
-            .when(!long, |chip| chip.whitespace_nowrap())
+            .when(!wide, |chip| chip.whitespace_nowrap())
             .text_color(p.tip_text())
-            .child(div().when(long, |d| d.flex_1().min_w_0()).child(self.label.clone()))
-            .when_some(self.keys.clone(), |chip, keys| chip.child(div().flex_none().whitespace_nowrap().text_color(p.tip_muted()).font_features(key_face()).child(keys)))
+            .child(body)
+            .when(!stacked, |chip| chip.when_some(self.keys.clone(), |chip, keys| chip.child(div().flex_none().whitespace_nowrap().text_color(p.tip_muted()).font_features(key_face()).child(keys))))
     }
 }
 
