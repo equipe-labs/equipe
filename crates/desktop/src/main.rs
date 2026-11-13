@@ -54,7 +54,6 @@ mod screen_look;
 mod setup;
 mod sheet;
 mod side_chat;
-mod side_split;
 mod sidecar;
 mod squad_form;
 mod ssh;
@@ -2412,14 +2411,6 @@ impl Render for Shell {
                 screen_look::used();
                 // A selection dragged out in the terminal follows the pointer anywhere.
                 views::terminal::dragged(this, e, window, cx);
-                // A hairline between the sidebar's areas, held.
-                if this.board.side_split_drag.is_some() {
-                    if e.pressed_button == Some(MouseButton::Left) {
-                        this.side_split_dragged(f32::from(e.position.y), cx);
-                    } else {
-                        this.side_split_released(cx);
-                    }
-                }
                 if this.board.sidebar_drag.is_some() {
                     if e.pressed_button == Some(MouseButton::Left) {
                         this.sidebar_dragged(f32::from(e.position.x), cx);
@@ -2462,7 +2453,6 @@ impl Render for Shell {
             .on_mouse_up(MouseButton::Left, cx.listener(|this, e: &MouseUpEvent, window, cx| {
                 views::terminal::released(this, e.position, window, cx);
                 this.sidebar_released(cx);
-                this.side_split_released(cx);
                 this.side_released(cx);
                 if this.design.talk.drag.is_some() {
                     this.design_talk_dragged(0., false, cx);

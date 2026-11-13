@@ -175,8 +175,34 @@ pub fn meters(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         .when(!folded, |h| h.child(div().flex_none().font_weight(FontWeight::NORMAL).text_size(px(11.)).child(rules::mode_word(model.engines.mode))))
         .children(waiting.then(|| div().flex_none().size(px(6.)).rounded_full().bg(p.accent)));
     let rows: Vec<AnyElement> = if folded { Vec::new() } else { meters.iter().map(|m| meter_rows(shell, m, now, cx)).collect() };
-    // Its hairline above is the sidebar's, to drag (`sidebar::split_area`).
-    Some(v_flex().flex_none().pt(px(6.)).pb_1().child(head).children(rows).into_any_element())
+    // Every engine out: one banner says so, folded or not, over the per-engine lines.
+    let banner = rules::all_out(&meters, now).map(|out| all_out_banner(p, out, now));
+    // Only as tall as its content: the heading, the banner when every engine is out, a line or two per engine.
+    Some(v_flex().flex_none().pt(px(6.)).pb_1().child(head).children(banner).children(rows).into_any_element())
+}
+
+/// "All engines are at their weekly limit · work resumes in 2d (Wed 13:15)":
+/// one compact banner, in the danger tone, for the moment nothing can run.
+fn all_out_banner(p: Palette, out: rules::AllOut, now: i64) -> AnyElement {
+    let (span, at) = (rules::until(out.resumes_at, now), crate::usage::local_time(out.resumes_at));
+    let words = if out.weekly { t!("engines.all_out_week", span = span, at = at) } else { t!("engines.all_out", span = span, at = at) };
+    h_flex()
+        .id("usage-all-out")
+        .mx_2()
+        .mt(px(2.))
+        .mb(px(2.))
+        .px_2()
+        .py(px(5.))
+        .gap(px(6.))
+        .items_start()
+        .rounded(px(6.))
+        .bg(p.red.opacity(0.12))
+        .role(Role::Alert)
+        .aria_label(words.clone())
+        .tip_at(p, t!("engines.all_out_tip"), None, gpui_kit::base::Placement::Right)
+        .child(div().flex_none().mt(px(3.)).child(div().size(px(6.)).rounded_full().bg(p.red)))
+        .child(div().flex_1().min_w_0().text_size(px(11.5)).line_height(px(15.)).font_weight(FontWeight::MEDIUM).text_color(p.text2).child(words))
+        .into_any_element()
 }
 
 /// One engine: its name, then a row per window — a short label, a bar that

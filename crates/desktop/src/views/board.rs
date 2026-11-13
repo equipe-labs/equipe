@@ -105,19 +105,12 @@ pub struct BoardUi {
     pub sidebar_hidden: bool,
     pub sidebar_width: f32,
     pub sidebar_drag: Option<(f32, f32)>,
-    /// A hairline between the sidebar's areas held: which, where the pointer
-    /// was, and the areas as drawn then (`side_split.rs`).
-    pub side_split_drag: Option<(crate::side_split::Divider, f32, crate::side_split::Drawn)>,
-    /// The sidebar's areas as last drawn: projects, usage (0: none), team.
-    pub side_drawn: std::rc::Rc<std::cell::Cell<[f32; 3]>>,
     /// When the sidebar last came or went, to slide it.
     pub sidebar_shown_at: Option<Instant>,
     /// The sidebar's lists of conversations shown whole (by project; "" the squad's).
     pub side_talks_all: std::collections::HashSet<String>,
     /// Every project shown, the quiet ones past the first few too.
     pub side_projects_all: bool,
-    /// The sidebar's other screens shown, named, under "More".
-    pub side_more: bool,
     /// Progress: since when "since you last looked" counts, and whether it shows today instead.
     pub progress_since: u64,
     pub progress_today: bool,
@@ -211,15 +204,12 @@ impl BoardUi {
             sidebar_hidden: false,
             sidebar_width: super::sidebar::WIDTH,
             sidebar_drag: None,
-            side_split_drag: None,
-            side_drawn: Default::default(),
             sidebar_shown_at: None,
             side_talks_all: Default::default(),
             project_page: None,
             project_tab: Default::default(),
             reopening: None,
             side_projects_all: false,
-            side_more: false,
             progress_since: 0,
             progress_today: false,
             orchestra: Default::default(),

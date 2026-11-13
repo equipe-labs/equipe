@@ -25,7 +25,6 @@ use gpui_kit::*;
 use super::board::dot;
 use crate::board::{HeadClick, Menu, SideGroup, ideas_view, recent_done_view, side_groups};
 use crate::state::{Conn, Member, Model, Presence, Side, Status};
-use crate::side_split::Divider;
 use crate::theme::{Palette, Sans, UI, key_face};
 use crate::{Screen, Shell, motion};
 
@@ -267,7 +266,10 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 .child(div().flex_none().text_size(px(11.)).text_color(p.muted).font_features(key_face()).child("⌘N"))
                 .on_click(cx.listener(|this, _, window, cx| this.new_message(window, cx))),
         )
-        .child(nav("nav-inbox", glyph(IconName::Inbox, on_board && menu == Menu::Inbox), t!("board.menu_inbox").into(), needs, 0, false, on_board && menu == Menu::Inbox).on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+        .child(nav("nav-inbox", glyph(IconName::Inbox, on_board && menu == Menu::Inbox), t!("board.menu_inbox").into(), needs, 0, false, on_board && menu == Menu::Inbox)
+            // What the badge counts: items, not people (the Team heading counts members).
+            .when(needs > 0, |r| r.tip_at(p, format!("{}, {needs}\n{}", t!("board.menu_inbox"), t!("sidebar.needs_tip", n = needs)), None, gpui_kit::base::Placement::Right))
+            .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
             if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Board, menu: Menu::Inbox, member: None, ticket: None }), window, cx) {
                 this.open_side_menu(Menu::Inbox, cx);
             }
@@ -329,14 +331,11 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         list.extend(conversation_rows(shell, None, cx));
     }
 
-    // The three areas: what each was drawn as goes to the hairlines' drags.
-    let drawn = shell.board.side_drawn.clone();
-    let measured = drawn.get();
-    let room = measured.iter().sum::<f32>();
-    // Folded, the plans' meters are their heading alone, whatever height they were dragged to.
-    let side_usage = shell.remembered.side_usage.filter(|_| !shell.remembered.usage_folded);
-    let (usage_h, team_h) = if room > 0. { crate::side_split::fit(side_usage, shell.remembered.side_team, room) } else { (side_usage, shell.remembered.side_team) };
-    let seen = drawn.clone();
+    // One column, one scroll: the nav and projects, then the plans' usage and
+    // the team, each only as tall as its own content — nothing reserves room
+    // it does not fill, nothing is clipped behind another area.
+    let usage = super::switching::meters(shell, cx).map(|meters| section(p, meters));
+    let team = team_block(shell, cx).map(|team| section(p, team));
     let body = v_flex()
         .id("side")
         .flex_1()
@@ -347,12 +346,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .when(dim, |l| l.opacity(0.8))
         .child(nav_rows)
         .children(list)
-        .on_prepaint(move |b, _, _| seen.set([f32::from(b.size.height), seen.get()[1], seen.get()[2]]));
-    let usage = super::switching::meters(shell, cx).map(|meters| split_area(shell, Divider::Usage, usage_h, meters, cx));
-    if usage.is_none() {
-        drawn.set([measured[0], 0., measured[2]]);
-    }
-    let team = team_block(shell, team_h, cx).map(|team| split_area(shell, Divider::Team, None, team, cx));
+        .children(usage)
+        .children(team);
 
     v_flex()
         .w(px(ui.sidebar_width))
@@ -364,8 +359,6 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .text_color(p.text)
         .child(strip)
         .child(body)
-        .children(usage)
-        .children(team)
         .children(relaunch(p, shell, cx))
         .child(footer(p, shell, cx))
         .children(popup(p, shell, cx))
@@ -455,7 +448,7 @@ fn on_more(shell: &Shell) -> bool {
 /// was finished, the ideas kept — named, one row each, behind "More".
 fn more_rows(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
     let p = shell.palette;
-    let open = shell.board.side_more || on_more(shell);
+    let open = shell.remembered.nav_more || on_more(shell);
     let words = if open { t!("sidebar.fewer") } else { t!("sidebar.more_screens") };
     let mut rows = vec![
         row_shell(p, "nav-more", false)
@@ -463,7 +456,8 @@ fn more_rows(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
             .aria_expanded(open)
             .aria_label(words)
             .on_click(cx.listener(|this, _, _, cx| {
-                this.board.side_more = !(this.board.side_more || on_more(this));
+                this.remembered.nav_more = !(this.remembered.nav_more || on_more(this));
+                this.remembered.save(&equipe_providers::credentials::equipe_home());
                 cx.notify();
             }))
             .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(icon(if open { IconName::ChevronDown } else { IconName::Ellipsis }, 14., p.muted)))
@@ -806,13 +800,14 @@ fn conversation_rows(shell: &Shell, project: Option<&str>, cx: &mut Context<Shel
     }
     let talks: Vec<&crate::state::Lane> = model.conversations().into_iter().filter(|l| l.project.as_deref() == project).collect();
     let all = shell.board.side_talks_all.contains(project.unwrap_or(""));
-    let shown = if all { talks.len() } else { talks.len().min(TALKS_SHOWN) };
+    let most = talks_shown(project);
+    let shown = if all { talks.len() } else { talks.len().min(most) };
     for lane in &talks[..shown] {
         rows.push(conversation_row(shell, lane, indent, cx));
     }
-    if talks.len() > TALKS_SHOWN {
+    if talks.len() > most {
         let key = project.unwrap_or("").to_owned();
-        let words = if all { t!("sidebar.fewer").to_owned() } else { t!("sidebar.more", n = talks.len() - TALKS_SHOWN) };
+        let words = if all { t!("sidebar.fewer").to_owned() } else { t!("sidebar.more", n = talks.len() - most) };
         rows.push(
             row_shell(p, SharedString::from(format!("talks-more-{key}")), false)
                 .h(px(26.))
@@ -834,6 +829,15 @@ fn conversation_rows(shell: &Shell, project: Option<&str>, cx: &mut Context<Shel
 
 /// A project's conversations with the PM shown at once; the rest behind "+N more".
 const TALKS_SHOWN: usize = 5;
+/// The conversations outside any project (the squad's own) shown at once: the
+/// latest few, so they never push the projects list down the sidebar.
+const OUTSIDE_TALKS_SHOWN: usize = 3;
+
+/// How many conversations show before "+N more": the latest three outside
+/// projects (`None`), a few more inside one.
+pub fn talks_shown(project: Option<&str>) -> usize {
+    if project.is_some() { TALKS_SHOWN } else { OUTSIDE_TALKS_SHOWN }
+}
 
 /// A conversation with the PM: a spinner while it answers, its first words,
 /// and on the pointer the way to put it away. ⌘-click: in a window of its own.
@@ -1192,7 +1196,7 @@ fn ideas_row(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
 /// they start and out as they hand back (`SubMotion`); three at most, then
 /// "+N more" — fewer when the block would outgrow its height, the members'
 /// rows staying in sight.
-fn team_block(shell: &Shell, height: Option<f32>, cx: &mut Context<Shell>) -> Option<AnyElement> {
+fn team_block(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
     let model = &shell.model;
     let members: Vec<&Member> = model.team().into_iter().filter_map(|s| model.members.iter().find(|m| m.session == s)).collect();
@@ -1213,10 +1217,6 @@ fn team_block(shell: &Shell, height: Option<f32>, cx: &mut Context<Shell>) -> Op
         motion.note(&shown, &live, now, !cx.reduce_motion());
         (motion.arriving(now), motion.leaving(now))
     };
-    let run_rows: usize = members.iter().map(|m| run_rows(model.runs_of(m.session).len())).sum();
-    // Those the person rested come last, under a small label of their own.
-    let resting = members.iter().filter(|m| model.is_resting(m)).count();
-    let child_rows = subs.iter().map(|s| sub_rows(s.len(), cap)).sum::<usize>() + leaving.len() + run_rows + usize::from(resting > 0);
     // Each row's engine only where it tells something; shared by all, once on the heading.
     let (engine_shown, shared_engine) = engine_marks(&members.iter().map(|m| m.engine).collect::<Vec<_>>());
     let mut rows: Vec<AnyElement> = Vec::new();
@@ -1250,12 +1250,8 @@ fn team_block(shell: &Shell, height: Option<f32>, cx: &mut Context<Shell>) -> Op
             rows.push(sub_more_row(p, m.session, subs.len() - cap, cx));
         }
     }
-    // Dragged to a height: the list takes what the heading leaves, scrolling.
-    let list = v_flex().id("team-list").overflow_y_scroll().children(rows);
-    let list = match height {
-        Some(_) => list.flex_1().min_h_0(),
-        None => list.max_h(px(team_height(members.len(), child_rows))),
-    };
+    // As tall as its rows: the sidebar's one scroll holds them.
+    let list = v_flex().id("team-list").children(rows);
     // Folded, the usual: one row of faces, each with how it stands; a click
     // on the heading shows the rows.
     let open = shell.remembered.team_open;
@@ -1299,8 +1295,8 @@ fn team_block(shell: &Shell, height: Option<f32>, cx: &mut Context<Shell>) -> Op
                     .rounded(px(4.))
                     .font_weight(FontWeight::NORMAL)
                     .hover(move |s| s.bg(p.side_sel))
-                    .aria_label(t!("sidebar.team_turns_open", n = turns))
-                    .tip(p, t!("sidebar.team_turns_open", n = turns), None)
+                    // Members, where Needs you counts items: the tip says so.
+                    .tip(p, format!("{}\n{}", t!("sidebar.team_turns_open", n = turns), t!("sidebar.team_turns_tip", n = turns)), None)
                     .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
                         cx.stop_propagation();
                         if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Board, menu: Menu::Inbox, member: None, ticket: None }), window, cx) {
@@ -1315,7 +1311,6 @@ fn team_block(shell: &Shell, height: Option<f32>, cx: &mut Context<Shell>) -> Op
     Some(
         v_flex()
             .flex_none()
-            .when(open, |b| b.when_some(height, |b, h| b.h(px(h))))
             .pt(px(6.))
             .pb_1()
             .child(heading)
@@ -1385,74 +1380,10 @@ fn faces(shell: &Shell, members: &[&Member], cx: &mut Context<Shell>) -> AnyElem
     h_flex().mx_2().px_2().pt_1().flex_wrap().gap(px(4.)).children(row).into_any_element()
 }
 
-/// One of the sidebar's lower areas (usage, the team) under its hairline:
-/// held and dragged, the room moves between it and the area above
-/// (`side_split.rs`); double-clicked, the areas take their own heights again.
-/// `height`: what it was dragged to, the area scrolling inside — none, its own.
-fn split_area(shell: &Shell, held: Divider, height: Option<f32>, area: AnyElement, cx: &mut Context<Shell>) -> AnyElement {
-    let p = shell.palette;
-    let dragging = shell.board.side_split_drag.is_some_and(|(d, ..)| d == held);
-    let seen = shell.board.side_drawn.clone();
-    let at = if held == Divider::Usage { 1 } else { 2 };
-    let id = if held == Divider::Usage { "side-split-usage" } else { "side-split-team" };
-    let content = match height {
-        Some(h) => v_flex().id(id).h(px(h)).overflow_y_scroll().child(area).into_any_element(),
-        None => area,
-    };
-    let group = SharedString::from(format!("{id}-line"));
-    v_flex()
-        .flex_none()
-        .relative()
-        .child(content)
-        .on_prepaint(move |b, _, _| {
-            let mut now = seen.get();
-            now[at] = f32::from(b.size.height);
-            seen.set(now);
-        })
-        // The hairline, lit under the pointer and while held; easy to catch.
-        .child(
-            div()
-                .id(SharedString::from(format!("{id}-grip")))
-                .group(group.clone())
-                .absolute()
-                .top(px(-4.))
-                .left_0()
-                .right_0()
-                .h(px(9.))
-                .cursor_row_resize()
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(4.))
-                        .left_0()
-                        .right_0()
-                        .h(px(if dragging { 2. } else { 1. }))
-                        .bg(if dragging { p.accent } else { p.hair })
-                        .group_hover(group, move |s| s.h(px(2.)).bg(p.accent).opacity(0.8)),
-                )
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                        cx.stop_propagation();
-                        if e.click_count >= 2 {
-                            this.side_split_reset(cx);
-                            return;
-                        }
-                        let [projects, usage, team] = this.board.side_drawn.get();
-                        let drawn = crate::side_split::Drawn { projects, usage: (usage > 0.).then_some(usage), team };
-                        this.board.side_split_drag = Some((held, f32::from(e.position.y), drawn));
-                        cx.notify();
-                    }),
-                ),
-        )
-        .into_any_element()
-}
-
-/// How tall the team's list may be: a row each, six members at most in
-/// sight, and its subagents' rows below them, as far as they have room
-/// ([`child_room`]); past that it scrolls inside.
-pub fn team_height(members: usize, child_rows: usize) -> f32 {
-    members.min(TEAM_SHOWN) as f32 * TEAM_ROW + (child_rows as f32 * SUB_ROW).min(child_room(members))
+/// One of the sidebar's lower areas (usage, the team) under a hairline of
+/// its own, as tall as its content.
+fn section(p: Palette, area: AnyElement) -> AnyElement {
+    v_flex().flex_none().mt(px(10.)).border_t_1().border_color(p.hair).child(area).into_any_element()
 }
 
 /// The height the subagents' rows may take: what six members' rows leave,
@@ -1466,6 +1397,7 @@ pub const RUNS_SHOWN: usize = 4;
 
 /// How many rows `n` runs take: those shown, and "+N more" for the rest —
 /// none for a single run, which its member's row says and opens.
+#[cfg(test)]
 pub fn run_rows(n: usize) -> usize {
     if n < 2 { 0 } else { n.min(RUNS_SHOWN) + usize::from(n > RUNS_SHOWN) }
 }
@@ -1766,6 +1698,19 @@ pub fn wait_of(model: &Model, member: &Member) -> Option<Wait> {
     Some(Wait { ticket: Some(t.id), what, waited: model.in_state_for(t) })
 }
 
+/// The ticket of `member`'s that equipe paused while it has no run — an
+/// engine's limit, a retry, the squad on hold — with why: what its row says
+/// in place of "Idle". Tickets in progress first, then the lowest number.
+pub fn paused_ticket<'a>(model: &'a Model, member: &Member) -> Option<(TicketId, &'a equipe_core::protocol::RunPause)> {
+    model
+        .tickets
+        .iter()
+        .filter(|t| t.owner.as_deref() == Some(member.name.as_str()))
+        .filter_map(|t| t.execution.as_ref().and_then(|e| e.pause.as_ref()).map(|pause| (t, pause)))
+        .min_by_key(|(t, _)| (t.status != TicketStatus::InProgress, t.id))
+        .map(|(t, pause)| (t.id, pause))
+}
+
 /// Which members' rows show their engine: only where it tells something —
 /// those on another engine than most of the team (all of them when it is a
 /// tie). The engine everyone shares, when they all do, is said once, on the
@@ -1811,6 +1756,9 @@ fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, show_engine
     }
     let at_work = runs.iter().any(|r| r.presence == Presence::Working) || member.presence == Presence::Working;
     let paused = single.and_then(|id| shell.model.tickets.iter().find(|t| t.id == id)).and_then(|t| t.execution.as_ref()).and_then(|e| e.pause.as_ref());
+    // Idle, but only because a ticket of its is paused (an engine's limit, a
+    // retry): the row says that instead of "Idle".
+    let parked = if state == TeamState::Resting && runs.is_empty() { paused_ticket(&shell.model, member) } else { None };
     let failed = single.is_some() && runs[0].failed && runs[0].presence != Presence::Working && paused.is_none();
     // Running several tickets, it says how many — "frontend · 3 tickets" —
     // whatever one of them waits for: its face's dot and that run's row say so.
@@ -1822,6 +1770,7 @@ fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, show_engine
         (Some(wait), _) => wait.short(),
         (None, Some(ticket)) if failed => format!("{} · T-{ticket}", t!("sidebar.run_failed")),
         (None, Some(ticket)) if let Some(pause) = paused => format!("{} · T-{ticket}", crate::state::pause_words(pause, shell.model.unix as i64)),
+        (None, None) if let Some((ticket, pause)) = parked => format!("{} · T-{ticket}", crate::state::pause_words(pause, shell.model.unix as i64)),
         _ => state.words(),
     };
     // On the pointer: the ticket and all that is asked, how long it has waited.
@@ -2276,27 +2225,7 @@ fn popup(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
                     .on_click(cx.listener(|this, _, window, cx| this.open_new_squad(window, cx)))
                     .into_any_element(),
             });
-            // The window's squad, deleted — asked first (`views/delete_squad.rs`).
-            if !shell.model.squad.is_empty() {
-                let can = shell.can_delete_squad();
-                let tone = if can { p.red } else { p.muted };
-                let delete = h_flex()
-                    .id("delete-squad")
-                    .h(px(30.))
-                    .px_2()
-                    .gap_2()
-                    .items_center()
-                    .rounded(px(6.))
-                    .text_size(px(TEXT))
-                    .text_color(tone)
-                    .child(div().w(px(14.)).flex_none().child(crate::icons::icon(crate::icons::Icon::Trash, 13., tone)))
-                    .child(div().flex_1().min_w_0().truncate().child(t!("sidebar.delete_squad", name = shell.model.squad)));
-                rows.push(if can {
-                    delete.cursor_pointer().hover(move |s| s.bg(p.side_hover)).on_click(cx.listener(|this, _, _, cx| this.open_delete_squad(cx))).into_any_element()
-                } else {
-                    delete.into_any_element()
-                });
-            }
+            // Deleting the squad is not here, beside switching: it is in the squad's Settings, asked first.
             rows.push(div().h(px(1.)).my_1().bg(p.hair).into_any_element());
             // One more window, on this machine and squad, to point elsewhere.
             rows.push(
@@ -2622,33 +2551,6 @@ impl Shell {
         cx.notify();
     }
 
-    /// Dragging a hairline between the sidebar's areas.
-    pub fn side_split_dragged(&mut self, y: f32, cx: &mut Context<Self>) {
-        let Some((held, y0, at)) = self.board.side_split_drag else { return };
-        let (usage, team) = crate::side_split::dragged(held, at, y - y0);
-        self.remembered.side_usage = usage.or(self.remembered.side_usage);
-        // The team as drawn stays its own height until a drag moves it.
-        if held == Divider::Team || team != at.team {
-            self.remembered.side_team = Some(team);
-        }
-        cx.notify();
-    }
-
-    pub fn side_split_released(&mut self, cx: &mut Context<Self>) {
-        if self.board.side_split_drag.take().is_some() {
-            self.remembered.save(&equipe_providers::credentials::equipe_home());
-            cx.notify();
-        }
-    }
-
-    /// A hairline double-clicked: usage and the team take their own heights again.
-    pub fn side_split_reset(&mut self, cx: &mut Context<Self>) {
-        self.board.side_split_drag = None;
-        (self.remembered.side_usage, self.remembered.side_team) = (None, None);
-        self.remembered.save(&equipe_providers::credentials::equipe_home());
-        cx.notify();
-    }
-
     /// Dragging the sidebar's edge.
     pub fn sidebar_dragged(&mut self, x: f32, cx: &mut Context<Self>) {
         if let Some((x0, w0)) = self.board.sidebar_drag {
@@ -2746,7 +2648,7 @@ pub struct Place {
 
 #[cfg(test)]
 mod tests {
-    use super::{HeadSign, MAX_WIDTH, MIN_WIDTH, SUB_ROW, SUBS_SHOWN, SubLeaving, SubMotion, SubShown, TEAM_ROW, TeamState, WIDTH, Wait, cut, engine_marks, head_sign, remove_ask, run_rows, settle, shown_projects, sub_rows, subs_cap, team_height, wait_of};
+    use super::{HeadSign, MAX_WIDTH, MIN_WIDTH, SUB_ROW, SUBS_SHOWN, SubLeaving, SubMotion, SubShown, TeamState, WIDTH, Wait, cut, engine_marks, head_sign, remove_ask, run_rows, settle, shown_projects, sub_rows, subs_cap, talks_shown, paused_ticket, wait_of, OUTSIDE_TALKS_SHOWN};
     use equipe_core::protocol::Engine;
     use crate::state::{Member, Model, Presence, Verb};
     use equipe_core::protocol::Ticket;
@@ -2860,6 +2762,30 @@ mod tests {
         assert_eq!(model.team()[0], 1);
     }
 
+    /// A member with nothing running whose ticket equipe paused says why,
+    /// where it used to say "Idle".
+    #[test]
+    fn an_idle_member_whose_ticket_is_paused_says_why_instead_of_idle() {
+        let mut model = Model::new("acme");
+        let mut limited = ticket(12, "in_progress", "frontend");
+        limited.execution = serde_json::from_value(serde_json::json!({"state": "active", "session": 2, "operation": "op", "generation": 1, "heartbeat_at": 0, "lease_expires_at": 0, "pause": {"why": "engine_limit", "engine": "claude", "resumes_at": 99_000}})).ok();
+        model.tickets = vec![ticket(5, "done", "frontend"), limited, ticket(13, "in_progress", "backend")];
+        model.members = vec![member(2, "frontend", Presence::Ready, Some(12)), member(3, "backend", Presence::Ready, Some(13))];
+        let (id, pause) = paused_ticket(&model, &model.members[0]).expect("its ticket is paused");
+        assert_eq!(id, 12);
+        let words = crate::state::pause_words(pause, 1_000);
+        assert!(words.contains("Claude") && !words.is_empty(), "{words}");
+        assert!(paused_ticket(&model, &model.members[1]).is_none(), "an unpaused ticket stays idle");
+        assert_eq!(TeamState::of(&model, &model.members[1]).words(), TeamState::Resting.words());
+    }
+
+    #[test]
+    fn outside_projects_show_the_latest_three_and_a_project_a_few_more() {
+        assert_eq!(talks_shown(None), OUTSIDE_TALKS_SHOWN);
+        assert_eq!(OUTSIDE_TALKS_SHOWN, 3);
+        assert!(talks_shown(Some("app")) > talks_shown(None));
+    }
+
     #[test]
     fn a_member_on_one_ticket_is_one_row_and_two_or_more_list_each_under_it() {
         assert_eq!(run_rows(0), 0);
@@ -2867,7 +2793,6 @@ mod tests {
         assert_eq!(run_rows(2), 2);
         assert_eq!(run_rows(4), 4);
         assert_eq!(run_rows(6), 5, "four, then +2 more");
-        assert_eq!(team_height(3, run_rows(1)), team_height(3, 0), "no room taken for it");
         // The member's row says the one ticket.
         let mut model = Model::new("acme");
         model.tickets = vec![ticket(669, "in_progress", "frontend")];
@@ -2933,24 +2858,6 @@ mod tests {
     }
 
     #[test]
-    fn the_team_block_shows_six_rows_then_scrolls_inside() {
-        assert_eq!(team_height(0, 0), 0.);
-        assert_eq!(team_height(4, 0), 4. * TEAM_ROW);
-        assert_eq!(team_height(6, 0), 6. * TEAM_ROW);
-        assert_eq!(team_height(9, 0), 6. * TEAM_ROW, "past six, the block keeps its height and scrolls");
-        const { assert!(TEAM_ROW <= 28.) };
-    }
-
-    #[test]
-    fn the_team_block_grows_by_its_subagents_rows_as_far_as_they_have_room() {
-        // Two members and three subagent rows: all in sight.
-        assert_eq!(team_height(2, 3), 2. * TEAM_ROW + 3. * SUB_ROW);
-        // Six members leave no room of their own: still six rows', then it scrolls.
-        assert_eq!(team_height(6, 9), 6. * TEAM_ROW + 6. * SUB_ROW);
-        assert_eq!(team_height(9, 2), 6. * TEAM_ROW + 2. * SUB_ROW);
-    }
-
-    #[test]
     fn three_subagents_show_under_a_member_then_more_and_fewer_when_the_block_is_full() {
         assert_eq!((sub_rows(0, 3), sub_rows(2, 3), sub_rows(3, 3), sub_rows(5, 3)), (0, 2, 3, 4), "three, then a row for the rest");
         assert_eq!(sub_rows(5, 0), 0, "none: the member's row counts them");
@@ -2967,7 +2874,7 @@ mod tests {
         for counts in [[3usize, 3, 3, 3], [9, 0, 0, 1], [1, 1, 1, 1]] {
             let cap = subs_cap(4, &counts);
             let rows: usize = counts.iter().map(|&n| sub_rows(n, cap)).sum();
-            assert!(rows as f32 * SUB_ROW <= team_height(4, rows) - 4. * TEAM_ROW, "{counts:?}");
+            assert!(rows as f32 * SUB_ROW <= super::child_room(4), "{counts:?}");
         }
     }
 
