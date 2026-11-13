@@ -8,7 +8,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use equipe_core::importance::Waiter;
 use equipe_core::protocol::engines::HandOver;
+use equipe_core::protocol::importance::WaitKind;
 use equipe_core::protocol::rpc::{Hello, SquadEntry};
 use equipe_core::protocol::{
     DesktopState, Engine, Entry, Estimate, Event, HumanCheck, Mode, OffMain, PauseWhy, PlanUsage, RunPause, RunView, SessionId, SessionState, Ticket, TicketEntry, TicketId, TicketKind,
@@ -238,6 +240,15 @@ pub enum Need {
     LoginOffer(u64),
 }
 
+/// A thing waiting for the person with what it holds up
+/// ([`Model::needs_ranked`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ranked {
+    pub section: Section,
+    pub need: Need,
+    pub impact: equipe_core::protocol::importance::Impact,
+}
+
 /// What a status is called, everywhere: one word each.
 pub fn status_word(status: TicketStatus) -> &'static str {
     match status {
@@ -389,6 +400,8 @@ pub struct Model {
     pub catalogs: HashMap<Engine, Vec<equipe_core::protocol::ModelChoice>>,
     /// Hours an empty board waits before the PM is woken; 0: never.
     pub idle_wake_hours: u32,
+    /// How the squad escalates what stays a bottleneck, as its daemon has it.
+    pub notify: equipe_core::protocol::importance::NotifySettings,
     /// The members the person rested, by name: they take no new work.
     pub resting: Vec<String>,
     /// How many subagents each member runs at once, where its engine has
@@ -610,6 +623,7 @@ impl Model {
             role_models: Vec::new(),
             catalogs: HashMap::new(),
             idle_wake_hours: equipe_core::protocol::routines::IDLE_WAKE_HOURS,
+            notify: Default::default(),
             resting: Vec::new(),
             subagents_at_once: None,
             parallel: Default::default(),
@@ -1235,6 +1249,7 @@ impl Model {
         self.role_models = snapshot.role_models.clone();
         // An older daemon says nothing: it wakes nobody, but the setting shows its default.
         self.idle_wake_hours = snapshot.idle_wake_hours.unwrap_or(equipe_core::protocol::routines::IDLE_WAKE_HOURS);
+        self.notify = snapshot.notify.clone().unwrap_or_default();
         self.resting = snapshot.resting.clone();
         self.subagents_at_once = snapshot.subagents_at_once;
         self.parallel = snapshot.parallel;
@@ -1417,6 +1432,14 @@ impl Model {
             Event::IdleWakeChanged { squad, hours } if *squad == self.squad => {
                 self.idle_wake_hours = *hours;
                 self.revision += 1;
+            }
+            Event::NotifyChanged { squad, settings } if *squad == self.squad => {
+                self.notify = settings.clone();
+                self.revision += 1;
+            }
+            // What stays a bottleneck, told once by the daemon: every screen of the squad shows it.
+            Event::Escalated { squad, notice } if *squad == self.squad => {
+                self.alerts.push(Alert::Escalated { notice: notice.clone() });
             }
             Event::RestingChanged { squad, resting } if *squad == self.squad => {
                 self.resting = resting.clone();
@@ -2155,6 +2178,98 @@ impl Model {
             out.extend(tickets.into_iter().map(|t| (*section, Need::Ticket(t.id))));
         }
         out
+    }
+
+    /// What `need` waits on, for [`equipe_core::importance`] to score: the
+    /// tickets it is about, how long it has waited, and which members are
+    /// parked on it.
+    fn waiter_of(&self, section: Section, need: Need) -> Waiter {
+        let ticket_of_member = |name: &str| self.members.iter().find(|m| m.name == name).and_then(|m| m.ticket);
+        let mut w = Waiter::new(WaitKind::Other);
+        match need {
+            // A request holds its member's turn: a lane parked on it.
+            Need::Permission(id) => {
+                w.kind = WaitKind::Permission;
+                w.idle_members = 1;
+                w.tickets = self.approvals.open_items().find(|a| a.id == id).and_then(|a| a.ticket).into_iter().collect();
+            }
+            // Questions don't hold the member up: it goes on without the answer.
+            Need::Questions(id) => {
+                w.kind = WaitKind::Decision;
+                if let Some(set) = self.asked.open().find(|s| s.id == id) {
+                    w.tickets = set.ticket.into_iter().collect();
+                    w.since = set.asked_at;
+                }
+            }
+            Need::Team(id) => {
+                w.kind = WaitKind::Decision;
+                if let Some(c) = self.team.open().find(|c| c.id == id) {
+                    w.holding = c.unblocks.clone();
+                    w.since = c.proposed_at;
+                }
+            }
+            Need::Routine(id) => {
+                w.kind = WaitKind::Decision;
+                w.since = self.routine_asks.open().find(|r| r.id == id).map_or(0, |r| r.proposed_at);
+            }
+            Need::Accept(id) => {
+                w.kind = WaitKind::Decision;
+                if let Some(c) = self.accepts.open().find(|c| c.id == id) {
+                    w.tickets = c.tickets.clone();
+                    w.since = c.proposed_at;
+                }
+            }
+            Need::Secret(id) => {
+                w.kind = WaitKind::SignIn;
+                w.idle_members = 1;
+                if let Some(a) = self.secret_asks.iter().find(|a| a.id == id) {
+                    w.tickets = a.ticket.into_iter().collect();
+                    w.since = a.at;
+                }
+            }
+            // A sign-in or check: every member waiting on that site is parked.
+            Need::Browser(page) => {
+                w.kind = WaitKind::SignIn;
+                if let Some(wait) = self.browser_waits.iter().find(|b| b.page == page) {
+                    let sign_in = wait.check == Some(HumanCheck::SignIn) && !wait.site.is_empty();
+                    let same: Vec<&BrowserWait> = self.browser_waits.iter().filter(|b| if sign_in { b.check == wait.check && b.site == wait.site } else { b.page == page }).collect();
+                    w.idle_members = same.len() as u32;
+                    w.tickets = same.iter().filter_map(|b| ticket_of_member(&b.member)).collect();
+                }
+            }
+            Need::LoginOffer(_) => {}
+            Need::Ticket(id) => {
+                w.kind = match section {
+                    Section::Stalled => WaitKind::Stalled,
+                    Section::Review => WaitKind::Review,
+                    Section::Proposed => WaitKind::Proposal,
+                    Section::NotOnMain => WaitKind::NotOnMain,
+                    _ => WaitKind::Ticket,
+                };
+                w.tickets = vec![id];
+                w.since = self.since.get(&id).copied().unwrap_or(0);
+                // A stopped run leaves its member with nothing to do on it; accepted work off main holds the merge.
+                w.idle_members = u32::from(section == Section::Stalled);
+                w.holds_deploy = section == Section::NotOnMain;
+            }
+        }
+        w
+    }
+
+    /// Everything waiting for the person in the order of importance: what it
+    /// holds up first ([`equipe_core::importance`]), the longest waiting
+    /// among equals — each with the impact it was ordered by.
+    pub fn needs_ranked(&self) -> Vec<Ranked> {
+        let items = self.needs_you();
+        let waiters: Vec<Waiter> = items.iter().map(|(s, n)| self.waiter_of(*s, *n)).collect();
+        let (impacts, by) = equipe_core::importance::rank(&self.tickets, &waiters);
+        by.into_iter().map(|i| Ranked { section: items[i].0, need: items[i].1, impact: impacts[i].clone() }).collect()
+    }
+
+    /// Whether something waiting for the person holds up urgent or high work:
+    /// the sidebar's count turns to its attention color.
+    pub fn needs_pressing(&self) -> bool {
+        self.needs_ranked().iter().any(|r| r.impact.is_pressing())
     }
 
     /// Whether a question set holds work up: it is about a ticket still open.
@@ -3948,6 +4063,25 @@ mod tests {
         assert_eq!(model.idle_wake_hours, 0);
         model.apply(Update::Event(Event::IdleWakeChanged { squad: "other".into(), hours: 24 }), T0);
         assert_eq!(model.idle_wake_hours, 0, "another squad's");
+    }
+
+    #[test]
+    fn how_the_squad_escalates_follows_the_daemon_and_an_escalation_becomes_one_notice() {
+        use equipe_core::protocol::importance::{Notice, NoticeItem, NoticeKind, NotifySettings, Only};
+        let mut model = needs_model();
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        assert_eq!(model.notify, NotifySettings::default(), "an older daemon says nothing: the default");
+        let mine = NotifySettings { only: Only::Urgent, ..NotifySettings::default() };
+        assert!(model.apply(Update::Event(Event::NotifyChanged { squad: "acme".into(), settings: mine.clone() }), T0));
+        assert_eq!(model.notify, mine);
+        model.apply(Update::Event(Event::NotifyChanged { squad: "other".into(), settings: NotifySettings::default() }), T0);
+        assert_eq!(model.notify, mine, "another squad's");
+        let item = NoticeItem { ticket: Some(7), title: "AWS sign-in".into(), level: 2, blocks: 5, priority: None, holds_deploy: false, waited_secs: 7200, missed: 0 };
+        let notice = Notice { kind: NoticeKind::Escalation, items: vec![item], phone: true };
+        model.take_alerts();
+        model.apply(Update::Event(Event::Escalated { squad: "acme".into(), notice: notice.clone() }), T0);
+        model.apply(Update::Event(Event::Escalated { squad: "other".into(), notice: notice.clone() }), T0);
+        assert_eq!(model.take_alerts(), vec![Alert::Escalated { notice }], "told once, for this squad only");
     }
 
     #[test]

@@ -71,6 +71,9 @@ pub enum Change {
     KeepOnBranch(u32),
     /// Rest a member (`resting`: no new work until woken) or wake it.
     Resting { member: String, resting: bool },
+    /// How the squad escalates what stays a bottleneck, one key of it
+    /// ([`crate::escalation::apply`]): quiet hours, levels, which things, the hourly cap.
+    Notify { key: String, value: String },
 }
 
 /// How far a mode lets members go, for telling a wider one from a narrower.
@@ -202,6 +205,13 @@ impl Change {
             "merge" => Change::Merge { ticket: ticket()?, push: args.get("push").and_then(Value::as_bool).unwrap_or(true) },
             "keep_on_branch" => Change::KeepOnBranch(ticket()?),
             "resting" => Change::Resting { member: member()?, resting: on(&value()?)? },
+            "notify" => {
+                let key = s("key").ok_or_else(|| format!("Which notification setting? Give `key`: {}.", crate::escalation::KEYS.join(", ")))?;
+                let value = value()?;
+                // Read it as it will be applied, so a bad value is said now.
+                crate::escalation::apply(&mut Default::default(), &key, &value, crate::i18n::core(Lang::En))?;
+                Change::Notify { key, value }
+            }
             other => return Err(format!("There is no setting {other:?}; `settings` lists what can change.")),
         })
     }
@@ -325,13 +335,13 @@ effort that does it well, up a step when its work comes back wrong — | off —
 it is signed in with room, else the member's own in a fresh session — | same | other), remove_project (project), \
 hq (project, or none), run_routine (id), delete_routine (id), signal (project, name, value on | off), disallow (value: \
 the rule as `settings` lists it), merge (ticket, push), keep_on_branch (ticket), resting (member, value on | off: a resting \
-member takes no new work — the board hands it nothing — and finishes what it holds; woken, it takes work again). Never set another engine's model \
+member takes no new work — the board hands it nothing — and finishes what it holds; woken, it takes work again), notify (key and value: how the squad's notifications escalate what stays a bottleneck without waking the person — on | off; only blocking | urgent; quiet on | off; quiet_from and quiet_to as HH:MM in the person's own time (default 23:00–08:00); levels as three waits like 2h,8h,24h; max_per_hour 1 through 60; phone on | off for paired phones and Telegram; remind_deploy as a wait like 2h, or off, to tell again about what holds a deploy up — narrowing or widening, it happens at once; confirm it in one line). Never set another engine's model \
 through `model`: moving a member to it is `engine`. Adding a project is `add_project`; adding a routine, \
 `propose_routine`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "subagents_at_once", "model", "effort", "engine", "engine_switching", "parallel", "model_choice", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch", "resting"] },
+                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "subagents_at_once", "model", "effort", "engine", "engine_switching", "parallel", "model_choice", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch", "resting", "notify"] },
                     "value": { "type": "string", "description": "The new value, as the setting takes it." },
                     "member": { "type": "string", "description": "The member, for mode (left out: the squad's), model, effort, engine and resting." },
                     "members": { "type": "array", "items": { "type": "string" }, "description": "engine: the members to move, on one card." },
@@ -340,6 +350,7 @@ through `model`: moving a member to it is `engine`. Adding a project is `add_pro
                     "when": { "type": "string", "enum": ["next_ticket", "now"], "description": "engine: next_ticket (the default), or now — mid-ticket, at the end of each one's turn, its ticket handed over. Use now when the person asks for it now." },
                     "project": { "type": "string", "description": "The project's name, for remove_project, hq and signal." },
                     "name": { "type": "string", "description": "The signal's name." },
+                    "key": { "type": "string", "description": "notify: which notification setting (on, only, quiet, quiet_from, quiet_to, levels, max_per_hour, phone, remind_deploy)." },
                     "id": { "type": "integer", "description": "The routine's id." },
                     "ticket": { "type": "integer", "description": "The ticket's number, for merge and keep_on_branch." },
                     "push": { "type": "boolean", "description": "merge: push main to origin too (default true)." },
@@ -398,6 +409,26 @@ mod tests {
         ] {
             assert!(!change(args.clone()).needs_yes(Mode::Auto), "{args}");
         }
+    }
+
+    #[test]
+    fn the_pm_changes_how_notifications_escalate_in_the_persons_words_at_once() {
+        // "Don't ping me before 9", "only notify me for urgent things", "remind me every 2 hours about deploy blockers".
+        let quiet = change(json!({ "setting": "notify", "key": "quiet_to", "value": "09:00" }));
+        assert_eq!(quiet, Change::Notify { key: "quiet_to".into(), value: "09:00".into() });
+        assert_eq!(change(json!({ "setting": "notify", "key": "only", "value": "urgent" })), Change::Notify { key: "only".into(), value: "urgent".into() });
+        assert_eq!(change(json!({ "setting": "notify", "key": "remind_deploy", "value": "2h" })), Change::Notify { key: "remind_deploy".into(), value: "2h".into() });
+        // A reminder of any kind is the person's own to ask for: no card.
+        for key_value in [("quiet_to", "09:00"), ("only", "urgent"), ("on", "off"), ("levels", "1h,4h,12h")] {
+            assert!(!change(json!({ "setting": "notify", "key": key_value.0, "value": key_value.1 })).needs_yes(Mode::ReadOnly), "{key_value:?}");
+        }
+        // Said wrong, it says what would do.
+        assert!(Change::parse(&json!({ "setting": "notify", "value": "on" })).unwrap_err().contains("Which notification setting"));
+        assert!(Change::parse(&json!({ "setting": "notify", "key": "quiet_to", "value": "late" })).unwrap_err().contains("HH:MM"));
+        assert!(Change::parse(&json!({ "setting": "notify", "key": "volume", "value": "1" })).unwrap_err().contains("No setting called volume"));
+        let tool = &tools()[1];
+        assert!(tool["inputSchema"]["properties"]["setting"]["enum"].as_array().unwrap().iter().any(|s| s == "notify"));
+        assert!(tool["inputSchema"]["properties"]["key"].is_object());
     }
 
     #[test]

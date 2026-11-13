@@ -1126,6 +1126,7 @@
   "view.writes": "escribe {files}",
   "view.your_turn_answer": "Responde punto por punto con /answer T-{id}, o r en el tablero",
   "view.your_turn_heading": "Tu turno · T-{id} · {title}",
+  "view.most_blocking": "Lo que más bloquea",
   "demo.pm_added": "Entendido: lo he puesto en el tablero como T-{id} para frontend. Empieza en cuanto termine la página de inicio (T-3).",
   "demo.pm_reply_1": "Así vamos: T-2 (API de registro) espera tu revisión, T-3 (página de inicio) está en curso y T-4 necesita una clave de API de prueba tuya. ¿Quieres que añada algo?",
   "demo.pm_reply_2": "Solo T-4 está bloqueado: necesita la clave de prueba del proveedor de pagos. Todo lo demás avanza; te aviso cuando haya algo listo para revisar.",
@@ -1503,5 +1504,9 @@
   "usage.change.time_to_done_median_secs": "tiempo hasta terminar, mediana",
   "usage.change.time_to_done_p75_secs": "tiempo hasta terminar, p75",
   "usage.change.turns_per_done": "turnos por ticket terminado",
-  "usage.change.tokens_per_done": "tokens por ticket terminado"
+  "usage.change.tokens_per_done": "tokens por ticket terminado",
+  "notify.source_squad": "Estos son los ajustes propios de {squad}.",
+  "notify.source_default": "Estos son tus ajustes por defecto; {squad} no tiene propios.",
+  "notify.saved_squad": "Guardado para {squad}.",
+  "notify.saved_default": "Guardado como tu ajuste por defecto para todo escuadrón sin ajustes propios."
 }

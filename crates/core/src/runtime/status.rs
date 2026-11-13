@@ -14,6 +14,7 @@ use equipe_protocol::status::{EngineBudget, SquadStatus, StatusAsk};
 use equipe_protocol::{AuthState, Engine};
 
 use super::*;
+use crate::importance;
 use crate::status::{self, Facts};
 
 /// The screens are told of a change in a squad's status no more often than this.
@@ -80,7 +81,49 @@ impl Runtime {
             decisions,
             signed_out,
             pm_accepts: self.journals.get(squad).is_none_or(Journal::pm_accepts),
+            asks: self.waiting_asks(squad),
         }
+    }
+
+    /// What waits on the person besides tickets, each with the tickets it is
+    /// about and whether a member is parked on it ([`crate::importance`]).
+    pub(super) fn waiting_asks(&mut self, squad: &str) -> Vec<importance::Ask> {
+        use equipe_protocol::importance::WaitKind;
+        let line = |text: &str| -> String { text.lines().next().unwrap_or_default().trim().chars().take(100).collect() };
+        let mut out = Vec::new();
+        // A request holds its member's turn: a lane parked on it.
+        for p in self.pending.values().filter(|p| p.squad == squad) {
+            let a = &p.approval;
+            out.push(importance::Ask { kind: WaitKind::Permission, label: line(&format!("{}: {} {}", a.member, a.tool, a.action)), tickets: a.ticket.into_iter().collect(), holding: Vec::new(), since: 0, idle_members: 1 });
+        }
+        // Questions don't hold the member up: they go on without the answer.
+        for set in self.question_sets(squad).iter() {
+            let label = set.questions.first().map(|q| line(&q.question)).unwrap_or_default();
+            out.push(importance::Ask { kind: WaitKind::Decision, label, tickets: set.ticket.into_iter().collect(), holding: Vec::new(), since: set.asked_at, idle_members: 0 });
+        }
+        for c in self.team_changes(squad).iter() {
+            out.push(importance::Ask { kind: WaitKind::Decision, label: line(&c.reason), tickets: Vec::new(), holding: c.unblocks.clone(), since: c.proposed_at, idle_members: 0 });
+        }
+        for r in self.routine_proposals(squad).iter() {
+            out.push(importance::Ask { kind: WaitKind::Decision, label: line(&r.routine.title), tickets: Vec::new(), holding: Vec::new(), since: r.proposed_at, idle_members: 0 });
+        }
+        for c in self.accepts(squad).iter() {
+            out.push(importance::Ask { kind: WaitKind::Decision, label: line(&c.summary), tickets: c.tickets.clone(), holding: Vec::new(), since: c.proposed_at, idle_members: 0 });
+        }
+        // A secret holds its member until typed.
+        for a in self.secret_asks(squad).iter() {
+            out.push(importance::Ask { kind: WaitKind::SignIn, label: line(&a.why), tickets: a.ticket.into_iter().collect(), holding: Vec::new(), since: a.at, idle_members: 1 });
+        }
+        out
+    }
+
+    /// The PM's note of what waits on the person, most blocking first
+    /// ([`importance::pm_note`]): `None` when nothing waits that holds work up.
+    pub(super) fn waiting_note(&mut self, squad: &str) -> Option<String> {
+        let tickets = self.tickets(squad);
+        let asks = self.waiting_asks(squad);
+        let pm_accepts = self.journals.get(squad).is_none_or(Journal::pm_accepts);
+        importance::pm_note(&importance::waiting_list(&tickets, &asks, pm_accepts), 3, now_secs())
     }
 
     /// A squad's status: the kept answer if it is fresh, else worked out now

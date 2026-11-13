@@ -1126,6 +1126,7 @@
   "view.writes": "écrit {files}",
   "view.your_turn_answer": "Répondez point par point avec /answer T-{id}, ou r sur le tableau",
   "view.your_turn_heading": "À vous · T-{id} · {title}",
+  "view.most_blocking": "Ce qui bloque le plus",
   "demo.pm_added": "C'est noté — je l'ai mis au tableau en T-{id} pour frontend. Ça commence dès que la page d'accueil (T-3) est finie.",
   "demo.pm_reply_1": "Où on en est : T-2 (API d'inscription) attend ta relecture, T-3 (page d'accueil) est en cours, et T-4 a besoin d'une clé d'API de test de ta part. Je rajoute quelque chose ?",
   "demo.pm_reply_2": "Rien n'est bloqué sauf T-4, qui attend la clé de test du prestataire de paiement. Le reste avance ; je te préviens dès que quelque chose est prêt à relire.",
@@ -1503,5 +1504,9 @@
   "usage.change.time_to_done_median_secs": "délai jusqu'à terminé, médiane",
   "usage.change.time_to_done_p75_secs": "délai jusqu'à terminé, p75",
   "usage.change.turns_per_done": "tours par ticket terminé",
-  "usage.change.tokens_per_done": "tokens par ticket terminé"
+  "usage.change.tokens_per_done": "tokens par ticket terminé",
+  "notify.source_squad": "Ce sont les réglages propres à {squad}.",
+  "notify.source_default": "Ce sont vos réglages par défaut ; {squad} n’en a pas en propre.",
+  "notify.saved_squad": "Enregistré pour {squad}.",
+  "notify.saved_default": "Enregistré comme votre réglage par défaut pour toute équipe sans réglage propre."
 }

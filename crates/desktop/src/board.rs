@@ -148,6 +148,9 @@ pub struct View {
     pub layout: crate::tickets::Layout,
     /// Tickets' triage: only the proposals, to take on (A) or drop (N).
     pub triage: bool,
+    /// Needs you grouped by kind, as it was; else by importance (what holds
+    /// the most up first). Remembered per Mac.
+    pub by_kind: bool,
 }
 
 /// A ticket page's tabs.
@@ -326,7 +329,8 @@ pub fn effective(view: &View, views: &[SavedView]) -> (String, GroupBy) {
 /// The rows of the menu item on screen.
 pub fn rows(model: &Model, view: &View, views: &[SavedView]) -> Vec<Row> {
     match view.menu {
-        Menu::Inbox => inbox(model, &Filter::parse(&view.query)),
+        Menu::Inbox if view.by_kind => inbox(model, &Filter::parse(&view.query)),
+        Menu::Inbox => inbox_ranked(model, &Filter::parse(&view.query)),
         Menu::Working => working(model, &Filter::parse(&view.query)),
         Menu::All | Menu::View(_) => {
             let (query, group) = effective(view, views);
@@ -396,6 +400,58 @@ pub fn inbox(model: &Model, filter: &Filter) -> Vec<Row> {
         }
     }
     out
+}
+
+/// Whether `need` passes the search words: a ticket by its own words; what
+/// is not a ticket only when nothing is searched.
+fn passes(model: &Model, filter: &Filter, need: &Need) -> bool {
+    match need {
+        Need::Ticket(id) => model.tickets.iter().find(|t| t.id == *id).is_some_and(|t| filter.matches(model, t)),
+        Need::Permission(_) | Need::Questions(_) | Need::Team(_) | Need::Routine(_) | Need::Accept(_) | Need::Browser(_) | Need::Secret(_) | Need::LoginOffer(_) => filter.is_empty(),
+    }
+}
+
+/// Needs you by importance: what holds the most up first — under "Most
+/// blocking", what blocks another ticket, holds a deploy or holds urgent or
+/// high work — then the rest, each in [`Model::needs_ranked`]'s order.
+/// Decisions waiting for days keep their own group at the bottom.
+pub fn inbox_ranked(model: &Model, filter: &Filter) -> Vec<Row> {
+    let ranked: Vec<crate::state::Ranked> = model.needs_ranked().into_iter().filter(|r| passes(model, filter, &r.need)).collect();
+    let stale = |need: &Need| matches!(need, Need::Questions(id) if model.asked.get(*id).is_some_and(|s| decide::is_stale(s, model.unix)));
+    let (older, fresh): (Vec<_>, Vec<_>) = ranked.into_iter().partition(|r| stale(&r.need));
+    let (top, rest): (Vec<_>, Vec<_>) = fresh.into_iter().partition(|r| r.impact.is_blocking());
+    let mut out = Vec::new();
+    let mut part = |label: String, tone: Tone, hint: Option<String>, items: Vec<crate::state::Ranked>| {
+        if !items.is_empty() {
+            out.push(Row::Heading { label, count: items.len(), tone, hint, all: None });
+            out.extend(items.into_iter().map(|r| Row::Item { need: r.need, depth: 0 }));
+        }
+    };
+    let rest_label = if top.is_empty() { t!("board.waiting_on_you").to_owned() } else { t!("board.rest_waiting").to_owned() };
+    part(t!("board.most_blocking").to_owned(), Tone::ForYou, Some(t!("board.most_blocking_hint").to_owned()), top);
+    part(rest_label, Tone::Plain, None, rest);
+    if !older.is_empty() {
+        let label = t!("decide.list_older", days = decide::STALE_DAYS).to_string();
+        out.push(Row::Heading { label, count: older.len(), tone: Tone::Plain, hint: None, all: Some(All { what: AllOf::Tidy, ids: Vec::new() }) });
+        out.extend(older.into_iter().map(|r| Row::Item { need: r.need, depth: 0 }));
+    }
+    out
+}
+
+/// What an item holds up, as the badge on its row says it: `blocks 5 ·
+/// urgent`, `holds deploys`, `blocks 2 · holds deploys`. Empty: nothing.
+pub fn impact_words(impact: &equipe_core::protocol::importance::Impact) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if impact.blocks > 0 {
+        parts.push(t!("board.blocks_n", n = impact.blocks).to_string());
+    }
+    if let Some(p) = impact.priority.filter(|p| matches!(p, Priority::Urgent | Priority::High)) {
+        parts.push(crate::tickets::priority_word(p).to_lowercase());
+    }
+    if impact.holds_deploy {
+        parts.push(t!("board.holds_deploys").to_owned());
+    }
+    parts.join(" · ")
 }
 
 /// In progress: work in progress, the soonest done first.
@@ -2020,5 +2076,108 @@ mod tests {
     fn a_started_idea_held_for_office_hours_says_so() {
         assert_eq!(idea_start_toast(7, true), "아이디어 T-7 시작 → PM이 먼저 오피스 아워");
         assert_eq!(idea_start_toast(7, false), "아이디어 T-7 시작 → 할 일");
+    }
+
+    /// A squad like the person's: a sign-in that blocks five, a production
+    /// migration that blocks four and holds every deploy, design picks that
+    /// block one each, a sign-off and an approval that block nothing.
+    fn crowded() -> Model {
+        let waiting = |id: u32| {
+            let mut t = ticket(id, "waiting", "/p", &[]);
+            t.note = Some("Waiting on you:\n- [ ] your part".into());
+            t
+        };
+        let mut tickets = vec![waiting(1), waiting(2), waiting(3), waiting(4), waiting(5)];
+        tickets.extend((10..15).map(|id| ticket(id, "todo", "/p", &[1])));
+        tickets.extend((20..23).map(|id| ticket(id, "todo", "/p", &[2])));
+        let mut deploy = ticket(23, "todo", "/p", &[2]);
+        deploy.title = "Deploy the API servers".into();
+        tickets.push(deploy);
+        tickets.push(ticket(30, "todo", "/p", &[3]));
+        let mut high = ticket(31, "todo", "/p", &[4]);
+        high.priority = Priority::High;
+        tickets.push(high);
+        tickets.push(ticket(6, "in_progress", "/p", &[]));
+        let mut m = model(tickets, &["/p"]);
+        m.unix = 2_000_000_000;
+        for (id, hours) in [(1, 3), (2, 5), (3, 8), (4, 2), (5, 70)] {
+            m.since.insert(id, m.unix - hours * 3600);
+        }
+        let ask: Approval = serde_json::from_value(serde_json::json!({"id": 9, "session": 2, "member": "backend", "ticket": 6, "tool": "Bash", "action": "git push", "reason": null})).unwrap();
+        m.approvals.push(ask);
+        m
+    }
+
+    #[test]
+    fn needs_you_by_importance_puts_what_blocks_most_first_and_the_rest_after() {
+        let m = crowded();
+        let rows = inbox_ranked(&m, &Filter::default());
+        assert_eq!(headings(&rows), vec!["가장 많이 막는 것", "나머지"]);
+        // Migration (4 blocked + a deploy held), the sign-in (5), the high-priority pick, the plain pick —
+        // then the approval that parks a member, and the sign-off that blocks nothing.
+        assert_eq!(items(&rows), vec![Need::Ticket(2), Need::Ticket(1), Need::Ticket(4), Need::Ticket(3), Need::Permission(9), Need::Ticket(5)]);
+        let top = rows.iter().position(|r| matches!(r, Row::Heading { label, .. } if label == "나머지")).unwrap();
+        assert_eq!(items(&rows[..top]).len(), 4, "only what blocks another ticket is in the top part");
+        // The by-kind list is still there, as it was.
+        assert_eq!(headings(&inbox(&m, &Filter::default())), vec!["허락 요청", "내 차례"]);
+        // The person's choice picks which one the screen lists.
+        let view = |by_kind| View { menu: Menu::Inbox, by_kind, ..Default::default() };
+        assert_eq!(headings(&super::rows(&m, &view(false), &[])), vec!["가장 많이 막는 것", "나머지"]);
+        assert_eq!(headings(&super::rows(&m, &view(true), &[])), vec!["허락 요청", "내 차례"]);
+    }
+
+    #[test]
+    fn each_item_says_what_it_holds_up_in_a_badge_and_a_parked_member_outranks_a_sign_off() {
+        let m = crowded();
+        let ranked = m.needs_ranked();
+        let impact = |need: Need| ranked.iter().find(|r| r.need == need).unwrap().impact.clone();
+        assert_eq!(impact_words(&impact(Need::Ticket(1))), "5개 막음");
+        assert_eq!(impact_words(&impact(Need::Ticket(2))), "4개 막음 · 배포 막음");
+        assert_eq!(impact_words(&impact(Need::Ticket(4))), "1개 막음 · 높음");
+        assert_eq!(impact_words(&impact(Need::Ticket(5))), "", "a sign-off that blocks nothing says nothing");
+        assert_eq!(impact_words(&impact(Need::Permission(9))), "");
+        let order: Vec<Need> = ranked.into_iter().map(|r| r.need).collect();
+        assert!(order.iter().position(|n| *n == Need::Permission(9)) < order.iter().position(|n| *n == Need::Ticket(5)), "{order:?}");
+    }
+
+    #[test]
+    fn equal_waits_go_to_the_one_waiting_longest() {
+        let waiting = |id: u32| {
+            let mut t = ticket(id, "waiting", "/p", &[]);
+            t.note = Some("Waiting on you:\n- [ ] a look".into());
+            t
+        };
+        let mut m = model(vec![waiting(1), waiting(2), waiting(3)], &["/p"]);
+        m.unix = 2_000_000_000;
+        m.since.insert(1, m.unix - 3600);
+        m.since.insert(2, m.unix - 9 * 3600);
+        m.since.insert(3, m.unix - 5 * 3600);
+        assert_eq!(ids(&inbox_ranked(&m, &Filter::default())), vec![2, 3, 1]);
+    }
+
+    #[test]
+    fn the_sidebars_count_turns_to_attention_only_when_urgent_or_high_work_is_held() {
+        let mut m = crowded();
+        assert!(m.needs_pressing(), "ticket 31 is high and waits on 4");
+        for t in m.tickets.iter_mut().filter(|t| t.id == 31) {
+            t.priority = Priority::Normal;
+        }
+        assert!(!m.needs_pressing());
+        for t in m.tickets.iter_mut().filter(|t| t.id == 5) {
+            t.priority = Priority::Urgent;
+        }
+        assert!(m.needs_pressing(), "an urgent ticket waiting on the person is itself pressing");
+    }
+
+    #[test]
+    fn with_nothing_holding_work_up_needs_you_is_one_plain_list_and_search_words_narrow_it() {
+        let mut waiting = ticket(1, "waiting", "/p", &[]);
+        waiting.note = Some("Waiting on you:\n- [ ] a look".into());
+        let m = model(vec![waiting, ticket(2, "review", "/p", &[])], &["/p"]);
+        let rows = inbox_ranked(&m, &Filter::default());
+        assert_eq!(headings(&rows), vec!["내 차례"]);
+        assert_eq!(ids(&rows).len(), 2);
+        assert_eq!(ids(&inbox_ranked(&m, &Filter::parse("status:review"))), vec![2]);
+        assert!(inbox_ranked(&model(Vec::new(), &["/p"]), &Filter::default()).is_empty());
     }
 }

@@ -90,6 +90,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::SetDesignReviewer { .. }
         | C::Scale { .. }
         | C::SetIdleWake { .. }
+        | C::SetNotify { .. }
         | C::SetResting { .. }
         | C::WatchTicket { .. }
         | C::SetModel { .. }

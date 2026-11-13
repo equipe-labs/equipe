@@ -414,6 +414,23 @@ impl Bridge {
                     _ => {}
                 }
             }
+            // What stays a bottleneck, told once (escalation: levels, quiet hours, the hourly cap are the daemon's):
+            // with a one-tap action when it is one ticket the person can settle here.
+            Event::Escalated { notice, .. } if notice.phone => {
+                let (title, body) = equipe_core::escalation::notice_text(notice, equipe_core::i18n::core(crate::i18n::lang()));
+                let text = format!("<b>{}</b>\n{}", escape(&title), escape(&body));
+                let mut buttons = Vec::new();
+                if let [item] = notice.items.as_slice()
+                    && let Some(id) = item.ticket
+                {
+                    match state!().tickets.get(&id).map(|t| t.status) {
+                        Some(TicketStatus::Waiting) => buttons.push(self.button(t!("telegram.button_done_carry_on"), Act::Resume(squad.to_owned(), id))),
+                        Some(TicketStatus::Review) => buttons.push(self.button(t!("telegram.button_accept"), Act::Accept(squad.to_owned(), id))),
+                        _ => {}
+                    }
+                }
+                outs.push(Out::Send { text, buttons, ask: None, key: None });
+            }
             _ => {}
         }
         outs
@@ -1089,6 +1106,19 @@ mod tests {
         assert!(matches!(&outs[..], [Out::Edit { message: 200, text }] if text.ends_with("<b>✅ Accepted</b>")), "{outs:?}");
         // Done, its buttons do nothing.
         assert!(b.on_button("cb", &accept).0.is_empty());
+    }
+
+    #[test]
+    fn an_escalation_reaches_telegram_with_a_one_tap_action_unless_phones_are_turned_off() {
+        use equipe_core::protocol::importance::{Notice, NoticeItem, NoticeKind};
+        let mut b = bridge();
+        b.on_event("acme", &Event::TicketChanged { squad: "acme".into(), ticket: ticket(4, TicketStatus::Waiting) });
+        let item = NoticeItem { ticket: Some(4), title: "Sign-in page".into(), level: 3, blocks: 5, priority: None, holds_deploy: false, waited_secs: 9 * 3600, missed: 3 };
+        let notice = |phone| Notice { kind: NoticeKind::Missed, items: vec![item.clone()], phone };
+        let outs = b.on_event("acme", &Event::Escalated { squad: "acme".into(), notice: notice(true) });
+        assert!(text(&outs[0]).contains("T-4 Sign-in page") && text(&outs[0]).contains("blocks 5"), "{outs:?}");
+        assert_eq!(buttons(&outs[0]).len(), 1, "settle it from the phone: done, carry on");
+        assert!(b.on_event("acme", &Event::Escalated { squad: "acme".into(), notice: notice(false) }).is_empty(), "phones turned off for it");
     }
 
     #[test]

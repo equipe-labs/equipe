@@ -197,6 +197,8 @@ pub struct Remembered {
     pub nav_more: bool,
     /// The sidebar's projects folded behind their heading.
     pub projects_folded: bool,
+    /// Needs you grouped by kind; else by importance (what holds the most up first).
+    pub needs_by_kind: bool,
     /// The language this app kept before the pick was everyone's (`ko`, `en`, …):
     /// read once, moved to the shared pick (`i18n::migrate`), never written again.
     pub lang: Option<String>,
@@ -456,6 +458,8 @@ impl Remembered {
                 out.nav_more = true;
             } else if line == "projects-folded" {
                 out.projects_folded = true;
+            } else if line == "needs-by-kind" {
+                out.needs_by_kind = true;
             } else if let Some(rest) = line.strip_prefix("sidebar-width ") {
                 out.sidebar_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
             } else if let Some(rest) = line.strip_prefix("window-size ") {
@@ -592,6 +596,9 @@ impl Remembered {
         }
         if self.projects_folded {
             text.push_str("projects-folded\n");
+        }
+        if self.needs_by_kind {
+            text.push_str("needs-by-kind\n");
         }
         if let Some(lang) = &self.lang {
             text.push_str(&format!("lang {lang}\n"));
@@ -839,6 +846,7 @@ mod tests {
         remembered.usage_folded = true;
         remembered.nav_more = true;
         remembered.projects_folded = true;
+        remembered.needs_by_kind = true;
         remembered.set_host_name("me@100.106.17.55", "  사무실 맥미니 ");
         remembered.set_host_name("vision", "vision");
         remembered.set_host_name("vision", "");
@@ -860,6 +868,7 @@ mod tests {
         assert!(!Remembered::default().usage_folded, "they start open");
         assert!(loaded.nav_more && !Remembered::default().nav_more, "the sidebar's More, as left; folded to start");
         assert!(loaded.projects_folded && !Remembered::default().projects_folded, "the sidebar's Projects, as left; open to start");
+        assert!(loaded.needs_by_kind && !Remembered::default().needs_by_kind, "Needs you by kind, as left; by importance to start");
         assert_eq!(loaded.host_name("me@100.106.17.55"), Some("사무실 맥미니"), "a machine's name, trimmed");
         assert_eq!(loaded.host_name("vision"), None, "an empty name takes it away");
         assert_eq!(loaded.dictation.as_deref(), Some("ja"), "dictation's language, apart from the app's");

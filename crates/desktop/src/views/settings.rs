@@ -61,6 +61,9 @@ pub enum Pop {
     PerEngine,
     /// The model providers to connect (Settings › AI platforms).
     AddProvider,
+    /// Quiet hours' start and end: the hours of the day.
+    QuietFrom,
+    QuietTo,
 }
 
 /// What a pop-up's row does.
@@ -77,6 +80,8 @@ enum Act {
     RoleEffort(&'static str, Engine, Option<String>),
     /// Subagents at once (`None`: each engine's own).
     Subagents(Option<u32>),
+    /// How the squad escalates what stays a bottleneck, one control changed.
+    Notify(equipe_core::protocol::importance::NotifySettings),
     /// The squad's parallel work, a cap changed.
     Parallel(equipe_core::protocol::lanes::Parallel),
     /// A provider's form opened, by its preset.
@@ -900,6 +905,51 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
             let hours = if on { equipe_core::protocol::routines::IDLE_WAKE_HOURS } else { 0 };
             this.send_command(equipe_core::protocol::Command::SetIdleWake { squad, hours });
         }, cx);
+    // What stays a bottleneck is told once, kindly: only while it holds work up, never in quiet hours
+    // (the person's own time), and at most a few an hour. The thresholds are the PM's to change, or `equipe notify`.
+    let notify = model.notify.clone();
+    let offset = crate::status::utc_offset_secs(model.unix);
+    let changed = move |f: fn(&mut equipe_core::protocol::importance::NotifySettings, bool), on: bool| {
+        let mut set = notify.clone();
+        f(&mut set, on);
+        set.utc_offset_secs = Some(offset);
+        set
+    };
+    let escalate = {
+        let c = changed.clone();
+        Line::new(t!("settings.notify"), t!("settings.notify_desc")).words("notify escalate bottleneck blocked remind").switch(shell, "notify-on", model.notify.on, connected, move |this, on, _, _| {
+            let settings = c(|s, on| s.on = on, on);
+            this.send_command(equipe_core::protocol::Command::SetNotify { squad: this.model.squad.clone(), settings });
+        }, cx)
+    };
+    let urgent = {
+        let c = changed.clone();
+        Line::new(t!("settings.notify_urgent"), t!("settings.notify_urgent_desc")).words("notify urgent deploy only").switch(shell, "notify-urgent", model.notify.only == equipe_core::protocol::importance::Only::Urgent, connected && model.notify.on, move |this, on, _, _| {
+            let mut settings = c(|_, _| {}, on);
+            settings.only = if on { equipe_core::protocol::importance::Only::Urgent } else { equipe_core::protocol::importance::Only::Blocking };
+            this.send_command(equipe_core::protocol::Command::SetNotify { squad: this.model.squad.clone(), settings });
+        }, cx)
+    };
+    let quiet = {
+        let c = changed.clone();
+        Line::new(t!("settings.notify_quiet"), t!("settings.notify_quiet_desc")).words("notify quiet hours sleep night do not disturb").switch(shell, "notify-quiet", model.notify.quiet_on, connected && model.notify.on, move |this, on, _, _| {
+            let settings = c(|s, on| s.quiet_on = on, on);
+            this.send_command(equipe_core::protocol::Command::SetNotify { squad: this.model.squad.clone(), settings });
+        }, cx)
+    };
+    let quiet_from = Line::new(t!("settings.notify_quiet_from"), String::new())
+        .words("notify quiet from start")
+        .control(if connected && model.notify.quiet_on { picker(shell, Pop::QuietFrom, t!("settings.notify_quiet_from"), equipe_core::escalation::clock(model.notify.quiet_from), 96., cx) } else { value(p, equipe_core::escalation::clock(model.notify.quiet_from)) });
+    let quiet_to = Line::new(t!("settings.notify_quiet_to"), String::new())
+        .words("notify quiet until end")
+        .control(if connected && model.notify.quiet_on { picker(shell, Pop::QuietTo, t!("settings.notify_quiet_to"), equipe_core::escalation::clock(model.notify.quiet_to), 96., cx) } else { value(p, equipe_core::escalation::clock(model.notify.quiet_to)) });
+    let phone = {
+        let c = changed;
+        Line::new(t!("settings.notify_phone"), t!("settings.notify_phone_desc")).words("notify phone telegram").switch(shell, "notify-phone", model.notify.phone, connected && model.notify.on, move |this, on, _, _| {
+            let settings = c(|s, on| s.phone = on, on);
+            this.send_command(equipe_core::protocol::Command::SetNotify { squad: this.model.squad.clone(), settings });
+        }, cx)
+    };
     // How many helpers each member starts at a time for big work, where its
     // engine has them: each engine's own, said plainly, or the person's number.
     let set = model.subagents_at_once;
@@ -915,6 +965,7 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         // Its own card, so the footnote above reads as the PM's accepting alone.
         Section::new("", vec![idle_wake]),
         Section::new("", vec![subagents]).foot(t!("settings.subagents_at_once_foot")),
+        Section::new(t!("settings.section_notify"), vec![escalate, urgent, quiet, quiet_from, quiet_to, phone]).foot(t!("settings.notify_foot")),
         signals::section(shell, connected, cx),
         role_models(shell, connected, cx),
         Section::new(t!("settings.section_members"), lines).foot(t!("settings.team_foot")),
@@ -1499,6 +1550,22 @@ fn choices(shell: &Shell, pop: Pop) -> (f32, Vec<(String, String, bool, Act)>) {
             rows.extend(SUBAGENT_CHOICES.into_iter().map(|n| (n.to_string(), String::new(), now == Some(n), Act::Subagents(Some(n)))));
             (420., rows)
         }
+        Pop::QuietFrom | Pop::QuietTo => {
+            let now = model.notify.clone();
+            let at = if pop == Pop::QuietFrom { now.quiet_from } else { now.quiet_to };
+            let offset = crate::status::utc_offset_secs(model.unix);
+            let rows = (0..24u16)
+                .map(|hour| {
+                    let minutes = hour * 60;
+                    let mut set = now.clone();
+                    if pop == Pop::QuietFrom { set.quiet_from = minutes } else { set.quiet_to = minutes }
+                    // Quiet hours are the person's own time, whatever machine the daemon is on.
+                    set.utc_offset_secs = Some(offset);
+                    (equipe_core::escalation::clock(minutes), String::new(), at == minutes, Act::Notify(set))
+                })
+                .collect();
+            (120., rows)
+        }
         Pop::PerMember | Pop::PerEngine => {
             let now = model.parallel;
             let (mut caps, at) = if pop == Pop::PerMember { (switching::per_member_choices(), now.per_member) } else { (switching::PER_ENGINE_CHOICES.to_vec(), now.per_engine) };
@@ -1623,6 +1690,8 @@ fn pop_number(pop: Pop) -> u64 {
         Pop::RoleEffort(role) => 8 * (ROLE_ORDER.len() + ROLE_ORDER.iter().position(|r| *r == role).unwrap_or(0)) as u64,
         // Past every role's.
         Pop::AddProvider => 8 * (2 * ROLE_ORDER.len() as u64 + 1),
+        Pop::QuietFrom => 8 * (2 * ROLE_ORDER.len() as u64 + 4),
+        Pop::QuietTo => 8 * (2 * ROLE_ORDER.len() as u64 + 5),
     }
 }
 
@@ -1814,6 +1883,10 @@ impl Shell {
             Act::Subagents(at_once) => {
                 let squad = self.model.squad.clone();
                 self.send_command(Command::SetSubagentsAtOnce { squad, at_once });
+            }
+            Act::Notify(settings) => {
+                let squad = self.model.squad.clone();
+                self.send_command(Command::SetNotify { squad, settings });
             }
             Act::Parallel(parallel) => self.set_parallel(parallel, cx),
             Act::Mode(session, mode) => {

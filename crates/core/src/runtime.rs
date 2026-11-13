@@ -739,6 +739,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         auth: HashMap::new(),
         status_cache: Default::default(),
         status_told: HashMap::new(),
+        escalation: HashMap::new(),
         installs: std::collections::HashSet::new(),
         codex_binary: crate::engines::codex_binary(),
         engines: Default::default(),
@@ -1389,6 +1390,8 @@ struct Runtime {
     status_cache: status::Cache,
     /// When each squad's screens were last told its status changed.
     status_told: HashMap<String, std::time::Instant>,
+    /// Each squad's escalation of what stays a bottleneck ([`crate::escalation`]).
+    escalation: HashMap<String, crate::escalation::Planner>,
     /// Both engines' plans, and members moving between them (`engines`).
     engines: engines::Engines,
     /// Pacing to the plans' budgets, per squad and engine ([`pacing`]).
@@ -2665,6 +2668,7 @@ impl Runtime {
             Command::ApproveRoutine { squad, id } => self.approve_routine(&squad, id),
             Command::DeclineRoutine { squad, id } => self.decline_routine(&squad, id),
             Command::SetIdleWake { squad, hours } => self.set_idle_wake(&squad, hours).await,
+            Command::SetNotify { squad, settings } => self.set_notify(&squad, settings),
             Command::SetResting { squad, member, resting, stop } => self.set_resting(&squad, &member, resting, stop).await,
             Command::WatchTicket { squad, ticket, watch } => self.watch_ticket(&squad, ticket, watch),
             Command::SetSignalOn { squad, project, name, on } => self.set_signal_on(&squad, &project, &name, on),
@@ -4423,6 +4427,8 @@ runbooks and reports live there, and work across the projects or on running them
             .filter(|s| s.is_pm() && s.work.is_none() && about.is_none())
             .and_then(|s| s.squad.clone())
             .and_then(|squad| self.squad_overview(&squad));
+        // What waits on the person, the most blocking first: the PM reminds them of the right things.
+        let waiting = self.sessions.get(&id).filter(|s| s.is_pm() && s.work.is_none()).and_then(|s| s.squad.clone()).and_then(|squad| self.waiting_note(&squad));
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -4437,6 +4443,9 @@ runbooks and reports live there, and work across the projects or on running them
                 briefing.iter().map(|line| format!("- {line}")).collect::<Vec<_>>().join("\n")
             ),
         };
+        if let Some(waiting) = waiting {
+            prompt = format!("[equipe: {waiting}]\n\n{prompt}");
+        }
         // Read on the phone: the member answers for its screen. Before the
         // project's word, which opens the message as the conversation reads it.
         if session.on_phone {
@@ -9213,6 +9222,7 @@ it back there once they have done it.{again} End your turn now with a short line
             routines,
             routine_proposals,
             idle_wake_hours,
+            notify: self.journals.contains_key(squad).then(|| self.notify_settings(squad)),
             subagents_at_once,
             design_reviewer: self.journals.get(squad).map(Journal::design_reviewer).unwrap_or_default(),
             team_changes,

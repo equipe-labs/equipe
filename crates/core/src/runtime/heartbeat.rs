@@ -66,6 +66,41 @@ don't ask them in words meanwhile."
         self.brief_pm(squad, line, Some(shown));
     }
 
+    /// How `squad` escalates what stays a bottleneck: its own settings, else the person's default.
+    pub(super) fn notify_settings(&self, squad: &str) -> equipe_protocol::importance::NotifySettings {
+        crate::escalation::effective(&self.config.home, self.journals.get(squad).and_then(Journal::notify_settings))
+    }
+
+    /// The person sets how the squad escalates ([`Command::SetNotify`]): kept for the squad, told to the screens.
+    pub(super) fn set_notify(&mut self, squad: &str, settings: equipe_protocol::importance::NotifySettings) {
+        let Some(journal) = self.journal(squad) else { return };
+        if let Err(err) = journal.set_notify_settings(&settings) {
+            crate::daemon_log!("equipe: {squad}: the notification settings weren't kept: {err}");
+            return;
+        }
+        self.publish(Event::NotifyChanged { squad: squad.to_owned(), settings });
+    }
+
+    /// Each minute: what stays a bottleneck is told — once per level, never
+    /// in quiet hours, never past the hourly cap ([`crate::escalation`]) — to
+    /// every screen and paired phone; and the PM brings the longest-held up
+    /// to the person first in conversation.
+    pub(super) async fn tell_escalations(&mut self, squad: &str) {
+        let settings = self.notify_settings(squad);
+        let tickets = self.tickets(squad);
+        let asks = self.waiting_asks(squad);
+        let pm_accepts = self.journals.get(squad).is_none_or(Journal::pm_accepts);
+        let now = now_secs();
+        let items = crate::escalation::items_of(&crate::importance::waiting_list(&tickets, &asks, pm_accepts), now);
+        let notices = self.escalation.entry(squad.to_owned()).or_default().step(now, &items, &settings);
+        for notice in notices {
+            if let (Some(pm), Some(line)) = (self.pm_of(squad), crate::escalation::pm_line(&notice)) {
+                self.hand_to_pm(squad, pm, line).await;
+            }
+            self.publish(Event::Escalated { squad: squad.to_owned(), notice });
+        }
+    }
+
     /// The person's word, in a conversation of `session`'s squad: the board isn't idle.
     pub(super) fn note_person_active(&mut self, session: SessionId) {
         let Some(squad) = self.sessions.get(&session).and_then(|s| s.squad.clone()) else { return };
@@ -91,6 +126,7 @@ don't ask them in words meanwhile."
         let squads: Vec<String> = self.journals.keys().cloned().collect();
         for squad in squads {
             self.remind_of_reviews(&squad).await;
+            self.tell_escalations(&squad).await;
             self.ask_about_stale_waits(&squad).await;
             if !self.wake_if_idle(&squad).await {
                 self.ask_about_ideas(&squad).await;

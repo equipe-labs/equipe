@@ -222,6 +222,8 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     // A conversation being started shows as the first of the Conversations, selected.
     let new_on = false;
     let needs = model.needs_you_count();
+    // The count's color: attention when something waiting holds up urgent or high work.
+    let needs_hot = needs > 0 && model.needs_pressing();
     let working = model.tickets.iter().filter(|t| t.status == TicketStatus::InProgress).count();
     let risky = crate::board::progress(model, model.unix).risks.len();
     let progress_on = shell.screen == Screen::Progress;
@@ -256,7 +258,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             })
             .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(mark))
             .child(div().flex_1().min_w_0().truncate().text_color(if on { p.text } else { p.text2 }).child(label))
-            .when(badge > 0, |r| r.child(count_box().rounded(px(9.)).px(px(5.)).bg(p.orange).text_color(p.on_accent).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child(badge.to_string())))
+            .when(badge > 0, |r| r.child(count_box().rounded(px(9.)).px(px(5.)).bg(if id == "nav-inbox" && needs_hot { p.red } else { p.orange }).text_color(p.on_accent).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child(badge.to_string())))
             // A red dot once work under way needs a look, where a project's wait dot sits.
             .when(count > 0 || risky, |r| r.child(count_sign(risky.then(|| p.danger()), (count > 0).then_some(count), p)))
     };

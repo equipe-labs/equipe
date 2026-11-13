@@ -2457,11 +2457,18 @@ fn board_list(app: &App, theme: Theme, width: usize) -> Vec<(Line<'static>, Opti
     let order = app.board_order();
     let picked = app.selected_ticket().map(|t| t.id);
     let query = app.board_query();
+    // What waits for the person and holds other work up: its own part of the Inbox, first.
+    let blocking: std::collections::HashSet<_> = if app.board_menu == BoardMenu::Inbox && query.is_none() {
+        app.ticket_impacts(&app.needs_you()).into_iter().filter(|(_, i)| i.is_blocking()).map(|(id, _)| id).collect()
+    } else {
+        Default::default()
+    };
     let heading = |t: &equipe_core::protocol::Ticket| -> String {
         if let Some(q) = &query {
             return t!("view.heading_found", query = q);
         }
         match app.board_menu {
+            BoardMenu::Inbox if blocking.contains(&t.id) => t!("view.most_blocking").to_owned(),
             BoardMenu::Inbox => section_of(t).map_or_else(String::new, |s| s.label().to_owned()),
             BoardMenu::Working => status_word(TicketStatus::InProgress).to_owned(),
             BoardMenu::All if t.status.is_closed() => status_word(TicketStatus::Done).to_owned(),

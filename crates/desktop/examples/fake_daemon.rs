@@ -467,6 +467,9 @@ fn board() -> Vec<Ticket> {
     if crowd::on() {
         return crowd::tickets();
     }
+    if priority::on() {
+        return priority::tickets();
+    }
     let empty = std::env::var("FAKE_EMPTY").is_ok_and(|v| v == "1");
     let mut out = vec![
         ticket(47, "in_progress", "web", "frontend", "Product detail page image gallery", "A gallery with swipe and zoom.", &[], Some("equipe/t-47-gallery"), None),
@@ -934,7 +937,9 @@ fn tickets() -> &'static std::sync::Mutex<Vec<Ticket>> {
         let mut all = board();
         // How pressing, and when each last moved: a spread, as a real board has.
         for t in &mut all {
+            // `FAKE_PRIORITY=1` sets its own.
             t.priority = match t.id {
+                _ if priority::on() => t.priority,
                 42 | 55 | 72 => Priority::Urgent,
                 47 | 70 | 61 | 52 => Priority::High,
                 62 | 64 | 66 => Priority::Low,
@@ -1324,6 +1329,9 @@ mod signin;
 
 #[path = "fake_daemon/crowd.rs"]
 mod crowd;
+
+#[path = "fake_daemon/priority.rs"]
+mod priority;
 
 #[path = "fake_daemon/studio.rs"]
 mod studio;

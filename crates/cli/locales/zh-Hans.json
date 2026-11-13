@@ -1103,6 +1103,7 @@
   "view.writes": "写入 {files}",
   "view.your_turn_answer": "用 /answer T-{id} 逐项回答，或在看板上按 r",
   "view.your_turn_heading": "轮到你 · T-{id} · {title}",
+  "view.most_blocking": "阻塞最多",
   "demo.pm_added": "好的，我已把它作为 T-{id} 放上看板，交给 frontend。落地页（T-3）一完成就开始。",
   "demo.pm_reply_1": "目前进展：T-2（注册 API）等你审阅，T-3（落地页）正在进行，T-4 需要你提供支付服务商的测试 API 密钥。还要添加什么吗？",
   "demo.pm_reply_2": "只有 T-4 在等支付服务商的测试密钥，其他都在推进。有可以审阅的内容时我会告诉你。",
@@ -1480,5 +1481,9 @@
   "usage.change.time_to_done_median_secs": "完成用时,中位数",
   "usage.change.time_to_done_p75_secs": "完成用时,p75",
   "usage.change.turns_per_done": "每个完成工单的轮次",
-  "usage.change.tokens_per_done": "每个完成工单的 token"
+  "usage.change.tokens_per_done": "每个完成工单的 token",
+  "notify.source_squad": "这是 {squad} 自己的设置。",
+  "notify.source_default": "这是你的默认设置；{squad} 没有单独设置。",
+  "notify.saved_squad": "已为 {squad} 保存。",
+  "notify.saved_default": "已保存为所有没有单独设置的小队的默认值。"
 }

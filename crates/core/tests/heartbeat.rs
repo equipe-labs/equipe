@@ -212,6 +212,24 @@ async fn an_empty_quiet_board_wakes_the_pm_once_and_not_again_within_the_day() {
 }
 
 #[tokio::test]
+async fn the_squads_notification_settings_are_kept_told_to_the_screens_and_survive_a_restart() {
+    use equipe_core::protocol::importance::{NotifySettings, Only};
+    let (home, project) = quiet_squad();
+    let (handle, mut events) = runtime::start(config(&busy_claude(), &home));
+    start(&handle, &mut events, 1, "pm", &project).await;
+    assert_eq!(handle.snapshot("acme").await.notify, Some(NotifySettings::default()), "the built-in default until the person sets one");
+    let mine = NotifySettings { only: Only::Urgent, quiet_from: 22 * 60, ..NotifySettings::default() };
+    handle.send(Command::SetNotify { squad: "acme".into(), settings: mine.clone() });
+    let seen = until(&mut events, |e| matches!(e, Event::NotifyChanged { .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::NotifyChanged { settings, .. } if *settings == mine)), "{seen:#?}");
+    assert_eq!(handle.snapshot("acme").await.notify, Some(mine.clone()));
+    handle.shutdown().await;
+    let (again, _events) = runtime::start(config(&busy_claude(), &home));
+    assert_eq!(again.snapshot("acme").await.notify, Some(mine), "kept in the squad's journal");
+    again.shutdown().await;
+}
+
+#[tokio::test]
 async fn open_work_or_the_idle_wake_off_leaves_the_pm_alone() {
     // Off: the board quiet for days, and nobody is woken.
     let (home, project) = quiet_squad();
