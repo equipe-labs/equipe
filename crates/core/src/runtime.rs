@@ -52,6 +52,7 @@ use equipe_protocol::routines::Routine;
 use crate::squad_home;
 use crate::squad_memory;
 use crate::steers;
+use crate::tidy;
 use crate::watchdog;
 use crate::worktree::{self, Sandbox};
 
@@ -95,6 +96,7 @@ mod review;
 mod retro;
 mod watch;
 mod words;
+mod put_away;
 mod plan_use;
 mod helping;
 mod side_chat;
@@ -692,6 +694,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         approvals_asked: HashMap::new(),
         closed_seen: std::collections::HashSet::new(),
         lane_tmp_tidied: std::time::Instant::now(),
+        tidied_at: None,
         signals_running: std::collections::HashSet::new(),
         accepts: HashMap::new(),
         accepts_declined: HashMap::new(),
@@ -1305,6 +1308,8 @@ struct Runtime {
     closed_seen: std::collections::HashSet<(String, TicketId)>,
     /// When lanes' temporary folders were last tidied.
     lane_tmp_tidied: std::time::Instant,
+    /// When conversations were last tidied ([`tidy`]); `None`: not yet.
+    tidied_at: Option<std::time::Instant>,
     /// Signals whose command runs now, by squad and key (`signals`).
     signals_running: std::collections::HashSet<(String, String)>,
     /// Decisions in the person's words waiting on them (`words`).
@@ -1827,6 +1832,9 @@ impl Runtime {
         self.plan_use_pass();
         pulse.step("minute tick: idle lanes");
         self.fold_idle_lanes();
+        if self.config.persist && self.tidied_at.is_none_or(|at| at.elapsed() >= tidy::EVERY) {
+            self.tidy_conversations().await;
+        }
         self.trim_builds();
         self.expire_estimates();
         pulse.step("minute tick: idle browsers");
@@ -2599,6 +2607,8 @@ impl Runtime {
             Command::MoveConversation { session, project } => self.move_conversation(session, project),
             Command::RenameConversation { squad, session, title } => self.rename_conversation(&squad, session, &title),
             Command::CloseConversation { session } => self.close_conversation(session).await,
+            Command::PinConversation { session, pinned } => self.pin_conversation(session, pinned),
+            Command::SetAutoPutAway { squad, on } => self.set_auto_put_away(squad, on),
             Command::ReopenConversation { squad, session } => self.reopen_conversation(&squad, session),
             Command::Focus { squad, project } => match project {
                 Some(name) => {
@@ -4576,14 +4586,7 @@ for one project goes to it as tickets for its owners, with that project — and 
 
     /// A conversation with the PM put away: its turn stops, it leaves the list.
     async fn close_conversation(&mut self, id: SessionId) {
-        let Some(squad) = self.sessions.get(&id).filter(|s| s.kept).map(|s| s.squad.clone()) else { return };
-        if self.config.persist
-            && let Some(journal) = squad.as_deref().and_then(|q| journal_for(&mut self.journals, &self.config.home, q))
-        {
-            let _ = journal.close_conversation(id);
-        }
-        self.close(id).await;
-        if let Some(squad) = squad {
+        if let Some(squad) = self.put_one_away(id, false).await {
             self.publish_put_away(&squad);
         }
     }
@@ -8988,6 +8991,7 @@ it back there once they have done it.{again} End your turn now with a short line
             tickets.iter().rev().filter(|t| t.status.is_closed()).map(|t| t.id).take(CLOSED_TICKETS_SHOWN).collect();
         tickets.retain(|t| !t.status.is_closed() || recent_closed.contains(&t.id));
         watchdog::mark("snapshot: members");
+        let marks = self.journals.get(squad).and_then(|j| j.conversation_marks().ok()).unwrap_or_default();
         let mut sessions: Vec<SessionInfo> = self
             .sessions
             .iter()
@@ -9017,7 +9021,7 @@ it back there once they have done it.{again} End your turn now with a short line
                     queued_in: s.memo_threads.clone(),
                     steering: s.steering.clone(),
                     steering_in: s.steer_threads.clone(),
-                    lane: s.lane.clone().map(|(of, project)| equipe_protocol::Lane { of, project, kept: s.kept }),
+                    lane: s.lane.clone().map(|(of, project)| equipe_protocol::Lane { of, project, kept: s.kept, active: marks.get(&id).map_or(0, |m| m.0), pinned: marks.get(&id).is_some_and(|m| m.1) }),
                     run: s.run_of.zip(s.work.as_ref()).map(|(of, w)| equipe_protocol::RunOf { of, ticket: w.ticket, generation: w.execution_generation }),
                     estimate: s.estimate.clone().filter(|e| !e.is_empty()),
                     work: s.work.as_ref().map(|w| WorkInfo {
@@ -9113,6 +9117,7 @@ it back there once they have done it.{again} End your turn now with a short line
             disk: self.disk_for_snapshot(),
             words: Some(self.words_live(squad)),
             words_all: self.journals.get(squad).is_some_and(Journal::words_all),
+            auto_put_away_off: self.journals.get(squad).is_some_and(|j| !j.auto_put_away()),
         }
     }
 

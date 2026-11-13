@@ -1942,7 +1942,7 @@ mod tests {
     #[test]
     fn a_projects_conversations_put_away_are_its_ended_ones() {
         let mut m = Model::new("acme");
-        let away = |session, project: Option<&str>| equipe_core::protocol::PutAway { session, project: project.map(str::to_owned), title: None, at: 0 };
+        let away = |session, project: Option<&str>| equipe_core::protocol::PutAway { session, project: project.map(str::to_owned), title: None, at: 0, auto: false };
         m.put_away = vec![away(9, Some("web")), away(8, None), away(7, Some("app")), away(6, Some("web"))];
         assert_eq!(project_put_away(&m, "web").iter().map(|c| c.session).collect::<Vec<_>>(), [9, 6], "its own, the latest first");
         assert!(project_put_away(&m, "api").is_empty());
@@ -1960,6 +1960,7 @@ mod tests {
             kept: true,
             title: None,
             active,
+            pinned: false,
         };
         use crate::state::Presence;
         m.lanes = vec![lane(10, Some("web"), Presence::Ready, 5), lane(11, Some("web"), Presence::Working, 9), lane(12, Some("web"), Presence::Ready, 7), lane(13, Some("api"), Presence::Ready, 8), lane(14, None, Presence::Ready, 9)];

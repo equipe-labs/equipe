@@ -19,6 +19,7 @@ use equipe_core::protocol::{Engine, SessionId, TicketId, TicketStatus};
 use crate::convo::Sub;
 use crate::tips::TipExt as _;
 use gpui_kit::component::*;
+use gpui_kit::component::input::Input;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -734,16 +735,23 @@ const CONVERSATIONS_SHOWN: usize = 10;
 const LABEL_MAX: f32 = 84.;
 
 /// The "Conversations" section: every conversation the person opened with the
-/// PM, the most lately used first — one being started on top, selected — each
-/// naming its project when it has one. No conversation, no section.
+/// PM, the most lately used first and in the days they were last used (Today,
+/// Yesterday, Previous 7 days, Older) — one being started on top, selected —
+/// each naming its project when it has one. Under the heading, once equipe has
+/// put old ones away that day, a quiet note says how many. "Show all" opens
+/// the rest, and a filter over their titles. No conversation, no section.
 fn conversation_list(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
     let p = shell.palette;
     let model = &shell.model;
     let talks = model.conversations();
-    if talks.is_empty() && model.draft_talk.is_none() {
+    let away_today = crate::talk_days::put_away_today(&model.put_away, model.unix, crate::state::local_midnight);
+    if talks.is_empty() && model.draft_talk.is_none() && away_today == 0 {
         return Vec::new();
     }
     let mut rows = vec![heading_frame(p, "talks-heading").child(div().flex_1().child(t!("sidebar.conversations"))).into_any_element()];
+    if away_today > 0 {
+        rows.extend(tidied_note(shell, away_today, cx));
+    }
     if let Some((draft, about)) = &model.draft_talk {
         let on = shell.screen == Screen::Chat;
         let title: String = t!("sidebar.new_conversation").into();
@@ -758,11 +766,38 @@ fn conversation_list(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> 
         );
     }
     let all = shell.board.side_talks_all.contains("");
-    let shown = if all { talks.len() } else { talks.len().min(CONVERSATIONS_SHOWN) };
-    for lane in &talks[..shown] {
-        rows.push(conversation_row(shell, lane, cx));
+    let long = talks.len() > CONVERSATIONS_SHOWN;
+    // The full list can be filtered by title; what is typed counts only while it is open.
+    let typed = if all && long { shell.board.talks_filter.read(cx).value().to_string() } else { String::new() };
+    let filtering = !typed.trim().is_empty();
+    let untitled: String = t!("sidebar.new_conversation").into();
+    let pool = if filtering { crate::talk_days::matching(&talks, &typed, &untitled) } else { talks.clone() };
+    let shown = if all { pool.len() } else { pool.len().min(CONVERSATIONS_SHOWN) };
+    if all && long {
+        rows.push(
+            h_flex()
+                .mx_2()
+                .mb_1()
+                .px_2()
+                .h(px(26.))
+                .items_center()
+                .rounded(px(6.))
+                .bg(p.side_hover)
+                .text_size(px(12.))
+                .child(Input::new(&shell.board.talks_filter).appearance(false).bordered(false))
+                .into_any_element(),
+        );
     }
-    if talks.len() > CONVERSATIONS_SHOWN {
+    for (day, range) in crate::talk_days::groups(&pool, shown, model.unix, crate::state::local_midnight) {
+        rows.push(div().mx_2().px_2().pt(px(6.)).pb(px(2.)).text_size(px(11.)).text_color(p.muted).child(crate::i18n::catalog().get(day.label_key()).to_owned()).into_any_element());
+        for lane in &pool[range] {
+            rows.push(conversation_row(shell, lane, cx));
+        }
+    }
+    if filtering && pool.is_empty() {
+        rows.push(div().mx_2().px_2().py_1().text_size(px(12.)).text_color(p.muted).child(t!("sidebar.no_conversation_match")).into_any_element());
+    }
+    if long {
         let words = if all { t!("sidebar.fewer").to_owned() } else { t!("sidebar.show_all", n = talks.len()) };
         rows.push(
             row_shell(p, "talks-more", false)
@@ -782,6 +817,66 @@ fn conversation_list(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> 
     rows
 }
 
+/// "N older conversations put away · Show": one quiet line when equipe put
+/// old conversations away today. "Show" lists them (newest first) right
+/// under it, each taken up again with a click.
+fn tidied_note(shell: &Shell, n: usize, cx: &mut Context<Shell>) -> Vec<AnyElement> {
+    let p = shell.palette;
+    let open = shell.board.side_put_away_open;
+    let said = if n == 1 { t!("sidebar.tidied_one").to_owned() } else { t!("sidebar.tidied_many", n = n) };
+    let toggle = if open { t!("sidebar.tidied_hide") } else { t!("sidebar.tidied_show") };
+    let mut rows = vec![
+        h_flex()
+            .id("talks-tidied")
+            .mx_2()
+            .px_2()
+            .h(px(24.))
+            .gap(px(4.))
+            .items_center()
+            .text_size(px(12.))
+            .text_color(p.muted)
+            .aria_label(said.clone())
+            .child(div().flex_none().child(format!("{said} ·")))
+            .child(
+                div()
+                    .id("talks-tidied-show")
+                    .flex_none()
+                    .cursor_pointer()
+                    .text_color(p.text2)
+                    .hover(move |s| s.text_color(p.text))
+                    .role(Role::Button)
+                    .aria_label(toggle.to_string())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.board.side_put_away_open = !this.board.side_put_away_open;
+                        cx.notify();
+                    }))
+                    .child(toggle.to_string()),
+            )
+            .into_any_element(),
+    ];
+    if open {
+        for c in shell.model.put_away.iter().take(PUT_AWAY_ROWS) {
+            let id = c.session;
+            let title = c.title.clone().unwrap_or_else(|| t!("sidebar.new_conversation").into());
+            rows.push(
+                row_shell(p, ("conv-away-row", id as usize), false)
+                    .h(px(26.))
+                    .aria_label(title.clone())
+                    .tip(p, t!("project.reopen_tip"), None)
+                    .on_click(cx.listener(move |this, _, _, cx| this.reopen_conversation(id, cx)))
+                    .child(div().w(px(MARK_BOX)).flex_none())
+                    .child(row_title(p, title, false, true))
+                    .children(project_label(p, c.project.as_deref()))
+                    .into_any_element(),
+            );
+        }
+    }
+    rows
+}
+
+/// The conversations put away listed under the note at most.
+const PUT_AWAY_ROWS: usize = 12;
+
 /// The project a conversation is about, small and muted at its row's end.
 fn project_label(p: Palette, project: Option<&str>) -> Option<Div> {
     project.map(|name| div().flex_none().max_w(px(LABEL_MAX)).truncate().text_size(px(11.)).text_color(p.muted).child(name.to_owned()))
@@ -797,6 +892,7 @@ fn conversation_row(shell: &Shell, lane: &crate::state::Lane, cx: &mut Context<S
     let group = SharedString::from(format!("conv-{id}"));
     // A spinner while the PM answers, else an empty mark: every title starts at the nav's x.
     let mark = if lane.presence == crate::state::Presence::Working { mark_element(p, Mark::Spinner, shell.spin(cx)) } else { div().w(px(MARK_BOX)).h(px(MARK_BOX)).flex_none().into_any_element() };
+    let pinned = lane.pinned;
     let title = lane.title.clone().unwrap_or_else(|| t!("sidebar.new_conversation").into());
     let label = match &lane.project {
         Some(project) => format!("{title}, {project}"),
@@ -811,6 +907,26 @@ fn conversation_row(shell: &Shell, lane: &crate::state::Lane, cx: &mut Context<S
         .items_center()
         .invisible()
         .group_hover(group.clone(), |s| s.visible())
+        .child(
+            div()
+                .id(("conv-pin", id as usize))
+                .size(px(22.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.))
+                .bg(p.side_hover)
+                .hover(move |s| s.bg(p.side_sel))
+                .role(Role::Button)
+                .aria_label(if lane.pinned { t!("sidebar.unpin") } else { t!("sidebar.pin") })
+                .tip(p, if lane.pinned { t!("sidebar.unpin") } else { t!("sidebar.pin") }, None)
+                .child(crate::icons::icon(crate::icons::Icon::Pin, 12., if lane.pinned { p.text } else { p.muted }))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.pin_conversation(id, !pinned, cx);
+                })),
+        )
         .child(
             div()
                 .id(("conv-rename", id as usize))
@@ -863,7 +979,8 @@ fn conversation_row(shell: &Shell, lane: &crate::state::Lane, cx: &mut Context<S
         }))
         .child(mark)
         .child(row_title(p, title, on, false))
-        .children(project_label(p, lane.project.as_deref()).map(|label| label.group_hover(group, |s| s.invisible())))
+        .children(project_label(p, lane.project.as_deref()).map(|label| label.group_hover(group.clone(), |s| s.invisible())))
+        .children(pinned.then(|| div().flex_none().group_hover(group, |s| s.invisible()).child(crate::icons::icon(crate::icons::Icon::Pin, 11., p.muted))))
         .child(actions)
         .into_any_element()
 }
@@ -2420,6 +2537,16 @@ impl Shell {
     /// Put a conversation with the PM away: it leaves the list.
     pub fn put_away_conversation(&mut self, session: SessionId, cx: &mut Context<Self>) {
         self.send_command(equipe_core::protocol::Command::CloseConversation { session });
+        cx.notify();
+    }
+
+    /// Pin a conversation with the PM, or let it go: equipe never puts a
+    /// pinned one away by itself.
+    pub fn pin_conversation(&mut self, session: SessionId, pinned: bool, cx: &mut Context<Self>) {
+        self.send_command(equipe_core::protocol::Command::PinConversation { session, pinned });
+        if let Some(lane) = self.model.lanes.iter_mut().find(|l| l.session == session) {
+            lane.pinned = pinned;
+        }
         cx.notify();
     }
 

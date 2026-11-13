@@ -12,6 +12,7 @@
 //! `FAKE_PHONE_QA=<file>` ends the conversation on a phone test's report kept in that file;
 //! `FAKE_CROWD=1` has nearly every project wait on the person (`fake_daemon/crowd.rs`);
 //! `FAKE_BUSY=1` adds four members at work in web and more finished today;
+//! `FAKE_TALKS=1` adds 25 conversations of the person over the last weeks (`FAKE_TIDIED=<n>`: n put away today);
 //! `FAKE_RUNS=1` has frontend run three tickets at once (T-160 to T-162), each in a
 //! session of its own under it — one asking the person, one at rest (`FAKE_RUNS=<n>`: n of them);
 //! `FAKE_OLD_WAIT=1` has T-73 wait on the person for nine days (stale);
@@ -334,7 +335,7 @@ fn put_away() -> &'static std::sync::Mutex<Vec<equipe_core::protocol::PutAway>> 
     static AWAY: std::sync::OnceLock<std::sync::Mutex<Vec<equipe_core::protocol::PutAway>>> = std::sync::OnceLock::new();
     AWAY.get_or_init(|| {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or_default();
-        let away = |session, title: &str, ago: i64| equipe_core::protocol::PutAway { session, project: Some("web".into()), title: Some(title.into()), at: now - ago };
+        let away = |session, title: &str, ago: i64| equipe_core::protocol::PutAway { session, project: Some("web".into()), title: Some(title.into()), at: now - ago, auto: false };
         std::sync::Mutex::new(vec![away(90, "Polish the landing copy", 3 * 3600), away(91, "Find the cause of the payment error", 2 * 86400)])
     })
 }
@@ -691,6 +692,46 @@ fn close_questions(id: u64, answers: Option<Vec<Answer>>, events: &broadcast::Se
     let _ = events.send(Event::QuestionsClosed { squad: "demo".into(), id, answers });
     let _ = events.send(Event::UserMessage { session: set.session, text: text.clone(), kept: Vec::new() });
     Some((set.session, text))
+}
+
+/// `FAKE_TALKS=<n>` (`1`: 25): that many conversations the person opened with
+/// the PM, last used from minutes to weeks ago (today, yesterday, the week
+/// before, older), the newest pinned one among them; `FAKE_TIDIED=<n>`: n older
+/// ones equipe put away today. For the sidebar's day groups and its quiet note.
+fn talks() -> usize {
+    match std::env::var("FAKE_TALKS").ok().and_then(|v| v.parse::<usize>().ok()) {
+        Some(1) => 25,
+        Some(n) => n,
+        None => 0,
+    }
+}
+
+fn tidied() -> usize {
+    std::env::var("FAKE_TIDIED").ok().and_then(|v| v.parse().ok()).unwrap_or(0)
+}
+
+const TALK_TITLES: [&str; 25] = [
+    "Pricing page copy", "Login redirect loop", "Weekly status for the team", "Invoice export format", "Onboarding checklist",
+    "Why is the build slow", "Dark mode contrast", "Release notes for Friday", "Search result ordering", "Rename the settings tab",
+    "Cache headers on the CDN", "Plan the mobile launch", "Fix the signup email", "Review the pull request flow", "Landing page hero",
+    "Customer interview notes", "Billing webhook retries", "Accessibility pass", "Idea: team digest", "Migrate the old docs",
+    "Holiday schedule", "Crash on first launch", "Competitor comparison", "API rate limits", "New conversation",
+];
+
+/// The conversations of `FAKE_TALKS`: a day each in turn, newest first.
+fn talk_sessions(now: u64) -> Vec<SessionInfo> {
+    let midnight = equipe_providers::platform::local_midnight(now).filter(|m| *m <= now).unwrap_or(now - now % 86_400);
+    // How many days ago each was last used.
+    let days = [0, 0, 0, 0, 1, 1, 1, 2, 3, 3, 4, 5, 5, 6, 6, 8, 10, 12, 15, 19, 24, 28, 33, 38, 45];
+    (0..talks().min(TALK_TITLES.len())).map(|i| {
+        let ago = days[i];
+        let active = if ago == 0 { midnight + (now - midnight) * (4 - i as u64) / 5 } else { midnight - (ago - 1) * 86_400 - 3_600 * (2 + (i as u64 * 3) % 18) };
+        let mut s = info(100 + i as u64, "pm", vec![Entry::User { text: TALK_TITLES[i].into(), kept: Vec::new() }, Entry::Reply { text: "Sure.".into() }]);
+        s.title = (i != 24).then(|| TALK_TITLES[i].to_owned());
+        s.lane = Some(equipe_core::protocol::Lane { of: 1, project: [None, Some("web".to_owned()), Some("api".to_owned())][i % 3].clone(), kept: true, active, pinned: i == 5 });
+        s.recent_at = vec![Some(active), Some(active)];
+        s
+    }).collect()
 }
 
 /// `FAKE_BUSY=1`: four more members, each at work on a web ticket, and more
@@ -1644,6 +1685,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 tokio::spawn(orchestra::play(events.clone()));
                             }
                         }
+                        sessions.extend(talk_sessions(unix()));
                         switching::mix(&mut sessions);
                         moved::dress(&mut sessions);
                         if moved::plays() {
@@ -1709,7 +1751,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             browsers_shown: true,
                             disk: disk::status(),
                             reviews: reviews(),
-                            put_away: put_away().lock().unwrap().clone(),
+                            put_away: (0..tidied()).map(|i| equipe_core::protocol::PutAway { session: 200 + i as u64, project: None, title: Some(TALK_TITLES[(i * 7 + 3) % 25].into()), at: unix() as i64 - 600 - 900 * i as i64, auto: true }).chain(put_away().lock().unwrap().clone()).collect(),
                             words: Some(waiting_words),
                             words_all: words::all(),
                             ..Default::default()
@@ -1945,6 +1987,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 routes.lock().await.kept.remove(&session);
                                 let _ = events.send(Event::SessionClosed { session });
                             }
+                            Command::PinConversation { session, pinned } => drop(events.send(Event::ConversationPinned { session, pinned })),
+                            Command::SetAutoPutAway { squad, on } => drop(events.send(Event::AutoPutAwayChanged { squad, on })),
                             Command::ReopenConversation { squad, session } => {
                                 let back = {
                                     let mut away = put_away().lock().unwrap();

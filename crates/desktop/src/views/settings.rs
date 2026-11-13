@@ -707,6 +707,7 @@ fn squad(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         .control(ui::button(p, "open-disk", Kind::Secondary, t!("settings.disk_open")).icon(Icon::Server).disabled(!connected).on_click(cx.listener(|this, _, window, cx| this.open_disk(window, cx))));
 
     let suggestions = Line::new(t!("settings.suggestions"), t!("settings.suggestions_desc")).words("suggest").switch(shell, "suggestions", !model.suggestions_off, connected, |this, on, _, _| this.set_suggestions(on), cx);
+    let tidy = Line::new(t!("settings.auto_put_away"), t!("settings.auto_put_away_desc")).words("tidy conversations put away old history pin").switch(shell, "auto-put-away", model.auto_put_away, connected, |this, on, _, _| this.set_auto_put_away(on), cx);
     let screen = Line::new(t!("settings.mac_screen"), t!("settings.mac_screen_desc")).words("desktop computer use /desktop").switch(shell, "desktop", !model.desktop_stopped, connected, |this, on, _, _| this.set_desktop_open(on), cx);
     // The squad itself, deleted: asked first (`views/delete_squad.rs`).
     let delete = Line::new(t!("settings.delete_squad"), t!("settings.delete_squad_desc", name = model.squad)).words(t!("settings.delete_squad_words")).control(
@@ -716,7 +717,7 @@ fn squad(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         Section::new(t!("settings.section_connection"), vec![squad, machine, connection]).foot(t!("settings.connection_foot")),
         phones(shell, connected, cx),
         Section::new(t!("settings.section_daemon"), vec![daemon_version, restart, disk]),
-        Section::new(t!("settings.section_squad"), vec![suggestions, screen, delete]).foot(t!("settings.squad_foot")),
+        Section::new(t!("settings.section_squad"), vec![suggestions, tidy, screen, delete]).foot(t!("settings.squad_foot")),
         desktop_apps(shell, connected, cx),
     ]
 }
@@ -1911,6 +1912,11 @@ impl Shell {
     pub fn set_suggestions(&mut self, on: bool) {
         self.send_command(Command::Suggestions { squad: self.model.squad.clone(), on });
         self.model.suggestions_off = !on;
+    }
+
+    pub fn set_auto_put_away(&mut self, on: bool) {
+        self.send_command(Command::SetAutoPutAway { squad: self.model.squad.clone(), on });
+        self.model.auto_put_away = on;
     }
 
     pub fn set_browsers_shown(&mut self, show: bool) {

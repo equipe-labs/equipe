@@ -6464,3 +6464,113 @@ async fn members_run_on_the_standard_window_unless_the_squad_or_the_ticket_asks_
     assert_eq!(window_notes(&notes).last().map(String::as_str), Some("[]"));
     handle.shutdown().await;
 }
+
+/// Backdate what the journal kept about conversations: `(id, seconds ago)`,
+/// for the conversation itself and each line said in it.
+fn age_conversations(home: &Path, ages: &[(u64, i64)]) {
+    let db = rusqlite::Connection::open(journal::squad_dir(home, "acme").join("squad.db")).unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    for &(id, ago) in ages {
+        db.execute("UPDATE conversations SET updated_at = ?1 WHERE id = ?2", rusqlite::params![now - ago, id as i64]).unwrap();
+        db.execute("UPDATE entries SET at = ?1 WHERE session = ?2", rusqlite::params![now - ago, id as i64]).unwrap();
+    }
+}
+
+const HOUR: i64 = 60 * 60;
+const DAY: i64 = 24 * HOUR;
+
+#[tokio::test]
+async fn conversations_left_alone_are_put_away_by_equipe_and_nothing_else_is() {
+    let site = named("site");
+    let (claude, _) = recording_claude(&answering_per_call("ok"));
+    let home = squad_home(&[&site]);
+    {
+        let (handle, mut events) = runtime::start(config(&claude, &home, true));
+        add(&handle, &mut events, 1, member(&site, "pm")).await;
+        // 50: said, long quiet. 51: the same, pinned. 52: said, a day ago.
+        for id in [50, 51, 52] {
+            handle.send(Command::NewConversation { squad: "acme".into(), session: id, project: None });
+            until(&mut events, |e| matches!(e, Event::LaneOpened { session, .. } if *session == id)).await;
+            handle.send(Command::Submit { session: id, text: format!("about {id}"), about: None });
+            until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == id)).await;
+        }
+        // 53: an empty draft two days old. 54: one an hour old.
+        for id in [53, 54] {
+            handle.send(Command::NewConversation { squad: "acme".into(), session: id, project: None });
+            until(&mut events, |e| matches!(e, Event::LaneOpened { session, .. } if *session == id)).await;
+        }
+        handle.send(Command::PinConversation { session: 51, pinned: true });
+        until(&mut events, |e| matches!(e, Event::ConversationPinned { session: 51, pinned: true })).await;
+        handle.shutdown().await;
+    }
+    age_conversations(&home, &[(50, 4 * DAY), (51, 4 * DAY), (52, DAY), (53, 2 * DAY), (54, HOUR)]);
+
+    // At start the daemon looks once.
+    let (handle, mut events) = runtime::start(config(&claude, &home, true));
+    let seen = until(&mut events, |e| matches!(e, Event::PutAwayChanged { .. })).await;
+    let Some(Event::PutAwayChanged { list, .. }) = seen.last() else { panic!("{seen:#?}") };
+    let mut away: Vec<_> = list.iter().map(|c| (c.session, c.auto)).collect();
+    away.sort();
+    assert_eq!(away, [(50, true), (53, true)], "the long quiet and the old empty draft, recorded as equipe's doing");
+    let snapshot = handle.snapshot("acme").await;
+    let mut kept: Vec<_> = snapshot.sessions.iter().filter_map(|s| s.lane.as_ref().map(|l| (s.session, l.pinned, l.active > 0))).collect();
+    kept.sort();
+    assert_eq!(kept, [(51, true, true), (52, false, true), (54, false, true)], "pinned, recent and fresh stay; each says when it was last used");
+
+    // Put away is not deleted: it comes back.
+    handle.send(Command::ReopenConversation { squad: "acme".into(), session: 50 });
+    until(&mut events, |e| matches!(e, Event::ConversationBack { session: 50, .. })).await;
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn with_tidying_off_nothing_is_put_away() {
+    let site = named("site");
+    let (claude, _) = recording_claude(&answering_per_call("ok"));
+    let home = squad_home(&[&site]);
+    {
+        let (handle, mut events) = runtime::start(config(&claude, &home, true));
+        add(&handle, &mut events, 1, member(&site, "pm")).await;
+        handle.send(Command::NewConversation { squad: "acme".into(), session: 50, project: None });
+        until(&mut events, |e| matches!(e, Event::LaneOpened { session: 50, .. })).await;
+        handle.send(Command::Submit { session: 50, text: "about 50".into(), about: None });
+        until(&mut events, |e| matches!(e, Event::TurnEnded { session: 50, .. })).await;
+        assert!(!handle.snapshot("acme").await.auto_put_away_off, "on unless turned off");
+        handle.send(Command::SetAutoPutAway { squad: "acme".into(), on: false });
+        until(&mut events, |e| matches!(e, Event::AutoPutAwayChanged { on: false, .. })).await;
+        handle.shutdown().await;
+    }
+    age_conversations(&home, &[(50, 30 * DAY)]);
+    let (handle, _events) = runtime::start(config(&claude, &home, true));
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let snapshot = handle.snapshot("acme").await;
+    assert!(snapshot.auto_put_away_off);
+    assert!(snapshot.sessions.iter().any(|s| s.session == 50) && snapshot.put_away.is_empty(), "a month old, and still on the list");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_conversation_whose_first_turn_failed_is_named_after_the_persons_first_words() {
+    let site = named("site");
+    let claude = fake_claude(true, "exit 1");
+    let home = squad_home(&[&site]);
+    {
+        let (handle, mut events) = runtime::start(config(&claude, &home, true));
+        add(&handle, &mut events, 1, member(&site, "pm")).await;
+        handle.send(Command::NewConversation { squad: "acme".into(), session: 50, project: None });
+        until(&mut events, |e| matches!(e, Event::LaneOpened { session: 50, .. })).await;
+        handle.send(Command::Submit { session: 50, text: "Fix the checkout total.\nIt shows tax twice.".into(), about: None });
+        until(&mut events, |e| matches!(e, Event::TurnEnded { session: 50, .. })).await;
+        handle.shutdown().await;
+    }
+    // Just now: the engine's name may still come.
+    let (handle, _events) = runtime::start(config(&claude, &home, true));
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(handle.snapshot("acme").await.sessions.iter().find(|s| s.session == 50).is_some_and(|s| s.title.is_none()));
+    handle.shutdown().await;
+
+    age_conversations(&home, &[(50, 2 * HOUR)]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, true));
+    until(&mut events, |e| matches!(e, Event::ConversationTitle { session: 50, title, named: false } if title == "Fix the checkout total")).await;
+    handle.shutdown().await;
+}
