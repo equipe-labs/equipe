@@ -106,6 +106,7 @@ mod call;
 mod tiers;
 mod workspace;
 mod turn_end;
+mod status;
 pub use hygiene::{NATIVE_DESK_TOKENS, NATIVE_TICKET_TOKENS, ROTATE_DESK_TOKENS, ROTATE_TICKET_TOKENS, wants_large_window};
 pub use turn_end::turn_ending;
 use turn_end::{RunEnd, TurnEnds, TurnWatch};
@@ -266,6 +267,8 @@ enum Request {
     Busy(oneshot::Sender<equipe_protocol::rpc::Busy>),
     /// What uses the disk (`equipe disk`).
     Disk(oneshot::Sender<crate::disk::DiskReport>),
+    /// A squad's status at a glance (`squad_status`).
+    Status(equipe_protocol::status::StatusAsk, oneshot::Sender<Result<equipe_protocol::status::SquadStatus, String>>),
     /// Give back these items of the disk (`equipe disk clean`).
     DiskClean(Vec<String>, oneshot::Sender<crate::disk::DiskCleaned>),
     PersonWindow(String, oneshot::Sender<bool>),
@@ -504,6 +507,17 @@ impl Handle {
         tokio::time::timeout(crate::disk::SCAN_BUDGET * 2, rx).await.ok()?.ok()
     }
 
+    /// A squad's status at a glance: kept for [`crate::status::CACHE_FOR`], read
+    /// from its journal off the loop. `Err` says why not (no such squad).
+    pub async fn squad_status(&self, ask: equipe_protocol::status::StatusAsk) -> Result<equipe_protocol::status::SquadStatus, String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.requests.send(Request::Status(ask, tx));
+        match tokio::time::timeout(ANSWER_WAIT * 4, rx).await {
+            Ok(answer) => answer.unwrap_or_else(|_| Err("the daemon didn't answer".to_owned())),
+            Err(_) => Err("the daemon didn't answer".to_owned()),
+        }
+    }
+
     /// Give back these items of the disk, those still safe to remove.
     pub async fn disk_clean(&self, ids: Vec<String>) -> Option<crate::disk::DiskCleaned> {
         let (tx, rx) = oneshot::channel();
@@ -715,6 +729,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         next_sign_in: 1,
         sign_in_codes: HashMap::new(),
         auth: HashMap::new(),
+        status_cache: Default::default(),
+        status_told: HashMap::new(),
         installs: std::collections::HashSet::new(),
         codex_binary: crate::engines::codex_binary(),
         engines: Default::default(),
@@ -1357,6 +1373,11 @@ struct Runtime {
     installs: std::collections::HashSet<Engine>,
     /// The `codex` the person's Codex sign-in runs.
     codex_binary: String,
+    /// Squads' statuses as last worked out, for [`crate::status::CACHE_FOR`]
+    /// (`runtime/status.rs`).
+    status_cache: status::Cache,
+    /// When each squad's screens were last told its status changed.
+    status_told: HashMap<String, std::time::Instant>,
     /// Both engines' plans, and members moving between them (`engines`).
     engines: engines::Engines,
     /// Failing engines, per ticket and per squad ([`turn_end`]).
@@ -1447,6 +1468,7 @@ impl Wake {
             Wake::Request(Some(Request::DesktopGate(..))) => Borrowed("desktop gate"),
             Wake::Request(Some(Request::DesktopTool(..))) => Borrowed("desktop tool"),
             Wake::Request(Some(Request::Busy(_))) => Borrowed("busy"),
+            Wake::Request(Some(Request::Status(..))) => Borrowed("a squad's status"),
             Wake::Request(Some(Request::PersonWindow(..))) => Borrowed("person's browser window"),
             Wake::Request(Some(Request::SignIn(..))) => Borrowed("person's sign-in"),
             Wake::Request(Some(Request::BrowserHub(_))) => Borrowed("browser panel"),
@@ -1646,6 +1668,7 @@ impl Runtime {
                 Some(Request::Desktop(request)) => self.on_desktop(request),
                 Some(Request::Phone(request)) => self.on_phone(request),
                 Some(Request::Disk(reply)) => self.disk_report(Some(reply), false),
+                Some(Request::Status(ask, reply)) => self.squad_status(ask, reply),
                 Some(Request::DiskClean(ids, reply)) => self.disk_clean(ids, Some(reply)),
                 Some(Request::Usage(engine, usage)) => {
                     self.publish(Event::PlanUsage { usage, engine });
@@ -2602,6 +2625,7 @@ impl Runtime {
             Command::DeclineRoutine { squad, id } => self.decline_routine(&squad, id),
             Command::SetIdleWake { squad, hours } => self.set_idle_wake(&squad, hours).await,
             Command::SetResting { squad, member, resting, stop } => self.set_resting(&squad, &member, resting, stop).await,
+            Command::WatchTicket { squad, ticket, watch } => self.watch_ticket(&squad, ticket, watch),
             Command::SetSignalOn { squad, project, name, on } => self.set_signal_on(&squad, &project, &name, on),
             Command::NewConversation { squad, session, project } => self.new_conversation(&squad, session, project),
             Command::MoveConversation { session, project } => self.move_conversation(session, project),

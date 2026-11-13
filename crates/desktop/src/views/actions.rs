@@ -54,6 +54,7 @@ impl Shell {
             Effect::ShowBoard => self.show(Screen::Board, cx),
             Effect::ShowDesign => self.open_design(cx),
             Effect::ShowMetrics => self.open_metrics(cx),
+            Effect::ShowStatus => self.open_status(cx),
             Effect::ShowLogins => self.open_logins(cx),
             Effect::SignIn(site) => self.open_sign_in(Some(site), window, cx),
             Effect::Find(words) => self.board_find(&words, cx),

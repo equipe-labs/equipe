@@ -275,6 +275,21 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 this.open_side_menu(Menu::Inbox, cx);
             }
         })))
+        // How the squad's work goes, at a glance: its dot says so (green, amber, red). Hidden
+        // while the daemon is one that predates the request.
+        .children(shell.status.offered().then(|| {
+            let on = shell.screen == Screen::Status;
+            let color = shell.status.mood(&model.squad).map_or(p.muted, |m| super::status::mood_color(p, m));
+            let mark = div().size(px(9.)).flex_none().rounded_full().bg(color).into_any_element();
+            let tip = shell.status.of(&model.squad).map(crate::status::headline);
+            nav("nav-status", mark, t!("status.title").into(), 0, 0, false, on)
+                .when_some(tip, |r, tip| r.tip_at(p, tip, None, gpui_kit::base::Placement::Right))
+                .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
+                    if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Status, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
+                        this.open_status(cx);
+                    }
+                }))
+        }))
         .child(
             nav("nav-working", glyph(IconName::LoaderCircle, progress_on), t!("progress.title").into(), 0, working, risky > 0, progress_on)
                 .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
@@ -2710,6 +2725,7 @@ impl Shell {
             Screen::Metrics => self.open_metrics(cx),
             Screen::Progress => self.open_progress(cx),
             Screen::Usage => self.open_usage(cx),
+            Screen::Status => self.open_status(cx),
             Screen::Logins => self.open_logins(cx),
             Screen::Orchestration => self.open_orchestra(cx),
             Screen::Docs => self.open_docs(cx),

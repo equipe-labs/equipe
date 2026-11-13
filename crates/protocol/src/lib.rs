@@ -31,6 +31,7 @@ pub mod routines;
 pub mod secrets;
 pub mod side_chat;
 pub mod signals;
+pub mod status;
 
 /// How many subagents Claude Code runs at once on its own
 /// (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` unset): what a Claude Code member
@@ -1180,6 +1181,10 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         stop: bool,
     },
+    /// The person pins a ticket to watch on the Status screen, or lets it go.
+    /// Kept in the squad's journal; only ever the person's. The Status
+    /// screen's next answer ([`rpc::SQUAD_STATUS`]) lists it.
+    WatchTicket { squad: SquadName, ticket: TicketId, watch: bool },
     /// The person saves a login for members to sign in with (new, or a
     /// change): its password to the Keychain, the rest to every screen
     /// ([`Event::Logins`]).
@@ -2945,6 +2950,12 @@ pub enum Event {
     IdleWakeChanged { squad: SquadName, hours: u32 },
     /// The members resting now, by name ([`Command::SetResting`]).
     RestingChanged { squad: SquadName, resting: Vec<String> },
+    /// Something that changes how the squad's work goes happened — its
+    /// breaker opened or closed, a run was paused or went on, a ticket was
+    /// pinned to watch: a screen showing the Status asks again
+    /// ([`rpc::SQUAD_STATUS`]) rather than wait for its next poll. Carries no
+    /// figures; at most one every couple of seconds.
+    StatusChanged { squad: SquadName },
     /// How many subagents a member runs at once now ([`Command::SetSubagentsAtOnce`]);
     /// `None`: each engine's own.
     SubagentsAtOnceChanged { squad: SquadName, at_once: Option<u32> },
@@ -3090,6 +3101,7 @@ impl Event {
             | Event::RoutineProposalClosed { squad, .. }
             | Event::IdleWakeChanged { squad, .. }
             | Event::RestingChanged { squad, .. }
+            | Event::StatusChanged { squad }
             | Event::SubagentsAtOnceChanged { squad, .. }
             | Event::ParallelChanged { squad, .. }
             | Event::ModelChoiceChanged { squad, .. }
@@ -3192,6 +3204,7 @@ impl Event {
             | Event::RoutineProposalClosed { .. }
             | Event::IdleWakeChanged { .. }
             | Event::RestingChanged { .. }
+            | Event::StatusChanged { .. }
             | Event::SubagentsAtOnceChanged { .. }
             | Event::ParallelChanged { .. }
             | Event::ModelChoiceChanged { .. }

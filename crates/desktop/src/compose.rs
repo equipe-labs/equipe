@@ -418,6 +418,7 @@ pub enum Effect {
     ShowDesign,
     /// Metrics (`/metrics`).
     ShowMetrics,
+    ShowStatus,
     /// Logins (`/logins`).
     ShowLogins,
     /// Sign in to a site in equipe's own browser (`/sign-in [site]`).
@@ -619,6 +620,7 @@ fn slash(model: &Model, command: &str) -> Plan {
         "disk" => Plan { effect: Some(Effect::Disk), ..Plan::default() },
         "design" => Plan { effect: Some(Effect::ShowDesign), ..Plan::default() },
         "metrics" => Plan { effect: Some(Effect::ShowMetrics), ..Plan::default() },
+        "status" => Plan { effect: Some(Effect::ShowStatus), ..Plan::default() },
         "logins" => Plan { effect: Some(Effect::ShowLogins), ..Plan::default() },
         "sign-in" => Plan { effect: Some(Effect::SignIn(rest.to_owned())), ..Plan::default() },
         "find" => Plan { effect: Some(Effect::Find(rest.to_owned())), ..Plan::default() },
@@ -1575,6 +1577,7 @@ mod tests {
         assert_eq!(plan(&model, "/board").effect, Some(Effect::ShowBoard));
         assert_eq!(plan(&model, "/design").effect, Some(Effect::ShowDesign));
         assert_eq!(plan(&model, "/metrics").effect, Some(Effect::ShowMetrics));
+        assert_eq!(plan(&model, "/status").effect, Some(Effect::ShowStatus));
         assert_eq!(plan(&model, "/logins").effect, Some(Effect::ShowLogins));
         assert_eq!(plan(&model, "/sign-in").effect, Some(Effect::SignIn(String::new())));
         assert_eq!(plan(&model, "/sign-in github.com").effect, Some(Effect::SignIn("github.com".into())));

@@ -40,6 +40,7 @@ pub mod pair;
 pub mod peek;
 pub mod orchestra;
 pub mod progress;
+pub mod status;
 pub mod project;
 pub mod quote;
 pub mod rename;

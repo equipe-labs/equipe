@@ -1282,6 +1282,8 @@ mod engines;
 mod disk;
 #[path = "fake_daemon/plan_use.rs"]
 mod plan_use;
+#[path = "fake_daemon/status.rs"]
+mod status;
 #[path = "fake_daemon/command.rs"]
 mod command;
 #[path = "fake_daemon/helpers.rs"]
@@ -1776,6 +1778,15 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         }
                         return browser::serve_stream(lines.into_inner(), writer, events.clone()).await;
                     }
+                    // How the squad's work goes, in the mode `FAKE_STATUS` names; `old` doesn't know the request.
+                    (Some(rpc::SQUAD_STATUS), Some(id)) => {
+                        let ask: equipe_core::protocol::status::StatusAsk = message.params_as().unwrap();
+                        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                        let reply = if status::old() { Message::failure(id, -32601, "unknown method") } else { Message::response(id, status::status(&ask.squad, now)) };
+                        if writer.write_all(reply.to_line().as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
                     // What deleting the squad would give back: made-up sizes.
                     (Some(rpc::SQUAD_FOOTPRINT), Some(id)) => {
                         let footprint = rpc::SquadFootprint { freed: 12_400_000_000, kept: 41_000_000, complete: true };
@@ -1903,6 +1914,10 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             }
                             Command::SetWordsAll { on, .. } => {
                                 words::set_all(on, &events);
+                                continue;
+                            }
+                            Command::WatchTicket { ticket, watch, .. } => {
+                                status::pin(ticket, watch);
                                 continue;
                             }
                             other => other,

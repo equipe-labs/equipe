@@ -2319,6 +2319,20 @@ pub fn properties(shell: &Shell, t: &Ticket, compact: bool, width: f32, cx: &mut
     if !compact {
         rows.push(row(t!("tickets.prop_kind"), prop(EditKind::Kind, div().into_any_element(), equipe_core::i18n::label::kind(crate::i18n::lang(), t.kind).to_owned(), cx)));
     }
+    // Watched on the Status screen: pinned there by the person, who sees how it goes at a glance.
+    if shell.status.offered() && can {
+        let on = shell.status.pinned(id);
+        let key = SharedString::from(format!("page-watch-{id}"));
+        let toggle = pill(p, key, true)
+            .child(super::sidebar::icon(IconName::Eye, 13., if on { p.text } else { p.muted }))
+            .child(div().min_w_0().truncate().text_color(if on { p.text } else { p.text2 }).child(if on { t!("status.watching") } else { t!("status.watch") }))
+            .tip(p, t!("status.watch_tip"), None)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let watch = !this.status.pinned(id);
+                this.watch_ticket(id, watch, cx);
+            }));
+        rows.push(row(t!("status.prop_watch"), toggle.into_any_element()));
+    }
     // Its model and effort, and why — raised, lowered or pinned by the person.
     if let Some(line) = rules::model_line(t) {
         let pinned = t.model.as_ref().is_some_and(|m| m.pinned);

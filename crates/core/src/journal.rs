@@ -905,6 +905,22 @@ impl Journal {
         Ok(members)
     }
 
+    /// The tickets the person pinned to watch on the Status screen, in the
+    /// order they pinned them.
+    pub fn watched(&self) -> Vec<TicketId> {
+        self.meta("watched").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    /// Pin `ticket` to watch, or let it go; the tickets pinned after.
+    pub fn set_watched(&self, ticket: TicketId, on: bool) -> Result<Vec<TicketId>> {
+        let mut pinned: Vec<TicketId> = self.watched().into_iter().filter(|t| *t != ticket).collect();
+        if on {
+            pinned.push(ticket);
+        }
+        self.set_meta("watched", &serde_json::json!(pinned).to_string())?;
+        Ok(pinned)
+    }
+
     /// When the PM was last asked about the person's stale waits (unix seconds).
     pub fn stale_waits_asked_at(&self) -> Option<u64> {
         self.meta("stale_waits_asked_at").and_then(|at| at.parse().ok())

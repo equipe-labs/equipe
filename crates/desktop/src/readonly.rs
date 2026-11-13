@@ -156,6 +156,7 @@ pub fn reads(command: &Command) -> bool {
         | C::SetSignalOn { .. }
         | C::SetIdleWake { .. }
         | C::SetResting { .. }
+        | C::WatchTicket { .. }
         | C::SaveLogin { .. }
         | C::DeleteLogin { .. }
         | C::ForgetLoginAllowance { .. }
@@ -249,6 +250,7 @@ pub const READ_METHODS: &[&str] = &[
     rpc::DISK,
     rpc::SQUAD_FOOTPRINT,
     rpc::USAGE,
+    rpc::SQUAD_STATUS,
     rpc::READ_UPLOAD,
     rpc::READ_IMAGE,
     rpc::LIST_IMAGES,
@@ -575,6 +577,7 @@ mod tests {
             Command::SetSignalOn { squad: s(), project: "p".into(), name: "n".into(), on: false },
             Command::SetIdleWake { squad: s(), hours: 0 },
             Command::SetResting { squad: s(), member: "qa".into(), resting: true, stop: false },
+            Command::WatchTicket { squad: s(), ticket: 3, watch: true },
             Command::SaveLogin { draft: login },
             Command::DeleteLogin { id: 1 },
             Command::ForgetLoginAllowance { id: 1, who: "acme/pm".into() },
@@ -724,7 +727,7 @@ mod tests {
 
     #[test]
     fn only_requests_that_read_go() {
-        for method in [rpc::HELLO, rpc::SQUADS, rpc::USAGE, rpc::READ_IMAGE, rpc::LIST_IMAGES, rpc::DESIGN_STUDIO, rpc::READ_UPLOAD, rpc::PERSON_LOOK, metrics::QUERY, metrics::SUMMARY, metrics::SOURCES] {
+        for method in [rpc::HELLO, rpc::SQUADS, rpc::USAGE, rpc::SQUAD_STATUS, rpc::READ_IMAGE, rpc::LIST_IMAGES, rpc::DESIGN_STUDIO, rpc::READ_UPLOAD, rpc::PERSON_LOOK, metrics::QUERY, metrics::SUMMARY, metrics::SOURCES] {
             assert!(reads_method(method), "{method}");
         }
         // The real view tells no look of its own: it isn't the person's screen.

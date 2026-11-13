@@ -1772,6 +1772,7 @@ impl App {
                 | Event::RoutineProposalClosed { .. }
                 | Event::IdleWakeChanged { .. }
                 | Event::RestingChanged { .. }
+                | Event::StatusChanged { .. }
                 | Event::SignalsChanged { .. }
                 | Event::Logins { .. }
                 | Event::Autopilot { .. }

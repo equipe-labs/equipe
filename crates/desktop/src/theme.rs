@@ -390,6 +390,11 @@ impl Palette {
         rgb(0xA9A7A1)
     }
 
+    /// All good: the green of the members' palette, one lightness for both appearances' text.
+    pub fn good(&self) -> Rgba {
+        self.members[3]
+    }
+
     /// What went wrong: the status red, one red for both.
     pub fn danger(&self) -> Rgba {
         self.red
