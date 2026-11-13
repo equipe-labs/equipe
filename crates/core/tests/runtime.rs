@@ -4368,7 +4368,7 @@ async fn a_member_hands_its_browser_to_the_panel_of_a_screen_on_another_mac_and_
     let all = calls(&recorded);
     assert_eq!(all.len(), before + 1, "one turn, without the person typing a word");
     let prompt = arg(all.last().unwrap(), "-p").unwrap();
-    assert!(prompt.contains("handed it back") && prompt.contains(why), "{prompt}");
+    assert!(prompt.contains("pressed Done") && prompt.contains(why), "{prompt}");
 
     // The person closes a tab of pm's: pm's conversation says so.
     handle.send(Command::BrowserCloseTab { page: 9_000_001 });
