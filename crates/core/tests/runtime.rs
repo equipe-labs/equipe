@@ -6116,3 +6116,351 @@ async fn a_lane_works_in_a_temporary_folder_of_its_own_that_goes_with_its_ticket
     assert!(desk.is_dir(), "a desk's folder isn't a ticket's to clear");
     let _ = (theirs.kill(), theirs.wait());
 }
+
+// ── context hygiene: fresh sessions at a budget, capped tool answers, obsolete tickets ──
+
+/// A turn that reports `used` tokens of context in a 1M window — a long conversation
+/// that hasn't come near its window, which only the token budget catches.
+fn answering_in_a_long_window(text: &str, used: u64) -> String {
+    format!(
+        r#"cat <<EOF
+{{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}}
+{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{text}"}}],"usage":{{"input_tokens":5,"cache_read_input_tokens":{used},"cache_creation_input_tokens":0,"output_tokens":0}}}}}}
+{{"type":"result","subtype":"success","is_error":false,"result":"{text}","usage":{{"input_tokens":5,"cache_read_input_tokens":{used},"output_tokens":2}},"modelUsage":{{"claude-test":{{"contextWindow":1000000}}}}}}
+EOF"#
+    )
+}
+
+const ROTATED: &str = "Context refreshed: continued in a fresh session with a summary";
+
+fn rotated(events: &[Event]) -> usize {
+    events.iter().filter(|e| matches!(e, Event::Notice { text, .. } if text.contains(ROTATED))).count()
+}
+
+async fn say_to(handle: &Handle, events: &mut UnboundedReceiver<Event>, session: u64, text: &str) -> Vec<Event> {
+    handle.send(Command::Submit { session, text: text.into(), about: None });
+    until(events, |e| matches!(e, Event::TurnEnded { session: s, .. } if *s == session)).await
+}
+
+#[tokio::test]
+async fn a_desk_conversation_at_its_token_budget_goes_on_in_a_fresh_session_opened_with_a_packet() {
+    let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
+    let (claude, recorded) = recording_claude(&answering_in_a_long_window("Noted: Postgres it is.", 260_000));
+    let (handle, mut events) = runtime::start(Config { persist: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+
+    // 26% of a 1M window: far from full, over the desk's 250k budget.
+    let first = say_to(&handle, &mut events, 1, "which database for the API?").await;
+    assert_eq!(rotated(&first), 0, "the first turn has no conversation to refresh");
+    let second = say_to(&handle, &mut events, 1, "and the pricing page?").await;
+    assert_eq!(rotated(&second), 1, "{second:#?}");
+    let call = calls(&recorded).pop().unwrap();
+    assert_eq!(arg(&call, "--resume"), None, "a fresh engine session, not the old one");
+    let prompt = arg(&call, "-p").unwrap();
+    // The packet: the last exchanges verbatim, then the person's new message.
+    assert!(prompt.contains("fresh session of the same conversation") && prompt.contains("260k tokens"), "{prompt}");
+    assert!(prompt.contains("which database for the API?") && prompt.contains("Noted: Postgres it is."), "{prompt}");
+    assert!(prompt.ends_with("and the pricing page?"), "{prompt}");
+    // Counted for the usage report.
+    let counted = Journal::for_squad(&home, "acme").unwrap().rotations_since(0).unwrap();
+    assert_eq!(counted, vec![("desk".to_owned(), 1, 260_005)]);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_conversation_under_its_budget_keeps_its_session() {
+    let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
+    let (claude, recorded) = recording_claude(&answering_in_a_long_window("ok", 100_000));
+    let (handle, mut events) = runtime::start(Config { persist: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    say_to(&handle, &mut events, 1, "first").await;
+    let second = say_to(&handle, &mut events, 1, "second").await;
+    assert_eq!(rotated(&second), 0);
+    let call = calls(&recorded).pop().unwrap();
+    assert_eq!(arg(&call, "--resume"), Some("sess-1"), "the same conversation goes on");
+    assert!(!arg(&call, "-p").unwrap().contains("fresh session"));
+    assert!(Journal::for_squad(&home, "acme").unwrap().rotations_since(0).unwrap().is_empty());
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn with_rotation_off_a_long_conversation_goes_on_as_before() {
+    let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
+    Journal::for_squad(&home, "acme").unwrap().set_context_rotation(false).unwrap();
+    let (claude, recorded) = recording_claude(&answering_in_a_long_window("ok", 400_000));
+    let (handle, mut events) = runtime::start(Config { persist: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    say_to(&handle, &mut events, 1, "first").await;
+    let second = say_to(&handle, &mut events, 1, "second").await;
+    assert_eq!(rotated(&second), 0, "{second:#?}");
+    assert_eq!(arg(&calls(&recorded).pop().unwrap(), "--resume"), Some("sess-1"));
+    // Turned back on, it rotates at the next turn.
+    Journal::for_squad(&home, "acme").unwrap().set_context_rotation(true).unwrap();
+    let third = say_to(&handle, &mut events, 1, "third").await;
+    assert_eq!(rotated(&third), 1);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn nothing_rotates_while_a_question_waits_on_the_person_and_it_does_once_answered() {
+    let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
+    let (claude, recorded) = recording_claude(&answering_in_a_long_window("ok", 400_000));
+    let (handle, mut events) = runtime::start(Config { persist: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    say_to(&handle, &mut events, 1, "first").await;
+    let asked = tool(&handle, "pm", "ask_decision", serde_json::json!({ "questions": [{ "question": "Which store?", "options": ["Redis", "SQLite"] }] })).await;
+    assert!(!asked.is_error, "{asked:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await;
+    let set = seen.iter().find_map(|e| if let Event::QuestionsAsked { questions, .. } = e { Some(questions.clone()) } else { None }).unwrap();
+
+    // Over budget, but a question is open: the same session.
+    let during = say_to(&handle, &mut events, 1, "meanwhile, status?").await;
+    assert_eq!(rotated(&during), 0, "{during:#?}");
+    assert_eq!(arg(&calls(&recorded).pop().unwrap(), "--resume"), Some("sess-1"));
+
+    // Answered: the next turn may refresh.
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: vec![equipe_core::protocol::decide::Answer { picked: vec![0], ..Default::default() }], about: None });
+    let after = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    assert_eq!(rotated(&after), 1, "{after:#?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn nothing_rotates_in_the_middle_of_a_turn() {
+    let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
+    // A turn that takes a moment, reporting a long context when it ends.
+    let (claude, _recorded) = recording_claude(&format!("case \"$*\" in *slow*) sleep 2;; esac\n{}", answering_in_a_long_window("ok", 400_000)));
+    let (handle, mut events) = runtime::start(Config { persist: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    say_to(&handle, &mut events, 1, "first").await;
+    // The second turn starts afresh (400k over budget) and runs slowly; the
+    // person speaks while it works — read by the running turn, not a new session.
+    handle.send(Command::Submit { session: 1, text: "slow second".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains(ROTATED))).await;
+    handle.send(Command::Submit { session: 1, text: "one more thing".into(), about: None });
+    let rest = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    assert_eq!(rotated(&rest), 0, "no second refresh inside the turn: {rest:#?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_ticket_conversation_over_its_budget_is_refreshed_with_the_ticket_its_criteria_and_the_last_exchanges() {
+    let repo = repo();
+    let home = squad_home(&[&repo]);
+    let (claude, recorded) = recording_claude(&answering_in_a_long_window("Wired the limiter in src/login.rs; tests next.", 320_000));
+    let (handle, mut events) = runtime::start(Config { persist: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    let body = "Rate limit the login.\n\nAcceptance criteria:\n- five tries a minute per address\n- tests pass";
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Login limiter", "body": body, "owner": "frontend" })).await;
+    let run = run_in(&until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await, 2);
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == run)).await;
+
+    // The run's context is 320k, over the ticket budget of 300k: its next turn opens fresh.
+    handle.send(Command::Submit { session: run, text: "go on with the tests".into(), about: None });
+    let seen = until(&mut events, |e| rotated(std::slice::from_ref(e)) == 1).await;
+    assert_eq!(rotated(&seen), 1);
+    let call = latest_call(&recorded, |p| p.contains("fresh session") && p.ends_with("go on with the tests")).await;
+    assert_eq!(arg(&call, "--resume"), None, "a fresh engine session on the ticket");
+    let prompt = arg(&call, "-p").unwrap();
+    assert!(prompt.contains("fresh session of the same conversation"), "{prompt}");
+    assert!(prompt.contains("T-1 Login limiter") && prompt.contains("five tries a minute per address") && prompt.contains("tests pass"), "the ticket and its criteria: {prompt}");
+    assert!(prompt.contains("Wired the limiter in src/login.rs"), "the last exchange: {prompt}");
+    assert!(prompt.contains("the worktree is exactly as you left it"), "nothing moved: {prompt}");
+    assert!(prompt.ends_with("go on with the tests") && prompt.matches("go on with the tests").count() == 1, "the message follows the packet once: {prompt}");
+    // The ticket's own record, and the usage report's count.
+    let journal = Journal::for_squad(&home, "acme").unwrap();
+    assert!(journal.ticket_history(1).unwrap().iter().any(|(_, kind, _)| kind == "context refreshed"));
+    assert!(journal.rotations_since(0).unwrap().iter().any(|(kind, n, _)| kind == "ticket" && *n >= 1));
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_long_board_comes_in_pages_each_within_the_cap() {
+    let repo = repo();
+    let home = squad_home(&[&repo]);
+    let (claude, _recorded) = recording_claude(&answering("ok"));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    // Ideas wait on nothing: a board of 400 tickets, each with a long body in its note.
+    for n in 0..400 {
+        let made = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": format!("Idea number {n} for the roadmap: {}", "a long title ".repeat(10)), "body": "-", "idea": true })).await;
+        assert!(!made.is_error, "{made:?}");
+    }
+    let page = tool(&handle, "pm", "board", serde_json::json!({})).await;
+    assert!(!page.is_error);
+    assert!(page.text.contains("more open ticket(s) not shown") && page.text.contains("call `board` with `after: "), "{}", page.text);
+    assert!(equipe_core::tool_cap::tokens_of(&page.text) <= equipe_core::tool_cap::MAX_TOOL_TOKENS + 100, "{} tokens", equipe_core::tool_cap::tokens_of(&page.text));
+    let last: u32 = page.text.rsplit("`after: ").next().unwrap().split(['`', ',']).next().unwrap().parse().unwrap();
+    let next = tool(&handle, "pm", "board", serde_json::json!({ "after": last })).await;
+    assert!(next.text.contains(&format!("T-{}", last + 1)) && !next.text.contains(&format!("T-{last} ")), "{}", next.text);
+    // The status filter narrows it.
+    let todos = tool(&handle, "pm", "board", serde_json::json!({ "status": "todo" })).await;
+    assert!(todos.text.contains("No open ticket is todo."), "{}", todos.text);
+    handle.shutdown().await;
+}
+
+/// Put `title` on the board for `owner` as a code ticket of the PM's.
+async fn put_on_board(handle: &Handle, title: &str, owner: &str, depends_on: &[u32]) -> String {
+    let made = tool(handle, "pm", "create_ticket", serde_json::json!({ "title": title, "body": "-", "owner": owner, "depends_on": depends_on })).await;
+    assert!(!made.is_error, "{made:?}");
+    made.text
+}
+
+#[tokio::test]
+async fn a_ticket_whose_blocker_was_cancelled_is_held_for_the_pm_until_the_pm_confirms() {
+    let repo = repo();
+    let home = squad_home(&[&repo]);
+    let (claude, recorded) = recording_claude(&format!("case \"$*\" in *\"You're on T-\"*) exec sleep 30;; esac\n{}", answering("ok")));
+    let (handle, mut events) = runtime::start(Config { persist: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    // T-1 is for a role nobody on the squad holds; T-2 waits for it.
+    put_on_board(&handle, "Fix the merge conflicts in the login branch", "qa", &[]).await;
+    put_on_board(&handle, "Integrate the login branch after the conflict fix", "frontend", &[1]).await;
+    let dropped = tool(&handle, "pm", "update_ticket", serde_json::json!({ "id": 1, "status": "cancelled" })).await;
+    assert!(!dropped.is_error, "{dropped:?}");
+
+    // Not started: held, told to the PM once.
+    let held = until(&mut events, |e| matches!(e, Event::Notice { session: 1, text, .. } if text.contains("was held, not started"))).await;
+    assert!(matches!(held.last(), Some(Event::Notice { text, .. }) if text.contains("T-2") && text.contains("T-1, which it waits on, was cancelled")), "{held:#?}");
+    assert!(!within(&mut events, 600).await.iter().any(|e| matches!(e, Event::WorkStarted { .. })), "T-2 must not start");
+    let journal = Journal::for_squad(&home, "acme").unwrap();
+    assert!(journal.ticket_history(2).unwrap().iter().any(|(_, kind, _)| kind == "held for the PM"));
+    // It is on the PM's brief, for its next message.
+    say_to(&handle, &mut events, 1, "status?").await;
+    let prompt = calls(&recorded).into_iter().rev().find_map(|c| arg(&c, "-p").filter(|p| p.contains("status?")).map(str::to_owned)).unwrap();
+    assert!(prompt.contains("T-2 \"Integrate the login branch after the conflict fix\" was held, not started"), "{prompt}");
+
+    // The PM confirms by touching the ticket: it starts.
+    let confirmed = tool(&handle, "pm", "update_ticket", serde_json::json!({ "id": 2 })).await;
+    assert!(!confirmed.is_error, "{confirmed:?}");
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_second_ticket_with_the_same_title_is_held_and_one_that_only_looks_alike_is_not() {
+    let repo = repo();
+    let home = squad_home(&[&repo]);
+    let (claude, _recorded) = recording_claude(&format!("case \"$*\" in *\"You're on T-\"*) exec sleep 30;; esac\n{}", answering("ok")));
+    let (handle, mut events) = runtime::start(Config { persist: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    put_on_board(&handle, "Rate limit the login endpoint", "frontend", &[]).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+
+    // The same title, differently written, while the first is under way: held.
+    put_on_board(&handle, "  rate-limit the LOGIN endpoint ", "frontend", &[]).await;
+    let held = until(&mut events, |e| matches!(e, Event::Notice { session: 1, text, .. } if text.contains("was held, not started"))).await;
+    assert!(matches!(held.last(), Some(Event::Notice { text, .. }) if text.contains("T-1 has the same title")), "{held:#?}");
+    assert!(!within(&mut events, 600).await.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })));
+
+    // A different ticket on a like subject is no twin: it starts.
+    put_on_board(&handle, "Rate limit the signup endpoint", "frontend", &[]).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 3, .. })).await;
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn with_the_obsolete_check_off_a_twin_starts_as_before() {
+    let repo = repo();
+    let home = squad_home(&[&repo]);
+    Journal::for_squad(&home, "acme").unwrap().set_context_obsolete_check(false).unwrap();
+    let (claude, _recorded) = recording_claude(&format!("case \"$*\" in *\"You're on T-\"*) exec sleep 30;; esac\n{}", answering("ok")));
+    let (handle, mut events) = runtime::start(Config { persist: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    put_on_board(&handle, "Rate limit the login endpoint", "frontend", &[]).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    put_on_board(&handle, "Rate limit the login endpoint", "frontend", &[]).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_run_whose_ticket_is_cancelled_by_any_path_is_stopped_and_its_session_closed() {
+    let repo = repo();
+    let home = squad_home(&[&repo]);
+    let (claude, _recorded) = recording_claude(&format!("case \"$*\" in *\"You're on T-\"*) exec sleep 30;; esac\n{}", answering("ok")));
+    let (handle, mut events) = runtime::start(Config { persist: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    put_on_board(&handle, "Hero", "frontend", &[]).await;
+    let run = run_in(&until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await, 2);
+
+    // The person's cancel stops it at once.
+    handle.send(Command::Cancel { squad: "acme".into(), ticket: 1 });
+    let seen = until(&mut events, |e| matches!(e, Event::SessionClosed { session } if *session == run)).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::WorkEnded { ticket: 1, .. })), "{seen:#?}");
+
+    // A ticket cancelled behind the runtime's back (another process writing the
+    // journal) is caught the next time the board is looked at.
+    put_on_board(&handle, "Footer", "frontend", &[]).await;
+    let run = run_in(&until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await, 2);
+    let journal = Journal::for_squad(&home, "acme").unwrap();
+    let mut footer = journal.ticket(2).unwrap().unwrap();
+    footer.status = TicketStatus::Cancelled;
+    journal.save_ticket(&footer).unwrap();
+    tool(&handle, "pm", "board", serde_json::json!({})).await;
+    let seen = until(&mut events, |e| matches!(e, Event::SessionClosed { session } if *session == run)).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::WorkEnded { ticket: 2, .. })), "{seen:#?}");
+    assert!(journal.ticket_history(2).unwrap().iter().any(|(_, kind, _)| kind == "stopped early"));
+    handle.shutdown().await;
+}
+
+// ── the standard window, and the engines' own compaction as a backstop ──
+
+/// A turn that writes down whether the 1M window was left out for it.
+fn noting_the_window(file: &Path, turn: &str) -> String {
+    format!("printf '[%s]\\n' \"$CLAUDE_CODE_DISABLE_1M_CONTEXT\" >> '{}'\n{turn}", file.display())
+}
+
+fn window_notes(file: &Path) -> Vec<String> {
+    std::fs::read_to_string(file).unwrap_or_default().lines().map(str::to_owned).collect()
+}
+
+#[tokio::test]
+async fn members_run_on_the_standard_window_unless_the_squad_or_the_ticket_asks_for_the_large_one() {
+    let repo = repo();
+    let home = squad_home(&[&repo]);
+    let notes = scratch("window").join("notes");
+    let (claude, recorded) = recording_claude(&noting_the_window(&notes, &answering("ok")));
+    let (handle, mut events) = runtime::start(Config { persist: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+
+    // The standard window: Claude Code is told to leave its 1M variants out, so its own compaction comes early.
+    say_to(&handle, &mut events, 1, "first").await;
+    assert_eq!(window_notes(&notes), ["[1]"]);
+    assert!(!calls(&recorded).pop().unwrap().iter().any(|a| a == "--autocompact"), "nothing to say about a window it doesn't have");
+
+    // The squad allows the large window: not left out, and Claude Code's own compaction asked for at the desk's budget.
+    let journal = Journal::for_squad(&home, "acme").unwrap();
+    journal.set_context_window_large(true).unwrap();
+    say_to(&handle, &mut events, 1, "second").await;
+    assert_eq!(window_notes(&notes), ["[1]", "[]"]);
+    assert_eq!(arg(&calls(&recorded).pop().unwrap(), "--autocompact"), Some("300000"));
+
+    // Native compaction off: no window flag either.
+    journal.set_context_native_compact(false).unwrap();
+    say_to(&handle, &mut events, 1, "third").await;
+    assert!(!calls(&recorded).pop().unwrap().iter().any(|a| a == "--autocompact"));
+
+    // Back to standard; a ticket that says it needs the large window gets it, alone.
+    journal.set_context_window_large(false).unwrap();
+    journal.set_context_native_compact(true).unwrap();
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    let body = "Integrate the big branch.\n\ncontext: large\n\nAcceptance: it merges.";
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Integrate the big branch", "body": body, "owner": "frontend" })).await;
+    let run = run_in(&until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await, 2);
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == run)).await;
+    let call = latest_call(&recorded, |p| p.contains("You're on T-1")).await;
+    assert_eq!(arg(&call, "--autocompact"), Some("360000"), "a ticket's budget");
+    assert_eq!(window_notes(&notes).last().map(String::as_str), Some("[]"));
+    handle.shutdown().await;
+}

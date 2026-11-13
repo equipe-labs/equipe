@@ -646,6 +646,12 @@ impl Journal {
             "CREATE TABLE IF NOT EXISTS turn_endings (at INTEGER NOT NULL, kind TEXT NOT NULL, ticket INTEGER, member TEXT)",
             [],
         );
+        // Conversations that went on in a fresh engine session at a context
+        // budget (`crate::runtime`'s `hygiene`): counted for the usage report.
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS context_rotations (at INTEGER NOT NULL, session INTEGER NOT NULL, member TEXT, ticket INTEGER, kind TEXT NOT NULL, tokens INTEGER NOT NULL)",
+            [],
+        );
         // Work sent back, and why: what decides whether a stronger model would
         // help (`tiers::after_send_back`). Send-backs from before have none:
         // none counted.
@@ -1363,6 +1369,78 @@ impl Journal {
     pub fn turn_endings_since(&self, since: u64) -> Result<Vec<(String, u64)>> {
         let mut stmt = self.conn.prepare("SELECT kind, COUNT(*) FROM turn_endings WHERE at >= ?1 GROUP BY kind ORDER BY COUNT(*) DESC, kind")?;
         let rows = stmt.query_map([since as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.max(0) as u64)))?;
+        rows.collect()
+    }
+
+    /// Whether the squad's long conversations go on in a fresh engine session
+    /// at a context budget (`equipe context-config --rotation`); on unless set off.
+    pub fn context_rotation(&self) -> bool {
+        self.meta("context_rotation").is_none_or(|v| v != "off")
+    }
+
+    pub fn set_context_rotation(&self, on: bool) -> Result<()> {
+        self.set_meta("context_rotation", if on { "on" } else { "off" })
+    }
+
+    /// Whether equipe's own tools cap very long answers
+    /// (`equipe context-config --tool-caps`); on unless set off.
+    pub fn context_tool_caps(&self) -> bool {
+        self.meta("context_tool_caps").is_none_or(|v| v != "off")
+    }
+
+    pub fn set_context_tool_caps(&self, on: bool) -> Result<()> {
+        self.set_meta("context_tool_caps", if on { "on" } else { "off" })
+    }
+
+    /// Whether a ticket whose blockers were cancelled, or that repeats another
+    /// open one, is held for the PM before it starts, and a run is stopped when
+    /// its ticket is cancelled (`equipe context-config --obsolete-check`); on unless set off.
+    pub fn context_obsolete_check(&self) -> bool {
+        self.meta("context_obsolete_check").is_none_or(|v| v != "off")
+    }
+
+    pub fn set_context_obsolete_check(&self, on: bool) -> Result<()> {
+        self.set_meta("context_obsolete_check", if on { "on" } else { "off" })
+    }
+
+    /// Whether the engines' own auto-compaction is asked to start at the
+    /// squad's context budgets (`equipe context-config --native-compact`); on unless set off.
+    pub fn context_native_compact(&self) -> bool {
+        self.meta("context_native_compact").is_none_or(|v| v != "off")
+    }
+
+    pub fn set_context_native_compact(&self, on: bool) -> Result<()> {
+        self.set_meta("context_native_compact", if on { "on" } else { "off" })
+    }
+
+    /// Whether members may run on a 1M-token context window: `false` (the
+    /// standard window, so the engine's own compaction comes early) unless the
+    /// squad said `large` (`equipe context-config --window large`). A ticket
+    /// can ask for it alone ([`crate::runtime::wants_large_window`]).
+    pub fn context_window_large(&self) -> bool {
+        self.meta("context_window").is_some_and(|v| v == "large")
+    }
+
+    pub fn set_context_window_large(&self, large: bool) -> Result<()> {
+        self.set_meta("context_window", if large { "large" } else { "standard" })
+    }
+
+    /// Keep a rotation: conversation `session` went on in a fresh engine
+    /// session at `tokens` of context (`kind`: `desk` or `ticket`).
+    pub fn record_rotation(&self, session: SessionId, member: Option<&str>, ticket: Option<TicketId>, kind: &str, tokens: u64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO context_rotations (at, session, member, ticket, kind, tokens) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![now(), session as i64, member, ticket, kind, tokens as i64],
+        )?;
+        self.conn.execute("DELETE FROM context_rotations WHERE at < ?1", [now() - KEPT_FOR_RETROS])?;
+        Ok(())
+    }
+
+    /// The rotations since `since`, by kind: how many, and the context they
+    /// started from, in all.
+    pub fn rotations_since(&self, since: u64) -> Result<Vec<(String, u64, u64)>> {
+        let mut stmt = self.conn.prepare("SELECT kind, COUNT(*), COALESCE(SUM(tokens), 0) FROM context_rotations WHERE at >= ?1 GROUP BY kind ORDER BY kind")?;
+        let rows = stmt.query_map([since as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.max(0) as u64, r.get::<_, i64>(2)?.max(0) as u64)))?;
         rows.collect()
     }
 
@@ -3676,6 +3754,33 @@ mod tests {
         j.set_stalled_checkout(8, Some("abc1234"), Some(3)).unwrap();
         let stalled = j.execution(8).unwrap().unwrap();
         assert_eq!((stalled.reason.as_deref(), stalled.head.as_deref(), stalled.dirty), (Some(equipe_protocol::stall_reason::NOT_RESUMED), Some("abc1234"), Some(3)));
+    }
+
+    #[test]
+    fn the_context_settings_default_on_and_each_can_be_turned_off() {
+        let home = std::env::temp_dir().join(format!("equipe-ctx-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        assert!(j.context_rotation() && j.context_tool_caps() && j.context_obsolete_check());
+        j.set_context_rotation(false).unwrap();
+        assert!(!j.context_rotation() && j.context_tool_caps() && j.context_obsolete_check());
+        j.set_context_tool_caps(false).unwrap();
+        j.set_context_obsolete_check(false).unwrap();
+        j.set_context_rotation(true).unwrap();
+        assert!(j.context_rotation() && !j.context_tool_caps() && !j.context_obsolete_check());
+    }
+
+    #[test]
+    fn rotations_are_kept_and_counted_by_kind() {
+        let home = std::env::temp_dir().join(format!("equipe-rot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        assert!(j.rotations_since(0).unwrap().is_empty());
+        j.record_rotation(1, Some("pm"), None, "desk", 260_000).unwrap();
+        j.record_rotation(1, Some("pm"), None, "desk", 270_000).unwrap();
+        j.record_rotation(5, Some("backend"), Some(42), "ticket", 310_000).unwrap();
+        assert_eq!(j.rotations_since(0).unwrap(), vec![("desk".to_owned(), 2, 530_000), ("ticket".to_owned(), 1, 310_000)]);
+        assert!(j.rotations_since(now() as u64 + 10).unwrap().is_empty());
     }
 
     #[test]

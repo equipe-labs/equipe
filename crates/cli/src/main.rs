@@ -11,6 +11,7 @@ mod attach;
 mod brief;
 mod call_sim;
 mod clip;
+mod context;
 mod daemon;
 mod design;
 mod design_lint;
@@ -324,6 +325,11 @@ enum Command {
         #[arg(long, short)]
         yes: bool,
     },
+    /// How equipe keeps what members read short: fresh sessions for long
+    /// conversations, caps on very long tool answers, a look at obsolete
+    /// tickets before they start — all on; turn each off per squad
+    #[command(name = "context-config")]
+    ContextConfig(context::ContextConfigArgs),
     /// The background daemon the team lives in
     Daemon {
         #[command(subcommand)]
@@ -590,6 +596,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Credential { kind, name } => logins::credential(&kind, &name).map_err(Failure::new),
         Command::CallSim { squad, no_llm } => call_sim::run(squad, no_llm).await.map_err(Failure::new),
         Command::Disk { words, squad, yes } => disk::command(&words, squad, yes).await.map_err(Failure::new),
+        Command::ContextConfig(args) => context::command(args).map_err(Failure::new),
         Command::Update => update().await,
         Command::Lang { lang } => match lang::command(&equipe_providers::credentials::equipe_home(), lang.as_deref()) {
             Ok(lines) => {
@@ -877,17 +884,21 @@ async fn serve_mcp(server: &str, squad: String, member: String, role: String, ho
             Step::Reply(reply) => reply,
             // A designer's reference tools run here, outside its engine's sandbox.
             Step::Call { id, name, arguments } if !desktop && !phone && name == equipe_core::board::DESIGN_TOOLS => {
-                mcp::call_reply(id, &design_taste::from_board(&socket, &home, &squad, &member, run, &arguments).await)
+                let result = design_taste::from_board(&socket, &home, &squad, &member, run, &arguments).await;
+                mcp::call_reply(id, &capped(&home, &squad, &name, result))
             }
             // Pictures a light design QA session asks for: found by the daemon, rendered here when they must be.
             Step::Call { id, name, arguments } if qa_lite && name == equipe_core::board::QA_PICTURES => {
-                mcp::call_reply(id, &design_qa::pictures_from_board(&socket, &squad, &member, run, &arguments).await)
+                let result = design_qa::pictures_from_board(&socket, &squad, &member, run, &arguments).await;
+                mcp::call_reply(id, &capped(&home, &squad, &name, result))
             }
             // The design system's checks run here, outside the member's engine's sandbox.
             Step::Call { id, name, arguments } if !desktop && !phone && name == equipe_core::board::SYSTEM_TOOLS => {
-                mcp::call_reply(id, &design_system::from_board(&socket, &home, &squad, &member, run, &arguments).await)
+                let result = design_system::from_board(&socket, &home, &squad, &member, run, &arguments).await;
+                mcp::call_reply(id, &capped(&home, &squad, &name, result))
             }
             Step::Call { id, name, arguments } => {
+                let tool = name.clone();
                 let call = protocol::rpc::ToolCall { squad: squad.clone(), member: member.clone(), name, arguments, run };
                 let result = if desktop {
                     equipe_core::gateway::call_desktop(&socket, &call).await
@@ -899,7 +910,7 @@ async fn serve_mcp(server: &str, squad: String, member: String, role: String, ho
                 let result = result.unwrap_or_else(|err| {
                     protocol::rpc::ToolResult { text: format!("equipe's daemon didn't answer: {err}"), is_error: true, image: None }
                 });
-                mcp::call_reply(id, &result)
+                mcp::call_reply(id, &capped(&home, &squad, &tool, result))
             }
             Step::Nothing => continue,
         };
@@ -910,6 +921,21 @@ async fn serve_mcp(server: &str, squad: String, member: String, role: String, ho
         }
     }
     Ok(())
+}
+
+/// A tool's answer as its engine gets it: one past `tool_cap::MAX_TOOL_CHARS`
+/// is cut, with what to call to see the rest — unless the squad turned that off
+/// (`equipe context-config --tool-caps off`). Every answer is re-read on each
+/// later model call, so one huge one is paid for over and over.
+fn capped(home: &std::path::Path, squad: &str, tool: &str, mut result: protocol::rpc::ToolResult) -> protocol::rpc::ToolResult {
+    // Bytes are never fewer than characters: a short answer costs no look at the setting.
+    if result.text.len() > equipe_core::tool_cap::MAX_TOOL_CHARS {
+        let on = equipe_core::journal::Journal::for_squad(home, squad).map(|j| j.context_tool_caps()).unwrap_or(true);
+        if on {
+            result.text = equipe_core::tool_cap::capped(tool, &result.text);
+        }
+    }
+    result
 }
 
 /// `equipe browser`: a browser window for the person to sign in (or sign up)

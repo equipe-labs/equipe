@@ -1011,6 +1011,61 @@ after the compaction; one not read by the turn's end becomes a memo, delivered
 after it — the same as at any other moment of a turn. equipe's own compaction
 happens before the turn starts, as its prompt is put together.
 
+### Context hygiene
+
+Every model call re-reads the whole conversation, so a conversation that runs on
+to the end of a 1M window costs many times what one at a quarter of that does,
+and models attend worse to very long contexts. Three squad settings keep what
+members read short; all default on, each off with `equipe context-config`
+(`--rotation`, `--tool-caps`, `--obsolete-check`, `on|off`; no flag shows the
+state, the thresholds and the last week's rotations):
+
+- **Session rotation** (`runtime/hygiene.rs`). As a turn starts, a conversation
+  whose last known context (`Session::desk_context`, `Session::context`) reached
+  `ROTATE_DESK_TOKENS` (250k, desk conversations: the PM's and the ones the
+  person opened) or `ROTATE_TICKET_TOKENS` (300k, a conversation on a ticket)
+  goes on in a fresh engine session: its resume handle is dropped (the old
+  session stays in the journal), and the turn's prompt opens with a packet from
+  `engines::rotation_packet` — the same builder as an engine switch's hand-over
+  packet (ticket and its acceptance criteria, the member's notes on it, where
+  things stand, files touched, what the person said, the last commands and the
+  end of the conversation verbatim), except that nothing is committed or moved:
+  the worktree stays. Never mid-turn (it is decided at turn start), and not
+  while an approval or a question is open, a hand-in or wait is open, a
+  compaction runs or a move to the other engine hasn't opened. A notice says
+  *Context refreshed…*, the ticket's record gets a `context refreshed` line, and
+  `context_rotations` in the squad journal counts each one (`equipe context-config`
+  shows the week's). No model call: unlike Claude Code's own compaction
+  (`--autocompact`, a summarizing call over the full context, mid-turn and lossy)
+  it costs nothing and loses nothing a model would have summarized away. The
+  older `refresh_desk` (full by percentage, cold after an hour, asked for) is
+  unchanged and goes first.
+- **The engines' own compaction, and the window** (`hygiene::window_for`). Both
+  engines have a verified setting, passed per turn: Claude Code's `--autocompact
+  <tokens>` (100k–1M, in its `--help`) and Codex's `model_auto_compact_token_limit`
+  (`-c`, to `codex app-server`). They are a backstop above rotation —
+  `NATIVE_DESK_TOKENS` 300k, `NATIVE_TICKET_TOKENS` 360k — because rotation only
+  acts at turn boundaries and one turn can run for hours. Members run on the
+  standard window: Claude Code gets `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` (so its own
+  compaction comes early), unless the squad set `--window large` or the ticket
+  has a line `context: large` in its body, and only then is `--autocompact` passed.
+  `--native-compact off` stops the flags; `--window large` allows the large window.
+  A ticket always starts on a fresh engine session of its own (each run is its own
+  session; only a ticket's own earlier session is resumed when it comes back).
+- **Tool answer caps** (`tool_cap`). Every answer of equipe's MCP servers (board,
+  desktop, phone, design tools) past ~10k tokens is cut at a line, ending with
+  the call that shows the rest. The board is paged by its own arguments
+  (`board` with `after` / `status`). Playwright's browser tools are a third
+  party's and are not capped by equipe.
+- **Obsolete tickets** (`obsolete`). Before a member starts a ticket (`todo`, no
+  branch yet) it is checked without a model call: a blocker it depends on was
+  cancelled (the board counts a cancelled ticket as finished), or an earlier open
+  ticket of the same project, kind and owner has the same normalized title (three
+  words at least). Such a ticket is held and the PM is told once, on its brief;
+  the PM touches it (`update_ticket`) to let it start, or cancels it. And a run
+  still working a ticket that is cancelled, by any path, is stopped and its
+  session closed (the person's cancel already did).
+
 ### Permission modes
 
 How much a member may do on its own while it works a ticket — the squad's

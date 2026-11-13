@@ -56,6 +56,8 @@ const BRIEF_DIFF: usize = 12_000;
 const BRIEF_PERSON: usize = 5_000;
 /// The last commands a packet shows, with their results.
 const BRIEF_COMMANDS: usize = 8;
+/// The files a context rotation's packet lists as touched, newest kept.
+const BRIEF_FILES: usize = 40;
 
 /// Claude Code tells its plan's usage when it changes: a turn that keeps
 /// answering says its last reading still holds, this often.
@@ -215,6 +217,11 @@ impl Engines {
     /// The brief a moved member's first turn opens with.
     pub(super) fn brief_for(&mut self, id: SessionId) -> Option<String> {
         self.briefs.remove(&id)
+    }
+
+    /// Whether session `id` has a brief waiting for its first turn.
+    pub(super) fn has_brief(&self, id: SessionId) -> bool {
+        self.briefs.contains_key(&id)
     }
 
     /// The cards a squad's screens show.
@@ -1357,7 +1364,7 @@ impl Runtime {
             self.publish(Event::WorkEnded { session: at, ticket: ticket_id, of });
             self.close_run(at);
         }
-        let state = State { estimate, waiting };
+        let state = State { estimate, waiting, ..State::default() };
         packet(&name, &due.mv, due.why, ticket_part.as_deref(), &entries, &state)
     }
 }
@@ -1380,6 +1387,9 @@ struct Tree {
     stat: String,
     diff: Option<String>,
     status: String,
+    /// Nothing was committed or moved: the worktree is where the member left it,
+    /// and it carries on there in a fresh session (a context rotation).
+    live: bool,
 }
 
 impl Tree {
@@ -1389,7 +1399,7 @@ impl Tree {
         let commit = sandbox.commit_all(message).ok().flatten();
         let stat = sandbox.diff_stat().unwrap_or_default();
         let diff = sandbox.diff().ok().filter(|d| d.len() <= BRIEF_DIFF);
-        Tree { commit, branch: sandbox.branch.clone(), path: sandbox.path.display().to_string(), base: sandbox.base.clone(), stat, diff, status }
+        Tree { commit, branch: sandbox.branch.clone(), path: sandbox.path.display().to_string(), base: sandbox.base.clone(), stat, diff, status, live: false }
     }
 }
 
@@ -1399,6 +1409,11 @@ impl Tree {
 struct State {
     estimate: Option<String>,
     waiting: Vec<String>,
+    /// The files its edits touched in this conversation, oldest first (a
+    /// context rotation lists them: no diff is carried).
+    files: Vec<String>,
+    /// The conversation goes on in the same worktree, nothing committed for it.
+    live: bool,
 }
 
 /// The ticket part of a packet: what it asks and its plan, what is open with
@@ -1426,6 +1441,7 @@ fn brief_ticket(ticket: &Ticket, tree: &Tree, notes: &[String]) -> String {
         }
         out.push_str(".\n");
         match &tree.commit {
+            _ if tree.live => out.push_str("Nothing was committed or moved for this: the worktree is exactly as you left it — read `git status` and `git diff` for what is done.\n"),
             Some(commit) => out.push_str(&format!("Everything it held was committed as it stood (\"equipe: handoff wip\", {}).\n", &commit[..commit.len().min(10)])),
             None => out.push_str("Nothing was left uncommitted.\n"),
         }
@@ -1550,6 +1566,15 @@ was lost: this is the hand-over packet. Read all of it before you do anything, a
         engine_name(mv.to),
         engine_name(mv.from)
     );
+    packet_body(&mut out, ticket, entries, state);
+    out
+}
+
+/// What follows a packet's opening, whatever moved the conversation onto a
+/// fresh session — an engine switch or a context rotation: the ticket, where
+/// things stand, the files touched, what the person said, the last commands,
+/// the end of the conversation verbatim, and what to check before editing.
+fn packet_body(out: &mut String, ticket: Option<&str>, entries: &[Entry], state: &State) {
     if let Some(ticket) = ticket {
         out.push_str(ticket);
         out.push('\n');
@@ -1557,7 +1582,11 @@ was lost: this is the hand-over packet. Read all of it before you do anything, a
     let part = if ticket.is_some() { this_part(entries) } else { entries };
     let last_reply = part.iter().rev().find_map(|e| if let Entry::Reply { text } = e { Some(text.as_str()) } else { None });
     out.push_str("## Where things stand\n");
-    out.push_str(if ticket.is_some() { "- Done: what the commit and diff above hold — check them against the ticket.\n" } else { "- Done: what the conversation below says.\n" });
+    out.push_str(match (ticket.is_some(), state.live) {
+        (true, true) => "- Done: what the worktree holds (`git status`, `git diff`) and what the files below say — check it against the ticket.\n",
+        (true, false) => "- Done: what the commit and diff above hold — check them against the ticket.\n",
+        (false, _) => "- Done: what the conversation below says.\n",
+    });
     if let Some(what) = state.estimate.as_deref().filter(|w| !w.trim().is_empty()) {
         out.push_str(&format!("- In progress, as you last said: {what}\n"));
     }
@@ -1571,6 +1600,12 @@ was lost: this is the hand-over packet. Read all of it before you do anything, a
         out.push_str("- Open decisions, waiting on the person — don't ask them again:\n");
         for w in &state.waiting {
             out.push_str(&format!("  - {}\n", clip(w, 300)));
+        }
+    }
+    if !state.files.is_empty() {
+        out.push_str("\n## Files you touched in this conversation\n");
+        for file in &state.files {
+            out.push_str(&format!("- {file}\n"));
         }
     }
     let said = person_said(part);
@@ -1603,6 +1638,45 @@ the person stay open — don't ask them again. When the ticket is done, hand it 
         "Nothing of a ticket is in progress: carry on the conversation where it was — the next message follows it. Don't repeat what \
 was said, and don't ask again what is waiting on the person."
     });
+}
+
+/// The files the edits in `entries` touched, oldest first, each once, at most
+/// [`BRIEF_FILES`].
+fn files_touched(entries: &[Entry]) -> Vec<String> {
+    let mut files: Vec<String> = Vec::new();
+    for entry in entries {
+        let Entry::Tool { tool, target: Some(target), outcome, .. } = entry else { continue };
+        let edits = matches!(tool.as_str(), "Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "apply_patch") || outcome.as_ref().is_some_and(|o| o.diff.is_some());
+        let target = target.trim();
+        if edits && !target.is_empty() && !files.iter().any(|f| f == target) {
+            files.push(clip(target, 200));
+        }
+    }
+    let extra = files.len().saturating_sub(BRIEF_FILES);
+    files.drain(..extra);
+    files
+}
+
+/// What a conversation's next session opens with when its context reached the
+/// budget (`ROTATE_DESK_TOKENS`, `ROTATE_TICKET_TOKENS`): the same packet an
+/// engine switch writes — the ticket and its criteria, the member's notes on
+/// it, where things stand, the files touched, what the person said, the last
+/// commands, and the end of the conversation verbatim — but nothing moved: the
+/// worktree stays as it is. `ticket` is the ticket's record, the member's own
+/// notes on it, and where it builds.
+pub(super) fn rotation_packet(name: &str, used: u64, ticket: Option<(&Ticket, &[String], Option<&str>)>, entries: &[Entry], estimate: Option<String>, waiting: Vec<String>) -> String {
+    let part = ticket.map(|(ticket, notes, worktree)| {
+        let tree = Tree { path: worktree.unwrap_or_default().to_owned(), live: true, ..Tree::default() };
+        brief_ticket(ticket, &tree, notes)
+    });
+    let mut out = format!(
+        "[equipe] You are {name}, carrying on in a fresh session of the same conversation: the last one had grown to {}k tokens of context, \
+and every step in a very long context costs more and is read less well. This session is new, but nothing was lost: this is the packet. \
+Read all of it before you do anything, and the repository's AGENTS.md.\n\n",
+        used / 1000
+    );
+    let state = State { estimate, waiting, files: files_touched(entries), live: true };
+    packet_body(&mut out, part.as_deref(), entries, &state);
     out
 }
 
@@ -1667,6 +1741,7 @@ mod tests {
             stat: " src/login.rs | 12 ++++++".into(),
             diff: Some("diff --git a/src/login.rs b/src/login.rs\n+let tries = 5;".into()),
             status: " M src/login.rs".into(),
+            live: false,
         };
         let part = brief_ticket(&ticket("Five tries a minute per address.\n\nAcceptance criteria:\n- tests pass"), &tree, &["estimate: counting in Redis".into()]);
         let entries = [
@@ -1676,7 +1751,7 @@ mod tests {
             tool("cargo test", false, "test login::five ... FAILED"),
             Entry::Reply { text: "Counting in Redis now; the window test is next.".into() },
         ];
-        let state = State { estimate: Some("wiring the counter".into()), waiting: vec!["Which store for counters?".into()] };
+        let state = State { estimate: Some("wiring the counter".into()), waiting: vec!["Which store for counters?".into()], ..State::default() };
         let text = packet("backend", &backend_move(), Why::Drain, Some(&part), &entries, &state);
         for wanted in [
             "You are backend",
@@ -1717,6 +1792,40 @@ mod tests {
         let desk = packet("qa", &Move { member: "qa".into(), role: "qa".into(), ..backend_move() }, Why::Return, None, &entries[..1], &State::default());
         assert!(desk.contains("Codex's plan has room again") && desk.contains("carry on the conversation where it was") && desk.contains("> Earlier, at the desk"));
         assert!(!desk.contains("## The ticket") && !desk.contains("`git status`"));
+    }
+
+    #[test]
+    fn a_rotation_packet_carries_the_ticket_its_criteria_the_files_touched_and_the_last_exchanges_but_moves_nothing() {
+        let edit = |file: &str| Entry::Tool { tool: "Edit".into(), target: Some(file.into()), outcome: None, label: None, background: false };
+        let entries = [
+            Entry::User { text: "Use Redis for the counters".into(), kept: Vec::new() },
+            edit("src/login.rs"),
+            edit("src/limit.rs"),
+            edit("src/login.rs"),
+            tool("cargo test", false, "test login::five ... FAILED"),
+            Entry::Reply { text: "Counters are in Redis; the five-tries test still fails.".into() },
+            Entry::User { text: "go on".into(), kept: Vec::new() },
+        ];
+        let t = ticket("Five tries a minute per address.\n\nAcceptance criteria:\n- tests pass");
+        let notes = ["estimate: counting in Redis".to_owned()];
+        let text = rotation_packet("backend", 312_345, Some((&t, &notes, Some("/w/backend-t42"))), &entries, Some("wiring the counter".into()), Vec::new());
+        assert!(text.starts_with("[equipe] You are backend, carrying on in a fresh session of the same conversation") && text.contains("312k tokens"), "{text}");
+        // The ticket, its criteria and the member's own notes.
+        assert!(text.contains("T-42 Rate limit the login") && text.contains("Acceptance criteria:\n- tests pass") && text.contains("estimate: counting in Redis"), "{text}");
+        // Nothing was committed or moved: the worktree is named, the diff and "handoff wip" are not.
+        assert!(text.contains("/w/backend-t42") && text.contains("exactly as you left it"), "{text}");
+        assert!(!text.contains("handoff wip") && !text.contains("The diff itself"), "{text}");
+        // Files touched, once each, oldest first.
+        let files = text.split("## Files you touched in this conversation\n").nth(1).unwrap().split("\n\n").next().unwrap();
+        assert_eq!(files, "- src/login.rs\n- src/limit.rs", "{text}");
+        // Where it stands, what the person said, the commands, the end of the talk.
+        assert!(text.contains("In progress, as you last said: wiring the counter") && text.contains("Next: where your last reply left it"), "{text}");
+        assert!(text.contains("> Use Redis for the counters") && text.contains("test login::five ... FAILED"), "{text}");
+        assert!(text.contains("You: Counters are in Redis; the five-tries test still fails.") && text.contains("Person: go on"), "{text}");
+        assert!(text.contains("## Before you change anything") && text.contains("don't start a new branch or worktree"), "{text}");
+        // At the desk, with no ticket: the conversation, with no ticket's parts.
+        let desk = rotation_packet("pm", 260_000, None, &entries[..1], None, Vec::new());
+        assert!(desk.contains("fresh session") && desk.contains("Person: Use Redis") && !desk.contains("## The ticket"), "{desk}");
     }
 
     #[test]

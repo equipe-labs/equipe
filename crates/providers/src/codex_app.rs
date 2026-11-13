@@ -274,6 +274,11 @@ pub fn provider_args(provider: &Provider, base_url: &str) -> Vec<String> {
     config.into_iter().flat_map(|c| ["-c".to_owned(), c]).collect()
 }
 
+/// The app-server's config override for its own auto-compaction, if one is asked for.
+pub fn compact_args(compact_at: Option<u64>) -> Vec<String> {
+    compact_at.map(|tokens| vec!["-c".to_owned(), format!("model_auto_compact_token_limit={tokens}")]).unwrap_or_default()
+}
+
 // ── one turn ──
 
 /// One turn's input.
@@ -310,6 +315,9 @@ pub struct TurnRequest<'a> {
     /// older configs); `None`, Codex's own default. On another provider it
     /// has none: `multi_agent` is off there.
     pub subagents: Option<u32>,
+    /// Codex's own auto-compaction: the thread's context size, in tokens, at
+    /// which it compacts (`model_auto_compact_token_limit`, as `-c`). `None`: its own.
+    pub compact_at: Option<u64>,
 }
 
 /// `thread/start`'s parameters; `others`, the person's own MCP servers off.
@@ -1387,10 +1395,11 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
         Some(provider) => Some(crate::relay::start(&provider.base_url, provider.wire).await?),
         None => None,
     };
-    let args = match (request.provider, &relay) {
+    let mut args = match (request.provider, &relay) {
         (Some(provider), Some(relay)) => provider_args(provider, &relay.url),
         _ => Vec::new(),
     };
+    args.extend(compact_args(request.compact_at));
     let mut server = Server::start(binary, cwd, &args, request.env).await?;
     if let Some(pid) = server.child.id() {
         on_activity(Activity::Engine { pid });
@@ -1631,6 +1640,12 @@ mod tests {
         let plain = start_params(&TurnRequest { prompt: "hi", ..Default::default() }, Path::new("/r"), None);
         assert!(plain["config"].get("mcp_servers").is_none(), "without servers of equipe's, the person's own");
         assert!(plain.get("model").is_none() && plain.get("developerInstructions").is_none());
+    }
+
+    #[test]
+    fn codexs_own_compaction_limit_goes_as_a_config_override_only_when_asked_for() {
+        assert!(compact_args(None).is_empty());
+        assert_eq!(compact_args(Some(300_000)), ["-c", "model_auto_compact_token_limit=300000"]);
     }
 
     #[test]

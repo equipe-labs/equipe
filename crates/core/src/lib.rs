@@ -82,6 +82,8 @@ pub mod subagent_watch;
 pub mod team;
 pub mod telemetry;
 pub mod tiers;
+pub mod tool_cap;
+pub mod obsolete;
 pub mod vault;
 pub mod visuals;
 pub mod watchdog;

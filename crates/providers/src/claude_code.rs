@@ -162,6 +162,9 @@ pub fn turn_args(request: &TurnRequest<'_>) -> Vec<String> {
     if let Some(effort) = request.effort {
         args.extend(["--effort".to_owned(), effort.to_owned()]);
     }
+    if let Some(tokens) = request.compact_at {
+        args.extend(["--autocompact".to_owned(), tokens.clamp(AUTOCOMPACT_RANGE.0, AUTOCOMPACT_RANGE.1).to_string()]);
+    }
     // Continue the conversation Claude Code already holds, rather than resending it.
     if let Some(id) = request.resume {
         args.extend(["--resume".to_owned(), id.to_owned()]);
@@ -293,7 +296,14 @@ pub struct TurnRequest<'a> {
     pub env: &'a [(String, String)],
     /// How hard the model thinks: `--effort low|medium|high|xhigh|max`; `None`, its default.
     pub effort: Option<&'a str>,
+    /// Claude Code's own auto-compaction window in tokens (`--autocompact`,
+    /// which takes `auto` or 100k–1M): it compacts a conversation that runs
+    /// on, mid-turn, near this size. `None`: its own (`auto`).
+    pub compact_at: Option<u64>,
 }
+
+/// The least `--autocompact` takes, and the most (Claude Code's `--help`: 100k–1M tokens).
+const AUTOCOMPACT_RANGE: (u64, u64) = (100_000, 1_000_000);
 
 /// One turn's outcome, with the id that continues the conversation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1631,6 +1641,12 @@ mod tests {
         let args = turn_args(&TurnRequest { prompt: "x", effort: Some("xhigh"), ..Default::default() });
         assert!(args.windows(2).any(|w| w[0] == "--effort" && w[1] == "xhigh"));
         assert!(!turn_args(&TurnRequest { prompt: "x", ..Default::default() }).iter().any(|a| a == "--effort"));
+        // Claude Code's own compaction window, only when asked for, within what it takes (100k to 1M).
+        let at = |tokens| turn_args(&TurnRequest { prompt: "x", compact_at: tokens, ..Default::default() });
+        assert!(!at(None).iter().any(|a| a == "--autocompact"));
+        assert!(at(Some(300_000)).windows(2).any(|w| w[0] == "--autocompact" && w[1] == "300000"));
+        assert!(at(Some(5)).windows(2).any(|w| w[0] == "--autocompact" && w[1] == "100000"));
+        assert!(at(Some(9_000_000)).windows(2).any(|w| w[0] == "--autocompact" && w[1] == "1000000"));
     }
 
     #[test]

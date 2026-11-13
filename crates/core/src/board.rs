@@ -209,49 +209,89 @@ fn in_address(text: &str, at: usize) -> bool {
     word.contains("://") || word.starts_with("www.")
 }
 
+/// The longest note a board line carries: a hand-in's summary can run to pages.
+const NOTE_MAX: usize = 2_000;
+
+/// One open ticket as the board lists it: its line, and its note under it.
+fn ticket_lines(t: &Ticket) -> String {
+    let mut out = format!("T-{} [{}] {}", t.id, t.status.label(), t.title);
+    let mut facts = vec![t.kind.label().to_owned()];
+    if !t.priority.is_normal() {
+        facts.push(format!("priority {}", t.priority.label()));
+    }
+    if let Some(who) = t.assignee.as_ref().or(t.owner.as_ref()) {
+        facts.push(format!("owner {who}"));
+    }
+    if let Some(project) = &t.project {
+        facts.push(format!("project {}", project_name(project)));
+    }
+    if !t.depends_on.is_empty() {
+        let ids: Vec<String> = t.depends_on.iter().map(|id| format!("T-{id}")).collect();
+        facts.push(format!("after {}", ids.join(", ")));
+    }
+    if let Some(branch) = &t.branch {
+        facts.push(format!("branch {branch}"));
+    }
+    if let Some(qa) = t.design_qa {
+        facts.push(format!("design QA on T-{qa} first"));
+    }
+    // How long handed-in work has waited: the longest waiting is reviewed first.
+    if t.status == TicketStatus::Review
+        && let Some(at) = t.updated_at
+    {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(at, |d| d.as_secs());
+        facts.push(format!("in review {}", crate::accept::waited(now.saturating_sub(at))));
+    }
+    if !facts.is_empty() {
+        out.push_str(&format!(" — {}", facts.join(", ")));
+    }
+    out.push('\n');
+    if let Some(note) = &t.note {
+        let note = if note.chars().count() > NOTE_MAX { format!("{}… (cut)", note.chars().take(NOTE_MAX).collect::<String>()) } else { note.clone() };
+        out.push_str(&format!("    note: {note}\n"));
+    }
+    out
+}
+
 /// The board as text, for a model to read.
 pub fn render(tickets: &[Ticket]) -> String {
-    let open: Vec<&Ticket> = tickets.iter().filter(|t| !t.status.is_closed()).collect();
+    render_page(tickets, None, None, usize::MAX)
+}
+
+/// The board as text, a page of it (the `board` tool's definition is left as it was, so no member is
+/// told anything new; only a long board's tail names the `after` and `status` arguments): the open tickets (those of `status`, when
+/// given) after ticket `after` in the board's order, as many as fit in `max`
+/// characters (always at least one). What is left out is counted, with the
+/// call that lists it.
+pub fn render_page(tickets: &[Ticket], status: Option<&str>, after: Option<TicketId>, max: usize) -> String {
+    let wanted = |t: &&Ticket| !t.status.is_closed() && status.is_none_or(|s| t.status.label().eq_ignore_ascii_case(s.trim()));
+    let open: Vec<&Ticket> = tickets.iter().filter(wanted).collect();
     if open.is_empty() {
-        return "The board is empty.".into();
+        return match status {
+            Some(s) => format!("No open ticket is {}.", s.trim()),
+            None => "The board is empty.".into(),
+        };
     }
+    let from = after.and_then(|id| open.iter().position(|t| t.id == id)).map_or(0, |at| at + 1);
     let mut out = String::new();
-    for t in open {
-        out.push_str(&format!("T-{} [{}] {}", t.id, t.status.label(), t.title));
-        let mut facts = vec![t.kind.label().to_owned()];
-        if !t.priority.is_normal() {
-            facts.push(format!("priority {}", t.priority.label()));
+    let mut shown = 0;
+    for t in &open[from..] {
+        let lines = ticket_lines(t);
+        if shown > 0 && out.chars().count() + lines.chars().count() > max {
+            break;
         }
-        if let Some(who) = t.assignee.as_ref().or(t.owner.as_ref()) {
-            facts.push(format!("owner {who}"));
-        }
-        if let Some(project) = &t.project {
-            facts.push(format!("project {}", project_name(project)));
-        }
-        if !t.depends_on.is_empty() {
-            let ids: Vec<String> = t.depends_on.iter().map(|id| format!("T-{id}")).collect();
-            facts.push(format!("after {}", ids.join(", ")));
-        }
-        if let Some(branch) = &t.branch {
-            facts.push(format!("branch {branch}"));
-        }
-        if let Some(qa) = t.design_qa {
-            facts.push(format!("design QA on T-{qa} first"));
-        }
-        // How long handed-in work has waited: the longest waiting is reviewed first.
-        if t.status == TicketStatus::Review
-            && let Some(at) = t.updated_at
-        {
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(at, |d| d.as_secs());
-            facts.push(format!("in review {}", crate::accept::waited(now.saturating_sub(at))));
-        }
-        if !facts.is_empty() {
-            out.push_str(&format!(" — {}", facts.join(", ")));
-        }
-        out.push('\n');
-        if let Some(note) = &t.note {
-            out.push_str(&format!("    note: {note}\n"));
-        }
+        out.push_str(&lines);
+        shown += 1;
+    }
+    let left = open.len() - from - shown;
+    if left > 0 {
+        let last = open[from + shown - 1].id;
+        let narrow = status.map_or_else(String::new, |s| format!(", `status: {}`", s.trim()));
+        out.push_str(&format!(
+            "[{left} more open ticket(s) not shown — {} of {} listed. To see more: call `board` with `after: {last}`{narrow}.]\n",
+            from + shown,
+            open.len()
+        ));
     }
     out
 }
@@ -1202,6 +1242,43 @@ mod tests {
     use super::*;
     use crate::roles::Subagents;
     use equipe_protocol::Engine;
+
+    #[test]
+    fn a_long_board_is_paged_within_the_cap_and_every_ticket_is_still_reachable() {
+        let tickets: Vec<Ticket> = (1..=400)
+            .map(|id| {
+                let mut t = ticket(id, "backend");
+                t.title = format!("Ticket number {id}: {}", "a long title ".repeat(8));
+                t.note = Some("The hand-in summary says what changed and why. ".repeat(6));
+                t
+            })
+            .collect();
+        let whole = render(&tickets);
+        let before = crate::tool_cap::tokens_of(&whole);
+        let mut seen = 0;
+        let mut after = None;
+        let mut biggest = 0;
+        loop {
+            let page = render_page(&tickets, None, after, crate::tool_cap::MAX_TOOL_CHARS);
+            biggest = biggest.max(crate::tool_cap::tokens_of(&page));
+            seen += page.lines().filter(|l| l.starts_with("T-")).count();
+            match page.rsplit("call `board` with `after: ").next().filter(|_| page.contains("not shown")) {
+                Some(rest) => after = Some(rest.split('`').next().unwrap().parse().unwrap()),
+                None => break,
+            }
+        }
+        // Before: one answer of ~28k tokens; after: pages of at most ~10k, all 400 tickets reachable.
+        assert!(before > 25_000, "{before}");
+        assert!(biggest <= crate::tool_cap::MAX_TOOL_TOKENS + 100, "{biggest}");
+        assert_eq!(seen, 400);
+        // A short board is one page, as before, with no tail.
+        let few = render_page(&tickets[..3], None, None, crate::tool_cap::MAX_TOOL_CHARS);
+        assert_eq!(few, render(&tickets[..3]));
+        assert!(!few.contains("not shown"));
+        // A status narrows it; an unknown `after` starts at the top.
+        assert_eq!(render_page(&tickets[..3], Some("review"), None, usize::MAX), "No open ticket is review.");
+        assert_eq!(render_page(&tickets[..3], None, Some(999), usize::MAX), render(&tickets[..3]));
+    }
 
     #[test]
     fn a_long_estimate_with_nobody_sharing_it_is_told_to_split_it_across_subagents() {
