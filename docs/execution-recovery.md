@@ -214,7 +214,8 @@ when the person asks.
 never from the number of members (`lanes::member_limit`,
 `lanes::engine_limit`): 3 runs per member and 8 per engine across the squad by
 default; 4 and 10 under 25% of the tightest plan window used; 2 and 4 from
-70%; 1 and 2 from 90%. With the disk low every member runs one at a time; from
+90%. Work keeps its full speed until then: the weekly reserve
+(`crate::pacing`) keeps the PM and urgent work going once a plan runs low. With the disk low every member runs one at a time; from
 critical, new code work waits altogether while tasks and actions still start.
 
 **Tool calls.** Every run's board, desktop and phone servers are started with

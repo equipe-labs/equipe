@@ -756,7 +756,7 @@ mod tests {
         assert_eq!(cap_premium(Engine::Codex, Some("gpt-6.1-sol"), false).as_deref(), Some("gpt-6.1-sol"));
         assert_eq!(cap_premium(Engine::Claude, None, false), None);
         // Tier targets, a member the person put on it, and a step up never give it.
-        let fable = Member { engine: Engine::Claude, model: Some("fable"), effort: Some("max"), catalog: &[] };
+        let fable = Member { engine: Engine::Claude, model: Some("fable"), effort: Some("max"), catalog: &[], person: true };
         for tier in ModelTier::ALL {
             assert_ne!(target(tier, Engine::Claude).0, "fable");
             for kept in [true, false] {

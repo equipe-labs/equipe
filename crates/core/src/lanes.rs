@@ -17,9 +17,12 @@
 //! |-----------------------------|-----------------|-----------------------------|
 //! | unknown                     | 3               | 8                           |
 //! | under 25%                   | 4               | 10                          |
-//! | 25% to under 70%            | 3               | 8                           |
-//! | 70% to under 90%            | 2               | 4                           |
-//! | 90% and over                | 1               | 2                           |
+//! | 25% to under 90%            | 3               | 8                           |
+//! | 90% and over                | 2               | 4                           |
+//!
+//! Work keeps its full speed until the very end of a window: the weekly
+//! reserve ([`crate::pacing`]) is what keeps the PM and urgent work going
+//! once a plan runs low, so the table only eases off in a window's last 10%.
 //!
 //! That is the squad's *auto* parallel work, and on auto an engine whose
 //! weekly window is under its reserve ([`crate::pacing`]) starts only the
@@ -79,8 +82,7 @@ pub fn member_limit(plan_used: Option<u8>, disk: DiskLevel, parallel: &Parallel)
     }
     match plan_used {
         None => LANES_PER_MEMBER,
-        Some(p) if p >= 90 => 1,
-        Some(p) if p >= 70 => 2,
+        Some(p) if p >= 90 => 2,
         Some(p) if p < 25 => LANES_PER_MEMBER + 1,
         Some(_) => LANES_PER_MEMBER,
     }
@@ -91,8 +93,7 @@ pub fn engine_limit(plan_used: Option<u8>, disk: DiskLevel, parallel: &Parallel)
     let limit = match plan_used {
         _ if parallel.is_max() && !used_up(plan_used) => parallel.clamped().per_engine as usize,
         None => LANES_PER_ENGINE,
-        Some(p) if p >= 90 => 2,
-        Some(p) if p >= 70 => 4,
+        Some(p) if p >= 90 => 4,
         Some(p) if p < 25 => LANES_PER_ENGINE + 2,
         Some(_) => LANES_PER_ENGINE,
     };
@@ -298,13 +299,13 @@ mod tests {
         assert_eq!(member_limit(None, DiskLevel::Ok, &auto), 3);
         assert_eq!(member_limit(Some(10), DiskLevel::Ok, &auto), 4);
         assert_eq!(member_limit(Some(50), DiskLevel::Ok, &auto), 3);
-        assert_eq!(member_limit(Some(75), DiskLevel::Ok, &auto), 2);
-        assert_eq!(member_limit(Some(95), DiskLevel::Ok, &auto), 1);
+        assert_eq!(member_limit(Some(75), DiskLevel::Ok, &auto), 3, "full speed until the last 10%");
+        assert_eq!(member_limit(Some(95), DiskLevel::Ok, &auto), 2);
         assert_eq!(member_limit(Some(10), DiskLevel::Low, &auto), 1, "a low disk: one at a time");
         assert_eq!(engine_limit(None, DiskLevel::Ok, &auto), 8);
         assert_eq!(engine_limit(Some(10), DiskLevel::Ok, &auto), 10);
-        assert_eq!(engine_limit(Some(75), DiskLevel::Ok, &auto), 4);
-        assert_eq!(engine_limit(Some(95), DiskLevel::Ok, &auto), 2);
+        assert_eq!(engine_limit(Some(75), DiskLevel::Ok, &auto), 8);
+        assert_eq!(engine_limit(Some(95), DiskLevel::Ok, &auto), 4);
         assert_eq!(engine_limit(Some(10), DiskLevel::Low, &auto), 4);
     }
 
@@ -322,7 +323,7 @@ mod tests {
         assert_eq!((member_limit(None, DiskLevel::Ok, &wild), engine_limit(None, DiskLevel::Ok, &wild)), (12, 1));
         // The caps kept while on auto change nothing there.
         let kept = Parallel { mode: equipe_protocol::lanes::ParallelMode::Auto, ..set };
-        assert_eq!((member_limit(Some(95), DiskLevel::Ok, &kept), engine_limit(Some(95), DiskLevel::Ok, &kept)), (1, 2));
+        assert_eq!((member_limit(Some(95), DiskLevel::Ok, &kept), engine_limit(Some(95), DiskLevel::Ok, &kept)), (2, 4));
     }
 
     #[test]
@@ -330,7 +331,7 @@ mod tests {
         let max = Parallel::max(6, 16);
         // A plan used up: no more than auto would run there.
         assert_eq!(member_limit(Some(100), DiskLevel::Ok, &max), member_limit(Some(100), DiskLevel::Ok, &Parallel::default()));
-        assert_eq!((member_limit(Some(100), DiskLevel::Ok, &max), engine_limit(Some(100), DiskLevel::Ok, &max)), (1, 2));
+        assert_eq!((member_limit(Some(100), DiskLevel::Ok, &max), engine_limit(Some(100), DiskLevel::Ok, &max)), (2, 4));
         // A low disk: one at a time per member, and the engine's room halved as on auto.
         assert_eq!(member_limit(Some(10), DiskLevel::Low, &max), 1);
         assert_eq!(engine_limit(Some(10), DiskLevel::Low, &max), LANES_PER_ENGINE / 2);
