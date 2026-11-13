@@ -88,7 +88,8 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok","usag
     }
 
     fn prompts(&self) -> Vec<String> {
-        let log = std::fs::read_to_string(self.bin.with_file_name("prompts.log")).unwrap_or_default();
+        // Lossy: engines appending big prompts at once can cut a multi-byte character in two.
+        let log = String::from_utf8_lossy(&std::fs::read(self.bin.with_file_name("prompts.log")).unwrap_or_default()).into_owned();
         log.split("<<end>>").map(str::trim).filter(|p| !p.is_empty()).map(str::to_owned).collect()
     }
 

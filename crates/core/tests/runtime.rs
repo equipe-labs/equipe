@@ -4759,10 +4759,10 @@ async fn moving_a_ticket_means_what_its_button_would_and_the_board_order_decides
     // The board's order decides what is picked up first — not priority.
     handle.send(Command::EditTicket { squad: "acme".into(), ticket: 1, changes: TicketEdit { priority: Some(Priority::Urgent), ..Default::default() } });
     until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.priority == Priority::Urgent)).await;
-    // A plan nearly used up: one ticket at a time ([`equipe_core::lanes::member_limit`]).
-    let window = equipe_core::protocol::PlanWindow { used_percent: 95, resets_at: 4_000_000_000 };
-    handle.usage_read(Engine::Claude, equipe_core::protocol::PlanUsage { five_hour: Some(window), seven_day: None });
-    until(&mut events, |e| matches!(e, Event::PlanUsage { .. })).await;
+    // One ticket at a time: the person's own cap ([`equipe_core::lanes::member_limit`]). A nearly used
+    // up plan no longer does it by itself: the table only eases off to two in a window's last 10%.
+    handle.send(Command::SetParallel { squad: "acme".into(), parallel: equipe_core::protocol::lanes::Parallel::max(1, 16) });
+    until(&mut events, |e| matches!(e, Event::ParallelChanged { .. })).await;
     add(&handle, &mut events, 2, member(&cwd, "qa")).await;
     let first = until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), .. })).await;
     assert!(matches!(first.last(), Some(Event::WorkStarted { ticket: 3, .. })), "{first:#?}");

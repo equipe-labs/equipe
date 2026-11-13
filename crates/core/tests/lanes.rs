@@ -86,7 +86,8 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok","usag
     }
 
     fn prompts(&self) -> Vec<String> {
-        let log = std::fs::read_to_string(self.bin.with_file_name("prompts.log")).unwrap_or_default();
+        // Lossy: engines appending big prompts at once can cut a multi-byte character in two.
+        let log = String::from_utf8_lossy(&std::fs::read(self.bin.with_file_name("prompts.log")).unwrap_or_default()).into_owned();
         log.split("<<end>>").map(str::trim).filter(|p| !p.is_empty()).map(str::to_owned).collect()
     }
 }
@@ -298,7 +299,7 @@ async fn on_max_the_persons_caps_hold_whatever_the_plan_and_auto_brings_the_plan
     let (home, repo) = squad();
     let (handle, mut events) = runtime::start(config(&engine.bin, &home));
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
-    // The plan nearly used up: on auto, one at a time.
+    // The plan nearly used up: on auto, two at a time (the table's last 10%).
     let window = PlanWindow { used_percent: 95, resets_at: 4_000_000_000 };
     handle.usage_read(Engine::Claude, PlanUsage { five_hour: Some(window), seven_day: None });
     until(&mut events, |e| matches!(e, Event::PlanUsage { .. })).await;
@@ -307,13 +308,13 @@ async fn on_max_the_persons_caps_hold_whatever_the_plan_and_auto_brings_the_plan
     for n in 1..=6 {
         ticket_for(&handle, "frontend", &format!("Page {n}")).await;
     }
-    assert_eq!(started(&mut events, 1).await, [(2, 1)]);
+    assert_eq!(started(&mut events, 2).await, [(2, 1), (2, 2)]);
     tokio::time::sleep(Duration::from_millis(400)).await;
-    assert_eq!(runs(&handle.snapshot("acme").await).len(), 1);
+    assert_eq!(runs(&handle.snapshot("acme").await).len(), 2);
     // Max at four per member: four at once, the plan's usage left out.
     handle.send(Command::SetParallel { squad: "acme".into(), parallel: Parallel::max(4, 16) });
     until(&mut events, |e| matches!(e, Event::ParallelChanged { parallel, .. } if parallel.is_max())).await;
-    assert_eq!(started(&mut events, 3).await, [(2, 2), (2, 3), (2, 4)]);
+    assert_eq!(started(&mut events, 2).await, [(2, 3), (2, 4)]);
     tokio::time::sleep(Duration::from_millis(400)).await;
     let snapshot = handle.snapshot("acme").await;
     assert_eq!(runs(&snapshot).len(), 4, "never past the cap");

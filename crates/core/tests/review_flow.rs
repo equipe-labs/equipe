@@ -169,7 +169,8 @@ fn prompts(bin: &Path) -> PathBuf {
 /// The ticket prompt `bin` was given that says `wanted`, once it was.
 async fn ticket_prompt(bin: &Path, wanted: &str) -> String {
     for _ in 0..300 {
-        let log = std::fs::read_to_string(prompts(bin)).unwrap_or_default();
+        // Lossy: engines appending big prompts at once can cut a multi-byte character in two.
+        let log = String::from_utf8_lossy(&std::fs::read(prompts(bin)).unwrap_or_default()).into_owned();
         if let Some(found) = log.split("<<end>>").find(|p| p.contains(wanted)) {
             return found.to_owned();
         }

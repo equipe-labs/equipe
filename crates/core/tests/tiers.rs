@@ -139,7 +139,8 @@ async fn ticket(handle: &Handle) -> Ticket {
 /// the arguments it ran with, the prompt among them.
 async fn nth_prompt(bin: &Path, n: usize) -> String {
     for _ in 0..300 {
-        let log = std::fs::read_to_string(prompts(bin)).unwrap_or_default();
+        // Lossy: engines appending big prompts at once can cut a multi-byte character in two.
+        let log = String::from_utf8_lossy(&std::fs::read(prompts(bin)).unwrap_or_default()).into_owned();
         let all: Vec<&str> = log.split("<<end>>").filter(|p| p.contains("You're on T-")).collect();
         if let Some(found) = all.get(n - 1) {
             return (*found).to_owned();
