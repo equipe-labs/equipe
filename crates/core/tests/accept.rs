@@ -223,10 +223,13 @@ async fn the_pm_puts_it_on_a_card_and_only_the_persons_confirmation_accepts_and_
 
     // The person confirms, merging as their screen's way says: what A and the merge send.
     handle.send(Command::ConfirmAccept { squad: "acme".into(), id: card.id, tickets: vec![Confirmed { ticket: 1, merge: Some(Land::Merge) }], said: None });
-    let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
+    let mut seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
     assert!(seen.iter().any(|e| matches!(e, Event::AcceptClosed { id, confirmed: true, tickets, .. } if *id == card.id && tickets == &[1])), "{seen:#?}");
     assert_eq!(git(&repo, &["show", "main:HERO.md"]), "made by the squad", "on main");
-    // And T-2, waiting on it, started as soon as it was accepted.
+    // And T-2, waiting on it, started as soon as it was accepted (its start can follow the merge's event).
+    if !seen.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })) {
+        seen.extend(until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await);
+    }
     assert!(seen.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })), "{seen:#?}");
     assert!(handle.snapshot("acme").await.accepts.is_empty());
     // Confirmed again from another screen: nothing more.
@@ -254,8 +257,11 @@ async fn the_pm_accepts_its_teams_work_itself_unless_the_person_keeps_that_for_t
     // Checked and accepted: done, merged into main, and what waited on it starts.
     let ok = tool(&handle, "pm", "accept_work", json!({ "tickets": [1, 2], "checked": "Read the diff: the hero renders, nothing else touched." })).await;
     assert!(!ok.is_error && ok.text.contains("Accepted T-1") && ok.text.contains("T-2"), "{ok:?}");
-    let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
+    let mut seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
     assert_eq!(git(&repo, &["show", "main:HERO.md"]), "made by the squad", "on main");
+    if !seen.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })) {
+        seen.extend(until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await);
+    }
     assert!(seen.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })), "{seen:#?}");
     assert!(handle.snapshot("acme").await.pm_accepts, "the PM accepts unless the person says otherwise");
 
