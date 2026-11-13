@@ -218,12 +218,12 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     let dim = matches!(model.conn, Conn::Down { had_snapshot: false, .. });
     let on_board = shell.screen == Screen::Board;
     let menu = ui.view.menu;
-    let new_on = shell.screen == Screen::Chat && model.draft_talk.as_ref().is_some_and(|(_, project)| project.is_none());
+    // A conversation being started shows as the first of the Conversations, selected.
+    let new_on = false;
     let needs = model.needs_you_count();
     let working = model.tickets.iter().filter(|t| t.status == TicketStatus::InProgress).count();
     let risky = crate::board::progress(model, model.unix).risks.len();
     let progress_on = shell.screen == Screen::Progress;
-    let orchestra_on = shell.screen == Screen::Orchestration;
 
     // The strip: the title bar's fixed buttons float over its left (see
     // `title_buttons`); search, the sidebar's own, sits after them and leaves
@@ -282,54 +282,31 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                     }
                 })),
         )
-        // Who does what and waits on whom, beside the work's progress.
-        .child(
-            nav("nav-orchestra", glyph(IconName::Network, orchestra_on), t!("orchestra.title").into(), 0, 0, false, orchestra_on)
-                .child(div().flex_none().text_size(px(11.)).text_color(p.muted).font_features(key_face()).child("⌘⇧L"))
-                .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
-                    if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Orchestration, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
-                        this.open_orchestra(cx);
-                    }
-                })),
-        )
         // The squad's other screens, named, behind "More".
         .children(more_rows(shell, cx));
 
-    // A group per project, its conversations under it; what is live in it
-    // shows on its header, and its page (its name) holds the work.
+    // The person's conversations with the PM, newest first, right under the
+    // nav; then the projects — a project's own conversations are on its page.
     let groups: Vec<SideGroup> = side_groups(model);
     let projects: Vec<&SideGroup> = groups.iter().filter(|g| g.name.is_some()).collect();
-    let mut list: Vec<AnyElement> = Vec::new();
+    let mut list: Vec<AnyElement> = conversation_list(shell, cx);
     // The projects under a heading of their own, with the button that adds one.
+    let folded = shell.remembered.projects_folded && shell.screen != Screen::Project;
     if !projects.is_empty() || !model.projects.is_empty() {
-        list.push(projects_heading(shell, cx));
+        list.push(projects_heading(shell, folded, cx));
     }
     // Every project with something in it; the quiet ones past a few behind "+N more".
     let talked: Vec<bool> = projects.iter().map(|g| !g.is_quiet() || g.name.as_ref().is_some_and(|n| model.conversations().iter().any(|l| l.project.as_deref() == Some(n.as_str())))).collect();
     let (shown_groups, hidden) = shown_projects(&talked, shell.board.side_projects_all, PROJECTS_SHOWN);
-    let mut after_rows = false;
-    for (ix, g) in shown_groups.iter().map(|&i| projects[i]).enumerate() {
-        let folded = shell.remembered.folded.contains(&g.key());
-        let gap = if ix == 0 { 2. } else if after_rows { 8. } else { 1. };
-        let talks = g.name.as_ref().map(|name| conversation_rows(shell, Some(name.as_str()), cx)).unwrap_or_default();
-        list.push(project_head(shell, g, folded, gap, !talks.is_empty(), cx));
-        after_rows = !folded && !talks.is_empty();
-        if !folded {
-            list.extend(talks);
+    if !folded {
+        for (ix, g) in shown_groups.iter().map(|&i| projects[i]).enumerate() {
+            list.push(project_head(shell, g, if ix == 0 { 2. } else { 1. }, cx));
+        }
+        if hidden > 0 || shell.board.side_projects_all {
+            list.push(projects_more_row(shell, hidden, cx));
         }
     }
-    if hidden > 0 || shell.board.side_projects_all {
-        list.push(projects_more_row(shell, hidden, cx));
-    }
     list.extend(removed_row(shell, cx));
-    // The squad's own: the PM's conversation and those about no one project.
-    let squad = groups.iter().find(|g| g.name.is_none()).cloned().unwrap_or(SideGroup { name: None, at: None, rows: Vec::new(), more: 0, working: 0, waiting: 0 });
-    let squad_folded = shell.remembered.folded.contains(&squad.key());
-    list.push(project_head(shell, &squad, squad_folded, 14., true, cx));
-    if !squad_folded {
-        list.push(pm_row(shell, cx));
-        list.extend(conversation_rows(shell, None, cx));
-    }
 
     // One column, one scroll: the nav and projects, then the plans' usage and
     // the team, each only as tall as its own content — nothing reserves room
@@ -404,32 +381,6 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         )
 }
 
-/// The PM's own conversation, first in the squad's group.
-fn pm_row(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
-    let p = shell.palette;
-    let model = &shell.model;
-    let on = shell.screen == Screen::Chat && model.side_open() == Some(Side::Pm) && model.draft_talk.is_none();
-    let indent = CHILD_INDENT;
-    let working = model.pm().and_then(|pm| model.members.iter().find(|m| m.session == pm)).is_some_and(|m| m.presence == crate::state::Presence::Working);
-    let mark = if working {
-        mark_element(p, Mark::Spinner, shell.spin(cx))
-    } else {
-        div().w(px(MARK_BOX)).h(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(crate::theme::avatar(p, equipe_core::roles::PM, equipe_core::roles::PM, 16.)).into_any_element()
-    };
-    row_shell(p, "nav-pm", on)
-        .pl(px(8. + indent))
-        .aria_label(t!("sidebar.pm_talk"))
-        .aria_selected(on)
-        .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
-            if !this.open_elsewhere(e, super::elsewhere::Goal::Place(Place { screen: Screen::Chat, menu: this.board.view.menu, member: None, ticket: None }), window, cx) {
-                this.open_side(Side::Pm, window, cx);
-            }
-        }))
-        .child(mark)
-        .child(row_title(p, t!("sidebar.pm_talk").into(), on, false))
-        .into_any_element()
-}
-
 /// An icon from the kit, or one of equipe's own.
 enum Glyph {
     Kit(IconName),
@@ -440,7 +391,7 @@ enum Glyph {
 /// person sees where they are.
 fn on_more(shell: &Shell) -> bool {
     let menu = shell.board.view.menu;
-    matches!(shell.screen, Screen::Roadmap | Screen::Metrics | Screen::Design | Screen::Docs | Screen::Logins)
+    matches!(shell.screen, Screen::Orchestration | Screen::Roadmap | Screen::Metrics | Screen::Design | Screen::Docs | Screen::Logins)
         || (shell.screen == Screen::Board && matches!(menu, Menu::All | Menu::View(_)))
 }
 
@@ -449,10 +400,10 @@ fn on_more(shell: &Shell) -> bool {
 fn more_rows(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
     let p = shell.palette;
     let open = shell.remembered.nav_more || on_more(shell);
-    let words = if open { t!("sidebar.fewer") } else { t!("sidebar.more_screens") };
+    let words = t!("sidebar.more_screens");
     let mut rows = vec![
         row_shell(p, "nav-more", false)
-            .h(px(30.))
+            .h(px(32.))
             .aria_expanded(open)
             .aria_label(words)
             .on_click(cx.listener(|this, _, _, cx| {
@@ -460,7 +411,7 @@ fn more_rows(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
                 this.remembered.save(&equipe_providers::credentials::equipe_home());
                 cx.notify();
             }))
-            .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(icon(if open { IconName::ChevronDown } else { IconName::Ellipsis }, 14., p.muted)))
+            .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(icon(if open { IconName::ChevronDown } else { IconName::ChevronRight }, 14., p.muted)))
             .child(div().flex_1().min_w_0().truncate().text_color(p.muted).child(words))
             .into_any_element(),
     ];
@@ -482,6 +433,17 @@ fn more_rows(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
             .child(row_title(p, label, on, false))
     };
     let place = |screen: Screen, menu: Menu| Place { screen, menu, member: None, ticket: None };
+    // Who does what and waits on whom, beside the work's progress.
+    rows.push(
+        tool("nav-orchestra", Glyph::Kit(IconName::Network), t!("orchestra.title").into(), shell.screen == Screen::Orchestration)
+            .child(div().flex_none().text_size(px(11.)).text_color(p.muted).font_features(key_face()).child("⌘⇧L"))
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                if !this.open_elsewhere(e, super::elsewhere::Goal::Place(place(Screen::Orchestration, this.board.view.menu)), window, cx) {
+                    this.open_orchestra(cx);
+                }
+            }))
+            .into_any_element(),
+    );
     rows.push(
         tool("nav-all", Glyph::Kit(IconName::LayoutDashboard), t!("board.menu_all").into(), on_all)
             .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
@@ -541,25 +503,38 @@ fn more_rows(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
     rows
 }
 
-/// "Projects", over the squad's projects, and its "+" (the same as the
-/// project list's "Add a project…").
-fn projects_heading(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
+/// A section's heading frame: the same muted line over every list.
+fn heading_frame(p: Palette, id: &'static str) -> Stateful<Div> {
+    h_flex().id(id).group(id).relative().h(px(26.)).mt(px(14.)).mx_2().pl_2().pr_1().items_center().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(p.muted)
+}
+
+/// "Projects", over the squad's projects, folding them on a click, and its
+/// "+" (the same as the project list's "Add a project…").
+fn projects_heading(shell: &Shell, folded: bool, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let local = !shell.endpoint.is_remote();
-    h_flex()
-        .id("projects-heading")
-        .group("projects-heading")
-        .relative()
-        .h(px(26.))
-        .mt(px(14.))
-        .mx_2()
-        .pl_2()
-        .pr_1()
-        .items_center()
-        .text_size(px(12.))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(p.muted)
-        .child(div().flex_1().child(t!("sidebar.projects")))
+    let words = t!("sidebar.projects");
+    heading_frame(p, "projects-heading")
+        .child(
+            h_flex()
+                .id("projects-fold")
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .gap(px(4.))
+                .items_center()
+                .cursor_pointer()
+                .role(Role::Button)
+                .aria_expanded(!folded)
+                .aria_label(words)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.remembered.projects_folded = !(this.remembered.projects_folded && this.screen != Screen::Project);
+                    this.remembered.save(&equipe_providers::credentials::equipe_home());
+                    cx.notify();
+                }))
+                .child(div().child(words))
+                .child(div().when(!folded, |d| d.invisible().group_hover("projects-heading", |s| s.visible())).child(icon(if folded { IconName::ChevronRight } else { IconName::ChevronDown }, 12., p.muted))),
+        )
         .child(
             div()
                 .id("projects-add")
@@ -628,40 +603,15 @@ pub fn hq_badge(p: Palette) -> impl IntoElement {
 /// dot and its number in ink; else a red dot; else a spinner at work.
 /// On the pointer the counts give way to "+" (a new conversation here) and
 /// "⋯" (its menu, as a right-click opens it).
-fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, talks: bool, cx: &mut Context<Shell>) -> AnyElement {
+fn project_head(shell: &Shell, g: &SideGroup, gap: f32, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let key = g.key();
     let group = SharedString::from(format!("head-{key}"));
-    // Nothing in it to fold: no conversation (its work is on its page).
-    let quiet = !talks;
     // Its page open now.
     let focused = g.name.is_some() && shell.screen == Screen::Project && shell.board.project_page == g.name;
-    let label = g.name.clone().unwrap_or_else(|| t!("sidebar.outside").into());
-    let (fold_project, name_project) = (g.name.clone(), g.name.clone());
-    // The chevron: open, always; folded, on the pointer — the name starts at one x either way.
-    let chevron = div()
-        .id(SharedString::from(format!("fold-{key}")))
-        .w(px(MARK_BOX))
-        .h(px(20.))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(4.))
-        .when(!quiet, |c| {
-            c.cursor_pointer()
-                .hover(move |s| s.bg(p.side_hover))
-                .tip(p, if folded { t!("sidebar.unfold") } else { t!("sidebar.fold") }, None)
-                .child(div().when(folded, |d| d.invisible().group_hover(group.clone(), |s| s.visible())).child(icon(if folded { IconName::ChevronRight } else { IconName::ChevronDown }, 12., p.muted)))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    cx.stop_propagation();
-                    this.side_head_click(HeadClick::Chevron, fold_project.clone(), window, cx);
-                }))
-        });
-    let name_tip = match &g.name {
-        None => t!("sidebar.squad_tip"),
-        Some(_) => t!("sidebar.open_project"),
-    };
+    let label = g.name.clone().unwrap_or_default();
+    let name_project = g.name.clone();
+    let name_tip = t!("sidebar.open_project");
     // Where the project is, on the daemon's machine: on the pointer, and to copy.
     let folder = g.name.as_ref().and_then(|n| shell.model.projects.iter().find(|p| &equipe_core::board::project_name(p) == n)).cloned();
     let name_tip = match &folder {
@@ -768,7 +718,6 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, talks: boo
             this.side_head_click(HeadClick::Name, name_project.clone(), window, cx)
         }))
         .text_size(px(UI))
-        .child(chevron)
         .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(ident))
         .child(div().flex_1().min_w_0().truncate().text_color(name_color).font_weight(if waiting > 0 || focused { FontWeight::MEDIUM } else { FontWeight::NORMAL }).child(label))
         .when(hq, |r| r.child(hq_badge(p)))
@@ -777,45 +726,51 @@ fn project_head(shell: &Shell, g: &SideGroup, folded: bool, gap: f32, talks: boo
     row.into_any_element()
 }
 
-/// The conversations with the PM about `project` (`None`: the whole squad),
-/// most lately used first — and, while one is being started there, it.
-fn conversation_rows(shell: &Shell, project: Option<&str>, cx: &mut Context<Shell>) -> Vec<AnyElement> {
+/// The conversations shown at once under "Conversations", the newest first;
+/// the rest behind "Show all (N)".
+const CONVERSATIONS_SHOWN: usize = 10;
+
+/// The longest a conversation's project label grows in its row.
+const LABEL_MAX: f32 = 84.;
+
+/// The "Conversations" section: every conversation the person opened with the
+/// PM, the most lately used first — one being started on top, selected — each
+/// naming its project when it has one. No conversation, no section.
+fn conversation_list(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
     let p = shell.palette;
     let model = &shell.model;
-    // Inside a project, under its colour: one step in.
-    let indent = CHILD_INDENT;
-    let mut rows = Vec::new();
-    if let Some((draft, about)) = &model.draft_talk
-        && about.as_deref() == project
-        && project.is_some()
-    {
+    let talks = model.conversations();
+    if talks.is_empty() && model.draft_talk.is_none() {
+        return Vec::new();
+    }
+    let mut rows = vec![heading_frame(p, "talks-heading").child(div().flex_1().child(t!("sidebar.conversations"))).into_any_element()];
+    if let Some((draft, about)) = &model.draft_talk {
         let on = shell.screen == Screen::Chat;
+        let title: String = t!("sidebar.new_conversation").into();
         rows.push(
             row_shell(p, ("conv-draft", *draft as usize), on)
-                .pl(px(8. + indent))
+                .aria_label(title.clone())
+                .aria_selected(on)
                 .child(div().w(px(MARK_BOX)).h(px(MARK_BOX)).flex_none())
-                .child(row_title(p, t!("sidebar.new_conversation").into(), on, true))
+                .child(row_title(p, title, on, true))
+                .children(project_label(p, about.as_deref()))
                 .into_any_element(),
         );
     }
-    let talks: Vec<&crate::state::Lane> = model.conversations().into_iter().filter(|l| l.project.as_deref() == project).collect();
-    let all = shell.board.side_talks_all.contains(project.unwrap_or(""));
-    let most = talks_shown(project);
-    let shown = if all { talks.len() } else { talks.len().min(most) };
+    let all = shell.board.side_talks_all.contains("");
+    let shown = if all { talks.len() } else { talks.len().min(CONVERSATIONS_SHOWN) };
     for lane in &talks[..shown] {
-        rows.push(conversation_row(shell, lane, indent, cx));
+        rows.push(conversation_row(shell, lane, cx));
     }
-    if talks.len() > most {
-        let key = project.unwrap_or("").to_owned();
-        let words = if all { t!("sidebar.fewer").to_owned() } else { t!("sidebar.more", n = talks.len() - most) };
+    if talks.len() > CONVERSATIONS_SHOWN {
+        let words = if all { t!("sidebar.fewer").to_owned() } else { t!("sidebar.show_all", n = talks.len()) };
         rows.push(
-            row_shell(p, SharedString::from(format!("talks-more-{key}")), false)
+            row_shell(p, "talks-more", false)
                 .h(px(26.))
                 .aria_label(words.clone())
-                .pl(px(8. + indent))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if !this.board.side_talks_all.remove(&key) {
-                        this.board.side_talks_all.insert(key.clone());
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if !this.board.side_talks_all.remove("") {
+                        this.board.side_talks_all.insert(String::new());
                     }
                     cx.notify();
                 }))
@@ -827,42 +782,35 @@ fn conversation_rows(shell: &Shell, project: Option<&str>, cx: &mut Context<Shel
     rows
 }
 
-/// A project's conversations with the PM shown at once; the rest behind "+N more".
-const TALKS_SHOWN: usize = 5;
-/// The conversations outside any project (the squad's own) shown at once: the
-/// latest few, so they never push the projects list down the sidebar.
-const OUTSIDE_TALKS_SHOWN: usize = 3;
-
-/// How many conversations show before "+N more": the latest three outside
-/// projects (`None`), a few more inside one.
-pub fn talks_shown(project: Option<&str>) -> usize {
-    if project.is_some() { TALKS_SHOWN } else { OUTSIDE_TALKS_SHOWN }
+/// The project a conversation is about, small and muted at its row's end.
+fn project_label(p: Palette, project: Option<&str>) -> Option<Div> {
+    project.map(|name| div().flex_none().max_w(px(LABEL_MAX)).truncate().text_size(px(11.)).text_color(p.muted).child(name.to_owned()))
 }
 
 /// A conversation with the PM: a spinner while it answers, its first words,
-/// and on the pointer the way to put it away. ⌘-click: in a window of its own.
-fn conversation_row(shell: &Shell, lane: &crate::state::Lane, indent: f32, cx: &mut Context<Shell>) -> AnyElement {
+/// its project at the end, and on the pointer the way to rename it and put it
+/// away. ⌘-click: in a window of its own.
+fn conversation_row(shell: &Shell, lane: &crate::state::Lane, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let id = lane.session;
     let on = shell.screen == Screen::Chat && shell.model.talk == Some(id) && shell.model.draft_talk.is_none();
     let group = SharedString::from(format!("conv-{id}"));
-    // Under its project's colour: a spinner while the PM answers, else
-    // nothing — the title lines up with the project's name above it.
+    // A spinner while the PM answers, else an empty mark: every title starts at the nav's x.
     let mark = if lane.presence == crate::state::Presence::Working { mark_element(p, Mark::Spinner, shell.spin(cx)) } else { div().w(px(MARK_BOX)).h(px(MARK_BOX)).flex_none().into_any_element() };
     let title = lane.title.clone().unwrap_or_else(|| t!("sidebar.new_conversation").into());
-    row_shell(p, ("conv", id as usize), on)
-        .pl(px(8. + indent))
-        .aria_label(title.clone())
-        .aria_selected(on)
-        .group(group.clone())
-        .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
-            if !this.open_elsewhere(e, super::elsewhere::Goal::Conversation(id), window, cx) {
-                this.open_side(Side::Conversation(id), window, cx);
-            }
-        }))
-        .child(mark)
-        .child(row_title(p, title, on, false))
-        // On the pointer: rename (it opens the conversation, and the card under its title) and put away.
+    let label = match &lane.project {
+        Some(project) => format!("{title}, {project}"),
+        None => title.clone(),
+    };
+    // On the pointer, over the row's end: rename (it opens the conversation, and the card under its title) and put away.
+    let actions = h_flex()
+        .absolute()
+        .right(px(4.))
+        .top_0()
+        .bottom_0()
+        .items_center()
+        .invisible()
+        .group_hover(group.clone(), |s| s.visible())
         .child(
             div()
                 .id(("conv-rename", id as usize))
@@ -872,9 +820,8 @@ fn conversation_row(shell: &Shell, lane: &crate::state::Lane, indent: f32, cx: &
                 .items_center()
                 .justify_center()
                 .rounded(px(4.))
-                .invisible()
-                .group_hover(group.clone(), |s| s.visible())
-                .hover(move |s| s.bg(p.side_hover))
+                .bg(p.side_hover)
+                .hover(move |s| s.bg(p.side_sel))
                 .role(Role::Button)
                 .aria_label(t!("talk.rename"))
                 .tip(p, t!("talk.rename"), None)
@@ -894,9 +841,8 @@ fn conversation_row(shell: &Shell, lane: &crate::state::Lane, indent: f32, cx: &
                 .items_center()
                 .justify_center()
                 .rounded(px(4.))
-                .invisible()
-                .group_hover(group, |s| s.visible())
-                .hover(move |s| s.bg(p.side_hover))
+                .bg(p.side_hover)
+                .hover(move |s| s.bg(p.side_sel))
                 .role(Role::Button)
                 .aria_label(t!("sidebar.put_away"))
                 .tip(p, t!("sidebar.put_away"), None)
@@ -905,7 +851,20 @@ fn conversation_row(shell: &Shell, lane: &crate::state::Lane, indent: f32, cx: &
                     cx.stop_propagation();
                     this.put_away_conversation(id, cx);
                 })),
-        )
+        );
+    row_shell(p, ("conv", id as usize), on)
+        .aria_label(label)
+        .aria_selected(on)
+        .group(group.clone())
+        .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+            if !this.open_elsewhere(e, super::elsewhere::Goal::Conversation(id), window, cx) {
+                this.open_side(Side::Conversation(id), window, cx);
+            }
+        }))
+        .child(mark)
+        .child(row_title(p, title, on, false))
+        .children(project_label(p, lane.project.as_deref()).map(|label| label.group_hover(group, |s| s.invisible())))
+        .child(actions)
         .into_any_element()
 }
 
@@ -2651,7 +2610,7 @@ pub struct Place {
 
 #[cfg(test)]
 mod tests {
-    use super::{HeadSign, MAX_WIDTH, MIN_WIDTH, SUB_ROW, SUBS_SHOWN, SubLeaving, SubMotion, SubShown, TeamState, WIDTH, Wait, cut, engine_marks, head_sign, remove_ask, run_rows, settle, shown_projects, sub_rows, subs_cap, talks_shown, paused_ticket, wait_of, OUTSIDE_TALKS_SHOWN};
+    use super::{HeadSign, MAX_WIDTH, MIN_WIDTH, SUB_ROW, SUBS_SHOWN, SubLeaving, SubMotion, SubShown, TeamState, WIDTH, Wait, cut, engine_marks, head_sign, remove_ask, run_rows, settle, shown_projects, sub_rows, subs_cap, paused_ticket, wait_of, CONVERSATIONS_SHOWN};
     use equipe_core::protocol::Engine;
     use crate::state::{Member, Model, Presence, Verb};
     use equipe_core::protocol::Ticket;
@@ -2783,10 +2742,8 @@ mod tests {
     }
 
     #[test]
-    fn outside_projects_show_the_latest_three_and_a_project_a_few_more() {
-        assert_eq!(talks_shown(None), OUTSIDE_TALKS_SHOWN);
-        assert_eq!(OUTSIDE_TALKS_SHOWN, 3);
-        assert!(talks_shown(Some("app")) > talks_shown(None));
+    fn the_conversations_list_shows_a_screenful_then_all_behind_one_row() {
+        assert_eq!(CONVERSATIONS_SHOWN, 10);
     }
 
     #[test]

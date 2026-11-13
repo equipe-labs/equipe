@@ -2298,6 +2298,8 @@
   "sidebar.outside": "專案之外",
   "sidebar.pm_talk": "PM 對話",
   "sidebar.projects": "專案",
+  "sidebar.conversations": "對話",
+  "sidebar.show_all": "顯示全部（{n}）",
   "sidebar.quick_yes": "A 同意",
   "sidebar.reading": "閱讀中",
   "sidebar.recent_done": "最近完成",

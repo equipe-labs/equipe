@@ -2357,6 +2357,8 @@
   "sidebar.outside": "Outside projects",
   "sidebar.pm_talk": "PM",
   "sidebar.projects": "Projects",
+  "sidebar.conversations": "Conversations",
+  "sidebar.show_all": "Show all ({n})",
   "sidebar.quick_yes": "A yes",
   "sidebar.reading": "Reading",
   "sidebar.recent_done": "Recently done",

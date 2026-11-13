@@ -195,6 +195,8 @@ pub struct Remembered {
     pub usage_folded: bool,
     /// The sidebar's other screens named under "More", not folded behind it.
     pub nav_more: bool,
+    /// The sidebar's projects folded behind their heading.
+    pub projects_folded: bool,
     /// The language this app kept before the pick was everyone's (`ko`, `en`, …):
     /// read once, moved to the shared pick (`i18n::migrate`), never written again.
     pub lang: Option<String>,
@@ -452,6 +454,8 @@ impl Remembered {
                 out.usage_folded = true;
             } else if line == "nav-more" {
                 out.nav_more = true;
+            } else if line == "projects-folded" {
+                out.projects_folded = true;
             } else if let Some(rest) = line.strip_prefix("sidebar-width ") {
                 out.sidebar_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
             } else if let Some(rest) = line.strip_prefix("window-size ") {
@@ -585,6 +589,9 @@ impl Remembered {
         }
         if self.nav_more {
             text.push_str("nav-more\n");
+        }
+        if self.projects_folded {
+            text.push_str("projects-folded\n");
         }
         if let Some(lang) = &self.lang {
             text.push_str(&format!("lang {lang}\n"));
@@ -831,6 +838,7 @@ mod tests {
         remembered.team_open = true;
         remembered.usage_folded = true;
         remembered.nav_more = true;
+        remembered.projects_folded = true;
         remembered.set_host_name("me@100.106.17.55", "  사무실 맥미니 ");
         remembered.set_host_name("vision", "vision");
         remembered.set_host_name("vision", "");
@@ -851,6 +859,7 @@ mod tests {
         assert!(loaded.usage_folded, "the plans' meters folded, as left");
         assert!(!Remembered::default().usage_folded, "they start open");
         assert!(loaded.nav_more && !Remembered::default().nav_more, "the sidebar's More, as left; folded to start");
+        assert!(loaded.projects_folded && !Remembered::default().projects_folded, "the sidebar's Projects, as left; open to start");
         assert_eq!(loaded.host_name("me@100.106.17.55"), Some("사무실 맥미니"), "a machine's name, trimmed");
         assert_eq!(loaded.host_name("vision"), None, "an empty name takes it away");
         assert_eq!(loaded.dictation.as_deref(), Some("ja"), "dictation's language, apart from the app's");
