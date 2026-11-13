@@ -1416,5 +1416,7 @@
   "credential.refused": "equipe credential 只把金鑰交給 AWS CLI 的 credential_process，絕不交給成員的命令。",
   "credential.missing": "沒有為設定檔 {name} 保存 AWS 金鑰（設定 › 帳號 › 登入自動駕駛）。",
   "credential.unknown": "equipe credential 只支援 aws，不支援 {kind}。",
-  "telegram.captcha": "{member} 的瀏覽器裡有個 CAPTCHA 等你處理。打開 equipe 完成它，之後 {member} 會自己繼續。"
+  "telegram.captcha": "{member} 的瀏覽器裡有個 CAPTCHA 等你處理。打開 equipe 完成它，之後 {member} 會自己繼續。",
+  "main.browser_panel_1": "頁面已在 equipe App 的瀏覽器面板中開啟。請在那裡登入或註冊。",
+  "main.browser_panel_2": "一次就夠了。完成後，equipe 會詢問是否儲存該登入。"
 }

@@ -1416,5 +1416,7 @@
   "credential.refused": "equipe credential은 AWS CLI의 credential_process에만 키를 주고, 멤버의 명령에는 주지 않아요.",
   "credential.missing": "{name} 프로필에 보관된 AWS 키가 없어요(설정 › 계정 › 로그인 오토파일럿).",
   "credential.unknown": "equipe credential은 aws만 알아요. {kind}는 몰라요.",
-  "telegram.captcha": "{member}의 브라우저에서 CAPTCHA가 기다리고 있어요. equipe를 열어 풀어 주세요. 풀고 나면 {member}가 알아서 이어가요."
+  "telegram.captcha": "{member}의 브라우저에서 CAPTCHA가 기다리고 있어요. equipe를 열어 풀어 주세요. 풀고 나면 {member}가 알아서 이어가요.",
+  "main.browser_panel_1": "페이지가 equipe 앱의 브라우저 패널에 열렸어요. 거기서 로그인하거나 가입하세요.",
+  "main.browser_panel_2": "한 번이면 돼요. 끝나면 equipe가 로그인을 저장할지 물어봐요."
 }

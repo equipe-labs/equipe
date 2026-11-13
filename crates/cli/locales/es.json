@@ -1439,5 +1439,7 @@
   "credential.refused": "equipe credential solo da una clave al credential_process de la AWS CLI, nunca al comando de un miembro.",
   "credential.missing": "No hay ninguna clave de AWS guardada para el perfil {name} (Ajustes › Cuentas › Piloto automático de acceso).",
   "credential.unknown": "equipe credential solo conoce aws, no {kind}.",
-  "telegram.captcha": "Un CAPTCHA te espera en el navegador de {member}. Abre equipe y resuélvelo; después {member} sigue por su cuenta."
+  "telegram.captcha": "Un CAPTCHA te espera en el navegador de {member}. Abre equipe y resuélvelo; después {member} sigue por su cuenta.",
+  "main.browser_panel_1": "La página se abrió en el panel del navegador de la app de equipe. Inicia sesión, o regístrate, allí:",
+  "main.browser_panel_2": "con una vez basta, y al terminar equipe ofrece guardar el acceso."
 }

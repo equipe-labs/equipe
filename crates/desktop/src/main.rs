@@ -1140,6 +1140,12 @@ impl Shell {
                             }
                             other => other,
                         };
+                        // A sign-in the person asked for in equipe's own browser: the Logins page's line, and the panel.
+                        if let daemon::Update::Event(Event::BrowserSignIn { site, state, window: window_asked }) = &update {
+                            this.sign_in_event(site, *state, *window_asked, window, cx);
+                            changed = true;
+                            continue;
+                        }
                         // The shared Chrome's tabs and hands: the browser panel's.
                         if let daemon::Update::Event(
                             event @ (Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. } | Event::BrowserWants { .. }),

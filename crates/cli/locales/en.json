@@ -1439,5 +1439,7 @@
   "credential.refused": "equipe credential gives a key only to the AWS CLI's credential_process, never to a member's command.",
   "credential.missing": "No AWS key is kept for the profile {name} (Settings › Accounts › Login autopilot).",
   "credential.unknown": "equipe credential knows aws only, not {kind}.",
-  "telegram.captcha": "A CAPTCHA waits for you in {member}'s browser. Open equipe and solve it; {member} carries on by itself afterwards."
+  "telegram.captcha": "A CAPTCHA waits for you in {member}'s browser. Open equipe and solve it; {member} carries on by itself afterwards.",
+  "main.browser_panel_1": "The page opened in the equipe app's browser panel. Sign in — or sign up — there:",
+  "main.browser_panel_2": "once is enough, and equipe offers to keep the login when you're done."
 }

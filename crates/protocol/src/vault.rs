@@ -382,6 +382,11 @@ pub struct LoginDraft {
     /// (off for a new login).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto: Option<bool>,
+    /// Use the account for "Sign in with …" on other sites
+    /// ([`Autopilot::idp`]); only an identity provider's own login takes it.
+    /// `None`: as kept (off for a new login).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idp: Option<bool>,
 }
 
 /// equipe's offer to keep a login the person just finished by hand in a
@@ -470,7 +475,7 @@ mod tests {
 
     #[test]
     fn a_drafts_password_is_never_printed() {
-        let draft = LoginDraft { id: None, site: "github.com".into(), username: "abel".into(), password: Some("hunter2".into()), note: None, auto: None };
+        let draft = LoginDraft { id: None, site: "github.com".into(), username: "abel".into(), password: Some("hunter2".into()), note: None, auto: None, idp: None };
         let shown = format!("{draft:?}");
         assert!(!shown.contains("hunter2") && shown.contains("•••"), "{shown}");
         let command = crate::Command::SaveLogin { draft };

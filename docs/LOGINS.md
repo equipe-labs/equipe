@@ -9,6 +9,7 @@ signs in once and isn't asked again for the same thing. The pieces:
 | Why the person was asked to sign in, and the measures | `crates/core/src/logins.rs`, `equipe logins stats` |
 | Offers to keep a login, signing in by itself, one card per site | `crates/core/src/runtime/logins.rs` |
 | The browser host's fill and session cookies | `crates/core/assets/browser-host.cjs`, `keep-sessions.js`, `gate.js` |
+| Signing in to a site in equipe's own browser (`equipe browser`, the app's "Sign in to a site") | `crates/core/src/signin.rs`, `Runtime::start_sign_in` (`crates/core/src/runtime.rs`), `follow_person_tabs` (`runtime/logins.rs`) |
 | Cards, the Logins page, Settings › Accounts | `crates/desktop/src/views/login_offers.rs`, `views/logins.rs` (logic: `crates/desktop/src/logins.rs`), `views/accounts.rs` |
 | Login autopilot: codes, passkey, keep-alive, command-line sign-ins | `crates/core/src/autopilot/`, `crates/core/src/runtime/autopilot.rs`, `views/autopilot.rs` (on the Logins page) |
 
@@ -34,9 +35,16 @@ One page for everything about the logins, reached from the sidebar's "More"
 "Save this login?" card, and Settings › Accounts (which keeps one line that
 opens it). Top to bottom:
 
+- **Sign in to a site** — the page's main button (also `/sign-in [site]` in
+  the command palette and a line in Settings › Accounts). It asks for a site
+  or an address, with quick picks: the sites members waited on or were sent
+  to sign in to lately, then common ones (`signin::COMMON_SITES`). It opens
+  equipe's own browser there — see "Signing in to a site yourself" below.
 - **Waiting for you now** — one row per site members wait on a sign-in for
   (members joined into one row, as the cards are), with "Open browser to log
-  in" (the browser panel on that page) and "Save this login" when none is kept.
+  in" (the browser panel on the member's page, in the person's hands; where
+  that page is gone, the same sign-in as "Sign in to a site") and "Save this
+  login" when none is kept.
 - **Saved logins** — a search (site, username, note, sign-in page) and a row
   each: a letter tile (no icon is fetched from the site, so opening the page
   tells no one which sites have logins), site, username and note, a scope
@@ -71,6 +79,54 @@ secret store is here), `Command::SetLoginScope` and `Command::ForgetNeverOffer`
 (person-only). `Login::password_at` dates the last password. Logic without
 drawing, tested with plain values: `crates/desktop/src/logins.rs`; the read
 model: `equipe_core::logins::insights`.
+
+## Signing in to a site yourself
+
+`equipe browser <url>` and the app's "Sign in to a site" are one code path:
+the daemon's `Runtime::start_sign_in` (`Command::BrowserSignIn { url, window }`
+from a screen, the `browser_sign_in` request from the command line;
+`crates/core/src/signin.rs` reads what was typed, `signin::resolve`: a host or
+an http(s) address, nothing else). The daemon opens the page where the person
+is: a new tab of the person's own in the shared Chrome, picked and shown in
+the browser panel of an attached screen, else (or when asked for with
+`window`) the separate Chrome window on the daemon's Mac. The command line
+falls back to its own sign-in window only where no daemon can open one.
+
+Over SSH the app talks to the daemon's Mac: the browser runs there and the
+panel shows it here. A separate window opens on that Mac's screen, not on the
+one in front of the person; the Logins page says so before and after.
+
+The old `browser_window` request still opens the window (older command lines)
+and starts the same follow-up.
+
+### Seeing the sign-in through
+
+The person's own tabs (lane `""`) are always the person's hands, whether the
+panel or the Chrome window shows them. `signin::Tracker` (pure, fed with the
+tabs as the browser host tells them) follows them:
+
+- a tab that was on a sign-in (a password or code wall) and now is past it on
+  the same site is a sign-in finished — with or without a sign-in the person
+  started, in the panel or in a popped-out window;
+- for the sign-in the person started, its tab (the first tab that wasn't open
+  before) counts as signing in to the starting site even while it is on
+  another host, so "Sign in with Google" (the provider's page, then back on
+  the site past its sign-in) finishes it too;
+- it is followed for 30 minutes; a closed tab ends it quietly.
+
+When one finishes the daemon records it (`login_events`, by the person), reloads
+members' pages waiting on that site (they go back to their members by
+themselves), and offers to keep the login as before. `Event::BrowserSignIn`
+tells every screen how it stands (opened, failed, signed in and whether a card
+asks, closed). The Logins page shows the card there too, with equipe's own
+masked boxes; "Signs in by itself" is on, and for an identity provider's own
+login "Use this account for 'Sign in with …' on other sites" too, both the
+person's to turn off (`LoginDraft::idp`).
+
+A member's own browser the person pops out into the real Chrome window is the
+person's hands too: popping out puts a hand on a lane the person holds
+(`touched`, `browser-host.cjs`), so a sign-in finished there is theirs — the
+panel's keys no longer have to be what says so.
 
 ## What is recorded, and the measures
 
@@ -109,9 +165,11 @@ once per site, to keep the login: a card with equipe's own username and
 password boxes (the password masked), a switch to let equipe sign in there by
 itself, and Save / Not now / Never for this site. "Never" is kept in
 `vault-never-offer.json`. Logins can also be added and changed on the Logins page. equipe never reads what the person typed into the site. A sign-in
-done in the real Chrome window (popped out, or on the Mac's screen with no
-browser panel attached) isn't seen as the person's hand, so no offer comes
-then; the Logins page still takes the login.
+done in the real Chrome window — popped out, or opened for the person with no
+browser panel attached — is seen the same way (see "Signing in to a site
+yourself"): the person's own tabs, and a member's lane they popped out, are
+their hands. Logins done in another browser profile's Chrome are not offered
+(another person's accounts).
 
 ## Signing in by itself
 

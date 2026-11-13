@@ -63,7 +63,9 @@ pub(super) fn sections(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let desc = if kept == 0 { t!("accounts.logins_none").to_owned() } else { t!("accounts.logins_count", kept = kept, auto = auto) };
     let open = ui::button(p, "settings-open-logins", Kind::Secondary, t!("accounts.logins_open")).icon(Icon::Lock).on_click(cx.listener(|this, _, _, cx| this.open_logins(cx)));
     let line = Line::new(t!("loginspage.title"), desc).words(t!("accounts.add_words")).control(open);
-    vec![Section::new(t!("accounts.section_logins"), vec![line]).foot(t!("accounts.foot", machine = shell.endpoint.label()))]
+    let sign_in = ui::button(p, "settings-sign-in", Kind::Secondary, t!("loginspage.signin")).icon(Icon::Globe).on_click(cx.listener(|this, _, window, cx| this.open_sign_in(None, window, cx)));
+    let sign_in = Line::new(t!("loginspage.signin"), t!("accounts.signin_desc")).words(t!("accounts.signin_words")).control(sign_in);
+    vec![Section::new(t!("accounts.section_logins"), vec![line, sign_in]).foot(t!("accounts.foot", machine = shell.endpoint.label()))]
 }
 
 /// Settings › Browser › Browser profiles: other people's accounts, each in a Chrome of its own —

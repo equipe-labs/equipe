@@ -420,6 +420,8 @@ pub enum Effect {
     ShowMetrics,
     /// Logins (`/logins`).
     ShowLogins,
+    /// Sign in to a site in equipe's own browser (`/sign-in [site]`).
+    SignIn(String),
     /// The board, narrowed to these words (`/find`).
     Find(String),
     /// Put this project (or all) in focus.
@@ -618,6 +620,7 @@ fn slash(model: &Model, command: &str) -> Plan {
         "design" => Plan { effect: Some(Effect::ShowDesign), ..Plan::default() },
         "metrics" => Plan { effect: Some(Effect::ShowMetrics), ..Plan::default() },
         "logins" => Plan { effect: Some(Effect::ShowLogins), ..Plan::default() },
+        "sign-in" => Plan { effect: Some(Effect::SignIn(rest.to_owned())), ..Plan::default() },
         "find" => Plan { effect: Some(Effect::Find(rest.to_owned())), ..Plan::default() },
         "project" => {
             let wanted = rest;
@@ -1573,6 +1576,8 @@ mod tests {
         assert_eq!(plan(&model, "/design").effect, Some(Effect::ShowDesign));
         assert_eq!(plan(&model, "/metrics").effect, Some(Effect::ShowMetrics));
         assert_eq!(plan(&model, "/logins").effect, Some(Effect::ShowLogins));
+        assert_eq!(plan(&model, "/sign-in").effect, Some(Effect::SignIn(String::new())));
+        assert_eq!(plan(&model, "/sign-in github.com").effect, Some(Effect::SignIn("github.com".into())));
         assert_eq!(plan(&model, "/find 로그인 화면").effect, Some(Effect::Find("로그인 화면".into())));
         for (line, effect) in [("/usage", Effect::Usage), ("/help", Effect::Help), ("/export", Effect::Export), ("/quit", Effect::Quit), ("/home", Effect::OpenHome), ("/memory", Effect::OpenMemory)] {
             let p = plan(&model, line);

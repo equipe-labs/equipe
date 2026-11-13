@@ -167,6 +167,41 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
         }
     }
 
+    /// The person's own tabs as the host tells them (lane `""`: the browser
+    /// panel's and the Chrome window's alike). A tab that was on a sign-in and
+    /// now is past it, on the same site — or that came back to the site a
+    /// sign-in started on from an identity provider — is the person's sign-in
+    /// finished: every tab here is theirs, however they see it.
+    pub(super) fn follow_person_tabs(&mut self, pages: &[browser::HostPage]) {
+        use crate::signin::Seen;
+        use equipe_protocol::BrowserSignInState as State;
+        for seen in self.person_sign_in.see(pages, now_secs()) {
+            match seen {
+                Seen::SignedIn { was, flow } => {
+                    let offered = self.person_sign_in_finished(&was);
+                    // Told to every screen only for the one the person started.
+                    if let Some((site, window)) = flow {
+                        self.publish(Event::BrowserSignIn { site, state: State::SignedIn { offered }, window });
+                    }
+                }
+                // Its tab closed before a sign-in was seen: nothing to wait for.
+                Seen::Closed { site, window } => self.publish(Event::BrowserSignIn { site, state: State::Closed, window }),
+            }
+        }
+    }
+
+    /// The person finished a sign-in in a tab of their own: kept on the
+    /// record, members' pages waiting on the site reloaded, and keeping the
+    /// login offered. Whether a card now asks.
+    fn person_sign_in_finished(&mut self, was: &logins::SigningIn) -> bool {
+        // The record is a squad's journal; the person's own tab belongs to none, so the first squad keeps it.
+        if let Some(squad) = self.journals.keys().min().cloned() {
+            self.login_record(&squad, Entry::new(now_secs(), &was.site, "", Kind::SignedIn, None, Some(BY_PERSON)));
+        }
+        self.reload_waiting(&was.site, "");
+        self.offer_login(None, None, &was.site, &was.url)
+    }
+
     /// A sign-in finished in `lane`'s page: by equipe's own fill (its check
     /// says so), or by the person — whose hands it was in: handed to them by
     /// its member, or held for them and `touched` (a page its member just
@@ -188,7 +223,7 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
         self.release_login_waiters(lane).await;
         // Another person's browser keeps their accounts: not the person's to keep in the vault.
         if !profile {
-            self.offer_login(&squad, &member, &was.site, &was.url);
+            self.offer_login(Some(&squad), Some(&member), &was.site, &was.url);
         }
     }
 
@@ -221,17 +256,19 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
 
     /// Offer, once, to keep a login for `site` the person just signed in to
     /// by hand: not where one is kept, nor where they said never, nor where
-    /// this machine has no secret store to keep it in.
-    fn offer_login(&mut self, squad: &str, member: &str, site: &str, url: &str) {
+    /// this machine has no secret store to keep it in. `squad` and `member`:
+    /// whose browser it was, when a member's. Whether a card now asks.
+    fn offer_login(&mut self, squad: Option<&str>, member: Option<&str>, site: &str, url: &str) -> bool {
         let site = vault::site_of(site);
         if !logins::offer_wanted(&site, &self.logins, &self.never_offer, &self.login_offered, self.can_keep_logins) {
-            return;
+            return false;
         }
         self.login_offered.insert(site.clone());
-        let offer = LoginOffer { id: self.next_login_offer, site, url: Some(url.to_owned()).filter(|u| u.starts_with("https://") || u.starts_with("http://")), squad: Some(squad.to_owned()), member: Some(member.to_owned()), at: now_secs() };
+        let offer = LoginOffer { id: self.next_login_offer, site, url: Some(url.to_owned()).filter(|u| u.starts_with("https://") || u.starts_with("http://")), squad: squad.map(str::to_owned), member: member.map(str::to_owned), at: now_secs() };
         self.next_login_offer += 1;
         self.login_offers.push(offer.clone());
         self.publish(Event::LoginOffered { offer });
+        true
     }
 
     /// Offers for `site` close: a login for it was saved.

@@ -645,6 +645,10 @@ async fn serve_client(
                 let url: String = message.params_as().unwrap_or_default();
                 let _ = out_tx.send(Message::response(id, core.person_window(url).await));
             }
+            (Some(rpc::BROWSER_SIGN_IN), Some(id)) => {
+                let url: String = message.params_as().unwrap_or_default();
+                let _ = out_tx.send(Message::response(id, core.sign_in(url).await));
+            }
             (Some(rpc::BROWSER_STREAM), Some(id)) => {
                 let hello = message.params_as::<equipe_protocol::stream::StreamHello>().unwrap_or_default();
                 let Some(hub) = core.browser_hub().await else {
@@ -1211,6 +1215,28 @@ pub async fn person_window(socket: &Path, url: &str) -> io::Result<bool> {
         }
     }
     Ok(false)
+}
+
+/// Sign in to `url` in equipe's own browser, where the person is — the
+/// panel of an attached app, else the separate Chrome window — as the app's
+/// "Sign in to a site" does. `Ok(None)` when no daemon answers, it is older
+/// than the method, or it has no browser to open.
+pub async fn sign_in(socket: &Path, url: &str) -> io::Result<Option<rpc::BrowserSignInOpened>> {
+    let Ok(stream) = connect(socket).await else {
+        return Ok(None);
+    };
+    let (reader, mut writer) = stream.into_split();
+    write_line(&mut writer, &Message::request(1, rpc::BROWSER_SIGN_IN, url)).await?;
+    let mut lines = BufReader::new(reader).lines();
+    while let Some(line) = lines.next_line().await? {
+        let Ok(message) = Message::from_line(&line) else {
+            continue;
+        };
+        if message.id == Some(1) {
+            return Ok(message.result_as::<rpc::BrowserSignInOpened>().filter(|o| o.opened));
+        }
+    }
+    Ok(None)
 }
 
 /// Which daemon answers at `socket`: `Ok(None)` when it is older than the
