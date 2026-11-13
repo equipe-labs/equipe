@@ -2171,9 +2171,9 @@ pub struct DesktopReadiness {
     /// older helper bundle. Empty from a daemon that predates it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub helper_name: String,
-    /// The old "equipe Desktop Helper" isn't used any more (equipe.app holds
-    /// the permission now): its row in System Settings can be removed. Shown
-    /// once, until the person puts it away (`DesktopAutoAction::Dismiss`).
+    /// Retired: always false. The old helper's stale Accessibility row is
+    /// harmless, so nobody is asked to clean it up. Kept so older apps and
+    /// daemons still read each other.
     #[serde(default)]
     pub old_helper: bool,
     /// The person lets members act through the accessibility tree while the

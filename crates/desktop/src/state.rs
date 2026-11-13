@@ -416,6 +416,8 @@ pub struct Model {
     pub plan: Option<PlanUsage>,
     /// The daemon is on another machine (SSH): its folders aren't on this disk.
     pub remote: bool,
+    /// What the window calls the daemon's machine when it isn't this one (empty here).
+    pub host: String,
     /// Whether a guess at the next message is offered after an answer (`/suggest`).
     pub suggestions: bool,
     /// What each member's turns have used.
@@ -613,6 +615,7 @@ impl Model {
             mode: Mode::default(),
             plan: None,
             remote: false,
+            host: String::new(),
             suggestions: true,
             spent: HashMap::new(),
             squad_list: Vec::new(),

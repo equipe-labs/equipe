@@ -156,7 +156,8 @@ options; `design-tools` before you run `equipe design …`; `ui-map` whenever a 
 `design-qa` on a design QA ticket. Taste calls — brand direction, colours, typefaces, which option — are the person's: offer \
 options with reasons and let them decide, and remember what they chose. Never grade your own work, and never show \
 the person a picture the critic hasn't seen: every direction, refined screen and revision goes first to a fresh \
-critic — the other engine when it's available — as `design-process` says.\n\
+critic — the other engine when it's available — as `design-process` says. Check accessibility in the browser's accessibility tree, \
+axe, or a simulator — never by switching on VoiceOver, Zoom or other settings of the host Mac.\n\
 Your sources of truth are files: tokens, SVG and HTML mockups, markdown guidelines. Render each one and look at the \
 picture yourself before you show or hand it in; compute contrast ratios instead of judging by eye (WCAG AA at \
 least); mark what you could not check as unconfirmed, and put each unconfirmed item up as a proposal of its own \
@@ -207,7 +208,9 @@ equipe deletes it when the ticket is done; keep one booted at a time and shut it
         duties: "You protect quality: review changes, write test plans, find edge cases, \
 and say plainly whether work meets its acceptance criteria. When a ticket carries test-plan cases (`TP-…`, in its \
 body), check the work by them, one by one: pass or fail each with what you saw; one you couldn't run is said so, \
-never passed. In the projects you read and report; you don't change their files.",
+never passed. In the projects you read and report; you don't change their files. Accessibility checks use the \
+browser's accessibility tree, axe, or the iOS Simulator's Accessibility Inspector or VoiceOver inside the simulator only — never \
+the host Mac's VoiceOver, Zoom or other accessibility settings.",
         edits: false,
         tier: Tier::Mid,
     },
@@ -911,7 +914,9 @@ with your engine's own wait or monitor tool."
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
 Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{skills}{home}{browser}{others}{desktop}{phone_tools}{pictures}{visuals}{phone_reply}{reports}{ideas}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
-your session or change your permission mode, so never ask them to — nor to edit settings files for you. What your mode \
+your session or change your permission mode, so never ask them to — nor to edit settings files for you. Never change this Mac's system-wide settings while you work or test: \
+no VoiceOver, Zoom, display, keyboard or other accessibility switch, by shortcut, command or System Settings; check screen-reader \
+behaviour in a browser's accessibility tree or a simulator, or ask the person. What your mode \
 doesn't allow on its own goes to the person as a request they answer with a key; when they decline, or equipe \
 refuses, say plainly what you need and why. CLIs like gh, vercel and npm are already signed in as the person: \
 use them as they are, and never search the environment or files for tokens — that asks the person every time. \
@@ -1107,6 +1112,20 @@ mod tests {
         assert!(!told("data", true).contains("review a plan") && !told(PM, true).contains("When the PM asks you to review a plan"));
         assert!(!told("backend", false).contains("`write_plan`"));
         assert!(charter(role("qa").unwrap(), "qa", &ctx(&team, &[], true)).contains("- `plan-review`: Use when the PM asks you to review a plan"), "the index says when");
+    }
+
+    #[test]
+    fn nobody_changes_the_hosts_system_settings_and_qa_tests_screen_readers_elsewhere() {
+        let team = [Teammate { name: "pm", role: PM }, Teammate { name: "qa", role: "qa" }, Teammate { name: "designer", role: "designer" }];
+        for id in [PM, "qa", "designer", "frontend", "backend", CUSTOM.id] {
+            for guard in [false, true] {
+                let told = charter(role_or_custom(id), id, &Context { guard, ..ctx(&team, &[], true) });
+                assert!(told.contains("Never change this Mac's system-wide settings") && told.contains("no VoiceOver, Zoom"), "{id}: {told}");
+            }
+        }
+        let duties = role("qa").unwrap().duties;
+        assert!(duties.contains("iOS Simulator's Accessibility Inspector or VoiceOver inside the simulator only") && duties.contains("never the host Mac's VoiceOver"), "{duties}");
+        assert!(role("designer").unwrap().duties.contains("never by switching on VoiceOver"));
     }
 
     #[test]

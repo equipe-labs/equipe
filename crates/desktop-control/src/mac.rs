@@ -749,11 +749,6 @@ pub fn trusted() -> bool {
     unsafe { AXIsProcessTrusted() }
 }
 
-/// macOS's Accessibility prompt for this process (once; the caller budgets it).
-pub fn ask_accessibility() {
-    Mac::new().request(crate::helper::Ask::Accessibility);
-}
-
 pub fn serve(home: &Path) -> std::io::Result<()> {
     let home = home.to_owned();
     std::thread::spawn(move || {

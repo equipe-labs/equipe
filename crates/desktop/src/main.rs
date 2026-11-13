@@ -1059,6 +1059,7 @@ impl Shell {
     fn attach(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
         self.model = Model::new(target.prefer.as_deref().unwrap_or(""));
         self.model.remote = target.endpoint.is_remote();
+        self.model.host = if self.model.remote { target.endpoint.label() } else { String::new() };
         self.design.reset();
         self.sheet = None;
         self.confirm = None;

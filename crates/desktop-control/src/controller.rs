@@ -392,6 +392,9 @@ impl<D: Desktop> Controller<D> {
     /// it — Accessibility's hit test, not the window list, which an overlay
     /// (BetterDisplay's, say) makes lie.
     fn aim(&mut self, member: &str, app: &App, at: Pt) -> Step<Hit> {
+        if let Some(why) = crate::system_guard::acting_on(&app.name, app.bundle_id.as_deref()) {
+            return Err(Reply::refuse(why));
+        }
         if self.desktop.focused_app() != Some(app.pid) {
             let _ = self.desktop.raise(app.pid, None);
             self.desktop.pause(300);
@@ -412,6 +415,9 @@ impl<D: Desktop> Controller<D> {
 
     /// Refuse to type unless the keyboard focus is in `app`.
     fn keyboard(&self, app: &App, what: &str) -> Step<()> {
+        if let Some(why) = crate::system_guard::acting_on(&app.name, app.bundle_id.as_deref()) {
+            return Err(Reply::refuse(why));
+        }
         let focused = self.desktop.focused_app();
         if focused == Some(app.pid) {
             return Ok(());
@@ -498,6 +504,9 @@ impl<D: Desktop> Controller<D> {
         let Some(query) = text(args, "app") else {
             return Err(Reply::refuse("Say which app to open."));
         };
+        if let Some(why) = crate::system_guard::app(query) {
+            return Err(Reply::refuse(why));
+        }
         self.desktop.open(query).map_err(|why| Reply::refuse(format!("Couldn't open {query}: {why}")))?;
         let mut app = None;
         for _ in 0..40 {
@@ -601,6 +610,9 @@ impl<D: Desktop> Controller<D> {
         let (app, at, what) = match self.element(member, args)? {
             Some((pid, element, node)) => {
                 let app = self.app_of(member, pid)?;
+                if let Some(why) = crate::system_guard::acting_on(&app.name, app.bundle_id.as_deref()) {
+                    return Err(Reply::refuse(why));
+                }
                 // Accessibility's own press: no coordinates, nothing else in the way.
                 if count == 1 && !right && node.actions.iter().any(|a| a == "AXPress") && self.desktop.press(&element).is_ok() {
                     return Ok(Reply::ok(format!("Pressed {} in {}.", label(&node), app.name)));
@@ -724,6 +736,9 @@ impl<D: Desktop> Controller<D> {
 
     fn key(&mut self, member: &str, args: &Value) -> Step<Reply> {
         self.need(false, true, "press keys")?;
+        if let Some(why) = crate::system_guard::chords(text(args, "keys").unwrap_or_default()) {
+            return Err(Reply::refuse(why));
+        }
         let combos = keys::parse_all(text(args, "keys").unwrap_or_default()).map_err(Reply::refuse)?;
         let app = self.target(member, args)?;
         for (n, combo) in combos.iter().enumerate() {
@@ -929,6 +944,26 @@ mod tests {
 
     fn controller(fake: Fake) -> Controller<Fake> {
         Controller::new(fake)
+    }
+
+    #[test]
+    fn chords_that_toggle_system_features_never_reach_the_keyboard_and_other_keys_still_do() {
+        let mut c = controller(Fake::new());
+        for keys in ["cmd+f5", "fn+cmd+f5", "option+cmd+8", "option+cmd+f5", "cmd+s cmd+f5"] {
+            let reply = c.call("qa", "key", &json!({ "keys": keys, "app": "TextEdit" }));
+            assert!(reply.is_error && reply.text.starts_with("Blocked:") && reply.text.contains("accessibility tree"), "{keys}: {}", reply.text);
+        }
+        assert_eq!(*c.desktop.typed.borrow(), "", "not even the harmless first chord of a refused line was pressed");
+        assert!(!c.call("qa", "key", &json!({ "keys": "cmd+s", "app": "TextEdit" })).is_error);
+    }
+
+    #[test]
+    fn voiceover_and_its_utility_are_not_opened_by_a_member() {
+        let mut c = controller(Fake::new());
+        for app in ["VoiceOver", "VoiceOver Utility", "x-apple.systempreferences:com.apple.preference.universalaccess"] {
+            let reply = c.call("qa", "open_app", &json!({ "app": app }));
+            assert!(reply.is_error && reply.text.contains("Simulator"), "{app}: {}", reply.text);
+        }
     }
 
     #[test]
