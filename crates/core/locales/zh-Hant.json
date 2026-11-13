@@ -389,6 +389,7 @@
   "notice.browser_given_back": "🖐 你交還了瀏覽器。",
   "notice.browser_in_panel": "🖥 {name} 的瀏覽器在瀏覽器面板中開啟：{why}",
   "notice.browser_on_screen": "🖥 {name} 的瀏覽器出現在這台 Mac 的螢幕上：{why}",
+  "notice.browser_view": "🖥 {name} 的登入在瀏覽器面板的登入檢視中開啟：{why}",
   "notice.browser_window": "🖥 {name} 的登入在 {host} 的一般 Chrome 視窗中開啟：{why}",
   "notice.browser_window_no_chrome": "🖥 equipe 尋找的位置沒有 Google Chrome，所以 {name} 的瀏覽器改在瀏覽器面板中開啟。那是自動化瀏覽器：網站的「驗證你是真人」檢查可能讓任何人都過不了。{why}",
   "notice.browser_window_other": "🖥 {name} 的登入無法在一般 Chrome 視窗中開啟（{reason}），所以改在瀏覽器面板中開啟。{why}",

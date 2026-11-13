@@ -69,6 +69,10 @@ fs-notify = { package = "notify", version = "8", default-features = false, featu
 # UNUserNotificationCenter (src/notify/system.rs): the same crate and features
 # GPUI already builds.
 objc2-user-notifications = "0.3"
+# The sign-in view: a plain, non-automated WebKit view inside the browser panel,
+# where the person signs in by hand (src/signin_view.rs). Only its cookies for
+# the sites visited there are read out, at Done.
+wry = { version = "0.57", default-features = false, features = ["os-webview"] }
 # Talks to Sparkle (updates) in the packaged app — see src/update.rs.
 objc2 = "0.6"
 # Sparkle's "install now" block, kept until the person asks for it.

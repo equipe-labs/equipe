@@ -10,13 +10,17 @@
 //! person pressing Done in the panel, so the member is told the same way.
 
 use crate::browser::HostEvent;
+use crate::handoff_view;
 use crate::window_handoff::{self as handoff, Action, PanelWhy};
+use equipe_protocol::{HandoffCookie, SignInView};
 
 use super::*;
 
 /// What the runtime keeps for the person's own windows.
 pub(super) struct Windows {
     pub(super) handoffs: handoff::Handoffs,
+    /// Sign-in views open on the person's screen, for members' hand-offs.
+    pub(super) views: handoff_view::Views,
     machine: Box<dyn handoff::Machine>,
     /// Each paused profile's other lanes that were open when its browser
     /// closed — `(squad, key, shown)` — to open again with it.
@@ -31,7 +35,7 @@ impl Windows {
     }
 
     pub(super) fn with(machine: Box<dyn handoff::Machine>) -> Self {
-        Self { handoffs: handoff::Handoffs::default(), machine, reopen: HashMap::new(), kept: Vec::new() }
+        Self { handoffs: handoff::Handoffs::default(), views: handoff_view::Views::default(), machine, reopen: HashMap::new(), kept: Vec::new() }
     }
 }
 
@@ -86,10 +90,15 @@ impl Runtime {
     /// the browser's profile is given to a normal Chrome window at `url`, in
     /// the person's hands until they press Done. `Err`: not possible — the
     /// panel then, for that reason.
-    pub(super) async fn begin_window_handoff(&mut self, call: &ToolCall, url: Option<&str>, why: &str) -> Result<(), PanelWhy> {
+    pub(super) async fn begin_window_handoff(&mut self, call: &ToolCall, url: Option<&str>, why: &str) -> Result<bool, PanelWhy> {
         let id = self.member_id(&call.squad, &call.member).ok_or(PanelWhy::NoWindow)?;
         let (squad, key) = self.browser_key(id).ok_or(PanelWhy::NoWindow)?;
         let lane = format!("{squad}/{key}");
+        // A screen that can take the sign-in in a view of its own, wherever it is: there.
+        if self.hub.has_web_view() {
+            self.begin_view_handoff(&squad, &key, url, why).await;
+            return Ok(true);
+        }
         let (profile, dir) = profile_of(&self.config.home, &lane);
         // Where to open it, and to come back to: the address it names, else where its member is.
         let at = url
@@ -109,12 +118,104 @@ impl Runtime {
         self.run_window_actions(actions).await;
         let (squad, _) = self.lane_session(&lane);
         self.publish(Event::BrowserControl { squad, lane, by: Some("person".into()), why: Some(why.to_owned()), check: None });
-        Ok(())
+        Ok(false)
+    }
+
+    /// The page a hand-off is for: the address asked for, else where the member is.
+    fn handoff_page(&self, squad: &str, key: &str, url: Option<&str>) -> String {
+        let lane = format!("{squad}/{key}");
+        url.map(str::to_owned)
+            .or_else(|| self.lane_page(&lane).map(|p| p.url).filter(|u| u.starts_with("http")))
+            .or_else(|| self.last_url.get(&(squad.to_owned(), key.to_owned())).cloned())
+            .unwrap_or_default()
+    }
+
+    /// The person signs in in a view of their screen's panel — a plain web
+    /// view, nothing driving it — and the cookies of that sign-in come back to
+    /// the member's browser (`crate::handoff_view`).
+    async fn begin_view_handoff(&mut self, squad: &str, key: &str, url: Option<&str>, why: &str) {
+        let lane = format!("{squad}/{key}");
+        let at = self.handoff_page(squad, key, url);
+        let site = vault::site_of(&at);
+        // The member's browser stays up: the cookies go into it.
+        self.open_browser(squad, key, false);
+        self.windows.views.begin(std::time::Instant::now(), &lane, &at, &site);
+        self.asked_in.insert(lane.clone(), why.to_owned());
+        self.held.insert(lane.clone(), Some(why.to_owned()));
+        let (sq, _) = self.lane_session(&lane);
+        self.publish(Event::BrowserWindow { squad: sq.clone(), lane: lane.clone(), open: true, view: Some(SignInView { url: at, site }), challenged: false });
+        self.publish(Event::BrowserControl { squad: sq, lane, by: Some("person".into()), why: Some(why.to_owned()), check: None });
+    }
+
+    /// A screen's sign-in cookies (`Command::BrowserCookies`): the ones of the
+    /// sign-in's own sites go into the member's browser and its page loads
+    /// again. From a screen with no hand-off under way: nothing.
+    pub(super) async fn view_cookies(&mut self, lane: String, hosts: Vec<String>, cookies: Vec<HandoffCookie>, failed: bool) {
+        match self.windows.views.cookies(std::time::Instant::now(), &lane, &hosts, cookies, failed) {
+            handoff_view::Taken::Ignored => {}
+            handoff_view::Taken::Failed => self.view_fallback(&lane).await,
+            handoff_view::Taken::Apply { url, scoped } => {
+                crate::daemon_log!("equipe: {} sign-in cookies go to {lane}'s browser ({} of other sites left out)", scoped.cookies.len(), scoped.dropped);
+                let cookies: Vec<serde_json::Value> = scoped
+                    .cookies
+                    .iter()
+                    .map(|c| json!({ "name": c.name, "value": c.value, "domain": c.domain, "path": c.path, "expires": c.expires, "secure": c.secure, "httpOnly": c.http_only, "sameSite": c.same_site }))
+                    .collect();
+                self.hub.op(&json!({ "op": "cookies", "lane": lane, "cookies": cookies, "url": url }));
+            }
+        }
+    }
+
+    /// A view that can't go on (its screen couldn't open it, or went away): the
+    /// person's own Chrome window on the daemon's Mac if there is one, else the panel.
+    async fn view_fallback(&mut self, lane: &str) {
+        let url = self.windows.views.take(lane).unwrap_or_default();
+        self.finish_view(lane, false);
+        let (profile, dir) = profile_of(&self.config.home, lane);
+        let chrome = self.windows.machine.chrome().is_some();
+        let actions = self.windows.handoffs.begin(std::time::Instant::now(), &profile, &dir, lane, &url, chrome);
+        self.run_window_actions(actions).await;
+    }
+
+    /// A view is over: its screens drop it.
+    fn finish_view(&mut self, lane: &str, challenged: bool) {
+        let (squad, _) = self.lane_session(lane);
+        self.publish(Event::BrowserWindow { squad, lane: lane.to_owned(), open: false, view: None, challenged });
+    }
+
+    /// Whether a lane's browser shows its page again after its cookies went in.
+    fn lane_loaded(&self, lane: &str) -> bool {
+        self.lane_page(lane).is_some_and(|p| !p.loading && p.url != "about:blank")
+    }
+
+    /// The views whose person is done and whose page is back: handed back —
+    /// saying so when the page still meets a human check.
+    async fn hand_back_views(&mut self) {
+        let now = std::time::Instant::now();
+        let loaded: std::collections::HashSet<String> = self.windows.views.lanes().into_iter().filter(|l| self.lane_loaded(l)).collect();
+        for (lane, _stale) in self.windows.views.ready(now, |l| loaded.contains(l)) {
+            let challenged = self.lane_page(&lane).is_some_and(|p| p.check.is_some());
+            self.finish_view(&lane, challenged);
+            Box::pin(self.on_host(HostEvent::Control { lane, by: None, refused: false })).await;
+        }
+        // The screen that took them went: each goes where a person can still sign in.
+        if !self.hub.has_web_view() && !self.windows.views.is_empty() {
+            for lane in self.windows.views.lanes() {
+                self.view_fallback(&lane).await;
+            }
+        }
     }
 
     /// The person pressed Done for `lane`: its window closes once no one is
     /// left in it. `true`: this was a hand-off of a window, nothing else to do.
     pub(super) async fn window_done(&mut self, lane: &str, take: bool) -> bool {
+        // A sign-in view: Done after its cookies; the browser goes back once its page is loaded again.
+        if self.windows.views.holds(lane) {
+            if !take {
+                self.windows.views.done(std::time::Instant::now(), lane);
+            }
+            return true;
+        }
         if !self.windows.handoffs.busy_lane(lane) {
             return false;
         }
@@ -128,6 +229,7 @@ impl Runtime {
     /// Time passing: the browser closed, the folder free, the window gone, the
     /// automated browser back at its pages.
     pub(super) async fn window_tick(&mut self) {
+        self.hand_back_views().await;
         let now = std::time::Instant::now();
         let mut actions = self.windows.handoffs.tick(now, &mut *self.windows.machine);
         for (profile, waited) in self.windows.handoffs.resuming(now) {
@@ -155,6 +257,25 @@ impl Runtime {
         self.windows.handoffs.window_lanes().into_iter().filter(|l| l.split_once('/').is_some_and(|(q, _)| q == squad)).collect()
     }
 
+    /// Whether any hand-off waits on the clock: a window, or a sign-in view.
+    pub(super) fn window_busy(&self) -> bool {
+        !self.windows.handoffs.is_empty() || !self.windows.views.is_empty()
+    }
+
+    /// Sign-in views open now in `squad`, as a screen that just came is told.
+    pub(super) fn view_asks(&self, squad: &str) -> Vec<Event> {
+        self.windows
+            .views
+            .lanes()
+            .into_iter()
+            .filter(|l| l.split_once('/').is_some_and(|(q, _)| q == squad))
+            .filter_map(|lane| {
+                let (url, site) = self.windows.views.ask_of(&lane)?;
+                Some(Event::BrowserWindow { squad: Some(squad.to_owned()), lane, open: true, view: Some(SignInView { url, site }), challenged: false })
+            })
+            .collect()
+    }
+
     /// Carry out what the hand-offs' state machine says, in order.
     pub(super) async fn run_window_actions(&mut self, actions: Vec<Action>) {
         let mut queue: std::collections::VecDeque<Action> = actions.into();
@@ -176,7 +297,7 @@ impl Runtime {
                 Action::Panel { lane, url, why } => self.window_to_panel(&lane, &url, why),
                 Action::Window { lane, open } => {
                     let (squad, _) = self.lane_session(&lane);
-                    self.publish(Event::BrowserWindow { squad, lane, open });
+                    self.publish(Event::BrowserWindow { squad, lane, open, view: None, challenged: false });
                 }
             }
         }

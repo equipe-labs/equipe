@@ -1335,6 +1335,20 @@ pub enum Command {
     /// names it) into their own hands, or gives it back. While they have it the
     /// member's browser tools wait; given back, the member is told.
     BrowserControl { lane: String, take: bool },
+    /// The person signed in in a sign-in view of their screen
+    /// ([`Event::BrowserWindow`] with a `view`): the cookies of the sites they
+    /// visited there, for `lane`'s browser, sent just before Done. `failed`: the
+    /// view couldn't open on that screen. Only a hand-off in progress takes them.
+    BrowserCookies {
+        lane: String,
+        /// The hosts the view visited, sign-in redirects included.
+        #[serde(default)]
+        hosts: Vec<String>,
+        #[serde(default)]
+        cookies: Vec<HandoffCookie>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        failed: bool,
+    },
     /// The person answers a page's `alert`, `confirm` or `prompt` (`text`).
     BrowserDialog { page: u64, accept: bool, text: Option<String> },
     /// The real Chrome window, with `page` in front — beside the app when
@@ -1997,6 +2011,47 @@ pub struct BrowserProfile {
     pub label: String,
 }
 
+/// One cookie of a sign-in, from a view the person signed in in. Its value is a
+/// credential: never printed — `Debug` leaves it out.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandoffCookie {
+    pub name: String,
+    pub value: String,
+    /// As the cookie states it: `.example.com` covers subdomains.
+    pub domain: String,
+    #[serde(default = "root_path")]
+    pub path: String,
+    /// Seconds since the epoch; `None`: lasts the session.
+    #[serde(default)]
+    pub expires: Option<i64>,
+    #[serde(default)]
+    pub secure: bool,
+    #[serde(default)]
+    pub http_only: bool,
+    /// `Strict`, `Lax` or `None`.
+    #[serde(default)]
+    pub same_site: Option<String>,
+}
+
+fn root_path() -> String {
+    "/".to_owned()
+}
+
+impl std::fmt::Debug for HandoffCookie {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HandoffCookie {{ name: {:?}, domain: {:?}, value: <{} bytes> }}", self.name, self.domain, self.value.len())
+    }
+}
+
+/// A sign-in view a screen opens for a member's hand-off: where, and which
+/// site it is for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignInView {
+    pub url: String,
+    /// The site the member's page is on: the cookies that count.
+    pub site: String,
+}
+
 /// One tab of the shared Chrome. `id` is the browser's own, stable while the
 /// tab is open and never given to another tab — not even by a browser started
 /// again: what [`crate::stream`] frames and commands name.
@@ -2599,7 +2654,20 @@ pub enum Event {
     /// the daemon's Mac, which nothing can stream (`open`) — or isn't any more.
     /// A screen shows a placeholder instead of the live picture, and says where
     /// the window is: on its own Mac, or another.
-    BrowserWindow { squad: Option<SquadName>, lane: String, open: bool },
+    ///
+    /// `view`: not a window of the daemon's Mac but a view of the screen the
+    /// person looks at, which takes their sign-in and sends back its cookies
+    /// ([`Command::BrowserCookies`]). `challenged`, once it is closed: the
+    /// member's browser met a human check again after the cookies went in.
+    BrowserWindow {
+        squad: Option<SquadName>,
+        lane: String,
+        open: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        view: Option<SignInView>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        challenged: bool,
+    },
     /// A page asks: `kind` is `alert`, `confirm`, `prompt` or `beforeunload`.
     BrowserDialog {
         squad: Option<SquadName>,

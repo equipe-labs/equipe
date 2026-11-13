@@ -192,6 +192,7 @@ pub fn reads(command: &Command) -> bool {
         | C::BrowserNewTab { .. }
         | C::BrowserCloseTab { .. }
         | C::BrowserControl { .. }
+        | C::BrowserCookies { .. }
         | C::BrowserDialog { .. }
         | C::BrowserPopOut { .. }
         | C::BrowserSignIn { .. }
@@ -614,6 +615,7 @@ mod tests {
             Command::BrowserNewTab { url: None, profile: None },
             Command::BrowserCloseTab { page: 1 },
             Command::BrowserControl { lane: "pm".into(), take: true },
+            Command::BrowserCookies { lane: "pm".into(), hosts: Vec::new(), cookies: Vec::new(), failed: false },
             Command::BrowserDialog { page: 1, accept: true, text: None },
             Command::BrowserPopOut { page: 1, bounds: Some(ScreenBounds { left: 0, top: 0, width: 1, height: 1 }) },
             Command::BrowserSignIn { url: "github.com".into(), window: false },

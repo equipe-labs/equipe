@@ -18,6 +18,7 @@ mod board;
 mod chapters;
 mod checks;
 mod browse;
+mod signin_view;
 mod commands;
 mod diffs;
 mod engines;

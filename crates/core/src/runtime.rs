@@ -1571,7 +1571,7 @@ async fn run(
             _ = frames.tick() => Wake::Frames,
             _ = minute.tick() => Wake::Minute,
             _ = design_tick.tick(), if !rt.design_watch.is_empty() => Wake::DesignTick,
-            _ = window_tick.tick(), if !rt.windows.handoffs.is_empty() => Wake::WindowTick,
+            _ = window_tick.tick(), if rt.window_busy() => Wake::WindowTick,
         };
         pulse.begin(wake.doing());
         let go_on = rt.wake(wake, &pulse).await;
@@ -1610,7 +1610,10 @@ impl Runtime {
                     }
                     // And the ones in a Chrome window of the person's own.
                     for lane in self.window_lanes(&squad) {
-                        let _ = tx.send(Event::BrowserWindow { squad: Some(squad.clone()), lane, open: true });
+                        let _ = tx.send(Event::BrowserWindow { squad: Some(squad.clone()), lane, open: true, view: None, challenged: false });
+                    }
+                    for ask in self.view_asks(&squad) {
+                        let _ = tx.send(ask);
                     }
                     // A disk found full is told to each screen as it comes.
                     if self.disk.status.level == crate::disk::DiskLevel::Full {
@@ -2442,6 +2445,9 @@ impl Runtime {
             Command::BrowserCloseTab { page } => {
                 self.hub.op(&json!({ "op": "closetab", "page": page }));
                 self.closed_by_person(page).await;
+            }
+            Command::BrowserCookies { lane, hosts, cookies, failed } => {
+                self.view_cookies(lane, hosts, cookies, failed).await;
             }
             Command::BrowserControl { lane, take } => {
                 // A browser in the person's own window: Done closes that window and
@@ -7439,17 +7445,23 @@ It starts when {owner} is free."
             let mut window_note = None;
             if self.window_mode() {
                 match self.begin_window_handoff(&call, url.as_deref(), &why).await {
-                    Ok(()) => {
+                    Ok(view) => {
                         if let Some(id) = self.caller_id(&call) {
-                            let text = self.window_notice(&call.member, &why);
+                            let text = if view { say!(self, "notice.browser_view", name = call.member, why = why) } else { self.window_notice(&call.member, &why) };
                             self.publish(Event::Notice { undo: None, session: id, text });
                         }
                         let _ = reply.send(ToolResult {
-                            text: "A normal Chrome window is opening on the person's Mac at that page, with your browser's own sign-ins — \
+                            text: if view {
+                                "A sign-in view is opening on the person's screen at that page: an ordinary web view, not your browser — they sign in there \
+by hand, and when they press \"Done\" the sign-in is handed to your browser, which loads the page again. Say in one line what they \
+should do there, then end your turn. When they're done you get a message and carry on by yourself — don't ask them to tell you."
+                            } else {
+                                "A normal Chrome window is opening on the person's Mac at that page, with your browser's own sign-ins — \
 a real browser of theirs, not yours: your browser tools are off until they press \"Done\" (or close that window), and the page there \
 isn't yours to look at. Say in one line what they should do there, then end your turn. When they're done you get a message and \
 carry on by yourself — don't ask them to tell you."
-                                .into(),
+                            }
+                            .into(),
                             is_error: false,
                             image: None,
                         });
@@ -8296,7 +8308,7 @@ there, end your turn, and carry on when they say they're done."
                 }
                 let pages: Vec<equipe_protocol::BrowserPage> = pages.into_iter().map(browser::HostPage::page).collect();
                 // The person's window, or the browser coming back from it: no check to ask about.
-                if !self.windows.handoffs.busy_lane(&lane) {
+                if !self.windows.handoffs.busy_lane(&lane) && !self.windows.views.holds(&lane) {
                     self.watch_checks(&lane, session, &pages, agent);
                 }
                 let event = Event::BrowserTabs { squad, lane: lane.clone(), session, member, color, pages, agent_page: agent };
@@ -9988,8 +10000,15 @@ fn handed_back(why: &str, asked: bool, page: Option<&equipe_protocol::BrowserPag
         let title = p.title.trim();
         if title.is_empty() { format!(" The page is at {}.", p.url) } else { format!(" The page is at {} (title: \"{title}\").", p.url) }
     });
+    // A page that still waits on a person: said, not tried again by itself.
+    let still = if page.is_some_and(|p| p.check.is_some()) {
+        " The page still shows a human check or a sign-in: tell the person plainly that it does (a site may not carry a sign-in over \
+to another browser), and don't try it again by yourself."
+    } else {
+        ""
+    };
     format!(
-        "[equipe: the person has finished{what} and pressed Done: your browser is yours again.{at} Check the page yourself now \
+        "[equipe: the person has finished{what} and pressed Done: your browser is yours again.{at}{still} Check the page yourself now \
 (take a snapshot or read the page and its URL) and carry on where you left off. Don't ask the person what they saw or whether \
 it worked — they did their part; you can see the result.]"
     )

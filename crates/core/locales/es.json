@@ -393,6 +393,7 @@
   "notice.browser_given_back": "🖐 Devolviste el navegador.",
   "notice.browser_in_panel": "🖥 El navegador de {name} se abre en tu panel de navegador: {why}",
   "notice.browser_on_screen": "🖥 El navegador de {name} aparece en la pantalla de este Mac: {why}",
+  "notice.browser_view": "🖥 El inicio de sesión de {name} se abre en una vista de inicio de sesión de tu panel de navegador: {why}",
   "notice.browser_window": "🖥 El inicio de sesión de {name} se abre en una ventana normal de Chrome en {host}: {why}",
   "notice.browser_window_no_chrome": "🖥 Google Chrome no está instalado donde equipe lo busca, así que el navegador de {name} se abre en tu panel de navegador. Es un navegador automatizado: la comprobación «verifica que eres humano» de un sitio puede no dejar pasar a nadie ahí. {why}",
   "notice.browser_window_other": "🖥 El inicio de sesión de {name} no pudo abrirse en una ventana normal de Chrome ({reason}), así que su navegador se abre en tu panel de navegador. {why}",

@@ -219,3 +219,35 @@ every member working in that profile loses its browser while the window is
 open (its tools fail; its lane reopens after). A daemon that restarts mid
 hand-off closes the window it finds and lets the next lane reopen the automated
 browser, signed in as the person left it.
+
+### The sign-in view (the way in when a screen can take it)
+
+The plain Chrome window above only appears on the daemon's Mac. A desktop app
+that can embed a web view (`HelloParams::web_view`, macOS) takes the sign-in on
+the screen the person is looking at instead, local or remote:
+
+1. The daemon asks the screen for a view (`Event::BrowserWindow` with a `view`:
+   the page and its site) and leaves the member's browser as it is.
+2. The panel opens a plain WKWebView (`wry`, `crates/desktop/src/signin_view.rs`)
+   below a card that says what to do: no automation, no debugging port, WebKit's
+   own user agent, a private cookie store. A site's check sees a person in a
+   genuine browser.
+3. At Done the screen reads the view's cookies, keeps those of the hosts the view
+   visited, and sends them over its existing daemon connection
+   (`Command::BrowserCookies`, just before the Done), then drops the view and
+   its store.
+4. The daemon keeps only the cookies of the hand-off's site and the hosts the
+   sign-in went through (`handoff_view::scope_cookies`: `chatgpt.com` and
+   `auth.openai.com` for a ChatGPT sign-in; `accounts.google.com` only if the
+   view went there; never an unrelated domain, never a bare suffix), only for a
+   hand-off in progress, and hands them to the browser host (`cookies`:
+   Playwright `context.addCookies`, then the page loads again). Then the member
+   gets its browser back.
+
+Cookie values are never printed or logged (`HandoffCookie`'s `Debug` leaves them
+out; the host logs a count). If the page still shows a human check after the
+cookies went in (a site may tie a clearance cookie to the browser or address it
+was issued to), the card says so (`challenged`) and the member is told to say so
+plainly instead of trying again by itself. If the screen can't open the view, or
+goes away mid sign-in, the hand-off falls to the plain Chrome window, then to the
+panel. Nothing here disguises the automated browser, and nothing answers a check.

@@ -34,6 +34,8 @@
 //   {"op":"unfit","page":3}  (no panel watches it: its own size again)
 //   {"op":"newtab","url":"…"}  {"op":"closetab","page":3}
 //   {"op":"control","lane":"squad/name","by":"person"|null,"why":"check"?,"ifUntouched":true?}
+//   {"op":"cookies","lane":"squad/name","cookies":[{name,value,domain,path,expires,secure,httpOnly,sameSite}],"url":"…"}
+//     (a sign-in the person made in a view of their screen: added to the lane's profile, the page loaded again)
 //   {"op":"goto","lane":"squad/name","url":"…"}  {"op":"dialog","page":3,"accept":true,"text":"…"}
 //   {"op":"popout","page":3,"bounds":{"left":0,"top":0,"width":900,"height":800}}
 //   {"op":"fill","lane":"squad/name","page":3,"script":"() => …","token":7}
@@ -1124,6 +1126,26 @@ const startProfile = async (name, profile, STATE) => {
   };
   // The real window, beside the app: for what a picture of the page can't do
   // (a passkey, a permission prompt, a <select>'s list).
+  // A sign-in the person made in a view of their screen: its cookies (already
+  // scoped to the sign-in's sites by the daemon) go into this profile, and the
+  // member's page loads again. A cookie's value is never printed.
+  const cookies = async ({ lane: laneId, cookies: list = [], url }) => {
+    const lane = lanes.get(laneId);
+    if (!lane) return;
+    const sameSite = (c) => (['Strict', 'Lax', 'None'].includes(c.sameSite) ? c.sameSite : 'Lax');
+    const ok = list
+      .filter((c) => c && c.name && c.domain)
+      .map((c) => ({
+        name: String(c.name), value: String(c.value ?? ''), domain: String(c.domain), path: String(c.path || '/'),
+        expires: typeof c.expires === 'number' && c.expires > 0 ? c.expires : -1,
+        httpOnly: !!c.httpOnly, sameSite: sameSite(c), secure: !!c.secure || sameSite(c) === 'None',
+      }));
+    try { await context.addCookies(ok); } catch { console.error(`equipe browser host: ${ok.length} sign-in cookies were not added`); }
+    const page = pages.get(lane.agent) || tabsOf(laneId).at(-1) || (await openTab(laneId));
+    if (url) await page.goto(address(url)).catch(() => {});
+    else await page.reload().catch(() => {});
+  };
+
   const popout = async ({ page: pid, bounds }) => {
     const page = pages.get(pid);
     if (!page) return;
@@ -1171,7 +1193,7 @@ const startProfile = async (name, profile, STATE) => {
 
   await ensureParking();
 
-  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, unfit, input, nav, goto, newtab, closetab, control, dialog, popout, fill, visit, look, passkey_add: passkeyAdd, passkey_use: passkeyUse, snap };
+  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, unfit, input, nav, goto, newtab, closetab, control, dialog, popout, cookies, fill, visit, look, passkey_add: passkeyAdd, passkey_use: passkeyUse, snap };
   // Its Chrome closed (the person quit it): the host goes, and the daemon starts it again —
   // unless the daemon closed it itself, to give the profile to the person's own window.
   let suspending = false;
@@ -1210,7 +1232,7 @@ const target = async (request) => {
     // equipe's own tabs, passkeys and pictures: the person's main Chrome only.
     case 'visit': case 'passkey_add': case 'snap': return profileOf({});
     case 'show': case 'close': return byLane(request.id);
-    case 'control': case 'goto': case 'fill': case 'passkey_use': return byLane(request.lane);
+    case 'control': case 'goto': case 'cookies': case 'fill': case 'passkey_use': return byLane(request.lane);
     default: return byPage(request.page);
   }
 };

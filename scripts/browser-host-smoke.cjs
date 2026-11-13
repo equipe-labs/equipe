@@ -32,8 +32,10 @@ const freePort = () => new Promise((resolve) => {
 });
 
 (async () => {
+  let afterCookie = null;
   const site = http.createServer((req, res) => {
     res.setHeader('content-type', 'text/html; charset=utf-8');
+    if (req.url === '/after') afterCookie = req.headers.cookie || '';
     if (req.url === '/form') return res.end('<title>Form</title><input id=q autofocus style="font-size:30px">');
     if (req.url === '/dialog') return res.end('<title>Dialog</title><button id=b onclick="document.title = confirm(\'Sure?\') ? \'yes\' : \'no\'">go</button>');
     // A stand-in for Cloudflare's wall (no real site is touched): its title, its
@@ -309,6 +311,12 @@ const freePort = () => new Promise((resolve) => {
   const returned = await until('the lane is back at its page', () => lastTabs(lane)?.pages.find((p) => p.url.endsWith('/signin')), 60000);
   check(!!returned, 'resumed, the member\'s browser opens again and goes back to its page');
   check(!!lockPid() && lockPid() !== chromePid, 'on the same folder, a new Chrome');
+
+  // A sign-in the person made in a view of their screen: its cookies go into the
+  // profile and the page loads again, with them.
+  op({ op: 'cookies', lane, url: `${other}/after`, cookies: [{ name: 'signin', value: 'view-session', domain: 'localhost', path: '/', secure: false, httpOnly: false, sameSite: 'Lax' }] });
+  await until('the page loads again', () => afterCookie !== null);
+  check(afterCookie === 'signin=view-session', 'the sign-in\'s cookie reaches the site from the member\'s browser');
 
   op({ op: 'unwatch', page });
   host.stdin.end();

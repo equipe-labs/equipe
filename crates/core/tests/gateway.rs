@@ -270,7 +270,7 @@ async fn while_the_app_is_attached_a_handed_over_browser_goes_to_its_panel_not_t
     // The app attaches, saying it has a panel (closed for now).
     let app = tokio::net::UnixStream::connect(&socket).await.unwrap();
     let (reader, mut writer) = app.into_split();
-    let hello = HelloParams { version: "app".into(), squad: "acme".into(), lang: None, browser_panel: true, phone: false, runs: false };
+    let hello = HelloParams { version: "app".into(), squad: "acme".into(), lang: None, browser_panel: true, phone: false, web_view: false, runs: false };
     writer.write_all(Message::request(1, rpc::HELLO, hello).to_line().as_bytes()).await.unwrap();
     let mut lines = tokio::io::BufReader::new(reader).lines();
     while let Some(line) = lines.next_line().await.unwrap() {
@@ -955,7 +955,7 @@ async fn a_screen_from_before_runs_never_sees_one_run_standing_for_several() {
     // A screen that knows runs lists both under qa.
     let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
     let (reader, mut writer) = stream.into_split();
-    let hello = HelloParams { version: "app".into(), squad: "acme".into(), lang: None, browser_panel: false, phone: false, runs: true };
+    let hello = HelloParams { version: "app".into(), squad: "acme".into(), lang: None, browser_panel: false, phone: false, web_view: false, runs: true };
     writer.write_all(Message::request(1, rpc::HELLO, hello).to_line().as_bytes()).await.unwrap();
     let mut lines = tokio::io::BufReader::new(reader).lines();
     let hello = loop {

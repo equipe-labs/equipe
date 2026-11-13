@@ -46,6 +46,7 @@ use crate::motion;
 use crate::stream::{Link, Update};
 use crate::target::Endpoint;
 use crate::theme::{CONTROL, ICON_SM, Palette, R_LG, R_MD, R_SM, SMALL, Sans, UI};
+use crate::signin_view::SignInView;
 use crate::tips::tip;
 use crate::ui::{self, Kind};
 
@@ -66,6 +67,8 @@ const MOVE_EVERY: Duration = Duration::from_millis(16);
 /// How long the word that the person took or gave back a browser stays; and
 /// the hint for a wheel over a page they don't drive.
 const TOAST_FOR: Duration = Duration::from_secs(4);
+/// How tall the card over a sign-in view is, in the panel's points.
+const VIEW_HEADER: f32 = 104.;
 const HINT_FOR: Duration = Duration::from_millis(1800);
 
 /// The widest the panel may be in a window this wide: the conversation and
@@ -164,6 +167,11 @@ pub struct BrowserPanel {
     /// Lanes whose browser is in the person's own Chrome window on the
     /// daemon's Mac: nothing to stream, a placeholder in its place.
     windows: BTreeSet<String>,
+    /// The sign-in view open in the panel (a plain web view), the lane it is for,
+    /// and one asked for that waits for the panel's room.
+    view: Option<SignInView>,
+    view_lane: Option<String>,
+    view_ask: Option<(String, String)>,
     dialogs: Vec<Dialog>,
     selected: Option<(String, u64)>,
     follow: bool,
@@ -305,6 +313,9 @@ impl BrowserPanel {
             lanes: BTreeMap::new(),
             hands: HashMap::new(),
             windows: BTreeSet::new(),
+            view: None,
+            view_lane: None,
+            view_ask: None,
             dialogs: Vec::new(),
             selected: None,
             follow: true,
@@ -511,6 +522,7 @@ impl BrowserPanel {
                 self.hands.entry(lane.clone()).or_default().on_control(by.is_some(), why.clone(), *check);
                 if by.is_none() {
                     self.windows.remove(lane);
+                    self.drop_view(lane);
                 }
                 // A member hands the person its browser, or a page of it waits for
                 // them: every screen opens the panel on it, in their hands — once.
@@ -530,14 +542,24 @@ impl BrowserPanel {
                 cx.notify();
             }
             // The person's own Chrome window opened for a member's browser, or closed.
-            Event::BrowserWindow { squad, lane, open } => {
+            Event::BrowserWindow { squad, lane, open, view, challenged } => {
                 if squad.as_deref().is_some_and(|s| s != self.squad) {
                     return;
                 }
                 if *open {
                     self.windows.insert(lane.clone());
+                    // The daemon asks for a sign-in view here: opened once the panel has room for it.
+                    if let Some(view) = view {
+                        self.view = None;
+                        self.view_lane = None;
+                        self.view_ask = Some((lane.clone(), view.url.clone()));
+                    }
                 } else {
                     self.windows.remove(lane);
+                    self.drop_view(lane);
+                    if *challenged {
+                        self.toast_next = Some((t!("browser.view_challenged", name = self.member_name(lane)), TOAST_FOR * 3));
+                    }
                 }
                 cx.notify();
             }
@@ -690,6 +712,12 @@ impl BrowserPanel {
                 self.connected = up;
                 self.down_since = if up { None } else { Some(Instant::now()) };
                 if up {
+                    // A new line starts from nothing — a daemon that restarted knows of no
+                    // sign-in view: ours is dropped, its private store with it.
+                    self.view = None;
+                    self.view_lane = None;
+                    self.view_ask = None;
+                    self.windows.clear();
                     // A new line starts from nothing: what to watch is asked again.
                     self.watching = None;
                     self.settle.reset();
@@ -1207,6 +1235,52 @@ impl BrowserPanel {
         )
     }
 
+    /// A lane's sign-in view is over: dropped, and its private store with it.
+    fn drop_view(&mut self, lane: &str) {
+        if self.view_lane.as_deref() == Some(lane) {
+            self.view = None;
+            self.view_lane = None;
+        }
+        if self.view_ask.as_ref().is_some_and(|(l, _)| l == lane) {
+            self.view_ask = None;
+        }
+    }
+
+    /// Where the sign-in view goes, in points of the window: the panel's
+    /// viewport below the card that says what it is for.
+    fn view_at(&self, window: &Window) -> Option<(f32, f32, f32, f32)> {
+        let b = (*self.viewport.borrow())?;
+        let zoom = window.content_zoom();
+        let head = VIEW_HEADER * zoom;
+        let (x, y, w, h) = (f32::from(b.origin.x) * zoom, f32::from(b.origin.y) * zoom, f32::from(b.size.width) * zoom, f32::from(b.size.height) * zoom);
+        Some((x, y + head, w, (h - head).max(1.)))
+    }
+
+    /// Open the asked-for sign-in view once the panel is up and has a box, and
+    /// keep it over the viewport — hidden while the panel is shut.
+    fn sync_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(at) = self.view_at(window) else { return };
+        if self.open
+            && self.view.is_none()
+            && let Some((lane, url)) = self.view_ask.clone()
+        {
+            self.view_ask = None;
+            match SignInView::open(window, &url, at) {
+                Ok(view) => {
+                    self.view = Some(view);
+                    self.view_lane = Some(lane);
+                }
+                // No view here: the daemon gives the person its own Chrome window instead.
+                Err(_) => self.command(Command::BrowserCookies { lane, hosts: Vec::new(), cookies: Vec::new(), failed: true }, cx),
+            }
+        }
+        let shown = self.open;
+        if let Some(view) = self.view.as_mut() {
+            view.set_bounds(at);
+            view.set_visible(shown);
+        }
+    }
+
     /// Instead of the live picture while a member's browser is in the person's
     /// own Chrome window — a normal window, with nothing of ours attached, so
     /// nothing to stream: who, what it asked, where the window is (on this
@@ -1232,6 +1306,39 @@ impl BrowserPanel {
             None => t!("browser.window_bring").to_owned(),
         };
         let done_lane = lane.clone();
+        // A sign-in view: only a strip over the panel — the web view takes the rest of it.
+        if self.view_lane.as_deref() == Some(lane.as_str()) || self.view_ask.as_ref().is_some_and(|(l, _)| *l == lane) {
+            let done = ui::button(p, "browser-view-done", Kind::Primary, t!("browser.done_give_back_short"))
+                .icon(Icon::Check)
+                .tip(t!("browser.handed_then", name = name), Some("Esc"))
+                .on_click(cx.listener(move |this, _, _, cx| this.give_back_lane(&done_lane, cx)));
+            return Some(
+                v_flex()
+                    .id("browser-view-card")
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(VIEW_HEADER))
+                    .px_3()
+                    .py_2()
+                    .gap_1()
+                    .bg(p.side)
+                    .border_b_1()
+                    .border_color(p.hair)
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(div().size(px(8.)).flex_none().rounded_full().bg(hue))
+                            .child(div().flex_1().min_w_0().truncate().text_size(px(UI)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("browser.view_title", name = name)))
+                            .child(div().flex_none().child(done)),
+                    )
+                    .when(!asked.is_empty(), |c| c.child(div().text_size(px(13.)).line_height(px(18.)).text_color(p.text).line_clamp(2).child(asked.clone())))
+                    .child(div().text_size(px(12.)).line_height(px(16.)).text_color(p.muted).line_clamp(2).child(t!("browser.view_note", name = name)))
+                    .into_any_element(),
+            );
+        }
         let raise = ui::button(p, "browser-window-raise", Kind::Ghost, bring)
             .icon(Icon::External)
             .on_click(cx.listener(|this, _, _, cx| this.command(Command::BrowserPopOut { page: 0, bounds: None }, cx)));
@@ -1370,6 +1477,18 @@ impl BrowserPanel {
 
     /// Give back from outside the panel (the conversation's row): back to its member.
     pub fn give_back_lane(&mut self, lane: &str, cx: &mut Context<Self>) {
+        // A sign-in view: what the sign-in made goes to the daemon first, over this
+        // screen's own connection, then Done; the view and its store are dropped.
+        if self.view_lane.as_deref() == Some(lane)
+            && let Some(view) = self.view.take()
+        {
+            let (hosts, cookies) = view.finish();
+            self.view_lane = None;
+            self.command(Command::BrowserCookies { lane: lane.to_owned(), hosts, cookies, failed: false }, cx);
+        }
+        if self.view_ask.as_ref().is_some_and(|(l, _)| l == lane) {
+            self.view_ask = None;
+        }
         self.toast_next = Some((t!("browser.gave_toast", name = self.member_name(lane)), TOAST_FOR));
         self.hands.entry(lane.to_owned()).or_default().give_back();
         self.handovers.given_back(lane);
@@ -2310,6 +2429,7 @@ impl Render for BrowserPanel {
         }
         // The viewport's size may have moved since the stream was asked.
         self.rewatch(window, cx);
+        self.sync_view(window, cx);
         let p = self.palette;
         let dragging = self.drag.is_some();
         // A window narrower than the width kept (or dragged wide before it

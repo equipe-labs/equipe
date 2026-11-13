@@ -393,6 +393,7 @@
   "notice.browser_given_back": "🖐 Du hast den Browser zurückgegeben.",
   "notice.browser_in_panel": "🖥 Der Browser von {name} öffnet sich in deinem Browser-Panel: {why}",
   "notice.browser_on_screen": "🖥 Der Browser von {name} erscheint auf dem Bildschirm dieses Mac: {why}",
+  "notice.browser_view": "🖥 Die Anmeldung von {name} öffnet sich in einer Anmeldeansicht in deinem Browser-Panel: {why}",
   "notice.browser_window": "🖥 Die Anmeldung von {name} öffnet sich in einem normalen Chrome-Fenster auf {host}: {why}",
   "notice.browser_window_no_chrome": "🖥 Google Chrome ist nicht dort installiert, wo equipe danach sucht; der Browser von {name} öffnet sich deshalb in deinem Browser-Panel. Das ist ein automatisierter Browser: Die Prüfung „Bestätige, dass du ein Mensch bist“ einer Seite lässt dort womöglich niemanden durch. {why}",
   "notice.browser_window_other": "🖥 Die Anmeldung von {name} ließ sich nicht in einem normalen Chrome-Fenster öffnen ({reason}); der Browser öffnet sich deshalb in deinem Browser-Panel. {why}",

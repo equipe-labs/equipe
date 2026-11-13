@@ -393,6 +393,7 @@
   "notice.browser_given_back": "🖐 The person gave the browser back.",
   "notice.browser_in_panel": "🖥 {name}'s browser opens in the person's browser panel: {why}",
   "notice.browser_on_screen": "🖥 {name}'s browser comes up on this Mac's screen: {why}",
+  "notice.browser_view": "🖥 {name}'s sign-in opens in a sign-in view in your browser panel: {why}",
   "notice.browser_window": "🖥 {name}'s sign-in opens in a normal Chrome window on {host}: {why}",
   "notice.browser_window_no_chrome": "🖥 Google Chrome isn't installed where equipe looks for it, so {name}'s browser opens in the person's browser panel instead. It is an automated browser: a site's \"verify you are human\" check may not let anyone through there. {why}",
   "notice.browser_window_other": "🖥 {name}'s sign-in couldn't open in a normal Chrome window ({reason}), so its browser opens in the person's browser panel instead. {why}",
