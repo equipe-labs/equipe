@@ -21,6 +21,10 @@
 //!   arriving meanwhile is told to wait instead of opening a second dialog;
 //! - after the person says no, background work doesn't ask again for a day
 //!   ([`prompts::COOL_OFF`]); what the person does themselves may ask at once;
+//! - a background read notes in `prompts.json` that it asked before it reads;
+//!   if the process dies with the dialog still up (a daemon restart), the note
+//!   stays and background work doesn't open another dialog on top of it for a
+//!   day ([`UNANSWERED`]);
 //! - items an older equipe kept one per secret are moved into the one item
 //!   when first needed, and removed.
 //!
@@ -47,6 +51,9 @@ const IDENTITY: &str = "equipe";
 pub const WAITING: &str = "the Keychain is asking you about equipe on this Mac: answer that dialog (\"Always Allow\" keeps it from asking again), then try again";
 /// What background work is told for a day after the person said no.
 pub const REFUSED: &str = "the Keychain was refused to equipe on this Mac: it asks again when you next save or use a key yourself, or tomorrow";
+/// What background work is told for a day after an earlier process asked and
+/// never saw an answer (its dialog may still be on screen).
+pub const UNANSWERED: &str = "the Keychain dialog for equipe was left unanswered: it asks again when you next save or use a key yourself, or tomorrow";
 
 /// How the Keychain answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,11 +207,37 @@ impl Store {
         Ok((outstanding, lock))
     }
 
-    /// Whether background work holds back after the person's recent no.
-    fn holding_back(&self, interactive: bool) -> bool {
-        !interactive
-            && prompts::recorded(&self.home, Kind::Keychain)
-                .is_some_and(|r| r.identity == IDENTITY && r.answer == Answer::Denied && unix_now().saturating_sub(r.at) < prompts::COOL_OFF)
+    /// Why background work holds back, after the person's recent no or a
+    /// dialog an earlier process left unanswered. Never for the person's own
+    /// calls, nor after a grant.
+    fn holding_back(&self, interactive: bool) -> Option<&'static str> {
+        if interactive {
+            return None;
+        }
+        let r = prompts::recorded(&self.home, Kind::Keychain)?;
+        if r.identity != IDENTITY || unix_now().saturating_sub(r.at) >= prompts::COOL_OFF {
+            return None;
+        }
+        match r.answer {
+            Answer::Denied => Some(REFUSED),
+            Answer::Asked => Some(UNANSWERED),
+            Answer::Granted => None,
+        }
+    }
+
+    /// Read an item that may show a dialog. Background reads note that they
+    /// asked first, so a process that dies with the dialog up leaves a trace;
+    /// whatever comes back (but a no, which [`Self::denied`] records) means no
+    /// dialog is waiting any more.
+    fn read(&self, service: &str, account: &str, interactive: bool) -> Result<Vec<u8>, Error> {
+        if !interactive {
+            prompts::record(&self.home, Kind::Keychain, IDENTITY, Answer::Asked, unix_now());
+        }
+        let result = self.backend.read(service, account);
+        if !matches!(result, Err(Error::Denied)) {
+            prompts::record(&self.home, Kind::Keychain, IDENTITY, Answer::Granted, unix_now());
+        }
+        result
     }
 
     fn denied(&self) -> String {
@@ -217,15 +250,15 @@ impl Store {
         if let Some(all) = self.cached().clone() {
             return Ok(all);
         }
-        if self.holding_back(interactive) {
-            return Err(REFUSED.into());
+        if let Some(why) = self.holding_back(interactive) {
+            return Err(why.into());
         }
         let _turn = self.turn()?;
         // Read by whoever held the turn before.
         if let Some(all) = self.cached().clone() {
             return Ok(all);
         }
-        let all = match self.backend.read(SERVICE, ACCOUNT) {
+        let all = match self.read(SERVICE, ACCOUNT, interactive) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| "equipe's Keychain item isn't readable".to_owned())?,
             Err(Error::NotFound) => BTreeMap::new(),
             Err(Error::Denied) => return Err(self.denied()),
@@ -258,9 +291,12 @@ impl Store {
             return Ok(value.clone());
         }
         // Kept by an older equipe as an item of its own: moved into the one.
+        if let Some(why) = self.holding_back(interactive) {
+            return Err(why.into());
+        }
         let legacy = {
             let _turn = self.turn()?;
-            self.backend.read(service, account)
+            self.read(service, account, interactive)
         };
         match legacy {
             Ok(bytes) => {
@@ -403,6 +439,55 @@ mod tests {
         fake.deny.store(false, Ordering::SeqCst);
         store.set("equipe.metrics", "c1", "x").unwrap();
         assert_eq!(store.get("equipe.metrics", "c1", false).unwrap(), "x");
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    fn asked(h: &Path) {
+        prompts::record(h, Kind::Keychain, IDENTITY, Answer::Asked, unix_now());
+    }
+
+    #[test]
+    fn a_dialog_an_earlier_process_left_up_is_not_doubled() {
+        let fake = Arc::new(Fake::default());
+        let h = home("orphan");
+        asked(&h); // an earlier process died mid-dialog
+        let store = Store::new(&h, Box::new(fake.clone()));
+        assert_eq!(store.get("equipe.vault", "1", false).unwrap_err(), UNANSWERED);
+        assert_eq!(store.load(false).unwrap_err(), UNANSWERED);
+        assert_eq!(fake.reads.load(Ordering::SeqCst), 0, "no second dialog for background work");
+        assert_eq!(store.get("equipe.vault", "1", true).unwrap_err(), "nothing kept", "the person's own call still asks");
+        assert!(fake.reads.load(Ordering::SeqCst) > 0);
+        assert_eq!(prompts::recorded(&h, Kind::Keychain).unwrap().answer, Answer::Granted);
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn a_background_read_leaves_a_grant_that_stops_nothing() {
+        let fake = Arc::new(Fake::default());
+        let h = home("granted");
+        let store = Store::new(&h, Box::new(fake.clone()));
+        assert_eq!(store.get("equipe.vault", "1", false).unwrap_err(), "nothing kept");
+        assert_eq!(prompts::recorded(&h, Kind::Keychain).unwrap().answer, Answer::Granted);
+        assert_eq!(store.get("equipe.vault", "2", false).unwrap_err(), "nothing kept", "later background reads still run");
+        let fresh = Store::new(&h, Box::new(fake.clone()));
+        let reads = fake.reads.load(Ordering::SeqCst);
+        assert_eq!(fresh.get("equipe.vault", "1", false).unwrap_err(), "nothing kept");
+        assert!(fake.reads.load(Ordering::SeqCst) > reads, "a new process reads again");
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
+    #[test]
+    fn the_older_item_read_respects_the_hold_back() {
+        let fake = Arc::new(Fake::default());
+        let h = home("legacy-hold");
+        fake.items.lock().unwrap().insert(("equipe.metrics".into(), "m1".into()), b"v".to_vec());
+        let store = Store::new(&h, Box::new(fake.clone()));
+        store.load(false).unwrap();
+        let reads = fake.reads.load(Ordering::SeqCst);
+        asked(&h); // another process is mid-dialog
+        assert_eq!(store.get("equipe.metrics", "m1", false).unwrap_err(), UNANSWERED);
+        assert_eq!(fake.reads.load(Ordering::SeqCst), reads, "the per-secret item isn't read behind a dialog");
+        assert_eq!(store.get("equipe.metrics", "m1", true).unwrap(), "v");
         let _ = std::fs::remove_dir_all(&h);
     }
 
