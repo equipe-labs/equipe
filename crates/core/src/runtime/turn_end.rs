@@ -453,7 +453,12 @@ already done — look at where you are, then end the turn in one of the ways abo
     /// Run `id`'s engine failed its turn: it goes again after a wait, longer
     /// each failure in a row; a fast one counts toward its squad's breaker.
     fn park_after_failure(&mut self, id: SessionId, squad: &str, name: &str, ticket: TicketId, ending: &Ending) {
-        let fast = ending.fast();
+        // Its conversation can't be resumed (gone, or one from another engine
+        // after a move): the next try starts a fresh one at once. That is
+        // equipe's own bookkeeping, not an engine failing, so it never counts
+        // toward the squad's breaker nor waits out a backoff.
+        let lost = ending.error.as_ref().is_some_and(|(m, _)| lost_conversation(m));
+        let fast = ending.fast() && !lost;
         let cause = ending.cause();
         let key = (squad.to_owned(), ticket);
         let attempt = {
@@ -463,8 +468,8 @@ already done — look at where you are, then end the turn in one of the ways abo
         };
         self.count_ending(squad, if fast { turn_ending::FAILED_FAST } else { turn_ending::FAILED }, Some(ticket), name);
         let now = now_secs();
-        // Its conversation can't be resumed: the next try starts a fresh one.
-        let fresh = ending.error.as_ref().is_some_and(|(m, _)| lost_conversation(m)).then(|| self.fresh_conversation(id, squad, ticket)).flatten();
+        let fresh = lost.then(|| self.fresh_conversation(id, squad, ticket)).flatten();
+        let started_fresh = fresh.is_some();
         let prompt = match (fresh, ending.prompt.as_deref().filter(|_| ending.did_nothing())) {
             (Some(fresh), _) => fresh,
             (None, Some(asked)) => format!("{asked}\n\n[equipe: your engine failed this turn before it began ({cause}); this is try {}. Go on as asked above.]", attempt + 1),
@@ -473,7 +478,7 @@ already done — look at where you are, then end the turn in one of the ways abo
 look at what is already done in your worktree first, and don't redo it."
             ),
         };
-        let due = now + backoff(attempt);
+        let due = if started_fresh { now } else { now + backoff(attempt) };
         self.park(id, Park { why: ParkWhy::Failed { attempt, cause: cause.clone() }, at: now, due: Some(due), prompt });
         if fast {
             let recent = self.turn_ends.fast.entry(squad.to_owned()).or_default();

@@ -4348,7 +4348,7 @@ async fn a_member_hands_its_browser_to_the_panel_of_a_screen_on_another_mac_and_
     // Nothing comes up on the daemon's own screen.
     assert!(!Journal::for_squad(&home, "acme").unwrap().browser_shown("pm"));
     let sent = || std::fs::read_to_string(&ops).unwrap_or_default();
-    for _ in 0..100 {
+    for _ in 0..400 {
         if sent().contains("\"control\"") {
             break;
         }

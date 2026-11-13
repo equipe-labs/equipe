@@ -49,6 +49,8 @@ enum Mode {
     Slow,
     /// It fails at once, having done nothing, saying it can't resume its conversation.
     FailsFast,
+    /// The conversation it was asked to resume is gone (or another engine's).
+    Lost,
     /// It ends on Claude Code's limit message.
     Limited,
     /// It goes on until it is stopped.
@@ -74,7 +76,8 @@ printf '%s\n<<end>>\n' "$*" >> '{log}'
 mode=$(cat '{mode}' 2>/dev/null)
 echo '{{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}}'
 case "$mode" in
-  fails) echo '{{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["No conversation found with session ID: sess-0"]}}'; exit 1;;
+  fails) echo '{{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["API Error: 500 Internal server error"]}}'; exit 1;;
+  lost) echo '{{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["No conversation found with session ID: sess-0"]}}'; exit 1;;
   limited) echo '{{"type":"result","subtype":"success","is_error":false,"result":"Claude AI usage limit reached|1900000000","usage":{{"input_tokens":3,"output_tokens":1}}}}'; exit 0;;
   hangs) exec sleep 30;;
   slow) sleep 2;;
@@ -99,6 +102,7 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok","usag
             Mode::Answers => "answers",
             Mode::Slow => "slow",
             Mode::FailsFast => "fails",
+            Mode::Lost => "lost",
             Mode::Limited => "limited",
             Mode::Hangs => "hangs",
         };
@@ -292,7 +296,7 @@ async fn an_engine_that_fails_fast_is_retried_after_a_growing_wait_never_in_a_lo
     let pause = execution(&failed).pause.unwrap();
     assert_eq!((failed.status, execution(&failed).state), (TicketStatus::InProgress, ExecutionState::Active), "the same run, in progress");
     assert_eq!(pause.attempt, 1);
-    assert!(pause.cause.as_deref().is_some_and(|c| c.contains("No conversation found")), "what the engine said: {pause:?}");
+    assert!(pause.cause.as_deref().is_some_and(|c| c.contains("API Error: 500")), "what the engine said: {pause:?}");
     let first = pause.resumes_at.unwrap();
     assert!((start + 30..=now() + 30).contains(&first), "30 seconds on: {first} from {start}");
     // No hot loop: nothing runs it meanwhile.
@@ -309,9 +313,6 @@ async fn an_engine_that_fails_fast_is_retried_after_a_growing_wait_never_in_a_lo
     // Its time: asked again the same, with why — and it fails again: 2 minutes now.
     handle.turn_ends_due_at(first).await;
     engine.said_times("You're on T-1", 2).await;
-    // Its conversation couldn't be resumed: the try starts a fresh one, with the ticket's brief.
-    let again = engine.prompt_with("couldn't be resumed, so this is a fresh one").await;
-    assert!(again.contains("You're on T-1") && !again.contains("--resume"), "{again}");
     let second = loop {
         let t = paused(&handle, 1, PauseWhy::Retrying).await;
         let p = execution(&t).pause.unwrap();
@@ -333,6 +334,36 @@ async fn an_engine_that_fails_fast_is_retried_after_a_growing_wait_never_in_a_lo
     handle.shutdown().await;
 }
 
+/// Conversations that can't be resumed (gone, or another engine's after a
+/// move) start fresh at once, with the ticket's brief — equipe's own
+/// bookkeeping, so however many at once, the squad's breaker stays shut.
+#[tokio::test]
+async fn conversations_that_cant_be_resumed_start_fresh_at_once_and_never_pause_the_squad() {
+    let engine = Engine0::new(Mode::Lost);
+    let (home, repo) = squad();
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home, false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    add(&handle, &mut events, 3, member(&repo, "backend")).await;
+    add(&handle, &mut events, 4, member(&repo, "qa")).await;
+    create(&handle, "Hero", "frontend").await;
+    create(&handle, "API", "backend").await;
+    create(&handle, "Checks", "qa").await;
+    for id in 1..=3 {
+        engine.prompt_with(&format!("You're on T-{id}")).await;
+    }
+    // Each goes again with a fresh conversation, due now — no backoff.
+    let t = paused(&handle, 1, PauseWhy::Retrying).await;
+    assert!(execution(&t).pause.unwrap().resumes_at.unwrap() <= now() + 1, "at once: {t:?}");
+    engine.set(Mode::Answers);
+    handle.turn_ends_due_at(now()).await;
+    let again = engine.prompt_with("couldn't be resumed, so this is a fresh one").await;
+    assert!(!again.contains("--resume"), "{again}");
+    assert_eq!(counted(&home, turn_ending::SQUAD_PAUSED), 0, "never the breaker");
+    assert_eq!(counted(&home, turn_ending::FAILED_FAST), 0, "not an engine failing");
+    handle.shutdown().await;
+}
+
 /// Several tickets failing fast at once — one cause for all —
 /// open the squad's breaker: nothing new starts and nothing retries, the
 /// person is told once with what the engine said; a test turn now and then
@@ -349,7 +380,7 @@ async fn several_fast_failures_at_once_pause_the_squad_until_a_test_turn_works()
     create(&handle, "Hero", "frontend").await;
     create(&handle, "API", "backend").await;
     create(&handle, "Checks", "qa").await;
-    let told = |e: &Event| matches!(e, Event::Notice { text, .. } if text.contains("failed at once") && text.contains("No conversation found"));
+    let told = |e: &Event| matches!(e, Event::Notice { text, .. } if text.contains("failed at once") && text.contains("API Error: 500"));
     let seen = until(&mut events, told).await;
     for id in 1..=3 {
         paused(&handle, id, PauseWhy::SquadPaused).await;
