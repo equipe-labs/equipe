@@ -1496,10 +1496,15 @@ fn run_row(shell: &Shell, run: &crate::state::Run, cx: &mut Context<Shell>) -> A
     let title = model.tickets.iter().find(|t| t.id == ticket).map(|t| t.title.clone()).unwrap_or_default();
     let asks = model.approvals.first_for(run.session).is_some();
     let on = shell.screen == Screen::Chat && model.opened == Some(ticket);
+    // A run equipe paused (an engine's limit, a retry, the squad on hold) is
+    // waiting on purpose, not failed: say why and when it goes on.
+    let pause = model.tickets.iter().find(|t| t.id == ticket).and_then(|t| t.execution.as_ref()).and_then(|e| e.pause.as_ref());
     let (mark, words) = if asks {
         (div().w(px(12.)).h(px(12.)).flex_none().flex().items_center().justify_center().child(dot(p.orange, SIGN_DOT)).into_any_element(), t!("state.section_permission").to_owned())
     } else if run.presence == Presence::Working {
         (sub_mark(p, shell.spin(cx)), t!("sidebar.working").to_owned())
+    } else if let Some(pause) = pause {
+        (div().w(px(12.)).h(px(12.)).flex_none().flex().items_center().justify_center().child(dot(p.muted, SIGN_DOT)).into_any_element(), crate::state::pause_words(pause, model.unix as i64))
     } else if run.failed {
         (div().w(px(12.)).h(px(12.)).flex_none().flex().items_center().justify_center().child(crate::icons::icon(crate::icons::Icon::Warning, 10., crate::render::tones(&p).warning)).into_any_element(), t!("sidebar.run_failed").to_owned())
     } else {
@@ -1805,7 +1810,8 @@ fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, show_engine
         shell.wake_at(std::time::Instant::now() + std::time::Duration::from_secs(1), cx);
     }
     let at_work = runs.iter().any(|r| r.presence == Presence::Working) || member.presence == Presence::Working;
-    let failed = single.is_some() && runs[0].failed && runs[0].presence != Presence::Working;
+    let paused = single.and_then(|id| shell.model.tickets.iter().find(|t| t.id == id)).and_then(|t| t.execution.as_ref()).and_then(|e| e.pause.as_ref());
+    let failed = single.is_some() && runs[0].failed && runs[0].presence != Presence::Working && paused.is_none();
     // Running several tickets, it says how many — "frontend · 3 tickets" —
     // whatever one of them waits for: its face's dot and that run's row say so.
     // Waiting on the person, it says for what.
@@ -1815,6 +1821,7 @@ fn member_row(shell: &Shell, member: &Member, folded: Option<usize>, show_engine
         _ if runs.len() > 1 => t!("sidebar.runs", n = runs.len()),
         (Some(wait), _) => wait.short(),
         (None, Some(ticket)) if failed => format!("{} · T-{ticket}", t!("sidebar.run_failed")),
+        (None, Some(ticket)) if let Some(pause) = paused => format!("{} · T-{ticket}", crate::state::pause_words(pause, shell.model.unix as i64)),
         _ => state.words(),
     };
     // On the pointer: the ticket and all that is asked, how long it has waited.
