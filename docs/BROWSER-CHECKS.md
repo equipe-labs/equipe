@@ -180,3 +180,42 @@ retrying, and no moving cookies to another browser. For an OAuth step like
 `wrangler login`, whose callback goes to `localhost` on the daemon's Mac, the
 person can also open the printed URL in their own browser on that Mac and sign
 in there themselves. Nothing of the member's browser is needed for that.
+
+## The person's own window (sign-in hand-offs)
+
+A member's browser is automated: Playwright launches Chrome with a debugging
+port and drives it. A site behind Cloudflare sees that and keeps failing its
+"verify you are human" check, for the person too, because the browser in front
+of them is automated. So for a hand-off (`show_my_browser`) the automation steps
+aside instead of the person working inside it:
+
+1. The browser host closes that profile's automated Chrome (`suspend`; it keeps
+   its sign-ins as on any exit, and the host and the other profiles go on) and
+   refuses to start another on that folder.
+2. When the folder is free (no live process in Chrome's `SingletonLock`), the
+   daemon opens the same folder in a plain Chrome window on its Mac: only
+   `--user-data-dir`, `--no-first-run`, `--no-default-browser-check`,
+   `--hide-crash-restore-bubble` and the page. No automation switch, no
+   debugging port, nothing attached, Chrome's own user agent. Nothing hides
+   anything from a site, and nothing answers a check: the person signs in by
+   hand, in a genuine browser.
+3. On Done (or the window closed, treated as Done after a short grace) the daemon
+   closes that window, waits for the folder to come free, reopens the automated
+   browser on it (`resume`, then the lane again), goes back to the page, and hands
+   the browser back with its address and title, as for any hand-off.
+
+The window can only appear on the daemon's Mac. A screen on another Mac says so
+on the card ("Sign-in opens a normal Chrome window on {host} — do it there, then
+press Done here") and shows a placeholder instead of the live picture: a
+normal window has no debugging port to stream. Failing that — no Chrome at the
+usual path (`/Applications` or `~/Applications`; `<home>/browser/plain-chrome`
+names another), a window that won't open, a folder the automated browser won't
+let go of — the hand-off goes to the browser panel as before, with the reason said.
+
+`equipe browser handoff panel|window` sets it (default `window` on macOS, in
+equipe's own home). Members of one profile (the main one, or a named profile)
+share its window; each profile has its own. Because a profile is one folder,
+every member working in that profile loses its browser while the window is
+open (its tools fail; its lane reopens after). A daemon that restarts mid
+hand-off closes the window it finds and lets the next lane reopen the automated
+browser, signed in as the person left it.

@@ -1148,7 +1148,7 @@ impl Shell {
                         }
                         // The shared Chrome's tabs and hands: the browser panel's.
                         if let daemon::Update::Event(
-                            event @ (Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. } | Event::BrowserWants { .. }),
+                            event @ (Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. } | Event::BrowserWants { .. } | Event::BrowserWindow { .. }),
                         ) = &update
                         {
                             // Told the squad first: these come right after the snapshot.

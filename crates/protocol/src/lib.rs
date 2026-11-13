@@ -2595,6 +2595,11 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         check: Option<HumanCheck>,
     },
+    /// A member's browser is in the person's own window — a normal Chrome on
+    /// the daemon's Mac, which nothing can stream (`open`) — or isn't any more.
+    /// A screen shows a placeholder instead of the live picture, and says where
+    /// the window is: on its own Mac, or another.
+    BrowserWindow { squad: Option<SquadName>, lane: String, open: bool },
     /// A page asks: `kind` is `alert`, `confirm`, `prompt` or `beforeunload`.
     BrowserDialog {
         squad: Option<SquadName>,
@@ -3079,7 +3084,7 @@ impl Event {
             | Event::CallSummary { squad, .. }
             | Event::DocCopyKept { squad, .. }
             | Event::DesignVersions { squad, .. } => Some(squad),
-            Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
+            Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserWindow { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             Event::SideChatOpened { squad, .. } | Event::SideChat { squad, .. } | Event::SideChatClosed { squad, .. } => squad.as_deref(),
             _ => None,
         }
@@ -3191,6 +3196,7 @@ impl Event {
             // A browser's own: never part of a conversation.
             | Event::BrowserTabs { .. }
             | Event::BrowserControl { .. }
+            | Event::BrowserWindow { .. }
             | Event::BrowserDialog { .. }
             | Event::BrowserDialogClosed { .. }
             | Event::BrowserWants { .. }
@@ -3253,6 +3259,7 @@ impl Event {
                 | Event::SquadNotDeleted { .. }
                 | Event::BrowserTabs { squad: None, .. }
                 | Event::BrowserControl { squad: None, .. }
+                | Event::BrowserWindow { squad: None, .. }
                 | Event::BrowserDialog { squad: None, .. }
         )
     }

@@ -51,6 +51,12 @@
 //   {"op":"passkey_use","lane":"squad/name","page":3,"credential":{…},"script":"() => …","token":10}
 //     (that passkey given to the tab for one sign-in, the tab held as for a
 //     fill; `filled` answers, `passkey` gives back the credential's new count)
+//   {"op":"suspend","profile":"jhjung"}  {"op":"resume","profile":"jhjung"}  (profile "" is the main one)
+//     (the person's own window: a hand-off for a sign-in or a human check opens
+//     a plain Chrome on that profile's folder — no automation, no debugging
+//     port — so this profile's automated Chrome is closed first and left
+//     closed, answered by `suspended`; requests for it are dropped until
+//     `resume`. This host's other profiles, and the host itself, go on.)
 //   {"op":"snap","hosts":["github.com"],"token":11}
 //     (a picture of the person's tab on that site, for its authenticator QR
 //     code; `snap` answers it, PNG in base64, to the daemon alone)
@@ -276,7 +282,8 @@ const startProfile = async (name, profile, STATE) => {
   // that starts or stops waiting for a person (a CAPTCHA answered), every two.
   const titles = new Map();
   let tick = 0;
-  setInterval(async () => {
+  const timers = [];
+  timers.push(setInterval(async () => {
     tick++;
     for (const page of context.pages()) {
       if (!owner.has(page)) continue;
@@ -292,7 +299,7 @@ const startProfile = async (name, profile, STATE) => {
         if (signature(s, frames) !== page.__equipeSig) report(owner.get(page));
       }
     }
-  }, 1000);
+  }, 1000));
   const report = (lane) => {
     // equipe's own tabs (`visit`) are told only when asked (`look`).
     if (typeof lane === 'string' && lane.startsWith('equipe:')) return;
@@ -876,7 +883,7 @@ const startProfile = async (name, profile, STATE) => {
     emit({ type: 'control', lane: laneId, by, refused: !by && refused });
     await restage();
   };
-  setInterval(() => {
+  timers.push(setInterval(() => {
     for (const [id, lane] of lanes) {
       // Waiting for a person who hasn't come yet: not handed back for that.
       if (lane.reason === 'check' && !lane.touched) continue;
@@ -887,7 +894,7 @@ const startProfile = async (name, profile, STATE) => {
       const waits = lane.reason === 'check' || tabsOf(id).some((p) => p.__equipeWaits);
       if (lane.control === 'person' && Date.now() - lane.lastInput > (waits ? IDLE_WAITING_MS : IDLE_CONTROL_MS)) setControl(id, null);
     }
-  }, 10000);
+  }, 10000));
 
   const input = async ({ page: pid, ev }) => {
     const page = pages.get(pid);
@@ -1165,15 +1172,28 @@ const startProfile = async (name, profile, STATE) => {
   await ensureParking();
 
   const ops = { lane: openLane, show, close, person, watch, unwatch, fit, unfit, input, nav, goto, newtab, closetab, control, dialog, popout, fill, visit, look, passkey_add: passkeyAdd, passkey_use: passkeyUse, snap };
-  // Its Chrome closed (the person quit it): the host goes, and the daemon starts it again.
-  context.on('close', () => process.exit(0));
-  return { ops, context, scrolling, owns: (pid) => pages.has(pid), hasLane: (id) => lanes.has(id) };
+  // Its Chrome closed (the person quit it): the host goes, and the daemon starts it again —
+  // unless the daemon closed it itself, to give the profile to the person's own window.
+  let suspending = false;
+  context.on('close', () => { if (!suspending) process.exit(0); });
+  const suspend = async () => {
+    suspending = true;
+    for (const t of timers) clearInterval(t);
+    fs.unwatchFile(STATE);
+    for (const pid of [...watches.keys()]) stopWatch(pid);
+    await context.close().catch(() => {});
+  };
+  return { ops, context, scrolling, suspend, owns: (pid) => pages.has(pid), hasLane: (id) => lanes.has(id) };
 };
 
 // Each profile's Chrome, by name ("" the main one): started when first asked for.
 const profiles = new Map();
+// Profiles whose Chrome the daemon closed for the person's own window: nothing
+// of ours may start one on that folder until `resume`.
+const suspended = new Set();
 const profileOf = (request) => {
   const name = request.profile || '';
+  if (suspended.has(name)) return null;
   if (!profiles.has(name)) {
     if (name && !request.profileDir) return null;
     profiles.set(name, startProfile(name || null, name ? request.profileDir : profile, name ? request.state : STATE));
@@ -1195,11 +1215,34 @@ const target = async (request) => {
   }
 };
 
+/// `suspend`: this profile's Chrome closed (sign-ins saved as on any exit) and kept
+/// closed; `resume`: it may start again, with the next lane that asks.
+const hold = async ({ op, profile: name = '' }) => {
+  if (op === 'resume') {
+    suspended.delete(name);
+    return;
+  }
+  suspended.add(name);
+  const started = profiles.get(name);
+  profiles.delete(name);
+  try {
+    const at = started ? await started.catch(() => null) : null;
+    if (at) await at.suspend();
+  } catch (err) {
+    console.error(`equipe browser host: suspend ${name || 'main'}: ${err && err.message}`);
+  }
+  emit({ type: 'suspended', profile: name });
+};
+
 (async () => {
   await profileOf({});
   readline.createInterface({ input: process.stdin }).on('line', (line) => {
     let request;
     try { request = JSON.parse(line); } catch { return; }
+    if (request.op === 'suspend' || request.op === 'resume') {
+      hold(request);
+      return;
+    }
     const run = async () => {
       const at = await target(request);
       if (!at) return undefined;

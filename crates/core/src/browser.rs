@@ -261,6 +261,12 @@ pub enum HostEvent {
         default: Option<String>,
     },
     DialogClosed { page: u64 },
+    /// A profile's automated browser closed at the daemon's asking
+    /// (`suspend`, for the person's own window; `""` the main profile).
+    Suspended {
+        #[serde(default)]
+        profile: String,
+    },
     /// A member's tool call was refused on a tab the person is on, for
     /// something the person can allow at a click (`close`).
     Wants { lane: String, page: u64, action: String },
@@ -581,6 +587,13 @@ impl Host {
             }
             Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {}
         }
+    }
+
+    /// Forget `lane`'s endpoint: its browser was closed for good with its
+    /// profile, and the next one opening is a new endpoint (the old one
+    /// belongs to the closed browser).
+    pub fn forget_lane(&mut self, lane: &str) {
+        self.lanes.remove(lane);
     }
 
     /// Open a tab in the host's Chrome for the person, at `url`, on screen.

@@ -25,7 +25,7 @@
 //! The rules are `crate::browse`, tested without a window.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -161,6 +161,9 @@ pub struct BrowserPanel {
     lanes: BTreeMap<String, Lane>,
     /// Who has each member's browser in hand.
     hands: HashMap<String, Hand>,
+    /// Lanes whose browser is in the person's own Chrome window on the
+    /// daemon's Mac: nothing to stream, a placeholder in its place.
+    windows: BTreeSet<String>,
     dialogs: Vec<Dialog>,
     selected: Option<(String, u64)>,
     follow: bool,
@@ -301,6 +304,7 @@ impl BrowserPanel {
             handed_open: false,
             lanes: BTreeMap::new(),
             hands: HashMap::new(),
+            windows: BTreeSet::new(),
             dialogs: Vec::new(),
             selected: None,
             follow: true,
@@ -505,16 +509,35 @@ impl BrowserPanel {
                     self.toast_next = Some((t!("browser.gave_toast", name = self.member_name(lane)), TOAST_FOR));
                 }
                 self.hands.entry(lane.clone()).or_default().on_control(by.is_some(), why.clone(), *check);
+                if by.is_none() {
+                    self.windows.remove(lane);
+                }
                 // A member hands the person its browser, or a page of it waits for
                 // them: every screen opens the panel on it, in their hands — once.
                 let page = self.lane_page(lane);
-                if let Some(open) = self.handovers.on_control(lane, by.is_some(), why.as_deref(), *check, page) {
+                // In the person's own Chrome window: no page of its member to wait for or
+                // open on — the panel opens on the card that says where the window is.
+                if by.is_some() && why.is_some() && self.windows.contains(lane) {
+                    self.hand_over(browse::Open::Later, window, cx);
+                } else if let Some(open) = self.handovers.on_control(lane, by.is_some(), why.as_deref(), *check, page) {
                     // What a member asked the person to do comes first: a page that
                     // waits for a person elsewhere doesn't take the panel from it.
                     let asked_elsewhere = self.selected.as_ref().is_some_and(|(l, _)| l != lane && self.hands.get(l).is_some_and(|h| h.held && h.asked.is_some()));
                     if why.is_some() || !asked_elsewhere {
                         self.hand_over(open, window, cx);
                     }
+                }
+                cx.notify();
+            }
+            // The person's own Chrome window opened for a member's browser, or closed.
+            Event::BrowserWindow { squad, lane, open } => {
+                if squad.as_deref().is_some_and(|s| s != self.squad) {
+                    return;
+                }
+                if *open {
+                    self.windows.insert(lane.clone());
+                } else {
+                    self.windows.remove(lane);
                 }
                 cx.notify();
             }
@@ -1184,6 +1207,63 @@ impl BrowserPanel {
         )
     }
 
+    /// Instead of the live picture while a member's browser is in the person's
+    /// own Chrome window — a normal window, with nothing of ours attached, so
+    /// nothing to stream: who, what it asked, where the window is (on this
+    /// Mac, or the daemon's — say so plainly), and Done.
+    fn window_card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let selected = self.selected.as_ref().map(|(l, _)| l.as_str());
+        let lane = match selected {
+            Some(l) if self.windows.contains(l) => l.to_owned(),
+            Some(_) => return None,
+            None => self.windows.iter().next()?.clone(),
+        };
+        let p = self.palette;
+        let name = self.member_name(&lane);
+        let hue = self.lane_color(&lane);
+        let asked = self.hands.get(&lane).and_then(|h| h.asked.clone()).unwrap_or_default();
+        let elsewhere = self.chrome_elsewhere();
+        let note = match &elsewhere {
+            Some(host) => t!("browser.window_note_remote", host = host),
+            None => t!("browser.window_note_local").to_owned(),
+        };
+        let bring = match &elsewhere {
+            Some(host) => t!("browser.open_on_host", host = host),
+            None => t!("browser.window_bring").to_owned(),
+        };
+        let done_lane = lane.clone();
+        let raise = ui::button(p, "browser-window-raise", Kind::Ghost, bring)
+            .icon(Icon::External)
+            .on_click(cx.listener(|this, _, _, cx| this.command(Command::BrowserPopOut { page: 0, bounds: None }, cx)));
+        let done = ui::button(p, "browser-window-done", Kind::Primary, t!("browser.done_give_back_short"))
+            .icon(Icon::Check)
+            .tip(t!("browser.handed_then", name = name), Some("Esc"))
+            .on_click(cx.listener(move |this, _, _, cx| this.give_back_lane(&done_lane, cx)));
+        Some(
+            v_flex()
+                .id("browser-window-card")
+                .absolute()
+                .inset_0()
+                .items_center()
+                .justify_center()
+                .px_6()
+                .gap_2()
+                .bg(p.side)
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(div().size(px(8.)).flex_none().rounded_full().bg(hue))
+                        .child(div().text_size(px(UI)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("browser.window_title", name = name))),
+                )
+                .when(!asked.is_empty(), |c| c.child(div().max_w(px(380.)).text_size(px(13.)).line_height(px(19.)).text_color(p.text).text_center().child(asked.clone())))
+                .child(div().max_w(px(380.)).text_size(px(SMALL)).line_height(px(20.)).text_color(p.text2).text_center().child(note))
+                .child(div().max_w(px(380.)).text_size(px(12.)).line_height(px(18.)).text_color(p.muted).text_center().child(t!("browser.window_hidden")))
+                .child(h_flex().pt_2().gap_2().child(done).child(raise))
+                .into_any_element(),
+        )
+    }
+
     /// Said under a check when the member's Chrome is on another Mac.
     fn chrome_window_note(&self, check: HumanCheck) -> Option<String> {
         if !matches!(check, HumanCheck::Challenge | HumanCheck::Captcha) {
@@ -1847,6 +1927,9 @@ impl BrowserPanel {
                 .child(div().text_size(px(UI)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).text_center().child(title))
                 .child(div().max_w(px(340.)).text_size(px(SMALL)).line_height(px(20.)).text_color(p.muted).text_center().child(body))
         };
+        if let Some(card) = self.window_card(cx) {
+            return Some(card);
+        }
         let empty = self.lanes.values().all(|l| l.pages.is_empty());
         if self.selected.is_none() {
             if let Some(gone) = self.gone.clone() {

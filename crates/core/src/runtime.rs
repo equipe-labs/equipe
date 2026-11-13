@@ -80,6 +80,7 @@ mod gate;
 pub(crate) use gate::checks_scratch;
 mod secrets;
 mod logins;
+mod window;
 mod autopilot;
 mod design_qa;
 mod design_review;
@@ -605,6 +606,11 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     let (internal_tx, internal_rx) = mpsc::unbounded_channel();
     let (host_tx, host_rx) = mpsc::unbounded_channel();
     let mut config = config;
+    let config_home = config.home.clone();
+    // A window of the person's own an earlier run left open ends.
+    if config.persist {
+        Runtime::recover_windows(&config_home);
+    }
     let mac = std::mem::replace(&mut config.mac, Box::new(desktop::ThisMac));
     if config.persist && config.nemotron.is_none() {
         crate::daemon_log!("equipe: no Nebius key yet (Settings › AI platforms, or `equipe login nebius`): handed-in work isn't reviewed by Nemotron");
@@ -673,6 +679,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         frame_sent: HashMap::new(),
         last_url: HashMap::new(),
         show_url: HashMap::new(),
+        windows: window::Windows::new(&config_home),
         plan: None,
         plans: Vec::new(),
         plan_types: HashMap::new(),
@@ -1261,6 +1268,8 @@ struct Runtime {
     /// page asked for when it next comes on screen.
     last_url: HashMap<(String, String), String>,
     show_url: HashMap<(String, String), String>,
+    /// Members' browsers handed to the person in a Chrome window of their own.
+    windows: window::Windows,
     /// The Claude plan's usage, as Claude Code last reported it.
     plan: Option<equipe_protocol::PlanUsage>,
     /// Every engine's plan usage, as last read, and each plan's name.
@@ -1422,6 +1431,7 @@ enum Wake {
     Frames,
     Minute,
     DesignTick,
+    WindowTick,
 }
 
 impl Wake {
@@ -1522,6 +1532,7 @@ impl Wake {
             Wake::Frames => Borrowed("browser pictures"),
             Wake::Minute => Borrowed("minute tick"),
             Wake::DesignTick => Borrowed("design tick"),
+            Wake::WindowTick => Borrowed("sign-in window tick"),
         }
     }
 }
@@ -1541,9 +1552,12 @@ async fn run(
     let mut frames = tokio::time::interval(FRAME_EVERY);
     // A design system on a screen follows what its designer saves.
     let mut design_tick = tokio::time::interval(design::LOOK_EVERY);
+    // A sign-in window the person is in: watched for it closing, and for the
+    // browser's folder coming free.
+    let mut window_tick = tokio::time::interval(Duration::from_secs(1));
     // A loop held up never catches up on the ticks it missed in a burst: that
     // only holds it up again.
-    for tick in [&mut daily, &mut minute, &mut desktop_tick, &mut frames, &mut design_tick] {
+    for tick in [&mut daily, &mut minute, &mut desktop_tick, &mut frames, &mut design_tick, &mut window_tick] {
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     }
     daily.tick().await; // the first tick is immediate; pruning already ran at start
@@ -1557,6 +1571,7 @@ async fn run(
             _ = frames.tick() => Wake::Frames,
             _ = minute.tick() => Wake::Minute,
             _ = design_tick.tick(), if !rt.design_watch.is_empty() => Wake::DesignTick,
+            _ = window_tick.tick(), if !rt.windows.handoffs.is_empty() => Wake::WindowTick,
         };
         pulse.begin(wake.doing());
         let go_on = rt.wake(wake, &pulse).await;
@@ -1592,6 +1607,10 @@ impl Runtime {
                             let check = self.checking.get(lane).map(|c| c.2);
                             let _ = tx.send(Event::BrowserControl { squad: Some(squad.clone()), lane: lane.clone(), by: Some("person".into()), why: why.clone(), check });
                         }
+                    }
+                    // And the ones in a Chrome window of the person's own.
+                    for lane in self.window_lanes(&squad) {
+                        let _ = tx.send(Event::BrowserWindow { squad: Some(squad.clone()), lane, open: true });
                     }
                     // A disk found full is told to each screen as it comes.
                     if self.disk.status.level == crate::disk::DiskLevel::Full {
@@ -1804,6 +1823,7 @@ impl Runtime {
             }
             Wake::Frames => self.take_frames(),
             Wake::DesignTick => self.design_tick(),
+            Wake::WindowTick => self.window_tick().await,
             Wake::Minute => self.minute(pulse).await,
         }
         true
@@ -2424,6 +2444,11 @@ impl Runtime {
                 self.closed_by_person(page).await;
             }
             Command::BrowserControl { lane, take } => {
+                // A browser in the person's own window: Done closes that window and
+                // brings the automated browser back; taking it is for the panel.
+                if self.window_done(&lane, take).await {
+                    return;
+                }
                 self.hub.op(&json!({ "op": "control", "lane": lane, "by": take.then_some("person") }));
             }
             Command::BrowserDialog { page, accept, text } => {
@@ -2433,6 +2458,12 @@ impl Runtime {
                 self.start_sign_in(&url, window);
             }
             Command::BrowserPopOut { page, bounds } => {
+                // No page: the person's own Chrome window of a hand-off, brought forward.
+                if page == 0 {
+                    let raise = self.windows.handoffs.raise();
+                    self.run_window_actions(raise).await;
+                    return;
+                }
                 self.hub.op(&json!({ "op": "popout", "page": page, "bounds": bounds }));
             }
             Command::Language { lang } => {
@@ -7402,9 +7433,37 @@ It starts when {owner} is free."
                 let _ = reply.send(ToolResult { text, is_error: false, image: None });
                 return;
             }
+            // A sign-in the person does in a normal Chrome window of their own, the
+            // automated browser stepping aside — a site's human check lets a person
+            // through there. Not possible (no Chrome): the panel, with the reason.
+            let mut window_note = None;
+            if self.window_mode() {
+                match self.begin_window_handoff(&call, url.as_deref(), &why).await {
+                    Ok(()) => {
+                        if let Some(id) = self.caller_id(&call) {
+                            let text = self.window_notice(&call.member, &why);
+                            self.publish(Event::Notice { undo: None, session: id, text });
+                        }
+                        let _ = reply.send(ToolResult {
+                            text: "A normal Chrome window is opening on the person's Mac at that page, with your browser's own sign-ins — \
+a real browser of theirs, not yours: your browser tools are off until they press \"Done\" (or close that window), and the page there \
+isn't yours to look at. Say in one line what they should do there, then end your turn. When they're done you get a message and \
+carry on by yourself — don't ask them to tell you."
+                                .into(),
+                            is_error: false,
+                            image: None,
+                        });
+                        return;
+                    }
+                    Err(why) => window_note = Some(why),
+                }
+            }
             if self.ask_in_panel(&call.squad, &call.member, url.as_deref(), &why) {
                 if let Some(id) = self.caller_id(&call) {
-                    let text = say!(self, "notice.browser_in_panel", name = call.member, why = why);
+                    let text = match window_note {
+                        Some(handoff_why) => self.window_fallback_note(&call.member, &why, handoff_why),
+                        None => say!(self, "notice.browser_in_panel", name = call.member, why = why),
+                    };
                     self.publish(Event::Notice { undo: None, session: id, text });
                 }
                 let _ = reply.send(ToolResult {
@@ -8054,6 +8113,10 @@ there, end your turn, and carry on when they say they're done."
     /// it to the page asked for, or where it last was. `name` is its key.
     fn open_browser(&mut self, squad: &str, name: &str, shown: bool) -> Option<u16> {
         let npx = self.config.npx.clone()?;
+        // Its profile is the person's, in a window of their own, just now.
+        if self.windows.handoffs.paused(browser::split_profile(name).1.unwrap_or_default()) {
+            return None;
+        }
         let output = std::env::temp_dir().join("equipe-browser").join(squad).join(name);
         let profile = browser::profile(&self.config.home, squad, name);
         let key = (squad.to_owned(), name.to_owned());
@@ -8104,6 +8167,7 @@ there, end your turn, and carry on when they say they're done."
             self.browsers.retain(|_, b| !b.is_lane());
             self.host = browser::Host::start(npx, &self.config.home, &self.hub, self.host_events.clone()).ok();
             self.hub.set_host(self.host.clone());
+            self.suspend_again();
         }
         self.host.clone()
     }
@@ -8231,7 +8295,10 @@ there, end your turn, and carry on when they say they're done."
                     self.follow_person_tabs(&pages);
                 }
                 let pages: Vec<equipe_protocol::BrowserPage> = pages.into_iter().map(browser::HostPage::page).collect();
-                self.watch_checks(&lane, session, &pages, agent);
+                // The person's window, or the browser coming back from it: no check to ask about.
+                if !self.windows.handoffs.busy_lane(&lane) {
+                    self.watch_checks(&lane, session, &pages, agent);
+                }
                 let event = Event::BrowserTabs { squad, lane: lane.clone(), session, member, color, pages, agent_page: agent };
                 self.tabs.insert(lane, event.clone());
                 self.publish(event);
@@ -8318,6 +8385,7 @@ there, end your turn, and carry on when they say they're done."
                 self.publish(Event::BrowserDialog { squad, lane, page, kind, message, default });
             }
             HostEvent::DialogClosed { page } => self.publish(Event::BrowserDialogClosed { page }),
+            HostEvent::Suspended { profile } => self.window_suspended(&profile),
             HostEvent::Filled { token, answer, .. } => self.filled(token, answer),
             HostEvent::Visited { token, page } => self.on_visited(token, page),
             HostEvent::Passkey { token, credential } => self.on_passkey(token, credential),
