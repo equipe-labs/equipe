@@ -4,41 +4,46 @@
 //! keeps its tier when its member moves engines: each engine maps the same
 //! step to a model and effort of its own ([`target`]).
 //!
-//! On the squad's default, quality first ([`ModelChoice::QualityFirst`]),
-//! equipe only raises: a ticket runs at the stronger of what its rules ask
-//! ([`rule`]) and what its member already runs on ([`floor`]), component by
-//! component — never a weaker model, never less thinking than the member's
-//! own. What a cheaper tier would have been is recorded
-//! ([`TicketModel::shadow`]) and never acted on. Nothing here reads the
-//! plans: when plan room runs short the lanes shrink (`crate::lanes`), and
-//! tiers never drop for it — on Max parallel work too.
+//! On the squad's default ([`ModelChoice::QualityFirst`]) a ticket is
+//! *right-sized* by how hard it looks: the cheapest tier that does it well
+//! ([`rule`]), with escalation as the safety net — work that comes back
+//! wrong runs one tier up ([`after_send_back`], [`step_up`]). Nothing here
+//! reads the plans: when plan room runs short the lanes shrink
+//! (`crate::lanes`), and tiers never drop for it — on Max parallel work too.
+//! What a member's own model is does not matter, except where the person
+//! chose it ([`Member::person`]): that is a floor, and only the person goes
+//! below it. A model that an automatic engine move left on a member is not
+//! a choice, so it never forces a lane up. What a cheaper tier would have
+//! been is recorded ([`TicketModel::shadow`]) where a ticket runs above its
+//! rule, and the rule's own reason is kept beside the shown one
+//! ([`TicketModel::classified`]), so the effect can be measured.
 //!
-//! | Ticket | Tier | Claude | Codex | Cheaper tier recorded |
-//! |---|---|---|---|---|
-//! | PM work | the PM's own | — | — | never |
-//! | Design QA review (squad policy `economy`, the default; `crate::design_qa::tier_for`) | standard; deep for a redesign, round 2+, or a precheck that needs judgment | Sonnet · medium (Opus · high) | Sol · low (Sol · high) | below the member's own unless the person set its model |
-//! | QA, security review | strong (deep with a risk tag) | Opus · medium | Sol · medium | never |
-//! | Risk tag (auth, payments, migration, security, concurrency, release) | deep | Opus · high | Sol · high | never |
-//! | Design work | deep | Opus · high | Sol · high | never |
-//! | Code: one change in many places, a large refactor | deep | Opus · high | Sol · high | never |
-//! | Code: a feature or a fix | strong | Opus · medium | Sol · medium | yes |
-//! | Code: a small change in one place, with a check to run | standard | Sonnet · medium | Sol · low | yes |
-//! | Docs, changelog | standard | Sonnet · medium | Sol · low | with a check |
-//! | Read-only research, logs, a status check | light with a check, else standard | Haiku · medium | Luna · medium | with a check |
-//! | Other tasks, actions | strong | Opus · medium | Sol · medium | tasks: yes; actions: never |
+//! | Ticket | Tier | Claude | Codex |
+//! |---|---|---|---|
+//! | PM work | the PM's own | — | — |
+//! | Risk tag (auth, payments, migration, security, concurrency, release) | deep | Opus · high | Sol · high |
+//! | Broad: a refactor, one change in many places | deep | Opus · high | Sol · high |
+//! | Design QA (squad policy `economy`, the default; `crate::design_qa::tier_for`) | standard; deep for a redesign, round 2+, or a precheck that needs judgment | Sonnet · medium (Opus · high) | Sol · low (Sol · high) |
+//! | QA, security review | standard for a narrow checklist or small diff (QA); else strong; deep with a risk tag | Sonnet · medium / Opus · medium | Sol · low / Sol · medium |
+//! | Design work | strong; standard for a small one | Opus · medium | Sol · medium |
+//! | Code: a feature, an unclear spec, or several areas | strong | Opus · medium | Sol · medium |
+//! | Code: routine — one area, small diff, clear acceptance criteria | standard | Sonnet · medium | Sol · low |
+//! | Tests added, chores (deps, config), copy, i18n, docs, changelog | standard | Sonnet · medium | Sol · low |
+//! | Read-only research, logs, audits | standard | Sonnet · medium | Sol · low |
+//! | Trivial and mechanical (a rename, formatting, a link, a status check) with a check to run | light | Haiku · medium | Luna · medium |
+//! | Other tasks | strong | Opus · medium | Sol · medium |
+//! | Actions in an app or the browser | strong | Opus · medium | Sol · medium |
 //!
-//! The member's own model and effort are the floor: a frontend member on
-//! Sonnet runs a feature on Opus, a backend member on Opus at its own effort
-//! keeps it. A ticket with no check to run never goes on a light tier and
-//! never records a cheaper one. Only the person goes below the floor, by
-//! setting a ticket's tier themselves ([`TierBy::Person`]) — and design QA's
-//! policy ([`QaTier`]), where nobody but equipe set the designer's model: a
-//! model the person set for the member is its floor there too.
+//! Max is reached only by escalation or the person. The person sets a
+//! ticket's tier whenever they like ([`TierBy::Person`]; `SetTicketTier`),
+//! lower than anything included, and pins it against escalation.
 //!
-//! When work comes back wrong ([`after_send_back`]): the first correctness
-//! send-back carries on in the same conversation, warm; the second (failed
-//! checks count) — or a lane caught looping — starts the ticket's next lane
-//! one tier up, fresh, with a handoff note; the third goes to the PM to
+//! When work comes back wrong the ticket's next lane starts one tier up,
+//! fresh, with a handoff note: a correctness send-back (a failed check or a
+//! failed design QA included, as they send the work back), a lane caught
+//! looping, or a member that hands its ticket back as something it cannot do
+//! or ends its turns twice with no hand-in ([`after_send_back`]). The second
+//! correctness send-back goes up once more; the third goes to the PM to
 //! decide. Style and environment send-backs raise nothing.
 
 use equipe_protocol::Engine;
@@ -49,14 +54,18 @@ use equipe_protocol::tiers::{ModelChoice, ModelTier, RiskTag, SendBackReason, Ti
 const REVIEWERS: [&str; 2] = ["qa", crate::roles::SECURITY];
 
 /// Claude Code's own effort when none is given: `xhigh` on its current models.
-/// A member set to no effort is taken to run there, so equipe never passes
-/// less than that.
+/// A member set to no effort is taken to run there, so a member whose model
+/// the person set never runs on less than that.
 pub const CLAUDE_DEFAULT_EFFORT: &str = "xhigh";
 /// Codex's effort when none is given and its list doesn't say.
 pub const CODEX_DEFAULT_EFFORT: &str = "medium";
 
 /// Identical tool calls in a row that make a lane look caught in a loop.
 pub const LOOP_REPEATS: u32 = 8;
+
+/// A ticket body longer than this many characters is not a small, clearly
+/// specified change.
+const ROUTINE_BODY_CHARS: usize = 800;
 
 /// What the rules read from a ticket and who works it.
 #[derive(Debug, Clone, Copy)]
@@ -105,27 +114,42 @@ pub fn rule(w: &Work<'_>) -> Option<Rule> {
     let text = format!("{}\n{}", w.title, w.body);
     let risk = risk_tags(&text);
     let checked = checkable(w.body);
-    let at = |tier, reason, never_lower: bool| Rule { tier, reason, risk: risk.clone(), never_lower: never_lower || !risk.is_empty() || !checked, below_floor: false };
+    let at = |tier, reason, never_lower: bool| Rule { tier, reason, risk: risk.clone(), never_lower: never_lower || !risk.is_empty(), below_floor: false };
     Some(if let (true, Some(q)) = (w.design_qa, w.qa_tier) {
         // Kept at the member's own where the person set it, the policy's tier recorded beside it.
         Rule { tier: q.tier, reason: TierReason::DesignQa, risk: risk.clone(), never_lower: q.below_floor, below_floor: q.below_floor }
     } else if w.design_qa {
-        at(ModelTier::Deep, TierReason::DesignQa, true)
+        // A checklist over what changed on screen; a redesign or a second round goes up by the policy or by escalation.
+        at(ModelTier::Standard, TierReason::DesignQa, false)
     } else if REVIEWERS.contains(&w.role) {
-        at(if risk.is_empty() { ModelTier::Strong } else { ModelTier::Deep }, TierReason::Review, true)
+        let routine = w.role != crate::roles::SECURITY && narrow(&text) && (checked || checklist(&text));
+        let tier = if !risk.is_empty() {
+            ModelTier::Deep
+        } else if routine {
+            ModelTier::Standard
+        } else {
+            ModelTier::Strong
+        };
+        at(tier, TierReason::Review, w.role == crate::roles::SECURITY)
+    } else if trivial(w.title) && risk.is_empty() && !wide_scope(&text) && !read_only(w) {
+        // Mechanical, and a checker catches what goes wrong: the cheapest model when there is one.
+        at(if checked { ModelTier::Light } else { ModelTier::Standard }, TierReason::Small, false)
+    } else if docs(w.title) {
+        // Words and docs carry no risk of their own, whatever they are about.
+        at(ModelTier::Standard, TierReason::Docs, false)
     } else if !risk.is_empty() {
         at(ModelTier::Deep, TierReason::Risk, true)
     } else if w.role == "designer" {
-        at(ModelTier::Deep, TierReason::Design, true)
-    } else if broad(&text) {
+        at(if small(w.title) { ModelTier::Standard } else { ModelTier::Strong }, TierReason::Design, false)
+    } else if wide_scope(&text) {
         at(ModelTier::Deep, TierReason::Broad, true)
-    } else if docs(w.title) {
-        at(ModelTier::Standard, TierReason::Docs, false)
+    } else if tests_added(w.title) {
+        at(ModelTier::Standard, TierReason::Small, false)
     } else if read_only(w) {
-        at(if checked { ModelTier::Light } else { ModelTier::Standard }, TierReason::ReadOnly, false)
+        at(if trivial(w.title) && checked { ModelTier::Light } else { ModelTier::Standard }, TierReason::ReadOnly, false)
     } else {
         match w.kind {
-            TicketKind::Code if checked && small(w.title) => at(ModelTier::Standard, TierReason::Small, false),
+            TicketKind::Code if routine_code(w, &text, checked) => at(ModelTier::Standard, TierReason::Small, false),
             TicketKind::Code => at(ModelTier::Strong, TierReason::Code, false),
             TicketKind::Task => at(ModelTier::Strong, TierReason::Task, false),
             TicketKind::Action => at(ModelTier::Strong, TierReason::Action, true),
@@ -144,8 +168,8 @@ fn has_word(text: &str, words: &[&str]) -> bool {
 }
 
 /// What in `text` — a ticket's title and body, paths included — is costly to
-/// get wrong. Read in English words and paths only; a ticket it misses runs at
-/// its member's floor or its kind's tier, never lower.
+/// get wrong. Read in English words and paths only; a ticket it misses is
+/// sized by what else it says, and escalation catches the rest.
 pub fn risk_tags(text: &str) -> Vec<RiskTag> {
     const RULES: [(RiskTag, &[&str]); 6] = [
         (
@@ -153,10 +177,10 @@ pub fn risk_tags(text: &str) -> Vec<RiskTag> {
             &["auth/", "authentication", "authorization", "authoriz", "oauth", "login", "log in", "sign-in", "sign in", "signin", "password", "permission", "session token", "access token", "jwt", "sso", "rbac"],
         ),
         (RiskTag::Payments, &["payment", "billing", "invoice", "checkout", "stripe", "subscription", "refund", "pricing plan"]),
-        (RiskTag::Migration, &["migration", "migrate", "schema change", "alter table", "drop table", "backfill", "delete data", "data deletion", "purge"]),
+        (RiskTag::Migration, &["migration", "migrate", "schema change", "alter table", "drop table", "backfill", "delete data", "data deletion"]),
         (RiskTag::Security, &["security", "vulnerab", "secret", "encrypt", "decrypt", "credential", "xss", "csrf", "injection", "sandbox escape", "cve-"]),
-        (RiskTag::Concurrency, &["concurren", "race condition", "deadlock", "mutex", "lock-free", "thread safety", "thread-safe", "atomic"]),
-        (RiskTag::Release, &["release", "deploy", "rollout", "roll out", "production", ".github/workflows", "publish to", "version bump"]),
+        (RiskTag::Concurrency, &["concurren", "race condition", "deadlock", "mutex", "lock-free", "thread safety", "thread-safe"]),
+        (RiskTag::Release, &["release", "deploy", "rollout", "roll out", ".github/workflows", "publish to", "version bump"]),
     ];
     let mut tags: Vec<RiskTag> = RULES.iter().filter(|(_, words)| has_word(text, words)).map(|(tag, _)| *tag).collect();
     // Plain `auth` names the area too: `auth.rs`, "the auth flow".
@@ -175,19 +199,109 @@ pub fn checkable(body: &str) -> bool {
     )
 }
 
-/// One change made the same way in several places, or a large refactor.
-fn broad(text: &str) -> bool {
-    has_word(text, &["everywhere", "across the", "across all", "all call sites", "every call site", "each call site", "rename", "refactor", "rewrite", "codebase-wide", "repo-wide", "throughout"])
+/// Whether a body states what done looks like: a check to run, or its
+/// acceptance criteria in words.
+fn criteria(body: &str) -> bool {
+    checkable(body) || has_word(body, &["acceptance", "criteria", "done when", "expected", "steps to reproduce", "repro"])
 }
 
-/// Docs or a changelog, as its title says.
+/// A checklist to follow: what a QA run is asked for when it is routine.
+fn checklist(text: &str) -> bool {
+    has_word(text, &["checklist", "smoke test", "verify", "regression", "walk through", "walkthrough", "test plan", "tp-", "acceptance"])
+}
+
+/// A refactor, or one change made the same way in several places.
+fn wide_scope(text: &str) -> bool {
+    has_word(
+        text,
+        &["everywhere", "across the", "across all", "all call sites", "every call site", "each call site", "rename all", "rename every", "renaming", "refactor", "rewrite", "codebase-wide", "repo-wide", "throughout"],
+    )
+}
+
+/// Docs, copy or translations, as the title says.
 fn docs(title: &str) -> bool {
-    has_word(title, &["docs", "doc ", "documentation", "readme", "changelog", "release notes", "typo"])
+    has_word(
+        title,
+        &["docs", "doc ", "documentation", "readme", "changelog", "release notes", "typo", "copy", "wording", "microcopy", "i18n", "l10n", "translation", "translations", "locale", "locales"],
+    )
 }
 
-/// A small change in one place, as its title says.
+/// Tests added, as the title says.
+fn tests_added(title: &str) -> bool {
+    has_word(
+        title,
+        &["add test", "add tests", "add a test", "write test", "write tests", "write a test", "tests for", "test coverage", "unit test", "unit tests", "regression test", "integration test", "e2e test"],
+    )
+}
+
+/// Mechanical work a checker catches: a rename, formatting, a link, a status check.
+fn trivial(title: &str) -> bool {
+    has_word(
+        title,
+        &["rename a", "rename the", "rename this", "reformat", "formatting", "whitespace", "fix link", "fix links", "fix the link", "fix broken link", "broken link", "broken links", "dead link", "update link", "status check", "check the status"],
+    )
+}
+
+/// A small change in one place, or a chore, as its title says.
 fn small(title: &str) -> bool {
-    has_word(title, &["lint", "typo", "copy", "wording", "label", "config value", "bump", "constant", "rename a", "fix a warning", "warning"])
+    has_word(
+        title,
+        &[
+            "lint", "typo", "copy", "wording", "label", "config", "bump", "constant", "fix a warning", "warning", "tweak", "chore", "dependency", "dependencies", "deps", "minor", "small", "tiny", "one-line", "one line", "flag",
+        ],
+    )
+}
+
+/// A small change, a chore or words, as a title says: what design QA of it
+/// needs no top tier for, even without a precheck report.
+pub fn small_change(title: &str) -> bool {
+    small(title) || docs(title)
+}
+
+/// New behaviour as the title says: a feature, whatever its size.
+fn feature(title: &str) -> bool {
+    has_word(title, &["add", "implement", "build", "create", "introduce", "support", "new ", "redesign", "integrate", "port ", "overhaul", "rework", "enable"])
+}
+
+/// What areas of the repository `text` names by path: the first two parts
+/// (`crates/core`, `src/auth`) of every file path in it, once each.
+fn areas(text: &str) -> usize {
+    let mut seen: Vec<String> = Vec::new();
+    for token in text.split(|c: char| c.is_whitespace() || matches!(c, '`' | '"' | '\'' | '(' | ')' | ',' | ';' | '[' | ']')) {
+        let token = token.trim_end_matches(['.', ':']);
+        if token.contains("://") || !token.contains('/') {
+            continue;
+        }
+        let parts: Vec<&str> = token.split('/').filter(|p| !p.is_empty()).collect();
+        let file = parts.last().is_some_and(|last| last.contains('.')) || token.ends_with('/');
+        if parts.len() < 2 || !file {
+            continue;
+        }
+        let key = if parts.len() == 2 { parts[0].to_owned() } else { format!("{}/{}", parts[0], parts[1]) };
+        if !seen.contains(&key) {
+            seen.push(key);
+        }
+    }
+    seen.len()
+}
+
+/// One area and no word of several: a footprint that stays in one place.
+fn narrow(text: &str) -> bool {
+    areas(text) <= 1
+        && !has_word(text, &["across", "several", "multiple", "various", "end-to-end", "end to end", "full-stack", "full stack", "cross-cutting", "all platforms", "all screens", "frontend and backend", "backend and frontend"])
+}
+
+/// A routine code change: one area, a small diff expected, and its acceptance
+/// criteria clear — a small change its title names with a check to run, or a
+/// short ticket that is not new behaviour and says what done looks like.
+fn routine_code(w: &Work<'_>, text: &str, checked: bool) -> bool {
+    if !narrow(text) {
+        return false;
+    }
+    if small(w.title) {
+        return checked;
+    }
+    !feature(w.title) && criteria(w.body) && w.body.chars().count() <= ROUTINE_BODY_CHARS
 }
 
 /// Reading only: a member that doesn't edit, or a task that investigates.
@@ -274,6 +388,11 @@ pub struct Member<'a> {
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
     pub catalog: &'a [Offer<'a>],
+    /// The person chose this model (`/model`, or a model for the member's
+    /// role): it is the floor of every lane. `false`: it is where equipe
+    /// left the member — a role's default, an automatic move to the other
+    /// engine — and says nothing about how hard a ticket is.
+    pub person: bool,
 }
 
 impl Member<'_> {
@@ -346,7 +465,8 @@ pub fn resolve(tier: ModelTier, m: &Member<'_>, floor_kept: bool) -> (Option<Str
     let keep_model = match (own, wanted) {
         (Some(own), Some(wanted)) if floor_kept => own >= wanted,
         (Some(own), Some(wanted)) => own == wanted,
-        _ => true,
+        // No model set: the tier's own. One equipe can't place: left as it is.
+        _ => m.model.is_some(),
     };
     let model = if keep_model { m.model.map(str::to_owned) } else { m.model_of(family).or_else(|| m.model.map(str::to_owned)) };
     // A member the person put on the premium family still runs its lanes on Opus.
@@ -382,15 +502,25 @@ pub struct Choice {
 /// squad's `choice`.
 pub fn choose(prev: Option<&TicketModel>, rule: Option<&Rule>, m: &Member<'_>, choice: ModelChoice) -> Choice {
     let prev = prev.cloned().unwrap_or_default();
-    let floor = floor(m);
+    // Only the person's own model is a floor. A model a provider serves is the person's by nature.
+    let provider = m.model.is_some_and(|model| model.trim_start().starts_with('@'));
+    let own_tier = floor(m);
+    let floor = if m.person { own_tier } else if provider { None } else { Some(ModelTier::Light) };
     let own = (m.model.map(str::to_owned), m.effort.map(str::to_owned));
-    let base = TicketModel { pinned: prev.pinned, escalations: prev.escalations, risk: rule.map(|r| r.risk.clone()).unwrap_or_default(), engine: Some(m.engine), ..TicketModel::default() };
+    let base = TicketModel {
+        pinned: prev.pinned,
+        escalations: prev.escalations,
+        risk: rule.map(|r| r.risk.clone()).unwrap_or_default(),
+        engine: Some(m.engine),
+        classified: rule.map(|r| r.reason),
+        ..TicketModel::default()
+    };
     let (ticket, (model, effort)) = match (prev.by, prev.tier) {
         // The person's own pick: theirs, even below the member's floor.
         (TierBy::Person, Some(tier)) => (TicketModel { tier: Some(tier), by: TierBy::Person, reason: TierReason::Person, ..base }, resolve(tier, m, false)),
-        _ if choice == ModelChoice::Off => (TicketModel { tier: floor, reason: TierReason::MemberOwn, ..base }, own),
+        _ if choice == ModelChoice::Off => (TicketModel { tier: own_tier, reason: TierReason::MemberOwn, ..base }, own),
         _ => match (rule, floor) {
-            (None, _) => (TicketModel { tier: floor, reason: TierReason::Pm, ..base }, own),
+            (None, _) => (TicketModel { tier: own_tier, reason: TierReason::Pm, ..base }, own),
             (Some(_), None) => (TicketModel { tier: None, reason: TierReason::MemberOwn, ..base }, own),
             (Some(rule), Some(floor)) => {
                 // Once raised, a ticket never comes back down mid-way.
@@ -408,7 +538,8 @@ pub fn choose(prev: Option<&TicketModel>, rule: Option<&Rule>, m: &Member<'_>, c
                 };
                 let shadow = (!rule.never_lower && rule.tier < tier).then_some(rule.tier);
                 let by = if escalated { TierBy::Escalation } else { TierBy::Rule };
-                (TicketModel { tier: Some(tier), by, reason, shadow, ..base }, resolve(tier, m, !rule.below_floor))
+                // Kept at the member's own only where the person chose it.
+                (TicketModel { tier: Some(tier), by, reason, shadow, ..base }, resolve(tier, m, m.person && !rule.below_floor))
             }
         },
     };
@@ -423,9 +554,8 @@ pub fn choose(prev: Option<&TicketModel>, rule: Option<&Rule>, m: &Member<'_>, c
 pub enum Next {
     /// Nothing: style and environment aren't a model's strength.
     Nothing,
-    /// The first correctness send-back: the same conversation carries on, warm.
-    SameLane,
-    /// The second: its next lane starts one tier up, fresh, with a handoff note.
+    /// The first and second correctness send-backs: its next lane starts one
+    /// tier up, fresh, with a handoff note.
     StepUp,
     /// The third and after: the PM decides — split it, rewrite what it asks,
     /// or ask the person.
@@ -433,12 +563,13 @@ pub enum Next {
 }
 
 /// What a send-back for `reason` does, `correctness` being how many
-/// correctness send-backs the ticket has had, this one included.
+/// correctness send-backs the ticket has had, this one included. Tickets
+/// start on the cheapest tier that fits, so the first one that comes back
+/// wrong already goes up.
 pub fn after_send_back(reason: SendBackReason, correctness: u32) -> Next {
     match (reason, correctness) {
         (SendBackReason::Style | SendBackReason::Environment, _) => Next::Nothing,
-        (SendBackReason::Correctness, 0 | 1) => Next::SameLane,
-        (SendBackReason::Correctness, 2) => Next::StepUp,
+        (SendBackReason::Correctness, 0..=2) => Next::StepUp,
         (SendBackReason::Correctness, _) => Next::PmDecides,
     }
 }
@@ -465,6 +596,7 @@ pub fn set_by_person(t: Option<&TicketModel>, tier: Option<ModelTier>, pinned: b
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -478,7 +610,8 @@ mod tests {
         (r.tier, r.reason, r.never_lower)
     }
 
-    const CLAUDE: Member<'static> = Member { engine: Engine::Claude, model: Some("sonnet"), effort: None, catalog: &[] };
+    /// A member on Sonnet that equipe left there (a role's default): nobody chose it.
+    const CLAUDE: Member<'static> = Member { engine: Engine::Claude, model: Some("sonnet"), effort: None, catalog: &[], person: false };
 
     fn codex_catalog() -> Vec<(String, Vec<String>)> {
         let e = |l: &[&str]| l.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
@@ -493,28 +626,109 @@ mod tests {
         c.iter().map(|(id, efforts)| Offer { id, efforts, default_effort: Some("medium") }).collect()
     }
 
+    const TESTED: &str = "Run `cargo test -p web` to check.";
+
     #[test]
-    fn each_role_and_kind_starts_at_its_tier() {
-        let tested = "Run `cargo test -p web` to check.";
-        assert_eq!(tier("frontend", TicketKind::Code, "Add a settings page", tested), (ModelTier::Strong, TierReason::Code, false));
-        assert_eq!(tier("backend", TicketKind::Code, "Fix the export endpoint", tested), (ModelTier::Strong, TierReason::Code, false));
-        assert_eq!(tier("mobile", TicketKind::Code, "Add pull to refresh", ""), (ModelTier::Strong, TierReason::Code, true), "no check to run: never lowered");
-        assert_eq!(tier("backend", TicketKind::Code, "Refactor the job queue", tested), (ModelTier::Deep, TierReason::Broad, true));
-        assert_eq!(tier("frontend", TicketKind::Code, "Use the new token everywhere", tested), (ModelTier::Deep, TierReason::Broad, true));
-        assert_eq!(tier("frontend", TicketKind::Code, "Fix a lint warning in the header", tested), (ModelTier::Standard, TierReason::Small, false));
-        assert_eq!(tier("frontend", TicketKind::Code, "Fix a lint warning in the header", "Just fix it."), (ModelTier::Strong, TierReason::Code, true), "small without a check: as any code");
-        assert_eq!(tier("backend", TicketKind::Code, "Update the README", ""), (ModelTier::Standard, TierReason::Docs, true));
+    fn routine_code_with_a_narrow_footprint_and_clear_criteria_is_standard() {
+        let repro = "Steps to reproduce: export with no rows. Expected: the CSV still has its header row. Run `cargo test -p export`.";
+        assert_eq!(tier("backend", TicketKind::Code, "Fix the empty export header", repro), (ModelTier::Standard, TierReason::Small, false));
+        assert_eq!(tier("frontend", TicketKind::Code, "Fix a lint warning in the header", TESTED), (ModelTier::Standard, TierReason::Small, false));
+        let one_area = "The retry delay in crates/core/src/retry.rs is off by one. Done when `cargo test -p equipe-core retry` passes.";
+        assert_eq!(tier("backend", TicketKind::Code, "Fix the retry delay", one_area), (ModelTier::Standard, TierReason::Small, false));
+        // Chores: a dependency bump, a config tweak.
+        assert_eq!(tier("backend", TicketKind::Code, "Bump the serde dependency", TESTED), (ModelTier::Standard, TierReason::Small, false));
+        assert_eq!(tier("backend", TicketKind::Code, "Tweak the config value for retries", TESTED), (ModelTier::Standard, TierReason::Small, false));
+    }
+
+    #[test]
+    fn features_unclear_specs_and_several_areas_stay_strong() {
+        assert_eq!(tier("frontend", TicketKind::Code, "Add a settings page", TESTED), (ModelTier::Strong, TierReason::Code, false), "a feature");
+        assert_eq!(tier("mobile", TicketKind::Code, "Fix the pull to refresh", ""), (ModelTier::Strong, TierReason::Code, false), "nothing says what done is");
+        assert_eq!(tier("frontend", TicketKind::Code, "Fix a lint warning in the header", "Just fix it."), (ModelTier::Strong, TierReason::Code, false), "small, but nothing checks it");
+        let two = "The delay in crates/core/src/retry.rs and the label in crates/desktop/src/views/jobs.rs disagree. Run `cargo test`.";
+        assert_eq!(tier("backend", TicketKind::Code, "Fix the retry delay", two).0, ModelTier::Strong, "two areas");
+        let spread = "Make the export work across several screens. Run `npm test`.";
+        assert_eq!(tier("frontend", TicketKind::Code, "Fix the export", spread).0, ModelTier::Strong, "several areas in words");
+        let long = format!("Expected: it works. Run `cargo test`. {}", "Details. ".repeat(120));
+        assert_eq!(tier("backend", TicketKind::Code, "Fix the importer", &long).0, ModelTier::Strong, "a long ticket is not a small diff");
+        assert_eq!(tier("marketing", TicketKind::Task, "Draft the launch post", ""), (ModelTier::Strong, TierReason::Task, false));
+        assert_eq!(tier("marketing", TicketKind::Action, "Reply on the forum", TESTED), (ModelTier::Strong, TierReason::Action, true), "acting in an app is never lowered");
+    }
+
+    #[test]
+    fn copy_docs_i18n_and_added_tests_are_standard() {
+        assert_eq!(tier("backend", TicketKind::Code, "Update the README", ""), (ModelTier::Standard, TierReason::Docs, false));
         assert_eq!(tier("marketing", TicketKind::Task, "Changelog for 1.4", "Check with `npm run lint:md`."), (ModelTier::Standard, TierReason::Docs, false));
-        assert_eq!(tier("designer", TicketKind::Code, "New empty states", tested), (ModelTier::Deep, TierReason::Design, true));
-        assert_eq!(tier("qa", TicketKind::Task, "Review T-12", tested), (ModelTier::Strong, TierReason::Review, true));
-        assert_eq!(tier("security", TicketKind::Task, "Review the session token storage", ""), (ModelTier::Deep, TierReason::Review, true), "a risky review thinks hard");
-        assert_eq!(tier("data", TicketKind::Task, "Weekly signups", "Verify with the dashboard query test."), (ModelTier::Light, TierReason::ReadOnly, false));
-        assert_eq!(tier("data", TicketKind::Task, "Weekly signups", ""), (ModelTier::Standard, TierReason::ReadOnly, true), "never light without a check");
-        assert_eq!(tier("marketing", TicketKind::Task, "Draft the launch post", ""), (ModelTier::Strong, TierReason::Task, true));
-        assert_eq!(tier("marketing", TicketKind::Action, "Reply on the forum", tested), (ModelTier::Strong, TierReason::Action, true));
-        assert!(rule(&work("pm", TicketKind::Task, "Plan the quarter", "")).is_none(), "the PM keeps its own model");
+        assert_eq!(tier("frontend", TicketKind::Code, "Translate the empty states (i18n)", ""), (ModelTier::Standard, TierReason::Docs, false));
+        assert_eq!(tier("frontend", TicketKind::Code, "Fix the wording of the save button", ""), (ModelTier::Standard, TierReason::Docs, false));
+        assert_eq!(tier("backend", TicketKind::Code, "Add tests for the export endpoint", TESTED), (ModelTier::Standard, TierReason::Small, false));
+        assert_eq!(tier("backend", TicketKind::Code, "Add test coverage for the importer", ""), (ModelTier::Standard, TierReason::Small, false));
+    }
+
+    #[test]
+    fn read_only_work_is_standard_and_only_trivial_mechanical_work_is_light() {
+        assert_eq!(tier("data", TicketKind::Task, "Weekly signups", ""), (ModelTier::Standard, TierReason::ReadOnly, false));
+        assert_eq!(tier("data", TicketKind::Task, "Weekly signups", "Verify with the dashboard query test."), (ModelTier::Standard, TierReason::ReadOnly, false), "a query is not trivial");
+        assert_eq!(tier("backend", TicketKind::Task, "Investigate the slow export", ""), (ModelTier::Standard, TierReason::ReadOnly, false));
+        // Light: a status check, a rename, formatting, links — with a check to run.
+        assert_eq!(tier("data", TicketKind::Task, "Status check of the nightly job", "Verify with `make status`."), (ModelTier::Light, TierReason::ReadOnly, false));
+        assert_eq!(tier("backend", TicketKind::Code, "Rename the helper", TESTED), (ModelTier::Light, TierReason::Small, false));
+        assert_eq!(tier("frontend", TicketKind::Code, "Reformat the stylesheet", "Check with `npm run lint`."), (ModelTier::Light, TierReason::Small, false));
+        assert_eq!(tier("backend", TicketKind::Code, "Fix broken links in the guide", "Check with `make links`."), (ModelTier::Light, TierReason::Small, false));
+        // Without anything to check it, trivial work is standard, never light.
+        assert_eq!(tier("backend", TicketKind::Code, "Rename the helper", ""), (ModelTier::Standard, TierReason::Small, false));
+        // A rename everywhere is broad, not trivial.
+        assert_eq!(tier("backend", TicketKind::Code, "Rename the job everywhere", TESTED).0, ModelTier::Deep);
+    }
+
+    #[test]
+    fn deep_is_for_real_risk_and_broad_refactors() {
+        assert_eq!(tier("backend", TicketKind::Code, "Retry failed payments", TESTED), (ModelTier::Deep, TierReason::Risk, true));
+        assert_eq!(tier("backend", TicketKind::Code, "Add a migration for the orders table", TESTED), (ModelTier::Deep, TierReason::Risk, true));
+        assert_eq!(tier("backend", TicketKind::Code, "Fix the race condition in the uploader", TESTED), (ModelTier::Deep, TierReason::Risk, true));
+        assert_eq!(tier("backend", TicketKind::Task, "Deploy 1.4", ""), (ModelTier::Deep, TierReason::Risk, true));
+        assert_eq!(tier("backend", TicketKind::Code, "Refactor the job queue", TESTED), (ModelTier::Deep, TierReason::Broad, true));
+        assert_eq!(tier("frontend", TicketKind::Code, "Use the new token everywhere", TESTED), (ModelTier::Deep, TierReason::Broad, true));
+        // Words and docs about risky things are still words.
+        let r = rule(&work("frontend", TicketKind::Code, "Fix a typo on the login page", "Run `npm test`.")).unwrap();
+        assert_eq!((r.tier, r.reason, r.risk.as_slice()), (ModelTier::Standard, TierReason::Docs, &[RiskTag::Auth][..]), "the risk is still read and shown");
+        // Max is never a rule's: only escalation or the person reaches it.
+        for w in [work("backend", TicketKind::Code, "Payment migration across the codebase", TESTED), work("security", TicketKind::Task, "Review the secrets storage", "")] {
+            assert!(rule(&w).unwrap().tier < ModelTier::Max, "{w:?}");
+        }
+    }
+
+    #[test]
+    fn reviews_design_qa_design_and_the_pm() {
+        // QA following a checklist or a check: standard; unclear scope: strong; risk: deep.
+        assert_eq!(tier("qa", TicketKind::Task, "Review T-12", TESTED), (ModelTier::Standard, TierReason::Review, false));
+        assert_eq!(tier("qa", TicketKind::Task, "Verify T-12 against its checklist", ""), (ModelTier::Standard, TierReason::Review, false));
+        assert_eq!(tier("qa", TicketKind::Task, "Review T-9", ""), (ModelTier::Strong, TierReason::Review, false));
+        assert_eq!(tier("qa", TicketKind::Task, "Review T-9 across several screens", TESTED).0, ModelTier::Strong, "a wide review");
+        assert_eq!(tier("qa", TicketKind::Task, "Review the session token storage", TESTED), (ModelTier::Deep, TierReason::Review, true));
+        // A security review is never routine.
+        assert_eq!(tier("security", TicketKind::Task, "Review T-5", TESTED), (ModelTier::Strong, TierReason::Review, true));
+        assert_eq!(tier("security", TicketKind::Task, "Review the session token storage", ""), (ModelTier::Deep, TierReason::Review, true));
+        // Design work: strong, standard when small.
+        assert_eq!(tier("designer", TicketKind::Code, "New empty states", TESTED), (ModelTier::Strong, TierReason::Design, false));
+        assert_eq!(tier("designer", TicketKind::Code, "Tweak the icon label", TESTED), (ModelTier::Standard, TierReason::Design, false));
+        // Design QA: a checklist over small UI changes, unless the squad's policy says higher.
         let qa = rule(&Work { design_qa: true, ..work("designer", TicketKind::Task, "Design QA of T-4", "") }).unwrap();
-        assert_eq!((qa.tier, qa.reason, qa.never_lower), (ModelTier::Deep, TierReason::DesignQa, true));
+        assert_eq!((qa.tier, qa.reason, qa.never_lower), (ModelTier::Standard, TierReason::DesignQa, false));
+        let deep = rule(&Work { design_qa: true, qa_tier: Some(QaTier { tier: ModelTier::Deep, below_floor: true }), ..work("designer", TicketKind::Task, "Design QA of T-4", "") }).unwrap();
+        assert_eq!(deep.tier, ModelTier::Deep);
+        assert!(rule(&work("pm", TicketKind::Task, "Plan the quarter", "")).is_none(), "the PM keeps its own model");
+    }
+
+    #[test]
+    fn a_footprint_is_the_areas_its_paths_name() {
+        assert_eq!(areas("Fix crates/core/src/a.rs and crates/core/tests/b.rs"), 1);
+        assert_eq!(areas("Fix `crates/core/src/a.rs` and (crates/desktop/src/b.rs)."), 2);
+        assert_eq!(areas("The input/output of the job and https://example.com/a/b.html"), 0, "not paths");
+        assert_eq!(areas("docs/GUIDE.md"), 1);
+        assert!(narrow("A fix in src/auth/session.rs"));
+        assert!(!narrow("A fix in src/a/x.rs and lib/b/y.rs"));
+        assert!(!narrow("Change it across the app"));
     }
 
     #[test]
@@ -528,7 +742,8 @@ mod tests {
         assert_eq!(risk_tags("Update auth.rs"), [RiskTag::Auth]);
         assert!(risk_tags("Show the author's name").is_empty(), "author is not auth");
         assert!(risk_tags("Make the button blue").is_empty());
-        let r = rule(&work("frontend", TicketKind::Code, "Fix a typo on the login page", "Run `npm test`.")).unwrap();
+        assert!(risk_tags("Use an atomic design system and purge the cache in production mode").is_empty(), "words that name nothing risky");
+        let r = rule(&work("frontend", TicketKind::Code, "Fix the login redirect", "Run `npm test`.")).unwrap();
         assert_eq!((r.tier, r.reason, r.never_lower, r.risk.as_slice()), (ModelTier::Deep, TierReason::Risk, true, &[RiskTag::Auth][..]));
     }
 
@@ -561,6 +776,8 @@ mod tests {
     #[test]
     fn tiers_map_to_each_engines_models() {
         assert_eq!(target(ModelTier::Strong, Engine::Claude), ("opus", "medium"));
+        assert_eq!(target(ModelTier::Standard, Engine::Claude), ("sonnet", "medium"));
+        assert_eq!(target(ModelTier::Light, Engine::Claude), ("haiku", "medium"));
         assert_eq!(target(ModelTier::Standard, Engine::Codex), ("sol", "low"));
         assert_eq!(model_rank(Engine::Claude, "claude-opus-5-5"), Some(2));
         assert_eq!(model_rank(Engine::Claude, "sonnet"), Some(1));
@@ -571,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn the_members_own_model_and_effort_are_the_floor() {
+    fn the_members_own_model_and_effort_cover_the_tiers_they_reach() {
         // Sonnet at Claude Code's own effort: standard; Opus there: the top.
         assert_eq!(floor(&CLAUDE), Some(ModelTier::Standard));
         assert_eq!(floor(&Member { model: Some("opus"), ..CLAUDE }), Some(ModelTier::Max));
@@ -580,57 +797,63 @@ mod tests {
         assert_eq!(floor(&Member { model: None, ..CLAUDE }), None);
         let c = codex_catalog();
         let catalog = offers(&c);
-        let sol = Member { engine: Engine::Codex, model: Some("gpt-6.1-sol"), effort: None, catalog: &catalog };
+        let sol = Member { engine: Engine::Codex, model: Some("gpt-6.1-sol"), effort: None, catalog: &catalog, person: true };
         assert_eq!(floor(&sol), Some(ModelTier::Strong), "Sol at its default, medium");
     }
 
     #[test]
-    fn quality_first_raises_and_never_lowers() {
-        let code = rule(&work("frontend", TicketKind::Code, "Add a settings page", "Run `npm test`.")).unwrap();
-        // A frontend member on Sonnet: the feature goes to Opus, at Claude Code's own effort.
-        let c = choose(None, Some(&code), &CLAUDE, ModelChoice::QualityFirst);
-        assert_eq!((c.model.as_deref(), c.effort.as_deref()), (Some("opus"), None));
-        assert_eq!((c.ticket.tier, c.ticket.reason, c.ticket.shadow), (Some(ModelTier::Strong), TierReason::Code, None));
-        // A backend member on Opus at its own effort keeps it; the cheaper tier is only recorded.
+    fn a_ticket_runs_on_its_own_tier_whatever_model_its_member_came_up_on() {
+        let routine = rule(&work("backend", TicketKind::Code, "Bump the serde dependency", TESTED)).unwrap();
+        // A member that came up on Opus after an automatic move (nobody chose it): Sonnet, medium.
         let opus = Member { model: Some("claude-opus-5-5"), ..CLAUDE };
-        let c = choose(None, Some(&code), &opus, ModelChoice::QualityFirst);
-        assert_eq!((c.model.as_deref(), c.effort.as_deref()), (Some("claude-opus-5-5"), None), "never a weaker model or less thinking");
-        assert_eq!((c.ticket.tier, c.ticket.reason, c.ticket.shadow), (Some(ModelTier::Max), TierReason::MemberFloor, Some(ModelTier::Strong)));
-        // A member set to think little thinks as its tier asks.
-        let low = Member { model: Some("opus"), effort: Some("low"), ..CLAUDE };
-        let risky = rule(&work("backend", TicketKind::Code, "Payment retries", "Run `cargo test`.")).unwrap();
-        let c = choose(None, Some(&risky), &low, ModelChoice::QualityFirst);
-        assert_eq!((c.model.as_deref(), c.effort.as_deref(), c.ticket.reason), (Some("opus"), Some("high"), TierReason::Risk));
-        assert_eq!(c.ticket.risk, [RiskTag::Payments]);
-        assert_eq!(c.ticket.shadow, None, "risk: nothing cheaper recorded");
+        let c = choose(None, Some(&routine), &opus, ModelChoice::QualityFirst);
+        assert_eq!((c.ticket.tier, c.ticket.reason, c.ticket.shadow, c.ticket.by), (Some(ModelTier::Standard), TierReason::Small, None, TierBy::Rule));
+        assert_eq!((c.model.as_deref(), c.effort.as_deref()), (Some("sonnet"), Some("medium")));
+        assert_eq!(c.ticket.classified, Some(TierReason::Small));
+        // A member with no model at all gets the tier's, not the engine's default.
+        let none = Member { model: None, ..CLAUDE };
+        let c = choose(None, Some(&routine), &none, ModelChoice::QualityFirst);
+        assert_eq!((c.model.as_deref(), c.effort.as_deref()), (Some("sonnet"), Some("medium")));
+        // A feature on a Sonnet member: Opus at medium, not the engine's own xhigh.
+        let feature = rule(&work("frontend", TicketKind::Code, "Add a settings page", TESTED)).unwrap();
+        let c = choose(None, Some(&feature), &CLAUDE, ModelChoice::QualityFirst);
+        assert_eq!((c.ticket.tier, c.model.as_deref(), c.effort.as_deref()), (Some(ModelTier::Strong), Some("opus"), Some("medium")));
+        // Risk: Opus at high; nothing cheaper recorded.
+        let risky = rule(&work("backend", TicketKind::Code, "Payment retries", TESTED)).unwrap();
+        let c = choose(None, Some(&risky), &opus, ModelChoice::QualityFirst);
+        assert_eq!((c.ticket.tier, c.model.as_deref(), c.effort.as_deref(), c.ticket.reason), (Some(ModelTier::Deep), Some("claude-opus-5-5"), Some("high"), TierReason::Risk));
+        assert_eq!((c.ticket.risk.as_slice(), c.ticket.shadow), (&[RiskTag::Payments][..], None));
+        // The PM keeps its own model.
+        let c = choose(None, None, &opus, ModelChoice::QualityFirst);
+        assert_eq!((c.model.as_deref(), c.ticket.reason), (Some("claude-opus-5-5"), TierReason::Pm));
+        // A provider's model is the person's: left alone.
+        let provider = Member { engine: Engine::Codex, model: Some("@nebius/nemotron-ultra"), effort: None, catalog: &[], person: false };
+        let c = choose(None, Some(&routine), &provider, ModelChoice::QualityFirst);
+        assert_eq!((c.model.as_deref(), c.ticket.tier, c.ticket.reason), (Some("@nebius/nemotron-ultra"), None, TierReason::MemberOwn));
     }
 
     #[test]
-    fn a_cheaper_tier_is_recorded_but_never_applied() {
-        let small = rule(&work("backend", TicketKind::Code, "Fix a lint warning", "Run `cargo clippy`.")).unwrap();
-        let opus = Member { model: Some("opus"), effort: Some("high"), ..CLAUDE };
-        let c = choose(None, Some(&small), &opus, ModelChoice::QualityFirst);
-        assert_eq!(c.ticket.shadow, Some(ModelTier::Standard), "Sonnet would have done, by the rules");
-        assert_eq!((c.model.as_deref(), c.effort.as_deref()), (Some("opus"), Some("high")), "but the member's own runs");
-        // Never-lower cells record nothing cheaper.
-        for w in [work("qa", TicketKind::Task, "Review T-3", "Run tests."), work("mobile", TicketKind::Code, "Add a tab", "")] {
-            let r = rule(&w).unwrap();
-            assert_eq!(choose(None, Some(&r), &opus, ModelChoice::QualityFirst).ticket.shadow, None, "{w:?}");
-        }
+    fn only_a_model_the_person_chose_is_a_floor() {
+        let routine = rule(&work("backend", TicketKind::Code, "Bump the serde dependency", TESTED)).unwrap();
+        let opus = Member { model: Some("claude-opus-5-5"), effort: Some("high"), person: true, ..CLAUDE };
+        let c = choose(None, Some(&routine), &opus, ModelChoice::QualityFirst);
+        assert_eq!((c.model.as_deref(), c.effort.as_deref()), (Some("claude-opus-5-5"), Some("high")), "never a weaker model or less thinking than the person chose");
+        assert_eq!((c.ticket.tier, c.ticket.reason, c.ticket.shadow), (Some(ModelTier::Deep), TierReason::MemberFloor, Some(ModelTier::Standard)), "the rule's tier recorded beside it");
+        assert_eq!(c.ticket.classified, Some(TierReason::Small), "what the rules made of it is kept");
+        // A person's Opus at Claude Code's own effort: the top.
+        let c = choose(None, Some(&routine), &Member { effort: None, ..opus }, ModelChoice::QualityFirst);
+        assert_eq!((c.ticket.tier, c.effort), (Some(ModelTier::Max), None));
+        // A person's Sonnet: a feature still goes to Opus.
+        let feature = rule(&work("frontend", TicketKind::Code, "Add a settings page", TESTED)).unwrap();
+        let c = choose(None, Some(&feature), &Member { person: true, ..CLAUDE }, ModelChoice::QualityFirst);
+        assert_eq!((c.model.as_deref(), c.effort.as_deref()), (Some("opus"), None), "raised, at the member's own effort");
     }
 
     #[test]
-    fn reviews_design_qa_and_the_pm_are_never_lowered() {
-        let opus = Member { model: Some("opus"), effort: Some("medium"), ..CLAUDE };
-        let qa = rule(&Work { design_qa: true, ..work("designer", TicketKind::Task, "Design QA of T-4", "") }).unwrap();
-        let c = choose(None, Some(&qa), &opus, ModelChoice::QualityFirst);
-        assert_eq!((c.model.as_deref(), c.effort.as_deref(), c.ticket.reason), (Some("opus"), Some("high"), TierReason::DesignQa));
-        let review = rule(&work("qa", TicketKind::Task, "Review T-9", "")).unwrap();
-        let c = choose(None, Some(&review), &CLAUDE, ModelChoice::QualityFirst);
-        assert_eq!(c.model.as_deref(), Some("opus"), "a review is never on a cheap model");
-        // The PM: its own model and effort, whatever it is.
-        let c = choose(None, None, &CLAUDE, ModelChoice::QualityFirst);
-        assert_eq!((c.model.as_deref(), c.effort.as_deref(), c.ticket.reason), (Some("sonnet"), None, TierReason::Pm));
+    fn off_is_the_members_own_model_and_unknown_models_are_left_alone() {
+        let code = rule(&work("frontend", TicketKind::Code, "Add a page", "Run tests.")).unwrap();
+        let c = choose(None, Some(&code), &CLAUDE, ModelChoice::Off);
+        assert_eq!((c.model.as_deref(), c.effort, c.ticket.reason), (Some("sonnet"), None, TierReason::MemberOwn));
     }
 
     #[test]
@@ -644,7 +867,8 @@ mod tests {
         let c = choose(None, Some(&qa(ModelTier::Deep, true)), &opus, ModelChoice::QualityFirst);
         assert_eq!((c.model.as_deref(), c.effort.as_deref()), (Some("opus"), Some("high")));
         // The person set the member's model: kept, the cheaper tier only recorded.
-        let c = choose(None, Some(&qa(ModelTier::Standard, false)), &opus, ModelChoice::QualityFirst);
+        let person = Member { person: true, ..opus };
+        let c = choose(None, Some(&qa(ModelTier::Standard, false)), &person, ModelChoice::QualityFirst);
         assert_eq!((c.model.as_deref(), c.effort.as_deref(), c.ticket.shadow), (Some("opus"), Some("high"), Some(ModelTier::Standard)));
         // The person's tier on the ticket, and off, win over the policy.
         let pinned = set_by_person(None, Some(ModelTier::Max), false);
@@ -655,31 +879,20 @@ mod tests {
         // On Codex the same step is its own engine's.
         let catalog = codex_catalog();
         let offers = offers(&catalog);
-        let sol = Member { engine: Engine::Codex, model: Some("gpt-6.1-sol"), effort: Some("high"), catalog: &offers };
+        let sol = Member { engine: Engine::Codex, model: Some("gpt-6.1-sol"), effort: Some("high"), catalog: &offers, person: false };
         let c = choose(None, Some(&qa(ModelTier::Standard, true)), &sol, ModelChoice::QualityFirst);
         assert_eq!((c.model.as_deref(), c.effort.as_deref()), (Some("gpt-6.1-sol"), Some("low")));
     }
 
     #[test]
-    fn off_is_the_members_own_model_and_unknown_models_are_left_alone() {
-        let code = rule(&work("frontend", TicketKind::Code, "Add a page", "Run tests.")).unwrap();
-        let c = choose(None, Some(&code), &CLAUDE, ModelChoice::Off);
-        assert_eq!((c.model.as_deref(), c.effort, c.ticket.reason), (Some("sonnet"), None, TierReason::MemberOwn));
-        let provider = Member { engine: Engine::Codex, model: Some("@nebius/nemotron-ultra"), effort: None, catalog: &[] };
-        let c = choose(None, Some(&code), &provider, ModelChoice::QualityFirst);
-        assert_eq!((c.model.as_deref(), c.ticket.tier, c.ticket.reason), (Some("@nebius/nemotron-ultra"), None, TierReason::MemberOwn));
-    }
-
-    #[test]
     fn a_ticket_keeps_its_tier_when_its_member_moves_engines() {
-        let risky = rule(&work("backend", TicketKind::Code, "Migrate the users table", "Run `cargo test`.")).unwrap();
-        let claude = Member { model: Some("sonnet"), effort: Some("medium"), ..CLAUDE };
-        let first = choose(None, Some(&risky), &claude, ModelChoice::QualityFirst);
+        let risky = rule(&work("backend", TicketKind::Code, "Migrate the users table", TESTED)).unwrap();
+        let first = choose(None, Some(&risky), &CLAUDE, ModelChoice::QualityFirst);
         assert_eq!((first.ticket.tier, first.model.as_deref(), first.effort.as_deref()), (Some(ModelTier::Deep), Some("opus"), Some("high")));
         // Moved to Codex on Sol at its default: the same tier, on Codex's model.
         let c = codex_catalog();
         let catalog = offers(&c);
-        let codex = Member { engine: Engine::Codex, model: Some("gpt-6.1-sol"), effort: None, catalog: &catalog };
+        let codex = Member { engine: Engine::Codex, model: Some("gpt-6.1-sol"), effort: None, catalog: &catalog, person: false };
         let moved = choose(Some(&first.ticket), Some(&risky), &codex, ModelChoice::QualityFirst);
         assert_eq!((moved.ticket.tier, moved.ticket.engine, moved.model.as_deref(), moved.effort.as_deref()), (Some(ModelTier::Deep), Some(Engine::Codex), Some("gpt-6.1-sol"), Some("high")));
         // An escalated ticket keeps its raised tier across the move too.
@@ -689,44 +902,66 @@ mod tests {
         // A Codex model without xhigh takes its highest below.
         let astra = Member { model: Some("gpt-6-astra"), ..codex };
         assert_eq!(resolve(ModelTier::Max, &astra, true), (Some("gpt-6-astra".into()), Some("high".into())));
-        // A member on Luna is raised to the account's latest Sol.
-        let luna = Member { model: Some("gpt-6-luna"), ..codex };
+        // A person's member on Luna is raised to the account's latest Sol.
+        let luna = Member { model: Some("gpt-6-luna"), person: true, ..codex };
         assert_eq!(resolve(ModelTier::Strong, &luna, true).0.as_deref(), Some("gpt-6.1-sol"));
+        // A member on Opus after a move to Claude is Sonnet for routine work, not Opus.
+        let routine = rule(&work("backend", TicketKind::Code, "Bump the serde dependency", TESTED)).unwrap();
+        let back = Member { model: Some("opus"), effort: None, ..CLAUDE };
+        assert_eq!(choose(None, Some(&routine), &back, ModelChoice::QualityFirst).model.as_deref(), Some("sonnet"));
     }
 
     #[test]
-    fn correctness_send_backs_climb_the_ladder_and_style_never_does() {
-        assert_eq!(after_send_back(SendBackReason::Correctness, 1), Next::SameLane, "first: the same lane, warm");
-        assert_eq!(after_send_back(SendBackReason::Correctness, 2), Next::StepUp, "second: one tier up, fresh");
+    fn a_correctness_send_back_climbs_a_tier_and_style_never_does() {
+        assert_eq!(after_send_back(SendBackReason::Correctness, 1), Next::StepUp, "first: one tier up, fresh");
+        assert_eq!(after_send_back(SendBackReason::Correctness, 2), Next::StepUp, "second: one more");
         assert_eq!(after_send_back(SendBackReason::Correctness, 3), Next::PmDecides, "third: the PM decides");
         assert_eq!(after_send_back(SendBackReason::Correctness, 6), Next::PmDecides);
         for n in 1..5 {
             assert_eq!(after_send_back(SendBackReason::Style, n), Next::Nothing);
             assert_eq!(after_send_back(SendBackReason::Environment, n), Next::Nothing);
         }
-        let code = rule(&work("frontend", TicketKind::Code, "Add a page", "Run tests.")).unwrap();
-        let first = choose(None, Some(&code), &CLAUDE, ModelChoice::QualityFirst);
-        // The first send-back carries on: the same model, no fresh start.
-        let again = choose(Some(&first.ticket), Some(&code), &CLAUDE, ModelChoice::QualityFirst);
-        assert_eq!((again.model.clone(), again.fresh), (first.model.clone(), false));
-        // The second: one tier up, fresh, counted.
-        let up = step_up(&again.ticket).unwrap();
-        assert_eq!((up.tier, up.by, up.escalations, up.fresh), (Some(ModelTier::Deep), TierBy::Escalation, 1, true));
-        let next = choose(Some(&up), Some(&code), &Member { effort: Some("medium"), ..CLAUDE }, ModelChoice::QualityFirst);
-        assert_eq!((next.ticket.tier, next.ticket.reason, next.fresh, next.effort.as_deref()), (Some(ModelTier::Deep), TierReason::Escalated, true, Some("high")));
+    }
+
+    #[test]
+    fn escalation_is_the_safety_net_of_a_cheap_start() {
+        let routine = rule(&work("backend", TicketKind::Code, "Bump the serde dependency", TESTED)).unwrap();
+        let first = choose(None, Some(&routine), &CLAUDE, ModelChoice::QualityFirst);
+        assert_eq!((first.ticket.tier, first.model.as_deref(), first.effort.as_deref()), (Some(ModelTier::Standard), Some("sonnet"), Some("medium")));
+        // Back wrong once: the next lane is Opus at medium, fresh, counted.
+        let up = step_up(&first.ticket).unwrap();
+        assert_eq!((up.tier, up.by, up.reason, up.escalations, up.fresh), (Some(ModelTier::Strong), TierBy::Escalation, TierReason::Escalated, 1, true));
+        let next = choose(Some(&up), Some(&routine), &CLAUDE, ModelChoice::QualityFirst);
+        assert_eq!((next.ticket.tier, next.ticket.reason, next.fresh, next.model.as_deref(), next.effort.as_deref()), (Some(ModelTier::Strong), TierReason::Escalated, true, Some("opus"), Some("medium")));
+        assert_eq!(next.ticket.classified, Some(TierReason::Small), "what the rules made of it is still kept");
+        assert_eq!(next.ticket.shadow, Some(ModelTier::Standard), "and what they asked");
+        // Again: Deep, never back down on a later lane.
+        let again = step_up(&next.ticket).unwrap();
+        let third = choose(Some(&again), Some(&routine), &CLAUDE, ModelChoice::QualityFirst);
+        assert_eq!((third.ticket.tier, third.effort.as_deref()), (Some(ModelTier::Deep), Some("high")));
+        let later = choose(Some(&third.ticket), Some(&routine), &CLAUDE, ModelChoice::QualityFirst);
+        assert_eq!(later.ticket.tier, Some(ModelTier::Deep), "a raised ticket never comes back down mid-way");
+        // Trivial work escalates to Standard first.
+        let light = rule(&work("backend", TicketKind::Code, "Rename the helper", TESTED)).unwrap();
+        let c = choose(None, Some(&light), &CLAUDE, ModelChoice::QualityFirst);
+        assert_eq!((c.ticket.tier, c.model.as_deref()), (Some(ModelTier::Light), Some("haiku")));
+        assert_eq!(step_up(&c.ticket).unwrap().tier, Some(ModelTier::Standard));
         // Pinned by the person: escalation leaves it be.
         assert_eq!(step_up(&TicketModel { pinned: true, ..up }), None);
+        // On a member the person set to Opus, a lane never goes under it — escalation or not.
+        let person = Member { model: Some("opus"), effort: Some("medium"), person: true, ..CLAUDE };
+        let c = choose(None, Some(&routine), &person, ModelChoice::QualityFirst);
+        assert_eq!((c.ticket.tier, c.model.as_deref()), (Some(ModelTier::Strong), Some("opus")));
     }
 
     #[test]
     fn the_person_raises_lowers_and_pins() {
         let code = rule(&work("backend", TicketKind::Code, "Add an endpoint", "Run tests.")).unwrap();
-        let opus = Member { model: Some("opus"), effort: Some("high"), ..CLAUDE };
-        let first = choose(None, Some(&code), &opus, ModelChoice::QualityFirst);
-        // Lower: their call, below the member's own.
-        let lowered = set_by_person(Some(&first.ticket), Some(ModelTier::Standard), false);
-        let c = choose(Some(&lowered), Some(&code), &opus, ModelChoice::QualityFirst);
-        assert_eq!((c.model.as_deref(), c.effort.as_deref(), c.ticket.reason, c.fresh), (Some("sonnet"), Some("medium"), TierReason::Person, true));
+        let first = choose(None, Some(&code), &CLAUDE, ModelChoice::QualityFirst);
+        // Lower: their call, below what the rules ask.
+        let lowered = set_by_person(Some(&first.ticket), Some(ModelTier::Light), false);
+        let c = choose(Some(&lowered), Some(&code), &CLAUDE, ModelChoice::QualityFirst);
+        assert_eq!((c.model.as_deref(), c.ticket.reason, c.fresh), (Some("haiku"), TierReason::Person, true));
         // Raise and pin: kept even when choice is off, and escalation leaves it.
         let pinned = set_by_person(Some(&c.ticket), Some(ModelTier::Max), true);
         let c = choose(Some(&pinned), Some(&code), &CLAUDE, ModelChoice::Off);
@@ -735,7 +970,7 @@ mod tests {
         // Given back: the rules again.
         let auto = set_by_person(Some(&c.ticket), None, false);
         assert_eq!((auto.by, auto.pinned, auto.tier), (TierBy::Rule, false, None));
-        let c = choose(Some(&auto), Some(&code), &opus, ModelChoice::QualityFirst);
+        let c = choose(Some(&auto), Some(&code), &CLAUDE, ModelChoice::QualityFirst);
         assert_eq!((c.ticket.by, c.model.as_deref()), (TierBy::Rule, Some("opus")));
     }
 

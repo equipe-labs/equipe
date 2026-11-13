@@ -21,7 +21,10 @@
 //! | 70% to under 90%            | 2               | 4                           |
 //! | 90% and over                | 1               | 2                           |
 //!
-//! That is the squad's *auto* parallel work. On *max*
+//! That is the squad's *auto* parallel work, and on auto an engine whose
+//! weekly window is under its reserve ([`crate::pacing`]) starts only the
+//! PM's work ([`Member::pm`]) and urgent or high tickets until the window
+//! resets; with more than the reserve left nothing is held back. On *max*
 //! ([`equipe_protocol::lanes::Parallel`]) the plan's usage is left out: the
 //! person's caps hold instead — 6 runs per member and 16 per engine unless
 //! they said otherwise — and the plan is used faster. Only an engine whose
@@ -39,7 +42,7 @@
 //! of names: `frontend-10` would come before `frontend-2`). A ticket owned by
 //! a member by name goes to that member only.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use equipe_protocol::disk::DiskLevel;
 use equipe_protocol::lanes::Parallel;
@@ -113,6 +116,9 @@ pub struct Member<'a> {
     /// Whether it takes new work at all: not while its engine is held, it
     /// is moving engines, or it only finishes what it holds.
     pub takes_new: bool,
+    /// The squad's PM: its work is admitted even on an engine whose reserve
+    /// is held ([`crate::pacing`]), so the squad can still answer the person.
+    pub pm: bool,
 }
 
 /// Which member starts which ready ticket now, in the order they start:
@@ -122,6 +128,12 @@ pub struct Member<'a> {
 /// the board says ([`board::assignments`]): `todo`, owned, knowing where it
 /// works, everything it depends on finished, in the board's order.
 pub fn assign(tickets: &[Ticket], members: &[Member<'_>], single_project: bool, first: &[TicketId], room: &HashMap<Engine, usize>) -> Vec<(TicketId, String)> {
+    assign_guarded(tickets, members, single_project, first, room, &HashSet::new())
+}
+
+/// [`assign`] with some engines' reserves held ([`crate::pacing`]): on those,
+/// only the PM's work and urgent or high tickets start.
+pub fn assign_guarded(tickets: &[Ticket], members: &[Member<'_>], single_project: bool, first: &[TicketId], room: &HashMap<Engine, usize>, guarded: &HashSet<Engine>) -> Vec<(TicketId, String)> {
     let finished = |id: &TicketId| tickets.iter().any(|t| t.id == *id && t.status.is_closed());
     let mut held: Vec<usize> = members.iter().map(|m| m.runs + m.waiting).collect();
     let mut runs: Vec<usize> = members.iter().map(|m| m.runs).collect();
@@ -137,7 +149,9 @@ pub fn assign(tickets: &[Ticket], members: &[Member<'_>], single_project: bool, 
         let by_role = members.iter().any(|m| m.role == owner);
         let free = |at: &usize| {
             let m = &members[*at];
-            m.takes_new && runs[*at] < m.limit && room.get(&m.engine).copied().unwrap_or(0) > 0
+            // Under a held reserve only the PM and urgent work start.
+            let admitted = !guarded.contains(&m.engine) || m.pm || crate::pacing::admitted(ticket.priority);
+            m.takes_new && runs[*at] < m.limit && room.get(&m.engine).copied().unwrap_or(0) > 0 && admitted
         };
         let pick = (0..members.len())
             .filter(|at| if by_role { members[*at].role == owner } else { members[*at].name == owner })
@@ -147,7 +161,7 @@ pub fn assign(tickets: &[Ticket], members: &[Member<'_>], single_project: bool, 
             held[at] += 1;
             runs[at] += 1;
             if let Some(left) = room.get_mut(&members[at].engine) {
-                *left -= 1;
+                *left = left.saturating_sub(1);
             }
             out.push((ticket.id, members[at].name.to_owned()));
         }
@@ -215,7 +229,7 @@ mod tests {
     }
 
     fn member<'a>(name: &'a str, role: &'a str, joined: u64, runs: usize) -> Member<'a> {
-        Member { name, role, joined, engine: Engine::Claude, runs, waiting: 0, limit: 10, takes_new: true }
+        Member { name, role, joined, engine: Engine::Claude, runs, waiting: 0, limit: 10, takes_new: true, pm: false }
     }
 
     fn room(n: usize) -> HashMap<Engine, usize> {
@@ -324,6 +338,48 @@ mod tests {
         assert_eq!(engine_limit(None, DiskLevel::Critical, &max), LANES_PER_ENGINE / 2);
         // A small cap stays small on a low disk.
         assert_eq!(engine_limit(None, DiskLevel::Low, &Parallel::max(6, 2)), 2);
+    }
+
+    #[test]
+    fn a_held_reserve_orders_urgent_tickets_first() {
+        use equipe_protocol::Priority;
+        let mut tickets: Vec<Ticket> = (1..=6).map(|id| ticket(id, "frontend")).collect();
+        tickets[3].priority = Priority::High;
+        tickets[4].priority = Priority::Urgent;
+        let team = [member("frontend", "frontend", 1, 0)];
+        let urgent = crate::pacing::urgent_first(&tickets);
+        assert_eq!(urgent, [5, 4], "urgent, then high");
+        let got = assign(&tickets, &team, true, &urgent, &room(2));
+        assert_eq!(got.iter().map(|(t, _)| *t).collect::<Vec<_>>(), [5, 4], "the two places go to the most urgent");
+        let plain = assign(&tickets, &team, true, &[], &room(2));
+        assert_eq!(plain.iter().map(|(t, _)| *t).collect::<Vec<_>>(), [1, 2], "no reserve held: the board's order");
+    }
+
+    #[test]
+    fn under_a_held_reserve_only_urgent_high_and_the_pms_work_start() {
+        use equipe_protocol::Priority;
+        let mut tickets: Vec<Ticket> = (1..=6).map(|id| ticket(id, "frontend")).collect();
+        tickets[3].priority = Priority::High;
+        tickets[4].priority = Priority::Urgent;
+        tickets.extend((7..=8).map(|id| ticket(id, "pm")));
+        let team = [member("frontend", "frontend", 1, 0), Member { pm: true, ..member("pm", "pm", 0, 0) }];
+        let held = HashSet::from([Engine::Claude]);
+        let got = assign_guarded(&tickets, &team, true, &[], &room(100), &held);
+        let started: Vec<TicketId> = got.iter().map(|(t, _)| *t).collect();
+        assert_eq!(started, [4, 5, 7, 8], "the high and urgent ones and the PM's; the rest wait");
+        // Another engine's reserve doesn't hold this one.
+        let other = HashSet::from([Engine::Codex]);
+        assert_eq!(assign_guarded(&tickets, &team, true, &[], &room(100), &other).len(), 8, "full speed");
+        // Nothing held: as `assign`.
+        assert_eq!(assign_guarded(&tickets, &team, true, &[], &room(100), &HashSet::new()), assign(&tickets, &team, true, &[], &room(100)));
+    }
+
+    #[test]
+    fn a_member_that_is_not_the_pm_has_no_exemption() {
+        let tickets: Vec<Ticket> = (1..=3).map(|id| ticket(id, "pm")).collect();
+        let held = HashSet::from([Engine::Claude]);
+        let other = [Member { pm: false, ..member("pm", "pm", 0, 0) }];
+        assert!(assign_guarded(&tickets, &other, true, &[], &room(100), &held).is_empty());
     }
 
     #[test]

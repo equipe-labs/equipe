@@ -397,6 +397,9 @@ pub struct Model {
     /// How many tickets the squad works at once: by the plans' usage, or
     /// max at the person's caps. Auto from a daemon that predates it.
     pub parallel: equipe_core::protocol::lanes::Parallel,
+    /// The engines under their reserve now, where only the PM and urgent
+    /// work start (auto only); none from a daemon that predates it.
+    pub pacing: Vec<equipe_core::protocol::lanes::Pacing>,
     /// Whether equipe picks each ticket's model: quality first unless the
     /// person turned it off. Quality first from a daemon that predates it.
     pub model_choice: equipe_core::protocol::tiers::ModelChoice,
@@ -610,6 +613,7 @@ impl Model {
             resting: Vec::new(),
             subagents_at_once: None,
             parallel: Default::default(),
+            pacing: Vec::new(),
             model_choice: Default::default(),
             design_reviewer: Default::default(),
             signals: Vec::new(),
@@ -1234,6 +1238,7 @@ impl Model {
         self.resting = snapshot.resting.clone();
         self.subagents_at_once = snapshot.subagents_at_once;
         self.parallel = snapshot.parallel;
+        self.pacing = snapshot.pacing.clone();
         self.model_choice = snapshot.model_choice;
         self.design_reviewer = snapshot.design_reviewer;
         self.signals = snapshot.signals.clone();
@@ -1427,6 +1432,10 @@ impl Model {
             }
             Event::ParallelChanged { squad, parallel } if *squad == self.squad => {
                 self.parallel = *parallel;
+                self.revision += 1;
+            }
+            Event::PacingChanged { squad, pacing } if *squad == self.squad => {
+                self.pacing = pacing.clone();
                 self.revision += 1;
             }
             Event::DesignReviewerChanged { squad, reviewer } if *squad == self.squad => {
@@ -3964,6 +3973,11 @@ mod tests {
         assert_eq!(model.parallel, Parallel::max(8, 20));
         model.apply(Update::Event(Event::ParallelChanged { squad: "other".into(), parallel: Parallel::default() }), T0);
         assert_eq!(model.parallel, Parallel::max(8, 20), "another squad's");
+        let paced = equipe_core::protocol::lanes::Pacing { engine: Engine::Claude, left: 12, reserve: 15, until: 99, other_engine: false, since: 5 };
+        assert!(model.apply(Update::Event(Event::PacingChanged { squad: "acme".into(), pacing: vec![paced] }), T0));
+        assert_eq!(model.pacing, vec![paced], "pacing shows as the daemon tells it");
+        model.apply(Update::Event(Event::PacingChanged { squad: "other".into(), pacing: vec![] }), T0);
+        assert_eq!(model.pacing, vec![paced], "another squad's");
         let snapshot = Snapshot { squad: "acme".into(), parallel: Parallel::max(3, 9), ..Default::default() };
         model.apply(Update::Attached(Hello { version: "x".into(), snapshot }), T0);
         assert_eq!(model.parallel, Parallel::max(3, 9), "the snapshot's on attaching");

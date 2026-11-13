@@ -101,6 +101,28 @@ impl Parallel {
     }
 }
 
+/// An engine whose weekly window is under its reserve (on auto): only the
+/// PM's work and urgent or high tickets start on it, so the squad can still
+/// answer the person — never a lighter model, never a run stopped mid-turn.
+/// With more than the reserve left nothing is held back. Max, the person's
+/// override, ends it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Pacing {
+    pub engine: crate::Engine,
+    /// Percent of the weekly window left, rounded down.
+    pub left: u32,
+    /// The reserve it fell under, in percent of the window.
+    pub reserve: u32,
+    /// Until when it is held (unix seconds).
+    pub until: i64,
+    /// `until` is the other engine's return, not this plan's reset.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub other_engine: bool,
+    /// When it last changed (unix seconds).
+    #[serde(default)]
+    pub since: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,6 +137,20 @@ mod tests {
         let max = Parallel::max(8, 20);
         assert_eq!(serde_json::to_value(max).unwrap(), json!({ "mode": "max", "per_member": 8, "per_engine": 20 }));
         assert_eq!(serde_json::from_value::<Parallel>(serde_json::to_value(max).unwrap()).unwrap(), max);
+    }
+
+    #[test]
+    fn pacing_is_told_as_json_and_a_snapshot_without_it_reads_as_none() {
+        let pacing = Pacing { engine: crate::Engine::Claude, left: 12, reserve: 15, until: 99, other_engine: false, since: 5 };
+        let wire = serde_json::to_value(pacing).unwrap();
+        assert_eq!(wire, json!({ "engine": "claude", "left": 12, "reserve": 15, "until": 99, "since": 5 }));
+        assert_eq!(serde_json::from_value::<Pacing>(wire).unwrap(), pacing);
+        let event = crate::Event::PacingChanged { squad: "acme".into(), pacing: vec![pacing] };
+        assert_eq!((event.squad(), event.session()), (Some("acme"), None));
+        assert_eq!(serde_json::from_str::<crate::Event>(&serde_json::to_string(&event).unwrap()).unwrap(), event);
+        let old: crate::Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[]}"#).unwrap();
+        assert!(old.pacing.is_empty());
+        assert!(serde_json::to_value(&old).unwrap().get("pacing").is_none());
     }
 
     #[test]

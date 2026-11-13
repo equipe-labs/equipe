@@ -13,7 +13,7 @@
 //! in a worktree of its own when it edits. Who gets which ticket is decided by
 //! equipe's rules ([`crate::board::assignments`]), never by a model.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -108,6 +108,7 @@ mod workspace;
 mod turn_end;
 mod status;
 pub use hygiene::{NATIVE_DESK_TOKENS, NATIVE_TICKET_TOKENS, ROTATE_DESK_TOKENS, ROTATE_TICKET_TOKENS, wants_large_window};
+mod pace;
 pub use turn_end::turn_ending;
 use turn_end::{RunEnd, TurnEnds, TurnWatch};
 
@@ -734,6 +735,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         installs: std::collections::HashSet::new(),
         codex_binary: crate::engines::codex_binary(),
         engines: Default::default(),
+        pacers: Default::default(),
         turn_ends: Default::default(),
         design_watch: HashMap::new(),
         design_busy: std::collections::HashSet::new(),
@@ -1380,6 +1382,8 @@ struct Runtime {
     status_told: HashMap<String, std::time::Instant>,
     /// Both engines' plans, and members moving between them (`engines`).
     engines: engines::Engines,
+    /// Pacing to the plans' budgets, per squad and engine ([`pacing`]).
+    pacers: pace::Pacers,
     /// Failing engines, per ticket and per squad ([`turn_end`]).
     turn_ends: TurnEnds,
     /// Squads whose design systems a screen looks at, and their stamp as
@@ -6032,6 +6036,9 @@ for one project goes to it as tickets for its owners, with that project — and 
         let disk = self.disk.status.level;
         let parallel = self.journals.get(squad).map(Journal::parallel).unwrap_or_default();
         let used = |engine: Engine| crate::lanes::plan_used(self.plans.iter().find(|p| p.engine == engine).map(|p| &p.usage));
+        // Engines whose weekly window is under its reserve (auto only): only the PM's work and urgent tickets start on them.
+        let guarded: HashSet<Engine> = [Engine::Claude, Engine::Codex].into_iter().filter(|e| !parallel.is_max() && self.pace_of(squad, *e).held).collect();
+        let paced = !guarded.is_empty();
         /// A member as this pass weighs it.
         struct Seat {
             name: String,
@@ -6051,7 +6058,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                 continue;
             }
             if s.run_of.is_some() {
-                *at_work.entry(s.engine).or_default() += 1;
+                // A run paused for a limit or a retry holds no slot while its engine's reserve is held.
+                if crate::pacing::holds_slot(Runtime::is_parked(s), guarded.contains(&s.engine)) {
+                    *at_work.entry(s.engine).or_default() += 1;
+                }
                 continue;
             }
             let Some(m) = s.member.as_ref().filter(|_| s.is_member_itself()) else { continue };
@@ -6083,14 +6093,19 @@ for one project goes to it as tickets for its owners, with that project — and 
                 waiting: crate::lanes::waiting_on_person(tickets, &m.name),
                 limit: m.limit,
                 takes_new: m.takes_new && (held_too || !m.held),
+                pm: m.role == crate::roles::PM,
             }
         }
         let candidates: Vec<crate::lanes::Member> = members.iter().map(|m| lane(m, &tickets, false)).collect();
-        let assigned = crate::lanes::assign(&tickets, &candidates, single_project, first, &room);
+        // With a reserve held, the little room goes to the most urgent tickets first.
+        let urgent = if paced { crate::pacing::urgent_first(&tickets) } else { Vec::new() };
+        let merged: Vec<TicketId> = [urgent.as_slice(), first].concat();
+        let first: &[TicketId] = if urgent.is_empty() { first } else { &merged };
+        let assigned = crate::lanes::assign_guarded(&tickets, &candidates, single_project, first, &room, &guarded);
         // What a hold keeps from starting: what members would take but for it.
         if members.iter().any(|m| m.held) {
             let unheld: Vec<crate::lanes::Member> = members.iter().map(|m| lane(m, &tickets, true)).collect();
-            let mut waiting: Vec<(Engine, TicketId)> = crate::lanes::assign(&tickets, &unheld, single_project, first, &room)
+            let mut waiting: Vec<(Engine, TicketId)> = crate::lanes::assign_guarded(&tickets, &unheld, single_project, first, &room, &guarded)
                 .into_iter()
                 .filter(|(t, _)| !assigned.iter().any(|(a, _)| a == t))
                 .filter_map(|(t, name)| members.iter().find(|m| m.name == name).filter(|m| m.held).map(|m| (m.engine, t)))
@@ -6749,6 +6764,15 @@ todo); or drop it if it's no longer wanted.]"
         self.publish(Event::TicketChanged { squad: squad.clone(), ticket });
         let of = self.sessions.get(&id).and_then(|s| s.run_of);
         self.publish(Event::WorkEnded { session: id, ticket: ticket_id, of });
+        // A member that says it cannot do the work, or ended its turns twice without handing in:
+        // the next lane, once the PM has settled it, starts one tier up.
+        if let Some((reason, _)) = &handed_back
+            && matches!(reason, turn_end::Reason::Cannot | turn_end::Reason::NoEnd)
+            && self.journal(&squad).is_some_and(|j| j.model_choice() != equipe_protocol::tiers::ModelChoice::Off)
+        {
+            let why = if *reason == turn_end::Reason::Cannot { "its member handed it back as beyond it" } else { "its member's turns ended twice without a hand-in" };
+            self.escalate(&squad, ticket_id, why);
+        }
         // Back at its desk: the thread it was in there.
         let desk = self.sessions.get(&id).and_then(|s| s.thread.clone());
         self.publish(Event::Thread { session: id, project: desk });
@@ -9127,6 +9151,7 @@ it back there once they have done it.{again} End your turn now with a short line
             plans: self.plans.clone(),
             engine_switching: self.journals.get(squad).map(Journal::engine_switching).unwrap_or_default(),
             parallel: self.journals.get(squad).map(Journal::parallel).unwrap_or_default(),
+            pacing: self.pacing_now(squad),
             model_choice: self.journals.get(squad).map(Journal::model_choice).unwrap_or_default(),
             pm_accepts: self.journals.get(squad).is_none_or(Journal::pm_accepts),
             resting: self.journals.get(squad).map(Journal::resting).unwrap_or_default(),

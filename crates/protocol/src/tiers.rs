@@ -5,10 +5,12 @@
 //! step when its member moves engines.
 //!
 //! The squad's [`ModelChoice`] says whether equipe picks at all. On
-//! [`ModelChoice::QualityFirst`] — the default — it only ever raises a
-//! ticket above its member's own model and effort, never lowers it; what a
-//! cheaper step would have been is recorded beside it ([`TicketModel::shadow`])
-//! and never acted on. The person may raise, lower or pin any ticket's tier.
+//! [`ModelChoice::QualityFirst`] — the default — each ticket runs on the
+//! cheapest step that does it well, by how hard it looks, and goes one step
+//! up when its work comes back wrong; a model the person chose for a member
+//! is the floor of its tickets. Where a ticket runs above what its rules ask,
+//! the step they asked is recorded beside it ([`TicketModel::shadow`]). The
+//! person may raise, lower or pin any ticket's tier.
 //!
 //! Everything here is optional on the wire: a ticket without [`TicketModel`]
 //! runs on its member's own model, as before.
@@ -22,14 +24,17 @@ use crate::Engine;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelTier {
-    /// The cheapest model: reading, checking, bulk work whose results are checked.
+    /// The cheapest model: trivial mechanical work whose result a command checks.
     Light,
-    /// An everyday model: a small change in one place that a command checks.
+    /// An everyday model: routine changes in one place, copy, docs, tests,
+    /// checklists, reading.
     Standard,
-    /// A strong model at moderate thinking: features and fixes.
+    /// A strong model at moderate thinking: features across several areas,
+    /// unclear specs.
     #[default]
     Strong,
-    /// A strong model thinking hard: risky, broad or design work, reviews.
+    /// A strong model thinking hard: real risk (auth, payments, data, security,
+    /// deploys, concurrency) and broad refactors.
     Deep,
     /// A strong model thinking hardest: reached by escalation or the person.
     Max,
@@ -78,9 +83,10 @@ impl ModelTier {
 pub enum ModelChoice {
     /// Members' own models only, as before tiers: nothing raised.
     Off,
-    /// Raise a ticket's model and effort where it matters, never lower them
-    /// below its member's own. Also what a choice this build doesn't know
-    /// reads as.
+    /// Right-size each ticket's model and effort by how hard it looks, raise
+    /// it when its work comes back wrong, and never go below a model the
+    /// person chose for the member. Also what a choice this build doesn't
+    /// know reads as.
     #[default]
     #[serde(other)]
     QualityFirst,
@@ -113,7 +119,7 @@ impl ModelChoice {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TierReason {
-    /// Code work: features and fixes start strong.
+    /// Code work: features, and changes that span several areas or have an unclear spec.
     #[default]
     Code,
     /// It touches something costly to get wrong ([`TicketModel::risk`]).
@@ -138,7 +144,7 @@ pub enum TierReason {
     Small,
     /// Reading only: research, logs, a status check.
     ReadOnly,
-    /// The member's own model and effort were already stronger.
+    /// The member's model, which the person chose, is stronger than the rules ask.
     MemberFloor,
     /// The member's own model, as set: per-ticket choice is off, or equipe
     /// can't tell how strong its model is.
@@ -233,14 +239,21 @@ pub struct TicketModel {
     /// How many times equipe raised it.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub escalations: u32,
-    /// The cheaper tier the rules would have picked, had they been allowed
-    /// to lower it: recorded, never acted on.
+    /// The tier the rules asked for, where the ticket runs above it — raised
+    /// by the member's floor the person chose, or by escalation: recorded
+    /// to measure what the right-sizing saves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadow: Option<ModelTier>,
     /// Its next lane starts a fresh conversation with a handoff note,
     /// because its tier changed since the last one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fresh: bool,
+    /// What the rules made of the ticket by itself, kept beside the shown
+    /// [`TicketModel::reason`] (which says escalated, the person's, or the
+    /// member's floor when that is why it runs where it does): to see which
+    /// kinds of tickets run on which tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classified: Option<TierReason>,
 }
 
 fn is_zero(n: &u32) -> bool {

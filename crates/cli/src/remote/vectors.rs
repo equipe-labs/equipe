@@ -982,6 +982,7 @@ fn snapshot() -> Snapshot {
         resting: Vec::new(),
         subagents_at_once: None,
         parallel: Default::default(),
+        pacing: Vec::new(),
         model_choice: Default::default(),
         design_reviewer: Default::default(),
         signals: Vec::new(),

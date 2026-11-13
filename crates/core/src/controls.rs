@@ -190,7 +190,7 @@ impl Change {
                 Change::Parallel { mode, per_member: cap("per_member", MOST_PER_MEMBER)?, per_engine: cap("per_engine", MOST_PER_ENGINE)? }
             }
             "model_choice" => Change::ModelChoice(
-                crate::protocol::tiers::ModelChoice::parse(&value()?).ok_or("Model choice is quality (raise a ticket's model where it matters, never below its member's own) or off (members' own models).")?,
+                crate::protocol::tiers::ModelChoice::parse(&value()?).ok_or("Model choice is quality (each ticket on the cheapest model that does it well, up a step when its work comes back wrong, never below a model the person chose) or off (members' own models).")?,
             ),
             "design_reviewer" => Change::DesignReviewer(Reviewer::parse(&value()?).ok_or("The design reviewer is auto, same (the member's own engine, in a fresh session) or other (always the other engine).")?),
             "remove_project" => Change::RemoveProject(s("project").ok_or("Which project? Give `project`.")?),
@@ -320,8 +320,8 @@ codex, optionally model and effort there, and when: next_ticket — the default:
 moves before its next — or now: at the end of each one's current turn, a ticket in progress handed over, same branch, and \
 carried on there; one not on a ticket, you included, moves once its turn ends either way, its conversation handed over), \
 engine_switching (off | suggest | auto), parallel (value auto — by the plans' usage — | max — fixed caps whatever the \
-usage, optionally per_member 1 through 12 and per_engine 1 through 32), model_choice (quality — raise a ticket's model and \
-effort where it matters, never below its member's own — | off — members' own models), design_reviewer (who reviews the designer's work: auto — the other engine when \
+usage, optionally per_member 1 through 12 and per_engine 1 through 32), model_choice (quality — each ticket on the cheapest model and \
+effort that does it well, up a step when its work comes back wrong — | off — members' own models), design_reviewer (who reviews the designer's work: auto — the other engine when \
 it is signed in with room, else the member's own in a fresh session — | same | other), remove_project (project), \
 hq (project, or none), run_routine (id), delete_routine (id), signal (project, name, value on | off), disallow (value: \
 the rule as `settings` lists it), merge (ticket, push), keep_on_branch (ticket), resting (member, value on | off: a resting \
