@@ -4827,10 +4827,13 @@ async fn the_desktop_is_only_for_members_the_person_turned_it_on_for() {
     handle.send(Command::Submit { session: 1, text: "go".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     let call = calls(&recorded).pop().unwrap();
-    if cfg!(target_os = "macos") {
+    // macOS and Linux members get the server; elsewhere there is none to give.
+    if equipe_core::desktop::offered() {
         let args: Vec<String> = servers(&call)["desktop"]["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap().to_owned()).collect();
         assert_eq!(&args[..3], ["mcp", "--server", "desktop"]);
         assert!(call.iter().any(|a| a == "mcp__desktop"), "used without asking in auto: {call:?}");
+    } else {
+        assert!(servers(&call).get("desktop").is_none());
     }
     let helper = handle.desktop(desktop("frontend")).await;
     assert!(helper.is_error && helper.text.contains("equipe desktop setup"), "{}", helper.text);

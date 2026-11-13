@@ -47,9 +47,10 @@ pub fn session_env(own: impl Fn(&str) -> Option<String>, manager: Option<&str>, 
     if !env.contains_key("DBUS_SESSION_BUS_ADDRESS")
         && let Some(runtime) = env.get("XDG_RUNTIME_DIR")
     {
-        let bus = Path::new(runtime).join("bus");
-        if exists(&bus) {
-            env.insert("DBUS_SESSION_BUS_ADDRESS".into(), format!("unix:path={}", bus.display()));
+        // A Linux path, spelled out so the same answer comes on every host the tests run on.
+        let bus = format!("{}/bus", runtime.trim_end_matches('/'));
+        if exists(Path::new(&bus)) {
+            env.insert("DBUS_SESSION_BUS_ADDRESS".into(), format!("unix:path={bus}"));
         }
     }
     env
@@ -429,6 +430,23 @@ pub fn idle(env: &BTreeMap<String, String>) -> Option<f64> {
 /// Where the running helper's process id is kept.
 pub fn pid_path(home: &Path) -> PathBuf {
     crate::helper::dir(home).join("helper.pid")
+}
+
+/// The person set the desktop up on this machine (`equipe desktop setup`, or
+/// the daemon started the helper once): the daemon keeps it running and every
+/// member works the desktop by default, as the helper's LaunchAgent does on
+/// macOS. `equipe desktop remove` takes it away.
+pub fn setup_mark(home: &Path) -> PathBuf {
+    crate::helper::dir(home).join("linux-setup")
+}
+
+pub fn mark_set_up(home: &Path) -> std::io::Result<()> {
+    crate::helper::ensure_dir(home)?;
+    std::fs::write(setup_mark(home), b"set up\n")
+}
+
+pub fn unmark_set_up(home: &Path) -> bool {
+    std::fs::remove_file(setup_mark(home)).is_ok()
 }
 
 /// Start the helper (`equipe desktop serve`) detached, inside the session

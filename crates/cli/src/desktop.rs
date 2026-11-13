@@ -44,7 +44,8 @@ pub async fn run(action: Option<Action>) -> Result<(), String> {
             supported()?;
             #[cfg(target_os = "linux")]
             {
-                let had = equipe_desktop_control::linux::stop_helper(&home);
+                let marked = equipe_desktop_control::linux::unmark_set_up(&home);
+                let had = equipe_desktop_control::linux::stop_helper(&home) || marked;
                 let _ = std::fs::remove_file(helper::socket_path(&home));
                 println!("{}", ui::out().ok_line(if had { t!("desktop.removed") } else { t!("desktop.not_installed") }));
                 return Ok(());
@@ -464,6 +465,9 @@ async fn report_linux(home: &Path) -> bool {
 async fn setup_linux(home: &Path) -> Result<(), String> {
     use equipe_core::desktop::auto::{Ops as _, ThisMachine};
     let p = ui::out();
+    // The person asked for the desktop here: the daemon keeps it from now on,
+    // and every member has it once the session answers.
+    let _ = equipe_desktop_control::linux::mark_set_up(home);
     install_engine(home).await;
     let session = linux_session().await;
     if session.session() {

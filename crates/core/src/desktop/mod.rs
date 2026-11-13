@@ -21,6 +21,13 @@ use equipe_protocol::{DesktopState, MemberRef};
 use lease::{Lease, Turn};
 use presence::Presence;
 
+/// Whether this machine's members are offered the desktop tools at all:
+/// macOS and Linux. Not Windows yet: its lease has no session probe (every
+/// call would be refused as logged out), so members get no tools there.
+pub const fn offered() -> bool {
+    cfg!(any(target_os = "macos", target_os = "linux"))
+}
+
 /// The desktop helper's `desktop serve` arguments (`--home <dir>`), if these
 /// are they: what equipe.app's executable is started with by the helper's
 /// LaunchAgent. `None` for anything else.

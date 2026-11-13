@@ -888,7 +888,10 @@ impl Ops for ThisMachine {
                     return Err(Failure::new(DesktopFailure::Session, missing.join(" ")));
                 }
                 let exe = std::env::current_exe().map_err(|e| Failure::new(DesktopFailure::Helper, e.to_string()))?;
-                linux::start_helper(&home, &exe, &env).map_err(|e| Failure::new(DesktopFailure::Helper, e.to_string()))
+                linux::start_helper(&home, &exe, &env).map_err(|e| Failure::new(DesktopFailure::Helper, e.to_string()))?;
+                // Started once, kept: as a LaunchAgent stays on macOS.
+                let _ = linux::mark_set_up(&home);
+                Ok(())
             }
             #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
             {
@@ -910,6 +913,9 @@ impl Ops for ThisMachine {
         // The person set the helper up once (setup, the first run, or a member
         // they turned on before): it is kept current and its switch watched.
         if cfg!(target_os = "macos") && equipe_desktop_control::install::plist_path().is_file() {
+            return true;
+        }
+        if cfg!(target_os = "linux") && equipe_desktop_control::linux::setup_mark(&self.home).is_file() {
             return true;
         }
         let Ok(dirs) = std::fs::read_dir(self.home.join("squads")) else { return false };
@@ -1395,6 +1401,50 @@ mod tests {
         assert_eq!(rig.setup(), DesktopSetup::JustReady);
         assert_eq!(rig.auto.refusal("mcp__desktop__snapshot"), None);
         assert_eq!(rig.fake.prompts.load(Ordering::SeqCst), 0);
+    }
+
+    /// A fresh Linux machine: the person ran `equipe desktop setup` (its mark
+    /// is all the daemon has; no member was ever turned on). The daemon takes
+    /// the desktop as wanted, finds the helper answering, and every member has
+    /// it from the next turn on, with no `equipe desktop on`.
+    #[tokio::test]
+    async fn a_linux_setup_alone_makes_the_desktop_everyones() {
+        let mut rig = rig();
+        *rig.fake.role.lock().unwrap() = "linux";
+        rig.fake.wanted.store(false, Ordering::SeqCst);
+        rig.fake.granted.store(true, Ordering::SeqCst);
+        rig.worker.step().await;
+        assert!(!rig.auto.granted(), "nothing set up yet: nobody has it");
+        assert_eq!(rig.fake.helper_syncs.load(Ordering::SeqCst), 0);
+        // `equipe desktop setup` leaves its mark.
+        rig.fake.wanted.store(true, Ordering::SeqCst);
+        rig.worker.step().await;
+        assert!(rig.auto.latest().unwrap().ready());
+        assert!(rig.auto.granted(), "every member has the desktop by default");
+        let journal = crate::journal::Journal::for_squad(&rig.home, "desk").unwrap();
+        assert!(journal.desktop_members().is_empty());
+        assert!(journal.desktop_enabled("assistant", rig.auto.granted()), "no `desktop on` needed");
+        // A daemon started later remembers it before its first look.
+        drop(journal);
+        let (again, _worker) = Auto::new(rig.home.clone(), rig.fake.clone(), Arc::new(|_| {}), Box::new(|| 1_000_000));
+        assert!(again.granted());
+        assert_eq!(rig.fake.prompts.load(Ordering::SeqCst), 0);
+    }
+
+    /// The real machine reads `equipe desktop setup`'s mark as wanted, and
+    /// `equipe desktop remove` takes it away.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn this_linux_machine_wants_the_desktop_once_set_up() {
+        let home = std::env::temp_dir().join(format!("eq-linux-mark-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let machine = ThisMachine { home: home.clone() };
+        assert!(!machine.wanted());
+        equipe_desktop_control::linux::mark_set_up(&home).unwrap();
+        assert!(machine.wanted());
+        assert!(equipe_desktop_control::linux::unmark_set_up(&home));
+        assert!(!machine.wanted());
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[tokio::test]
