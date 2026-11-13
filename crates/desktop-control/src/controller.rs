@@ -82,6 +82,10 @@ pub enum Pointer {
     Scroll { at: Pt, down: i32, right: i32 },
 }
 
+/// What a member is told when it asks for a picture and Screen Recording isn't
+/// granted: nothing is captured, so macOS isn't asked anything.
+pub const NO_PICTURE: &str = "No picture of the screen is available until the person grants Screen Recording (`equipe desktop setup`): read the app with `snapshot` / `find` (the accessibility tree) meanwhile.";
+
 /// The Mac, as the tools use it.
 pub trait Desktop {
     /// An Accessibility element, kept between a member's `elements` call and
@@ -304,6 +308,9 @@ impl<D: Desktop> Controller<D> {
         }
         if missing.is_empty() {
             return Ok(());
+        }
+        if missing == ["Screen Recording"] {
+            return Err(Reply::refuse(NO_PICTURE));
         }
         Err(Reply::refuse(format!(
             "The desktop helper isn't allowed to {what} yet (missing: {}). Ask the person to run `{SETUP}` on the Mac — it says exactly what to switch on.",
@@ -815,6 +822,7 @@ mod tests {
     /// A Mac with TextEdit and the person's terminal on it.
     struct Fake {
         permissions: Permissions,
+        captures: std::cell::Cell<usize>,
         focused: RefCell<i32>,
         /// What a click anywhere lands on.
         hit: RefCell<i32>,
@@ -831,6 +839,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 permissions: Permissions { screen: true, accessibility: true, post_events: true },
+                captures: std::cell::Cell::new(0),
                 focused: RefCell::new(TEXTEDIT),
                 hit: RefCell::new(TEXTEDIT),
                 typed: RefCell::default(),
@@ -852,6 +861,7 @@ mod tests {
             Some(Display { frame: Frame { x: 0.0, y: 0.0, w: 1440.0, h: 900.0 }, backing: 1.0 })
         }
         fn capture(&self, _: Option<u32>, w: usize, h: usize) -> Result<Vec<u8>, String> {
+            self.captures.set(self.captures.get() + 1);
             Ok(vec![0xff, 0xd8, w as u8, h as u8])
         }
         fn apps(&self) -> Vec<App> {
@@ -1025,6 +1035,21 @@ mod tests {
         }
         assert!(c.call("frontend", "screenshot", &json!({})).text.contains("Screen Recording"));
         assert_eq!(*c.desktop.typed.borrow(), "");
+    }
+
+    #[test]
+    fn without_screen_recording_nothing_is_captured_and_the_accessibility_tools_work() {
+        let mut c = controller(Fake { permissions: Permissions { screen: false, accessibility: true, post_events: true }, ..Fake::new() });
+        for _ in 0..20 {
+            let shot = c.call("frontend", "screenshot", &json!({}));
+            assert!(shot.is_error && shot.jpeg.is_none() && shot.text == NO_PICTURE, "{}", shot.text);
+            let window = c.call("frontend", "screenshot", &json!({ "window": "w9" }));
+            assert!(window.is_error, "{}", window.text);
+            assert!(c.capture().is_error, "the picture shown to the person is refused too");
+        }
+        assert_eq!(c.desktop.captures.get(), 0, "no capture, so macOS is never asked for Screen Recording");
+        let tree = c.call("frontend", "elements", &json!({ "app": "TextEdit" }));
+        assert!(!tree.is_error && tree.text.contains("AXButton"), "{}", tree.text);
     }
 
     #[test]
