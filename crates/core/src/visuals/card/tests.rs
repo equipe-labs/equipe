@@ -284,6 +284,11 @@ fn knocks(listener: &TcpListener) -> usize {
 #[test]
 fn a_card_reaching_out_makes_no_request_at_all() {
     let Some(chrome) = chrome_here() else { return };
+    // Hosted CI runners draw without a GPU and time out on Chrome's side;
+    // the guard itself is also covered by `check` above, which needs no Chrome.
+    if std::env::var_os("CI").is_some() && std::env::var_os("EQUIPE_CARD_SHOTS").is_none() {
+        return;
+    }
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = server.local_addr().unwrap().port();
