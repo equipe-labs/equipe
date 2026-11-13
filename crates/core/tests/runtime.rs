@@ -5453,9 +5453,11 @@ async fn in_risk_batch_a_low_risk_change_skips_the_designer_and_the_daily_review
     let prompt = arg(&call, "-p").unwrap();
     assert!(prompt.contains("T-1 Settings screen") && prompt.contains("design_review"), "{prompt}");
     // Every change needs its entry.
-    let empty = tool(&handle, "designer", "design_review", serde_json::json!({ "findings": "Looked.", "items": [] })).await;
+    // From the run of that review, as its board server calls: a call naming no run is only
+    // for a member with exactly one, and the other review may have started by now.
+    let empty = tool_on(&handle, "designer", first, "design_review", serde_json::json!({ "findings": "Looked.", "items": [] })).await;
     assert!(empty.is_error && empty.text.contains("T-1"), "{empty:?}");
-    let done = tool(&handle, "designer", "design_review", serde_json::json!({
+    let done = tool_on(&handle, "designer", first, "design_review", serde_json::json!({
         "findings": "One real problem.",
         "items": [{ "ticket": 1, "blockers": ["Save is cut off at 390 dark."], "polish": ["Gap 12px; the scale says 16."] }],
     })).await;
