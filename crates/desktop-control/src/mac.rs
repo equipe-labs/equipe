@@ -320,6 +320,25 @@ impl Mac {
         })
     }
 
+    /// Whether macOS shows this process other apps' window titles, which it
+    /// does only with Screen Recording. A plain window-list read: it never
+    /// asks the person anything.
+    fn titles_readable(&self) -> bool {
+        // SAFETY: the window list, +1; dictionaries are toll-free bridged.
+        let Some(list) = (unsafe { object(CGWindowListCopyWindowInfo(1 | 16, 0)) }) else { return false };
+        let list: Retained<NSArray<NSDictionary<NSString, AnyObject>>> = unsafe { Retained::cast_unchecked(list) };
+        let own = std::process::id() as i32;
+        let seen: Vec<(i32, bool)> = list
+            .iter()
+            .map(|info| {
+                let pid = info.objectForKey(&ns("kCGWindowOwnerPID")).and_then(|v| v.downcast::<NSNumber>().ok()).map_or(0, |n| n.intValue());
+                let titled = info.objectForKey(&ns("kCGWindowName")).and_then(|v| v.downcast::<NSString>().ok()).is_some_and(|s| !s.to_string().is_empty());
+                (pid, titled)
+            })
+            .collect();
+        any_title_visible(&seen, own)
+    }
+
     /// Ask macOS for the permissions: every one puts the helper in both lists,
     /// with a prompt where macOS shows one; `Ask::Accessibility` only for the
     /// Accessibility prompt (which comes with sending input).
@@ -386,9 +405,12 @@ impl Desktop for Mac {
         unsafe {
             Permissions {
                 // The preflight can say no while macOS allows the capture (seen on
-                // macOS 26: tccd "Allowed (System Set)", preflight false), so
-                // ScreenCaptureKit itself has the last word.
-                screen: CGPreflightScreenCaptureAccess() || shareable().is_ok(),
+                // macOS 26: tccd "Allowed (System Set)", preflight false), so a
+                // second look that never asks decides: whether other apps'
+                // window titles are readable. Never ScreenCaptureKit here:
+                // every call of it while Screen Recording isn't granted is a
+                // request tccd logs (and the person sees as a dialog).
+                screen: CGPreflightScreenCaptureAccess() || self.titles_readable(),
                 accessibility: AXIsProcessTrusted(),
                 post_events: CGPreflightPostEventAccess(),
             }
@@ -658,7 +680,14 @@ impl Desktop for Mac {
     }
 }
 
+/// Whether any window of another process has a title: `(owner pid, has a title)`.
+fn any_title_visible(windows: &[(i32, bool)], own: i32) -> bool {
+    windows.iter().any(|&(pid, titled)| pid != own && titled)
+}
+
 /// What ScreenCaptureKit may capture: refused without Screen Recording.
+/// Only reached once the permission is known to be there, or by the
+/// person's own request: asking is what makes macOS show its dialog.
 fn shareable() -> Result<Retained<SCShareableContent>, String> {
     let (tx, rx) = mpsc::channel::<Result<usize, String>>();
     let tx = Mutex::new(tx);
@@ -770,4 +799,16 @@ pub fn serve(home: &Path) -> std::io::Result<()> {
         CFRunLoopRun();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::any_title_visible;
+
+    #[test]
+    fn titles_of_other_apps_show_that_screen_recording_is_on() {
+        assert!(!any_title_visible(&[], 1));
+        assert!(!any_title_visible(&[(1, true), (2, false), (3, false)], 1), "our own titles and untitled windows say nothing");
+        assert!(any_title_visible(&[(2, false), (3, true)], 1));
+    }
 }

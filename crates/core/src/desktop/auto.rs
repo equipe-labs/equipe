@@ -303,6 +303,13 @@ impl Auto {
         }
         let tool = tool.rsplit("__").next().unwrap_or(tool);
         let engine_tool = equipe_desktop_control::engine::handles(tool);
+        // A picture needs Screen Recording, which only the person's own action
+        // asks for: until it is on, members read the accessibility tree, and
+        // nothing here makes macOS ask (no card either: it is not the switch
+        // the setup is about).
+        if tool == "screenshot" && last.helper && last.screen == Some(false) {
+            return Some(equipe_desktop_control::controller::NO_PICTURE.to_owned());
+        }
         // Pictures of the screen need no Accessibility.
         let needs_grant = !matches!(tool, "screenshot" | "list_windows");
         let message = if engine_tool && !last.engine {
@@ -821,6 +828,7 @@ mod tests {
         engine_installs: AtomicUsize,
         helper_syncs: AtomicUsize,
         prompts: AtomicUsize,
+        screen_requests: AtomicUsize,
         engine_ready_after_install: AtomicBool,
     }
 
@@ -835,6 +843,7 @@ mod tests {
                 engine_installs: AtomicUsize::new(0),
                 helper_syncs: AtomicUsize::new(0),
                 prompts: AtomicUsize::new(0),
+                screen_requests: AtomicUsize::new(0),
                 engine_ready_after_install: AtomicBool::new(true),
             })
         }
@@ -866,6 +875,10 @@ mod tests {
         fn helper(&self, tool: &'static str) -> Fut<Option<Value>> {
             if tool == helper::REQUEST_ACCESSIBILITY {
                 self.prompts.fetch_add(1, Ordering::SeqCst);
+            } else if tool != helper::STATUS {
+                // Anything else (`REQUEST`) is the person's "Allow…": the
+                // background setup must never send it.
+                self.screen_requests.fetch_add(1, Ordering::SeqCst);
             }
             let up = self.helper_up.load(Ordering::SeqCst);
             let granted = self.granted.load(Ordering::SeqCst);
@@ -1019,8 +1032,10 @@ mod tests {
         rig.worker.step().await;
         let message = rig.auto.refusal("mcp__desktop__snapshot").unwrap();
         assert!(message.contains("Don't retry") && message.contains("screenshot"), "{message}");
-        // The picture of the screen needs no engine and no Accessibility.
-        assert_eq!(rig.auto.refusal("mcp__desktop__screenshot"), None);
+        // The picture of the screen needs no engine and no Accessibility, only
+        // Screen Recording (which the fake machine hasn't got).
+        let picture = rig.auto.refusal("mcp__desktop__screenshot").unwrap();
+        assert!(picture.contains("Screen Recording"), "{picture}");
         // Once everything is on, nothing stands in the way.
         rig.fake.engine_ok.store(true, Ordering::SeqCst);
         rig.fake.granted.store(true, Ordering::SeqCst);
@@ -1064,5 +1079,24 @@ mod tests {
         rig.auto.wanted();
         rig.worker.step().await;
         assert_eq!(rig.setup(), DesktopSetup::Grant);
+    }
+
+    #[tokio::test]
+    async fn background_work_never_asks_for_screen_recording_and_members_read_the_tree() {
+        for ax in [true, false] {
+            let mut rig = rig();
+            rig.fake.granted.store(ax, Ordering::SeqCst);
+            // Three days of the daemon looking, as it does when "everyone" works the desktop.
+            for hour in 0..72u64 {
+                rig.worker.clock = Box::new(move || 1_000_000 + hour * 3600);
+                rig.worker.step().await;
+                assert_eq!(rig.auto.refusal("mcp__desktop__snapshot").is_some(), !ax);
+                let picture = rig.auto.refusal("mcp__desktop__screenshot").expect("no Screen Recording: told, not tried");
+                assert!(picture.contains("Screen Recording") && picture.contains("snapshot") && !picture.contains('\n'), "{picture}");
+            }
+            assert_eq!(rig.fake.screen_requests.load(Ordering::SeqCst), 0, "ax={ax}: nothing but the person's own action asks for Screen Recording");
+            assert_eq!(rig.fake.prompts.load(Ordering::SeqCst), usize::from(!ax), "ax={ax}: Accessibility is asked once, never again");
+            assert_eq!(prompts::recorded(&rig.home, prompts::Kind::ScreenRecording), None);
+        }
     }
 }

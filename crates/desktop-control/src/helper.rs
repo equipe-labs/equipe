@@ -275,7 +275,11 @@ fn answer<D: Desktop>(
     match tool {
         STATUS => ToolResult::ok(with_engine(status(&controller.desktop)).to_string()),
         REQUEST | REQUEST_ACCESSIBILITY => {
-            request(&controller.desktop, if tool == REQUEST { Ask::Everything } else { Ask::Accessibility });
+            if tool == REQUEST {
+                request_everything(home, &controller.desktop, status, request);
+            } else {
+                request(&controller.desktop, Ask::Accessibility);
+            }
             ToolResult::ok(with_engine(status(&controller.desktop)).to_string())
         }
         SCENE => {
@@ -292,6 +296,35 @@ fn answer<D: Desktop>(
             eprintln!("equipe desktop helper: {member} {tool}{}", if reply.is_error { " (refused)" } else { "" });
             self::reply(reply)
         }
+    }
+}
+
+/// The person's "Allow…" (`REQUEST`): everything, Screen Recording included,
+/// through the prompt budget. Screen Recording is asked for only here, only
+/// while it isn't granted, one prompt at a time, and what happened is
+/// remembered (`asked`; `denied` when the person is asked again and it is
+/// still off) so background work never has a reason to. Whatever is already
+/// granted is not asked again.
+#[cfg(any(unix, windows))]
+fn request_everything<D>(home: &Path, desktop: &D, status: &impl Fn(&D) -> Value, request: &impl Fn(&D, Ask)) {
+    use crate::prompts::{self, Answer, Kind};
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let before = status(desktop);
+    let identity = format!("screen:{}", before["role"].as_str().unwrap_or("helper"));
+    let granted = before["screen"].as_bool() == Some(true);
+    prompts::observe(home, Kind::ScreenRecording, &identity, granted, now);
+    let turn = if granted || !prompts::may_ask(home, Kind::ScreenRecording, &identity, true, now) { None } else { prompts::begin(Kind::ScreenRecording) };
+    if turn.is_none() {
+        request(desktop, Ask::Accessibility);
+        return;
+    }
+    let asked_before = prompts::recorded(home, Kind::ScreenRecording).is_some_and(|r| r.identity == identity && r.answer == Answer::Asked);
+    prompts::record(home, Kind::ScreenRecording, &identity, Answer::Asked, now);
+    request(desktop, Ask::Everything);
+    if status(desktop)["screen"].as_bool() == Some(true) {
+        prompts::observe(home, Kind::ScreenRecording, &identity, true, now);
+    } else if asked_before {
+        prompts::record(home, Kind::ScreenRecording, &identity, Answer::Denied, now);
     }
 }
 
@@ -375,5 +408,28 @@ mod tests {
         let result = call(&home, "frontend", "screenshot", &json!({})).await;
         assert_eq!(result.text, NOT_RUNNING, "a token but no socket");
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn only_the_persons_allow_asks_for_screen_recording_and_it_is_remembered() {
+        use crate::prompts::{self, Answer, Kind};
+        use std::cell::{Cell, RefCell};
+        let home = std::env::temp_dir().join(format!("eq-dh-screen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let granted = Cell::new(false);
+        let asked = RefCell::new(Vec::new());
+        let status = |_: &()| json!({ "screen": granted.get(), "role": "app" });
+        let request = |_: &(), ask: Ask| asked.borrow_mut().push(ask);
+        request_everything(&home, &(), &status, &request);
+        assert_eq!(*asked.borrow(), vec![Ask::Everything], "the person's button asks");
+        assert_eq!(prompts::recorded(&home, Kind::ScreenRecording).map(|r| r.answer), Some(Answer::Asked));
+        request_everything(&home, &(), &status, &request);
+        assert_eq!(prompts::recorded(&home, Kind::ScreenRecording).map(|r| r.answer), Some(Answer::Denied), "asked again and still off: a no");
+        granted.set(true);
+        request_everything(&home, &(), &status, &request);
+        assert_eq!(asked.borrow().len(), 3);
+        assert_eq!(asked.borrow()[2], Ask::Accessibility, "granted: never asked again");
+        assert_eq!(prompts::recorded(&home, Kind::ScreenRecording).map(|r| r.answer), Some(Answer::Granted));
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
