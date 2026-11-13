@@ -2925,6 +2925,9 @@ pub enum Event {
     SubagentsAtOnceChanged { squad: SquadName, at_once: Option<u32> },
     /// How many tickets the squad works at once now ([`Command::SetParallel`]).
     ParallelChanged { squad: SquadName, parallel: lanes::Parallel },
+    /// The engines paced to their plans' budgets now, none when full speed
+    /// (`lanes::Pacing`): told when it changes, never every turn.
+    PacingChanged { squad: SquadName, pacing: Vec<lanes::Pacing> },
     /// Whether equipe picks each ticket's model now ([`Command::SetModelChoice`]).
     ModelChoiceChanged { squad: SquadName, choice: tiers::ModelChoice },
     /// Which engine reviews the designer's work now ([`Command::SetDesignReviewer`]).
@@ -3066,6 +3069,7 @@ impl Event {
             | Event::RestingChanged { squad, .. }
             | Event::SubagentsAtOnceChanged { squad, .. }
             | Event::ParallelChanged { squad, .. }
+            | Event::PacingChanged { squad, .. }
             | Event::ModelChoiceChanged { squad, .. }
             | Event::DesignReviewerChanged { squad, .. }
             | Event::SignalsChanged { squad, .. }
@@ -3166,6 +3170,7 @@ impl Event {
             | Event::RestingChanged { .. }
             | Event::SubagentsAtOnceChanged { .. }
             | Event::ParallelChanged { .. }
+            | Event::PacingChanged { .. }
             | Event::ModelChoiceChanged { .. }
             | Event::DesignReviewerChanged { .. }
             | Event::SignalsChanged { .. }
@@ -3559,6 +3564,9 @@ pub struct Snapshot {
     /// predates it.
     #[serde(default, skip_serializing_if = "lanes::Parallel::is_default")]
     pub parallel: lanes::Parallel,
+    /// The engines paced to their plans' budgets now ([`Event::PacingChanged`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pacing: Vec<lanes::Pacing>,
     /// Whether equipe picks each ticket's model ([`Command::SetModelChoice`]);
     /// left out on quality first, the default — as from a daemon that predates it.
     #[serde(default, skip_serializing_if = "tiers::ModelChoice::is_default")]
@@ -4114,6 +4122,7 @@ mod tests {
             idle_wake_hours: Some(24),
             subagents_at_once: Some(8),
             parallel: lanes::Parallel::max(8, 20),
+            pacing: Vec::new(),
             model_choice: tiers::ModelChoice::Off,
             design_reviewer: engines::Reviewer::Same,
             signals: Vec::new(),

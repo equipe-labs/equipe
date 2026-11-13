@@ -67,6 +67,7 @@ impl Runtime {
     pub(super) fn on_plan_use_passed(&mut self, burns: Vec<Burn>, loads: Vec<(Engine, plan_use::Load)>) {
         self.plan_use.passing = false;
         self.engine_loads(loads);
+        self.pace_pass();
         let now = now_secs() as i64;
         self.plan_use.told.retain(|_, at| now - *at < TELL_AGAIN);
         self.plan_use.recent.retain(|b| now - b.at < RECENT);

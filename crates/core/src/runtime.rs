@@ -102,6 +102,7 @@ mod call;
 mod tiers;
 mod workspace;
 mod turn_end;
+mod pace;
 pub use turn_end::turn_ending;
 use turn_end::{RunEnd, TurnEnds, TurnWatch};
 
@@ -712,6 +713,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         installs: std::collections::HashSet::new(),
         codex_binary: crate::engines::codex_binary(),
         engines: Default::default(),
+        pacers: Default::default(),
         turn_ends: Default::default(),
         design_watch: HashMap::new(),
         design_busy: std::collections::HashSet::new(),
@@ -1351,6 +1353,8 @@ struct Runtime {
     codex_binary: String,
     /// Both engines' plans, and members moving between them (`engines`).
     engines: engines::Engines,
+    /// Pacing to the plans' budgets, per squad and engine ([`pacing`]).
+    pacers: pace::Pacers,
     /// Failing engines, per ticket and per squad ([`turn_end`]).
     turn_ends: TurnEnds,
     /// Squads whose design systems a screen looks at, and their stamp as
@@ -5973,6 +5977,9 @@ for one project goes to it as tickets for its owners, with that project — and 
         let disk = self.disk.status.level;
         let parallel = self.journals.get(squad).map(Journal::parallel).unwrap_or_default();
         let used = |engine: Engine| crate::lanes::plan_used(self.plans.iter().find(|p| p.engine == engine).map(|p| &p.usage));
+        // Paced to the plan's budget (auto only): each engine's cap on runs at once.
+        let pace: HashMap<Engine, crate::pacing::State> = [Engine::Claude, Engine::Codex].into_iter().map(|e| (e, if parallel.is_max() { Default::default() } else { self.pace_of(squad, e) })).collect();
+        let paced = pace.values().any(|p| p.cap.is_some());
         /// A member as this pass weighs it.
         struct Seat {
             name: String,
@@ -5992,7 +5999,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                 continue;
             }
             if s.run_of.is_some() {
-                *at_work.entry(s.engine).or_default() += 1;
+                // A run paused for a limit or a retry holds no slot while its engine is paced.
+                if crate::pacing::holds_slot(Runtime::is_parked(s), pace.get(&s.engine).is_some_and(|p| p.cap.is_some())) {
+                    *at_work.entry(s.engine).or_default() += 1;
+                }
                 continue;
             }
             let Some(m) = s.member.as_ref().filter(|_| s.is_member_itself()) else { continue };
@@ -6012,7 +6022,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         }
         let room: HashMap<Engine, usize> = [Engine::Claude, Engine::Codex]
             .into_iter()
-            .map(|e| (e, crate::lanes::engine_limit(used(e), disk, &parallel).saturating_sub(at_work.get(&e).copied().unwrap_or(0))))
+            .map(|e| (e, crate::pacing::capped(crate::lanes::engine_limit(used(e), disk, &parallel), pace.get(&e).copied().unwrap_or_default()).saturating_sub(at_work.get(&e).copied().unwrap_or(0))))
             .collect();
         fn lane<'a>(m: &'a Seat, tickets: &[Ticket], held_too: bool) -> crate::lanes::Member<'a> {
             crate::lanes::Member {
@@ -6024,9 +6034,14 @@ for one project goes to it as tickets for its owners, with that project — and 
                 waiting: crate::lanes::waiting_on_person(tickets, &m.name),
                 limit: m.limit,
                 takes_new: m.takes_new && (held_too || !m.held),
+                pm: m.role == crate::roles::PM,
             }
         }
         let candidates: Vec<crate::lanes::Member> = members.iter().map(|m| lane(m, &tickets, false)).collect();
+        // Paced, the little room goes to the most urgent tickets first.
+        let urgent = if paced { crate::pacing::urgent_first(&tickets) } else { Vec::new() };
+        let merged: Vec<TicketId> = [urgent.as_slice(), first].concat();
+        let first: &[TicketId] = if urgent.is_empty() { first } else { &merged };
         let assigned = crate::lanes::assign(&tickets, &candidates, single_project, first, &room);
         // What a hold keeps from starting: what members would take but for it.
         if members.iter().any(|m| m.held) {
@@ -9063,6 +9078,7 @@ it back there once they have done it.{again} End your turn now with a short line
             plans: self.plans.clone(),
             engine_switching: self.journals.get(squad).map(Journal::engine_switching).unwrap_or_default(),
             parallel: self.journals.get(squad).map(Journal::parallel).unwrap_or_default(),
+            pacing: self.pacing_now(squad),
             model_choice: self.journals.get(squad).map(Journal::model_choice).unwrap_or_default(),
             pm_accepts: self.journals.get(squad).is_none_or(Journal::pm_accepts),
             resting: self.journals.get(squad).map(Journal::resting).unwrap_or_default(),

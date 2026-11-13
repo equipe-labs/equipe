@@ -8,6 +8,7 @@
 //! A child of `views/settings.rs`, drawn with its rows and controls.
 
 use equipe_core::protocol::engines::{Reviewer, Switching};
+use equipe_core::protocol::Engine;
 use equipe_core::protocol::lanes::{MOST_PER_ENGINE, MOST_PER_MEMBER, Parallel, ParallelMode};
 use equipe_core::protocol::tiers::ModelChoice;
 use equipe_core::t;
@@ -83,6 +84,21 @@ fn parallel_section(shell: &Shell, cx: &mut Context<Shell>) -> Section {
         } else {
             value(p, rules::parallel_word(now.mode))
         }));
+    }
+    // Engines paced to their plans' budgets: said plainly, with the way out.
+    let now_at = self::now();
+    for pacing in &shell.model.pacing {
+        let engine = rules::engine_name(pacing.engine);
+        let other = rules::engine_name(if pacing.engine == Engine::Claude { Engine::Codex } else { Engine::Claude });
+        let span = rules::span(pacing.until, now_at);
+        let (cap, base) = (pacing.cap, pacing.of);
+        let about = if pacing.other_engine { t!("parallel.pacing_about_other", cap = cap, base = base, other = other, span = span) } else { t!("parallel.pacing_about", cap = cap, base = base, span = span) };
+        let handle = cx.entity().downgrade();
+        lines.push(Line::new(t!("parallel.pacing", engine = engine), about).words("pacing paced budget plan lasts slower full speed").warn(true).control(
+            ui::button(p, ("parallel-full-speed", pacing.engine as usize), Kind::Secondary, t!("parallel.full_speed")).disabled(!connected).on_click(move |_, _, cx| {
+                handle.update(cx, |shell, cx| shell.set_parallel(Parallel { mode: ParallelMode::Max, ..shell.model.parallel }, cx)).ok();
+            }),
+        ));
     }
     for ((label, desc), (pop, n)) in rows.zip([(Pop::PerMember, now.per_member), (Pop::PerEngine, now.per_engine)]) {
         lines.push(Line::new(label, desc).words("parallel max lanes per member per engine").control(if connected { picker(shell, pop, label, n.to_string(), 72., cx) } else { value(p, n.to_string()) }));

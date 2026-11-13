@@ -43,6 +43,7 @@ pub mod i18n;
 pub mod journal;
 pub mod keychain;
 pub mod lanes;
+pub mod pacing;
 pub mod logins;
 pub mod kept;
 pub mod language;

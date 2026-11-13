@@ -358,6 +358,16 @@ impl Runtime {
         (assessed.level == Level::Exhausted).then_some(assessed.resets_at)
     }
 
+    /// `engine`'s week for pacing ([`crate::pacing`]): its weekly window and
+    /// reading time, and its burn in points a second when known.
+    pub(super) fn week_burn(&self, squad: &str, engine: Engine) -> Option<(equipe_protocol::PlanWindow, i64, Option<f64>)> {
+        let fallback = Memory::default();
+        let memory = self.engines.squads.get(squad).map_or(&fallback, |s| &s.memory);
+        let reading = self.readings().into_iter().find(|r| r.engine == engine)?;
+        let week = reading.weekly.filter(|w| w.resets_at > unix_now())?;
+        Some((week, reading.at, rules::weekly_burn(&reading, memory, unix_now())))
+    }
+
     /// Whether `engine` was read after unix time `at`, fresh, with room.
     pub(super) fn engine_room_since(&self, squad: &str, engine: Engine, at: u64) -> bool {
         let fallback = Memory::default();
@@ -538,7 +548,7 @@ impl Runtime {
     }
 
     /// "35m", "2h", "3d" (in the person's language): how long until then.
-    fn span(&self, secs: i64) -> String {
+    pub(super) fn span(&self, secs: i64) -> String {
         let secs = secs.max(60) as u64;
         match secs {
             ..3_600 => say!(self, "engines.span_minutes", count = secs / 60),

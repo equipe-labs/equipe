@@ -1753,6 +1753,7 @@ impl App {
                 | Event::PmAcceptsChanged { .. }
                 | Event::SubagentsAtOnceChanged { .. }
                 | Event::ParallelChanged { .. }
+                | Event::PacingChanged { .. }
                 | Event::ModelChoiceChanged { .. }
                 | Event::DesignReviewerChanged { .. }
                 | Event::RoleModelsChanged { .. }
