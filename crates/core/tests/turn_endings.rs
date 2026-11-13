@@ -18,7 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use equipe_core::journal::Journal;
 use equipe_core::protocol::rpc::{ToolCall, ToolResult};
 use equipe_core::protocol::{
-    Access, Command, Engine, Event, ExecutionState, PauseWhy, PlanUsage, PlanWindow, SessionSpec, SessionState, Ticket, TicketStatus, stall_reason,
+    Access, Command, Engine, Event, ExecutionState, PauseWhy, PlanUsage, PlanWindow, SessionSpec, SessionState, Ticket, TicketStatus, TurnOutcome, stall_reason,
 };
 use equipe_core::runtime::{self, Config, Handle, turn_ending};
 use equipe_core::squads;
@@ -51,6 +51,8 @@ enum Mode {
     FailsFast,
     /// The conversation it was asked to resume is gone (or another engine's).
     Lost,
+    /// Only a resumed conversation is gone; a fresh one works.
+    LostOnResume,
     /// It ends on Claude Code's limit message.
     Limited,
     /// It goes on until it is stopped.
@@ -78,6 +80,7 @@ echo '{{"type":"system","subtype":"init","model":"claude-test","session_id":"ses
 case "$mode" in
   fails) echo '{{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["API Error: 500 Internal server error"]}}'; exit 1;;
   lost) echo '{{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["No conversation found with session ID: sess-0"]}}'; exit 1;;
+  lost_on_resume) case "$*" in *--resume*) echo '{{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["No conversation found with session ID: sess-1"]}}'; exit 1;; esac;;
   limited) echo '{{"type":"result","subtype":"success","is_error":false,"result":"Claude AI usage limit reached|1900000000","usage":{{"input_tokens":3,"output_tokens":1}}}}'; exit 0;;
   hangs) exec sleep 30;;
   slow) sleep 2;;
@@ -103,6 +106,7 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok","usag
             Mode::Slow => "slow",
             Mode::FailsFast => "fails",
             Mode::Lost => "lost",
+            Mode::LostOnResume => "lost_on_resume",
             Mode::Limited => "limited",
             Mode::Hangs => "hangs",
         };
@@ -362,6 +366,27 @@ async fn conversations_that_cant_be_resumed_start_fresh_at_once_and_never_pause_
     assert!(!again.contains("--resume"), "{again}");
     assert_eq!(counted(&home, turn_ending::SQUAD_PAUSED), 0, "never the breaker");
     assert_eq!(counted(&home, turn_ending::FAILED_FAST), 0, "not an engine failing");
+    handle.shutdown().await;
+}
+
+/// A conversation off any ticket whose engine can't resume it (one kept
+/// from another engine before a move) is asked again at once in a fresh
+/// one — not failed on every message the person sends after.
+#[tokio::test]
+async fn a_desk_conversation_that_cant_be_resumed_is_asked_again_fresh() {
+    let engine = Engine0::new(Mode::Answers);
+    let (home, repo) = squad();
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home, true));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    handle.send(Command::Submit { session: 1, text: "first words".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    engine.set(Mode::LostOnResume);
+    handle.send(Command::Submit { session: 1, text: "second words".into(), about: None });
+    engine.said_times("second words", 2).await;
+    let tries = engine.said("second words");
+    assert!(tries[0].contains("--resume") && !tries[1].contains("--resume"), "{tries:#?}");
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, .. })).await;
+    assert_eq!(engine.said("second words").len(), 2, "asked again once, not in a loop");
     handle.shutdown().await;
 }
 

@@ -385,6 +385,23 @@ impl Runtime {
     pub(super) fn unfinished_turn(&mut self, id: SessionId, ending: Option<Ending>) -> bool {
         let Some(ending) = ending else { return false };
         let Some(s) = self.sessions.get(&id) else { return false };
+        // A conversation off any ticket (the person's with the PM, a member's
+        // own) whose engine can't resume it — gone, or one kept from another
+        // engine before a move: asked again at once in a fresh one, opened
+        // with the end of the last, instead of failing every message after.
+        if s.work.is_none()
+            // Only a conversation it was asked to resume: a fresh one can't be lost again.
+            && s.claude_session.is_some()
+            && ending.outcome == TurnOutcome::Failed
+            && ending.error.as_ref().is_some_and(|(m, _)| lost_conversation(m))
+            && let Some(prompt) = ending.prompt.clone()
+        {
+            if let Some(s) = self.sessions.get_mut(&id) {
+                s.refresh = Some(true);
+            }
+            self.start_turn(id, prompt);
+            return true;
+        }
         let Some(work) = s.work.as_ref().filter(|w| !w.preparing) else { return false };
         let (Some(squad), Some(name)) = (s.squad.clone(), s.name().map(str::to_owned)) else { return false };
         if ending.outcome == TurnOutcome::Interrupted {
