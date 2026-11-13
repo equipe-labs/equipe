@@ -1353,7 +1353,7 @@ mod tests {
                 assert!(picture.contains("Screen Recording") && picture.contains("snapshot") && !picture.contains('\n'), "{picture}");
             }
             assert_eq!(rig.fake.screen_requests.load(Ordering::SeqCst), 0, "ax={ax}: nothing but the person's own action asks for Screen Recording");
-            assert_eq!(rig.fake.prompts.load(Ordering::SeqCst), usize::from(!ax), "ax={ax}: Accessibility is asked once, never again");
+            assert_eq!(rig.fake.prompts.load(Ordering::SeqCst), 0, "ax={ax}: background work never asks for Accessibility; only the person's click does");
             assert_eq!(prompts::recorded(&rig.home, prompts::Kind::ScreenRecording), None);
         }
     }
