@@ -88,7 +88,8 @@ pub struct Autopilot {
     /// another site sends the browser there ("Sign in with Google" …): only
     /// for a login whose site is the provider's host, only identity steps
     /// (the account chooser, email, password, authenticator code), never a
-    /// consent or permission screen. Off unless the person turns it on.
+    /// consent or permission screen. On by default for a provider's own
+    /// account when it is saved; the person can turn it off.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub idp: bool,
     /// The domain the site's code mail comes from, when not its own.

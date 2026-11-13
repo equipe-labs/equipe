@@ -168,7 +168,7 @@ The exception is narrow, and only where ALL of these hold
   `login.live.com`, `appleid.apple.com`, `github.com`, or an Okta tenant's own
   `<tenant>.okta.com`) — a login saved for `google.com` doesn't qualify;
 - the person turned on that login's "Use this account for 'Sign in with …' on
-  other sites" (`Autopilot::idp`, off by default, under the login's Autopilot
+  other sites" (`Autopilot::idp`, on by default when a provider's own account is saved; one switch turns it off, under the login's Autopilot
   on the Logins page, a person-only `SetLoginAutopilot`), and "Signs in by
   itself" is on and not stopped;
 - the page's host is exactly that provider host, over https (no http

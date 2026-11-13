@@ -578,7 +578,12 @@ impl Vault {
                 // Saving a login is the person's leave for equipe to sign in
                 // with it by itself: on unless they turned it off on the form.
                 let auto = draft.auto.unwrap_or(true);
-                self.logins.push(Login { id, site, url, username, note, allowed: Vec::new(), auto, stopped: None, created_at: now, password_at: None, uses: Vec::new(), autopilot: Default::default() });
+                // An identity provider's own account ("Sign in with Google" …)
+                // is saved to be used on other sites' sign-in steps too: on by
+                // default, one switch turns it off. Consent screens stay the
+                // person's whatever this says (`idp_grant_page`, `FillGuard::idp`).
+                let autopilot = crate::protocol::vault::Autopilot { idp: idp_provider(&site).is_some(), ..Default::default() };
+                self.logins.push(Login { id, site, url, username, note, allowed: Vec::new(), auto, stopped: None, created_at: now, password_at: None, uses: Vec::new(), autopilot });
                 id
             }
         };
@@ -1118,6 +1123,19 @@ mod tests {
         assert!(!vault.logins[0].auto, "never on by itself");
         let file = std::fs::read_to_string(home.join("vault.json")).unwrap();
         assert!(file.contains("\"acme\"") && !file.contains("acme/frontend"), "{file}");
+    }
+
+    #[test]
+    fn a_saved_provider_account_signs_in_for_other_sites_unless_turned_off() {
+        let home = home();
+        let mut vault = Vault::open(&home, Box::new(InMemory::default()));
+        let google = vault.save(draft("accounts.google.com", "abel@example.com", Some("pw")), 1).unwrap();
+        let shop = vault.save(draft("shop.example", "abel", Some("pw")), 1).unwrap();
+        let of = |id: u32| vault.logins.iter().find(|l| l.id == id).unwrap().autopilot.idp;
+        assert!(of(google), "a provider's own account is for 'Sign in with Google' too");
+        assert!(!of(shop), "an ordinary site's login has no such use");
+        assert!(idp_login_for(&vault.logins, "https://accounts.google.com/v3/signin/identifier?continue=x").is_some());
+        assert!(idp_login_for(&vault.logins, "https://accounts.google.com/signin/oauth/consent?client_id=x").is_none(), "never a consent page");
     }
 
     #[test]
