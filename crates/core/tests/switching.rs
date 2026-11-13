@@ -575,6 +575,6 @@ async fn setting_the_premium_family_keeps_it_and_says_what_it_costs() {
     let (bin, _dir) = claude(ANSWERS);
     let (handle, mut events) = pm_and_codex_qa(&bin).await;
     handle.send(Command::SetModel { session: 1, model: "fable".into() });
-    let seen = until(&mut events, |e| matches!(e, Event::Notice { session: 1, text, .. } if text.contains("premium"))).await;
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { session: 1, text, .. } if text.contains("Opus"))).await;
     assert!(seen.iter().any(|e| matches!(e, Event::ModelKnown { session: 1, model, .. } if model == "fable")));
 }
