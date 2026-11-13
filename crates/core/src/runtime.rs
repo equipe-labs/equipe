@@ -88,6 +88,7 @@ mod heartbeat;
 mod signals;
 mod tickets;
 mod compact;
+mod hygiene;
 mod controls;
 mod review;
 mod retro;
@@ -102,6 +103,7 @@ mod call;
 mod tiers;
 mod workspace;
 mod turn_end;
+pub use hygiene::{NATIVE_DESK_TOKENS, NATIVE_TICKET_TOKENS, ROTATE_DESK_TOKENS, ROTATE_TICKET_TOKENS, wants_large_window};
 pub use turn_end::turn_ending;
 use turn_end::{RunEnd, TurnEnds, TurnWatch};
 
@@ -4712,7 +4714,12 @@ for one project goes to it as tickets for its owners, with that project — and 
         // A desk conversation grown too large, or gone cold, starts afresh.
         let prompt = match self.refresh_desk(id) {
             Some(handoff) => format!("{handoff}\n\n{prompt}"),
-            None => prompt,
+            // Else one that reached its context budget — at the desk or on a
+            // ticket — goes on in a fresh session, opened with a packet.
+            None => match self.rotate_context(id, &prompt) {
+                Some(packet) => format!("{packet}\n\n{prompt}"),
+                None => prompt,
+            },
         };
         // A member that just moved engines: equipe's brief of where it was.
         // The brief is the member's; its first run's first turn carries it
@@ -5013,6 +5020,18 @@ for one project goes to it as tickets for its owners, with that project — and 
             debug_assert_eq!(sub.at_once, at_once);
             env.push((CLAUDE_SUBAGENTS_ENV.to_owned(), at_once.to_string()));
         }
+        // Context: the standard window unless allowed larger, and the engine's own compaction at the budget.
+        let compact_at = if session.member.is_some() && has_tools(session) {
+            let journal = squad.as_deref().and_then(|s| self.journals.get(s));
+            let native = journal.is_none_or(Journal::context_native_compact);
+            let wants = ticket.and_then(|t| journal.and_then(|j| j.ticket(t).ok().flatten())).is_some_and(|t| hygiene::wants_large_window(&t.body));
+            let large = wants || journal.is_some_and(Journal::context_window_large);
+            let window = hygiene::window_for(session.engine, ticket.is_some(), native, large);
+            env.extend(window.env);
+            window.compact_at
+        } else {
+            None
+        };
         let writable: Vec<String> = builds.iter().chain(scratch.iter()).map(|d| d.to_string_lossy().into_owned()).collect();
         let fenced = member_rules && access == claude_code::Access::EditFiles && mode == Mode::Auto;
         // Directories added for reading stay read-only in every mode, and no other
@@ -5167,6 +5186,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         env: &env,
                         provider: provider.as_ref(),
                         subagents: subagents.and(set_at_once),
+                        compact_at,
                     };
                     // The person's changes to the squad's folder saved first (off the loop): what it writes is its own.
                     if let Some(saved) = saved_first {
@@ -5338,6 +5358,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         env: &env,
                         effort: effort.as_deref(),
                         hooks: hooks.as_ref(),
+                        compact_at,
                     };
                     // The person's changes to the squad's folder saved first (off the loop): what it writes is its own.
                     if let Some(saved) = saved_first {
@@ -5965,6 +5986,9 @@ for one project goes to it as tickets for its owners, with that project — and 
         watchdog::mark("dispatch: board");
         let mut tickets = self.tickets(squad);
         tickets.retain(|ticket| !self.held_for_room(ticket.kind) && !self.workspaces.busy(squad, ticket.id) && !self.prechecking(squad, ticket.id));
+        // Runs on tickets cancelled meanwhile stop; tickets that look obsolete wait for the PM.
+        self.stop_obsolete_runs(squad);
+        self.hold_obsolete(squad, &mut tickets, first);
         let single_project = self.projects(squad).len() == 1;
         // Members equipe once brought in for a rush finish what they hold and take nothing new.
         let helpers = self.journals.get(squad).map(Journal::helpers).unwrap_or_default();
@@ -8513,7 +8537,11 @@ there, end your turn, and carry on when they say they're done."
         let no_project = |arg: &str| format!("No project called {arg}. The squad's projects: {}.", names.join(", "));
         match name.as_str() {
             board::BOARD => {
-                let mut text = board::render(&self.tickets(&squad));
+                // A long board comes in pages (`status`, `after`), one answer at most `tool_cap`'s ceiling.
+                let paged = self.journal(&squad).is_none_or(Journal::context_tool_caps);
+                let limit = if paged { crate::tool_cap::MAX_TOOL_CHARS } else { usize::MAX };
+                let (status, after) = (board::arg_str(&args, "status"), board::arg_id(&args, "after"));
+                let mut text = board::render_page(&self.tickets(&squad), status, after, limit);
                 let resting = self.journal(&squad).map(|j| j.resting()).unwrap_or_default();
                 if let Some(line) = board::resting_line(&resting) {
                     text = format!("{}\n\n{line}", text.trim_end());

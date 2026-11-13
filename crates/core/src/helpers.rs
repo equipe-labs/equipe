@@ -214,6 +214,7 @@ pub fn request<'a>(
         provider: Some(provider),
         // None of its own on another provider, nor any to cap.
         subagents: None,
+        compact_at: None,
     }
 }
 
