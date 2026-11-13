@@ -102,6 +102,41 @@ jobs:
       - name: Build
         run: cargo build --release --locked -p equipe --target ${{ matrix.target }}
 
+      # The command line signed with the Developer ID (Hardened Runtime),
+      # when the secrets are there — the same identity the app's copy carries
+      # (scripts/desktop-dmg.sh). Ad hoc, macOS knows a build only by its hash:
+      # every update lost the person's "Always Allow" for its Keychain item,
+      # its Local Network and App Management answers, and showed its login
+      # item as new. Signed, the requirement is "identifier equipe" and the
+      # team, the same for every release (docs/RELEASING.md).
+      - name: Sign (macOS)
+        if: contains(matrix.target, 'apple-darwin')
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          if [ -z "$MACOS_CERTIFICATE" ]; then
+            echo "::warning::No Developer ID certificate: the command line stays ad hoc, and macOS asks people again after each update"
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(uuidgen)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)"
+          [ -n "$identity" ] || { echo "::error::The certificate holds no Developer ID Application identity"; exit 1; }
+          bin="target/$TARGET/release/equipe"
+          codesign --force --timestamp --options runtime --keychain "$keychain" --sign "$identity" --identifier equipe "$bin"
+          codesign --verify --strict --verbose=2 "$bin"
+          codesign -d -r- "$bin"
+          security delete-keychain "$keychain"
+
       - name: Smoke test
         run: target/${{ matrix.target }}/release/equipe --version
 

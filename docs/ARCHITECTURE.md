@@ -338,7 +338,10 @@ helper ──child process, stdin for text──▶ agent-desktop 1.2.0 (pinned,
 
 - **Only the helper holds the permissions.** A TCC grant belongs to the process
   launchd started and every child inherits it: granted to the daemon, every
-  member's Bash could capture the screen. The helper is an app bundle
+  member's Bash could capture the screen. With equipe.app installed the helper
+  is the app's own executable (`equipe-desktop desktop serve`, started by the
+  LaunchAgent), so the app's one "equipe" grant covers it (docs/DESKTOP-CONTROL.md,
+  "One permission entry"). Without the app, the helper is an app bundle
   (`im.equipe.desktop-helper`) whose executable is a copy of `equipe` that runs
   `desktop serve` and nothing else, signed with a fixed identity so a rebuilt
   helper keeps its grants: a self-signed certificate made on the Mac, in a

@@ -819,24 +819,59 @@ impl Journal {
         Ok(())
     }
 
-    /// The members allowed the Mac's desktop (experimental; nobody by default).
+    /// The members the person turned the Mac's desktop on for by name
+    /// (before it was everyone's by default, or before the switch was on).
     pub fn desktop_members(&self) -> Vec<String> {
-        let value: serde_json::Value = self.meta("desktop_members").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default();
+        self.names("desktop_members")
+    }
+
+    /// The members the person turned the desktop off for.
+    pub fn desktop_off(&self) -> Vec<String> {
+        self.names("desktop_off")
+    }
+
+    /// Whether the person turned the desktop off for the whole squad.
+    pub fn desktop_off_for_everyone(&self) -> bool {
+        self.meta("desktop_everyone").as_deref() == Some("off")
+    }
+
+    fn names(&self, key: &str) -> Vec<String> {
+        let value: serde_json::Value = self.meta(key).and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default();
         value.as_array().into_iter().flatten().filter_map(|m| m.as_str().map(str::to_owned)).collect()
     }
 
-    /// Whether `member` works the Mac's desktop.
-    pub fn desktop_enabled(&self, member: &str) -> bool {
-        self.desktop_members().iter().any(|m| m == member)
+    /// Whether `member` works the Mac's desktop. Everyone does by default
+    /// once the person's Accessibility switch is on (`granted`), unless the
+    /// person turned it off for them or for the squad; a member turned on by
+    /// name does either way (the switch is then asked for).
+    pub fn desktop_enabled(&self, member: &str, granted: bool) -> bool {
+        if self.desktop_members().iter().any(|m| m == member) {
+            return true;
+        }
+        granted && !self.desktop_off_for_everyone() && !self.desktop_off().iter().any(|m| m == member)
     }
 
-    /// Allow `member` the desktop, or take it back.
+    /// Turn the desktop on or off for `member`.
     pub fn set_desktop(&self, member: &str, on: bool) -> Result<()> {
         let mut members: Vec<String> = self.desktop_members().into_iter().filter(|m| m != member).collect();
+        let mut off: Vec<String> = self.desktop_off().into_iter().filter(|m| m != member).collect();
         if on {
             members.push(member.to_owned());
+        } else {
+            off.push(member.to_owned());
         }
-        self.set_meta("desktop_members", &serde_json::json!(members).to_string())
+        self.set_meta("desktop_members", &serde_json::json!(members).to_string())?;
+        self.set_meta("desktop_off", &serde_json::json!(off).to_string())
+    }
+
+    /// Turn the desktop on or off for everyone on the squad: off, only members
+    /// turned on by name work it; on again, everyone does, and the names
+    /// turned off one by one are forgotten.
+    pub fn set_desktop_everyone(&self, on: bool) -> Result<()> {
+        if on {
+            self.set_meta("desktop_off", "[]")?;
+        }
+        self.set_meta("desktop_everyone", if on { "on" } else { "off" })
     }
 
     /// The members the person rested (`Command::SetResting`), by name: they

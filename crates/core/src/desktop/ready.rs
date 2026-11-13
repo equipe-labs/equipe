@@ -19,10 +19,16 @@ pub const SCREEN_PANE: &str = "x-apple.systempreferences:com.apple.preference.se
 /// ask the helper to request its permissions, and open System Settings at
 /// what is still missing.
 pub async fn readiness(home: &Path, guide: bool) -> DesktopReadiness {
-    let mut ready = DesktopReadiness { supported: cfg!(any(target_os = "macos", windows)), engine_version: pin::VERSION.to_owned(), ..Default::default() };
+    let mut ready = DesktopReadiness {
+        supported: cfg!(any(target_os = "macos", windows)),
+        engine_version: pin::VERSION.to_owned(),
+        work_locked: super::work_locked(home),
+        ..Default::default()
+    };
     if !ready.supported {
         return ready;
     }
+    ready.helper_name = helper_name(None);
     let home_owned = home.to_owned();
     ready.engine = tokio::task::spawn_blocking(move || matches!(pin::check(&home_owned, pin::this_machine()), pin::Installed::Ready(_))).await.unwrap_or(false);
     let answer = helper::call(home, "settings", if guide { helper::REQUEST } else { helper::STATUS }, &Value::Null).await;
@@ -48,6 +54,19 @@ pub(super) fn apply(ready: &mut DesktopReadiness, status: &Value) {
     ready.screen = status["screen"].as_bool();
     ready.engine_grant = status["engine"]["accessibility"].as_str().map(|state| state == "granted");
     ready.locked = status["session"]["locked"].as_bool() == Some(true);
+    ready.helper_name = helper_name(Some(status));
+}
+
+/// What System Settings lists the helper as: "equipe" when equipe.app (or the
+/// bundle named after it) holds the permission, else the older bundle's name.
+pub fn helper_name(status: Option<&Value>) -> String {
+    use equipe_desktop_control::install::{self, Host};
+    match status.and_then(|s| s["role"].as_str()) {
+        Some("app") => install::DISPLAY_NAME.to_owned(),
+        Some("bundle") => Host::Bundle.name().to_owned(),
+        _ if cfg!(target_os = "macos") => install::host().name().to_owned(),
+        _ => install::DISPLAY_NAME.to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -63,6 +82,8 @@ mod tests {
             &json!({ "screen": false, "accessibility": true, "post_events": true, "session": { "locked": false }, "engine": { "accessibility": "granted" } }),
         );
         assert_eq!((ready.helper, ready.accessibility, ready.screen, ready.engine_grant), (true, Some(true), Some(false), Some(true)));
+        apply(&mut ready, &json!({ "accessibility": true, "post_events": true, "role": "app", "engine": { "accessibility": "granted" } }));
+        assert_eq!(ready.helper_name, "equipe", "equipe.app holds it: one entry, called equipe");
         assert!(ready.ready(), "Screen Recording is only for screenshots");
         apply(&mut ready, &json!({ "accessibility": true, "post_events": false, "engine": { "accessibility": "denied" } }));
         assert_eq!(ready.accessibility, Some(false));

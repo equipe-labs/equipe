@@ -311,6 +311,12 @@ impl Mac {
             "session": session,
             "exe": std::env::current_exe().ok(),
             "pid": std::process::id(),
+            // Which process holds the permission: equipe.app, the bundle, or a
+            // bare `equipe` (a test); handed over to by the app while it isn't allowed yet.
+            "role": std::env::current_exe().map(|exe| crate::install::role_of(&exe)).unwrap_or("cli"),
+            "handed_over": std::env::var_os(crate::FALLBACK_ENV).is_some(),
+            "version": env!("CARGO_PKG_VERSION"),
+            "revision": crate::install::REVISION,
         })
     }
 
@@ -737,6 +743,17 @@ extern "C" fn tick(_: Ref, _: *mut c_void) {}
 
 /// Run the helper: requests served on a thread of their own, while the main
 /// thread runs the run loop that keeps AppKit's list of running apps current.
+/// Whether this process may use Accessibility (no prompt).
+pub fn trusted() -> bool {
+    // SAFETY: a plain query.
+    unsafe { AXIsProcessTrusted() }
+}
+
+/// macOS's Accessibility prompt for this process (once; the caller budgets it).
+pub fn ask_accessibility() {
+    Mac::new().request(crate::helper::Ask::Accessibility);
+}
+
 pub fn serve(home: &Path) -> std::io::Result<()> {
     let home = home.to_owned();
     std::thread::spawn(move || {

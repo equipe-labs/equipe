@@ -16,7 +16,7 @@ const { chromium } = require(require.resolve('playwright', { paths: roots }));
     headless: process.env.EQUIPE_SIGN_IN_HEADLESS === '1',
     ignoreDefaultArgs: ['--enable-automation'],
     // The second keeps Chrome from warning about the first in a bar.
-    args: ['--disable-blink-features=AutomationControlled', '--test-type'],
+    args: ['--disable-blink-features=AutomationControlled', '--test-type', '--disable-notifications'],
   });
   const context = await browser.newContext({ viewport: null, ...(fs.existsSync(state) ? { storageState: state } : {}) });
   // Only what the person changed here goes back, merged into the file as it is

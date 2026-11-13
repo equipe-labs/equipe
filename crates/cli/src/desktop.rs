@@ -14,8 +14,9 @@ use crate::ui;
 pub enum Action {
     Setup { sign: Option<String> },
     Status,
-    On { member: String, experimental: bool, squad: Option<String> },
-    Off { member: String, squad: Option<String> },
+    On { member: Option<String>, everyone: bool, squad: Option<String> },
+    Off { member: Option<String>, everyone: bool, squad: Option<String> },
+    Locked { state: Option<String> },
     Remove,
     Serve { home: PathBuf },
 }
@@ -36,22 +37,16 @@ pub async fn run(action: Option<Action>) -> Result<(), String> {
     let home = equipe_providers::credentials::equipe_home();
     match action.unwrap_or(Action::Status) {
         Action::Serve { home } => equipe_desktop_control::serve(&home).map_err(|e| e.to_string()),
-        Action::On { member, experimental, squad } => {
-            if !experimental {
-                return Err(
-                    "Desktop control is experimental: a member clicks and types on this Mac as you, with no screen lease or send approval yet. Add --experimental to turn it on anyway."
-                        .into(),
-                );
-            }
-            set(&home, &member, true, squad)
-        }
-        Action::Off { member, squad } => set(&home, &member, false, squad),
+        Action::On { member, everyone, squad } => set(&home, member, everyone, true, squad),
+        Action::Off { member, everyone, squad } => set(&home, member, everyone, false, squad),
+        Action::Locked { state } => locked(&home, state.as_deref()),
         Action::Remove => {
             mac_only()?;
+            let name = install::host().name();
             let had = install::uninstall(&home);
             let p = ui::out();
-            println!("{}", p.ok_line(if had { "The desktop helper is stopped and removed." } else { "No desktop helper was installed." }));
-            println!("{}", p.note(2, "To take its permissions back too: System Settings › Privacy & Security › Screen & System Audio Recording and Accessibility, remove \"equipe Desktop Helper\" with −."));
+            println!("{}", p.ok_line(if had { t!("desktop.removed") } else { t!("desktop.not_installed") }));
+            println!("{}", p.note(2, &t!("desktop.remove_note", name = name)));
             Ok(())
         }
         Action::Status => {
@@ -81,10 +76,37 @@ fn mac_only() -> Result<(), String> {
 /// mean nothing on Windows, whose helper needs no permission.
 const MAC: bool = cfg!(target_os = "macos");
 
-fn set(home: &Path, member: &str, on: bool, squad: Option<String>) -> Result<(), String> {
+/// `equipe desktop locked on|off`: the person's "Work while the screen is locked".
+fn locked(home: &Path, state: Option<&str>) -> Result<(), String> {
+    let p = ui::out();
+    let on = match state.map(str::to_ascii_lowercase).as_deref() {
+        None => equipe_core::desktop::work_locked(home),
+        Some("on" | "true" | "yes") => true,
+        Some("off" | "false" | "no") => false,
+        Some(_) => return Err(t!("desktop.locked_bad").to_owned()),
+    };
+    if state.is_some() {
+        equipe_core::desktop::set_work_locked(home, on).map_err(|e| e.to_string())?;
+    }
+    println!("{}", p.ok_line(if on { t!("desktop.locked_on") } else { t!("desktop.locked_off") }));
+    if on {
+        println!("{}", p.note(2, t!("desktop.locked_note")));
+    }
+    Ok(())
+}
+
+fn set(home: &Path, member: Option<String>, everyone: bool, on: bool, squad: Option<String>) -> Result<(), String> {
     let cwd = std::env::current_dir().unwrap_or_default();
     let squad = crate::home::squad_for(home, &cwd, squad).ok_or("No squad yet. Run equipe to start one.")?;
     let journal = equipe_core::journal::Journal::for_squad(home, &squad).map_err(|e| e.to_string())?;
+    let p = ui::out();
+    if everyone {
+        journal.set_desktop_everyone(on).map_err(|e| e.to_string())?;
+        println!("{}", p.ok_line(&if on { t!("desktop.on_everyone", squad = squad) } else { t!("desktop.off_everyone", squad = squad) }));
+        return Ok(());
+    }
+    let Some(member) = member else { return Err(t!("desktop.needs_member").to_owned()) };
+    let member = member.as_str();
     let team: Vec<String> = journal
         .open_sessions()
         .map_err(|e| e.to_string())?
@@ -95,13 +117,12 @@ fn set(home: &Path, member: &str, on: bool, squad: Option<String>) -> Result<(),
         return Err(format!("No one called {member} on {squad}. On the squad: {}.", team.join(", ")));
     }
     journal.set_desktop(member, on).map_err(|e| e.to_string())?;
-    let p = ui::out();
     if on {
-        println!("{}", p.ok_line(&format!("{member} works this Mac's desktop from its next turn (experimental).")));
-        println!("{}", p.note(2, "It clicks and types as you. Each click is checked against the app it means, and typing stops when focus moves; leave the Mac alone while it works."));
+        println!("{}", p.ok_line(&t!("desktop.on_member", member = member)));
+        println!("{}", p.note(2, t!("desktop.on_note")));
         println!("  {}", p.hint(&format!("equipe desktop off {member}")));
     } else {
-        println!("{}", p.ok_line(&format!("{member} no longer works the desktop, from its next turn.")));
+        println!("{}", p.ok_line(&t!("desktop.off_member", member = member)));
     }
     Ok(())
 }
@@ -144,13 +165,17 @@ async fn report(home: &Path) -> bool {
     }
     let Some(status) = status else { return false };
     let yes = |key: &str| status[key].as_bool().unwrap_or(false);
-    line(yes("accessibility"), t!("desktop.check_accessibility"), t!("desktop.fix_accessibility"));
+    let name = equipe_core::desktop::ready::helper_name(Some(&status));
+    if MAC {
+        host_lines(&status, &name);
+    }
+    line(yes("accessibility"), t!("desktop.check_accessibility"), &t!("desktop.fix_accessibility", name = name));
     line(yes("post_events"), t!("desktop.check_post_events"), t!("desktop.fix_post_events"));
     // The engine, run by the helper: proof that its grant reaches agent-desktop.
     if let Some(state) = status["engine"]["accessibility"].as_str() {
-        line(state == "granted", t!("desktop.check_engine_grant"), t!("desktop.fix_engine_grant"));
+        line(state == "granted", t!("desktop.check_engine_grant"), &t!("desktop.fix_engine_grant", name = name));
     }
-    optional(yes("screen"), t!("desktop.check_screen"), t!("desktop.fix_screen"));
+    optional(yes("screen"), t!("desktop.check_screen"), &t!("desktop.fix_screen", name = name));
     match status["display"].as_object() {
         Some(d) => {
             let (w, h, s) = (d["width"].as_f64().unwrap_or(0.0), d["height"].as_f64().unwrap_or(0.0), d["scale"].as_f64().unwrap_or(1.0));
@@ -158,17 +183,57 @@ async fn report(home: &Path) -> bool {
         }
         None => line(false, t!("desktop.check_no_display"), t!("desktop.fix_no_display")),
     }
+    let work_locked = equipe_core::desktop::work_locked(home);
     if status["session"]["locked"].as_bool() == Some(true) {
-        line(false, t!("desktop.check_unlocked"), t!("desktop.fix_unlocked"));
+        if work_locked {
+            optional(false, t!("desktop.check_unlocked"), t!("desktop.fix_unlocked_working"));
+        } else {
+            line(false, t!("desktop.check_unlocked"), t!("desktop.fix_unlocked"));
+        }
     }
-    let members = desktop_members(home);
     let p = ui::out();
-    if members.is_empty() {
-        println!("\n{}", p.note(2, t!("desktop.no_members")));
-    } else {
-        println!("\n{}", p.note(2, &t!("desktop.members", names = members.join(", "))));
-    }
+    println!("\n{}", p.note(2, &members_line(home, yes("accessibility"))));
+    println!("{}", p.note(2, if work_locked { t!("desktop.locked_on") } else { t!("desktop.locked_off_hint") }));
     gui && yes("accessibility") && yes("post_events")
+}
+
+/// Which process holds the permission, and — once equipe.app does — that the
+/// older helper's row can go.
+fn host_lines(status: &Value, name: &str) {
+    let p = ui::out();
+    match status["role"].as_str() {
+        Some("app") => println!("  {}", p.ok(t!("desktop.check_host_app"))),
+        Some("bundle") if status["handed_over"].as_bool() == Some(true) => {
+            optional(false, t!("desktop.check_host_app"), &t!("desktop.fix_host_handed", name = name));
+        }
+        Some("bundle") => println!("  {}", p.ok(&t!("desktop.check_host_bundle", name = name))),
+        _ => {}
+    }
+    if status["role"].as_str() == Some("app") && install::bundle_executable().is_some() {
+        println!("{}", p.note(2, t!("desktop.old_row")));
+    }
+}
+
+/// Who works the desktop, across squads: everyone by default once the switch is on.
+fn members_line(home: &Path, granted: bool) -> String {
+    let mut named = Vec::new();
+    let mut off = Vec::new();
+    let mut everyone_off = Vec::new();
+    for squad in equipe_core::squads::list(home) {
+        let Ok(j) = equipe_core::journal::Journal::for_squad(home, &squad.name) else { continue };
+        named.extend(j.desktop_members().into_iter().map(|m| format!("{}/{m}", squad.name)));
+        off.extend(j.desktop_off().into_iter().map(|m| format!("{}/{m}", squad.name)));
+        if j.desktop_off_for_everyone() {
+            everyone_off.push(squad.name.clone());
+        }
+    }
+    off.extend(everyone_off.iter().map(|s| format!("{s}/*")));
+    match (granted, off.is_empty()) {
+        (false, _) if named.is_empty() => t!("desktop.members_until_granted").to_owned(),
+        (false, _) => t!("desktop.members", names = named.join(", ")),
+        (true, true) => t!("desktop.members_everyone").to_owned(),
+        (true, false) => t!("desktop.members_except", names = off.join(", ")),
+    }
 }
 
 /// A check that doesn't hold the desktop back when it fails.
@@ -213,14 +278,6 @@ async fn install_engine(home: &Path) {
     }
 }
 
-fn desktop_members(home: &Path) -> Vec<String> {
-    equipe_core::squads::list(home)
-        .into_iter()
-        .filter_map(|s| equipe_core::journal::Journal::for_squad(home, &s.name).ok().map(|j| (s.name, j.desktop_members())))
-        .flat_map(|(squad, members)| members.into_iter().map(move |m| format!("{squad}/{m}")))
-        .collect()
-}
-
 async fn setup(home: &Path, sign: Option<String>) -> Result<(), String> {
     mac_only()?;
     let p = ui::out();
@@ -239,11 +296,14 @@ async fn setup(home: &Path, sign: Option<String>) -> Result<(), String> {
     };
     signer.remember(home).map_err(|e| e.to_string())?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let installed = install::install(home, &exe, env!("CARGO_PKG_VERSION"), &signer)?;
-    if installed.changed {
-        println!("{}", p.ok_line(&format!("Installed the desktop helper, signed with {}.", signer.describe())));
-    } else {
-        println!("{}", p.ok_line("The desktop helper is up to date."));
+    let installed = install::install(home, &exe, env!("CARGO_PKG_VERSION"), &signer).map_err(|why| match why.strip_prefix(install::SIGNING_FAILED) {
+        Some(detail) => t!("desktop.signing_failed", detail = detail.trim()),
+        None => why,
+    })?;
+    match (&installed.host, installed.changed) {
+        (install::Host::App(_), _) => println!("{}", p.ok_line(t!("desktop.installed_app"))),
+        (install::Host::Bundle, true) => println!("{}", p.ok_line(&format!("Installed the desktop helper, signed with {}.", signer.describe()))),
+        (install::Host::Bundle, false) => println!("{}", p.ok_line("The desktop helper is up to date.")),
     }
     println!("{}", p.note(2, &p.dim(&installed.requirement)));
     // The helper looks for the engine at each call: no restart needed.
@@ -266,7 +326,7 @@ async fn setup(home: &Path, sign: Option<String>) -> Result<(), String> {
     if !granted(&status) {
         // Asking puts the helper in both lists (and shows macOS's prompts).
         let _ = helper_status(home, helper::REQUEST).await;
-        guide(&status);
+        guide(&status, &equipe_core::desktop::ready::helper_name(Some(&status)));
         if ui::interactive() {
             loop {
                 println!("\n  {}", p.dim("Press Enter once you've switched them on (q to stop here)…"));
@@ -279,7 +339,7 @@ async fn setup(home: &Path, sign: Option<String>) -> Result<(), String> {
                 tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
                 match helper_status(home, helper::STATUS).await {
                     Some(now) if granted(&now) => break,
-                    Some(now) => guide(&now),
+                    Some(now) => guide(&now, &equipe_core::desktop::ready::helper_name(Some(&now))),
                     None => println!("{}", p.fail_line("The helper didn't come back after a restart.")),
                 }
             }
@@ -321,18 +381,18 @@ async fn setup_windows(home: &Path) -> Result<(), String> {
 }
 
 /// Exactly what the person switches on, opening the panes for them.
-fn guide(status: &Value) {
+fn guide(status: &Value, name: &str) {
     let p = ui::out();
     let yes = |key: &str| status[key].as_bool() == Some(true);
-    println!("\n{}", p.note(2, t!("desktop.guide_intro")));
+    println!("\n{}", p.note(2, &t!("desktop.guide_intro", name = name)));
     let mut step = 1;
     if !yes("accessibility") || !yes("post_events") {
-        println!("{}", p.note(2, &t!("desktop.guide_accessibility", step = step)));
+        println!("{}", p.note(2, &t!("desktop.guide_accessibility", step = step, name = name)));
         let _ = equipe_providers::platform::open_status(ACCESSIBILITY_PANE);
         step += 1;
     }
     if !yes("screen") {
-        println!("{}", p.note(2, &t!("desktop.guide_screen", step = step)));
+        println!("{}", p.note(2, &t!("desktop.guide_screen", step = step, name = name)));
         let _ = equipe_providers::platform::open_status(SCREEN_PANE);
     }
     println!("{}", p.note(2, t!("desktop.guide_signed")));

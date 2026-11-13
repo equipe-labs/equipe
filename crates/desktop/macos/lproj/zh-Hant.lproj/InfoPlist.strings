@@ -1,5 +1,8 @@
-/* equipe's name and why it asks for the microphone and speech recognition, in zh-Hant. */
+/* equipe's name and why it asks for the microphone, speech recognition, desktop control and the local network, in zh-Hant. */
 "CFBundleDisplayName" = "equipe";
 "CFBundleName" = "equipe";
 "NSMicrophoneUsageDescription" = "你用語音輸入訊息時，equipe 會使用麥克風。聲音不會離開這台 Mac。";
 "NSSpeechRecognitionUsageDescription" = "equipe 在這台 Mac 上把你說的話或附加的錄音轉成文字。";
+"NSAppleEventsUsageDescription" = "equipe 的成員經過 equipe 自己的檢查，替你讀取並操作這台 Mac 上的 App。";
+"NSScreenCaptureUsageDescription" = "equipe 的成員在替你使用桌面 App 時會看到螢幕。";
+"NSLocalNetworkUsageDescription" = "在你選擇時，equipe 會透過網路連線你的其他 Mac 和裝置。";

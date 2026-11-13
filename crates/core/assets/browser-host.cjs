@@ -181,7 +181,7 @@ const startProfile = async (name, profile, STATE) => {
     // --hide-crash-restore-bubble: the last exit is marked as a crash to keep
     // session sign-ins (above); no "Restore pages?" bubble for that.
     ignoreDefaultArgs: ['--enable-automation'],
-    args: ['--disable-blink-features=AutomationControlled', '--test-type', '--hide-crash-restore-bubble'],
+    args: ['--disable-blink-features=AutomationControlled', '--test-type', '--disable-notifications', '--hide-crash-restore-bubble'],
   });
 
   const owner = new Map(); // page -> lane id ("" for the person's own)

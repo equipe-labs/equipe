@@ -181,6 +181,7 @@ pub fn reads(command: &Command) -> bool {
         | C::Desktop { .. }
         | C::DesktopCheck { .. }
         | C::DesktopAuto { .. }
+        | C::DesktopLocked { .. }
         | C::Suggestions { .. }
         | C::Unqueue { .. }
         | C::SendNow { .. }
@@ -600,6 +601,7 @@ mod tests {
             Command::Desktop { open: false },
             Command::DesktopCheck { guide: true },
             Command::DesktopAuto { action: equipe_core::protocol::DesktopAutoAction::Retry },
+            Command::DesktopLocked { on: true },
             Command::Suggestions { squad: s(), on: false },
             Command::Unqueue { session: 1, text: "x".into() },
             Command::SendNow { session: 1, texts: vec![] },

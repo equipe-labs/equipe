@@ -400,20 +400,33 @@ enum DesktopAction {
     },
     /// What the desktop helper has and lacks, changing nothing
     Status,
-    /// Let a member work the desktop
+    /// Let a member work the desktop (everyone does by default once Accessibility is on)
     On {
-        member: String,
-        /// Desktop control is experimental: say so
+        /// The member (or --everyone)
+        member: Option<String>,
+        /// The whole squad again, after `equipe desktop off --everyone`
         #[arg(long)]
+        everyone: bool,
+        /// Accepted for older scripts; no longer needed
+        #[arg(long, hide = true)]
         experimental: bool,
         #[arg(long)]
         squad: Option<String>,
     },
-    /// Take the desktop back from a member
+    /// Take the desktop back from a member, or from the whole squad
     Off {
-        member: String,
+        /// The member (or --everyone)
+        member: Option<String>,
+        /// Everyone on the squad (members turned on by name keep it)
+        #[arg(long)]
+        everyone: bool,
         #[arg(long)]
         squad: Option<String>,
+    },
+    /// Whether members may act in apps through the accessibility tree while the screen is locked
+    Locked {
+        /// on or off (prints the current setting when left out)
+        state: Option<String>,
     },
     /// Stop the helper and remove it
     Remove,
@@ -733,8 +746,9 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Desktop { action } => desktop::run(action.map(|a| match a {
             DesktopAction::Setup { sign } => desktop::Action::Setup { sign },
             DesktopAction::Status => desktop::Action::Status,
-            DesktopAction::On { member, experimental, squad } => desktop::Action::On { member, experimental, squad },
-            DesktopAction::Off { member, squad } => desktop::Action::Off { member, squad },
+            DesktopAction::On { member, everyone, experimental: _, squad } => desktop::Action::On { member, everyone, squad },
+            DesktopAction::Off { member, everyone, squad } => desktop::Action::Off { member, everyone, squad },
+            DesktopAction::Locked { state } => desktop::Action::Locked { state },
             DesktopAction::Remove => desktop::Action::Remove,
             DesktopAction::Serve { home } => desktop::Action::Serve { home },
         }))

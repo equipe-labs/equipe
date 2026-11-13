@@ -772,7 +772,8 @@ fn desktop_apps(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Sect
         lines.push(Line::new(t!("settings.desktop_helper"), t!("settings.desktop_helper_missing")).warn(true).words(words).control(retry("desktop-retry-helper")));
     } else {
         let ax = ready.accessibility == Some(true);
-        lines.push(Line::new(t!("settings.desktop_accessibility"), t!("settings.desktop_accessibility_desc")).warn(!ax).words(words).control(if ax { state(true) } else { allow("desktop-allow-ax") }));
+        let name = if ready.helper_name.is_empty() { "equipe" } else { ready.helper_name.as_str() };
+        lines.push(Line::new(t!("settings.desktop_accessibility"), t!("settings.desktop_accessibility_desc", name = name)).warn(!ax).words(words).control(if ax { state(true) } else { allow("desktop-allow-ax") }));
     }
     let engine_desc = match (ready.engine, ready.engine_grant) {
         (false, _) => t!("settings.desktop_engine_missing", version = ready.engine_version),
@@ -785,9 +786,15 @@ fn desktop_apps(shell: &Shell, connected: bool, cx: &mut Context<Shell>) -> Sect
         let screen = ready.screen == Some(true);
         lines.push(Line::new(t!("settings.desktop_screen"), t!("settings.desktop_screen_desc")).words(words).control(if screen || ready.accessibility != Some(true) { state(screen) } else { allow("desktop-allow-screen") }));
     }
-    if ready.locked {
+    if ready.locked && !ready.work_locked {
         lines.push(Line::new(t!("settings.desktop_locked"), t!("settings.desktop_locked_desc")).warn(true).words(words));
     }
+    // The person's choice for an unattended Mac: tree actions go on while it is locked.
+    lines.push(
+        Line::new(t!("settings.desktop_work_locked"), t!("settings.desktop_work_locked_desc"))
+            .words("desktop locked lock screen unattended")
+            .switch(shell, "desktop-work-locked", ready.work_locked, connected, |this, on, _, _| this.set_desktop_work_locked(on), cx),
+    );
     section(lines)
 }
 
@@ -1909,6 +1916,14 @@ impl Shell {
     pub fn set_browsers_shown(&mut self, show: bool) {
         self.send_command(Command::ShowBrowser { squad: self.model.squad.clone(), member: None, show });
         self.model.browsers_shown = show;
+    }
+
+    /// "Work while the screen is locked", on the daemon's machine.
+    pub fn set_desktop_work_locked(&mut self, on: bool) {
+        if let Some(ready) = self.model.desktop_ready.as_mut() {
+            ready.work_locked = on;
+        }
+        self.send_command(Command::DesktopLocked { on });
     }
 
     pub fn set_desktop_open(&mut self, open: bool) {

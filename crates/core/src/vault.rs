@@ -78,24 +78,20 @@ pub fn system_store() -> Box<dyn Secrets> {
     Box::new(SecretStore)
 }
 
+/// macOS: equipe's one Keychain item ([`crate::keychain`]), read once per
+/// process — never one dialog per login.
 #[cfg(target_os = "macos")]
 impl Secrets for SecretStore {
     fn set_named(&mut self, account: &str, password: &str) -> Result<(), String> {
-        security_framework::passwords::set_generic_password(SERVICE, account, password.as_bytes()).map_err(|e| e.to_string())
+        crate::keychain::global().set(SERVICE, account, password)
     }
 
     fn get_named(&self, account: &str) -> Result<String, String> {
-        let bytes = security_framework::passwords::get_generic_password(SERVICE, account).map_err(|e| e.to_string())?;
-        String::from_utf8(bytes).map_err(|_| "the kept password isn't text".into())
+        crate::keychain::global().get(SERVICE, account, false)
     }
 
     fn delete_named(&mut self, account: &str) -> Result<(), String> {
-        match security_framework::passwords::delete_generic_password(SERVICE, account) {
-            Ok(()) => Ok(()),
-            // Gone already: nothing to take away.
-            Err(e) if e.code() == -25300 => Ok(()),
-            Err(e) => Err(e.to_string()),
-        }
+        crate::keychain::global().delete(SERVICE, account)
     }
 }
 

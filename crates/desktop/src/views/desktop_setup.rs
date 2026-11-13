@@ -1,7 +1,8 @@
 //! The desktop's own setup, as the person sees it: a strip above the screen
 //! while the daemon installs the accessibility engine, when it couldn't, and —
-//! the one thing macOS keeps for the person — when "equipe Desktop Helper"
-//! needs its Accessibility switch. The daemon does everything else by itself
+//! the one thing macOS keeps for the person — when equipe needs its
+//! Accessibility switch, and once, after equipe.app took over from the older
+//! "equipe Desktop Helper", that the old row can be removed. The daemon does everything else by itself
 //! (`equipe_core::desktop::auto`); this only says what it says, once, with the
 //! button that opens System Settings at the right pane (the daemon's machine,
 //! even over SSH) and the one that puts the card away.
@@ -89,7 +90,7 @@ pub fn banner(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                     v_flex()
                         .flex_1()
                         .min_w_0()
-                        .child(div().truncate().text_color(p.text).font_weight(FontWeight::SEMIBOLD).child(t!("desktop_setup.grant_title")))
+                        .child(div().truncate().text_color(p.text).font_weight(FontWeight::SEMIBOLD).child(t!("desktop_setup.grant_title", name = helper_name(ready))))
                         .child(div().truncate().text_color(p.muted).child(t!("desktop_setup.grant_body"))),
                 )
                 .child(div().flex_none().child(ui::button(p, "desktop-setup-open", Kind::Secondary, t!("desktop_setup.grant_button")).icon(Icon::Shield).disabled(!connected).on_click(cx.listener(|this, _, _, cx| {
@@ -101,8 +102,37 @@ pub fn banner(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 .child(dismiss("desktop-setup-grant-close", cx))
                 .into_any_element(),
         ),
+        DesktopSetup::Idle | DesktopSetup::JustReady if ready.old_helper => Some(
+            strip("desktop-setup-old-helper")
+                .child(div().flex_none().child(icon(Icon::Shield, ICON_SM, p.accent)))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().truncate().text_color(p.text).font_weight(FontWeight::SEMIBOLD).child(t!("desktop_setup.old_title")))
+                        .child(div().truncate().text_color(p.muted).child(t!("desktop_setup.old_body"))),
+                )
+                .child(div().flex_none().child(ui::button(p, "desktop-setup-old-open", Kind::Secondary, t!("desktop_setup.grant_button")).icon(Icon::Shield).disabled(!connected).on_click(cx.listener(|this, _, _, cx| {
+                    // System Settings at Accessibility, on the daemon's machine.
+                    this.send_command(Command::DesktopCheck { guide: true });
+                    cx.notify();
+                }))))
+                .child(div().flex_none().child(ui::icon_button(p, "desktop-setup-old-close", Icon::X, t!("desktop_setup.dismiss"), None).on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(ready) = this.model.desktop_ready.as_mut() {
+                        ready.old_helper = false;
+                    }
+                    this.send_command(Command::DesktopAuto { action: DesktopAutoAction::Dismiss });
+                    cx.notify();
+                }))))
+                .into_any_element(),
+        ),
         DesktopSetup::Idle | DesktopSetup::JustReady => None,
     }
+}
+
+/// What System Settings lists the helper as.
+fn helper_name(ready: &equipe_core::protocol::DesktopReadiness) -> &str {
+    if ready.helper_name.is_empty() { "equipe" } else { &ready.helper_name }
 }
 
 #[cfg(test)]

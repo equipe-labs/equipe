@@ -39,7 +39,7 @@ with a thin tree, canvases, shortcuts, and whenever a member truly needs pixels.
 ```
 member ──mcp__desktop__snapshot / act / …──▶ daemon: may it? (desktop on) → its turn
    (Use::Read / Headless: no lease) → send gate on the scene → helper
-helper (signed bundle, the one Accessibility grant) ──spawns──▶ agent-desktop --session eq-<hash> …
+helper = equipe.app itself (the one "equipe" Accessibility grant) ──spawns──▶ agent-desktop --session eq-<hash> …
    text on stdin · AGENT_DESKTOP_HOME=~/.equipe/desktop/agent-desktop/state (0700) · stderr dropped
 ```
 
@@ -50,7 +50,8 @@ helper's process, the CLI as a child process, or `agent-desktop mcp`.
 
 - **The CLI, chosen.** macOS charges a child's Accessibility use to its
   responsible process, so agent-desktop launched by the helper runs under the
-  helper's grant — the one switch the person already turns on. The person
+  helper's grant — the one switch the person already turns on (for "equipe",
+  see [One permission entry](#one-permission-entry-equipeapp-is-the-helper)). The person
   never grants agent-desktop itself (the release binaries are ad-hoc signed, so
   a grant to them would not survive an update anyway). The CLI has everything
   the members' loop needs: `--skeleton` and `--root` drill-down, `--window-id`,
@@ -157,11 +158,62 @@ focused or last non-empty text field of the same snapshot. So:
   title (the conversation) and the draft live before acting — another
   conversation or another draft than the person read, and nothing is sent.
 
+### One permission entry: equipe.app is the helper
+
+System Settings used to list two rows, "equipe" (the app, with its icon) and
+"equipe Desktop Helper" (a blank icon) — the second a signed copy of `equipe`
+in `~/Applications` that held the permission. Now:
+
+- **With equipe.app installed** (any version whose Info.plist has
+  `EquipeDesktopServe`), the helper's LaunchAgent (`im.equipe.desktop-helper`)
+  runs the app's own executable: `equipe.app/Contents/MacOS/equipe-desktop
+  desktop serve --home ~/.equipe`. That mode opens no window; it serves the
+  helper socket exactly as before. macOS judges a permission by the code that
+  runs, so the app's single "equipe" row covers the app, the helper and
+  agent-desktop under it. Nothing is copied or signed on the Mac: the app's
+  Developer ID signature keeps the grant across Sparkle updates, and the
+  LaunchAgent's path never changes (no "background item added" again). After
+  an update the daemon restarts the helper once so it runs the new build.
+- **Without the app** (the command line alone) the helper is still a bundle in
+  `~/Applications`, now named "equipe" with equipe's icon (folder name kept,
+  so an existing grant stays). It is rebuilt only when the helper's code
+  changed (`install::REVISION`, a hash of `crates/desktop-control/src`), not on
+  every update; a new build is staged beside the old one and swapped in by
+  renaming, and the old one is moved to `~/.equipe/desktop/retired/` — never
+  written into or deleted, which is what macOS's App Management blocked
+  ("macOS blocked equipe from modifying apps").
+- **Moving over.** A Mac that had the old bundle and gets equipe.app: the
+  LaunchAgent is pointed at the app once. While the app isn't allowed yet and
+  the old bundle is, the app shows macOS's Accessibility prompt for "equipe"
+  once and hands over to the old bundle (`exec`, so macOS judges the old
+  bundle's grant) — members keep working. The daemon starts the app again on
+  its own start, when the person presses Allow…/Check, and every 6 hours, to
+  see whether "equipe" is allowed by then. Once it is, the old bundle is moved
+  aside and the person is told once — a card in the app, a note in `equipe
+  desktop status` — that the "equipe Desktop Helper" row can be removed (−).
+- `equipe desktop status` says which process holds the permission ("runs as
+  equipe itself", or the bundle, or "the older helper keeps working
+  meanwhile").
+
 ### Permissions UX
 
-- **One grant matters: Accessibility for "equipe Desktop Helper".** It covers
+- **One grant matters: Accessibility for "equipe".** It covers
   the tree, ref actions and input, and agent-desktop under it. Screen
   Recording is optional now — only screenshots and the send-approval picture.
+- **Every member works the desktop by default** once that switch is on — no
+  `equipe desktop on <member>` step. The person opts out per member
+  (`equipe desktop off <member>`) or per squad (`equipe desktop off
+  --everyone`; `on --everyone` undoes it); a member turned on by name works it
+  either way (and the switch is then asked for). Every gate below stays:
+  sending in the person's name asks them, payment/password/security screens
+  and password managers take no input, text goes in on stdin, and nothing of
+  the screen is logged.
+- **Prompt budget.** Every macOS prompt equipe can cause goes through one place
+  (`equipe_desktop_control::prompts`): at most one of a kind is up at a time
+  in a process, the answer is kept in `~/.equipe/prompts.json`, and after a
+  yes equipe never asks again for that identity unless macOS takes the grant
+  back; after a no, background work waits a day. The Accessibility prompt is
+  shown once per identity (the app, or the bundle).
 - The daemon sets all of it up by itself — see [Automatic setup](#automatic-setup)
   below. `equipe desktop setup` does the same right away and walks the person
   through the grant; `equipe desktop status` lists every check (GUI session,
@@ -206,8 +258,9 @@ no permission, no screen and no network).
 | Step | Who | When |
 |---|---|---|
 | Engine: download, verify the pinned SHA-256s, install | daemon, in the background, off the main loop (15 s after it starts) | the engine is missing, doesn't verify, or `VERSION` changed (`equipe update` restarts the daemon) — for every user, from the first daemon start |
-| Helper: install and sign the bundle, load its LaunchAgent, keep it current | daemon | once a member works the desktop (turned on for someone, or a desktop tool was called) and someone is logged in at the Mac |
-| macOS's Accessibility prompt for the helper | daemon, **once** (`_request_accessibility`) | engine ready, helper answering, grant missing, desktop wanted |
+| Helper: point its LaunchAgent at equipe.app (or, without the app, install and sign the bundle), keep it current | daemon | once the desktop is wanted (the helper was set up once, a member was turned on by name, or a desktop tool was called) and someone is logged in at the Mac |
+| macOS's Accessibility prompt for "equipe" | daemon, **once** per identity (`_request_accessibility`, through the prompt budget) | engine ready, helper answering, grant missing, desktop wanted |
+| Moving from the old bundle to equipe.app, and the note that its row can go | daemon + the app's helper mode | equipe.app installed and allowed |
 | The switch | **the person** | the card below, or the first-run step |
 | Watching for the switch, the status check, "Desktop apps ready" | daemon: a light poll (4 s for 10 minutes, then 30 s) while the card is up | the grant appears |
 
@@ -239,13 +292,15 @@ own prompt was shown once before it.
 - **Managed Macs (MDM).** Accessibility can be pre-approved by a configuration
   profile on a supervised or MDM-managed Mac, so nobody flips anything: push a
   Privacy Preferences Policy Control (PPPC) payload (`com.apple.TCC.configuration-profile-policy`)
-  with an `Accessibility` entry for the helper, `Authorization` = `Allow`, with
-  `Identifier` = `im.equipe.desktop-helper`, `IdentifierType` = `bundleID` and
-  the `CodeRequirement` that `codesign -d -r- "~/Applications/equipe Desktop
-  Helper.app"` prints (`equipe desktop setup` prints it as well). The
-  requirement depends on how the helper is signed — a Developer ID
-  (`equipe desktop setup --sign "<identity>"`) is the right choice for a fleet,
-  since a self-signed certificate is different on every Mac. When the profile
+  with an `Accessibility` entry for equipe.app, `Authorization` = `Allow`, with
+  `Identifier` = `im.equipe.desktop`, `IdentifierType` = `bundleID` and the
+  `CodeRequirement` that `codesign -d -r- /Applications/equipe.app` prints
+  (`equipe desktop setup` prints it as well) — the release's Developer ID, the
+  same on every Mac. Without the app, the entry is for the bundle
+  (`im.equipe.desktop-helper`, `codesign -d -r- "~/Applications/equipe
+  Desktop Helper.app"`), whose requirement depends on how it is signed: a
+  Developer ID (`equipe desktop setup --sign "<identity>"`), since a
+  self-signed certificate is different on every Mac. When the profile
   is in place the daemon sees the grant on its first look and says "Desktop
   apps ready" without a card. Only Accessibility can be pre-approved this way;
   Screen Recording can only be allowed by the person (a profile can merely let
@@ -269,8 +324,8 @@ Not run against a live desktop while building this (by rule): everything above
 is tested with fakes and a stand-in agent-desktop. On a real Mac, the person:
 
 1. does nothing for the engine and the helper;
-2. switches on **Accessibility** for "equipe Desktop Helper" (password or Touch
-   ID) when the card, the first-run step or macOS's prompt asks — the one switch;
+2. switches on **Accessibility** for "equipe" (password or Touch ID) when the
+   card, the first-run step or macOS's prompt asks — the one switch;
 3. optionally switches on **Screen Recording** for it (screenshots), from
    Settings › Squad › Desktop apps › Allow…;
 4. can check `equipe desktop status`: "The engine works under the helper's
@@ -281,6 +336,35 @@ is tested with fakes and a stand-in agent-desktop. On a real Mac, the person:
 To verify end to end: a member with the desktop on snapshots TextEdit, types
 into its text area by ref, re-reads it; then in a messaging app, a ref click on
 Send must ask.
+
+### Working while the screen is locked
+
+An unattended Mac (a Mac mini in a cupboard) is locked most of the time. The
+person may turn on **Work while the screen is locked** (`equipe desktop locked
+on`, or the switch in Settings › Desktop apps; off unless turned on; the
+person's alone — members can't change it):
+
+- **Allowed while locked:** reading (`snapshot`, `find`, `wait`, lists — these
+  always were) and **headless ref actions** (`act` without `headed`: press,
+  set a value, select, toggle, scroll, launch in the background). They go to
+  the app through the accessibility API (an `AXUIElement` call answered by the
+  app's own process), not through the window server's input path, and the
+  apps keep running in the locked session.
+- **Still waits for an unlocked screen:** everything physical — `headed`
+  actions, double/right clicks, focusing or moving windows, launching with
+  `activate`, writing the clipboard, notification buttons, and the
+  screenshot-and-click tools. macOS routes synthesised pointer and keyboard
+  events to the lock screen while it is up (they would type into the password
+  field, if anything), and screen capture shows the lock screen. Members are
+  told so in one line (`Refusal::LockedPhysical`) and pointed at `act` on a ref.
+- **Not verified on a live Mac** (by rule, nothing here touched a real
+  screen): some apps stop updating their tree, or ignore actions, while the
+  session is locked (App Nap, a window server that stopped drawing them).
+  When a headless action fails while the screen is locked, the member is told
+  that this may be why, and to read the app again or wait for the person.
+- **Logged out stays refused**, and so does FileVault before the first login:
+  there is no session, and no app, to act in. `/desktop stop` refuses
+  everything as before.
 
 ### Limits and follow-ups
 
