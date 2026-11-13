@@ -1291,7 +1291,10 @@ fn team_block(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                     .id("team-turns")
                     .gap(px(5.))
                     .items_center()
+                    // The padding (for the hover background) hangs outside the
+                    // heading's own, so the words end at the rows' right edge.
                     .px(px(4.))
+                    .mr(px(-4.))
                     .rounded(px(4.))
                     .font_weight(FontWeight::NORMAL)
                     .hover(move |s| s.bg(p.side_sel))

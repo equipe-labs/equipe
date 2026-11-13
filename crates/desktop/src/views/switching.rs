@@ -171,9 +171,17 @@ pub fn meters(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         )
         .child(div().min_w_0().truncate().child(t!("engines.usage_title")))
         .child(div().flex_1())
-        .children(glance)
-        .when(!folded, |h| h.child(div().flex_none().font_weight(FontWeight::NORMAL).text_size(px(11.)).child(rules::mode_word(model.engines.mode))))
-        .children(waiting.then(|| div().flex_none().size(px(6.)).rounded_full().bg(p.accent)));
+        // The status dot comes first, as in the team heading, so the words end
+        // at the same right edge as the rows below.
+        .child(
+            h_flex()
+                .flex_none()
+                .gap(px(5.))
+                .items_center()
+                .children(waiting.then(|| div().flex_none().size(px(6.)).rounded_full().bg(p.accent)))
+                .children(glance)
+                .when(!folded, |h| h.child(div().flex_none().font_weight(FontWeight::NORMAL).text_size(px(11.)).child(rules::mode_word(model.engines.mode)))),
+        );
     let rows: Vec<AnyElement> = if folded { Vec::new() } else { meters.iter().map(|m| meter_rows(shell, m, now, cx)).collect() };
     // Every engine out: one banner says so, folded or not, over the per-engine lines.
     let banner = rules::all_out(&meters, now).map(|out| all_out_banner(p, out, now));
