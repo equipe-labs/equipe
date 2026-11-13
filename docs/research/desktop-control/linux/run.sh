@@ -49,9 +49,22 @@ dbus-run-session -- bash -c '
   H act "{\"ref\":\"$OK\",\"action\":\"click\"}"
   sleep 1
   if kill -0 $ZEN 2>/dev/null; then echo "zenity still open"; else echo "zenity closed; it printed: $(cat /tmp/zenity.out)"; fi
-  echo; echo "----- helper: a screenshot tool on Linux -----"
+  echo; echo "----- helper: screenshot, the real pointer and keyboard (openbox: no compositor) -----"
+  GTK_MODULES=gail:atk-bridge zenity --entry --title "Pointer Probe" --text "Typed?" > /tmp/zenity2.out 2>/dev/null & ZEN2=$!
+  sleep 2
   H screenshot "{}"
-  H click "{\"x\":10,\"y\":10}"
+  H list_windows "{}"
+  H elements "{\"app\":\"zenity\"}"
+  WIN=$(H list_windows "{}" | grep "Pointer Probe" | grep -oE "^OK w[0-9]+|^w[0-9]+" | grep -oE "w[0-9]+" | head -1)
+  H screenshot "{\"window\":\"$WIN\"}"
+  H screenshot "{}"
+  echo "(a click outside zenity, on the bare root window, is refused before any input)"
+  H click "{\"app\":\"zenity\",\"x\":1270,\"y\":790}"
+  H type_text "{\"app\":\"zenity\",\"text\":\"real keys, ok\"}"
+  H key "{\"app\":\"zenity\",\"keys\":\"alt+f4\"}"
+  H key "{\"app\":\"zenity\",\"keys\":\"return\"}"
+  sleep 1
+  if kill -0 $ZEN2 2>/dev/null; then echo "zenity 2 still open"; else echo "zenity 2 closed; it printed: $(cat /tmp/zenity2.out)"; fi
   echo; echo "----- remove -----"
   '"$EQ"' desktop remove; echo "[remove exit $?]"
   sleep 0.5; pgrep -f "^/out/equipe desktop serve" >/dev/null && echo "helper still running" || echo "no helper running"

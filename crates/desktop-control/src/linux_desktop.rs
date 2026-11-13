@@ -59,17 +59,34 @@ pub struct Listed {
     pub focused: bool,
 }
 
-/// An agent-desktop failure: its code (when it said one) and what to tell the member.
+/// An agent-desktop failure: its code (when it said one), whether it says
+/// nothing was sent, and what to tell the member.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Failed {
     pub code: Option<String>,
+    pub unsent: bool,
     pub text: String,
 }
 
 impl Failed {
     fn plain(text: impl Into<String>) -> Self {
-        Self { code: None, text: text.into() }
+        Self { code: None, unsent: false, text: text.into() }
     }
+}
+
+/// agent-desktop's `error`, in a line: what it said, and whether anything
+/// went in. Not the accessibility tools' hints (`headed: true`), which mean
+/// nothing for a pointer or keyboard tool.
+pub fn error_line(err: &Value) -> String {
+    let code = err.get("code").and_then(Value::as_str).unwrap_or("ERROR");
+    let message = err.get("message").and_then(Value::as_str).unwrap_or("").replace(" pass --force to override", "").replace("; pass --force to override", "");
+    let mut line = format!("{code}: {}", message.trim_end_matches([';', ' ']));
+    match err.get("disposition").and_then(|d| d.get("delivery")).and_then(Value::as_str) {
+        Some("not_delivered") => line.push_str(" (nothing was sent)"),
+        Some(other) => line.push_str(&format!(" ({}: look before you try again)", other.replace('_', " "))),
+        None => {}
+    }
+    line
 }
 
 /// The Linux desktop, as the screenshot tools use it.
@@ -96,8 +113,9 @@ impl LinuxDesktop {
         }
         let err = envelope.get("error").cloned().unwrap_or(Value::Null);
         let code = err.get("code").and_then(Value::as_str).map(str::to_owned);
-        let text = if err.is_null() { "agent-desktop failed without saying why".to_owned() } else { crate::engine::compact::error(&err) };
-        Err(Failed { code, text })
+        let unsent = err.get("disposition").and_then(|d| d.get("delivery")).and_then(Value::as_str) == Some("not_delivered");
+        let text = if err.is_null() { "agent-desktop failed without saying why".to_owned() } else { error_line(&err) };
+        Err(Failed { code, unsent, text })
     }
 
     /// Input: on failure, kept for [`crate::controller::Desktop::input_failure`].
@@ -450,14 +468,22 @@ impl crate::controller::Desktop for LinuxDesktop {
         self.input(&["--headed".into(), "press".into(), press_name(combo)], None);
     }
     /// Real keys into the focused text field (`type --headed`, the text on
-    /// stdin); where nothing focused takes text, key by key when every
-    /// character is a key.
+    /// stdin). Keys that couldn't be sent at all (agent-desktop can't confirm
+    /// the window active, as under some window managers) go into that same
+    /// field through its text interface instead. Where nothing focused takes
+    /// text, key by key when every character is a key.
     fn type_run(&self, text: &str) -> Option<Result<(), String>> {
         let typed = match self.focused_element() {
-            Some(field) => match self.ad(&["--headed".into(), "type".into(), field.reference, "--stdin".into()], Some(text), 30) {
+            Some(field) => match self.ad(&["--headed".into(), "type".into(), field.reference.clone(), "--stdin".into()], Some(text), 30) {
                 Ok(_) => Ok(()),
                 // Not a text field (a terminal's keys, a canvas): key by key below.
                 Err(Failed { code: Some(code), .. }) if code == "POLICY_DENIED" || code == "ACTION_NOT_SUPPORTED" => Err(None),
+                Err(Failed { code: Some(code), unsent: true, text: why }) if code == "ACTION_FAILED" => {
+                    match self.ad(&["type".into(), field.reference, "--stdin".into()], Some(text), 30) {
+                        Ok(_) => Ok(()),
+                        Err(again) => Err(Some(format!("{why}; through the field's text interface: {}", again.text))),
+                    }
+                }
                 Err(failed) => Err(Some(failed.text)),
             },
             None => Err(None),
@@ -524,7 +550,9 @@ mod tests {
                     { "ref_id": "@s1:e1", "role": "textfield", "name": "Document", "value": "hello", "states": ["focused", "enabled"] }
                 ] }] } }),
                 "type" => {
-                    if let Some(code) = *self.refuse_type.lock().unwrap() {
+                    if let Some(code) = *self.refuse_type.lock().unwrap()
+                        && (code != "ACTION_FAILED" || args.iter().any(|a| a == "--headed"))
+                    {
                         return Ok(json!({ "ok": false, "error": { "code": code, "message": "not a text target", "disposition": { "delivery": "not_delivered", "retry": "safe" } } }));
                     }
                     json!({ "action": "type" })
@@ -618,6 +646,19 @@ mod tests {
         let pressed: Vec<String> = ran(&fake, "press").iter().map(|(a, _)| a[2].clone()).collect();
         assert_eq!(pressed, ["l", "s", "space", "-", "a"]);
         assert!(d.type_run("é").unwrap().unwrap_err().contains("act"), "a character no key makes isn't guessed at");
+        // Keys that couldn't be sent at all: into the same field, headless.
+        *fake.refuse_type.lock().unwrap() = Some("ACTION_FAILED");
+        assert_eq!(d.type_run("über"), Some(Ok(())));
+        let last = ran(&fake, "type").pop().unwrap();
+        assert_eq!((last.0, last.1.as_deref()), (vec!["type".to_owned(), "@s1:e1".to_owned(), "--stdin".to_owned()], Some("über")));
+    }
+
+    #[test]
+    fn a_refusal_reads_without_the_accessibility_tools_hints() {
+        let blocked = json!({ "code": "POLICY_DENIED", "message": "Key combo 'alt+f4' is blocked for safety; pass --force to override", "disposition": { "delivery": "not_delivered", "retry": "safe" } });
+        assert_eq!(error_line(&blocked), "POLICY_DENIED: Key combo 'alt+f4' is blocked for safety (nothing was sent)");
+        let maybe = json!({ "code": "TIMEOUT", "message": "late", "disposition": { "delivery": "delivery_uncertain" } });
+        assert_eq!(error_line(&maybe), "TIMEOUT: late (delivery uncertain: look before you try again)");
     }
 
     #[test]

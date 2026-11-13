@@ -15,4 +15,6 @@ while not buf.endswith(b"\n"):
         break
     buf += chunk
 r = json.loads(buf)
-print(("ERROR " if r.get("is_error") else "OK ") + r.get("text", ""))
+image = r.get("image") or {}
+seen = f" [+ {image.get('mime')} image, {len(image.get('data', '')) * 3 // 4} bytes]" if image else ""
+print(("ERROR " if r.get("is_error") else "OK ") + r.get("text", "") + seen)

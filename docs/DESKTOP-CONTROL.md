@@ -459,8 +459,11 @@ Linux helper (`crates/desktop-control/src/linux.rs`) is about the session:
   - `type_text`: real keys into the element whose AT-SPI state is `focused`
     in the focused window (`type --headed <ref> --stdin`, the text never in
     the arguments), in runs between the return and tab keys a newline and a
-    tab press, focus checked before each run. Where nothing focused takes text
-    (a terminal), key by key with `press` when every character is a key. The
+    tab press, focus checked before each run. Keys agent-desktop couldn't send
+    at all (it can't confirm the window active, as under openbox) go into the
+    same focused field through its text interface instead. Where nothing
+    focused takes text (a terminal), key by key with `press` when every
+    character is a key. The
     send gate sees that focused field, so a password field gets nothing, as on
     a Mac.
   - `key`: `--headed press`, `cmd` read as Ctrl (as on Windows). agent-desktop
@@ -497,16 +500,33 @@ Linux helper (`crates/desktop-control/src/linux.rs`) is about the session:
   `at-spi2-core`, `libatk-adaptor` (GTK's bridge), `dbus-x11` or another
   session bus, a window manager, and for X11 headless work `xvfb`; Wayland
   clipboard needs `wl-clipboard`.
-- **Run live** on Ubuntu 24.04 (aarch64, in a container: Xvfb + openbox +
-  AT-SPI + a GTK `zenity --entry`), with the script and its output in
+- **Run live**, with the scripts and output in
   [`research/desktop-control/linux`](./research/desktop-control/linux):
-  `status`/`setup` from a bare shell and from a session without AT-SPI say
-  what is missing; in the full session `setup` downloads and verifies the
-  pinned aarch64 engine, starts the helper and reports ready, and through the
-  helper's socket a snapshot, the send gate's `_scene`, `act type` (verified),
-  and `act click` on OK work — zenity printed the typed text. Not run live: the
-  daemon (its rules are platform-independent and unit-tested), the systemd
-  environment fallback, Wayland, GNOME Shell, and the x86_64 binary.
+  - *A real Xfce desktop* (Ubuntu 24.04 x86_64 VM: Xvnc, xfwm4, Mousepad and
+    Chrome; `vm-xfce.txt`): from a squad with no `desktop on` and no remembered
+    readiness, `equipe desktop setup` inside the session reported ready (idle
+    time from the X server: the VM has neither Mutter nor `xprintidle`); the
+    daemon, a systemd user unit started without `DISPLAY`, found the session
+    through the user manager, read the setup mark and called the desktop ready
+    by itself; then one real Claude Code member on an action ticket took a
+    whole-screen screenshot, clicked into Mousepad, pressed `ctrl+end return`
+    and typed a line with `type_text` (real keys), took a second screenshot to
+    check, and handed in after 65 s. The editor's text was read back
+    independently. With xfwm4's compositor on, agent-desktop's whole-screen
+    capture is `PLATFORM_NOT_SUPPORTED` and the helper's composed picture came
+    back in 1.5 s.
+  - *A container* (Ubuntu 24.04 aarch64: Xvfb + openbox + AT-SPI + GTK
+    `zenity --entry`; `run.sh`, `live.txt`): `status`/`setup` from a bare
+    shell and without AT-SPI say what is missing; in the full session the
+    accessibility path (snapshot, `_scene`, `act type` verified, `act click`)
+    and the screenshot/pointer/keyboard path (screenshots, `list_windows`, a
+    click outside the app refused before any input, `type_text`, a blocked
+    `alt+f4` told, `return` closing the dialog with the typed text) work.
+  - *Not run live:* Wayland (keys through Mutter, the portal's consent), GNOME
+    Shell, the systemd environment fallback with a session that exports
+    nothing, lock detection, the Chromium headed-click fallback (unit-tested
+    only), and a person using the machine while a member waits for the screen
+    (the person-first wait is platform-independent and unit-tested).
 
 ### Limits and follow-ups
 
