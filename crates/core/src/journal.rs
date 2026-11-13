@@ -291,8 +291,11 @@ pub struct ModelChoiceKept {
     pub what: String,
     pub tier: Option<String>,
     pub by: String,
-    /// The cheaper tier the rules would have picked, never acted on.
+    /// The tier the rules asked for, where the ticket ran above it.
     pub shadow: Option<String>,
+    /// What the rules made of the ticket by itself (`code`, `small`, `risk`…),
+    /// whatever it ran as in the end; `None` for the PM and rows from before.
+    pub classified: Option<String>,
 }
 
 /// A design QA ticket's way through the precheck, its gate and the
@@ -676,6 +679,10 @@ impl Journal {
              );
              CREATE INDEX IF NOT EXISTS model_choices_ticket ON model_choices(ticket);",
         )?;
+        // What the rules made of a ticket by itself, beside the reason it ran on its tier
+        // (an escalation, the person's choice, the member's floor): kept to see which kinds
+        // of tickets run on which tier.
+        let _ = conn.execute("ALTER TABLE model_choices ADD COLUMN classified TEXT", []);
         // Each design QA ticket's way through the precheck, its gate and the
         // designer, for measuring them (`crate::design::qa_stats`).
         conn.execute_batch(
@@ -1650,13 +1657,14 @@ impl Journal {
     }
 
     /// Keep a model choice for `ticket`: `what` happened (`lane`: a lane
-    /// started on it; `escalated`; `person`), on whom, and the cheaper tier
-    /// the rules would have picked, never acted on.
+    /// started on it; `escalated`; `person`), on whom, the tier the rules
+    /// asked where the ticket ran above it, and what the rules made of the
+    /// ticket by itself.
     pub fn record_model_choice(&self, ticket: TicketId, what: &str, member: Option<(&str, &str)>, m: &equipe_protocol::tiers::TicketModel) -> Result<()> {
         let word = |v: serde_json::Result<serde_json::Value>| v.ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
         self.conn.execute(
-            "INSERT INTO model_choices (ticket, at, what, member, role, engine, tier, model, effort, by, reason, shadow)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO model_choices (ticket, at, what, member, role, engine, tier, model, effort, by, reason, shadow, classified)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 ticket,
                 now(),
@@ -1670,6 +1678,7 @@ impl Journal {
                 word(serde_json::to_value(m.by)),
                 word(serde_json::to_value(m.reason)),
                 m.shadow.map(|t| t.code()),
+                m.classified.map(|r| word(serde_json::to_value(r))),
             ],
         )?;
         Ok(())
@@ -1678,8 +1687,8 @@ impl Journal {
     /// The model choices kept for `ticket`, oldest first: what happened, the
     /// tier, by whom, and the cheaper tier recorded beside it.
     pub fn model_choices(&self, ticket: TicketId) -> Result<Vec<ModelChoiceKept>> {
-        let mut stmt = self.conn.prepare("SELECT what, tier, by, shadow FROM model_choices WHERE ticket = ?1 ORDER BY at, rowid")?;
-        let rows = stmt.query_map([ticket], |r| Ok(ModelChoiceKept { what: r.get(0)?, tier: r.get(1)?, by: r.get(2)?, shadow: r.get(3)? }))?;
+        let mut stmt = self.conn.prepare("SELECT what, tier, by, shadow, classified FROM model_choices WHERE ticket = ?1 ORDER BY at, rowid")?;
+        let rows = stmt.query_map([ticket], |r| Ok(ModelChoiceKept { what: r.get(0)?, tier: r.get(1)?, by: r.get(2)?, shadow: r.get(3)?, classified: r.get(4)? }))?;
         rows.collect()
     }
 
@@ -1924,6 +1933,17 @@ impl Journal {
     /// equipe's policies never run them below it.
     pub fn person_models(&self) -> Vec<String> {
         self.meta("person_models").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    /// `member`'s model is no longer the person's choice: equipe moved it to
+    /// the other engine on its own, onto a model of its own.
+    pub fn unmark_person_model(&self, member: &str) -> Result<()> {
+        let mut all = self.person_models();
+        if all.iter().any(|m| m == member) {
+            all.retain(|m| m != member);
+            self.set_meta("person_models", &serde_json::to_string(&all).unwrap_or_default())?;
+        }
+        Ok(())
     }
 
     pub fn mark_person_model(&self, member: &str) -> Result<()> {
@@ -3309,10 +3329,10 @@ mod tests {
         j.record_send_back(id, "equipe", SendBackReason::Correctness).unwrap();
         assert_eq!((j.send_backs(id, SendBackReason::Correctness).unwrap(), j.send_backs(id, SendBackReason::Style).unwrap()), (2, 1));
         // Every choice, with the cheaper tier beside it.
-        j.record_model_choice(id, "lane", Some(("backend", "backend")), &TicketModel { tier: Some(ModelTier::Max), reason: TierReason::MemberFloor, shadow: Some(ModelTier::Strong), ..TicketModel::default() }).unwrap();
+        j.record_model_choice(id, "lane", Some(("backend", "backend")), &TicketModel { tier: Some(ModelTier::Max), reason: TierReason::MemberFloor, shadow: Some(ModelTier::Strong), classified: Some(TierReason::Code), ..TicketModel::default() }).unwrap();
         j.record_model_choice(id, "escalated", None, &m).unwrap();
-        let kept = |what: &str, tier: &str, by: &str, shadow: Option<&str>| ModelChoiceKept { what: what.into(), tier: Some(tier.into()), by: by.into(), shadow: shadow.map(str::to_owned) };
-        assert_eq!(j.model_choices(id).unwrap(), [kept("lane", "max", "rule", Some("strong")), kept("escalated", "deep", "escalation", None)]);
+        let kept = |what: &str, tier: &str, by: &str, shadow: Option<&str>, classified: Option<&str>| ModelChoiceKept { what: what.into(), tier: Some(tier.into()), by: by.into(), shadow: shadow.map(str::to_owned), classified: classified.map(str::to_owned) };
+        assert_eq!(j.model_choices(id).unwrap(), [kept("lane", "max", "rule", Some("strong"), Some("code")), kept("escalated", "deep", "escalation", None, None)]);
         // The squad's say: quality first until set.
         assert_eq!(j.model_choice(), ModelChoice::QualityFirst);
         j.set_model_choice(ModelChoice::Off).unwrap();

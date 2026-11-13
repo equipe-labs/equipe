@@ -74,7 +74,7 @@ impl Runtime {
         });
         out.push(match model_choice {
             crate::protocol::tiers::ModelChoice::QualityFirst => {
-                "Model choice (model_choice): quality — each ticket's lane starts on a stronger model or more thinking where its work needs it, never below its member's own; work sent back twice for correctness goes up a step.".to_owned()
+                "Model choice (model_choice): quality — each ticket's lane starts on the cheapest model and effort that does its work well (an everyday model for routine changes, a strong one for features, the hardest thinking for real risk), never below a model the person chose for its member; work sent back for correctness goes up a step.".to_owned()
             }
             crate::protocol::tiers::ModelChoice::Off => "Model choice (model_choice): off — every ticket runs on its member's own model and effort.".to_owned(),
         });

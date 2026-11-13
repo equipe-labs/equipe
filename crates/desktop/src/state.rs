@@ -395,8 +395,8 @@ pub struct Model {
     /// How many tickets the squad works at once: by the plans' usage, or
     /// max at the person's caps. Auto from a daemon that predates it.
     pub parallel: equipe_core::protocol::lanes::Parallel,
-    /// The engines whose new runs are paced to their plans' budgets now
-    /// (auto only); none from a daemon that predates it.
+    /// The engines under their reserve now, where only the PM and urgent
+    /// work start (auto only); none from a daemon that predates it.
     pub pacing: Vec<equipe_core::protocol::lanes::Pacing>,
     /// Whether equipe picks each ticket's model: quality first unless the
     /// person turned it off. Quality first from a daemon that predates it.
@@ -3952,7 +3952,7 @@ mod tests {
         assert_eq!(model.parallel, Parallel::max(8, 20));
         model.apply(Update::Event(Event::ParallelChanged { squad: "other".into(), parallel: Parallel::default() }), T0);
         assert_eq!(model.parallel, Parallel::max(8, 20), "another squad's");
-        let paced = equipe_core::protocol::lanes::Pacing { engine: Engine::Claude, cap: 6, of: 14, until: 99, other_engine: false, since: 5 };
+        let paced = equipe_core::protocol::lanes::Pacing { engine: Engine::Claude, left: 12, reserve: 15, until: 99, other_engine: false, since: 5 };
         assert!(model.apply(Update::Event(Event::PacingChanged { squad: "acme".into(), pacing: vec![paced] }), T0));
         assert_eq!(model.pacing, vec![paced], "pacing shows as the daemon tells it");
         model.apply(Update::Event(Event::PacingChanged { squad: "other".into(), pacing: vec![] }), T0);

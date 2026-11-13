@@ -460,7 +460,9 @@ truncation with the whole text available), hand in again with `waive_findings` s
         let run = journal.design_qa_run(qa.id);
         let round = run.as_ref().map(|r| r.round).or_else(|| checked.as_ref().and_then(|c| journal.design_qa_rounds(c.id).ok())).unwrap_or(1);
         // The top tier for what leaves too little seen; what only left some states unseen stays cheap.
-        let judgment = run.as_ref().is_none_or(|r| r.precheck != "done" || r.judgment.as_deref().is_some_and(crate::design_qa::Judgment::text_needs_top));
+        // A small change (copy, a label, a tweak) with no report is still a small look; the top tier waits for what a designer must really judge.
+        let small = checked.as_ref().is_some_and(|c| crate::tiers::small_change(&c.title));
+        let judgment = run.as_ref().is_some_and(|r| r.judgment.as_deref().is_some_and(crate::design_qa::Judgment::text_needs_top)) || (run.as_ref().is_none_or(|r| r.precheck != "done") && !small);
         let person = journal.person_models().iter().any(|m| m == member) || journal.role_models().iter().any(|r| r.role == role && r.engine == engine && r.model.is_some());
         // A light per-ticket session: the cheap tier, the top one from a third round on.
         if run.as_ref().is_some_and(|r| r.lite) {

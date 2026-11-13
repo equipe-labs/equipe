@@ -213,12 +213,13 @@ every ticket (`crate::tiers`):
 - `economy` (default): **standard** (Claude: Sonnet · medium; Codex: Sol · low) — **deep** (Opus · high / Sol · high)
   for a redesign (the checked ticket says redesign, restyle, …), a second round or more, or a precheck whose judgment
   reason needs the top tier (table above; no report at all included, so with the gate `off` design QA stays on the
-  top tier). `capped`, `partial` and `unmapped` stay on the cheap tier: the designer is handed what wasn't seen.
+  top tier — except for a small change, as its title says: copy, a label, a tweak, a chore, which stays on the cheap
+  tier even without a report). `capped`, `partial` and `unmapped` stay on the cheap tier: the designer is handed what wasn't seen.
 - `quality`: deep always, as before.
 - `<cheap>/<top>`, e.g. `strong/max`.
 
 Precedence, strongest first: the tier the person set on the ticket; the squad's model choice `off` (members' own
-models); a model the person set for the member (`/model`, a move they made, or the squad's default for the role) —
+models); a model the person set for the member (`/model`, a move they made with a model, or a model they set for the role) —
 then the member's own model is the floor and the cheaper tier is only recorded beside it (`shadow` in
 `model_choices`); otherwise the policy's tier, below the member's own model included.
 

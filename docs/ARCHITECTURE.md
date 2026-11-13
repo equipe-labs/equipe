@@ -786,6 +786,42 @@ owns it or suggests `/add`.
   family (the latest Sol, else Astra; Luna for light work; a reviewer never below Sol).
   Claude writes and Codex reviews (`roles::DEFAULT_ENGINES`) — which puts QA on a
   different engine from the engineers, so a second model checks the first one's work.
+- **Models per ticket** (`equipe_core::tiers`). A lane picks a *tier* once, when it
+  starts, and the tier is mapped to a model and effort on the member's engine. By
+  default the squad is on *quality* (`ModelChoice::QualityFirst`): each ticket gets
+  the cheapest tier that does it well, and escalation is the safety net.
+
+  | Ticket | Tier | Claude | Codex |
+  |---|---|---|---|
+  | Trivial and mechanical (rename, formatting, links, status check), with a check to run | light | Haiku · medium | Luna · medium |
+  | Routine code (one area, small diff, clear acceptance criteria), tests added, chores, copy, i18n, docs, read-only research, checklist QA, design QA of small changes | standard | Sonnet · medium | Sol · low |
+  | Features, unclear specs, several areas, design work | strong | Opus · medium | Sol · medium |
+  | Real risk (auth, payments, migrations, security, concurrency, deploys) and broad refactors | deep | Opus · high | Sol · high |
+  | Escalated work, or the person's pick | max | Opus · xhigh | Sol · xhigh |
+
+  Escalation moves a ticket one tier up for its next lane, fresh, with a handoff
+  note: a correctness send-back (a failed check or failed design QA is one), a lane
+  caught looping, or a member handing its ticket back as beyond it. The first and
+  second send-backs each go up a tier; the third goes to the PM. Style and
+  environment send-backs raise nothing. Nothing reads the plans: a plan running low
+  shrinks the lanes, never the tier.
+
+  A member's own model does not decide any of this. Only a model the person chose
+  (`/model`, a model set for its role, or their own move with a model) is a floor
+  that lanes never go below; a model equipe left on a member (a role's default, an
+  automatic move to the other engine) is not. To override: the person sets any
+  ticket's tier with `SetTicketTier` (the Model row on its card in the desktop app;
+  lower than the rules included) and may pin it so escalation leaves it; the squad's model
+  choice setting (`SetModelChoice`: `/model-choice quality|off`) turns picking off, so
+  members run on their own models. `model_choices` in the squad's journal keeps every
+  lane's tier, model, effort, why (`reason`), what the rules made of the ticket by
+  itself (`classified`) and, where it ran above that, the tier they asked (`shadow`).
+- **Reserve for the person** (`equipe_core::pacing`). On auto parallel work nothing is
+  held back while an engine's weekly window has more than 15% left. Under it, before the
+  window resets (or before the other engine is back, when it is out), only the PM's
+  work and urgent or high tickets start on that engine, so the squad can still answer;
+  nothing running is stopped, models are never lowered. Max parallel work ("Run at full
+  speed") overrides it.
 - **Charters** are added to the engine's own instructions, never replacing them:
   `--append-system-prompt` for Claude Code, `instructions` for Codex. A charter names
   the member, its teammates and who keeps the plan, and is rebuilt every turn, so it

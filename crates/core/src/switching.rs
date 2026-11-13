@@ -311,17 +311,6 @@ pub fn windows_at(r: &Reading, memory: &Memory, now: i64) -> Vec<(Window, u8, bo
         .collect()
 }
 
-/// The week's burn in points a second, for pacing ([`crate::pacing`]): the
-/// recent rate between readings, else the Usage screen's pace of the last
-/// day. `None`: unknown, or the reading is stale (its burn is a floor).
-pub fn weekly_burn(r: &Reading, memory: &Memory, now: i64) -> Option<f64> {
-    if now - r.at > STALE_AFTER {
-        return None;
-    }
-    let w = r.weekly.filter(|w| w.resets_at > now)?;
-    memory.rate(r.engine, Window::Weekly, w).or_else(|| r.pace.map(|p| f64::from(p.per_day_bp) / 100. / (24 * HOUR) as f64))
-}
-
 /// Where `r`'s engine stands at `now`.
 pub fn assess(r: &Reading, memory: &Memory, now: i64) -> Assessment {
     let stale = now - r.at > STALE_AFTER;

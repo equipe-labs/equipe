@@ -1,11 +1,11 @@
 //! Each ticket's model and effort, driven the way a screen and an engine
-//! drive them: a lane starts on the tier its ticket's rules ask — never
-//! below its member's own model — and the turns record what they ran on;
-//! work sent back for correctness carries on warm the first time, starts its
-//! next lane one tier up with a handoff note the second, and goes to the PM
-//! the third; style and environment send-backs raise nothing; the person's
-//! own tier wins; and with the squad's model choice off, members' own models
-//! run as before.
+//! drive them: a lane starts on the tier its ticket's rules ask — whatever
+//! model its member was left on, unless the person chose it — and the turns
+//! record what they ran on; work sent back for correctness starts its next
+//! lane one tier up with a handoff note, twice, and goes to the PM the third
+//! time; a member handing its ticket back as beyond it raises it too; style
+//! and environment send-backs raise nothing; the person's own tier wins; and
+//! with the squad's model choice off, members' own models run as before.
 
 #![cfg(unix)]
 
@@ -193,66 +193,126 @@ fn raised(seen: &[Event]) -> bool {
 }
 
 #[tokio::test]
-async fn a_feature_starts_above_a_sonnet_member_and_correctness_send_backs_climb_one_step_then_go_to_the_pm() {
+async fn a_feature_starts_on_opus_at_medium_and_correctness_send_backs_climb_two_steps_then_go_to_the_pm() {
     let (handle, mut events, home, bin) = started("Add a settings page", "Run `npm test` to check.").await;
-    // The frontend member runs Sonnet; a feature starts on Opus, at Claude Code's own effort.
+    // A feature is strong whatever the frontend member (Sonnet, its role's default) was left on: Opus at medium.
     let first = nth_prompt(&bin, 1).await;
-    assert_eq!(arg_after(&first, "--model"), Some("opus"), "{first}");
-    assert_eq!(arg_after(&first, "--effort"), None, "never less than the engine's own");
+    assert_eq!((arg_after(&first, "--model"), arg_after(&first, "--effort")), (Some("opus"), Some("medium")), "{first}");
     let model = ticket(&handle).await.model.expect("a model chosen");
-    assert_eq!((model.tier, model.by, model.reason, model.model.as_deref()), (Some(ModelTier::Strong), TierBy::Rule, TierReason::Code, Some("opus")));
+    assert_eq!((model.tier, model.by, model.reason, model.model.as_deref(), model.classified), (Some(ModelTier::Strong), TierBy::Rule, TierReason::Code, Some("opus"), Some(TierReason::Code)));
 
-    // First correctness send-back: the same conversation carries on, on the same model.
+    // First correctness send-back: its next lane starts one tier up, fresh, with a handoff note; the person is told.
     let seen = round(&handle, &mut events, "The form loses its values on save.", "correctness").await;
-    assert!(!raised(&seen));
-    let second = nth_prompt(&bin, 2).await;
-    assert!(second.contains("The form loses its values on save.") && second.contains("--resume"), "{second}");
-    assert_eq!(arg_after(&second, "--model"), Some("opus"));
-    assert!(!second.contains("Handoff:"));
-
-    // Second: its next lane starts one tier up, fresh, with a handoff note; the person is told.
-    let seen = round(&handle, &mut events, "Saving still drops the email field.", "correctness").await;
     assert!(raised(&seen), "{seen:#?}");
-    let third = nth_prompt(&bin, 3).await;
-    assert!(third.contains("Handoff: T-1 moves to a stronger model (deep)") && third.contains("Saving still drops the email field."), "{third}");
-    assert!(!third.contains("--resume"), "a fresh conversation: {third}");
+    let second = nth_prompt(&bin, 2).await;
+    assert!(second.contains("Handoff: T-1 moves to a stronger model (deep)") && second.contains("The form loses its values on save."), "{second}");
+    assert!(!second.contains("--resume"), "a fresh conversation: {second}");
+    assert_eq!((arg_after(&second, "--model"), arg_after(&second, "--effort")), (Some("opus"), Some("high")));
     let model = ticket(&handle).await.model.unwrap();
     assert_eq!((model.tier, model.by, model.reason, model.escalations, model.fresh), (Some(ModelTier::Deep), TierBy::Escalation, TierReason::Escalated, 1, false));
+    assert_eq!(model.classified, Some(TierReason::Code), "what the rules made of it is kept beside why it runs where it does");
     let record = Journal::for_squad(&home, "acme").unwrap().ticket_history(1).unwrap();
     assert!(record.iter().any(|(by, kind, _)| by == "equipe" && kind == "model raised"), "{record:?}");
     assert!(record.iter().any(|(_, kind, text)| kind == "handoff" && text.contains("branch")), "{record:?}");
+
+    // Second: one more step.
+    let seen = round(&handle, &mut events, "Saving still drops the email field.", "correctness").await;
+    assert!(raised(&seen), "{seen:#?}");
+    let third = nth_prompt(&bin, 3).await;
+    assert!(third.contains("Handoff: T-1 moves to a stronger model (max)") && !third.contains("--resume"), "{third}");
+    assert_eq!((arg_after(&third, "--model"), arg_after(&third, "--effort")), (Some("opus"), Some("xhigh")));
+    assert_eq!(ticket(&handle).await.model.unwrap().escalations, 2);
 
     // Third: no higher; the PM decides.
     let seen = round(&handle, &mut events, "The email field is gone again.", "correctness").await;
     assert!(!raised(&seen));
     assert!(seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text, .. } if text.contains("the PM decides"))), "{seen:#?}");
-    assert_eq!(ticket(&handle).await.model.unwrap().escalations, 1);
+    assert_eq!(ticket(&handle).await.model.unwrap().escalations, 2);
     let fourth = nth_prompt(&bin, 4).await;
     assert!(fourth.contains("--resume") && !fourth.contains("Handoff:"), "the raised lane carries on: {fourth}");
 
-    // Every turn kept what it ran on; every choice and the raise are logged.
+    // Every turn kept what it ran on; every choice and the raises are logged, with what the rules made of the ticket.
     let journal = Journal::for_squad(&home, "acme").unwrap();
     let turns = journal.ticket_turns(1).unwrap();
     assert!(!turns.is_empty() && turns.iter().all(|t| t.engine.as_deref() == Some("claude") && t.model.is_some()), "{turns:?}");
     let choices = journal.model_choices(1).unwrap();
     assert!(choices.iter().any(|c| c.what == "escalated" && c.tier.as_deref() == Some("deep") && c.by == "escalation"), "{choices:?}");
     assert_eq!(choices.iter().filter(|c| c.what == "lane").count(), 4, "{choices:?}");
+    assert!(choices.iter().filter(|c| c.what == "lane").all(|c| c.classified.as_deref() == Some("code")), "{choices:?}");
     handle.shutdown().await;
 }
 
 #[tokio::test]
-async fn a_ticket_already_at_the_top_starts_fresh_and_says_so_rather_than_claiming_a_raise() {
-    // A backend member on Opus at Claude Code's own effort: the top tier already.
-    let (handle, mut events, home, bin) = started_as("backend", "Add an export endpoint", "Run `cargo test`.").await;
+async fn routine_work_runs_on_sonnet_even_for_a_member_whose_role_defaults_to_opus_and_a_send_back_raises_it() {
+    // A backend member's role default is Opus — equipe's, not the person's: no floor.
+    let (handle, mut events, _home, bin) = started_as("backend", "Bump the serde dependency", "Run `cargo test`.").await;
+    let first = nth_prompt(&bin, 1).await;
+    assert_eq!((arg_after(&first, "--model"), arg_after(&first, "--effort")), (Some("sonnet"), Some("medium")), "{first}");
     let model = ticket(&handle).await.model.unwrap();
-    assert_eq!((model.tier, model.reason, model.shadow), (Some(ModelTier::Max), TierReason::MemberFloor, Some(ModelTier::Strong)), "the cheaper tier only recorded");
-    round_by(&handle, &mut events, "backend", "The CSV header is missing.", "correctness").await;
-    let seen = round_by(&handle, &mut events, "backend", "Still no header.", "correctness").await;
+    assert_eq!((model.tier, model.reason, model.shadow), (Some(ModelTier::Standard), TierReason::Small, None));
+    // Back wrong once: Opus at medium, fresh.
+    let seen = round_by(&handle, &mut events, "backend", "The lockfile still has the old version.", "correctness").await;
+    assert!(raised(&seen), "{seen:#?}");
+    let second = nth_prompt(&bin, 2).await;
+    assert!(second.contains("Handoff: T-1 moves to a stronger model (strong)") && !second.contains("--resume"), "{second}");
+    assert_eq!((arg_after(&second, "--model"), arg_after(&second, "--effort")), (Some("opus"), Some("medium")));
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_model_the_person_set_for_a_member_is_the_floor_of_its_lanes() {
+    let repo = repo();
+    let home = scratch("home");
+    squads::create(&home, "acme", &repo).unwrap();
+    let bin = claude();
+    let (handle, mut events) = runtime::start(config(&bin, &home, true));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    // The person's own `/model`: opus, at Claude Code's own effort.
+    handle.send(Command::SetModel { session: 2, model: "opus".into() });
+    until(&mut events, |e| matches!(e, Event::ModelKnown { session: 2, .. })).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Bump the serde dependency", "body": "Run `cargo test`.", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let first = nth_prompt(&bin, 1).await;
+    assert_eq!(arg_after(&first, "--model"), Some("opus"), "{first}");
+    let model = ticket(&handle).await.model.unwrap();
+    assert_eq!((model.tier, model.reason, model.shadow, model.classified), (Some(ModelTier::Max), TierReason::MemberFloor, Some(ModelTier::Standard), Some(TierReason::Small)), "what the rules asked is recorded");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_member_handing_its_ticket_back_as_beyond_it_raises_its_next_lane() {
+    let (handle, mut events, home, _bin) = started("Add a settings page", "Run `npm test` to check.").await;
+    let handed = tool(&handle, "frontend", "hand_back", json!({ "reason": "cannot", "note": "It needs a design decision I can't make." })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Proposed)).await;
+    let record = loop {
+        let record = Journal::for_squad(&home, "acme").unwrap().ticket_history(1).unwrap();
+        if record.iter().any(|(_, kind, _)| kind == "model raised") {
+            break record;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(record.iter().any(|(_, kind, text)| kind == "model raised" && text.contains("beyond it")), "{record:?}");
+    let model = ticket(&handle).await.model.unwrap();
+    assert_eq!((model.tier, model.by, model.escalations), (Some(ModelTier::Deep), TierBy::Escalation, 1));
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_ticket_at_the_top_starts_fresh_and_says_so_rather_than_claiming_a_raise() {
+    // A migration is risk: deep. The first send-back raises it to max; the second has nowhere to go.
+    let (handle, mut events, home, bin) = started_as("backend", "Migrate the users table", "Run `cargo test`.").await;
+    let model = ticket(&handle).await.model.unwrap();
+    assert_eq!((model.tier, model.reason, model.shadow), (Some(ModelTier::Deep), TierReason::Risk, None));
+    let seen = round_by(&handle, &mut events, "backend", "The index is missing.", "correctness").await;
+    assert!(raised(&seen), "{seen:#?}");
+    let seen = round_by(&handle, &mut events, "backend", "Still no index.", "correctness").await;
     assert!(!raised(&seen));
     assert!(seen.iter().any(|e| matches!(e, Event::Notice { text, .. } if text.contains("strongest model already"))), "{seen:#?}");
     let third = nth_prompt(&bin, 3).await;
     assert!(third.contains("Handoff:") && !third.contains("--resume"), "{third}");
-    assert_eq!(arg_after(&third, "--model"), Some("opus"));
+    assert_eq!((arg_after(&third, "--model"), arg_after(&third, "--effort")), (Some("opus"), Some("xhigh")));
     let record = Journal::for_squad(&home, "acme").unwrap().ticket_history(1).unwrap();
     assert!(record.iter().any(|(_, kind, text)| kind == "model raised" && text.contains("already at max")), "{record:?}");
     handle.shutdown().await;

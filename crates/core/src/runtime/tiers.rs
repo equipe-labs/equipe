@@ -1,7 +1,8 @@
 //! Each ticket's model and effort, made so ([`crate::tiers`] has the rules):
 //! picked when a lane starts, kept on the ticket with why, raised one tier
-//! when work keeps coming back wrong, and set by the person whenever they
-//! like. Everything is logged, and every raise is told on the ticket and in
+//! when work comes back wrong (a send-back, a failed check or design QA, a
+//! loop, a member that hands its ticket back as beyond it), and set by the
+//! person whenever they like. Everything is logged, and every raise is told on the ticket and in
 //! the PM's conversation.
 
 use equipe_protocol::tiers::{ModelChoice, ModelTier, SendBackReason, TicketModel};
@@ -20,6 +21,8 @@ impl Runtime {
         let design_qa = batch.is_some() || self.checked_by(squad, ticket.id).is_some();
         let choice = self.journal(squad).map(Journal::model_choice).unwrap_or_default();
         let (name, role, engine) = self.sessions.get(&id).and_then(|s| s.member.as_ref().map(|m| (m.name.clone(), m.role.clone(), s.engine)))?;
+        // Only a model the person chose is a floor: the member's own `/model`, or a model they set for its role.
+        let person = self.journal(squad).is_some_and(|j| j.person_models().contains(&name) || j.role_models().iter().any(|r| r.role == role && r.engine == engine && r.model.is_some()));
         let qa_tier = match (&batch, design_qa) {
             // A daily review on the cheap tier, its audit on the top one.
             (Some(kind), _) => self.batch_tier(squad, kind, &name, &role, engine),
@@ -33,15 +36,15 @@ impl Runtime {
             Engine::Claude => Vec::new(),
         };
         let catalog: Vec<rules::Offer<'_>> = infos.iter().map(|m| rules::Offer { id: &m.id, efforts: &m.efforts, default_effort: m.default_effort.as_deref() }).collect();
-        let member = rules::Member { engine: s.engine, model: s.model.as_deref(), effort: effort.as_deref(), catalog: &catalog };
+        let member = rules::Member { engine: s.engine, model: s.model.as_deref(), effort: effort.as_deref(), catalog: &catalog, person };
         let work = rules::Work { role: &role, kind: ticket.kind, title: &ticket.title, body: &ticket.body, design_qa, qa_tier, edits: s.edits() };
         let rule = rules::rule(&work);
         Some(rules::choose(ticket.model.as_ref(), rule.as_ref(), &member, choice))
     }
 
     /// `ticket` was sent back by `by` for `why`: kept, and — while the squad
-    /// lets equipe choose models — the second correctness send-back raises
-    /// its next lane one tier, the third puts it to the PM.
+    /// lets equipe choose models — each of the first two correctness
+    /// send-backs raises its next lane one tier, the third puts it to the PM.
     pub(super) fn after_send_back(&mut self, squad: &str, ticket: TicketId, by: &str, why: SendBackReason) {
         let Some(journal) = self.journal(squad) else { return };
         if let Err(err) = journal.record_send_back(ticket, by, why) {
@@ -52,7 +55,7 @@ impl Runtime {
         }
         let times = journal.send_backs(ticket, SendBackReason::Correctness).unwrap_or(0);
         match rules::after_send_back(why, times) {
-            Next::Nothing | Next::SameLane => {}
+            Next::Nothing => {}
             Next::StepUp => self.escalate(squad, ticket, &format!("sent back for correctness {times} times")),
             Next::PmDecides => {
                 let Some(t) = self.find_ticket(squad, ticket) else { return };

@@ -358,14 +358,12 @@ impl Runtime {
         (assessed.level == Level::Exhausted).then_some(assessed.resets_at)
     }
 
-    /// `engine`'s week for pacing ([`crate::pacing`]): its weekly window and
-    /// reading time, and its burn in points a second when known.
-    pub(super) fn week_burn(&self, squad: &str, engine: Engine) -> Option<(equipe_protocol::PlanWindow, i64, Option<f64>)> {
-        let fallback = Memory::default();
-        let memory = self.engines.squads.get(squad).map_or(&fallback, |s| &s.memory);
+    /// `engine`'s weekly window for the reserve ([`crate::pacing`]) and
+    /// when it was read.
+    pub(super) fn week_window(&self, engine: Engine) -> Option<(equipe_protocol::PlanWindow, i64)> {
         let reading = self.readings().into_iter().find(|r| r.engine == engine)?;
         let week = reading.weekly.filter(|w| w.resets_at > unix_now())?;
-        Some((week, reading.at, rules::weekly_burn(&reading, memory, unix_now())))
+        Some((week, reading.at))
     }
 
     /// Whether `engine` was read after unix time `at`, fresh, with room.
@@ -1021,6 +1019,16 @@ impl Runtime {
         if !mv.in_place() {
             record.homes.entry(mv.member.clone()).or_insert(Home { engine: mv.from, model: mv.was_model.clone() });
             record.switched.entry(mv.member.clone()).or_default().push(unix_now());
+        }
+        // A move equipe made on its own leaves the member on a model of its own choosing: not the
+        // person's, so it is no floor for the member's tickets. The person's own move with a model is.
+        let by_person = self.engines_of(squad).proposals.iter().any(|p| p.id == proposal && p.why == Why::Person);
+        if let Some(journal) = self.journal(squad) {
+            if by_person && mv.model.is_some() {
+                let _ = journal.mark_person_model(&mv.member);
+            } else if !by_person && !mv.in_place() {
+                let _ = journal.unmark_person_model(&mv.member);
+            }
         }
         // The setup, or the person's own move: where it belongs from now on.
         let setup = self.engines_of(squad).proposals.iter().any(|p| p.id == proposal && matches!(p.why, Why::Setup | Why::Person));

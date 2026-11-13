@@ -1,14 +1,15 @@
-//! Pace to budget, as the daemon makes it so ([`crate::pacing`]): on auto,
-//! every minute (as the plans' use is read) each engine's weekly burn is held
-//! against what its plan can sustain, and the squad's new runs on it are
-//! capped to match. [`Runtime::dispatch_to`] asks [`Runtime::pace_of`] when it
-//! sizes the room; nothing running is stopped. A change is told once — the
+//! The reserve for the person, as the daemon makes it so ([`crate::pacing`]):
+//! on auto, every minute (as the plans' use is read) each engine's weekly
+//! window is held against its reserve. While more than the reserve is left
+//! nothing is held back; under it, [`Runtime::dispatch_to`] (which asks
+//! [`Runtime::pace_of`]) starts only the PM's work and urgent or high tickets
+//! on that engine. Nothing running is stopped. A change is told once — the
 //! PM's news line and every screen — and counted in the squad's journal for
 //! the usage report.
 
 use super::*;
 use crate::pacing::{self, Budget, Change, State, Until};
-use equipe_protocol::lanes::{Pacing, Parallel};
+use equipe_protocol::lanes::Pacing;
 
 #[derive(Default)]
 pub(super) struct Pacers {
@@ -27,52 +28,38 @@ fn other_of(engine: Engine) -> Engine {
 }
 
 impl Runtime {
-    /// Where `engine`'s pacing stands for `squad`: the cap on its runs, if any.
+    /// Where `engine`'s reserve stands for `squad`: whether it is held.
     pub(super) fn pace_of(&self, squad: &str, engine: Engine) -> State {
         self.pacers.by.get(&(squad.to_owned(), engine)).copied().unwrap_or_default()
     }
 
-    /// The engines paced for `squad`, for the screens.
+    /// The engines whose reserve is held for `squad`, for the screens.
     pub(super) fn pacing_now(&self, squad: &str) -> Vec<Pacing> {
         [Engine::Claude, Engine::Codex]
             .into_iter()
             .filter_map(|engine| {
                 let state = self.pace_of(squad, engine);
-                let cap = state.cap?;
-                let (_, until) = self.pace_budget(squad, engine)?;
-                Some(Pacing { engine, cap: cap as u32, of: self.pace_base(engine) as u32, until: until.at(), other_engine: matches!(until, Until::OtherBack(_)), since: state.since })
+                if !state.held {
+                    return None;
+                }
+                let budget = self.pace_budget(squad, engine)?;
+                let until = pacing::horizon(&budget, now_secs() as i64)?;
+                Some(Pacing {
+                    engine,
+                    left: budget.left().floor() as u32,
+                    reserve: pacing::RESERVE as u32,
+                    until: until.at(),
+                    other_engine: matches!(until, Until::OtherBack(_)),
+                    since: state.since,
+                })
             })
             .collect()
     }
 
-    /// The runs at once the lane policy allows `engine` without pacing.
-    pub(super) fn pace_base(&self, engine: Engine) -> usize {
-        let used = crate::lanes::plan_used(self.plans.iter().find(|p| p.engine == engine).map(|p| &p.usage));
-        crate::lanes::engine_limit(used, self.disk.status.level, &Parallel::default())
-    }
-
-    /// Runs at work on `engine` for `squad` that hold an admission slot.
-    /// While the engine is paced, runs paused for a limit or a retry don't:
-    /// they burn nothing. A member's conversation with no ticket is no run at
-    /// all, so it never holds one.
-    pub(super) fn pace_runs(&self, squad: &str, engine: Engine, paced: bool) -> usize {
-        self.sessions
-            .values()
-            .filter(|s| s.squad.as_deref() == Some(squad) && s.engine == engine && s.run_of.is_some())
-            .filter(|s| pacing::holds_slot(Runtime::is_parked(s), paced))
-            .count()
-    }
-
-    /// The week's budget of `engine` for `squad`, and until when it should last.
-    fn pace_budget(&self, squad: &str, engine: Engine) -> Option<(Budget, Until)> {
-        let (week, at, burn) = self.week_burn(squad, engine)?;
-        let now = now_secs() as i64;
-        let paced = self.pace_of(squad, engine).cap.is_some();
-        let runs = self.pace_runs(squad, engine, paced);
-        let budget = Budget { used: f64::from(week.used_percent), resets_at: week.resets_at, burn, runs, other_back: self.engine_out(squad, other_of(engine)), age: now - at };
-        let per_run = burn.filter(|_| runs > 0).map(|b| b / runs as f64);
-        let (_, until) = pacing::sustainable(&budget, now, per_run)?;
-        Some((budget, until))
+    /// The weekly window of `engine` for `squad`, as the reserve reads it.
+    fn pace_budget(&self, squad: &str, engine: Engine) -> Option<Budget> {
+        let (week, at) = self.week_window(engine)?;
+        Some(Budget { used: f64::from(week.used_percent), resets_at: week.resets_at, other_back: self.engine_out(squad, other_of(engine)), age: now_secs() as i64 - at })
     }
 
     /// Look at every squad's engines again.
@@ -88,20 +75,20 @@ impl Runtime {
         let mut changed = false;
         for engine in [Engine::Claude, Engine::Codex] {
             let prev = self.pace_of(squad, engine);
-            let Some((budget, _)) = self.pace_budget(squad, engine) else {
-                // No week read, or it just started over: nothing to pace.
-                if prev.cap.is_some() {
+            let Some(budget) = self.pace_budget(squad, engine) else {
+                // No week read, or it just started over: nothing to hold.
+                if prev.held {
                     self.pacers.by.remove(&(squad.to_owned(), engine));
                     changed = true;
                 }
                 continue;
             };
-            let (next, change) = pacing::step(prev, self.pace_base(engine), &budget, &parallel, now);
+            let (next, change) = pacing::step(prev, &budget, &parallel, now);
             if next == prev {
                 continue;
             }
             changed = true;
-            if next.cap.is_some() {
+            if next.held {
                 self.pacers.by.insert((squad.to_owned(), engine), next);
             } else {
                 self.pacers.by.remove(&(squad.to_owned(), engine));
@@ -109,8 +96,8 @@ impl Runtime {
             match change {
                 Some(change) => self.tell_pacing(squad, engine, change),
                 // The person chose full speed.
-                None if parallel.is_max() && prev.cap.is_some() => {
-                    self.log_engines(squad, format!("pacing {} ended: the person runs at full speed", named(engine)));
+                None if parallel.is_max() && prev.held => {
+                    self.log_engines(squad, format!("reserve on {} ended: the person runs at full speed", named(engine)));
                     self.count_pacing(squad, engine, pacing::kind::OFF);
                     let text = say!(self, "engines.pace_override", engine = named(engine));
                     self.brief_pm(squad, format!("equipe: {text}"), Some(text));
@@ -135,18 +122,21 @@ impl Runtime {
     fn tell_pacing(&mut self, squad: &str, engine: Engine, change: Change) {
         let now = now_secs() as i64;
         let until = match change {
-            Change::Lowered { until, .. } | Change::Raised { until, .. } | Change::Lifted { until } => until,
+            Change::Held { until } | Change::Lifted { until } => until,
         };
         let (name, span, other) = (named(engine), self.span(until.at() - now), named(other_of(engine)));
+        let reserve = pacing::RESERVE as u32;
         let text = match change {
-            Change::Lowered { to, of, until: Until::Reset(_) } => say!(self, "engines.pace_lower", engine = name, cap = to, base = of, span = span),
-            Change::Lowered { to, of, until: Until::OtherBack(_) } => say!(self, "engines.pace_lower_other", engine = name, cap = to, base = of, span = span, other = other),
-            Change::Raised { to, of, .. } => say!(self, "engines.pace_raise", engine = name, cap = to, base = of, span = span),
-            Change::Lifted { .. } => say!(self, "engines.pace_off", engine = name, span = span),
+            Change::Held { until: Until::Reset(_) } => say!(self, "engines.pace_hold", engine = name, reserve = reserve, span = span),
+            Change::Held { until: Until::OtherBack(_) } => say!(self, "engines.pace_hold_other", engine = name, reserve = reserve, span = span, other = other),
+            Change::Lifted { .. } => say!(self, "engines.pace_off", engine = name),
         };
-        self.log_engines(squad, format!("pacing {name}: {text}"));
+        self.log_engines(squad, format!("reserve on {name}: {text}"));
         self.count_pacing(squad, engine, change.kind());
-        let line = format!("equipe: {text}. If the person asks why work starts more slowly, say so plainly; urgent tickets and your own work still start at once. Don't lower models or effort to get around it.");
+        let line = match change {
+            Change::Held { .. } => format!("equipe: {text}. If the person asks why other work isn't starting, say so plainly; the PM's own work and urgent or high tickets still start at once. Don't lower models or effort to get around it."),
+            Change::Lifted { .. } => format!("equipe: {text}."),
+        };
         self.brief_pm(squad, line, Some(text));
     }
 }
