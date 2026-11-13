@@ -32,6 +32,7 @@ pub mod secrets;
 pub mod side_chat;
 pub mod signals;
 pub mod status;
+pub mod importance;
 
 /// How many subagents Claude Code runs at once on its own
 /// (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` unset): what a Claude Code member
@@ -1169,6 +1170,9 @@ pub enum Command {
     /// waiting — before the PM is woken to propose what's next, in hours;
     /// 0 turns it off. Answered by [`Event::IdleWakeChanged`].
     SetIdleWake { squad: SquadName, hours: u32 },
+    /// How the squad escalates what stays a bottleneck, and its quiet hours.
+    /// Answered by [`Event::NotifyChanged`].
+    SetNotify { squad: SquadName, settings: importance::NotifySettings },
     /// The person rests a member (`resting`) or wakes it again. A resting
     /// member takes no new work: the board hands it nothing and no run of
     /// its opens. What it works on now finishes, unless `stop`: then its runs
@@ -3021,6 +3025,11 @@ pub enum Event {
     /// How long an empty board waits before the PM is woken now
     /// ([`Command::SetIdleWake`]); 0: never.
     IdleWakeChanged { squad: SquadName, hours: u32 },
+    /// How the squad escalates now ([`Command::SetNotify`]).
+    NotifyChanged { squad: SquadName, settings: importance::NotifySettings },
+    /// Something stays a bottleneck, or was missed: for every screen and
+    /// paired phone to tell the person once ([`importance::Notice`]).
+    Escalated { squad: SquadName, notice: importance::Notice },
     /// The members resting now, by name ([`Command::SetResting`]).
     RestingChanged { squad: SquadName, resting: Vec<String> },
     /// Something that changes how the squad's work goes happened — its
@@ -3176,6 +3185,8 @@ impl Event {
             | Event::RoutineProposed { squad, .. }
             | Event::RoutineProposalClosed { squad, .. }
             | Event::IdleWakeChanged { squad, .. }
+            | Event::NotifyChanged { squad, .. }
+            | Event::Escalated { squad, .. }
             | Event::RestingChanged { squad, .. }
             | Event::StatusChanged { squad }
             | Event::SubagentsAtOnceChanged { squad, .. }
@@ -3280,6 +3291,8 @@ impl Event {
             | Event::RoutineProposed { .. }
             | Event::RoutineProposalClosed { .. }
             | Event::IdleWakeChanged { .. }
+            | Event::NotifyChanged { .. }
+            | Event::Escalated { .. }
             | Event::RestingChanged { .. }
             | Event::StatusChanged { .. }
             | Event::SubagentsAtOnceChanged { .. }
@@ -3667,6 +3680,10 @@ pub struct Snapshot {
     /// 0: never. `None` from a daemon that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_wake_hours: Option<u32>,
+    /// How the squad escalates what stays a bottleneck ([`Command::SetNotify`]).
+    /// `None` from a daemon that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify: Option<importance::NotifySettings>,
     /// The members the person rested ([`Command::SetResting`]), by name:
     /// they take no new work. None from a daemon that predates it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -4242,6 +4259,7 @@ mod tests {
                 proposed_at: 3,
             }],
             idle_wake_hours: Some(24),
+            notify: None,
             subagents_at_once: Some(8),
             parallel: lanes::Parallel::max(8, 20),
             pacing: Vec::new(),

@@ -1126,6 +1126,7 @@
   "view.writes": "writes {files}",
   "view.your_turn_answer": "Answer item by item with /answer T-{id}, or r on the board",
   "view.your_turn_heading": "Your turn · T-{id} · {title}",
+  "view.most_blocking": "Most blocking",
   "demo.pm_added": "Got it — I've put that on the board as T-{id} for frontend. It starts as soon as the landing page (T-3) is done.",
   "demo.pm_reply_1": "Here's where we are: T-2 (sign-up API) waits for your review, T-3 (landing page) is in progress, and T-4 needs a test API key from you. Want me to add anything?",
   "demo.pm_reply_2": "Nothing is blocked except T-4, which needs the payment provider's test key. Everything else is moving; I'll tell you when something is ready to review.",
@@ -1503,5 +1504,9 @@
   "usage.change.time_to_done_median_secs": "time to done, median",
   "usage.change.time_to_done_p75_secs": "time to done, p75",
   "usage.change.turns_per_done": "turns per done ticket",
-  "usage.change.tokens_per_done": "tokens per done ticket"
+  "usage.change.tokens_per_done": "tokens per done ticket",
+  "notify.source_squad": "These are {squad}’s own settings.",
+  "notify.source_default": "These are your defaults; {squad} has none of its own.",
+  "notify.saved_squad": "Saved for {squad}.",
+  "notify.saved_default": "Saved as your default for every squad without its own."
 }

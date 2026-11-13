@@ -61,6 +61,9 @@ pub enum Alert {
     /// Merging an accepted ticket's work failed — `conflict` with main, or
     /// otherwise; nothing was merged.
     MergeFailed { ticket: TicketId, conflict: bool, project: Option<String> },
+    /// Something stays a bottleneck, or was missed: the daemon's one notice
+    /// (`equipe_core::escalation`), with its levels, quiet hours and cap already kept.
+    Escalated { notice: equipe_core::protocol::importance::Notice },
     /// A new version of the app is found; it is being downloaded.
     UpdateFound { version: String },
     /// A new version of the app is downloaded and goes in on a restart.
@@ -76,7 +79,7 @@ impl Alert {
     /// News rather than something waiting: told one by one, never folded into
     /// "n things wait for you".
     fn is_news(&self) -> bool {
-        matches!(self, Alert::Reply { .. } | Alert::Merged { .. } | Alert::UpdateFound { .. } | Alert::Update { .. })
+        matches!(self, Alert::Reply { .. } | Alert::Merged { .. } | Alert::Escalated { .. } | Alert::UpdateFound { .. } | Alert::Update { .. })
     }
 }
 
@@ -90,7 +93,7 @@ impl Pings {
         match alert {
             Alert::Approval { .. } => self.approvals,
             Alert::Review { .. } => self.reviews,
-            Alert::Waiting { .. } | Alert::Decision { .. } | Alert::Browser { .. } => self.waiting,
+            Alert::Waiting { .. } | Alert::Decision { .. } | Alert::Browser { .. } | Alert::Escalated { .. } => self.waiting,
             // A merge that failed waits for the person, as a failed turn does.
             Alert::Failed { .. } | Alert::MergeFailed { .. } => self.failed,
             Alert::Reply { .. } => self.replies,
@@ -254,7 +257,7 @@ pub fn thread(alert: &Alert, squad: &str) -> String {
         Alert::Approval { approval, squad } => member_thread(squad, &approval.member),
         Alert::Review { by, .. } | Alert::Waiting { by, .. } => by.as_deref().map_or_else(|| squad_thread(squad), |b| member_thread(squad, b)),
         Alert::Failed { member, .. } | Alert::Decision { member, .. } | Alert::Browser { member, .. } | Alert::Reply { member, .. } => member_thread(squad, member),
-        Alert::Merged { .. } | Alert::MergeFailed { .. } => squad_thread(squad),
+        Alert::Merged { .. } | Alert::MergeFailed { .. } | Alert::Escalated { .. } => squad_thread(squad),
         Alert::UpdateFound { .. } | Alert::Update { .. } => "equipe/update".into(),
     }
 }
@@ -324,6 +327,15 @@ fn toast(alert: &Alert, squad: &str, titles: bool) -> Toast {
             let why = if *conflict { t!("notify.merge_conflict") } else { t!("notify.merge_failed") };
             let project = project.as_deref().map(|p| format!(" · {p}")).unwrap_or_default();
             (t!("notify.merge_failed_title", ticket = ticket), format!("{why}{project}"), Go::Ticket(*ticket))
+        }
+        // One text for every channel (`equipe_core::escalation::notice_text`); a click opens the ticket when it is one.
+        Alert::Escalated { notice } => {
+            let (title, body) = equipe_core::escalation::notice_text(notice, equipe_core::i18n::core(crate::i18n::lang()));
+            let go = match notice.items.as_slice() {
+                [one] => one.ticket.map_or(Go::Board, Go::Ticket),
+                _ => Go::Board,
+            };
+            (title, body, go)
         }
         Alert::UpdateFound { version } => (t!("notify.update_found_title", version = version), t!("notify.update_found_body").to_owned(), Go::Update),
         Alert::Update { version } => (t!("notify.update_title").to_owned(), t!("notify.update_body", version = version), Go::Update),
@@ -599,6 +611,23 @@ mod tests {
         let t = toasts(&[ask(equipe_core::desktop_gate::SEND, "press return in Slack\nhi")], "acme", true);
         assert!(t[0].body.contains("허락"));
         assert!(!t[0].body.contains("hi"));
+    }
+
+    #[test]
+    fn an_escalation_is_one_notice_that_opens_its_ticket_or_the_board_and_is_never_folded() {
+        use equipe_core::protocol::importance::{Notice, NoticeItem, NoticeKind};
+        let item = |ticket| NoticeItem { ticket, title: "AWS sign-in".into(), level: 3, blocks: 5, priority: None, holds_deploy: true, waited_secs: 9 * 3600, missed: 0 };
+        let one = Alert::Escalated { notice: Notice { kind: NoticeKind::Escalation, items: vec![item(Some(7))], phone: true } };
+        let several = Alert::Escalated { notice: Notice { kind: NoticeKind::Batch, items: vec![item(Some(7)), item(Some(8))], phone: true } };
+        // Four waits fold into one line; an escalation is told on its own.
+        let alerts = vec![ask("Bash", "ls"), ask("Bash", "pwd"), ask("Bash", "ls -a"), ask("Bash", "date"), one.clone(), several.clone()];
+        let out = toasts(&alerts, "acme", true);
+        assert_eq!(out.len(), 3, "the grouped waits, and each escalation: {out:?}");
+        let first = toast(&one, "acme", true);
+        assert_eq!(first.go, Go::Ticket(7));
+        assert!(first.body.contains("배포 막음"), "{first:?}");
+        assert_eq!(toast(&several, "acme", true).go, Go::Board);
+        assert!(Pings::default().wants(&one), "told with the other things that wait");
     }
 
     #[test]

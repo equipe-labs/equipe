@@ -1103,6 +1103,7 @@
   "view.writes": "쓰기: {files}",
   "view.your_turn_answer": "답하기: /answer T-{id} 로 항목마다, 또는 보드에서 r",
   "view.your_turn_heading": "내 차례 · T-{id} · {title}",
+  "view.most_blocking": "가장 많이 막는 것",
   "demo.pm_added": "알겠어요. 보드에 T-{id}로 올리고 frontend에게 맡겼어요. 랜딩 페이지(T-3)가 끝나는 대로 시작해요.",
   "demo.pm_reply_1": "지금 상황이에요: T-2(가입 API)는 검토를 기다리고, T-3(랜딩 페이지)는 진행 중이고, T-4는 결제사의 테스트 API 키가 필요해요. 더 추가할 일이 있을까요?",
   "demo.pm_reply_2": "T-4만 결제사 테스트 키를 기다리고 있고, 나머지는 진행 중이에요. 검토할 것이 생기면 알려 드릴게요.",
@@ -1480,5 +1481,9 @@
   "usage.change.time_to_done_median_secs": "완료까지 시간, 중앙값",
   "usage.change.time_to_done_p75_secs": "완료까지 시간, p75",
   "usage.change.turns_per_done": "완료된 티켓당 턴",
-  "usage.change.tokens_per_done": "완료된 티켓당 토큰"
+  "usage.change.tokens_per_done": "완료된 티켓당 토큰",
+  "notify.source_squad": "{squad}에 따로 정한 설정이에요.",
+  "notify.source_default": "기본 설정이에요. {squad}에는 따로 정한 게 없어요.",
+  "notify.saved_squad": "{squad}에 저장했어요.",
+  "notify.saved_default": "따로 정하지 않은 모든 스쿼드의 기본 설정으로 저장했어요."
 }

@@ -308,6 +308,13 @@ pub struct SquadStatus {
     pub engines: Vec<EngineBudget>,
     pub waste: Waste,
     pub watched: WatchedList,
+    /// What waits on the person, the most blocking first (the first few; the
+    /// rest is `waiting_more`). Left out by an older daemon.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting: Vec<crate::importance::Waiting>,
+    /// Items cut off `waiting` for being too many.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub waiting_more: u32,
     /// The squad has no members or tickets yet.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub empty: bool,
@@ -341,12 +348,27 @@ mod tests {
         };
         let back: SquadStatus = serde_json::from_str(&serde_json::to_string(&status).unwrap()).unwrap();
         assert_eq!(back, status);
+        let waiting = SquadStatus {
+            waiting: vec![crate::importance::Waiting {
+                kind: crate::importance::WaitKind::Ticket,
+                ticket: Some(3),
+                status: Some(crate::TicketStatus::Waiting),
+                title: "AWS admin sign-in".into(),
+                since: None,
+                impact: crate::importance::Impact { score: 55, blocks: 5, ..Default::default() },
+            }],
+            waiting_more: 2,
+            ..status.clone()
+        };
+        let back: SquadStatus = serde_json::from_str(&serde_json::to_string(&waiting).unwrap()).unwrap();
+        assert_eq!(back, waiting, "what waits on the person, most blocking first, survives the wire");
+        assert!(serde_json::to_value(&status).unwrap().get("waiting").is_none(), "left out when none: an older screen reads it as before");
         let old: SquadStatus = serde_json::from_value(json!({
             "squad": "acme", "at": 1, "mood": "good", "tiles": {}, "waste": { "tokens_day": 0, "turns_day": 0, "metrics": [] }, "watched": { "pinned": false, "tickets": [] }
         }))
         .unwrap();
         assert_eq!(old.mood, Mood::Good);
-        assert!(old.blocked.is_empty() && old.engines.is_empty());
+        assert!(old.blocked.is_empty() && old.engines.is_empty() && old.waiting.is_empty() && old.waiting_more == 0);
     }
 
     #[test]

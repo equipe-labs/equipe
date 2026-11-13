@@ -71,6 +71,8 @@ pub enum Popover {
     Talk,
     Filter,
     Group,
+    /// Needs you's order: by importance, or by kind.
+    Order,
     /// The design screen's systems, when more than two: a list, not segments.
     DesignSource,
 }
@@ -188,9 +190,9 @@ impl BoardUi {
         self.tk.relocalize(window, cx);
     }
 
-    pub fn new(window: &mut Window, cx: &mut Context<Shell>, fetched: tokio::sync::mpsc::UnboundedSender<Fetched>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Shell>, fetched: tokio::sync::mpsc::UnboundedSender<Fetched>, needs_by_kind: bool) -> Self {
         Self {
-            view: View { peek: true, ..View::default() },
+            view: View { peek: true, by_kind: needs_by_kind, ..View::default() },
             search: cx.new(|cx| InputState::new(window, cx).placeholder(t!("board.search_placeholder"))),
             reply: cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 8).submit_on_enter(false).placeholder(t!("board.reply_placeholder"))),
             naming: cx.new(|cx| InputState::new(window, cx).placeholder(t!("board.view_name_placeholder"))),
@@ -1046,6 +1048,15 @@ impl Shell {
         self.board_changed(cx);
     }
 
+    /// Needs you's order, remembered on this Mac.
+    pub fn board_set_order(&mut self, by_kind: bool, cx: &mut Context<Self>) {
+        self.board.view.by_kind = by_kind;
+        self.board.popover = None;
+        self.remembered.needs_by_kind = by_kind;
+        self.remembered.save(&equipe_providers::credentials::equipe_home());
+        self.board_changed(cx);
+    }
+
     pub fn board_set_group(&mut self, group: GroupBy, cx: &mut Context<Self>) {
         self.board.view.group = group;
         self.board.popover = None;
@@ -1308,7 +1319,9 @@ impl Shell {
         let most = if self.board.wide { width - side - LIST_LEAST } else { width - side };
         let wanted = self.board.peek_held.or(self.remembered.peek_width).unwrap_or(PEEK);
         self.board.peek_width = wanted.min(most).max(PEEK_LEAST);
-        self.board.list_width = width - side - if peek { self.board.peek_width } else { 0. } - 16.;
+        // Needs you by importance keeps a slot at the right of each row for what it holds up.
+        let slot = if self.board.view.menu == Menu::Inbox && !self.board.view.by_kind && !self.board.view.triage { IMPACT_W } else { 0. };
+        self.board.list_width = width - side - if peek { self.board.peek_width } else { 0. } - 16. - slot;
         self.note_place();
     }
 }
@@ -1597,6 +1610,29 @@ fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                             .child(super::sidebar::icon(IconName::ChevronDown, 12., p.muted)),
                     )
                 })
+                .when(view.menu == Menu::Inbox && !view.triage, |bar| {
+                    bar.child(
+                        h_flex()
+                            .id("order")
+                            .h(px(28.))
+                            .px_2()
+                            .gap_1()
+                            .items_center()
+                            .flex_none()
+                            .rounded(px(6.))
+                            .text_size(px(SMALL))
+                            .text_color(p.text2)
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(p.wash))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.toggle_popover(Popover::Order, cx);
+                                cx.notify();
+                            }))
+                            .child(div().text_color(p.muted).child(t!("board.order")))
+                            .child(if view.by_kind { t!("board.order_kind") } else { t!("board.order_importance") })
+                            .child(super::sidebar::icon(IconName::ChevronDown, 12., p.muted)),
+                    )
+                })
                 .when(tickets_on, |bar| bar.child(super::tickets::new_button(shell, cx)))
                 .children(popover(shell, cx)),
         )
@@ -1632,6 +1668,13 @@ fn popover(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     };
     let body: Vec<AnyElement> = match which {
         Popover::Projects | Popover::Members | Popover::Talk | Popover::DesignSource => return None,
+        Popover::Order => [(false, t!("board.order_importance")), (true, t!("board.order_kind"))]
+            .into_iter()
+            .map(|(by_kind, label)| {
+                let on = shell.board.view.by_kind == by_kind;
+                item(SharedString::from(if by_kind { "order-kind" } else { "order-importance" }), label.to_owned(), on).on_click(cx.listener(move |this, _, _, cx| this.board_set_order(by_kind, cx))).into_any_element()
+            })
+            .collect(),
         Popover::Group => {
             let mut rows: Vec<AnyElement> = GroupBy::ALL
                 .into_iter()
@@ -1676,7 +1719,7 @@ fn popover(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 .collect()
         }
     };
-    let right = which == Popover::Group;
+    let right = matches!(which, Popover::Group | Popover::Order);
     Some(
         deferred(
             v_flex()
@@ -1747,6 +1790,9 @@ impl Shell {
 fn list(shell: &Shell, rows: &[Row], pick: Option<Need>, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let p = shell.palette;
     let empty = board::items(rows).is_empty() && !rows.iter().any(|r| matches!(r, Row::Done { .. }));
+    // Needs you by importance: each item that holds work up says what, at its right.
+    let impacts: Option<std::collections::HashMap<Need, equipe_core::protocol::importance::Impact>> =
+        (shell.board.view.menu == Menu::Inbox && !shell.board.view.by_kind && !shell.board.view.triage).then(|| shell.model.needs_ranked().into_iter().map(|r| (r.need, r.impact)).collect());
     v_flex()
         .id("board-list")
         .flex_1()
@@ -1758,7 +1804,7 @@ fn list(shell: &Shell, rows: &[Row], pick: Option<Need>, cx: &mut Context<Shell>
         .pt_1()
         .pb_6()
         .children(super::tickets::triage_banner(shell, cx))
-        .children(rows.iter().enumerate().map(|(ix, row)| list_row(shell, ix, row, pick, cx)))
+        .children(rows.iter().enumerate().map(|(ix, row)| list_row(shell, ix, row, pick, impacts.as_ref(), cx)))
         .when(empty, |l| l.child(empty_note(shell, p, cx)))
 }
 
@@ -1792,7 +1838,7 @@ fn empty_note(shell: &Shell, p: Palette, cx: &mut Context<Shell>) -> AnyElement 
         .into_any_element()
 }
 
-fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, cx: &mut Context<Shell>) -> AnyElement {
+fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, impacts: Option<&std::collections::HashMap<Need, equipe_core::protocol::importance::Impact>>, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     match row {
         Row::Heading { label, count, tone, hint, all } => {
@@ -1882,9 +1928,34 @@ fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, cx: &mut Co
                 .child(super::sidebar::icon(if open { IconName::ChevronDown } else { IconName::ChevronRight }, 12., p.muted))
                 .into_any_element()
         }
-        Row::Item { need, depth } => item_row(shell, *need, *depth, pick == Some(*need), cx),
+        Row::Item { need, depth } => {
+            let row = item_row(shell, *need, *depth, pick == Some(*need), cx);
+            // What it holds up, in a slot of its own at the right: only the rows that hold something up have one.
+            match impacts.and_then(|m| m.get(need)).filter(|i| i.is_blocking()) {
+                Some(impact) => {
+                    let color = if impact.is_pressing() { p.red } else { p.amber };
+                    h_flex()
+                        .items_center()
+                        .child(div().flex_1().min_w_0().child(row))
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("impact-{need:?}")))
+                                .flex_none()
+                                .w(px(IMPACT_W))
+                                .flex()
+                                .justify_end()
+                                .child(div().px(px(6.)).h(px(18.)).flex().items_center().rounded(px(4.)).bg(p.wash).text_size(px(11.)).font_weight(FontWeight::MEDIUM).text_color(color).whitespace_nowrap().child(board::impact_words(impact))),
+                        )
+                        .into_any_element()
+                }
+                None => row,
+            }
+        }
     }
 }
+
+/// The slot of the badge that says what a row holds up (`blocks 5 · urgent`).
+const IMPACT_W: f32 = 168.;
 
 /// What a row says at its right, column by column.
 struct Meta {

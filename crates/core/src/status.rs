@@ -34,6 +34,7 @@ use equipe_protocol::status::{
 use equipe_protocol::{Engine, PauseWhy, Priority, Ticket, TicketId, TicketStatus};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
+use crate::importance;
 use crate::runtime::turn_ending;
 use crate::usage::{self, Input, Report};
 
@@ -53,6 +54,8 @@ const FAILURES: [&str; 4] = [turn_ending::FAILED, turn_ending::FAILED_FAST, turn
 pub const BLOCKED_SHOWN: usize = 8;
 /// Tickets of the watched list; the rest is "+N more".
 pub const WATCHED_SHOWN: usize = 8;
+/// Items of what waits on the person the status lists; the rest is "+N more".
+pub const WAITING_SHOWN: usize = 5;
 /// Tickets a row names.
 const NAMED: usize = 3;
 /// A plan this used makes the squad run fewer at once ([`crate::lanes`]).
@@ -91,6 +94,9 @@ pub struct Facts {
     pub signed_out: Vec<Engine>,
     /// The PM accepts handed-in work: the person sees only what it puts to them.
     pub pm_accepts: bool,
+    /// What waits on the person besides tickets: requests, questions, cards,
+    /// secrets — with the tickets they are about, for [`importance`].
+    pub asks: Vec<importance::Ask>,
 }
 
 /// What the squad's journal says.
@@ -148,6 +154,10 @@ pub fn compute(facts: &Facts, rows: &Rows, now: u64) -> SquadStatus {
     let mut notes: Vec<Note> = facts.engines.iter().filter_map(|e| e.out_until.map(|at| Note::Out { engine: e.engine, back_at: (at > 0).then_some(at) })).collect();
     notes.extend(facts.engines.iter().filter_map(|e| e.pacing_at_once.map(|at_once| Note::Pacing { engine: e.engine, at_once })));
 
+    let mut waiting = importance::waiting_list(&facts.tickets, &facts.asks, facts.pm_accepts);
+    let waiting_more = waiting.len().saturating_sub(WAITING_SHOWN) as u32;
+    waiting.truncate(WAITING_SHOWN);
+
     SquadStatus {
         squad: facts.squad.clone(),
         at: now,
@@ -159,6 +169,8 @@ pub fn compute(facts: &Facts, rows: &Rows, now: u64) -> SquadStatus {
         engines: facts.engines.clone(),
         waste: waste(&rows.usage, now),
         watched: watched(facts, rows),
+        waiting,
+        waiting_more,
         empty: facts.tickets.is_empty() && facts.members == 0,
     }
 }
@@ -541,6 +553,24 @@ mod tests {
 
     fn causes(s: &SquadStatus) -> Vec<Cause> {
         s.blocked.iter().map(|b| b.cause).collect()
+    }
+
+    #[test]
+    fn what_waits_on_the_person_is_listed_most_blocking_first_and_cut_to_a_few() {
+        let mut waiting = ticket(1, TicketStatus::Waiting);
+        waiting.title = "AWS admin sign-in".into();
+        let mut quiet = ticket(2, TicketStatus::Waiting);
+        quiet.title = "Pick a color".into();
+        let mut tickets = vec![quiet, waiting];
+        tickets.extend((10..13).map(|id| Ticket { depends_on: vec![1], ..ticket(id, TicketStatus::Todo) }));
+        let facts = Facts { squad: "acme".into(), tickets, members: 1, ..healthy() };
+        let s = status(&facts, &quiet_rows());
+        assert_eq!(s.waiting.iter().map(|w| w.ticket).collect::<Vec<_>>(), vec![Some(1), Some(2)]);
+        assert_eq!((s.waiting[0].impact.blocks, s.waiting[0].impact.reason.as_str()), (3, "blocks 3 tickets"));
+        assert_eq!(s.waiting_more, 0);
+        let many = Facts { tickets: (1..=8).map(|id| ticket(id, TicketStatus::Waiting)).collect(), ..facts };
+        let s = status(&many, &quiet_rows());
+        assert_eq!((s.waiting.len(), s.waiting_more), (WAITING_SHOWN, 3));
     }
 
     #[test]

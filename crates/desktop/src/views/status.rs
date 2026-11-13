@@ -180,6 +180,7 @@ fn page(shell: &Shell, s: &SquadStatus, cx: &mut Context<Shell>) -> AnyElement {
         .child(status_line(shell, s, now))
         .child(tiles(shell, s, cx))
         .child(blocked(shell, s, now, cx))
+        .children((!s.waiting.is_empty()).then(|| waiting(shell, s, cx)))
         .child(h_flex().w_full().flex_wrap().items_start().gap_4().child(budget(shell, s, now)).child(waste(shell, s)))
         .child(watched(shell, s, now, cx))
         .into_any_element()
@@ -376,6 +377,43 @@ fn waste(shell: &Shell, s: &SquadStatus) -> AnyElement {
         }
     }
     div().flex_1().min_w(px(CARD_MIN)).child(card(p, "status-waste", t!("status.waste").to_owned(), None).child(body)).into_any_element()
+}
+
+/// What waits on the person, the most blocking first — the order Needs you
+/// lists them in — each with what it holds up.
+fn waiting(shell: &Shell, s: &SquadStatus, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let mut card = card(p, "status-waiting", t!("status.waiting_title").to_owned(), None);
+    for (ix, w) in s.waiting.iter().enumerate() {
+        let ticket = w.ticket;
+        let badge = crate::board::impact_words(&w.impact);
+        let color = if w.impact.is_pressing() { p.red } else { p.amber };
+        card = card.child(
+            h_flex()
+                .id(("status-waiting-row", ix))
+                .w_full()
+                .min_h(px(40.))
+                .px_3()
+                .py_1()
+                .gap_3()
+                .items_center()
+                .cursor_pointer()
+                .when(ix > 0, |r| r.border_t_1().border_color(p.hair))
+                .hover(move |s| s.bg(p.wash))
+                .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| match ticket {
+                    Some(id) if !this.open_elsewhere(e, super::elsewhere::Goal::Ticket(id), window, cx) => this.open_ticket_row(id, window, cx),
+                    Some(_) => {}
+                    None => this.open_side_menu(crate::board::Menu::Inbox, cx),
+                }))
+                .child(div().w(px(52.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(ticket.map(|id| format!("T-{id}")).unwrap_or_default()))
+                .child(div().flex_1().min_w_0().truncate().text_size(px(SMALL)).text_color(p.text).child(w.title.clone()))
+                .child(div().flex_none().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(color).child(badge)),
+        );
+    }
+    if s.waiting_more > 0 {
+        card = card.child(div().px_3().py_2().text_size(px(12.)).text_color(p.muted).child(t!("status.more", count = s.waiting_more)));
+    }
+    card.into_any_element()
 }
 
 fn watched(shell: &Shell, s: &SquadStatus, now: u64, cx: &mut Context<Shell>) -> AnyElement {

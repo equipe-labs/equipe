@@ -25,6 +25,7 @@ mod i18n;
 mod lang;
 mod launchd;
 mod logins;
+mod notify;
 mod usage;
 mod onboard;
 mod remote;
@@ -346,6 +347,8 @@ enum Command {
     },
     /// Where the squad's tokens went and what looks wasted: by day, member and kind, with waste signals
     Usage(usage::UsageArgs),
+    /// How notifications escalate what stays a bottleneck, and quiet hours: `show`, or `set <key> <value>`
+    Notify(notify::NotifyArgs),
     /// What an AWS CLI profile's credential_process runs (login autopilot sets it up)
     #[command(hide = true)]
     Credential { kind: String, name: String },
@@ -597,6 +600,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Brief { action } => brief::command(action).await.map_err(Failure::new),
         Command::Logins { action } => logins::command(action).map_err(Failure::new),
         Command::Usage(args) => usage::command(args).map_err(Failure::new),
+        Command::Notify(args) => notify::command(args).map_err(Failure::new),
         Command::Credential { kind, name } => logins::credential(&kind, &name).map_err(Failure::new),
         Command::CallSim { squad, no_llm } => call_sim::run(squad, no_llm).await.map_err(Failure::new),
         Command::Disk { words, squad, yes } => disk::command(&words, squad, yes).await.map_err(Failure::new),
@@ -1798,6 +1802,8 @@ impl App {
                 | Event::RoutineProposed { .. }
                 | Event::RoutineProposalClosed { .. }
                 | Event::IdleWakeChanged { .. }
+                | Event::NotifyChanged { .. }
+                | Event::Escalated { .. }
                 | Event::RestingChanged { .. }
                 | Event::StatusChanged { .. }
                 | Event::SignalsChanged { .. }

@@ -41,6 +41,8 @@ pub mod engines;
 pub mod eta;
 pub mod gateway;
 pub mod i18n;
+pub mod escalation;
+pub mod importance;
 pub mod journal;
 pub mod keychain;
 pub mod lanes;

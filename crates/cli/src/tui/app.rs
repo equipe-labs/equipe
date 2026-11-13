@@ -1120,6 +1120,50 @@ impl App {
     /// unblocks first), proposals, work accepted but not on main. The same
     /// definition as the desktop's: the menu's count, the Inbox and the card read it.
     pub fn needs_you(&self) -> Vec<(Section, Need)> {
+        let by_kind = self.needs_by_kind();
+        let impacts = self.ticket_impacts(&by_kind);
+        // What holds other work up comes first among the tickets, the most
+        // blocking leading; the rest keep their sections.
+        let blocking = |need: &Need| matches!(need, Need::Ticket(id) if impacts.get(id).is_some_and(|i| i.is_blocking()));
+        let mut out: Vec<(Section, Need)> = by_kind.iter().filter(|(s, _)| *s == Section::Permission).copied().collect();
+        let mut top: Vec<(Section, Need)> = by_kind.iter().filter(|(_, n)| blocking(n)).copied().collect();
+        top.sort_by_key(|(_, n)| match n {
+            Need::Ticket(id) => (std::cmp::Reverse(impacts[id].score), self.tickets.iter().find(|t| t.id == *id).and_then(|t| t.updated_at).unwrap_or(u64::MAX), *id),
+            Need::Permission(id) => (std::cmp::Reverse(0), u64::MAX, *id as TicketId),
+        });
+        out.extend(top);
+        out.extend(by_kind.iter().filter(|(s, n)| *s != Section::Permission && !blocking(n)).copied());
+        out
+    }
+
+    /// What each ticket in `needs` (as [`App::needs_by_kind`] lists them)
+    /// holds up ([`equipe_core::importance`]): the same scoring the desktop's
+    /// Needs you is ordered by.
+    pub fn ticket_impacts(&self, needs: &[(Section, Need)]) -> HashMap<TicketId, equipe_core::protocol::importance::Impact> {
+        use equipe_core::protocol::importance::WaitKind;
+        let waiters: Vec<(TicketId, equipe_core::importance::Waiter)> = needs
+            .iter()
+            .filter_map(|(section, need)| {
+                let Need::Ticket(id) = need else { return None };
+                let kind = match section {
+                    Section::Stalled => WaitKind::Stalled,
+                    Section::Review => WaitKind::Review,
+                    Section::Proposed => WaitKind::Proposal,
+                    Section::NotOnMain => WaitKind::NotOnMain,
+                    _ => WaitKind::Ticket,
+                };
+                let since = self.tickets.iter().find(|t| t.id == *id).and_then(|t| t.updated_at).unwrap_or(0);
+                Some((*id, equipe_core::importance::Waiter { kind, tickets: vec![*id], holding: Vec::new(), since, idle_members: u32::from(*section == Section::Stalled), holds_deploy: false }))
+            })
+            .collect();
+        let graph = equipe_core::importance::Graph::new(&self.tickets);
+        waiters.iter().map(|(id, w)| (*id, graph.impact(w))).collect()
+    }
+
+    /// What waits for the person by section, as before importance: requests
+    /// for permission, tickets put down for them, work handed in (what it
+    /// unblocks first), proposals, work accepted but not on main.
+    fn needs_by_kind(&self) -> Vec<(Section, Need)> {
         let mut out: Vec<(Section, Need)> = self.approvals.iter().map(|a| (Section::Permission, Need::Permission(a.id))).collect();
         for section in &Section::ALL[1..] {
             let mut tickets: Vec<&Ticket> = self.tickets.iter().filter(|t| section_of(t) == Some(*section) && self.in_focus(t)).collect();
@@ -4912,11 +4956,12 @@ mod tests {
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: merged_not });
         app.approvals.push(approval(7));
         let sections: Vec<Section> = app.needs_you().into_iter().map(|(s, _)| s).collect();
-        assert_eq!(sections, [Section::Permission, Section::Waiting, Section::Review, Section::Review, Section::Proposed, Section::NotOnMain]);
+        // The review that holds work up (T-3 waits for it) comes first among the tickets; the rest keep their sections.
+        assert_eq!(sections, [Section::Permission, Section::Review, Section::Waiting, Section::Review, Section::Proposed, Section::NotOnMain]);
         app.pane = Pane::Board;
         app.board_menu = BoardMenu::Inbox;
         // The review that unblocks work first.
-        assert_eq!(app.board_order(), vec![5, 2, 1, 4, 6]);
+        assert_eq!(app.board_order(), vec![2, 5, 1, 4, 6]);
         assert_eq!(app.blocked_by(&app.tickets.iter().find(|t| t.id == 3).unwrap().clone()), Some(2));
         for c in ['g', 'b'] {
             app.on_key(KeyEvent::from(KeyCode::Char(c)), Instant::now());

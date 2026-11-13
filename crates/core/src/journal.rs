@@ -1607,6 +1607,16 @@ impl Journal {
         self.set_meta("idle_wake_hours", &hours.to_string())
     }
 
+    /// How this squad escalates what stays a bottleneck, as the person set it
+    /// for it; `None`: they did not, and their default (or the built-in one) stands.
+    pub fn notify_settings(&self) -> Option<crate::protocol::importance::NotifySettings> {
+        self.meta("notify").and_then(|json| serde_json::from_str(&json).ok())
+    }
+
+    pub fn set_notify_settings(&self, settings: &crate::protocol::importance::NotifySettings) -> Result<()> {
+        self.set_meta("notify", &serde_json::to_string(settings).unwrap_or_default())
+    }
+
     /// When the person last did something in the squad — made it, wrote to a
     /// member — in unix seconds; the board's own times count besides.
     /// `None`: not since this was kept.
