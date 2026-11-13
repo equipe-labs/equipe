@@ -41,7 +41,16 @@ pub async fn run(action: Option<Action>) -> Result<(), String> {
         Action::Off { member, everyone, squad } => set(&home, member, everyone, false, squad),
         Action::Locked { state } => locked(&home, state.as_deref()),
         Action::Remove => {
-            mac_only()?;
+            supported()?;
+            #[cfg(target_os = "linux")]
+            {
+                let marked = equipe_desktop_control::linux::unmark_set_up(&home);
+                let had = equipe_desktop_control::linux::stop_helper(&home) || marked;
+                let _ = std::fs::remove_file(helper::socket_path(&home));
+                println!("{}", ui::out().ok_line(if had { t!("desktop.removed") } else { t!("desktop.not_installed") }));
+                return Ok(());
+            }
+            #[allow(unreachable_code)]
             let name = install::host().name();
             let had = install::uninstall(&home);
             let p = ui::out();
@@ -50,10 +59,10 @@ pub async fn run(action: Option<Action>) -> Result<(), String> {
             Ok(())
         }
         Action::Status => {
-            mac_only()?;
+            supported()?;
             let p = ui::out();
             println!("{}\n", p.kicker("desktop"));
-            let ready = report(&home).await;
+            let ready = if LINUX { report_linux(&home).await } else { report(&home).await };
             if !ready {
                 println!("\n  {}", p.hint("equipe desktop setup"));
             }
@@ -63,14 +72,18 @@ pub async fn run(action: Option<Action>) -> Result<(), String> {
     }
 }
 
-/// macOS and Windows run the desktop helper; Linux doesn't yet (see docs/DESKTOP-CONTROL.md).
-fn mac_only() -> Result<(), String> {
-    if cfg!(any(target_os = "macos", windows)) {
+/// macOS, Windows and Linux run the desktop helper (see docs/DESKTOP-CONTROL.md).
+fn supported() -> Result<(), String> {
+    if cfg!(any(target_os = "macos", windows, target_os = "linux")) {
         Ok(())
     } else {
-        Err("Desktop control works on macOS and Windows only; Linux isn't supported yet (docs/DESKTOP-CONTROL.md lists what it will need).".into())
+        Err("Desktop control works on macOS, Windows and Linux only.".into())
     }
 }
+
+/// Linux has no permission to grant: its checks are the session's (a
+/// display, the session bus, AT-SPI), and the helper runs inside it.
+const LINUX: bool = cfg!(target_os = "linux");
 
 /// A Mac's checks (a login session, the login service, the helper's bundle)
 /// mean nothing on Windows, whose helper needs no permission.
@@ -279,10 +292,13 @@ async fn install_engine(home: &Path) {
 }
 
 async fn setup(home: &Path, sign: Option<String>) -> Result<(), String> {
-    mac_only()?;
+    supported()?;
     let p = ui::out();
     println!("{}\n", p.kicker("desktop setup"));
     println!("{}\n", p.note(2, t!("desktop.auto_note")));
+    if LINUX {
+        return setup_linux(home).await;
+    }
     if !MAC {
         return setup_windows(home).await;
     }
@@ -378,6 +394,117 @@ async fn setup_windows(home: &Path) -> Result<(), String> {
     } else {
         Err(format!("Not ready yet: see what's marked ✗ (the helper's log: {}).", helper::log_path(home).display()))
     }
+}
+
+/// The session as this terminal sees it: display, bus, AT-SPI. A terminal
+/// inside the desktop session sees what the helper will.
+#[cfg(target_os = "linux")]
+async fn linux_session() -> equipe_desktop_control::linux::Readiness {
+    tokio::task::spawn_blocking(equipe_desktop_control::linux::check).await.unwrap_or_else(|e| equipe_desktop_control::linux::Readiness {
+        display: Err(e.to_string()),
+        bus: Err(e.to_string()),
+        atspi: Err(e.to_string()),
+        toolkits: None,
+    })
+}
+
+/// Print Linux's checks; `true` when the desktop is ready to use: the
+/// session reachable, AT-SPI answering, the engine installed, and the
+/// helper (inside the session) able to read apps through it.
+#[cfg(target_os = "linux")]
+async fn report_linux(home: &Path) -> bool {
+    let p = ui::out();
+    let session = linux_session().await;
+    let err = |r: Result<(), &String>| r.err().cloned().unwrap_or_default();
+    line(session.display.is_ok(), t!("desktop.check_linux_display"), &err(session.display.as_ref().map(drop)));
+    line(session.bus.is_ok(), t!("desktop.check_linux_bus"), &err(session.bus.as_ref().map(drop)));
+    line(session.atspi.is_ok(), t!("desktop.check_linux_atspi"), &err(session.atspi.as_ref().map(drop)));
+    if session.atspi.is_ok()
+        && let Some(on) = session.toolkits
+    {
+        optional(on, t!("desktop.check_linux_toolkits"), t!("desktop.fix_linux_toolkits"));
+    }
+    engine_line(home);
+    let status = helper_status(home, helper::STATUS).await;
+    let engine_ready = matches!(pin::check(home, pin::this_machine()), pin::Installed::Ready(_));
+    let Some(status) = status else {
+        if session.ok() {
+            line(false, t!("desktop.check_answers"), &t!("desktop.fix_answers", path = helper::log_path(home).display()));
+        }
+        return false;
+    };
+    let helper_ok = status["accessibility"].as_bool() == Some(true);
+    let missing: Vec<&str> = status["missing"].as_array().map(|m| m.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    line(helper_ok, t!("desktop.check_linux_helper"), &missing.join(" "));
+    let engine_grant = status["engine"]["accessibility"].as_str();
+    if let Some(state) = engine_grant {
+        line(state == "granted", t!("desktop.check_linux_engine"), t!("desktop.fix_linux_engine"));
+    }
+    // Pointer and keyboard input waits for the person to leave the screen:
+    // without a way to tell, it never goes in.
+    let idle = tokio::task::spawn_blocking(|| equipe_desktop_control::linux::idle(&equipe_desktop_control::linux::this_session())).await.ok().flatten();
+    optional(idle.is_some(), t!("desktop.check_linux_idle"), t!("desktop.fix_linux_idle"));
+    let work_locked = equipe_core::desktop::work_locked(home);
+    if status["session"]["locked"].as_bool() == Some(true) {
+        if work_locked {
+            optional(false, t!("desktop.check_unlocked"), t!("desktop.fix_unlocked_working"));
+        } else {
+            line(false, t!("desktop.check_unlocked"), t!("desktop.fix_unlocked"));
+        }
+    }
+    println!("\n{}", p.note(2, &members_line(home, helper_ok)));
+    println!("{}", p.note(2, t!("desktop.linux_input")));
+    println!("{}", p.note(2, if work_locked { t!("desktop.locked_on") } else { t!("desktop.locked_off_hint") }));
+    helper_ok && engine_ready && engine_grant != Some("denied")
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn report_linux(home: &Path) -> bool {
+    report(home).await
+}
+
+/// Linux: the engine, then the helper started inside this terminal's
+/// session — or, without one, exactly what the session lacks.
+#[cfg(target_os = "linux")]
+async fn setup_linux(home: &Path) -> Result<(), String> {
+    use equipe_core::desktop::auto::{Ops as _, ThisMachine};
+    let p = ui::out();
+    // The person asked for the desktop here: the daemon keeps it from now on,
+    // and every member has it once the session answers.
+    let _ = equipe_desktop_control::linux::mark_set_up(home);
+    install_engine(home).await;
+    let session = linux_session().await;
+    if session.session() {
+        let machine = ThisMachine { home: home.to_owned() };
+        let status = helper_status(home, helper::STATUS).await;
+        // A helper left running from an earlier session (or an older equipe)
+        // doesn't see this one's AT-SPI: started again, inside this session.
+        let stale = status.as_ref().is_some_and(|s| s["accessibility"].as_bool() != Some(true) && session.ok());
+        if stale && equipe_desktop_control::linux::stop_helper(home) {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        if status.is_none() || stale {
+            machine.sync_helper(false).await.map_err(|f| f.detail)?;
+            for _ in 0..40 {
+                if helper_status(home, helper::STATUS).await.is_some() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        }
+    }
+    println!();
+    if report_linux(home).await {
+        println!("\n{}", p.ok_line("The desktop is ready."));
+        Ok(())
+    } else {
+        Err(t!("desktop.linux_not_ready").to_owned())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn setup_linux(home: &Path) -> Result<(), String> {
+    setup_windows(home).await
 }
 
 /// Exactly what the person switches on, opening the panes for them.

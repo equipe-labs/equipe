@@ -31,48 +31,56 @@ fn modifier(name: &str) -> Option<u64> {
     })
 }
 
+/// Single characters and their key codes (ANSI layout).
+const LETTERS: &[(char, u16)] = &[
+    ('a', 0), ('s', 1), ('d', 2), ('f', 3), ('h', 4), ('g', 5), ('z', 6), ('x', 7), ('c', 8), ('v', 9),
+    ('b', 11), ('q', 12), ('w', 13), ('e', 14), ('r', 15), ('y', 16), ('t', 17), ('1', 18), ('2', 19),
+    ('3', 20), ('4', 21), ('6', 22), ('5', 23), ('=', 24), ('9', 25), ('7', 26), ('-', 27), ('8', 28),
+    ('0', 29), (']', 30), ('o', 31), ('u', 32), ('[', 33), ('i', 34), ('p', 35), ('l', 37), ('j', 38),
+    ('\'', 39), ('k', 40), (';', 41), ('\\', 42), (',', 43), ('/', 44), ('n', 45), ('m', 46), ('.', 47),
+    ('`', 50),
+];
+
+/// Named keys, the name members most often write first.
+const NAMED: &[(&str, u16)] = &[
+    ("return", RETURN), ("enter", RETURN), ("⏎", RETURN),
+    ("tab", TAB),
+    ("space", 49),
+    ("delete", 51), ("backspace", 51), ("⌫", 51),
+    ("escape", 53), ("esc", 53),
+    ("forwarddelete", 117), ("del", 117),
+    ("home", 115), ("end", 119), ("pageup", 116), ("pagedown", 121),
+    ("left", 123), ("right", 124), ("down", 125), ("up", 126),
+    ("f1", 122), ("f2", 120), ("f3", 99), ("f4", 118), ("f5", 96), ("f6", 97),
+    ("f7", 98), ("f8", 100), ("f9", 101), ("f10", 109), ("f11", 103), ("f12", 111),
+];
+
 fn key(name: &str) -> Option<u16> {
-    const LETTERS: &[(char, u16)] = &[
-        ('a', 0), ('s', 1), ('d', 2), ('f', 3), ('h', 4), ('g', 5), ('z', 6), ('x', 7), ('c', 8), ('v', 9),
-        ('b', 11), ('q', 12), ('w', 13), ('e', 14), ('r', 15), ('y', 16), ('t', 17), ('1', 18), ('2', 19),
-        ('3', 20), ('4', 21), ('6', 22), ('5', 23), ('=', 24), ('9', 25), ('7', 26), ('-', 27), ('8', 28),
-        ('0', 29), (']', 30), ('o', 31), ('u', 32), ('[', 33), ('i', 34), ('p', 35), ('l', 37), ('j', 38),
-        ('\'', 39), ('k', 40), (';', 41), ('\\', 42), (',', 43), ('/', 44), ('n', 45), ('m', 46), ('.', 47),
-        ('`', 50),
-    ];
     let mut chars = name.chars();
     if let (Some(c), None) = (chars.next(), chars.next()) {
         return LETTERS.iter().find(|(l, _)| *l == c).map(|(_, code)| *code);
     }
-    Some(match name {
-        "return" | "enter" | "⏎" => RETURN,
-        "tab" => TAB,
-        "space" => 49,
-        "delete" | "backspace" | "⌫" => 51,
-        "escape" | "esc" => 53,
-        "forwarddelete" | "del" => 117,
-        "home" => 115,
-        "end" => 119,
-        "pageup" => 116,
-        "pagedown" => 121,
-        "left" => 123,
-        "right" => 124,
-        "down" => 125,
-        "up" => 126,
-        "f1" => 122,
-        "f2" => 120,
-        "f3" => 99,
-        "f4" => 118,
-        "f5" => 96,
-        "f6" => 97,
-        "f7" => 98,
-        "f8" => 100,
-        "f9" => 101,
-        "f10" => 109,
-        "f11" => 103,
-        "f12" => 111,
-        _ => return None,
-    })
+    NAMED.iter().find(|(n, _)| *n == name).map(|(_, code)| *code)
+}
+
+/// The key a code stands for, as members write it (`s`, `return`).
+pub fn key_name(code: u16) -> Option<String> {
+    LETTERS
+        .iter()
+        .find(|(_, c)| *c == code)
+        .map(|(l, _)| l.to_string())
+        .or_else(|| NAMED.iter().find(|(_, c)| *c == code).map(|(n, _)| (*n).to_owned()))
+}
+
+/// A combo as members write it: `cmd+shift+s`.
+pub fn name(combo: Combo) -> String {
+    let mut parts: Vec<String> = [(CONTROL, "ctrl"), (OPTION, "alt"), (SHIFT, "shift"), (COMMAND, "cmd"), (FUNCTION, "fn")]
+        .iter()
+        .filter(|(flag, _)| combo.flags & flag != 0)
+        .map(|(_, n)| (*n).to_owned())
+        .collect();
+    parts.push(key_name(combo.code).unwrap_or_else(|| format!("key {}", combo.code)));
+    parts.join("+")
 }
 
 /// One shortcut: modifiers and a key joined by `+` (`cmd+shift+s`).
@@ -119,5 +127,14 @@ mod tests {
         assert!(parse("hyper+a").unwrap_err().contains("hyper"));
         assert_eq!(parse_all("cmd+a delete").unwrap().len(), 2);
         assert!(parse_all("  ").is_err());
+    }
+
+    #[test]
+    fn a_combo_is_named_back_as_written() {
+        for written in ["cmd+s", "ctrl+alt+shift+t", "return", "shift+tab", "cmd+,", "f5", "space", "alt+left"] {
+            assert_eq!(name(parse(written).unwrap()), written);
+        }
+        assert_eq!(name(parse("enter").unwrap()), "return", "a key's first name");
+        assert_eq!(name(Combo { code: 999, flags: 0 }), "key 999");
     }
 }

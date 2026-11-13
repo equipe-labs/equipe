@@ -20,7 +20,7 @@ pub const SCREEN_PANE: &str = "x-apple.systempreferences:com.apple.preference.se
 /// what is still missing.
 pub async fn readiness(home: &Path, guide: bool) -> DesktopReadiness {
     let mut ready = DesktopReadiness {
-        supported: cfg!(any(target_os = "macos", windows)),
+        supported: cfg!(any(target_os = "macos", windows, target_os = "linux")),
         engine_version: pin::VERSION.to_owned(),
         work_locked: super::work_locked(home),
         ..Default::default()
@@ -36,6 +36,11 @@ pub async fn readiness(home: &Path, guide: bool) -> DesktopReadiness {
         && let Ok(status) = serde_json::from_str::<Value>(&answer.text)
     {
         apply(&mut ready, &status);
+    }
+    // No helper to say it: what the session lacks, as far as can be told from here.
+    #[cfg(target_os = "linux")]
+    if !ready.helper {
+        ready.missing = tokio::task::spawn_blocking(|| equipe_desktop_control::linux::check().missing()).await.unwrap_or_default();
     }
     if guide && cfg!(target_os = "macos") && ready.helper {
         if ready.accessibility != Some(true) {
@@ -55,6 +60,7 @@ pub(super) fn apply(ready: &mut DesktopReadiness, status: &Value) {
     ready.engine_grant = status["engine"]["accessibility"].as_str().map(|state| state == "granted");
     ready.locked = status["session"]["locked"].as_bool() == Some(true);
     ready.helper_name = helper_name(Some(status));
+    ready.missing = status["missing"].as_array().map(|lines| lines.iter().filter_map(|l| l.as_str().map(str::to_owned)).collect()).unwrap_or_default();
 }
 
 /// What System Settings lists the helper as: "equipe" when equipe.app (or the
@@ -88,6 +94,20 @@ mod tests {
         apply(&mut ready, &json!({ "accessibility": true, "post_events": false, "engine": { "accessibility": "denied" } }));
         assert_eq!(ready.accessibility, Some(false));
         assert!(!ready.ready());
+        assert!(ready.missing.is_empty());
+    }
+
+    #[test]
+    fn a_linux_helpers_status_says_what_the_session_lacks() {
+        let mut ready = DesktopReadiness { supported: true, engine: true, ..Default::default() };
+        let missing = vec!["AT-SPI (the desktop's accessibility bus) isn't answering".to_owned()];
+        apply(&mut ready, &json!({ "role": "linux", "screen": null, "accessibility": false, "post_events": false, "missing": missing }));
+        assert_eq!((ready.helper, ready.accessibility, ready.screen), (true, Some(false), None));
+        assert_eq!(ready.missing, missing);
+        assert_eq!(ready.helper_name, "equipe");
+        assert!(!ready.ready());
+        apply(&mut ready, &json!({ "role": "linux", "screen": null, "accessibility": true, "post_events": true, "missing": [], "engine": { "accessibility": "granted" } }));
+        assert!(ready.missing.is_empty() && ready.ready(), "AT-SPI answering is all Linux asks; no picture needed");
     }
 
     #[tokio::test]

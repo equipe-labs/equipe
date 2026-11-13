@@ -4840,7 +4840,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         // is on, but whoever they turned it off for.
         let granted = self.desktop_granted();
         let desktop = wants_browser
-            && cfg!(target_os = "macos")
+            && desktop::offered()
             && squad.as_deref().zip(session.member.as_ref()).is_some_and(|(s, m)| self.journals.get(s).is_some_and(|j| j.desktop_enabled(&m.name, granted)));
         // A squad's mobile app: its QA and mobile members test it on the ticket's own phone.
         let phone = board_tools && !lite && squad.as_deref().zip(session.member.as_ref()).is_some_and(|(s, m)| self.phone_offered(s, &m.role, mode));

@@ -43,8 +43,13 @@ impl Cli {
     /// The pinned release in `home`, if this machine has one. Its state root
     /// is emptied: refs from an earlier run of the helper mean nothing now.
     pub fn installed(home: &Path) -> Option<Self> {
+        Self::installed_with_state(home, pin::state_dir(home))
+    }
+
+    /// The pinned release in `home`, keeping its state in `state` (emptied
+    /// too): a second user of the engine whose snapshots stay apart.
+    pub fn installed_with_state(home: &Path, state: PathBuf) -> Option<Self> {
         let archive = pin::this_machine()?;
-        let state = pin::state_dir(home);
         let _ = std::fs::remove_dir_all(&state);
         Some(Self { binary: pin::executable(home, archive), sha256: Some(archive.executable_sha256()), state, checked: Mutex::new(None) })
     }

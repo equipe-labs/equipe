@@ -51,5 +51,11 @@ windows = { version = "0.62.2", features = [
 ] }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Pictures from agent-desktop (PNG) resized for the model (JPEG), and the
+# person's idle time from the X server (MIT-SCREEN-SAVER), pure Rust.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+x11rb = { version = "0.13", default-features = false, features = ["screensaver"] }
+
 [dev-dependencies]
 tokio = { version = "1.53.2", features = ["rt", "macros"] }

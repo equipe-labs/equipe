@@ -59,8 +59,10 @@ impl Archive {
     }
 }
 
-/// The archives equipe knows, by target. macOS and Windows: where the desktop
-/// helper runs. (agent-desktop also ships Linux; equipe's helper doesn't run there yet.)
+/// The archives equipe knows, by target: macOS, Windows and Linux (glibc),
+/// each on arm64 and x86_64. A Linux archive also carries
+/// `agent-desktop-linux-clipboard-owner`, which agent-desktop runs to keep
+/// the X11 clipboard after setting it.
 pub const ARCHIVES: &[Archive] = &[
     Archive {
         target: "aarch64-apple-darwin",
@@ -88,15 +90,40 @@ pub const ARCHIVES: &[Archive] = &[
         sha256: "d6d8643310c2c13eace2261444d9e4c0d16ca09581f38500983104903604caa6",
         files: &[("agent-desktop.exe", "f1577d9f8cb6c9b1e767584fed96c72fbe1591fefbd67100965607d1a337a2fb")],
     },
+    Archive {
+        target: "x86_64-unknown-linux-gnu",
+        sha256: "591ae7f4a38479dc045df97e27447c0c8b530441730ab6b990e27c813162af44",
+        files: &[
+            ("agent-desktop", "da52a1eb2152cdc21b756ab20e6208d242da8062c73cd20bc8a8ae2a0384392c"),
+            ("agent-desktop-linux-clipboard-owner", "3e96f92b805c0d1f9de309935d62f4189b8e11e1385ad022bb878487bb3942ec"),
+        ],
+    },
+    Archive {
+        target: "aarch64-unknown-linux-gnu",
+        sha256: "68e8ebbb4f80e44485d2f1cf972943a38ee43108e2e0ce56bdfa641fd1599f68",
+        files: &[
+            ("agent-desktop", "915de59a8b3d22c9ad33023740bbcc5fe0b4fa830de9587bbf761237eafeb76f"),
+            ("agent-desktop-linux-clipboard-owner", "a6bfde6778dadcf9fd04ba94de17cdf205eb0b23b643c3f34073d264d2117cc3"),
+        ],
+    },
 ];
 
 /// The archive for the machine this runs on, if equipe knows one.
 pub fn this_machine() -> Option<&'static Archive> {
-    let target = match (std::env::consts::OS, std::env::consts::ARCH) {
+    for_machine(std::env::consts::OS, std::env::consts::ARCH, cfg!(target_env = "gnu"))
+}
+
+/// The archive for an `os` and `arch` (as `std::env::consts` names them).
+/// Linux releases are built against glibc: a musl build of equipe (Alpine)
+/// gets none.
+pub fn for_machine(os: &str, arch: &str, glibc: bool) -> Option<&'static Archive> {
+    let target = match (os, arch) {
         ("macos", "aarch64") => "aarch64-apple-darwin",
         ("macos", "x86_64") => "x86_64-apple-darwin",
         ("windows", "x86_64") => "x86_64-pc-windows-msvc",
         ("windows", "aarch64") => "aarch64-pc-windows-msvc",
+        ("linux", "x86_64") if glibc => "x86_64-unknown-linux-gnu",
+        ("linux", "aarch64") if glibc => "aarch64-unknown-linux-gnu",
         _ => return None,
     };
     ARCHIVES.iter().find(|a| a.target == target)
@@ -256,6 +283,30 @@ mod tests {
             );
         }
         assert!(LICENSE.contains("Apache License") && LICENSE.contains("Version 2.0"));
+    }
+
+    #[test]
+    fn linux_is_pinned_on_both_architectures_with_its_clipboard_owner() {
+        for (arch, archive_sha) in [
+            ("x86_64", "591ae7f4a38479dc045df97e27447c0c8b530441730ab6b990e27c813162af44"),
+            ("aarch64", "68e8ebbb4f80e44485d2f1cf972943a38ee43108e2e0ce56bdfa641fd1599f68"),
+        ] {
+            let archive = for_machine("linux", arch, true).unwrap_or_else(|| panic!("no Linux {arch} pin"));
+            assert_eq!(archive.target, format!("{arch}-unknown-linux-gnu"));
+            assert_eq!(archive.sha256, archive_sha, "the release's checksums.txt");
+            assert_eq!(archive.name(), format!("agent-desktop-v1.2.0-{arch}-unknown-linux-gnu.tar.gz"));
+            let names: Vec<_> = archive.files.iter().map(|(name, _)| *name).collect();
+            assert_eq!(names, ["agent-desktop", "agent-desktop-linux-clipboard-owner"], "the executable first");
+            assert_ne!(archive.files[0].1, archive.files[1].1);
+        }
+        assert_ne!(for_machine("linux", "x86_64", true).map(|a| a.files), for_machine("linux", "aarch64", true).map(|a| a.files));
+        assert_eq!(for_machine("linux", "x86_64", false), None, "glibc builds only: none for musl");
+        assert_eq!(for_machine("linux", "riscv64", true), None);
+        assert_eq!(for_machine("freebsd", "x86_64", true), None);
+        assert_eq!(for_machine("macos", "aarch64", false).map(|a| a.target), Some("aarch64-apple-darwin"));
+        assert_eq!(for_machine("windows", "x86_64", false).map(|a| a.target), Some("x86_64-pc-windows-msvc"));
+        let targets: std::collections::BTreeSet<_> = ARCHIVES.iter().map(|a| a.target).collect();
+        assert_eq!(targets.len(), ARCHIVES.len(), "one pin per target");
     }
 
     #[test]

@@ -120,10 +120,27 @@ pub trait Desktop {
     fn pointer(&self, action: Pointer);
     fn type_char(&self, c: char);
     fn key(&self, combo: Combo);
+    /// Type `text` (no newline or tab in it) where the keyboard focus is, in
+    /// one go. `None`: this desktop types a character at a time
+    /// ([`Desktop::type_char`]), focus checked before each.
+    fn type_run(&self, _text: &str) -> Option<Result<(), String>> {
+        None
+    }
+    /// Why the last pointer action, key or character didn't go in, if it
+    /// didn't — taken, so it is told once. `None` where posting input
+    /// doesn't fail visibly (macOS, Windows).
+    fn input_failure(&self) -> Option<String> {
+        None
+    }
     fn pause(&self, ms: u64);
     /// What to call a process that isn't one of [`Desktop::apps`] — a system
     /// dialog, an overlay — when it is in the way.
     fn process_name(&self, _pid: i32) -> Option<String> {
+        None
+    }
+    /// Why `tool` (a screenshot-and-coordinates tool) isn't on this platform
+    /// at all: it is refused with this before anything runs. `None`: it is.
+    fn unavailable(&self, _tool: &str) -> Option<&'static str> {
         None
     }
 }
@@ -185,6 +202,9 @@ impl<D: Desktop> Controller<D> {
     /// that scene: a send the person said yes to doesn't land in another
     /// conversation, and a field that turned into a password field gets nothing.
     pub fn call(&mut self, member: &str, tool: &str, args: &Value) -> Reply {
+        if let Some(why) = self.desktop.unavailable(tool) {
+            return Reply::refuse(why);
+        }
         if let Some(expected) = args.get(EXPECT) {
             match self.scene(member, tool, args) {
                 Ok(now) if same_scene(expected, &now) => {}
@@ -218,6 +238,9 @@ impl<D: Desktop> Controller<D> {
     /// JSON in the shape of `equipe_core::desktop_gate::Scene`, for the daemon's
     /// send gate. A click by point brings the app forward first, as the click would.
     pub fn scene(&mut self, member: &str, tool: &str, args: &Value) -> Step<Value> {
+        if let Some(why) = self.desktop.unavailable(tool) {
+            return Err(Reply::refuse(why));
+        }
         self.need(false, true, "read apps' UI")?;
         let element = self.element(member, args)?;
         let app = match &element {
@@ -278,6 +301,9 @@ impl<D: Desktop> Controller<D> {
     /// Leaves every member's coordinates as they were.
     pub fn capture(&self) -> Reply {
         let shot = || -> Step<Vec<u8>> {
+            if let Some(why) = self.desktop.unavailable("screenshot") {
+                return Err(Reply::refuse(why));
+            }
             self.need(true, false, "see the screen")?;
             let display = self.display()?;
             let mapping = Mapping::for_frame(display.frame, display.backing);
@@ -636,8 +662,11 @@ impl<D: Desktop> Controller<D> {
         };
         let hit = self.aim(member, &app, at)?;
         self.desktop.pointer(Pointer::Click { at, right, count });
-        self.desktop.pause(150);
         let (x, y) = self.mapping(member)?.to_image(at);
+        if let Some(why) = self.desktop.input_failure() {
+            return Err(Reply::refuse(format!("Couldn't click at ({x}, {y}) in {}: {why}", app.name)));
+        }
+        self.desktop.pause(150);
         let verb = match (count, right) {
             (2, _) => "Double-clicked",
             (_, true) => "Right-clicked",
@@ -662,6 +691,9 @@ impl<D: Desktop> Controller<D> {
         let to = self.point(member, args, "to_x", "to_y")?;
         self.aim(member, &app, from)?;
         self.desktop.pointer(Pointer::Drag { from, to });
+        if let Some(why) = self.desktop.input_failure() {
+            return Err(Reply::refuse(format!("Couldn't drag in {}: {why}", app.name)));
+        }
         Ok(Reply::ok(format!("Dragged in {}.", app.name)))
     }
 
@@ -689,6 +721,9 @@ impl<D: Desktop> Controller<D> {
         let down = num(args, "down").unwrap_or(if num(args, "right").is_some() { 0.0 } else { 5.0 }) as i32;
         let right = num(args, "right").unwrap_or(0.0) as i32;
         self.desktop.pointer(Pointer::Scroll { at, down, right });
+        if let Some(why) = self.desktop.input_failure() {
+            return Err(Reply::refuse(format!("Couldn't scroll in {}: {why}", app.name)));
+        }
         Ok(Reply::ok(format!("Scrolled {} in {}.", if down < 0 { "up" } else { "down" }, app.name)))
     }
 
@@ -717,8 +752,10 @@ impl<D: Desktop> Controller<D> {
             return Err(Reply::refuse(format!("Focus is in {} but not on {}: nothing typed.", app.name, label(node))));
         }
         let total = text.chars().count();
-        for (typed, c) in text.chars().enumerate() {
-            // The person may click elsewhere mid-way: every character checks again.
+        let mut typed = 0;
+        for piece in pieces(text) {
+            // The person may click elsewhere mid-way: every character (or run
+            // of them, where the desktop types runs) checks again.
             let focused = self.desktop.focused_app();
             if focused != Some(app.pid) {
                 return Err(Reply::refuse(format!(
@@ -726,10 +763,50 @@ impl<D: Desktop> Controller<D> {
                     self.name_of(focused)
                 )));
             }
-            match c {
-                '\n' => self.desktop.key(Combo { code: keys::RETURN, flags: 0 }),
-                '\t' => self.desktop.key(Combo { code: keys::TAB, flags: 0 }),
-                c => self.desktop.type_char(c),
+            let run = match piece {
+                Piece::Key(code) => {
+                    self.desktop.key(Combo { code, flags: 0 });
+                    Ok(1)
+                }
+                Piece::Text(run) => match self.desktop.type_run(run) {
+                    Some(done) => done.map(|()| run.chars().count()),
+                    None => {
+                        let mut chars = run.chars();
+                        let first = chars.next().map(|c| self.desktop.type_char(c));
+                        // The rest of the run a character at a time, focus checked before each.
+                        let mut count = usize::from(first.is_some());
+                        let mut failed = self.desktop.input_failure();
+                        for c in chars {
+                            if failed.is_some() {
+                                break;
+                            }
+                            let focused = self.desktop.focused_app();
+                            if focused != Some(app.pid) {
+                                return Err(Reply::refuse(format!(
+                                    "Typed {} of {total} characters, then keyboard focus moved to {}: stopped there.",
+                                    typed + count,
+                                    self.name_of(focused)
+                                )));
+                            }
+                            self.desktop.type_char(c);
+                            failed = self.desktop.input_failure();
+                            if failed.is_none() {
+                                count += 1;
+                            }
+                        }
+                        match failed {
+                            Some(why) => {
+                                typed += count;
+                                Err(why)
+                            }
+                            None => Ok(count),
+                        }
+                    }
+                },
+            };
+            match run.and_then(|n| self.desktop.input_failure().map_or(Ok(n), Err)) {
+                Ok(n) => typed += n,
+                Err(why) => return Err(Reply::refuse(format!("Typed {typed} of {total} characters into {}, then: {why}", app.name))),
             }
         }
         self.desktop.pause(200);
@@ -752,6 +829,9 @@ impl<D: Desktop> Controller<D> {
             let what = if n == 0 { "pressed".to_owned() } else { format!("more pressed after {n} of {}", combos.len()) };
             self.keyboard(&app, &what)?;
             self.desktop.key(*combo);
+            if let Some(why) = self.desktop.input_failure() {
+                return Err(Reply::refuse(format!("Couldn't press {} in {} ({n} of {} pressed before it): {why}", keys::name(*combo), app.name, combos.len())));
+            }
             self.desktop.pause(60);
         }
         Ok(Reply::ok(format!("Pressed {} in {}.", text(args, "keys").unwrap_or_default().trim(), app.name)))
@@ -791,6 +871,35 @@ fn element_json(node: &Node) -> Value {
         element["value"] = json!(value);
     }
     element
+}
+
+/// Typed text in the pieces it goes in as: runs of characters, and the
+/// return and tab keys a newline and a tab press.
+#[derive(Debug, PartialEq)]
+enum Piece<'a> {
+    Text(&'a str),
+    Key(u16),
+}
+
+fn pieces(text: &str) -> Vec<Piece<'_>> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for (i, c) in text.char_indices() {
+        let key = match c {
+            '\n' => keys::RETURN,
+            '\t' => keys::TAB,
+            _ => continue,
+        };
+        if start < i {
+            out.push(Piece::Text(&text[start..i]));
+        }
+        out.push(Piece::Key(key));
+        start = i + 1;
+    }
+    if start < text.len() {
+        out.push(Piece::Text(&text[start..]));
+    }
+    out
 }
 
 fn text<'a>(args: &'a Value, key: &str) -> Option<&'a str> {

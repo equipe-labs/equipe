@@ -1,0 +1,61 @@
+# A real Xfce desktop (Ubuntu 24.04 x86_64 VM, Xvnc :1 + xfwm4, Mousepad and
+# Chrome open), equipe built from this branch (f4cc7c53) in debug, its own
+# EQUIPE_HOME and squad `desk`, the daemon a systemd user unit started from a
+# shell without DISPLAY. Excerpts, in order.
+
+## Fresh state: no `desktop on` in the squad, no remembered readiness
+before: [('desktop_members', '["assistant"]'), ('desktop_off', '[]')]
+after: []
+(setup.json and the linux-setup mark removed)
+
+## `equipe desktop setup` from a terminal inside the session
+  ✓ A graphical session (X11 or Wayland) is reachable
+  ✓ The D-Bus session bus is there
+  ✓ AT-SPI, the desktop's accessibility bus, answers
+  ✓ Apps are told to expose their accessibility trees
+  ✓ Accessibility engine: agent-desktop 1.2.0, checksum verified
+  ✓ The helper, inside the session, reaches AT-SPI
+  ✓ agent-desktop reads apps through AT-SPI
+  ✓ Idle time readable (input waits while you're using the computer)
+  Working the desktop: everyone
+✓ The desktop is ready.
+[exit 0]
+(no xprintidle on the VM, no Mutter: idle time came from the X server's
+MIT-SCREEN-SAVER, asked directly)
+
+## The helper, read-only, compositing off
+OK w1  mousepad — *Untitled 1 - Mousepad  (0, 25) 612×484  (keyboard focus)
+w2  chrome — Example Domains - Google Chrome  (24, 44) 959×764
+OK The screen, 1440×900 pt, as a 1356×848 image (1 px = 1.06 pt). Keyboard focus: mousepad. [+ image/jpeg image, 175044 bytes]
+
+## xfwm4's compositor turned on for one capture, then off again
+agent-desktop screenshot --screen 0 →
+  PLATFORM_NOT_SUPPORTED "The screen cannot be captured truthfully under a compositing window manager…"
+the helper's screenshot → 1.5 s, OK The screen, 1440×900 pt, as a 1356×848 image
+  (put together from the windows: Mousepad over Chrome where they are; panel and wallpaper black)
+compositing restored: false
+
+## The daemon (systemd user unit eq-pr9), 40 s after it started
+{"told_ready":true,"ever_granted":true,...}   ← from the setup mark alone
+helper: DISPLAY=:1, the user bus, XDG_SESSION_TYPE=x11 (found through the user manager)
+
+## One real Claude Code member, one action ticket (pix_ticket.py), no `desktop on`
+   0.2s member started (assistant)
+   0.2s T-2 in_progress
+  65.5s T-2 review
+NOTE: Done, using the real pointer and keyboard.
+1. screenshot (whole screen): Mousepad "*Untitled 1" with two lines of notes, in front of a Chrome window showing Example Domains, with the XFCE panel on top.
+2. click inside Mousepad's text area → key "ctrl+end return" → type_text "Typed with real keys by an equipe member."
+3. Read it back with a screenshot of the Mousepad window. …
+Desktop tools used: screenshot (×2), click, key, type_text.
+
+helper log:
+equipe desktop helper: desk/assistant screenshot
+equipe desktop helper: desk/assistant click
+equipe desktop helper: desk/assistant key
+equipe desktop helper: desk/assistant type_text
+equipe desktop helper: desk/assistant screenshot
+
+## Read back independently (agent-desktop find, not the member)
+"role": "textfield", "states": ["focused"],
+"value": "Notes for the team:\nChecked by an equipe member on Tenki.\nTyped with real keys by an equipe member."

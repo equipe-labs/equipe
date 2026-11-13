@@ -13,6 +13,12 @@
 > calls still pass through the daemon's one-member screen lease, send gate, and
 > `_scene` recheck before input is posted.
 
+> **Linux:** the same tools, all through agent-desktop: the accessibility tools
+> over AT-SPI, and the screenshot, pointer and keyboard tools over X11 (XTEST
+> input, X11 capture), with the helper running inside the person's graphical
+> session — see [Linux](#linux). `elements` isn't on Linux (`snapshot` with
+> `bounds` is); Wayland has keys but no aimed pointer.
+
 Members working desktop apps (Microsoft Teams, say) the way they work the
 browser: see the screen, click and type, open apps. This is the T-20 spike
 (ROADMAP principle 2): before building the tools, learn whether equipe's daemon,
@@ -74,7 +80,9 @@ helper's process, the CLI as a child process, or `agent-desktop mcp`.
 ### Pinned, verified, private
 
 - One release: `engine::pin::VERSION` = 1.2.0. equipe downloads the upstream archive for the machine (macOS arm64/x86_64, Windows
-  x64/arm64), checks its SHA-256 against the value pinned in code (from the
+  x64/arm64, Linux glibc x86_64/aarch64 — whose archive also carries
+  `agent-desktop-linux-clipboard-owner`, which agent-desktop runs to keep the X11
+  clipboard after setting it), checks its SHA-256 against the value pinned in code (from the
   release's `checksums.txt`; each archive's Sigstore attestation was checked with
   `gh attestation verify` when pinning), unpacks only the pinned files with the
   system `tar`, checks each file's SHA-256, and installs them with a copy of the
@@ -309,13 +317,11 @@ own prompt was shown once before it.
   daemon downloads the engine automatically and starts the helper
   (`equipe desktop serve`, detached) when a member first needs the desktop; a
   helper left over from an older equipe isn't replaced automatically yet.
-- **Linux** has no helper yet. agent-desktop itself ships for Linux; to bring it
-  here equipe will need an X11 or Wayland session with a running AT-SPI bus
-  (the desktop's accessibility service, `at-spi2-core`) and toolkits' accessibility
-  switched on (`gsettings set org.gnome.desktop.interface toolkit-accessibility true`
-  on GNOME), a user session rather than a bare SSH shell, and, on Wayland, the
-  compositor's portal for screen capture. None of that is set up or checked
-  today: `equipe desktop` says so and exits.
+- **Linux** needs no grant either, but a session: see [Linux](#linux). The
+  daemon downloads the engine and, once the person has run `equipe desktop
+  setup` (or a member needs the desktop), starts the helper detached inside the
+  person's graphical session; when there is no session to reach it says what
+  is missing instead.
 - Opt out of all of it with `EQUIPE_NO_DESKTOP_AUTO=1` in the daemon's environment.
 
 ### What needs the person on a real Mac
@@ -365,6 +371,162 @@ person's alone — members can't change it):
 - **Logged out stays refused**, and so does FileVault before the first login:
   there is no session, and no app, to act in. `/desktop stop` refuses
   everything as before.
+
+### Linux
+
+Linux has no Accessibility switch to flip: whether agent-desktop works depends
+on whether the person's desktop session can be reached and its AT-SPI bus
+answers (upstream: <https://agent-browser.dev/desktop/platforms/linux>). So the
+Linux helper (`crates/desktop-control/src/linux.rs`) is about the session:
+
+- **What it checks** (`linux::probe`), each with a line the person can act on:
+  1. a display — `WAYLAND_DISPLAY` with its socket in `$XDG_RUNTIME_DIR`, or
+     `DISPLAY` with its X socket in `/tmp/.X11-unix` (a TCP display is taken on
+     trust); a variable naming a session that is gone is told apart from none;
+  2. the D-Bus session bus — `DBUS_SESSION_BUS_ADDRESS`, or systemd's per-user
+     bus at `$XDG_RUNTIME_DIR/bus`;
+  3. AT-SPI — `org.a11y.Bus.GetAddress` on the session bus, asked with
+     whichever client is installed (`gdbus`, `busctl`, `dbus-send`);
+  4. (advisory) `org.a11y.Status.IsEnabled`: whether toolkits are told to
+     expose their trees (`gsettings set org.gnome.desktop.interface
+     toolkit-accessibility true` on GNOME; `QT_ACCESSIBILITY=1` for Qt apps).
+  The final word is agent-desktop's own: the helper runs `agent-desktop
+  permissions` and reports its `accessibility` state, which on Linux is
+  `granted` exactly when the bus answers.
+- **Where the helper runs.** The daemon is a systemd user service, whose
+  environment may lack the session's variables. `linux::this_session` takes
+  the process's own and fills the missing ones from `systemctl --user
+  show-environment` (desktops export `DISPLAY`, `WAYLAND_DISPLAY`,
+  `XAUTHORITY` there at login). The helper (`equipe desktop serve`) is started
+  detached in its own process group with exactly those variables, logs to
+  `~/.equipe/desktop/helper.log`, and keeps its pid in
+  `~/.equipe/desktop/helper.pid` so `equipe desktop setup` can restart one left
+  over from an older session and `equipe desktop remove` can stop it. It
+  listens on the same `0600` Unix socket with the same token as on a Mac.
+- **`equipe desktop status` / `setup`**, from a terminal inside the session,
+  print the checks above, the engine, whether the helper answers and whether
+  agent-desktop reads apps through AT-SPI from inside the helper. `setup`
+  installs the engine, starts the helper (or restarts a stale one) and exits 1
+  with what is still missing. From a bare SSH shell or a TTY both say "No
+  graphical session…" and "No D-Bus session bus…", not a blanket refusal.
+- **Set up once, everyone's by default.** `equipe desktop setup` leaves a mark
+  (`~/.equipe/desktop/linux-setup`) the daemon reads as "the desktop is
+  wanted", as the helper's LaunchAgent is on macOS; the daemon starting the
+  helper itself leaves it too, and `equipe desktop remove` takes it away. With
+  the mark, the daemon keeps the helper running, sees AT-SPI answer, and every
+  member has `mcp__desktop__…` from its next turn without `equipe desktop on`
+  (still off for whoever the person turned it off for). Before this, nothing
+  made the desktop wanted on Linux until someone ran `equipe desktop on`, and
+  members on a fresh machine never got the tools.
+- **The daemon's own setup** (`desktop::auto`): no display or no bus → no
+  helper is started and `DesktopReadiness.missing` carries the lines; a member
+  who needs the desktop is told what is missing (not "the helper is
+  starting"), and that makes it a `Failed { reason: Session }` card the person
+  can retry. AT-SPI not answering → the same, from the helper's `missing`.
+  There is never an Accessibility "Grant" card on Linux, and nothing is
+  prompted for.
+- **The rules don't change.** Members' calls go through the same daemon
+  checks: `/desktop stop`, the lease for anything physical, the person-first
+  wait, the send gate and the `_scene` recheck. `ThisMac` on Linux reads the
+  session for the lease: no display or bus is `NoSession`; the screensaver's
+  `GetActive` (GNOME's, then freedesktop's) is the lock; the person's idle time
+  comes from GNOME's `org.gnome.Mutter.IdleMonitor`, else the X server's own
+  count (MIT-SCREEN-SAVER, asked directly with `x11rb` on the session's
+  display with its Xauthority cookie — Xfce, openbox and other non-GNOME X11
+  desktops), else `xprintidle` — and when none answers, pointer and keyboard
+  input is refused, since not knowing whether the person is there is not leave
+  to go ahead (`equipe desktop status` shows whether idle time is readable).
+  Headless ref actions and reads need none of it.
+- **Screenshots, pointer and keyboard** (`crates/desktop-control/src/linux_desktop.rs`).
+  The helper's `Desktop` for the controller is agent-desktop again, one short
+  child process per step, with snapshots kept apart from the members' own
+  (`~/.equipe/desktop/agent-desktop/pixels`):
+  - `screenshot`: `screenshot --screen 0` (or `--window-id` for one window),
+    resized and sent as JPEG like on a Mac. Under a compositing window manager
+    (xfwm4 with its compositor on, GNOME on X11) the root window holds no
+    picture and agent-desktop answers `PLATFORM_NOT_SUPPORTED`: the helper then
+    puts the screen together from each window's own picture — a window covering
+    the display (the desktop) first, the focused window last — so coordinates
+    still mean the whole screen; what no window owns is black. A window
+    screenshot works either way.
+  - `click` / `double_click` / `drag` / `scroll`: `--headed mouse-click`,
+    `drag --from-xy --to-xy`, `mouse-wheel --x --y --dy --dx` (real XTEST
+    events). Before any of them the controller's own check: the app is brought
+    forward (`focus-window`) and the point must be in its window — "what is at
+    a point" is the focused window when it covers it, else the first listed
+    window that does (X11 has no Accessibility hit test; an overlay that isn't
+    a window isn't seen).
+  - `type_text`: real keys into the element whose AT-SPI state is `focused`
+    in the focused window (`type --headed <ref> --stdin`, the text never in
+    the arguments), in runs between the return and tab keys a newline and a
+    tab press, focus checked before each run. Keys agent-desktop couldn't send
+    at all (it can't confirm the window active, as under openbox) go into the
+    same focused field through its text interface instead. Where nothing
+    focused takes text (a terminal), key by key with `press` when every
+    character is a key. The
+    send gate sees that focused field, so a password field gets nothing, as on
+    a Mac.
+  - `key`: `--headed press`, `cmd` read as Ctrl (as on Windows). agent-desktop
+    refuses combos that switch the session or close a window (`alt+f4`,
+    `ctrl+alt+…`) and the member is told.
+  - `list_windows` / `focus_window` / `open_app`: `list-windows`,
+    `focus-window`, `launch`. Window ids are agent-desktop's (34–70
+    characters), numbered `w1`, `w2`… for members by the helper. Apps with a
+    window on screen come first, so a member's headless browser (no window)
+    never stands in for the person's of the same name.
+  - Every input failure (a refused combo, Wayland's unaimable pointer) comes
+    back to the member instead of "Clicked".
+  - A headed `act` click that agent-desktop times out on before sending
+    anything (`TIMEOUT`, `not_delivered`: Chromium's links never read as
+    actionable over AT-SPI) goes in with the pointer at the element's centre
+    (`get --property bounds`, then `mouse-click`), and says so; one that may
+    have landed is only told.
+- **Not on Linux yet:** `elements` (refused, pointing at `snapshot` with
+  `bounds`, `find` and `act`); the helper isn't replaced automatically after an
+  equipe update (as on Windows: `equipe desktop setup` restarts it); a helper
+  isn't started at login by itself (the daemon starts it once set up). From
+  upstream: Wayland has no aimed pointer, no window screenshot and no window
+  control (keys go through Mutter's RemoteDesktop; the first screenshot asks
+  the person through the portal), headless `scroll` is refused,
+  notifications are GNOME Shell only, and Ubuntu 22.04's AT-SPI bridge is too
+  old (24.04 or later, or an `at-spi2-core` with upstream's fix).
+- **Chromium and Chrome** expose their web content only with
+  `--force-renderer-accessibility`. With the system's `org.a11y.Status.IsEnabled`
+  on, other Chromium processes (a member's headless Playwright browser) join
+  the bus as a second `chrome`: the screenshot tools tell them apart by window
+  (above); for `snapshot --app chrome`, name the window (`window` from
+  `windows`).
+- **Packages** on a minimal machine (what the live run used):
+  `at-spi2-core`, `libatk-adaptor` (GTK's bridge), `dbus-x11` or another
+  session bus, a window manager, and for X11 headless work `xvfb`; Wayland
+  clipboard needs `wl-clipboard`.
+- **Run live**, with the scripts and output in
+  [`research/desktop-control/linux`](./research/desktop-control/linux):
+  - *A real Xfce desktop* (Ubuntu 24.04 x86_64 VM: Xvnc, xfwm4, Mousepad and
+    Chrome; `vm-xfce.txt`): from a squad with no `desktop on` and no remembered
+    readiness, `equipe desktop setup` inside the session reported ready (idle
+    time from the X server: the VM has neither Mutter nor `xprintidle`); the
+    daemon, a systemd user unit started without `DISPLAY`, found the session
+    through the user manager, read the setup mark and called the desktop ready
+    by itself; then one real Claude Code member on an action ticket took a
+    whole-screen screenshot, clicked into Mousepad, pressed `ctrl+end return`
+    and typed a line with `type_text` (real keys), took a second screenshot to
+    check, and handed in after 65 s. The editor's text was read back
+    independently. With xfwm4's compositor on, agent-desktop's whole-screen
+    capture is `PLATFORM_NOT_SUPPORTED` and the helper's composed picture came
+    back in 1.5 s.
+  - *A container* (Ubuntu 24.04 aarch64: Xvfb + openbox + AT-SPI + GTK
+    `zenity --entry`; `run.sh`, `live.txt`): `status`/`setup` from a bare
+    shell and without AT-SPI say what is missing; in the full session the
+    accessibility path (snapshot, `_scene`, `act type` verified, `act click`)
+    and the screenshot/pointer/keyboard path (screenshots, `list_windows`, a
+    click outside the app refused before any input, `type_text`, a blocked
+    `alt+f4` told, `return` closing the dialog with the typed text) work.
+  - *Not run live:* Wayland (keys through Mutter, the portal's consent), GNOME
+    Shell, the systemd environment fallback with a session that exports
+    nothing, lock detection, the Chromium headed-click fallback (unit-tested
+    only), and a person using the machine while a member waits for the screen
+    (the person-first wait is platform-independent and unit-tested).
 
 ### Limits and follow-ups
 

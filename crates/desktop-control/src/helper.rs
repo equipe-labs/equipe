@@ -103,9 +103,12 @@ fn read_token(home: &Path) -> Option<String> {
 }
 
 /// What a member gets when the helper isn't there to answer.
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 pub const NOT_RUNNING: &str =
     "The desktop helper isn't running on this Mac. Ask the person to run `equipe desktop setup` on the Mac (while logged in at its screen).";
+#[cfg(all(unix, not(target_os = "macos")))]
+pub const NOT_RUNNING: &str =
+    "The desktop helper isn't running on this Linux machine. Ask the person to run `equipe desktop setup` from a terminal inside their desktop session.";
 #[cfg(windows)]
 pub const NOT_RUNNING: &str =
     "The desktop helper isn't running on this Windows PC. Ask the person to run `equipe desktop setup` while logged in at its screen.";

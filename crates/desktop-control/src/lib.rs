@@ -18,6 +18,8 @@ pub mod geometry;
 pub mod helper;
 pub mod install;
 pub mod keys;
+pub mod linux;
+pub mod linux_desktop;
 #[cfg(target_os = "macos")]
 mod mac;
 pub mod prompts;
@@ -66,9 +68,11 @@ pub fn serve(home: &std::path::Path) -> std::io::Result<()> {
     return mac::serve(home);
     #[cfg(windows)]
     return windows::serve(home);
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(target_os = "linux")]
+    return linux::serve(home);
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
     {
         let _ = home;
-        Err(std::io::Error::other("desktop control is macOS only"))
+        Err(std::io::Error::other("desktop control runs on macOS, Windows and Linux only"))
     }
 }

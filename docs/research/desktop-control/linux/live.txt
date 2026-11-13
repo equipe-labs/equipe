@@ -1,0 +1,144 @@
+== packages installed: 2.52.0-1build1 at-spi2-core
+
+===== 1. bare shell: no DISPLAY, no session bus =====
+DESKTOP
+
+  ✗ A graphical session (X11 or Wayland) is reachable — No graphical session: neither DISPLAY nor WAYLAND_DISPLAY is set. Run equipe from a terminal inside your desktop session (not a bare SSH shell or a TTY), or have the session export them (`systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY`).
+  ✗ The D-Bus session bus is there — No D-Bus session bus: DBUS_SESSION_BUS_ADDRESS isn't set and $XDG_RUNTIME_DIR/bus isn't there. Log in to a desktop session (or start one under `dbus-run-session`).
+  ✗ AT-SPI, the desktop's accessibility bus, answers — AT-SPI can't be reached without a session bus.
+  ✗ Accessibility engine (agent-desktop 1.2.0) — equipe downloads it by itself and checks its checksum (or run equipe desktop setup now)
+
+  → equipe desktop setup
+[exit 0]
+
+----- setup from the bare shell -----
+DESKTOP SETUP
+
+  From now on the daemon does this by itself: it installs the engine and the
+  helper, and shows you the one switch. This command just does it right away.
+
+  Downloading agent-desktop 1.2.0 (Apache-2.0), the accessibility engine…
+✓ Installed agent-desktop 1.2.0: checksum verified.
+
+  ✗ A graphical session (X11 or Wayland) is reachable — No graphical session: neither DISPLAY nor WAYLAND_DISPLAY is set. Run equipe from a terminal inside your desktop session (not a bare SSH shell or a TTY), or have the session export them (`systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY`).
+  ✗ The D-Bus session bus is there — No D-Bus session bus: DBUS_SESSION_BUS_ADDRESS isn't set and $XDG_RUNTIME_DIR/bus isn't there. Log in to a desktop session (or start one under `dbus-run-session`).
+  ✗ AT-SPI, the desktop's accessibility bus, answers — AT-SPI can't be reached without a session bus.
+  ✓ Accessibility engine: agent-desktop 1.2.0, checksum verified
+
+✗ Not ready yet: fix what's marked ✗ from a terminal inside your desktop
+  session, then run equipe desktop setup again.
+[exit 1]
+total 6196
+drwxr-xr-x 2 root root    4096 Nov 13 22:19 .
+drwxr-xr-x 3 root root    4096 Nov 13 22:19 ..
+-rw-r--r-- 1 root root   11358 Nov 13 22:19 LICENSE
+-rwxr-xr-x 1 root root 5804456 Nov  5 02:32 agent-desktop
+-rwxr-xr-x 1 root root  512640 Nov  5 02:33 agent-desktop-linux-clipboard-owner
+
+===== 2. display + bus, AT-SPI not available =====
+DESKTOP
+
+  ✓ A graphical session (X11 or Wayland) is reachable
+  ✓ The D-Bus session bus is there
+  ✗ AT-SPI, the desktop's accessibility bus, answers — AT-SPI (the desktop's accessibility bus) isn't answering on the session bus (Error org.freedesktop.DBus.Error.ServiceUnknown: The name org.a11y.Bus was not provided by any .service files). Install at-spi2-core (and, for GTK apps, the AT-SPI bridge: libatk-adaptor), then log out and in, or restart it: `systemctl --user restart at-spi-dbus-bus`.
+  ✓ Accessibility engine: agent-desktop 1.2.0, checksum verified
+
+  → equipe desktop setup
+[exit 0]
+
+===== 3. a full session: Xvfb + openbox + AT-SPI + a GTK app =====
+DESKTOP SETUP
+
+  From now on the daemon does this by itself: it installs the engine and the
+  helper, and shows you the one switch. This command just does it right away.
+
+✓ agent-desktop 1.2.0 is installed and verified.
+
+  ✓ A graphical session (X11 or Wayland) is reachable
+  ✓ The D-Bus session bus is there
+  ✓ AT-SPI, the desktop's accessibility bus, answers
+  ○ Apps are told to expose their accessibility trees — on GNOME: gsettings set org.gnome.desktop.interface toolkit-accessibility true (Qt apps also need QT_ACCESSIBILITY=1)
+  ✓ Accessibility engine: agent-desktop 1.2.0, checksum verified
+  ✓ The helper, inside the session, reaches AT-SPI
+  ✓ agent-desktop reads apps through AT-SPI
+  ✓ Idle time readable (input waits while you're using the computer)
+
+  Working the desktop: everyone
+  On X11, members also see the screen and use the real pointer and keyboard when
+  the tree isn't enough: one at a time, and only once you've left the screen
+  alone. Under a compositing window manager a whole-screen picture is put
+  together from the windows; on Wayland the pointer can't be aimed.
+  Members wait for an unlocked screen (an unattended Mac: equipe desktop locked
+  on).
+
+✓ The desktop is ready.
+[setup exit 0]
+
+----- status -----
+DESKTOP
+
+  ✓ A graphical session (X11 or Wayland) is reachable
+  ✓ The D-Bus session bus is there
+  ✓ AT-SPI, the desktop's accessibility bus, answers
+  ○ Apps are told to expose their accessibility trees — on GNOME: gsettings set org.gnome.desktop.interface toolkit-accessibility true (Qt apps also need QT_ACCESSIBILITY=1)
+  ✓ Accessibility engine: agent-desktop 1.2.0, checksum verified
+  ✓ The helper, inside the session, reaches AT-SPI
+  ✓ agent-desktop reads apps through AT-SPI
+  ✓ Idle time readable (input waits while you're using the computer)
+
+  Working the desktop: everyone
+  On X11, members also see the screen and use the real pointer and keyboard when
+  the tree isn't enough: one at a time, and only once you've left the screen
+  alone. Under a compositing window manager a whole-screen picture is put
+  together from the windows; on Wayland the pointer can't be aimed.
+  Members wait for an unlocked screen (an unattended Mac: equipe desktop locked
+  on).
+[status exit 0]
+
+----- helper: snapshot zenity (what a member gets) -----
+OK zenity foreground
+OK zenity · "Equipe Probe" · w-1.0-org-gnome-Zenity-a11y-… · snapshot s3set3f28cwbq9 · 3 refs
+dialog "Equipe Probe"
+ e1 textfield "Name?" focused
+ e2 button "Cancel"
+ e3 button "OK"
+field=e1 ok=e3
+
+----- helper: the send gate scene for typing into e1 -----
+OK {"app":{"name":"zenity"},"focused":{"role":"AXTextField","title":"Name?"},"ref":"@s3set3f28cwbq9:e1","target":{"role":"AXTextField","title":"Name?"},"window":"Equipe Probe"}
+
+----- helper: act type, re-read, click OK -----
+OK type e1: delivered verified · focused
+OK matches · snapshot s3jsdi796hw14a
+dialog "Equipe Probe" @485,284 310x231
+group @485,284 300x221
+group @485,284 300x221
+group @515,308 300x177
+(find took a snapshot of its own: refs come from a fresh snapshot)
+OK zenity · "Equipe Probe" · w-1.0-org-gnome-Zenity-a11y-… · snapshot s2o5z3zxuyzmq5 · 3 refs
+dialog "Equipe Probe"
+ e1 textfield "Name?" ="hello from equipe" focused
+ e2 button "Cancel"
+ e3 button "OK"
+OK click e3: delivered unverified
+open now: window "Equipe Probe", sheet "Equipe Probe" — snapshot it with `surface`.
+zenity closed; it printed: hello from equipe
+
+----- helper: screenshot, the real pointer and keyboard (openbox: no compositor) -----
+OK The screen, 1280×800 pt, as a 1280×800 image (1 px = 1.00 pt). Keyboard focus: zenity. Coordinates are this image's pixels until your next screenshot. [+ image/jpeg image, 36732 bytes]
+OK w1  zenity — Pointer Probe  (485, 284) 310×231  (keyboard focus)
+(where: pixels of your last screenshot)
+ERROR On Linux, read an app with `snapshot` / `find` (refs to act on; `bounds: true` for where things are), then `act`, or click by point after a screenshot.
+OK Window w1 — zenity: Pointer Probe, 310×231 pt, as a 310×231 image (1 px = 1.00 pt). Keyboard focus: zenity. Coordinates are this image's pixels until your next screenshot. [+ image/jpeg image, 8382 bytes]
+OK The screen, 1280×800 pt, as a 1280×800 image (1 px = 1.00 pt). Keyboard focus: zenity. Coordinates are this image's pixels until your next screenshot. [+ image/jpeg image, 36801 bytes]
+(a click outside zenity, on the bare root window, is refused before any input)
+ERROR Accessibility can't tell what is at (1270, 790): nothing done.
+OK Typed 13 characters into zenity. The field now reads: "real keys, ok"
+ERROR Couldn't press alt+f4 in zenity (0 of 1 pressed before it): POLICY_DENIED: Key combo 'alt+f4' is blocked for safety (nothing was sent)
+OK Pressed return in zenity.
+zenity 2 closed; it printed: real keys, ok
+
+----- remove -----
+✓ The desktop helper is stopped and removed.
+[remove exit 0]
+no helper running
