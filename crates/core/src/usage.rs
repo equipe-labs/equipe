@@ -632,7 +632,7 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
     names.flatten().any(|n| n == column)
 }
 
-fn has_table(conn: &Connection, table: &str) -> bool {
+pub(crate) fn has_table(conn: &Connection, table: &str) -> bool {
     conn.query_row("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1", [table], |_| Ok(())).optional().ok().flatten().is_some()
 }
 

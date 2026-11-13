@@ -91,6 +91,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::Scale { .. }
         | C::SetIdleWake { .. }
         | C::SetResting { .. }
+        | C::WatchTicket { .. }
         | C::SetModel { .. }
         | C::SetRoleModel { .. }
         | C::SetEffort { .. }
@@ -549,6 +550,7 @@ mod tests {
             Command::SetMode { squad: "a".into(), member: None, mode: None },
             Command::SetPmAccepts { squad: "a".into(), on: true },
             Command::SetResting { squad: "a".into(), member: "qa".into(), resting: true, stop: false },
+            Command::WatchTicket { squad: "a".into(), ticket: 3, watch: true },
             Command::Disallow { squad: "a".into(), rule: "Bash(rm:*)".into() },
             Command::DeleteLogin { id: 1 },
             Command::SetNebiusKey { key: None },

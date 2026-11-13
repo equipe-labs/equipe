@@ -84,6 +84,7 @@ mod motion;
 mod relaunch;
 use relaunch::DaemonUpdate;
 mod metrics;
+mod status;
 mod models;
 mod picker;
 mod orchestra;
@@ -217,6 +218,8 @@ pub enum Screen {
     Project,
     /// Progress: what needs a look, what is under way, what finished (`views/progress.rs`).
     Progress,
+    /// Status: is the squad's work going well, what slows or stops it (`views/status.rs`).
+    Status,
     /// Usage: where the plans went (`views/usage.rs`).
     Usage,
     /// Logins: everything about the logins members sign in with (`views/logins.rs`).
@@ -289,6 +292,8 @@ pub struct Shell {
     /// Metrics' state: what the daemon said, the form being filled.
     pub metrics: metrics::Metrics,
     pub metrics_ui: views::metrics::Inputs,
+    /// Status' state: what the daemon said of how the squad's work goes (`status.rs`).
+    pub status: status::StatusUi,
     /// Taste & decisions' box for a note.
     pub design_taste: views::design_taste::Inputs,
     /// The shared Chrome, live, beside the conversation (⌘⇧B).
@@ -509,6 +514,7 @@ impl Shell {
             releases_asked: None,
             metrics: metrics::Metrics::new(),
             metrics_ui: Default::default(),
+            status: Default::default(),
             design_taste: Default::default(),
             browser,
             terminal: None,
@@ -904,6 +910,7 @@ impl Shell {
         }));
         shell.load_peers(cx);
         shell.tell_looks(window, cx);
+        shell.status_poll(window, cx);
         // One of the app's windows, on its own machine and squad.
         let first = windows::none_open();
         let squad = opening.squad.clone().unwrap_or_default();
@@ -1172,6 +1179,13 @@ impl Shell {
                                 // A phone waits for the person's yes: bring the window to them.
                                 Event::PairAsked { .. } if this.pairing.open => window.activate_window(),
                                 _ => {}
+                            }
+                            continue;
+                        }
+                        // How the squad's work goes changed: the Status asks again, now.
+                        if let daemon::Update::Event(Event::StatusChanged { squad }) = &update {
+                            if *squad == this.model.squad {
+                                this.status_ask(cx);
                             }
                             continue;
                         }
@@ -2040,6 +2054,7 @@ impl Shell {
                     Screen::Metrics => views::metrics::render(self, cx),
                     Screen::Project => views::project::render(self, cx),
                     Screen::Progress => views::progress::render(self, cx),
+                    Screen::Status => views::status::render(self, cx),
                     Screen::Usage => views::usage::render(self, cx),
                     Screen::Logins => views::logins::render(self, cx),
                     Screen::Orchestration => views::orchestra::render(self, cx),

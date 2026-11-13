@@ -5,7 +5,7 @@
 //! `EQUIPE_SCRIPT="wait:1500;say:hello;wait:800;shot:/tmp/a.png"` — steps split on `;`:
 //! `wait:<ms>` · `shot:<png>` · `say:<text>` (type it in the box and send) ·
 //! `memo:<text>` (send it as a memo, as Tab does) · `type:<text>` (type, don't send) · `key:<y|a|n|o>` (answer a request) · `esc` (stop the member) · `up`/`down`
-//! (history; ↑ on an empty box reaches the bubbles waiting) · `pwithdraw` (take the last waiting bubble back) · `pnow` (send what waits now) · `project:<name|all>` · `shead:<project>` / `sfold:<project>` (a sidebar header's name, its chevron; empty: the shared folder) · `select:<member>` · `board` · `chat` ·
+//! (history; ↑ on an empty box reaches the bubbles waiting) · `pwithdraw` (take the last waiting bubble back) · `pnow` (send what waits now) · `project:<name|all>` · `shead:<project>` / `sfold:<project>` (a sidebar header's name, its chevron; empty: the shared folder) · `select:<member>` · `board` · `chat` · `status` (the Status screen) ·
 //! `menu:<inbox|working|all|view0…>` (a sidebar item) · `cmenu:<attach|recent|to|model|effort|mode|context>` (a composer menu) · `bkey:<key>` (a work
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket; `ppick:<n>`, peeking) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
@@ -368,6 +368,7 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                 }),
                 // `progress`: Progress; `retro:<day>`: a past retro from its list, the PM's conversation at it.
                 "progress" => shell.update(cx, |shell, cx| shell.open_progress(cx)),
+                "status" => shell.update(cx, |shell, cx| shell.open_status(cx)),
                 "retro" => shell.update(cx, |shell, cx| {
                     // No day: the latest, as its row lists it first.
                     let latest = || shell.model.pm().and_then(|pm| shell.model.convos.get(&pm)).and_then(|c| crate::retro::past(c.transcript.entries()).into_iter().next()).map(|p| p.to);

@@ -251,10 +251,17 @@ impl TurnEnds {
     pub(super) fn paused(&self, squad: &str) -> bool {
         self.breakers.contains_key(squad)
     }
+
+    /// `squad`'s open breaker, for the status: what the engine said, and when it opened.
+    pub(super) fn breaker(&self, squad: &str) -> Option<crate::status::Breaker> {
+        self.breakers.get(squad).map(|b| crate::status::Breaker { cause: b.cause.clone(), since: b.since })
+    }
 }
 
 struct Breaker {
     cause: String,
+    /// When it opened (unix seconds).
+    since: u64,
     probe_at: u64,
     gap: u64,
     /// The run whose turn is the test now.
@@ -537,8 +544,9 @@ and worktree, nothing reset: look at `git status`, its log and what is already d
     /// and nothing retries until a test turn works; the person is told once.
     fn open_breaker(&mut self, squad: &str, cause: &str) {
         let now = now_secs();
-        self.turn_ends.breakers.insert(squad.to_owned(), Breaker { cause: cause.to_owned(), probe_at: now + PROBE_FIRST, gap: PROBE_FIRST, probing: None });
+        self.turn_ends.breakers.insert(squad.to_owned(), Breaker { cause: cause.to_owned(), since: now, probe_at: now + PROBE_FIRST, gap: PROBE_FIRST, probing: None });
         self.count_ending(squad, turn_ending::SQUAD_PAUSED, None, "equipe");
+        self.status_changed(squad);
         self.wake_at(now + PROBE_FIRST);
         let shown = say!(self, "news.squad_paused", cause = cause);
         let line = format!(
@@ -561,6 +569,7 @@ don't requeue or reassign the paused tickets."
             return;
         }
         self.turn_ends.fast.remove(squad);
+        self.status_changed(squad);
         let now = now_secs();
         // The others go again now, a few seconds apart.
         let parked: Vec<SessionId> = self.parked_runs(squad, |w| matches!(w, ParkWhy::Failed { .. }));
@@ -705,7 +714,8 @@ kept; it goes on by itself — on the other engine if {name} moves there, or onc
         if journal.set_execution_pause(ticket, generation, pause.as_ref()).unwrap_or(false)
             && let Some(ticket) = journal.ticket(ticket).ok().flatten()
         {
-            self.publish(Event::TicketChanged { squad, ticket });
+            self.publish(Event::TicketChanged { squad: squad.clone(), ticket });
+            self.status_changed(&squad);
         }
     }
 

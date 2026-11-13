@@ -297,6 +297,18 @@ fn window_level(kind: Window, w: PlanWindow, now: i64, rate: Option<f64>, pace: 
     (level, runs_out, lasts)
 }
 
+/// When the week runs out at its pace of late — before it starts over — and
+/// whether that pace says it lasts until then; `(None, false)` with no week
+/// read, or a stale reading, whose burn is unknown.
+pub fn weekly_forecast(r: &Reading, memory: &Memory, now: i64) -> (Option<i64>, bool) {
+    let Some(w) = r.weekly.filter(|w| w.resets_at > now) else { return (None, false) };
+    if now - r.at > STALE_AFTER {
+        return (None, false);
+    }
+    let (_, runs_out, lasts) = window_level(Window::Weekly, w, now, memory.rate(r.engine, Window::Weekly, w), r.pace);
+    (runs_out, lasts)
+}
+
 /// Each of `r`'s windows that hasn't started over by `now`: how used, and
 /// whether at the burn so far — or the week at its pace — it runs out before
 /// it does (a stale reading's burn is unknown: never).

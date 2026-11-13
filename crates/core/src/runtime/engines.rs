@@ -355,6 +355,41 @@ impl Runtime {
             .collect()
     }
 
+    /// Each engine's plan as the Status screen shows it: how far its week is
+    /// used and when it starts over, whether it is out of its limit now, the
+    /// week's pace of late, and the squad running fewer at once on it to make
+    /// it last ([`crate::lanes`]) — Claude's first.
+    pub(super) fn engine_budgets(&self, squad: &str, now: u64, disk: equipe_protocol::disk::DiskLevel, parallel: &equipe_protocol::lanes::Parallel) -> Vec<equipe_protocol::status::EngineBudget> {
+        let fallback = Memory::default();
+        let memory = self.engines.squads.get(squad).map_or(&fallback, |s| &s.memory);
+        let at = now as i64;
+        let used = |engine: Engine| crate::lanes::plan_used(self.plans.iter().find(|p| p.engine == engine).map(|p| &p.usage));
+        let live = |w: Option<equipe_protocol::PlanWindow>| w.filter(|w| w.resets_at > at);
+        let mut out: Vec<equipe_protocol::status::EngineBudget> = self
+            .readings()
+            .into_iter()
+            .map(|reading| {
+                let assessed = rules::assess(&reading, memory, at);
+                let (runs_out_at, lasts) = rules::weekly_forecast(&reading, memory, at);
+                let out = assessed.level == Level::Exhausted;
+                let pacing = !out && !parallel.is_max() && used(reading.engine).is_some_and(|u| u >= crate::status::PACING_AT);
+                equipe_protocol::status::EngineBudget {
+                    engine: reading.engine,
+                    plan_type: self.plans.iter().find(|p| p.engine == reading.engine).and_then(|p| p.plan_type.clone()),
+                    weekly: live(reading.weekly),
+                    five_hour: live(reading.five_hour),
+                    out_until: out.then_some(assessed.resets_at.max(0) as u64),
+                    runs_out_at: runs_out_at.map(|t| t.max(0) as u64),
+                    lasts,
+                    pacing_at_once: pacing.then(|| crate::lanes::engine_limit(used(reading.engine), disk, parallel) as u32),
+                    stale: assessed.stale,
+                }
+            })
+            .collect();
+        out.sort_by_key(|e| e.engine != Engine::Claude);
+        out
+    }
+
     /// When `engine`'s plan is out of its limit for `squad`, as last read: the
     /// time it starts over. `None` while it has room, or nobody read it.
     pub(super) fn engine_out(&self, squad: &str, engine: Engine) -> Option<i64> {

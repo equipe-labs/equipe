@@ -481,6 +481,20 @@ async fn serve_client(
                     });
                 });
             }
+            // Whether the squad's work is going well and what slows it: worked out in the runtime, kept a few seconds.
+            (Some(rpc::SQUAD_STATUS), Some(id)) => {
+                let Some(ask) = message.params_as::<equipe_protocol::status::StatusAsk>() else {
+                    let _ = out_tx.send(Message::failure(id, -32602, "squad_status needs { squad }"));
+                    continue;
+                };
+                let (core, out) = (core.clone(), out_tx.clone());
+                tokio::spawn(async move {
+                    let _ = out.send(match core.squad_status(ask).await {
+                        Ok(status) => Message::response(id, status),
+                        Err(why) => Message::failure(id, -32000, why),
+                    });
+                });
+            }
             (Some(rpc::SQUADS), Some(id)) => {
                 let home = home.clone();
                 let squads = tokio::task::spawn_blocking(move || squads(&home)).await.unwrap_or_default();

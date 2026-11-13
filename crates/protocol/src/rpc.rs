@@ -42,6 +42,11 @@
 //! - `usage` (request): [`UsageAsk`] → the squad's token-usage report with
 //!   its waste signals (`equipe usage --json`, docs/USAGE.md), read from the
 //!   squad's journal; the answer's shape is core's `usage::Report`
+//! - `squad_status` (request): [`crate::status::StatusAsk`] →
+//!   [`crate::status::SquadStatus`], whether the squad's work is going well
+//!   and what slows or stops it, computed from its journal and runtime state
+//!   and kept for 15 seconds. An older daemon answers "unknown method": the
+//!   screen hides its Status row.
 //! - `screen_look` (notification, screen → daemon): [`crate::look::ScreenLook`],
 //!   the look the screen shows the app in and which app it is — told after
 //!   `hello` and again when it changes or the person uses the screen; kept
@@ -99,6 +104,10 @@ pub const SQUAD_FOOTPRINT: &str = "squad_footprint";
 /// Where a squad's tokens went and what looks wasted (`equipe usage`):
 /// [`UsageAsk`] → the report as JSON (core's `usage::Report`). A look, nothing changed.
 pub const USAGE: &str = "usage";
+/// Whether the squad's work is going well, what slows or stops it, and what
+/// the person can do (the Status screen): [`crate::status::StatusAsk`] →
+/// [`crate::status::SquadStatus`]. A look, nothing changed.
+pub const SQUAD_STATUS: &str = "squad_status";
 /// A window for the person in the members' shared Chrome, at a page (`equipe
 /// browser`): `true` when there is such a Chrome.
 pub const BROWSER_WINDOW: &str = "browser_window";

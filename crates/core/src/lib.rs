@@ -46,6 +46,7 @@ pub mod keychain;
 pub mod lanes;
 pub mod logins;
 pub mod usage;
+pub mod status;
 pub mod kept;
 pub mod language;
 pub mod looks;
