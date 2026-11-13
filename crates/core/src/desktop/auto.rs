@@ -884,9 +884,14 @@ mod tests {
         worker: Worker,
         heard: Arc<Mutex<Vec<DesktopReadiness>>>,
         home: PathBuf,
+        // The system prompt's turn (`prompts::begin`) is one per process:
+        // rigs take turns so parallel tests don't take it from each other.
+        _serial: std::sync::MutexGuard<'static, ()>,
     }
 
     fn rig() -> Rig {
+        static SERIAL: Mutex<()> = Mutex::new(());
+        let serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         static N: AtomicUsize = AtomicUsize::new(0);
         let home = std::env::temp_dir().join(format!("eq-auto-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
         let _ = std::fs::remove_dir_all(&home);
@@ -898,7 +903,7 @@ mod tests {
         };
         let clock = Arc::new(AtomicUsize::new(1_000_000));
         let (auto, worker) = Auto::new(home.clone(), fake.clone(), sink, Box::new(move || clock.load(Ordering::SeqCst) as u64));
-        Rig { fake, auto, worker, heard, home }
+        Rig { fake, auto, worker, heard, home, _serial: serial }
     }
 
     impl Drop for Rig {
