@@ -187,6 +187,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::BrowserControl { .. }
         | C::BrowserDialog { .. }
         | C::BrowserPopOut { .. }
+        | C::BrowserSignIn { .. }
         | C::Language { .. }
         | C::Logins
         | C::Autopilot

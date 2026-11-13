@@ -1123,6 +1123,13 @@ const startProfile = async (name, profile, STATE) => {
     personShown = page;
     await applyFit(page);
     if (owner.get(page) !== PERSON) hush(owner.get(page));
+    // The person took the real window to act in it by hand: a sign-in they finish there is theirs
+    // (the panel's keys are what `touched` is otherwise made of, and a window has none of them).
+    const held = lanes.get(owner.get(page));
+    if (held && held.control === 'person') {
+      held.touched = true;
+      held.lastInput = Date.now();
+    }
     const { windowId } = await windowOf(page);
     await setState(windowId, 'normal');
     if (bounds) await parking?.cdp.send('Browser.setWindowBounds', { windowId, bounds }).catch(() => {});

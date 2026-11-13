@@ -1095,6 +1095,18 @@ impl BrowserPanel {
         }
     }
 
+    /// A tab of the person's own that the daemon is about to open (a sign-in
+    /// the person asked for): picked and shown when it comes.
+    pub fn expect_new_tab(&mut self, cx: &mut Context<Self>) {
+        self.new_tab = true;
+        cx.notify();
+    }
+
+    /// Whether `page` is a tab of some browser the panel knows now.
+    pub fn knows_page(&self, page: u64) -> bool {
+        self.lanes.values().any(|l| l.pages.iter().any(|p| p.id == page))
+    }
+
     /// A tab of the person's own at `url`, picked when it comes (a link from a reply).
     pub fn open_tab(&mut self, url: &str, cx: &mut Context<Self>) {
         self.new_tab(Some(url.to_owned()), cx);

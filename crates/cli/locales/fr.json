@@ -1439,5 +1439,7 @@
   "credential.refused": "equipe credential ne donne une clé qu'au credential_process de l'AWS CLI, jamais à la commande d'un membre.",
   "credential.missing": "Aucune clé AWS n'est gardée pour le profil {name} (Réglages › Comptes › Pilote automatique de connexion).",
   "credential.unknown": "equipe credential ne connaît que aws, pas {kind}.",
-  "telegram.captcha": "Un CAPTCHA vous attend dans le navigateur de {member}. Ouvrez equipe et résolvez-le ; {member} continue ensuite tout seul."
+  "telegram.captcha": "Un CAPTCHA vous attend dans le navigateur de {member}. Ouvrez equipe et résolvez-le ; {member} continue ensuite tout seul.",
+  "main.browser_panel_1": "La page s'est ouverte dans le panneau navigateur de l'app equipe. Connectez-vous — ou inscrivez-vous — :",
+  "main.browser_panel_2": "une fois suffit, et equipe proposera d'enregistrer l'identifiant ensuite."
 }

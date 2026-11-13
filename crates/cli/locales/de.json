@@ -1439,5 +1439,7 @@
   "credential.refused": "equipe credential gibt einen Schlüssel nur an den credential_process der AWS CLI, nie an den Befehl eines Mitglieds.",
   "credential.missing": "Für das Profil {name} ist kein AWS-Schlüssel gespeichert (Einstellungen › Konten › Anmelde-Autopilot).",
   "credential.unknown": "equipe credential kennt nur aws, nicht {kind}.",
-  "telegram.captcha": "Im Browser von {member} wartet ein CAPTCHA auf dich. Öffne equipe und löse es; danach macht {member} von selbst weiter."
+  "telegram.captcha": "Im Browser von {member} wartet ein CAPTCHA auf dich. Öffne equipe und löse es; danach macht {member} von selbst weiter.",
+  "main.browser_panel_1": "Die Seite hat sich im Browser-Bereich der equipe-App geöffnet. Melde dich dort an – oder registriere dich:",
+  "main.browser_panel_2": "einmal reicht, und danach bietet equipe an, die Anmeldung zu speichern."
 }

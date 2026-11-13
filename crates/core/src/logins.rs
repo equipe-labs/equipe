@@ -198,6 +198,13 @@ pub struct SigningIn {
     pub url: String,
 }
 
+/// Where a sign-in the person started began: its tab, site and address.
+struct Origin<'a> {
+    page: u64,
+    site: &'a str,
+    url: &'a str,
+}
+
 /// Members' pages on a sign-in, followed from tab to tab (by page id).
 #[derive(Debug, Default)]
 pub struct SignInWatch {
@@ -210,11 +217,38 @@ impl SignInWatch {
     /// it), each with where it signed in. A page that went to another site,
     /// or closed, is forgotten.
     pub fn see(&mut self, lane: &str, pages: &[crate::browser::HostPage]) -> Vec<(u64, SigningIn)> {
+        self.see_from(lane, pages, None)
+    }
+
+    /// The person's own tabs (lane `""`, in the browser panel or the Chrome
+    /// window alike — they are the person's hands whichever shows them).
+    /// `flow`, a sign-in the person started: its tab counts as signing in to
+    /// the flow's site even while it is on another host (an identity
+    /// provider's page, "Sign in with Google"), so coming back to the site
+    /// past the sign-in finishes it.
+    pub fn see_person(&mut self, pages: &[crate::browser::HostPage], flow: Option<&crate::signin::Flow>) -> Vec<(u64, SigningIn)> {
+        let origin = flow.filter(|f| !f.site.is_empty()).and_then(|f| f.page().map(|page| Origin { page, site: &f.site, url: &f.url }));
+        self.see_from("", pages, origin)
+    }
+
+    fn see_from(&mut self, lane: &str, pages: &[crate::browser::HostPage], origin: Option<Origin<'_>>) -> Vec<(u64, SigningIn)> {
         let mut finished = Vec::new();
         for page in pages {
             let signals = page.signals.as_ref();
+            let started = origin.as_ref().filter(|o| o.page == page.id);
             if crate::browser::signing_in(&page.url, &page.title, signals) {
-                self.pages.entry(page.id).or_insert_with(|| SigningIn { lane: lane.to_owned(), site: crate::vault::site_of(&page.url), url: page.url.clone() });
+                let was = self.pages.entry(page.id).or_insert_with(|| match started {
+                    Some(o) => SigningIn { lane: lane.to_owned(), site: o.site.to_owned(), url: if crate::vault::serves(o.site, &page.url) { page.url.clone() } else { o.url.to_owned() } },
+                    None => SigningIn { lane: lane.to_owned(), site: crate::vault::site_of(&page.url), url: page.url.clone() },
+                });
+                // Begun on another page of the flow's site (its home, a provider's page): the site's own sign-in page is the one to keep.
+                if let Some(o) = started
+                    && was.url == o.url
+                    && page.url != o.url
+                    && crate::vault::serves(o.site, &page.url)
+                {
+                    was.url = page.url.clone();
+                }
                 continue;
             }
             if !self.pages.contains_key(&page.id) || !crate::browser::past_sign_in(&page.url, &page.title, signals, page.loading) {
@@ -756,6 +790,47 @@ mod tests {
         watch.see("acme/qa", &[host_page(9, "https://github.com/login", true, false)]);
         watch.see("acme/pm", &[]);
         assert_eq!(watch.see("acme/qa", &[host_page(9, "https://github.com/", false, false)]).len(), 1);
+    }
+
+    #[test]
+    fn a_sign_in_in_the_persons_own_tab_is_seen_in_any_window() {
+        let mut watch = SignInWatch::default();
+        // No flow: the person's tabs still count, as their own hands.
+        assert!(watch.see_person(&[host_page(3, "https://github.com/login", true, false)], None).is_empty());
+        let done = watch.see_person(&[host_page(3, "https://github.com/", false, false)], None);
+        assert_eq!((done.len(), done[0].1.lane.as_str(), done[0].1.site.as_str()), (1, "", "github.com"));
+    }
+
+    #[test]
+    fn a_sign_in_started_by_the_person_survives_a_trip_through_an_identity_provider() {
+        use crate::signin::Flow;
+        let mut watch = SignInWatch::default();
+        let mut flow = Flow::new("https://app.example.com/", false, [1], 0);
+        let tab = |url: &str, password: bool| vec![host_page(1, "https://old.example/", false, false), host_page(9, url, password, false)];
+        // Its tab: the app's home, then its "Sign in" page, then the provider, then back.
+        flow.claim(&tab("https://app.example.com/", false));
+        assert!(watch.see_person(&tab("https://app.example.com/", false), Some(&flow)).is_empty());
+        assert!(watch.see_person(&tab("https://app.example.com/login", true), Some(&flow)).is_empty());
+        assert!(watch.see_person(&tab("https://accounts.google.com/o/oauth2/auth?client_id=x", true), Some(&flow)).is_empty());
+        let done = watch.see_person(&tab("https://app.example.com/dashboard", false), Some(&flow));
+        assert_eq!(done.len(), 1);
+        assert_eq!((done[0].0, done[0].1.site.as_str(), done[0].1.url.as_str()), (9, "app.example.com", "https://app.example.com/login"));
+    }
+
+    #[test]
+    fn a_flow_that_goes_straight_to_the_provider_is_still_the_starting_sites_sign_in() {
+        use crate::signin::Flow;
+        let mut watch = SignInWatch::default();
+        let mut flow = Flow::new("https://app.example.com/start", true, [], 0);
+        let tab = |url: &str, password: bool| vec![host_page(4, url, password, false)];
+        flow.claim(&tab("https://accounts.google.com/signin", true));
+        assert!(watch.see_person(&tab("https://accounts.google.com/signin", true), Some(&flow)).is_empty());
+        let done = watch.see_person(&tab("https://app.example.com/home", false), Some(&flow));
+        assert_eq!((done.len(), done[0].1.site.as_str(), done[0].1.url.as_str()), (1, "app.example.com", "https://app.example.com/start"));
+        // Without the flow it is a sign-in to Google that never came back to Google.
+        let mut plain = SignInWatch::default();
+        plain.see_person(&tab("https://accounts.google.com/signin", true), None);
+        assert!(plain.see_person(&tab("https://app.example.com/home", false), None).is_empty());
     }
 
     #[test]

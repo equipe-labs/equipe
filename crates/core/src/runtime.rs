@@ -264,6 +264,8 @@ enum Request {
     /// Give back these items of the disk (`equipe disk clean`).
     DiskClean(Vec<String>, oneshot::Sender<crate::disk::DiskCleaned>),
     PersonWindow(String, oneshot::Sender<bool>),
+    /// Sign in to a site in equipe's own browser, where the person is (`start_sign_in`).
+    SignIn(String, oneshot::Sender<equipe_protocol::rpc::BrowserSignInOpened>),
     BrowserHub(oneshot::Sender<std::sync::Arc<browser::Hub>>),
     Desktop(DesktopRequest),
     /// A member's phone tools ([`crate::phone`]).
@@ -462,6 +464,15 @@ impl Handle {
         rx.await.unwrap_or(false)
     }
 
+    /// A sign-in to `url` (a site or an address) in equipe's own browser, as
+    /// the app's "Sign in to a site" does it: in the panel of an attached
+    /// screen, else the separate Chrome window.
+    pub async fn sign_in(&self, url: String) -> equipe_protocol::rpc::BrowserSignInOpened {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.requests.send(Request::SignIn(url, tx));
+        rx.await.unwrap_or(equipe_protocol::rpc::BrowserSignInOpened { opened: false, window: false })
+    }
+
     /// The shared Chrome's pictures and input, for a browser panel's stream.
     pub async fn browser_hub(&self) -> Option<std::sync::Arc<browser::Hub>> {
         let (tx, rx) = oneshot::channel();
@@ -614,6 +625,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         login_offered: std::collections::HashSet::new(),
         login_insights_days: 7,
         signing_in: Default::default(),
+        person_sign_in: Default::default(),
         relogins: HashMap::new(),
         relogin_tries: HashMap::new(),
         sign_in_joined: HashMap::new(),
@@ -1357,6 +1369,8 @@ struct Runtime {
     login_insights_days: u32,
     /// Members' pages seen on a sign-in, by page id ([`logins`]).
     signing_in: crate::logins::SignInWatch,
+    /// The person's own tabs and the sign-in they started in equipe's own browser, followed until it is done.
+    person_sign_in: crate::signin::Tracker,
     /// Members' browsers equipe is signing in by itself now, by lane.
     relogins: HashMap<String, logins::Relogin>,
     /// When equipe last tried signing in with each login by itself.
@@ -1420,6 +1434,7 @@ impl Wake {
             Wake::Request(Some(Request::DesktopTool(..))) => Borrowed("desktop tool"),
             Wake::Request(Some(Request::Busy(_))) => Borrowed("busy"),
             Wake::Request(Some(Request::PersonWindow(..))) => Borrowed("person's browser window"),
+            Wake::Request(Some(Request::SignIn(..))) => Borrowed("person's sign-in"),
             Wake::Request(Some(Request::BrowserHub(_))) => Borrowed("browser panel"),
             Wake::Request(Some(Request::Desktop(_))) => Borrowed("desktop lease"),
             Wake::Request(Some(Request::Phone(_))) => Borrowed("phone tool"),
@@ -1591,7 +1606,10 @@ impl Runtime {
                 }
                 Some(Request::Tool(call, reply)) => self.tool(call, reply).await,
                 Some(Request::PersonWindow(url, reply)) => {
-                    let _ = reply.send(self.person_window(&url));
+                    let _ = reply.send(self.start_sign_in(&url, true).opened);
+                }
+                Some(Request::SignIn(url, reply)) => {
+                    let _ = reply.send(self.start_sign_in(&url, false));
                 }
                 Some(Request::BrowserHub(reply)) => {
                     let _ = reply.send(self.hub.clone());
@@ -2402,6 +2420,9 @@ impl Runtime {
             }
             Command::BrowserDialog { page, accept, text } => {
                 self.hub.op(&json!({ "op": "dialog", "page": page, "accept": accept, "text": text }));
+            }
+            Command::BrowserSignIn { url, window } => {
+                self.start_sign_in(&url, window);
             }
             Command::BrowserPopOut { page, bounds } => {
                 self.hub.op(&json!({ "op": "popout", "page": page, "bounds": bounds }));
@@ -8068,16 +8089,44 @@ there, end your turn, and carry on when they say they're done."
         self.host.clone()
     }
 
-    /// A window in the shared Chrome for the person — to sign in, once, where
-    /// every member works. `false` when members use a Chrome each.
-    fn person_window(&mut self, url: &str) -> bool {
-        let Some(npx) = self.config.npx.clone() else {
-            return false;
+    /// The person signs in to a site in equipe's own browser — the one way
+    /// in for `equipe browser <url>` and the app's "Sign in to a site": `url`
+    /// is a site or an address ([`crate::signin::resolve`]). The page opens
+    /// where the person is: a tab of the panel of an attached screen — shown
+    /// there, never a window on a Mac nobody may be looking at — else (or with
+    /// `window`) the separate Chrome window on this Mac. The page is followed
+    /// until the sign-in is seen through ([`Self::follow_person_tabs`]).
+    /// Says how it went to every screen ([`Event::BrowserSignIn`]).
+    fn start_sign_in(&mut self, input: &str, window: bool) -> equipe_protocol::rpc::BrowserSignInOpened {
+        use equipe_protocol::BrowserSignInState as State;
+        let Some(url) = crate::signin::resolve(input) else {
+            self.publish(Event::BrowserSignIn { site: String::new(), state: State::Failed, window });
+            return equipe_protocol::rpc::BrowserSignInOpened { opened: false, window };
         };
-        let Some(host) = self.browser_host(&npx) else {
-            return false;
-        };
-        host.lock().map(|mut h| h.person(url)).is_ok()
+        let window = window || !self.hub.has_panel();
+        let site = if url.starts_with("data:") { String::new() } else { vault::site_of(&url) };
+        let host = self.config.npx.clone().and_then(|npx| self.browser_host(&npx));
+        let opened = host.is_some_and(|host| {
+            host.lock()
+                .map(|mut h| {
+                    if window {
+                        h.person(&url);
+                    } else {
+                        h.op(&json!({ "op": "newtab", "url": url }));
+                    }
+                })
+                .is_ok()
+        });
+        if opened {
+            let open: Vec<u64> = match self.tabs.get("") {
+                Some(Event::BrowserTabs { pages, .. }) => pages.iter().map(|p| p.id).collect(),
+                _ => Vec::new(),
+            };
+            self.person_sign_in.start(crate::signin::Flow::new(&url, window, open, now_secs()));
+        }
+        let state = if opened { State::Opened } else { State::Failed };
+        self.publish(Event::BrowserSignIn { site, state, window });
+        equipe_protocol::rpc::BrowserSignInOpened { opened, window }
     }
 
     /// A picture of each watched member's browser, one under way at a time.
@@ -8158,6 +8207,10 @@ there, end your turn, and carry on when they say they're done."
                 self.see_pages(&lane, &pages);
                 // A sign-in page that turned into its site: a sign-in finished.
                 self.follow_sign_ins(&lane, &pages, touched).await;
+                // The person's own tabs, in the panel or the Chrome window: a sign-in they started, or any.
+                if lane.is_empty() {
+                    self.follow_person_tabs(&pages);
+                }
                 let pages: Vec<equipe_protocol::BrowserPage> = pages.into_iter().map(browser::HostPage::page).collect();
                 self.watch_checks(&lane, session, &pages, agent);
                 let event = Event::BrowserTabs { squad, lane: lane.clone(), session, member, color, pages, agent_page: agent };

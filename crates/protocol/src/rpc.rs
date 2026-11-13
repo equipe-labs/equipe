@@ -96,6 +96,19 @@ pub const SQUAD_FOOTPRINT: &str = "squad_footprint";
 /// A window for the person in the members' shared Chrome, at a page (`equipe
 /// browser`): `true` when there is such a Chrome.
 pub const BROWSER_WINDOW: &str = "browser_window";
+/// `equipe browser`'s way in, shared with the app's "Sign in to a site"
+/// ([`crate::Command::BrowserSignIn`]): params the site or address, answered
+/// with [`BrowserSignInOpened`] — where the page opened.
+pub const BROWSER_SIGN_IN: &str = "browser_sign_in";
+
+/// Where a sign-in page opened ([`BROWSER_SIGN_IN`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserSignInOpened {
+    /// `false`: no browser could be opened.
+    pub opened: bool,
+    /// In the separate Chrome window on the daemon's Mac, not a panel.
+    pub window: bool,
+}
 /// The live browser panel's own connection (params
 /// [`crate::stream::StreamHello`]), answered `true`; after the answer the
 /// connection carries [`crate::stream`]'s binary messages, both ways.

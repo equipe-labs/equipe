@@ -1340,6 +1340,20 @@ pub enum Command {
     /// The real Chrome window, with `page` in front — beside the app when
     /// `bounds` says where (screen points) — for what a picture can't do.
     BrowserPopOut { page: u64, bounds: Option<ScreenBounds> },
+    /// The person signs in to a site in equipe's own browser — what `equipe
+    /// browser <url>` does: `url` is a site or an address (`github.com`,
+    /// `https://github.com/login`), blank for
+    /// the page of common sites. The daemon opens it where the person is: in
+    /// the browser panel of an attached screen (`window` false) or as the
+    /// separate Chrome window on the daemon's Mac (`window` true, or no screen
+    /// attached) — and follows the page until the sign-in is done, then offers
+    /// to keep the login. Answered by [`Event::BrowserSignIn`].
+    BrowserSignIn {
+        url: String,
+        /// Ask for the separate Chrome window even where a panel is attached.
+        #[serde(default)]
+        window: bool,
+    },
     /// The person switched their screen to `lang` (`ko`, `zh-Hant`): what equipe
     /// says to them from now on is in it, as when a screen says hello.
     Language { lang: String },
@@ -1954,6 +1968,21 @@ pub enum BrowserNavAction {
     Stop,
     /// To the `url` given.
     Go,
+}
+
+/// Where a sign-in the person asked for stands ([`Event::BrowserSignIn`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserSignInState {
+    /// The page is open, in the panel or in the Chrome window on the daemon's Mac.
+    Opened,
+    /// No browser could be opened (no Node, or members use a Chrome each).
+    Failed,
+    /// The page went from a sign-in to the site: done. `offered`: a card asks
+    /// whether to keep the login.
+    SignedIn { offered: bool },
+    /// The page was closed before a sign-in was seen.
+    Closed,
 }
 
 /// A browser profile besides the person's main one: a Chrome of its own with
@@ -2870,6 +2899,9 @@ pub enum Event {
     LoginInsights { insights: vault::LoginInsights },
     /// The offer was answered, or the login saved: the card closes everywhere.
     LoginOfferClosed { id: u64 },
+    /// Where a sign-in the person asked for stands ([`Command::BrowserSignIn`],
+    /// or `equipe browser`): every screen's.
+    BrowserSignIn { site: String, state: BrowserSignInState, window: bool },
     /// The browser profiles besides the main one: every screen's.
     BrowserProfiles { profiles: Vec<BrowserProfile> },
     /// A member asks the person for a secret on a card ([`Command::SaveSecret`]).
@@ -3142,6 +3174,7 @@ impl Event {
             | Event::LoginInsights { .. }
             | Event::LoginOffered { .. }
             | Event::LoginOfferClosed { .. }
+            | Event::BrowserSignIn { .. }
             | Event::BrowserProfiles { .. }
             | Event::Design { .. }
             | Event::ProjectDocs { .. }
@@ -3213,6 +3246,7 @@ impl Event {
                 | Event::LoginInsights { .. }
                 | Event::LoginOffered { .. }
                 | Event::LoginOfferClosed { .. }
+                | Event::BrowserSignIn { .. }
                 | Event::BrowserProfiles { .. }
                 | Event::BrowserDialogClosed { .. }
                 | Event::SquadDeleted { .. }

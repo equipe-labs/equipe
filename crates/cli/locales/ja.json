@@ -1416,5 +1416,7 @@
   "credential.refused": "equipe credential は AWS CLI の credential_process にだけキーを渡し、メンバーのコマンドには渡しません。",
   "credential.missing": "プロファイル {name} の AWS キーは保管されていません(設定 › アカウント › ログインオートパイロット)。",
   "credential.unknown": "equipe credential が扱えるのは aws だけで、{kind} は扱えません。",
-  "telegram.captcha": "{member} のブラウザで CAPTCHA があなたを待っています。equipe を開いて解いてください。解けば {member} が自分で続けます。"
+  "telegram.captcha": "{member} のブラウザで CAPTCHA があなたを待っています。equipe を開いて解いてください。解けば {member} が自分で続けます。",
+  "main.browser_panel_1": "ページは equipe アプリのブラウザパネルで開きました。そこでサインインまたは登録してください。",
+  "main.browser_panel_2": "一度で十分です。終わると equipe がログインを保存するか尋ねます。"
 }

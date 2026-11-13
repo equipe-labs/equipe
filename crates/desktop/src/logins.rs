@@ -211,6 +211,120 @@ pub fn waiting(waits: &[BrowserWait], logins: &[Login]) -> Vec<WaitingSite> {
     out
 }
 
+// ── signing in to a site, started here ──
+
+/// A site to pick in "Sign in to a site": what it is called and the address
+/// opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pick {
+    pub label: String,
+    pub url: String,
+}
+
+/// The quick picks: sites members needed a sign-in for lately (waiting now,
+/// then asking most in the look-back; each opens its kept sign-in page where
+/// a login has one), and the common sites besides those. At most
+/// `recent_limit` of the first.
+pub fn sign_in_picks(waits: &[WaitingSite], insights: Option<&LoginInsights>, logins: &[Login], recent_limit: usize) -> (Vec<Pick>, Vec<Pick>) {
+    let mut recent: Vec<Pick> = Vec::new();
+    let mut add = |site: &str| {
+        if recent.len() < recent_limit && !site.is_empty() && !recent.iter().any(|p| p.label == site) {
+            let url = logins.iter().find(|l| serves(&l.site, site)).and_then(|l| l.url.clone()).unwrap_or_else(|| format!("https://{site}"));
+            recent.push(Pick { label: site.to_owned(), url });
+        }
+    };
+    for w in waits {
+        add(&w.site);
+    }
+    for s in insights.iter().flat_map(|i| i.sites.iter()).filter(|s| sign_in_asks(&s.by_cause) > 0) {
+        add(&s.site);
+    }
+    let common = equipe_core::signin::COMMON_SITES
+        .iter()
+        .filter(|(_, url)| !recent.iter().any(|p| serves(&p.label, url)))
+        .map(|(name, url)| Pick { label: (*name).to_owned(), url: (*url).to_owned() })
+        .collect();
+    (recent, common)
+}
+
+/// The address to open for what was typed: a site or an address, else `None`.
+pub fn sign_in_target(typed: &str) -> Option<String> {
+    equipe_core::signin::resolve(typed)
+}
+
+/// Where the sign-in the person asked for stands, as the page says it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignInView {
+    /// Asked; the daemon hasn't said yet.
+    Opening { site: String },
+    /// Open — in the browser panel, or in a Chrome window on the daemon's Mac.
+    Open { site: String, window: bool },
+    /// Done; `offered`: a card asks whether to keep the login.
+    Done { site: String, offered: bool },
+    /// No browser could be opened.
+    Failed,
+    /// The page was closed before a sign-in finished.
+    Closed { site: String },
+    /// What was typed isn't a site or an address.
+    BadAddress,
+}
+
+/// Which sentence tells it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Note {
+    Opening,
+    Panel,
+    Window,
+    /// A window on the daemon's Mac, which is another one: said where.
+    RemoteWindow,
+    DoneOffered,
+    Done,
+    Failed,
+    Closed,
+    BadAddress,
+}
+
+pub fn note_of(view: &SignInView, remote: bool) -> Note {
+    match view {
+        SignInView::Opening { .. } => Note::Opening,
+        SignInView::Open { window: false, .. } => Note::Panel,
+        SignInView::Open { window: true, .. } if remote => Note::RemoteWindow,
+        SignInView::Open { window: true, .. } => Note::Window,
+        SignInView::Done { offered: true, .. } => Note::DoneOffered,
+        SignInView::Done { .. } => Note::Done,
+        SignInView::Failed => Note::Failed,
+        SignInView::Closed { .. } => Note::Closed,
+        SignInView::BadAddress => Note::BadAddress,
+    }
+}
+
+/// What the daemon's word means for the page.
+pub fn view_of(site: &str, state: equipe_core::protocol::BrowserSignInState, window: bool) -> SignInView {
+    use equipe_core::protocol::BrowserSignInState as State;
+    let site = site.to_owned();
+    match state {
+        State::Opened => SignInView::Open { site, window },
+        State::Failed => SignInView::Failed,
+        State::SignedIn { offered } => SignInView::Done { site, offered },
+        State::Closed => SignInView::Closed { site },
+    }
+}
+
+impl SignInView {
+    /// The site it is about, where it has one.
+    pub fn site(&self) -> &str {
+        match self {
+            SignInView::Opening { site } | SignInView::Open { site, .. } | SignInView::Done { site, .. } | SignInView::Closed { site } => site,
+            SignInView::Failed | SignInView::BadAddress => "",
+        }
+    }
+
+    /// Whether it is still waiting on the person (the page keeps the line up).
+    pub fn waiting(&self) -> bool {
+        matches!(self, SignInView::Opening { .. } | SignInView::Open { .. })
+    }
+}
+
 /// Bar heights for the trend, 0..=1 of the tallest; a day with no asks is a
 /// hairline (`floor`), so the row of days stays readable.
 pub fn bars(trend: &[u64], floor: f32) -> Vec<f32> {
@@ -288,6 +402,37 @@ mod tests {
             signed_in: 0,
             signed_in_by_equipe: 0,
         }
+    }
+
+    #[test]
+    fn the_quick_picks_start_with_what_members_need_then_the_common_sites() {
+        let mut kept = login(1, "dash.cloudflare.com", "abel");
+        kept.url = Some("https://dash.cloudflare.com/login".into());
+        let waits = waiting(&[wait(5, "qa", "app.acme.dev", Some(HumanCheck::SignIn))], &[]);
+        let mut insights = LoginInsights::default();
+        insights.sites = vec![asks("dash.cloudflare.com", 4, 0), asks("captcha-only.example", 0, 3), asks("app.acme.dev", 2, 0), asks("slack.com", 1, 0)];
+        let (recent, common) = sign_in_picks(&waits, Some(&insights), &[kept], 3);
+        assert_eq!(recent.iter().map(|p| p.label.as_str()).collect::<Vec<_>>(), ["app.acme.dev", "dash.cloudflare.com", "slack.com"], "waiting first, then asking most; a site that only showed CAPTCHAs isn't one to sign in to");
+        assert_eq!(recent[1].url, "https://dash.cloudflare.com/login", "a kept sign-in page is the address");
+        assert_eq!(recent[0].url, "https://app.acme.dev");
+        assert!(!common.iter().any(|p| p.label == "Cloudflare") && common.iter().any(|p| p.label == "GitHub"), "a common site already listed above isn't listed twice");
+        let (none, all) = sign_in_picks(&[], None, &[], 4);
+        assert!(none.is_empty() && all.len() == equipe_core::signin::COMMON_SITES.len());
+    }
+
+    #[test]
+    fn what_was_typed_is_a_site_or_an_address_and_the_page_says_where_it_stands() {
+        use equipe_core::protocol::BrowserSignInState as State;
+        assert_eq!(sign_in_target(" github.com ").as_deref(), Some("https://github.com"));
+        assert_eq!(sign_in_target("my bank"), None);
+        assert_eq!(note_of(&view_of("github.com", State::Opened, false), true), Note::Panel, "the panel shows it here, wherever the browser runs");
+        assert_eq!(note_of(&view_of("github.com", State::Opened, true), false), Note::Window);
+        assert_eq!(note_of(&view_of("github.com", State::Opened, true), true), Note::RemoteWindow, "a window on another Mac's screen says so");
+        assert_eq!(note_of(&view_of("github.com", State::SignedIn { offered: true }, true), true), Note::DoneOffered);
+        assert_eq!(note_of(&view_of("github.com", State::SignedIn { offered: false }, false), false), Note::Done);
+        assert_eq!(note_of(&view_of("", State::Failed, false), false), Note::Failed);
+        assert!(view_of("a.com", State::Opened, false).waiting() && !view_of("a.com", State::Closed, false).waiting());
+        assert_eq!(view_of("a.com", State::Closed, false).site(), "a.com");
     }
 
     #[test]

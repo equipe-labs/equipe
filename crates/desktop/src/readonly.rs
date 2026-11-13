@@ -194,6 +194,7 @@ pub fn reads(command: &Command) -> bool {
         | C::BrowserControl { .. }
         | C::BrowserDialog { .. }
         | C::BrowserPopOut { .. }
+        | C::BrowserSignIn { .. }
         // The language equipe speaks to the person in, kept.
         | C::Language { .. }
         | C::Disallow { .. }
@@ -516,7 +517,7 @@ mod tests {
         let s = || "acme".to_owned();
         let spec = SessionSpec { engine: None, model: None, access: Access::ReadOnly, cwd: "/".into(), role: None, squad: None };
         let routine = routines::Routine { id: 0, title: "t".into(), prompt: "p".into(), when: routines::Schedule::Daily { hour: 9, minute: 0 }, on: true, last_run: None, next_run: None };
-        let login = vault::LoginDraft { id: None, site: "x".into(), username: "u".into(), password: None, note: None, auto: None };
+        let login = vault::LoginDraft { id: None, site: "x".into(), username: "u".into(), password: None, note: None, auto: None, idp: None };
         vec![
             Command::Start { session: 1, spec },
             Command::Submit { session: 1, text: "x".into(), about: None },
@@ -614,6 +615,7 @@ mod tests {
             Command::BrowserControl { lane: "pm".into(), take: true },
             Command::BrowserDialog { page: 1, accept: true, text: None },
             Command::BrowserPopOut { page: 1, bounds: Some(ScreenBounds { left: 0, top: 0, width: 1, height: 1 }) },
+            Command::BrowserSignIn { url: "github.com".into(), window: false },
             Command::Language { lang: "en".into() },
             Command::Disallow { squad: s(), rule: "r".into() },
             Command::PairStart,
@@ -721,7 +723,7 @@ mod tests {
             assert!(reads_method(method), "{method}");
         }
         // The real view tells no look of its own: it isn't the person's screen.
-        for method in [rpc::SCREEN_LOOK, rpc::UPLOAD, rpc::TELEMETRY_SET, rpc::DISK_CLEAN, rpc::BROWSER_WINDOW, rpc::BROWSER_STREAM, rpc::SHUTDOWN, rpc::TOOL, rpc::COMMAND, rpc::DESKTOP, metrics::CONNECT, metrics::DISCONNECT, metrics::REFRESH, "metrics.anything_new"] {
+        for method in [rpc::SCREEN_LOOK, rpc::UPLOAD, rpc::TELEMETRY_SET, rpc::DISK_CLEAN, rpc::BROWSER_WINDOW, rpc::BROWSER_SIGN_IN, rpc::BROWSER_STREAM, rpc::SHUTDOWN, rpc::TOOL, rpc::COMMAND, rpc::DESKTOP, metrics::CONNECT, metrics::DISCONNECT, metrics::REFRESH, "metrics.anything_new"] {
             assert!(!reads_method(method), "{method}");
         }
         assert!(!blocked("nothing") && lets_method(rpc::UPLOAD), "outside the real view nothing is held back");

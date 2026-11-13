@@ -34,6 +34,9 @@ pub struct LoginOffersUi {
     /// Offers whose "sign in by itself" switch the person turned off (on by
     /// default: saving the login is their leave).
     manual: HashSet<u64>,
+    /// Offers for an identity provider's own login whose "Use for Sign in
+    /// with …" switch the person turned off (on by default).
+    no_idp: HashSet<u64>,
 }
 
 impl LoginOffersUi {
@@ -52,6 +55,7 @@ impl Shell {
         ui.subscriptions.retain(|id, _| offers.iter().any(|o| o.id == *id));
         ui.open.retain(|id| offers.iter().any(|o| o.id == *id));
         ui.manual.retain(|id| offers.iter().any(|o| o.id == *id));
+        ui.no_idp.retain(|id| offers.iter().any(|o| o.id == *id));
         for offer in offers {
             if self.login_offers.inputs.contains_key(&offer.id) {
                 continue;
@@ -86,7 +90,9 @@ impl Shell {
             input.update(cx, |s, cx| s.set_value(String::new(), window, cx));
         }
         let auto = !self.login_offers.manual.contains(&id);
-        let draft = LoginDraft { id: None, site: offer.site.clone(), username, password: Some(password), note: None, auto: Some(auto) };
+        // "Sign in with …": on by default for an identity provider's own login — saving it is the person's leave.
+        let idp = equipe_core::vault::idp_provider(&offer.site).map(|_| !self.login_offers.no_idp.contains(&id));
+        let draft = LoginDraft { id: None, site: offer.site.clone(), username, password: Some(password), note: None, auto: Some(auto), idp };
         self.send_command(Command::SaveLogin { draft });
         self.model.login_offers.retain(|o| o.id != id);
         self.model.revision += 1;
@@ -144,6 +150,21 @@ pub fn card(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> Option<AnyElemen
             cx.notify();
         });
     });
+    let provider = equipe_core::vault::idp_provider(&offer.site);
+    let idp_on = !shell.login_offers.no_idp.contains(&id);
+    let idp_handle = cx.entity().downgrade();
+    let idp_switch = provider.map(|provider| {
+        ui::switch(p, SharedString::from(format!("login-offer-idp-{id}")), idp_on).name(t!("logins.offer_idp", provider = provider)).on_flip(move |on, _, cx| {
+            let _ = idp_handle.update(cx, |shell, cx| {
+                if on {
+                    shell.login_offers.no_idp.remove(&id);
+                } else {
+                    shell.login_offers.no_idp.insert(id);
+                }
+                cx.notify();
+            });
+        })
+    });
     let save = ui::button(p, ("login-offer-save", id), Kind::Primary, t!("accounts.save")).key("⏎").icon(Icon::Lock).on_click(cx.listener(move |this, _, window, cx| this.save_login_offer(id, window, cx)));
     let later = ui::button(p, ("login-offer-later", id), Kind::Ghost, t!("secrets.not_now")).on_click(cx.listener(move |this, _, _, cx| this.dismiss_login_offer(id, false, cx)));
     let never = ui::button(p, ("login-offer-never", id), Kind::Ghost, t!("logins.offer_never")).on_click(cx.listener(move |this, _, _, cx| this.dismiss_login_offer(id, true, cx)));
@@ -157,6 +178,7 @@ pub fn card(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> Option<AnyElemen
             .child(div().text_size(px(15.)).text_color(p.text).child(t!("logins.offer_question", site = offer.site)))
             .child(h_flex().w_full().gap_3().child(field(t!("accounts.username"), &u)).child(field(t!("accounts.password"), &pw)))
             .child(h_flex().gap_2().items_center().child(switch).child(div().text_size(px(SMALL)).text_color(p.text2).child(t!("logins.offer_auto", site = offer.site))))
+            .children(provider.zip(idp_switch).map(|(provider, switch)| h_flex().gap_2().items_center().child(switch).child(div().text_size(px(SMALL)).text_color(p.text2).child(t!("logins.offer_idp", provider = provider)))))
             .child(div().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(t!("logins.offer_where", machine = shell.endpoint.label())))
             .child(h_flex().gap_2().items_center().child(save).child(later).child(never).child(div().flex_1()).child(manage))
             .into_any_element(),

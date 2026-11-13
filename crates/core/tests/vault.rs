@@ -100,7 +100,7 @@ async fn a_member_signs_in_only_with_the_persons_yes_and_never_sees_the_password
     assert!(none.is_error && none.text.contains("Settings › Accounts"), "{none:?}");
 
     // The person saves one: every screen hears it, without the password.
-    let draft = LoginDraft { id: None, site: "https://dash.cloudflare.com/login".into(), username: "abel@ironact.net".into(), password: Some("s3cr3t-pw".into()), note: None, auto: None };
+    let draft = LoginDraft { id: None, site: "https://dash.cloudflare.com/login".into(), username: "abel@ironact.net".into(), password: Some("s3cr3t-pw".into()), note: None, auto: None, idp: None };
     handle.send(Command::SaveLogin { draft });
     let seen = until(&mut events, |e| matches!(e, Event::Logins { .. })).await;
     let Some(Event::Logins { logins }) = seen.last() else { panic!() };
@@ -199,7 +199,7 @@ async fn members_asking_at_once_share_one_card_and_always_is_the_whole_squads() 
     // No login yet: kept on the record as such.
     let none = sign_in_as(&handle, "backend", "https://github.com/login?return_to=%2Fsecret").await;
     assert!(none.is_error, "{none:?}");
-    let draft = LoginDraft { id: None, site: "github.com".into(), username: "abel".into(), password: Some("pw-github-1".into()), note: None, auto: None };
+    let draft = LoginDraft { id: None, site: "github.com".into(), username: "abel".into(), password: Some("pw-github-1".into()), note: None, auto: None, idp: None };
     handle.send(Command::SaveLogin { draft });
     until(&mut events, |e| matches!(e, Event::Logins { logins } if !logins.is_empty())).await;
 
@@ -310,7 +310,7 @@ async fn the_logins_page_changes_scope_in_one_step_reads_the_record_and_takes_a_
     std::fs::write(home.join("vault-never-offer.json"), r#"["slack.com","erp.example.com"]"#).unwrap();
     let (handle, mut events) = runtime::start(config(&idle_claude(), &home));
 
-    let draft = LoginDraft { id: None, site: "github.com".into(), username: "abel".into(), password: Some("pw-page-1".into()), note: Some("work".into()), auto: None };
+    let draft = LoginDraft { id: None, site: "github.com".into(), username: "abel".into(), password: Some("pw-page-1".into()), note: Some("work".into()), auto: None, idp: None };
     handle.send(Command::SaveLogin { draft });
     until(&mut events, |e| matches!(e, Event::Logins { logins } if !logins.is_empty())).await;
 
@@ -348,4 +348,42 @@ async fn the_logins_page_changes_scope_in_one_step_reads_the_record_and_takes_a_
     }
     handle.shutdown().await;
     assert!(!std::fs::read_to_string(home.join("vault-never-offer.json")).unwrap().contains("slack.com"));
+}
+
+#[tokio::test]
+async fn signing_in_to_a_site_says_how_it_went_to_every_screen() {
+    use equipe_core::protocol::BrowserSignInState as State;
+    unsafe { std::env::set_var("EQUIPE_VAULT_IN_MEMORY", "1") };
+    let home = scratch("signin-home");
+    let (handle, mut events) = runtime::start(config(&idle_claude(), &home));
+    // What isn't a site or an address is refused before any browser is asked.
+    handle.send(Command::BrowserSignIn { url: "my bank".into(), window: false });
+    let seen = until(&mut events, |e| matches!(e, Event::BrowserSignIn { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::BrowserSignIn { site, state: State::Failed, .. }) if site.is_empty()), "{seen:?}");
+    // A site where no browser can start (no Node here): said, with the site's name, not dropped.
+    handle.send(Command::BrowserSignIn { url: "github.com".into(), window: true });
+    let seen = until(&mut events, |e| matches!(e, Event::BrowserSignIn { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::BrowserSignIn { site, state: State::Failed, window: true }) if site == "github.com"), "{seen:?}");
+    // The command line's way in, the same code: nobody opened, so it says so.
+    assert!(!handle.sign_in("github.com".into()).await.opened);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_provider_login_saved_from_the_card_can_turn_on_sign_in_with_and_another_site_cannot() {
+    unsafe { std::env::set_var("EQUIPE_VAULT_IN_MEMORY", "1") };
+    let home = scratch("idp-home");
+    let (handle, mut events) = runtime::start(config(&idle_claude(), &home));
+    let draft = |site: &str| LoginDraft { id: None, site: site.into(), username: "abel@example.com".into(), password: Some("pw-idp-1".into()), note: None, auto: None, idp: Some(true) };
+    handle.send(Command::SaveLogin { draft: draft("accounts.google.com") });
+    handle.send(Command::SaveLogin { draft: draft("app.example.com") });
+    let seen = until(&mut events, |e| matches!(e, Event::Logins { logins } if logins.len() == 2)).await;
+    let Some(Event::Logins { logins }) = seen.last() else { panic!() };
+    let by = |site: &str| logins.iter().find(|l| l.site == site).unwrap();
+    assert!(by("accounts.google.com").autopilot.idp && by("accounts.google.com").auto, "on by default for an identity provider's own login");
+    assert!(!by("app.example.com").autopilot.idp, "no provider, nothing to sign in with");
+    for e in &seen {
+        assert!(!format!("{e:?}").contains("pw-idp-1"));
+    }
+    handle.shutdown().await;
 }

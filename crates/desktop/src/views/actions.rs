@@ -55,6 +55,7 @@ impl Shell {
             Effect::ShowDesign => self.open_design(cx),
             Effect::ShowMetrics => self.open_metrics(cx),
             Effect::ShowLogins => self.open_logins(cx),
+            Effect::SignIn(site) => self.open_sign_in(Some(site), window, cx),
             Effect::Find(words) => self.board_find(&words, cx),
             Effect::Focus(project) => self.set_focus(project, window, cx),
             Effect::SwitchSquad(name) => self.select_squad(&name, window, cx),

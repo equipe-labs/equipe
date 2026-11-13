@@ -54,6 +54,14 @@ pub struct LoginsUi {
     pub url: Entity<InputState>,
     pub note: Entity<InputState>,
     pub password: Entity<InputState>,
+    /// "Sign in to a site": the site or address box, whether it is open, where the
+    /// sign-in stands, and whether the separate Chrome window is asked for.
+    pub signin: Entity<InputState>,
+    pub signin_open: bool,
+    pub signin_view: Option<rules::SignInView>,
+    pub signin_window: bool,
+    /// When this screen asked for one: its panel opens for the daemon's answer.
+    pub signin_asked: Option<Instant>,
     pub form: Option<Form>,
     /// The new login's "signs in by itself" switch.
     pub auto: bool,
@@ -81,6 +89,11 @@ impl LoginsUi {
             url: cx.new(|cx| InputState::new(window, cx).placeholder(t!("loginspage.url_placeholder"))),
             note: cx.new(|cx| InputState::new(window, cx).placeholder(t!("accounts.note_placeholder"))),
             password: cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("accounts.password_placeholder"))),
+            signin: cx.new(|cx| InputState::new(window, cx).placeholder(t!("loginspage.signin_placeholder"))),
+            signin_open: false,
+            signin_view: None,
+            signin_window: false,
+            signin_asked: None,
             form: None,
             // A new login signs in by itself unless the person turns it off: saving it is their leave.
             auto: true,
@@ -97,7 +110,7 @@ impl LoginsUi {
 
     /// Whether one of the boxes has the keyboard: what is typed is the box's.
     pub fn typing(&self, window: &Window, cx: &App) -> bool {
-        [&self.search, &self.site, &self.username, &self.url, &self.note, &self.password].iter().any(|i| i.read(cx).focus_handle(cx).is_focused(window))
+        [&self.search, &self.site, &self.username, &self.url, &self.note, &self.password, &self.signin].iter().any(|i| i.read(cx).focus_handle(cx).is_focused(window))
     }
 
     /// A button's place in the Tab order, steady between draws.
@@ -122,6 +135,13 @@ pub fn subscribe(shell: &mut Shell, window: &mut Window, cx: &mut Context<Shell>
             }
         }));
     }
+    let signin = shell.logins_ui.signin.clone();
+    shell._subscriptions.push(cx.subscribe_in(&signin, window, |this, _, event: &InputEvent, _, cx| {
+        if matches!(event, InputEvent::PressEnter { .. }) {
+            let typed = this.logins_ui.signin.read(cx).value().to_string();
+            this.sign_in_to(&typed, cx);
+        }
+    }));
 }
 
 fn now_secs() -> u64 {
@@ -235,7 +255,13 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .child(div().min_w_0().truncate().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(t!("loginspage.title")))
         .child(div().flex_1())
         .child(
-            ui::button(p, "logins-add", Kind::Primary, t!("loginspage.add"))
+            ui::button(p, "logins-sign-in", Kind::Primary, t!("loginspage.signin"))
+                .icon(Icon::Globe)
+                .focus(&ui.stop("logins-sign-in", cx))
+                .on_click(cx.listener(|this, _, window, cx| this.open_sign_in(None, window, cx))),
+        )
+        .child(
+            ui::button(p, "logins-add", Kind::Secondary, t!("loginspage.add"))
                 .icon(Icon::Plus)
                 .focus(&ui.stop("logins-add", cx))
                 .on_click(cx.listener(|this, _, window, cx| this.logins_open_form(Form::Add, None, window, cx))),
@@ -262,11 +288,116 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 .child(div().flex_1().min_w_0().child(t!("loginspage.no_store", machine = shell.endpoint.label()))),
         );
     }
+    if shell.logins_ui.signin_open || shell.logins_ui.signin_view.is_some() {
+        column = column.child(sign_in_section(shell, cx));
+    }
+    for offer in offers_section(shell, cx) {
+        column = column.child(offer);
+    }
     column = column.child(waiting_section(shell, cx)).child(saved_section(shell, cx)).child(autopilot_section(shell, cx)).child(asked_section(shell, cx)).child(never_section(shell, cx));
     column = column.child(div().w_full().px_1().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(t!("loginspage.foot", machine = shell.endpoint.label())));
 
     let body = div().id("logins-body").flex_1().min_h_0().overflow_y_scroll().track_scroll(&ui.scroll).child(div().w_full().px_5().py_5().flex().justify_center().child(column));
     v_flex().flex_1().min_w_0().h_full().child(header).child(body).children(undo_strip(shell, cx)).into_any_element()
+}
+
+// ── sign in to a site ──
+
+/// "Sign in to a site": the box, the quick picks, where the browser opens, and
+/// where the sign-in stands.
+fn sign_in_section(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let ui = &shell.logins_ui;
+    let machine = shell.endpoint.label();
+    let remote = shell.endpoint.is_remote();
+    let mut body = card(p);
+    if ui.signin_open {
+        let waits = rules::waiting(&shell.model.browser_waits, &shell.model.logins);
+        let (recent, common) = rules::sign_in_picks(&waits, shell.model.login_insights.as_ref(), &shell.model.logins, 4);
+        let picks = |heading: &'static str, id: &'static str, list: Vec<rules::Pick>, cx: &mut Context<Shell>| -> Option<AnyElement> {
+            if list.is_empty() {
+                return None;
+            }
+            let buttons = list.into_iter().enumerate().map(|(ix, pick)| {
+                let url = pick.url.clone();
+                ui::button(p, SharedString::from(format!("{id}-{ix}")), Kind::Secondary, pick.label).on_click(cx.listener(move |this, _, _, cx| this.sign_in_to(&url, cx))).into_any_element()
+            });
+            Some(v_flex().w_full().gap_1().child(div().text_size(px(12.)).text_color(p.muted).child(heading)).child(h_flex().w_full().flex_wrap().gap_1p5().children(buttons)).into_any_element())
+        };
+        let window_on = ui.signin_window;
+        let handle = cx.entity().downgrade();
+        let toggle = ui::switch(p, "logins-sign-in-window", window_on).name(t!("loginspage.signin_window")).on_flip(move |on, _, cx| {
+            let _ = handle.update(cx, |shell, cx| {
+                shell.logins_ui.signin_window = on;
+                cx.notify();
+            });
+        });
+        let mut form = v_flex()
+            .w_full()
+            .p_4()
+            .gap_3()
+            .child(div().text_size(px(13.)).line_height(px(19.)).text_color(p.text2).child(t!("loginspage.signin_body")))
+            .child(h_flex().w_full().gap_2().items_center().child(div().flex_1().min_w_0().child(boxed(p, &ui.signin))).child(ui::button(p, "logins-sign-in-go", Kind::Primary, t!("loginspage.signin_go")).icon(Icon::Globe).on_click(cx.listener(|this, _, _, cx| {
+                let typed = this.logins_ui.signin.read(cx).value().to_string();
+                this.sign_in_to(&typed, cx);
+            }))).child(ui::button(p, "logins-sign-in-close", Kind::Ghost, t!("loginspage.signin_close")).on_click(cx.listener(|this, _, _, cx| {
+                this.logins_ui.signin_open = false;
+                cx.notify();
+            }))))
+            .children(picks(t!("loginspage.signin_recent"), "logins-pick-recent", recent, cx))
+            .children(picks(t!("loginspage.signin_common"), "logins-pick-common", common, cx))
+            .child(h_flex().w_full().gap_2().items_center().child(toggle).child(div().flex_1().min_w_0().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(t!("loginspage.signin_window"))));
+        // Where it will open, when that isn't the screen in front of the person.
+        if remote {
+            form = form.child(div().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(if window_on { t!("loginspage.signin_remote_window", machine = machine) } else { t!("loginspage.signin_remote_panel", machine = machine) }));
+        }
+        body = body.child(form);
+    }
+    if let Some(view) = &ui.signin_view {
+        let site = view.site().to_owned();
+        let note = match rules::note_of(view, remote) {
+            rules::Note::Opening => t!("loginspage.signin_opening", site = site),
+            rules::Note::Panel => t!("loginspage.signin_panel", site = site),
+            rules::Note::Window => t!("loginspage.signin_window_open", site = site),
+            rules::Note::RemoteWindow => t!("loginspage.signin_window_remote", site = site, machine = machine),
+            rules::Note::DoneOffered => t!("loginspage.signin_done_offered", site = site),
+            rules::Note::Done => t!("loginspage.signin_done", site = site),
+            rules::Note::Failed => t!("loginspage.signin_failed", machine = machine),
+            rules::Note::Closed => t!("loginspage.signin_closed", site = site),
+            rules::Note::BadAddress => t!("loginspage.signin_bad").to_owned(),
+        };
+        let bad = matches!(view, rules::SignInView::BadAddress | rules::SignInView::Failed);
+        let tone = if bad { p.danger() } else { p.text };
+        body = body.child(
+            h_flex()
+                .id("logins-sign-in-note")
+                .role(if bad { Role::Alert } else { Role::Status })
+                .w_full()
+                .px_4()
+                .py_3()
+                .gap_2()
+                .items_start()
+                .when(ui.signin_open, |r| r.border_t_1().border_color(p.hair))
+                .child(div().pt(px(2.)).flex_none().child(icon(if bad { Icon::Warning } else { Icon::Globe }, 14., if bad { p.danger() } else { p.accent })))
+                .child(div().flex_1().min_w_0().text_size(px(13.)).line_height(px(19.)).text_color(tone).child(note))
+                .child(ui::button(p, "logins-sign-in-dismiss", Kind::Ghost, t!("loginspage.signin_dismiss")).on_click(cx.listener(|this, _, _, cx| {
+                    this.logins_ui.signin_view = None;
+                    cx.notify();
+                }))),
+        );
+    }
+    section(p, "logins-sign-in", t!("loginspage.signin_title"), None, body)
+}
+
+/// The "Save this login?" cards asked, here too: a sign-in finished in a
+/// window or panel that isn't this page leaves its card where the person is.
+fn offers_section(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
+    let p = shell.palette;
+    let ids: Vec<u64> = shell.model.login_offers.iter().map(|o| o.id).collect();
+    ids.into_iter()
+        .filter_map(|id| super::login_offers::card(shell, id, cx))
+        .map(|card| div().id("logins-offer").w_full().p_3().rounded(px(R_LG)).bg(p.raised).border_1().border_color(p.hair).shadow_sm().child(card).into_any_element())
+        .collect()
 }
 
 // ── waiting now ──
@@ -283,10 +414,11 @@ fn waiting_section(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         let (page, site) = (w.page, w.site.clone());
         let kept = w.kept;
         let save_site = w.site.clone();
+        let open_site = w.site.clone();
         let open = ui::button(p, SharedString::from(format!("logins-wait-open-{ix}")), Kind::Primary, t!("loginspage.waiting_open"))
             .icon(Icon::Globe)
             .focus(&ui.stop(&format!("logins-wait-open-{ix}"), cx))
-            .on_click(cx.listener(move |this, _, _, cx| this.reveal_browser(page, cx)));
+            .on_click(cx.listener(move |this, _, window, cx| this.open_waiting_login(page, &open_site, window, cx)));
         let save = (!kept).then(|| {
             ui::button(p, SharedString::from(format!("logins-wait-save-{ix}")), Kind::Ghost, t!("loginspage.fix_save"))
                 .focus(&ui.stop(&format!("logins-wait-save-{ix}"), cx))
@@ -768,6 +900,89 @@ impl Shell {
         cx.notify();
     }
 
+    /// "Sign in to a site": the Logins page with its box open and ready —
+    /// for a site or address already known (`/sign-in github.com`), it opens
+    /// at once.
+    pub fn open_sign_in(&mut self, site: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_logins(cx);
+        match site.filter(|s| !s.trim().is_empty()) {
+            Some(site) => self.sign_in_to(&site, cx),
+            None => {
+                let ui = &mut self.logins_ui;
+                ui.signin_open = true;
+                ui.signin.update(cx, |s, cx| s.focus(window, cx));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Open equipe's own browser at `typed` (a site or an address) — what
+    /// `equipe browser <url>` does, by the daemon, wherever it runs: in the
+    /// panel here, or the separate Chrome window on the daemon's Mac.
+    pub fn sign_in_to(&mut self, typed: &str, cx: &mut Context<Self>) {
+        let Some(url) = rules::sign_in_target(typed) else {
+            self.logins_ui.signin_view = Some(rules::SignInView::BadAddress);
+            cx.notify();
+            return;
+        };
+        let ui = &mut self.logins_ui;
+        let window = ui.signin_window;
+        ui.signin_view = Some(rules::SignInView::Opening { site: equipe_core::vault::site_of(&url) });
+        ui.signin_asked = Some(Instant::now());
+        self.send_command(Command::BrowserSignIn { url, window });
+        cx.notify();
+    }
+
+    /// "Open browser to log in" on a waiting site: the member's own page in
+    /// the panel, in the person's hands, as before; where that page is gone,
+    /// the same sign-in as "Sign in to a site".
+    pub fn open_waiting_login(&mut self, page: u64, site: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = window;
+        if self.browser.read(cx).knows_page(page) {
+            self.reveal_browser(page, cx);
+        } else {
+            self.sign_in_to(site, cx);
+        }
+    }
+
+    /// The daemon's word on a sign-in ([`Event::BrowserSignIn`]): the line the
+    /// page keeps, and — for one this screen asked for, or on the window in
+    /// front — the browser panel opened on the page.
+    pub fn sign_in_event(&mut self, site: &str, state: equipe_core::protocol::BrowserSignInState, window_asked: bool, window: &mut Window, cx: &mut Context<Self>) {
+        use equipe_core::protocol::BrowserSignInState as State;
+        let mine = self.logins_ui.signin_asked.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(30 * 60));
+        let view = rules::view_of(site, state, window_asked);
+        // Another screen's sign-in: this page shows a line only for what it asked for.
+        if mine || self.logins_ui.signin_view.as_ref().is_some_and(|v| v.site() == site) {
+            self.logins_ui.signin_view = Some(view);
+        }
+        if matches!(state, State::Opened) && !window_asked && (mine || window.is_window_active()) {
+            // Shown where the person is: the panel beside the conversation, its new tab picked.
+            self.show_sign_in_panel(window, cx);
+        }
+        // Done, failed or closed: nothing more is waited for.
+        if !matches!(state, State::Opened) {
+            self.logins_ui.signin_asked = None;
+        }
+        cx.notify();
+    }
+
+    fn show_sign_in_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.screen != Screen::Chat {
+            self.show(Screen::Chat, cx);
+        }
+        self.doc = None;
+        if let Some(ui) = self.terminal.as_mut().filter(|_| !self.remembered.term_below) {
+            ui.open = false;
+        }
+        if !self.browser.read(cx).open {
+            self.browser.update(cx, |b, cx| b.toggle(window, cx));
+            self.sync_browser(window, cx);
+        }
+        self.browser.update(cx, |b, cx| b.expect_new_tab(cx));
+        cx.notify();
+    }
+
     fn logins_set_days(&mut self, days: u32, cx: &mut Context<Self>) {
         if self.logins_ui.days != days {
             self.logins_ui.days = days;
@@ -849,7 +1064,7 @@ impl Shell {
                     self.logins_ui.problem = Some(problem);
                     return cx.notify();
                 }
-                LoginDraft { id: None, site: rules::draft_site(&site, ""), username, password: Some(password), note: (!note.is_empty()).then_some(note), auto: Some(ui.auto) }
+                LoginDraft { id: None, site: rules::draft_site(&site, ""), username, password: Some(password), note: (!note.is_empty()).then_some(note), auto: Some(ui.auto), idp: None }
             }
             Form::Edit(id) => {
                 let Some(login) = self.model.logins.iter().find(|l| l.id == id) else { return self.logins_close_form(window, cx) };
@@ -857,7 +1072,7 @@ impl Shell {
                     self.logins_ui.problem = Some(Problem::NeedUsername);
                     return cx.notify();
                 }
-                LoginDraft { id: Some(id), site: rules::draft_site(&login.site, &url), username, password: None, note: (!note.is_empty()).then_some(note), auto: None }
+                LoginDraft { id: Some(id), site: rules::draft_site(&login.site, &url), username, password: None, note: (!note.is_empty()).then_some(note), auto: None, idp: None }
             }
             Form::Password(id) => {
                 let Some(login) = self.model.logins.iter().find(|l| l.id == id) else { return self.logins_close_form(window, cx) };
@@ -865,7 +1080,7 @@ impl Shell {
                     self.logins_ui.problem = Some(Problem::NeedPassword);
                     return cx.notify();
                 }
-                LoginDraft { id: Some(id), site: login.url.clone().unwrap_or_else(|| login.site.clone()), username: login.username.clone(), password: Some(password), note: login.note.clone(), auto: None }
+                LoginDraft { id: Some(id), site: login.url.clone().unwrap_or_else(|| login.site.clone()), username: login.username.clone(), password: Some(password), note: login.note.clone(), auto: None, idp: None }
             }
         };
         self.send_command(Command::SaveLogin { draft });
@@ -1014,5 +1229,6 @@ impl Shell {
         ui.username.update(cx, |s, cx| s.set_placeholder(t!("accounts.username_placeholder"), window, cx));
         ui.note.update(cx, |s, cx| s.set_placeholder(t!("accounts.note_placeholder"), window, cx));
         ui.password.update(cx, |s, cx| s.set_placeholder(t!("accounts.password_placeholder"), window, cx));
+        ui.signin.update(cx, |s, cx| s.set_placeholder(t!("loginspage.signin_placeholder"), window, cx));
     }
 }

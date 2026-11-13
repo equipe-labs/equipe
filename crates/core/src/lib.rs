@@ -68,6 +68,7 @@ pub mod secrets;
 pub mod side_chat;
 pub mod signal_sources;
 pub mod signals;
+pub mod signin;
 pub mod skills;
 pub mod runtime;
 pub mod squad_home;

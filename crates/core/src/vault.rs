@@ -564,6 +564,9 @@ impl Vault {
                 if let Some(auto) = draft.auto {
                     login.auto = auto;
                 }
+                if let Some(idp) = draft.idp {
+                    login.autopilot.idp = idp && idp_provider(&login.site).is_some();
+                }
                 // A new password, or signing in by itself turned on again: worth a try again.
                 if new_password || draft.auto == Some(true) {
                     login.stopped = None;
@@ -578,7 +581,9 @@ impl Vault {
                 // Saving a login is the person's leave for equipe to sign in
                 // with it by itself: on unless they turned it off on the form.
                 let auto = draft.auto.unwrap_or(true);
-                self.logins.push(Login { id, site, url, username, note, allowed: Vec::new(), auto, stopped: None, created_at: now, password_at: None, uses: Vec::new(), autopilot: Default::default() });
+                // "Sign in with …" is the person's to turn on, and only an identity provider's own login can serve it.
+                let autopilot = crate::protocol::vault::Autopilot { idp: draft.idp == Some(true) && idp_provider(&site).is_some(), ..Default::default() };
+                self.logins.push(Login { id, site, url, username, note, allowed: Vec::new(), auto, stopped: None, created_at: now, password_at: None, uses: Vec::new(), autopilot });
                 id
             }
         };
@@ -1055,7 +1060,7 @@ mod tests {
     }
 
     fn draft(site: &str, user: &str, password: Option<&str>) -> LoginDraft {
-        LoginDraft { id: None, site: site.into(), username: user.into(), password: password.map(Into::into), note: None, auto: None }
+        LoginDraft { id: None, site: site.into(), username: user.into(), password: password.map(Into::into), note: None, auto: None, idp: None }
     }
 
     fn login(site: &str, url: Option<&str>, auto: bool) -> Login {
@@ -1084,7 +1089,7 @@ mod tests {
         assert!(file.contains("github.com") && file.contains("https://github.com/login"));
         assert_eq!(vault.password(id).unwrap(), "hunter2");
         // A change without a password keeps the one kept.
-        vault.save(LoginDraft { id: Some(id), site: "github.com".into(), username: "abel2".into(), password: None, note: Some(" work ".into()), auto: None }, 2).unwrap();
+        vault.save(LoginDraft { id: Some(id), site: "github.com".into(), username: "abel2".into(), password: None, note: Some(" work ".into()), auto: None, idp: None }, 2).unwrap();
         assert_eq!(vault.password(id).unwrap(), "hunter2");
         let l = &vault.logins[0];
         assert_eq!((l.username.as_str(), l.note.as_deref(), l.url.as_deref()), ("abel2", Some("work"), Some("https://github.com/login")));
@@ -1135,7 +1140,7 @@ mod tests {
         vault.stop_auto(id, "the form came back").unwrap();
         assert!(auto_login_for(&vault.logins, "https://github.com/login").is_none(), "stopped");
         // A new password is worth a try again.
-        vault.save(LoginDraft { id: Some(id), site: "github.com".into(), username: "abel".into(), password: Some("pw2".into()), note: None, auto: None }, 2).unwrap();
+        vault.save(LoginDraft { id: Some(id), site: "github.com".into(), username: "abel".into(), password: Some("pw2".into()), note: None, auto: None, idp: None }, 2).unwrap();
         assert!(vault.logins[0].stopped.is_none() && vault.logins[0].auto);
         vault.set_auto(id, false).unwrap();
         assert!(auto_login_for(&vault.logins, "https://github.com/login").is_none());

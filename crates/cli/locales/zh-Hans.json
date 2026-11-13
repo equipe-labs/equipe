@@ -1416,5 +1416,7 @@
   "credential.refused": "equipe credential 只把密钥交给 AWS CLI 的 credential_process，绝不交给成员的命令。",
   "credential.missing": "没有为配置文件 {name} 保存 AWS 密钥（设置 › 账户 › 登录自动驾驶）。",
   "credential.unknown": "equipe credential 只支持 aws，不支持 {kind}。",
-  "telegram.captcha": "{member} 的浏览器里有个 CAPTCHA 等你处理。打开 equipe 完成它，之后 {member} 会自己继续。"
+  "telegram.captcha": "{member} 的浏览器里有个 CAPTCHA 等你处理。打开 equipe 完成它，之后 {member} 会自己继续。",
+  "main.browser_panel_1": "页面已在 equipe 应用的浏览器面板中打开。请在那里登录或注册。",
+  "main.browser_panel_2": "一次就够了。完成后，equipe 会询问是否保存该登录。"
 }

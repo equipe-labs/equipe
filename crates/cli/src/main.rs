@@ -923,15 +923,22 @@ async fn sign_in(url: Option<String>, forget: bool) -> CmdResult {
     }
     // Members share one Chrome, run by the daemon: the person signs in there,
     // once — Google too — and every member works signed in.
+    // The same way in as the app's "Sign in to a site": the daemon opens the page where the person is.
+    let target = url.as_deref().map(|u| equipe_core::signin::resolve(u).unwrap_or_else(|| u.to_owned())).unwrap_or_else(start_page);
     if daemon::ensure_running().await.is_ok()
-        && equipe_core::gateway::person_window(&daemon::socket(), &url.clone().unwrap_or_else(start_page)).await.unwrap_or(false)
+        && let Some(opened) = equipe_core::gateway::sign_in(&daemon::socket(), &target).await.unwrap_or(None)
     {
         println!("{}\n", p.kicker(t!("main.browser_kicker")));
-        println!("{}", p.note(2, t!("main.browser_chrome_1")));
-        println!("{}", p.note(2, t!("main.browser_chrome_2")));
-        println!("{}", p.note(2, t!("main.browser_chrome_3")));
-        if std::env::var_os("SSH_CONNECTION").is_some() {
-            println!("\n{}", p.note(2, t!("main.browser_ssh_chrome")));
+        if opened.window {
+            println!("{}", p.note(2, t!("main.browser_chrome_1")));
+            println!("{}", p.note(2, t!("main.browser_chrome_2")));
+            println!("{}", p.note(2, t!("main.browser_chrome_3")));
+            if std::env::var_os("SSH_CONNECTION").is_some() {
+                println!("\n{}", p.note(2, t!("main.browser_ssh_chrome")));
+            }
+        } else {
+            println!("{}", p.note(2, t!("main.browser_panel_1")));
+            println!("{}", p.note(2, t!("main.browser_panel_2")));
         }
         return Ok(());
     }
@@ -955,7 +962,7 @@ async fn sign_in(url: Option<String>, forget: bool) -> CmdResult {
     open.args(["-y", "-p", browser::PLAYWRIGHT_PACKAGE, "node"])
         .arg(browser::sign_in_script(&home))
         .arg(&state)
-        .arg(url.unwrap_or_else(start_page));
+        .arg(target);
     let status = open.status().map_err(|err| Failure::new(t!("main.browser_open_failed", err = err)))?;
     let _ = std::fs::set_permissions(&state, std::os::unix::fs::PermissionsExt::from_mode(0o600));
     if !status.success() {
@@ -974,15 +981,7 @@ async fn sign_in(url: Option<String>, forget: bool) -> CmdResult {
 
 /// The page the sign-in window opens on: a few sites squads often need.
 fn start_page() -> String {
-    let sites = [
-        ("GitHub", "https://github.com/login"),
-        ("Vercel", "https://vercel.com/login"),
-        ("PostHog", "https://app.posthog.com/login"),
-        ("Supabase", "https://supabase.com/dashboard/sign-in"),
-        ("Cloudflare", "https://dash.cloudflare.com/login"),
-        ("Netlify", "https://app.netlify.com/login"),
-        ("Google Search Console", "https://search.google.com/search-console"),
-    ];
+    let sites = equipe_core::signin::COMMON_SITES;
     let links: String = sites.iter().map(|(name, url)| format!("<li><a href='{url}'>{name}</a></li>")).collect();
     let html = format!(
         "<!doctype html><meta charset=utf-8><title>equipe · {title}</title>\
@@ -1749,6 +1748,7 @@ impl App {
                 | Event::LoginInsights { .. }
                 | Event::LoginOffered { .. }
                 | Event::LoginOfferClosed { .. }
+                | Event::BrowserSignIn { .. }
                 | Event::BrowserProfiles { .. }
                 | Event::PmAcceptsChanged { .. }
                 | Event::SubagentsAtOnceChanged { .. }
