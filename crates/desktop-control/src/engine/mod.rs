@@ -534,7 +534,12 @@ impl Engine {
         if !ACTIONS.contains(&action) {
             return Err(format!("No action {action:?}: one of {}.", ACTIONS.join(", ")));
         }
-        let (qualified, _, _) = self.lookup(member, args)?;
+        let (qualified, _, snap) = self.lookup(member, args)?;
+        if let Some(app) = snap.app.as_deref()
+            && let Some(why) = crate::system_guard::acting_on(app, None)
+        {
+            return Err(why);
+        }
         let headed = flag(args, "headed") || action == "double_click";
         let mut cli = Vec::new();
         if headed {
@@ -581,6 +586,9 @@ impl Engine {
             }
             "launch" => {
                 let app = text(args, "app").ok_or("Say which app with `app`.")?;
+                if let Some(why) = crate::system_guard::app(app) {
+                    return Err(why);
+                }
                 let mut cli = vec!["launch".to_owned()];
                 if flag(args, "activate") {
                     cli.push("--activate".into());
@@ -596,6 +604,9 @@ impl Engine {
             }
             "close" => {
                 let app = text(args, "app").ok_or("Say which app with `app`.")?;
+                if let Some(why) = crate::system_guard::app(app) {
+                    return Err(why);
+                }
                 let data = self.run(member, vec!["close-app".into(), "--".into(), app.to_owned()], None, Duration::from_secs(30))?;
                 Ok(compact::action(&format!("close {app}"), &data))
             }

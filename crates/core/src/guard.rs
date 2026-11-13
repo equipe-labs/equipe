@@ -13,6 +13,13 @@
 //!   command's (`cp` into it, `rm` in it, `>` onto it). Copying out of one is
 //!   reading it, and is never refused.
 //!
+//! - a command that switches a system-wide accessibility feature on the
+//!   person's Mac: VoiceOver started or stopped, `defaults write` on the
+//!   universal-access or VoiceOver domains or the global domain, `tccutil`.
+//!   Screen readers are tested in a browser's accessibility tree or a
+//!   simulator, never on the host (`equipe_desktop_control::system_guard`
+//!   refuses the same through the desktop tools).
+//!
 //! The guard only refuses: what it lets through goes on to the engine's own
 //! permission rules and the operating system's fence, as before.
 
@@ -39,6 +46,13 @@ const HOOK_TIMEOUT_SECS: u64 = 30;
 pub const BROWSER_REFUSED: &str = "Blocked: `equipe browser` opens a window for the person and waits until they close \
 it, which would stop your turn. To hand your browser to the person — to sign in, or for a step only they can do — \
 call `show_my_browser`; to work in a site yourself, use your `browser` tools.";
+
+/// What a member is told when a command would switch a system-wide setting
+/// (VoiceOver, universal access, the global defaults) on the person's Mac.
+pub const SYSTEM_TOGGLE_REFUSED: &str = "Blocked: that command starts or stops VoiceOver, or changes a system-wide accessibility, \
+display or keyboard setting on the person's Mac, which is theirs, not yours to change while working. Test screen readers without \
+touching this Mac's settings: read the browser's accessibility tree (Playwright's ARIA snapshot, axe, Chrome's accessibility \
+snapshot), use VoiceOver or the Accessibility Inspector inside the iOS Simulator, or ask the person.";
 
 /// Set in a member's commands' environment: `equipe browser` refuses there.
 pub const MEMBER_ENV: &str = "EQUIPE_MEMBER";
@@ -73,6 +87,9 @@ pub fn refusal(tool: &str, input: &Value, cwd: &Path, work: &Path, read_only: &[
             let commands = parse(command);
             if commands.iter().any(|c| runs_equipe_browser(&c.words)) {
                 return Some(BROWSER_REFUSED.to_owned());
+            }
+            if commands.iter().any(|c| toggles_system_feature(&c.words, command)) {
+                return Some(SYSTEM_TOGGLE_REFUSED.to_owned());
             }
             // Where each command runs: a `cd` moves the rest of the chain.
             let mut here = cwd.to_path_buf();
@@ -433,6 +450,33 @@ fn without_heredocs(line: &str) -> String {
     out
 }
 
+/// Whether one command switches a system-wide feature of the host Mac: by
+/// its words, and for `osascript` — whose script may come on stdin — by the
+/// whole line.
+fn toggles_system_feature(words: &[String], line: &str) -> bool {
+    let words: &[String] = if words.first().is_some_and(|w| w == "sudo") { &words[1..] } else { words };
+    let Some(first) = words.first() else { return false };
+    let program = first.rsplit('/').next().unwrap_or(first).to_lowercase();
+    let lower: Vec<String> = words[1..].iter().map(|w| w.to_lowercase()).collect();
+    let any = |needles: &[&str]| lower.iter().any(|w| needles.iter().any(|n| w.contains(n)));
+    match program.as_str() {
+        "voiceover" | "voiceoverutility" | "tccutil" => true,
+        "osascript" | "jxa" => {
+            let line = line.to_lowercase();
+            ["voiceover", "universal access", "universalaccess", "key code 96"].iter().any(|n| line.contains(n))
+                || (line.contains("command down") && line.contains("option down") && (line.contains("keystroke \"8\"") || line.contains("key code 28")))
+        }
+        "launchctl" | "killall" | "pkill" | "kill" => any(&["voiceover", "scrod", "universalaccess"]),
+        "open" => any(&["voiceover", "universalaccess", "settings.extension.accessibility"]) || (any(&["x-apple.systempreferences"]) && any(&["accessibility"])),
+        "defaults" => {
+            lower.first().is_some_and(|verb| matches!(verb.as_str(), "write" | "delete" | "import" | "rename"))
+                && (any(&["com.apple.universalaccess", "com.apple.voiceover", "com.apple.scrod", "com.apple.accessibility"])
+                    || lower.iter().any(|w| matches!(w.as_str(), "nsglobaldomain" | "-g" | "-globaldomain")))
+        }
+        _ => false,
+    }
+}
+
 /// Whether these words run `equipe browser`.
 fn runs_equipe_browser(words: &[String]) -> bool {
     match words {
@@ -539,6 +583,61 @@ mod tests {
             }
         }
         assert!(bash("sleep 30 && ls").unwrap().contains("`sleep 30`"), "it names the sleep");
+    }
+
+    #[test]
+    fn commands_that_switch_host_accessibility_features_are_refused_with_the_alternatives() {
+        for command in [
+            "osascript -e 'tell application \"VoiceOver\" to quit'",
+            "osascript -e 'tell application \"System Events\" to key code 96 using {command down}'",
+            "osascript -e 'tell application \"System Events\" to keystroke \"8\" using {option down, command down}'",
+            "osascript <<EOF\ntell application \"VoiceOver\" to activate\nEOF",
+            "launchctl kickstart -k gui/501/com.apple.VoiceOver",
+            "launchctl load /System/Library/LaunchAgents/com.apple.scrod.plist",
+            "open -a VoiceOver",
+            "open /System/Library/CoreServices/VoiceOver.app",
+            "open -a 'VoiceOver Utility'",
+            "open 'x-apple.systempreferences:com.apple.preference.universalaccess'",
+            "killall VoiceOver",
+            "pkill -f voiceover",
+            "defaults write com.apple.universalaccess closeViewZoomed -bool true",
+            "defaults write com.apple.VoiceOver4/default SCREnableAppleScript -bool true",
+            "defaults write NSGlobalDomain AppleKeyboardUIMode -int 3",
+            "defaults write -g KeyRepeat 1",
+            "defaults delete com.apple.universalaccess reduceMotion",
+            "sudo defaults write com.apple.universalaccess reduceTransparency -bool true",
+            "cd /tmp && env A=1 defaults write com.apple.universalaccess x 1",
+            "bash -c 'open -a VoiceOver'",
+            "tccutil reset Accessibility",
+            "/System/Library/CoreServices/VoiceOver.app/Contents/MacOS/VoiceOver",
+        ] {
+            let why = bash(command).unwrap_or_else(|| panic!("{command} let through"));
+            assert_eq!(why, SYSTEM_TOGGLE_REFUSED, "{command}");
+            for part in ["accessibility tree", "Simulator", "ask the person"] {
+                assert!(why.contains(part), "{part}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_alternatives_for_testing_screen_readers_and_ordinary_commands_go_through() {
+        for command in [
+            "npx playwright test a11y.spec.ts",
+            "npx axe http://localhost:3000",
+            "grep -rn VoiceOver docs/",
+            "cat notes/voiceover-checklist.md",
+            "open -a Simulator",
+            "open -a 'Accessibility Inspector'",
+            "xcrun simctl spawn booted defaults write com.apple.Accessibility VoiceOverTouchEnabled -bool true",
+            "open https://example.com",
+            "defaults read com.apple.universalaccess",
+            "defaults write com.example.myapp debug -bool true",
+            "osascript -e 'tell application \"Safari\" to get URL of front document'",
+            "launchctl list",
+            "killall node",
+        ] {
+            assert_eq!(bash(command), None, "{command}");
+        }
     }
 
     #[test]

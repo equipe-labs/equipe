@@ -50,6 +50,10 @@ while. Use them for what the tree can't reach: a canvas, a game, an app whose tr
 - **Payment, deleting an account, passwords, security settings**, password managers and password fields take no input
   from a member at all. Ask the person to do it.
 - **equipe's own windows** are the person's.
+- **The Mac's system-wide settings** — VoiceOver (⌘F5), Zoom (⌥⌘8), the Accessibility Shortcuts panel (⌥⌘F5), display and
+  keyboard switches, System Settings (you may read it, never click or type in it), VoiceOver Utility. Those shortcuts and
+  apps are refused. To check a screen reader, read the browser's accessibility tree (Playwright's ARIA snapshot, axe,
+  Chrome's accessibility snapshot) or use VoiceOver inside the iOS Simulator; otherwise ask the person.
 
 ## Private by default
 

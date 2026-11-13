@@ -12,27 +12,38 @@
 //!    the background; a failure is reported once, in a word the screen
 //!    translates, with a retry, and is tried again quietly with a growing wait;
 //! 2. once a member works (or asks for) the desktop, the helper is installed
-//!    and kept current, and macOS's own Accessibility prompt is shown once. The
-//!    daemon never touches the permission database and never clicks in System
-//!    Settings: [`DesktopSetup::Grant`] is the card a screen shows, whose
-//!    button opens System Settings at the right pane (`DesktopCheck { guide }`);
+//!    and kept current. The daemon never touches the permission database,
+//!    never clicks in System Settings and never makes macOS ask anything by
+//!    itself: [`DesktopSetup::Grant`] is the card a screen shows, whose button
+//!    (a person's click) asks macOS and opens System Settings at the right
+//!    pane (`DesktopCheck { guide }`);
 //! 3. the grant is watched for lightly, and when it appears the status check
 //!    runs by itself and the person is told once ([`DesktopSetup::JustReady`]).
 //!
 //! 4. a Mac that had the older helper bundle moves to equipe.app by itself:
-//!    once the app holds the permission, the bundle is moved aside and the
-//!    person is told once that its row in System Settings can be removed
-//!    ([`DesktopReadiness::old_helper`]). While the app isn't allowed yet the
-//!    old bundle keeps working (the app hands over to it), and the app is
-//!    started again now and then ([`RECHECK`]) to see whether it is.
+//!    once the app holds the permission, the bundle is moved aside. Nobody is
+//!    told: its stale row in System Settings is harmless. While the app isn't
+//!    allowed yet the old bundle keeps working (the app hands over to it), and
+//!    the app is started again now and then ([`RECHECK`]) to see whether it is.
 //!
-//! Every prompt goes through the prompt budget (`equipe_desktop_control::prompts`):
-//! macOS's Accessibility prompt is shown once per identity, never again after
-//! a yes unless macOS takes it back.
+//! A card shows only when work is blocked and the person can unblock it with
+//! one action (docs/PROMPTS.md has every card and prompt, and when):
 //!
-//! The person puts the card away ([`Auto::dismiss`]) and isn't asked again
-//! until a member actually needs the desktop and can't have it
-//! ([`Auto::refusal`]), at most once in [`REOFFER_AFTER`].
+//! - Grant: a member was refused for want of the switch ([`Auto::refusal`]),
+//!   or the desktop was set up for the first time and never skipped;
+//! - Failed: the set-up failed and a member needs it, or it keeps failing
+//!   ([`FAILURE_GRACE`]).
+//!
+//! Never for what resolves itself (installing, restarts, an update, a locked
+//! screen). The person puts a card away ([`Auto::dismiss`]): that is kept in
+//! `setup.json`, per card and identity ("grant:app", "failed:download"), so a
+//! restart or an update doesn't bring it back. A dismissed Grant card returns
+//! only after the switch was seen on (the condition cleared) and was taken
+//! back while a member needs it; a Failed card, for another failure.
+//!
+//! macOS's own prompts are never made by this background work: only the
+//! person's click on the card does, once, through the prompt budget
+//! (`equipe_desktop_control::prompts`).
 //!
 //! All the machine is behind [`Ops`], so the whole of it is tested with fakes
 //! that touch no permission, no screen and no network.
@@ -53,8 +64,9 @@ use tokio::sync::Notify;
 use super::ready;
 use crate::keychain::prompts;
 
-/// A dismissed card comes back, when a member needs the desktop, after this long (seconds).
-pub const REOFFER_AFTER: u64 = 6 * 60 * 60;
+/// A set-up failure nobody is blocked on is told only once it has lasted this
+/// long (seconds): the quiet retries usually mend it first.
+pub const FAILURE_GRACE: u64 = 10 * 60;
 
 /// How often the grant is looked for while the card is up: quickly at first,
 /// then lazily.
@@ -126,21 +138,35 @@ pub trait Ops: Send + Sync + 'static {
 /// What is kept between daemon runs, in `<home>/desktop/setup.json`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Saved {
-    /// macOS's Accessibility prompt was shown once already.
-    #[serde(default)]
-    prompted: bool,
     /// The person was told the desktop is ready (and it hasn't stopped being since).
     #[serde(default)]
     told_ready: bool,
-    /// When the person put the card away (unix seconds).
+    /// The switch was seen on at some time.
     #[serde(default)]
+    ever_granted: bool,
+    /// The person skipped the desktop in the first run: no card until a member needs it.
+    #[serde(default)]
+    skipped: bool,
+    /// Cards the person put away, by what and for whom (`grant:<identity>`,
+    /// `failed:<reason>`). A key goes when its condition clears.
+    #[serde(default)]
+    dismissed: Vec<String>,
+    /// A member was refused for want of the switch, and it is still off.
+    #[serde(default)]
+    needs_grant: bool,
+    /// A member was refused for want of the set-up, and it hasn't mended.
+    #[serde(default)]
+    blocked: bool,
+    /// Since when the set-up has been failing (unix seconds).
+    #[serde(default)]
+    failing_since: Option<u64>,
+    /// Before dismissals were kept per card: when the person put the card
+    /// away (0: skipped). Read once, then folded into the fields above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     dismissed_at: Option<u64>,
     /// The older helper bundle was moved aside (equipe.app holds the permission).
     #[serde(default)]
     retired_old: bool,
-    /// The person put away the note that its row can be removed.
-    #[serde(default)]
-    told_old: bool,
 }
 
 fn saved_path(home: &Path) -> PathBuf {
@@ -169,8 +195,10 @@ struct Inner {
     wanted: bool,
     retry: bool,
     dismiss: bool,
-    /// A member needed the desktop and couldn't have it.
-    needed: bool,
+    /// A member needed the desktop and couldn't have it: for want of the switch.
+    needed_grant: bool,
+    /// …or for want of the set-up.
+    needed_setup: bool,
     /// The person was told the desktop was ready before this daemon started.
     granted_before: bool,
 }
@@ -241,6 +269,7 @@ impl Auto {
             waiting_since: None,
             last_recheck: None,
             restarted_for: None,
+            card: None,
         };
         (Self { shared }, worker)
     }
@@ -265,7 +294,6 @@ impl Auto {
     pub fn decorate(&self, ready: &mut DesktopReadiness) {
         if let Some(last) = self.latest() {
             ready.setup = last.setup;
-            ready.old_helper = last.old_helper;
         }
     }
 
@@ -312,6 +340,7 @@ impl Auto {
         }
         // Pictures of the screen need no Accessibility.
         let needs_grant = !matches!(tool, "screenshot" | "list_windows");
+        let mut grant = false;
         let message = if engine_tool && !last.engine {
             Some(match last.setup {
                 DesktopSetup::Failed { .. } => "equipe couldn't install its accessibility engine (the person was told and can retry). Don't retry; use the screenshot tools meanwhile, or tell the person.".to_owned(),
@@ -320,9 +349,10 @@ impl Auto {
         } else if engine_tool && !last.helper {
             Some("equipe is starting the desktop helper (nothing for the person to do). Call again in a minute.".to_owned())
         } else if needs_grant && last.helper && last.accessibility == Some(false) {
+            grant = true;
             let name = if last.helper_name.is_empty() { equipe_desktop_control::install::DISPLAY_NAME } else { last.helper_name.as_str() };
             Some(format!(
-                "Desktop apps need one switch only the person can flip: Accessibility for \"{name}\" (System Settings › Privacy & Security › Accessibility). equipe has already asked them and shows a card in the app. It works by itself the moment the switch is on, so don't retry now: tell the person if your work waits on it, or do something else first."
+                "Desktop apps need one switch only the person can flip: Accessibility for \"{name}\" (System Settings › Privacy & Security › Accessibility). equipe has told them (a card in the app, unless they put it away). It works by itself the moment the switch is on, so don't retry now: tell the person if your work waits on it, or do something else first."
             ))
         } else {
             None
@@ -330,7 +360,11 @@ impl Auto {
         if message.is_some() {
             let mut inner = self.shared.inner();
             inner.wanted = true;
-            inner.needed = true;
+            if grant {
+                inner.needed_grant = true;
+            } else {
+                inner.needed_setup = true;
+            }
             drop(inner);
             self.shared.wake.notify_one();
         }
@@ -339,10 +373,10 @@ impl Auto {
 }
 
 /// The person skipped the desktop in the first run: the card stays away until
-/// a member first needs the desktop, which offers it (at once, not after [`REOFFER_AFTER`]).
+/// a member first needs the desktop, which offers it once.
 pub fn skip(home: &Path) {
     let mut saved = Saved::load(home);
-    saved.dismissed_at = Some(0);
+    saved.skipped = true;
     saved.save(home);
 }
 
@@ -396,6 +430,8 @@ struct Worker {
     last_recheck: Option<Instant>,
     /// The app version the helper was last restarted for (after an update).
     restarted_for: Option<String>,
+    /// The card on screen now, as a dismissal key.
+    card: Option<String>,
 }
 
 impl Worker {
@@ -432,12 +468,28 @@ impl Worker {
             self.publish(DesktopReadiness::default(), DesktopSetup::Idle);
             return STEADY;
         }
-        let (retry, dismiss, needed, wanted_flag) = {
+        let (retry, dismiss, needed_grant, needed_setup, wanted_flag) = {
             let mut inner = self.shared.inner();
-            (std::mem::take(&mut inner.retry), std::mem::take(&mut inner.dismiss), std::mem::take(&mut inner.needed), inner.wanted)
+            (
+                std::mem::take(&mut inner.retry),
+                std::mem::take(&mut inner.dismiss),
+                std::mem::take(&mut inner.needed_grant),
+                std::mem::take(&mut inner.needed_setup),
+                inner.wanted,
+            )
         };
         if wanted_flag {
             self.sticky_wanted = true;
+        }
+        // What an older daemon kept as one time.
+        if self.saved.dismissed_at == Some(0) {
+            self.edit(|saved| {
+                saved.dismissed_at = None;
+                saved.skipped = true;
+            });
+        }
+        if self.saved.told_ready && !self.saved.ever_granted {
+            self.edit(|saved| saved.ever_granted = true);
         }
         if retry {
             self.engine_next = None;
@@ -445,18 +497,22 @@ impl Worker {
             self.engine_attempts = 0;
             self.helper_attempts = 0;
             self.engine_verified = false;
-            self.edit(|saved| saved.dismissed_at = None);
+            // The person asked again: a failure put away is told afresh.
+            self.edit(|saved| saved.dismissed.retain(|key| !key.starts_with("failed:")));
         }
-        if needed && self.saved.dismissed_at.is_some_and(|at| now.saturating_sub(at) >= REOFFER_AFTER) {
-            self.edit(|saved| saved.dismissed_at = None);
+        if needed_grant || needed_setup {
+            self.edit(|saved| {
+                saved.skipped = false;
+                saved.needs_grant |= needed_grant;
+                saved.blocked |= needed_setup;
+            });
         }
-        if dismiss {
-            if self.saved.retired_old && !self.saved.told_old {
-                // The note about the old row, put away.
-                self.edit(|saved| saved.told_old = true);
-            } else {
-                self.edit(|saved| saved.dismissed_at = Some(now));
-            }
+        if dismiss && let Some(card) = self.card.take() {
+            self.edit(|saved| {
+                if !saved.dismissed.contains(&card) {
+                    saved.dismissed.push(card);
+                }
+            });
         }
         let wanted = self.sticky_wanted || self.blocking(|ops| ops.wanted()).await;
 
@@ -480,48 +536,77 @@ impl Worker {
             ready::apply(&mut ready, status);
             self.host_step(status, &ready, retry).await;
         }
-        ready.old_helper = self.saved.retired_old && !self.saved.told_old;
-        if let Some(failure) = self.helper_failure.as_ref().or(self.engine_failure.as_ref()) {
-            setup = DesktopSetup::Failed { reason: failure.reason, detail: failure.detail.clone() };
+        let mut card = None;
+        if let Some(failure) = self.helper_failure.clone().or_else(|| self.engine_failure.clone()) {
+            if self.saved.failing_since.is_none() {
+                self.edit(|saved| saved.failing_since = Some(now));
+            }
+            let since = self.saved.failing_since.unwrap_or(now);
             idle = FAILING;
-        } else if wanted && status.is_some() && (self.engine_verified || !pin_known()) {
-            let identity = prompt_identity(status.as_ref());
-            if ready.accessibility == Some(true) {
-                prompts::observe(&self.home, prompts::Kind::Accessibility, &identity, true, now);
-                self.waiting_since = None;
-                if ready.ready() && !self.saved.told_ready {
-                    setup = DesktopSetup::JustReady;
+            // Told when a member is blocked on it, or once it has lasted.
+            if self.saved.blocked || now.saturating_sub(since) >= FAILURE_GRACE {
+                setup = DesktopSetup::Failed { reason: failure.reason, detail: failure.detail.clone() };
+                card = Some(format!("failed:{:?}", failure.reason));
+            }
+        } else {
+            let healthy = self.engine_verified && status.is_some();
+            self.edit(|saved| {
+                saved.failing_since = None;
+                if healthy {
+                    saved.blocked = false;
                 }
-                let told = ready.ready() || self.saved.told_ready;
-                self.edit(|saved| {
-                    saved.prompted = false;
-                    saved.told_ready = told;
-                });
-            } else {
-                // The system's prompt, once (and only once for this identity,
-                // whatever else asked); then the card, and a light watch for the switch.
-                if !self.saved.prompted {
-                    self.edit(|saved| saved.prompted = true);
-                    if prompts::may_ask(&self.home, prompts::Kind::Accessibility, &identity, false, now)
-                        && let Some(_asking) = prompts::begin(prompts::Kind::Accessibility)
-                    {
-                        prompts::record(&self.home, prompts::Kind::Accessibility, &identity, prompts::Answer::Asked, now);
-                        let _ = self.ops.helper(helper::REQUEST_ACCESSIBILITY).await;
+            });
+            if wanted && status.is_some() && (self.engine_verified || !pin_known()) {
+                let identity = prompt_identity(status.as_ref());
+                if ready.accessibility == Some(true) {
+                    prompts::observe(&self.home, prompts::Kind::Accessibility, &identity, true, now);
+                    self.waiting_since = None;
+                    if ready.ready() && !self.saved.told_ready {
+                        setup = DesktopSetup::JustReady;
+                    }
+                    let told = ready.ready() || self.saved.told_ready;
+                    self.edit(|saved| {
+                        saved.told_ready = told;
+                        saved.ever_granted = true;
+                        saved.needs_grant = false;
+                        saved.blocked = false;
+                        // The condition cleared: a card put away for it is spent.
+                        saved.dismissed.retain(|key| !key.starts_with("grant:"));
+                    });
+                } else {
+                    // The switch is off. A watch for it, light; a card only if
+                    // work is blocked on it (or this is the first set-up), and
+                    // not on a locked screen, which the person can't reach.
+                    self.edit(|saved| saved.told_ready = false);
+                    let since = *self.waiting_since.get_or_insert_with(Instant::now);
+                    idle = if since.elapsed() < FAST_FOR { POLL_FAST } else { POLL_SLOW };
+                    let first_time = !self.saved.ever_granted && !self.saved.skipped;
+                    if !ready.locked && (self.saved.needs_grant || first_time) {
+                        setup = DesktopSetup::Grant;
+                        card = Some(format!("grant:{identity}"));
                     }
                 }
-                self.edit(|saved| saved.told_ready = false);
-                let since = *self.waiting_since.get_or_insert_with(Instant::now);
-                idle = if since.elapsed() < FAST_FOR { POLL_FAST } else { POLL_SLOW };
-                setup = DesktopSetup::Grant;
             }
         }
         if !wanted {
             setup = DesktopSetup::Idle;
+            card = None;
         }
-        // A card the person put away stays away (a failure that is new isn't put away).
-        if self.saved.dismissed_at.is_some() && matches!(setup, DesktopSetup::Failed { .. } | DesktopSetup::Grant) {
+        // A card put away by an older daemon (one time, for whatever card it was).
+        if let Some(key) = card.clone()
+            && self.saved.dismissed_at.is_some()
+        {
+            self.edit(|saved| {
+                saved.dismissed_at = None;
+                saved.dismissed.push(key);
+            });
+        }
+        // A card the person put away stays away.
+        if card.as_ref().is_some_and(|key| self.saved.dismissed.contains(key)) {
             setup = DesktopSetup::Idle;
+            card = None;
         }
+        self.card = card;
         self.publish(ready, setup);
         idle
     }
@@ -535,10 +620,7 @@ impl Worker {
         if role == "app" && ready.accessibility == Some(true) && !self.saved.retired_old && self.blocking(|ops| ops.old_bundle()).await {
             let moved = self.blocking(|ops| ops.retire_old()).await;
             crate::daemon_log!("equipe: desktop: equipe.app holds the permission now; the old helper bundle {}", if moved { "was moved aside" } else { "couldn't be moved aside" });
-            self.edit(|saved| {
-                saved.retired_old = true;
-                saved.told_old = false;
-            });
+            self.edit(|saved| saved.retired_old = true);
         }
         if role == "app"
             && let Some(version) = self.ops.app_version()
@@ -582,10 +664,6 @@ impl Worker {
                         self.engine_next = None;
                     }
                     Err(failure) => {
-                        // A failure that is new is told afresh.
-                        if self.engine_failure.is_none() {
-                            self.edit(|saved| saved.dismissed_at = None);
-                        }
                         self.engine_attempts += 1;
                         self.engine_next = Some(Instant::now() + backoff(self.engine_attempts));
                         self.engine_failure = Some(failure);
@@ -627,9 +705,6 @@ impl Worker {
                     }
                 }
                 Err(failure) => {
-                    if self.helper_failure.is_none() {
-                        self.edit(|saved| saved.dismissed_at = None);
-                    }
                     self.helper_attempts += 1;
                     self.helper_next = Some(Instant::now() + backoff(self.helper_attempts));
                     self.helper_failure = Some(failure);
@@ -830,6 +905,10 @@ mod tests {
         prompts: AtomicUsize,
         screen_requests: AtomicUsize,
         engine_ready_after_install: AtomicBool,
+        locked: AtomicBool,
+        /// Who holds the permission, as the helper's status says it ("" = not said).
+        role: Mutex<&'static str>,
+        old_bundle: AtomicBool,
     }
 
     impl Fake {
@@ -845,6 +924,9 @@ mod tests {
                 prompts: AtomicUsize::new(0),
                 screen_requests: AtomicUsize::new(0),
                 engine_ready_after_install: AtomicBool::new(true),
+                locked: AtomicBool::new(false),
+                role: Mutex::new(""),
+                old_bundle: AtomicBool::new(false),
             })
         }
     }
@@ -882,9 +964,18 @@ mod tests {
             }
             let up = self.helper_up.load(Ordering::SeqCst);
             let granted = self.granted.load(Ordering::SeqCst);
+            let locked = self.locked.load(Ordering::SeqCst);
+            let role = *self.role.lock().unwrap();
             Box::pin(async move {
-                up.then(|| json!({ "accessibility": granted, "post_events": granted, "screen": false, "session": { "locked": false }, "engine": { "accessibility": if granted { "granted" } else { "denied" } } }))
+                up.then(|| json!({ "role": role, "accessibility": granted, "post_events": granted, "screen": false, "session": { "locked": locked }, "engine": { "accessibility": if granted { "granted" } else { "denied" } } }))
             })
+        }
+        fn old_bundle(&self) -> bool {
+            self.old_bundle.load(Ordering::SeqCst)
+        }
+        fn retire_old(&self) -> bool {
+            self.old_bundle.store(false, Ordering::SeqCst);
+            true
         }
         fn wanted(&self) -> bool {
             self.wanted.load(Ordering::SeqCst)
@@ -954,6 +1045,10 @@ mod tests {
         let mut rig = rig();
         rig.fake.engine_ok.store(false, Ordering::SeqCst);
         rig.worker.step().await;
+        // Nobody is blocked on it and it may mend by itself: no card yet.
+        assert_eq!(rig.setup(), DesktopSetup::Idle);
+        rig.worker.clock = Box::new(|| 1_000_000 + FAILURE_GRACE);
+        rig.worker.step().await;
         assert_eq!(rig.setup(), DesktopSetup::Failed { reason: DesktopFailure::Download, detail: "offline".into() });
         // Looking again before the wait is over doesn't try again, nor say it again.
         let told = rig.told().len();
@@ -970,17 +1065,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_switch_is_asked_for_once_then_watched_and_the_person_told_once() {
+    async fn the_switch_is_watched_without_a_system_prompt_and_the_person_told_once() {
         let mut rig = rig();
         rig.worker.step().await;
-        // Engine and helper in place, the grant missing: one system prompt, one card.
+        // Engine and helper in place, the grant missing, first set-up: a card, and no
+        // macOS prompt from the background (the card's button asks, on the person's click).
         assert_eq!(rig.fake.helper_syncs.load(Ordering::SeqCst), 1);
-        assert_eq!(rig.fake.prompts.load(Ordering::SeqCst), 1);
+        assert_eq!(rig.fake.prompts.load(Ordering::SeqCst), 0);
         assert_eq!(rig.setup(), DesktopSetup::Grant);
-        // Watching doesn't prompt again.
+        // Watching doesn't prompt either.
         rig.worker.step().await;
         rig.worker.step().await;
-        assert_eq!(rig.fake.prompts.load(Ordering::SeqCst), 1);
+        assert_eq!(rig.fake.prompts.load(Ordering::SeqCst), 0);
         assert_eq!(rig.setup(), DesktopSetup::Grant);
         // The person flips the switch: the next look sees it and says so.
         rig.fake.granted.store(true, Ordering::SeqCst);
@@ -1001,8 +1097,19 @@ mod tests {
         assert!(!heard.lock().unwrap().contains(&DesktopSetup::JustReady));
     }
 
+    /// A second daemon run on the same home, as after a restart or an update.
+    fn restarted(rig: &Rig) -> (Auto, Worker, Arc<Mutex<Vec<DesktopSetup>>>) {
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let sink: Sink = {
+            let heard = heard.clone();
+            Arc::new(move |ready: DesktopReadiness| heard.lock().unwrap().push(ready.setup))
+        };
+        let (auto, worker) = Auto::new(rig.home.clone(), rig.fake.clone(), sink, Box::new(|| 1_000_000));
+        (auto, worker, heard)
+    }
+
     #[tokio::test]
-    async fn a_dismissed_card_stays_away_until_a_member_needs_the_desktop() {
+    async fn a_dismissed_card_stays_away_even_when_a_member_needs_the_desktop_again() {
         let mut rig = rig();
         rig.worker.step().await;
         assert_eq!(rig.setup(), DesktopSetup::Grant);
@@ -1011,17 +1118,164 @@ mod tests {
         assert_eq!(rig.setup(), DesktopSetup::Idle);
         rig.worker.step().await;
         assert_eq!(rig.setup(), DesktopSetup::Idle, "no nagging");
-        // A member needs it: told how, at once, but the card waits out the re-offer time.
+        // A member needs it: told how, but the person's card is not put up again.
         let message = rig.auto.refusal("mcp__desktop__snapshot").expect("a member is told");
         assert!(message.contains("Accessibility for \"") && message.contains("System Settings"), "{message}");
         rig.worker.step().await;
         assert_eq!(rig.setup(), DesktopSetup::Idle);
-        // Much later, needing it again offers the card again.
-        rig.worker.clock = Box::new(|| 1_000_000 + REOFFER_AFTER + 1);
+        // Not even much later.
+        rig.worker.clock = Box::new(|| 1_000_000 + 30 * 24 * 60 * 60);
         rig.auto.refusal("mcp__desktop__act");
         rig.worker.step().await;
+        assert_eq!(rig.setup(), DesktopSetup::Idle);
+        assert_eq!(rig.fake.prompts.load(Ordering::SeqCst), 0, "background work never makes macOS ask");
+    }
+
+    #[tokio::test]
+    async fn a_dismissal_survives_a_daemon_restart_and_an_update() {
+        let mut rig = rig();
+        rig.worker.step().await;
+        rig.auto.dismiss();
+        rig.worker.step().await;
+        let (auto, mut again, heard) = restarted(&rig);
+        again.step().await;
+        auto.refusal("mcp__desktop__snapshot");
+        again.step().await;
+        again.step().await;
+        assert!(!heard.lock().unwrap().contains(&DesktopSetup::Grant), "{:?}", heard.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_card_for_another_identity_is_another_question() {
+        let mut rig = rig();
+        *rig.fake.role.lock().unwrap() = "bundle";
+        rig.worker.step().await;
         assert_eq!(rig.setup(), DesktopSetup::Grant);
-        assert_eq!(rig.fake.prompts.load(Ordering::SeqCst), 1, "the system's prompt is shown once, not again");
+        rig.auto.dismiss();
+        rig.worker.step().await;
+        assert_eq!(rig.setup(), DesktopSetup::Idle);
+        // The app took over and isn't allowed either: a different row, a different card.
+        *rig.fake.role.lock().unwrap() = "app";
+        rig.worker.step().await;
+        assert_eq!(rig.setup(), DesktopSetup::Grant);
+    }
+
+    #[tokio::test]
+    async fn an_update_that_takes_the_grant_back_asks_once_and_only_when_work_needs_it() {
+        let mut rig = rig();
+        rig.fake.granted.store(true, Ordering::SeqCst);
+        rig.worker.step().await;
+        rig.worker.step().await;
+        assert_eq!(rig.setup(), DesktopSetup::Idle);
+        // The update changed the code signature: macOS forgot the grant. Nothing needs it: no card.
+        rig.fake.granted.store(false, Ordering::SeqCst);
+        for _ in 0..3 {
+            rig.worker.step().await;
+        }
+        assert_eq!(rig.setup(), DesktopSetup::Idle);
+        assert_eq!(rig.fake.prompts.load(Ordering::SeqCst), 0);
+        // Work reaches for the desktop: one card.
+        rig.auto.refusal("mcp__desktop__snapshot");
+        rig.worker.step().await;
+        assert_eq!(rig.setup(), DesktopSetup::Grant);
+        rig.auto.dismiss();
+        rig.worker.step().await;
+        // And once put away, a restart, another need or the next update don't bring it back.
+        let (auto, mut again, heard) = restarted(&rig);
+        again.step().await;
+        auto.refusal("mcp__desktop__act");
+        again.step().await;
+        assert!(!heard.lock().unwrap().contains(&DesktopSetup::Grant));
+        assert_eq!(rig.fake.prompts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn the_card_goes_the_moment_the_grant_arrives_and_a_no_changes_nothing() {
+        let mut rig = rig();
+        rig.worker.step().await;
+        assert_eq!(rig.setup(), DesktopSetup::Grant);
+        // The person says no in macOS's prompt: still off, still the one card, nothing asked again.
+        for _ in 0..3 {
+            rig.worker.step().await;
+        }
+        assert_eq!(rig.setup(), DesktopSetup::Grant);
+        assert_eq!(rig.fake.prompts.load(Ordering::SeqCst), 0);
+        // The switch goes on while the card is up: the next look takes it away.
+        rig.fake.granted.store(true, Ordering::SeqCst);
+        rig.worker.step().await;
+        assert_ne!(rig.setup(), DesktopSetup::Grant);
+        rig.worker.step().await;
+        assert_eq!(rig.told().last(), Some(&DesktopSetup::Idle));
+    }
+
+    #[tokio::test]
+    async fn a_card_put_away_on_one_screen_goes_from_every_screen() {
+        let mut rig = rig();
+        rig.worker.step().await;
+        assert_eq!(rig.told().last(), Some(&DesktopSetup::Grant));
+        // Both screens hear the daemon (one sink); either may press "Not now".
+        rig.auto.dismiss();
+        rig.auto.dismiss();
+        rig.worker.step().await;
+        assert_eq!(rig.told().last(), Some(&DesktopSetup::Idle));
+        assert_eq!(rig.setup(), DesktopSetup::Idle, "what a screen asking afterwards is told");
+    }
+
+    #[tokio::test]
+    async fn a_locked_screen_is_no_reason_for_a_card() {
+        let mut rig = rig();
+        rig.fake.locked.store(true, Ordering::SeqCst);
+        rig.auto.wanted();
+        rig.worker.step().await;
+        rig.auto.refusal("mcp__desktop__snapshot");
+        rig.worker.step().await;
+        assert_eq!(rig.setup(), DesktopSetup::Idle);
+        // Unlocked, the person can reach it: the card, once.
+        rig.fake.locked.store(false, Ordering::SeqCst);
+        rig.worker.step().await;
+        assert_eq!(rig.setup(), DesktopSetup::Grant);
+    }
+
+    #[tokio::test]
+    async fn taking_over_from_the_old_helper_tells_nobody_anything() {
+        let mut rig = rig();
+        rig.fake.granted.store(true, Ordering::SeqCst);
+        rig.fake.old_bundle.store(true, Ordering::SeqCst);
+        *rig.fake.role.lock().unwrap() = "app";
+        for _ in 0..3 {
+            rig.worker.step().await;
+        }
+        assert!(!rig.fake.old_bundle.load(Ordering::SeqCst), "moved aside");
+        assert!(rig.heard.lock().unwrap().iter().all(|r| !r.old_helper), "its stale row is harmless: no note");
+        assert_eq!(rig.setup(), DesktopSetup::Idle);
+    }
+
+    #[tokio::test]
+    async fn a_failure_waits_for_a_blocked_member_or_for_time_and_a_put_away_one_stays_away() {
+        let mut rig = rig();
+        rig.fake.engine_ok.store(false, Ordering::SeqCst);
+        rig.worker.step().await;
+        assert_eq!(rig.setup(), DesktopSetup::Idle, "installing and retrying quietly");
+        // A member blocked on it: told at once.
+        rig.auto.refusal("mcp__desktop__snapshot");
+        rig.worker.step().await;
+        assert!(matches!(rig.setup(), DesktopSetup::Failed { .. }));
+        rig.auto.dismiss();
+        rig.worker.step().await;
+        assert_eq!(rig.setup(), DesktopSetup::Idle);
+        let (_, mut again, heard) = restarted(&rig);
+        again.step().await;
+        assert!(!heard.lock().unwrap().iter().any(|s| matches!(s, DesktopSetup::Failed { .. })), "not after a restart");
+    }
+
+    #[tokio::test]
+    async fn a_dismissal_an_older_daemon_kept_is_honoured() {
+        let mut rig = rig();
+        std::fs::create_dir_all(helper::dir(&rig.home)).unwrap();
+        std::fs::write(saved_path(&rig.home), r#"{"prompted":true,"told_ready":false,"dismissed_at":5}"#).unwrap();
+        rig.worker.saved = Saved::load(&rig.home);
+        rig.worker.step().await;
+        assert_eq!(rig.setup(), DesktopSetup::Idle, "the card they put away isn't shown again by the update");
     }
 
     #[tokio::test]
@@ -1029,6 +1283,10 @@ mod tests {
         let mut rig = rig();
         assert_eq!(rig.auto.refusal("snapshot"), None, "nothing is known before the first look");
         rig.fake.engine_ok.store(false, Ordering::SeqCst);
+        rig.worker.step().await;
+        // Still mending quietly: told to call again. A member blocked on it makes the failure known.
+        let soft = rig.auto.refusal("mcp__desktop__snapshot").unwrap();
+        assert!(soft.contains("Call again in a minute"), "{soft}");
         rig.worker.step().await;
         let message = rig.auto.refusal("mcp__desktop__snapshot").unwrap();
         assert!(message.contains("Don't retry") && message.contains("screenshot"), "{message}");
@@ -1051,7 +1309,7 @@ mod tests {
         rig.fake.engine_ok.store(false, Ordering::SeqCst);
         rig.worker.step().await;
         assert_eq!(rig.fake.prompts.load(Ordering::SeqCst), 0, "nothing to ask for until the engine is there");
-        assert!(matches!(rig.setup(), DesktopSetup::Failed { .. }));
+        assert_ne!(rig.setup(), DesktopSetup::Grant);
     }
 
     #[tokio::test]
@@ -1063,7 +1321,7 @@ mod tests {
         assert_eq!(rig.setup(), DesktopSetup::Idle, "skipped: no card");
         rig.auto.refusal("mcp__desktop__snapshot");
         rig.worker.step().await;
-        assert_eq!(rig.setup(), DesktopSetup::Grant, "offered again at the first need, not hours later");
+        assert_eq!(rig.setup(), DesktopSetup::Grant, "offered again at the first need");
     }
 
     #[tokio::test]

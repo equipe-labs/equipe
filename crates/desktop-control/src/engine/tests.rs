@@ -101,6 +101,31 @@ fn a_ref_action_is_headless_and_names_its_qualified_ref() {
 }
 
 #[test]
+fn voiceover_is_neither_launched_nor_closed_and_other_apps_still_are() {
+    let (engine, calls, _) = engine();
+    for action in ["launch", "close"] {
+        for app in ["VoiceOver", "VoiceOver Utility"] {
+            let answer = engine.call(M, "apps", &json!({ "action": action, "app": app }));
+            assert!(answer.is_error && answer.text.contains("accessibility tree"), "{action} {app}: {}", answer.text);
+        }
+    }
+    assert!(calls.lock().unwrap().is_empty(), "nothing reached the engine");
+    assert!(!engine.call(M, "apps", &json!({ "action": "launch", "app": "Simulator" })).is_error);
+}
+
+#[test]
+fn nothing_is_acted_on_in_system_settings_but_it_can_be_read() {
+    let (engine, calls, answers) = engine();
+    let settings = CHAT.replace("\"Slack\"", "\"System Settings\"");
+    answers.lock().unwrap().push(("snapshot", serde_json::from_str(&settings).unwrap()));
+    engine.call(M, "snapshot", &json!({ "app": "System Settings" }));
+    let before = calls.lock().unwrap().len();
+    let answer = engine.call(M, "act", &json!({ "ref": "e12", "action": "click" }));
+    assert!(answer.is_error && answer.text.starts_with("Blocked:"), "{}", answer.text);
+    assert_eq!(calls.lock().unwrap().len(), before, "no click was sent");
+}
+
+#[test]
 fn typed_text_goes_in_on_stdin_never_in_the_arguments() {
     let (engine, calls, _) = engine();
     engine.call(M, "snapshot", &json!({ "app": "Slack" }));
