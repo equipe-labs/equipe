@@ -37,7 +37,10 @@ pub fn banner(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let strip = |id: &'static str| {
         h_flex()
             .id(id)
-            .h(px(38.))
+            // Two lines (a title and what to do) need room: at least one
+            // row tall, growing with its words, never squeezed.
+            .min_h(px(38.))
+            .py(px(7.))
             .flex_none()
             .pl(px(shell.header_inset(16., cx)))
             .pr_3()
