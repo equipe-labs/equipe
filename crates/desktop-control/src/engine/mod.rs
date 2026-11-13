@@ -132,6 +132,10 @@ pub struct Engine {
     /// App name → bundle id, from `list-apps`: the send gate knows messaging
     /// apps by bundle id when their shown name is localised.
     bundles: Mutex<HashMap<String, Option<String>>>,
+    /// A headed click whose actionability check timed out with nothing sent
+    /// goes in with the pointer at the element's centre (Linux: Chromium's
+    /// links never read as actionable to AT-SPI).
+    pointer_fallback: bool,
 }
 
 fn text<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
@@ -160,6 +164,25 @@ pub fn session_of(member: &str) -> String {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     format!("eq-{hash:016x}")
+}
+
+/// A `TIMEOUT` that sent nothing (`not_delivered`): safe to go in another way.
+fn unreached_timeout(error: &Value) -> bool {
+    error.get("code").and_then(Value::as_str) == Some("TIMEOUT")
+        && error.get("disposition").and_then(|d| d.get("delivery")).and_then(Value::as_str) == Some("not_delivered")
+}
+
+/// The first `{x, y, width, height}` anywhere in `data`: `get --property bounds`.
+fn rect_in(data: &Value) -> Option<(f64, f64, f64, f64)> {
+    let n = |k: &str| data.get(k).and_then(Value::as_f64);
+    if let (Some(x), Some(y), Some(w), Some(h)) = (n("x"), n("y"), n("width"), n("height")) {
+        return (w > 0.0 && h > 0.0).then_some((x, y, w, h));
+    }
+    match data {
+        Value::Object(map) => map.values().find_map(rect_in),
+        Value::Array(list) => list.iter().find_map(rect_in),
+        _ => None,
+    }
 }
 
 /// The role the send gate (`desktop_gate`, written for macOS AX roles) reads.
@@ -205,7 +228,7 @@ fn qualify(raw: &str, last: Option<&str>) -> Result<String, String> {
 
 impl Engine {
     pub fn new(runner: Box<dyn Runner>) -> Self {
-        Self { runner, members: Mutex::new(HashMap::new()), bundles: Mutex::new(HashMap::new()) }
+        Self { runner, members: Mutex::new(HashMap::new()), bundles: Mutex::new(HashMap::new()), pointer_fallback: cfg!(target_os = "linux") }
     }
 
     fn members(&self) -> std::sync::MutexGuard<'_, HashMap<String, Member>> {
@@ -218,13 +241,31 @@ impl Engine {
     }
 
     /// Run agent-desktop for `member`; the envelope's `data`, or the refusal in words.
-    fn run(&self, member: &str, mut args: Vec<String>, stdin: Option<&str>, timeout: Duration) -> Result<Value, String> {
+    fn run(&self, member: &str, args: Vec<String>, stdin: Option<&str>, timeout: Duration) -> Result<Value, String> {
+        self.run_raw(member, args, stdin, timeout).map_err(|(_, words)| words)
+    }
+
+    /// [`Engine::run`], keeping agent-desktop's `error` beside the words.
+    fn run_raw(&self, member: &str, mut args: Vec<String>, stdin: Option<&str>, timeout: Duration) -> Result<Value, (Option<Value>, String)> {
         args.insert(0, kv("--session", session_of(member)));
-        let envelope = self.runner.run(&args, stdin, timeout)?;
+        let envelope = self.runner.run(&args, stdin, timeout).map_err(|why| (None, why))?;
         if envelope.get("ok").and_then(Value::as_bool) == Some(true) {
             return Ok(envelope.get("data").cloned().unwrap_or(Value::Null));
         }
-        Err(envelope.get("error").map(compact::error).unwrap_or_else(|| "agent-desktop failed without saying why".into()))
+        let error = envelope.get("error").cloned();
+        let words = error.as_ref().map(compact::error).unwrap_or_else(|| "agent-desktop failed without saying why".into());
+        Err((error, words))
+    }
+
+    /// A headed click agent-desktop timed out on before sending anything: the
+    /// pointer at the element's centre instead, as a person would click it.
+    fn click_by_pointer(&self, member: &str, qualified: &str, why: &str) -> Result<String, String> {
+        let bounds = self.run(member, vec!["get".into(), kv("--property", "bounds"), "--".into(), qualified.to_owned()], None, Duration::from_secs(15))?;
+        let frame = rect_in(&bounds).ok_or_else(|| format!("{why} Its place on screen isn't known either: take a screenshot and click by point."))?;
+        let (x, y) = ((frame.0 + frame.2 / 2.0).round() as i64, (frame.1 + frame.3 / 2.0).round() as i64);
+        let data = self.run(member, vec!["--headed".into(), "mouse-click".into(), kv("--xy", format!("{x},{y}"))], None, Duration::from_secs(15))?;
+        let what = format!("click {} with the pointer at its centre ({x}, {y}), its own check having timed out", compact::short_ref(qualified, self.last(member).as_deref()));
+        Ok(compact::action(&what, &data))
     }
 
     /// The engine's state for `_status`: installed, and what macOS lets it do
@@ -570,7 +611,13 @@ impl Engine {
         cli.push("--".into());
         cli.push(qualified.clone());
         cli.extend(option);
-        let data = self.run(member, cli, stdin.as_deref(), Duration::from_secs(40))?;
+        let data = match self.run_raw(member, cli, stdin.as_deref(), Duration::from_secs(40)) {
+            Ok(data) => data,
+            Err((Some(error), words)) if self.pointer_fallback && headed && action == "click" && unreached_timeout(&error) => {
+                return self.click_by_pointer(member, &qualified, &words);
+            }
+            Err((_, words)) => return Err(words),
+        };
         let what = format!("{} {}", action.replace('_', " "), compact::short_ref(&qualified, self.last(member).as_deref()));
         Ok(compact::action(&what, &data))
     }

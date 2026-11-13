@@ -301,3 +301,25 @@ fn snapshot_costs_a_fraction_of_a_screenshot() {
     assert!(tokens(full.len()) < image_tokens, "the full tree costs less than one screenshot");
     assert!(tokens(map.len()) * 10 < image_tokens, "a skeleton costs under a tenth of one");
 }
+
+#[test]
+fn a_headed_click_that_times_out_unsent_goes_in_with_the_pointer_at_the_elements_centre() {
+    let (mut engine, calls, answers) = engine();
+    engine.pointer_fallback = true;
+    assert!(!engine.call(M, "snapshot", &json!({ "app": "Slack" })).is_error);
+    let timeout = |delivery: &str| json!({ "ok": false, "command": "click", "error": { "code": "TIMEOUT", "message": "did not become actionable", "disposition": { "delivery": delivery, "retry": "safe" } } });
+    answers.lock().unwrap().push(("click", timeout("not_delivered")));
+    answers.lock().unwrap().push(("get", json!({ "ok": true, "command": "get", "data": { "property": "bounds", "value": { "x": 100.0, "y": 40.0, "width": 80.0, "height": 20.0 } } })));
+    let clicked = engine.call(M, "act", &json!({ "ref": "e3", "headed": true }));
+    assert!(!clicked.is_error && clicked.text.contains("pointer at its centre (140, 50)"), "{}", clicked.text);
+    assert_eq!(&last_args(&calls)[1..], ["--headed", "mouse-click", "--xy=140,50"]);
+    // Something may have landed: told, never clicked again.
+    answers.lock().unwrap().push(("click", timeout("delivery_uncertain")));
+    let before = calls.lock().unwrap().len();
+    let uncertain = engine.call(M, "act", &json!({ "ref": "e3", "headed": true }));
+    assert!(uncertain.is_error && uncertain.text.contains("TIMEOUT"));
+    assert_eq!(calls.lock().unwrap().len(), before + 1);
+    // Headless: no pointer.
+    answers.lock().unwrap().push(("click", timeout("not_delivered")));
+    assert!(engine.call(M, "act", &json!({ "ref": "e3" })).is_error);
+}

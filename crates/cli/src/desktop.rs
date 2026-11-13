@@ -440,6 +440,10 @@ async fn report_linux(home: &Path) -> bool {
     if let Some(state) = engine_grant {
         line(state == "granted", t!("desktop.check_linux_engine"), t!("desktop.fix_linux_engine"));
     }
+    // Pointer and keyboard input waits for the person to leave the screen:
+    // without a way to tell, it never goes in.
+    let idle = tokio::task::spawn_blocking(|| equipe_desktop_control::linux::idle(&equipe_desktop_control::linux::this_session())).await.ok().flatten();
+    optional(idle.is_some(), t!("desktop.check_linux_idle"), t!("desktop.fix_linux_idle"));
     let work_locked = equipe_core::desktop::work_locked(home);
     if status["session"]["locked"].as_bool() == Some(true) {
         if work_locked {
@@ -449,7 +453,7 @@ async fn report_linux(home: &Path) -> bool {
         }
     }
     println!("\n{}", p.note(2, &members_line(home, helper_ok)));
-    println!("{}", p.note(2, t!("desktop.linux_tree_only")));
+    println!("{}", p.note(2, t!("desktop.linux_input")));
     println!("{}", p.note(2, if work_locked { t!("desktop.locked_on") } else { t!("desktop.locked_off_hint") }));
     helper_ok && engine_ready && engine_grant != Some("denied")
 }

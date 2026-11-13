@@ -259,7 +259,7 @@ fn pixel_tools() -> Vec<Value> {
         ),
         tool(
             "key",
-            "Press keys or shortcuts on the real keyboard, one after another: \"cmd+s\" (Ctrl+S on Windows), \"return\", \"cmd+a delete\". Refused if focus isn't in the app you mean. Waits for the screen.",
+            "Press keys or shortcuts on the real keyboard, one after another: \"cmd+s\" (Ctrl+S on Windows and Linux), \"return\", \"cmd+a delete\". Refused if focus isn't in the app you mean. Waits for the screen.",
             json!({ "keys": { "type": "string", "description": "Shortcuts separated by spaces." }, "app": app(), "why": why() }),
             &["keys"],
         ),

@@ -415,16 +415,94 @@ pub fn locked(env: &BTreeMap<String, String>) -> Option<bool> {
 }
 
 /// Seconds since the person last used mouse or keyboard: GNOME's idle
-/// monitor, else `xprintidle` on X11; `None` when neither answers, and then
-/// no pointer or keyboard input goes in (not knowing is not leave).
+/// monitor, else the X server's own count (MIT-SCREEN-SAVER, asked
+/// directly), else `xprintidle`; `None` when nothing answers, and then no
+/// pointer or keyboard input goes in (not knowing is not leave).
 #[cfg(target_os = "linux")]
 pub fn idle(env: &BTreeMap<String, String>) -> Option<f64> {
     let ms = SessionBus::call(&IDLE_MUTTER, env)
         .ok()
         .as_deref()
         .and_then(parse_number)
+        .or_else(|| x11_idle(env))
         .or_else(|| env.contains_key("DISPLAY").then(|| run("xprintidle", &[], env, Duration::from_secs(3)).ok()).flatten().as_deref().and_then(parse_number))?;
     Some(ms as f64 / 1000.0)
+}
+
+/// Milliseconds since the X server last saw input, on the session's display,
+/// with the session's Xauthority cookie (the daemon's own environment may
+/// have neither).
+#[cfg(target_os = "linux")]
+fn x11_idle(env: &BTreeMap<String, String>) -> Option<u64> {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::screensaver::ConnectionExt as _;
+    use x11rb::reexports::x11rb_protocol::{parse_display::parse_display, xauth::Family};
+    use x11rb::rust_connection::{DefaultStream, RustConnection};
+    let parsed = parse_display(Some(env.get("DISPLAY")?)).ok()?;
+    let cookies = env
+        .get("XAUTHORITY")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".Xauthority")))
+        .and_then(|path| std::fs::read(path).ok())
+        .map(|bytes| parse_xauthority(&bytes))
+        .unwrap_or_default();
+    for address in parsed.connect_instruction() {
+        let Ok((stream, (family, peer))) = DefaultStream::connect(&address) else { continue };
+        let family = [(Family::LOCAL, 256), (Family::INTERNET, 0), (Family::INTERNET6, 6), (Family::WILD, 65535)]
+            .iter()
+            .find(|(f, _)| *f == family)
+            .map(|(_, n)| *n);
+        let (name, data) = family.and_then(|f| cookie(&cookies, f, &peer, parsed.display)).unwrap_or_default();
+        let Ok(conn) = RustConnection::connect_to_stream_with_auth_info(stream, parsed.screen.into(), name, data) else { continue };
+        let root = conn.setup().roots.get(usize::from(parsed.screen))?.root;
+        return Some(u64::from(conn.screensaver_query_info(root).ok()?.reply().ok()?.ms_since_user_input));
+    }
+    None
+}
+
+/// One entry of an Xauthority file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct XAuth {
+    pub family: u16,
+    pub address: Vec<u8>,
+    pub number: Vec<u8>,
+    pub name: Vec<u8>,
+    pub data: Vec<u8>,
+}
+
+/// The entries of an Xauthority file (big-endian lengths before each field).
+pub fn parse_xauthority(mut bytes: &[u8]) -> Vec<XAuth> {
+    fn take<'a>(bytes: &mut &'a [u8], n: usize) -> Option<&'a [u8]> {
+        let (head, rest) = (bytes.get(..n)?, bytes.get(n..)?);
+        *bytes = rest;
+        Some(head)
+    }
+    fn field(bytes: &mut &[u8]) -> Option<Vec<u8>> {
+        let len = take(bytes, 2)?;
+        let len = usize::from(u16::from_be_bytes([len[0], len[1]]));
+        take(bytes, len).map(<[u8]>::to_vec)
+    }
+    let mut entries = Vec::new();
+    while let Some(family) = take(&mut bytes, 2) {
+        let family = u16::from_be_bytes([family[0], family[1]]);
+        let (Some(address), Some(number), Some(name), Some(data)) = (field(&mut bytes), field(&mut bytes), field(&mut bytes), field(&mut bytes)) else { break };
+        entries.push(XAuth { family, address, number, name, data });
+    }
+    entries
+}
+
+/// The MIT-MAGIC-COOKIE-1 for display `display` reached as `family`/`address`
+/// (a wildcard entry, or one without a number, matches too), as Xlib picks it.
+pub fn cookie(entries: &[XAuth], family: u16, address: &[u8], display: u16) -> Option<(Vec<u8>, Vec<u8>)> {
+    let number = display.to_string().into_bytes();
+    entries
+        .iter()
+        .find(|e| {
+            (e.family == 65535 || family == 65535 || (e.family == family && e.address == address))
+                && (e.number.is_empty() || e.number == number)
+                && e.name == b"MIT-MAGIC-COOKIE-1"
+        })
+        .map(|e| (e.name.clone(), e.data.clone()))
 }
 
 /// Where the running helper's process id is kept.
@@ -485,15 +563,17 @@ pub fn stop_helper(home: &Path) -> bool {
     std::process::Command::new("kill").arg(pid.to_string()).status().is_ok_and(|s| s.success())
 }
 
-/// The helper on Linux: agent-desktop's accessibility tools, served on the
-/// helper's socket. The screenshot-and-coordinates tools aren't built for
-/// Linux yet, so [`LinuxDesktop`] answers each of them with what to use instead.
+/// The helper on Linux, served on the helper's socket: agent-desktop's
+/// accessibility tools, and the screenshot, pointer and keyboard tools through
+/// agent-desktop too ([`crate::linux_desktop`]), with snapshots of their own.
 #[cfg(target_os = "linux")]
 pub fn serve(home: &Path) -> std::io::Result<()> {
     crate::helper::ensure_dir(home)?;
     crate::helper::ensure_token(home)?;
     let _ = std::fs::write(pid_path(home), std::process::id().to_string());
-    let mut controller = crate::controller::Controller::new(LinuxDesktop);
+    let state = crate::helper::dir(home).join("agent-desktop").join("pixels");
+    let runner = crate::engine::Cli::installed_with_state(home, state).map(|cli| Box::new(cli) as Box<dyn crate::engine::Runner>);
+    let mut controller = crate::controller::Controller::new(crate::linux_desktop::LinuxDesktop::new(runner));
     crate::helper::serve(
         home,
         &mut controller,
@@ -516,7 +596,8 @@ pub fn status_json(ready: &Readiness, locked: bool) -> serde_json::Value {
     };
     json!({
         "role": "linux",
-        // Not a permission here: the picture tools aren't built for Linux yet.
+        // Not a permission here: X11 needs none, and Wayland asks the person
+        // itself (the portal) the first time.
         "screen": null,
         "accessibility": ready.ok(),
         "post_events": ready.ok(),
@@ -530,75 +611,6 @@ pub fn status_json(ready: &Readiness, locked: bool) -> serde_json::Value {
             "toolkits": ready.toolkits,
         },
     })
-}
-
-/// What a member is told when it reaches for a screenshot tool on Linux.
-pub const ACCESSIBILITY_ONLY: &str = "On Linux, equipe works apps through the accessibility tree only: use snapshot / find / act (and apps, windows, wait, clipboard). The screenshot, click-at-a-point and keyboard tools aren't available on Linux yet.";
-
-/// The Linux desktop as the screenshot tools see it: not there. Every one of
-/// them is refused before anything runs ([`crate::controller::Desktop::unavailable`]).
-pub struct LinuxDesktop;
-
-impl crate::controller::Desktop for LinuxDesktop {
-    type Element = ();
-
-    fn unavailable(&self, _tool: &str) -> Option<&'static str> {
-        Some(ACCESSIBILITY_ONLY)
-    }
-    fn permissions(&self) -> crate::controller::Permissions {
-        crate::controller::Permissions::default()
-    }
-    fn display(&self) -> Option<crate::controller::Display> {
-        None
-    }
-    fn capture(&self, _window: Option<u32>, _width: usize, _height: usize) -> Result<Vec<u8>, String> {
-        Err(ACCESSIBILITY_ONLY.to_owned())
-    }
-    fn apps(&self) -> Vec<crate::controller::App> {
-        Vec::new()
-    }
-    fn open(&self, _app: &str) -> Result<(), String> {
-        Err(ACCESSIBILITY_ONLY.to_owned())
-    }
-    fn windows(&self) -> Vec<crate::controller::Window> {
-        Vec::new()
-    }
-    fn raise(&self, _pid: i32, _window: Option<&crate::controller::Window>) -> Result<(), String> {
-        Err(ACCESSIBILITY_ONLY.to_owned())
-    }
-    fn focused_app(&self) -> Option<i32> {
-        None
-    }
-    fn focused_element(&self) -> Option<()> {
-        None
-    }
-    fn hit(&self, _at: crate::geometry::Pt) -> Option<crate::controller::Hit> {
-        None
-    }
-    fn elements(&self, _pid: i32, _window: Option<&crate::controller::Window>, _max: usize) -> Vec<((), crate::controller::Node)> {
-        Vec::new()
-    }
-    fn same(&self, _a: &(), _b: &()) -> bool {
-        false
-    }
-    fn frame(&self, _element: &()) -> Option<crate::geometry::Frame> {
-        None
-    }
-    fn value(&self, _element: &()) -> Option<String> {
-        None
-    }
-    fn press(&self, _element: &()) -> Result<(), String> {
-        Err(ACCESSIBILITY_ONLY.to_owned())
-    }
-    fn focus(&self, _element: &()) -> Result<(), String> {
-        Err(ACCESSIBILITY_ONLY.to_owned())
-    }
-    fn pointer(&self, _action: crate::controller::Pointer) {}
-    fn type_char(&self, _c: char) {}
-    fn key(&self, _combo: crate::keys::Combo) {}
-    fn pause(&self, ms: u64) {
-        std::thread::sleep(std::time::Duration::from_millis(ms));
-    }
 }
 
 #[cfg(test)]
@@ -726,6 +738,28 @@ mod tests {
     }
 
     #[test]
+    fn the_sessions_x_cookie_is_found_in_its_xauthority() {
+        let entry = |family: u16, address: &[u8], number: &[u8], data: &[u8]| {
+            let mut out = family.to_be_bytes().to_vec();
+            for f in [address, number, b"MIT-MAGIC-COOKIE-1".as_slice(), data] {
+                out.extend((f.len() as u16).to_be_bytes());
+                out.extend(f);
+            }
+            out
+        };
+        let mut file = entry(256, b"vm", b"0", b"zero");
+        file.extend(entry(256, b"vm", b"1", b"one"));
+        file.extend(entry(65535, b"", b"7", b"wild"));
+        file.extend([0, 1, 0]); // a cut-off entry at the end is left out
+        let entries = parse_xauthority(&file);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(cookie(&entries, 256, b"vm", 1).map(|c| c.1), Some(b"one".to_vec()));
+        assert_eq!(cookie(&entries, 256, b"other-host", 7).map(|c| c.1), Some(b"wild".to_vec()), "a wildcard entry fits any host");
+        assert_eq!(cookie(&entries, 256, b"other-host", 1), None);
+        assert!(parse_xauthority(&[]).is_empty());
+    }
+
+    #[test]
     fn each_client_is_asked_the_same_question() {
         let commands = ATSPI_ENABLED.commands();
         let names: Vec<_> = commands.iter().map(|(p, _)| *p).collect();
@@ -734,18 +768,5 @@ mod tests {
         assert!(commands[1].1.ends_with(&["Get".into(), "ss".into(), "org.a11y.Status".into(), "IsEnabled".into()]));
         assert!(commands[2].1.ends_with(&["string:org.a11y.Status".into(), "string:IsEnabled".into()]));
         assert!(ATSPI.commands()[1].1.ends_with(&["org.a11y.Bus".into(), "GetAddress".into()]));
-    }
-
-    #[test]
-    fn the_screenshot_tools_are_refused_with_what_to_use() {
-        let mut controller = crate::controller::Controller::new(LinuxDesktop);
-        for tool in ["screenshot", "click", "type", "key", "elements", "open_app", "list_windows"] {
-            let reply = controller.call("frontend", tool, &serde_json::json!({ "x": 1, "y": 1, "text": "hi", "app": "Files" }));
-            assert!(reply.is_error && reply.text == ACCESSIBILITY_ONLY, "{tool}: {}", reply.text);
-        }
-        let scene = controller.scene("frontend", "click", &serde_json::json!({ "x": 1, "y": 1 }));
-        assert_eq!(scene.unwrap_err().text, ACCESSIBILITY_ONLY);
-        let capture = controller.capture();
-        assert!(capture.is_error && capture.jpeg.is_none());
     }
 }

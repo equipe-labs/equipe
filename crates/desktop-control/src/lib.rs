@@ -19,6 +19,7 @@ pub mod helper;
 pub mod install;
 pub mod keys;
 pub mod linux;
+pub mod linux_desktop;
 #[cfg(target_os = "macos")]
 mod mac;
 pub mod prompts;
