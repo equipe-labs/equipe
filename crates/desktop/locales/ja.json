@@ -2298,6 +2298,8 @@
   "sidebar.outside": "プロジェクト外",
   "sidebar.pm_talk": "PM",
   "sidebar.projects": "プロジェクト",
+  "sidebar.conversations": "会話",
+  "sidebar.show_all": "すべて表示 ({n})",
   "sidebar.quick_yes": "A はい",
   "sidebar.reading": "読み取り中",
   "sidebar.recent_done": "最近完了",

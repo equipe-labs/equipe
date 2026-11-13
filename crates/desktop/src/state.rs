@@ -3336,6 +3336,24 @@ mod tests {
     }
 
     #[test]
+    fn conversations_list_newest_activity_first_each_with_its_project_and_a_new_one_on_top() {
+        let mut model = Model::new("acme");
+        let lane = |session, project: Option<&str>, active| Lane { session, of: 1, project: project.map(str::to_owned), presence: Presence::Ready, verb: Verb::Thinking, kept: true, title: None, active };
+        model.lanes.push(lane(40, None, 100));
+        model.lanes.push(lane(41, Some("web"), 300));
+        model.lanes.push(lane(42, Some("app"), 200));
+        // A lane beside a member's work is not a conversation of the person's.
+        model.lanes.push(Lane { kept: false, ..lane(43, None, 900) });
+        let order = |m: &Model| m.conversations().iter().map(|l| (l.session, l.project.clone())).collect::<Vec<_>>();
+        assert_eq!(order(&model), [(41, Some("web".into())), (42, Some("app".into())), (40, None)], "newest activity first, the project kept with each");
+        model.unix = 400;
+        model.lanes.push(lane(44, None, model.unix));
+        assert_eq!(order(&model)[0], (44, None), "a new conversation is first at once");
+        model.draft_conversation(Some("web".into()));
+        assert_eq!(model.draft_talk.as_ref().map(|(_, p)| p.clone()), Some(Some("web".into())), "one being started names its project; the sidebar lists it above the rest");
+    }
+
+    #[test]
     fn what_waits_is_counted_by_its_project_and_the_counts_add_up() {
         let mut model = Model::new("acme");
         model.projects = vec!["/r/web".into(), "/r/app".into()];

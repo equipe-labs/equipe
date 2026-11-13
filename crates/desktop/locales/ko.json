@@ -2298,6 +2298,8 @@
   "sidebar.outside": "프로젝트 밖",
   "sidebar.pm_talk": "PM 대화",
   "sidebar.projects": "프로젝트",
+  "sidebar.conversations": "대화",
+  "sidebar.show_all": "모두 보기 ({n})",
   "sidebar.quick_yes": "A 예",
   "sidebar.reading": "읽는 중",
   "sidebar.recent_done": "최근 끝남",
