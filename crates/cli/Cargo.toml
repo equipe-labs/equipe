@@ -14,6 +14,7 @@ dirs = "7.0.0"
 equipe-core = { path = "../core" }
 equipe-desktop-control = { path = "../desktop-control" }
 equipe-protocol = { path = "../protocol" }
+equipe-rfb = { path = "../rfb" }
 equipe-providers = { path = "../providers" }
 futures-util = "0.3.34"
 hpke = { version = "0.14.1", default-features = false, features = ["alloc", "getrandom", "x25519", "chacha"] }

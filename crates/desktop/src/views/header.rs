@@ -220,7 +220,22 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         // The buttons stay whole; the words before them give way.
         .children(studio_button(shell, cx))
         .child(div().flex_none().child(terminal_button(shell, cx)))
+        .children(screen_button(shell, cx))
         .child(div().flex_none().child(browser_button(shell, cx)))
+}
+
+/// The far machine's screen (⌘⇧D): only when the daemon is on another machine.
+fn screen_button(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
+    crate::screen::source(&shell.endpoint)?;
+    let p = shell.palette;
+    let on = shell.remote_screen.read(cx).open;
+    Some(
+        div().flex_none().child(
+            crate::ui::icon_button(p, "header-screen", crate::icons::Icon::Laptop, t!("screen.header_tip", host = shell.endpoint.label()), Some("⌘⇧D"))
+                .selected(on)
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_screen(window, cx))),
+        ),
+    )
 }
 
 /// The engine the member runs on now — and, when it moved between engines,

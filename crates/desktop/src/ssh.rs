@@ -34,6 +34,12 @@ pub fn attach_command() -> String {
     format!("sh -c 'PATH=\"{PATH_PREFIX}:$PATH\"; export PATH; exec equipe attach --stdio'")
 }
 
+/// What the Screen panel runs: `equipe screen --stdio`, written as
+/// [`attach_command`] is, for the same reasons.
+pub fn screen_command() -> String {
+    format!("sh -c 'PATH=\"{PATH_PREFIX}:$PATH\"; export PATH; exec equipe screen --stdio'")
+}
+
 /// A one-off command (its script goes in on standard input, so nothing is
 /// quoted for the outer shell): `sh -s`.
 const SCRIPT_COMMAND: &str = "sh -s";
@@ -107,7 +113,14 @@ impl Launcher {
     }
 
     fn command(&self, host: &SshHost, remote: &str) -> Command {
-        let mut command = Command::new(&self.program);
+        let mut command = Command::from(self.std_command(host, remote));
+        command.kill_on_drop(true);
+        command
+    }
+
+    /// The same `ssh`, as a plain process (for a reader on a thread of its own).
+    fn std_command(&self, host: &SshHost, remote: &str) -> std::process::Command {
+        let mut command = std::process::Command::new(&self.program);
         // A machine the app's key went onto: offered, so no password is asked (`sshkey.rs`).
         command.args(self.options()).args(crate::sshkey::identity_options(host)).args(host.args()).arg(remote);
         if let Some(askpass) = &self.askpass {
@@ -117,8 +130,13 @@ impl Launcher {
                 .env(askpass::ENV_SOCKET, &askpass.socket)
                 .env(askpass::ENV_TOKEN, &askpass.token);
         }
-        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         command
+    }
+
+    /// Start `equipe screen --stdio` on `host`, over the shared connection.
+    pub fn screen(&self, host: &SshHost) -> std::io::Result<std::process::Child> {
+        self.std_command(host, &screen_command()).spawn()
     }
 
     /// Start `equipe attach --stdio` on `host`.
@@ -465,6 +483,9 @@ mod tests {
             }
             let out = Std::new(shell).arg("-c").arg(attach_command()).env("HOME", &home).env("PATH", "/usr/bin:/bin").output().unwrap();
             assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "equipe attach --stdio", "in {shell}: {}", String::from_utf8_lossy(&out.stderr));
+            // The Screen panel's line is built the same way.
+            let out = Std::new(shell).arg("-c").arg(screen_command()).env("HOME", &home).env("PATH", "/usr/bin:/bin").output().unwrap();
+            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "equipe screen --stdio", "in {shell}: {}", String::from_utf8_lossy(&out.stderr));
             ran += 1;
         }
         assert!(ran >= 2, "at least bash and zsh/sh are here");

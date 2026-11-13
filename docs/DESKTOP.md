@@ -224,6 +224,7 @@ over the same control connection; quote every path with single quotes
 | `/memory`, `/memory changes` | `equipe memory [changes] --squad <s>` | the same, `EQUIPE_NO_OPEN=1 equipe memory …`; `EQUIPE_NO_OPEN` keeps it from opening a Finder window on the far screen. |
 | A ticket's diff | the ticket (from the snapshot) gives `dir, branch, from`: a `home`-kind ticket (`task`, `action`) → `ticket.worktree`, `branch`, `main`; a `code` ticket → `ticket.project` (else the squad's first project), `branch`, `HEAD`. Stat: `git -C <dir> diff --stat=200 <from>...<branch>`; full: `git -C <dir> diff <from>...<branch>` | the same two `git` commands as `ssh` side commands. Cache per (ticket, branch) as the console does; fetch the full diff only when it is opened. |
 | `/export` | the conversation is the app's own (snapshot + events), rendered to Markdown | write it **on the laptop** (the person reads it there): a save panel, defaulting to `~/Downloads/<squad>-<member>-<time>.md`. Nothing goes to the daemon's machine. |
+| The daemon machine's screen | — (this Mac's own screen is the one in front) | **done** — the Screen panel: `equipe screen --stdio` over the same SSH ([The Screen panel](#the-screen-panel)) |
 | Browser sign-in (`/browser signin`) | `equipe browser [url]`: a Chrome window on this screen; members then use the saved sign-ins | `equipe browser [url]` as an `ssh` side command: the window opens on **the daemon's machine's** screen, where the members' browser lives. Tell the person to reach it with Screen Sharing (`open vnc://<host>`); the command ends when they close the window. Needs the daemon machine's GUI session (see "Daemon off"). |
 | `/browser` (show / watch) | `ShowBrowser` / `WatchBrowser` commands | the same — already protocol. |
 | Approval preview (`Approval.preview`) | a file path on the daemon's Mac; open it | **done** (`Shell::open_file`) — `cat -- '<path>'` as a side command into a 0600 temp file in `/tmp/equipe-desktop-<uid>/`, then `open`. Fetched on click while the request is still open (the file goes once it is answered); a failure shows in the flash line. |
@@ -546,6 +547,104 @@ old English news line in the PM's conversation; `FAKE_FIT=driving` draws
 members' pages as 0.47 did, for a before shot). The host's
 ops have a smoke test, a stand-in Cloudflare wall included:
 `npx -y -p playwright@1.64.0 node scripts/browser-host-smoke.cjs`.
+
+## The Screen panel
+
+⌘⇧D (View › Remote Screen, or the laptop button in the header — shown only when
+the window is attached to another machine) shows that machine's desktop live,
+over the window, and lets the person take control of it: mouse, keyboard,
+wheel. It is a VNC viewer that rides the window's SSH connection; there is no
+port, preview URL or account of its own.
+
+```
+ laptop                                          far machine
+ equipe-desktop ── ssh … 'equipe screen --stdio' ──► equipe screen ──► VNC server
+   crates/rfb (RFB 3.8 client)   one JSON line, then RFB    (signs in)   unix socket or
+                                                                          127.0.0.1 only
+```
+
+- **Transport: a subcommand over the same SSH, not port forwarding.** The app
+  runs `sh -c 'PATH=…; exec equipe screen --stdio'` with the same options,
+  host alias and shared `ControlMaster` connection as `equipe attach --stdio`
+  (`ssh::screen_command`, `Launcher::screen`), so no second sign-in, nothing
+  listening on the laptop, and SSH is the only authentication. `-L` forwarding
+  would have needed a local port (reachable by every process on the laptop), a
+  port picked per window, and `AllowTcpForwarding` on the far side; and the VNC
+  password would have had to travel to the laptop.
+- **The bridge** (`crates/cli/src/screen.rs`) reaches only a server on its own
+  machine — a Unix socket or a loopback address; anything else is refused —
+  found from `--vnc`, `$EQUIPE_SCREEN_VNC`, `<home>/screen/vnc` (first line),
+  `<home>/screen/vnc.sock` if it exists, else `127.0.0.1:5900`. It joins the
+  server *shared* (other viewers, and the members' own tools, stay connected),
+  signs in itself (None, or VNC password from `<home>/screen/passwd`, the
+  `vncpasswd` format, 0600 in a 0700 folder, refused when others can read it;
+  `equipe screen password` writes it), then prints one line —
+  `{"screen":1,"ok":true,"os":"linux","width":1440,"height":900,"name":…}` or
+  `{"screen":1,"error":"no_server|needs_password|auth_failed|unsupported|refused|…","detail":…}`
+  (exit 69) — and plays an RFB 3.8 server with security None in front of the
+  real one. The password never leaves that machine and is never printed.
+  `equipe screen` (no flag) says where it would go and whether it gets in.
+- **The client** (`crates/rfb`, ours, MIT; DES from RustCrypto's `des`, zlib
+  from `flate2`, JPEG from `image`): RFB 3.3/3.7/3.8 handshakes, Tight (fill,
+  JPEG, palette, gradient, the four zlib streams), ZRLE, CopyRect and Raw,
+  DesktopSize/ExtendedDesktopSize, LastRect. Pixels are asked for as 32-bit
+  little-endian BGRX, the window's own byte order. Over the ~165 ms round trip
+  to a cloud machine the server is asked to **push** (continuous updates, with
+  its fences answered) instead of one request per update, which would cap the
+  picture at one frame per round trip; servers without them get a request
+  after each update. JPEG quality 6, zlib level 2 over SSH.
+- **Drawing** (`crates/desktop/src/screen.rs`, `views/screen.rs`): the reader
+  thread keeps the framebuffer and hands the window only the newest picture,
+  once it has drawn the last (`screen::Latest`), so a slow line shows fewer,
+  newer pictures, never a queue. Fitted to the panel, never drawn larger than one
+  point per pixel. The header says the size and the pictures per second.
+- **Looking takes nothing from anyone.** In look mode nothing is sent but
+  update requests; clicks and keys stay in the app (Esc closes the panel).
+- **Take control** forwards the pointer (buttons, drags), the wheel (a notch per
+  24 points turned) and keys. Keys that type something go as the character's
+  keysym; text the Mac's input source composes (Korean, Japanese…) is shown
+  over the picture while composing and sent, once committed, as the characters
+  themselves (X's Unicode keysyms, `0x01000000 + code point`), so a Korean word
+  arrives as the syllables typed, with no input method on the far side. ⌘ is Control on Linux (⌘C,
+  ⌘V, ⌘A mean there what they mean here), Super on a Mac; ⌥ is Alt.
+- **The person first.** Taking control sends `/desktop stop`
+  (`Command::Desktop { open: false }`): whoever held the screen's lease loses
+  it, nobody waits in line, and every member's desktop tool answers "The person
+  has taken the screen back" until control goes back. Giving it back (the
+  button, closing the panel, another machine, the line dropping) lets every key
+  and button go on the far side and sends `/desktop resume` — only if the panel
+  was the one that stopped it: a screen the person had already stopped with
+  `/desktop stop` stays stopped, and a `/desktop resume` typed meanwhile is
+  theirs to make. Kept in the daemon's memory like the lease itself: if the app
+  is killed while in control, `/desktop resume` opens the screen again.
+- **No screen to show** has its own words for each case: no VNC server (with
+  the line to start one), a password wanted or refused (`equipe screen
+  password` on that machine), a sign-in equipe doesn't speak (Apple's own, VeNCrypt
+  only), an `equipe` there older than `screen` (`equipe update`), no `equipe`
+  at all, SSH's own ending. A line that drops while showing is tried again,
+  0.5 s doubling to 8 s. A window on this Mac says its screen is the one in front.
+
+**What the far machine needs.** A VNC server on the desktop session, reachable
+only from that machine:
+
+| Machine | Server | equipe's side |
+|---|---|---|
+| Linux, an X desktop already running (TigerVNC `Xvnc`, a real login on `:0`) | a second server on the same display, TigerVNC's scraping server (`apt install tigervnc-scraping-server`): `x0vncserver -display :0 -rfbport -1 -rfbunixpath ~/.equipe/screen/vnc.sock -rfbunixmode 0600 -SecurityTypes None` — a socket only that user can open, no TCP port | nothing: the socket is found |
+| Linux, same, with a password on loopback | `x0vncserver -display :1 -rfbport 5911 -localhost yes -SecurityTypes VncAuth -PasswordFile ~/.vnc/passwd` | `echo 127.0.0.1:5911 > ~/.equipe/screen/vnc`, `equipe screen password` |
+| Linux, x11vnc | `x11vnc -display :0 -localhost -rfbport 5900 -shared -forever` (`-rfbauth` for a password) | default `127.0.0.1:5900` |
+| Linux, GNOME (Wayland) | Settings › Sharing › Remote Desktop with VNC enabled (GNOME Remote Desktop) on loopback; it asks for a password | `equipe screen password` |
+| macOS | System Settings › General › Sharing › Screen Sharing, and in its ⓘ "VNC viewers may control screen with password" (Apple's own sign-in isn't spoken) | `equipe screen password`; ⌘ goes as Command |
+
+Don't restart a server members are using to add one: a second, shared server
+on the same display shows the same screen. `xdpyinfo -display :1` tells the
+display a session uses.
+
+**Trying it.** `EQUIPE_SCREEN_STDIO='<command>'` runs any command in place of
+the SSH line (`equipe screen --stdio --vnc 127.0.0.1:5900` against a local
+server, or an `ssh` of your own). Snapshot steps: `screen`, `stake`, `sgive`,
+`slive`, `sclick:<fx>,<fy>` (a press and release at a fraction of the far
+screen), `skeys:<text>` (`~` is Enter, `_` a space), `sime:<marked>|<marked>|=<committed>` (an input source's
+composition: each step marked, `=` commits).
 
 ## Orchestration
 

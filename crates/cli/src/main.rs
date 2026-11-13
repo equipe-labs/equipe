@@ -29,6 +29,7 @@ mod usage;
 mod onboard;
 mod remote;
 mod review;
+mod screen;
 mod settings;
 mod telegram;
 mod telemetry;
@@ -288,6 +289,18 @@ enum Command {
         #[arg(long)]
         no_start: bool,
     },
+    /// This machine's screen for the desktop app on another machine, over SSH:
+    /// `ssh <host> equipe screen --stdio` reaches the VNC server here
+    Screen {
+        /// Carry the VNC server's protocol on standard input and output
+        #[arg(long)]
+        stdio: bool,
+        /// The VNC server: `unix:/path`, `127.0.0.1:5901`, `:1` (this machine only)
+        #[arg(long)]
+        vnc: Option<String>,
+        #[command(subcommand)]
+        action: Option<ScreenAction>,
+    },
     /// Keep a file a screen on another machine streams on standard input
     /// (`ssh <host> equipe receive …`): prints where it was kept
     #[command(hide = true)]
@@ -400,6 +413,14 @@ enum DemoAction {
         #[arg(long)]
         home: Option<std::path::PathBuf>,
     },
+}
+
+#[derive(Subcommand)]
+enum ScreenAction {
+    /// Where the screen would come from, and whether equipe gets in (the default)
+    Status,
+    /// Keep the VNC server's password here (0600), for servers that ask for one
+    Password,
 }
 
 #[derive(Subcommand)]
@@ -620,6 +641,9 @@ async fn run(cli: Cli) -> ExitCode {
             }
             Err(why) => Err(Failure::new(why)),
         },
+        Command::Screen { stdio: true, vnc, .. } => screen::stdio(vnc.as_deref()),
+        Command::Screen { action: Some(ScreenAction::Password), .. } => return screen::set_password(),
+        Command::Screen { vnc, .. } => return screen::status(vnc.as_deref()),
         Command::Attach { stdio: true, no_start } => attach::stdio(no_start).await,
         Command::Attach { stdio: false, .. } => return attach::usage(),
         Command::Receive { name, size, kind } => {

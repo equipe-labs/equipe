@@ -51,6 +51,7 @@ mod pane;
 mod queue;
 mod quote;
 mod readonly;
+mod screen;
 mod screen_look;
 mod setup;
 mod sheet;
@@ -130,7 +131,7 @@ use views::connect::{AskUi, ConnectUi};
 
 actions!(
     equipe,
-    [ToggleDocFocus, ToggleBoard, ToggleBrowser, ToggleTerminal, ChooseTarget, AllProjects, Project1, Project2, Project3, Project4, Project5, Project6, Project7, Project8, Project9, ToggleFolds]
+    [ToggleDocFocus, ToggleBoard, ToggleBrowser, ToggleScreen, ToggleTerminal, ChooseTarget, AllProjects, Project1, Project2, Project3, Project4, Project5, Project6, Project7, Project8, Project9, ToggleFolds]
 );
 // The conversation's: ⌘F, and Escape in its find bar.
 actions!(equipe, [FindInConversation, CloseFind]);
@@ -299,6 +300,8 @@ pub struct Shell {
     pub design_taste: views::design_taste::Inputs,
     /// The shared Chrome, live, beside the conversation (⌘⇧B).
     pub browser: Entity<BrowserPanel>,
+    /// The daemon's machine's desktop, live, over the window (⌘⇧D; `views/screen.rs`).
+    pub remote_screen: Entity<views::screen::ScreenPanel>,
     /// The terminal at the right, while one runs.
     pub(crate) terminal: Option<views::terminal::TermUi>,
     /// The reply whose command was last typed into the terminal unasked.
@@ -474,6 +477,7 @@ impl Shell {
         palette.apply_to_kit(appearance, cx);
         let browser_width = remembered.browser_width;
         let browser = cx.new(|cx| BrowserPanel::new(browser_width, palette, window, cx));
+        let remote_screen = cx.new(|cx| views::screen::ScreenPanel::new(palette, cx));
         let mut shell = Self {
             palette,
             model: Model::new(""),
@@ -518,6 +522,7 @@ impl Shell {
             status: Default::default(),
             design_taste: Default::default(),
             browser,
+            remote_screen,
             terminal: None,
             term_offered: None,
             signin_code: None,
@@ -684,6 +689,11 @@ impl Shell {
                 this.sync_browser(window, cx);
             }
         }));
+        // The Screen panel's lease: taking control stops the members, giving it back resumes them.
+        let remote_screen = shell.remote_screen.clone();
+        shell._subscriptions.push(cx.subscribe_in(&remote_screen, window, |this, _, event: &views::screen::ScreenEvent, _, _| match event {
+            views::screen::ScreenEvent::Command(command) => this.send_command(command.clone()),
+        }));
         // Settings' search filters as it is typed.
         // Compare and review's words: ⏎ sends the draft back with them.
         let design_redo = shell.design_redo.clone();
@@ -718,6 +728,10 @@ impl Shell {
             let modifiers = event.keystroke.modifiers;
             // Typing into the browser panel's page: its keys are the page's.
             if this.update(cx, |shell, cx| shell.browser.read(cx).focus.is_focused(window)).unwrap_or(false) {
+                return;
+            }
+            // And the far screen's, while the Screen panel is in front.
+            if this.update(cx, |shell, cx| shell.remote_screen.read(cx).open && shell.remote_screen.read(cx).focus.is_focused(window)).unwrap_or(false) {
                 return;
             }
             // A box over the window has the keys: typing a password must never
@@ -987,7 +1001,24 @@ impl Shell {
         self.chat_sync(cx);
         self.board_sync(cx);
         self.sync_browser(window, cx);
+        self.sync_screen(window, cx);
         self.reach_goal(window, cx);
+    }
+
+    /// Tell the Screen panel which machine and what the screen's lease says.
+    fn sync_screen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (endpoint, desktop, palette) = (self.endpoint.clone(), self.model.desktop.clone(), self.palette);
+        self.remote_screen.update(cx, |s, cx| s.sync(&endpoint, &desktop, palette, window, cx));
+    }
+
+    /// ⌘⇧D, the menu, or the header's button: the daemon's machine's screen.
+    pub fn toggle_screen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_screen(window, cx);
+        self.remote_screen.update(cx, |s, cx| s.toggle(window, cx));
+        if !self.remote_screen.read(cx).open {
+            self.composer.focus(window, cx);
+        }
+        cx.notify();
     }
 
     /// Tell the browser panel what it follows: this daemon and squad, the
@@ -2498,6 +2529,7 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &ChooseTarget, window, cx| this.open_chooser(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleDocFocus, window, cx| this.toggle_doc_focus(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleBrowser, window, cx| this.toggle_browser(window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleScreen, window, cx| this.toggle_screen(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleTerminal, window, cx| this.toggle_terminal(window, cx)))
             // The browser panel's divider follows the pointer wherever it goes.
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
@@ -2585,6 +2617,8 @@ impl Render for Shell {
             // The title bar's fixed buttons, by the traffic lights, over the
             // sidebar or the header alike: the same place whatever slides.
             .children((!focused).then(|| views::sidebar::title_buttons(self, cx)))
+            // The far machine's screen, over the window; questions from ssh still above it.
+            .children(self.remote_screen.read(cx).open.then(|| self.remote_screen.clone()))
             // Over everything: the chooser, then a question from ssh above it.
             .children(views::quote::layer(self, window, cx))
             .children(views::quote::peek(self))
@@ -2713,6 +2747,7 @@ fn view_menu() -> Menu {
         MenuItem::separator(),
         MenuItem::action(t!("menu.palette"), CommandPalette),
         MenuItem::action(t!("menu.toggle_board"), ToggleBoard),
+        MenuItem::action(t!("screen.menu"), ToggleScreen),
         MenuItem::action(t!("orchestra.title"), ShowOrchestration),
         MenuItem::action(t!("menu.all_projects"), AllProjects),
         MenuItem::action(t!("menu.toggle_folds"), ToggleFolds),
@@ -2725,6 +2760,7 @@ fn window_bindings() -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("cmd-b", ToggleBoard, None),
         KeyBinding::new("cmd-shift-b", ToggleBrowser, None),
+        KeyBinding::new("cmd-shift-d", ToggleScreen, None),
         KeyBinding::new("cmd-shift-f", ToggleDocFocus, None),
         KeyBinding::new("cmd-shift-l", ShowOrchestration, None),
         KeyBinding::new("ctrl-`", ToggleTerminal, None),
