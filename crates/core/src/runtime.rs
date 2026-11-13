@@ -2483,6 +2483,10 @@ impl Runtime {
                     self.publish(Event::ModelKnown { session, model: model.clone(), asked: Some(model.clone()) });
                     let text = say!(self, "notice.model", model = model);
                     self.publish(Event::Notice { undo: None, session, text });
+                    if crate::tiers::cap_premium(Engine::Claude, Some(&model), false).as_deref() != Some(model.as_str()) {
+                        let text = say!(self, "notice.model_premium");
+                        self.publish(Event::Notice { undo: None, session, text });
+                    }
                 }
             }
             Command::Models { engine } => self.models_asked(engine),
@@ -3770,7 +3774,9 @@ runbooks and reports live there, and work across the projects or on running them
             (Some(squad), Some(role)) => self.journal(squad).and_then(|j| j.role_models().into_iter().find(|d| d.role == role.id && d.engine == engine)),
             _ => None,
         };
-        let mut model = spec.model.clone().or_else(|| role_default.as_ref().and_then(|d| d.model.clone()));
+        // A model named in the spec is the caller's choice; a role default applied to a
+        // member that starts without one is automatic, so never the premium family.
+        let mut model = spec.model.clone().or_else(|| crate::tiers::cap_premium(engine, role_default.as_ref().and_then(|d| d.model.as_deref()), false));
         let role_effort = role_default.and_then(|d| d.effort);
         let mut codex_cred = None;
         match engine {

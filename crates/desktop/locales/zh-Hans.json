@@ -667,7 +667,7 @@
   "models.weight_3": "较快消耗套餐",
   "models.weight_2": "较省套餐",
   "models.weight_1": "最省套餐",
-  "models.about_fable": "能力最强，适合最难的工作",
+  "models.about_fable": "高级：能力最强，消耗是 Opus 的数倍",
   "models.about_opus": "困难、长时间的工作",
   "models.about_sonnet": "日常编程与写作",
   "models.about_haiku": "快速、简单的任务",

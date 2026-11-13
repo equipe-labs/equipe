@@ -628,3 +628,18 @@ fn what_must_go_is_what_the_pace_says_and_a_margin() {
     let a = assess(&claude(88, 30), &Memory::default(), NOW);
     assert_eq!(a.need_bp(NOW), NEED_BP, "no forecast: half");
 }
+
+#[test]
+fn coming_back_home_never_restores_the_premium_family_and_a_step_down_never_picks_it() {
+    let mates = vec![Mate { engine: Engine::Codex, home: Engine::Claude, home_model: Some("claude-fable-5-1".into()), switched: vec![NOW - 4 * H], ..mate("pm", Engine::Claude) }];
+    let mut memory = Memory::default();
+    let low = |at| read_at(Engine::Claude, at, Some((45, 4 * H)), Some((40, 3 * 24 * H)));
+    let codex_ok = codex(20, 20);
+    decide_at(&[low(NOW), codex_ok], &mates, &reach(), Switching::Auto, NOW, &mut memory);
+    let d = decide_at(&[low(NOW + 11 * M), codex_ok], &mates, &reach(), Switching::Auto, NOW + 11 * M, &mut memory);
+    let batch = d.batch.expect("back home");
+    assert_eq!(batch.moves[0].model.as_deref(), Some("opus"));
+    // A step-down of a member on it lowers effort and lands on Opus, not Fable.
+    let (model, effort) = step_down(Engine::Claude, "pm", Some("fable"), Some("high")).unwrap();
+    assert_eq!((model.as_deref(), effort.as_deref()), (Some("opus"), Some("medium")));
+}

@@ -692,7 +692,7 @@
   "models.weight_3": "verbraucht den Tarif schnell",
   "models.weight_2": "schont den Tarif",
   "models.weight_1": "schont den Tarif am meisten",
-  "models.about_fable": "Das stärkste Modell, für die schwierigste Arbeit",
+  "models.about_fable": "Premium: das stärkste Modell, kostet ein Mehrfaches von Opus",
   "models.about_opus": "Schwierige, lange Arbeit",
   "models.about_sonnet": "Alltägliches Programmieren und Schreiben",
   "models.about_haiku": "Schnelle, einfache Aufgaben",

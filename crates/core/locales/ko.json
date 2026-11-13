@@ -405,6 +405,7 @@
   "notice.fresh_full": "── 새 대화: 지난 대화가 {window}k 토큰 중 {used}k를 채웠어요 ──",
   "notice.memory_updated": "✎ {name}이(가) 스쿼드의 기억을 고쳤어요: {what} · /memory에서 스쿼드가 아는 것을 봐요",
   "notice.model": "다음 턴부터 {model}. 대화는 그대로 이어져요.",
+  "notice.model_premium": "Fable은 프리미엄 모델로 플랜을 Opus의 몇 배 소모해요. 바꾸기 전까지 이 멤버에게만 쓰여요.",
   "notice.on_nebius": "Nebius Token Factory의 NVIDIA Nemotron({model})으로 Codex CLI 에이전트에서 일해요. 연결한 Nebius 키에 토큰 단위로 과금돼요.",
   "notice.on_open_model": "{provider}의 {model}로 Codex CLI 에이전트에서 일해요. {provider}에서 토큰 단위로 과금돼요.",
   "notice.pm_accepted": "✓ PM이 {ids}을(를) 수락하고 main에 합쳤어요 — {checked}",

@@ -667,7 +667,7 @@
   "models.weight_3": "較快消耗方案",
   "models.weight_2": "較省方案",
   "models.weight_1": "最省方案",
-  "models.about_fable": "能力最強，適合最難的工作",
+  "models.about_fable": "高級：能力最強，消耗是 Opus 的數倍",
   "models.about_opus": "困難、長時間的工作",
   "models.about_sonnet": "日常程式設計與寫作",
   "models.about_haiku": "快速、簡單的任務",

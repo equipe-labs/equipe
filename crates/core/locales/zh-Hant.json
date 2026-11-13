@@ -405,6 +405,7 @@
   "notice.fresh_full": "── 新的對話：上一段已用掉 {window}k 中的 {used}k 權杖 ──",
   "notice.memory_updated": "✎ {name} 為小隊更新了：{what} · /memory 查看小隊知道的內容",
   "notice.model": "從下一輪起使用 {model}。對話繼續。",
+  "notice.model_premium": "Fable 是高級模型，消耗的方案額度是 Opus 的數倍。僅用於此成員，直到你變更為止。",
   "notice.on_nebius": "透過 Nebius Token Factory 的 NVIDIA Nemotron（{model}）在 Codex CLI 的代理上執行。按 token 計費到你連接的 Nebius 金鑰。",
   "notice.on_open_model": "透過 {provider} 的 {model} 在 Codex CLI 的代理上執行。由 {provider} 按 token 計費。",
   "notice.pm_accepted": "✓ PM 已接受 {ids} 並合併到 main — {checked}",

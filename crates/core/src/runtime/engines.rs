@@ -785,7 +785,7 @@ impl Runtime {
             .moves
             .iter()
             .filter(|m| m.done)
-            .map(|m| Move { from: m.to, to: m.from, model: m.was_model.clone(), effort: None, was_model: m.model.clone(), done: false, ..m.clone() })
+            .map(|m| Move { from: m.to, to: m.from, model: crate::tiers::cap_premium(m.from, m.was_model.as_deref(), false), effort: None, was_model: m.model.clone(), done: false, ..m.clone() })
             .collect();
         let undo = Proposal { id, moves: back, applied: true, ..proposal.clone() };
         self.schedule(squad, &undo);
