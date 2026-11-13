@@ -20,6 +20,7 @@ The commands and console features in detail. For a first look, start with the
 | `/suggest` | After a member answers you, your likely next message waits greyed in the empty composer, and **→** takes it; typing ignores it. Claude Code's small model guesses it from the end of the conversation alone. `/suggest off` stops it, `/suggest on` brings it back |
 | `/model` | `/model <member> <model>` changes the model a member works on from its next turn — Claude Code's `opus` / `sonnet` / `haiku`, or any model its engine offers; its conversation carries on |
 | `/usage` | The footer shows your Claude plan's five-hour and weekly windows; `/usage` adds when they start over, and each member's context, tokens processed and the share from cache |
+| `equipe usage` | **Where a squad's tokens went, and what looks wasted** — `equipe usage [--squad S] [--since 7d\|24h\|2w\|2026-11-01] [--json]`. Totals split into input, output, cache read and cache write; by day (UTC), engine and model, member (lanes such as `frontend-12` are folded into `frontend` with a lane count) and kind of turn (PM desk, member on a ticket, lane on a ticket, no ticket); turns bucketed by *context per call* (under 100k, 100–200k, 200–400k, over 400k); the biggest tickets, tokens on tickets that ended cancelled, rework tickets (15 turns or more) and how turns ended. A **Quality** section sits beside the tokens (below), and a **Waste signals** section then lists only the signals over their thresholds, each with a plain sentence and what to do. See [Token usage report](#token-usage-report) |
 | `/compact` · `/clear` | `/compact [member]` summarizes a member's conversation now; `/clear [member]` starts clean. Memory and the board carry over either way |
 | `/squad` · `/project` | `/squad <name>` switches to another squad, `/squad new <name> [folder]` starts one, `/squad add <folder>` / `/squad remove <project>` change what a squad works on. `/project <name>` (or **Ctrl-P**) filters the board, the review card and new requests to one project; `/project all` takes the filter off |
 | `equipe telegram setup` | **Your squads from Telegram.** Make a bot with @BotFather, paste its token, tap the link it shows: the bot is paired with your Telegram account and answers no one else. Requests for permission arrive with Allow / Decline (once — never "always" from a phone), work to review with Accept / Ask for changes. Runs in the daemon; `equipe telegram off` disconnects. Messages travel through Telegram's servers (encrypted to them, not end to end) |
@@ -51,6 +52,54 @@ Done. greet() now capitalizes the name.
   keep       git merge equipe/try-6acb8840
   discard    git branch -D equipe/try-6acb8840
 ```
+
+## Token usage report
+
+Most of a busy squad's tokens are cache reads: the whole conversation is read
+again on every model call. So the number that says how heavy a turn is isn't
+its total but its **context per call** — `(input + cache read + cache write) /
+calls`, what one request carries in. `equipe usage` reads each turn's tokens
+from the squad's journal (read-only) and reports it that way.
+
+The waste signals are hints, not verdicts; each is shown only over its
+threshold, a named constant in [`crates/core/src/usage.rs`](../crates/core/src/usage.rs):
+
+| Signal | Shown when |
+|---|---|
+| PM conversation never compacted | the PM desk (its turns with no ticket) averages over 400k context per call and holds 5% or more of the tokens |
+| Huge contexts | turns over 400k context per call hold 25% or more of the tokens |
+| Cancelled work | tickets that ended cancelled took 3% or more of the tokens |
+| Rework loops | tickets with 15 or more turns hold 5% or more of the tokens |
+| Abnormal endings | 5 or more turns ended `limited`, `failed_fast` or `handed_back` |
+
+Share-based signals need at least 50M tokens in the window, so a quiet squad
+says nothing. Turns recorded before tokens were kept by kind count in the
+totals but not in the context buckets (they show as *unknown*).
+
+**Quality.** Cheaper only counts if the work stays as good, so the report
+carries the numbers to check that, over the same window as the tokens (all
+from the squad's journal): tickets accepted; the share accepted on their
+first hand-in (of the first hand-ins in the window that have a verdict, those
+accepted with no send-back — one still waiting counts for neither side);
+send-backs (reopened, sent back, design QA changes) per accepted ticket, and
+the send-backs kept by reason; design QA runs by verdict and gate decision;
+median and p75 time from a ticket's first assignment to its acceptance; and
+turns and tokens per accepted ticket (all of a ticket's turns, whenever they
+ran). `--compare 7d` prints the window before (that long, ending where
+`--since` starts) next to this one with the change in percent for the token
+and quality numbers — `--since 7d --compare 7d` is this week against last
+week; with `--json` they come as `report`, `before` and `changes`.
+
+**Daily note.** Once a day (the first minute after 09:00 local time the daemon
+runs), if any signal is over its threshold for the last 24 hours, the person
+gets one short note in the PM's conversation and the PM is briefed, with the
+24-hour tokens next to the daily average of the 7 days before. At most one a
+day per squad; nothing is sent on a day without a signal. `equipe usage digest
+off` switches it off for a squad (`on` brings it back; the default is on).
+
+Screens can ask the daemon for the same report with the `usage` request
+(`{ squad, since? }`, answered with the report as JSON; see
+[`rpc.rs`](../crates/protocol/src/rpc.rs)).
 
 ## Engines & sign-in
 

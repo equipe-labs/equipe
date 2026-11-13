@@ -39,6 +39,9 @@
 //! - `metrics.sources`, `metrics.connect`, `metrics.disconnect`,
 //!   `metrics.refresh`, `metrics.query`, `metrics.summary` (requests): the
 //!   product's numbers, [`crate::metrics`] (docs/METRICS.md)
+//! - `usage` (request): [`UsageAsk`] → the squad's token-usage report with
+//!   its waste signals (`equipe usage --json`, docs/USAGE.md), read from the
+//!   squad's journal; the answer's shape is core's `usage::Report`
 //! - `screen_look` (notification, screen → daemon): [`crate::look::ScreenLook`],
 //!   the look the screen shows the app in and which app it is — told after
 //!   `hello` and again when it changes or the person uses the screen; kept
@@ -93,6 +96,9 @@ pub const DISK_CLEAN: &str = "disk_clean";
 /// What deleting a squad would give back: [`SquadFootprintAsk`] →
 /// [`SquadFootprint`]. A look, nothing changed.
 pub const SQUAD_FOOTPRINT: &str = "squad_footprint";
+/// Where a squad's tokens went and what looks wasted (`equipe usage`):
+/// [`UsageAsk`] → the report as JSON (core's `usage::Report`). A look, nothing changed.
+pub const USAGE: &str = "usage";
 /// A window for the person in the members' shared Chrome, at a page (`equipe
 /// browser`): `true` when there is such a Chrome.
 pub const BROWSER_WINDOW: &str = "browser_window";
@@ -142,6 +148,15 @@ pub struct RpcError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiskClean {
     pub ids: Vec<String>,
+}
+
+/// Which squad's token usage to report, and from when.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageAsk {
+    pub squad: crate::SquadName,
+    /// From when, in unix seconds; to now. Omitted: the last 7 days.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<u64>,
 }
 
 /// Which squad's footprint to look at.

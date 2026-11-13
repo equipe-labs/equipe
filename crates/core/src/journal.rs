@@ -1775,6 +1775,32 @@ impl Journal {
         self.set_meta(&key, &now().to_string()).is_ok()
     }
 
+    /// The turns, tickets and turn endings that [`crate::usage`] measures,
+    /// for the turns that ended in `since..until`.
+    pub fn usage_input(&self, since: u64, until: u64) -> Result<crate::usage::Input> {
+        crate::usage::select(&self.conn, since, until)
+    }
+
+    /// Whether the squad gets the daily usage note (`equipe usage digest`):
+    /// on unless the person switched it off.
+    pub fn usage_digest_on(&self) -> bool {
+        self.meta("usage_digest").is_none_or(|v| v != "off")
+    }
+
+    pub fn set_usage_digest(&self, on: bool) -> Result<()> {
+        self.set_meta("usage_digest", if on { "on" } else { "off" })
+    }
+
+    /// The UTC day (`YYYY-MM-DD`) the daily usage note was last looked at,
+    /// said or not; `None` for never.
+    pub fn usage_digest_day(&self) -> Option<String> {
+        self.meta("usage_digest_day")
+    }
+
+    pub fn set_usage_digest_day(&self, day: &str) -> Result<()> {
+        self.set_meta("usage_digest_day", day)
+    }
+
     /// When the last daily design review was made, in unix seconds; 0 for never.
     pub fn design_qa_last_batch(&self) -> i64 {
         self.meta("design_qa_last_batch").and_then(|v| v.parse().ok()).unwrap_or(0)

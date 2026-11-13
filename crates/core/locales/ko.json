@@ -685,5 +685,19 @@
   "match.remember_words": "로그인 상태 유지|로그인 유지|자동 로그인|아이디 저장|이 기기 신뢰|이 기기를 신뢰|신뢰할 수 있는 기기|이 브라우저 신뢰|이 기기 기억|다시 묻지 않기|다시 확인하지 않기",
   "match.session_expired_words": "세션이 만료|로그인 시간이 만료|로그아웃되었|로그아웃 되었|다시 로그인해 주세요|다시 로그인하세요|장시간 사용하지 않아|로그인이 만료",
   "match.approve_words": "승인|허용|동의|확인|계속|예|수락|인증하기",
-  "notice.secret_store": "이 컴퓨터의 보안 저장소"
+  "notice.secret_store": "이 컴퓨터의 보안 저장소",
+  "usage.digest.head": "최근 24시간 토큰 사용량: {turns}턴에 {tokens} (직전 7일 하루 평균: {average}).",
+  "usage.signal.pm_desk.what": "PM 대화가 호출당 약 {context} 토큰을 읽고 있어요(전체 토큰의 {share}%). 대화가 압축되지 않고 있어요.",
+  "usage.signal.pm_desk.todo": "PM에게 새 대화를 시작하게 하거나 더 일찍 압축하세요.",
+  "usage.signal.heavy_context.what": "토큰의 {share}%가 호출당 컨텍스트 {limit}를 넘는 턴에서 쓰였어요.",
+  "usage.signal.heavy_context.todo": "대화를 짧게 유지하세요. 큰 티켓은 나누고, 오래 이어진 건 새로 시작하세요.",
+  "usage.signal.cancelled.what": "토큰의 {share}%가 나중에 취소된 티켓에 쓰였어요: {tickets}.",
+  "usage.signal.cancelled.todo": "멤버가 시작하기 전에 PM과 만들 가치가 있는지 먼저 정하세요.",
+  "usage.signal.rework.what": "티켓 {count}개가 {turns}턴 이상 걸렸어요(토큰의 {share}%): {tickets}.",
+  "usage.signal.rework.todo": "왜 반복되는지 확인하세요(불분명한 티켓이나 실패하는 검사). 다시 쓰거나 나누세요.",
+  "usage.signal.endings.what": "비정상적으로 끝난 턴이 {count}개예요: {endings}.",
+  "usage.signal.endings.todo": "엔진 로그인과 플랜 사용량을 확인하고, 되돌려진 티켓을 읽어 보세요.",
+  "usage.ending.limited": "플랜 한도 도달",
+  "usage.ending.failed_fast": "즉시 실패",
+  "usage.ending.handed_back": "되돌려짐"
 }

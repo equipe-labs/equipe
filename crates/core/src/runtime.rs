@@ -83,6 +83,7 @@ mod logins;
 mod autopilot;
 mod design_qa;
 mod design_review;
+mod usage_digest;
 mod team;
 mod heartbeat;
 mod signals;
@@ -1831,6 +1832,7 @@ impl Runtime {
         self.run_due_routines().await;
         pulse.step("minute tick: design reviews");
         self.design_qa_tick(now_secs()).await;
+        self.usage_digest_tick(now_secs());
         pulse.step("minute tick: idle boards");
         self.wake_idle_pms().await;
         pulse.step("minute tick: signals");

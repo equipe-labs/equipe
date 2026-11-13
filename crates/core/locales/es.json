@@ -689,5 +689,19 @@
   "match.remember_words": "mantener la sesión iniciada|mantener sesión iniciada|no cerrar sesión|recordarme|recuérdame|recordar sesión|confiar en este dispositivo|confiar en este navegador|recordar este dispositivo|recordar este navegador|no volver a preguntar en este",
   "match.session_expired_words": "sesión caducada|la sesión ha caducado|su sesión ha caducado|sesión expirada|la sesión ha expirado|se ha cerrado tu sesión|se cerró tu sesión|vuelve a iniciar sesión|inicia sesión de nuevo|por inactividad",
   "match.approve_words": "autorizar|permitir|aprobar|confirmar|continuar|sí|aceptar",
-  "notice.secret_store": "el almacén de secretos de este equipo"
+  "notice.secret_store": "el almacén de secretos de este equipo",
+  "usage.digest.head": "Uso de tokens de las últimas 24 horas: {tokens} en {turns} turnos (media diaria de los 7 días anteriores: {average}).",
+  "usage.signal.pm_desk.what": "La conversación del PM lee unos {context} tokens por llamada ({share}% de los tokens): no se está compactando.",
+  "usage.signal.pm_desk.todo": "Empieza al PM con una conversación nueva o compáctala antes.",
+  "usage.signal.heavy_context.what": "El {share}% de los tokens se gastó en turnos con más de {limit} de contexto por llamada.",
+  "usage.signal.heavy_context.todo": "Mantén las conversaciones cortas: divide los tickets grandes y empieza de nuevo los largos.",
+  "usage.signal.cancelled.what": "El {share}% de los tokens se fue a tickets que luego se cancelaron: {tickets}.",
+  "usage.signal.cancelled.todo": "Acuerda con el PM qué vale la pena construir antes de que los miembros empiecen.",
+  "usage.signal.rework.what": "{count} tickets necesitaron {turns} turnos o más ({share}% de los tokens): {tickets}.",
+  "usage.signal.rework.todo": "Revisa por qué se repiten (un ticket poco claro o una comprobación que falla) y reescríbelos o divídelos.",
+  "usage.signal.endings.what": "{count} turnos terminaron de forma anómala: {endings}.",
+  "usage.signal.endings.todo": "Revisa los inicios de sesión y el uso del plan de los motores, y lee los tickets devueltos.",
+  "usage.ending.limited": "límite del plan alcanzado",
+  "usage.ending.failed_fast": "falló al instante",
+  "usage.ending.handed_back": "devuelto"
 }

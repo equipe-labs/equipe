@@ -685,5 +685,19 @@
   "match.remember_words": "ログイン状態を保持|ログインしたままにする|サインインしたままにする|ログイン状態を維持|次回から入力を省略|このデバイスを信頼|このブラウザを信頼|このデバイスを記憶|このブラウザを記憶|今後このデバイスでは確認しない|ログインを記憶",
   "match.session_expired_words": "セッションの有効期限が切れ|セッションがタイムアウト|ログアウトされました|サインアウトされました|再度ログインしてください|もう一度ログインしてください|再度サインインしてください|一定時間操作がなかったため",
   "match.approve_words": "承認|許可|同意して続行|同意する|続行|次へ|はい|確認|承諾",
-  "notice.secret_store": "このマシンのシークレットストア"
+  "notice.secret_store": "このマシンのシークレットストア",
+  "usage.digest.head": "直近24時間のトークン使用量: {turns}ターンで{tokens}(その前7日間の1日平均: {average})。",
+  "usage.signal.pm_desk.what": "PMの会話が1回の呼び出しで約{context}トークンを読み込んでいます(全体の{share}%)。会話が圧縮されていません。",
+  "usage.signal.pm_desk.todo": "PMに新しい会話を始めさせるか、もっと早く圧縮してください。",
+  "usage.signal.heavy_context.what": "トークンの{share}%が、1回の呼び出しあたりのコンテキストが{limit}を超えるターンで使われました。",
+  "usage.signal.heavy_context.todo": "会話を短く保ちましょう。大きなチケットは分割し、長く続いたものは新しく始めてください。",
+  "usage.signal.cancelled.what": "トークンの{share}%が、後からキャンセルされたチケットに使われました: {tickets}。",
+  "usage.signal.cancelled.todo": "メンバーが着手する前に、作る価値があるかをPMと決めておきましょう。",
+  "usage.signal.rework.what": "{count}件のチケットが{turns}ターン以上かかりました(トークンの{share}%): {tickets}。",
+  "usage.signal.rework.todo": "なぜ繰り返しているのかを確認し(曖昧なチケットや失敗するチェック)、書き直すか分割してください。",
+  "usage.signal.endings.what": "異常終了したターンが{count}件あります: {endings}。",
+  "usage.signal.endings.todo": "エンジンのサインインとプランの使用量を確認し、差し戻されたチケットを読んでください。",
+  "usage.ending.limited": "プランの上限に到達",
+  "usage.ending.failed_fast": "すぐに失敗",
+  "usage.ending.handed_back": "差し戻し"
 }

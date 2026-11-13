@@ -685,5 +685,19 @@
   "match.remember_words": "记住我|保持登录|保持登录状态|记住登录状态|下次自动登录|信任此设备|信任此浏览器|记住此设备|记住此浏览器|在此设备上不再询问|七天内免登录",
   "match.session_expired_words": "会话已过期|登录已过期|登录已失效|登录超时|您已退出登录|你已退出登录|您已登出|请重新登录|请重新登陆|长时间未操作",
   "match.approve_words": "授权|允许|同意|批准|确认|继续|下一步|是|接受",
-  "notice.secret_store": "本机的密钥库"
+  "notice.secret_store": "本机的密钥库",
+  "usage.digest.head": "最近24小时的 token 用量:{turns} 轮共 {tokens}(此前7天的日均:{average})。",
+  "usage.signal.pm_desk.what": "PM 对话每次调用约读取 {context} token(占总量的 {share}%):对话没有被压缩。",
+  "usage.signal.pm_desk.todo": "让 PM 开启新对话,或更早地压缩对话。",
+  "usage.signal.heavy_context.what": "{share}% 的 token 花在每次调用上下文超过 {limit} 的轮次上。",
+  "usage.signal.heavy_context.todo": "保持对话简短:拆分大工单,长时间运行的从头开始。",
+  "usage.signal.cancelled.what": "{share}% 的 token 花在后来被取消的工单上:{tickets}。",
+  "usage.signal.cancelled.todo": "在成员开工之前,先和 PM 确定哪些值得做。",
+  "usage.signal.rework.what": "{count} 个工单用了 {turns} 轮或更多(占 token 的 {share}%):{tickets}。",
+  "usage.signal.rework.todo": "查明为什么反复(工单不清晰或检查失败),然后重写或拆分。",
+  "usage.signal.endings.what": "有 {count} 个轮次异常结束:{endings}。",
+  "usage.signal.endings.todo": "检查引擎的登录和套餐用量,并查看被退回的工单。",
+  "usage.ending.limited": "触及套餐上限",
+  "usage.ending.failed_fast": "立即失败",
+  "usage.ending.handed_back": "被退回"
 }
