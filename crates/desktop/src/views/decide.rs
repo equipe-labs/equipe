@@ -37,6 +37,11 @@ use crate::{Screen, Shell};
 
 use super::visuals::Shots;
 
+/// A question read back from the answers' message, without the links its words may carry.
+fn said_question(question: &str) -> String {
+    equipe_core::protocol::links::words(question)
+}
+
 /// The disclosure of a decided row.
 pub const PART_DECIDED: u32 = (1 << 20) + 9;
 
@@ -149,14 +154,14 @@ impl Shell {
                 self.decide.subscriptions.insert(k, subscription);
             }
         }
-        self.decide_take_fresh(cx);
+        self.decide_take_fresh(window, cx);
     }
 
     /// A question just asked (or asked again) in the conversation on screen:
     /// it comes to the front — unless the person is in the middle of another
     /// card, which stays — lights up for a moment, and its card comes before
     /// the less pressing ones over the composer.
-    fn decide_take_fresh(&mut self, cx: &mut Context<Self>) {
+    fn decide_take_fresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.model.asked.take_fresh() else { return };
         let Some(member) = self.model.selected_member().map(|m| m.session) else { return };
         let order = self.decide_order();
@@ -167,6 +172,12 @@ impl Shell {
         let busy = front.is_some_and(|f| self.decide.drafts.get(&f).is_some_and(Draft::begun) || self.decide.fields.iter().any(|((set, _), field)| *set == f && !field.read(cx).value().trim().is_empty()));
         if !busy && let Some(to) = rules::jump(&order, id) {
             self.decide.browsing.insert(member, to);
+            // A question that points to a link and takes only words (a code to
+            // type from the page): its box has the typing, nothing else in the way.
+            let code = self.model.asked.get(id).and_then(|s| s.questions.first()).is_some_and(|q| q.options.is_empty() && !q.shown().1.is_empty());
+            if code && self.screen == Screen::Chat && self.composer.text(cx).trim().is_empty() && let Some(field) = self.decide.fields.get(&(id, 0)).cloned() {
+                field.update(cx, |s, cx| s.focus(window, cx));
+            }
         }
         self.decide.fresh = Some((id, std::time::Instant::now()));
         self.decide.fresh_serial += 1;
@@ -624,7 +635,7 @@ pub fn tidy_message(sets: &[&QuestionSet], now: u64) -> String {
         .iter()
         .map(|s| {
             let ticket = s.ticket.map(|t| format!(" · T-{t}")).unwrap_or_default();
-            let first = s.questions.first().map(|q| q.question.split_whitespace().collect::<Vec<_>>().join(" ")).unwrap_or_default();
+            let first = s.questions.first().map(|q| q.shown().0.split_whitespace().collect::<Vec<_>>().join(" ")).unwrap_or_default();
             let first: String = if first.chars().count() > 140 { format!("{}…", first.chars().take(140).collect::<String>()) } else { first };
             let more = if s.questions.len() > 1 { format!(" {}", t!("decide.and_more", count = s.questions.len() - 1)) } else { String::new() };
             format!("- {}{ticket}: {first}{more} ({})", s.member, crate::activity::ago(now.saturating_sub(s.asked_at)))
@@ -679,7 +690,7 @@ fn list(shell: &Shell, order: &[(&QuestionSet, Rank)], front: u64, cx: &mut Cont
             );
         }
         let (name, _) = who(shell, set);
-        let first = set.questions.first().map(|q| if q.header.trim().is_empty() { q.question.clone() } else { format!("{} · {}", q.header, q.question) }).unwrap_or_default();
+        let first = set.questions.first().map(|q| if q.header.trim().is_empty() { q.shown().0 } else { format!("{} · {}", q.header, q.shown().0) }).unwrap_or_default();
         let title = crate::decide::review_title(set).unwrap_or(first);
         let id = set.id;
         let open = handle.clone();
@@ -826,6 +837,8 @@ fn card(shell: &Shell, id: u64, place: Place, nav: Option<Nav>, cx: &mut Context
         return Some(folded(p, id, &set, &name, mark, nav.and_then(|n| rest_words(n.rest)), is_fresh(shell, id), &handle));
     }
     let q = draft.question(&set)?.clone();
+    // Its links leave its words: each a row under the question.
+    let (words, links) = q.shown();
     let total = set.questions.len();
     let others = shell.decide_others(id, cx);
     let answered = draft.answered(&others);
@@ -874,7 +887,7 @@ fn card(shell: &Shell, id: u64, place: Place, nav: Option<Nav>, cx: &mut Context
                 // Just asked here: said so, quietly, for a moment.
                 .when(place == Place::Docked && is_fresh(shell, id), |c| c.child(div().text_size(px(11.)).line_height(px(16.)).font_weight(FontWeight::SEMIBOLD).text_color(p.accent).child(t!("decide.new"))))
                 .children(crate::decide::review_title(&set).map(|title| div().text_size(px(12.)).line_height(px(17.)).font_weight(FontWeight::SEMIBOLD).text_color(p.accent).child(title)))
-                .child(div().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(q.question.clone())),
+                .child(div().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(words)),
         )
         .child(h_flex().flex_none().mt(px(-3.)).mr(px(-6.)).gap_0p5().children(fold).child(close));
 
@@ -895,7 +908,8 @@ fn card(shell: &Shell, id: u64, place: Place, nav: Option<Nav>, cx: &mut Context
     let actions_h = if reacts { ACTIONS_H } else { 0. };
     // A whole row of tiles fits what the card has left for its options: the
     // card's height less its question, its box, its attachments and its foot.
-    let tiles_room = (card_tallest(shell, place) - 280. - actions_h).max(0.);
+    let link_rows = super::links::rows(p, render::hash_of(("decide-links", id, draft.step)), &links, shell.link_view_of(set.session, cx), &handle);
+    let tiles_room = (card_tallest(shell, place) - 280. - actions_h - links.len() as f32 * 48.).max(0.);
     let layout = visual::grid_within(width, q.options.len(), described, tiles_room);
     let own = (!q.images.is_empty()).then(|| question_pictures(&shots, id, draft.step, &q, width, &layout, cx));
     let tile_h = visual::tile_height(layout.tile, described) + actions_h;
@@ -976,7 +990,7 @@ fn card(shell: &Shell, id: u64, place: Place, nav: Option<Nav>, cx: &mut Context
     // Measured whether or not it is a grid: the question's own pictures size by it too.
     let options = shots.measured(options, key);
     // The box for their own words stays under the options, never scrolled away: Tab reaches it.
-    let body = v_flex().w_full().min_h_0().gap_2().child(div().flex_none().child(head)).when(anything, |b| b.child(options)).children(other.map(|o| div().flex_none().w_full().child(o))).children(attached.map(|a| div().flex_none().w_full().child(a)));
+    let body = v_flex().w_full().min_h_0().gap_2().child(div().flex_none().child(head)).children(link_rows.map(|r| div().flex_none().w_full().child(r))).when(anything, |b| b.child(options)).children(other.map(|o| div().flex_none().w_full().child(o))).children(attached.map(|a| div().flex_none().w_full().child(a)));
     // Each step slides in from the side it came from.
     let body: AnyElement = if reduce || draft.went == 0 {
         body.into_any_element()
@@ -1576,7 +1590,7 @@ pub fn decided_row(p: Palette, tones: render::Tones, handle: WeakEntity<Shell>, 
             let answer = if r.skipped { t!("decide.skipped").to_owned() } else { rules::answer_text(r) };
             v_flex()
                 .gap_0p5()
-                .child(h_flex().gap_1p5().items_baseline().child(div().flex_none().font_family(MONO).text_size(px(11.5)).text_color(p.muted).child(format!("{}.", n + 1))).child(div().text_size(px(12.5)).line_height(px(18.)).text_color(p.text2).child(r.question.clone())))
+                .child(h_flex().gap_1p5().items_baseline().child(div().flex_none().font_family(MONO).text_size(px(11.5)).text_color(p.muted).child(format!("{}.", n + 1))).child(div().text_size(px(12.5)).line_height(px(18.)).text_color(p.text2).child(said_question(&r.question))))
                 .child(
                     h_flex()
                         .pl(px(18.))
@@ -1596,7 +1610,7 @@ pub fn decided_row(p: Palette, tones: render::Tones, handle: WeakEntity<Shell>, 
 /// many more), who asks.
 pub fn row_text(shell: &Shell, id: u64) -> Option<(String, Option<u32>, String, Rgba)> {
     let set = shell.model.asked.get(id)?;
-    let first = set.questions.first().map(|q| q.question.clone()).unwrap_or_default();
+    let first = set.questions.first().map(|q| q.shown().0).unwrap_or_default();
     let title = match set.questions.len() {
         // The weekly design review, the weekly retro: called so, whatever they ask.
         _ if set.review || set.retro.is_some() => crate::decide::review_title(set).unwrap_or(first),

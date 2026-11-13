@@ -752,7 +752,8 @@ have done it. Your changes so far are kept. Then end your turn.",
                         "items": { "type": "string" },
                         "description": "Each thing the person has to do or answer, one per item — never several joined into one. \
 Each a complete sentence that stands on its own, concrete enough to do without asking; a file or folder named by its path in \
-backticks (`outputs/T-12/shots/`), so the person can open it from the card they answer on. In the person's language.",
+backticks (`outputs/T-12/shots/`), so the person can open it from the card they answer on; an address a Markdown link with \
+a label (`[AWS sign-in](https://…)`), which the card draws as a button. In the person's language.",
                     },
                     "why": { "type": "string", "description": "What it is for, in one line — in the person's language." },
                 },
@@ -884,7 +885,9 @@ visual choice — a logo, colours, a layout, a screen, an icon, an illustration 
 render or mock up each option first (PNG, JPG, WebP, GIF or SVG, in your worktree or the squad's folder), then ask, \
 giving each option its `images`; the person sees them side by side and picks from the pictures. Give a design \
 option its `aspects` too (its type, colour, shape — in the person's language) and the person can answer in one click: \
-this one, this one with an aspect of another (a mix), or another round.",
+this one, this one with an aspect of another (a mix), or another round. Links — a sign-in page, a document — go in a \
+question's `links` with a label each, never inside its `question` text: the person gets them as buttons under the \
+question, and the question stays a short sentence.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -915,6 +918,19 @@ this one, this one with an aspect of another (a mix), or another round.",
                                 },
                             },
                             "multi_select": { "type": "boolean", "description": "Set when several options can be picked together." },
+                            "links": {
+                                "type": "array",
+                                "maxItems": LINKS,
+                                "description": "Every link the question points to — a sign-in page, a document, a pull request. Always here, never written into `question`: the person sees each as a button under the question, with a label, to open and copy. `question` keeps only the words.",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": { "type": "string", "description": "What the link is, in 2 to 5 words, in the person's language: \"AWS sign-in\"." },
+                                        "url": { "type": "string", "description": "The full address, http(s) only." },
+                                    },
+                                    "required": ["url"],
+                                },
+                            },
                             "aspects": ASPECTS_SCHEMA.clone(),
                             "images": {
                                 "type": "array",
@@ -1178,10 +1194,38 @@ pub fn questions_arg(args: &Value) -> Result<Vec<crate::protocol::decide::Questi
         let multi_select = !options.is_empty() && item.get("multi_select").and_then(Value::as_bool).unwrap_or(false);
         // Pictures as the member named them; the runtime finds them where it works.
         let images = arg_strs(item, "images");
-        out.push(Question { question: question.to_owned(), header, options, multi_select, images });
+        let mut question = Question { question: question.to_owned(), header, options, multi_select, images, links: links_arg(item) };
+        // A link written into the words moves to `links`: screens draw it as a row of its own.
+        question.move_links();
+        out.push(question);
     }
     Ok(out)
 }
+
+/// The links a question names (`[{label, url}]`; a bare address counts as a link
+/// without a label): web addresses only, each once.
+fn links_arg(item: &Value) -> Vec<crate::protocol::links::Link> {
+    use crate::protocol::links::{Link, looks};
+    let mut out: Vec<Link> = Vec::new();
+    let items: &[Value] = match item.get("links") {
+        Some(Value::Array(items)) => items,
+        Some(one @ (Value::Object(_) | Value::String(_))) => std::slice::from_ref(one),
+        _ => &[],
+    };
+    for link in items {
+        let (label, url) = match link {
+            Value::String(url) => ("", url.trim()),
+            o => (arg_str(o, "label").unwrap_or_default(), arg_str(o, "url").unwrap_or_default()),
+        };
+        if looks(url).is_some() && !out.iter().any(|l| l.url == url) && out.len() < LINKS {
+            out.push(Link { label: label.chars().take(60).collect::<String>().trim().to_owned(), url: url.to_owned() });
+        }
+    }
+    out
+}
+
+/// At most this many links on a question.
+const LINKS: usize = 4;
 
 /// What of a design option can be mixed into another, at most four, each a
 /// word or two, once each.
@@ -1840,6 +1884,31 @@ mod tests {
             assert_eq!(hand_in["inputSchema"]["properties"]["screen_checks"]["items"]["enum"].as_array().unwrap().len(), 4);
             let doc = hand_in["description"].as_str().unwrap();
             assert!(doc.contains("`images`") && doc.contains("visual") && doc.contains("`screen_checks`"), "{doc}");
+        }
+    }
+
+    #[test]
+    fn links_come_as_their_own_field_and_one_left_in_the_words_is_moved_there() {
+        let long = "https://ap-northeast-2.signin.aws.amazon.com/v1/authorize?response_type=code&client_id=arn%3Aaws%3Asignin%3A%3A%3Adevtools%2Fcross-device&state=abc&code_challenge=xyz";
+        let asked = questions_arg(&json!({ "questions": [
+            { "question": "Sign in to AWS from any device, then type the code shown?", "links": [{ "label": "AWS sign-in", "url": long }, { "url": "javascript:alert(1)" }, "https://a.io/x", { "label": "dup", "url": "https://a.io/x" }] },
+            { "question": format!("Sign in to AWS at this address and type the code shown here: {long}") },
+            { "question": format!("[Open]({long})") },
+        ] }))
+        .unwrap();
+        assert_eq!(asked[0].question, "Sign in to AWS from any device, then type the code shown?");
+        let urls: Vec<_> = asked[0].links.iter().map(|l| (l.label.as_str(), l.url.as_str())).collect();
+        assert_eq!(urls, [("AWS sign-in", long), ("", "https://a.io/x")], "web addresses only, once each");
+        assert_eq!(asked[1].question, "Sign in to AWS at this address and type the code shown here");
+        assert_eq!(asked[1].links[0].url, long, "the encoded query string comes through whole");
+        assert_eq!(asked[2].question, format!("[Open]({long})"), "words that are only a link are left as written");
+        assert_eq!(asked[2].links[0].label, "Open");
+        for is_pm in [true, false] {
+            let tools = tools(is_pm);
+            let decide = tools.iter().find(|t| t["name"] == ASK_DECISION).unwrap();
+            let item = &decide["inputSchema"]["properties"]["questions"]["items"]["properties"]["links"];
+            assert_eq!(item["items"]["properties"]["url"]["type"], "string");
+            assert!(decide["description"].as_str().unwrap().contains("`links`") && item["description"].as_str().unwrap().contains("never written into `question`"));
         }
     }
 

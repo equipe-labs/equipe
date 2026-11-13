@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use equipe_core::protocol::asks::{self, Reply};
-use equipe_core::protocol::{Command, Ticket, TicketId, TicketStatus};
+use equipe_core::protocol::{Command, SessionId, Ticket, TicketId, TicketStatus};
 use equipe_core::t;
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::*;
@@ -118,6 +118,8 @@ pub struct Card {
     pub now: u64,
     /// The one step open, answered in place; the rest are a line each.
     pub current: Option<usize>,
+    /// The member's session, when a sign-in view of its browser is open here.
+    pub view: Option<SessionId>,
 }
 
 impl Card {
@@ -146,6 +148,10 @@ impl Card {
             let (_, hue) = look(&role, &name);
             (name, role, shell.palette.member(hue))
         });
+        let view = t
+            .and_then(|t| t.assignee.as_ref().or(t.owner.as_ref()))
+            .and_then(|name| model.members.iter().find(|m| &m.name == name))
+            .and_then(|m| shell.link_view_of(m.session, cx));
         Some(Rc::new(Card {
             ticket: id,
             title: t.map(|t| t.title.clone()).unwrap_or_default(),
@@ -166,6 +172,7 @@ impl Card {
             attached: (0..asks_len).map(|n| shell.turn.strips.get(&(id, n)).map(|s| s.items().to_vec()).unwrap_or_default()).collect(),
             now: crate::state::now_unix(),
             current,
+            view,
         }))
     }
 
@@ -237,7 +244,8 @@ pub fn looks(shell: &Shell, cx: &App) -> HashMap<TicketId, u64> {
             let mut attached: Vec<String> = shell.turn.strips.iter().filter(|((id, _), _)| *id == t.id).map(|((_, n), s)| format!("{n}:{:?}", s.items().iter().map(|i| (i.id, format!("{:?}", i.stage), i.thumb.is_some())).collect::<Vec<_>>())).collect();
             attached.sort();
             let _ = cx;
-            (t.id, render::hash_of((format!("{:?}", t.status), t.asks(), answered, fields, notes, format!("{picks:?}"), &t.title, attached)))
+            let view = t.assignee.as_ref().or(t.owner.as_ref()).and_then(|name| model.members.iter().find(|m| &m.name == name)).and_then(|m| shell.link_view_of(m.session, cx));
+            (t.id, render::hash_of((format!("{:?}", t.status), t.asks(), answered, fields, notes, format!("{picks:?}"), &t.title, attached, view)))
         })
         .collect()
 }
@@ -438,7 +446,7 @@ fn line(card: &Card, d: &Draw<'_>, n: usize, ask: &str) -> AnyElement {
     let reply = card.replies.get(n).cloned().unwrap_or_default();
     let set = !reply.is_empty();
     let done = reply == Reply::Done;
-    let words: String = ask.lines().next().unwrap_or_default().replace("**", "").replace('`', "");
+    let words: String = equipe_core::protocol::links::words(ask).lines().next().unwrap_or_default().replace("**", "").replace('`', "");
     let handle = d.handle.clone();
     h_flex()
         .id(("turn-line", hash(d.key, n)))
@@ -496,7 +504,11 @@ fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElem
     };
     // On the first line of its words: their line is 22 high, the mark 22.
     let number = number(n, done, edge, fill, ink);
-    let shown = rules::mark_paths(ask, card.named.get(n).map(Vec::as_slice).unwrap_or_default());
+    // An address in the words leaves them: a row of its own under the ask.
+    let found = equipe_core::protocol::links::extract(ask);
+    let (words, link_list) = if found.text.is_empty() { (ask.to_owned(), found.links) } else { (found.text, found.links) };
+    let shown = rules::mark_paths(&words, card.named.get(n).map(Vec::as_slice).unwrap_or_default());
+    let link_rows = super::links::rows(p, hash(key, n << 3 | 7), &link_list, card.view, &d.handle);
     let quiet = done || matches!(reply, Reply::Yours | Reply::Later);
     let text = super::chat::markdown(p, ("turn-ask", hash(key, n)), &shown, crate::theme::UI, crate::theme::UI_PROSE_LINE, if quiet { p.muted } else { p.text }, &d.handle);
     let files = card.named.get(n).filter(|f| !f.is_empty()).map(|files| h_flex().flex_wrap().gap_1p5().children(files.iter().enumerate().map(|(k, f)| file_chip(p, f, hash(key, n << 8 | k)))));
@@ -538,7 +550,7 @@ fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElem
         .gap_2p5()
         .items_start()
         .child(number)
-        .child(v_flex().flex_1().min_w_0().gap_2().child(text).children(files).children(field).children(attached).children(choices).children(note).children(next.map(|b| h_flex().justify_end().child(b))))
+        .child(v_flex().flex_1().min_w_0().gap_2().child(text).children(link_rows).children(files).children(field).children(attached).children(choices).children(note).children(next.map(|b| h_flex().justify_end().child(b))))
         .into_any_element()
 }
 

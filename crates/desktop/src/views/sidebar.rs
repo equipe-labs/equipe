@@ -1782,13 +1782,13 @@ pub fn wait_of(model: &Model, member: &Member) -> Option<Wait> {
         return Some(Wait { ticket: a.ticket.or(member.ticket).or(waiting.map(|t| t.id)), what, waited: None });
     }
     if let Some(set) = model.asked.from(&member.name) {
-        let what = set.questions.first().map(|q| q.question.clone()).unwrap_or_else(|| t!("state.section_decide").to_owned());
+        let what = set.questions.first().map(|q| q.shown().0).unwrap_or_else(|| t!("state.section_decide").to_owned());
         let waited = (set.asked_at > 0).then(|| model.unix.saturating_sub(set.asked_at));
         return Some(Wait { ticket: set.ticket, what, waited });
     }
     let t = waiting?;
     let asks = t.asks();
-    let what = if asks.is_empty() { t!("sidebar.needs_you_what").to_owned() } else { asks.join("; ") };
+    let what = if asks.is_empty() { t!("sidebar.needs_you_what").to_owned() } else { asks.iter().map(|a| equipe_core::protocol::links::words(a)).collect::<Vec<_>>().join("; ") };
     Some(Wait { ticket: Some(t.id), what, waited: model.in_state_for(t) })
 }
 

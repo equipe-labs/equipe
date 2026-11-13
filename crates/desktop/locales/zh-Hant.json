@@ -3983,5 +3983,16 @@
   "status.watched_default": "沒有固定的，顯示緊急工單",
   "status.watched_none": "沒有要關注的工單。在工單頁面點「關注」即可固定。",
   "status.watching": "關注中",
-  "status.weekdays_short": "週日|週一|週二|週三|週四|週五|週六"
+  "status.weekdays_short": "週日|週一|週二|週三|週四|週五|週六",
+  "links.open": "開啟連結",
+  "links.open_signin": "開啟登入頁面",
+  "links.open_signin_of": "開啟 {service} 登入",
+  "links.open_service": "開啟 {service}",
+  "links.open_here": "在此開啟",
+  "links.open_here_tip": "在此視窗中，以該成員瀏覽器的登入檢視開啟",
+  "links.open_browser": "開啟",
+  "links.open_browser_tip": "以這台 Mac 的瀏覽器開啟",
+  "links.copy": "複製連結",
+  "links.copy_tip": "複製位址",
+  "links.copied": "連結已複製"
 }

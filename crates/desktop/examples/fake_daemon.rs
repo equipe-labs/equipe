@@ -630,6 +630,7 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
         ];
         let sets = if pictures::on() { std::iter::once(pictures::question_set(now)).chain(sets).collect() } else { sets };
         let sets = if deciding().as_deref() == Some("scope") { std::iter::once(scope_set(now)).chain(sets).collect() } else { sets };
+        let sets = if deciding().as_deref() == Some("link") { vec![link_set(now)] } else { sets };
         let mut waiting = if queue::on() {
             queue::sets(now)
         } else if briefs::office() {
@@ -649,6 +650,24 @@ fn questions() -> &'static std::sync::Mutex<Vec<QuestionSet>> {
         waiting.extend(studio::question_set(now));
         std::sync::Mutex::new(waiting)
     })
+}
+
+/// `FAKE_DECIDE=link`: a question a member wrote with a long sign-in address in its words.
+fn link_set(now: u64) -> QuestionSet {
+    QuestionSet {
+        id: 9003,
+        session: 3,
+        member: "backend".into(),
+        ticket: Some(70),
+        questions: vec![Question {
+            question: "Sign in to AWS at this address from any device and type the code shown here: https://ap-northeast-2.signin.aws.amazon.com/v1/authorize?response_type=code&client_id=arn%3Aaws%3Asignin%3A%3A%3Adevtools%2Fcross-device&state=3f9c1e5a-77b2-4c1d-9a64-0d2e8b6f41aa&code_challenge=Zq3v1rVnGd0xk8T2yJm4bWc7sLpH5aEoUi9NfXtYhDk&code_challenge_method=SHA-256&redirect_uri=https%3A%2F%2Fap-northeast-2.signin.aws.amazon.com%2Fv1%2Fdevice%2Fcomplete&scope=openid%20profile".into(),
+            header: "AWS code".into(),
+            ..Question::default()
+        }],
+        asked_at: now.saturating_sub(40),
+        review: false,
+        retro: None,
+    }
 }
 
 /// `FAKE_DECIDE=scope`: the plan step's scope card, as the PM puts it.

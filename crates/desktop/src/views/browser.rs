@@ -1235,6 +1235,37 @@ impl BrowserPanel {
         )
     }
 
+    /// Whether a sign-in view is open (or about to be) for the member of `session`'s browser.
+    pub fn has_view_for(&self, session: SessionId) -> bool {
+        self.lane_of_session(session).is_some_and(|lane| self.view_lane.as_deref() == Some(lane) || self.view_ask.as_ref().is_some_and(|(l, _)| l == lane))
+    }
+
+    fn lane_of_session(&self, session: SessionId) -> Option<&str> {
+        self.lanes.iter().find(|(_, l)| l.session == Some(session)).map(|(lane, _)| lane.as_str())
+    }
+
+    /// "Open here": the member's sign-in view goes to `url` — on the panel,
+    /// which comes up. Whether there was a view to take it.
+    pub fn open_here(&mut self, session: SessionId, url: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !crate::signin_view::allowed(url) {
+            return false;
+        }
+        let Some(lane) = self.lane_of_session(session).map(str::to_owned) else { return false };
+        if self.view_lane.as_deref() == Some(lane.as_str()) && let Some(view) = self.view.as_ref() {
+            view.navigate(url);
+        } else if self.view_ask.as_ref().is_some_and(|(l, _)| *l == lane) {
+            self.view_ask = Some((lane, url.to_owned()));
+        } else {
+            return false;
+        }
+        self.open = true;
+        self.shown = true;
+        cx.emit(PanelEvent::Opened);
+        self.ensure_link(window, cx);
+        cx.notify();
+        true
+    }
+
     /// A lane's sign-in view is over: dropped, and its private store with it.
     fn drop_view(&mut self, lane: &str) {
         if self.view_lane.as_deref() == Some(lane) {

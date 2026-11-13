@@ -1070,7 +1070,7 @@ pub fn wait_note(model: &Model, t: &Ticket) -> Option<WaitNote> {
 
 pub fn first_need(t: &Ticket) -> Option<String> {
     let note = t.note.as_deref()?;
-    equipe_core::board::waiting_needs(note).first().map(|s| (*s).to_owned()).or_else(|| checklist(note).into_iter().next())
+    equipe_core::board::waiting_needs(note).first().map(|s| equipe_core::protocol::links::words(s)).or_else(|| checklist(note).into_iter().next().map(|s| equipe_core::protocol::links::words(&s)))
 }
 
 // ── what accepting does ──
@@ -1726,6 +1726,9 @@ mod tests {
         let mut t = ticket(1, "waiting", "/p", &[]);
         t.note = Some(note.into());
         assert_eq!(first_need(&t).as_deref(), Some("Create the API key"));
+        // A long link in the need is not what the one-line summary says.
+        t.note = Some(equipe_core::board::waiting_note(&["Sign in at https://ap-northeast-2.signin.aws.amazon.com/v1/authorize?client_id=arn%3Aaws&state=abc and type the code".to_owned()], None));
+        assert_eq!(first_need(&t).as_deref(), Some("Sign in at and type the code"));
     }
 
     /// A member on `ticket`, in the middle of a turn (`working`) or between turns.

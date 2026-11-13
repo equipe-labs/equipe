@@ -662,6 +662,7 @@ fn questions() -> QuestionSet {
                 options: vec![choice("httpOnly 쿠키 (추천)", "스크립트가 못 읽어 안전합니다"), choice("localStorage", "간단하지만 XSS에 노출됩니다")],
                 multi_select: false,
                 images: Vec::new(),
+                links: Vec::new(),
             },
             Question {
                 question: "어떤 로그인을 먼저 낼까요?".into(),
@@ -669,6 +670,7 @@ fn questions() -> QuestionSet {
                 options: vec![choice("이메일", ""), choice("Google", ""), choice("Apple", "")],
                 multi_select: true,
                 images: Vec::new(),
+                links: Vec::new(),
             },
         ],
         asked_at: NOW / 1000,
@@ -697,6 +699,7 @@ fn visual_questions() -> QuestionSet {
             options: vec![choice("e. + 파란 원 점 (추천)", "사이트와 앱을 하나로", &[LOGO_A]), choice("e. 회색 점 유지", "지금 앱 그대로", &[LOGO_B])],
             multi_select: false,
             images: Vec::new(),
+            links: Vec::new(),
         }],
         asked_at: NOW / 1000,
         review: false,

@@ -3983,5 +3983,16 @@
   "status.watched_default": "没有固定的，显示紧急工单",
   "status.watched_none": "没有要关注的工单。在工单页面点“关注”即可固定。",
   "status.watching": "关注中",
-  "status.weekdays_short": "周日|周一|周二|周三|周四|周五|周六"
+  "status.weekdays_short": "周日|周一|周二|周三|周四|周五|周六",
+  "links.open": "打开链接",
+  "links.open_signin": "打开登录页面",
+  "links.open_signin_of": "打开 {service} 登录",
+  "links.open_service": "打开 {service}",
+  "links.open_here": "在此打开",
+  "links.open_here_tip": "在此窗口中，用该成员浏览器的登录视图打开",
+  "links.open_browser": "打开",
+  "links.open_browser_tip": "用这台 Mac 的浏览器打开",
+  "links.copy": "复制链接",
+  "links.copy_tip": "复制地址",
+  "links.copied": "链接已复制"
 }
