@@ -4107,5 +4107,16 @@
   "status.watched_default": "urgent tickets, nothing pinned",
   "status.watched_none": "Nothing to watch. Pin a ticket with Watch on its page.",
   "status.watching": "Watching",
-  "status.weekdays_short": "Sun|Mon|Tue|Wed|Thu|Fri|Sat"
+  "status.weekdays_short": "Sun|Mon|Tue|Wed|Thu|Fri|Sat",
+  "links.open": "Open link",
+  "links.open_signin": "Open sign-in page",
+  "links.open_signin_of": "Open {service} sign-in",
+  "links.open_service": "Open {service}",
+  "links.open_here": "Open here",
+  "links.open_here_tip": "Open it in the sign-in view of this member's browser, in this window",
+  "links.open_browser": "Open",
+  "links.open_browser_tip": "Open it in this Mac's browser",
+  "links.copy": "Copy link",
+  "links.copy_tip": "Copy the address",
+  "links.copied": "Link copied"
 }

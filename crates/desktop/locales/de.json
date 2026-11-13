@@ -4107,5 +4107,16 @@
   "status.watched_default": "dringende Tickets, nichts angeheftet",
   "status.watched_none": "Nichts zu beobachten. Hefte ein Ticket mit „Beobachten“ auf seiner Seite an.",
   "status.watching": "Wird beobachtet",
-  "status.weekdays_short": "So|Mo|Di|Mi|Do|Fr|Sa"
+  "status.weekdays_short": "So|Mo|Di|Mi|Do|Fr|Sa",
+  "links.open": "Link öffnen",
+  "links.open_signin": "Anmeldeseite öffnen",
+  "links.open_signin_of": "{service}-Anmeldung öffnen",
+  "links.open_service": "{service} öffnen",
+  "links.open_here": "Hier öffnen",
+  "links.open_here_tip": "In der Anmeldeansicht des Browsers dieses Mitglieds öffnen, in diesem Fenster",
+  "links.open_browser": "Öffnen",
+  "links.open_browser_tip": "Im Browser dieses Macs öffnen",
+  "links.copy": "Link kopieren",
+  "links.copy_tip": "Adresse kopieren",
+  "links.copied": "Link kopiert"
 }

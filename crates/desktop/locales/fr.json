@@ -4107,5 +4107,16 @@
   "status.watched_default": "tickets urgents, rien d'épinglé",
   "status.watched_none": "Rien à suivre. Épinglez un ticket avec « Suivre » sur sa page.",
   "status.watching": "Suivi",
-  "status.weekdays_short": "dim.|lun.|mar.|mer.|jeu.|ven.|sam."
+  "status.weekdays_short": "dim.|lun.|mar.|mer.|jeu.|ven.|sam.",
+  "links.open": "Ouvrir le lien",
+  "links.open_signin": "Ouvrir la page de connexion",
+  "links.open_signin_of": "Ouvrir la connexion à {service}",
+  "links.open_service": "Ouvrir {service}",
+  "links.open_here": "Ouvrir ici",
+  "links.open_here_tip": "L'ouvrir dans la vue de connexion du navigateur de ce membre, dans cette fenêtre",
+  "links.open_browser": "Ouvrir",
+  "links.open_browser_tip": "L'ouvrir dans le navigateur de ce Mac",
+  "links.copy": "Copier le lien",
+  "links.copy_tip": "Copier l'adresse",
+  "links.copied": "Lien copié"
 }

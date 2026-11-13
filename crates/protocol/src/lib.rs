@@ -23,6 +23,7 @@ pub mod metrics;
 pub mod plan_use;
 pub mod engines;
 pub mod lanes;
+pub mod links;
 pub mod tiers;
 pub mod harness;
 pub mod design;

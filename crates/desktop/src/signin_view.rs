@@ -31,6 +31,8 @@ impl SignInView {
 
     pub fn set_visible(&mut self, _: bool) {}
 
+    pub fn navigate(&self, _: &str) {}
+
     pub fn finish(self) -> (Vec<String>, Vec<equipe_core::protocol::HandoffCookie>) {
         (Vec::new(), Vec::new())
     }
@@ -126,6 +128,14 @@ mod mac {
 
         pub fn set_bounds(&self, at: (f32, f32, f32, f32)) {
             let _ = self.webview.set_bounds(rect(at.0, at.1, at.2, at.3));
+        }
+
+        /// Go to another page of the same view (its store, and the hosts it visited, kept).
+        pub fn navigate(&self, url: &str) {
+            if allowed(url) {
+                self.visited.borrow_mut().extend(host_of(url));
+                let _ = self.webview.load_url(url);
+            }
         }
 
         pub fn set_visible(&mut self, shown: bool) {

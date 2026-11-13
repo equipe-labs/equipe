@@ -129,6 +129,26 @@ fn escape(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
+/// A waiting ask as a message line: its words with each long link taken out
+/// of the sentence, and the links on lines of their own under it (a label,
+/// tapped to open) — never an address cut off mid-way.
+fn ask_with_links(ask: &str, max: usize) -> String {
+    use equipe_core::protocol::links;
+    let found = links::extract(ask);
+    let text = if found.text.is_empty() { ask.trim().to_owned() } else { found.text };
+    let mut out = escape(&cut(&text, max));
+    for link in found.links.iter().filter(|l| !text.contains(&l.url)) {
+        let looks = links::looks(&link.url);
+        let name = match (link.label.as_str(), &looks) {
+            ("", Some(l)) => l.host.clone(),
+            ("", None) => link.url.clone(),
+            (label, _) => label.to_owned(),
+        };
+        out.push_str(&format!("\n\u{1f517} <a href=\"{}\">{}</a>", escape(&link.url).replace('"', "&quot;"), escape(&cut(&name, 60))));
+    }
+    out
+}
+
 fn cut(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_owned();
@@ -252,7 +272,7 @@ impl Bridge {
         match t.note.as_deref().filter(|n| !n.trim().is_empty()) {
             // Its asks one under another, numbered, and why.
             Some(note) if !asks.is_empty() => {
-                let listed = asks.iter().enumerate().map(|(n, a)| format!("{}. {}", n + 1, escape(&cut(a, 600)))).collect::<Vec<_>>().join("\n");
+                let listed = asks.iter().enumerate().map(|(n, a)| format!("{}. {}", n + 1, ask_with_links(a, 600))).collect::<Vec<_>>().join("\n");
                 let why = equipe_core::protocol::asks::waiting_why(note).map(|w| format!("\n<i>{}</i>", escape(&w))).unwrap_or_default();
                 text.push_str(&format!("{}\n\n{listed}{why}", t!("telegram.needs_you_with_note", who = who)));
             }
@@ -1133,6 +1153,16 @@ mod tests {
         let (commands, said) = b.on_text("Added the DNS record", Some(300), 301);
         assert_eq!(commands, vec![("acme".to_owned(), Command::Resume { squad: "acme".into(), ticket: 4, note: "Added the DNS record".into() })]);
         assert_eq!(said, vec![Out::Seen { message: 301 }]);
+    }
+
+    #[test]
+    fn a_long_link_in_a_waiting_ask_goes_on_a_line_of_its_own_with_a_label() {
+        let url = "https://ap-northeast-2.signin.aws.amazon.com/v1/authorize?response_type=code&client_id=arn%3Aaws&state=abc&code_challenge=xyz";
+        let line = ask_with_links(&format!("Sign in to AWS and type the code shown here: {url}"), 600);
+        assert_eq!(line, format!("Sign in to AWS and type the code shown here\n\u{1f517} <a href=\"{}\">ap-northeast-2.signin.aws.amazon.com</a>", url.replace('&', "&amp;")));
+        let labelled = ask_with_links(&format!("Open [AWS sign-in]({url}) first"), 600);
+        assert!(labelled.starts_with("Open first\n") && labelled.contains(">AWS sign-in</a>"), "{labelled}");
+        assert_eq!(ask_with_links("Plain ask & more", 600), "Plain ask &amp; more");
     }
 
     #[test]

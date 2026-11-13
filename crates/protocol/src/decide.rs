@@ -82,9 +82,34 @@ pub struct Question {
     /// their paths on the daemon's machine; left out when none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<String>,
+    /// Links the question points to (a sign-in page, a document), each
+    /// drawn as a row under it rather than written into its words; left out
+    /// when none (and from an older daemon, whose questions may still carry
+    /// one in their words: [`Question::shown`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<crate::links::Link>,
 }
 
 impl Question {
+    /// The question as screens show it: its words with every long link taken
+    /// out of them, and all its links — those it carries and those its words
+    /// did, once each. Words left empty by it are kept as written.
+    pub fn shown(&self) -> (String, Vec<crate::links::Link>) {
+        let found = crate::links::extract(&self.question);
+        let text = if found.text.is_empty() { self.question.trim().to_owned() } else { found.text };
+        (text, crate::links::merged(&self.links, found.links))
+    }
+
+    /// Move the links its words carry into `links`, so the words say only
+    /// what is asked.
+    pub fn move_links(&mut self) {
+        let (text, links) = self.shown();
+        if links.len() != self.links.len() || text != self.question.trim() {
+            self.question = text;
+            self.links = links;
+        }
+    }
+
     /// Whether any option is shown as a picture: then the options are a
     /// grid of pictures rather than a list.
     pub fn is_visual(&self) -> bool {
@@ -662,6 +687,28 @@ mod tests {
         assert_eq!(wire["questions"][0]["options"][0]["aspects"], json!(["type", "colour"]));
         assert!(serde_json::to_value(set()).unwrap()["questions"][0]["options"][0].get("aspects").is_none());
         assert_eq!(serde_json::from_value::<QuestionSet>(wire).unwrap(), design());
+    }
+
+    #[test]
+    fn a_question_shows_its_links_apart_from_its_words_and_the_wire_is_as_before_without_any() {
+        use crate::links::Link;
+        let url = "https://ap-northeast-2.signin.aws.amazon.com/v1/authorize?client_id=arn%3Aaws&state=abc&code_challenge=xyz";
+        let old = Question { question: format!("Sign in to AWS and type the code shown: {url}"), ..Question::default() };
+        let (words, links) = old.shown();
+        assert_eq!((words.as_str(), links.len()), ("Sign in to AWS and type the code shown", 1));
+        // An older daemon's words, moved: the same for every screen.
+        let mut moved = old.clone();
+        moved.move_links();
+        assert_eq!((moved.question.as_str(), moved.links.clone()), ("Sign in to AWS and type the code shown", vec![Link { label: String::new(), url: url.into() }]));
+        assert_eq!(moved.shown(), (moved.question.clone(), moved.links.clone()), "moving twice changes nothing");
+        // A member's own link keeps its label, and is not found twice.
+        let own = Question { question: format!("Open {url}"), links: vec![Link { label: "AWS sign-in".into(), url: url.into() }], ..Question::default() };
+        assert_eq!(own.shown(), ("Open".to_owned(), vec![Link { label: "AWS sign-in".into(), url: url.into() }]));
+        // On the wire only when there are links.
+        assert!(wire_of(&set())["questions"][0].get("links").is_none());
+        let wire = serde_json::to_value(&moved).unwrap();
+        assert_eq!(wire["links"], json!([{ "url": url }]));
+        assert_eq!(serde_json::from_value::<Question>(wire).unwrap(), moved);
     }
 
     fn asked(id: u64, member: &str, ticket: Option<TicketId>, questions: &[(&str, &[&str])], asked_at: u64) -> QuestionSet {

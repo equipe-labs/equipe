@@ -4005,5 +4005,16 @@
   "status.watched_default": "固定がないため緊急チケットを表示",
   "status.watched_none": "ウォッチするものはありません。チケットのページで「ウォッチ」を押すと固定できます。",
   "status.watching": "ウォッチ中",
-  "status.weekdays_short": "日|月|火|水|木|金|土"
+  "status.weekdays_short": "日|月|火|水|木|金|土",
+  "links.open": "リンクを開く",
+  "links.open_signin": "ログインページを開く",
+  "links.open_signin_of": "{service}のログインを開く",
+  "links.open_service": "{service}を開く",
+  "links.open_here": "ここで開く",
+  "links.open_here_tip": "このウィンドウ内で、このメンバーのブラウザのログイン画面で開きます",
+  "links.open_browser": "開く",
+  "links.open_browser_tip": "この Mac のブラウザで開きます",
+  "links.copy": "リンクをコピー",
+  "links.copy_tip": "アドレスをコピーします",
+  "links.copied": "リンクをコピーしました"
 }

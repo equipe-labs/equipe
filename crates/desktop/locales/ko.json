@@ -4006,5 +4006,16 @@
   "status.watched_default": "고정한 것이 없어 긴급 티켓을 보여줘요",
   "status.watched_none": "지켜볼 티켓이 없어요. 티켓 페이지의 '지켜보기'로 고정해 보세요.",
   "status.watching": "지켜보는 중",
-  "status.weekdays_short": "일|월|화|수|목|금|토"
+  "status.weekdays_short": "일|월|화|수|목|금|토",
+  "links.open": "링크 열기",
+  "links.open_signin": "로그인 페이지 열기",
+  "links.open_signin_of": "{service} 로그인 열기",
+  "links.open_service": "{service} 열기",
+  "links.open_here": "여기서 열기",
+  "links.open_here_tip": "이 창 안에서, 이 멤버 브라우저의 로그인 화면으로 엽니다",
+  "links.open_browser": "열기",
+  "links.open_browser_tip": "이 Mac의 브라우저로 엽니다",
+  "links.copy": "링크 복사",
+  "links.copy_tip": "주소를 복사합니다",
+  "links.copied": "링크를 복사했습니다"
 }

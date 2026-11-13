@@ -4107,5 +4107,16 @@
   "status.watched_default": "tickets urgentes, nada fijado",
   "status.watched_none": "Nada que vigilar. Fija un ticket con «Vigilar» en su página.",
   "status.watching": "Vigilando",
-  "status.weekdays_short": "dom|lun|mar|mié|jue|vie|sáb"
+  "status.weekdays_short": "dom|lun|mar|mié|jue|vie|sáb",
+  "links.open": "Abrir enlace",
+  "links.open_signin": "Abrir página de inicio de sesión",
+  "links.open_signin_of": "Abrir inicio de sesión de {service}",
+  "links.open_service": "Abrir {service}",
+  "links.open_here": "Abrir aquí",
+  "links.open_here_tip": "Abrirlo en la vista de inicio de sesión del navegador de este miembro, en esta ventana",
+  "links.open_browser": "Abrir",
+  "links.open_browser_tip": "Abrirlo en el navegador de este Mac",
+  "links.copy": "Copiar enlace",
+  "links.copy_tip": "Copiar la dirección",
+  "links.copied": "Enlace copiado"
 }
