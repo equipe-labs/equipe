@@ -409,6 +409,7 @@
   "notice.fresh_full": "── ein neues Gespräch: das letzte hatte {used}k von {window}k Tokens gefüllt ──",
   "notice.memory_updated": "✎ {name} hat für den Squad aktualisiert: {what} · /memory zeigt, was der Squad weiß",
   "notice.model": "Ab dem nächsten Zug: {model}. Das Gespräch geht weiter.",
+  "notice.model_premium": "Fable ist ein Premium-Modell: Es kostet den Tarif ein Mehrfaches von Opus. Es läuft nur für dieses Mitglied, bis du es änderst.",
   "notice.on_nebius": "Läuft mit NVIDIA Nemotron ({model}) über Nebius Token Factory, auf dem Agenten der Codex CLI. Abgerechnet pro Token über den verbundenen Nebius-Schlüssel.",
   "notice.on_open_model": "Läuft auf {model} über {provider}, mit dem Agenten der Codex-CLI. {provider} rechnet pro Token ab.",
   "notice.pm_accepted": "✓ Der PM hat {ids} angenommen und in main gemergt — {checked}",

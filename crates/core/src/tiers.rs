@@ -214,6 +214,24 @@ pub fn target(tier: ModelTier, engine: Engine) -> (&'static str, &'static str) {
     }
 }
 
+/// The premium Claude family: it costs several times Opus against the plan,
+/// so equipe never lands a member on it by itself.
+pub const PREMIUM_FAMILY: &str = "fable";
+
+/// The model an automatic choice may land on: `model`, except that Claude's
+/// premium family ([`PREMIUM_FAMILY`], by alias or full id) becomes Opus —
+/// effort untouched — unless the person picked it in that same action
+/// (`explicit`). Every path that chooses a model without the person (engine
+/// moves, a restored home or previous model, tier targets, step-downs and
+/// step-ups, role defaults on a new member) goes through here, so a premium
+/// model the person once chose never carries over silently. Other engines
+/// and models pass as they are.
+pub fn cap_premium(engine: Engine, model: Option<&str>, explicit: bool) -> Option<String> {
+    let model = model?;
+    let premium = engine == Engine::Claude && !model.trim_start().starts_with('@') && crate::models::family(model).is_some_and(|f| f.alias == PREMIUM_FAMILY);
+    Some(if premium && !explicit { "opus".to_owned() } else { model.to_owned() })
+}
+
 /// How strong a model family is on its engine; `None` for one equipe can't
 /// place: a provider's, an unknown family.
 fn family_rank(engine: Engine, family: &str) -> Option<u8> {
@@ -331,6 +349,8 @@ pub fn resolve(tier: ModelTier, m: &Member<'_>, floor_kept: bool) -> (Option<Str
         _ => true,
     };
     let model = if keep_model { m.model.map(str::to_owned) } else { m.model_of(family).or_else(|| m.model.map(str::to_owned)) };
+    // A member the person put on the premium family still runs its lanes on Opus.
+    let model = cap_premium(m.engine, model.as_deref(), false);
     // The tier's effort, as near as this model takes it without going over.
     let offered = model.as_deref().map(|id| m.efforts(id)).unwrap_or_default();
     let want = effort_rank(effort).unwrap_or(2);
@@ -392,6 +412,8 @@ pub fn choose(prev: Option<&TicketModel>, rule: Option<&Rule>, m: &Member<'_>, c
             }
         },
     };
+    // A lane never starts on the premium family by itself, whatever its member runs.
+    let model = cap_premium(m.engine, model.as_deref(), false);
     let fresh = prev.fresh;
     Choice { ticket: TicketModel { model: model.clone(), effort: effort.clone(), ..ticket }, model, effort, fresh }
 }
@@ -508,6 +530,32 @@ mod tests {
         assert!(risk_tags("Make the button blue").is_empty());
         let r = rule(&work("frontend", TicketKind::Code, "Fix a typo on the login page", "Run `npm test`.")).unwrap();
         assert_eq!((r.tier, r.reason, r.never_lower, r.risk.as_slice()), (ModelTier::Deep, TierReason::Risk, true, &[RiskTag::Auth][..]));
+    }
+
+    #[test]
+    fn the_premium_family_is_only_ever_picked_by_the_person() {
+        assert_eq!(cap_premium(Engine::Claude, Some("fable"), false).as_deref(), Some("opus"));
+        assert_eq!(cap_premium(Engine::Claude, Some("claude-fable-5-1[1m]"), false).as_deref(), Some("opus"));
+        assert_eq!(cap_premium(Engine::Claude, Some("fable"), true).as_deref(), Some("fable"));
+        assert_eq!(cap_premium(Engine::Claude, Some("claude-opus-5-5"), false).as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(cap_premium(Engine::Codex, Some("gpt-6.1-sol"), false).as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(cap_premium(Engine::Claude, None, false), None);
+        // Tier targets, a member the person put on it, and a step up never give it.
+        let fable = Member { engine: Engine::Claude, model: Some("fable"), effort: Some("max"), catalog: &[] };
+        for tier in ModelTier::ALL {
+            assert_ne!(target(tier, Engine::Claude).0, "fable");
+            for kept in [true, false] {
+                assert_ne!(resolve(tier, &fable, kept).0.as_deref(), Some("fable"), "{tier:?} {kept}");
+            }
+        }
+        let rule = Rule { tier: ModelTier::Strong, reason: TierReason::Code, never_lower: false, below_floor: false, risk: Vec::new() };
+        let prev = TicketModel { tier: Some(ModelTier::Max), by: TierBy::Escalation, ..TicketModel::default() };
+        for prev in [None, Some(&prev)] {
+            assert_ne!(choose(prev, Some(&rule), &fable, ModelChoice::QualityFirst).model.as_deref(), Some("fable"));
+            assert_ne!(choose(prev, None, &fable, ModelChoice::Off).model.as_deref(), Some("fable"));
+        }
+        let up = step_up(&TicketModel { tier: Some(ModelTier::Deep), ..TicketModel::default() }).unwrap();
+        assert_ne!(choose(Some(&up), Some(&rule), &fable, ModelChoice::QualityFirst).model.as_deref(), Some("fable"));
     }
 
     #[test]

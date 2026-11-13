@@ -409,6 +409,7 @@
   "notice.fresh_full": "── a fresh conversation: the last one had filled {used}k of {window}k tokens ──",
   "notice.memory_updated": "✎ {name} updated for the squad: {what} · /memory shows what the squad knows",
   "notice.model": "From its next turn: {model}. Its conversation carries on.",
+  "notice.model_premium": "Fable is a premium model: it costs several times Opus against the plan. It runs only for this member, until you change it.",
   "notice.on_nebius": "Runs on NVIDIA Nemotron ({model}) through Nebius Token Factory, on the Codex CLI's agent. Billed per token to the Nebius key you connected.",
   "notice.on_open_model": "Runs on {model} through {provider}, on the Codex CLI's agent. Billed per token by {provider}.",
   "notice.pm_accepted": "✓ The PM accepted {ids} and merged it into main — {checked}",

@@ -405,6 +405,7 @@
   "notice.fresh_full": "── 新しい会話: 前の会話が {window}k トークン中 {used}k を使っていました ──",
   "notice.memory_updated": "✎ {name} がスクワッドの記憶を更新しました: {what} · /memory でスクワッドが知っていることを表示",
   "notice.model": "次のターンから {model}。会話はそのまま続きます。",
+  "notice.model_premium": "Fable はプレミアムモデルで、プランの消費は Opus の数倍です。このメンバーにだけ、変更するまで使われます。",
   "notice.on_nebius": "Nebius Token Factory の NVIDIA Nemotron（{model}）で、Codex CLI のエージェント上で動きます。接続した Nebius のキーにトークン単位で課金されます。",
   "notice.on_open_model": "{provider} の {model} で、Codex CLI のエージェント上で動きます。料金は {provider} でトークン単位にかかります。",
   "notice.pm_accepted": "✓ PM が {ids} を承認して main にマージしました — {checked}",

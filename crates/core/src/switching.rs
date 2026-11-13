@@ -441,7 +441,7 @@ pub fn step_down(engine: Engine, role: &str, model: Option<&str>, effort: Option
         0
     };
     let now = LEVELS.iter().position(|l| Some(*l) == effort).unwrap_or(2);
-    (now > floor).then(|| (model.map(str::to_owned), Some(LEVELS[now - 1].to_owned())))
+    (now > floor).then(|| (crate::tiers::cap_premium(engine, model, false), Some(LEVELS[now - 1].to_owned())))
 }
 
 /// Something to tell the person once: an engine reached a level.
@@ -667,7 +667,7 @@ fn back_home(squad: &Squad<'_>, memory: &Memory) -> Option<Batch> {
         let a = assess(reading, memory, now);
         let moves = movers
             .into_iter()
-            .map(|m| Move { member: m.name.clone(), role: m.role.clone(), from: m.engine, to: home, model: m.home_model.clone(), effort: None, was_model: m.model.clone(), done: false, now: false })
+            .map(|m| Move { member: m.name.clone(), role: m.role.clone(), from: m.engine, to: home, model: crate::tiers::cap_premium(home, m.home_model.as_deref(), false), effort: None, was_model: m.model.clone(), done: false, now: false })
             .collect();
         let window = reading.five_hour.map(|_| Window::FiveHour).or(reading.weekly.map(|_| Window::Weekly));
         let used = reading.five_hour.or(reading.weekly).filter(|w| w.resets_at > now).map_or(0, |w| w.used_percent);

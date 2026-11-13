@@ -542,3 +542,39 @@ async fn a_conversation_without_a_ticket_on_an_exhausted_engine_keeps_what_it_wa
     let asked = prompt_with(&dir, "Are you there?").await;
     assert!(asked.contains("Are you there?"), "{asked}");
 }
+
+fn started_model(seen: &[Event], name: &str) -> Option<Option<String>> {
+    seen.iter().find_map(|e| match e {
+        Event::SessionStarted { member: Some(m), model, .. } if m.name == name => Some(model.clone()),
+        _ => None,
+    })
+}
+
+#[tokio::test]
+async fn a_person_move_with_no_model_chosen_never_lands_on_the_premium_family_even_with_a_role_default_of_it() {
+    let (bin, _dir) = claude(ANSWERS);
+    let (handle, mut events) = pm_and_codex_qa(&bin).await;
+    let default = equipe_core::protocol::RoleModel { role: "qa".into(), engine: Engine::Claude, model: Some("fable".into()), effort: None };
+    handle.send(Command::SetRoleModel { squad: "acme".into(), default });
+    handle.send(Command::MoveEngine { squad: "acme".into(), members: vec!["qa".into()], engine: Engine::Claude, model: None, effort: None, now: true });
+    let seen = until(&mut events, |e| matches!(e, Event::SessionStarted { member: Some(m), engine: Engine::Claude, .. } if m.name == "qa")).await;
+    assert_eq!(started_model(&seen, "qa"), Some(Some("opus".to_owned())), "{seen:#?}");
+}
+
+#[tokio::test]
+async fn a_person_move_that_names_the_premium_family_keeps_it() {
+    let (bin, _dir) = claude(ANSWERS);
+    let (handle, mut events) = pm_and_codex_qa(&bin).await;
+    handle.send(Command::MoveEngine { squad: "acme".into(), members: vec!["qa".into()], engine: Engine::Claude, model: Some("fable".into()), effort: None, now: true });
+    let seen = until(&mut events, |e| matches!(e, Event::SessionStarted { member: Some(m), engine: Engine::Claude, .. } if m.name == "qa")).await;
+    assert_eq!(started_model(&seen, "qa"), Some(Some("fable".to_owned())), "{seen:#?}");
+}
+
+#[tokio::test]
+async fn setting_the_premium_family_keeps_it_and_says_what_it_costs() {
+    let (bin, _dir) = claude(ANSWERS);
+    let (handle, mut events) = pm_and_codex_qa(&bin).await;
+    handle.send(Command::SetModel { session: 1, model: "fable".into() });
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { session: 1, text, .. } if text.contains("premium"))).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::ModelKnown { session: 1, model, .. } if model == "fable")));
+}
