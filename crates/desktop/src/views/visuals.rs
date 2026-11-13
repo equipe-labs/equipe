@@ -1291,7 +1291,15 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
                 })
                 .into_any_element()
         }
-        (None, Look::Gone(why)) => v_flex()
+        // Not here yet, or gone: a small card in the middle of where the
+        // picture will be (the stage centres that frame, not the card).
+        (None, Look::Gone(why)) => div()
+            .w(px(zoomed.0))
+            .h(px(zoomed.1))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(v_flex()
             .size(px(220.))
             .gap_2()
             .rounded(px(R_LG))
@@ -1301,10 +1309,11 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
             .text_size(px(13.))
             .text_color(rgba(0xFFFFFFB3))
             .child(icon(Icon::Camera, 28., rgba(0xFFFFFFB3)))
-            .child(why_words(*why))
+            .child(why_words(*why)))
             .into_any_element(),
         _ => div()
-            .size(px(220.))
+            .w(px(zoomed.0))
+            .h(px(zoomed.1))
             .flex()
             .items_center()
             .justify_center()
