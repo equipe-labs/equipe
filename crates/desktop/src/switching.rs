@@ -232,6 +232,34 @@ impl Gauge {
     }
 }
 
+/// Every engine that was read has run out of a window: no member can work
+/// until the first of them comes back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AllOut {
+    /// The window each engine is held by is the week (not only the five hours).
+    pub weekly: bool,
+    /// When the first engine is usable again (unix seconds).
+    pub resumes_at: i64,
+}
+
+/// Whether every engine in use is at its limit — the sidebar's one banner
+/// over the per-engine lines. Engines never read are not in use; a reading
+/// gone stale is not trusted to say "out", so it clears the banner.
+pub fn all_out(meters: &[Meter], now: i64) -> Option<AllOut> {
+    let read: Vec<&Meter> = meters.iter().filter(|m| m.read_at.is_some() && !m.gauges.is_empty()).collect();
+    if read.is_empty() || read.iter().any(|m| m.stale) {
+        return None;
+    }
+    let mut back: Vec<(i64, bool)> = Vec::new();
+    for m in &read {
+        // The engine is back once every window it is out of has reset.
+        let held = m.gauges.iter().filter(|g| g.tone == Tone::Out && g.resets_at > now).max_by_key(|g| g.resets_at)?;
+        back.push((held.resets_at, held.window == Window::Weekly));
+    }
+    let resumes_at = back.iter().map(|(at, _)| *at).min()?;
+    Some(AllOut { weekly: back.iter().all(|(_, weekly)| *weekly), resumes_at })
+}
+
 /// The window used most of the plans read, with its engine — the one back
 /// sooner when two are as used.
 pub fn tightest(meters: &[Meter]) -> Option<(Engine, Gauge)> {
@@ -611,6 +639,24 @@ mod tests {
         assert!(!worth_showing(&[unread.clone(), unread.clone()], false), "nothing read: the space stays the team's");
         assert!(worth_showing(&[unread], true), "a switch waits on the person");
         assert!(!worth_showing(&[], false));
+    }
+
+    #[test]
+    fn all_engines_out_says_so_once_and_when_work_resumes() {
+        let out = |engine, window, resets| meter(engine, &[(Window::FiveHour, 10, NOW + 100), (window, 100, resets)], Some(NOW));
+        let claude = out(Engine::Claude, Window::Weekly, NOW + 5 * 86_400);
+        let codex = out(Engine::Codex, Window::Weekly, NOW + 2 * 86_400);
+        assert_eq!(all_out(&[claude.clone(), codex.clone()], NOW), Some(AllOut { weekly: true, resumes_at: NOW + 2 * 86_400 }), "the first engine back");
+        let five = out(Engine::Codex, Window::FiveHour, NOW + 3_600);
+        assert_eq!(all_out(&[claude.clone(), five], NOW), Some(AllOut { weekly: false, resumes_at: NOW + 3_600 }), "a five-hour hold is not called weekly");
+        let calm = meter(Engine::Codex, &[(Window::Weekly, 40, NOW + 86_400)], Some(NOW));
+        assert_eq!(all_out(&[claude.clone(), calm], NOW), None, "one engine with room: not all");
+        let unread = meter(Engine::Codex, &[], None);
+        assert!(all_out(&[claude.clone(), unread.clone()], NOW).is_some(), "an engine never read is not in use");
+        assert_eq!(all_out(&[unread.clone(), unread], NOW), None, "nothing read");
+        let mut old = claude;
+        old.stale = true;
+        assert_eq!(all_out(&[old, codex], NOW), None, "a stale reading is not trusted to say out");
     }
 
     #[test]

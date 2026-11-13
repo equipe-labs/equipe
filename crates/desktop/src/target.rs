@@ -186,10 +186,6 @@ pub struct Remembered {
     pub views: Vec<KeptView>,
     /// How wide the sidebar was left (px).
     pub sidebar_width: Option<f32>,
-    /// How tall the sidebar's usage and team areas were dragged (px; none:
-    /// their own height) — `side_split.rs`.
-    pub side_usage: Option<f32>,
-    pub side_team: Option<f32>,
     /// When Progress was last opened (unix seconds): its "since you last looked".
     pub progress_seen: Option<u64>,
     /// The team shown row by row in the sidebar, not as one row of faces.
@@ -197,6 +193,8 @@ pub struct Remembered {
     /// The plans' meters folded to their heading (the window used most alone);
     /// they start open.
     pub usage_folded: bool,
+    /// The sidebar's other screens named under "More", not folded behind it.
+    pub nav_more: bool,
     /// The language this app kept before the pick was everyone's (`ko`, `en`, …):
     /// read once, moved to the shared pick (`i18n::migrate`), never written again.
     pub lang: Option<String>,
@@ -446,16 +444,14 @@ impl Remembered {
                 if let (Some(pinned), Some(group), Some(name), Some(query)) = (parts.next(), parts.next(), parts.next(), parts.next()) {
                     out.views.push(KeptView { name: name.to_owned(), query: query.to_owned(), group: group.to_owned(), pinned: pinned == "1" });
                 }
-            } else if let Some(rest) = line.strip_prefix("side-usage ") {
-                out.side_usage = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("progress-seen ") {
                 out.progress_seen = rest.trim().parse::<u64>().ok().filter(|at| *at > 0);
             } else if line == "team-open" {
                 out.team_open = true;
             } else if line == "usage-folded" {
                 out.usage_folded = true;
-            } else if let Some(rest) = line.strip_prefix("side-team ") {
-                out.side_team = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
+            } else if line == "nav-more" {
+                out.nav_more = true;
             } else if let Some(rest) = line.strip_prefix("sidebar-width ") {
                 out.sidebar_width = rest.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
             } else if let Some(rest) = line.strip_prefix("window-size ") {
@@ -578,12 +574,6 @@ impl Remembered {
         if let Some((width, height)) = self.window {
             text.push_str(&format!("window-size {width:.0}x{height:.0}\n"));
         }
-        if let Some(height) = self.side_usage {
-            text.push_str(&format!("side-usage {height:.0}\n"));
-        }
-        if let Some(height) = self.side_team {
-            text.push_str(&format!("side-team {height:.0}\n"));
-        }
         if let Some(at) = self.progress_seen {
             text.push_str(&format!("progress-seen {at}\n"));
         }
@@ -592,6 +582,9 @@ impl Remembered {
         }
         if self.usage_folded {
             text.push_str("usage-folded\n");
+        }
+        if self.nav_more {
+            text.push_str("nav-more\n");
         }
         if let Some(lang) = &self.lang {
             text.push_str(&format!("lang {lang}\n"));
@@ -834,11 +827,10 @@ mod tests {
         remembered.peek_width = Some(560.);
         remembered.sidebar_width = Some(301.6);
         remembered.window = Some((1440.2, 899.6));
-        remembered.side_usage = Some(96.);
-        remembered.side_team = Some(240.4);
         remembered.progress_seen = Some(1_793_700_000);
         remembered.team_open = true;
         remembered.usage_folded = true;
+        remembered.nav_more = true;
         remembered.set_host_name("me@100.106.17.55", "  사무실 맥미니 ");
         remembered.set_host_name("vision", "vision");
         remembered.set_host_name("vision", "");
@@ -854,11 +846,11 @@ mod tests {
         let loaded = Remembered::load(&dir);
         assert_eq!((loaded.sidebar_width, loaded.lang.as_deref()), (Some(302.), Some("ko")));
         assert_eq!(loaded.window, Some((1440., 900.)), "the window's size, as left");
-        assert_eq!((loaded.side_usage, loaded.side_team), (Some(96.), Some(240.)), "the sidebar's areas as dragged");
         assert_eq!(loaded.progress_seen, Some(1_793_700_000), "진행 상황's last look, for \"since you last looked\"");
         assert!(loaded.team_open, "the team as the person left it");
         assert!(loaded.usage_folded, "the plans' meters folded, as left");
         assert!(!Remembered::default().usage_folded, "they start open");
+        assert!(loaded.nav_more && !Remembered::default().nav_more, "the sidebar's More, as left; folded to start");
         assert_eq!(loaded.host_name("me@100.106.17.55"), Some("사무실 맥미니"), "a machine's name, trimmed");
         assert_eq!(loaded.host_name("vision"), None, "an empty name takes it away");
         assert_eq!(loaded.dictation.as_deref(), Some("ja"), "dictation's language, apart from the app's");

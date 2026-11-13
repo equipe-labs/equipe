@@ -66,6 +66,8 @@ pub fn plans() -> Vec<EnginePlan> {
         Some("claude86") => vec![plan(Engine::Claude, 86, 2 * H, 41, 3 * D, 60), plan(Engine::Codex, 12, 4 * H, 18, 5 * D, 300)],
         Some("claude_week") => vec![plan(Engine::Claude, 41, 3 * H, 86, 3 * D + 6 * H, 60), plan(Engine::Codex, 12, 4 * H, 18, 5 * D, 300)],
         Some("claude_out") => vec![plan(Engine::Claude, 64, 3 * H, 100, 3 * D, 120), plan(Engine::Codex, 9, 4 * H, 14, 5 * D, 240)],
+        // Every engine out of its week: the sidebar's one banner says when work resumes.
+        Some("both_out") => vec![plan(Engine::Claude, 64, 3 * H, 100, 3 * D + 3 * H, 120), plan(Engine::Codex, 9, 4 * H, 100, 5 * D, 240)],
         Some("week61") => vec![plan(Engine::Claude, 48, 3 * H, 61, 2 * D + 10 * H, 60), plan(Engine::Codex, 12, 4 * H, 23, 5 * D, 300)],
         Some("both_low") => vec![plan(Engine::Claude, 91, 3 * H, 58, 3 * D, 60), plan(Engine::Codex, 47, 2 * H, 88, 2 * D, 600)],
         // Plans with a weekly window only, Claude's read half an hour ago.
