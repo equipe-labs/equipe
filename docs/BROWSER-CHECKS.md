@@ -180,3 +180,74 @@ retrying, and no moving cookies to another browser. For an OAuth step like
 `wrangler login`, whose callback goes to `localhost` on the daemon's Mac, the
 person can also open the printed URL in their own browser on that Mac and sign
 in there themselves. Nothing of the member's browser is needed for that.
+
+## The person's own window (sign-in hand-offs)
+
+A member's browser is automated: Playwright launches Chrome with a debugging
+port and drives it. A site behind Cloudflare sees that and keeps failing its
+"verify you are human" check, for the person too, because the browser in front
+of them is automated. So for a hand-off (`show_my_browser`) the automation steps
+aside instead of the person working inside it:
+
+1. The browser host closes that profile's automated Chrome (`suspend`; it keeps
+   its sign-ins as on any exit, and the host and the other profiles go on) and
+   refuses to start another on that folder.
+2. When the folder is free (no live process in Chrome's `SingletonLock`), the
+   daemon opens the same folder in a plain Chrome window on its Mac: only
+   `--user-data-dir`, `--no-first-run`, `--no-default-browser-check`,
+   `--hide-crash-restore-bubble` and the page. No automation switch, no
+   debugging port, nothing attached, Chrome's own user agent. Nothing hides
+   anything from a site, and nothing answers a check: the person signs in by
+   hand, in a genuine browser.
+3. On Done (or the window closed, treated as Done after a short grace) the daemon
+   closes that window, waits for the folder to come free, reopens the automated
+   browser on it (`resume`, then the lane again), goes back to the page, and hands
+   the browser back with its address and title, as for any hand-off.
+
+The window can only appear on the daemon's Mac. A screen on another Mac says so
+on the card ("Sign-in opens a normal Chrome window on {host} — do it there, then
+press Done here") and shows a placeholder instead of the live picture: a
+normal window has no debugging port to stream. Failing that — no Chrome at the
+usual path (`/Applications` or `~/Applications`; `<home>/browser/plain-chrome`
+names another), a window that won't open, a folder the automated browser won't
+let go of — the hand-off goes to the browser panel as before, with the reason said.
+
+`equipe browser handoff panel|window` sets it (default `window` on macOS, in
+equipe's own home). Members of one profile (the main one, or a named profile)
+share its window; each profile has its own. Because a profile is one folder,
+every member working in that profile loses its browser while the window is
+open (its tools fail; its lane reopens after). A daemon that restarts mid
+hand-off closes the window it finds and lets the next lane reopen the automated
+browser, signed in as the person left it.
+
+### The sign-in view (the way in when a screen can take it)
+
+The plain Chrome window above only appears on the daemon's Mac. A desktop app
+that can embed a web view (`HelloParams::web_view`, macOS) takes the sign-in on
+the screen the person is looking at instead, local or remote:
+
+1. The daemon asks the screen for a view (`Event::BrowserWindow` with a `view`:
+   the page and its site) and leaves the member's browser as it is.
+2. The panel opens a plain WKWebView (`wry`, `crates/desktop/src/signin_view.rs`)
+   below a card that says what to do: no automation, no debugging port, WebKit's
+   own user agent, a private cookie store. A site's check sees a person in a
+   genuine browser.
+3. At Done the screen reads the view's cookies, keeps those of the hosts the view
+   visited, and sends them over its existing daemon connection
+   (`Command::BrowserCookies`, just before the Done), then drops the view and
+   its store.
+4. The daemon keeps only the cookies of the hand-off's site and the hosts the
+   sign-in went through (`handoff_view::scope_cookies`: `chatgpt.com` and
+   `auth.openai.com` for a ChatGPT sign-in; `accounts.google.com` only if the
+   view went there; never an unrelated domain, never a bare suffix), only for a
+   hand-off in progress, and hands them to the browser host (`cookies`:
+   Playwright `context.addCookies`, then the page loads again). Then the member
+   gets its browser back.
+
+Cookie values are never printed or logged (`HandoffCookie`'s `Debug` leaves them
+out; the host logs a count). If the page still shows a human check after the
+cookies went in (a site may tie a clearance cookie to the browser or address it
+was issued to), the card says so (`challenged`) and the member is told to say so
+plainly instead of trying again by itself. If the screen can't open the view, or
+goes away mid sign-in, the hand-off falls to the plain Chrome window, then to the
+panel. Nothing here disguises the automated browser, and nothing answers a check.

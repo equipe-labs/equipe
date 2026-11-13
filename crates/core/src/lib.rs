@@ -73,6 +73,8 @@ pub mod side_chat;
 pub mod signal_sources;
 pub mod signals;
 pub mod signin;
+pub mod handoff_view;
+pub mod window_handoff;
 pub mod skills;
 pub mod runtime;
 pub mod squad_home;

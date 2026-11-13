@@ -261,6 +261,12 @@ pub enum HostEvent {
         default: Option<String>,
     },
     DialogClosed { page: u64 },
+    /// A profile's automated browser closed at the daemon's asking
+    /// (`suspend`, for the person's own window; `""` the main profile).
+    Suspended {
+        #[serde(default)]
+        profile: String,
+    },
     /// A member's tool call was refused on a tab the person is on, for
     /// something the person can allow at a click (`close`).
     Wants { lane: String, page: u64, action: String },
@@ -583,6 +589,13 @@ impl Host {
         }
     }
 
+    /// Forget `lane`'s endpoint: its browser was closed for good with its
+    /// profile, and the next one opening is a new endpoint (the old one
+    /// belongs to the closed browser).
+    pub fn forget_lane(&mut self, lane: &str) {
+        self.lanes.remove(lane);
+    }
+
     /// Open a tab in the host's Chrome for the person, at `url`, on screen.
     pub fn person(&mut self, url: &str) {
         self.send(&json!({ "op": "person", "url": url }));
@@ -687,6 +700,8 @@ struct HubInner {
     /// Screens attached now that have a browser panel (the desktop app, on
     /// this Mac or another), whether or not the panel is open yet.
     screens: usize,
+    /// Screens attached now that can open a sign-in view in their panel.
+    web_views: usize,
     /// The box each panel shows its page in, by watcher: the page is laid
     /// out at the largest — and the host was told this, by page.
     fits: std::collections::HashMap<u64, (u64, Fit)>,
@@ -872,6 +887,17 @@ impl Hub {
     /// where the person already is, and it says what to do and hands back.
     /// The raw window only comes up with no such screen attached, or when the
     /// person asks for it (the panel's "open in Chrome").
+    pub fn web_view(&self, attached: bool) {
+        let mut inner = self.inner.lock().expect("hub");
+        inner.web_views = if attached { inner.web_views + 1 } else { inner.web_views.saturating_sub(1) };
+    }
+
+    /// Whether a screen that can take a member's sign-in in a view of its own
+    /// is attached (`HelloParams::web_view`).
+    pub fn has_web_view(&self) -> bool {
+        self.inner.lock().expect("hub").web_views > 0
+    }
+
     pub fn has_panel(&self) -> bool {
         let inner = self.inner.lock().expect("hub");
         inner.panels > 0 || inner.screens > 0

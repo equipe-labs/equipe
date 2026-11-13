@@ -4313,6 +4313,14 @@ for line in sys.stdin:
         tabs(op["lane"])
     elif op.get("op") == "control":
         say({{"type": "control", "lane": op["lane"], "by": op.get("by")}})
+    elif op.get("op") == "cookies" and op.get("lane") in pages:
+        # The sign-in's cookies went in and the page loaded again.
+        pages[op["lane"]][1] = op.get("url") or pages[op["lane"]][1]
+        tabs(op["lane"])
+    elif op.get("op") == "suspend":
+        # The profile's Chrome closed: its tabs are gone, and the daemon is told.
+        pages.clear()
+        say({{"type": "suspended", "profile": op.get("profile", "")}})
 "#,
             ops = ops.to_string_lossy()
         ),
@@ -4379,6 +4387,194 @@ async fn a_member_hands_its_browser_to_the_panel_of_a_screen_on_another_mac_and_
     let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": "https://appstoreconnect.apple.com/", "why": why })).await;
     assert!(said.text.contains("comes up on the person's screen"), "{said:?}");
     assert!(Journal::for_squad(&home, "acme").unwrap().browser_shown("pm"));
+}
+
+/// A stand-in for Google Chrome as the person's own window: each launch's
+/// arguments written down, then it stays up until it is closed.
+fn fake_plain_chrome(home: &std::path::Path) -> PathBuf {
+    let dir = scratch("plain-chrome");
+    let launches = dir.join("launches");
+    let chrome = dir.join("chrome");
+    write_script(&chrome, &format!("#!/bin/sh\necho \"$@\" >> '{}'\nexec sleep 300\n", launches.display()));
+    std::fs::create_dir_all(home.join("browser")).unwrap();
+    std::fs::write(home.join("browser").join("plain-chrome"), format!("{}\n", chrome.display())).unwrap();
+    std::fs::write(home.join("browser").join("handoff"), "window\n").unwrap();
+    launches
+}
+
+#[tokio::test]
+async fn a_sign_in_hand_off_goes_to_a_plain_chrome_window_and_the_automated_browser_comes_back_on_done() {
+    let repo = repo();
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    let launches = fake_plain_chrome(&home);
+    let (npx, ops) = fake_host_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), browser_host: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    // A screen with a panel is attached: the window is where the person signs in all the same.
+    handle.browser_hub().await.unwrap().screen(true);
+
+    // The browser host is up, as after any step a member took.
+    handle.send(Command::BrowserNewTab { url: None, profile: None });
+    for _ in 0..400 {
+        if std::fs::read_to_string(&ops).unwrap_or_default().contains("\"op\":\"newtab\"") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let url = "https://auth.openai.com/log-in";
+    let why = "Sign in to OpenAI";
+    let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": url, "why": why })).await;
+    assert!(!said.is_error && said.text.contains("normal Chrome window") && said.text.contains("carry on by yourself"), "{said:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::BrowserControl { lane, by: Some(_), why: Some(w), .. } if lane == "acme/pm" && w == why)), "{seen:?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::BrowserWindow { lane, open: true, .. } if lane == "acme/pm")), "a placeholder instead of the picture: {seen:?}");
+
+    // The automated browser was closed first, then Chrome opened on the same folder, plainly.
+    let launched = || std::fs::read_to_string(&launches).unwrap_or_default();
+    for _ in 0..400 {
+        if !launched().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let launched = launched();
+    let sent = std::fs::read_to_string(&ops).unwrap_or_default();
+    assert!(sent.contains("\"op\":\"suspend\""), "{sent}");
+    assert!(launched.contains(&format!("--user-data-dir={}", home.join("browser").join("chrome").display())) && launched.contains(url), "{launched}");
+    for automated in ["remote-debugging", "enable-automation", "disable-blink-features", "headless"] {
+        assert!(!launched.contains(automated), "a plain window: {launched}");
+    }
+    assert!(!sent.lines().any(|l| l.contains("\"op\":\"control\"")), "no hold on a page that doesn't exist now: {sent}");
+
+    // Done: the window closes, the browser opens again on the same profile, back at the page,
+    // and its member carries on, told where it is.
+    let before = calls(&recorded).len();
+    handle.send(Command::BrowserControl { lane: "acme/pm".into(), take: false });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::BrowserWindow { lane, open: false, .. } if lane == "acme/pm")), "{seen:?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::BrowserControl { lane, by: None, .. } if lane == "acme/pm")), "{seen:?}");
+    let sent = std::fs::read_to_string(&ops).unwrap_or_default();
+    let resumed = sent.find("\"op\":\"resume\"").unwrap_or_else(|| panic!("resumed: {sent}"));
+    assert!(resumed < sent.rfind("\"op\":\"goto\"").unwrap_or(0), "resumed, then taken back to the page: {sent}");
+    let all = calls(&recorded);
+    assert_eq!(all.len(), before + 1, "one turn, without the person typing a word");
+    let prompt = arg(all.last().unwrap(), "-p").unwrap();
+    assert!(prompt.contains("pressed Done") && prompt.contains(why) && prompt.contains(url), "{prompt}");
+}
+
+#[tokio::test]
+async fn a_sign_in_hand_off_without_chrome_goes_to_the_panel_and_says_why() {
+    let repo = repo();
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    std::fs::create_dir_all(home.join("browser")).unwrap();
+    std::fs::write(home.join("browser").join("handoff"), "window\n").unwrap();
+    // Chrome named, and not there.
+    std::fs::write(home.join("browser").join("plain-chrome"), "/nonexistent/Google Chrome\n").unwrap();
+    let (npx, ops) = fake_host_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), browser_host: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    handle.browser_hub().await.unwrap().screen(true);
+
+    let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": "https://auth.openai.com/log-in", "why": "Sign in" })).await;
+    assert!(!said.is_error && said.text.contains("browser panel"), "{said:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { text, .. } if text.contains("Chrome isn't installed") && text.contains("browser panel"))), "{seen:?}");
+    assert!(!seen.iter().any(|e| matches!(e, Event::BrowserWindow { .. })));
+    assert!(!std::fs::read_to_string(&ops).unwrap_or_default().contains("suspend"), "its automated browser was never closed");
+}
+
+fn cookie(name: &str, domain: &str) -> equipe_core::protocol::HandoffCookie {
+    equipe_core::protocol::HandoffCookie { name: name.into(), value: "v-secret".into(), domain: domain.into(), path: "/".into(), expires: None, secure: true, http_only: true, same_site: Some("Lax".into()) }
+}
+
+#[tokio::test]
+async fn a_sign_in_view_on_a_remote_screen_hands_its_scoped_cookies_to_the_members_browser_and_the_member_carries_on() {
+    let repo = repo();
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    // The setting is on (`window`: the person's own window, here a view of their screen).
+    let _ = fake_plain_chrome(&home);
+    let (npx, ops) = fake_host_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), browser_host: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    // The app, on another Mac, with a panel that can open a sign-in view.
+    let hub = handle.browser_hub().await.unwrap();
+    hub.screen(true);
+    hub.web_view(true);
+    let sent = || std::fs::read_to_string(&ops).unwrap_or_default();
+
+    // Cookies from a screen with no hand-off under way (a stale view after a restart) go nowhere.
+    handle.send(Command::BrowserCookies { lane: "acme/pm".into(), hosts: vec!["chatgpt.com".into()], cookies: vec![cookie("stale", "chatgpt.com")], failed: false });
+
+    let url = "https://chatgpt.com/auth/login";
+    let why = "Sign in to ChatGPT";
+    let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": url, "why": why })).await;
+    assert!(!said.is_error && said.text.contains("sign-in view") && said.text.contains("carry on by yourself"), "{said:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
+    assert!(
+        seen.iter().any(|e| matches!(e, Event::BrowserWindow { lane, open: true, view: Some(v), .. } if lane == "acme/pm" && v.url == url && v.site == "chatgpt.com")),
+        "the screen is asked for a view at the page: {seen:?}"
+    );
+    assert!(seen.iter().any(|e| matches!(e, Event::BrowserControl { lane, by: Some(_), why: Some(w), .. } if lane == "acme/pm" && w == why)), "{seen:?}");
+
+    // No Chrome window, no suspension of the member's browser: nothing of the daemon's Mac is touched.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!sent().contains("\"op\":\"suspend\""), "{}", sent());
+
+    // The person signed in (through auth.openai.com); the view sends what it holds, and Done.
+    let before = calls(&recorded).len();
+    handle.send(Command::BrowserCookies {
+        lane: "acme/pm".into(),
+        hosts: vec!["auth.openai.com".into(), "chatgpt.com".into()],
+        cookies: vec![cookie("session", "chatgpt.com"), cookie("auth", ".auth.openai.com"), cookie("tracker", ".doubleclick.net"), cookie("google", ".google.com")],
+        failed: false,
+    });
+    handle.send(Command::BrowserControl { lane: "acme/pm".into(), take: false });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::BrowserWindow { lane, open: false, challenged: false, .. } if lane == "acme/pm")), "{seen:?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::BrowserControl { lane, by: None, .. } if lane == "acme/pm")), "{seen:?}");
+    let sent = sent();
+    let line = sent.lines().find(|l| l.contains("\"op\":\"cookies\"")).unwrap_or_else(|| panic!("cookies went to the host: {sent}"));
+    assert!(line.contains("\"session\"") && line.contains("\"auth\"") && line.contains(url), "{line}");
+    assert!(!line.contains("tracker") && !line.contains("doubleclick") && !line.contains("google") && !line.contains("stale"), "only the sign-in's sites: {line}");
+    assert_eq!(sent.matches("\"op\":\"cookies\"").count(), 1, "the stale ones went nowhere, nor did a replay");
+    let all = calls(&recorded);
+    assert_eq!(all.len(), before + 1, "one turn, without the person typing a word");
+    let prompt = arg(all.last().unwrap(), "-p").unwrap();
+    assert!(prompt.contains("pressed Done") && prompt.contains(why) && prompt.contains(url), "{prompt}");
+    assert!(!prompt.contains("v-secret"), "a cookie's value never reaches a member");
+}
+
+#[tokio::test]
+async fn a_sign_in_view_whose_screen_goes_away_or_fails_falls_back_to_a_plain_chrome_window_or_the_panel() {
+    let repo = repo();
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    let launches = fake_plain_chrome(&home);
+    let (npx, _ops) = fake_host_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), browser_host: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    let hub = handle.browser_hub().await.unwrap();
+    hub.screen(true);
+    hub.web_view(true);
+    let url = "https://chatgpt.com/auth/login";
+    let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": url, "why": "Sign in" })).await;
+    assert!(said.text.contains("sign-in view"), "{said:?}");
+    // The screen that was to take it goes away (or says it couldn't open the view): a window of its own on the daemon's Mac.
+    hub.web_view(false);
+    let seen = until(&mut events, |e| matches!(e, Event::BrowserWindow { open: true, view: None, .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::BrowserWindow { open: false, view: None, .. })), "the view is over first: {seen:?}");
+    for _ in 0..400 {
+        if std::fs::read_to_string(&launches).is_ok_and(|t| t.contains(url)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(std::fs::read_to_string(&launches).unwrap_or_default().contains(url), "a plain Chrome opened at the page");
+    // Cookies from the gone view are not taken.
+    handle.send(Command::BrowserCookies { lane: "acme/pm".into(), hosts: vec![], cookies: vec![cookie("late", "chatgpt.com")], failed: false });
 }
 
 #[tokio::test]

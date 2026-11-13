@@ -122,7 +122,7 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
     }
 
     /// The tab a lane's member works in, as last told.
-    fn lane_page(&self, lane: &str) -> Option<equipe_protocol::BrowserPage> {
+    pub(super) fn lane_page(&self, lane: &str) -> Option<equipe_protocol::BrowserPage> {
         match self.tabs.get(lane) {
             Some(Event::BrowserTabs { pages, agent_page, .. }) => agent_page.and_then(|a| pages.iter().find(|p| p.id == a)).or(pages.last()).cloned(),
             _ => None,

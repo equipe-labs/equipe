@@ -17,7 +17,7 @@ const { spawn } = require('node:child_process');
 const assets = path.join(__dirname, '..', 'crates', 'core', 'assets');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'equipe-host-smoke-'));
 const script = path.join(dir, 'browser-host.cjs');
-fs.writeFileSync(script, fs.readFileSync(path.join(assets, 'browser-host.cjs'), 'utf8').replace('__DRIVING__', fs.readFileSync(path.join(assets, 'driving.js'), 'utf8')).replace('__GATE__', fs.readFileSync(path.join(assets, 'gate.js'), 'utf8')));
+fs.writeFileSync(script, fs.readFileSync(path.join(assets, 'browser-host.cjs'), 'utf8').replace('__DRIVING__', fs.readFileSync(path.join(assets, 'driving.js'), 'utf8')).replace('__GATE__', fs.readFileSync(path.join(assets, 'gate.js'), 'utf8')).replace('__KEEP_SESSIONS__', fs.readFileSync(path.join(assets, 'keep-sessions.js'), 'utf8')));
 fs.writeFileSync(path.join(dir, 'state.json'), '{"cookies":[],"origins":[]}');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -32,8 +32,10 @@ const freePort = () => new Promise((resolve) => {
 });
 
 (async () => {
+  let afterCookie = null;
   const site = http.createServer((req, res) => {
     res.setHeader('content-type', 'text/html; charset=utf-8');
+    if (req.url === '/after') afterCookie = req.headers.cookie || '';
     if (req.url === '/form') return res.end('<title>Form</title><input id=q autofocus style="font-size:30px">');
     if (req.url === '/dialog') return res.end('<title>Dialog</title><button id=b onclick="document.title = confirm(\'Sure?\') ? \'yes\' : \'no\'">go</button>');
     // A stand-in for Cloudflare's wall (no real site is touched): its title, its
@@ -282,6 +284,39 @@ const freePort = () => new Promise((resolve) => {
   op({ op: 'closetab', page: mine.id });
   await until('closed', () => !lastTabs('')?.pages.some((p) => p.id === mine.id));
   check(!lastTabs('')?.pages.some((p) => p.id === mine.id), 'and closes');
+
+  // The person's own window. For a hand-off the profile's automated Chrome closes
+  // (`suspend`) and stays closed — the host goes on — so a plain Chrome can have
+  // the folder; nothing of ours starts one on it until `resume`.
+  const lockPid = () => {
+    try { return Number(fs.readlinkSync(path.join(dir, 'chrome', 'SingletonLock')).split('-').pop()); } catch { return null; }
+  };
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const chromePid = lockPid();
+  check(!!chromePid && alive(chromePid), 'the automated Chrome holds the profile\'s folder');
+  op({ op: 'suspend', profile: '' });
+  check(!!(await until('suspended', () => messages.find((m) => m.type === 'suspended' && m.profile === ''), 30000)), 'the host says the profile\'s browser is closed');
+  await sleep(500);
+  check(host.exitCode === null, 'closing it for the person\'s window does not take the host with it');
+  check(!alive(chromePid), 'the folder is free: its Chrome has exited');
+  // Asked meanwhile, the host starts nothing on the folder.
+  op({ op: 'newtab', url: `${base}/mine` });
+  await sleep(1500);
+  check(!(lockPid() && alive(lockPid())), 'a request for the profile meanwhile opens no Chrome on it');
+  // Back: a lane asks, the profile's Chrome starts on the same folder, signed in as it was.
+  op({ op: 'resume', profile: '' });
+  const port2 = await freePort();
+  op({ op: 'lane', id: lane, member: 'frontend', color: '120, 190, 240', port: port2, output: path.join(dir, 'out'), shown: false });
+  op({ op: 'goto', lane, url: `${base}/signin` });
+  const returned = await until('the lane is back at its page', () => lastTabs(lane)?.pages.find((p) => p.url.endsWith('/signin')), 60000);
+  check(!!returned, 'resumed, the member\'s browser opens again and goes back to its page');
+  check(!!lockPid() && lockPid() !== chromePid, 'on the same folder, a new Chrome');
+
+  // A sign-in the person made in a view of their screen: its cookies go into the
+  // profile and the page loads again, with them.
+  op({ op: 'cookies', lane, url: `${other}/after`, cookies: [{ name: 'signin', value: 'view-session', domain: 'localhost', path: '/', secure: false, httpOnly: false, sameSite: 'Lax' }] });
+  await until('the page loads again', () => afterCookie !== null);
+  check(afterCookie === 'signin=view-session', 'the sign-in\'s cookie reaches the site from the member\'s browser');
 
   op({ op: 'unwatch', page });
   host.stdin.end();

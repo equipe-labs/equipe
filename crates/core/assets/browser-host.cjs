@@ -34,6 +34,8 @@
 //   {"op":"unfit","page":3}  (no panel watches it: its own size again)
 //   {"op":"newtab","url":"…"}  {"op":"closetab","page":3}
 //   {"op":"control","lane":"squad/name","by":"person"|null,"why":"check"?,"ifUntouched":true?}
+//   {"op":"cookies","lane":"squad/name","cookies":[{name,value,domain,path,expires,secure,httpOnly,sameSite}],"url":"…"}
+//     (a sign-in the person made in a view of their screen: added to the lane's profile, the page loaded again)
 //   {"op":"goto","lane":"squad/name","url":"…"}  {"op":"dialog","page":3,"accept":true,"text":"…"}
 //   {"op":"popout","page":3,"bounds":{"left":0,"top":0,"width":900,"height":800}}
 //   {"op":"fill","lane":"squad/name","page":3,"script":"() => …","token":7}
@@ -51,6 +53,12 @@
 //   {"op":"passkey_use","lane":"squad/name","page":3,"credential":{…},"script":"() => …","token":10}
 //     (that passkey given to the tab for one sign-in, the tab held as for a
 //     fill; `filled` answers, `passkey` gives back the credential's new count)
+//   {"op":"suspend","profile":"jhjung"}  {"op":"resume","profile":"jhjung"}  (profile "" is the main one)
+//     (the person's own window: a hand-off for a sign-in or a human check opens
+//     a plain Chrome on that profile's folder — no automation, no debugging
+//     port — so this profile's automated Chrome is closed first and left
+//     closed, answered by `suspended`; requests for it are dropped until
+//     `resume`. This host's other profiles, and the host itself, go on.)
 //   {"op":"snap","hosts":["github.com"],"token":11}
 //     (a picture of the person's tab on that site, for its authenticator QR
 //     code; `snap` answers it, PNG in base64, to the daemon alone)
@@ -276,7 +284,8 @@ const startProfile = async (name, profile, STATE) => {
   // that starts or stops waiting for a person (a CAPTCHA answered), every two.
   const titles = new Map();
   let tick = 0;
-  setInterval(async () => {
+  const timers = [];
+  timers.push(setInterval(async () => {
     tick++;
     for (const page of context.pages()) {
       if (!owner.has(page)) continue;
@@ -292,7 +301,7 @@ const startProfile = async (name, profile, STATE) => {
         if (signature(s, frames) !== page.__equipeSig) report(owner.get(page));
       }
     }
-  }, 1000);
+  }, 1000));
   const report = (lane) => {
     // equipe's own tabs (`visit`) are told only when asked (`look`).
     if (typeof lane === 'string' && lane.startsWith('equipe:')) return;
@@ -876,7 +885,7 @@ const startProfile = async (name, profile, STATE) => {
     emit({ type: 'control', lane: laneId, by, refused: !by && refused });
     await restage();
   };
-  setInterval(() => {
+  timers.push(setInterval(() => {
     for (const [id, lane] of lanes) {
       // Waiting for a person who hasn't come yet: not handed back for that.
       if (lane.reason === 'check' && !lane.touched) continue;
@@ -887,7 +896,7 @@ const startProfile = async (name, profile, STATE) => {
       const waits = lane.reason === 'check' || tabsOf(id).some((p) => p.__equipeWaits);
       if (lane.control === 'person' && Date.now() - lane.lastInput > (waits ? IDLE_WAITING_MS : IDLE_CONTROL_MS)) setControl(id, null);
     }
-  }, 10000);
+  }, 10000));
 
   const input = async ({ page: pid, ev }) => {
     const page = pages.get(pid);
@@ -1117,6 +1126,26 @@ const startProfile = async (name, profile, STATE) => {
   };
   // The real window, beside the app: for what a picture of the page can't do
   // (a passkey, a permission prompt, a <select>'s list).
+  // A sign-in the person made in a view of their screen: its cookies (already
+  // scoped to the sign-in's sites by the daemon) go into this profile, and the
+  // member's page loads again. A cookie's value is never printed.
+  const cookies = async ({ lane: laneId, cookies: list = [], url }) => {
+    const lane = lanes.get(laneId);
+    if (!lane) return;
+    const sameSite = (c) => (['Strict', 'Lax', 'None'].includes(c.sameSite) ? c.sameSite : 'Lax');
+    const ok = list
+      .filter((c) => c && c.name && c.domain)
+      .map((c) => ({
+        name: String(c.name), value: String(c.value ?? ''), domain: String(c.domain), path: String(c.path || '/'),
+        expires: typeof c.expires === 'number' && c.expires > 0 ? c.expires : -1,
+        httpOnly: !!c.httpOnly, sameSite: sameSite(c), secure: !!c.secure || sameSite(c) === 'None',
+      }));
+    try { await context.addCookies(ok); } catch { console.error(`equipe browser host: ${ok.length} sign-in cookies were not added`); }
+    const page = pages.get(lane.agent) || tabsOf(laneId).at(-1) || (await openTab(laneId));
+    if (url) await page.goto(address(url)).catch(() => {});
+    else await page.reload().catch(() => {});
+  };
+
   const popout = async ({ page: pid, bounds }) => {
     const page = pages.get(pid);
     if (!page) return;
@@ -1164,16 +1193,29 @@ const startProfile = async (name, profile, STATE) => {
 
   await ensureParking();
 
-  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, unfit, input, nav, goto, newtab, closetab, control, dialog, popout, fill, visit, look, passkey_add: passkeyAdd, passkey_use: passkeyUse, snap };
-  // Its Chrome closed (the person quit it): the host goes, and the daemon starts it again.
-  context.on('close', () => process.exit(0));
-  return { ops, context, scrolling, owns: (pid) => pages.has(pid), hasLane: (id) => lanes.has(id) };
+  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, unfit, input, nav, goto, newtab, closetab, control, dialog, popout, cookies, fill, visit, look, passkey_add: passkeyAdd, passkey_use: passkeyUse, snap };
+  // Its Chrome closed (the person quit it): the host goes, and the daemon starts it again —
+  // unless the daemon closed it itself, to give the profile to the person's own window.
+  let suspending = false;
+  context.on('close', () => { if (!suspending) process.exit(0); });
+  const suspend = async () => {
+    suspending = true;
+    for (const t of timers) clearInterval(t);
+    fs.unwatchFile(STATE);
+    for (const pid of [...watches.keys()]) stopWatch(pid);
+    await context.close().catch(() => {});
+  };
+  return { ops, context, scrolling, suspend, owns: (pid) => pages.has(pid), hasLane: (id) => lanes.has(id) };
 };
 
 // Each profile's Chrome, by name ("" the main one): started when first asked for.
 const profiles = new Map();
+// Profiles whose Chrome the daemon closed for the person's own window: nothing
+// of ours may start one on that folder until `resume`.
+const suspended = new Set();
 const profileOf = (request) => {
   const name = request.profile || '';
+  if (suspended.has(name)) return null;
   if (!profiles.has(name)) {
     if (name && !request.profileDir) return null;
     profiles.set(name, startProfile(name || null, name ? request.profileDir : profile, name ? request.state : STATE));
@@ -1190,9 +1232,28 @@ const target = async (request) => {
     // equipe's own tabs, passkeys and pictures: the person's main Chrome only.
     case 'visit': case 'passkey_add': case 'snap': return profileOf({});
     case 'show': case 'close': return byLane(request.id);
-    case 'control': case 'goto': case 'fill': case 'passkey_use': return byLane(request.lane);
+    case 'control': case 'goto': case 'cookies': case 'fill': case 'passkey_use': return byLane(request.lane);
     default: return byPage(request.page);
   }
+};
+
+/// `suspend`: this profile's Chrome closed (sign-ins saved as on any exit) and kept
+/// closed; `resume`: it may start again, with the next lane that asks.
+const hold = async ({ op, profile: name = '' }) => {
+  if (op === 'resume') {
+    suspended.delete(name);
+    return;
+  }
+  suspended.add(name);
+  const started = profiles.get(name);
+  profiles.delete(name);
+  try {
+    const at = started ? await started.catch(() => null) : null;
+    if (at) await at.suspend();
+  } catch (err) {
+    console.error(`equipe browser host: suspend ${name || 'main'}: ${err && err.message}`);
+  }
+  emit({ type: 'suspended', profile: name });
 };
 
 (async () => {
@@ -1200,6 +1261,10 @@ const target = async (request) => {
   readline.createInterface({ input: process.stdin }).on('line', (line) => {
     let request;
     try { request = JSON.parse(line); } catch { return; }
+    if (request.op === 'suspend' || request.op === 'resume') {
+      hold(request);
+      return;
+    }
     const run = async () => {
       const at = await target(request);
       if (!at) return undefined;

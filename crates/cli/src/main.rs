@@ -230,8 +230,12 @@ enum Command {
     },
     /// Sign in to sites in a browser, for the squad to work in as you
     Browser {
-        /// Where to start (default: a page of sites squads often need)
+        /// Where to start (default: a page of sites squads often need) — or
+        /// `handoff panel|window`: where a member's sign-in opens (the
+        /// automated browser in the app's panel, or a normal Chrome window)
         url: Option<String>,
+        /// With `handoff`: `panel` or `window` (no value: show it)
+        value: Option<String>,
         /// Forget every sign-in: members have no browser until you sign in again
         #[arg(long)]
         forget: bool,
@@ -698,6 +702,7 @@ async fn run(cli: Cli) -> ExitCode {
             eprintln!("{}", equipe_core::guard::BROWSER_REFUSED);
             return ExitCode::FAILURE;
         }
+        Command::Browser { url: Some(word), value, .. } if word == "handoff" => browser_handoff(value.as_deref()),
         Command::Browser { max: Some(n), .. } => match settings::browser_max(&equipe_providers::credentials::equipe_home(), n.as_deref()) {
             Ok(line) => {
                 println!("  {line}");
@@ -941,6 +946,28 @@ fn capped(home: &std::path::Path, squad: &str, tool: &str, mut result: protocol:
 /// `equipe browser`: a browser window for the person to sign in (or sign up)
 /// where the squad should work. What they sign in to is kept as Playwright
 /// storage state; members start their own browsers from it.
+/// `equipe browser handoff [panel|window]`: where a member's sign-in opens.
+fn browser_handoff(value: Option<&str>) -> CmdResult {
+    use equipe_core::window_handoff::{self as handoff, Mode};
+    let home = equipe_providers::credentials::equipe_home();
+    let line = match value {
+        None => match handoff::mode(&home, handoff::default_mode()) {
+            Mode::Window => t!("main.browser_handoff_window"),
+            Mode::Panel => t!("main.browser_handoff_panel"),
+        },
+        Some(word) => {
+            let Some(mode) = Mode::parse(word) else { return Err(Failure::new(t!("main.browser_handoff_usage"))) };
+            handoff::set_mode(&home, mode).map_err(|err| Failure::new(err.to_string()))?;
+            match mode {
+                Mode::Window => t!("main.browser_handoff_set_window"),
+                Mode::Panel => t!("main.browser_handoff_set_panel"),
+            }
+        }
+    };
+    println!("  {line}");
+    Ok(())
+}
+
 async fn sign_in(url: Option<String>, forget: bool) -> CmdResult {
     use equipe_core::browser;
     let p = ui::out();
@@ -1714,7 +1741,7 @@ impl App {
                 Event::Compacting { .. } | Event::Compacted { .. } | Event::CompactFailed { .. } => {}
                 Event::ToolResult { .. } | Event::Thinking { .. } | Event::CommandWatch { .. } => {}
                 Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. }
-                | Event::BrowserWants { .. }
+                | Event::BrowserWants { .. } | Event::BrowserWindow { .. }
                 | Event::PairOffer { .. } | Event::PairAsked { .. } | Event::Paired { .. } | Event::PairEnded { .. } | Event::Devices { .. }
                 | Event::DiskLevel { .. } | Event::DiskReport { .. } | Event::DiskCleaned { .. } | Event::PlanUse { .. } | Event::PlanBurn { .. } | Event::Engines { .. } | Event::Nebius { .. } | Event::Providers { .. } | Event::ProviderTested { .. } | Event::SignIn { .. } | Event::EngineAuth { .. } | Event::EngineInstall { .. } => {}
                 Event::SideChatOpened { .. } | Event::SideChat { .. } | Event::SideChatClosed { .. } => {}

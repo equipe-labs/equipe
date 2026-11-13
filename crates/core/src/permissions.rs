@@ -188,6 +188,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::BrowserNewTab { .. }
         | C::BrowserCloseTab { .. }
         | C::BrowserControl { .. }
+        | C::BrowserCookies { .. }
         | C::BrowserDialog { .. }
         | C::BrowserPopOut { .. }
         | C::BrowserSignIn { .. }

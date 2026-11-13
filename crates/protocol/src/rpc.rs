@@ -211,6 +211,11 @@ pub struct HelloParams {
     /// and members are told so ([`crate::Command::OnPhone`]). Others: `false`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub phone: bool,
+    /// The screen can open a sign-in view in its browser panel (a plain web
+    /// view, not driven): a member's sign-in hand-off goes there, wherever the
+    /// daemon's Mac is, and its cookies come back to the member's browser.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub web_view: bool,
     /// The screen lists a member's ticket runs under it ([`crate::RunOf`]).
     /// A screen without it gets the squad as it knew it
     /// ([`crate::runs::Legacy`]): a member with several runs shows that the
@@ -613,7 +618,7 @@ mod tests {
 
     #[test]
     fn requests_and_responses_pair_by_id() {
-        let req = Message::request(7, HELLO, HelloParams { version: "1".into(), squad: "acme".into(), lang: None, browser_panel: false, phone: false, runs: false });
+        let req = Message::request(7, HELLO, HelloParams { version: "1".into(), squad: "acme".into(), lang: None, browser_panel: false, phone: false, web_view: false, runs: false });
         let res = Message::response(7, Hello { version: "1".into(), snapshot: Default::default() });
         assert_eq!(req.id, res.id);
         assert!(res.result_as::<Hello>().is_some());
