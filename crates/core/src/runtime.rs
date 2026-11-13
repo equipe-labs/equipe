@@ -662,6 +662,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         host_events: host_tx,
         tabs: HashMap::new(),
         asked_in: HashMap::new(),
+        browser_back: HashMap::new(),
         held: HashMap::new(),
         checking: HashMap::new(),
         let_go: std::collections::HashSet::new(),
@@ -1233,6 +1234,11 @@ struct Runtime {
     /// Lanes whose member asked the person in (`show_my_browser` with a browser
     /// panel attached): handing back tells the member the person is done.
     asked_in: HashMap<String, String>,
+    /// When the person last handed a member's browser back (squad and member
+    /// to unix seconds), until its member's first decision asked after: the
+    /// member looks at the page itself rather than asking what they saw
+    /// ([`Runtime::ask_decision`]).
+    browser_back: HashMap<(String, String), u64>,
     /// Lanes in the person's hands, and what their member asked them for.
     held: HashMap<String, Option<String>>,
     /// Lanes put in the person's hands by equipe itself, for a page that
@@ -3133,6 +3139,7 @@ impl Runtime {
         self.held.retain(|lane, _| !of_squad(lane));
         self.checking.retain(|lane, _| !of_squad(lane));
         self.asked_in.retain(|lane, _| !of_squad(lane));
+        self.browser_back.retain(|(q, _), _| q != squad);
         self.focus.remove(squad);
         self.watching.remove(squad);
         self.frame_watchers.remove(squad);
@@ -4683,6 +4690,10 @@ for one project goes to it as tickets for its owners, with that project — and 
         {
             session.queued.push(prompt);
             session.memo_threads.push(None);
+            return;
+        }
+        // On an engine that is out of its limit nothing would run: kept for later.
+        if self.hold_for_limit(id, &prompt) {
             return;
         }
         if let Some(session) = self.sessions.get_mut(&id) {
@@ -8249,13 +8260,23 @@ there, end your turn, and carry on when they say they're done."
                 }
                 self.publish(Event::BrowserControl { squad, lane: lane.clone(), by: by.clone(), why: None, check });
                 let Some(session) = session else { return };
+                // Handed back to a member that had asked for it, or whose page needed the person.
+                if by.is_none()
+                    && (asked.is_some() || checked.is_some())
+                    && let Some(name) = self.sessions.get(&session).and_then(|s| s.name().map(str::to_owned))
+                {
+                    let squad = lane.split_once('/').map(|(q, _)| q.to_owned()).unwrap_or_default();
+                    self.browser_back.insert((squad, name), now_secs());
+                }
                 let working = self.sessions.get(&session).is_some_and(Session::is_working);
+                let back_at = self.tabs.get(&lane).and_then(current_page);
                 // Its tools were turned away at a page that waited for the person,
                 // and its turn ended: it carries on now.
                 if checked.is_some() && asked.is_none() {
                     if refused && !working {
                         let text = say!(self, "notice.browser_given_back");
-                        self.carry_on(session, text, "[equipe: the person handled the page that needed them in your browser (a human check or a sign-in) and handed it back. Carry on where you were.]".into()).await;
+                        let prompt = handed_back("a human check or a sign-in on the page", false, back_at.as_ref());
+                        self.carry_on(session, text, prompt).await;
                     } else if working {
                         let text = say!(self, "notice.browser_given_back");
                         self.publish(Event::Notice { undo: None, session, text });
@@ -8275,7 +8296,7 @@ there, end your turn, and carry on when they say they're done."
                     (false, true) => {
                         let why = asked.unwrap_or_default();
                         let text = say!(self, "notice.browser_given_back");
-                        self.carry_on(session, text, handed_back(&why)).await;
+                        self.carry_on(session, text, handed_back(&why, true, back_at.as_ref())).await;
                     }
                     (false, false) if working => {
                         let text = say!(self, "notice.browser_given_back");
@@ -9880,13 +9901,28 @@ const REFRESH_COLD_TOKENS: u64 = 60_000;
 const REFRESH_COLD_AFTER: Duration = Duration::from_secs(60 * 60);
 /// What a member is told when the person hands back the browser it handed
 /// them (`show_my_browser`, in the panel): its turn starts again on it.
-fn handed_back(why: &str) -> String {
+fn handed_back(why: &str, asked: bool, page: Option<&equipe_protocol::BrowserPage>) -> String {
     let why = why.trim();
-    let what = if why.is_empty() { String::new() } else { format!(" (you asked: {why})") };
+    let what = match (asked, why.is_empty()) {
+        (_, true) => String::new(),
+        (true, false) => format!(" (you asked: {why})"),
+        (false, false) => format!(" ({why})"),
+    };
+    let at = page.map_or_else(String::new, |p| {
+        let title = p.title.trim();
+        if title.is_empty() { format!(" The page is at {}.", p.url) } else { format!(" The page is at {} (title: \"{title}\").", p.url) }
+    });
     format!(
-        "[equipe: the person finished in your browser{what} and handed it back to you. Look at the page as it is now \
-and carry on where you left off.]"
+        "[equipe: the person has finished{what} and pressed Done: your browser is yours again.{at} Check the page yourself now \
+(take a snapshot or read the page and its URL) and carry on where you left off. Don't ask the person what they saw or whether \
+it worked — they did their part; you can see the result.]"
     )
+}
+
+/// The tab a member's tools last worked in, else the first, of a lane's tabs as last told.
+fn current_page(tabs: &Event) -> Option<equipe_protocol::BrowserPage> {
+    let Event::BrowserTabs { pages, agent_page, .. } = tabs else { return None };
+    agent_page.and_then(|id| pages.iter().find(|p| p.id == id)).or(pages.first()).cloned()
 }
 
 /// How many of the last messages a fresh conversation is handed.
@@ -10631,6 +10667,22 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_browser_handed_back_says_the_person_finished_where_the_page_is_and_to_look_itself() {
+        let page = equipe_protocol::BrowserPage { id: 3, url: "https://app.example.com/dashboard".into(), title: "Dashboard".into(), ..Default::default() };
+        let text = handed_back("sign in to the app", true, Some(&page));
+        for wanted in ["the person has finished", "(you asked: sign in to the app)", "pressed Done", "https://app.example.com/dashboard", "title: \"Dashboard\"", "Check the page yourself", "Don't ask the person what they saw"] {
+            assert!(text.contains(wanted), "{wanted} in: {text}");
+        }
+        let bare = handed_back("", true, None);
+        assert!(bare.contains("Check the page yourself") && !bare.contains("The page is at"), "{bare}");
+        // The lane's tabs as last told: the tab its tools worked in, else the first.
+        let tab = |id, url: &str| equipe_protocol::BrowserPage { id, url: url.into(), ..Default::default() };
+        let tabs = |agent_page| Event::BrowserTabs { squad: Some("acme".into()), lane: "acme/qa".into(), session: Some(1), member: None, color: None, pages: vec![tab(1, "https://a.test/"), tab(2, "https://b.test/")], agent_page };
+        assert_eq!(current_page(&tabs(Some(2))).map(|p| p.url), Some("https://b.test/".into()));
+        assert_eq!(current_page(&tabs(None)).map(|p| p.url), Some("https://a.test/".into()));
+    }
 
     #[test]
     fn a_failure_made_of_thousands_of_lines_is_kept_as_an_excerpt() {

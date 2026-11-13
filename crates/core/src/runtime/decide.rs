@@ -15,6 +15,10 @@ use equipe_protocol::decide::{self, Answer, QuestionSet, Reaction};
 use super::*;
 use crate::visuals;
 
+/// How long after the person hands a browser back its member's first question
+/// is turned away ([`Runtime::refuse_after_browser_back`]), in seconds.
+const BROWSER_BACK_WINDOW: u64 = 30 * 60;
+
 impl Runtime {
     /// `squad`'s question sets waiting for the person, oldest first — read
     /// from its journal the first time, a decision asked more than once
@@ -55,6 +59,7 @@ impl Runtime {
     /// told the answers come as the person's next message.
     pub(super) fn ask_decision(&mut self, squad: &str, member: &str, id: SessionId, args: &Value) -> Result<String, String> {
         let mut questions = board::questions_arg(args)?;
+        self.refuse_after_browser_back(squad, member)?;
         // Each picture found where the member works, or the call is refused with why.
         let (cwd, roots) = self.picture_places(squad, id);
         let fix = "Save the pictures in your worktree or the squad's folder and give their paths, then ask again.";
@@ -74,7 +79,7 @@ impl Runtime {
             self.sessions.iter().find(|(_, s)| s.lane.as_ref().is_some_and(|(of, _)| *of == id) && s.is_working()).map_or(id, |(&lane, _)| lane)
         };
         let is_pm = self.sessions.get(&id).is_some_and(Session::is_pm);
-        let ticket = self.sessions.get(&session).or(self.sessions.get(&id)).and_then(|s| s.work.as_ref().map(|w| w.ticket));
+        let ticket = self.asking_ticket(id, session);
         let review = self.review_asked(id, now_secs());
         let retro = self.retro_asked(id, now_secs(), args, questions.len());
         let set = QuestionSet { id: equipe_protocol::new_session_id(), session, member: member.to_owned(), ticket, questions, asked_at: now_secs(), review, retro };
@@ -108,6 +113,32 @@ with a short line, or carry on with work that doesn't depend on the answer.";
             Some(nudge) => format!("{asked}\n\n{nudge}"),
             None => asked.into(),
         })
+    }
+
+    /// The ticket a question is about: the asking session's own (a run's), else
+    /// the member's, else - asked from the member's own conversation while it
+    /// has runs - the one run on a ticket (or the one at work among several).
+    fn asking_ticket(&self, id: SessionId, session: SessionId) -> Option<TicketId> {
+        let own = |at: SessionId| self.sessions.get(&at).and_then(|s| s.work.as_ref().map(|w| w.ticket));
+        if let Some(ticket) = own(session).or_else(|| own(id)) {
+            return Some(ticket);
+        }
+        let runs: Vec<SessionId> = self.runs_of(id).into_iter().filter(|r| own(*r).is_some()).collect();
+        let working: Vec<SessionId> = runs.iter().copied().filter(|r| self.sessions.get(r).is_some_and(Session::is_working)).collect();
+        match (runs.as_slice(), working.as_slice()) {
+            ([only], _) | (_, [only]) => own(*only),
+            _ => None,
+        }
+    }
+
+    /// A member whose browser the person handed back a moment ago is refused
+    /// its first question set: it has the browser again and can look at the
+    /// page itself, so it shouldn't ask the person what they saw. Structural,
+    /// not about words: the first set within [`BROWSER_BACK_WINDOW`] seconds
+    /// of the hand-back is turned away once; a member that asks again - it has
+    /// looked and something does need a decision - is let through.
+    fn refuse_after_browser_back(&mut self, squad: &str, member: &str) -> Result<(), String> {
+        browser_back_refusal(&mut self.browser_back, (squad.to_owned(), member.to_owned()), now_secs())
     }
 
     /// What `ticket` still asks of the person through open questions and
@@ -264,6 +295,19 @@ with a short line, or carry on with work that doesn't depend on the answer.";
     }
 }
 
+/// [`Runtime::refuse_after_browser_back`] on the hand-backs `back` keeps: a
+/// member's one is used up whether or not it was recent.
+fn browser_back_refusal(back: &mut HashMap<(String, String), u64>, key: (String, String), now: u64) -> Result<(), String> {
+    let Some(at) = back.remove(&key) else { return Ok(()) };
+    if now.saturating_sub(at) > BROWSER_BACK_WINDOW {
+        return Ok(());
+    }
+    Err("The person just handed your browser back after doing their part, so look at the page yourself now (take a snapshot, \
+read the URL) rather than asking them what they saw, whether it worked or what is on the screen. Nothing has been sent to \
+them. If, having looked, a decision truly is theirs to make, ask again - about the decision, not about what the page shows."
+        .into())
+}
+
 /// `text` on one line, its runs of white space as single spaces.
 pub(super) fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -306,6 +350,21 @@ pub(super) fn fit(set: &QuestionSet, answers: Vec<Answer>) -> Vec<Answer> {
 mod tests {
     use super::*;
     use equipe_protocol::decide::{Choice, Question};
+
+    #[test]
+    fn the_first_question_after_a_browser_comes_back_is_turned_away_once_and_only_while_recent() {
+        let key = |m: &str| ("acme".to_owned(), m.to_owned());
+        let mut back = HashMap::from([(key("qa"), 1_000), (key("dev"), 1_000)]);
+        // Within the window: refused, with what to do instead; the same member's next try passes.
+        let refused = browser_back_refusal(&mut back, key("qa"), 1_000 + 60).unwrap_err();
+        assert!(refused.contains("look at the page yourself") && refused.contains("Nothing has been sent"), "{refused}");
+        assert!(browser_back_refusal(&mut back, key("qa"), 1_000 + 61).is_ok(), "asked again: let through");
+        // Another member's hand-back is its own; a member never handed one is never refused.
+        assert!(browser_back_refusal(&mut back, key("pm"), 1_000 + 60).is_ok());
+        // Long after: not refused, and the old hand-back is used up.
+        assert!(browser_back_refusal(&mut back, key("dev"), 1_000 + BROWSER_BACK_WINDOW + 1).is_ok());
+        assert!(back.is_empty());
+    }
 
     #[test]
     fn answers_fit_their_questions() {

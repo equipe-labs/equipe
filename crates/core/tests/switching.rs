@@ -419,3 +419,126 @@ async fn the_conversations_the_person_opened_with_the_pm_move_with_it_to_its_new
     let talk = snapshot.sessions.iter().find(|s| s.session == 77).expect("the conversation is still listed");
     assert_eq!(talk.lane.as_ref().map(|l| (l.of, l.kept)), Some((pm, true)), "it belongs to the new session");
 }
+
+/// Qa on Codex with a ticket in hand whose run waits on the person and has a
+/// question open; its engine's turn ended (there is no Codex here). Returns
+/// the run's session.
+async fn qa_waiting_with_a_question(handle: &Handle, events: &mut UnboundedReceiver<Event>) -> u64 {
+    create_ticket(handle, "qa").await;
+    let started = until(events, |e| matches!(e, Event::WorkStarted { of: Some(2), .. })).await;
+    let run = started.iter().find_map(|e| if let Event::WorkStarted { session, of: Some(2), .. } = e { Some(*session) } else { None }).unwrap();
+    for _ in 0..100 {
+        let snapshot = handle.snapshot("acme").await;
+        if snapshot.sessions.iter().find(|s| s.session == run).is_some_and(|s| s.state == equipe_core::protocol::SessionState::Ready && s.work.is_some()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let call = |name: &str, arguments: serde_json::Value| equipe_core::protocol::rpc::ToolCall {
+        run: Some(equipe_core::protocol::rpc::RunKey { session: run, ticket: 1, generation: 1 }),
+        squad: "acme".into(),
+        member: "qa".into(),
+        name: name.into(),
+        arguments,
+    };
+    let asked = handle.tool(call("block_on_person", json!({ "needs": ["Say which release this is"] }))).await;
+    assert!(!asked.is_error, "{}", asked.text);
+    let asked = handle.tool(call("ask_decision", json!({ "questions": [{ "question": "Which release is this?", "options": ["1.0", "2.0"] }] }))).await;
+    assert!(!asked.is_error, "{}", asked.text);
+    run
+}
+
+#[tokio::test]
+async fn an_exhausted_engine_moves_a_member_whose_run_waits_on_the_person_and_keeps_both() {
+    let (bin, _dir) = claude(ANSWERS);
+    let (handle, mut events) = pm_and_codex_qa(&bin).await;
+    let run = qa_waiting_with_a_question(&handle, &mut events).await;
+    handle.usage_read(Engine::Claude, usage(10, 10));
+    handle.usage_read(Engine::Codex, usage(100, 20));
+    let seen = until(&mut events, |e| matches!(e, Event::SessionStarted { member: Some(m), engine: Engine::Claude, .. } if m.name == "qa")).await;
+    assert_eq!(proposed(&seen).why, Why::Exhausted);
+    assert!(seen.iter().any(|e| matches!(e, Event::SessionClosed { session: 2 })), "moved although it waits on the person");
+    let snapshot = handle.snapshot("acme").await;
+    let qa = snapshot.sessions.iter().find(|s| s.run.is_none() && s.lane.is_none() && s.member.as_ref().is_some_and(|m| m.name == "qa")).expect("qa is back");
+    assert_eq!(qa.engine, Engine::Claude);
+    // Its waiting run stayed with its ticket and went along, now on Claude.
+    let kept = snapshot.sessions.iter().find(|s| s.session == run).expect("the waiting run is still there");
+    assert_eq!((kept.engine, kept.run.map(|r| r.of), kept.work.as_ref().map(|w| w.ticket)), (Engine::Claude, Some(qa.session), Some(1)));
+    // And the question is still open.
+    assert_eq!(snapshot.questions.len(), 1, "{:#?}", snapshot.questions);
+    assert_eq!(snapshot.questions[0].member, "qa");
+}
+
+#[tokio::test]
+async fn a_move_that_is_not_exhausted_still_waits_for_a_run_waiting_on_the_person() {
+    let (bin, _dir) = claude(ANSWERS);
+    let (handle, mut events) = pm_and_codex_qa(&bin).await;
+    let run = qa_waiting_with_a_question(&handle, &mut events).await;
+    handle.usage_read(Engine::Claude, usage(10, 10));
+    handle.usage_read(Engine::Codex, usage(96, 20));
+    let seen = until(&mut events, |e| matches!(e, Event::EngineProposed { proposal, .. } if proposal.why == Why::Drain)).await;
+    assert_eq!(proposed(&seen).why, Why::Drain);
+    let later = within(&mut events, Duration::from_millis(1500)).await;
+    assert!(!later.iter().any(|e| matches!(e, Event::SessionClosed { session: 2 })), "a drain waits: {later:#?}");
+    let snapshot = handle.snapshot("acme").await;
+    assert_eq!(snapshot.sessions.iter().find(|s| s.session == run).map(|s| s.engine), Some(Engine::Codex));
+}
+
+#[tokio::test]
+async fn a_question_asked_from_a_run_carries_that_runs_ticket_named_or_not() {
+    let (bin, _dir) = claude(ANSWERS);
+    let (handle, mut events) = pm_and_codex_qa(&bin).await;
+    qa_waiting_with_a_question(&handle, &mut events).await;
+    let named = handle.snapshot("acme").await.questions.pop().expect("asked");
+    assert_eq!(named.ticket, Some(1), "{named:#?}");
+    // A call that names no run, from a member whose only run is on the ticket.
+    let call = equipe_core::protocol::rpc::ToolCall {
+        run: None,
+        squad: "acme".into(),
+        member: "qa".into(),
+        name: "ask_decision".into(),
+        arguments: json!({ "questions": [{ "question": "Is this the right branch?", "options": ["Yes", "No"] }] }),
+    };
+    assert!(!handle.tool(call).await.is_error);
+    let sets = handle.snapshot("acme").await.questions;
+    assert_eq!(sets.len(), 2);
+    assert!(sets.iter().all(|s| s.ticket == Some(1)), "{sets:#?}");
+}
+
+#[tokio::test]
+async fn a_run_resumed_on_an_exhausted_engine_pauses_for_it_and_starts_no_turn_there() {
+    let (bin, _dir) = claude(ANSWERS);
+    let (handle, mut events) = pm_and_codex_qa(&bin).await;
+    let run = qa_waiting_with_a_question(&handle, &mut events).await;
+    // Nothing moves; Codex is out of its limit.
+    handle.send(Command::SetEngineSwitching { squad: "acme".into(), mode: Switching::Off });
+    until(&mut events, |e| matches!(e, Event::EngineSwitchingChanged { mode: Switching::Off, .. })).await;
+    handle.usage_read(Engine::Codex, usage(100, 20));
+    let _ = within(&mut events, Duration::from_millis(500)).await;
+    // The person answers: its ticket goes back to it — and a turn on Codex would only fail.
+    let set = handle.snapshot("acme").await.questions.pop().expect("asked");
+    handle.send(Command::DismissQuestions { squad: "acme".into(), id: set.id });
+    let later = within(&mut events, Duration::from_millis(2000)).await;
+    assert!(!later.iter().any(|e| matches!(e, Event::TurnEnded { session, .. } if *session == run)), "no turn was started on Codex: {later:#?}");
+    let snapshot = handle.snapshot("acme").await;
+    let kept = snapshot.sessions.iter().find(|s| s.session == run).expect("the run is still there, paused");
+    assert_eq!(kept.engine, Engine::Codex);
+    assert!(kept.work.is_some());
+}
+
+#[tokio::test]
+async fn a_conversation_without_a_ticket_on_an_exhausted_engine_keeps_what_it_was_asked_and_gets_it_where_it_moves() {
+    let (bin, dir) = claude(ANSWERS);
+    let (handle, mut events) = pm_and_codex_qa(&bin).await;
+    handle.send(Command::SetEngineSwitching { squad: "acme".into(), mode: Switching::Off });
+    until(&mut events, |e| matches!(e, Event::EngineSwitchingChanged { mode: Switching::Off, .. })).await;
+    handle.usage_read(Engine::Codex, usage(100, 20));
+    let _ = within(&mut events, Duration::from_millis(500)).await;
+    handle.send(Command::Submit { session: 2, text: "Are you there?".into(), about: None });
+    let later = within(&mut events, Duration::from_millis(1500)).await;
+    assert!(!later.iter().any(|e| matches!(e, Event::TurnEnded { session: 2, .. })), "no turn on the exhausted engine: {later:#?}");
+    // The person moves it: what it was asked is asked of it on Claude.
+    handle.send(Command::MoveEngine { squad: "acme".into(), members: vec!["qa".into()], engine: Engine::Claude, model: None, effort: None, now: true });
+    let asked = prompt_with(&dir, "Are you there?").await;
+    assert!(asked.contains("Are you there?"), "{asked}");
+}

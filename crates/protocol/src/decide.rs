@@ -478,6 +478,28 @@ mod tests {
         assert!(!old.recommended);
     }
 
+    #[test]
+    fn the_same_ticketless_question_kept_again_by_one_member_waits_once() {
+        let ask = |id, member: &str, text: &str| QuestionSet {
+            id,
+            session: 9,
+            member: member.into(),
+            ticket: None,
+            questions: vec![Question { question: text.into(), options: vec![Choice { label: "Yes".into(), ..Default::default() }, Choice { label: "No".into(), ..Default::default() }], ..Default::default() }],
+            asked_at: id,
+            review: false,
+            retro: None,
+        };
+        let sets = vec![
+            ask(1, "qa", "What did you see before handing this browser back?"),
+            ask(2, "qa", "What did you see before handing the browser back?"),
+            ask(3, "qa", "What did you see before handing this browser back??"),
+            ask(4, "dev", "What did you see before handing this browser back?"),
+        ];
+        let once = collapse(sets);
+        assert_eq!(once.iter().map(|s| (s.id, s.member.as_str())).collect::<Vec<_>>(), [(1, "qa"), (4, "dev")], "one card a member, as last worded");
+    }
+
     fn set() -> QuestionSet {
         let choice = |label: &str, description: &str| Choice { label: label.into(), description: description.into(), ..Default::default() };
         QuestionSet {

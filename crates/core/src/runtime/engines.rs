@@ -268,7 +268,7 @@ impl Runtime {
     }
 
     /// A decision, kept in the squad's journal and the daemon's log.
-    fn log_engines(&mut self, squad: &str, what: String) {
+    pub(super) fn log_engines(&mut self, squad: &str, what: String) {
         crate::daemon_log!("equipe: engines ({squad}): {what}");
         let mut record = self.engines_record(squad);
         record.log.push((unix_now(), what));
@@ -386,7 +386,7 @@ impl Runtime {
             self.consider_engines(&squad);
         }
         // A run paused for this engine's limit may go on now: looked at on the loop.
-        if self.sessions.values().any(Runtime::is_parked) {
+        if self.sessions.values().any(Runtime::is_parked) || !self.turn_ends.desk_held.is_empty() {
             let _ = self.internal.send(Internal::TurnEndsDue);
         }
     }
@@ -943,6 +943,10 @@ impl Runtime {
         if s.work.as_ref().is_some_and(|w| w.handed_in.is_some() || w.waiting.is_some()) {
             return false;
         }
+        // An engine that is out of its limit runs no turn anyway: a run idle on
+        // the person (waiting, handed in) or an open question doesn't hold the
+        // member there. Those runs go on with it ([`Self::switch_member`]).
+        let exhausted = due.why == Why::Exhausted;
         // Each of its runs at a clean point too; it starts no new one while
         // the move waits ([`Self::moving`]).
         let runs = self.runs_of(id);
@@ -951,13 +955,13 @@ impl Runtime {
             if r.is_working() || !r.queued.is_empty() || !r.steering.is_empty() || self.pending.values().any(|p| p.approval.session == *run) {
                 return false;
             }
-            if r.work.as_ref().is_some_and(|w| w.handed_in.is_some() || w.waiting.is_some()) {
+            if !exhausted && r.work.as_ref().is_some_and(|w| w.handed_in.is_some() || w.waiting.is_some()) {
                 return false;
             }
         }
         let on_ticket = s.work.is_some() || !runs.is_empty();
         let name = due.mv.member.clone();
-        if self.question_sets(squad).iter().any(|q| q.member == name) {
+        if !exhausted && self.question_sets(squad).iter().any(|q| q.member == name) {
             return false;
         }
         boundary(due.mv.in_place(), on_ticket, due.mv.now || due.why == Why::Exhausted)
@@ -1088,7 +1092,7 @@ impl Runtime {
             (Engine::Codex, Some(hint)) => self.codex_model(&hint).await,
             (_, model) => model,
         };
-        let first_run = self.runs_of(id).first().copied();
+        let first_run = self.runs_of(id).into_iter().find(|r| !self.idle_on_person(*r));
         let ticket = first_run.or(Some(id)).and_then(|at| self.sessions.get(&at)).and_then(|s| s.work.as_ref().map(|w| w.ticket));
         let brief = self.hand_over(squad, id, due).await;
         let packet = packet_kept(&brief).to_owned();
@@ -1099,6 +1103,18 @@ impl Runtime {
         // the session it leaves: parked on the new one so `/close` spares them.
         let kept: Vec<SessionId> = self.sessions.iter().filter(|(_, s)| s.kept && s.lane.as_ref().is_some_and(|(of, _)| *of == id)).map(|(&l, _)| l).collect();
         self.repoint_lanes(&kept, fresh, None);
+        // Runs idle on the person (waiting, handed in) weren't handed over:
+        // they keep their ticket and state, and belong to the new session, and
+        // so do the questions the member has open — closing the old one would
+        // end both.
+        let staying: Vec<SessionId> = self.runs_of(id).into_iter().filter(|r| self.idle_on_person(*r)).collect();
+        for run in &staying {
+            if let Some(r) = self.sessions.get_mut(run) {
+                r.run_of = Some(fresh);
+            }
+        }
+        let held = self.turn_ends.desk_held.remove(&id);
+        let asked: Vec<equipe_protocol::decide::QuestionSet> = self.question_sets(squad).iter().filter(|q| q.member == name).cloned().collect();
         // What `/close` sends, then what `/add` does — under the same name.
         Box::pin(self.handle(Command::Close { session: id })).await;
         let spec = SessionSpec { engine: Some(mv.to), model, access, cwd: squad_home::path(&self.config.home, squad), role: Some(role.clone()), squad: Some(squad.to_owned()) };
@@ -1126,7 +1142,14 @@ impl Runtime {
             session.briefing = briefing;
         }
         let member = self.sessions.get(&now_id).map(|s| (s.engine, s.model.clone()));
-        self.repoint_lanes(&kept, now_id, member);
+        self.repoint_lanes(&kept, now_id, member.clone());
+        self.carry_runs(squad, &staying, now_id, member);
+        if let Some(held) = held.filter(|_| self.sessions.contains_key(&now_id)) {
+            // What it was asked while its engine was out: asked of it on the new one.
+            self.turn_ends.desk_held.insert(now_id, held);
+            let _ = self.internal.send(Internal::TurnEndsDue);
+        }
+        self.reask(squad, id, now_id, asked);
         if self.sessions.contains_key(&now_id) {
             let to = if moved { mv.to } else { mv.from };
             let hand_over = HandOver { member: name.clone(), from_session: id, to_session: now_id, from: mv.from, to, why: due.why, at: unix_now(), ticket };
@@ -1144,6 +1167,83 @@ impl Runtime {
             self.set_mode(squad, Some(name), mode);
         }
         moved
+    }
+
+    /// Whether run `run` waits on the person: it asked for something or handed
+    /// its ticket in, and has nothing to do until they answer.
+    fn idle_on_person(&self, run: SessionId) -> bool {
+        self.sessions.get(&run).and_then(|s| s.work.as_ref()).is_some_and(|w| w.handed_in.is_some() || w.waiting.is_some())
+    }
+
+    /// Runs that stayed with their member through a move now belong to `to`.
+    /// Given the member's engine and model, each goes on there in a new
+    /// conversation, opening with its lines so far — its ticket, worktree and
+    /// waiting state as they were.
+    fn carry_runs(&mut self, squad: &str, runs: &[SessionId], to: SessionId, member: Option<(Engine, Option<String>)>) {
+        for run in runs {
+            let Some(s) = self.sessions.get_mut(run) else { continue };
+            s.run_of = Some(to);
+            let Some((engine, model)) = member.clone() else { continue };
+            if s.engine == engine {
+                continue;
+            }
+            let said: Vec<String> = s
+                .transcript
+                .entries()
+                .iter()
+                .filter_map(|e| match e {
+                    Entry::User { text, .. } => Some(format!("Person: {}", clip(text, 600))),
+                    Entry::Reply { text } => Some(format!("You: {}", clip(text, 600))),
+                    _ => None,
+                })
+                .collect();
+            let recent = said[said.len().saturating_sub(16)..].join("\n");
+            s.engine = engine;
+            s.model = model;
+            s.claude_session = None;
+            s.history.clear();
+            let ticket = s.work.as_mut().map(|w| {
+                w.claude_session = None;
+                w.history.clear();
+                w.ticket
+            });
+            if !recent.is_empty() {
+                s.briefing.push(format!(
+                    "equipe: this conversation moved to {} with the PM; the engine starts afresh, so here is how it went so far (latest last):\n{recent}",
+                    engine_name(engine)
+                ));
+            }
+            // The other engine can't resume this one's conversation.
+            if let Some(journal) = ticket.and_then(|t| self.journal(squad).map(|j| (j, t))) {
+                let (journal, ticket) = journal;
+                let mut kept = journal.ticket_work(ticket).unwrap_or_default();
+                kept.engine_session = None;
+                let _ = journal.set_ticket_work(ticket, &kept);
+            }
+        }
+    }
+
+    /// The questions a member had open when it moved, put back: closing its
+    /// old session dropped them. Those it asked from the session it left are
+    /// now asked from `now`.
+    fn reask(&mut self, squad: &str, old: SessionId, now: SessionId, asked: Vec<equipe_protocol::decide::QuestionSet>) {
+        if asked.is_empty() || !self.sessions.contains_key(&now) {
+            return;
+        }
+        for mut set in asked {
+            if set.session == old {
+                set.session = now;
+            }
+            if self.question_sets(squad).iter().any(|q| q.id == set.id) {
+                continue;
+            }
+            self.question_sets(squad).push(set.clone());
+            self.publish(Event::QuestionsAsked { squad: squad.to_owned(), questions: set });
+        }
+        let sets = self.question_sets(squad).clone();
+        if let Some(journal) = self.journal(squad) {
+            let _ = journal.set_questions(&sets);
+        }
     }
 
     /// Conversations the person opened with a member now belong to `to`. Given
@@ -1199,7 +1299,7 @@ impl Runtime {
     async fn hand_over(&mut self, squad: &str, id: SessionId, due: &Due) -> String {
         // Its runs' tickets go over too, each the same way; the first one's
         // conversation and ticket open the packet.
-        let runs = self.runs_of(id);
+        let runs: Vec<SessionId> = self.runs_of(id).into_iter().filter(|r| !self.idle_on_person(*r)).collect();
         let Some(s) = self.sessions.get(&id) else { return String::new() };
         let told = runs.first().and_then(|r| self.sessions.get(r)).unwrap_or(s);
         let entries = told.transcript.entries().to_vec();
