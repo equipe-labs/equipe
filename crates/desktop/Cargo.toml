@@ -11,6 +11,8 @@ path = "src/main.rs"
 [dependencies]
 equipe-core = { path = "../core" }
 equipe-providers = { path = "../providers" }
+# The Screen panel's protocol: an RFB (VNC) client of our own (`crates/rfb`).
+equipe-rfb = { path = "../rfb" }
 # gpui-kit pins the matching GPUI snapshot (gpui-pre) and re-exports it, so we
 # depend on exactly one UI crate and upgrade it on our own schedule.
 # Code blocks are highlighted with tree-sitter: the languages members write

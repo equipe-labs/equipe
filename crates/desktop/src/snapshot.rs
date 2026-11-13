@@ -1044,6 +1044,56 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                     }
                     shell.update(cx, |_, cx| cx.notify());
                 }
+                // The Screen panel (`views/screen.rs`): open it, take or give back control,
+                // click at a fraction of the far screen, type key by key, compose as an input source would.
+                "screen" => shell.update(cx, |shell, cx| shell.toggle_screen(window, cx)),
+                "stake" | "sgive" => {
+                    let panel = shell.read(cx).remote_screen.clone();
+                    panel.update(cx, |s, cx| s.hand(verb == "stake", window, cx));
+                }
+                "slive" => {
+                    let panel = shell.read(cx).remote_screen.clone();
+                    eprintln!("slive: {}", panel.read(cx).live());
+                }
+                "sclick" => {
+                    let panel = shell.read(cx).remote_screen.clone();
+                    let (fx, fy) = arg.split_once(',').map(|(x, y)| (x.parse().unwrap_or(0.5), y.parse().unwrap_or(0.5))).unwrap_or((0.5f32, 0.5f32));
+                    match panel.read(cx).picture_rect() {
+                        Some(r) => {
+                            let at = point(r.origin.x + r.size.width * fx, r.origin.y + r.size.height * fy);
+                            window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers: Modifiers::default() }), cx);
+                            let down = MouseDownEvent { button: MouseButton::Left, position: at, modifiers: Modifiers::default(), click_count: 1, first_mouse: false };
+                            window.dispatch_event(PlatformInput::MouseDown(down), cx);
+                            let up = MouseUpEvent { button: MouseButton::Left, position: at, modifiers: Modifiers::default(), click_count: 1 };
+                            window.dispatch_event(PlatformInput::MouseUp(up), cx);
+                        }
+                        None => eprintln!("sclick: no picture yet"),
+                    }
+                }
+                "skeys" => {
+                    // Key by key through the window, down and up: `~` is Enter, `_` a space
+                    // (the script's steps are trimmed, so a space at the end would be lost).
+                    for c in arg.chars() {
+                        let c = if c == '_' { ' ' } else { c };
+                        let key = match c {
+                            '~' => "enter".to_owned(),
+                            ' ' => "space".to_owned(),
+                            c => c.to_string(),
+                        };
+                        if let Ok(mut stroke) = Keystroke::parse(&key) {
+                            if stroke.key_char.is_none() && c != '~' {
+                                stroke.key_char = Some(c.to_string());
+                            }
+                            window.dispatch_keystroke(stroke.clone(), cx);
+                            window.dispatch_event(PlatformInput::KeyUp(KeyUpEvent { keystroke: stroke }), cx);
+                        }
+                    }
+                }
+                "sime" => {
+                    let panel = shell.read(cx).remote_screen.clone();
+                    let steps: Vec<&str> = arg.split('|').collect();
+                    panel.update(cx, |s, cx| s.compose(&steps, window, cx));
+                }
                 "bime" => {
                     let panel = shell.read(cx).browser.clone();
                     let steps: Vec<&str> = arg.split('|').collect();

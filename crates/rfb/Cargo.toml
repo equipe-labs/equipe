@@ -1,0 +1,14 @@
+[package]
+name = "equipe-rfb"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+description = "A small RFB (VNC) 3.8 client and bridge handshake: the Screen panel's protocol"
+
+[dependencies]
+# VNC authentication: the challenge is DES-encrypted with the password (RustCrypto, MIT OR Apache-2.0).
+des = "0.8.1"
+# Tight's four zlib streams and ZRLE's one (already in the tree through equipe-core).
+flate2 = "1"
+# Tight's JPEG rectangles (the decoder the app already builds).
+image = { version = "0.25", default-features = false, features = ["jpeg"] }

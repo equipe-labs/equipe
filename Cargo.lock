@@ -2005,6 +2005,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "des"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffdd80ce8ce993de27e9f063a444a4d53ce8e8db4c1f00cc03af5ad5a9867a1e"
+dependencies = [
+ "cipher 0.4.4",
+]
+
+[[package]]
 name = "dialoguer"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2344,6 +2353,7 @@ dependencies = [
  "equipe-desktop-control",
  "equipe-protocol",
  "equipe-providers",
+ "equipe-rfb",
  "futures-util",
  "hpke",
  "image",
@@ -2409,6 +2419,7 @@ dependencies = [
  "block2 0.6.2",
  "equipe-core",
  "equipe-providers",
+ "equipe-rfb",
  "gpui-kit",
  "gpui-pre-reqwest-client",
  "icu_normalizer",
@@ -2480,6 +2491,15 @@ dependencies = [
  "tokio",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "equipe-rfb"
+version = "0.103.109"
+dependencies = [
+ "des",
+ "flate2",
+ "image",
 ]
 
 [[package]]
