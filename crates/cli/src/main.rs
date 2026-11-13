@@ -24,6 +24,7 @@ mod i18n;
 mod lang;
 mod launchd;
 mod logins;
+mod usage;
 mod onboard;
 mod remote;
 mod review;
@@ -333,6 +334,8 @@ enum Command {
         #[command(subcommand)]
         action: logins::LoginsAction,
     },
+    /// Where the squad's tokens went and what looks wasted: by day, member and kind, with waste signals
+    Usage(usage::UsageArgs),
     /// What an AWS CLI profile's credential_process runs (login autopilot sets it up)
     #[command(hide = true)]
     Credential { kind: String, name: String },
@@ -583,6 +586,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Design { action } => design::command(action).await.map_err(Failure::new),
         Command::Brief { action } => brief::command(action).await.map_err(Failure::new),
         Command::Logins { action } => logins::command(action).map_err(Failure::new),
+        Command::Usage(args) => usage::command(args).map_err(Failure::new),
         Command::Credential { kind, name } => logins::credential(&kind, &name).map_err(Failure::new),
         Command::CallSim { squad, no_llm } => call_sim::run(squad, no_llm).await.map_err(Failure::new),
         Command::Disk { words, squad, yes } => disk::command(&words, squad, yes).await.map_err(Failure::new),

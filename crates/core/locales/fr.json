@@ -689,5 +689,19 @@
   "match.remember_words": "rester connecté|restez connecté|garder ma session ouverte|se souvenir de moi|se souvenir de ce navigateur|mémoriser cet appareil|faire confiance à cet appareil|faire confiance à ce navigateur|ne plus demander sur cet appareil|ne plus me demander",
   "match.session_expired_words": "session expirée|votre session a expiré|vous avez été déconnecté|vous avez été déconnectée|veuillez vous reconnecter|veuillez vous connecter à nouveau|déconnecté pour cause d’inactivité|déconnecté pour inactivité",
   "match.approve_words": "autoriser|permettre|approuver|valider|confirmer|continuer|oui|accepter",
-  "notice.secret_store": "le coffre de secrets de cette machine"
+  "notice.secret_store": "le coffre de secrets de cette machine",
+  "usage.digest.head": "Consommation de tokens des dernières 24 heures : {tokens} en {turns} tours (moyenne quotidienne des 7 jours précédents : {average}).",
+  "usage.signal.pm_desk.what": "La conversation du PM lit environ {context} tokens par appel ({share}% des tokens) : elle n'est pas compactée.",
+  "usage.signal.pm_desk.todo": "Faites repartir le PM sur une nouvelle conversation ou compactez-la plus tôt.",
+  "usage.signal.heavy_context.what": "{share}% des tokens ont été dépensés dans des tours dépassant {limit} de contexte par appel.",
+  "usage.signal.heavy_context.todo": "Gardez les conversations courtes : découpez les gros tickets et repartez de zéro pour les longs.",
+  "usage.signal.cancelled.what": "{share}% des tokens sont allés à des tickets annulés ensuite : {tickets}.",
+  "usage.signal.cancelled.todo": "Décidez avec le PM ce qui vaut la peine d'être construit avant que les membres s'y mettent.",
+  "usage.signal.rework.what": "{count} tickets ont pris {turns} tours ou plus ({share}% des tokens) : {tickets}.",
+  "usage.signal.rework.todo": "Cherchez pourquoi ils bouclent (ticket flou ou vérification qui échoue), puis réécrivez-les ou découpez-les.",
+  "usage.signal.endings.what": "{count} tours se sont terminés anormalement : {endings}.",
+  "usage.signal.endings.todo": "Vérifiez les connexions et l'usage du forfait des moteurs, et lisez les tickets rendus.",
+  "usage.ending.limited": "limite du forfait atteinte",
+  "usage.ending.failed_fast": "échec immédiat",
+  "usage.ending.handed_back": "rendu"
 }

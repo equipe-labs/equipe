@@ -458,6 +458,29 @@ async fn serve_client(
                     });
                 });
             }
+            // Where a squad's tokens went: its journal read off the loop (`crate::usage`).
+            (Some(rpc::USAGE), Some(id)) => {
+                let Some(ask) = message.params_as::<rpc::UsageAsk>() else {
+                    let _ = out_tx.send(Message::failure(id, -32602, "usage needs { squad }"));
+                    continue;
+                };
+                let (home, out) = (home.clone(), out_tx.clone());
+                tokio::spawn(async move {
+                    let read = tokio::task::spawn_blocking(move || {
+                        let until = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                        let since = ask.since.unwrap_or(until.saturating_sub(7 * 24 * 60 * 60));
+                        let db = crate::journal::squad_dir(&home, &ask.squad).join("squad.db");
+                        let input = crate::usage::read(&db, since, until.saturating_add(1))?;
+                        serde_json::to_value(crate::usage::summarize(&input, since, until)).map_err(|e| e.to_string())
+                    })
+                    .await;
+                    let _ = out.send(match read {
+                        Ok(Ok(report)) => Message::response(id, report),
+                        Ok(Err(why)) => Message::failure(id, -32000, why),
+                        Err(_) => Message::failure(id, -32000, "the look at the squad's usage stopped"),
+                    });
+                });
+            }
             (Some(rpc::SQUADS), Some(id)) => {
                 let home = home.clone();
                 let squads = tokio::task::spawn_blocking(move || squads(&home)).await.unwrap_or_default();

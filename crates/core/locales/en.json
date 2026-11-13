@@ -689,5 +689,19 @@
   "match.remember_words": "remember me|keep me signed in|stay signed in|keep me logged in|trust this device|trust this browser|remember this device|remember this browser|don't ask again on this",
   "match.session_expired_words": "session expired|session has expired|you have been signed out|you've been signed out|you have been logged out|please sign in again|please log in again|signed out due to inactivity",
   "match.approve_words": "authorize|allow|approve|confirm|continue|yes|accept",
-  "notice.secret_store": "this machine's secret store"
+  "notice.secret_store": "this machine's secret store",
+  "usage.digest.head": "Token usage, last 24 hours: {tokens} in {turns} turns (daily average of the 7 days before: {average}).",
+  "usage.signal.pm_desk.what": "The PM conversation reads about {context} tokens per call ({share}% of tokens): it isn't being compacted.",
+  "usage.signal.pm_desk.todo": "Start the PM on a fresh conversation or compact it sooner.",
+  "usage.signal.heavy_context.what": "{share}% of tokens were spent in turns with more than {limit} of context per call.",
+  "usage.signal.heavy_context.todo": "Keep conversations short: split big tickets and start long-running ones fresh.",
+  "usage.signal.cancelled.what": "{share}% of tokens went to tickets that were cancelled afterwards: {tickets}.",
+  "usage.signal.cancelled.todo": "Settle with the PM what is worth building before members start on it.",
+  "usage.signal.rework.what": "{count} tickets took {turns} turns or more ({share}% of tokens): {tickets}.",
+  "usage.signal.rework.todo": "Check why they loop (an unclear ticket or a failing check) and rewrite or split them.",
+  "usage.signal.endings.what": "{count} turns ended abnormally: {endings}.",
+  "usage.signal.endings.todo": "Check the engines' sign-ins and plan use, and read the tickets that were handed back.",
+  "usage.ending.limited": "hit a plan limit",
+  "usage.ending.failed_fast": "failed at once",
+  "usage.ending.handed_back": "handed back"
 }

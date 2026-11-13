@@ -689,5 +689,19 @@
   "match.remember_words": "angemeldet bleiben|eingeloggt bleiben|anmeldung merken|login merken|diesem gerät vertrauen|diesem browser vertrauen|diesen browser merken|dieses gerät merken|auf diesem gerät nicht erneut fragen|nicht mehr fragen",
   "match.session_expired_words": "sitzung abgelaufen|sitzung ist abgelaufen|sie wurden abgemeldet|du wurdest abgemeldet|sie wurden ausgeloggt|bitte erneut anmelden|bitte melden sie sich erneut an|wegen inaktivität abgemeldet",
   "match.approve_words": "autorisieren|zulassen|erlauben|genehmigen|bestätigen|weiter|fortfahren|ja|akzeptieren",
-  "notice.secret_store": "den Geheimnisspeicher dieses Rechners"
+  "notice.secret_store": "den Geheimnisspeicher dieses Rechners",
+  "usage.digest.head": "Token-Verbrauch der letzten 24 Stunden: {tokens} in {turns} Turns (Tagesschnitt der 7 Tage davor: {average}).",
+  "usage.signal.pm_desk.what": "Das PM-Gespräch liest etwa {context} Tokens pro Aufruf ({share}% der Tokens): Es wird nicht komprimiert.",
+  "usage.signal.pm_desk.todo": "Lass den PM ein neues Gespräch beginnen oder es früher komprimieren.",
+  "usage.signal.heavy_context.what": "{share}% der Tokens gingen in Turns mit mehr als {limit} Kontext pro Aufruf.",
+  "usage.signal.heavy_context.todo": "Halte Gespräche kurz: große Tickets aufteilen, lang laufende neu beginnen.",
+  "usage.signal.cancelled.what": "{share}% der Tokens gingen an Tickets, die danach abgebrochen wurden: {tickets}.",
+  "usage.signal.cancelled.todo": "Kläre mit dem PM, was sich lohnt, bevor Mitglieder anfangen.",
+  "usage.signal.rework.what": "{count} Tickets brauchten {turns} Turns oder mehr ({share}% der Tokens): {tickets}.",
+  "usage.signal.rework.todo": "Prüfe, warum sie sich wiederholen (unklares Ticket oder fehlschlagende Prüfung), und schreibe sie neu oder teile sie auf.",
+  "usage.signal.endings.what": "{count} Turns endeten abnormal: {endings}.",
+  "usage.signal.endings.todo": "Prüfe die Anmeldungen und die Plannutzung der Engines und lies die zurückgegebenen Tickets.",
+  "usage.ending.limited": "Plangrenze erreicht",
+  "usage.ending.failed_fast": "sofort fehlgeschlagen",
+  "usage.ending.handed_back": "zurückgegeben"
 }
