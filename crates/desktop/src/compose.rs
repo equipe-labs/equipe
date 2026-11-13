@@ -1250,7 +1250,7 @@ mod tests {
     #[test]
     fn in_a_conversation_opened_with_the_pm_what_is_said_goes_there_and_the_pms_own_stays_its_own() {
         let mut talk = session(50, "pm", SessionState::Ready);
-        talk.lane = Some(equipe_core::protocol::Lane { of: 1, project: Some("site".into()), kept: true });
+        talk.lane = Some(equipe_core::protocol::Lane { of: 1, project: Some("site".into()), kept: true, active: 0, pinned: false });
         talk.title = Some("login is broken".into());
         let mut model = squad(vec![session(1, "pm", SessionState::Ready), talk, session(2, "frontend", SessionState::Ready)]);
         assert_eq!(model.members.iter().map(|m| m.session).collect::<Vec<_>>(), [1, 2], "a conversation isn't a member");
@@ -1301,7 +1301,7 @@ mod tests {
     /// at work on a ticket — the person then on the design screen of `site`.
     fn designing_while_a_conversation_is_open() -> Model {
         let mut talk = session(50, "pm", SessionState::Ready);
-        talk.lane = Some(equipe_core::protocol::Lane { of: 1, project: Some("app".into()), kept: true });
+        talk.lane = Some(equipe_core::protocol::Lane { of: 1, project: Some("app".into()), kept: true, active: 0, pinned: false });
         talk.title = Some("how is the app going?".into());
         let mut model = squad(vec![session(1, "pm", SessionState::Ready), talk, session(4, "designer", SessionState::Working)]);
         model.members[1].ticket = Some(396);

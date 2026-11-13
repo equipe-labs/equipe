@@ -135,6 +135,8 @@ pub struct Lane {
     /// When something last happened in it (unix seconds; 0 before this
     /// window saw anything), for the most lately used first.
     pub active: u64,
+    /// The person pinned it: equipe never puts it away by itself.
+    pub pinned: bool,
 }
 
 /// One ticket a member runs, in a session of its own beside its
@@ -404,6 +406,9 @@ pub struct Model {
     pub signals: Vec<equipe_core::protocol::signals::SignalView>,
     /// Conversations with the PM the person put away, the latest first.
     pub put_away: Vec<equipe_core::protocol::PutAway>,
+    /// equipe puts conversations away by itself when they lie unused for days
+    /// (on unless the person turned it off).
+    pub auto_put_away: bool,
     /// Secrets members asked the person to type, oldest first.
     pub secret_asks: Vec<equipe_core::protocol::secrets::SecretAsk>,
     /// equipe's offers to keep a login the person just signed in with by hand.
@@ -607,6 +612,7 @@ impl Model {
             design_reviewer: Default::default(),
             signals: Vec::new(),
             put_away: Vec::new(),
+            auto_put_away: true,
             secret_asks: Vec::new(),
             login_offers: Vec::new(),
             browser_profiles: Vec::new(),
@@ -1229,6 +1235,7 @@ impl Model {
         self.design_reviewer = snapshot.design_reviewer;
         self.signals = snapshot.signals.clone();
         self.put_away = snapshot.put_away.clone();
+        self.auto_put_away = !snapshot.auto_put_away_off;
         self.secret_asks = snapshot.secret_asks.clone();
         self.login_offers = snapshot.login_offers.clone();
         self.routines = snapshot.routines.clone();
@@ -1286,8 +1293,9 @@ impl Model {
                     verb: Verb::of_entry(s.recent.iter().rev().find(|e| matches!(e, Entry::Tool { .. } | Entry::Reply { .. } | Entry::User { .. }))),
                     kept: lane.kept,
                     title: s.title.clone(),
-                    // Kept as this window last saw them, else in the daemon's order.
-                    active: self.lanes.iter().find(|l| l.session == s.session).map_or(0, |l| l.active),
+                    // What this window last saw, if later than what the daemon kept.
+                    active: self.lanes.iter().find(|l| l.session == s.session).map_or(0, |l| l.active).max(lane.active),
+                    pinned: lane.pinned,
                 })
             })
             .collect();
@@ -1592,6 +1600,16 @@ impl Model {
                 }
             }
             Event::WordsAllChanged { squad, on } if squad == self.squad => self.words.all = on,
+            Event::AutoPutAwayChanged { squad, on } if squad == self.squad => {
+                self.auto_put_away = on;
+                self.revision += 1;
+            }
+            Event::ConversationPinned { session, pinned } => {
+                if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == session) {
+                    lane.pinned = pinned;
+                    self.revision += 1;
+                }
+            }
             Event::WordsLog { squad, entries } if squad == self.squad => self.words.got_log(entries),
             Event::ModeChanged { squad, member, mode } if squad == self.squad => match member {
                 None => self.mode = mode.unwrap_or_default(),
@@ -1828,7 +1846,7 @@ impl Model {
                 _ => convo.lane = true,
             }
         }
-        self.lanes.push(Lane { session, of, project, presence: lane.presence, verb: lane.verb, kept, title: None, active: self.unix });
+        self.lanes.push(Lane { session, of, project, presence: lane.presence, verb: lane.verb, kept, title: None, active: self.unix, pinned: false });
         // The new conversation this window started: made now, and open.
         if self.draft_talk.as_ref().is_some_and(|(draft, _)| *draft == session) {
             self.draft_talk = None;
@@ -3338,7 +3356,7 @@ mod tests {
     #[test]
     fn conversations_list_newest_activity_first_each_with_its_project_and_a_new_one_on_top() {
         let mut model = Model::new("acme");
-        let lane = |session, project: Option<&str>, active| Lane { session, of: 1, project: project.map(str::to_owned), presence: Presence::Ready, verb: Verb::Thinking, kept: true, title: None, active };
+        let lane = |session, project: Option<&str>, active| Lane { session, of: 1, project: project.map(str::to_owned), presence: Presence::Ready, verb: Verb::Thinking, kept: true, title: None, active, pinned: false };
         model.lanes.push(lane(40, None, 100));
         model.lanes.push(lane(41, Some("web"), 300));
         model.lanes.push(lane(42, Some("app"), 200));
@@ -3366,7 +3384,7 @@ mod tests {
         in_talk.ticket = None;
         let mut squad_wide = approval(9, 1);
         squad_wide.ticket = None;
-        model.lanes.push(Lane { session: 40, of: 1, project: Some("app".into()), presence: Presence::Ready, verb: Verb::Thinking, kept: true, title: None, active: 0 });
+        model.lanes.push(Lane { session: 40, of: 1, project: Some("app".into()), presence: Presence::Ready, verb: Verb::Thinking, kept: true, title: None, active: 0, pinned: false });
         for a in [on_web, in_talk, squad_wide] {
             model.apply(Update::Event(Event::ApprovalRequested { squad: "acme".into(), approval: a }), T0);
         }
@@ -3702,7 +3720,7 @@ mod tests {
     #[test]
     fn a_snapshot_keeps_lanes_apart_from_members() {
         let mut lane = session(9, "pm", "pm", SessionState::Working);
-        lane.lane = Some(equipe_core::protocol::Lane { of: 1, project: Some("app".into()), kept: false });
+        lane.lane = Some(equipe_core::protocol::Lane { of: 1, project: Some("app".into()), kept: false, active: 0, pinned: false });
         let mut model = Model::new("acme");
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), lane]), T0);
         assert_eq!(model.members.len(), 1);

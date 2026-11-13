@@ -84,6 +84,10 @@ pub struct BoardUi {
     pub naming: Entity<InputState>,
     /// The project list's search, and which header opened it.
     pub slice_search: Entity<InputState>,
+    /// The sidebar's filter over the full list of conversations.
+    pub talks_filter: Entity<InputState>,
+    /// The conversations put away show under the sidebar's list.
+    pub side_put_away_open: bool,
     pub slice_place: &'static str,
     /// The project list's box takes a folder's path to add, not a name to find.
     pub adding_project: bool,
@@ -177,6 +181,7 @@ impl BoardUi {
         self.reply.update(cx, |s, cx| s.set_placeholder(t!("board.reply_placeholder"), window, cx));
         self.naming.update(cx, |s, cx| s.set_placeholder(t!("board.view_name_placeholder"), window, cx));
         self.slice_search.update(cx, |s, cx| s.set_placeholder(t!("header.find_project"), window, cx));
+        self.talks_filter.update(cx, |s, cx| s.set_placeholder(t!("sidebar.find_conversation"), window, cx));
         if let Some(diff) = &self.diff {
             diff.comment.update(cx, |s, cx| s.set_placeholder(t!("diff.comment_placeholder"), window, cx));
         }
@@ -190,6 +195,8 @@ impl BoardUi {
             reply: cx.new(|cx| TextareaState::new(window, cx).auto_grow(2, 8).submit_on_enter(false).placeholder(t!("board.reply_placeholder"))),
             naming: cx.new(|cx| InputState::new(window, cx).placeholder(t!("board.view_name_placeholder"))),
             slice_search: cx.new(|cx| InputState::new(window, cx).placeholder(t!("header.find_project"))),
+            talks_filter: cx.new(|cx| InputState::new(window, cx).placeholder(t!("sidebar.find_conversation"))),
+            side_put_away_open: false,
             slice_place: "",
             adding_project: false,
             flow: None,
@@ -244,6 +251,7 @@ impl BoardUi {
             || self.reply.read(cx).focus_handle(cx).is_focused(window)
             || self.naming.read(cx).focus_handle(cx).is_focused(window)
             || self.slice_search.read(cx).focus_handle(cx).is_focused(window)
+            || self.talks_filter.read(cx).focus_handle(cx).is_focused(window)
             || self.diff.as_ref().is_some_and(|d| d.comment.read(cx).focus_handle(cx).is_focused(window))
             || self.tk.typing(window, cx)
     }
@@ -297,8 +305,14 @@ impl Shell {
         let reply = self.board.reply.clone();
         let naming = self.board.naming.clone();
         let slice = self.board.slice_search.clone();
+        let talks_filter = self.board.talks_filter.clone();
         let mut tickets = self.tickets_subscriptions(window, cx);
         tickets.extend(vec![
+            cx.subscribe_in(&talks_filter, window, |_, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
             cx.subscribe_in(&slice, window, |this, input, event: &InputEvent, _, cx| match event {
                 InputEvent::Change => cx.notify(),
                 // A path typed to add: sent as it is, read on the daemon's machine.

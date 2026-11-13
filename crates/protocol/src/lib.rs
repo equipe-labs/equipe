@@ -189,6 +189,10 @@ pub struct PutAway {
     pub title: Option<String>,
     /// When it was put away (unix seconds).
     pub at: i64,
+    /// equipe put it away itself, for lack of use ([`Command::SetAutoPutAway`]),
+    /// not the person.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto: bool,
 }
 
 /// A member's conversation about one project (`None`: the whole squad's),
@@ -203,6 +207,13 @@ pub struct Lane {
     /// the PM runs beside its work, folded back when idle.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub kept: bool,
+    /// When something last happened in a conversation the person opened
+    /// (unix seconds; 0 where not known): what the list groups by day.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub active: u64,
+    /// The person pinned it: equipe never puts it away by itself.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 /// A session that runs one ticket for a member: the member's own session
@@ -1100,6 +1111,15 @@ pub enum Command {
     RenameConversation { squad: SquadName, session: SessionId, title: String },
     /// A conversation with the PM is put away: it leaves the list.
     CloseConversation { session: SessionId },
+    /// A conversation with the PM is pinned, or let go: a pinned one is never
+    /// put away by [`Command::SetAutoPutAway`]'s tidying. Answered with
+    /// [`Event::ConversationPinned`].
+    PinConversation { session: SessionId, pinned: bool },
+    /// Turn the squad's automatic tidying of conversations on or off (on
+    /// unless the person turned it off): one with no activity for days, nothing
+    /// running, asked or waiting, and not pinned is put away — kept, listed,
+    /// to be taken up again. Answered with [`Event::AutoPutAwayChanged`].
+    SetAutoPutAway { squad: SquadName, on: bool },
     /// A conversation put away is taken up again, as it was left: answered
     /// with [`Event::LaneOpened`] and [`Event::ConversationBack`].
     ReopenConversation { squad: SquadName, session: SessionId },
@@ -2364,6 +2384,11 @@ pub enum Event {
     },
     /// A [`Command::RenameConversation`] was not done; the title is as it was.
     ConversationRenameRefused { session: SessionId },
+    /// A conversation is pinned or no longer ([`Command::PinConversation`]).
+    ConversationPinned { session: SessionId, pinned: bool },
+    /// Automatic tidying of conversations turned on or off for the squad
+    /// ([`Command::SetAutoPutAway`]).
+    AutoPutAwayChanged { squad: SquadName, on: bool },
     /// A conversation taken up again ([`Command::ReopenConversation`]): what
     /// was said in it, after its [`Event::LaneOpened`].
     ConversationBack {
@@ -3048,6 +3073,7 @@ impl Event {
             | Event::WordsClosed { squad, .. }
             | Event::WordsLog { squad, .. }
             | Event::WordsAllChanged { squad, .. }
+            | Event::AutoPutAwayChanged { squad, .. }
             | Event::Allowed { squad, .. }
             | Event::EngineProposed { squad, .. }
             | Event::EngineProposalClosed { squad, .. }
@@ -3108,6 +3134,7 @@ impl Event {
             | Event::ConversationBack { session, .. }
             | Event::ConversationTitle { session, .. }
             | Event::ConversationRenameRefused { session, .. }
+            | Event::ConversationPinned { session, .. }
             | Event::Steered { session, .. }
             | Event::CommandWatch { session, .. }
             | Event::Estimated { session, .. }
@@ -3145,6 +3172,7 @@ impl Event {
             | Event::WordsClosed { .. }
             | Event::WordsLog { .. }
             | Event::WordsAllChanged { .. }
+            | Event::AutoPutAwayChanged { .. }
             | Event::Allowed { .. }
             | Event::EngineProposed { .. }
             | Event::EngineProposalClosed { .. }
@@ -3636,6 +3664,11 @@ pub struct Snapshot {
     /// "All by words" is on for the squad ([`Command::SetWordsAll`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub words_all: bool,
+    /// The person turned automatic tidying of conversations off
+    /// ([`Command::SetAutoPutAway`]); on otherwise, so a daemon that predates
+    /// it reads as on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_put_away_off: bool,
 }
 
 #[cfg(test)]
@@ -4044,9 +4077,10 @@ mod tests {
             hq: Some("/repo".into()),
             hand_overs: Vec::new(),
             resting: vec!["qa".into()],
-            put_away: vec![PutAway { session: 51, project: Some("web".into()), title: Some("the pricing page".into()), at: 1_760_000_000 }],
+            put_away: vec![PutAway { session: 51, project: Some("web".into()), title: Some("the pricing page".into()), at: 1_760_000_000, auto: false }],
             words: None,
             words_all: false,
+            auto_put_away_off: false,
             routines: vec![routines::Routine { id: 1, title: "Weekly report".into(), prompt: "Sum up the week".into(), when: routines::Schedule::Daily { hour: 9, minute: 0 }, on: true, last_run: None, next_run: Some(1) }],
             tickets: vec![ticket(1)],
             reviews: vec![review::CodeReview {
@@ -4665,5 +4699,26 @@ mod tests {
         assert_eq!(serde_json::from_value::<Snapshot>(wire).unwrap(), rested);
         let older: Snapshot = serde_json::from_value(json!({ "squad": "acme", "sessions": [] })).unwrap();
         assert!(older.resting.is_empty());
+    }
+
+    #[test]
+    fn tidying_conversations_pins_and_the_switch_are_json_and_older_peers_read_as_on_and_unpinned() {
+        let pin = Command::PinConversation { session: 7, pinned: true };
+        assert_eq!(serde_json::to_value(&pin).unwrap(), json!({ "type": "pin_conversation", "session": 7, "pinned": true }));
+        let off = Command::SetAutoPutAway { squad: "acme".into(), on: false };
+        assert_eq!(serde_json::to_value(&off).unwrap(), json!({ "type": "set_auto_put_away", "squad": "acme", "on": false }));
+        let told = Event::AutoPutAwayChanged { squad: "acme".into(), on: false };
+        assert_eq!(serde_json::from_value::<Event>(serde_json::to_value(&told).unwrap()).unwrap(), told);
+        assert_eq!(Event::ConversationPinned { session: 7, pinned: true }.session(), Some(7));
+        // A snapshot from a daemon before them: tidying on, nothing pinned, no activity known.
+        let before: Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[]}"#).unwrap();
+        assert!(!before.auto_put_away_off);
+        let lane: Lane = serde_json::from_value(json!({ "of": 1, "project": null, "kept": true })).unwrap();
+        assert_eq!((lane.active, lane.pinned), (0, false));
+        assert!(serde_json::to_value(&lane).unwrap().get("pinned").is_none());
+        // One put away by equipe says so; the person's own says nothing more than before.
+        let away = PutAway { session: 3, project: None, title: None, at: 9, auto: true };
+        assert_eq!(serde_json::to_value(&away).unwrap()["auto"], json!(true));
+        assert!(serde_json::to_value(PutAway { auto: false, ..away }).unwrap().get("auto").is_none());
     }
 }

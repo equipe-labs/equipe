@@ -608,6 +608,10 @@ impl Journal {
         }
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN merged INTEGER", []);
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN cwd TEXT", []);
+        // Pinned by the person; put away by equipe itself ([`crate::tidy`]).
+        for column in ["pinned INTEGER NOT NULL DEFAULT 0", "auto INTEGER NOT NULL DEFAULT 0"] {
+            let _ = conn.execute(&format!("ALTER TABLE conversations ADD COLUMN {column}"), []);
+        }
         // What a member's turn used, by kind, on which engine and model, in
         // which of the engine's sessions (`crate::plan_use`).
         for column in [
@@ -2433,14 +2437,49 @@ impl Journal {
 
     /// Put away: it leaves the list; its lines stay as long as any.
     pub fn close_conversation(&self, id: SessionId) -> Result<()> {
-        self.touch_conversation(id, "open", false)
+        self.conn.execute("UPDATE conversations SET open = 0, auto = 0, updated_at = ?1 WHERE id = ?2", params![now(), id as i64])?;
+        Ok(())
+    }
+
+    /// Put away by equipe itself, for lack of use: the same, and recorded as
+    /// its doing ([`equipe_protocol::PutAway::auto`]).
+    pub fn close_conversation_auto(&self, id: SessionId) -> Result<()> {
+        self.conn.execute("UPDATE conversations SET open = 0, auto = 1, updated_at = ?1 WHERE id = ?2", params![now(), id as i64])?;
+        Ok(())
+    }
+
+    /// The person pins a conversation (or lets it go): a pinned one is never
+    /// put away by itself. Not an activity of its own.
+    pub fn set_conversation_pinned(&self, id: SessionId, pinned: bool) -> Result<bool> {
+        Ok(self.conn.execute("UPDATE conversations SET pinned = ?1 WHERE id = ?2", params![pinned, id as i64])? > 0)
+    }
+
+    /// For each open conversation: when something last happened in it (its
+    /// latest line, or when it was made or last changed) and whether it is
+    /// pinned.
+    pub fn conversation_marks(&self) -> Result<std::collections::HashMap<SessionId, (u64, bool)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.id, MAX(c.updated_at, COALESCE((SELECT MAX(e.at) FROM entries e WHERE e.session = c.id), 0)), c.pinned
+             FROM conversations c WHERE c.open = 1",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)? as u64, (r.get::<_, i64>(1)?.max(0) as u64, r.get::<_, bool>(2)?))))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// Automatic tidying of conversations: on unless the person turned it off.
+    pub fn auto_put_away(&self) -> bool {
+        self.meta("auto_put_away").as_deref() != Some("off")
+    }
+
+    pub fn set_auto_put_away(&self, on: bool) -> Result<()> {
+        self.set_meta("auto_put_away", if on { "on" } else { "off" })
     }
 
     /// The conversations put away, the latest first: at most `limit`.
     pub fn put_away(&self, limit: usize) -> Result<Vec<equipe_protocol::PutAway>> {
-        let mut stmt = self.conn.prepare("SELECT id, project, title, updated_at FROM conversations WHERE open = 0 ORDER BY updated_at DESC, id DESC LIMIT ?1")?;
+        let mut stmt = self.conn.prepare("SELECT id, project, title, updated_at, auto FROM conversations WHERE open = 0 ORDER BY updated_at DESC, id DESC LIMIT ?1")?;
         let rows = stmt.query_map(params![limit as i64], |r| {
-            Ok(equipe_protocol::PutAway { session: r.get::<_, i64>(0)? as u64, project: r.get(1)?, title: r.get(2)?, at: r.get(3)? })
+            Ok(equipe_protocol::PutAway { session: r.get::<_, i64>(0)? as u64, project: r.get(1)?, title: r.get(2)?, at: r.get(3)?, auto: r.get(4)? })
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
@@ -2449,6 +2488,7 @@ impl Journal {
     /// None if there is no such conversation, or it is open.
     pub fn reopen_conversation(&self, id: SessionId) -> Result<Option<ConversationRecord>> {
         let changed = self.conn.execute("UPDATE conversations SET open = 1, updated_at = ?1 WHERE id = ?2 AND open = 0", params![now(), id as i64])?;
+        self.conn.execute("UPDATE conversations SET auto = 0 WHERE id = ?1", params![id as i64])?;
         if changed == 0 {
             return Ok(None);
         }

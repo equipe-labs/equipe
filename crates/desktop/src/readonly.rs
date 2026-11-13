@@ -141,6 +141,8 @@ pub fn reads(command: &Command) -> bool {
         | C::MoveConversation { .. }
         | C::RenameConversation { .. }
         | C::CloseConversation { .. }
+        | C::PinConversation { .. }
+        | C::SetAutoPutAway { .. }
         | C::ReopenConversation { .. }
         | C::AddProject { .. }
         | C::RemoveProject { .. }
@@ -557,6 +559,8 @@ mod tests {
             Command::MoveConversation { session: 1, project: None },
             Command::RenameConversation { squad: s(), session: 1, title: "t".into() },
             Command::CloseConversation { session: 1 },
+            Command::PinConversation { session: 1, pinned: true },
+            Command::SetAutoPutAway { squad: s(), on: false },
             Command::ReopenConversation { squad: s(), session: 1 },
             Command::AddProject { squad: s(), path: "/p".into() },
             Command::RemoveProject { squad: s(), path: "/p".into() },

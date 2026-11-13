@@ -173,6 +173,8 @@ pub fn person_only(command: &Command) -> bool {
         | C::MoveConversation { .. }
         | C::RenameConversation { .. }
         | C::CloseConversation { .. }
+        | C::PinConversation { .. }
+        | C::SetAutoPutAway { .. }
         | C::ReopenConversation { .. }
         | C::Unqueue { .. }
         | C::SendNow { .. }

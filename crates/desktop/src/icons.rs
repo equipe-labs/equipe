@@ -11,7 +11,7 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     Chosen,
     [
-        ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CornerDownRight, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, Eye, FileText, Flag, Folder, Globe, Hand, Inbox, Info, Keyboard, Laptop, Lightbulb, Locate, Lock, Maximize2, MessageSquare, Mic, Reply, Minimize2, Minus, Paperclip, Pencil, Play, Plug, Plus, RotateCcw, RotateCw, Search, Server, Settings, Compass, AppWindow, PenTool, Bug, ChartNoAxesColumn, Megaphone, ShieldCheck, Smartphone, Sparkles, SquareSlash, SquareTerminal, Ticket, Trash, TriangleAlert, Undo2, Users, X
+        ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CornerDownRight, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, Eye, FileText, Flag, Folder, Globe, Hand, Inbox, Info, Keyboard, Laptop, Lightbulb, Locate, Lock, Maximize2, MessageSquare, Mic, Reply, Minimize2, Minus, Paperclip, Pencil, Pin, Play, Plug, Plus, RotateCcw, RotateCw, Search, Server, Settings, Compass, AppWindow, PenTool, Bug, ChartNoAxesColumn, Megaphone, ShieldCheck, Smartphone, Sparkles, SquareSlash, SquareTerminal, Ticket, Trash, TriangleAlert, Undo2, Users, X
     ]
 );
 
@@ -82,6 +82,7 @@ pub enum Icon {
     Lightbulb,
     Message,
     Pencil,
+    Pin,
     Terminal,
     Ticket,
     /// Cancelled.
@@ -127,7 +128,7 @@ pub enum Icon {
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 69] = [
+    pub const ALL: [Icon; 70] = [
         Icon::ArrowDown,
         Icon::ArrowLeft,
         Icon::ArrowRight,
@@ -173,6 +174,7 @@ impl Icon {
         Icon::Lightbulb,
         Icon::Message,
         Icon::Pencil,
+        Icon::Pin,
         Icon::Terminal,
         Icon::Ticket,
         Icon::XCircle,
@@ -254,6 +256,7 @@ impl Icon {
             Icon::Lightbulb => "icons/lightbulb.svg",
             Icon::Message => "icons/message-square.svg",
             Icon::Pencil => "icons/pencil.svg",
+            Icon::Pin => "icons/pin.svg",
             Icon::Terminal => "icons/square-terminal.svg",
             Icon::Ticket => "icons/ticket.svg",
             Icon::XCircle => "icons/circle-x.svg",
