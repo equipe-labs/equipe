@@ -126,6 +126,11 @@ pub trait Desktop {
     fn process_name(&self, _pid: i32) -> Option<String> {
         None
     }
+    /// Why `tool` (a screenshot-and-coordinates tool) isn't on this platform
+    /// at all: it is refused with this before anything runs. `None`: it is.
+    fn unavailable(&self, _tool: &str) -> Option<&'static str> {
+        None
+    }
 }
 
 /// A tool's answer: text, whether it was refused or failed, and a screenshot.
@@ -185,6 +190,9 @@ impl<D: Desktop> Controller<D> {
     /// that scene: a send the person said yes to doesn't land in another
     /// conversation, and a field that turned into a password field gets nothing.
     pub fn call(&mut self, member: &str, tool: &str, args: &Value) -> Reply {
+        if let Some(why) = self.desktop.unavailable(tool) {
+            return Reply::refuse(why);
+        }
         if let Some(expected) = args.get(EXPECT) {
             match self.scene(member, tool, args) {
                 Ok(now) if same_scene(expected, &now) => {}
@@ -218,6 +226,9 @@ impl<D: Desktop> Controller<D> {
     /// JSON in the shape of `equipe_core::desktop_gate::Scene`, for the daemon's
     /// send gate. A click by point brings the app forward first, as the click would.
     pub fn scene(&mut self, member: &str, tool: &str, args: &Value) -> Step<Value> {
+        if let Some(why) = self.desktop.unavailable(tool) {
+            return Err(Reply::refuse(why));
+        }
         self.need(false, true, "read apps' UI")?;
         let element = self.element(member, args)?;
         let app = match &element {
@@ -278,6 +289,9 @@ impl<D: Desktop> Controller<D> {
     /// Leaves every member's coordinates as they were.
     pub fn capture(&self) -> Reply {
         let shot = || -> Step<Vec<u8>> {
+            if let Some(why) = self.desktop.unavailable("screenshot") {
+                return Err(Reply::refuse(why));
+            }
             self.need(true, false, "see the screen")?;
             let display = self.display()?;
             let mapping = Mapping::for_frame(display.frame, display.backing);

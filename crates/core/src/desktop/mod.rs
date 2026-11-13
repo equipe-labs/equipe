@@ -102,14 +102,37 @@ impl Probe for ThisMac {
     fn screen(&self) -> Screen {
         mac::screen()
     }
-    #[cfg(not(target_os = "macos"))]
+    /// GNOME's idle monitor, else `xprintidle`; `None` (no pointer or
+    /// keyboard input goes in) when neither answers.
+    #[cfg(target_os = "linux")]
+    fn idle(&self) -> Option<f64> {
+        equipe_desktop_control::linux::idle(&equipe_desktop_control::linux::this_session())
+    }
+    /// A display and a session bus to reach, and the screensaver's word on the lock.
+    #[cfg(target_os = "linux")]
+    fn screen(&self) -> Screen {
+        use equipe_desktop_control::linux;
+        let env = linux::this_session();
+        linux_screen(&linux::probe(&env, |p| p.exists(), &linux::Unasked), || linux::locked(&env))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     fn idle(&self) -> Option<f64> {
         None
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     fn screen(&self) -> Screen {
         Screen::NoSession
     }
+}
+
+/// A Linux session as the lease sees it: no display or no bus is no
+/// session; a lock the screensaver can't confirm is taken as open, as macOS
+/// does when it doesn't say.
+pub fn linux_screen(ready: &equipe_desktop_control::linux::Readiness, locked: impl FnOnce() -> Option<bool>) -> Screen {
+    if !ready.session() {
+        return Screen::NoSession;
+    }
+    if locked() == Some(true) { Screen::Locked } else { Screen::Open }
 }
 
 /// What a desktop tool call does with the screen.
@@ -218,6 +241,9 @@ impl std::fmt::Display for Refusal {
             ),
             Refusal::LockedPhysical => f.write_str(
                 "The Mac's screen is locked: pointer and keyboard input (headed, double/right click, focusing windows, screenshots-and-click) waits until it is unlocked, since macOS sends it to the lock screen. Reading (snapshot, find) and act on a ref without `headed` work while it is locked: use those, or ask the person to unlock.",
+            ),
+            Refusal::NoSession if cfg!(target_os = "linux") => f.write_str(
+                "equipe can't reach this machine's desktop session (no display or no session bus), or can't tell whether the person is using it (pointer and keyboard input wait for GNOME's idle monitor or xprintidle to answer): nothing was done. Ask the person to run `equipe desktop status` inside their desktop session.",
             ),
             Refusal::NoSession => f.write_str(
                 "Nobody is logged in at the Mac's screen, or equipe's daemon isn't running in the person's login session: nothing was done. Ask the person to log in at the Mac and run `equipe daemon install`.",
@@ -357,6 +383,20 @@ impl Desktop {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_linux_session_reads_as_open_locked_or_none_for_the_lease() {
+        use super::{Screen, linux_screen};
+        use equipe_desktop_control::linux::{Display, Readiness};
+        let session = Readiness { display: Ok(Display::X11(":0".into())), bus: Ok(()), atspi: Err("not asked".into()), toolkits: None };
+        assert_eq!(linux_screen(&session, || Some(false)), Screen::Open);
+        assert_eq!(linux_screen(&session, || Some(true)), Screen::Locked, "a locked screen holds input back as on a Mac");
+        assert_eq!(linux_screen(&session, || None), Screen::Open, "no screensaver to ask");
+        let no_display = Readiness { display: Err("no display".into()), ..session.clone() };
+        assert_eq!(linux_screen(&no_display, || panic!("not asked without a session")), Screen::NoSession);
+        let no_bus = Readiness { bus: Err("no bus".into()), ..session };
+        assert_eq!(linux_screen(&no_bus, || Some(false)), Screen::NoSession);
+    }
+
     #[test]
     fn with_the_persons_yes_tree_actions_go_on_while_locked_and_input_still_waits() {
         let (d, mac) = desktop(Some(600.0), Screen::Locked);

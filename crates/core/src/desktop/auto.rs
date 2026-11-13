@@ -102,16 +102,22 @@ impl Failure {
 
 /// Everything the setup does to the machine.
 pub trait Ops: Send + Sync + 'static {
-    /// The machine can run the desktop helper at all (macOS, Windows).
+    /// The machine can run the desktop helper at all (macOS, Windows, Linux).
     fn supported(&self) -> bool;
     /// What is installed of the pinned engine (hashes every file).
     fn engine(&self) -> pin::Installed;
     /// Download, verify and install the pinned engine.
     fn install_engine(&self) -> Fut<Result<(), Failure>>;
-    /// Someone is logged in at the Mac's screen.
+    /// Someone is logged in at the Mac's screen (Linux: a display and a
+    /// session bus can be reached).
     fn gui_session(&self) -> bool;
+    /// When there is no session to reach, what is missing, a line each, for
+    /// the person (Linux). Empty where the OS says nothing more (macOS).
+    fn session_missing(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// Install the helper and keep it current (macOS), or start it when it
-    /// doesn't answer (`answering` false; Windows).
+    /// doesn't answer (`answering` false; Windows, and Linux inside the session).
     fn sync_helper(&self, answering: bool) -> Fut<Result<(), Failure>>;
     /// Ask the helper (`_status`, `_request_accessibility`): its answer, or `None`.
     fn helper(&self, tool: &'static str) -> Fut<Option<Value>>;
@@ -346,6 +352,11 @@ impl Auto {
                 DesktopSetup::Failed { .. } => "equipe couldn't install its accessibility engine (the person was told and can retry). Don't retry; use the screenshot tools meanwhile, or tell the person.".to_owned(),
                 _ => "equipe is still setting up the accessibility engine in the background (nothing for the person to do). Call again in a minute, or use the screenshot tools meanwhile.".to_owned(),
             })
+        } else if !last.missing.is_empty() && (engine_tool || needs_grant) {
+            Some(format!(
+                "This machine's desktop session isn't reachable for equipe: {} Only the person can fix that (`equipe desktop status` lists it); equipe has told them. Don't retry now: tell the person if your work waits on it, or do something else first.",
+                last.missing.join(" ")
+            ))
         } else if engine_tool && !last.helper {
             Some("equipe is starting the desktop helper (nothing for the person to do). Call again in a minute.".to_owned())
         } else if needs_grant && last.helper && last.accessibility == Some(false) {
@@ -549,7 +560,8 @@ impl Worker {
                 card = Some(format!("failed:{:?}", failure.reason));
             }
         } else {
-            let healthy = self.engine_verified && status.is_some();
+            // A session that lacks something (Linux) isn't mended by the helper answering.
+            let healthy = self.engine_verified && status.is_some() && ready.missing.is_empty();
             self.edit(|saved| {
                 saved.failing_since = None;
                 if healthy {
@@ -573,6 +585,11 @@ impl Worker {
                         // The condition cleared: a card put away for it is spent.
                         saved.dismissed.retain(|key| !key.starts_with("grant:"));
                     });
+                } else if !ready.missing.is_empty() {
+                    // No switch to flip (Linux): the session lacks something.
+                    // Told below, once a member is blocked on it.
+                    self.edit(|saved| saved.told_ready = false);
+                    idle = POLL_SLOW;
                 } else {
                     // The switch is off. A watch for it, light; a card only if
                     // work is blocked on it (or this is the first set-up), and
@@ -587,6 +604,13 @@ impl Worker {
                     }
                 }
             }
+        }
+        // What only the person can mend in the session (Linux): told when a
+        // member was refused for it, as a failure they can retry.
+        if setup == DesktopSetup::Idle && card.is_none() && wanted && self.saved.blocked && !ready.missing.is_empty() {
+            setup = DesktopSetup::Failed { reason: DesktopFailure::Session, detail: ready.missing.join(" ") };
+            card = Some(format!("failed:{:?}", DesktopFailure::Session));
+            idle = idle.min(POLL_SLOW);
         }
         if !wanted {
             setup = DesktopSetup::Idle;
@@ -682,7 +706,10 @@ impl Worker {
     async fn helper_step(&mut self, ready: &mut DesktopReadiness) -> Option<Value> {
         if !self.blocking(|ops| ops.gui_session()).await {
             // Nobody at the Mac's screen: there is no one to set it up for yet.
+            // On Linux, what the session lacks is said, for the person to mend.
             ready.helper = false;
+            let ops = self.ops.clone();
+            ready.missing = tokio::task::spawn_blocking(move || ops.session_missing()).await.unwrap_or_default();
             return None;
         }
         let mut status = self.ops.helper(helper::STATUS).await;
@@ -782,7 +809,7 @@ pub async fn install_engine(home: &Path) -> Result<(), Failure> {
 
 impl Ops for ThisMachine {
     fn supported(&self) -> bool {
-        cfg!(any(target_os = "macos", windows))
+        cfg!(any(target_os = "macos", windows, target_os = "linux"))
     }
 
     fn engine(&self) -> pin::Installed {
@@ -795,7 +822,20 @@ impl Ops for ThisMachine {
     }
 
     fn gui_session(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        return self.session_missing().is_empty();
+        #[cfg(not(target_os = "linux"))]
         if cfg!(target_os = "macos") { equipe_desktop_control::install::gui_session() } else { true }
+    }
+
+    fn session_missing(&self) -> Vec<String> {
+        #[cfg(target_os = "linux")]
+        {
+            use equipe_desktop_control::linux;
+            linux::probe(&linux::this_session(), |p| p.exists(), &linux::Unasked).session_missing()
+        }
+        #[cfg(not(target_os = "linux"))]
+        Vec::new()
     }
 
     fn sync_helper(&self, answering: bool) -> Fut<Result<(), Failure>> {
@@ -834,7 +874,23 @@ impl Ops for ThisMachine {
                     .map(|_| ())
                     .map_err(|e| Failure::new(DesktopFailure::Helper, e.to_string()))
             }
-            #[cfg(not(any(target_os = "macos", windows)))]
+            #[cfg(target_os = "linux")]
+            {
+                use equipe_desktop_control::linux;
+                if answering {
+                    return Ok(());
+                }
+                // No permission to ask for: the helper is started detached,
+                // inside the person's graphical session.
+                let env = linux::this_session();
+                let missing = linux::probe(&env, |p| p.exists(), &linux::Unasked).session_missing();
+                if !missing.is_empty() {
+                    return Err(Failure::new(DesktopFailure::Session, missing.join(" ")));
+                }
+                let exe = std::env::current_exe().map_err(|e| Failure::new(DesktopFailure::Helper, e.to_string()))?;
+                linux::start_helper(&home, &exe, &env).map_err(|e| Failure::new(DesktopFailure::Helper, e.to_string()))
+            }
+            #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
             {
                 let _ = (home, answering);
                 Ok(())
@@ -909,6 +965,10 @@ mod tests {
         /// Who holds the permission, as the helper's status says it ("" = not said).
         role: Mutex<&'static str>,
         old_bundle: AtomicBool,
+        /// Linux: what the session lacks before the helper (no display, no
+        /// bus), and what the helper says it lacks (AT-SPI).
+        session_missing: Mutex<Vec<String>>,
+        helper_missing: Mutex<Vec<String>>,
     }
 
     impl Fake {
@@ -927,6 +987,8 @@ mod tests {
                 locked: AtomicBool::new(false),
                 role: Mutex::new(""),
                 old_bundle: AtomicBool::new(false),
+                session_missing: Mutex::new(Vec::new()),
+                helper_missing: Mutex::new(Vec::new()),
             })
         }
     }
@@ -947,7 +1009,10 @@ mod tests {
             Box::pin(async move { if ok { Ok(()) } else { Err(Failure::new(DesktopFailure::Download, "offline")) } })
         }
         fn gui_session(&self) -> bool {
-            true
+            self.session_missing.lock().unwrap().is_empty()
+        }
+        fn session_missing(&self) -> Vec<String> {
+            self.session_missing.lock().unwrap().clone()
         }
         fn sync_helper(&self, _answering: bool) -> Fut<Result<(), Failure>> {
             self.helper_syncs.fetch_add(1, Ordering::SeqCst);
@@ -966,8 +1031,9 @@ mod tests {
             let granted = self.granted.load(Ordering::SeqCst);
             let locked = self.locked.load(Ordering::SeqCst);
             let role = *self.role.lock().unwrap();
+            let missing = self.helper_missing.lock().unwrap().clone();
             Box::pin(async move {
-                up.then(|| json!({ "role": role, "accessibility": granted, "post_events": granted, "screen": false, "session": { "locked": locked }, "engine": { "accessibility": if granted { "granted" } else { "denied" } } }))
+                up.then(|| json!({ "role": role, "accessibility": granted, "post_events": granted, "screen": false, "session": { "locked": locked }, "missing": missing, "engine": { "accessibility": if granted { "granted" } else { "denied" } } }))
             })
         }
         fn old_bundle(&self) -> bool {
@@ -1301,6 +1367,58 @@ mod tests {
         rig.worker.step().await;
         assert!(rig.auto.latest().unwrap().ready());
         assert_eq!(rig.auto.refusal("mcp__desktop__snapshot"), None);
+    }
+
+    #[tokio::test]
+    async fn a_linux_machine_without_a_session_says_what_is_missing_and_starts_nothing() {
+        let mut rig = rig();
+        let no_display = equipe_desktop_control::linux::NO_DISPLAY.to_owned();
+        *rig.fake.session_missing.lock().unwrap() = vec![no_display.clone()];
+        rig.worker.step().await;
+        let ready = rig.auto.latest().unwrap();
+        assert_eq!(ready.missing, vec![no_display.clone()]);
+        assert!(!ready.helper && !ready.ready());
+        assert_eq!(rig.fake.helper_syncs.load(Ordering::SeqCst), 0, "no helper outside a session");
+        assert_eq!(rig.setup(), DesktopSetup::Idle, "nobody is blocked yet: no card");
+        // A member needs it: told what is missing, not "the helper is starting".
+        let message = rig.auto.refusal("mcp__desktop__snapshot").unwrap();
+        assert!(message.contains(&no_display) && message.contains("Don't retry"), "{message}");
+        rig.worker.step().await;
+        assert!(matches!(rig.setup(), DesktopSetup::Failed { reason: DesktopFailure::Session, ref detail } if detail.contains("DISPLAY")), "{:?}", rig.setup());
+        assert_ne!(rig.setup(), DesktopSetup::Grant);
+        // The person logs in (or exports the session): the helper starts, the card goes.
+        rig.fake.session_missing.lock().unwrap().clear();
+        rig.fake.granted.store(true, Ordering::SeqCst);
+        rig.worker.step().await;
+        assert_eq!(rig.fake.helper_syncs.load(Ordering::SeqCst), 1);
+        assert!(rig.auto.latest().unwrap().ready());
+        assert_eq!(rig.setup(), DesktopSetup::JustReady);
+        assert_eq!(rig.auto.refusal("mcp__desktop__snapshot"), None);
+        assert_eq!(rig.fake.prompts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn atspi_not_answering_on_linux_is_no_permission_card() {
+        let mut rig = rig();
+        *rig.fake.role.lock().unwrap() = "linux";
+        let atspi = "AT-SPI (the desktop's accessibility bus) isn't answering on the session bus.".to_owned();
+        *rig.fake.helper_missing.lock().unwrap() = vec![atspi.clone()];
+        rig.worker.step().await;
+        let ready = rig.auto.latest().unwrap();
+        assert!(ready.helper && ready.accessibility == Some(false));
+        assert_eq!(ready.missing, vec![atspi.clone()]);
+        assert_eq!(rig.setup(), DesktopSetup::Idle, "no Accessibility switch to offer on Linux");
+        let message = rig.auto.refusal("mcp__desktop__act").unwrap();
+        assert!(message.contains(&atspi) && !message.contains("System Settings"), "{message}");
+        rig.worker.step().await;
+        assert!(matches!(rig.setup(), DesktopSetup::Failed { reason: DesktopFailure::Session, .. }), "{:?}", rig.setup());
+        // AT-SPI comes up: ready, said once.
+        rig.fake.helper_missing.lock().unwrap().clear();
+        rig.fake.granted.store(true, Ordering::SeqCst);
+        rig.worker.step().await;
+        assert!(rig.auto.latest().unwrap().ready());
+        assert_eq!(rig.setup(), DesktopSetup::JustReady);
+        assert_eq!(rig.fake.prompts.load(Ordering::SeqCst), 0, "nothing is ever prompted for");
     }
 
     #[tokio::test]

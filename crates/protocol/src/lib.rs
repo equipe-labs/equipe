@@ -2218,7 +2218,7 @@ pub enum DesktopSetup {
 /// (agent-desktop) and the session. Nothing in it is private.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DesktopReadiness {
-    /// The daemon's machine can run the desktop helper at all (macOS, Windows).
+    /// The daemon's machine can run the desktop helper at all (macOS, Windows, Linux).
     #[serde(default)]
     pub supported: bool,
     /// The helper is installed and answers.
@@ -2260,6 +2260,11 @@ pub struct DesktopReadiness {
     /// screen is locked ([`Command::DesktopLocked`]). Off unless turned on.
     #[serde(default)]
     pub work_locked: bool,
+    /// What the machine's desktop session lacks, a line each, in the order
+    /// to fix it (Linux: no display, no session bus, AT-SPI not answering).
+    /// Only the person can mend these; empty on macOS and Windows.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<String>,
 }
 
 impl DesktopReadiness {

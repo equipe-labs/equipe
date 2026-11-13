@@ -13,6 +13,11 @@
 > calls still pass through the daemon's one-member screen lease, send gate, and
 > `_scene` recheck before input is posted.
 
+> **Linux:** the accessibility tools only (snapshot, find, act, apps, windows,
+> wait, clipboard), through agent-desktop over AT-SPI, with the helper running
+> inside the person's graphical session — see [Linux](#linux). The screenshot
+> and coordinate tools aren't built for Linux yet and say so.
+
 Members working desktop apps (Microsoft Teams, say) the way they work the
 browser: see the screen, click and type, open apps. This is the T-20 spike
 (ROADMAP principle 2): before building the tools, learn whether equipe's daemon,
@@ -74,7 +79,9 @@ helper's process, the CLI as a child process, or `agent-desktop mcp`.
 ### Pinned, verified, private
 
 - One release: `engine::pin::VERSION` = 1.2.0. equipe downloads the upstream archive for the machine (macOS arm64/x86_64, Windows
-  x64/arm64), checks its SHA-256 against the value pinned in code (from the
+  x64/arm64, Linux glibc x86_64/aarch64 — whose archive also carries
+  `agent-desktop-linux-clipboard-owner`, which agent-desktop runs to keep the X11
+  clipboard after setting it), checks its SHA-256 against the value pinned in code (from the
   release's `checksums.txt`; each archive's Sigstore attestation was checked with
   `gh attestation verify` when pinning), unpacks only the pinned files with the
   system `tar`, checks each file's SHA-256, and installs them with a copy of the
@@ -309,13 +316,10 @@ own prompt was shown once before it.
   daemon downloads the engine automatically and starts the helper
   (`equipe desktop serve`, detached) when a member first needs the desktop; a
   helper left over from an older equipe isn't replaced automatically yet.
-- **Linux** has no helper yet. agent-desktop itself ships for Linux; to bring it
-  here equipe will need an X11 or Wayland session with a running AT-SPI bus
-  (the desktop's accessibility service, `at-spi2-core`) and toolkits' accessibility
-  switched on (`gsettings set org.gnome.desktop.interface toolkit-accessibility true`
-  on GNOME), a user session rather than a bare SSH shell, and, on Wayland, the
-  compositor's portal for screen capture. None of that is set up or checked
-  today: `equipe desktop` says so and exits.
+- **Linux** needs no grant either, but a session: see [Linux](#linux). The
+  daemon downloads the engine and, once a member needs the desktop, starts the
+  helper detached inside the person's graphical session; when there is no
+  session to reach it says what is missing instead.
 - Opt out of all of it with `EQUIPE_NO_DESKTOP_AUTO=1` in the daemon's environment.
 
 ### What needs the person on a real Mac
@@ -365,6 +369,83 @@ person's alone — members can't change it):
 - **Logged out stays refused**, and so does FileVault before the first login:
   there is no session, and no app, to act in. `/desktop stop` refuses
   everything as before.
+
+### Linux
+
+Linux has no Accessibility switch to flip: whether agent-desktop works depends
+on whether the person's desktop session can be reached and its AT-SPI bus
+answers (upstream: <https://agent-browser.dev/desktop/platforms/linux>). So the
+Linux helper (`crates/desktop-control/src/linux.rs`) is about the session:
+
+- **What it checks** (`linux::probe`), each with a line the person can act on:
+  1. a display — `WAYLAND_DISPLAY` with its socket in `$XDG_RUNTIME_DIR`, or
+     `DISPLAY` with its X socket in `/tmp/.X11-unix` (a TCP display is taken on
+     trust); a variable naming a session that is gone is told apart from none;
+  2. the D-Bus session bus — `DBUS_SESSION_BUS_ADDRESS`, or systemd's per-user
+     bus at `$XDG_RUNTIME_DIR/bus`;
+  3. AT-SPI — `org.a11y.Bus.GetAddress` on the session bus, asked with
+     whichever client is installed (`gdbus`, `busctl`, `dbus-send`);
+  4. (advisory) `org.a11y.Status.IsEnabled`: whether toolkits are told to
+     expose their trees (`gsettings set org.gnome.desktop.interface
+     toolkit-accessibility true` on GNOME; `QT_ACCESSIBILITY=1` for Qt apps).
+  The final word is agent-desktop's own: the helper runs `agent-desktop
+  permissions` and reports its `accessibility` state, which on Linux is
+  `granted` exactly when the bus answers.
+- **Where the helper runs.** The daemon is a systemd user service, whose
+  environment may lack the session's variables. `linux::this_session` takes
+  the process's own and fills the missing ones from `systemctl --user
+  show-environment` (desktops export `DISPLAY`, `WAYLAND_DISPLAY`,
+  `XAUTHORITY` there at login). The helper (`equipe desktop serve`) is started
+  detached in its own process group with exactly those variables, logs to
+  `~/.equipe/desktop/helper.log`, and keeps its pid in
+  `~/.equipe/desktop/helper.pid` so `equipe desktop setup` can restart one left
+  over from an older session and `equipe desktop remove` can stop it. It
+  listens on the same `0600` Unix socket with the same token as on a Mac.
+- **`equipe desktop status` / `setup`**, from a terminal inside the session,
+  print the checks above, the engine, whether the helper answers and whether
+  agent-desktop reads apps through AT-SPI from inside the helper. `setup`
+  installs the engine, starts the helper (or restarts a stale one) and exits 1
+  with what is still missing. From a bare SSH shell or a TTY both say "No
+  graphical session…" and "No D-Bus session bus…", not a blanket refusal.
+- **The daemon's own setup** (`desktop::auto`): no display or no bus → no
+  helper is started and `DesktopReadiness.missing` carries the lines; a member
+  who needs the desktop is told what is missing (not "the helper is
+  starting"), and that makes it a `Failed { reason: Session }` card the person
+  can retry. AT-SPI not answering → the same, from the helper's `missing`.
+  There is never an Accessibility "Grant" card on Linux, and nothing is
+  prompted for.
+- **The rules don't change.** Members' calls go through the same daemon
+  checks: `/desktop stop`, the lease for anything physical, the person-first
+  wait, the send gate and the `_scene` recheck. `ThisMac` on Linux reads the
+  session for the lease: no display or bus is `NoSession`; the screensaver's
+  `GetActive` (GNOME's, then freedesktop's) is the lock; the person's idle time
+  comes from GNOME's `org.gnome.Mutter.IdleMonitor`, else `xprintidle` on X11 —
+  and when neither answers, pointer and keyboard input is refused, since not
+  knowing whether the person is there is not leave to go ahead. Headless ref
+  actions and reads need neither.
+- **Not on Linux yet:** the screenshot, click-at-a-point, keyboard and
+  `elements` tools (the helper refuses each before anything runs, pointing at
+  snapshot / find / act); the helper isn't replaced automatically after an
+  equipe update (as on Windows: `equipe desktop setup` restarts it); a helper
+  isn't started at login by itself (the daemon starts it when a member needs
+  it). From upstream: Wayland has no pointer gestures or window control,
+  headless `scroll` is refused, notifications are GNOME Shell only, and Ubuntu
+  22.04's AT-SPI bridge is too old (24.04 or later, or an `at-spi2-core` with
+  upstream's fix).
+- **Packages** on a minimal machine (what the live run used):
+  `at-spi2-core`, `libatk-adaptor` (GTK's bridge), `dbus-x11` or another
+  session bus, a window manager, and for X11 headless work `xvfb`; Wayland
+  clipboard needs `wl-clipboard`.
+- **Run live** on Ubuntu 24.04 (aarch64, in a container: Xvfb + openbox +
+  AT-SPI + a GTK `zenity --entry`), with the script and its output in
+  [`research/desktop-control/linux`](./research/desktop-control/linux):
+  `status`/`setup` from a bare shell and from a session without AT-SPI say
+  what is missing; in the full session `setup` downloads and verifies the
+  pinned aarch64 engine, starts the helper and reports ready, and through the
+  helper's socket a snapshot, the send gate's `_scene`, `act type` (verified),
+  and `act click` on OK work — zenity printed the typed text. Not run live: the
+  daemon (its rules are platform-independent and unit-tested), the systemd
+  environment fallback, Wayland, GNOME Shell, and the x86_64 binary.
 
 ### Limits and follow-ups
 
