@@ -99,7 +99,8 @@ pub fn person_only(command: &Command) -> bool {
         | C::Desktop { .. }
         // Asking macOS for the helper's permissions: the person's, at their machine.
         | C::DesktopCheck { .. }
-        | C::DesktopAuto { .. } => true,
+        | C::DesktopAuto { .. }
+        | C::DesktopLocked { .. } => true,
         // Projects, HQ and the squad's routines: the shape of the work.
         C::AddProject { .. }
         | C::RemoveProject { .. }
@@ -551,6 +552,7 @@ mod tests {
             Command::Desktop { open: true },
             Command::DesktopCheck { guide: true },
             Command::DesktopAuto { action: crate::protocol::DesktopAutoAction::Retry },
+            Command::DesktopLocked { on: true },
             Command::PairStart,
             Command::Unpair { device: "phone".into() },
             Command::UndoHomeChange { squad: "a".into(), session: 1, change: "abc".into() },

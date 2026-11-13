@@ -228,7 +228,7 @@ fn desktop_card(shell: &Shell, cx: &mut Context<Shell>) -> Option<Div> {
                 .into_any_element(),
             Some(DesktopSetup::Grant) => v_flex()
                 .gap_2()
-                .child(div().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("desktop_setup.grant_title")))
+                .child(div().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("desktop_setup.grant_title", name = "equipe")))
                 .child(desc(p, t!("desktop_setup.grant_body")))
                 .child(
                     h_flex()

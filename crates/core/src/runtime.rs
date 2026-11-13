@@ -377,8 +377,14 @@ impl Handle {
                 }
             }
         }
-        let result = helper::call(&home, &member, &call.name, &arguments).await;
+        let mut result = helper::call(&home, &member, &call.name, &arguments).await;
         self.desktop_done(who, start, what.physical());
+        // Allowed while locked by the person's choice, and refused by macOS or the app anyway.
+        if result.is_error && what == desktop::Use::Headless && desktop::Probe::screen(&desktop::ThisMac) == desktop::Screen::Locked {
+            result.text.push_str(
+                "\n(The Mac's screen is locked. Accessibility actions run while it is, but some apps don't answer them until it is unlocked, and nothing typed or clicked physically can reach an app. Try reading the app again, or wait for the person to unlock.)",
+            );
+        }
         result
     }
 
@@ -620,7 +626,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         calls: HashMap::new(),
         call_llm: crate::call::judge::LlmConfig::from_env(),
         calls_ended_at: HashMap::new(),
-        desktop: desktop::Desktop::new(mac),
+        desktop: desktop::Desktop::new(mac).with_home(&config.home),
         desktop_auto: None,
         config,
         // A server that never answers a connection must not hold anything up.
@@ -2329,6 +2335,21 @@ impl Runtime {
                         if guide {
                             auto.wanted();
                         }
+                    }
+                    let _ = internal.send(Internal::Event(Box::new(Event::DesktopReady { ready })));
+                });
+            }
+            Command::DesktopLocked { on } => {
+                if let Err(e) = desktop::set_work_locked(&self.config.home, on) {
+                    crate::daemon_log!("equipe: desktop: couldn't keep \"work while locked\": {e}");
+                }
+                crate::daemon_log!("equipe: desktop: work while the screen is locked {}", if on { "on" } else { "off" });
+                // Every screen sees the switch where it now is.
+                let (home, internal, auto) = (self.config.home.clone(), self.internal.clone(), self.desktop_auto.clone());
+                tokio::spawn(async move {
+                    let mut ready = desktop::ready::readiness(&home, false).await;
+                    if let Some(auto) = auto {
+                        auto.decorate(&mut ready);
                     }
                     let _ = internal.send(Internal::Event(Box::new(Event::DesktopReady { ready })));
                 });
@@ -4700,10 +4721,12 @@ for one project goes to it as tickets for its owners, with that project — and 
         // person (or a teammate) signed in, if anywhere yet. In Auto and Full
         // it browses freely; in Ask each step comes to the person.
         let wants_browser = board_tools && mode != Mode::ReadOnly && !lite;
-        // The Mac's desktop: experimental, for the members the person turned it on for.
+        // The Mac's desktop: everyone's once the person's Accessibility switch
+        // is on, but whoever they turned it off for.
+        let granted = self.desktop_granted();
         let desktop = wants_browser
             && cfg!(target_os = "macos")
-            && squad.as_deref().zip(session.member.as_ref()).is_some_and(|(s, m)| self.journals.get(s).is_some_and(|j| j.desktop_enabled(&m.name)));
+            && squad.as_deref().zip(session.member.as_ref()).is_some_and(|(s, m)| self.journals.get(s).is_some_and(|j| j.desktop_enabled(&m.name, granted)));
         // A squad's mobile app: its QA and mobile members test it on the ticket's own phone.
         let phone = board_tools && !lite && squad.as_deref().zip(session.member.as_ref()).is_some_and(|(s, m)| self.phone_offered(s, &m.role, mode));
         // A designer's `design` tools, when equipe-design is installed: never installed for it.
@@ -7904,10 +7927,17 @@ there, end your turn, and carry on when they say they're done."
         }
     }
 
-    /// Whether a member may use the desktop: only one the person turned it on for.
+    /// Whether the person's Accessibility switch for equipe's desktop helper is on.
+    fn desktop_granted(&self) -> bool {
+        self.desktop_auto.as_ref().is_some_and(desktop::auto::Auto::granted)
+    }
+
+    /// Whether a member may use the desktop: everyone once the switch is on,
+    /// but whoever the person turned it off for.
     fn desktop_allowed(&self, call: &ToolCall) -> Result<(PathBuf, Vec<String>), ToolResult> {
         let journal = self.journals.get(&call.squad);
-        let on = self.team(&call.squad).iter().any(|(_, name, _)| *name == call.member) && journal.is_some_and(|j| j.desktop_enabled(&call.member));
+        let granted = self.desktop_granted();
+        let on = self.team(&call.squad).iter().any(|(_, name, _)| *name == call.member) && journal.is_some_and(|j| j.desktop_enabled(&call.member, granted));
         if on {
             // Still being set up, or waiting on the person's one switch: said
             // short, so the member neither retries nor guesses; the person is shown the card.
@@ -7917,7 +7947,7 @@ there, end your turn, and carry on when they say they're done."
             Ok((self.config.home.clone(), journal.map(Journal::messaging_apps).unwrap_or_default()))
         } else {
             Err(ToolResult::error(format!(
-                "The Mac's desktop is off for {}. Only the person turns it on (`equipe desktop on {} --experimental`).",
+                "The Mac's desktop is off for {}. Only the person turns it on (`equipe desktop on {}`).",
                 call.member, call.member
             )))
         }

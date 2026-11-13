@@ -50,6 +50,11 @@ pub async fn run_foreground() -> io::Result<()> {
     tokio::spawn(crate::remote::link::serve_forever(equipe_home(), socket(), build_id()));
     let idle = std::env::var("EQUIPE_TRIAL_IDLE_SECS").ok().and_then(|secs| secs.parse().ok()).map(Duration::from_secs);
     let leave = leave_for(&settled(&equipe_home()), &temp_roots(), idle);
+    // The Keychain read once, early and off every loop: a new signature's one
+    // dialog shows now, not in the middle of a member's command.
+    if !is_temporary(&settled(&equipe_home()), &temp_roots()) {
+        equipe_core::keychain::warm();
+    }
     left_for(gateway::serve_leaving(config, &socket(), &build_id(), leave).await)
 }
 

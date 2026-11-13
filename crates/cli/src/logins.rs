@@ -30,6 +30,9 @@ pub fn credential(kind: &str, name: &str) -> Result<(), String> {
         return Err(t!("credential.refused").to_owned());
     }
     let home = equipe_providers::credentials::equipe_home();
+    // Several AWS commands at once queue for one Keychain dialog instead of
+    // each opening its own.
+    equipe_core::keychain::patient();
     let vault = equipe_core::vault::Vault::open(&home, equipe_core::vault::system_store());
     let login = vault.cli.iter().find(|c| c.kind == equipe_core::protocol::vault::CliKind::AwsKeys && c.name == name).ok_or_else(|| t!("credential.missing", name = name))?;
     let secret = vault.secret(&equipe_core::vault::account::cli(login.id))?;

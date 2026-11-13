@@ -1263,6 +1263,11 @@ pub enum Command {
     /// The person answers the desktop setup equipe runs by itself
     /// ([`DesktopSetup`]): try again after a failure, or put its card away.
     DesktopAuto { action: DesktopAutoAction },
+    /// Whether members may act in desktop apps through the accessibility
+    /// tree while the Mac's screen is locked (an unattended Mac). Physical
+    /// input still waits for an unlocked screen. The person's; answered by
+    /// [`Event::DesktopReady`].
+    DesktopLocked { on: bool },
     /// Whether the squad's empty composer offers a guess at the person's next
     /// message after a member answers them ([`Event::Suggestion`]). On unless
     /// turned off; kept for the squad.
@@ -2092,8 +2097,8 @@ pub enum DesktopSetup {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         detail: String,
     },
-    /// The one switch: Accessibility for "equipe Desktop Helper", in System
-    /// Settings. macOS keeps it for the person.
+    /// The one switch: Accessibility for equipe ([`DesktopReadiness::helper_name`]),
+    /// in System Settings. macOS keeps it for the person.
     Grant,
     /// It just became ready: told once.
     JustReady,
@@ -2125,12 +2130,27 @@ pub struct DesktopReadiness {
     /// The engine, run by the helper, works under the helper's permission.
     #[serde(default)]
     pub engine_grant: Option<bool>,
-    /// The screen is locked: nothing acts until the person unlocks it.
+    /// The screen is locked: nothing acts until the person unlocks it
+    /// (unless they let members work while it is, [`Self::work_locked`]).
     #[serde(default)]
     pub locked: bool,
     /// Where the daemon's own setup stands, and the card it asks for.
     #[serde(default)]
     pub setup: DesktopSetup,
+    /// What holds the permission, as System Settings lists it: "equipe" (the
+    /// app itself, or the helper bundle named after it) — or the name of an
+    /// older helper bundle. Empty from a daemon that predates it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub helper_name: String,
+    /// The old "equipe Desktop Helper" isn't used any more (equipe.app holds
+    /// the permission now): its row in System Settings can be removed. Shown
+    /// once, until the person puts it away (`DesktopAutoAction::Dismiss`).
+    #[serde(default)]
+    pub old_helper: bool,
+    /// The person lets members act through the accessibility tree while the
+    /// screen is locked ([`Command::DesktopLocked`]). Off unless turned on.
+    #[serde(default)]
+    pub work_locked: bool,
 }
 
 impl DesktopReadiness {

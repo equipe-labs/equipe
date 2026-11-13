@@ -3,9 +3,10 @@
 //!
 //! What members need to work desktop apps: the accessibility engine (the
 //! pinned agent-desktop release, downloaded and checksum-verified), the desktop
-//! helper (a signed copy of equipe that holds the permission), and — on a Mac —
-//! one switch only the person may flip: Accessibility for "equipe Desktop
-//! Helper". The daemon does every step that needs no one:
+//! helper (equipe.app itself when it is installed, else a signed copy of
+//! equipe that holds the permission — `install`), and — on a Mac — one switch
+//! only the person may flip: Accessibility for "equipe". The daemon does every
+//! step that needs no one:
 //!
 //! 1. the engine is installed, or updated when the pinned version changed, in
 //!    the background; a failure is reported once, in a word the screen
@@ -17,6 +18,17 @@
 //!    button opens System Settings at the right pane (`DesktopCheck { guide }`);
 //! 3. the grant is watched for lightly, and when it appears the status check
 //!    runs by itself and the person is told once ([`DesktopSetup::JustReady`]).
+//!
+//! 4. a Mac that had the older helper bundle moves to equipe.app by itself:
+//!    once the app holds the permission, the bundle is moved aside and the
+//!    person is told once that its row in System Settings can be removed
+//!    ([`DesktopReadiness::old_helper`]). While the app isn't allowed yet the
+//!    old bundle keeps working (the app hands over to it), and the app is
+//!    started again now and then ([`RECHECK`]) to see whether it is.
+//!
+//! Every prompt goes through the prompt budget (`equipe_desktop_control::prompts`):
+//! macOS's Accessibility prompt is shown once per identity, never again after
+//! a yes unless macOS takes it back.
 //!
 //! The person puts the card away ([`Auto::dismiss`]) and isn't asked again
 //! until a member actually needs the desktop and can't have it
@@ -39,6 +51,7 @@ use serde_json::Value;
 use tokio::sync::Notify;
 
 use super::ready;
+use crate::keychain::prompts;
 
 /// A dismissed card comes back, when a member needs the desktop, after this long (seconds).
 pub const REOFFER_AFTER: u64 = 6 * 60 * 60;
@@ -56,6 +69,9 @@ const FAILING: Duration = Duration::from_secs(30);
 /// How long after the daemon starts before the engine is fetched: the
 /// start-up has its own work.
 const START_AFTER: Duration = Duration::from_secs(15);
+/// While equipe.app hands over to the old helper bundle (it isn't allowed
+/// yet), how often the app is started again to see whether it is.
+pub const RECHECK: Duration = Duration::from_secs(6 * 60 * 60);
 
 pub type Fut<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
@@ -87,8 +103,24 @@ pub trait Ops: Send + Sync + 'static {
     fn sync_helper(&self, answering: bool) -> Fut<Result<(), Failure>>;
     /// Ask the helper (`_status`, `_request_accessibility`): its answer, or `None`.
     fn helper(&self, tool: &'static str) -> Fut<Option<Value>>;
-    /// A member works the desktop (the person turned it on for someone).
+    /// A member works the desktop (the person turned it on for someone, or set the helper up).
     fn wanted(&self) -> bool;
+    /// Start the helper again (no change to its LaunchAgent).
+    fn restart_helper(&self) -> bool {
+        false
+    }
+    /// The older helper bundle is still in `~/Applications`.
+    fn old_bundle(&self) -> bool {
+        false
+    }
+    /// Move the older helper bundle aside; `true` when it was there.
+    fn retire_old(&self) -> bool {
+        false
+    }
+    /// The version of the equipe.app that hosts the helper, if one does.
+    fn app_version(&self) -> Option<String> {
+        None
+    }
 }
 
 /// What is kept between daemon runs, in `<home>/desktop/setup.json`.
@@ -103,6 +135,12 @@ struct Saved {
     /// When the person put the card away (unix seconds).
     #[serde(default)]
     dismissed_at: Option<u64>,
+    /// The older helper bundle was moved aside (equipe.app holds the permission).
+    #[serde(default)]
+    retired_old: bool,
+    /// The person put away the note that its row can be removed.
+    #[serde(default)]
+    told_old: bool,
 }
 
 fn saved_path(home: &Path) -> PathBuf {
@@ -133,6 +171,8 @@ struct Inner {
     dismiss: bool,
     /// A member needed the desktop and couldn't have it.
     needed: bool,
+    /// The person was told the desktop was ready before this daemon started.
+    granted_before: bool,
 }
 
 struct Shared {
@@ -180,8 +220,8 @@ impl Auto {
     }
 
     fn new(home: PathBuf, ops: Arc<dyn Ops>, sink: Sink, clock: Box<dyn Fn() -> u64 + Send + Sync>) -> (Self, Worker) {
-        let shared = Arc::new(Shared { inner: Mutex::new(Inner::default()), wake: Notify::new() });
         let saved = Saved::load(&home);
+        let shared = Arc::new(Shared { inner: Mutex::new(Inner { granted_before: saved.told_ready, ..Inner::default() }), wake: Notify::new() });
         let worker = Worker {
             saved,
             home,
@@ -199,6 +239,8 @@ impl Auto {
             helper_next: None,
             sticky_wanted: false,
             waiting_since: None,
+            last_recheck: None,
+            restarted_for: None,
         };
         (Self { shared }, worker)
     }
@@ -208,10 +250,22 @@ impl Auto {
         self.shared.inner().last.clone()
     }
 
+    /// Whether the person's Accessibility switch is on: as the latest look
+    /// saw it, or — before the first look — as the last daemon left it.
+    /// Every member works the desktop by default once it is.
+    pub fn granted(&self) -> bool {
+        let inner = self.shared.inner();
+        match &inner.last {
+            Some(last) if last.helper => last.accessibility == Some(true),
+            _ => inner.granted_before,
+        }
+    }
+
     /// Put the setup's state into a readiness a screen asked for.
     pub fn decorate(&self, ready: &mut DesktopReadiness) {
         if let Some(last) = self.latest() {
             ready.setup = last.setup;
+            ready.old_helper = last.old_helper;
         }
     }
 
@@ -259,10 +313,10 @@ impl Auto {
         } else if engine_tool && !last.helper {
             Some("equipe is starting the desktop helper (nothing for the person to do). Call again in a minute.".to_owned())
         } else if needs_grant && last.helper && last.accessibility == Some(false) {
-            Some(
-                "Desktop apps need one switch only the person can flip: Accessibility for \"equipe Desktop Helper\" (System Settings › Privacy & Security › Accessibility). equipe has already asked them and shows a card in the app. It works by itself the moment the switch is on, so don't retry now: tell the person if your work waits on it, or do something else first."
-                    .to_owned(),
-            )
+            let name = if last.helper_name.is_empty() { equipe_desktop_control::install::DISPLAY_NAME } else { last.helper_name.as_str() };
+            Some(format!(
+                "Desktop apps need one switch only the person can flip: Accessibility for \"{name}\" (System Settings › Privacy & Security › Accessibility). equipe has already asked them and shows a card in the app. It works by itself the moment the switch is on, so don't retry now: tell the person if your work waits on it, or do something else first."
+            ))
         } else {
             None
         };
@@ -331,6 +385,10 @@ struct Worker {
     helper_next: Option<Instant>,
     sticky_wanted: bool,
     waiting_since: Option<Instant>,
+    /// When equipe.app, handing over to the old bundle, was last started again.
+    last_recheck: Option<Instant>,
+    /// The app version the helper was last restarted for (after an update).
+    restarted_for: Option<String>,
 }
 
 impl Worker {
@@ -386,11 +444,17 @@ impl Worker {
             self.edit(|saved| saved.dismissed_at = None);
         }
         if dismiss {
-            self.edit(|saved| saved.dismissed_at = Some(now));
+            if self.saved.retired_old && !self.saved.told_old {
+                // The note about the old row, put away.
+                self.edit(|saved| saved.told_old = true);
+            } else {
+                self.edit(|saved| saved.dismissed_at = Some(now));
+            }
         }
         let wanted = self.sticky_wanted || self.blocking(|ops| ops.wanted()).await;
 
-        let mut ready = DesktopReadiness { supported: true, engine_version: pin::VERSION.to_owned(), ..Default::default() };
+        let mut ready =
+            DesktopReadiness { supported: true, engine_version: pin::VERSION.to_owned(), work_locked: super::work_locked(&self.home), ..Default::default() };
 
         // 1. The engine: there and verified, or fetched.
         self.engine_step(wanted, &mut ready).await;
@@ -407,12 +471,16 @@ impl Worker {
         let mut setup = DesktopSetup::Idle;
         if let Some(status) = &status {
             ready::apply(&mut ready, status);
+            self.host_step(status, &ready, retry).await;
         }
+        ready.old_helper = self.saved.retired_old && !self.saved.told_old;
         if let Some(failure) = self.helper_failure.as_ref().or(self.engine_failure.as_ref()) {
             setup = DesktopSetup::Failed { reason: failure.reason, detail: failure.detail.clone() };
             idle = FAILING;
         } else if wanted && status.is_some() && (self.engine_verified || !pin_known()) {
+            let identity = prompt_identity(status.as_ref());
             if ready.accessibility == Some(true) {
+                prompts::observe(&self.home, prompts::Kind::Accessibility, &identity, true, now);
                 self.waiting_since = None;
                 if ready.ready() && !self.saved.told_ready {
                     setup = DesktopSetup::JustReady;
@@ -423,10 +491,16 @@ impl Worker {
                     saved.told_ready = told;
                 });
             } else {
-                // The system's prompt, once; then the card, and a light watch for the switch.
+                // The system's prompt, once (and only once for this identity,
+                // whatever else asked); then the card, and a light watch for the switch.
                 if !self.saved.prompted {
                     self.edit(|saved| saved.prompted = true);
-                    let _ = self.ops.helper(helper::REQUEST_ACCESSIBILITY).await;
+                    if prompts::may_ask(&self.home, prompts::Kind::Accessibility, &identity, false, now)
+                        && let Some(_asking) = prompts::begin(prompts::Kind::Accessibility)
+                    {
+                        prompts::record(&self.home, prompts::Kind::Accessibility, &identity, prompts::Answer::Asked, now);
+                        let _ = self.ops.helper(helper::REQUEST_ACCESSIBILITY).await;
+                    }
                 }
                 self.edit(|saved| saved.told_ready = false);
                 let since = *self.waiting_since.get_or_insert_with(Instant::now);
@@ -443,6 +517,37 @@ impl Worker {
         }
         self.publish(ready, setup);
         idle
+    }
+
+    /// Where the helper runs, kept right: the old bundle moved aside once
+    /// equipe.app holds the permission; the app's helper restarted after the
+    /// app was updated; and, while the app hands over to the old bundle, the
+    /// app started again now and then to see whether it is allowed by now.
+    async fn host_step(&mut self, status: &Value, ready: &DesktopReadiness, retry: bool) {
+        let role = status["role"].as_str().unwrap_or_default();
+        if role == "app" && ready.accessibility == Some(true) && !self.saved.retired_old && self.blocking(|ops| ops.old_bundle()).await {
+            let moved = self.blocking(|ops| ops.retire_old()).await;
+            crate::daemon_log!("equipe: desktop: equipe.app holds the permission now; the old helper bundle {}", if moved { "was moved aside" } else { "couldn't be moved aside" });
+            self.edit(|saved| {
+                saved.retired_old = true;
+                saved.told_old = false;
+            });
+        }
+        if role == "app"
+            && let Some(version) = self.ops.app_version()
+            && status["version"].as_str().is_some_and(|v| v != version)
+            && self.restarted_for.as_deref() != Some(version.as_str())
+        {
+            self.restarted_for = Some(version);
+            let _ = self.blocking(|ops| ops.restart_helper()).await;
+        }
+        if status["handed_over"].as_bool() == Some(true)
+            && self.ops.app_version().is_some()
+            && (retry || self.last_recheck.is_none_or(|at| at.elapsed() >= RECHECK))
+        {
+            self.last_recheck = Some(Instant::now());
+            let _ = self.blocking(|ops| ops.restart_helper()).await;
+        }
     }
 
     async fn engine_step(&mut self, wanted: bool, ready: &mut DesktopReadiness) {
@@ -540,6 +645,15 @@ impl Worker {
             inner.last = Some(ready.clone());
         }
         (self.sink)(ready);
+    }
+}
+
+/// Who macOS's Accessibility prompt would be for, as the prompt budget keeps it.
+fn prompt_identity(status: Option<&Value>) -> String {
+    match status.and_then(|s| s["role"].as_str()) {
+        Some("app") => equipe_desktop_control::APP_PROMPT.to_owned(),
+        Some(role) => format!("helper-{role}"),
+        None => "helper".to_owned(),
     }
 }
 
@@ -655,11 +769,37 @@ impl Ops for ThisMachine {
     }
 
     fn wanted(&self) -> bool {
+        // The person set the helper up once (setup, the first run, or a member
+        // they turned on before): it is kept current and its switch watched.
+        if cfg!(target_os = "macos") && equipe_desktop_control::install::plist_path().is_file() {
+            return true;
+        }
         let Ok(dirs) = std::fs::read_dir(self.home.join("squads")) else { return false };
         dirs.flatten()
             .filter(|d| d.path().join("squad.db").exists())
             .filter_map(|d| crate::journal::Journal::for_squad(&self.home, &d.file_name().to_string_lossy()).ok())
             .any(|journal| !journal.desktop_members().is_empty())
+    }
+
+    fn restart_helper(&self) -> bool {
+        cfg!(target_os = "macos") && equipe_desktop_control::install::restart().is_ok()
+    }
+
+    fn old_bundle(&self) -> bool {
+        cfg!(target_os = "macos") && equipe_desktop_control::install::bundle_executable().is_some()
+    }
+
+    fn retire_old(&self) -> bool {
+        cfg!(target_os = "macos") && equipe_desktop_control::install::retire_bundle(&self.home)
+    }
+
+    fn app_version(&self) -> Option<String> {
+        if !cfg!(target_os = "macos") {
+            return None;
+        }
+        let app = equipe_desktop_control::install::app_host()?;
+        let text = std::fs::read_to_string(app.join("Contents/Info.plist")).ok()?;
+        equipe_desktop_control::install::plist_value(&text, "CFBundleShortVersionString")
     }
 }
 
@@ -855,7 +995,7 @@ mod tests {
         assert_eq!(rig.setup(), DesktopSetup::Idle, "no nagging");
         // A member needs it: told how, at once, but the card waits out the re-offer time.
         let message = rig.auto.refusal("mcp__desktop__snapshot").expect("a member is told");
-        assert!(message.contains("Accessibility") && message.contains("equipe Desktop Helper"), "{message}");
+        assert!(message.contains("Accessibility for \"") && message.contains("System Settings"), "{message}");
         rig.worker.step().await;
         assert_eq!(rig.setup(), DesktopSetup::Idle);
         // Much later, needing it again offers the card again.

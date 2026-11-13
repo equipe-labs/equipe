@@ -21,6 +21,47 @@ use equipe_protocol::{DesktopState, MemberRef};
 use lease::{Lease, Turn};
 use presence::Presence;
 
+/// The desktop helper's `desktop serve` arguments (`--home <dir>`), if these
+/// are they: what equipe.app's executable is started with by the helper's
+/// LaunchAgent. `None` for anything else.
+pub fn serve_args(args: &[String]) -> Option<std::path::PathBuf> {
+    if args.get(1).map(String::as_str) != Some("desktop") || args.get(2).map(String::as_str) != Some("serve") {
+        return None;
+    }
+    let home = args.iter().position(|a| a == "--home").and_then(|i| args.get(i + 1)).map(std::path::PathBuf::from);
+    Some(home.unwrap_or_else(equipe_providers::credentials::equipe_home))
+}
+
+/// The person's desktop settings file (`<home>/desktop/settings.json`).
+fn settings_path(home: &std::path::Path) -> std::path::PathBuf {
+    equipe_desktop_control::helper::dir(home).join("settings.json")
+}
+
+/// Whether the person lets members act through the accessibility tree while
+/// the Mac's screen is locked ("Work while the screen is locked"). Off unless
+/// they turned it on.
+pub fn work_locked(home: &std::path::Path) -> bool {
+    std::fs::read_to_string(settings_path(home))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|v| v["work_locked"].as_bool())
+        .unwrap_or(false)
+}
+
+/// Turn "Work while the screen is locked" on or off: the person's alone.
+pub fn set_work_locked(home: &std::path::Path, on: bool) -> std::io::Result<()> {
+    let path = settings_path(home);
+    let mut value = std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok()).unwrap_or_else(|| serde_json::json!({}));
+    value["work_locked"] = serde_json::json!(on);
+    equipe_desktop_control::helper::ensure_dir(home)?;
+    std::fs::write(path, value.to_string())
+}
+
+/// Serve the desktop helper as equipe.app ([`equipe_desktop_control::serve_as_app`]).
+pub fn serve_as_app(home: &std::path::Path) -> std::io::Result<()> {
+    equipe_desktop_control::serve_as_app(home)
+}
+
 /// A member's hold on the screen ends when it hasn't used a desktop tool for
 /// this long (seconds), so a member that wandered off doesn't keep the line waiting.
 pub const LEASE_IDLE: f64 = 120.0;
@@ -149,6 +190,10 @@ pub enum Refusal {
         left: f64,
     },
     Locked,
+    /// Locked, and the person lets members work while it is — but only
+    /// through the accessibility tree: pointer and keyboard input go to the
+    /// lock screen, never to an app.
+    LockedPhysical,
     NoSession,
     /// The person took the screen back.
     Stopped,
@@ -169,7 +214,10 @@ impl std::fmt::Display for Refusal {
                 left.ceil() as u64
             ),
             Refusal::Locked => f.write_str(
-                "The Mac's screen is locked: nothing was clicked or typed. Members can't unlock it; ask the person to.",
+                "The Mac's screen is locked: nothing was clicked or typed. Members can't unlock it; ask the person to (or to turn on \"Work while the screen is locked\", which lets act on a ref run while it is).",
+            ),
+            Refusal::LockedPhysical => f.write_str(
+                "The Mac's screen is locked: pointer and keyboard input (headed, double/right click, focusing windows, screenshots-and-click) waits until it is unlocked, since macOS sends it to the lock screen. Reading (snapshot, find) and act on a ref without `headed` work while it is locked: use those, or ask the person to unlock.",
             ),
             Refusal::NoSession => f.write_str(
                 "Nobody is logged in at the Mac's screen, or equipe's daemon isn't running in the person's login session: nothing was done. Ask the person to log in at the Mac and run `equipe daemon install`.",
@@ -187,6 +235,8 @@ pub struct Desktop {
     presence: Presence,
     probe: Box<dyn Probe>,
     epoch: Instant,
+    /// Where the person's "Work while the screen is locked" is kept; `None`: off.
+    home: Option<std::path::PathBuf>,
 }
 
 impl Desktop {
@@ -195,7 +245,17 @@ impl Desktop {
     }
 
     pub fn with(probe: Box<dyn Probe>, idle: f64, quiet: f64) -> Self {
-        Self { lease: Lease::new(idle), presence: Presence::new(quiet), probe, epoch: Instant::now() }
+        Self { lease: Lease::new(idle), presence: Presence::new(quiet), probe, epoch: Instant::now(), home: None }
+    }
+
+    /// Read the person's "Work while the screen is locked" from `home` (at each ask while locked).
+    pub fn with_home(mut self, home: &std::path::Path) -> Self {
+        self.home = Some(home.to_owned());
+        self
+    }
+
+    fn locked_refusal(&self) -> Refusal {
+        if self.home.as_deref().is_some_and(work_locked) { Refusal::LockedPhysical } else { Refusal::Locked }
     }
 
     /// Seconds on the daemon's clock, for [`Desktop::done`].
@@ -222,6 +282,10 @@ impl Desktop {
             }
             return match self.probe.screen() {
                 Screen::Open => Ok(()),
+                // The person's choice: on an unattended Mac, accessibility
+                // actions go on while it is locked (the apps keep running in
+                // the locked session and answer their accessibility calls).
+                Screen::Locked if self.home.as_deref().is_some_and(work_locked) => Ok(()),
                 Screen::Locked => Err(Refusal::Locked),
                 Screen::NoSession => Err(Refusal::NoSession),
             };
@@ -236,7 +300,7 @@ impl Desktop {
         }
         match self.probe.screen() {
             Screen::Open => {}
-            Screen::Locked => return Err(Refusal::Locked),
+            Screen::Locked => return Err(self.locked_refusal()),
             Screen::NoSession => return Err(Refusal::NoSession),
         }
         if what == Use::Approved {
@@ -293,6 +357,36 @@ impl Desktop {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn with_the_persons_yes_tree_actions_go_on_while_locked_and_input_still_waits() {
+        let (d, mac) = desktop(Some(600.0), Screen::Locked);
+        let home = std::env::temp_dir().join(format!("eq-locked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let mut d = d.with_home(&home);
+        let a = MemberRef { squad: "s".into(), member: "a".into() };
+        assert_eq!(d.ask(&a, Use::Headless), Err(Refusal::Locked), "off unless the person turned it on");
+        super::set_work_locked(&home, true).unwrap();
+        assert!(super::work_locked(&home));
+        assert_eq!(d.ask(&a, Use::Headless), Ok(()), "act on a ref, headless, while locked");
+        assert_eq!(d.ask(&a, Use::Read), Ok(()));
+        assert_eq!(d.ask(&a, Use::Input), Err(Refusal::LockedPhysical), "pointer and keys would reach the lock screen");
+        mac.0.lock().unwrap().1 = Screen::NoSession;
+        assert_eq!(d.ask(&a, Use::Headless), Err(Refusal::NoSession), "logged out stays refused");
+        super::set_work_locked(&home, false).unwrap();
+        mac.0.lock().unwrap().1 = Screen::Locked;
+        assert_eq!(d.ask(&a, Use::Headless), Err(Refusal::Locked));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn the_app_knows_when_it_is_started_as_the_helper() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(super::serve_args(&args(&["x", "desktop", "serve", "--home", "/h/.equipe"])), Some(std::path::PathBuf::from("/h/.equipe")));
+        assert!(super::serve_args(&args(&["x", "desktop", "serve"])).is_some());
+        assert_eq!(super::serve_args(&args(&["x"])), None);
+        assert_eq!(super::serve_args(&args(&["x", "--notify-test"])), None);
+    }
+
     use std::sync::{Arc, Mutex};
 
     use super::*;

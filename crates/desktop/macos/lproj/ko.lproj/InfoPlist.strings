@@ -1,5 +1,8 @@
-/* equipe's name and why it asks for the microphone and speech recognition, in ko. */
+/* equipe's name and why it asks for the microphone, speech recognition, desktop control and the local network, in ko. */
 "CFBundleDisplayName" = "equipe";
 "CFBundleName" = "equipe";
 "NSMicrophoneUsageDescription" = "말로 메시지를 쓸 때 마이크를 씁니다. 소리는 이 Mac 밖으로 나가지 않습니다.";
 "NSSpeechRecognitionUsageDescription" = "말한 내용이나 첨부한 녹음을 이 Mac에서 글로 바꿉니다.";
+"NSAppleEventsUsageDescription" = "equipe의 멤버가 equipe의 확인을 거쳐 이 Mac의 앱을 대신 읽고 조작합니다.";
+"NSScreenCaptureUsageDescription" = "equipe의 멤버가 데스크톱 앱으로 일할 때 화면을 봅니다.";
+"NSLocalNetworkUsageDescription" = "고른 다른 Mac이나 기기에 네트워크로 연결합니다.";

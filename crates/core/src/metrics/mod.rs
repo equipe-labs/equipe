@@ -4,8 +4,9 @@
 //!
 //! - `metrics/connections.json` (the person's only): every connection, its
 //!   settings that aren't secret and the names of its keys — no key.
-//! - The keys: the daemon machine's Keychain (`equipe.metrics`, account = the
-//!   connection's id, the secret fields as one JSON object).
+//! - The keys: the daemon machine's Keychain, in equipe's one item
+//!   (`crate::keychain`; under `equipe.metrics:<connection id>`, the secret
+//!   fields as one JSON object), read once per daemon.
 //! - `metrics/<squad>/<connection>/<YYYY-MM-DD>.json`: what a fetch that day
 //!   brought ([`Snapshot`]). Read in day order, a later fetch's value of a day
 //!   wins, so days a service has forgotten (GitHub's past 14) stay.
@@ -100,25 +101,22 @@ pub trait Keys: Send {
 /// The daemon machine's Keychain.
 pub struct Keychain;
 
+/// The keys live in equipe's one Keychain item ([`crate::keychain`]): read
+/// once per daemon, never one dialog per connection.
 #[cfg(target_os = "macos")]
 impl Keys for Keychain {
     fn set(&mut self, id: &str, keys: &BTreeMap<String, String>) -> Result<(), String> {
         let text = serde_json::to_string(keys).map_err(|e| e.to_string())?;
-        security_framework::passwords::set_generic_password(SERVICE, id, text.as_bytes()).map_err(|e| e.to_string())
+        crate::keychain::global().set(SERVICE, id, &text)
     }
 
     fn get(&self, id: &str) -> Result<BTreeMap<String, String>, String> {
-        let bytes = security_framework::passwords::get_generic_password(SERVICE, id).map_err(|e| e.to_string())?;
-        serde_json::from_slice(&bytes).map_err(|_| "the kept keys aren't readable".into())
+        let text = crate::keychain::global().get(SERVICE, id, false)?;
+        serde_json::from_str(&text).map_err(|_| "the kept keys aren't readable".into())
     }
 
     fn delete(&mut self, id: &str) -> Result<(), String> {
-        match security_framework::passwords::delete_generic_password(SERVICE, id) {
-            Ok(()) => Ok(()),
-            // Gone already.
-            Err(e) if e.code() == -25300 => Ok(()),
-            Err(e) => Err(e.to_string()),
-        }
+        crate::keychain::global().delete(SERVICE, id)
     }
 }
 

@@ -1,5 +1,8 @@
-/* equipe's name and why it asks for the microphone and speech recognition, in de. */
+/* equipe's name and why it asks for the microphone, speech recognition, desktop control and the local network, in de. */
 "CFBundleDisplayName" = "equipe";
 "CFBundleName" = "equipe";
 "NSMicrophoneUsageDescription" = "equipe nutzt das Mikrofon, wenn du eine Nachricht diktierst. Der Ton verlässt diesen Mac nie.";
 "NSSpeechRecognitionUsageDescription" = "equipe macht auf diesem Mac aus dem Gesagten oder einer angehängten Aufnahme Text.";
+"NSAppleEventsUsageDescription" = "equipes Mitglieder lesen und bedienen Apps auf diesem Mac für dich, mit equipes eigenen Prüfungen.";
+"NSScreenCaptureUsageDescription" = "equipes Mitglieder sehen den Bildschirm, wenn sie für dich Desktop-Apps bedienen.";
+"NSLocalNetworkUsageDescription" = "equipe verbindet sich mit deinen anderen Macs und Geräten im Netzwerk, wenn du eines auswählst.";

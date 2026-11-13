@@ -2820,6 +2820,16 @@ fn help_menu() -> Menu {
 
 
 fn main() {
+    // The desktop helper's LaunchAgent starts this same binary as `desktop
+    // serve`: equipe.app itself holds the person's Accessibility permission,
+    // so one "equipe" entry covers it (docs/DESKTOP-CONTROL.md). No window.
+    if let Some(home) = equipe_core::desktop::serve_args(&std::env::args().collect::<Vec<_>>()) {
+        if let Err(err) = equipe_core::desktop::serve_as_app(&home) {
+            eprintln!("equipe desktop helper: {err}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // `ssh` starts this same binary to ask the person a question: answer it
     // through the running app and leave, without opening a window.
     if let Some(code) = askpass::helper() {

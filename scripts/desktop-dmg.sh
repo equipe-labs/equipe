@@ -134,7 +134,9 @@ mkdir -p "$work" "$out"
 app="$work/equipe.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 lipo -create "${binaries[@]}" -output "$app/Contents/MacOS/equipe-desktop"
-# In Helpers, not MacOS: an `equipe` in Contents/MacOS is the desktop helper's copy.
+# In Helpers, not MacOS. The app's own executable is also the desktop helper
+# (`equipe-desktop desktop serve`, started by the helper's LaunchAgent): one
+# permission entry, "equipe", with the app's icon (docs/DESKTOP-CONTROL.md).
 mkdir -p "$app/Contents/Helpers"
 lipo -create "${cli_binaries[@]}" -output "$app/Contents/Helpers/equipe"
 chmod +x "$app/Contents/Helpers/equipe"
@@ -226,7 +228,15 @@ cat > "$app/Contents/Info.plist" <<EOF
 	<key>NSMicrophoneUsageDescription</key>
 	<string>equipe uses the microphone when you dictate a message. The sound never leaves this Mac.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>equipe turns what you say, or a recording you attach, into text on this Mac.</string>$updates_plist
+	<string>equipe turns what you say, or a recording you attach, into text on this Mac.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>equipe's members read and act in apps on this Mac for you, through equipe's own checks.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>equipe's members see the screen when they work desktop apps for you.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>equipe connects to your other Macs and devices on the network when you choose one.</string>
+	<key>EquipeDesktopServe</key>
+	<true/>$updates_plist
 </dict>
 </plist>
 EOF
@@ -241,7 +251,10 @@ else
   say "no Developer ID identity: signing ad hoc"
   sign() { codesign --force --sign - "$@"; }
 fi
-sign "$app/Contents/Helpers/equipe"
+# The same identifier as the command line's release build (release.yml), so
+# macOS keeps one identity for `equipe` — Keychain access, Local Network, App
+# Management — across updates and whichever copy runs the daemon.
+sign --identifier equipe "$app/Contents/Helpers/equipe"
 framework="$app/Contents/Frameworks/Sparkle.framework"
 if [ -d "$framework" ]; then
   sign "$framework/Versions/B/Autoupdate"

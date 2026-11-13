@@ -18,7 +18,7 @@ Screens: `design/specs/metrics/` (T-311).
 flowchart LR
   S[Desktop / phone] -- metrics.* JSON-RPC --> D[daemon]
   M[member: metrics tool] --> D
-  D -- keys --> K[(Keychain equipe.metrics)]
+  D -- keys --> K[(Keychain: equipe's one item)]
   D -- API with key --> P[PostHog / GitHub / App Store]
   D --> F[(~/.equipe/metrics/)]
 ```
@@ -28,11 +28,17 @@ flowchart LR
 - A key is in the Keychain and nowhere else: not `connections.json`, not a
   snapshot, not the daemon's log, not an answer, not a member's tool result.
   `metrics.connect` is the only message that carries one, inward.
-- The Keychain item trusts the `equipe` that made it by its code signature.
-  An ad-hoc signed build (cdhash only) can't read back what another build
-  kept — `errSecAuthFailed`, no prompt for a background daemon, error code
-  `keychain` (T-356). A daemon signed with the fixed Developer ID identity
-  (T-510) keeps reading its keys across updates.
+- The keys live in equipe's one Keychain item (service `equipe`, account
+  `secrets`, `crate::keychain`), beside logins' passwords, under
+  `equipe.metrics:<connection id>`; items an older equipe kept per connection
+  are moved into it when first read. The daemon reads the item once, at
+  start, and keeps it in memory: one Keychain dialog at most, never one per
+  connection, never one per fetch.
+- The item trusts the `equipe` that made it by its code signature. An ad-hoc
+  build (cdhash only) is a stranger to the next one — `errSecAuthFailed` or a
+  dialog, error code `keychain` (T-356). Release builds are signed with the
+  Developer ID (docs/RELEASING.md), so "Always Allow" lasts across updates.
+  After a no, background fetches don't ask again for a day.
 - An adapter's error message has every key of its connection cut out
   (`•••`) before it is kept, answered or logged — in case a service echoes it.
 - Members only read. Connecting, keys and disconnecting are the person's, on

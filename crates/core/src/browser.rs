@@ -1209,7 +1209,9 @@ pub fn server(npx: &Path, home: &Path, profile: &Path, output: &Path, shown: boo
 /// How every member's browser is launched: Google Chrome without the
 /// automation switch and with automation hidden from pages, which Google
 /// otherwise answers by refusing to sign anyone in; `--test-type` keeps Chrome
-/// from warning about that flag in a bar across every window.
+/// from warning about that flag in a bar across every window. Sites can't ask
+/// to show notifications (`--disable-notifications`): a member's browser has
+/// no one to show them to, and equipe tells the person itself.
 fn browser_channel() -> &'static str {
     if std::env::var("EQUIPE_BROWSER_CHANNEL").is_ok_and(|v| v.eq_ignore_ascii_case("msedge")) {
         return "msedge";
@@ -1269,7 +1271,7 @@ pub fn windows_profile_roots() -> Vec<(&'static str, PathBuf)> {
 fn mcp_config(home: &Path) -> PathBuf {
     let path = home.join("browser").join("mcp-config.json");
     let config = format!(
-        r#"{{"browser":{{"browserName":"chromium","launchOptions":{{"channel":"{}","ignoreDefaultArgs":["--enable-automation"],"args":["--disable-blink-features=AutomationControlled","--test-type"]}}}}}}"#,
+        r#"{{"browser":{{"browserName":"chromium","launchOptions":{{"channel":"{}","ignoreDefaultArgs":["--enable-automation"],"args":["--disable-blink-features=AutomationControlled","--test-type","--disable-notifications"]}}}}}}"#,
         browser_channel()
     );
     if std::fs::read_to_string(&path).ok().as_deref() != Some(config.as_str()) {
@@ -1843,7 +1845,7 @@ mod tests {
         let config: Value = serde_json::from_str(&std::fs::read_to_string(config).unwrap()).unwrap();
         assert_eq!(config["browser"]["launchOptions"]["ignoreDefaultArgs"], json!(["--enable-automation"]));
         assert_eq!(config["browser"]["launchOptions"]["channel"], "chrome");
-        assert_eq!(config["browser"]["launchOptions"]["args"], json!(["--disable-blink-features=AutomationControlled", "--test-type"]), "no warning bar about it");
+        assert_eq!(config["browser"]["launchOptions"]["args"], json!(["--disable-blink-features=AutomationControlled", "--test-type", "--disable-notifications"]), "no warning bar about it, no notification prompts");
         // On the person's screen it shows who drives it, out of reach of clicks and snapshots.
         for part in ["!argv.includes('--headless')", "addInitScript(driving", "attachShadow({ mode: 'closed' })", "aria-hidden", "pointer-events: none"] {
             assert!(text.contains(part), "{part}");
