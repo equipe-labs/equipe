@@ -128,12 +128,17 @@ jobs:
           echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
           security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           rm "$RUNNER_TEMP/certificate.p12"
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          # Signing must never block a release: on any failure below, the
+          # command line ships ad hoc as before, with a warning.
+          unsigned() { echo "::warning::Couldn't sign the command line ($1): it ships ad hoc this time"; security delete-keychain "$keychain" 2>/dev/null || true; exit 0; }
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null || unsigned "no signing key in the certificate"
+          # shellcheck disable=SC2046 # one keychain path per word
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)"
-          [ -n "$identity" ] || { echo "::error::The certificate holds no Developer ID Application identity"; exit 1; }
+          [ -n "$identity" ] || unsigned "no Developer ID Application identity"
           bin="target/$TARGET/release/equipe"
-          codesign --force --timestamp --options runtime --keychain "$keychain" --sign "$identity" --identifier equipe "$bin"
-          codesign --verify --strict --verbose=2 "$bin"
+          codesign --force --timestamp --options runtime --keychain "$keychain" --sign "$identity" --identifier equipe "$bin" || unsigned "codesign failed"
+          codesign --verify --strict --verbose=2 "$bin" || unsigned "the signature didn't verify"
           codesign -d -r- "$bin"
           security delete-keychain "$keychain"
 
