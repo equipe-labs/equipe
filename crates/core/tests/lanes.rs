@@ -397,6 +397,32 @@ async fn a_call_from_a_run_that_no_longer_holds_its_ticket_changes_nothing() {
 }
 
 #[tokio::test]
+async fn a_run_whose_turn_ended_waiting_on_the_persons_sign_in_keeps_its_ticket() {
+    let engine = Engine0::new(false);
+    let (home, repo) = squad();
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    ticket_for(&handle, "frontend", "Hero").await;
+    started(&mut events, 1).await;
+    let run = key(&handle.snapshot("acme").await, 1);
+    for _ in 0..100 {
+        if handle.snapshot("acme").await.sessions.iter().any(|s| s.session == run.session && s.state == SessionState::Ready) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Its turn put a sign-in in the person's hands, then ended: the person takes
+    // longer than the lease to sign in, and the run is still on its ticket.
+    let _ = tool(&handle, "frontend", Some(run), "sign_in", json!({ "site": "example.com", "why": "Open the settings page" })).await;
+    handle.check_leases_at(now() + 1_000).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let ticket = handle.snapshot("acme").await.tickets.into_iter().find(|t| t.id == 1).unwrap();
+    assert_eq!(ticket.execution.as_ref().map(|e| e.state), Some(ExecutionState::Active), "waiting on the person is not stalled: {ticket:?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn one_run_waiting_or_stopped_leaves_its_siblings_as_they_were() {
     let engine = Engine0::new(true);
     let (home, repo) = squad();

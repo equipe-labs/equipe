@@ -432,7 +432,7 @@ impl Runtime {
         // it; without them it says so in words, and the person accepts.
         let Some(s) = self.sessions.get(&id) else { return false };
         let board_tools = has_tools(s) && self.config.equipe_binary.is_some();
-        let waits_on_person = s.work.as_ref().is_some_and(|w| w.end.with_person) || self.pending.values().any(|p| p.approval.session == id);
+        let waits_on_person = self.waits_on_person(id, s);
         // What the person said meanwhile goes to it first: that is its next turn.
         let said_meanwhile = !s.queued.is_empty() || !s.steering.is_empty();
         if !board_tools || waits_on_person || said_meanwhile {
