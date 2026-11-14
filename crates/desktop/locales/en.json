@@ -2766,6 +2766,8 @@
   "sidebar.unpin": "Unpin",
   "sidebar.tidied_one": "1 older conversation put away",
   "sidebar.tidied_many": "{n} older conversations put away",
+  "sidebar.put_away_many": "{n} put-away conversations",
+  "sidebar.put_away_one": "1 put-away conversation",
   "sidebar.tidied_show": "Show",
   "sidebar.tidied_hide": "Hide",
   "settings.auto_put_away": "Tidy old conversations",

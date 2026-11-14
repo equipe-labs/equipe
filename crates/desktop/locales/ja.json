@@ -2699,6 +2699,8 @@
   "sidebar.unpin": "ピン留めを外す",
   "sidebar.tidied_one": "古い会話を1件片付けました",
   "sidebar.tidied_many": "古い会話を{n}件片付けました",
+  "sidebar.put_away_many": "片付けた会話 {n}件",
+  "sidebar.put_away_one": "片付けた会話 1件",
   "sidebar.tidied_show": "表示",
   "sidebar.tidied_hide": "非表示",
   "settings.auto_put_away": "古い会話を自動で整理",

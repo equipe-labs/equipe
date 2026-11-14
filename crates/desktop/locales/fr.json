@@ -2766,6 +2766,8 @@
   "sidebar.unpin": "Désépingler",
   "sidebar.tidied_one": "1 ancienne conversation rangée",
   "sidebar.tidied_many": "{n} anciennes conversations rangées",
+  "sidebar.put_away_many": "{n} conversations rangées",
+  "sidebar.put_away_one": "1 conversation rangée",
   "sidebar.tidied_show": "Afficher",
   "sidebar.tidied_hide": "Masquer",
   "settings.auto_put_away": "Ranger les anciennes conversations",

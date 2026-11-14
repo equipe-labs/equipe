@@ -2699,6 +2699,8 @@
   "sidebar.unpin": "고정 해제",
   "sidebar.tidied_one": "오래된 대화 1개를 치웠어요",
   "sidebar.tidied_many": "오래된 대화 {n}개를 치웠어요",
+  "sidebar.put_away_many": "보관한 대화 {n}개",
+  "sidebar.put_away_one": "보관한 대화 1개",
   "sidebar.tidied_show": "보기",
   "sidebar.tidied_hide": "숨기기",
   "settings.auto_put_away": "오래된 대화 자동 정리",
