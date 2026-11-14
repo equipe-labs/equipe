@@ -150,6 +150,16 @@ actions!(equipe, [ZoomIn, ZoomOut, ActualSize]);
 actions!(equipe, [ShowOrchestration]);
 // The Window menu's: one more window (⌘⇧N), and the Mac's own two.
 actions!(equipe, [NewWindow, MinimizeWindow, ZoomWindow]);
+// Back and forward through the places the window has been (⌘[ ⌘], ⌘← ⌘→), as
+// the title bar's arrows do.
+actions!(equipe, [GoBack, GoForward]);
+// ⌘W puts away the topmost thing (a sheet, a panel, find, settings) and, with
+// nothing left to close, the window; ⌘⇧W is always the window. ⌃⌘F is full screen.
+actions!(equipe, [CloseTop, CloseWindow, ToggleFullScreen]);
+// ⌘G and ⌘⇧G: the next and the previous match of the conversation's find.
+actions!(equipe, [FindNext, FindPrevious]);
+// ⌘1, ⌘2, ⌘3: the sidebar's top items in order (Needs you, Status, Progress).
+actions!(equipe, [SidebarItem1, SidebarItem2, SidebarItem3]);
 
 /// The menu bar and ⌘K: each item is a command line (T-62 §2.7 — every menu
 /// item is a command, and every command is in the palette). A line that ends
@@ -1549,6 +1559,42 @@ impl Shell {
         }
     }
 
+    /// ⌘W: put away the topmost thing, or the window when nothing is open.
+    fn close_top(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let on_chat = self.screen == Screen::Chat;
+        let chat_layer = on_chat && (self.chat.gallery.is_some() || self.chat.lightbox.is_some() || self.chat.find.open || !self.chat.side.is_empty());
+        let terminal = on_chat && self.terminal.as_ref().is_some_and(|t| t.open && !t.term.ended);
+        let browser = on_chat && self.browser.read(cx).open;
+        match close_step(self.overlay_open(), chat_layer, terminal, browser, self.screen == Screen::Settings) {
+            CloseStep::Overlay => self.escape_overlay(window, cx),
+            CloseStep::Chat => {
+                self.chat_escape(window, cx);
+            }
+            CloseStep::Terminal => self.toggle_terminal(window, cx),
+            CloseStep::Browser => self.toggle_browser(window, cx),
+            CloseStep::Settings => self.close_settings(window, cx),
+            CloseStep::Window => window.remove_window(),
+        }
+        cx.notify();
+    }
+
+    /// ⌘G / ⌘⇧G: the next or previous match, while find is open.
+    fn find_again(&mut self, back: bool, cx: &mut Context<Self>) {
+        if self.screen == Screen::Chat && self.chat.find.open {
+            self.find_step(back, cx);
+        }
+    }
+
+    /// ⌘1, ⌘2…: the sidebar's nth top item.
+    fn side_item(&mut self, n: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let places = views::sidebar::top_places(self.status.offered(), self.board.view.menu);
+        match places.get(n.wrapping_sub(1)) {
+            Some(place) if place.screen == Screen::Board => self.open_side_menu(place.menu, cx),
+            Some(place) => self.go_to(*place, window, cx),
+            None => {}
+        }
+    }
+
     /// `ssh` wants something from the person: a box over the window.
     fn ask_user(&mut self, prompt: askpass::Prompt, window: &mut Window, cx: &mut Context<Self>) {
         self.ask.queue.push_back(prompt);
@@ -2419,6 +2465,9 @@ impl Render for Shell {
             .text_color(p.text)
             .track_focus(&self.root_focus)
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
+            // The mouse's side buttons, and the swipe macOS reports the same way.
+            .on_mouse_down(MouseButton::Navigate(NavigationDirection::Back), cx.listener(|this, _, window, cx| this.go_back(window, cx)))
+            .on_mouse_down(MouseButton::Navigate(NavigationDirection::Forward), cx.listener(|this, _, window, cx| this.go_forward(window, cx)))
             .on_action(cx.listener(|this, _: &DismissOverlay, window, cx| {
                 if this.overlay_open() {
                     this.escape_overlay(window, cx);
@@ -2631,6 +2680,7 @@ fn app_menu(cx: &mut App) {
         }
     });
     answer_zoom(cx);
+    answer_navigation(cx);
     cx.on_action(|_: &MinimizeWindow, cx| {
         if let Some(window) = cx.active_window() {
             let _ = window.update(cx, |_, window, _| window.minimize_window());
@@ -2667,13 +2717,23 @@ pub fn set_menus(cx: &mut App) {
         MenuItem::action(t!("main.menu_show_all"), ShowAll),
         MenuItem::separator(),
         MenuItem::action(t!("main.menu_quit"), Quit),
-    ]), edit_menu(), squad_menu(), member_menu(), view_menu(), window_menu(), help_menu()]);
+    ]), file_menu(), edit_menu(), squad_menu(), member_menu(), view_menu(), window_menu(), help_menu()]);
     // The Mac lists the windows under it, by their titles ("equipe-squad · Mac mini").
     windows::windows_menu_at(WINDOW_MENU_AT);
 }
 
-/// Where the Window menu is in the menu bar: after equipe, Edit, Squad, Member and View.
-const WINDOW_MENU_AT: isize = 5;
+/// Where the Window menu is in the menu bar: after equipe, File, Edit, Squad, Member and View.
+const WINDOW_MENU_AT: isize = 6;
+
+/// The File menu: a new conversation, and closing — the open panel, else the window.
+fn file_menu() -> Menu {
+    Menu::new(t!("menu.file")).items([
+        MenuItem::action(t!("sidebar.new_conversation"), NewMessage),
+        MenuItem::separator(),
+        MenuItem::action(t!("menu.close"), CloseTop),
+        MenuItem::action(t!("menu.close_window"), CloseWindow),
+    ])
+}
 
 /// The Window menu: one more window, and the Mac's own items; macOS lists
 /// the open windows under them.
@@ -2704,9 +2764,69 @@ fn answer_zoom(cx: &mut App) {
     cx.on_action(|_: &ActualSize, cx| zoom(zoom::Step::Actual, cx));
 }
 
+/// ⌘[ ⌘] ⌘W ⌘⇧W ⌃⌘F ⌘G ⌘⇧G ⌘1–3: like zoom, the app's to answer for the
+/// window in front, whatever has the focus (or nothing at all).
+fn answer_navigation(cx: &mut App) {
+    fn on_front(cx: &mut App, run: impl FnOnce(&mut Shell, &mut Window, &mut Context<Shell>) + 'static) {
+        let Some((handle, shell)) = windows::front(cx) else { return };
+        // Later: the window is in use while it dispatches the key.
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, cx| shell.update(cx, |shell, cx| run(shell, window, cx)));
+        });
+    }
+    cx.on_action(|_: &GoBack, cx| on_front(cx, |shell, window, cx| shell.go_back(window, cx)));
+    cx.on_action(|_: &GoForward, cx| on_front(cx, |shell, window, cx| shell.go_forward(window, cx)));
+    cx.on_action(|_: &CloseTop, cx| on_front(cx, |shell, window, cx| shell.close_top(window, cx)));
+    cx.on_action(|_: &CloseWindow, cx| on_front(cx, |_, window, _| window.remove_window()));
+    cx.on_action(|_: &ToggleFullScreen, cx| on_front(cx, |_, window, _| window.toggle_fullscreen()));
+    cx.on_action(|_: &FindNext, cx| on_front(cx, |shell, _, cx| shell.find_again(false, cx)));
+    cx.on_action(|_: &FindPrevious, cx| on_front(cx, |shell, _, cx| shell.find_again(true, cx)));
+    cx.on_action(|_: &SidebarItem1, cx| on_front(cx, |shell, window, cx| shell.side_item(1, window, cx)));
+    cx.on_action(|_: &SidebarItem2, cx| on_front(cx, |shell, window, cx| shell.side_item(2, window, cx)));
+    cx.on_action(|_: &SidebarItem3, cx| on_front(cx, |shell, window, cx| shell.side_item(3, window, cx)));
+}
+
+/// What ⌘W puts away, in order: a box over the window, the conversation's
+/// pictures, find or a side page, the terminal, the browser panel, settings —
+/// and when none is open, the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloseStep {
+    Overlay,
+    Chat,
+    Terminal,
+    Browser,
+    Settings,
+    Window,
+}
+
+/// Which step ⌘W takes, from what is open.
+fn close_step(overlay: bool, chat_layer: bool, terminal: bool, browser: bool, settings: bool) -> CloseStep {
+    if overlay {
+        CloseStep::Overlay
+    } else if chat_layer {
+        CloseStep::Chat
+    } else if terminal {
+        CloseStep::Terminal
+    } else if browser {
+        CloseStep::Browser
+    } else if settings {
+        CloseStep::Settings
+    } else {
+        CloseStep::Window
+    }
+}
+
 /// The View menu: the window's size, as a browser zooms.
 fn view_menu() -> Menu {
     Menu::new(t!("main.menu_view")).items([
+        MenuItem::action(t!("sidebar.back"), GoBack),
+        MenuItem::action(t!("sidebar.forward"), GoForward),
+        MenuItem::separator(),
+        MenuItem::action(t!("settings.key_sidebar"), ToggleSidebar),
+        MenuItem::action(t!("board.menu_inbox"), SidebarItem1),
+        MenuItem::action(t!("status.title"), SidebarItem2),
+        MenuItem::action(t!("progress.title"), SidebarItem3),
+        MenuItem::separator(),
         MenuItem::action(t!("main.menu_zoom_in"), ZoomIn),
         MenuItem::action(t!("main.menu_zoom_out"), ZoomOut),
         MenuItem::action(t!("main.menu_actual_size"), ActualSize),
@@ -2716,6 +2836,8 @@ fn view_menu() -> Menu {
         MenuItem::action(t!("orchestra.title"), ShowOrchestration),
         MenuItem::action(t!("menu.all_projects"), AllProjects),
         MenuItem::action(t!("menu.toggle_folds"), ToggleFolds),
+        MenuItem::separator(),
+        MenuItem::action(t!("menu.full_screen"), ToggleFullScreen),
     ])
 }
 
@@ -2759,6 +2881,26 @@ fn window_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-shift-n", NewWindow, None),
         KeyBinding::new("alt-cmd-n", AddMembers, None),
         KeyBinding::new("cmd-m", MinimizeWindow, None),
+        // Back and forward, as Safari, Finder and Xcode. The text box binds
+        // ⌘[ ⌘] to indent (a code editor's), which the conversation's box has
+        // no use for: here they navigate, text box focused or not. ⌘← ⌘→ are
+        // the text box's own (line start, line end), so they navigate only
+        // where no text box has the focus.
+        KeyBinding::new("cmd-[", GoBack, None),
+        KeyBinding::new("cmd-]", GoForward, None),
+        KeyBinding::new("cmd-[", GoBack, Some("Input")),
+        KeyBinding::new("cmd-]", GoForward, Some("Input")),
+        KeyBinding::new("cmd-left", GoBack, Some("!Input")),
+        KeyBinding::new("cmd-right", GoForward, Some("!Input")),
+        KeyBinding::new("cmd-w", CloseTop, None),
+        KeyBinding::new("cmd-shift-w", CloseWindow, None),
+        KeyBinding::new("ctrl-cmd-f", ToggleFullScreen, None),
+        KeyBinding::new("cmd-g", FindNext, None),
+        KeyBinding::new("cmd-shift-g", FindPrevious, None),
+        KeyBinding::new("cmd-1", SidebarItem1, None),
+        KeyBinding::new("cmd-2", SidebarItem2, None),
+        KeyBinding::new("cmd-3", SidebarItem3, None),
+        KeyBinding::new("cmd-?", ShowHelp, None),
         // ⌥⏎ and ⌃J break the line like ⇧⏎ (T-54 §8).
         KeyBinding::new("alt-enter", Enter { secondary: false, shift: true }, Some("Input")),
         KeyBinding::new("ctrl-j", Enter { secondary: false, shift: true }, Some("Input")),
@@ -2777,6 +2919,11 @@ fn edit_menu() -> Menu {
         MenuItem::os_action(t!("main.menu_copy"), Copy, OsAction::Copy),
         MenuItem::os_action(t!("main.menu_paste"), Paste, OsAction::Paste),
         MenuItem::os_action(t!("main.menu_select_all"), SelectAll, OsAction::SelectAll),
+        MenuItem::separator(),
+        MenuItem::action(t!("chat.find_placeholder"), FindInConversation),
+        MenuItem::action(t!("menu.find_next"), FindNext),
+        MenuItem::action(t!("menu.find_previous"), FindPrevious),
+        MenuItem::action(t!("settings.key_search_all"), SearchAll),
     ])
 }
 
@@ -2996,7 +3143,7 @@ pub fn open_app_window(opening: windows::Opening, cx: &mut App) -> (AnyWindowHan
 
 #[cfg(test)]
 mod tests {
-    use super::window_bindings;
+    use super::{CloseStep, close_step, window_bindings};
     use gpui_kit::Keystroke;
 
     /// What a keystroke is bound to in the window's table, by action name.
@@ -3015,7 +3162,8 @@ mod tests {
         assert_eq!(bound("ctrl-0"), ["equipe::AllProjects"]);
         for n in 1..=9 {
             assert_eq!(bound(&format!("ctrl-{n}")), [format!("equipe::Project{n}").as_str()]);
-            assert!(bound(&format!("cmd-{n}")).is_empty(), "⌘{n} is free again");
+            // ⌘1–3 are the sidebar's top items, never the project slices.
+            assert!(bound(&format!("cmd-{n}")).iter().all(|a| a.starts_with("equipe::SidebarItem")), "⌘{n} is not a project slice");
         }
     }
 
@@ -3044,5 +3192,116 @@ mod tests {
         // The menu shows the first binding of each: ⌘+, not ⌘=.
         let first_zoom_in = bindings.iter().find(|b| b.action().name() == "equipe::ZoomIn").unwrap();
         assert_eq!(first_zoom_in.keystrokes()[0].unparse(), "cmd-+");
+    }
+
+    #[test]
+    fn the_macs_navigation_and_window_keys_are_bound() {
+        assert!(bound("cmd-[").iter().all(|a| *a == "equipe::GoBack") && !bound("cmd-[").is_empty());
+        assert!(bound("cmd-]").iter().all(|a| *a == "equipe::GoForward") && !bound("cmd-]").is_empty());
+        assert_eq!(bound("cmd-left"), ["equipe::GoBack"]);
+        assert_eq!(bound("cmd-right"), ["equipe::GoForward"]);
+        assert_eq!(bound("cmd-w"), ["equipe::CloseTop"]);
+        assert_eq!(bound("cmd-shift-w"), ["equipe::CloseWindow"]);
+        assert_eq!(bound("ctrl-cmd-f"), ["equipe::ToggleFullScreen"]);
+        assert_eq!(bound("cmd-g"), ["equipe::FindNext"]);
+        assert_eq!(bound("cmd-shift-g"), ["equipe::FindPrevious"]);
+        assert_eq!(bound("cmd-1"), ["equipe::SidebarItem1"]);
+        assert_eq!(bound("cmd-3"), ["equipe::SidebarItem3"]);
+        // Kept as they were.
+        assert_eq!(bound("cmd-,"), ["equipe::OpenSettings"]);
+        assert_eq!(bound("cmd-\\"), ["equipe::ToggleSidebar"]);
+        assert_eq!(bound("cmd-k"), ["equipe::SearchAll"]);
+        assert_eq!(bound("cmd-f"), ["equipe::FindInConversation"]);
+        assert_eq!(bound("cmd-/"), ["equipe::ShowHelp"]);
+        assert_eq!(bound("cmd-?"), ["equipe::ShowHelp"]);
+    }
+
+    #[test]
+    fn the_arrows_navigate_only_where_no_text_box_has_the_focus() {
+        for (keys, action) in [("cmd-left", "equipe::GoBack"), ("cmd-right", "equipe::GoForward")] {
+            let typed = [Keystroke::parse(keys).unwrap()];
+            let found: Vec<_> = window_bindings().into_iter().filter(|b| b.match_keystrokes(&typed) == Some(false)).collect();
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].action().name(), action);
+            assert_eq!(found[0].predicate().map(|p| p.to_string()).as_deref(), Some("!Input"), "{keys} is the text box's line start and end");
+        }
+    }
+
+    #[test]
+    fn close_takes_the_topmost_thing_and_the_window_last() {
+        assert_eq!(close_step(true, true, true, true, true), CloseStep::Overlay);
+        assert_eq!(close_step(false, true, true, true, true), CloseStep::Chat);
+        assert_eq!(close_step(false, false, true, true, true), CloseStep::Terminal);
+        assert_eq!(close_step(false, false, false, true, true), CloseStep::Browser);
+        assert_eq!(close_step(false, false, false, false, true), CloseStep::Settings);
+        assert_eq!(close_step(false, false, false, false, false), CloseStep::Window);
+    }
+
+    /// A conversation's box, as the window has it: the app's keys and the text box's own.
+    struct Probe {
+        field: gpui_kit::Entity<gpui_kit::component::input::TextareaState>,
+        back: usize,
+        forward: usize,
+    }
+
+    impl gpui_kit::Render for Probe {
+        fn render(&mut self, _: &mut gpui_kit::Window, cx: &mut gpui_kit::Context<Self>) -> impl gpui_kit::IntoElement {
+            use gpui_kit::InteractiveElement as _;
+            use gpui_kit::ParentElement as _;
+            use gpui_kit::Styled as _;
+            gpui_kit::div()
+                .size_full()
+                .on_action(cx.listener(|this, _: &super::GoBack, _, _| this.back += 1))
+                .on_action(cx.listener(|this, _: &super::GoForward, _, _| this.forward += 1))
+                .child(gpui_kit::component::input::Textarea::new(&self.field))
+        }
+    }
+
+    /// With the text box focused, ⌘A ⌘C ⌘Z are the box's — and ⌘[ ⌘] still go
+    /// back and forward, while ⌘← ⌘→ move the cursor and go nowhere.
+    #[gpui_kit::test]
+    fn the_composer_keeps_its_text_keys_and_the_window_keeps_back_and_forward(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.bind_keys(window_bindings());
+        });
+        let (probe, cx) = cx.add_window_view(|window, cx| {
+            let field = cx.new(|cx| gpui_kit::component::input::TextareaState::new(window, cx).auto_grow(1, 6));
+            Probe { field, back: 0, forward: 0 }
+        });
+        let field = probe.read_with(cx, |p, _| p.field.clone());
+        cx.update(|window, cx| {
+            field.update(cx, |s, cx| {
+                s.set_value("hello world", window, cx);
+                s.focus(window, cx);
+            });
+            window.draw(cx).clear(cx);
+        });
+        let press = |cx: &mut gpui_kit::VisualTestContext, keys: &str| {
+            let stroke = Keystroke::parse(keys).unwrap();
+            cx.update(|window, cx| window.dispatch_keystroke(stroke, cx));
+            cx.run_until_parked();
+        };
+        let value = |cx: &mut gpui_kit::VisualTestContext| field.read_with(cx, |s, _| s.value().to_string());
+
+        // ⌘A then ⌘C: the whole text is the clipboard's.
+        press(cx, "cmd-a");
+        press(cx, "cmd-c");
+        assert_eq!(cx.read_from_clipboard().and_then(|c| c.text()).as_deref(), Some("hello world"));
+        // ⌘A then Backspace empties it, and ⌘Z brings it back — the box's undo.
+        press(cx, "backspace");
+        assert_eq!(value(cx), "");
+        press(cx, "cmd-z");
+        assert_eq!(value(cx), "hello world");
+        // ⌘← and ⌘→ are the box's line start and end: no navigation.
+        press(cx, "cmd-left");
+        press(cx, "cmd-right");
+        assert_eq!(probe.read_with(cx, |p, _| (p.back, p.forward)), (0, 0), "⌘← ⌘→ stay the text box's");
+        // ⌘[ and ⌘] navigate, the text unchanged (no indent).
+        press(cx, "cmd-[");
+        press(cx, "cmd-]");
+        assert_eq!(probe.read_with(cx, |p, _| (p.back, p.forward)), (1, 1));
+        assert_eq!(value(cx), "hello world");
     }
 }

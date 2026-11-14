@@ -41,7 +41,10 @@ pub fn sections() -> Vec<Section> {
             title: t!("help.navigate").into(),
             rows: rows(&[
                 ("⌘B", t!("help.nav_board")),
-                ("⌘0 · ⌘1–9", t!("help.nav_projects")),
+                ("⌃0 · ⌃1–9", t!("help.nav_projects")),
+                ("⌘[ · ⌘] · ⌘← · ⌘→", t!("settings.key_back_forward")),
+                ("⌘1 · ⌘2 · ⌘3", t!("settings.key_top_items")),
+                ("⌘W · ⌘⇧W", t!("settings.key_close")),
                 ("⌘⇧O", t!("help.nav_folds")),
                 ("⇧⌘F", t!("help.nav_doc_focus")),
                 ("⌘U", t!("help.nav_usage")),
