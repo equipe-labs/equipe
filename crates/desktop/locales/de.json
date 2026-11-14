@@ -2766,6 +2766,8 @@
   "sidebar.unpin": "Lösen",
   "sidebar.tidied_one": "1 ältere Unterhaltung weggelegt",
   "sidebar.tidied_many": "{n} ältere Unterhaltungen weggelegt",
+  "sidebar.put_away_many": "{n} weggelegte Unterhaltungen",
+  "sidebar.put_away_one": "1 weggelegte Unterhaltung",
   "sidebar.tidied_show": "Anzeigen",
   "sidebar.tidied_hide": "Ausblenden",
   "settings.auto_put_away": "Alte Unterhaltungen aufräumen",

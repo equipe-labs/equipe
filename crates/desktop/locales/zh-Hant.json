@@ -2699,6 +2699,8 @@
   "sidebar.unpin": "取消釘選",
   "sidebar.tidied_one": "已收起 1 個較早的對話",
   "sidebar.tidied_many": "已收起 {n} 個較早的對話",
+  "sidebar.put_away_many": "已收起的對話 {n} 個",
+  "sidebar.put_away_one": "已收起的對話 1 個",
   "sidebar.tidied_show": "查看",
   "sidebar.tidied_hide": "隱藏",
   "settings.auto_put_away": "自動整理舊對話",

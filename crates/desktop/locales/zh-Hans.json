@@ -2699,6 +2699,8 @@
   "sidebar.unpin": "取消置顶",
   "sidebar.tidied_one": "已收起 1 个较早的对话",
   "sidebar.tidied_many": "已收起 {n} 个较早的对话",
+  "sidebar.put_away_many": "已收起的对话 {n} 个",
+  "sidebar.put_away_one": "已收起的对话 1 个",
   "sidebar.tidied_show": "查看",
   "sidebar.tidied_hide": "隐藏",
   "settings.auto_put_away": "自动整理旧对话",

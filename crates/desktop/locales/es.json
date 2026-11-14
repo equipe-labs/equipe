@@ -2766,6 +2766,8 @@
   "sidebar.unpin": "Dejar de fijar",
   "sidebar.tidied_one": "1 conversación antigua guardada",
   "sidebar.tidied_many": "{n} conversaciones antiguas guardadas",
+  "sidebar.put_away_many": "{n} conversaciones guardadas",
+  "sidebar.put_away_one": "1 conversación guardada",
   "sidebar.tidied_show": "Mostrar",
   "sidebar.tidied_hide": "Ocultar",
   "settings.auto_put_away": "Ordenar conversaciones antiguas",

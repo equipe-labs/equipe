@@ -762,12 +762,12 @@ fn conversation_list(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> 
     let model = &shell.model;
     let talks = model.conversations();
     let away_today = crate::talk_days::put_away_today(&model.put_away, model.unix, crate::state::local_midnight);
-    if talks.is_empty() && model.draft_talk.is_none() && away_today == 0 {
+    if talks.is_empty() && model.draft_talk.is_none() && model.put_away.is_empty() {
         return Vec::new();
     }
     let mut rows = vec![heading_frame(p, "talks-heading").child(div().flex_1().child(t!("sidebar.conversations"))).into_any_element()];
     if away_today > 0 {
-        rows.extend(tidied_note(shell, away_today, cx));
+        rows.extend(tidied_note(shell, away_today, true, cx));
     }
     if let Some((draft, about)) = &model.draft_talk {
         let on = shell.screen == Screen::Chat;
@@ -831,16 +831,27 @@ fn conversation_list(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> 
                 .into_any_element(),
         );
     }
+    // Put away on another day: still one click away, at the list's end, so
+    // nothing equipe tidied is ever out of reach.
+    if away_today == 0 && !model.put_away.is_empty() {
+        rows.extend(tidied_note(shell, model.put_away.len(), false, cx));
+    }
     rows
 }
 
 /// "N older conversations put away · Show": one quiet line when equipe put
-/// old conversations away today. "Show" lists them (newest first) right
+/// old conversations away today (`today`), or "N put-away conversations ·
+/// Show" at the list's end otherwise. "Show" lists them (newest first) right
 /// under it, each taken up again with a click.
-fn tidied_note(shell: &Shell, n: usize, cx: &mut Context<Shell>) -> Vec<AnyElement> {
+fn tidied_note(shell: &Shell, n: usize, today: bool, cx: &mut Context<Shell>) -> Vec<AnyElement> {
     let p = shell.palette;
     let open = shell.board.side_put_away_open;
-    let said = if n == 1 { t!("sidebar.tidied_one").to_owned() } else { t!("sidebar.tidied_many", n = n) };
+    let said = match (today, n) {
+        (true, 1) => t!("sidebar.tidied_one").to_owned(),
+        (true, _) => t!("sidebar.tidied_many", n = n),
+        (false, 1) => t!("sidebar.put_away_one").to_owned(),
+        (false, _) => t!("sidebar.put_away_many", n = n),
+    };
     let toggle = if open { t!("sidebar.tidied_hide") } else { t!("sidebar.tidied_show") };
     let mut rows = vec![
         h_flex()
@@ -891,8 +902,9 @@ fn tidied_note(shell: &Shell, n: usize, cx: &mut Context<Shell>) -> Vec<AnyEleme
     rows
 }
 
-/// The conversations put away listed under the note at most.
-const PUT_AWAY_ROWS: usize = 12;
+/// The conversations put away listed under the note at most (as many as a
+/// snapshot carries).
+const PUT_AWAY_ROWS: usize = 50;
 
 /// The project a conversation is about, small and muted at its row's end.
 fn project_label(p: Palette, project: Option<&str>) -> Option<Div> {
@@ -1325,13 +1337,14 @@ fn team_block(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         // Its tickets, each run under it, when it runs two or more: one row
         // each, opened like the ticket. A single run is its member's row.
         let runs = model.runs_of(m.session);
+        let runs_open = shell.board.side_talks_all.contains(&runs_key(m.session));
         if runs.len() > 1 {
-            for run in runs.iter().take(RUNS_SHOWN) {
+            for run in runs.iter().take(if runs_open { runs.len() } else { RUNS_SHOWN }) {
                 rows.push(run_row(shell, run, cx));
             }
         }
         if runs.len() > RUNS_SHOWN {
-            rows.push(runs_more_row(shell, m.session, runs[RUNS_SHOWN].ticket, runs.len() - RUNS_SHOWN, cx));
+            rows.push(runs_more_row(shell, m.session, runs.len() - RUNS_SHOWN, runs_open, cx));
         }
         for (session, sub) in subs.iter().take(cap) {
             rows.push(sub_row(shell, m.session, *session, sub, arriving.contains(&sub.id), cx));
@@ -1555,15 +1568,33 @@ fn run_row(shell: &Shell, run: &crate::state::Run, cx: &mut Context<Shell>) -> A
 }
 
 /// "+N more": the rest of a member's runs; a click opens the first of them.
-fn runs_more_row(shell: &Shell, member: SessionId, next: TicketId, more: usize, cx: &mut Context<Shell>) -> AnyElement {
+/// The key a member's runs are kept open under, beside "Show all" of the
+/// conversations (one set of what the sidebar has opened).
+fn runs_key(member: SessionId) -> String {
+    format!("runs-{member}")
+}
+
+/// "+N more" under a member's runs: a click shows the rest right there, and
+/// "Show fewer" folds them again.
+fn runs_more_row(shell: &Shell, member: SessionId, more: usize, open: bool, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
+    let words = if open { t!("sidebar.fewer").to_owned() } else { t!("sidebar.more", n = more) };
     sub_shell(p, SharedString::from(format!("runs-more-{member}")))
         .cursor_pointer()
         .hover(move |s| s.bg(p.side_hover))
-        .on_click(cx.listener(move |this, _, window, cx| this.open_side(Side::Ticket(next), window, cx)))
+        .role(Role::Button)
+        .aria_expanded(open)
+        .aria_label(words.clone())
+        .on_click(cx.listener(move |this, _, _, cx| {
+            let key = runs_key(member);
+            if !this.board.side_talks_all.remove(&key) {
+                this.board.side_talks_all.insert(key);
+            }
+            cx.notify();
+        }))
         .child(div().w(px(12.)).flex_none())
-        .child(div().text_size(px(11.5)).text_color(p.muted).child(t!("sidebar.more", n = more)))
-        .child(icon(IconName::ChevronRight, 10., p.muted))
+        .child(div().text_size(px(11.5)).text_color(p.muted).child(words))
+        .child(icon(if open { IconName::ChevronUp } else { IconName::ChevronDown }, 10., p.muted))
         .into_any_element()
 }
 
