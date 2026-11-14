@@ -18,6 +18,7 @@ impl Runtime {
         }
         crate::daemon_log!("equipe: {squad}'s parallel work is now {} ({} per member, {} per engine)", parallel.mode.code(), parallel.per_member, parallel.per_engine);
         self.publish(Event::ParallelChanged { squad: squad.to_owned(), parallel });
+        self.status_changed(squad);
         self.dispatch(squad).await;
     }
 
@@ -68,9 +69,9 @@ impl Runtime {
         });
         out.push(format!("Engine switching: {}.", format!("{switching:?}").to_lowercase()));
         out.push(if parallel.is_max() {
-            format!("Parallel work (parallel): max — up to {} tickets per member and {} per engine at once, whatever the plans' usage.", parallel.per_member, parallel.per_engine)
+            format!("Speed (parallel): full — up to {} tickets per member and {} per engine at once, whatever the plans' usage.", parallel.per_member, parallel.per_engine)
         } else {
-            format!("Parallel work (parallel): auto — fewer tickets at once as a plan runs low (max's caps: {} per member, {} per engine).", parallel.per_member, parallel.per_engine)
+            format!("Speed (parallel): balanced — fewer tickets at once as a plan runs low (full speed's caps: {} per member, {} per engine).", parallel.per_member, parallel.per_engine)
         });
         out.push(match model_choice {
             crate::protocol::tiers::ModelChoice::QualityFirst => {

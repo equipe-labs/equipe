@@ -28,13 +28,15 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 
+use equipe_protocol::lanes::Parallel;
 use equipe_protocol::status::{
-    Action, Block, Cause, EngineBudget, Goto, Handling, Mood, Note, Severity, SquadStatus, Tiles, Waste, WasteKey, WasteMetric, Watched, WatchedList,
+    Action, Block, Cause, EngineBudget, Goto, Handling, Mood, Note, Severity, Speed, SquadStatus, Tiles, Waste, WasteKey, WasteMetric, Watched, WatchedList,
 };
 use equipe_protocol::{Engine, PauseWhy, Priority, Ticket, TicketId, TicketStatus};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
 use crate::runtime::turn_ending;
+use crate::speed;
 use crate::usage::{self, Input, Report};
 
 const MINUTE: u64 = 60;
@@ -91,6 +93,14 @@ pub struct Facts {
     pub signed_out: Vec<Engine>,
     /// The PM accepts handed-in work: the person sees only what it puts to them.
     pub pm_accepts: bool,
+    /// Members as the flow sees them, the PM among them.
+    pub crew: Vec<speed::Crew>,
+    /// Each engine's lane: its cap now, its runs, its reserve, its pace.
+    pub lanes: Vec<speed::Lane>,
+    /// The squad has one project: a code ticket needs none named.
+    pub single_project: bool,
+    /// The squad's parallel work.
+    pub parallel: Parallel,
 }
 
 /// What the squad's journal says.
@@ -126,27 +136,51 @@ fn rank(cause: Cause) -> u8 {
 /// The squad's status at unix time `now`.
 pub fn compute(facts: &Facts, rows: &Rows, now: u64) -> SquadStatus {
     let tiles = tiles(facts, rows);
+    let analysis = speed::analyze(&speed::Input {
+        tickets: &facts.tickets,
+        crew: &facts.crew,
+        lanes: &facts.lanes,
+        engines: &facts.engines,
+        working: &facts.working,
+        single_project: facts.single_project,
+        pm_accepts: facts.pm_accepts,
+    });
+    let flow = analysis.flow.clone();
     let mut blocked = blocks(facts, rows, &tiles, now);
     let all_out = !facts.in_use.is_empty() && facts.in_use.iter().all(|e| facts.engines.iter().any(|b| b.engine == *e && b.out_until.is_some()));
     if all_out {
         for b in blocked.iter_mut().filter(|b| b.cause == Cause::EngineOut) {
             b.severity = Severity::Red;
         }
+    } else if facts.breaker.is_none() {
+        // An engine out of its limit that holds nothing up — the squad's work
+        // goes on another — is no row of what is blocked: the budget card and
+        // the status line's note say it.
+        blocked.retain(|b| b.cause != Cause::EngineOut || b.count > 0 || flow.on_engine > 0);
     }
     blocked.sort_by(|a, b| b.severity.cmp(&a.severity).then(rank(a.cause).cmp(&rank(b.cause))).then(b.count.cmp(&a.count)));
     let blocked_more = blocked.len().saturating_sub(BLOCKED_SHOWN) as u32;
     blocked.truncate(BLOCKED_SHOWN);
 
-    let pacing = facts.engines.iter().any(|e| e.pacing_at_once.is_some());
+    // Slowed only where something equipe or the person can change holds work
+    // back: the caps full with tickets ready, an engine's limit or reserve
+    // holding tickets, or a row that slows. Plenty of work waiting on other
+    // tickets or on the person while runs go is no slowdown.
+    let held = flow.held_by_cap > 0 || flow.on_engine > 0;
     let mood = if facts.breaker.is_some() || all_out {
         Mood::Stopped
-    } else if pacing || blocked.iter().any(|b| b.severity >= Severity::Amber) {
+    } else if held || blocked.iter().any(|b| b.severity >= Severity::Amber) {
         Mood::Slowed
     } else {
         Mood::Good
     };
     let mut notes: Vec<Note> = facts.engines.iter().filter_map(|e| e.out_until.map(|at| Note::Out { engine: e.engine, back_at: (at > 0).then_some(at) })).collect();
-    notes.extend(facts.engines.iter().filter_map(|e| e.pacing_at_once.map(|at_once| Note::Pacing { engine: e.engine, at_once })));
+    // Running fewer at once matters once it holds a ready ticket back.
+    if flow.held_by_cap > 0 {
+        notes.extend(facts.engines.iter().filter_map(|e| e.pacing_at_once.map(|at_once| Note::Pacing { engine: e.engine, at_once })));
+    }
+    notes.extend(facts.lanes.iter().filter(|l| l.reserve && !facts.parallel.is_max()).map(|l| Note::Reserve { engine: l.engine }));
+    let outlook = speed::outlook(&analysis, &facts.lanes, &facts.engines, &facts.parallel, now);
 
     SquadStatus {
         squad: facts.squad.clone(),
@@ -160,6 +194,8 @@ pub fn compute(facts: &Facts, rows: &Rows, now: u64) -> SquadStatus {
         waste: waste(&rows.usage, now),
         watched: watched(facts, rows),
         empty: facts.tickets.is_empty() && facts.members == 0,
+        speed: Some(Speed { parallel: facts.parallel, outlook }),
+        flow: Some(flow),
     }
 }
 
@@ -617,7 +653,13 @@ mod tests {
         let mut only = healthy();
         only.in_use = vec![Engine::Claude];
         only.engines[1].out_until = Some(NOW + DAY);
-        assert_eq!(status(&only, &quiet_rows()).mood, Mood::Slowed, "still a row to see, not a stop");
+        let carried = status(&only, &quiet_rows());
+        assert_eq!(carried.mood, Mood::Good, "Claude carries the work: nothing is held, so nothing is slowed");
+        assert!(carried.blocked.is_empty(), "no row for an engine that holds nothing up");
+        assert_eq!(carried.notes, [Note::Out { engine: Engine::Codex, back_at: Some(NOW + DAY) }], "but the status line says it");
+        only.tickets.push(paused(40, PauseWhy::EngineLimit, Engine::Codex, Some(NOW + DAY)));
+        assert_eq!(status(&only, &quiet_rows()).mood, Mood::Slowed, "a run waiting on it is a row to see, not a stop");
+        only.tickets.pop();
         only.engines[0].out_until = Some(NOW + HOUR);
         assert_eq!(status(&only, &quiet_rows()).mood, Mood::Stopped);
     }
@@ -716,14 +758,61 @@ mod tests {
         assert_eq!(s.mood, Mood::Slowed);
     }
 
+    /// A squad of one member on Claude with `runs` runs of `limit`, and Claude's lane of `cap`.
+    fn one_member(facts: &mut Facts, runs: u32, limit: u32, cap: u32) {
+        facts.crew = vec![speed::Crew { name: "frontend".into(), role: "frontend".into(), engine: Engine::Claude, runs, limit, pm: false }];
+        facts.lanes = vec![speed::Lane { engine: Engine::Claude, cap, running: runs, reserve: false, per_day_bp: None, full_cap: 16, balanced_cap: 8 }];
+        facts.single_project = true;
+    }
+
     #[test]
-    fn running_fewer_at_once_to_make_a_plan_last_is_amber_with_a_note_and_no_row() {
+    fn running_fewer_at_once_is_amber_only_when_it_holds_a_ready_ticket_back() {
         let mut facts = healthy();
         facts.engines[0].pacing_at_once = Some(4);
+        one_member(&mut facts, 1, 4, 4);
+        // One ready ticket, room to start it: pacing holds nothing, so nothing is slowed.
+        let s = status(&facts, &quiet_rows());
+        assert_eq!((s.mood, s.flow.as_ref().map(|f| (f.starting, f.held_by_cap))), (Mood::Good, Some((1, 0))));
+        assert!(s.notes.is_empty() && s.blocked.is_empty());
+        // The caps are full with tickets ready: slowed, and the note says how many at once.
+        one_member(&mut facts, 4, 4, 4);
+        facts.tickets.extend([ticket(3, TicketStatus::Todo), ticket(4, TicketStatus::Todo)]);
         let s = status(&facts, &quiet_rows());
         assert_eq!(s.mood, Mood::Slowed);
         assert!(s.blocked.is_empty());
         assert_eq!(s.notes, [Note::Pacing { engine: Engine::Claude, at_once: 4 }]);
+        let flow = s.flow.unwrap();
+        assert_eq!((flow.held_by_cap, flow.limit), (3, equipe_protocol::status::Limit::Cap));
+    }
+
+    #[test]
+    fn plenty_waiting_on_tickets_or_the_person_while_runs_go_is_not_slowed_and_the_flow_says_why() {
+        let mut facts = healthy();
+        one_member(&mut facts, 1, 6, 16);
+        facts.tickets = vec![ticket(1, TicketStatus::InProgress), ticket(2, TicketStatus::Waiting), ticket(3, TicketStatus::Todo)];
+        facts.tickets[2].depends_on = vec![2];
+        facts.tickets.push(ticket(4, TicketStatus::Todo));
+        facts.tickets[3].depends_on = vec![1];
+        facts.decisions = 2;
+        let s = status(&facts, &quiet_rows());
+        assert_eq!(s.mood, Mood::Good, "{s:#?}");
+        let flow = s.flow.unwrap();
+        assert_eq!((flow.running, flow.on_you, flow.behind_you, flow.on_tickets, flow.held_by_cap), (1, 1, 1, 1, 0));
+        assert_eq!(flow.limit, equipe_protocol::status::Limit::You);
+        assert_eq!(s.speed.unwrap().parallel, Parallel::default());
+    }
+
+    #[test]
+    fn a_reserve_held_is_a_note_on_auto_and_none_on_max() {
+        let mut facts = healthy();
+        one_member(&mut facts, 1, 4, 8);
+        facts.lanes[0].reserve = true;
+        facts.tickets.push(ticket(5, TicketStatus::Todo));
+        let s = status(&facts, &quiet_rows());
+        assert_eq!(s.notes, [Note::Reserve { engine: Engine::Claude }]);
+        assert_eq!(s.mood, Mood::Slowed, "ready tickets wait for the engine's reserve");
+        facts.parallel = Parallel::max(6, 16);
+        assert!(status(&facts, &quiet_rows()).notes.is_empty());
     }
 
     #[test]

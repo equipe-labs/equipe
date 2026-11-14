@@ -40,11 +40,12 @@ impl ParallelMode {
         }
     }
 
-    /// `auto` or `max`, as typed in a command.
+    /// `auto` or `max`, as typed in a command — or as the person says them:
+    /// `balanced` is auto, `full` (speed) is max.
     pub fn parse(text: &str) -> Option<Self> {
         match text.trim().to_ascii_lowercase().as_str() {
-            "auto" | "plan" => Some(ParallelMode::Auto),
-            "max" | "booster" | "boost" => Some(ParallelMode::Max),
+            "auto" | "plan" | "balanced" | "balance" => Some(ParallelMode::Auto),
+            "max" | "booster" | "boost" | "full" | "full speed" | "full_speed" | "full-speed" => Some(ParallelMode::Max),
             _ => None,
         }
     }
@@ -162,6 +163,8 @@ mod tests {
         assert!(!Parallel { per_member: 4, ..Parallel::default() }.is_default(), "auto, the caps the person left: still said");
         assert!(ParallelMode::ALL.iter().all(|m| ParallelMode::parse(m.code()) == Some(*m)));
         assert_eq!(ParallelMode::parse(" Max "), Some(ParallelMode::Max));
-        assert_eq!(ParallelMode::parse("fast"), None);
+        assert_eq!(ParallelMode::parse("Full speed"), Some(ParallelMode::Max));
+        assert_eq!(ParallelMode::parse("balanced"), Some(ParallelMode::Auto));
+        assert_eq!(ParallelMode::parse("warp"), None);
     }
 }

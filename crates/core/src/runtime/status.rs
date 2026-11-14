@@ -65,6 +65,38 @@ impl Runtime {
             .filter(|(_, fix)| matches!(fix.state, AuthState::SignedOut | AuthState::KeychainLocked | AuthState::OutsideLogin { .. }))
             .map(|(engine, _)| *engine)
             .collect();
+        // The flow's view: each member with its runs and limit, each engine's lane.
+        let guarded = |engine: Engine| !parallel.is_max() && self.pace_of(squad, engine).held;
+        let mut crew = Vec::new();
+        let mut running: HashMap<Engine, u32> = HashMap::new();
+        for (&id, s) in self.sessions.iter().filter(|(_, s)| s.squad.as_deref() == Some(squad)) {
+            if s.run_of.is_some() {
+                // A run paused while its engine's reserve is held holds no slot.
+                if crate::pacing::holds_slot(Self::is_parked(s), guarded(s.engine)) {
+                    *running.entry(s.engine).or_default() += 1;
+                }
+                continue;
+            }
+            let Some(m) = s.member.as_ref().filter(|_| s.is_member_itself()) else { continue };
+            let runs = self.sessions.values().filter(|r| r.run_of == Some(id)).count() as u32;
+            crew.push(crate::speed::Crew { name: m.name.clone(), role: m.role.clone(), engine: s.engine, runs, limit: crate::lanes::member_limit(used(s.engine), disk, &parallel) as u32, pm: s.is_pm() });
+        }
+        let at = |mode| equipe_protocol::lanes::Parallel { mode, ..parallel };
+        let lanes: Vec<crate::speed::Lane> = engines
+            .iter()
+            .map(|b| {
+                let engine = b.engine;
+                crate::speed::Lane {
+                    engine,
+                    cap: crate::lanes::engine_limit(used(engine), disk, &parallel) as u32,
+                    running: running.get(&engine).copied().unwrap_or(0),
+                    reserve: guarded(engine),
+                    per_day_bp: self.week_burn(engine),
+                    full_cap: crate::lanes::engine_limit(used(engine), disk, &at(equipe_protocol::lanes::ParallelMode::Max)) as u32,
+                    balanced_cap: crate::lanes::engine_limit(used(engine), disk, &at(equipe_protocol::lanes::ParallelMode::Auto)) as u32,
+                }
+            })
+            .collect();
         let approvals = self.pending.values().filter(|p| p.squad == squad).count() as u32;
         let decisions = (self.question_sets(squad).len() + self.team_changes(squad).len() + self.routine_proposals(squad).len() + self.accepts(squad).len() + self.secret_asks(squad).len()) as u32;
         Facts {
@@ -80,6 +112,10 @@ impl Runtime {
             decisions,
             signed_out,
             pm_accepts: self.journals.get(squad).is_none_or(Journal::pm_accepts),
+            crew,
+            lanes,
+            single_project: self.projects(squad).len() == 1,
+            parallel,
         }
     }
 
