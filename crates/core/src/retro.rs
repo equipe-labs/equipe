@@ -657,7 +657,7 @@ mod tests {
             plan: None,
             model: None,
             asks: vec![],
-            remaining: vec![],
+            label: None, remaining: vec![],
             images: Vec::new(),
             updated_at: None,
             priority: Default::default(),

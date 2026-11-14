@@ -479,6 +479,9 @@ pub const REMEMBER: &str = "remember";
 pub const FORGET: &str = "forget";
 /// A member says when what it is doing will be done — and what it ships, live.
 pub const ESTIMATE: &str = "estimate";
+/// The PM finds open tickets whose title breaks the title rule, then retitles
+/// them: equipe applies the titles the PM writes, never writes one itself.
+pub const RETITLE_OPEN_TICKETS: &str = "retitle_open_tickets";
 /// The PM adds a project to the squad when the person asks it to.
 pub const ADD_PROJECT: &str = "add_project";
 /// The PM writes a plan — kept in the squad's own folder, never a project's
@@ -625,6 +628,23 @@ a project, task when it has none.",
     })
 });
 
+/// The title rule, as `create_ticket`'s and `update_ticket`'s `title` says it
+/// ([`equipe_protocol::title`]; the daemon checks it).
+pub const TITLE_RULE: &str = "A short outcome in the squad's language — ideally 40 characters or 8 words — that says what changes or \
+is checked, for whom. No ticket numbers or test codes (T-12, TP-3), no [bracket] prefix, no → steps: those go in the body. \
+The sort of work goes in `label`, not in the title.";
+
+/// The `label` argument of `create_ticket` and `update_ticket`.
+static LABEL_SCHEMA: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+    json!({
+        "type": "string",
+        "enum": equipe_protocol::title::TicketLabel::ALL.map(|l| l.key()),
+        "description": "The sort of work, as a chip beside the title — instead of a word like QA, verify, fix or deploy in it. \
+feature: something new. fix: something wrong made right. check: QA, verifying, reviewing. deploy: putting something live. \
+design: how it looks. chore: housekeeping.",
+    })
+});
+
 /// The `images` of an option, and of a hand-in: pictures by their paths.
 static IMAGES_SCHEMA: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
     json!({
@@ -682,8 +702,9 @@ It waits on the board as a proposal until the PM or the person accepts it."
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "title": { "type": "string", "description": "One line: what gets done." },
-                    "body": { "type": "string", "description": "What to do and the acceptance criteria." },
+                    "title": { "type": "string", "description": TITLE_RULE },
+                    "body": { "type": "string", "description": "What to do and the acceptance criteria — and what the title leaves out: ticket numbers, test codes, the steps." },
+                    "label": LABEL_SCHEMA.clone(),
                     "owner": { "type": "string", "description": "A role (designer, frontend, backend, qa, data) or a member's name." },
                     "kind": KIND_SCHEMA.clone(),
                     "project": { "type": "string", "description": "The project's name: for code, the repository it changes (needed when the squad has several); for a task or action, what it is about, if anything." },
@@ -743,7 +764,8 @@ again with `waive_findings` saying why they aren't real.",
             "description": "Put the ticket you are on down when you can't go on without something only the person \
 can do — a token or secret to issue, an account or a setting to change. The ticket waits for them with what you \
 list as their checklist; you are free for other work meanwhile, and get it back, in the same worktree, once they \
-have done it. Your changes so far are kept. Then end your turn. Never list macOS privacy-permission steps \
+have done it. Your changes so far are kept. Then end your turn. The person reads the ticket in their list by `ask` \
+alone, so it says what they must do — not what you do. Never list macOS privacy-permission steps \
 (System Settings panes, adding equipe's binary with +, restarting equipe): equipe's desktop tools hold Accessibility and \
 Screen Recording themselves, so use them for screenshots, clicks and dialogs; if one says a permission is missing, call \
 this with `permission` — the person gets one card with one button — and no steps.",
@@ -755,6 +777,10 @@ this with `permission` — the person gets one card with one button — and no s
                         "items": { "type": "string", "enum": ["accessibility", "screen_recording"] },
                         "description": "Only when a desktop tool says this permission is missing for equipe: the person gets one card with one button that asks macOS and opens System Settings at the right pane (on another Mac it says where to do it). Use this instead of writing steps; it is refused when equipe's desktop already has the permission.",
                     },
+                    "ask": { "type": "string", "description": "One line, at most 50 characters, in the person's language: what the person must do, \
+as an action (\"Share the 3 sheets with the service account\") — no ticket numbers, codes or arrows. It replaces the ticket's \
+title in their list. Required with `needs`; leave out with `permission`, whose card says it." },
+                    "effort_minutes": { "type": "integer", "minimum": 1, "description": "About how many minutes it takes the person; shown after `ask` (\"· 1 min\"). Required with `needs`; leave out with `permission`." },
                     "needs": {
                         "type": "array",
                         "items": { "type": "string" },
@@ -1026,8 +1052,9 @@ they say it isn't for now.",
                 "type": "object",
                 "properties": {
                     "id": { "type": "integer" },
-                    "title": { "type": "string" },
+                    "title": { "type": "string", "description": TITLE_RULE },
                     "body": { "type": "string" },
+                    "label": LABEL_SCHEMA.clone(),
                     "owner": { "type": "string" },
                     "kind": KIND_SCHEMA.clone(),
                     "project": { "type": "string" },
@@ -1036,6 +1063,32 @@ they say it isn't for now.",
                     "why": { "type": "string", "description": "With status proposed, for an idea: why now, in one or two lines in the person's language — what in the business or on the board makes it timely. Shown on its card." },
                 },
                 "required": ["id"],
+            },
+        }));
+        tools.push(json!({
+            "name": RETITLE_OPEN_TICKETS,
+            "description": "Make the board readable at a glance. Called with no `titles`, it lists the open tickets whose \
+title breaks the title rule (an id or test code, a [bracket] prefix, an arrow, too long, cut off, not in the squad's \
+language) and why — nothing changes. You write a short outcome title for each, moving what it dropped into the body \
+with `update_ticket` if it matters; then call it again with `titles` to apply them. Each title is checked as a new \
+one is; the old one is kept in the ticket's history.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "titles": {
+                        "type": "array",
+                        "description": "The new titles to apply, one per ticket.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "integer" },
+                                "title": { "type": "string", "description": TITLE_RULE },
+                                "label": LABEL_SCHEMA.clone(),
+                            },
+                            "required": ["id", "title"],
+                        },
+                    },
+                },
             },
         }));
         tools.push(json!({
@@ -1452,7 +1505,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
-            remaining: Vec::new(), images: Vec::new(),
+            label: None, remaining: Vec::new(), images: Vec::new(),
             updated_at: None,
             priority: Default::default(), rank: 0,
             kind: TicketKind::Code,

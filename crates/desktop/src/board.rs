@@ -1121,7 +1121,7 @@ pub fn wait_note(model: &Model, t: &Ticket) -> Option<WaitNote> {
     }
     let waited = model.in_state_for(t);
     let stale = waited.is_some_and(|w| w >= equipe_core::heartbeat::STALE_WAIT_AFTER);
-    Some(WaitNote { who: t.assignee.clone().or_else(|| t.owner.clone()), what: first_need(t), waited, stale })
+    Some(WaitNote { who: t.assignee.clone().or_else(|| t.owner.clone()), what: if t.ask_headline().is_some() { None } else { first_need(t) }, waited, stale })
 }
 
 pub fn first_need(t: &Ticket) -> Option<String> {

@@ -645,6 +645,8 @@ impl Journal {
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN plan TEXT", []);
         // The model and effort its lanes run on, and why (JSON, `tiers::TicketModel`).
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN model TEXT", []);
+        // What sort of work it is, in a word (`protocol::title::TicketLabel`).
+        let _ = conn.execute("ALTER TABLE tickets ADD COLUMN label TEXT", []);
         // The effort a member's turn ran at; `NULL`: the engine's own, or a turn from before.
         let _ = conn.execute("ALTER TABLE turns ADD COLUMN effort TEXT", []);
         // How turns on tickets ended when they didn't end as they should: no
@@ -1718,8 +1720,8 @@ impl Journal {
         let at = now();
         self.conn.execute(
             "INSERT INTO tickets (id, title, body, status, owner, assignee, project, depends_on, branch, created_by,
-                                  note, created_at, updated_at, kind, priority, rank, plan)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14, ?15, ?16)",
+                                  note, created_at, updated_at, kind, priority, rank, plan, label)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 id,
                 t.title,
@@ -1737,6 +1739,7 @@ impl Journal {
                 t.priority.label(),
                 t.rank,
                 t.plan,
+                t.label.map(|l| l.key()),
             ],
         )?;
         Ok(id as TicketId)
@@ -1747,7 +1750,7 @@ impl Journal {
         self.conn.execute(
             "UPDATE tickets SET title = ?1, body = ?2, status = ?3, owner = ?4, assignee = ?5, project = ?6,
                                 depends_on = ?7, branch = ?8, note = ?9, updated_at = ?10, merged = ?12, kind = ?13,
-                                off_main = ?14, priority = ?15, rank = ?16, remaining = ?17, images = ?18, design_qa = ?19, plan = ?20
+                                off_main = ?14, priority = ?15, rank = ?16, remaining = ?17, images = ?18, design_qa = ?19, plan = ?20, label = ?21
              WHERE id = ?11",
             params![
                 t.title,
@@ -1770,6 +1773,7 @@ impl Journal {
                 remaining_str(&t.images),
                 t.design_qa,
                 t.plan,
+                t.label.map(|l| l.key()),
             ],
         )?;
         Ok(())
@@ -2258,7 +2262,7 @@ impl Journal {
         let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT t.id, t.title, t.body, t.status, t.owner, t.assignee, t.project, t.depends_on, t.branch, t.created_by, t.note, t.worktree, t.merged, t.kind, t.off_main, t.updated_at,
                     t.priority, t.rank, t.remaining, t.images, t.design_qa, t.plan, t.model,
-                    e.state, e.session, e.operation, e.generation, e.heartbeat_at, e.lease_expires_at, e.reason, e.head, e.dirty, e.pause
+                    e.state, e.session, e.operation, e.generation, e.heartbeat_at, e.lease_expires_at, e.reason, e.head, e.dirty, e.pause, t.label
              FROM tickets t LEFT JOIN ticket_executions e ON e.ticket = t.id {filter} ORDER BY t.id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -2278,6 +2282,7 @@ impl Journal {
                 execution: None,
                 merged: r.get(12)?,
                 kind: TicketKind::parse(&r.get::<_, String>(13)?).unwrap_or_default(),
+                label: r.get::<_, Option<String>>(33)?.and_then(|l| equipe_protocol::title::TicketLabel::parse(&l)),
                 asks: Vec::new(),
                 remaining: r.get::<_, Option<String>>(18)?.and_then(|r| serde_json::from_str(&r).ok()).unwrap_or_default(),
                 images: r.get::<_, Option<String>>(19)?.and_then(|i| serde_json::from_str(&i).ok()).unwrap_or_default(),
@@ -3361,7 +3366,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
-            remaining: Vec::new(), images: Vec::new(),
+            label: None, remaining: Vec::new(), images: Vec::new(),
             updated_at: None,
             priority: Default::default(), rank: 0,
             kind: TicketKind::Code,
