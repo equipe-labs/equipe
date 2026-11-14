@@ -2456,7 +2456,11 @@ impl Model {
     /// every screen shares): whether its assignee has a turn running on it
     /// is what this screen knows of its members.
     pub fn run_view(&self, t: &Ticket) -> Option<RunView> {
-        let working = t.assignee.as_ref().map(|_| self.member_on(t.id).is_some_and(|m| m.presence == Presence::Working));
+        // A ticket run in a lane of its own: that lane's presence, not its member's own session (idle while the lane works).
+        let working = t.assignee.as_ref().map(|_| match self.run_on(t.id) {
+            Some(run) => run.presence == Presence::Working,
+            None => self.member_on(t.id).is_some_and(|m| m.presence == Presence::Working),
+        });
         t.run_view(self.unix, working)
     }
 
@@ -2495,6 +2499,10 @@ impl Model {
     /// — once past [`QUIET_AFTER`].
     pub fn quiet_for(&self, t: &Ticket) -> Option<u64> {
         if t.status != TicketStatus::InProgress {
+            return None;
+        }
+        // Its lane at work is not quiet, however long its member's own session has been.
+        if self.run_on(t.id).is_some_and(|r| r.presence == Presence::Working) {
             return None;
         }
         let member = self.member_on(t.id)?;
