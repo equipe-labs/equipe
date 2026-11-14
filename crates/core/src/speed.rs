@@ -266,6 +266,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
+            label: None,
             remaining: vec![],
             images: vec![],
             priority: Priority::Normal,

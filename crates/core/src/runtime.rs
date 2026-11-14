@@ -6519,7 +6519,7 @@ for one project goes to it as tickets for its owners, with that project — and 
     /// Run `id`'s turn ended with something in the person's hands — its
     /// browser for a sign-in, an approval it asked for: it is still on its
     /// ticket, waiting for them to come back, not stalled.
-    fn waits_on_person(&self, id: SessionId, session: &Session) -> bool {
+    fn run_waits_on_person(&self, id: SessionId, session: &Session) -> bool {
         session.work.as_ref().is_some_and(|w| w.end.with_person) || self.pending.values().any(|p| p.approval.session == id)
     }
 
@@ -6531,7 +6531,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             .iter()
             // A run equipe paused holds its lease while it waits to go on, and
             // so does one waiting on the person (its browser in their hands).
-            .filter(|(&id, session)| session.is_working() || session.is_preparing() || Runtime::is_parked(session) || self.waits_on_person(id, session))
+            .filter(|(id, session)| session.is_working() || session.is_preparing() || Runtime::is_parked(session) || self.run_waits_on_person(**id, session))
             .filter_map(|(_, session)| {
                 let work = session.work.as_ref()?;
                 Some((session.squad.clone()?, work.execution_session, work.ticket, work.execution_generation))
@@ -6555,9 +6555,9 @@ for one project goes to it as tickets for its owners, with that project — and 
             let live: Vec<SessionId> = self
                 .sessions
                 .iter()
-                .filter(|(&id, session)| {
+                .filter(|(id, session)| {
                     session.squad.as_deref() == Some(squad.as_str())
-                        && (session.is_working() || session.is_preparing() || Runtime::is_parked(session) || self.waits_on_person(id, session))
+                        && (session.is_working() || session.is_preparing() || Runtime::is_parked(session) || self.run_waits_on_person(**id, session))
                 })
                 .map(|(_, session)| session)
                 .filter_map(|session| session.work.as_ref().map(|work| work.execution_session))
