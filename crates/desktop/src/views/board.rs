@@ -1938,9 +1938,10 @@ fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, impacts: Op
                 .into_any_element()
         }
         Row::Item { need, depth } => {
+            let impact = impacts.and_then(|m| m.get(need)).filter(|i| i.is_blocking());
             let row = item_row(shell, *need, *depth, pick == Some(*need), cx);
             // What it holds up, in a slot of its own at the right: only the rows that hold something up have one.
-            match impacts.and_then(|m| m.get(need)).filter(|i| i.is_blocking()) {
+            match impact {
                 Some(impact) => {
                     let color = if impact.is_pressing() { p.red } else { p.amber };
                     let picked = pick == Some(*need);
@@ -1951,12 +1952,13 @@ fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, impacts: Op
                         .rounded(px(6.))
                         .when(picked, |r| r.bg(p.wash))
                         .when(!picked, |r| r.hover(move |s| s.bg(p.wash)))
-                        .child(div().flex_1().min_w_0().child(row))
+                        .child(div().flex_1().min_w_0().overflow_hidden().child(row))
                         .child(
                             div()
                                 .id(SharedString::from(format!("impact-{need:?}")))
                                 .flex_none()
                                 .w(px(IMPACT_W))
+                                .pl_2()
                                 .flex()
                                 .justify_end()
                                 .child(div().px(px(6.)).h(px(18.)).flex().items_center().rounded(px(4.)).bg(p.wash).text_size(px(11.)).font_weight(FontWeight::MEDIUM).text_color(color).whitespace_nowrap().child(board::impact_words(impact))),
@@ -1970,6 +1972,7 @@ fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, impacts: Op
 }
 
 /// The slot of the badge that says what a row holds up (`blocks 5 · urgent`).
+/// The list's width already leaves it out.
 const IMPACT_W: f32 = 168.;
 
 /// What a row says at its right, column by column.
@@ -2185,12 +2188,16 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
     };
     // One grid for every row of every section: check · mark · T-n · project ·
     // title · flags · detail · when · time.
-    let compact = shell.board.list_width < 720.;
+    let width = shell.board.list_width;
+    let compact = width < 720.;
     let show_project = model.focus.is_none() && model.projects.len() > 1;
     // Narrower still (a ticket panel dragged wide beside it): the flags and
     // the estimate go, so what is left is never cut at the edge.
-    let narrow = shell.board.list_width < 560.;
-    let (flags_w, detail_w, eta_w) = if narrow { (0., 96., 0.) } else if compact { (72., 120., 44.) } else { (120., 176., 56.) };
+    let narrow = width < 560.;
+    // Narrowest (Needs you beside an open ticket, its badge slot taken): who it's with goes too,
+    // so the title keeps room and nothing runs under the badge.
+    let tiny = width < 440.;
+    let (flags_w, detail_w, eta_w) = if tiny { (0., 0., 0.) } else if narrow { (0., 96., 0.) } else if compact { (72., 120., 44.) } else { (120., 176., 56.) };
     let project_col = |t: Option<&Ticket>| {
         let name = t.map(|t| model.ticket_project_name(t).unwrap_or_else(|| t!("board.squad_folder").into()));
         h_flex()
@@ -2224,7 +2231,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                         .child(div().flex_1().min_w_0().truncate().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(card.lines.first().cloned().unwrap_or_default())),
                 )
                 .child(div().w(px(flags_w)).flex_none())
-                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(p.member(hue)).child(crate::theme::member_mark(p, model, &a.member, 14.)).child(div().min_w_0().truncate().child(a.member.clone())))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(p.member(hue)).child(crate::theme::member_mark(p, model, &a.member, 14.)).child(div().min_w_0().truncate().child(a.member.clone())))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
@@ -2239,7 +2246,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(TITLE_MIN)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
@@ -2254,7 +2261,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(TITLE_MIN)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(p.muted).child(div().min_w_0().truncate().child(name)))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(p.muted).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
@@ -2269,7 +2276,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(TITLE_MIN)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
@@ -2284,7 +2291,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(TITLE_MIN)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
@@ -2299,7 +2306,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(TITLE_MIN)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
@@ -2314,7 +2321,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(TITLE_MIN)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
@@ -2330,7 +2337,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(ticket)))
                 .child(div().flex_1().min_w(px(TITLE_MIN)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
