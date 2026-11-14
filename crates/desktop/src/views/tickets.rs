@@ -1140,6 +1140,15 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
         )
     };
     let flags = super::board::row_flags(shell, t);
+    // What the row's other columns leave for the chips, the title's least kept: a chip is shown whole or not at all.
+    let chips_room = {
+        let (project, stat) = if narrow { (0., 0.) } else { (if compact { 74. } else { 96. }, 64.) };
+        let assignee = if compact { 26. } else { 210. };
+        // pl 8 + pr 12; check, status, id; the title's least; assignee, priority, when; the gaps between all the columns.
+        let columns = if narrow { 8. } else { 10. };
+        let fixed = 20. + 14. + 24. + 46. + 120. + project + assignee + stat + 24. + 32. + 6. * (columns - 1.);
+        crate::chips::room(shell.board.list_width, fixed, if compact { 120. } else { 220. })
+    };
     let who = rules::who(t).map(str::to_owned);
     let project = model.ticket_project_name(t);
     let changed = tickets::changed_at(model, t);
@@ -1234,13 +1243,7 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
         .child(div().w(px(46.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
         .child(super::board::title_cell(shell, t, depth, 120., yours))
         .child(
-            h_flex().flex_none().max_w(px(if compact { 90. } else { 160. })).gap_1().justify_end().overflow_hidden().children(flags.into_iter().enumerate().map(|(i, (text, color, tip))| {
-                let chip = div().id(("tflag", i)).flex_none().px(px(6.)).h(px(18.)).flex().items_center().rounded(px(4.)).bg(p.wash).text_size(px(11.)).text_color(color).child(text);
-                match tip {
-                    Some(tip) => chip.tip(p, tip, None).into_any_element(),
-                    None => chip.into_any_element(),
-                }
-            })),
+            crate::chips::row(p, &flags, chips_room, SharedString::from(format!("tflag-{id}")), false),
         )
         .when(!narrow, |r| {
             r.child(

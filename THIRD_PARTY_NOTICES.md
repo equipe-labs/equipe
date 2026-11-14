@@ -66,4 +66,18 @@ projects; the full list of sources they draw on is in
   identify the service a row is about; their presence does not imply any
   endorsement of, or affiliation with, equipe. Services Simple Icons does not
   carry (AWS, Mobbin, 21st.dev) and servers added by address get a monogram
-  (initials on a colour tile), not a logo.
+  (initials on a colour tile) first.
+
+## Site icons fetched at run time
+
+- **What:** for those services, the icon the service's own site publishes
+  (its `apple-touch-icon` or favicon, for a server added by address from its
+  registrable domain), fetched by the desktop app on the person's Mac over
+  https (one icon, at most 256 KB, PNG or ICO, no cookies or credentials) and
+  kept in the app's cache folder (`<equipe home>/cache/site-icons/`) for 30
+  days. If none can be fetched, the monogram stays.
+- **Not redistributed:** no such icon is part of this repository, the
+  releases or the installed app; they are the services' own marks, fetched
+  from their own sites and shown only to identify the service a row is about.
+  Their presence does not imply any endorsement of, or affiliation with,
+  equipe.
