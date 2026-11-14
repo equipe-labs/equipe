@@ -10,7 +10,7 @@
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket; `ppick:<n>`, peeking) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
 //! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `popup:subagents:<member>` · `subagent:<member>[,<n>]` (its first — or nth, from 0 — subagent's row, clicked) · `settings[:<category>]` (settings, at general · engines · squad · team · permissions · projects · browser · keys · about) · `words:<on|off|ask>` ("All by words" for the squad, or asked about) · `wlog` (the log of where words went wrong) · `wundo` (Undo, Cancel or Leave on what waits in words) · `eng:<signin|switch|cancel|signout|sure|keep|tab>:<codex|claude>` (an AI platform's card) · `signin:<go|move|check|cancel|carry|far|paste:<code>|type:<code>>` (a lost sign-in's card in the conversation) · `ssearch:<words>` (its search) · `spop:<language|squad|subagents|per_member|per_engine|provider>` (a pop-up) · `padd:<preset>` · `purl:<url>` · `pconnect` (a model provider's form: opened, its address, Connect) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
-//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `setup:<nogit|gitasked|missing|confirm|installing|signedout|waiting|ready|failed|squad|creating|error>` (the first run's steps) · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
+//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `setup:<nogit|gitasked|missing|confirm|installing|signedout|waiting|ready|failed|squad|creating|error>` (the first run's steps) · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `ctext[:<label>]` (the composer's words, selection, composition and focus, logged) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
 //! `sdrag:<x1>,<y1>,<x2>,<y2>` (a selection dragged out) · `peekw:<px>` (the peek held that wide) · `quote:<open|reply|copy|type:<words>|write:<words>|add|cancel|edit:<n>|remove:<n>|peek:<n>|card:<quote>|<words>|send|close|jump>` (asking about — replying to — the words selected; a card's "Reply", ✕, the pointer on it; a card made at once) ·
 //! `sidechat:<start|on:<words>|type:<words>|send|close|bring|jump|reopen>` (a side chat: about the words selected, or about `words` of the conversation as if selected; typed in, sent, closed, its last answer brought to the composer, its passage clicked, opened again from its mark) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
@@ -410,6 +410,13 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                         _ => K::Attach,
                     };
                     shell.open_menu(kind, window, cx);
+                }),
+                // The composer as it stands: its words, selection, a composition, and whether it has the keys.
+                "ctext" => shell.update(cx, |shell, cx| {
+                    let state = shell.composer.state.clone();
+                    let marked = state.update(cx, |s, cx| gpui_kit::EntityInputHandler::marked_text_range(s, window, cx));
+                    let s = state.read(cx);
+                    eprintln!("ctext {arg}: {:?} selected {:?} marked {marked:?} focused {} browser page focused {}", s.value().to_string(), s.selected_range(), shell.composer.is_focused(window, cx), shell.browser.read(cx).focus.is_focused(window));
                 }),
                 "ckey" => shell.update(cx, |shell, cx| {
                     let taken = shell.on_composer_key(&arg, &Modifiers::default(), window, cx);
