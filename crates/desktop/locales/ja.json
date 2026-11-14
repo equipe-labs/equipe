@@ -1651,6 +1651,7 @@
   "talk.rename_count": "{n}/{max}",
   "main.banner_needs_you": "対応が必要です",
   "main.banner_reconnecting": "再接続中 — 復帰すると自動で再開します",
+  "main.banner_short": "接続なし",
   "main.connecting_local": "デーモンに接続中…",
   "main.connecting_ssh": "SSHで{name}に接続中…",
   "main.copy_command": "コマンドをコピー",

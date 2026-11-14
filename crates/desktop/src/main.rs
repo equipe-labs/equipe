@@ -391,6 +391,8 @@ pub struct Shell {
     sheet_focused: bool,
     /// The sidebar is away because the browser panel needed the room (`render`).
     sidebar_squeezed: bool,
+    /// How wide the screen beside the sidebar and any side panel was when last drawn, in the window's own points (the banner's words fit it).
+    pub main_width: std::cell::Cell<f32>,
     /// The buttons a sheet's keys can reach, in Tab order (set as it is drawn).
     pub sheet_stops: std::rc::Rc<std::cell::RefCell<Vec<FocusHandle>>>,
     pub confirm: Option<sheet::Ask>,
@@ -576,6 +578,7 @@ impl Shell {
             sheet_focused: false,
             root_focus: cx.focus_handle(),
             sidebar_squeezed: false,
+            main_width: std::cell::Cell::new(f32::MAX),
             sheet_stops: Default::default(),
             confirm: None,
             deleting_squad: None,
@@ -1864,7 +1867,21 @@ impl Shell {
     /// The side panel's width now: as the person left it, within the window.
     pub fn side_width(&self, window: &Window) -> f32 {
         let sidebar = if self.board.sidebar_hidden { 0. } else { self.board.sidebar_width };
-        doc::kept_width(self.remembered.side_width, window.viewport_size().width.into(), sidebar)
+        doc::kept_width(self.remembered.side_width, f32::from(window.viewport_size().width) / window.content_zoom().max(0.01), sidebar)
+    }
+
+    /// How wide the screen is beside the sidebar and a side panel, in the
+    /// window's own points: what the banner's words are fitted to.
+    pub fn measure_main(&self, window: &Window, cx: &App) -> f32 {
+        let logical = f32::from(window.viewport_size().width) / window.content_zoom().max(0.01);
+        let side = if self.doc.is_some() || (self.terminal.is_some() && !self.remembered.term_below && self.screen == Screen::Chat) {
+            self.side_width(window)
+        } else if self.screen == Screen::Chat && self.browser.read(cx).open {
+            self.browser.read(cx).width
+        } else {
+            0.
+        };
+        (logical - self.sidebar_on_screen(cx) - side).max(0.)
     }
 
     fn side_released(&mut self, cx: &mut Context<Self>) {
@@ -2163,28 +2180,128 @@ impl Shell {
         let Conn::Down { reason, since, had_snapshot: true } = conn else { return None };
         let guide = reason.guide(&self.endpoint);
         let waits = reason.waits_for_person();
-        Some(
-            h_flex()
-                .h(px(36.))
-                .flex_none()
-                .px_4()
-                .gap_3()
-                .items_center()
-                .bg(p.accent_bg)
-                .border_b_1()
-                .border_color(p.hair)
-                .text_size(px(SMALL))
-                // One line whatever the width: what went wrong gives way to the
-                // button, the line after it first — never a word a letter wide
-                // running down over the window (T-621).
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .child(div().flex_none().child(icons::icon(icons::Icon::XCircle, theme::ICON_SM, p.text)))
-                .child(div().min_w_0().truncate().text_color(p.text).child(format!("{} · {since}", guide.short)))
-                .child(div().flex_1().min_w_0().truncate().text_color(p.muted).child(if waits { t!("main.banner_needs_you") } else { t!("main.banner_reconnecting") }))
-                .child(div().flex_none().child(ui::button(p, "banner-retry", ui::Kind::Secondary, t!("main.retry")).icon(icons::Icon::Retry).on_click(cx.listener(|this, _, _, cx| this.retry(cx))))),
-        )
+        let words = BannerWords {
+            what: guide.short.clone(),
+            time: since.to_string(),
+            generic: t!("main.banner_short").to_string(),
+            hint: if waits { t!("main.banner_needs_you") } else { t!("main.banner_reconnecting") }.to_string(),
+            retry: t!("main.retry").to_string(),
+        };
+        // Beside no sidebar the title bar's buttons sit over the bar's left: its words start past them.
+        let left = self.header_inset(16., cx);
+        let plan = banner_plan(self.main_width.get() - (left - 16.), &words);
+        let retry = if plan.retry_words {
+            ui::button(p, "banner-retry", ui::Kind::Secondary, words.retry.clone()).icon(icons::Icon::Retry)
+        } else {
+            ui::icon_button(p, "banner-retry", icons::Icon::Retry, words.retry.clone(), None)
+        }
+        .on_click(cx.listener(|this, _, _, cx| this.retry(cx)));
+        Some(banner_bar(p, &words, plan, left, retry))
     }
+}
+
+/// What the banner says, in the words of the window's language.
+struct BannerWords {
+    what: String,
+    time: String,
+    generic: String,
+    hint: String,
+    retry: String,
+}
+
+/// What the banner shows at one width.
+#[derive(Debug, Clone, PartialEq)]
+struct BannerPlan {
+    /// The retry with its words; else only its icon (named by a tooltip and for screen readers).
+    retry_words: bool,
+    /// What is down: with the time, without it, the short "Disconnected", or not at all.
+    what: BannerWhat,
+    hint: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum BannerWhat {
+    WithTime,
+    Plain,
+    Generic,
+    Hidden,
+}
+
+/// About how wide a line of text is, in points at the banner's size: a
+/// wide (CJK) letter counts twice a narrow one.
+fn est(text: &str) -> f32 {
+    text.chars().map(|c| if c.is_ascii() { 6.6 } else { 10.5 }).sum()
+}
+
+/// Which parts fit a banner `width` points wide, most needed first: the
+/// retry, then what is down (its time goes first, then its words for a short
+/// one, then it goes), the hint last — and a part never shows as a stub.
+fn banner_plan(width: f32, w: &BannerWords) -> BannerPlan {
+    const PAD: f32 = 32.;
+    const GAP: f32 = 12.;
+    const ICON: f32 = 14.;
+    const RETRY_ICON: f32 = 28.;
+    const HINT_LEAST: f32 = 96.;
+    let after_icon = (width - PAD - ICON - GAP).max(0.);
+    let retry_full = est(&w.retry) + 14. + 28.;
+    let plain = est(&w.what) + 4.;
+    let with_time = plain + est(" · ") + est(&w.time);
+    let generic = est(&w.generic) + 4.;
+    let fits = |retry: f32, what: f32| after_icon - retry - GAP >= what;
+    let retry_words = fits(retry_full, generic);
+    let retry = if retry_words { retry_full } else { RETRY_ICON };
+    let room = after_icon - retry - GAP;
+    let what = if room >= with_time {
+        BannerWhat::WithTime
+    } else if room >= plain {
+        BannerWhat::Plain
+    } else if room >= generic {
+        BannerWhat::Generic
+    } else {
+        BannerWhat::Hidden
+    };
+    let used = match what {
+        BannerWhat::WithTime => with_time,
+        BannerWhat::Plain => plain,
+        BannerWhat::Generic => generic,
+        BannerWhat::Hidden => 0.,
+    };
+    let hint = what != BannerWhat::Hidden && room - used - GAP >= HINT_LEAST;
+    BannerPlan { retry_words, what, hint }
+}
+
+/// The banner's one row: what is down, a hint, the retry. A part that doesn't
+/// fit isn't squeezed to a stub: the plan above takes it away, with its gap;
+/// what stays is a single line that ends in "…" and never wraps.
+fn banner_bar(p: Palette, w: &BannerWords, plan: BannerPlan, left: f32, retry: impl IntoElement) -> Div {
+    let what = match plan.what {
+        BannerWhat::WithTime => Some(format!("{} · {}", w.what, w.time)),
+        BannerWhat::Plain => Some(w.what.clone()),
+        BannerWhat::Generic => Some(w.generic.clone()),
+        BannerWhat::Hidden => None,
+    };
+    h_flex()
+        .h(px(36.))
+        .flex_none()
+        .pl(px(left))
+        .pr_4()
+        .items_center()
+        // One line whatever the width (T-621).
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .bg(p.accent_bg)
+        .border_b_1()
+        .border_color(p.hair)
+        .text_size(px(SMALL))
+        .child(icons::icon(icons::Icon::XCircle, theme::ICON_SM, p.text).flex_none())
+        // Gaps belong to the parts shown: none is left where one was taken away.
+        .children(what.map(|what| div().debug_selector(|| "banner-what".into()).ml_3().min_w_0().flex_shrink(1.).truncate().text_color(p.text).child(what)))
+        .child(if plan.hint {
+            div().debug_selector(|| "banner-hint".into()).ml_3().flex_1().min_w_0().truncate().text_color(p.muted).child(w.hint.clone())
+        } else {
+            div().flex_1()
+        })
+        .child(div().debug_selector(|| "banner-retry-box".into()).ml_3().flex_none().child(retry))
 }
 
 /// What runs on the daemon's machine: the latest equipe over the one there
@@ -2616,7 +2733,10 @@ impl Render for Shell {
         let away = matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting);
         // The browser panel open in a window too narrow for sidebar, conversation and
         // panel together: the sidebar steps aside, and comes back when there is room.
-        let squeezed = self.browser.read(cx).open && f32::from(window.viewport_size().width) / window.content_zoom().max(0.01) < self.board.sidebar_width + views::browser::SQUEEZE_REST;
+        let logical = f32::from(window.viewport_size().width) / window.content_zoom().max(0.01);
+        let side_open = self.doc.is_some() || (self.terminal.is_some() && !self.remembered.term_below);
+        let squeezed = (self.browser.read(cx).open && logical < self.board.sidebar_width + views::browser::SQUEEZE_REST)
+            || (side_open && self.screen == Screen::Chat && logical < self.board.sidebar_width + doc::CHAT_LEAST + doc::MIN_WIDTH);
         if squeezed && !self.board.sidebar_hidden && !self.sidebar_squeezed {
             self.board.sidebar_hidden = true;
             self.board.sidebar_shown_at = None;
@@ -3323,5 +3443,106 @@ mod tests {
         press(cx, "cmd-]");
         assert_eq!(probe.read_with(cx, |p, _| (p.back, p.forward)), (1, 1));
         assert_eq!(value(cx), "hello world");
+    }
+}
+
+#[cfg(all(test, feature = "snapshot"))]
+mod banner_layout {
+    use super::{BannerWhat, BannerWords, banner_bar, banner_plan};
+    use crate::theme::Palette;
+    use gpui_kit::{Bounds, Context, IntoElement, Render, Styled, TestAppContext, Window, WindowAppearance, point, px, size};
+
+    /// The longest words the banner has (German), and the Korean ones.
+    fn words(lang: &str) -> BannerWords {
+        let (what, time, generic, hint, retry) = match lang {
+            "de" => ("Der Daemon ist aus", "16:02:37", "Getrennt", "Verbindet neu – geht von selbst weiter, sobald die Verbindung zurück ist", "Erneut versuchen"),
+            "ko" => ("데몬이 꺼져 있어요", "16:02:37", "연결 끊김", "다시 연결하는 중 — 켜지면 자동으로 이어져요", "다시 시도"),
+            _ => ("Can't reach 100.106.17.55", "16:02:37", "Disconnected", "Reconnecting — picks up on its own once it's back", "Try Again"),
+        };
+        BannerWords { what: what.into(), time: time.into(), generic: generic.into(), hint: hint.into(), retry: retry.into() }
+    }
+
+    struct Probe {
+        p: Palette,
+        words: BannerWords,
+        width: f32,
+    }
+
+    impl Render for Probe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let plan = banner_plan(self.width, &self.words);
+            let retry = if plan.retry_words {
+                crate::ui::button(self.p, "banner-retry", crate::ui::Kind::Secondary, self.words.retry.clone()).icon(crate::icons::Icon::Retry)
+            } else {
+                crate::ui::icon_button(self.p, "banner-retry", crate::icons::Icon::Retry, self.words.retry.clone(), None)
+            };
+            banner_bar(self.p, &self.words, plan, 16., retry).w(px(self.width))
+        }
+    }
+
+    /// The connection banner at every width the main panel can have — down to
+    /// a side panel's squeeze — in each language, light and dark: no label
+    /// wraps, none leaves the bar, the retry is whole, and no part shows as a stub.
+    #[test]
+    fn no_banner_word_wraps_or_leaves_the_bar() {
+        let mut app = TestAppContext::single();
+        for appearance in [WindowAppearance::Light, WindowAppearance::Dark] {
+            let p = Palette::new(appearance);
+            for lang in ["en", "ko", "de"] {
+                let (view, cx) = app.add_window_view(|_, _| Probe { p, words: words(lang), width: 1044. });
+                for width in [1044., 760., 560., 400., 320., 240., 170.] {
+                    view.update(cx, |v, _| v.width = width);
+                    cx.update(|window, cx| {
+                        window.refresh();
+                        window.draw(cx).clear(cx);
+                    });
+                    let bar = Bounds::new(point(px(0.), px(0.)), size(px(width), px(36.)));
+                    let plan = banner_plan(width, &words(lang));
+                    let mut shown = vec!["banner-retry-box"];
+                    if plan.what != BannerWhat::Hidden {
+                        shown.push("banner-what");
+                    }
+                    if plan.hint {
+                        shown.push("banner-hint");
+                    }
+                    for id in shown {
+                        let b = cx.debug_bounds(id).unwrap_or_else(|| panic!("{id} not drawn at {width} ({lang})"));
+                        assert!(b.size.height <= px(36.), "{id} is {:?} tall at {width} ({lang}): its words wrapped", b.size.height);
+                        assert!(b.right() <= bar.right() - px(15.5) && b.left() >= bar.left(), "{id} leaves the bar or its padding at {width} ({lang}): {b:?}");
+                        if id == "banner-what" {
+                            // Never a stub like "The dae…": it fits whole, or goes.
+                            assert!(b.size.width >= px(est_least(&plan, &words(lang))), "what is down is a stub at {width} ({lang}): {:?} plan {plan:?}", b.size.width);
+                        }
+                    }
+                    let retry = cx.debug_bounds("banner-retry-box").unwrap();
+                    assert!(retry.size.width >= px(27.5), "the retry is squeezed to {:?} at {width} ({lang})", retry.size.width);
+                    if plan.retry_words {
+                        assert!(retry.size.width >= px(super::est(&words(lang).retry) * 0.8 + 30.), "the retry's words are squeezed to {:?} at {width} ({lang})", retry.size.width);
+                    }
+                }
+            }
+        }
+    }
+
+    /// What the shown label needs to be whole, a little under what the plan reserves.
+    fn est_least(plan: &super::BannerPlan, w: &BannerWords) -> f32 {
+        let text = match plan.what {
+            BannerWhat::WithTime => format!("{} · {}", w.what, w.time),
+            BannerWhat::Plain => w.what.clone(),
+            _ => w.generic.clone(),
+        };
+        super::est(&text) * 0.8
+    }
+
+    #[test]
+    fn the_plan_gives_way_in_order() {
+        let w = words("en");
+        let wide = banner_plan(1044., &w);
+        assert!(wide.retry_words && wide.hint && wide.what == BannerWhat::WithTime);
+        let mid = banner_plan(360., &w);
+        assert!(!mid.hint && mid.what != BannerWhat::Hidden, "the hint goes before what is down: {mid:?}");
+        let thin = banner_plan(170., &w);
+        assert!(!thin.retry_words && !thin.hint, "only the icon retry stays when there is no room: {thin:?}");
+        assert!(banner_plan(170., &words("de")).what == BannerWhat::Hidden || banner_plan(170., &words("de")).what == BannerWhat::Generic);
     }
 }

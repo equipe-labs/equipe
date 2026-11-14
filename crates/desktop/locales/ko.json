@@ -1651,6 +1651,7 @@
   "talk.rename_count": "{n}/{max}",
   "main.banner_needs_you": "확인이 필요해요",
   "main.banner_reconnecting": "다시 연결하는 중 — 켜지면 자동으로 이어져요",
+  "main.banner_short": "연결 끊김",
   "main.connecting_local": "데몬에 연결하는 중…",
   "main.connecting_ssh": "{name}에 SSH로 연결하는 중…",
   "main.copy_command": "명령 복사",

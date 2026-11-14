@@ -51,12 +51,15 @@ impl Panes {
 }
 
 impl Render for Pane {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (me, part) = (cx.entity_id(), self.part);
         self.shell
             .update(cx, |shell, cx| {
                 if shell.log_renders {
                     eprintln!("render {part:?} {me:?}");
+                }
+                if part == Part::Body {
+                    shell.main_width.set(shell.measure_main(window, cx));
                 }
                 let was = shell.panes.drawing.replace(Some(me));
                 let element = match part {
