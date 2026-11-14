@@ -651,6 +651,30 @@ impl Runtime {
         });
     }
 
+    /// A `cli_sign_in` card's process printed its page: where the person let
+    /// equipe approve that CLI's device sign-ins, it is approved in the shared
+    /// browser like any other. The approval's number when this call took it
+    /// over (to be let go of with [`Self::device_card_ended`]).
+    pub(super) fn approve_device_for_card(&mut self, session: SessionId, cli_name: &str, url: String, code: Option<String>) -> Option<u32> {
+        let cli = self.vault.lock().map(|v| v.cli.clone()).unwrap_or_default();
+        let approval = ap::cli_logins::approval_for(&cli, &self.logins, cli_name)?;
+        let took = !self.autopilot.device_running.contains_key(&approval.id);
+        if took {
+            self.autopilot.device_running.insert(approval.id, Some(session));
+        }
+        self.approve_device(approval.id, ap::cli_logins::DevicePrompt { url: Some(url), code });
+        took.then_some(approval.id)
+    }
+
+    /// The `cli_sign_in` process that had approval `cli` ended: the approval is free again.
+    pub(super) fn device_card_ended(&mut self, cli: u32) {
+        self.autopilot.device_running.remove(&cli);
+        let tokens: Vec<u64> = self.autopilot.visits.iter().filter(|(_, v)| matches!(v.purpose, Purpose::Device { cli: c, .. } if c == cli)).map(|(t, _)| *t).collect();
+        for token in tokens {
+            self.end_visit(token);
+        }
+    }
+
     /// The CLI printed where to approve it: opened in equipe's own tab of the
     /// shared, signed-in browser — only on the hosts the person named.
     fn approve_device(&mut self, cli: u32, prompt: ap::cli_logins::DevicePrompt) {

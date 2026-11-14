@@ -80,6 +80,7 @@ mod accept;
 mod gate;
 pub(crate) use gate::checks_scratch;
 mod secrets;
+mod cli_signin;
 mod squad_keys;
 mod logins;
 mod window;
@@ -662,6 +663,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         next_fill: 0,
         autopilot: Default::default(),
         secret_asks: HashMap::new(),
+        cli_signins: HashMap::new(),
         secret_env: HashMap::new(),
         secret_nudge: Default::default(),
         delta_tail: HashMap::new(),
@@ -1110,6 +1112,8 @@ enum Internal {
     Relogin { lane: String, outcome: Result<vault::Filled, String> },
     /// Login autopilot's work off the loop came back ([`autopilot::Note`]).
     Autopilot(autopilot::Note),
+    /// A command-line sign-in's process, off the loop, has news ([`cli_signin::Note`]).
+    CliSignIn(cli_signin::Note),
     /// A row of the sign-in record, from work done off the loop.
     LoginRecord { squad: String, entry: crate::logins::Entry },
     /// Something waits for a conversation to act on — work handed in for the
@@ -1453,6 +1457,8 @@ struct Runtime {
     /// Secrets members asked the person for (`ask_secret`), by squad — read
     /// from its journal when first wanted.
     secret_asks: HashMap<String, Vec<crate::protocol::secrets::SecretAsk>>,
+    /// Command-line sign-ins the person is finishing on cards (`cli_sign_in`), by squad.
+    cli_signins: HashMap<String, Vec<cli_signin::Live>>,
     /// Kept keys members asked their commands to get as environment
     /// variables (`secret_use`), by session: `(variable, key name)`. The value
     /// is looked up — and the right to it checked again — when a turn starts.
@@ -1537,6 +1543,7 @@ impl Wake {
             Wake::Internal(Internal::LoginInsights(_)) => Borrowed("the sign-in record read"),
             Wake::Internal(Internal::Relogin { .. }) => Borrowed("equipe's own sign-in ending"),
             Wake::Internal(Internal::Autopilot(_)) => Borrowed("login autopilot"),
+            Wake::Internal(Internal::CliSignIn(_)) => Borrowed("a command-line sign-in"),
             Wake::Internal(Internal::LoginRecord { .. }) => Borrowed("a sign-in kept on the record"),
             Wake::Internal(Internal::DeskSaved { .. }) => Borrowed("a desk turn's changes saved"),
             Wake::Internal(Internal::Wake { .. }) => Borrowed("work waits for a conversation"),
@@ -1796,6 +1803,7 @@ impl Runtime {
                 Internal::LoginInsights(insights) => self.publish(Event::LoginInsights { insights: *insights }),
                 Internal::Relogin { lane, outcome } => self.relogin_done(lane, outcome).await,
                 Internal::Autopilot(note) => self.autopilot_note(note).await,
+                Internal::CliSignIn(note) => self.cli_sign_in_note(note).await,
                 Internal::LoginRecord { squad, entry } => self.login_record(&squad, entry),
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
@@ -2686,6 +2694,9 @@ impl Runtime {
             Command::BrowserProfiles => self.publish_browser_profiles(),
             Command::SaveSecret { squad, id, values } => self.save_secret(&squad, id, values).await,
             Command::DismissSecret { squad, id } => self.dismiss_secret(&squad, id).await,
+            Command::SubmitCliSignInCode { squad, id, code } => self.submit_cli_sign_in_code(&squad, id, code),
+            Command::RestartCliSignIn { squad, id } => self.restart_cli_sign_in(&squad, id),
+            Command::CancelCliSignIn { squad, id } => self.cancel_cli_sign_in(&squad, id).await,
             command @ (Command::SquadSecrets
             | Command::SetSquadSecretProjects { .. }
             | Command::DeleteSquadSecret { .. }
@@ -9017,6 +9028,7 @@ it back there once they have done it.{again} End your turn now with a short line
             }
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
             crate::secrets::ASK_SECRET => self.ask_secret(&squad, &member, id, &args),
+            crate::cli_signin::CLI_SIGN_IN => self.cli_sign_in(&squad, &member, id, &args),
             crate::squad_secrets::SAVE => self.secret_save(&squad, &member, id, &args),
             crate::squad_secrets::LIST => self.secret_list(&squad),
             crate::squad_secrets::USE => self.secret_use(&squad, &member, id, &args),
@@ -9298,6 +9310,7 @@ it back there once they have done it.{again} End your turn now with a short line
             resting: self.journals.get(squad).map(Journal::resting).unwrap_or_default(),
             role_models: self.journals.get(squad).map(Journal::role_models).unwrap_or_default(),
             secret_asks: self.secret_asks(squad).clone(),
+            cli_sign_ins: self.cli_sign_in_cards(squad),
             login_offers: self.login_offers_now(),
             engine_proposals: self.engines.proposals(squad),
             hand_overs,

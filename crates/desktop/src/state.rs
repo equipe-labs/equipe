@@ -429,6 +429,8 @@ pub struct Model {
     pub auto_put_away: bool,
     /// Secrets members asked the person to type, oldest first.
     pub secret_asks: Vec<equipe_core::protocol::secrets::SecretAsk>,
+    /// Command-line sign-ins a member asked the person to finish on a card (`cli_sign_in`).
+    pub cli_sign_ins: Vec<equipe_core::protocol::cli_signin::CliSignIn>,
     /// equipe's offers to keep a login the person just signed in with by hand.
     pub login_offers: Vec<equipe_core::protocol::vault::LoginOffer>,
     /// The browser profiles besides the main one (other people's accounts).
@@ -637,6 +639,7 @@ impl Model {
             put_away: Vec::new(),
             auto_put_away: true,
             secret_asks: Vec::new(),
+            cli_sign_ins: Vec::new(),
             login_offers: Vec::new(),
             browser_profiles: Vec::new(),
             mode: Mode::default(),
@@ -1263,6 +1266,7 @@ impl Model {
         self.put_away = snapshot.put_away.clone();
         self.auto_put_away = !snapshot.auto_put_away_off;
         self.secret_asks = snapshot.secret_asks.clone();
+        self.cli_sign_ins = snapshot.cli_sign_ins.clone();
         self.login_offers = snapshot.login_offers.clone();
         self.routines = snapshot.routines.clone();
         self.reviews = snapshot.reviews.iter().map(|r| (r.ticket, r.clone())).collect();
@@ -1408,6 +1412,17 @@ impl Model {
             }
             Event::SecretClosed { squad, id, .. } if *squad == self.squad => {
                 self.secret_asks.retain(|a| a.id != *id);
+                self.revision += 1;
+            }
+            Event::CliSignInChanged { squad, card } if *squad == self.squad => {
+                match self.cli_sign_ins.iter_mut().find(|c| c.id == card.id) {
+                    Some(old) => *old = card.clone(),
+                    None => self.cli_sign_ins.push(card.clone()),
+                }
+                self.revision += 1;
+            }
+            Event::CliSignInClosed { squad, id } if *squad == self.squad => {
+                self.cli_sign_ins.retain(|c| c.id != *id);
                 self.revision += 1;
             }
             Event::LoginOffered { offer } => {

@@ -1833,6 +1833,8 @@ impl App {
                 | Event::Models { .. }
                 | Event::SecretAsked { .. }
                 | Event::SecretClosed { .. }
+                | Event::CliSignInChanged { .. }
+                | Event::CliSignInClosed { .. }
                 | Event::Allowed { .. }
                 | Event::Design { .. }
                 | Event::ProjectDocs { .. }

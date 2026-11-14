@@ -67,7 +67,7 @@ impl Runtime {
             .map(|(engine, _)| *engine)
             .collect();
         let approvals = self.pending.values().filter(|p| p.squad == squad).count() as u32;
-        let decisions = (self.question_sets(squad).len() + self.team_changes(squad).len() + self.routine_proposals(squad).len() + self.accepts(squad).len() + self.secret_asks(squad).len()) as u32;
+        let decisions = (self.question_sets(squad).len() + self.team_changes(squad).len() + self.routine_proposals(squad).len() + self.accepts(squad).len() + self.secret_asks(squad).len() + self.cli_sign_in_open(squad).len()) as u32;
         Facts {
             squad: squad.to_owned(),
             tickets,
@@ -113,6 +113,10 @@ impl Runtime {
         // A secret holds its member until typed.
         for a in self.secret_asks(squad).iter() {
             out.push(importance::Ask { kind: WaitKind::SignIn, label: line(&a.why), tickets: a.ticket.into_iter().collect(), holding: Vec::new(), since: a.at, idle_members: 1 });
+        }
+        // So does a command-line sign-in the person hasn't finished.
+        for c in self.cli_sign_in_open(squad) {
+            out.push(importance::Ask { kind: WaitKind::SignIn, label: line(&c.why), tickets: c.ticket.into_iter().collect(), holding: Vec::new(), since: c.at, idle_members: 1 });
         }
         out
     }

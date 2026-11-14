@@ -1,0 +1,11 @@
+Browser will not be automatically opened.
+Please visit the following URL:
+
+https://device.sso.us-east-1.amazonaws.com/
+
+Then enter the code:
+
+KQRD-HMFB
+
+Alternatively, you may visit the following URL which will autofill the code upon loading:
+https://device.sso.us-east-1.amazonaws.com/?user_code=KQRD-HMFB

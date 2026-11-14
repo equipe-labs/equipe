@@ -181,6 +181,9 @@ pub fn reads(command: &Command) -> bool {
         | C::DeleteBrowserProfile { .. }
         | C::SaveSecret { .. }
         | C::DismissSecret { .. }
+        | C::SubmitCliSignInCode { .. }
+        | C::RestartCliSignIn { .. }
+        | C::CancelCliSignIn { .. }
         | C::SetSquadSecretProjects { .. }
         | C::DeleteSquadSecret { .. }
         | C::RevealSquadSecret { .. }
@@ -611,6 +614,9 @@ mod tests {
             Command::BrowserProfiles,
             Command::SaveSecret { squad: s(), id: 1, values: vec![secrets::SecretValue("v".into())] },
             Command::DismissSecret { squad: s(), id: 1 },
+            Command::SubmitCliSignInCode { squad: s(), id: 1, code: equipe_core::protocol::cli_signin::PastedCode("c".into()) },
+            Command::RestartCliSignIn { squad: s(), id: 1 },
+            Command::CancelCliSignIn { squad: s(), id: 1 },
             Command::SquadSecrets,
             Command::SetSquadSecretProjects { squad: s(), name: "k".into(), projects: Vec::new(), any_project: false },
             Command::DeleteSquadSecret { squad: s(), name: "k".into() },

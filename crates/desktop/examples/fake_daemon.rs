@@ -1757,6 +1757,35 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             } else {
                                 Vec::new()
                             },
+                            // `FAKE_CLI_SIGNIN=aws|gh|expired|done`: devops waits on a command-line sign-in, on a card.
+                            cli_sign_ins: match std::env::var("FAKE_CLI_SIGNIN").ok().as_deref() {
+                                Some(kind @ ("aws" | "gh" | "expired" | "done")) => {
+                                    use equipe_core::protocol::cli_signin::{CliSignIn, Phase};
+                                    let aws = kind != "gh";
+                                    vec![CliSignIn {
+                                        id: 77,
+                                        session: 3,
+                                        member: "backend".into(),
+                                        ticket: Some(117),
+                                        tool: if aws { "aws" } else { "gh" }.into(),
+                                        name: if aws { "AWS" } else { "GitHub" }.into(),
+                                        profile: aws.then(|| "atinum".to_owned()),
+                                        why: "Deploy the staging stack".into(),
+                                        url: (kind != "expired").then(|| "https://us-east-1.signin.aws.amazon.com/v1/authorize?response_type=code&client_id=arn%3Aaws%3Asignin%3A%3A%3Adevtools%2Fcross-device".into()),
+                                        user_code: (kind == "gh").then(|| "2D53-6413".to_owned()),
+                                        wants_code: aws,
+                                        phase: match kind {
+                                            "expired" => Phase::Expired,
+                                            "done" => Phase::SignedIn,
+                                            _ => Phase::Waiting,
+                                        },
+                                        who: (kind == "done").then(|| "arn:aws:iam::123456789012:user/atinum-admin".to_owned()),
+                                        detail: None,
+                                        at: 0,
+                                    }]
+                                }
+                                _ => Vec::new(),
+                            },
                             engine_proposals: switching::proposals(),
                             hand_overs: moved::hand_overs(),
                             squad: params.squad,

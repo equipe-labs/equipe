@@ -380,6 +380,24 @@ sign-ins), kept in the secret store:
   written too only when the member names one (`save_to`) for a program equipe
   doesn't run.
 
+**`cli_sign_in`** (a member's tool) is the hand-off for a CLI sign-in the
+person has to finish and no machine credential covers. equipe runs the tool's
+own cross-device mode on the daemon's Mac, in a pseudo-terminal (`gh` over pipes:
+in a terminal it first asks about the git credential helper), reads the page and
+the code from its output, and shows one card: "Open sign-in page" (opened on the
+Mac the person is looking at), the device code to confirm, and a box when the
+flow has the person paste a code back (`aws login --remote`, `gcloud auth login
+--no-launch-browser`). The pasted code is written to the process's standard
+input and dropped: not in an event, a journal or a log, and the terminal's echo is
+off. Expired or failed: "Get a new link" runs it again. When it ends signed in the
+member is told as whom, from the tool's own whoami (`aws sts get-caller-identity`,
+`gh api user`, `gcloud config get-value account`, `az account show`) — no secrets.
+Where "Approve device sign-ins" is on for `gh` or `aws sso`, the same approval as
+`device_code` above approves the page by itself. The modes: `aws login --remote`,
+`aws sso login --no-browser --use-device-code`, `gh auth login --web`, `gcloud auth
+login --no-launch-browser`, `az login --use-device-code`; flags that would hand
+equipe a token, password or key are refused.
+
 A member can still print an environment variable its command was given; the
 values reach only commands run for members of that squad, and the guard's deny
 rules keep members away from the stores themselves.

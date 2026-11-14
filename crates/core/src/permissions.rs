@@ -135,6 +135,9 @@ pub fn person_only(command: &Command) -> bool {
         | C::DeleteBrowserProfile { .. }
         | C::SaveSecret { .. }
         | C::DismissSecret { .. }
+        | C::SubmitCliSignInCode { .. }
+        | C::RestartCliSignIn { .. }
+        | C::CancelCliSignIn { .. }
         // The keys members kept: who may use them where, deleting them, and seeing one.
         | C::SquadSecrets
         | C::SetSquadSecretProjects { .. }
