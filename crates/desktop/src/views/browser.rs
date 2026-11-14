@@ -68,7 +68,9 @@ const MOVE_EVERY: Duration = Duration::from_millis(16);
 /// the hint for a wheel over a page they don't drive.
 const TOAST_FOR: Duration = Duration::from_secs(4);
 /// How tall the card over a sign-in view is, in the panel's points.
+/// The sign-in view's card before it was first measured, and its least height.
 const VIEW_HEADER: f32 = 104.;
+const VIEW_HEADER_MIN: f32 = 56.;
 const HINT_FOR: Duration = Duration::from_millis(1800);
 
 /// The widest the panel may be in a window this wide: the conversation and
@@ -205,6 +207,8 @@ pub struct BrowserPanel {
     placed: Placed,
     /// The viewport's box, as drawn.
     viewport: Rc<RefCell<Option<Bounds<Pixels>>>>,
+    /// The sign-in view's card as last drawn, in points: the web view goes below it.
+    view_head: Rc<std::cell::Cell<f32>>,
     /// The page's size asked for, once the box holds still.
     settle: Settle,
     /// When the page on screen was first asked for: its frames late past
@@ -336,6 +340,7 @@ impl BrowserPanel {
             previous: None,
             placed: Rc::default(),
             viewport: Rc::default(),
+            view_head: Rc::new(std::cell::Cell::new(VIEW_HEADER)),
             settle: Settle::default(),
             asked_at: None,
             _wake: None,
@@ -1282,7 +1287,7 @@ impl BrowserPanel {
     fn view_at(&self, window: &Window) -> Option<(f32, f32, f32, f32)> {
         let b = (*self.viewport.borrow())?;
         let zoom = window.content_zoom();
-        let head = VIEW_HEADER * zoom;
+        let head = self.view_head.get().max(VIEW_HEADER_MIN) * zoom;
         let (x, y, w, h) = (f32::from(b.origin.x) * zoom, f32::from(b.origin.y) * zoom, f32::from(b.size.width) * zoom, f32::from(b.size.height) * zoom);
         Some((x, y + head, w, (h - head).max(1.)))
     }
@@ -1350,7 +1355,6 @@ impl BrowserPanel {
                     .top_0()
                     .left_0()
                     .right_0()
-                    .h(px(VIEW_HEADER))
                     .px_3()
                     .py_2()
                     .gap_1()
@@ -1365,8 +1369,26 @@ impl BrowserPanel {
                             .child(div().flex_1().min_w_0().truncate().text_size(px(UI)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("browser.view_title", name = name)))
                             .child(div().flex_none().child(done)),
                     )
-                    .when(!asked.is_empty(), |c| c.child(div().text_size(px(13.)).line_height(px(18.)).text_color(p.text).line_clamp(2).child(asked.clone())))
-                    .child(div().text_size(px(12.)).line_height(px(16.)).text_color(p.muted).line_clamp(2).child(t!("browser.view_note", name = name)))
+                    // As tall as its words: what was asked whole (up to four lines), then the note.
+                    .when(!asked.is_empty(), |c| c.child(div().text_size(px(13.)).line_height(px(18.)).text_color(p.text).line_clamp(4).child(asked.clone())))
+                    .child(div().text_size(px(12.)).line_height(px(16.)).text_color(p.muted).line_clamp(3).child(t!("browser.view_note", name = name)))
+                    // Its height, measured: the web view below moves to fit it.
+                    .child({
+                        let head = self.view_head.clone();
+                        div().absolute().inset_0().child(
+                            canvas(
+                                |_, _, _| {},
+                                move |bounds, _, window, _| {
+                                    let h = f32::from(bounds.size.height);
+                                    if (head.get() - h).abs() > 0.5 {
+                                        head.set(h);
+                                        window.refresh();
+                                    }
+                                },
+                            )
+                            .size_full(),
+                        )
+                    })
                     .into_any_element(),
             );
         }
