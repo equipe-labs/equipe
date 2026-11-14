@@ -2738,6 +2738,8 @@ impl Render for Shell {
         // The sidebar runs to the window's top, the traffic lights over its
         // strip; each screen's header is the title bar on the right.
         if self.screen == Screen::Settings {
+            // No browser panel here: its sign-in view hides with it.
+            self.browser.update(cx, |b, _| b.set_drawn(false));
             // Settings: its own list in the sidebar's place, the page beside it.
             return root
                 .relative()
@@ -2780,6 +2782,10 @@ impl Render for Shell {
         let (below, terminal) = if self.remembered.term_below { (terminal, None) } else { (None, terminal) };
         let doc = doc.or(terminal);
         let browser = (doc.is_none() && self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
+        // Whether the panel is drawn this frame: its sign-in view (a native view
+        // over the window, nothing the panel paints) hides when it isn't.
+        let drawn = browser.is_some();
+        self.browser.update(cx, |b, _| b.set_drawn(drawn));
         // The design screen: the designer's conversation at its right (`views/design_talk.rs`).
         let talk = if away { None } else { views::design_talk::panel(self, window, cx) };
         let body = self.panes.body.clone().cached(StyleRefinement::default().flex_1().min_w_0().min_h_0());

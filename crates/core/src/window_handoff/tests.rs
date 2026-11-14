@@ -456,3 +456,24 @@ fn bringing_the_window_forward_hands_chrome_no_page() {
     assert_eq!(s.m.opened.len(), opened + 1);
     assert_eq!(s.m.opened.last(), Some(&("".to_owned(), String::new())));
 }
+
+#[test]
+fn the_persons_window_keeps_the_sessions_sign_ins_as_the_automated_browser_does() {
+    let dir = std::env::temp_dir().join(format!("equipe-keep-sessions-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(keep_sessions(&dir), Kept::Nothing, "a profile Chrome never ran: nothing to mark");
+    std::fs::create_dir_all(dir.join("Default")).unwrap();
+    let prefs = dir.join("Default").join("Preferences");
+    // The automated browser stepped aside with a clean exit.
+    std::fs::write(&prefs, r#"{"profile":{"exit_type":"Normal","name":"Person 1"},"session":{"restore_on_startup":5}}"#).unwrap();
+    assert_eq!(keep_sessions(&dir), Kept::Marked);
+    let kept: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&prefs).unwrap()).unwrap();
+    assert_eq!(kept["profile"]["exit_type"], "Crashed");
+    assert_eq!(kept["profile"]["name"], "Person 1", "nothing else changes");
+    assert_eq!(kept["session"]["restore_on_startup"], 5, "no old tab comes back with it");
+    assert_eq!(keep_sessions(&dir), Kept::Already);
+    std::fs::write(&prefs, "not json").unwrap();
+    assert_eq!(keep_sessions(&dir), Kept::Untouched);
+    assert_eq!(std::fs::read_to_string(&prefs).unwrap(), "not json", "a file that isn't Chrome's is left as it was");
+    let _ = std::fs::remove_dir_all(&dir);
+}

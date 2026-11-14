@@ -484,9 +484,73 @@ impl Pointer {
     }
 }
 
+// ── the sign-in view's place ──
+
+/// The lane whose window card the panel shows: the picked lane if its
+/// browser is in a window (or a sign-in view), none if another lane is
+/// picked, else the first such lane.
+pub fn card_lane<'a>(selected: Option<&'a str>, windows: &'a std::collections::BTreeSet<String>) -> Option<&'a str> {
+    match selected {
+        Some(lane) if windows.contains(lane) => Some(lane),
+        Some(_) => None,
+        None => windows.iter().next().map(String::as_str),
+    }
+}
+
+/// What decides whether the sign-in view's web view shows.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ViewPlace<'a> {
+    /// The panel is open.
+    pub open: bool,
+    /// …and in sight: beside a conversation, not behind another screen.
+    pub in_sight: bool,
+    /// The window drew the panel this frame (not a document or terminal in its place).
+    pub drawn: bool,
+    /// The panel's box was measured since it was last drawn.
+    pub boxed: bool,
+    /// The lane the view is for, and the lane whose card the panel shows.
+    pub view_lane: Option<&'a str>,
+    pub card_lane: Option<&'a str>,
+}
+
+/// Whether the sign-in view's web view shows now. It is a native view the
+/// system draws over the window, not something the panel paints: nothing
+/// hides it when the panel isn't drawn, and it stays wherever it was last put.
+/// So it shows only while every one of these holds — the panel open, in
+/// sight, drawn this frame with a box measured since, and its own card (the
+/// view's lane) on screen — and is hidden otherwise. Another app or window in
+/// front changes none of these: the view is part of this window, and goes
+/// behind with it.
+pub fn view_shown(p: &ViewPlace<'_>) -> bool {
+    p.open && p.in_sight && p.drawn && p.boxed && p.view_lane.is_some() && p.view_lane == p.card_lane
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sign_in_view_shows_only_under_its_card_in_an_open_panel_in_sight() {
+        let shown = ViewPlace { open: true, in_sight: true, drawn: true, boxed: true, view_lane: Some("acme/qa"), card_lane: Some("acme/qa") };
+        assert!(view_shown(&shown));
+        // The panel shut; the person on another screen; a document drawn where the panel was.
+        assert!(!view_shown(&ViewPlace { open: false, ..shown }), "the panel is shut");
+        assert!(!view_shown(&ViewPlace { in_sight: false, ..shown }), "another screen is in front of the conversation");
+        assert!(!view_shown(&ViewPlace { drawn: false, ..shown }), "the window didn't draw the panel");
+        assert!(!view_shown(&ViewPlace { boxed: false, ..shown }), "its box is from an earlier layout");
+        assert!(!view_shown(&ViewPlace { card_lane: Some("acme/pm"), ..shown }), "another member's card is on screen");
+        assert!(!view_shown(&ViewPlace { card_lane: None, ..shown }), "a member's live page is picked instead");
+        assert!(!view_shown(&ViewPlace { view_lane: None, card_lane: None, ..shown }), "no view");
+    }
+
+    #[test]
+    fn the_card_on_screen_is_the_picked_lanes_or_the_first_window() {
+        let windows: std::collections::BTreeSet<String> = ["acme/pm".to_owned(), "acme/qa".to_owned()].into();
+        assert_eq!(card_lane(Some("acme/qa"), &windows), Some("acme/qa"));
+        assert_eq!(card_lane(Some("acme/frontend"), &windows), None, "a live page is picked: no card");
+        assert_eq!(card_lane(None, &windows), Some("acme/pm"));
+        assert_eq!(card_lane(None, &Default::default()), None);
+    }
 
     fn header(page: u64, seq: u64) -> FrameHeader {
         FrameHeader { page, seq, w: 10, h: 10, css_w: 10., css_h: 10., sx: 0., sy: 0., top: 0. }

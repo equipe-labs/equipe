@@ -155,13 +155,15 @@ impl Runtime {
             handoff_view::Taken::Ignored => {}
             handoff_view::Taken::Failed => self.view_fallback(&lane).await,
             handoff_view::Taken::Apply { url, scoped } => {
-                crate::daemon_log!("equipe: {} sign-in cookies go to {lane}'s browser ({} of other sites left out)", scoped.cookies.len(), scoped.dropped);
-                let cookies: Vec<serde_json::Value> = scoped
-                    .cookies
-                    .iter()
-                    .map(|c| json!({ "name": c.name, "value": c.value, "domain": c.domain, "path": c.path, "expires": c.expires, "secure": c.secure, "httpOnly": c.http_only, "sameSite": c.same_site }))
-                    .collect();
+                // What went in is the host's to say (`HostEvent::Cookies`): Chrome may refuse some.
+                crate::daemon_log!("equipe: {} sign-in cookies are for {lane}'s browser ({} of other sites left out)", scoped.cookies.len(), scoped.dropped);
+                let cookies: Vec<serde_json::Value> = scoped.cookies.iter().map(super::sign_ins::host_cookie).collect();
                 self.hub.op(&json!({ "op": "cookies", "lane": lane, "cookies": cookies, "url": url }));
+                // Kept for the squad: no member of it is asked for this site again while the site takes it.
+                if let Some((squad, key)) = lane.split_once('/') {
+                    let profile = browser::split_profile(key).1.unwrap_or_default().to_owned();
+                    self.keep_sign_in(vec![squad.to_owned()], &profile, &url, scoped.cookies);
+                }
             }
         }
     }
@@ -289,6 +291,13 @@ impl Runtime {
                 Action::Resume { profile, lanes } => self.resume_profile(&profile, &lanes),
                 Action::HandBack { lanes } => {
                     for lane in lanes {
+                        // What the person signed in to in their own window: kept for the squad.
+                        if let Some(site) = self.asked_site.get(&lane).cloned()
+                            && let Some((squad, _)) = lane.split_once('/')
+                        {
+                            let profile = profile_of(&self.config.home, &lane).0;
+                            self.collect_sign_in(vec![squad.to_owned()], &profile, &site);
+                        }
                         // The same as the person pressing Done in the panel: the
                         // member is told, with where its page is now.
                         Box::pin(self.on_host(HostEvent::Control { lane, by: None, refused: false })).await;
@@ -342,6 +351,8 @@ impl Runtime {
     /// went into, and take each lane back to where it was.
     fn resume_profile(&mut self, profile: &str, lanes: &[(String, String)]) {
         self.hub.op(&json!({ "op": "resume", "profile": profile }));
+        // Its Chrome starts again: the kept sign-ins go in again as its lanes open.
+        self.sign_ins_restart(Some(profile));
         let mut again = self.windows.reopen.remove(profile).unwrap_or_default();
         for (lane, _) in lanes {
             if let Some((squad, key)) = lane.split_once('/')

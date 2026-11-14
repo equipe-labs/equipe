@@ -3779,6 +3779,7 @@
   "logins.offer_where": "ここにだけ入力し、{machine} のシークレットストアに保存します。メンバーにも会話にも表示されません。",
   "logins.offer_never": "このサイトでは聞かない",
   "logins.offer_open": "保存…",
+  "logins.offer_save": "equipeに保存",
   "logins.offer_whose": "{name} のブラウザで",
   "desktop_setup.installing": "デスクトップアプリを準備中…",
   "desktop_setup.failed_title": "デスクトップアプリを準備できませんでした",

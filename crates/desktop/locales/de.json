@@ -3872,6 +3872,7 @@
   "logins.offer_where": "Nur hier eingegeben, im Geheimnisspeicher von {machine} gespeichert – nie einem Mitglied gezeigt, nie in einem Gespräch.",
   "logins.offer_never": "Nie für diese Website",
   "logins.offer_open": "Speichern…",
+  "logins.offer_save": "In equipe speichern",
   "logins.offer_whose": "im Browser von {name}",
   "desktop_setup.installing": "Desktop-Apps werden eingerichtet …",
   "desktop_setup.failed_title": "Desktop-Apps konnten nicht eingerichtet werden",

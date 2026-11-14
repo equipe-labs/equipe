@@ -3779,6 +3779,7 @@
   "logins.offer_where": "只在這裡輸入，儲存在 {machine} 的安全儲存中——絕不顯示給成員，也不會出現在對話裡。",
   "logins.offer_never": "此網站不再詢問",
   "logins.offer_open": "儲存…",
+  "logins.offer_save": "儲存到 equipe",
   "logins.offer_whose": "在 {name} 的瀏覽器中",
   "desktop_setup.installing": "正在準備桌面 App…",
   "desktop_setup.failed_title": "無法準備桌面 App",

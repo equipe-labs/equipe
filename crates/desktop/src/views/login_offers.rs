@@ -2,8 +2,11 @@
 //! signed in to a site by hand in a member's browser, and no login is kept
 //! for it. A card asks once — "Save this login?" — with equipe's own boxes
 //! for the username and the password (masked), a switch to let equipe sign
-//! in there by itself when the site logs a member out, and Save / Not now /
-//! Never for this site. What is typed goes to the daemon's machine, into its
+//! in there by itself when the site logs a member out, and Save to equipe
+//! (the default: ⏎) / Not now / Never for this site. It comes up open by
+//! itself right after the sign-in, its first box ready (the password where
+//! the username is filled in) unless the person is typing elsewhere. Nothing
+//! is saved until they press Save. What is typed goes to the daemon's machine, into its
 //! secret store, and nowhere else: never to a member, never into a
 //! conversation. Over the composer in the conversation (folded to one line
 //! until opened) and in the Inbox.
@@ -31,6 +34,8 @@ pub struct LoginOffersUi {
     pub open: HashSet<u64>,
     inputs: HashMap<u64, (Entity<InputState>, Entity<InputState>)>,
     subscriptions: HashMap<u64, Subscription>,
+    /// ⏎ in each offer's username box.
+    next: HashMap<u64, Subscription>,
     /// Offers whose "sign in by itself" switch the person turned off (on by
     /// default: saving the login is their leave).
     manual: HashSet<u64>,
@@ -47,7 +52,9 @@ impl LoginOffersUi {
 }
 
 impl Shell {
-    /// Boxes for each offer; those of offers gone, dropped.
+    /// Boxes for each offer; those of offers gone, dropped. A new offer — a
+    /// sign-in just finished — comes up open by itself, its first box ready
+    /// when the keyboard isn't the person's elsewhere.
     pub fn login_offers_sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let offers = self.model.login_offers.clone();
         let ui = &mut self.login_offers;
@@ -63,15 +70,32 @@ impl Shell {
             let username = cx.new(|cx| InputState::new(window, cx).placeholder(t!("accounts.username_placeholder")));
             let password = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("accounts.password_placeholder")));
             let id = offer.id;
-            // ⏎ in the password box saves.
+            // ⏎ in the password box saves; in the username box it goes on to the password.
             let subscription = cx.subscribe_in(&password, window, move |shell, _, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     shell.save_login_offer(id, window, cx);
                 }
             });
+            let next = cx.subscribe_in(&username, window, move |shell, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    shell.save_login_offer(id, window, cx);
+                }
+            });
+            let free = if self.composer.is_focused(window, cx) { self.composer.state.read(cx).value().is_empty() } else { window.focused(cx).is_none() };
+            let first = match first_box(!username.read(cx).value().trim().is_empty()) {
+                Field::Username => username.clone(),
+                Field::Password => password.clone(),
+            };
             self.login_offers.inputs.insert(id, (username, password));
             self.login_offers.subscriptions.insert(id, subscription);
+            self.login_offers.next.insert(id, next);
+            // Right after the sign-in, the card itself — not a line to open first.
+            self.login_offers.open.insert(id);
+            if free && self.screen == Screen::Chat {
+                first.update(cx, |s, cx| s.focus(window, cx));
+            }
         }
+        self.login_offers.next.retain(|id, _| self.login_offers.inputs.contains_key(id));
     }
 
     /// Save: both boxes filled, the login to the daemon — and the boxes
@@ -115,6 +139,19 @@ impl Shell {
         }
         cx.notify();
     }
+}
+
+/// A box of a save card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    Username,
+    Password,
+}
+
+/// Which box a save card gives the keyboard first: the password where the
+/// username is filled in already, else the username.
+pub fn first_box(username_known: bool) -> Field {
+    if username_known { Field::Password } else { Field::Username }
 }
 
 /// The key that marks an offer in the Inbox.
@@ -165,7 +202,7 @@ pub fn card(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> Option<AnyElemen
             });
         })
     });
-    let save = ui::button(p, ("login-offer-save", id), Kind::Primary, t!("accounts.save")).key("⏎").icon(Icon::Lock).on_click(cx.listener(move |this, _, window, cx| this.save_login_offer(id, window, cx)));
+    let save = ui::button(p, ("login-offer-save", id), Kind::Primary, t!("logins.offer_save")).key("⏎").icon(Icon::Lock).on_click(cx.listener(move |this, _, window, cx| this.save_login_offer(id, window, cx)));
     let later = ui::button(p, ("login-offer-later", id), Kind::Ghost, t!("secrets.not_now")).on_click(cx.listener(move |this, _, _, cx| this.dismiss_login_offer(id, false, cx)));
     let never = ui::button(p, ("login-offer-never", id), Kind::Ghost, t!("logins.offer_never")).on_click(cx.listener(move |this, _, _, cx| this.dismiss_login_offer(id, true, cx)));
     let manage = ui::button(p, ("login-offer-manage", id), Kind::Ghost, t!("logins.offer_manage")).on_click(cx.listener(|this, _, _, cx| this.open_logins(cx)));
@@ -223,4 +260,24 @@ pub fn peek(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> AnyElement {
         .child(div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(p.muted).child(t!("logins.offer_title")))
         .children(card(shell, id, cx))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    // Not `super::*`: the UI kit's own `test` attribute would come with it.
+    use super::{Field, first_box};
+
+    #[test]
+    fn the_save_card_gives_the_keyboard_to_the_box_still_to_fill() {
+        assert_eq!(first_box(true), Field::Password, "the username known: the password is what's left");
+        assert_eq!(first_box(false), Field::Username);
+    }
+
+    #[test]
+    fn the_save_button_says_where_the_login_goes_in_every_language() {
+        for lang in equipe_core::i18n::Lang::ALL {
+            let said = crate::i18n::of(lang).own("logins.offer_save");
+            assert!(said.is_some_and(|s| s.contains("equipe")), "{lang:?}: {said:?}");
+        }
+    }
 }
