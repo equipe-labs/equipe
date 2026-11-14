@@ -1131,6 +1131,7 @@
   "design.refs_search_placeholder": "Rechercher des motifs et des notes",
   "design.refs_search_clear": "Effacer la recherche",
   "design.refs_refresh": "Relire les références",
+  "design.refs_place_main": "Principal",
   "design.refs_patterns.one": "{count} motif",
   "design.refs_patterns.other": "{count} motifs",
   "design.refs_pictures.one": "{count} image",

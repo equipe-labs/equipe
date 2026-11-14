@@ -1131,6 +1131,7 @@
   "design.refs_search_placeholder": "Muster und Notizen durchsuchen",
   "design.refs_search_clear": "Suche löschen",
   "design.refs_refresh": "Referenzen neu einlesen",
+  "design.refs_place_main": "Hauptstand",
   "design.refs_patterns.one": "{count} Muster",
   "design.refs_patterns.other": "{count} Muster",
   "design.refs_pictures.one": "{count} Bild",

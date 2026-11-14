@@ -368,8 +368,8 @@ pub fn read_image(ask: &equipe_core::protocol::rpc::ReadImage) -> Result<equipe_
 
 /// `design_refs`: read the folders the daemon's way, one page.
 pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool {
-    let Command::DesignRefs { project, query, offset, .. } = command else { return false };
-    let Found { total, patterns, sources, folder } = refgallery::read_in(folders(project.as_deref()), query, *offset as usize);
-    let _ = events.send(Event::DesignRefs { squad: "demo".into(), project: project.clone(), query: query.clone(), offset: *offset, total: total as u32, patterns, sources, folder });
+    let Command::DesignRefs { project, ticket, query, offset, .. } = command else { return false };
+    let Found { total, patterns, sources, folder, .. } = refgallery::read_in(folders(project.as_deref()), query, *offset as usize);
+    let _ = events.send(Event::DesignRefs { squad: "demo".into(), project: project.clone(), ticket: *ticket, at: 0, places: Vec::new(), query: query.clone(), offset: *offset, total: total as u32, patterns, sources, folder });
     true
 }

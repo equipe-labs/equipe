@@ -666,7 +666,8 @@ pub struct RefNote {
     /// When it was taken (`YYYY-MM-DD`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date: Option<String>,
-    /// The picture the entry names: its file name in the pattern's folder.
+    /// The picture the entry names: its file name (a picture in the pattern's
+    /// folder, or one an `Image:` line links).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picture: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -687,6 +688,30 @@ pub struct RefPicture {
     /// Unix seconds.
     #[serde(default)]
     pub modified: u64,
+    /// The entry of `notes.md` (its place among `notes`) that links this
+    /// picture with an `Image:` line, when one does: its card shows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<u32>,
+}
+
+/// A place that keeps references: the project's own `design/references/`
+/// (`ticket` none), or a ticket's worktree where they are being made.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefPlace {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<u64>,
+    /// The ticket's title.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    /// The ticket is in review, not at work.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub review: bool,
+    /// How many patterns it holds.
+    #[serde(default)]
+    pub patterns: u32,
+    /// The latest references work in it, Unix seconds.
+    #[serde(default)]
+    pub updated: u64,
 }
 
 /// One pattern (`design/references/<name>/`): its pictures and notes.
@@ -849,7 +874,7 @@ mod tests {
             }],
             agree: "Dense rows.".into(),
             raw: "## Acme — Orders\n".into(),
-            pictures: vec![RefPicture { path: "/d/references/x/acme-1440.png".into(), name: "acme-1440.png".into(), size: 9, modified: 3 }],
+            pictures: vec![RefPicture { path: "/d/references/x/acme-1440.png".into(), name: "acme-1440.png".into(), size: 9, modified: 3, note: Some(0) }],
             pictures_total: 5,
             updated: 4,
         };

@@ -2123,6 +2123,7 @@ impl Shell {
             self.design.working = false;
             self.design.end_compare();
             self.design.refs.forget();
+            self.design.refs.ticket = None;
             let (label, squad) = (self.endpoint.label(), self.model.squad.clone());
             let seen_key = move |s: &DesignSystem| format!("{label}|{squad}|{}", s.key());
             let systems = std::mem::take(&mut self.design.raw);

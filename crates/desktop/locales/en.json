@@ -1131,6 +1131,7 @@
   "design.refs_search_placeholder": "Search patterns and notes",
   "design.refs_search_clear": "Clear search",
   "design.refs_refresh": "Read the references again",
+  "design.refs_place_main": "Main",
   "design.refs_patterns.one": "{count} pattern",
   "design.refs_patterns.other": "{count} patterns",
   "design.refs_pictures.one": "{count} picture",

@@ -1186,8 +1186,8 @@ impl Shell {
                                 changed |= this.design_arrived(squad, systems, folder, taste);
                                 continue;
                             }
-                            daemon::Update::Event(Event::DesignRefs { squad, project, query, offset, total, patterns, sources, folder }) => {
-                                changed |= this.refs_arrived(squad, project, query, offset, total, patterns, sources, folder);
+                            daemon::Update::Event(Event::DesignRefs { squad, project, ticket, at, places, query, offset, total, patterns, sources, folder }) => {
+                                changed |= this.refs_arrived(squad, project, ticket, at, places, query, offset, total, patterns, sources, folder);
                                 continue;
                             }
                             daemon::Update::Event(Event::DesignVersions { squad, project, versions }) => {

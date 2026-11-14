@@ -22,7 +22,9 @@ you design and whenever it is judged.
    that serves UI references; from public pages in your own browser, or shot with `equipe design refs shoot <url>
    --learn "…" --aspect pattern` (paced, as robots.txt allows). A paid library only through its official MCP server
    or API, when the squad has connected one; a site behind a sign-in is never scraped or captured in bulk. Keep each
-   picture in the pattern's folder, `<pattern>/<site>-<width>.png`, or cite the path `refs shoot` kept it at.
+   picture in the pattern's folder next to its `notes.md`, `<pattern>/<site>-<width>.png` — that is the place (a
+   picture an entry links with an `- Image: <path from notes.md>` line is shown too when it is elsewhere inside
+   `design/`, but the gallery counts and shows pictures best from the pattern folder).
 4. Write the pattern's `notes.md`, one entry per example:
 
    ```
