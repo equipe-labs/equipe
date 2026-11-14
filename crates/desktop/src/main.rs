@@ -734,9 +734,10 @@ impl Shell {
         shell._subscriptions.push(cx.subscribe_in(&state, window, |this, _, event: &InputEvent, window, cx| this.on_composer_event(event, window, cx)));
         shell._subscriptions.push(cx.observe_in(&state, window, |this, _, window, cx| this.on_composer_touched(window, cx)));
         // Esc, ↑↓, Tab and Enter get to the composer's completion and history
-        // before the text box's own bindings take them.
+        // before the text box's own bindings take them. Only this window's
+        // keys: another window's state must never take them.
         let this = cx.entity().downgrade();
-        shell._subscriptions.push(cx.intercept_keystrokes(move |event, window, cx| {
+        let intercept = intercept_own_keystrokes(window, cx, move |event, window, cx| {
             screen_look::used();
             let key = event.keystroke.key.as_str();
             let modifiers = event.keystroke.modifiers;
@@ -925,7 +926,8 @@ impl Shell {
             if taken {
                 cx.stop_propagation();
             }
-        }));
+        });
+        shell._subscriptions.push(intercept);
         // Several windows: what is drawn inside text views reaches the shell of
         // the window in front — where the click is.
         shell._subscriptions.push(cx.observe_window_activation(window, |_, window, cx| {
@@ -2802,6 +2804,22 @@ impl Render for Shell {
     }
 }
 
+/// `f` on each keystroke typed in `window`, before anything else sees it.
+///
+/// `App::intercept_keystrokes` hears every window's keys, while a window's
+/// interceptor reads its own shell's state (a picture shown big, a deck, a
+/// request's keys): left unfiltered, a picture open in one window swallowed
+/// every letter typed into another window's composer. So only `window`'s keys
+/// reach `f`.
+fn intercept_own_keystrokes(window: &Window, cx: &mut App, mut f: impl FnMut(&gpui_kit::KeystrokeEvent, &mut Window, &mut App) + 'static) -> gpui_kit::Subscription {
+    let own = window.window_handle().window_id();
+    cx.intercept_keystrokes(move |event, window, cx| {
+        if window.window_handle().window_id() == own {
+            f(event, window, cx);
+        }
+    })
+}
+
 /// The app menu: updates, hiding, quitting.
 fn app_menu(cx: &mut App) {
     #[cfg(target_os = "macos")]
@@ -3476,6 +3494,61 @@ mod tests {
         press(cx, "cmd-]");
         assert_eq!(probe.read_with(cx, |p, _| (p.back, p.forward)), (1, 1));
         assert_eq!(value(cx), "hello world");
+    }
+
+    /// Two windows, the second showing a picture big — its keys (every key
+    /// but ⌘'s) are the picture's. Letters typed into the first window's box
+    /// still land there: a window's key interceptor hears only its own window.
+    #[gpui_kit::test]
+    fn a_window_takes_only_its_own_keys(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.bind_keys(window_bindings());
+        });
+        let open = |cx: &mut gpui_kit::TestAppContext, swallows: bool| {
+            let (probe, vcx) = cx.add_window_view(|window, cx| {
+                let field = cx.new(|cx| gpui_kit::component::input::TextareaState::new(window, cx).auto_grow(1, 6));
+                Probe { field, back: 0, forward: 0 }
+            });
+            let field = probe.read_with(vcx, |p, _| p.field.clone());
+            let handle = vcx.update(|window, cx| {
+                field.update(cx, |s, cx| s.focus(window, cx));
+                if swallows {
+                    // As the shell does while a picture is shown big.
+                    let intercept = super::intercept_own_keystrokes(window, cx, |event, _, cx| {
+                        if !event.keystroke.modifiers.platform {
+                            cx.stop_propagation();
+                        }
+                    });
+                    intercept.detach();
+                }
+                window.draw(cx).clear(cx);
+                window.window_handle()
+            });
+            (handle, field)
+        };
+        let (first, first_field) = open(cx, false);
+        let (second, second_field) = open(cx, true);
+        let typed = |cx: &mut gpui_kit::TestAppContext, window: gpui_kit::AnyWindowHandle, keys: &str| {
+            for key in keys.split(' ') {
+                let stroke = Keystroke::parse(key).unwrap();
+                cx.update_window(window, |_, window, cx| {
+                    window.draw(cx).clear(cx);
+                    window.dispatch_keystroke(stroke, cx);
+                })
+                .unwrap();
+                cx.run_until_parked();
+            }
+        };
+        typed(cx, first, "a s d f");
+        assert_eq!(first_field.read_with(cx, |s, _| s.value().to_string()), "asdf", "the other window's picture took the letters");
+        // ⌘A then a letter replaces the selection, as in any text box.
+        typed(cx, first, "cmd-a x");
+        assert_eq!(first_field.read_with(cx, |s, _| s.value().to_string()), "x");
+        // The window showing the picture still keeps its own keys from its box.
+        typed(cx, second, "q w");
+        assert_eq!(second_field.read_with(cx, |s, _| s.value().to_string()), "");
     }
 }
 
