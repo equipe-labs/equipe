@@ -724,6 +724,7 @@ fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         super::switching::docked(shell, cx),
         super::login_offers::docked(shell, cx),
         super::cli_signin::docked(shell, cx),
+        super::verify::docked(shell, cx),
     ]
     .into_iter()
     .enumerate()

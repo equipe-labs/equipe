@@ -83,6 +83,7 @@ pub mod telemetry;
 pub mod team;
 pub mod transcript;
 pub mod vault;
+pub mod verify;
 pub mod review;
 pub mod watch;
 pub mod words;
@@ -1275,6 +1276,25 @@ pub enum Command {
     RestartCliSignIn { squad: SquadName, id: u64 },
     /// The person won't sign in (now): the process stops and the member is told.
     CancelCliSignIn { squad: SquadName, id: u64 },
+    /// "Fill code from email" on a verification card ([`Event::VerificationChanged`]):
+    /// the daemon reads the matching mail from the connected mailbox and types
+    /// the code into the member's page. Only ever the person's click; the code
+    /// goes nowhere but that page.
+    FillVerificationCode { squad: SquadName, id: u64 },
+    /// "I'll type it": the card closes and the page's code field takes the
+    /// person's typing in the hand-off view.
+    TypeVerificationCode { squad: SquadName, id: u64 },
+    /// The person connects Gmail as the mailbox verification codes are read
+    /// from (read-only access, `gmail.readonly`): the daemon opens Google's
+    /// consent page in the person's own browser ([`Event::MailboxConnect`]).
+    /// `client`: an OAuth client of their own, where this build has none.
+    ConnectGmail {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client: Option<vault::GmailClient>,
+    },
+    /// The person disconnects Gmail: the kept grant is dropped from the
+    /// secret store (revoke it in their Google Account too).
+    DisconnectGmail,
     /// The person starts a key card themselves, from Logins › Connections: the
     /// daemon puts the catalog service `service`'s card (`SecretAsk::store`)
     /// on every screen — answered by [`Event::SecretAsked`]. No member waits
@@ -3085,6 +3105,20 @@ pub enum Event {
     CliSignInChanged { squad: SquadName, card: cli_signin::CliSignIn },
     /// The sign-in's card closes everywhere.
     CliSignInClosed { squad: SquadName, id: u64 },
+    /// A verification card is up, or stands differently now: the whole card
+    /// ([`verify::Verification`]); it never carries the code.
+    VerificationChanged { squad: SquadName, card: verify::Verification },
+    /// The card closes everywhere.
+    VerificationClosed { squad: SquadName, id: u64 },
+    /// Connecting Gmail ([`Command::ConnectGmail`]): Google's consent page to
+    /// open in the person's own browser, or why it couldn't go on. Once
+    /// connected, [`Event::Autopilot`] says as whom.
+    MailboxConnect {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// Every squad's kept keys, as facts ([`Command::SquadSecrets`]): for every screen.
     SquadSecrets { secrets: Vec<secrets::SquadSecret> },
     /// A kept key the person asked to see ([`Command::RevealSquadSecret`]): to be shown
@@ -3279,6 +3313,8 @@ impl Event {
             | Event::SecretClosed { squad, .. }
             | Event::CliSignInChanged { squad, .. }
             | Event::CliSignInClosed { squad, .. }
+            | Event::VerificationChanged { squad, .. }
+            | Event::VerificationClosed { squad, .. }
             | Event::ProjectsChanged { squad, .. }
             | Event::RoutinesChanged { squad, .. }
             | Event::RoutineProposed { squad, .. }
@@ -3386,6 +3422,8 @@ impl Event {
             | Event::SecretClosed { .. }
             | Event::CliSignInChanged { .. }
             | Event::CliSignInClosed { .. }
+            | Event::VerificationChanged { .. }
+            | Event::VerificationClosed { .. }
             | Event::SquadSecrets { .. }
             | Event::SquadSecretRevealed { .. }
             | Event::ProjectsChanged { .. }
@@ -3408,6 +3446,7 @@ impl Event {
             | Event::SignalsChanged { .. }
             | Event::Logins { .. }
             | Event::Autopilot { .. }
+            | Event::MailboxConnect { .. }
             | Event::LoginInsights { .. }
             | Event::LoginOffered { .. }
             | Event::LoginOfferClosed { .. }
@@ -3484,6 +3523,7 @@ impl Event {
                 | Event::SquadSecrets { .. }
                 | Event::SquadSecretRevealed { .. }
                 | Event::Autopilot { .. }
+                | Event::MailboxConnect { .. }
                 | Event::LoginInsights { .. }
                 | Event::LoginOffered { .. }
                 | Event::LoginOfferClosed { .. }
@@ -3873,6 +3913,10 @@ pub struct Snapshot {
     /// Command-line sign-ins members asked the person to finish on a card.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cli_sign_ins: Vec<cli_signin::CliSignIn>,
+    /// Verification cards waiting on the person: a code a site emailed while
+    /// a member's browser waits on it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verifications: Vec<verify::Verification>,
     /// equipe's offers to keep a login the person just signed in with by
     /// hand, waiting for an answer (every squad's: logins are the machine's).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -4418,6 +4462,7 @@ mod tests {
             role_models: vec![RoleModel { role: "qa".into(), engine: Engine::Codex, model: Some("gpt-6.1-sol".into()), effort: Some("high".into()) }],
             secret_asks: Vec::new(),
             cli_sign_ins: Vec::new(),
+            verifications: Vec::new(),
             login_offers: Vec::new(),
             engine_proposals: Vec::new(),
             desktop: DesktopState::default(),

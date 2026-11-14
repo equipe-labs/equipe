@@ -274,6 +274,8 @@ pub struct Shell {
     /// The boxes of members' asks for a secret.
     pub secrets: views::secrets::SecretsUi,
     pub cli_signin: views::cli_signin::CliSignInUi,
+    /// Verification cards and the Connections row's mailbox.
+    pub verify: views::verify::VerifyUi,
     pub login_offers: views::login_offers::LoginOffersUi,
     /// The boxes the person writes to a member in, on its request for permission.
     pub approval_words: views::approvals::Words,
@@ -519,6 +521,7 @@ impl Shell {
             title_shown: String::new(),
             secrets: Default::default(),
             cli_signin: Default::default(),
+            verify: Default::default(),
             login_offers: Default::default(),
             approval_words: Default::default(),
             decide: Default::default(),
@@ -815,7 +818,7 @@ impl Shell {
             }
             // Typing in a "your turn" card's box or one of the browser panel's: T, N,
             // y, 1… are letters there, not shortcuts. Esc still leaves; Tab and ⌘⏎ are the card's own.
-            if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx) || shell.secrets.typing(window, cx) || shell.cli_signin.typing(window, cx) || shell.login_offers.typing(window, cx) || shell.logins_ui.typing(window, cx) || shell.browser.read(cx).typing(window, cx) || shell.design_taste.typing(window, cx)).unwrap_or(false) {
+            if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx) || shell.secrets.typing(window, cx) || shell.cli_signin.typing(window, cx) || shell.verify.typing(window, cx) || shell.login_offers.typing(window, cx) || shell.logins_ui.typing(window, cx) || shell.browser.read(cx).typing(window, cx) || shell.design_taste.typing(window, cx)).unwrap_or(false) {
                 return;
             }
             // Writing to a member on its request: Esc closes the box; every other
@@ -1192,6 +1195,18 @@ impl Shell {
                             }
                             other => other,
                         };
+                        // A new verification card: in front of the cards over the composer (it is the last of them) — a code doesn't wait long.
+                        if let daemon::Update::Event(Event::VerificationChanged { card, .. }) = &update
+                            && !this.model.verifications.iter().any(|c| c.id == card.id)
+                        {
+                            this.chat.dock_at.set(usize::MAX);
+                        }
+                        // Connecting Gmail: Google's page, opened here for the screen that pressed Connect, or why not.
+                        if let daemon::Update::Event(Event::MailboxConnect { url, error }) = &update {
+                            this.on_mailbox_connect(url.as_deref(), error.as_deref(), cx);
+                            changed = true;
+                            continue;
+                        }
                         // A sign-in the person asked for in equipe's own browser: the Logins page's line, and the panel.
                         if let daemon::Update::Event(Event::BrowserSignIn { site, state, window: window_asked }) = &update {
                             this.sign_in_event(site, *state, *window_asked, window, cx);

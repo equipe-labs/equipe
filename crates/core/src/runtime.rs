@@ -113,6 +113,7 @@ mod turn_end;
 mod status;
 pub use hygiene::{NATIVE_DESK_TOKENS, NATIVE_TICKET_TOKENS, ROTATE_DESK_TOKENS, ROTATE_TICKET_TOKENS, wants_large_window};
 mod pace;
+mod verify;
 pub use turn_end::turn_ending;
 use turn_end::{RunEnd, TurnEnds, TurnWatch};
 
@@ -665,6 +666,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         autopilot: Default::default(),
         secret_asks: HashMap::new(),
         cli_signins: HashMap::new(),
+        verify: Default::default(),
         secret_env: HashMap::new(),
         secret_nudge: Default::default(),
         delta_tail: HashMap::new(),
@@ -1115,6 +1117,8 @@ enum Internal {
     Autopilot(autopilot::Note),
     /// A command-line sign-in's process, off the loop, has news ([`cli_signin::Note`]).
     CliSignIn(cli_signin::Note),
+    /// A verification card's fill, or connecting Gmail, came back ([`verify::Note`]).
+    Verify(verify::Note),
     /// A row of the sign-in record, from work done off the loop.
     LoginRecord { squad: String, entry: crate::logins::Entry },
     /// Something waits for a conversation to act on — work handed in for the
@@ -1462,6 +1466,8 @@ struct Runtime {
     secret_asks: HashMap<String, Vec<crate::protocol::secrets::SecretAsk>>,
     /// Command-line sign-ins the person is finishing on cards (`cli_sign_in`), by squad.
     cli_signins: HashMap<String, Vec<cli_signin::Live>>,
+    /// Verification cards: codes sites emailed while members' pages wait on them ([`verify`]).
+    verify: verify::State,
     /// Kept keys members asked their commands to get as environment
     /// variables (`secret_use`), by session: `(variable, key name)`. The value
     /// is looked up — and the right to it checked again — when a turn starts.
@@ -1547,6 +1553,7 @@ impl Wake {
             Wake::Internal(Internal::Relogin { .. }) => Borrowed("equipe's own sign-in ending"),
             Wake::Internal(Internal::Autopilot(_)) => Borrowed("login autopilot"),
             Wake::Internal(Internal::CliSignIn(_)) => Borrowed("a command-line sign-in"),
+            Wake::Internal(Internal::Verify(_)) => Borrowed("a verification code card"),
             Wake::Internal(Internal::LoginRecord { .. }) => Borrowed("a sign-in kept on the record"),
             Wake::Internal(Internal::DeskSaved { .. }) => Borrowed("a desk turn's changes saved"),
             Wake::Internal(Internal::Wake { .. }) => Borrowed("work waits for a conversation"),
@@ -1808,6 +1815,7 @@ impl Runtime {
                 Internal::Relogin { lane, outcome } => self.relogin_done(lane, outcome).await,
                 Internal::Autopilot(note) => self.autopilot_note(note).await,
                 Internal::CliSignIn(note) => self.cli_sign_in_note(note).await,
+                Internal::Verify(note) => self.verify_note(note).await,
                 Internal::LoginRecord { squad, entry } => self.login_record(&squad, entry),
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
@@ -2706,6 +2714,10 @@ impl Runtime {
             Command::SubmitCliSignInCode { squad, id, code } => self.submit_cli_sign_in_code(&squad, id, code),
             Command::RestartCliSignIn { squad, id } => self.restart_cli_sign_in(&squad, id),
             Command::CancelCliSignIn { squad, id } => self.cancel_cli_sign_in(&squad, id).await,
+            Command::FillVerificationCode { squad, id } => self.fill_verification(&squad, id),
+            Command::TypeVerificationCode { squad, id } => self.type_verification(&squad, id),
+            Command::ConnectGmail { client } => self.connect_gmail(client),
+            Command::DisconnectGmail => self.disconnect_gmail(),
             Command::RequestServiceKey { squad, service } => self.request_service_key(&squad, &service),
             command @ (Command::SquadSecrets
             | Command::SetSquadSecretProjects { .. }
@@ -8465,6 +8477,8 @@ there, end your turn, and carry on when they say they're done."
                 let (squad, session) = self.lane_session(&lane);
                 // What login autopilot reads off the pages; a sign-in that ran out, signed back in.
                 self.see_pages(&lane, &pages);
+                // A page waiting on a code the site emailed: the person's card.
+                self.see_verification_pages(&lane, &pages);
                 // A sign-in page that turned into its site: a sign-in finished.
                 self.follow_sign_ins(&lane, &pages, touched).await;
                 // The person's own tabs, in the panel or the Chrome window: a sign-in they started, or any.
@@ -8525,6 +8539,10 @@ there, end your turn, and carry on when they say they're done."
                 // Its tools were turned away at a page that waited for the person,
                 // and its turn ended: it carries on now.
                 if checked.is_some() && asked.is_none() {
+                    // equipe filled its emailed code on the person's click: "they confirmed access".
+                    if self.verification_handed_back(&lane).await {
+                        return;
+                    }
                     if refused && !working {
                         let text = say!(self, "notice.browser_given_back");
                         let prompt = handed_back("a human check or a sign-in on the page", false, back_at.as_ref());
@@ -9035,6 +9053,10 @@ End your turn now with a short summary.",
                 })
             }
             board::BLOCK_ON_PERSON => {
+                // A code the site emailed: the person's card fills it from their mailbox on their click.
+                if let Some(verification) = args.get("verification").filter(|v| v.is_object()) {
+                    return self.verification_asked(&squad, id, verification);
+                }
                 let asked = board::arg_strs(&args, "needs");
                 let permissions: Vec<crate::protocol::asks::Permission> =
                     board::arg_strs(&args, "permission").iter().filter_map(|p| crate::protocol::asks::Permission::parse(p)).collect();
@@ -9369,6 +9391,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
             role_models: self.journals.get(squad).map(Journal::role_models).unwrap_or_default(),
             secret_asks: self.secret_asks(squad).clone(),
             cli_sign_ins: self.cli_sign_in_cards(squad),
+            verifications: self.verification_cards(squad),
             login_offers: self.login_offers_now(),
             engine_proposals: self.engines.proposals(squad),
             hand_overs,

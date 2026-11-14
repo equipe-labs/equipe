@@ -161,6 +161,31 @@ impl std::fmt::Debug for MailboxDraft {
     }
 }
 
+/// Gmail connected as the mailbox verification codes are read from, as
+/// screens see it: the address, and the OAuth client it was granted to. The
+/// grant itself (a refresh token for `gmail.readonly`) is in the secret store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Gmail {
+    pub address: String,
+    pub client_id: String,
+}
+
+/// An OAuth client of the person's own (a "Desktop app" client in their
+/// Google Cloud project), for a build of equipe that has none: the secret
+/// goes once, to the secret store. Google calls a desktop client's secret
+/// one in name only, but it is kept like any other.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GmailClient {
+    pub id: String,
+    pub secret: String,
+}
+
+impl std::fmt::Debug for GmailClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GmailClient").field("id", &self.id).field("secret", &"•••").finish()
+    }
+}
+
 /// A credential equipe keeps for a command-line tool, so members' commands
 /// work without anyone signing in at a terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -242,6 +267,13 @@ impl std::fmt::Debug for CliLoginDraft {
 #[serde(default)]
 pub struct AutopilotStatus {
     pub mailbox: Option<Mailbox>,
+    /// Gmail, connected read-only for verification codes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gmail: Option<Gmail>,
+    /// This build carries an OAuth client for Gmail: Connect needs nothing
+    /// typed. Without one the person brings a client of their own.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub gmail_client_builtin: bool,
     /// The person lets equipe read codes from Messages.
     pub sms: bool,
     /// Whether equipe can read Messages now (Full Disk Access): `None` where
@@ -482,6 +514,10 @@ mod tests {
         assert!(!format!("{command:?}").contains("hunter2"));
         let mailbox = MailboxDraft { host: "imap.example.com".into(), port: 993, username: "me".into(), password: Some("app-pass".into()) };
         assert!(!format!("{mailbox:?}").contains("app-pass"));
+        let client = GmailClient { id: "123.apps.googleusercontent.com".into(), secret: "GOCSPX-shh".into() };
+        assert!(!format!("{client:?}").contains("GOCSPX-shh"));
+        let asked = crate::Command::ConnectGmail { client: Some(client) };
+        assert!(!format!("{asked:?}").contains("GOCSPX-shh"));
         let cli = CliLoginDraft { id: None, kind: CliKind::GhToken, name: "gh".into(), host: "github.com".into(), public: String::new(), squad: None, secret: Some("ghp_x".into()) };
         assert!(!format!("{cli:?}").contains("ghp_x"));
         let totp = crate::Command::SetLoginTotp { id: 1, secret: Some(crate::secrets::SecretValue("JBSWY3DPEHPK3PXP".into())) };

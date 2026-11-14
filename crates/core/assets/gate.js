@@ -39,8 +39,9 @@ function gate(lane, call) {
     const leaves = closing || ['browser_navigate', 'browser_navigate_back', 'browser_tabs'].includes(call.tool);
     if (leaves) return null;
     return {
-      text: 'This tab waits for a person (a "verify you are human" check, a sign-in or a code from their phone), and the person '
-        + 'was asked to do it. Don\'t try to get around it here. You may close this tab or go elsewhere in it if you no longer need '
+      text: 'This tab waits for a person (a "verify you are human" check, a sign-in or a verification code), and the person '
+        + 'was asked to do it. Don\'t try to get around it here, and never ask them for a code in chat: a code the site emailed is '
+        + 'filled from their mailbox on their click. You may close this tab or go elsewhere in it if you no longer need '
         + 'it, and your other tabs are yours; otherwise end your turn saying you wait for them — you\'ll be told when they hand it back.',
       wants: null,
       page: held,

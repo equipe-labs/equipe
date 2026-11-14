@@ -78,6 +78,8 @@ pub mod account {
     }
     /// The app password of the mailbox sites' codes come to.
     pub const MAILBOX: &str = "mailbox";
+    /// Gmail's read-only grant for verification codes (`crate::verify::gmail::Grant`, as JSON).
+    pub const GMAIL: &str = "mailbox.gmail";
     /// A command-line credential's token or key.
     pub fn cli(id: u32) -> String {
         format!("cli.{id}")
@@ -721,6 +723,24 @@ impl Vault {
         self.keep_settings()
     }
 
+    /// Gmail connected for verification codes: its grant to the secret store,
+    /// the address to `autopilot.json`; `None` forgets both.
+    pub fn save_gmail(&mut self, connected: Option<(crate::protocol::vault::Gmail, crate::verify::gmail::Grant)>) -> Result<(), String> {
+        let Some((gmail, grant)) = connected else {
+            self.secrets.delete_named(account::GMAIL)?;
+            self.settings.gmail = None;
+            return self.keep_settings();
+        };
+        self.secrets.set_named(account::GMAIL, &serde_json::to_string(&grant).map_err(|e| e.to_string())?)?;
+        self.settings.gmail = Some(gmail);
+        self.keep_settings()
+    }
+
+    /// Gmail's kept grant.
+    pub fn gmail_grant(&self) -> Result<crate::verify::gmail::Grant, String> {
+        serde_json::from_str(&self.secrets.get_named(account::GMAIL)?).map_err(|_| "Gmail's kept access is unreadable; connect it again".to_owned())
+    }
+
     pub fn set_sms(&mut self, on: bool) -> Result<(), String> {
         self.settings.sms = on;
         self.keep_settings()
@@ -1310,6 +1330,14 @@ mod tests {
         assert!(vault.save_cli(CliLoginDraft { id: None, kind: CliKind::Env, name: "bad name".into(), host: String::new(), public: String::new(), squad: None, secret: Some("x".into()) }, 1).is_err());
         vault.save_mailbox(None).unwrap();
         assert!(vault.secret(account::MAILBOX).is_err() && vault.settings.mailbox.is_none());
+        // Gmail: the grant to the secret store only, the address to the settings file.
+        let grant = crate::verify::gmail::Grant { client_id: "c.apps.googleusercontent.com".into(), client_secret: "GOCSPX-s".into(), refresh_token: "1//r-token".into() };
+        vault.save_gmail(Some((crate::protocol::vault::Gmail { address: "squad@example.com".into(), client_id: grant.client_id.clone() }, grant.clone()))).unwrap();
+        assert_eq!(vault.gmail_grant().unwrap(), grant);
+        let on_disk = std::fs::read_to_string(&vault.settings_file).unwrap();
+        assert!(on_disk.contains("squad@example.com") && !on_disk.contains("1//r-token") && !on_disk.contains("GOCSPX-s"), "{on_disk}");
+        vault.save_gmail(None).unwrap();
+        assert!(vault.gmail_grant().is_err() && vault.settings.gmail.is_none());
     }
 
     #[test]

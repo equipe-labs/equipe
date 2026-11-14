@@ -431,6 +431,8 @@ pub struct Model {
     pub secret_asks: Vec<equipe_core::protocol::secrets::SecretAsk>,
     /// Command-line sign-ins a member asked the person to finish on a card (`cli_sign_in`).
     pub cli_sign_ins: Vec<equipe_core::protocol::cli_signin::CliSignIn>,
+    /// Verification cards: a code a site emailed while a member's page waits on it (never the code).
+    pub verifications: Vec<equipe_core::protocol::verify::Verification>,
     /// equipe's offers to keep a login the person just signed in with by hand.
     pub login_offers: Vec<equipe_core::protocol::vault::LoginOffer>,
     /// The browser profiles besides the main one (other people's accounts).
@@ -640,6 +642,7 @@ impl Model {
             auto_put_away: true,
             secret_asks: Vec::new(),
             cli_sign_ins: Vec::new(),
+            verifications: Vec::new(),
             login_offers: Vec::new(),
             browser_profiles: Vec::new(),
             mode: Mode::default(),
@@ -1267,6 +1270,7 @@ impl Model {
         self.auto_put_away = !snapshot.auto_put_away_off;
         self.secret_asks = snapshot.secret_asks.clone();
         self.cli_sign_ins = snapshot.cli_sign_ins.clone();
+        self.verifications = snapshot.verifications.clone();
         self.login_offers = snapshot.login_offers.clone();
         self.routines = snapshot.routines.clone();
         self.reviews = snapshot.reviews.iter().map(|r| (r.ticket, r.clone())).collect();
@@ -1423,6 +1427,17 @@ impl Model {
             }
             Event::CliSignInClosed { squad, id } if *squad == self.squad => {
                 self.cli_sign_ins.retain(|c| c.id != *id);
+                self.revision += 1;
+            }
+            Event::VerificationChanged { squad, card } if *squad == self.squad => {
+                match self.verifications.iter_mut().find(|c| c.id == card.id) {
+                    Some(old) => *old = card.clone(),
+                    None => self.verifications.push(card.clone()),
+                }
+                self.revision += 1;
+            }
+            Event::VerificationClosed { squad, id } if *squad == self.squad => {
+                self.verifications.retain(|c| c.id != *id);
                 self.revision += 1;
             }
             Event::LoginOffered { offer } => {

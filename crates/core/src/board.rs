@@ -768,10 +768,22 @@ have done it. Your changes so far are kept. Then end your turn. The person reads
 alone, so it says what they must do — not what you do. Never list macOS privacy-permission steps \
 (System Settings panes, adding equipe's binary with +, restarting equipe): equipe's desktop tools hold Accessibility and \
 Screen Recording themselves, so use them for screenshots, clicks and dialogs; if one says a permission is missing, call \
-this with `permission` — the person gets one card with one button — and no steps.",
+this with `permission` — the person gets one card with one button — and no steps. When your browser's page asks \
+for a verification code the site emailed (GitHub's \"Confirm access\", Google's \"Verify it's you\") and no card came \
+up for it by itself, call this with `verification` and nothing else: the person gets one card that fills the code from \
+their mailbox on their click, your ticket stays yours, and you never see, ask for or type the code.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "verification": {
+                        "type": "object",
+                        "properties": {
+                            "site": { "type": "string", "description": "The site whose page asks for the code, by host (`github.com`)." },
+                            "channel": { "type": "string", "enum": ["email"], "description": "How the site sent the code. Only an emailed code is filled from the person's mailbox." },
+                        },
+                        "required": ["site"],
+                        "description": "Only for a verification code the site emailed while your browser's page waits on it. Then end your turn; you are told once the person confirmed access.",
+                    },
                     "permission": {
                         "type": "array",
                         "items": { "type": "string", "enum": ["accessibility", "screen_recording"] },

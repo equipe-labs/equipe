@@ -533,6 +533,10 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                 }),
                 // The Logins page on a sample, no daemon asked: `lseed` fills it, `logins[:add|open[:id]|password[:id]|month]` opens it.
                 "lseed" => shell.update(cx, |shell, cx| shell.snapshot_logins_seed(cx)),
+                // A verification card over the composer, no daemon asked: `verify[:waiting|fetching|nomail|filled|failed|nomailbox]`;
+                // the Connections row's mailbox: `vmailbox:<none|gmail|imap|form|connecting>`.
+                "verify" => shell.update(cx, |shell, cx| shell.snapshot_verify(&arg, cx)),
+                "vmailbox" => shell.update(cx, |shell, cx| shell.snapshot_mailbox(&arg, window, cx)),
                 "logins" => shell.update(cx, |shell, cx| shell.snapshot_logins(&arg, window, cx)),
                 // The sidebar this wide: `sidew:210`.
                 "sidew" => shell.update(cx, |shell, cx| {

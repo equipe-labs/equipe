@@ -174,6 +174,8 @@ impl Runtime {
         }
         AutopilotStatus {
             mailbox: settings.mailbox,
+            gmail: settings.gmail,
+            gmail_client_builtin: crate::verify::gmail::builtin().is_some(),
             sms: settings.sms,
             sms_access: self.autopilot.sms_access,
             keepalive_hours: settings.keepalive_hours,
@@ -961,7 +963,7 @@ pub(super) struct CodeJob {
 }
 
 /// Run one script in a page through the browser host's `fill`, and read its answer.
-async fn fill_once(host: &browser::SharedHost, waits: &logins::FillWaits, lane: &str, page: u64, script: String, token: u64) -> Result<vault::Filled, String> {
+pub(super) async fn fill_once(host: &browser::SharedHost, waits: &logins::FillWaits, lane: &str, page: u64, script: String, token: u64) -> Result<vault::Filled, String> {
     let (tx, rx) = oneshot::channel();
     waits.lock().map_err(|_| "stopped".to_owned())?.insert(token, tx);
     host.lock().map_err(|_| "the browser host is gone".to_owned())?.op(&json!({ "op": "fill", "lane": lane, "page": page, "script": script, "token": token }));

@@ -1873,6 +1873,9 @@ impl App {
                 | Event::SecretClosed { .. }
                 | Event::CliSignInChanged { .. }
                 | Event::CliSignInClosed { .. }
+                | Event::VerificationChanged { .. }
+                | Event::VerificationClosed { .. }
+                | Event::MailboxConnect { .. }
                 | Event::Allowed { .. }
                 | Event::Design { .. }
                 | Event::ProjectDocs { .. }
