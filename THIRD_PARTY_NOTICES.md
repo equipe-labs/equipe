@@ -47,3 +47,23 @@ projects; the full list of sources they draw on is in
   `redesign-screen` skill's job walk, its cap on changes per pass and its
   rules for placing a new part are adapted in `ui-review` and
   `ui-layout-and-states`.
+
+## Simple Icons — service logos
+
+- **What:** the single-path SVG logos under `crates/desktop/assets/brand/`
+  (Gmail, Anthropic, OpenAI, GitHub, Vercel, PostHog, Figma, Framer, and the
+  Claude and OpenAI marks the engine pickers use), drawn in the Logins ›
+  Connections list and the engine pickers as one-colour masks. The brand
+  colours equipe tints them with are the `hex` values in the same package.
+- **Project:** <https://github.com/simple-icons/simple-icons> (npm package
+  `simple-icons`)
+- **Version:** 16.37.0 for Gmail, Anthropic, GitHub, Vercel, PostHog, Figma,
+  Framer and Claude; the OpenAI file is an earlier copy of the same project's
+  icon (the package no longer ships it).
+- **License:** CC0 1.0 Universal (public domain dedication); no attribution is
+  required, and the files are used unmodified.
+- **Trademarks:** the logos are trademarks of their owners. They appear only to
+  identify the service a row is about; their presence does not imply any
+  endorsement of, or affiliation with, equipe. Services Simple Icons does not
+  carry (AWS, Mobbin, 21st.dev) and servers added by address get a monogram
+  (initials on a colour tile), not a logo.

@@ -27,7 +27,7 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::icons::{Icon, icon};
+use crate::icons::Icon;
 use crate::theme::{CONTROL, Palette, R_LG, R_MD, SMALL};
 use crate::ui::{self, Kind};
 use crate::Shell;
@@ -87,16 +87,26 @@ fn rows(shell: &Shell) -> Vec<Row> {
     out
 }
 
-/// The squad's MCP servers on their rows: a catalog one on its service's
-/// row, any other on a row of its own after the catalog's.
+/// The squad's MCP servers on their rows: a catalog one (added from the
+/// catalog, or by its official address) on its service's row, any other on a
+/// row of its own after the catalog's.
 fn add_mcp_rows(rows: &mut Vec<Row>, servers: &[McpServer], status: &[McpServerStatus]) {
     let status_of = |name: &str| status.iter().find(|s| s.name == name).cloned();
+    let mut shown: Vec<&str> = Vec::new();
     for row in rows.iter_mut().filter(|r| r.service.is_some_and(Service::is_mcp)) {
-        let server = servers.iter().find(|s| s.catalog.as_deref() == Some(row.id.as_str())).cloned();
+        // The one added from the catalog first, else one added by the same address.
+        let server = servers
+            .iter()
+            .find(|s| s.catalog.as_deref() == Some(row.id.as_str()))
+            .or_else(|| servers.iter().find(|s| squad_mcp::catalog_service(s).is_some_and(|c| c.id == row.id)));
+        if let Some(server) = server {
+            shown.push(server.name.as_str());
+        }
+        let server = server.cloned();
         let status = server.as_ref().and_then(|s| status_of(&s.name));
         row.mcp = Some(McpRow { server, status });
     }
-    for server in servers.iter().filter(|s| squad_mcp::service_of(s).is_none()) {
+    for server in servers.iter().filter(|s| !shown.contains(&s.name.as_str())) {
         rows.push(Row {
             id: format!("mcp:{}", server.name),
             label: server.name.clone(),
@@ -295,7 +305,7 @@ fn row_view(shell: &Shell, row: &Row, divider: bool, cx: &mut Context<Shell>) ->
                 .py_3()
                 .gap_3()
                 .items_center()
-                .child(div().flex_none().size(px(32.)).flex().items_center().justify_center().rounded(px(8.)).bg(p.wash).child(icon(Icon::Plug, 14., p.text2)))
+                .child(crate::brands::tile(p, &crate::brands::mark_of(row.service, &row.label)))
                 .child(
                     v_flex()
                         .flex_1()
@@ -380,7 +390,7 @@ fn mcp_row_view(shell: &Shell, row: &Row, mcp: &McpRow, used: Option<String>, di
                 .py_3()
                 .gap_3()
                 .items_center()
-                .child(div().flex_none().size(px(32.)).flex().items_center().justify_center().rounded(px(8.)).bg(p.wash).child(icon(Icon::Server, 14., p.text2)))
+                .child(crate::brands::tile(p, &crate::brands::mark_of(row.service, &row.label)))
                 .child(
                     v_flex()
                         .flex_1()
@@ -527,7 +537,7 @@ mod tests {
         add_mcp_rows(&mut rows, &[], &[]);
         let mobbin = rows.iter().find(|r| r.id == "mobbin").unwrap();
         assert!(mobbin.mcp.as_ref().is_some_and(|m| m.server.is_none()), "not connected yet: Connect");
-        assert!(rows.iter().filter(|r| !["mobbin", "21st"].contains(&r.id.as_str())).all(|r| r.mcp.is_none()));
+        assert!(rows.iter().filter(|r| !["mobbin", "21st", "figma", "framer"].contains(&r.id.as_str())).all(|r| r.mcp.is_none()));
         assert!(rows.iter().any(|r| r.id == "21st" && r.mcp.as_ref().is_some_and(|m| m.server.is_none())), "21st.dev too: Connect");
         let servers = vec![equipe_core::squad_mcp::server("mobbin", None, None, None).unwrap(), equipe_core::squad_mcp::server("docs", Some("https://docs.example.com/mcp"), None, None).unwrap()];
         let status = vec![McpServerStatus { name: "mobbin".into(), engines: vec![McpEngineStatus { engine: Engine::Claude, state: McpState::NeedsSignIn, detail: None, checked_at: 1 }] }];
@@ -538,6 +548,25 @@ mod tests {
         let docs = rows.last().unwrap();
         assert_eq!((docs.id.as_str(), docs.label.as_str()), ("mcp:docs", "docs"));
         assert_eq!(rows.len(), CATALOG.len() + 1);
+    }
+
+    #[test]
+    fn a_server_added_by_the_figma_or_framer_address_is_on_their_catalog_row() {
+        use equipe_core::squad_mcp::{catalog_service, server};
+        let figma = server("design-files", Some("https://mcp.figma.com/mcp"), None, None).unwrap();
+        let framer = server("sites", Some("https://mcp.framer.com/mcp/"), None, None).unwrap();
+        assert!(figma.catalog.is_none() && framer.catalog.is_none(), "added by address, not from the catalog");
+        assert_eq!((catalog_service(&figma).map(|s| s.id), catalog_service(&framer).map(|s| s.id)), (Some("figma"), Some("framer")));
+        assert!(catalog_service(&server("docs", Some("https://docs.example.com/mcp"), None, None).unwrap()).is_none());
+        // Another host of the same brand is not its official server.
+        assert!(catalog_service(&server("figma-docs", Some("https://docs.figma.com/mcp"), None, None).unwrap()).is_none());
+        let other = server("docs", Some("https://docs.example.com/mcp"), None, None).unwrap();
+        let mut rows = rows_of("acme", &[], &[]);
+        add_mcp_rows(&mut rows, &[figma, framer, other], &[]);
+        assert_eq!(rows.len(), CATALOG.len() + 1);
+        let on = |id: &str| rows.iter().find(|r| r.id == id).unwrap().mcp.as_ref().and_then(|m| m.server.as_ref()).map(|s| s.name.clone());
+        assert_eq!((on("figma"), on("framer")), (Some("design-files".to_owned()), Some("sites".to_owned())));
+        assert_eq!(rows.last().unwrap().id, "mcp:docs");
     }
 
     #[test]

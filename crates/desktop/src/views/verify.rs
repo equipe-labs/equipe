@@ -424,7 +424,7 @@ pub fn mailbox_row(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                 .gap_3()
                 .items_center()
                 .flex_wrap()
-                .child(div().flex_none().size(px(32.)).flex().items_center().justify_center().rounded(px(8.)).bg(p.wash).child(icon(Icon::Inbox, 14., p.text2)))
+                .child(crate::brands::tile(p, &crate::brands::catalog_mark(crate::brands::MAILBOX).expect("the mailbox has its mark")))
                 .child(
                     v_flex()
                         .flex_1()
