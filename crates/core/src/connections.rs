@@ -193,10 +193,10 @@ pub fn tool() -> Value {
 key, a GitHub token, a PostHog personal key. They see ONE card: what it is for, a button that opens the page where they create it, \
 your hint on what to create, and a masked box to paste it into; equipe keeps it in this machine's secret store under `name`. \
 You never see the value and it never passes through the conversation. When they save it you are told `saved as <name>` and carry \
-on: use it with `secret_use` or `secret_write`. Use this instead of writing steps for them, and never ask for a key in chat. \
-equipe never creates or rotates a key at the provider for you, and never touches billing. A website sign-in (a person's account, \
-not a key) is `sign_in`, not this. For a service in equipe's catalog (anthropic, openai, github, vercel, posthog) `create_url` can be \
-left out; for any other, give its key page as `create_url` (https).",
+on: use it with `secret_use` or `secret_write`; never ask for a key in chat. Every request carries `steps` (numbered on the card) \
+and the exact page as `create_url`: a card without them is refused. equipe never creates or rotates a key at the provider for you, \
+and never touches billing. A website sign-in (a person's account, not a key) is `sign_in`, not this. For a service in equipe's \
+catalog (anthropic, github, vercel, posthog) `create_url` is filled in when left out; for any other, give its key page (https).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -204,13 +204,68 @@ left out; for any other, give its key page as `create_url` (https).",
                 "service": { "type": "string", "description": "The service: `anthropic`, `github`, or a site (`app.example.com`)." },
                 "kind": { "type": "string", "enum": kinds, "description": "What it is." },
                 "why": { "type": "string", "description": "What it is for, in a line in the person's language: \"read API-key metadata, usage and cost reports\"." },
-                "create_url": { "type": "string", "description": "The page where the person creates it (https). Left out: the catalog's page for the service." },
+                "steps": steps_schema("what the person does to create and copy it"),
+                "create_url": { "type": "string", "description": "The exact page where the person creates it (https, a real site: no credentials, port, IP or localhost). Required; left out only for a catalog service (the catalog's page is used)." },
+                "no_page": no_page_schema(),
                 "scopes_hint": { "type": "string", "description": "What to create there, in a short line in the person's language: \"read-only / usage scope\"." },
                 "projects": { "type": "array", "items": { "type": "string" }, "description": "The squad's projects whose work may use it, by name. Left out: the project of your ticket." },
             },
-            "required": ["name", "service", "kind", "why"],
+            "required": ["name", "service", "kind", "why", "steps"],
         },
     })
+}
+
+/// At most this many steps on one card.
+pub const MOST_STEPS: usize = 8;
+
+/// The schema of a `steps` argument, shared by `ask_secret` and `request_secret`.
+pub fn steps_schema(what: &str) -> Value {
+    json!({
+        "type": "array",
+        "items": { "type": "string" },
+        "minItems": 1,
+        "maxItems": MOST_STEPS,
+        "description": format!("Required. {what}: 1 to {MOST_STEPS} short imperative lines in the person's language, in order, naming the exact menu items and buttons (\"Open Settings > Admin keys\", \"Click Create key\", \"Copy the key: it is shown once\"). The card numbers them; an address inside a step becomes a link."),
+    })
+}
+
+/// The schema of a `no_page` argument, shared by `ask_secret` and `request_secret`.
+pub fn no_page_schema() -> Value {
+    json!({ "type": "boolean", "description": "Only when the secret has no web page at all (a local NAS password): then no url is needed, and `steps` must say where to find it. Anything from a website or console needs its page as the url." })
+}
+
+/// The guide a card carries: what to do, and the page to do it on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Guide {
+    pub steps: Vec<String>,
+    /// The page the secret comes from.
+    pub url: Option<String>,
+    /// The service's sign-in page, when it differs from `url`.
+    pub sign_in_url: Option<String>,
+}
+
+/// Check the guide of a call: `steps` (1 to 8 lines), and the page under
+/// `url_key` — else the catalog's key page for `service`. A call without
+/// steps, or from a website without its page, is refused with what to add.
+pub fn check_guide(args: &Value, service: &str, url_key: &str) -> Result<Guide, String> {
+    let given: Vec<String> = match args.get("steps") {
+        Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).map(|s| s.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|s| !s.is_empty()).collect(),
+        _ => Vec::new(),
+    };
+    if given.is_empty() || given.len() > MOST_STEPS {
+        return Err(format!("Add `steps`: 1 to {MOST_STEPS} short imperative lines saying what the person does, in order, in their language, naming the exact menu items and buttons — the card shows them numbered. A request without them is refused."));
+    }
+    let steps = given.into_iter().map(|s| s.chars().take(300).collect()).collect();
+    let catalog = Service::of(service);
+    let said = args.get(url_key).and_then(Value::as_str).map(str::trim).unwrap_or_default();
+    let url = if said.is_empty() { catalog.and_then(|s| s.key_url).map(str::to_owned) } else { Some(clean_url(said)?) };
+    let no_page = args.get("no_page").and_then(Value::as_bool).unwrap_or(false);
+    if url.is_none() && !no_page {
+        return Err(format!("Add `{url_key}`: the exact https page where the person gets it (the key page of the service's console). The card opens it with one button. Only a secret with no web page at all (a local NAS password) may leave it out: set `no_page` to true and say in `steps` where to find it."));
+    }
+    // The sign-in page as a second link, when the page is a service's own.
+    let sign_in_url = catalog.or_else(|| url.as_deref().and_then(Service::of)).and_then(|s| s.sign_in_url).map(str::to_owned).filter(|s| url.as_ref() != Some(s));
+    Ok(Guide { steps, url, sign_in_url })
 }
 
 /// A `request_secret` call, checked.
@@ -221,6 +276,8 @@ pub struct Request {
     pub kind: SecretKind,
     pub why: String,
     pub create_url: Option<String>,
+    pub sign_in_url: Option<String>,
+    pub steps: Vec<String>,
     pub scopes_hint: Option<String>,
     pub projects: Option<Vec<String>>,
 }
@@ -240,13 +297,12 @@ pub fn check_request(args: &Value) -> Result<Request, String> {
     if why.is_empty() {
         return Err("Say in `why` what it is for, in a line.".into());
     }
-    let create_url = match text("create_url") {
-        given if !given.is_empty() => Some(clean_url(&given)?),
-        _ => Service::of(&service).and_then(|s| s.key_url).map(str::to_owned),
-    };
+    // `url` is taken as `create_url` too: both name the page.
+    let key = if text("create_url").is_empty() && !text("url").is_empty() { "url" } else { "create_url" };
+    let Guide { steps, url: create_url, sign_in_url } = check_guide(args, &service, key)?;
     let scopes_hint = Some(text("scopes_hint")).filter(|h| !h.is_empty()).map(|h| h.chars().take(300).collect());
     let projects = args.get("projects").map(|_| crate::board::arg_strs(args, "projects"));
-    Ok(Request { name, service, kind, why: why.chars().take(300).collect(), create_url, scopes_hint, projects })
+    Ok(Request { name, service, kind, why: why.chars().take(300).collect(), create_url, sign_in_url, steps, scopes_hint, projects })
 }
 
 /// A page address to open on the person's screen: https, a real host, no
@@ -310,19 +366,59 @@ mod tests {
         assert!(Service::of("example.com").is_none() && Service::of("").is_none());
     }
 
+    const STEPS: [&str; 2] = ["Open Settings > Admin keys", "Click Create key and copy it"];
+
     #[test]
     fn a_request_is_checked_and_its_page_must_be_an_https_site() {
-        let ok = check_request(&json!({ "name": "anthropic-admin-key", "service": "anthropic", "kind": "api_key", "why": "usage reports" })).unwrap();
+        let ok = check_request(&json!({ "name": "anthropic-admin-key", "service": "anthropic", "kind": "api_key", "why": "usage reports", "steps": STEPS })).unwrap();
         assert_eq!(ok.create_url.as_deref(), Some("https://platform.claude.com/settings/admin-keys"), "the catalog's page");
-        let own = check_request(&json!({ "name": "k", "service": "acme", "kind": "token", "why": "x", "create_url": "https://acme.example.com/keys?x=1", "scopes_hint": " read only " })).unwrap();
-        assert_eq!((own.create_url.as_deref(), own.scopes_hint.as_deref()), (Some("https://acme.example.com/keys?x=1"), Some("read only")));
-        let none = check_request(&json!({ "name": "k", "service": "acme", "kind": "token", "why": "x" })).unwrap();
-        assert!(none.create_url.is_none());
+        assert_eq!(ok.sign_in_url.as_deref(), Some("https://platform.claude.com/"), "and its sign-in as a second link");
+        assert_eq!(ok.steps, STEPS);
+        let own = check_request(&json!({ "name": "k", "service": "acme", "kind": "token", "why": "x", "steps": STEPS, "create_url": "https://acme.example.com/keys?x=1", "scopes_hint": " read only " })).unwrap();
+        assert_eq!((own.create_url.as_deref(), own.scopes_hint.as_deref(), own.sign_in_url.is_none()), (Some("https://acme.example.com/keys?x=1"), Some("read only"), true));
+        // `url` names the page as well as `create_url`.
+        let by_url = check_request(&json!({ "name": "k", "service": "acme", "kind": "token", "why": "x", "steps": STEPS, "url": "https://acme.example.com/keys" })).unwrap();
+        assert_eq!(by_url.create_url.as_deref(), Some("https://acme.example.com/keys"));
         for bad in ["http://acme.example.com", "javascript:alert(1)", "file:///etc/passwd", "https://user:pw@acme.example.com", "https://acme.example.com:8443/", "https://localhost/", "https://127.0.0.1/", "https://acme.example.com/a b", "acme.example.com"] {
-            assert!(check_request(&json!({ "name": "k", "service": "acme", "kind": "token", "why": "x", "create_url": bad })).is_err(), "{bad}");
+            assert!(check_request(&json!({ "name": "k", "service": "acme", "kind": "token", "why": "x", "steps": STEPS, "create_url": bad })).is_err(), "{bad}");
         }
         for missing in [json!({ "service": "a", "kind": "token", "why": "x" }), json!({ "name": "k", "kind": "token", "why": "x" }), json!({ "name": "k", "service": "a", "why": "x" }), json!({ "name": "k", "service": "a", "kind": "token" }), json!({ "name": "bad name", "service": "a", "kind": "token", "why": "x" })] {
-            assert!(check_request(&missing).is_err(), "{missing}");
+            let mut args = missing.clone();
+            args["steps"] = json!(STEPS);
+            args["create_url"] = json!("https://a.example.com/k");
+            assert!(check_request(&args).is_err(), "{missing}");
+        }
+    }
+
+    #[test]
+    fn a_request_without_steps_or_without_a_page_is_refused_with_what_to_add() {
+        let base = json!({ "name": "k", "service": "acme", "kind": "token", "why": "x" });
+        let with = |extra: Value| {
+            let mut args = base.clone();
+            args.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            check_request(&args)
+        };
+        let no_steps = with(json!({ "create_url": "https://acme.example.com/keys" })).unwrap_err();
+        assert!(no_steps.contains("`steps`"), "{no_steps}");
+        assert!(with(json!({ "create_url": "https://acme.example.com/keys", "steps": [] })).is_err());
+        // A service outside the catalog, no page: refused, saying `create_url` and the one way out.
+        let no_url = with(json!({ "steps": STEPS })).unwrap_err();
+        assert!(no_url.contains("`create_url`") && no_url.contains("no_page"), "{no_url}");
+        assert!(with(json!({ "steps": STEPS, "no_page": true })).unwrap().create_url.is_none());
+        // OpenAI is in the catalog but its docs name no address: still needs one from the member.
+        assert!(check_request(&json!({ "name": "k", "service": "openai", "kind": "api_key", "why": "x", "steps": STEPS })).is_err());
+    }
+
+    #[test]
+    fn both_tools_require_steps_in_their_schema_and_say_so() {
+        for (tool, url_key) in [(tool(), "create_url"), (crate::secrets::tool(), "url")] {
+            let required: Vec<&str> = tool["inputSchema"]["required"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+            assert!(required.contains(&"steps"), "{tool}");
+            let steps = &tool["inputSchema"]["properties"]["steps"];
+            assert_eq!((steps["minItems"].as_u64(), steps["maxItems"].as_u64()), (Some(1), Some(8)));
+            assert!(tool["inputSchema"]["properties"][url_key].is_object() && tool["inputSchema"]["properties"]["no_page"].is_object());
+            let said = tool["description"].as_str().unwrap();
+            assert!(said.contains("`steps`") && said.contains("refused"), "{said}");
         }
     }
 

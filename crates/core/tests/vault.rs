@@ -145,16 +145,21 @@ async fn a_secret_the_person_types_goes_to_its_file_and_never_to_the_member() {
     let ask = |args: serde_json::Value| handle.tool(ToolCall { run: None, squad: "acme".into(), member: "backend".into(), name: "ask_secret".into(), arguments: args });
 
     // Somewhere keys already live: refused, said why.
-    let ssh = ask(json!({ "why": "NAS", "save_to": "~/.ssh/nas", "fields": [{ "key": "NAS_PASSWORD", "label": "비밀번호", "secret": true }] })).await;
+    let ssh = ask(json!({ "why": "NAS", "save_to": "~/.ssh/nas", "no_page": true, "steps": ["Read it off the NAS label"], "fields": [{ "key": "NAS_PASSWORD", "label": "비밀번호", "secret": true }] })).await;
     assert!(ssh.is_error && ssh.text.contains("keys and logins already live"), "{ssh:?}");
 
     // Asked: a card for the person; the member carries on meanwhile.
-    let asked = ask(json!({ "why": "NAS 매일 자동 수집", "save_to": "~/.config/atinum/nas.env",
+    // Without steps the card is refused, whatever else is right.
+    let bare = ask(json!({ "why": "NAS", "save_to": "~/.config/atinum/nas.env", "no_page": true, "fields": [{ "key": "NAS_PASSWORD", "label": "x", "secret": true }] })).await;
+    assert!(bare.is_error && bare.text.contains("`steps`"), "{bare:?}");
+    assert!(handle.snapshot("acme").await.secret_asks.is_empty());
+    let asked = ask(json!({ "why": "NAS 매일 자동 수집", "save_to": "~/.config/atinum/nas.env", "no_page": true, "steps": ["NAS 본체 라벨에서 비밀번호를 확인하세요"],
         "fields": [{ "key": "NAS_USER", "label": "NAS 아이디" }, { "key": "NAS_PASSWORD", "label": "비밀번호", "secret": true }] })).await;
     assert!(!asked.is_error && asked.text.contains("you never see the values"), "{asked:?}");
     let seen = until(&mut events, |e| matches!(e, Event::SecretAsked { .. })).await;
     let Some(Event::SecretAsked { ask: card, .. }) = seen.last().cloned() else { panic!() };
     assert_eq!((card.member.as_str(), card.save_to.as_str(), card.fields.len()), ("backend", "~/.config/atinum/nas.env", 2));
+    assert_eq!((card.steps.len(), card.url.is_none()), (1, true), "a local password has steps and no page");
     assert_eq!(handle.snapshot("acme").await.secret_asks, vec![card.clone()], "a screen attaching sees it");
 
     // The person types it: saved to the file, readable by them alone; the card closes; the

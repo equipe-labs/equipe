@@ -49,6 +49,9 @@ impl Runtime {
             save_to: asked.shown.clone(),
             at: now_secs(),
             store: None,
+            steps: asked.guide.steps,
+            url: asked.guide.url,
+            sign_in_url: asked.guide.sign_in_url,
         };
         self.secret_asks(squad).retain(|a| !(a.session == id && a.save_to == ask.save_to));
         self.secret_asks(squad).push(ask.clone());
@@ -70,10 +73,11 @@ waiting for."
         let existing = self.journal(squad).map(ks::read).unwrap_or_default().into_iter().find(|s| s.name == asked.name);
         let projects = self.key_projects(squad, id, &asked.projects, existing.as_ref())?;
         let ticket = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
-        let store = SecretStore { name: asked.name.clone(), service: asked.service, kind: asked.kind, projects, create_url: asked.create_url, scopes_hint: asked.scopes_hint };
-        self.put_store_card(squad, member, id, ticket, asked.why, store);
+        let store = SecretStore { name: asked.name.clone(), service: asked.service, kind: asked.kind, projects, create_url: asked.create_url.clone(), scopes_hint: asked.scopes_hint };
+        let guide = crate::connections::Guide { steps: asked.steps, url: asked.create_url, sign_in_url: asked.sign_in_url };
+        self.put_store_card(squad, member, id, ticket, asked.why, store, guide);
         Ok(format!(
-            "The person is asked on a card to add {}: a button opens the key's page, a masked box takes the paste, and equipe keeps it in \
+            "The person is asked on a card to add {}: your numbered steps, a button that opens the key's page, a masked box takes the paste, and equipe keeps it in \
 this machine's secret store under that name — you never see the value. When they save it you are told `saved as {}` and carry on \
 (`secret_use` or `secret_write`). Meanwhile go on with what doesn't need it, or end your turn saying in a line what you're waiting for.",
             asked.name, asked.name
@@ -93,10 +97,13 @@ this machine's secret store under that name — you never see the value. When th
             create_url: found.key_url.map(str::to_owned),
             scopes_hint: None,
         };
-        self.put_store_card(squad, "", 0, None, String::new(), store);
+        // No member's steps here: the screen shows the catalog's own, in the person's language.
+        let guide = crate::connections::Guide { steps: Vec::new(), url: store.create_url.clone(), sign_in_url: found.sign_in_url.map(str::to_owned).filter(|s| store.create_url.as_ref() != Some(s)) };
+        self.put_store_card(squad, "", 0, None, String::new(), store, guide);
     }
 
-    fn put_store_card(&mut self, squad: &str, member: &str, id: SessionId, ticket: Option<TicketId>, why: String, store: SecretStore) {
+    #[allow(clippy::too_many_arguments)]
+    fn put_store_card(&mut self, squad: &str, member: &str, id: SessionId, ticket: Option<TicketId>, why: String, store: SecretStore, guide: crate::connections::Guide) {
         let title = crate::connections::title_of(&store.name, &store.service);
         let ask = SecretAsk {
             id: now_secs() * 1000 + self.secret_asks(squad).len() as u64,
@@ -108,6 +115,9 @@ this machine's secret store under that name — you never see the value. When th
             save_to: String::new(),
             at: now_secs(),
             store: Some(store.clone()),
+            steps: guide.steps,
+            url: guide.url,
+            sign_in_url: guide.sign_in_url,
         };
         // Asked again for the same key: the old card is replaced.
         self.secret_asks(squad).retain(|a| a.store.as_ref().is_none_or(|s| s.name != store.name));

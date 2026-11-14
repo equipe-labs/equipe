@@ -379,6 +379,21 @@ sign-ins), kept in the secret store:
   environment values, `$KEY` in every member turn that starts after; a file is
   written too only when the member names one (`save_to`) for a program equipe
   doesn't run.
+- **Every secret request carries a guide**, `ask_secret` and `request_secret`
+  alike: `steps` (1 to 8 short imperative lines, in the person's language) and
+  the page the secret comes from (`url` / `create_url`, https, a real host: no
+  credentials, port, IP, localhost, `javascript:` or `file:`). A call without
+  steps, or a website's secret without its page, is refused with what to add,
+  so a card never appears bare; only a secret with no web page at all (a local
+  NAS password, `no_page: true`) may leave the page out, and its steps say where
+  to find it. For a catalog service (Connections) a missing page is filled with
+  the catalog's key page, and its sign-in page rides along as a second link. The
+  card shows the purpose, the numbered steps (an address inside a step gets its
+  own button), a primary **Open <host>** button, **Copy link**, then the masked
+  field and Save. The button runs in the desktop app, so it opens on the screen
+  the person is looking at even when the daemon is on another Mac. A card the
+  person starts from Connections has no member's steps: it shows the catalog's
+  own (`connections.svc.<id>.steps` in the locale files).
 
 **`cli_sign_in`** (a member's tool) is the hand-off for a CLI sign-in the
 person has to finish and no machine credential covers. equipe runs the tool's
