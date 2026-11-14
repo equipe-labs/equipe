@@ -1462,6 +1462,8 @@
   "usage.row_lanes": "  {name}: {tokens} · {share}% · 턴: {turns} · 레인: {lanes}",
   "usage.row_context": "  {name}: {tokens} · {share}% · 턴: {turns} · 호출당: {context}",
   "usage.ticket_row": "  T-{id} {title}: {tokens} · 턴: {turns} · {status}",
+  "usage.premium": "프리미엄 모델(Fable, Opus의 몇 배 비용): 토큰 {tokens} (전체의 {share}%), 티켓별:",
+  "usage.premium_row": "  T-{id} {title}: 프리미엄 {premium} / 전체 {tokens} · {status}",
   "usage.kind.pm_desk": "PM 데스크(티켓 없음)",
   "usage.kind.member_on_ticket": "티켓을 맡은 멤버",
   "usage.kind.lane_on_ticket": "티켓을 맡은 레인",

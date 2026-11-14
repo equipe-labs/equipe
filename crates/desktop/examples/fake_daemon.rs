@@ -1128,6 +1128,17 @@ fn on_board_command(command: &Command) -> Option<Vec<Event>> {
             t.model = Some(set);
             Some(vec![changed(t)])
         }
+        // One ticket's own model, as the daemon keeps it.
+        Command::SetTicketModel { ticket, model, .. } => {
+            let t = all.iter_mut().find(|t| t.id == *ticket)?;
+            let mut set = equipe_core::tiers::set_pick(t.model.as_ref(), model.as_deref(), "you", 1_794_000_000).ok()?;
+            if let Some(p) = &set.pick {
+                set.model = Some(p.model.clone());
+                set.premium_tokens = if p.model == "fable" { 1_240_000 } else { 0 };
+            }
+            t.model = Some(set);
+            Some(vec![changed(t)])
+        }
         Command::EditTicket { ticket, changes, .. } => {
             if let Some(deps) = &changes.depends_on
                 && let Some(path) = equipe_core::board::dependency_loop(&all, *ticket, deps)

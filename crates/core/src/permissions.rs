@@ -87,6 +87,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::SetParallel { .. }
         | C::SetModelChoice { .. }
         | C::SetTicketTier { .. }
+        | C::SetTicketModel { .. }
         | C::SetDesignReviewer { .. }
         | C::Scale { .. }
         | C::SetIdleWake { .. }

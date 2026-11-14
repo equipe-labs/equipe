@@ -210,6 +210,21 @@ pub enum TierBy {
     Rule,
 }
 
+/// A model the person chose for one ticket alone ([`TicketModel::pick`]).
+/// Honoured by every lane and run of that ticket, the premium family
+/// included; never carried to another ticket or to the member.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelPick {
+    /// A Claude family alias: `haiku`, `sonnet`, `opus` or `fable`.
+    pub model: String,
+    /// Who chose it: `you` for the person, the name of the one who said so.
+    #[serde(default)]
+    pub by: String,
+    /// When, in seconds since the epoch.
+    #[serde(default)]
+    pub at: i64,
+}
+
 /// A ticket's tier, and what its latest lane ran on. Absent: the ticket
 /// runs on its member's own model.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,9 +269,21 @@ pub struct TicketModel {
     /// kinds of tickets run on which tier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classified: Option<TierReason>,
+    /// The model the person chose for this ticket alone, over its tier's.
+    /// Cleared when the ticket closes or the person lets it go.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pick: Option<ModelPick>,
+    /// Tokens this ticket's turns spent on the premium family, whenever they
+    /// ran (kept after the pick is cleared).
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub premium_tokens: u64,
 }
 
 fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+fn is_zero_u64(n: &u64) -> bool {
     *n == 0
 }
 

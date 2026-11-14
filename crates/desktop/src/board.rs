@@ -1072,6 +1072,31 @@ pub fn tier_command(squad: &str, t: &Ticket, act: TierAct) -> Option<Command> {
     (!same).then(|| Command::SetTicketTier { squad: squad.to_owned(), ticket: t.id, tier, pinned })
 }
 
+/// The models a ticket's own menu offers, strongest first: Claude's families.
+pub const PICKABLE: [&str; 4] = ["fable", "opus", "sonnet", "haiku"];
+
+/// Whether `alias` is the premium family: costly, so said as such on its row.
+pub fn is_premium_alias(alias: &str) -> bool {
+    alias == equipe_core::tiers::PREMIUM_FAMILY
+}
+
+/// What a family's row in the ticket model menu says of it.
+pub fn pick_hint(alias: &str) -> String {
+    match alias {
+        "fable" => t!("tier.pick_fable").to_owned(),
+        "opus" => t!("tier.pick_opus").to_owned(),
+        "sonnet" => t!("tier.pick_sonnet").to_owned(),
+        _ => t!("tier.pick_haiku").to_owned(),
+    }
+}
+
+/// The command a pick from a ticket's model menu sends for `t`, if it
+/// changes anything: `pick` for this ticket alone, or none to give it back.
+pub fn model_pick_command(squad: &str, t: &Ticket, pick: Option<&str>) -> Option<Command> {
+    let now = t.model.as_ref().and_then(|m| m.pick.as_ref()).map(|p| p.model.as_str());
+    (now != pick).then(|| Command::SetTicketModel { squad: squad.to_owned(), ticket: t.id, model: pick.map(str::to_owned) })
+}
+
 /// The person who does a ticket's work: whom C talks to.
 pub fn who(t: &Ticket) -> Option<&str> {
     t.assignee.as_deref().or(t.owner.as_deref())
@@ -1450,6 +1475,20 @@ mod tests {
         assert_eq!(tier_command("acme", &t, TierAct::Lower), set(Some(ModelTier::Deep), true));
         assert_eq!(tier_command("acme", &t, TierAct::Pin), set(Some(ModelTier::Max), false), "a pin let go");
         assert_eq!(tier_command("acme", &t, TierAct::Auto), set(None, false));
+    }
+
+    #[test]
+    fn the_ticket_model_menu_offers_fable_marked_with_its_cost_and_sends_one_pick_per_change() {
+        use equipe_core::protocol::tiers::{ModelPick, TicketModel};
+        assert_eq!(PICKABLE[0], "fable");
+        assert!(is_premium_alias("fable") && !is_premium_alias("opus"));
+        assert!(pick_hint("fable").to_lowercase().contains("opus"), "{}", pick_hint("fable"));
+        let mut t = ticket(7, "todo", "web", &[]);
+        assert_eq!(model_pick_command("acme", &t, Some("fable")), Some(Command::SetTicketModel { squad: "acme".into(), ticket: 7, model: Some("fable".into()) }));
+        assert_eq!(model_pick_command("acme", &t, None), None, "nothing picked: nothing to let go");
+        t.model = Some(TicketModel { pick: Some(ModelPick { model: "fable".into(), by: "you".into(), at: 1 }), ..TicketModel::default() });
+        assert_eq!(model_pick_command("acme", &t, Some("fable")), None, "already so");
+        assert_eq!(model_pick_command("acme", &t, None), Some(Command::SetTicketModel { squad: "acme".into(), ticket: 7, model: None }));
     }
 
     fn ticket(id: u32, status: &str, project: &str, deps: &[u32]) -> Ticket {

@@ -156,6 +156,10 @@ fn ticket_line(t: &TicketRow) -> String {
     t!("usage.ticket_row", id = t.id, title = t.title, tokens = amount(t.tokens), turns = t.turns, status = t.status)
 }
 
+fn premium_line(t: &TicketRow) -> String {
+    t!("usage.premium_row", id = t.id, title = t.title, premium = amount(t.premium_tokens), tokens = amount(t.tokens), status = t.status)
+}
+
 fn counts(rows: &[(String, u64)]) -> String {
     if rows.is_empty() { "–".to_owned() } else { rows.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(", ") }
 }
@@ -199,6 +203,10 @@ pub(crate) fn text(squad: &str, since: &str, r: &Report) -> String {
     section(&mut out, t!("usage.by_kind").to_owned(), r.by_kind.iter().map(|m| line(&kind_word(&m.name), m)).collect());
     section(&mut out, t!("usage.context").to_owned(), r.context.iter().map(bucket_line).collect());
     section(&mut out, t!("usage.top_tickets").to_owned(), r.top_tickets.iter().map(ticket_line).collect());
+    if r.premium_tokens > 0 {
+        let share = format!("{:.1}", r.premium_tokens as f64 * 100.0 / r.tokens.total.max(1) as f64);
+        section(&mut out, t!("usage.premium", tokens = amount(r.premium_tokens), share = share), r.premium_tickets.iter().map(premium_line).collect());
+    }
     if r.cancelled_tokens > 0 {
         out.push(String::new());
         out.push(t!("usage.cancelled", tokens = amount(r.cancelled_tokens), share = format!("{:.1}", r.cancelled_share_percent)));

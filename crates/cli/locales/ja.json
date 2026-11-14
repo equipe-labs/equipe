@@ -1462,6 +1462,8 @@
   "usage.row_lanes": "  {name}: {tokens} · {share}% · ターン: {turns} · レーン: {lanes}",
   "usage.row_context": "  {name}: {tokens} · {share}% · ターン: {turns} · 1回あたり: {context}",
   "usage.ticket_row": "  T-{id} {title}: {tokens} · ターン: {turns} · {status}",
+  "usage.premium": "プレミアムモデル（Fable、Opus の数倍のコスト）: {tokens} トークン（全体の {share}%）、チケット別:",
+  "usage.premium_row": "  T-{id} {title}: プレミアム {premium} / 全体 {tokens} · {status}",
   "usage.kind.pm_desk": "PMのデスク(チケットなし)",
   "usage.kind.member_on_ticket": "チケットに取り組むメンバー",
   "usage.kind.lane_on_ticket": "チケットに取り組むレーン",

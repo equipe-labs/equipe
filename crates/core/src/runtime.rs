@@ -1967,11 +1967,25 @@ impl Runtime {
         }
         // A ticket closing, however it closed (the person's word, the PM's, a
         // designer's verdict, a member leaving): its lane's temporary folder goes.
-        if let Event::TicketChanged { squad, ticket } = &event {
+        let mut event = event;
+        if let Event::TicketChanged { squad, ticket } = &mut event {
             if !ticket.status.is_closed() {
                 self.closed_seen.remove(&(squad.clone(), ticket.id));
-            } else if self.closed_seen.insert((squad.clone(), ticket.id)) {
-                self.clear_lane_tmp_of(squad, ticket.id);
+            } else {
+                let first = self.closed_seen.insert((squad.clone(), ticket.id));
+                if first {
+                    self.clear_lane_tmp_of(squad, ticket.id);
+                }
+                // A model the person picked for this ticket alone ends with it, wherever it closed.
+                if first || ticket.model.as_ref().is_some_and(|m| m.pick.is_some()) {
+                    if let Some(m) = ticket.model.as_ref().filter(|m| m.pick.is_some()) {
+                        ticket.model = Some(crate::tiers::close(m));
+                    }
+                    let (squad, id) = (squad.clone(), ticket.id);
+                    if let Some(journal) = self.journal(&squad) {
+                        let _ = journal.clear_ticket_pick(id);
+                    }
+                }
             }
         }
         self.publish_in(None, event);
@@ -2047,6 +2061,8 @@ impl Runtime {
         let mut squad = squad.map(str::to_owned);
         let mut no_room = false;
         let mut to_draw = None;
+        // A ticket whose premium-family spend just grew: told to the screens after.
+        let mut premium_spent = None;
         if let Some(id) = event.session()
             && let Some(session) = self.sessions.get_mut(&id)
         {
@@ -2153,11 +2169,23 @@ impl Runtime {
                 }
                 if let Some(turn) = &turn {
                     let _ = journal.record_turn_use(turn, turn_use.as_ref());
+                    // Tokens spent on the premium family stay on the ticket, for the person to see.
+                    if let (Some(ticket), Some(used)) = (turn.ticket, &turn_use)
+                        && used.model.as_deref().is_some_and(|m| crate::tiers::is_premium(used.engine, m))
+                        && journal.add_premium_tokens(ticket, turn.tokens).unwrap_or(false)
+                    {
+                        premium_spent = Some((name.clone(), ticket));
+                    }
                 }
             }
         }
         if let Some((id, name, finished)) = to_draw {
             self.draw_visuals(id, &name, &finished);
+        }
+        if let Some((squad, ticket)) = premium_spent
+            && let Some(t) = self.find_ticket(&squad, ticket)
+        {
+            self.publish(Event::TicketChanged { squad, ticket: t });
         }
         if let Some(name) = event.squad() {
             squad = Some(name.to_owned());
@@ -2818,6 +2846,7 @@ impl Runtime {
             Command::SetParallel { squad, parallel } => self.set_parallel(&squad, parallel).await,
             Command::SetModelChoice { squad, choice } => self.set_model_choice(&squad, choice),
             Command::SetTicketTier { squad, ticket, tier, pinned } => self.set_ticket_tier(&squad, ticket, tier, pinned),
+            Command::SetTicketModel { squad, ticket, model } => self.set_ticket_pick(&squad, ticket, model),
             Command::SetPmAccepts { squad, on } => {
                 if let Some(journal) = self.journal(&squad) {
                     let _ = journal.set_pm_accepts(on);

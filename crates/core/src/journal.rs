@@ -1788,6 +1788,31 @@ impl Journal {
         Ok(())
     }
 
+    /// A ticket's model as kept; `None` for a ticket with none, or one that isn't there.
+    fn ticket_model(&self, id: TicketId) -> Option<equipe_protocol::tiers::TicketModel> {
+        let text: Option<String> = self.conn.query_row("SELECT model FROM tickets WHERE id = ?1", [id], |r| r.get(0)).optional().ok().flatten().flatten();
+        text.and_then(|m| serde_json::from_str(&m).ok())
+    }
+
+    /// Add `tokens` spent on the premium family to `ticket`'s count
+    /// ([`equipe_protocol::tiers::TicketModel::premium_tokens`]). `true`
+    /// when it was kept: a ticket with no model kept has nothing to add to.
+    pub fn add_premium_tokens(&self, id: TicketId, tokens: u64) -> Result<bool> {
+        let Some(mut m) = self.ticket_model(id) else { return Ok(false) };
+        m.premium_tokens = m.premium_tokens.saturating_add(tokens);
+        self.set_ticket_model(id, Some(&m))?;
+        Ok(true)
+    }
+
+    /// Let go of the model the person picked for `ticket` alone, as it
+    /// closes: its pick and the pin that came with it.
+    pub fn clear_ticket_pick(&self, id: TicketId) -> Result<()> {
+        if let Some(m) = self.ticket_model(id).filter(|m| m.pick.is_some()) {
+            self.set_ticket_model(id, Some(&crate::tiers::close(&m)))?;
+        }
+        Ok(())
+    }
+
     /// Keep that `ticket` was sent back by `by`, and why.
     pub fn record_send_back(&self, ticket: TicketId, by: &str, reason: equipe_protocol::tiers::SendBackReason) -> Result<()> {
         self.conn.execute("INSERT INTO send_backs (ticket, at, by, reason) VALUES (?1, ?2, ?3, ?4)", params![ticket, now(), by, reason.code()])?;

@@ -1462,6 +1462,8 @@
   "usage.row_lanes": "  {name}:{tokens} · {share}% · 輪次:{turns} · 通道:{lanes}",
   "usage.row_context": "  {name}:{tokens} · {share}% · 輪次:{turns} · 每次呼叫:{context}",
   "usage.ticket_row": "  T-{id} {title}:{tokens} · 輪次:{turns} · {status}",
+  "usage.premium": "高階模型（Fable，成本是 Opus 的數倍）:{tokens} 個 token（占總量的 {share}%），依工單:",
+  "usage.premium_row": "  T-{id} {title}:高階 {premium} / 共 {tokens} · {status}",
   "usage.kind.pm_desk": "PM 桌面(無工單)",
   "usage.kind.member_on_ticket": "處理工單的成員",
   "usage.kind.lane_on_ticket": "處理工單的通道",

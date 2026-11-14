@@ -292,6 +292,7 @@ fn squad_of(command: &Command) -> Option<&str> {
         | Command::SetParallel { squad, .. }
         | Command::SetModelChoice { squad, .. }
         | Command::SetTicketTier { squad, .. }
+        | Command::SetTicketModel { squad, .. }
         | Command::ApplyEngineProposal { squad, .. }
         | Command::DismissEngineProposal { squad, .. }
         | Command::UndoEngineProposal { squad, .. }

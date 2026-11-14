@@ -1556,6 +1556,12 @@ pub enum Command {
     /// with `pinned` false gives it back to equipe. Answered by
     /// [`Event::TicketChanged`].
     SetTicketTier { squad: SquadName, ticket: TicketId, tier: Option<tiers::ModelTier>, pinned: bool },
+    /// The person picks the model of one ticket alone — any Claude family,
+    /// the premium one included (`fable`: several times Opus's cost): every
+    /// lane and run of that ticket uses it, no other ticket and not its
+    /// member. `None` lets the pick go. Cleared when the ticket closes.
+    /// Answered by [`Event::TicketChanged`].
+    SetTicketModel { squad: SquadName, ticket: TicketId, model: Option<String> },
     /// Which engine reviews the designer's work ([`engines::Reviewer`]).
     /// Answered by [`Event::DesignReviewerChanged`].
     SetDesignReviewer { squad: SquadName, reviewer: engines::Reviewer },

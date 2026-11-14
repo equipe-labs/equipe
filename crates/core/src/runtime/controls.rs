@@ -226,6 +226,7 @@ impl Runtime {
             Change::EngineSwitching(mode) => Command::SetEngineSwitching { squad: squad_name, mode },
             Change::Parallel { .. } => Command::SetParallel { squad: squad_name, parallel: self.parallel_for(squad, change) },
             Change::ModelChoice(choice) => Command::SetModelChoice { squad: squad_name, choice },
+            Change::TicketModel { ticket, model } => Command::SetTicketModel { squad: squad_name, ticket, model },
             Change::DesignReviewer(reviewer) => Command::SetDesignReviewer { squad: squad_name, reviewer },
             Change::RemoveProject(name) => Command::RemoveProject { squad: squad_name, path: project(&name)? },
             Change::Hq(name) => Command::SetHq { squad: squad_name, path: name.as_deref().map(project).transpose()? },
@@ -300,6 +301,11 @@ impl Runtime {
                     ModelFit::Unknown => Err(format!("{member} runs on {}, which has no model {model:?}. {} Nothing changed.", engine_name(engine), models_line(engine, codex.as_ref()))),
                 }
             }
+            Change::TicketModel { ticket, .. } => match self.journal(squad).and_then(|j| j.ticket(*ticket).ok().flatten()) {
+                None => Err(format!("There is no T-{ticket} on the board.")),
+                Some(t) if t.status.is_closed() => Err(format!("T-{ticket} is closed: a model is picked for a ticket that is still being worked on.")),
+                Some(_) => Ok(()),
+            },
             Change::Effort { member, effort: Some(effort) } => {
                 let engine = self.engine_of(squad, member)?;
                 let model = self.member_id(squad, member).and_then(|id| self.sessions.get(&id)).and_then(|s| s.model.clone());
@@ -428,6 +434,9 @@ impl Runtime {
             Change::EngineSwitching(m) => say!(self, "control.engine_switching", mode = format!("{m:?}").to_lowercase()),
             Change::ModelChoice(crate::protocol::tiers::ModelChoice::QualityFirst) => say!(self, "control.model_choice_quality"),
             Change::ModelChoice(crate::protocol::tiers::ModelChoice::Off) => say!(self, "control.model_choice_off"),
+            Change::TicketModel { ticket, model: None } => say!(self, "control.ticket_model_off", ticket = ticket),
+            Change::TicketModel { ticket, model: Some(model) } if crate::tiers::is_premium(Engine::Claude, model) => say!(self, "control.ticket_model_premium", ticket = ticket, model = self.model_label(model)),
+            Change::TicketModel { ticket, model: Some(model) } => say!(self, "control.ticket_model", ticket = ticket, model = self.model_label(model)),
             Change::Parallel { .. } => {
                 let parallel = self.parallel_for(squad, change);
                 if parallel.is_max() {
