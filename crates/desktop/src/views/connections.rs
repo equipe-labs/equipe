@@ -27,6 +27,7 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::brands::Mark;
 use crate::icons::Icon;
 use crate::theme::{CONTROL, Palette, R_LG, R_MD, SMALL};
 use crate::ui::{self, Kind};
@@ -147,6 +148,24 @@ fn rows_of(squad: &str, secrets: &[SquadSecret], logins: &[Login]) -> Vec<Row> {
         }
     }
     out
+}
+
+/// The row's tile: its logo or monogram, and where it has none of Simple
+/// Icons', the service's own site icon once that is fetched (`siteicon`).
+fn mark_tile(p: Palette, row: &Row, cx: &mut Context<Shell>) -> Div {
+    let mark = crate::brands::mark_of(row.service, &row.label);
+    let icon = match mark {
+        Mark::Glyph { .. } => None,
+        Mark::Monogram { .. } => {
+            let wanted = match (row.service, row.mcp.as_ref().and_then(|m| m.server.as_ref())) {
+                (Some(service), _) => crate::siteicon::for_catalog(service.id),
+                (None, Some(server)) => crate::siteicon::for_server_url(&server.url),
+                (None, None) => crate::siteicon::for_service_text(&row.id),
+            };
+            wanted.and_then(|w| crate::siteicon::icon(&w, cx))
+        }
+    };
+    crate::brands::tile_with(p, &mark, icon.as_deref())
 }
 
 fn now_secs() -> u64 {
@@ -305,7 +324,7 @@ fn row_view(shell: &Shell, row: &Row, divider: bool, cx: &mut Context<Shell>) ->
                 .py_3()
                 .gap_3()
                 .items_center()
-                .child(crate::brands::tile(p, &crate::brands::mark_of(row.service, &row.label)))
+                .child(mark_tile(p, row, cx))
                 .child(
                     v_flex()
                         .flex_1()
@@ -390,7 +409,7 @@ fn mcp_row_view(shell: &Shell, row: &Row, mcp: &McpRow, used: Option<String>, di
                 .py_3()
                 .gap_3()
                 .items_center()
-                .child(crate::brands::tile(p, &crate::brands::mark_of(row.service, &row.label)))
+                .child(mark_tile(p, row, cx))
                 .child(
                     v_flex()
                         .flex_1()

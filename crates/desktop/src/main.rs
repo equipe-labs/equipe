@@ -87,6 +87,8 @@ mod transcribe;
 mod ui;
 mod i18n;
 mod brands;
+mod chips;
+mod siteicon;
 mod icons;
 mod motion;
 mod relaunch;

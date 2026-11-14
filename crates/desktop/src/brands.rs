@@ -8,8 +8,10 @@
 //! and 2x and take the brand colour in light mode and a readable colour in
 //! dark. The marks are their owners' trademarks, shown only to identify the
 //! service. A brand Simple Icons does not carry (AWS, Mobbin, 21st.dev) and
-//! any server added by address get a monogram: offline and deterministic
-//! (the colour comes from the name), nothing is drawn by hand or fetched.
+//! any server added by address get a monogram first: instant, offline and
+//! deterministic (the colour comes from the name), nothing drawn by hand.
+//! The service's own site icon replaces it once `siteicon` has fetched it
+//! (never shipped with the app), and the monogram stays when none comes.
 
 use equipe_core::connections::{CATALOG, Service};
 use gpui_kit::component::h_flex;
@@ -162,13 +164,25 @@ fn surface(p: Palette) -> u32 {
 
 /// The tile's side, in points.
 pub const TILE: f32 = 32.;
+/// The plate a site icon sits on, inside the tile.
+const SITE_PLATE: f32 = 24.;
 
 /// A row's tile: the logo on the subtle wash, or the monogram.
 pub fn tile(p: Palette, mark: &Mark) -> Div {
+    tile_with(p, mark, None)
+}
+
+/// The same, with a fetched site icon (`siteicon`) in place of a monogram:
+/// on a white plate, so a dark icon reads in dark mode too.
+pub fn tile_with(p: Palette, mark: &Mark, site_icon: Option<&std::path::Path>) -> Div {
     let base = div().flex_none().size(px(TILE)).flex().items_center().justify_center().rounded(px(8.));
     let on = surface(p);
     match mark {
         Mark::Glyph { asset, brand } => base.bg(p.wash).child(icon_from_asset(asset, 18., rgb(glyph_color(*brand, on)))),
+        Mark::Monogram { .. } if site_icon.is_some() => {
+            let path = site_icon.map(std::path::Path::to_path_buf).unwrap_or_default();
+            base.bg(p.wash).child(div().size(px(SITE_PLATE)).flex_none().rounded(px(6.)).overflow_hidden().bg(rgb(WHITE)).child(img(path).size_full().object_fit(ObjectFit::Contain)))
+        }
         Mark::Monogram { text, brand } => {
             let (fill, ink) = monogram_colors(*brand, on);
             // One or two capitals, a little smaller for the longer text.

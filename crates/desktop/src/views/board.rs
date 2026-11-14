@@ -22,7 +22,6 @@ use crate::board::{self, DoneWindow, Filter, GroupBy, Menu, MergeWay, Row, Saved
 use crate::diffs::{self, Fetched, Source, Stat};
 use crate::state::{Conn, Model, Need, Presence, Verb, local_hm, short_span, status_word};
 use crate::theme::{MONO, Palette, SMALL, key_face, look};
-use crate::tips::TipExt as _;
 use crate::{Screen, Shell};
 
 /// A row of the list.
@@ -1978,7 +1977,7 @@ const IMPACT_W: f32 = 168.;
 /// What a row says at its right, column by column.
 struct Meta {
     /// Each chip: its words, its color, and what it means on the pointer.
-    flags: Vec<(String, Rgba, Option<String>)>,
+    flags: Vec<crate::chips::Flag>,
     activity: Option<(String, Rgba)>,
     eta: Option<(String, Rgba)>,
     time: Option<String>,
@@ -2018,7 +2017,8 @@ pub fn live_activity(model: &Model, t: &Ticket) -> Option<String> {
 
 /// A row's chips: what it waits on, what it holds up, where its work is,
 /// quiet, failed — each its words, colour and what it means on the pointer.
-pub fn row_flags(shell: &Shell, t: &Ticket) -> Vec<(String, Rgba, Option<String>)> {
+pub fn row_flags(shell: &Shell, t: &Ticket) -> Vec<crate::chips::Flag> {
+    use crate::chips::{Flag, NOTE, QUIET, UNBLOCKS, URGENT};
     let p = shell.palette;
     let model = &shell.model;
     let mut flags = Vec::new();
@@ -2031,32 +2031,33 @@ pub fn row_flags(shell: &Shell, t: &Ticket) -> Vec<(String, Rgba, Option<String>
             equipe_core::protocol::RunView::Paused => p.amber,
             _ => p.accent,
         };
-        flags.push((word.to_owned(), tone, model.run_reason(t)));
+        let rank = if view == equipe_core::protocol::RunView::Stalled || view == equipe_core::protocol::RunView::Paused { URGENT } else { NOTE };
+        flags.push(Flag::new(word, tone, model.run_reason(t), rank));
     }
     if let Some(dep) = model.blocked_by(t).filter(|_| matches!(t.status, TicketStatus::Todo | TicketStatus::Proposed)) {
-        flags.push((format!("⛔ T-{dep}"), p.orange, Some(t!("tickets.tip_blocked", id = dep))));
+        flags.push(Flag::new(format!("⛔ T-{dep}"), p.orange, Some(t!("tickets.tip_blocked", id = dep)), URGENT));
     }
     let unblocks = model.unblocks(t.id).len();
     if unblocks > 0 && !t.status.is_closed() {
-        flags.push((format!("→{unblocks}"), p.muted, None));
+        flags.push(Flag::new(format!("→{unblocks}"), p.muted, None, UNBLOCKS));
     }
     if t.not_on_main() {
         let branch = t.branch.clone().unwrap_or_default();
         flags.push(if t.waits_to_merge() {
-            (t!("state.chip_not_on_main").to_owned(), p.accent, Some(t!("state.chip_not_on_main_tip", branch = branch)))
+            Flag::new(t!("state.chip_not_on_main"), p.accent, Some(t!("state.chip_not_on_main_tip", branch = branch)), NOTE)
         } else {
-            (t!("state.chip_kept").to_owned(), p.muted, Some(t!("state.chip_kept_tip", branch = branch)))
+            Flag::new(t!("state.chip_kept"), p.muted, Some(t!("state.chip_kept_tip", branch = branch)), NOTE)
         });
     }
     if let Some(quiet) = model.quiet_for(t) {
-        flags.push((format!("{} {}", t!("board.flag_quiet"), short_span(quiet)), p.amber, None));
+        flags.push(Flag::new(format!("{} {}", t!("board.flag_quiet"), short_span(quiet)), p.amber, None, QUIET));
     }
     // Waiting on the person for days: worth asking whether it is still needed.
     if let Some(note) = board::wait_note(model, t).filter(|n| n.stale) {
-        flags.push((t!("board.flag_stale").to_owned(), p.amber, Some(t!("board.flag_stale_tip", span = short_span(note.waited.unwrap_or_default())))));
+        flags.push(Flag::new(t!("board.flag_stale"), p.amber, Some(t!("board.flag_stale_tip", span = short_span(note.waited.unwrap_or_default()))), QUIET));
     }
     if model.failed(t) {
-        flags.push((t!("board.flag_error").to_owned(), p.red, None));
+        flags.push(Flag::new(t!("board.flag_error"), p.red, None, URGENT));
     }
     flags
 }
@@ -2068,7 +2069,7 @@ fn meta(shell: &Shell, t: &Ticket) -> Meta {
     let run = model.run_view(t).filter(|v| matches!(v, equipe_core::protocol::RunView::Stalled | equipe_core::protocol::RunView::Paused));
     // Said where the step would be (shown at every width), not again as a chip.
     let word = run.and_then(crate::state::run_word);
-    let flags: Vec<_> = flags.into_iter().filter(|(text, _, _)| Some(text.as_str()) != word).collect();
+    let flags: Vec<_> = flags.into_iter().filter(|f| Some(f.text.as_str()) != word).collect();
     let activity = match t.status {
         // A run that stopped, or that nothing runs now: said where the step would be.
         TicketStatus::InProgress if run.is_some() => run.and_then(crate::state::run_word).map(|w| (w.to_owned(), if run == Some(equipe_core::protocol::RunView::Stalled) { p.red } else { p.amber })),
@@ -2410,22 +2411,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(Some(t))))
                 .child(title_cell(shell, t, depth, TITLE_MIN, false))
                 .child(
-                    h_flex()
-                        .w(px(flags_w))
-                        .flex_none()
-                        .gap_1()
-                        .justify_end()
-                        .overflow_hidden()
-                        .children(m.flags.into_iter().enumerate().map(|(i, (text, color, tip))| {
-                            // What it waits on: that ticket's card, not a tooltip.
-                            let dep = text.strip_prefix("⛔ T-").and_then(|n| n.parse().ok());
-                            let chip = div().id(("flag", i)).flex_none().px(px(6.)).h(px(18.)).flex().items_center().rounded(px(4.)).bg(p.wash).text_size(px(11.)).text_color(color).child(text);
-                            match (dep, tip) {
-                                (Some(dep), _) => super::ticket_card::hover_link(chip, dep, super::ticket_card::Side::Below).into_any_element(),
-                                (None, Some(tip)) => chip.tip(p, tip, None).into_any_element(),
-                                (None, None) => chip.into_any_element(),
-                            }
-                        })),
+                    crate::chips::row(p, &m.flags, flags_w, SharedString::from(format!("flag-{id}")), true).w(px(flags_w)),
                 )
                 .child(
                     h_flex()
