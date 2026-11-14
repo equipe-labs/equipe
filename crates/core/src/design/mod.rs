@@ -53,6 +53,7 @@ pub mod fonts;
 pub mod palette;
 pub mod precheck;
 pub mod qa_stats;
+pub mod refgallery;
 pub mod refs;
 pub mod kit;
 pub mod lint;

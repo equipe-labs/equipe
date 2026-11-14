@@ -86,6 +86,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let body: AnyElement = match ui.current() {
         _ if !ui.loaded => waiting(shell),
         _ if tab == Tab::Map => super::flows::page(shell, cx),
+        _ if tab == Tab::References => super::design_refs::page(shell, cx),
         None if ui.section == Section::Taste => super::design_taste::page(shell, cx),
         None => empty(shell, cx),
         Some(system) => page(shell, system, cx),
@@ -1758,7 +1759,14 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         return None;
     }
     let p = shell.palette;
+    // A reference: the pattern's pictures in turn, and where it was seen.
+    let reference = (shell.design_tab() == Tab::References).then(|| shell.design.refs.viewing()).flatten();
+    let source_url = reference.as_ref().and_then(|v| v.url.clone());
     let (path, name, said, many, dark_stage) = match super::flows::zoomed(shell) {
+        _ if reference.is_some() => {
+            let v = reference?;
+            (v.path, v.name, v.said, v.many, p.is_dark())
+        }
         Some((path, name, said, many)) => (path, name, said, many, p.is_dark()),
         None if shell.design.component_shot.is_some() => {
             let (c, k) = shell.design.component_shot?;
@@ -1831,6 +1839,9 @@ pub fn lightbox(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 .when(many, |b| b.child(round(div().id("design-lb-prev").on_click(cx.listener(|this, _, _, cx| this.design_step(false, cx))), Icon::ArrowLeft, t!("composer.aria_previous").into(), Some("←"))))
                 .child(div().text_size(px(13.)).text_color(rgb(0xFFFFFF)).child(name))
                 .child(div().min_w_0().truncate().text_size(px(12.)).text_color(rgba(0xFFFFFFB3)).child(said))
+                .children(source_url.map(|url| {
+                    round(div().id("design-lb-source").on_click(cx.listener(move |this, _, window, cx| this.refs_open_source(&url, window, cx))), Icon::External, t!("design.refs_open_source").into(), None)
+                }))
                 .child(round(div().id("design-lb-dl").on_click(cx.listener(move |this, _, _, cx| this.design_download(&path, &dl_name, cx))), Icon::ArrowDown, t!("design.download").into(), None))
                 .when(!remote, |b| {
                     b.child(round(
@@ -1983,6 +1994,8 @@ impl Shell {
         self.design.local = !self.endpoint.is_remote();
         self.design.arrived(systems, folder, taste, &key);
         self.design_versions_follow();
+        // The designer saved something: its references may have changed too.
+        self.design.refs.dirty = true;
         true
     }
 
@@ -2003,6 +2016,7 @@ impl Shell {
                 self.design.map.zoomed = false;
                 self.design.changes_open = false;
                 self.design.versions_open = false;
+                self.design.refs.viewer = None;
             }
         }
         if !on {
@@ -2033,6 +2047,9 @@ impl Shell {
         }
         self.design_load_pictures(cx);
         self.flows_load_pictures(cx);
+        if self.design_tab() == Tab::References {
+            self.refs_prepare(cx);
+        }
         // The conversation beside it is the designer's (or the PM's): once
         // this frame is drawn, the one on screen and in the box becomes theirs.
         if self.design_talk_open(window, cx) && self.design_talk_behind() {
@@ -2105,6 +2122,7 @@ impl Shell {
             self.design.draft = false;
             self.design.working = false;
             self.design.end_compare();
+            self.design.refs.forget();
             let (label, squad) = (self.endpoint.label(), self.model.squad.clone());
             let seen_key = move |s: &DesignSystem| format!("{label}|{squad}|{}", s.key());
             let systems = std::mem::take(&mut self.design.raw);
@@ -2146,6 +2164,7 @@ impl Shell {
     }
 
     pub fn design_lightbox(&mut self, at: Option<usize>, cx: &mut Context<Self>) {
+        self.design.refs.viewer = None;
         self.design.lightbox = at;
         self.design.component_shot = None;
         self.design.map.zoomed = false;
@@ -2162,6 +2181,11 @@ impl Shell {
     }
 
     fn design_step(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if self.design.refs.viewer.is_some() {
+            self.design.refs.step(forward);
+            cx.notify();
+            return;
+        }
         if super::flows::zoomed(self).is_some() {
             return self.flows_step_state(forward, cx);
         }
@@ -2182,7 +2206,7 @@ impl Shell {
     }
 
     /// The folder: opened in Finder on this Mac; its path copied from another.
-    fn design_open_folder(&mut self, dir: &str, cx: &mut Context<Self>) {
+    pub(super) fn design_open_folder(&mut self, dir: &str, cx: &mut Context<Self>) {
         if self.endpoint.is_remote() {
             cx.write_to_clipboard(ClipboardItem::new_string(dir.to_owned()));
             self.composer.flash = Some(t!("design.folder_copied", path = dir));
@@ -2253,7 +2277,7 @@ impl Shell {
         if self.screen != Screen::Design || m.platform || m.control || m.alt || m.function {
             return false;
         }
-        if self.design.lightbox.is_some() || self.design.component_shot.is_some() || self.design.map.zoomed {
+        if self.design.lightbox.is_some() || self.design.component_shot.is_some() || self.design.map.zoomed || self.design.refs.viewer.is_some() {
             match key {
                 "left" => self.design_step(false, cx),
                 "right" => self.design_step(true, cx),
@@ -2296,6 +2320,14 @@ impl Shell {
         if key == "escape" && self.design.compare {
             self.design_compare(false, cx);
             return true;
+        }
+        if self.design_tab() == Tab::References {
+            // Esc goes back to the patterns; the other keys are the search box's.
+            if key == "escape" && self.design.refs.pattern.is_some() {
+                self.refs_back(cx);
+                return true;
+            }
+            return false;
         }
         if self.design_tab() == Tab::Map {
             return false;

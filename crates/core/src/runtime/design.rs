@@ -100,6 +100,20 @@ impl Runtime {
         });
     }
 
+    /// A screen asked for the references of a design folder: read off the
+    /// loop, one page, and sent. Read only (`crate::design::refgallery`).
+    pub(super) fn design_refs_asked(&mut self, squad: String, project: Option<String>, query: String, offset: u32) {
+        if !crate::squads::valid_name(&squad) {
+            return;
+        }
+        let (home, internal) = (self.config.home.clone(), self.internal.clone());
+        tokio::task::spawn_blocking(move || {
+            let found = ds::refgallery::read(&home, &squad, project.as_deref(), &query, offset as usize);
+            let event = Event::DesignRefs { squad, project, query, offset, total: found.total as u32, patterns: found.patterns, sources: found.sources, folder: found.folder };
+            let _ = internal.send(Internal::DesignRefs(Box::new(event)));
+        });
+    }
+
     pub(super) fn on_design_versions(&mut self, squad: String, project: Option<String>, versions: Vec<DesignVersion>) {
         self.publish(Event::DesignVersions { squad, project, versions });
     }

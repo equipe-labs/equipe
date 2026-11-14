@@ -1169,6 +1169,8 @@ enum Internal {
     PlanListed(String, Option<String>),
     /// A design system's accepted versions, read off the loop.
     DesignVersions { squad: String, project: Option<String>, versions: Vec<equipe_protocol::design::DesignVersion> },
+    /// A design folder's references read off the loop: the event to send.
+    DesignRefs(Box<Event>),
     /// The version the person asked to go back to, looked up off the loop (`None`: not one).
     DesignRestore { squad: String, project: Option<String>, commit: String, version: Option<equipe_protocol::design::DesignVersion> },
     /// A design QA precheck ended off the loop: its report is in the
@@ -1573,6 +1575,7 @@ impl Wake {
             Wake::Internal(Internal::PlanCut(..)) => Borrowed("a plan read for a ticket"),
             Wake::Internal(Internal::PlanListed(..)) => Borrowed("a ticket listed in its plan"),
             Wake::Internal(Internal::DesignVersions { .. }) => Borrowed("a design system's versions"),
+            Wake::Internal(Internal::DesignRefs(..)) => Borrowed("a design system's references"),
             Wake::Internal(Internal::DesignRestore { .. }) => Borrowed("a design version to go back to"),
             Wake::Internal(Internal::Reviewed { .. }) => Borrowed("a Nemotron review"),
             Wake::Internal(Internal::Prechecked { .. }) => Borrowed("a design QA precheck"),
@@ -1863,6 +1866,7 @@ impl Runtime {
                 Internal::PlanCut(cut) => self.plan_cut(*cut).await,
                 Internal::PlanListed(squad, error) => self.plan_listed(&squad, error),
                 Internal::DesignVersions { squad, project, versions } => self.on_design_versions(squad, project, versions),
+                Internal::DesignRefs(event) => self.publish(*event),
                 Internal::DesignRestore { squad, project, commit, version } => self.on_design_restore(squad, project, commit, version).await,
                 Internal::Reviewed { squad, ticket, member, result } => self.on_reviewed(&squad, ticket, member, result),
                 Internal::Prechecked { squad, qa, result, secs } => Box::pin(self.on_prechecked(&squad, qa, result, secs)).await,
@@ -2847,6 +2851,7 @@ impl Runtime {
             Command::SearchDocs { squad, query } => self.docs_searched(squad, query),
             Command::KeepDocCopy { squad, session, keep } => self.keep_doc_copy(squad, session, keep),
             Command::DesignVersions { squad, project } => self.design_versions_asked(squad, project),
+            Command::DesignRefs { squad, project, query, offset } => self.design_refs_asked(squad, project, query, offset),
             Command::RestoreDesign { squad, project, commit } => self.restore_design_asked(squad, project, commit),
             Command::Taste { squad, project, change } => self.taste_changed(squad, project, change),
         }

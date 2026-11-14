@@ -53,6 +53,7 @@ mod pane;
 mod queue;
 mod quote;
 mod refs;
+mod refshelf;
 mod readonly;
 mod screen_look;
 mod setup;
@@ -306,6 +307,8 @@ pub struct Shell {
     pub shelf: docs::Shelf,
     /// The docs screen's search box.
     pub docs_search: Entity<InputState>,
+    /// The design screen's References tab: its search.
+    pub refs_search: Entity<InputState>,
     pub releases_asked: Option<std::time::Instant>,
     /// Metrics' state: what the daemon said, the form being filled.
     pub metrics: metrics::Metrics,
@@ -534,6 +537,7 @@ impl Shell {
             docs: Vec::new(),
             shelf: docs::Shelf::default(),
             docs_search: cx.new(|cx| InputState::new(window, cx).placeholder(t!("docs.search_placeholder"))),
+            refs_search: cx.new(|cx| InputState::new(window, cx).placeholder(t!("design.refs_search_placeholder"))),
             releases_asked: None,
             metrics: metrics::Metrics::new(),
             metrics_ui: Default::default(),
@@ -721,6 +725,13 @@ impl Shell {
         shell._subscriptions.push(cx.subscribe_in(&docs_search, window, |this, _, event: &InputEvent, _, cx| {
             if matches!(event, InputEvent::Change) {
                 this.docs_typed(cx);
+            }
+        }));
+        // The References tab's search: asked of the daemon once typing rests.
+        let refs_search = shell.refs_search.clone();
+        shell._subscriptions.push(cx.subscribe_in(&refs_search, window, |this, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.refs_typed(cx);
             }
         }));
         views::logins::subscribe(&mut shell, window, cx);
@@ -1147,6 +1158,10 @@ impl Shell {
                         let update = match update {
                             daemon::Update::Event(Event::Design { squad, systems, folder, taste }) => {
                                 changed |= this.design_arrived(squad, systems, folder, taste);
+                                continue;
+                            }
+                            daemon::Update::Event(Event::DesignRefs { squad, project, query, offset, total, patterns, sources, folder }) => {
+                                changed |= this.refs_arrived(squad, project, query, offset, total, patterns, sources, folder);
                                 continue;
                             }
                             daemon::Update::Event(Event::DesignVersions { squad, project, versions }) => {
@@ -2546,6 +2561,7 @@ impl Shell {
         self.ask.input.update(cx, |s, cx| s.set_placeholder(t!("connect.secret_placeholder"), window, cx));
         self.design_redo.update(cx, |s, cx| s.set_placeholder(t!("design.compare_redo_placeholder"), window, cx));
         self.docs_search.update(cx, |s, cx| s.set_placeholder(t!("docs.search_placeholder"), window, cx));
+        self.refs_search.update(cx, |s, cx| s.set_placeholder(t!("design.refs_search_placeholder"), window, cx));
         self.logins_relocalize(window, cx);
         self.browser.update(cx, |b, cx| b.relocalize(window, cx));
     }

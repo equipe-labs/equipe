@@ -4962,6 +4962,36 @@ async fn a_screen_asking_for_the_design_system_gets_it_and_then_what_the_designe
 }
 
 #[tokio::test]
+async fn a_screen_asking_for_references_gets_a_page_of_patterns_and_may_read_their_pictures_only() {
+    let project = repo();
+    let home = squad_home(&[&project]);
+    let (handle, _all) = runtime::start(config(&fake_claude(true, &answering("hi")), &home, true));
+    let refs = squad_home::path(&home, "acme").join("design/references");
+    std::fs::create_dir_all(refs.join("kpi-tile")).unwrap();
+    std::fs::create_dir_all(refs.join("data-table")).unwrap();
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>"#;
+    std::fs::write(refs.join("kpi-tile/a.svg"), svg).unwrap();
+    std::fs::write(refs.join("kpi-tile/notes.md"), "## Acme — Orders\n- Source: https://example.com/a (Gallery), 2026-10-02, `a.svg`\n- Take: one number\n").unwrap();
+    std::fs::write(squad_home::path(&home, "acme").join("secret.svg"), svg).unwrap();
+    let (_, mut screen) = handle.subscribe("acme").await.unwrap();
+    handle.send(Command::DesignRefs { squad: "acme".into(), project: None, query: String::new(), offset: 0 });
+    let seen = until(&mut screen, |e| matches!(e, Event::DesignRefs { .. })).await;
+    let Some(Event::DesignRefs { total, patterns, query, offset, .. }) = seen.last() else { unreachable!() };
+    assert_eq!((*total, patterns.len(), query.as_str(), *offset), (2, 2, "", 0));
+    assert_eq!(patterns[1].name, "kpi-tile");
+    assert_eq!(patterns[1].notes[0].host.as_deref(), Some("example.com"));
+    let picture = patterns[1].pictures[0].path.clone();
+    let ask = |path: &str| equipe_core::protocol::rpc::ReadImage { squad: "acme".into(), path: path.into(), max: None };
+    assert_eq!(equipe_core::visuals::serve(&home, &ask(&picture), None).unwrap().mime, "image/svg+xml");
+    let secret = squad_home::path(&home, "acme").join("secret.svg");
+    assert!(equipe_core::visuals::serve(&home, &ask(&secret.to_string_lossy()), None).is_err(), "the rest of the squad's folder stays shut");
+    handle.send(Command::DesignRefs { squad: "acme".into(), project: None, query: "number".into(), offset: 0 });
+    let seen = until(&mut screen, |e| matches!(e, Event::DesignRefs { query, .. } if query == "number")).await;
+    let Some(Event::DesignRefs { total, patterns, .. }) = seen.last() else { unreachable!() };
+    assert_eq!((*total, patterns[0].name.as_str()), (1, "kpi-tile"));
+}
+
+#[tokio::test]
 async fn a_design_systems_versions_come_when_asked_and_going_back_is_a_ticket_for_review() {
     let project = repo();
     let home = squad_home(&[&project]);

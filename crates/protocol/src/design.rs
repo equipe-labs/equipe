@@ -640,6 +640,96 @@ pub enum TasteChange {
     Confirm { text: String },
 }
 
+// ── references ──
+
+/// One reference entry of a pattern's `notes.md` (`## <product> — <screen>`
+/// with its Source / Take / Leave / Fit lines), parsed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefNote {
+    /// The entry's heading, as written.
+    pub title: String,
+    /// The product it is of, and its screen, when the heading has both
+    /// (`Product — Screen`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub product: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub screen: String,
+    /// Where it was seen: an `http(s)` address only, never another scheme.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// The address's host, without `www.`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// Which of the squad's sources it came from (`Source: <URL> (<source>)`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// When it was taken (`YYYY-MM-DD`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    /// The picture the entry names: its file name in the pattern's folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub take: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub leave: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fit: String,
+}
+
+/// A picture in a pattern's folder. Its `path` is the one `read_image` gives.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefPicture {
+    pub path: String,
+    /// Its file name.
+    pub name: String,
+    pub size: u64,
+    /// Unix seconds.
+    #[serde(default)]
+    pub modified: u64,
+}
+
+/// One pattern (`design/references/<name>/`): its pictures and notes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefPattern {
+    /// The folder's name (`kpi-tile`).
+    pub name: String,
+    /// Read from the squad's folder, because the project has none of this name.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shared: bool,
+    /// The entries of `notes.md`, in its order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<RefNote>,
+    /// What the examples agree on: the closing lines of `notes.md`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub agree: String,
+    /// `notes.md` as it is (cut at its limit).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub raw: String,
+    /// The first pictures, by name; `pictures_total` says how many there are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pictures: Vec<RefPicture>,
+    #[serde(default)]
+    pub pictures_total: u32,
+    /// The latest change among its notes and pictures, Unix seconds.
+    #[serde(default)]
+    pub updated: u64,
+}
+
+/// A line of `design/references/sources.md`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefSource {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub good_for: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fits: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub access: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -734,5 +824,37 @@ mod tests {
         assert_eq!(serde_json::from_str::<Taste>(&serde_json::to_string(&web).unwrap()).unwrap(), web);
         let change = TasteChange::Edit { was: "a".into(), text: "b".into() };
         assert_eq!(serde_json::to_value(&change).unwrap(), serde_json::json!({ "do": "edit", "was": "a", "text": "b" }));
+    }
+
+    #[test]
+    fn a_reference_pattern_travels_without_what_it_lacks() {
+        let bare: RefPattern = serde_json::from_str(r#"{"name":"kpi-tile"}"#).unwrap();
+        assert_eq!(bare, RefPattern { name: "kpi-tile".into(), ..Default::default() });
+        assert_eq!(serde_json::to_string(&bare).unwrap(), r#"{"name":"kpi-tile","pictures_total":0,"updated":0}"#);
+        let full = RefPattern {
+            name: "데이터 표".into(),
+            shared: true,
+            notes: vec![RefNote {
+                title: "Acme — Orders".into(),
+                product: "Acme".into(),
+                screen: "Orders".into(),
+                url: Some("https://www.example.com/a".into()),
+                host: Some("example.com".into()),
+                source: Some("Gallery".into()),
+                date: Some("2026-11-01".into()),
+                picture: Some("acme-1440.png".into()),
+                take: "36px rows".into(),
+                leave: "the logo".into(),
+                fit: "high".into(),
+            }],
+            agree: "Dense rows.".into(),
+            raw: "## Acme — Orders\n".into(),
+            pictures: vec![RefPicture { path: "/d/references/x/acme-1440.png".into(), name: "acme-1440.png".into(), size: 9, modified: 3 }],
+            pictures_total: 5,
+            updated: 4,
+        };
+        assert_eq!(serde_json::from_str::<RefPattern>(&serde_json::to_string(&full).unwrap()).unwrap(), full);
+        let source: RefSource = serde_json::from_str(r#"{"name":"Gallery"}"#).unwrap();
+        assert!(source.url.is_none() && source.good_for.is_empty());
     }
 }

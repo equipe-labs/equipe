@@ -42,7 +42,7 @@ pub fn mode() -> Option<String> {
 }
 
 /// Under the fake daemon's own home, so two of them never share it.
-fn base() -> PathBuf {
+pub fn base() -> PathBuf {
     equipe_providers::credentials::equipe_home().join("design-system")
 }
 
@@ -149,6 +149,8 @@ pub fn seed() {
         super::components::seed(&base().join("t412"), Some("source-chip"));
         write_decisions(&squad, &base().join("web/design"));
     }
+    // The designers' references, for the References tab.
+    super::refgallery::seed(&base());
 }
 
 /// The squad's notes, kept for the run as its memory would keep them.
@@ -594,6 +596,10 @@ fn versions(project: Option<&str>) -> Vec<DesignVersion> {
 /// `read_image` for a design system's picture, as the daemon checks it:
 /// only one an asset names, inside its folder.
 pub fn read_image(ask: &ReadImage) -> Result<ImageRead, String> {
+    // A picture of the references: read against its own folder.
+    if let Ok(read) = super::refgallery::read_image(ask) {
+        return Ok(read);
+    }
     let places = places();
     let (mut systems, _) = folder::catalog_of(&places, Lang::En);
     super::flows::dress(&mut systems);
