@@ -153,7 +153,7 @@ impl Runtime {
             Err(why) => return self.squad_error(squad, why),
         };
         let now = self.journal(squad).map(Journal::mcp_servers).unwrap_or_default();
-        let same = now.iter().any(|s| *s == server);
+        let same = now.contains(&server);
         let servers = match sm::with(&now, server.clone()) {
             Ok(servers) => servers,
             Err(why) => return self.squad_error(squad, why),
@@ -335,7 +335,12 @@ impl Runtime {
         let before = self.mcp.status.get(squad).and_then(|k| k.get(&server.name)).cloned().unwrap_or_default();
         for s in &statuses {
             if !before.iter().any(|b| b.engine == s.engine && b.state == s.state && b.detail == s.detail) {
-                crate::daemon_log!("equipe: {squad}'s outside MCP server {} on {}: {:?}{}", server.name, s.engine.label(), s.state, s.detail.as_deref().map(|d| format!(" ({d})")).unwrap_or_default());
+                // equipe's own connection is one for every engine: said once.
+                let on = if server.auth.proxied() { "through equipe".to_owned() } else { format!("on {}", s.engine.label()) };
+                crate::daemon_log!("equipe: {squad}'s outside MCP server {} {on}: {:?}{}", server.name, s.state, s.detail.as_deref().map(|d| format!(" ({d})")).unwrap_or_default());
+                if server.auth.proxied() {
+                    break;
+                }
             }
         }
         self.mcp.status.entry(squad.to_owned()).or_default().insert(server.name.clone(), statuses);

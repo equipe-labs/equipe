@@ -81,6 +81,7 @@ mod talk_days;
 mod team;
 mod term;
 mod tailnet;
+mod tunnel;
 mod tickets;
 mod tips;
 mod transcribe;
@@ -1044,6 +1045,7 @@ impl Shell {
         self.decide_sync(window, cx);
         self.secrets_sync(window, cx);
         self.cli_signin_sync(window, cx);
+        self.connections_follow(window, cx);
         self.login_offers_sync(window, cx);
         self.chat_sync(cx);
         self.board_sync(cx);
@@ -1613,12 +1615,14 @@ impl Shell {
     }
 
     pub fn overlay_open(&self) -> bool {
-        self.connect.open || !self.ask.queue.is_empty() || self.new_squad.open || self.pairing.open || self.disk.open || self.confirm.is_some() || self.sheet.is_some() || self.bell.sheet
+        self.connect.open || !self.ask.queue.is_empty() || self.new_squad.open || self.pairing.open || self.disk.open || self.confirm.is_some() || self.sheet.is_some() || self.bell.sheet || self.logins_ui.connections.sheet.is_some()
     }
 
     fn escape_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.ask.queue.is_empty() {
             self.answer_prompt(askpass::Answer::Cancel, window, cx);
+        } else if self.logins_ui.connections.sheet.is_some() {
+            self.connections_hide(cx);
         } else if self.new_squad.open {
             self.close_new_squad(window, cx);
         } else if self.pairing.open {
@@ -2856,6 +2860,7 @@ impl Render for Shell {
             .children(views::pair::sheet(self, cx))
             .children(views::disk::sheet(self, cx))
             .children(views::bell::sheet(self, cx))
+            .children(views::connections::sheet(self, cx))
             .children(views::connect::question(self, cx))
             .children(self.zoom_chip(window, cx))
             .child(views::ticket_card::layer(cx))

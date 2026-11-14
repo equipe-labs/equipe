@@ -187,7 +187,11 @@ pub async fn discover(http: &reqwest::Client, url: &str, metadata: Option<&str>)
         }
     }
     let server = server.ok_or("its sign-in server's settings couldn't be found")?;
-    let scopes = resource.as_ref().and_then(|r| r["scopes_supported"].as_array()).map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
+    let mut scopes: Vec<String> = resource.as_ref().and_then(|r| r["scopes_supported"].as_array()).map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
+    // A refresh token, where the sign-in server gives one only when asked.
+    if !scopes.is_empty() && !scopes.iter().any(|s| s == "offline_access") && server["scopes_supported"].as_array().is_some_and(|a| a.iter().any(|s| s == "offline_access")) {
+        scopes.push("offline_access".to_owned());
+    }
     Ok(Discovery {
         authorization_endpoint: server["authorization_endpoint"].as_str().unwrap_or_default().to_owned(),
         token_endpoint: server["token_endpoint"].as_str().unwrap_or_default().to_owned(),
@@ -394,8 +398,10 @@ impl Store for VaultStore {
 
 /// What was read last for each squad's server, so a call doesn't go to the Keychain each time.
 static KNOWN: LazyLock<Mutex<HashMap<(String, String), Tokens>>> = LazyLock::new(Default::default);
+/// A squad's server: what [`KNOWN`] and [`RENEWING`] go by.
+type ServerKey = (String, String);
 /// One refresh at a time per squad's server.
-static RENEWING: LazyLock<Mutex<HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>> = LazyLock::new(Default::default);
+static RENEWING: LazyLock<Mutex<HashMap<ServerKey, Arc<tokio::sync::Mutex<()>>>>> = LazyLock::new(Default::default);
 
 fn watch(squad: &str, tokens: &Tokens) {
     let name = secret_name("");

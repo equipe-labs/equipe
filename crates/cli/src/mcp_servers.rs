@@ -273,6 +273,7 @@ async fn login_through_daemon(socket: &Path, squad: &str, server: &McpServer) ->
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     let mut card_id = None;
     let mut shown = false;
+    let mut typing = true;
     let deadline = tokio::time::Instant::now() + equipe_core::mcp_oauth::SIGN_IN_WAIT;
     loop {
         tokio::select! {
@@ -304,13 +305,14 @@ async fn login_through_daemon(socket: &Path, squad: &str, server: &McpServer) ->
                 Some(_) => {}
                 None => return Err(t!("mcp.no_answer").to_owned()),
             },
-            line = stdin.next_line(), if card_id.is_some() => {
-                if let (Ok(Some(line)), Some(id)) = (line, card_id)
-                    && !line.trim().is_empty()
-                {
+            line = stdin.next_line(), if card_id.is_some() && typing => match (line, card_id) {
+                (Ok(Some(line)), Some(id)) if !line.trim().is_empty() => {
                     client.send(Command::SubmitCliSignInCode { squad: squad.to_owned(), id, code: PastedCode(line.trim().to_owned()) });
                 }
-            }
+                (Ok(Some(_)), _) => {}
+                // Nothing more to read here: the page's own redirect is waited for.
+                _ => typing = false,
+            },
             _ = tokio::time::sleep_until(deadline) => return Err(t!("mcp.login_failed", name = sm::label(server))),
         }
     }
