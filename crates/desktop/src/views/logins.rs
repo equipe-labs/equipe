@@ -1216,6 +1216,9 @@ impl Shell {
                 fields: vec![SecretField { key: "vercel-token".into(), label: "Vercel token".into(), secret: true }],
                 save_to: String::new(),
                 at: now,
+                steps: Vec::new(),
+                url: Some("https://vercel.com/account/tokens".into()),
+                sign_in_url: None,
                 store: Some(SecretStore {
                     name: "vercel-token".into(),
                     service: "vercel".into(),

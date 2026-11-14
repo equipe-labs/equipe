@@ -41,6 +41,17 @@ pub struct SecretAsk {
     /// secret store under this name instead of an environment variable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store: Option<SecretStore>,
+    /// What the person does to get it, in order, in their language (1 to 8
+    /// short lines). Empty only for a card kept before guides existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<String>,
+    /// The page the secret comes from (https): one button opens it on the
+    /// screen the person is looking at. `None`: it has no web page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// The service's sign-in page (https), a second link when it differs from `url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign_in_url: Option<String>,
 }
 
 /// Where a `request_secret` (or Connections) card's value is kept: the squad
@@ -168,6 +179,29 @@ mod tests {
         assert_eq!(SecretKind::parse("API-Key"), Some(SecretKind::ApiKey));
         assert_eq!(SecretKind::parse("connection string"), Some(SecretKind::ConnectionString));
         assert_eq!(SecretKind::parse("pgp"), None);
+    }
+
+    #[test]
+    fn a_guide_rides_the_card_over_the_wire_and_an_old_card_still_reads() {
+        let ask = SecretAsk {
+            id: 1,
+            session: 2,
+            member: "backend".into(),
+            ticket: None,
+            why: "usage reports".into(),
+            fields: vec![SecretField { key: "K".into(), label: "k".into(), secret: true }],
+            save_to: String::new(),
+            at: 0,
+            store: None,
+            steps: vec!["Open the page".into(), "Click Create key".into()],
+            url: Some("https://platform.claude.com/settings/admin-keys".into()),
+            sign_in_url: Some("https://platform.claude.com/".into()),
+        };
+        let json = serde_json::to_string(&ask).unwrap();
+        assert_eq!(serde_json::from_str::<SecretAsk>(&json).unwrap(), ask);
+        let old = r#"{"id":1,"session":2,"member":"m","why":"w","fields":[],"save_to":"","at":0}"#;
+        let read: SecretAsk = serde_json::from_str(old).unwrap();
+        assert!(read.steps.is_empty() && read.url.is_none() && read.sign_in_url.is_none());
     }
 
     #[test]

@@ -1793,6 +1793,14 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     fields: vec![equipe_core::protocol::secrets::SecretField { key: "anthropic-admin-key".into(), label: "Anthropic admin key".into(), secret: true }],
                                     save_to: String::new(),
                                     at: 0,
+                                    steps: vec![
+                                        "Sign in to the Anthropic Console with an organization admin account.".into(),
+                                        "Open Settings > Admin keys.".into(),
+                                        "Click Create Admin Key, name it, and confirm.".into(),
+                                        "Copy the key now: it is shown only once.".into(),
+                                    ],
+                                    url: Some("https://platform.claude.com/settings/admin-keys".into()),
+                                    sign_in_url: Some("https://platform.claude.com/".into()),
                                     store: Some(equipe_core::protocol::secrets::SecretStore {
                                         name: "anthropic-admin-key".into(),
                                         service: "anthropic".into(),
@@ -1815,6 +1823,9 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     ],
                                     save_to: "~/.config/atinum/nas.env".into(),
                                     at: 0,
+                                    steps: vec!["Open the NAS admin page at https://nas.example.com/admin".into(), "Under Users, open the account the import uses.".into(), "Read the user name and set or reveal the password.".into()],
+                                    url: Some("https://nas.example.com/admin".into()),
+                                    sign_in_url: None,
                                     store: None,
                                 }]
                             } else {

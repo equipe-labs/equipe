@@ -145,7 +145,7 @@ impl World {
         self.call(
             "backend",
             "request_secret",
-            json!({ "name": "anthropic-admin-key", "service": "anthropic", "kind": "api_key", "why": "read usage and cost reports", "scopes_hint": "read-only / usage scope" }),
+            json!({ "name": "anthropic-admin-key", "service": "anthropic", "kind": "api_key", "why": "read usage and cost reports", "scopes_hint": "read-only / usage scope", "steps": ["Sign in to the Console", "Open Settings > Admin keys", "Click Create key and copy it"] }),
         )
         .await
     }
@@ -199,6 +199,9 @@ async fn a_requested_key_goes_from_the_card_into_the_store_and_the_member_is_tol
     assert_eq!((store.name.as_str(), store.service.as_str(), store.kind), ("anthropic-admin-key", "anthropic", SecretKind::ApiKey));
     assert_eq!(store.create_url.as_deref(), Some("https://platform.claude.com/settings/admin-keys"));
     assert_eq!(store.scopes_hint.as_deref(), Some("read-only / usage scope"));
+    // The guide rides the card: the member's numbered steps and the page, the catalog's sign-in as a second link.
+    assert_eq!(card.steps, ["Sign in to the Console", "Open Settings > Admin keys", "Click Create key and copy it"]);
+    assert_eq!((card.url.as_deref(), card.sign_in_url.as_deref()), (Some("https://platform.claude.com/settings/admin-keys"), Some("https://platform.claude.com/")));
     assert_eq!((card.member.as_str(), card.why.as_str(), card.fields.len(), card.fields[0].secret), ("backend", "read usage and cost reports", 1, true));
     assert_eq!(w.handle.snapshot("acme").await.secret_asks, vec![card.clone()], "a screen attaching sees it");
 
@@ -232,17 +235,23 @@ async fn a_requested_key_goes_from_the_card_into_the_store_and_the_member_is_tol
 async fn a_card_that_asks_for_nothing_valid_is_refused_and_a_page_must_be_https() {
     let w = world().await;
     for bad in ["http://acme.example.com/keys", "javascript:alert(1)", "https://user:pw@acme.example.com/", "file:///etc/passwd"] {
-        let r = w.call("backend", "request_secret", json!({ "name": "k", "service": "acme", "kind": "token", "why": "x", "create_url": bad })).await;
+        let r = w.call("backend", "request_secret", json!({ "name": "k", "service": "acme", "kind": "token", "why": "x", "steps": ["Open it"], "create_url": bad })).await;
         assert!(r.is_error, "{bad}: {r:?}");
     }
-    let r = w.call("backend", "request_secret", json!({ "name": "k", "service": "acme", "kind": "token" })).await;
+    let r = w.call("backend", "request_secret", json!({ "name": "k", "service": "acme", "kind": "token", "steps": ["Open it"], "create_url": "https://acme.example.com/k" })).await;
     assert!(r.is_error && r.text.contains("why"), "{r:?}");
+    // The card never appears bare: no steps, or a website's key without its page, is refused with what to add.
+    let r = w.call("backend", "request_secret", json!({ "name": "k", "service": "acme", "kind": "token", "why": "x", "create_url": "https://acme.example.com/k" })).await;
+    assert!(r.is_error && r.text.contains("`steps`"), "{r:?}");
+    let r = w.call("backend", "request_secret", json!({ "name": "k", "service": "acme", "kind": "token", "why": "x", "steps": ["Open it"] })).await;
+    assert!(r.is_error && r.text.contains("`create_url`"), "{r:?}");
     assert!(w.handle.snapshot("acme").await.secret_asks.is_empty(), "nothing was put to the person");
     // An unknown service works with the member's own page.
-    let ok = w.call("backend", "request_secret", json!({ "name": "acme-token", "service": "acme", "kind": "token", "why": "deploy status", "create_url": "https://acme.example.com/settings/tokens" })).await;
+    let ok = w.call("backend", "request_secret", json!({ "name": "acme-token", "service": "acme", "kind": "token", "why": "deploy status", "steps": ["Open Settings > Tokens", "Click New token"], "create_url": "https://acme.example.com/settings/tokens" })).await;
     assert!(!ok.is_error, "{ok:?}");
     let asks = w.handle.snapshot("acme").await.secret_asks;
     assert_eq!(asks[0].store.as_ref().and_then(|s| s.create_url.as_deref()), Some("https://acme.example.com/settings/tokens"));
+    assert_eq!((asks[0].url.as_deref(), asks[0].steps.len()), (Some("https://acme.example.com/settings/tokens"), 2));
     w.handle.shutdown().await;
 }
 

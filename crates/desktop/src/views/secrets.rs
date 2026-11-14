@@ -4,6 +4,9 @@
 //! that file, and nowhere else: never into a conversation, never to a member.
 //! Over the composer in the conversation — folded to one line until the
 //! person opens it, so the work on screen isn't pushed aside — and in the Inbox.
+//! Every card carries a guide: numbered steps and a button that opens the
+//! exact page, on the screen the person is looking at (this app's, whichever
+//! machine the daemon is on), with Copy link beside it.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -187,6 +190,7 @@ pub fn card(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> Option<AnyElemen
                     .children(ask.ticket.map(|t| div().text_color(p.muted).child(format!("T-{t}")))),
             )
             .child(div().text_size(px(15.)).text_color(p.text).child(ask.why.clone()))
+            .children(guide(shell, &ask, cx))
             .child(v_flex().gap_2().children(boxes))
             .child(div().text_size(px(SMALL)).line_height(px(18.)).text_color(p.muted).child(if ask.save_to.is_empty() { t!("secrets.vault", machine = shell.endpoint.label()) } else { t!("secrets.where", path = ask.save_to) }))
             .child(h_flex().gap_2().items_center().child(save).child(later))
@@ -287,6 +291,77 @@ pub fn service_words(id: &str, part: &str) -> Option<String> {
     crate::i18n::catalog().own(&key).map(str::to_owned)
 }
 
+/// The steps a card shows: the member's, else (a card the person started
+/// from Connections) the catalog service's own, in the person's language.
+fn steps_of(ask: &SecretAsk) -> Vec<String> {
+    if !ask.steps.is_empty() {
+        return ask.steps.clone();
+    }
+    let catalog = ask.store.as_ref().and_then(|st| equipe_core::connections::Service::of(&st.service));
+    catalog.and_then(|s| service_words(s.id, "steps")).map(|text| text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect()).unwrap_or_default()
+}
+
+/// The page the card opens: its `url` (a card kept before guides existed:
+/// the store's key page), only if it checks out as an https site.
+pub fn page_of(ask: &SecretAsk) -> Option<String> {
+    let given = ask.url.clone().or_else(|| ask.store.as_ref().and_then(|st| st.create_url.clone()))?;
+    equipe_core::connections::clean_url(&given).ok()
+}
+
+/// The guide: numbered steps, then one button that opens the page, Copy link,
+/// and the sign-in page as a second link when it differs. With no page and no
+/// steps (an old card), nothing.
+fn guide(shell: &Shell, ask: &SecretAsk, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let p = shell.palette;
+    let id = ask.id;
+    let steps = steps_of(ask);
+    let page = page_of(ask);
+    if steps.is_empty() && page.is_none() {
+        return None;
+    }
+    let list = steps.iter().enumerate().map(|(n, step)| {
+        let found = equipe_core::protocol::links::extract(step);
+        let words = if found.text.trim().is_empty() { step.clone() } else { found.text.clone() };
+        // An address inside a step is a button right under it.
+        let inline: Vec<AnyElement> = found
+            .links
+            .iter()
+            .filter_map(|l| equipe_core::connections::clean_url(&l.url).ok())
+            .filter(|u| Some(u) != page.as_ref())
+            .enumerate()
+            .map(|(k, url)| {
+                let host = equipe_core::connections::host_of(&url);
+                ui::button(p, ("secret-step-link", crate::render::hash_of((id, n, k))), Kind::Ghost, t!("secrets.guide.open", host = host)).field().icon(Icon::External).on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url))).into_any_element()
+            })
+            .collect();
+        h_flex()
+            .id(("secret-step", crate::render::hash_of((id, n))))
+            .w_full()
+            .gap_2p5()
+            .items_start()
+            .child(div().flex_none().mt(px(1.)).size(px(18.)).flex().items_center().justify_center().rounded_full().bg(p.accent_bg).text_color(p.accent).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child((n + 1).to_string()))
+            .child(v_flex().flex_1().min_w_0().gap_1().child(div().text_size(px(13.)).line_height(px(19.)).text_color(p.text2).child(words)).children(if inline.is_empty() { None } else { Some(h_flex().gap_1().flex_wrap().children(inline)) }))
+            .into_any_element()
+    }).collect::<Vec<_>>();
+    let buttons = page.map(|url| {
+        let host = equipe_core::connections::host_of(&url);
+        let (open_url, copy_url) = (url.clone(), url);
+        let mut row = h_flex().w_full().gap_2().items_center().flex_wrap();
+        row = row.child(ui::button(p, ("secret-open-page", id), Kind::Primary, t!("secrets.guide.open", host = host)).icon(Icon::External).on_click(cx.listener(move |_, _, _, cx| cx.open_url(&open_url))));
+        row = row.child(ui::button(p, ("secret-copy-page", id), Kind::Ghost, t!("links.copy")).icon(Icon::Copy).on_click(cx.listener(move |this, _, _, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(copy_url.clone()));
+            this.composer.flash = Some(t!("links.copied").into());
+            cx.notify();
+        })));
+        if let Some(sign_in) = ask.sign_in_url.clone().and_then(|u| equipe_core::connections::clean_url(&u).ok()).filter(|u| Some(u) != ask.url.as_ref()) {
+            let host = equipe_core::connections::host_of(&sign_in);
+            row = row.child(ui::button(p, ("secret-sign-in-page", id), Kind::Ghost, t!("secrets.guide.sign_in", host = host)).icon(Icon::Lock).on_click(cx.listener(move |_, _, _, cx| cx.open_url(&sign_in))));
+        }
+        row.into_any_element()
+    });
+    Some(v_flex().id(("secret-guide", id)).w_full().gap_2p5().children(if steps.is_empty() { None } else { Some(v_flex().w_full().gap_1p5().children(list)) }).children(buttons).into_any_element())
+}
+
 /// The card for a key asked to be kept in the squad's secret store
 /// (`request_secret`, or Connect on the Logins page): what it is for, the
 /// button that opens the key's page, what to create there, a masked box.
@@ -299,21 +374,6 @@ fn store_card(shell: &Shell, ask: &SecretAsk, store: &equipe_core::protocol::sec
     let catalog = equipe_core::connections::Service::of(&store.service);
     let why = if ask.why.is_empty() { catalog.and_then(|s| service_words(s.id, "use")) } else { Some(ask.why.clone()) };
     let hint = store.scopes_hint.clone().or_else(|| catalog.and_then(|s| service_words(s.id, "hint")));
-    // Opened here, on the screen the person is looking at: only an address that checks out.
-    let page = store.create_url.clone().and_then(|u| equipe_core::connections::clean_url(&u).ok());
-    let page_row = match page {
-        Some(url) => {
-            let host = equipe_core::connections::host_of(&url);
-            h_flex()
-                .w_full()
-                .gap_2()
-                .items_center()
-                .child(ui::button(p, ("secret-open-page", id), Kind::Secondary, t!("secrets.store.open_page")).icon(Icon::External).on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url))))
-                .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(p.muted).child(t!("secrets.store.opens", host = host)))
-                .into_any_element()
-        }
-        None => div().w_full().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(t!("secrets.store.no_page")).into_any_element(),
-    };
     let field = div().w_full().h(px(CONTROL + 4.)).px_3().flex().items_center().rounded(px(R_MD)).border_1().border_color(p.hair).bg(p.code_bg).text_size(px(13.)).child(Input::new(&input).appearance(false).bordered(false));
     let save = ui::button(p, ("secret-save", id), Kind::Primary, t!("secrets.store.save")).key("⏎").icon(Icon::Lock).on_click(cx.listener(move |this, _, window, cx| this.save_secret_card(id, window, cx)));
     let later = ui::button(p, ("secret-later", id), Kind::Ghost, t!("secrets.not_now")).on_click(cx.listener(move |this, _, _, cx| this.dismiss_secret_card(id, cx)));
@@ -330,11 +390,63 @@ fn store_card(shell: &Shell, ask: &SecretAsk, store: &equipe_core::protocol::sec
             .child(head)
             .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("secrets.store.title", what = what)))
             .children(why.map(|w| div().text_size(px(13.)).line_height(px(19.)).text_color(p.text2).child(t!("secrets.store.for", why = w))))
-            .child(page_row)
+            .child(guide(shell, ask, cx).unwrap_or_else(|| div().w_full().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(t!("secrets.store.no_page")).into_any_element()))
             .children(hint.map(|h| h_flex().w_full().gap_2().items_start().child(div().pt(px(2.)).flex_none().child(icon(Icon::Info, 13., p.muted))).child(div().flex_1().min_w_0().text_size(px(12.5)).line_height(px(18.)).text_color(p.muted).child(h))))
             .child(field)
             .child(div().text_size(px(SMALL)).line_height(px(18.)).text_color(p.muted).child(t!("secrets.store.where", machine = shell.endpoint.label())))
             .child(h_flex().gap_2().items_center().child(save).child(later))
             .into_any_element(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{page_of, steps_of};
+    use equipe_core::protocol::secrets::SecretAsk;
+    use equipe_core::protocol::secrets::{SecretField, SecretKind, SecretStore};
+
+    fn ask(steps: &[&str], url: Option<&str>, store: Option<SecretStore>) -> SecretAsk {
+        SecretAsk {
+            id: 1,
+            session: 3,
+            member: "backend".into(),
+            ticket: None,
+            why: "usage reports".into(),
+            fields: vec![SecretField { key: "K".into(), label: "k".into(), secret: true }],
+            save_to: String::new(),
+            at: 0,
+            store,
+            steps: steps.iter().map(|s| (*s).to_owned()).collect(),
+            url: url.map(str::to_owned),
+            sign_in_url: None,
+        }
+    }
+
+    fn store(service: &str, create_url: Option<&str>) -> SecretStore {
+        SecretStore { name: "k".into(), service: service.into(), kind: SecretKind::ApiKey, projects: Vec::new(), create_url: create_url.map(str::to_owned), scopes_hint: None }
+    }
+
+    #[test]
+    fn a_card_shows_the_members_steps_in_order_and_opens_only_a_page_that_checks_out() {
+        let card = ask(&["Open Settings", "Click Create"], Some("https://acme.example.com/keys"), None);
+        assert_eq!(steps_of(&card), ["Open Settings", "Click Create"]);
+        assert_eq!(page_of(&card).as_deref(), Some("https://acme.example.com/keys"));
+        for bad in ["http://acme.example.com", "javascript:alert(1)", "file:///etc/passwd", "https://u:p@acme.example.com/"] {
+            assert!(page_of(&ask(&["x"], Some(bad), None)).is_none(), "{bad}");
+        }
+        // A card kept before guides existed still opens the store's key page.
+        let old = ask(&[], None, Some(store("acme", Some("https://acme.example.com/tokens"))));
+        assert_eq!(page_of(&old).as_deref(), Some("https://acme.example.com/tokens"));
+    }
+
+    #[test]
+    fn a_card_the_person_started_shows_the_catalogs_own_steps() {
+        for id in ["anthropic", "openai", "github", "vercel", "posthog"] {
+            let card = ask(&[], None, Some(store(id, None)));
+            let steps = steps_of(&card);
+            assert!(steps.len() >= 4 && steps.iter().all(|s| !s.trim().is_empty()), "{id}: {steps:?}");
+        }
+        // The member's steps stand alone: the catalog's are not added to them.
+        assert_eq!(steps_of(&ask(&["Mine"], None, Some(store("anthropic", None)))), ["Mine"]);
+    }
 }
