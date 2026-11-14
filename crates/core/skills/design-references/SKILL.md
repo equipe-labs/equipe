@@ -51,7 +51,7 @@ then use a source only for a kind it fits: a gallery of marketing sites is for l
 dense dashboard; a consumer app's onboarding isn't one for an admin table; a website is never the reference for a
 mobile app. An older file's `dense tools`, `mobile` and `marketing sites` read as web product, mobile app and
 landing. When neither file exists, start the project's from `references/sources.md` next to this file, keep only the lines that fit the product, and tell the person they can add
-their own (a library they pay for and have connected, products they admire). Public design systems' docs and writing
+their own (a library they pay for and have connected, products they admire). Public design systems' docs (the pages for each component are indexed in `ui-design-systems`) and writing
 on interaction craft count as sources too: they show a pattern's states and the reasons behind its proportions. So do
 component registries (`kind: component registry`), for the parts a real page is built from.
 

@@ -116,6 +116,11 @@ const LIBRARY: &[Source] = &[
     Source { dir: "ui-polish", files: &[file!("ui-polish", "SKILL.md")], offered: |r, _| builds_ui(r) },
     Source { dir: "ui-review", files: &[file!("ui-review", "SKILL.md"), file!("ui-review", "references/sources.md")], offered: |r, _| r.id == "designer" },
     Source { dir: "ui-vocabulary", files: &[file!("ui-vocabulary", "SKILL.md")], offered: |r, _| r.id == "designer" },
+    Source {
+        dir: "ui-design-systems",
+        files: &[file!("ui-design-systems", "SKILL.md"), file!("ui-design-systems", "references/components.md")],
+        offered: |r, _| builds_ui(r),
+    },
 ];
 
 /// A skill as one member gets it: its files rendered for its role and squad.
@@ -488,13 +493,13 @@ mod tests {
         let base = ctx(&team);
         let all = Context { browser: true, desktop: true, design: true, ..ctx(&team) };
         assert_eq!(names(PM, &base), ["office-hours", "planning", "working-with-design", "routines-and-signals", "product-ideas", "research-report"]);
-        let craft = ["ui-product-kinds", "ui-foundations", "ui-layout-and-states", "ui-data-display", "ui-forms", "ui-mobile", "ui-motion", "ui-accessibility", "ui-writing", "ui-polish", "ui-review", "ui-vocabulary"];
+        let craft = ["ui-product-kinds", "ui-foundations", "ui-layout-and-states", "ui-data-display", "ui-forms", "ui-mobile", "ui-motion", "ui-accessibility", "ui-writing", "ui-polish", "ui-review", "ui-vocabulary", "ui-design-systems"];
         let designer_has = ["plan-review", "research-report", "design-system", "design-process", "design-references", "design-tools", "ui-map", "design-qa"];
         assert_eq!(names("designer", &base), designer_has.iter().chain(&craft).copied().collect::<Vec<_>>());
         assert!(names("designer", &all).contains(&"design-remix".to_owned()));
         // Engineers who build screens get the parts of the craft they build to.
-        assert_eq!(names("frontend", &base), ["plan-review", "research-report", "design-system", "ui-floor", "ui-forms", "ui-motion", "ui-accessibility", "ui-polish"]);
-        assert_eq!(names("mobile", &base), ["plan-review", "research-report", "ui-forms", "ui-mobile", "ui-motion", "ui-accessibility", "ui-polish"]);
+        assert_eq!(names("frontend", &base), ["plan-review", "research-report", "design-system", "ui-floor", "ui-forms", "ui-motion", "ui-accessibility", "ui-polish", "ui-design-systems"]);
+        assert_eq!(names("mobile", &base), ["plan-review", "research-report", "ui-forms", "ui-mobile", "ui-motion", "ui-accessibility", "ui-polish", "ui-design-systems"]);
         // An engineer gets the component system, not the designer's setup of a brand.
         let text = |id: &str, c: &Context<'_>, name: &str| offered(role(id).unwrap(), c).into_iter().find(|s| s.name == name).unwrap().text();
         let frontend = text("frontend", &base, "design-system");
@@ -583,6 +588,40 @@ mod tests {
     }
 
     #[test]
+    fn the_design_systems_index_covers_each_component_and_names_only_known_systems_with_https_roots() {
+        let source = LIBRARY.iter().find(|s| s.dir == "ui-design-systems").unwrap();
+        let (skill, index) = (source.files[0].1, source.files[1].1);
+        for heading in [
+            "### Button", "### Link", "### Segmented control", "### Menu and dropdown", "### Command palette", "### Text input", "### Select and combobox",
+            "### Checkbox, radio and switch", "### Date picker", "### Form layout and validation", "### File upload", "### Tabs", "### Navigation:",
+            "### Pagination", "### Stepper and wizard", "### Settings page", "### Dialog and modal", "### Drawer and sheet", "### Popover and tooltip",
+            "### Toast, notification and banner", "### Empty state", "### Loading, skeleton and progress", "### Badge, tag and status", "### Avatar",
+            "### Data table", "### Filter bar, chips and search", "### KPI and stat tile", "### Charts", "### Card", "### List", "### Accordion",
+            "### Mobile tab bar and navigation bar", "### Pull to refresh and lists on mobile", "### Onboarding",
+        ] {
+            assert!(index.contains(heading), "{heading}");
+        }
+        let systems = ["Carbon", "Primer", "Polaris", "Geist", "Atlassian", "M3", "HIG", "GOV.UK", "Radix/shadcn", "Radix", "shadcn", "Android"];
+        let mut seen = std::collections::BTreeSet::new();
+        for line in index.lines().filter(|l| l.starts_with("- ")) {
+            let (system, rest) = line[2..].split_once(": ").unwrap_or_else(|| panic!("system: {line}"));
+            assert!(systems.contains(&system), "{line}");
+            assert!(rest.contains('`') && rest.contains(" — "), "a page and what it is good for: {line}");
+            seen.insert(system);
+        }
+        for system in ["Carbon", "Primer", "Polaris", "Geist", "Atlassian", "M3", "HIG", "GOV.UK", "Radix/shadcn"] {
+            assert!(seen.contains(system), "{system}");
+        }
+        let roots = index.split("## Roots").nth(1).expect("roots table");
+        let urls: Vec<&str> = roots.split('`').skip(1).step_by(2).filter(|t| t.starts_with("http")).collect();
+        assert!(urls.len() >= 10 && urls.iter().all(|u| u.starts_with("https://") && u.ends_with('/')), "{urls:?}");
+        // The skill says how to use the pages: compare, note, follow the agreement, never copy.
+        for part in ["notes.md", "Agree", "Differ", "follow the agreement", "accepted system", "never copy", "licences", "## Review checklist"] {
+            assert!(skill.contains(part) || skill.to_lowercase().contains(&part.to_lowercase()), "{part}");
+        }
+    }
+
+    #[test]
     fn the_index_names_each_skill_and_when_and_how_to_open_it() {
         let home = scratch("index");
         let team = [Teammate { name: "pm", role: PM }];
@@ -607,7 +646,7 @@ mod tests {
         // The UI craft library is indexed like any skill, but never sent inline.
         let designer = offered(role("designer").unwrap(), &ctx(&team));
         let library: Vec<&Skill> = designer.iter().filter(|s| s.library).collect();
-        assert_eq!(library.len(), 12, "{:?}", library.iter().map(|s| &s.name).collect::<Vec<_>>());
+        assert_eq!(library.len(), 13, "{:?}", library.iter().map(|s| &s.name).collect::<Vec<_>>());
         let (indexed, inline) = (for_charter(&designer, Delivery::Plugin(&at)), for_charter(&designer, Delivery::Inline));
         for skill in &library {
             assert!(indexed.contains(&format!("- `{}`: {}", skill.name, skill.description)), "{indexed}");
