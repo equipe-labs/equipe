@@ -2666,6 +2666,10 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "is_false")]
         background: bool,
     },
+    /// The agent's plan as it stands now — every step, with where it is. It
+    /// replaces the plan before it: a screen keeps one live plan card per
+    /// turn. Comes beside the plan's one-line [`Event::ToolUse`] (`TodoWrite`).
+    Plan { session: SessionId, steps: Vec<PlanStep> },
     /// A tool use came back: the latest [`Event::ToolUse`] with the same
     /// `tool` and `target` still open ended so. A screen that doesn't know
     /// this event shows the step as before.
@@ -3274,6 +3278,7 @@ impl Event {
             | Event::TextDelta { session, .. }
             | Event::ToolUse { session, .. }
             | Event::ToolResult { session, .. }
+            | Event::Plan { session, .. }
             | Event::Thinking { session, .. }
             | Event::ModelKnown { session, .. }
             | Event::Thread { session, .. }
@@ -3449,6 +3454,23 @@ impl Event {
     }
 }
 
+/// Where one step of an agent's plan stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanState {
+    Pending,
+    /// The step being worked on now.
+    Active,
+    Done,
+}
+
+/// One step of an agent's plan, in the agent's words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanStep {
+    pub text: String,
+    pub state: PlanState,
+}
+
 /// How a tool use ended: whether it worked, a command's exit code, how long it
 /// took, the end of what it printed, and — for an edit — the change.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -3547,6 +3569,9 @@ pub enum Entry {
     },
     Error { message: String, next: Option<String> },
     Landed { branch: String, stat: String },
+    /// The agent's plan, as a checklist ([`Event::Plan`]). A turn keeps one:
+    /// a newer plan takes the place of the one before in the same turn.
+    Plan { steps: Vec<PlanStep> },
     /// What follows is about `project` — or, with `None`, about the whole
     /// squad (see [`transcript::scope`]). Never shown itself; a screen shows
     /// one project's slice of the conversation.
@@ -4139,6 +4164,7 @@ mod tests {
             Event::Notice { undo: None, session: 2, text: "↪ You → frontend: hi".into() },
             Event::TextDelta { session: 1, text: "안녕".into() },
             Event::ToolUse { session: 1, tool: "Edit".into(), target: Some("a.rs".into()), label: None, background: false },
+            Event::Plan { session: 1, steps: vec![PlanStep { text: "Write the test".into(), state: PlanState::Active }, PlanStep { text: "Fix it".into(), state: PlanState::Pending }] },
             Event::TurnEnded {
                 session: 1,
                 outcome: TurnOutcome::Interrupted,

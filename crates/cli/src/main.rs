@@ -1778,7 +1778,7 @@ impl App {
                 Event::SubagentEnded { .. } => eprintln!("{}", e.dim(&format!("  ↳ {}", t!("main.handed_back")))),
                 Event::SubagentStep { .. } | Event::SubagentEntry { .. } | Event::SubagentStuck { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::RunOpened { .. } | Event::LaneMoved { .. } | Event::ConversationBack { .. } | Event::ConversationTitle { .. } | Event::ConversationRenameRefused { .. } | Event::ConversationPinned { .. } | Event::AutoPutAwayChanged { .. } | Event::PutAwayChanged { .. } | Event::Estimated { .. } | Event::MemoWithdrawn { .. } | Event::QueueSent { .. } | Event::VisualsRendered { .. } => {}
                 Event::Compacting { .. } | Event::Compacted { .. } | Event::CompactFailed { .. } => {}
-                Event::ToolResult { .. } | Event::Thinking { .. } | Event::CommandWatch { .. } => {}
+                Event::ToolResult { .. } | Event::Plan { .. } | Event::Thinking { .. } | Event::CommandWatch { .. } => {}
                 Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. }
                 | Event::BrowserWants { .. } | Event::BrowserWindow { .. }
                 | Event::PairOffer { .. } | Event::PairAsked { .. } | Event::Paired { .. } | Event::PairEnded { .. } | Event::Devices { .. }

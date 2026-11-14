@@ -383,6 +383,7 @@ commit it, print it or copy it elsewhere; to hand it to a service, run the CLI y
                 *text = joined;
             }
             Event::Thinking { text, .. } | Event::UserMessage { text, .. } | Event::MessageQueued { text, .. } | Event::Steered { text, .. } | Event::Notice { text, .. } => mask(text),
+            Event::Plan { steps, .. } => steps.iter_mut().for_each(|step| mask(&mut step.text)),
             Event::ToolUse { tool, target, label, .. } => {
                 // `secret_save`'s arguments are the value itself.
                 if ks::carries_value(tool) {

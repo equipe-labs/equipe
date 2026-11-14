@@ -2325,6 +2325,26 @@ async fn turn(session: SessionId, events: broadcast::Sender<Event>, seconds: f32
     if let Some(mode) = command::mode() {
         return command::run(session, &events, &mode).await;
     }
+    // `FAKE_PLAN_CARD=1`: a plan that moves along; `long`: one of eleven steps.
+    if let Ok(mode) = std::env::var("FAKE_PLAN_CARD") {
+        use equipe_core::protocol::{PlanState, PlanStep};
+        let words: &[&str] = if mode == "long" {
+            &["Read the existing gallery code", "Sketch the thumbnail strip", "Add swipe handling", "Add pinch to zoom", "Wire the strip to the main image", "Handle images that fail to load", "Write the swipe tests", "Write the zoom tests", "Check it at phone width", "Check it in light and dark", "Hand it in with the screenshots"]
+        } else {
+            &["Read the gallery code", "Add swipe handling, then check that a long caption which wraps onto a second line still lines up", "Write the tests", "Check it at phone width", "Hand it in"]
+        };
+        let plan = |done: usize| Event::Plan {
+            session,
+            steps: words.iter().enumerate().map(|(n, text)| PlanStep { text: (*text).into(), state: if n < done { PlanState::Done } else if n == done { PlanState::Active } else { PlanState::Pending } }).collect(),
+        };
+        for done in 0..(words.len() / 2).max(2) {
+            let _ = events.send(plan(done));
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+        // The turn stays open on its plan, so a picture shows it moving.
+        tokio::time::sleep(Duration::from_secs(600)).await;
+        return;
+    }
     let long = std::env::var("FAKE_LONG_REPLY").is_ok_and(|v| v == "1").then(history::long_reply);
     let chars: Vec<char> = long.as_deref().unwrap_or(REPLY).chars().collect();
     let chunks = chars.chunks(4).count().max(1);

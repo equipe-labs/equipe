@@ -39,6 +39,36 @@ pub struct Transcript {
     open_reply: bool,
 }
 
+/// A replayed conversation with each turn's plans folded into one: the
+/// journal keeps every plan as it came, a turn shows its latest — where its
+/// first stood. A turn runs from a message of the person's to the next.
+pub fn fold_plans(entries: Vec<Entry>, times: Vec<Option<u64>>) -> (Vec<Entry>, Vec<Option<u64>>) {
+    if entries.iter().filter(|e| matches!(e, Entry::Plan { .. })).count() < 2 {
+        return (entries, times);
+    }
+    let mut out: Vec<Entry> = Vec::with_capacity(entries.len());
+    let mut out_times: Vec<Option<u64>> = Vec::with_capacity(entries.len());
+    // Where this turn's plan stands in `out`.
+    let mut plan_at: Option<usize> = None;
+    for (entry, at) in entries.into_iter().zip(times) {
+        match &entry {
+            Entry::User { .. } => plan_at = None,
+            Entry::Plan { .. } => {
+                if let Some(ix) = plan_at {
+                    out[ix] = entry;
+                    out_times[ix] = at;
+                    continue;
+                }
+                plan_at = Some(out.len());
+            }
+            _ => {}
+        }
+        out.push(entry);
+        out_times.push(at);
+    }
+    (out, out_times)
+}
+
 /// Now, in unix seconds.
 fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
@@ -53,6 +83,7 @@ impl Transcript {
     /// Lines with when each was said; a time missing is not known.
     pub fn with_times(entries: Vec<Entry>, mut times: Vec<Option<u64>>) -> Self {
         times.resize(entries.len(), None);
+        let (entries, times) = fold_plans(entries, times);
         let mut t = Self { entries, times, open_reply: false };
         t.cap();
         t
@@ -146,6 +177,7 @@ impl Transcript {
                     None => format!("── T-{ticket} · {title}"),
                 },
             }),
+            Event::Plan { steps, .. } if !steps.is_empty() => Some(Entry::Plan { steps: steps.clone() }),
             Event::ToolUse { tool, target, label, background, .. } => Some(Entry::Tool { tool: tool.clone(), target: target.clone(), outcome: None, label: label.clone(), background: *background }),
             Event::TurnEnded { outcome: TurnOutcome::Interrupted, .. } => Some(Entry::Note { undo: None, text: notes::STOPPED.into() }),
             Event::TurnEnded { outcome: TurnOutcome::Incomplete, .. } => {
@@ -172,8 +204,24 @@ impl Transcript {
             }
         }
         if let Some(entry) = new {
-            self.entries.push(entry.clone());
-            self.times.push(Some(now));
+            // A plan takes the place of the one before it in the same turn (the
+            // journal keeps each as it came; a replay folds them the same way,
+            // `fold_plans`).
+            let turn_start = self.entries.iter().rposition(|e| matches!(e, Entry::User { .. })).map_or(0, |ix| ix + 1);
+            let earlier = match entry {
+                Entry::Plan { .. } => self.entries[turn_start..].iter().rposition(|e| matches!(e, Entry::Plan { .. })).map(|at| turn_start + at),
+                _ => None,
+            };
+            match earlier {
+                Some(at) => {
+                    self.entries[at] = entry.clone();
+                    self.times[at] = Some(now);
+                }
+                None => {
+                    self.entries.push(entry.clone());
+                    self.times.push(Some(now));
+                }
+            }
             done.push(entry);
         }
         self.cap();
@@ -292,7 +340,7 @@ pub mod scope {
             Entry::User { text, .. } => !crate::harness::only_harness(text),
             Entry::Reply { .. } | Entry::Error { .. } | Entry::Landed { .. } => true,
             Entry::Note { text, .. } => !text.chars().next().is_some_and(|c| ('\u{E000}'..='\u{F8FF}').contains(&c)),
-            Entry::Tool { .. } | Entry::Thread { .. } => false,
+            Entry::Tool { .. } | Entry::Plan { .. } | Entry::Thread { .. } => false,
         }
     }
 
@@ -380,6 +428,16 @@ pub fn markdown(entries: &[Entry], heading: &str) -> String {
                 out.push_str(&format!("> ✗ {message}{}\n\n", next.as_ref().map(|n| format!(" → `{n}`")).unwrap_or_default()))
             }
             Entry::Landed { branch, stat } => out.push_str(&format!("✓ Landed on `{branch}`\n\n```\n{stat}\n```\n\n")),
+            Entry::Plan { steps } => {
+                for step in steps {
+                    let mark = match step.state {
+                        crate::PlanState::Done => "x",
+                        _ => " ",
+                    };
+                    out.push_str(&format!("- [{mark}] {}\n", step.text));
+                }
+                out.push('\n');
+            }
         }
     }
     out
@@ -416,7 +474,43 @@ pub fn tool_verb(name: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Usage;
+    use crate::{PlanState, PlanStep, Usage};
+
+    fn plan(steps: &[(&str, PlanState)]) -> Vec<PlanStep> {
+        steps.iter().map(|(text, state)| PlanStep { text: (*text).into(), state: *state }).collect()
+    }
+
+    #[test]
+    fn a_newer_plan_takes_the_place_of_the_one_before_in_its_turn_and_a_new_message_starts_another() {
+        let mut t = Transcript::default();
+        let said = |text: &str| Event::UserMessage { session: 1, text: text.into(), kept: Vec::new() };
+        t.apply_at(&said("do it"), 1);
+        let first = plan(&[("Read", PlanState::Active), ("Write", PlanState::Pending)]);
+        let second = plan(&[("Read", PlanState::Done), ("Write", PlanState::Active)]);
+        assert_eq!(t.apply_at(&Event::Plan { session: 1, steps: first.clone() }, 2), vec![Entry::Plan { steps: first.clone() }], "the journal gets each plan as it came");
+        t.apply_at(&Event::TextDelta { session: 1, text: "working".into() }, 3);
+        t.apply_at(&Event::Plan { session: 1, steps: second.clone() }, 4);
+        let plans: Vec<_> = t.entries().iter().filter(|e| matches!(e, Entry::Plan { .. })).collect();
+        assert_eq!(plans, [&Entry::Plan { steps: second.clone() }], "one card for the turn, with the latest steps");
+        assert!(matches!(t.entries()[1], Entry::Plan { .. }), "where the first stood");
+        assert!(t.apply_at(&Event::Plan { session: 1, steps: Vec::new() }, 5).is_empty(), "an empty plan says nothing");
+        t.apply_at(&said("and now?"), 6);
+        t.apply_at(&Event::Plan { session: 1, steps: first.clone() }, 7);
+        assert_eq!(t.entries().iter().filter(|e| matches!(e, Entry::Plan { .. })).count(), 2, "a later turn has a plan of its own");
+    }
+
+    #[test]
+    fn a_replay_folds_each_turns_plans_into_the_latest_where_the_first_stood() {
+        let user = |text: &str| Entry::User { text: text.into(), kept: Vec::new() };
+        let a = plan(&[("A", PlanState::Active)]);
+        let b = plan(&[("A", PlanState::Done)]);
+        let c = plan(&[("C", PlanState::Pending)]);
+        let journal = vec![user("1"), Entry::Plan { steps: a.clone() }, Entry::Reply { text: "r".into() }, Entry::Plan { steps: b.clone() }, user("2"), Entry::Plan { steps: c.clone() }];
+        let t = Transcript::with_times(journal, vec![Some(1), Some(2), Some(3), Some(4), Some(5), Some(6)]);
+        assert_eq!(t.entries(), [user("1"), Entry::Plan { steps: b }, Entry::Reply { text: "r".into() }, user("2"), Entry::Plan { steps: c }]);
+        assert_eq!(t.times(), [Some(1), Some(4), Some(3), Some(5), Some(6)]);
+        assert!(markdown(t.entries(), "x").contains("- [x] A\n"));
+    }
 
     mod scopes {
         use super::super::scope::{self, Part};

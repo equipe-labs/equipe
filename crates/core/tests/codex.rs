@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as Process;
 use std::time::Duration;
 
-use equipe_core::protocol::{Access, Command, CompactTrigger, Decision, Engine, Event, SessionSpec, TurnOutcome};
+use equipe_core::protocol::{Access, Command, CompactTrigger, Decision, Engine, Event, PlanState, SessionSpec, TurnOutcome};
 use equipe_core::runtime::{self, Config, Handle};
 use equipe_core::squads;
 use equipe_providers::CredentialStore;
@@ -144,6 +144,9 @@ async fn codex_edits_in_its_own_worktree_and_its_work_lands_on_a_branch() {
     assert!(turn.iter().any(|e| matches!(e, Event::ToolResult { tool, outcome, .. } if tool == "Write" && outcome.diff.as_deref().is_some_and(|d| d.contains("+hi")))));
     assert!(turn.iter().any(|e| matches!(e, Event::ToolResult { tool, outcome, .. } if tool == "Bash" && outcome.exit == Some(101) && !outcome.ok)));
     assert!(turn.iter().any(|e| matches!(e, Event::ToolUse { tool, .. } if tool == "TodoWrite")));
+    // The plan's every step travels beside its line.
+    let steps = turn.iter().find_map(|e| if let Event::Plan { steps, .. } = e { Some(steps.clone()) } else { None }).expect("the plan's steps");
+    assert_eq!(steps.iter().map(|s| (s.text.as_str(), s.state)).collect::<Vec<_>>(), [("Add hello.txt", PlanState::Done), ("Run the tests", PlanState::Active)]);
     // The plan's usage, its windows known by their length.
     let usage = turn.iter().find_map(|e| if let Event::PlanUsage { usage, engine: Engine::Codex } = e { Some(*usage) } else { None }).expect("codex's plan usage");
     assert_eq!((usage.five_hour.map(|w| w.used_percent), usage.seven_day.map(|w| w.used_percent)), (Some(42), Some(5)));

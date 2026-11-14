@@ -10661,6 +10661,17 @@ fn tail_chars(text: &str, most: usize) -> String {
     if n <= most { text.to_owned() } else { text.chars().skip(n - most).collect() }
 }
 
+/// One step of an engine's plan, as the protocol has it.
+fn plan_step(step: equipe_providers::turn::PlanStep) -> equipe_protocol::PlanStep {
+    use equipe_providers::turn::StepState;
+    let state = match step.state {
+        StepState::Pending => equipe_protocol::PlanState::Pending,
+        StepState::Active => equipe_protocol::PlanState::Active,
+        StepState::Done => equipe_protocol::PlanState::Done,
+    };
+    equipe_protocol::PlanStep { text: step.text, state }
+}
+
 /// What an engine's activity shows on the screens, as an event of session `id`.
 /// Codex's plan limits are not one of its own: [`Internal::CodexLimits`].
 fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
@@ -10672,6 +10683,7 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
             let outcome = equipe_protocol::ToolOutcome { ok: done.ok, exit: done.exit, ms: Some(done.ms), output, skipped, diff: done.diff };
             Event::ToolResult { session: id, tool: done.name, target: done.target, outcome }
         }
+        Activity::PlanSteps(steps) => Event::Plan { session: id, steps: steps.into_iter().map(plan_step).collect() },
         Activity::Thinking(text) => Event::Thinking { session: id, text },
         Activity::Model(model) => Event::ModelKnown { session: id, model, asked: None },
         Activity::Output(tokens) => Event::Output { session: id, tokens },

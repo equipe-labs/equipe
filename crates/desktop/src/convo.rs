@@ -14,7 +14,7 @@ use equipe_core::protocol::harness;
 use equipe_core::protocol::transcript::scope;
 use equipe_core::protocol::watch::CommandWatch;
 use equipe_core::protocol::{
-    CompactTrigger, Engine, Entry, Event, Rendered, SessionId, SessionInfo, TicketId,
+    CompactTrigger, Engine, Entry, Event, PlanStep, Rendered, SessionId, SessionInfo, TicketId,
     ToolOutcome, Transcript, TurnOutcome,
 };
 use equipe_core::t;
@@ -528,6 +528,11 @@ impl Convo {
             }
         }
         self.mark_delegations(blocks);
+        for block in blocks.iter_mut() {
+            if let Block::Plan { working, .. } = block {
+                *working = self.working_since.is_some();
+            }
+        }
         // A command left running in the background runs on while the turn does,
         // wherever its line is.
         if self.working_since.is_some() {
@@ -796,6 +801,11 @@ pub enum Block {
     Moved { from: Engine, to: Engine, at: u64, session: SessionId },
     Error { message: String, next: Option<String> },
     Landed { branch: String, stat: String },
+    /// The member's plan as a checklist: the latest one only, wherever the
+    /// turn it came in put it. `stale`: the person has spoken since, so it is
+    /// the plan "from before your last message" until a new one replaces it;
+    /// `working`: the member is at work now, so its step in progress moves.
+    Plan { steps: Vec<PlanStep>, stale: bool, working: bool },
     /// Said while the member works, waiting: a steer (read at its next
     /// step, the work carrying on) or a memo (read when its turn ends); when
     /// it was said, in unix seconds (0: not known).
@@ -836,6 +846,7 @@ impl Block {
             Block::Steps(lines) => Some(lines.iter().map(|l| format!("{} {}", verb_word(&l.verb), l.targets.join(" "))).collect::<Vec<_>>().join("\n")),
             Block::Error { message, .. } => Some(message.clone()),
             Block::Landed { branch, stat } => Some(format!("{branch}\n{stat}")),
+            Block::Plan { steps, .. } => Some(steps.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("\n")),
             Block::Moved { from, to, .. } => Some(crate::state::moved_words(*from, *to)),
             Block::Thought { .. } | Block::Thinking(_) | Block::Summarized => None,
         }
@@ -894,10 +905,15 @@ pub fn build_blocks_at(entries: &[Cow<'_, Entry>], times: &[Option<u64>], base: 
     // When the run of steps began.
     let mut run_at: Option<u64> = None;
     let mut replied = false;
+    // Only the latest plan shows: a newer one replaces the one before.
+    let last_plan = entries.iter().rposition(|e| matches!(e.as_ref(), Entry::Plan { .. }));
     for (ix, entry) in entries.iter().enumerate() {
         at.resize(blocks.len(), said);
         said = times.get(ix).copied().flatten();
         let entry = entry.as_ref();
+        if matches!(entry, Entry::Plan { .. }) && last_plan != Some(ix) {
+            continue;
+        }
         // A design check or a second look that ran to its end: its own card.
         if let Entry::Tool { tool, target: Some(target), outcome: Some(o), .. } = entry
             && let Some(ran) = crate::checks::ran(tool, target, &o.output)
@@ -1032,6 +1048,11 @@ pub fn build_blocks_at(entries: &[Cow<'_, Entry>], times: &[Option<u64>], base: 
             },
             Entry::Error { message, next } => blocks.push(Block::Error { message: message.clone(), next: next.clone() }),
             Entry::Landed { branch, stat } => blocks.push(Block::Landed { branch: branch.clone(), stat: stat.clone() }),
+            Entry::Plan { steps } => {
+                // The person has said something since (not the harness speaking for them).
+                let stale = entries[ix + 1..].iter().any(|e| matches!(e.as_ref(), Entry::User { text, .. } if !harness::only_harness(text)));
+                blocks.push(Block::Plan { steps: steps.clone(), stale, working: false });
+            }
             Entry::Tool { .. } | Entry::Thread { .. } => {}
         }
     }
@@ -2001,6 +2022,29 @@ mod tests {
         );
         assert_eq!(c.blocks()[0], Block::Error { message: "boom".into(), next: Some("equipe login".into()) });
         assert_eq!(c.blocks()[1], Block::Landed { branch: "b".into(), stat: " a | 1 +".into() });
+    }
+
+    #[test]
+    fn one_plan_card_shows_the_latest_steps_and_goes_quiet_once_the_person_speaks() {
+        use equipe_core::protocol::{PlanState, PlanStep};
+        let step = |text: &str, state| PlanStep { text: text.into(), state };
+        let mut c = convo(false);
+        feed(
+            &mut c,
+            &[
+                Event::UserMessage { session: 1, text: "do it".into(), kept: Vec::new() },
+                Event::Plan { session: 1, steps: vec![step("Read", PlanState::Active), step("Write", PlanState::Pending)] },
+                Event::Plan { session: 1, steps: vec![step("Read", PlanState::Done), step("Write", PlanState::Active)] },
+            ],
+        );
+        let plans = |c: &Convo| c.blocks().into_iter().filter(|b| matches!(b, Block::Plan { .. })).collect::<Vec<_>>();
+        assert_eq!(plans(&c), [Block::Plan { steps: vec![step("Read", PlanState::Done), step("Write", PlanState::Active)], stale: false, working: true }]);
+        feed(&mut c, &[Event::UserMessage { session: 1, text: "wait, also the footer".into(), kept: Vec::new() }]);
+        assert!(matches!(&plans(&c)[..], [Block::Plan { stale: true, .. }]), "the plan from before your last message stays");
+        feed(&mut c, &[Event::Plan { session: 1, steps: vec![step("Footer", PlanState::Active)] }]);
+        let now = plans(&c);
+        assert_eq!(now.len(), 1, "a new plan replaces it");
+        assert!(matches!(&now[0], Block::Plan { steps, stale: false, .. } if steps[0].text == "Footer"));
     }
 
     #[test]
