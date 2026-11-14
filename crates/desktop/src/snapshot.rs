@@ -24,6 +24,8 @@
 //! `cfocus` (the summary band's retry, focused by keyboard) · `wfocus` (the studio's wait card action, focused by keyboard) · `mark:<label>` (a line in the log, with the process's CPU time and memory) · `a11yon` / `a11y:<json>` (the accessibility tree built, as for a screen reader; then written) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `wheel:<x>,<y>,<n>,<dy>` (the same with the pointer at `x,y`) · `pinch:<x>,<y>,<n>,<delta>` (a trackpad's pinch there, n frames of `delta` each) · `browser` (the browser panel, ⌘⇧B) · `doc:<path>` (a document in the side panel) · `packet` (the hand-over packet the member on screen opened with after its latest move to the other engine) · `docs` (briefs and plans, all in one place) · `docsfind:<words>` · `docsfilter:<project:<name>|squad|kind:<brief|plan>|status:<word>|clear>` · `docsopen:<n>` (its nth row, beside) · `docskeep:<set>,<n>` (keep copy n of a set saved under more than one project) · `dfold[:open]` (fold it to a rail, or open it again) · `dmore` (its "more" menu) · `term[:<line>]` (the terminal, with a line typed at its prompt) · `tkeys:<text>` (typed into it, `~` for Enter) · `tmove` (the terminal to the bottom, or back to the right) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: "Take over", "Give back") · `breveal:<page>` (a page waiting for the person, as Needs you opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:<step>|<step>|…` (an IME's steps composed, then the last committed: `bime:k|か`) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` ("Connect a phone"'s sheet) · `pair:allow|deny|retry|close` (its buttons) · `newsquad[:type:<name>|create|tab[:back]|close|failed|far|farout]` ("New squad…"'s sheet: a name, its Create, Tab, closed, a refusal shown; the window as if on another machine, attached or not) · `delsquad[:far|purge]` ("Delete squad…"'s question for the window's squad; `far`, as if on another machine; `purge`, its "Delete permanently now" switch turned on) · `orchestra[:<member>]` (Orchestration, a member's lane lit) · `studio:<ticket>` (the designer studio on a ticket; `studio:width:<n>` a width picked, `studio:item:<n>` the nth on its timeline opened big, `studio:back`) · `usage[:day|week|claude|codex|outside|cut:<tickets|members|projects>|hour[:<n>]|dismiss]` (the Usage screen: its stretch, its engine, outside equipe opened, a cut, an hour picked — the busiest, or the nth — and the fast burn's notice closed) · `needsorder:<kind|importance>` (Needs you grouped by kind, or by importance) · `disk` (the Disk panel) · `disk:fix<n>|all|yes|back|rescan|close` (a fix's sheet, every fix's, its yes, back, look again, close) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `newwindow[:<squad>]` (New Window, ⌘⇧N; a squad's "open in a new window") · `win:<n|first|last>` (the steps after it act on that window) · `titles[:<file>]` (every window's title, as the Window menu lists them) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
 //!
+//! `linkmenu:<ticket>` (that ticket's "Copy link" menu, open) · `linkchip:<text>` (what a paste of `text` makes) · `openlink:<link>` (a link opened as the system would).
+//!
 //! `shot:` names its file with `{mode}` and `{width}` put in as the window is
 //! drawn (`default.{mode}.{width}.png`); `lang:<code>` switches the words.
 //!
@@ -948,6 +950,15 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                 }),
                 "slide" => shell.update(cx, |shell, cx| shell.present(arg.parse().unwrap_or(0), cx)),
                 "usage" => shell.update(cx, |shell, cx| shell.snapshot_usage(&arg, cx)),
+                // "Copy link" open on a ticket (`linkmenu:<ticket>`); a link pasted into the box
+                // (`linkchip:<text>`); a link opened as the system would (`openlink:<text>`).
+                "linkmenu" => shell.update(cx, |shell, cx| shell.snapshot_link_menu(arg.parse().unwrap_or(0), cx)),
+                "linkchip" => shell.update(cx, |shell, cx| {
+                    if let Some(chip) = shell.link_chip(&arg) {
+                        shell.add_ref(chip, cx);
+                    }
+                }),
+                "openlink" => crate::deeplink::handle(&arg, cx),
                 // The header's member list, open.
                 "members" => shell.update(cx, |shell, cx| shell.toggle_popover(crate::views::board::Popover::Members, cx)),
                 "rail" => shell.update(cx, |shell, cx| {

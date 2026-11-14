@@ -1485,5 +1485,9 @@
   "notify.source_squad": "{squad}에 따로 정한 설정이에요.",
   "notify.source_default": "기본 설정이에요. {squad}에는 따로 정한 게 없어요.",
   "notify.saved_squad": "{squad}에 저장했어요.",
-  "notify.saved_default": "따로 정하지 않은 모든 스쿼드의 기본 설정으로 저장했어요."
+  "notify.saved_default": "따로 정하지 않은 모든 스쿼드의 기본 설정으로 저장했어요.",
+  "open.bad_link": "“{text}”은(는) equipe 링크가 아니에요. 링크는 equipe://open/<스쿼드>/ticket/T-12 또는 https://equipe.im/o/#<스쿼드>/ticket/T-12 모양이에요",
+  "open.no_app": "{link}을(를) 열 앱이 없어요. equipe 데스크톱 앱(equipe.app)을 설치하고 한 번 실행한 뒤 다시 시도하세요.",
+  "open.opening": "equipe에서 {link} 여는 중",
+  "open.unsupported": "equipe open은 아직 macOS와 Linux에서만 쓸 수 있어요. 링크: {link}"
 }

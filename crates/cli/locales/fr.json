@@ -1508,5 +1508,9 @@
   "notify.source_squad": "Ce sont les réglages propres à {squad}.",
   "notify.source_default": "Ce sont vos réglages par défaut ; {squad} n’en a pas en propre.",
   "notify.saved_squad": "Enregistré pour {squad}.",
-  "notify.saved_default": "Enregistré comme votre réglage par défaut pour toute équipe sans réglage propre."
+  "notify.saved_default": "Enregistré comme votre réglage par défaut pour toute équipe sans réglage propre.",
+  "open.bad_link": "« {text} » n'est pas un lien equipe. Un lien ressemble à equipe://open/<équipe>/ticket/T-12 ou https://equipe.im/o/#<équipe>/ticket/T-12",
+  "open.no_app": "Aucune app n'a ouvert {link}. Installez l'app de bureau equipe (equipe.app), lancez-la une fois, puis réessayez.",
+  "open.opening": "Ouverture de {link} dans equipe",
+  "open.unsupported": "equipe open fonctionne pour l'instant sous macOS et Linux. Le lien est {link}"
 }

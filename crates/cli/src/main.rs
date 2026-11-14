@@ -28,6 +28,7 @@ mod logins;
 mod notify;
 mod usage;
 mod onboard;
+mod open;
 mod remote;
 mod review;
 mod settings;
@@ -260,6 +261,14 @@ enum Command {
         /// Give ⌃⇧V back to iTerm2
         #[arg(long)]
         remove: bool,
+    },
+    /// Open a shared link (`equipe://open/…` or `https://equipe.im/o/#…`) in the desktop app
+    Open {
+        /// The link, as copied from equipe or a chat
+        link: String,
+        /// Only print the link in its `equipe://` form
+        #[arg(long)]
+        print: bool,
     },
     /// Pair a phone running the equipe app with this machine
     Pair,
@@ -606,6 +615,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Disk { words, squad, yes } => disk::command(&words, squad, yes).await.map_err(Failure::new),
         Command::ContextConfig(args) => context::command(args).map_err(Failure::new),
         Command::Update => update().await,
+        Command::Open { link, print } => open::command(&link, print).map_err(Failure::new),
         Command::Lang { lang } => match lang::command(&equipe_providers::credentials::equipe_home(), lang.as_deref()) {
             Ok(lines) => {
                 for line in lines {

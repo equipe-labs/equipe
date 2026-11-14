@@ -1508,5 +1508,9 @@
   "notify.source_squad": "Estos son los ajustes propios de {squad}.",
   "notify.source_default": "Estos son tus ajustes por defecto; {squad} no tiene propios.",
   "notify.saved_squad": "Guardado para {squad}.",
-  "notify.saved_default": "Guardado como tu ajuste por defecto para todo escuadrón sin ajustes propios."
+  "notify.saved_default": "Guardado como tu ajuste por defecto para todo escuadrón sin ajustes propios.",
+  "open.bad_link": "«{text}» no es un enlace de equipe. Uno se ve así: equipe://open/<equipo>/ticket/T-12 o https://equipe.im/o/#<equipo>/ticket/T-12",
+  "open.no_app": "Ninguna app abrió {link}. Instala la app de escritorio de equipe (equipe.app), ábrela una vez e inténtalo de nuevo.",
+  "open.opening": "Abriendo {link} en equipe",
+  "open.unsupported": "equipe open funciona por ahora en macOS y Linux. El enlace es {link}"
 }

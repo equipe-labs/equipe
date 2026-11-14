@@ -649,6 +649,47 @@ It says what macOS allows, asks if it never was, posts three notices (two in
 the PM's thread, and the update's), puts 3 on the Dock and waits two minutes for
 a click, each step in the log.
 
+## Shareable links
+
+Two people on the same squad (its daemon on one Mac; one app attached locally,
+the other over SSH or Tailscale) share "look at this ticket / this conversation /
+this decision" as a link:
+
+```
+equipe://open/<squad>/<kind>/<id>?host=<machine>
+https://equipe.im/o/#<squad>/<kind>/<id>?host=<machine>
+```
+
+Kinds: `ticket` (`T-2391`), `conversation` (a kept conversation's session id),
+`member` (a name), `decision` (a question set's id), `needs-you`, `status` (the
+last two have no id). Squad, name and host are percent-encoded. `host` is the
+daemon machine's stable name: its Tailscale (MagicDNS) name, else its host name;
+for a window connected over SSH, the name that window connects by. The
+receiving app compares only the first label (`mini` = `mini.tail1234.ts.net`).
+The https form exists because chat apps often don't make a custom scheme
+clickable; the fragment never reaches a server, and `docs/site-open-page/index.html`
+is the static page for `equipe.im/o/` that hands it back to `equipe://`.
+
+Grammar and tolerance (trailing punctuation, `<…>`, Markdown, quotes) are in
+`crates/protocol/src/deeplink.rs`; what the app does is in
+`crates/desktop/src/deeplink.rs`:
+
+- The app registers the `equipe` scheme (`CFBundleURLTypes`, written by
+  `scripts/desktop-dmg.sh`) and handles the open-URL event; a link on its
+  command line, `equipe open <link>` (the CLI hands it to the system) and a
+  link clicked in a chat all arrive the same way.
+- A link for the daemon and squad a window shows goes to that window (the place
+  is pushed on its back/forward history). Another squad of an attached daemon
+  opens in a window of its own. A machine connected to before is offered ("Open
+  on mini?", in a new window). Otherwise a sheet says which Mac and squad the
+  link is for, and how to connect.
+- "Copy link" is in a ticket's header (and ⌘⇧C, and a right-click on a ticket row
+  or card), the conversation's ⋯ menu, a member's row menu, a decision card, Needs
+  you's rows (right-click) and Status. Each copies the link, or "Copy as text"
+  (`T-2391 title · equipe://…`), or the https form.
+- Pasting a link (alone, or with its title) into the composer makes a chip with the
+  ticket's or conversation's title; what is sent starts with "title · link" for each chip.
+
 ## Windows
 
 Each window is its own machine and squad, live side by side: the Mac mini's

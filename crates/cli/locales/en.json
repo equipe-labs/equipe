@@ -1508,5 +1508,9 @@
   "notify.source_squad": "These are {squad}’s own settings.",
   "notify.source_default": "These are your defaults; {squad} has none of its own.",
   "notify.saved_squad": "Saved for {squad}.",
-  "notify.saved_default": "Saved as your default for every squad without its own."
+  "notify.saved_default": "Saved as your default for every squad without its own.",
+  "open.bad_link": "“{text}” isn't an equipe link. One looks like equipe://open/<squad>/ticket/T-12 or https://equipe.im/o/#<squad>/ticket/T-12",
+  "open.no_app": "No app opened {link}. Install the equipe desktop app (equipe.app), start it once, and try again.",
+  "open.opening": "Opening {link} in equipe",
+  "open.unsupported": "equipe open works on macOS and Linux for now. The link is {link}"
 }

@@ -874,6 +874,12 @@ fn card(shell: &Shell, id: u64, place: Place, nav: Option<Nav>, cx: &mut Context
             handle.update(cx, |shell, cx| shell.decide_dismiss(id, window, cx)).ok();
         })
     };
+    // Its link, to share in a chat: the question as the words.
+    let link = {
+        let target = equipe_core::protocol::deeplink::Target::Decision(id);
+        let title = shell.link_title(&target);
+        super::linkshare::button(shell, "decide-link", target, title, cx)
+    };
     let head = h_flex()
         .w_full()
         .gap_2()
@@ -889,7 +895,7 @@ fn card(shell: &Shell, id: u64, place: Place, nav: Option<Nav>, cx: &mut Context
                 .children(crate::decide::review_title(&set).map(|title| div().text_size(px(12.)).line_height(px(17.)).font_weight(FontWeight::SEMIBOLD).text_color(p.accent).child(title)))
                 .child(div().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(words)),
         )
-        .child(h_flex().flex_none().mt(px(-3.)).mr(px(-6.)).gap_0p5().children(fold).child(close));
+        .child(h_flex().flex_none().mt(px(-3.)).mr(px(-6.)).gap_0p5().items_center().child(link).children(fold).child(close));
 
     // The question's own pictures; then the options — a visual question's
     // as a grid of tiles, balanced rows of one size, those without a picture

@@ -1485,5 +1485,9 @@
   "notify.source_squad": "{squad}専用の設定です。",
   "notify.source_default": "これは既定の設定です。{squad}には個別の設定がありません。",
   "notify.saved_squad": "{squad}に保存しました。",
-  "notify.saved_default": "個別設定のないすべてのスクワッドの既定として保存しました。"
+  "notify.saved_default": "個別設定のないすべてのスクワッドの既定として保存しました。",
+  "open.bad_link": "「{text}」はequipeのリンクではありません。リンクは equipe://open/<スクワッド>/ticket/T-12 または https://equipe.im/o/#<スクワッド>/ticket/T-12 の形です",
+  "open.no_app": "{link} を開くアプリがありません。equipe のデスクトップアプリ(equipe.app)をインストールし、一度起動してから、もう一度お試しください。",
+  "open.opening": "equipe で {link} を開いています",
+  "open.unsupported": "equipe open は今のところ macOS と Linux で使えます。リンクは {link} です"
 }

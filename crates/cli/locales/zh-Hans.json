@@ -1485,5 +1485,9 @@
   "notify.source_squad": "这是 {squad} 自己的设置。",
   "notify.source_default": "这是你的默认设置；{squad} 没有单独设置。",
   "notify.saved_squad": "已为 {squad} 保存。",
-  "notify.saved_default": "已保存为所有没有单独设置的小队的默认值。"
+  "notify.saved_default": "已保存为所有没有单独设置的小队的默认值。",
+  "open.bad_link": "“{text}”不是 equipe 链接。链接的样子是 equipe://open/<小队>/ticket/T-12 或 https://equipe.im/o/#<小队>/ticket/T-12",
+  "open.no_app": "没有应用打开 {link}。请安装 equipe 桌面应用(equipe.app),启动一次后再试。",
+  "open.opening": "正在 equipe 中打开 {link}",
+  "open.unsupported": "equipe open 目前支持 macOS 和 Linux。链接是 {link}"
 }

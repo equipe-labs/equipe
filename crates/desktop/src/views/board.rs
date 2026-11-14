@@ -75,6 +75,8 @@ pub enum Popover {
     Order,
     /// The design screen's systems, when more than two: a list, not segments.
     DesignSource,
+    /// "Copy link" (`linkshare.rs`): the link's forms, under the button that opened it.
+    Link,
 }
 
 type Seen = (Option<String>, String, Option<bool>);
@@ -95,6 +97,11 @@ pub struct BoardUi {
     pub adding_project: bool,
     pub flow: Option<Flow>,
     pub popover: Option<Popover>,
+    /// What "Copy link" is open for, and which control copied last (it shows a check a moment).
+    pub link: Option<super::linkshare::LinkMenu>,
+    /// A right-click's "Copy link", and where it opened.
+    pub link_at: Option<(super::linkshare::LinkMenu, Point<Pixels>)>,
+    pub link_copied: Option<(&'static str, std::time::Instant)>,
     /// The popover a press outside just closed, and when: the same press on
     /// its own control mustn't open it again.
     pub popover_closed: Option<(Popover, std::time::Instant)>,
@@ -203,6 +210,9 @@ impl BoardUi {
             adding_project: false,
             flow: None,
             popover: None,
+            link: None,
+            link_at: None,
+            link_copied: None,
             popover_closed: None,
             list_scroll: ScrollHandle::new(),
             peek_scroll: ScrollHandle::new(),
@@ -1488,6 +1498,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .children(super::tickets::views_menu(shell, cx))
         .children(super::tickets::sheet(shell, cx))
         .children(super::tickets::confirm_card(shell, cx))
+        .children(super::linkshare::context(shell, cx))
         .children(shell.board.keys_open.then(|| keys_sheet(p, cx)))
         .into_any_element()
 }
@@ -1667,7 +1678,7 @@ fn popover(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             .child(label)
     };
     let body: Vec<AnyElement> = match which {
-        Popover::Projects | Popover::Members | Popover::Talk | Popover::DesignSource => return None,
+        Popover::Projects | Popover::Members | Popover::Talk | Popover::DesignSource | Popover::Link => return None,
         Popover::Order => [(false, t!("board.order_importance")), (true, t!("board.order_kind"))]
             .into_iter()
             .map(|(by_kind, label)| {
@@ -2087,7 +2098,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
     let group = SharedString::from(format!("row-{need:?}"));
     // `said`: the row as a screen reader reads it.
     let base = |id: SharedString, said: String, cx: &mut Context<Shell>| {
-        h_flex()
+        let row = h_flex()
             .id(id)
             .role(Role::ListItem)
             .aria_label(said)
@@ -2109,7 +2120,13 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                     this.board.view.page = Some(Tab::Overview);
                 }
                 this.board_pick(need, cx);
-            }))
+            }));
+        // Right-click: its link, to share.
+        match need {
+            Need::Ticket(id) => super::linkshare::on_right_click(row, "row-link", equipe_core::protocol::deeplink::Target::Ticket(id), cx),
+            Need::Questions(id) => super::linkshare::on_right_click(row, "row-link", equipe_core::protocol::deeplink::Target::Decision(id), cx),
+            _ => row,
+        }
     };
     // One grid for every row of every section: check · mark · T-n · project ·
     // title · flags · detail · when · time.

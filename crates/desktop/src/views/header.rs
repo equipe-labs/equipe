@@ -495,6 +495,20 @@ fn talk_menu(shell: &Shell, current: Option<String>, cx: &mut Context<Shell>) ->
                 .on_click(cx.listener(move |this, _, window, cx| this.open_rename(session, None, window, cx)))
                 .into_any_element(),
         );
+        // Its link, to share in a chat (a conversation of the person's, not a draft).
+        if model.conversations().iter().any(|l| l.session == session) {
+            use crate::deeplink::CopyAs;
+            for (id, label, how) in [("talk-copy-link", t!("link.copy"), CopyAs::Link), ("talk-copy-text", t!("link.copy_text"), CopyAs::Text), ("talk-copy-web", t!("link.copy_web"), CopyAs::Web)] {
+                rows.push(
+                    item(id.into(), crate::icons::icon(crate::icons::Icon::Link, 12., p.text2).into_any_element(), label.into(), false)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.board.popover = None;
+                            this.copy_link_to("talk-link", equipe_core::protocol::deeplink::Target::Conversation(session), how, cx);
+                        }))
+                        .into_any_element(),
+                );
+            }
+        }
         rows.push(div().my_1().h(px(1.)).bg(p.hair).into_any_element());
     }
     rows.push(div().px_2().pt_1().pb(px(2.)).text_size(px(11.)).text_color(p.muted).child(t!("header.move_to")).into_any_element());
