@@ -1485,6 +1485,8 @@
   "usage.row_lanes": "  {name} : {tokens} · {share}% · tours : {turns} · voies : {lanes}",
   "usage.row_context": "  {name} : {tokens} · {share}% · tours : {turns} · par appel : {context}",
   "usage.ticket_row": "  T-{id} {title} : {tokens} · tours : {turns} · {status}",
+  "usage.premium": "Famille premium (Fable, plusieurs fois le coût d’Opus) : {tokens} tokens ({share} % du total), par ticket :",
+  "usage.premium_row": "  T-{id} {title} : {premium} en premium sur {tokens} · {status}",
   "usage.kind.pm_desk": "Bureau du PM (sans ticket)",
   "usage.kind.member_on_ticket": "membre sur un ticket",
   "usage.kind.lane_on_ticket": "voie sur un ticket",

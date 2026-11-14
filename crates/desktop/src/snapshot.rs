@@ -1371,6 +1371,7 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                         "who" => K::Assignee,
                         "project" => K::Project,
                         "kind" => K::Kind,
+                        "model" => K::TicketModel,
                         _ => K::Depends,
                     };
                     let (targets, sheet) = match rest {
@@ -1385,6 +1386,7 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                         K::Project => "project",
                         K::Kind => "kind",
                         K::Depends => "deps",
+                        K::TicketModel => "model",
                     };
                     let key = if sheet { format!("sheet-{code}") } else if rest == "bulk" { format!("bulk-{code}") } else if shell.board.view.page.is_some() { format!("page-{code}-{rest}") } else { format!("{code}-{rest}") };
                     shell.open_edit_menu(kind, targets, key.into(), sheet, window, cx);

@@ -53,6 +53,10 @@ pub enum Change {
     Parallel { mode: ParallelMode, per_member: Option<u32>, per_engine: Option<u32> },
     /// Whether equipe picks each ticket's model and effort (`crate::tiers`).
     ModelChoice(crate::protocol::tiers::ModelChoice),
+    /// The model of one ticket alone, as the person says it ("use Fable for
+    /// T-2562"): a Claude family, the premium one included, or none to let
+    /// the pick go. Never the member's, never another ticket's.
+    TicketModel { ticket: u32, model: Option<String> },
     /// Which engine reviews the designer's work.
     DesignReviewer(Reviewer),
     /// Take a project off the squad (its folder stays).
@@ -98,6 +102,9 @@ impl Change {
             Change::Parallel { mode, .. } => *mode == ParallelMode::Max,
             // Stronger models spend the plan faster: the person's. Off only narrows.
             Change::ModelChoice(choice) => *choice == crate::protocol::tiers::ModelChoice::QualityFirst,
+            // A model picked for a ticket spends the plan as the person decided, the premium one several times over:
+            // theirs, on a card. Letting a pick go only narrows.
+            Change::TicketModel { model, .. } => model.is_some(),
             // Always the other engine draws on its plan however low it runs:
             // the person's. Auto and the member's own only narrow it.
             Change::DesignReviewer(reviewer) => *reviewer == Reviewer::Other,
@@ -202,6 +209,14 @@ impl Change {
             "model_choice" => Change::ModelChoice(
                 crate::protocol::tiers::ModelChoice::parse(&value()?).ok_or("Model choice is quality (each ticket on the cheapest model that does it well, up a step when its work comes back wrong, never below a model the person chose) or off (members' own models).")?,
             ),
+            "ticket_model" => {
+                let text = value()?;
+                let model = match text.to_ascii_lowercase().as_str() {
+                    "default" | "auto" | "none" | "off" => None,
+                    _ => Some(crate::tiers::pick_alias(&text).ok_or("A ticket's model is a Claude family — haiku, sonnet, opus or fable (the premium one, several times Opus's cost) — or default to let the pick go.")?.to_owned()),
+                };
+                Change::TicketModel { ticket: ticket()?, model }
+            }
             "design_reviewer" => Change::DesignReviewer(Reviewer::parse(&value()?).ok_or("The design reviewer is auto, same (the member's own engine, in a fresh session) or other (always the other engine).")?),
             "remove_project" => Change::RemoveProject(s("project").ok_or("Which project? Give `project`.")?),
             "hq" => Change::Hq(s("project").filter(|p| p != "none")),
@@ -340,7 +355,10 @@ engine_switching (off | suggest | auto), parallel — the person's \"speed\" (va
 full, or max: fixed caps whatever the usage, optionally per_member 1 through 12 and per_engine 1 through 32; a cap named alone is a cap on full speed). \
 Use it for \"go full speed\", \"slow down to save Claude\", \"max 4 per member\". When they ask why work isn't faster, read `settings` and the board: it is usually tickets waiting on \
 dependencies or on them, not the speed. model_choice (quality — each ticket on the cheapest model and \
-effort that does it well, up a step when its work comes back wrong — | off — members' own models), design_reviewer (who reviews the designer's work: auto — the other engine when \
+effort that does it well, up a step when its work comes back wrong — | off — members' own models), \
+ticket_model (ticket, value haiku | sonnet | opus | fable, or default to let the pick go: the model one ticket alone runs on, every lane of it and no other ticket; \
+fable is the premium family and costs several times Opus, so use it only when the person names it for that ticket — \
+\"use Fable for T-2562\" — and always say so on the card; it is put to the person, and it ends when the ticket closes), design_reviewer (who reviews the designer's work: auto — the other engine when \
 it is signed in with room, else the member's own in a fresh session — | same | other), remove_project (project), \
 hq (project, or none), run_routine (id), delete_routine (id), signal (project, name, value on | off), disallow (value: \
 the rule as `settings` lists it), merge (ticket, push), keep_on_branch (ticket), resting (member, value on | off: a resting \
@@ -350,7 +368,7 @@ through `model`: moving a member to it is `engine`. Adding a project is `add_pro
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "subagents_at_once", "model", "effort", "engine", "engine_switching", "parallel", "speed", "model_choice", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch", "resting", "notify"] },
+                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "subagents_at_once", "model", "effort", "engine", "engine_switching", "parallel", "speed", "model_choice", "ticket_model", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch", "resting", "notify"] },
                     "value": { "type": "string", "description": "The new value, as the setting takes it." },
                     "member": { "type": "string", "description": "The member, for mode (left out: the squad's), model, effort, engine and resting." },
                     "members": { "type": "array", "items": { "type": "string" }, "description": "engine: the members to move, on one card." },
@@ -361,7 +379,7 @@ through `model`: moving a member to it is `engine`. Adding a project is `add_pro
                     "name": { "type": "string", "description": "The signal's name." },
                     "key": { "type": "string", "description": "notify: which notification setting (on, only, quiet, quiet_from, quiet_to, levels, max_per_hour, phone, remind_deploy)." },
                     "id": { "type": "integer", "description": "The routine's id." },
-                    "ticket": { "type": "integer", "description": "The ticket's number, for merge and keep_on_branch." },
+                    "ticket": { "type": "integer", "description": "The ticket's number, for merge, keep_on_branch and ticket_model." },
                     "push": { "type": "boolean", "description": "merge: push main to origin too (default true)." },
                     "per_member": { "type": "integer", "description": "parallel max: tickets each member runs at once (left out: as set)." },
                     "per_engine": { "type": "integer", "description": "parallel max: tickets each engine runs at once across the squad (left out: as set)." },

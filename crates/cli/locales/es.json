@@ -1485,6 +1485,8 @@
   "usage.row_lanes": "  {name}: {tokens} · {share}% · turnos: {turns} · carriles: {lanes}",
   "usage.row_context": "  {name}: {tokens} · {share}% · turnos: {turns} · por llamada: {context}",
   "usage.ticket_row": "  T-{id} {title}: {tokens} · turnos: {turns} · {status}",
+  "usage.premium": "Familia premium (Fable, varias veces el coste de Opus): {tokens} tokens ({share} % del total), por ticket:",
+  "usage.premium_row": "  T-{id} {title}: {premium} en premium de {tokens} · {status}",
   "usage.kind.pm_desk": "Escritorio del PM (sin ticket)",
   "usage.kind.member_on_ticket": "miembro en un ticket",
   "usage.kind.lane_on_ticket": "carril en un ticket",

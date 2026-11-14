@@ -237,6 +237,7 @@ pub fn reads(command: &Command) -> bool {
         | C::SetParallel { .. }
         | C::SetModelChoice { .. }
         | C::SetTicketTier { .. }
+        | C::SetTicketModel { .. }
         | C::SetDesignReviewer { .. }
         | C::SetRoleModel { .. }
         | C::ApplyEngineProposal { .. }
@@ -683,6 +684,7 @@ mod tests {
             Command::SetParallel { squad: s(), parallel: equipe_core::protocol::lanes::Parallel::max(6, 16) },
             Command::SetModelChoice { squad: s(), choice: equipe_core::protocol::tiers::ModelChoice::Off },
             Command::SetTicketTier { squad: s(), ticket: 1, tier: Some(equipe_core::protocol::tiers::ModelTier::Max), pinned: true },
+            Command::SetTicketModel { squad: s(), ticket: 1, model: Some("fable".into()) },
             Command::SetDesignReviewer { squad: s(), reviewer: engines::Reviewer::Same },
             Command::Models { engine: Engine::Codex },
             Command::SetRoleModel { squad: s(), default: equipe_core::protocol::RoleModel { role: "qa".into(), engine: Engine::Claude, model: None, effort: None } },
