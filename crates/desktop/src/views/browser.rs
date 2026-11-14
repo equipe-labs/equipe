@@ -2310,6 +2310,10 @@ impl BrowserPanel {
         let Some(Mode::Asked(why)) = self.mode() else { return None };
         let p = self.palette;
         let lane = self.lane_of_selected()?.to_owned();
+        // The sign-in view's own card already says who, what for and Done: one card, not two.
+        if self.view_lane.as_deref() == Some(lane.as_str()) || self.view_ask.as_ref().is_some_and(|(l, _)| *l == lane) {
+            return None;
+        }
         let name = self.member_name(&lane);
         let hue = self.lane_color(&lane);
         // Small, so the page keeps the room: who, and the one button, on one
