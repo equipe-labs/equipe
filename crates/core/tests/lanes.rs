@@ -368,7 +368,7 @@ async fn a_call_from_a_run_that_no_longer_holds_its_ticket_changes_nothing() {
     // Generation 1 speaks after generation 2 began: every state-changing call is refused.
     for (name, args) in [
         ("estimate", json!({ "done_in_minutes": 5 })),
-        ("block_on_person", json!({ "needs": ["a token"] })),
+        ("block_on_person", json!({ "ask": "Do the one thing", "effort_minutes": 1, "needs": ["a token"] })),
         ("submit_for_review", json!({ "summary": "done", "changes_screens": false })),
         ("comment", json!({ "id": 1, "text": "late" })),
         ("ask_decision", json!({ "questions": [{ "question": "Which?", "options": [{ "label": "A" }, { "label": "B" }] }] })),
@@ -411,7 +411,7 @@ async fn one_run_waiting_or_stopped_leaves_its_siblings_as_they_were() {
     let (a, b, c) = (key(&snapshot, 1), key(&snapshot, 2), key(&snapshot, 3));
 
     // A can't go on without the person; its turn is stopped, so the wait lands now.
-    let blocked = tool(&handle, "frontend", Some(a), "block_on_person", json!({ "needs": ["a token"] })).await;
+    let blocked = tool(&handle, "frontend", Some(a), "block_on_person", json!({ "ask": "Do the one thing", "effort_minutes": 1, "needs": ["a token"] })).await;
     assert!(!blocked.is_error, "{blocked:?}");
     handle.send(Command::Interrupt { session: a.session });
     until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Waiting)).await;

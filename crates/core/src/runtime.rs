@@ -71,6 +71,7 @@ macro_rules! say {
 }
 
 mod decide;
+mod glance;
 mod room;
 mod engines;
 mod design;
@@ -8697,7 +8698,10 @@ there, end your turn, and carry on when they say they're done."
                 Ok(text)
             }
             board::CREATE_TICKET => {
-                let title = board::arg_str(&args, "title").ok_or("A ticket needs a title.")?;
+                let title = board::arg_str(&args, "title").ok_or("A ticket needs a title.")?.trim();
+                let written = self.squad_language(&squad);
+                glance::check_title(written, title)?;
+                let label = glance::label_arg(&args)?;
                 let body = board::arg_str(&args, "body").unwrap_or_default();
                 let kind = kind_arg(&args)?;
                 let named = match board::arg_str(&args, "project") {
@@ -8754,7 +8758,7 @@ there, end your turn, and carry on when they say they're done."
                     created_by: member.clone(),
                     note: None,
                     asks: vec![],
-                    remaining: Vec::new(), images: Vec::new(),
+                    label, remaining: Vec::new(), images: Vec::new(),
                     updated_at: None,
                     priority: Default::default(), rank: 0,
                 };
@@ -8767,6 +8771,9 @@ there, end your turn, and carry on when they say they're done."
                 let mut reply = format!("Created T-{new_id}.");
                 if kind.in_home() {
                     reply = format!("Created T-{new_id} ({}).", kind.label());
+                }
+                if equipe_protocol::title::is_long(title) {
+                    reply.push_str(&format!(" The title is longer than reads at a glance: {} characters or {} words is the most — shorten it with update_ticket if you can.", equipe_protocol::title::GOOD_CHARS, equipe_protocol::title::GOOD_WORDS));
                 }
                 if idea {
                     reply = format!("Kept T-{new_id} as an idea — nothing starts it. Tell the person in one line it's kept; when the board is light you'll be asked to look at the ideas again.");
@@ -8802,6 +8809,7 @@ there, end your turn, and carry on when they say they're done."
                     return Err("Only the PM changes tickets; propose a new one, or comment.".into());
                 }
                 let ticket_id = board::arg_id(&args, "id").ok_or("Which ticket? Give its id.")?;
+                let lang = self.squad_language(&squad);
                 let present: Vec<String> = self
                     .sessions
                     .values()
@@ -8814,8 +8822,14 @@ there, end your turn, and carry on when they say they're done."
                     let status = ticket.status.label();
                     return Err(format!("T-{ticket_id} is {status} — from here it's the person's to change."));
                 }
-                if let Some(title) = board::arg_str(&args, "title") {
+                if let Some(title) = board::arg_str(&args, "title").map(str::trim).filter(|t| *t != ticket.title) {
+                    glance::check_title(lang, title)?;
+                    // The old one stays in its history.
+                    let _ = journal.ticket_event(ticket_id, &member, glance::RETITLED, &ticket.title);
                     ticket.title = title.to_owned();
+                }
+                if let Some(label) = glance::label_arg(&args)? {
+                    ticket.label = Some(label);
                 }
                 if let Some(body) = board::arg_str(&args, "body") {
                     ticket.body = body.to_owned();
@@ -8945,12 +8959,13 @@ End your turn now with a short summary.",
                 if asked.is_empty() {
                     return Err("List what the person has to do, one thing per item.".into());
                 }
+                let headline = self.ask_headline(&squad, &args)?;
                 // What the person left open last time (not yet, later) is asked again with these.
                 let on = self.sessions.get(&id).and_then(|s| s.work.as_ref()).map(|w| w.ticket);
                 let open = on.and_then(|t| self.journal(&squad).and_then(|j| j.ticket(t).ok().flatten())).map(|t| t.remaining).unwrap_or_default();
                 let needs = crate::protocol::asks::with_open(&asked, &open);
                 let again = needs.len() - asked.len();
-                let note = board::waiting_note(&needs, board::arg_str(&args, "why"));
+                let note = equipe_protocol::asks::waiting_note_headed(&needs, board::arg_str(&args, "why"), Some(&headline));
                 let session = self.sessions.get_mut(&id).ok_or("You're not on the squad.")?;
                 let work = session.work.as_mut().ok_or("You're not on a ticket — there is nothing to put down.")?;
                 if work.handed_in.is_some() {
@@ -8985,6 +9000,12 @@ it back there once they have done it.{again} End your turn now with a short line
             board::DESIGN_TOOLS => Err("design_tools is run by your board server; this equipe's server is older than its daemon — restart your conversation.".into()),
             crate::team::PROPOSE_TEAM_CHANGE => self.propose_team_change(&squad, &member, id, &args),
             crate::heartbeat::PROPOSE_ROUTINE => self.propose_routine(&squad, &member, id, &args),
+            board::RETITLE_OPEN_TICKETS => {
+                if !is_pm {
+                    return Err("Only the PM retitles tickets.".into());
+                }
+                self.retitle_open_tickets(&squad, &member, &args)
+            }
             board::ADD_PROJECT => {
                 if !is_pm {
                     return Err("Only the PM adds projects; tell the PM which folder the person wants added.".into());

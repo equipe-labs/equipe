@@ -13,7 +13,19 @@ pub const WAITING_HEAD: &str = "Waiting on you:";
 /// A waiting ticket's note: the person's checklist, one ask a `- [ ]` line (a
 /// line break inside one ask goes on, indented, under it), and why.
 pub fn waiting_note(asks: &[String], why: Option<&str>) -> String {
+    waiting_note_headed(asks, why, None)
+}
+
+/// The mark of the headline line under [`WAITING_HEAD`].
+const HEADLINE_MARK: &str = "> ";
+
+/// [`waiting_note`] with the one-line ask that says at a glance what the
+/// person has to do (`block_on_person`'s `ask`), as a quote under the head.
+pub fn waiting_note_headed(asks: &[String], why: Option<&str>, headline: Option<&str>) -> String {
     let mut out = String::from(WAITING_HEAD);
+    if let Some(line) = headline.map(str::trim).filter(|h| !h.is_empty()) {
+        out.push_str(&format!("\n{HEADLINE_MARK}{}", line.lines().next().unwrap_or_default().trim_end()));
+    }
     for ask in asks {
         let mut lines = ask.trim().lines();
         out.push_str(&format!("\n- [ ] {}", lines.next().unwrap_or_default().trim_end()));
@@ -47,6 +59,17 @@ pub fn waiting_needs(note: &str) -> Vec<String> {
     }
     out.retain(|a| !a.is_empty());
     out
+}
+
+/// The one-line ask a waiting ticket's note leads with: what the person has to
+/// do, and how long it takes. `None` for a note without one (a ticket from
+/// before headlines, or any other note).
+pub fn waiting_headline(note: &str) -> Option<String> {
+    let mut lines = note.trim_start().lines();
+    if lines.next()?.trim() != WAITING_HEAD {
+        return None;
+    }
+    lines.next()?.strip_prefix(HEADLINE_MARK).map(str::trim).filter(|h| !h.is_empty()).map(str::to_owned)
 }
 
 /// Why the ticket waits, as its note says it under the checklist: `(…)`.
@@ -467,6 +490,12 @@ pub fn can_send(answers: &Answers) -> bool {
 }
 
 impl crate::Ticket {
+    /// While it waits for the person: the one line that says what they have to
+    /// do — what a list shows in place of the title the member gave it.
+    pub fn ask_headline(&self) -> Option<String> {
+        self.note.as_deref().filter(|_| self.status == crate::TicketStatus::Waiting).and_then(waiting_headline)
+    }
+
     /// What it asks of the person while it waits for them, item by item: the
     /// list it carries; from an older daemon, its note's checklist; from
     /// before that, the one line the asks were joined into.
@@ -487,6 +516,23 @@ impl crate::Ticket {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_waiting_note_leads_with_its_headline_and_the_list_reads_on() {
+        let asks = vec!["Share each sheet with the account.".to_owned(), "Tell me when done.".to_owned()];
+        let note = waiting_note_headed(&asks, Some("for the sync"), Some("Share 3 sheets with the account · 1 min"));
+        assert_eq!(note, "Waiting on you:\n> Share 3 sheets with the account · 1 min\n- [ ] Share each sheet with the account.\n- [ ] Tell me when done.\n(for the sync)");
+        assert_eq!(waiting_headline(&note).as_deref(), Some("Share 3 sheets with the account · 1 min"));
+        assert_eq!(waiting_needs(&note), asks);
+        assert_eq!(waiting_why(&note).as_deref(), Some("for the sync"));
+        assert_eq!(waiting_headline(&waiting_note(&asks, None)), None, "a note from before headlines has none");
+        assert_eq!(waiting_headline("Resumed: the PM says so."), None);
+        let mut t: crate::Ticket = serde_json::from_value(serde_json::json!({ "id": 1, "title": "t", "body": "", "status": "waiting", "depends_on": [], "created_by": "pm", "rank": 0 })).unwrap();
+        t.note = Some(note);
+        assert_eq!(t.ask_headline().as_deref(), Some("Share 3 sheets with the account · 1 min"));
+        t.status = crate::TicketStatus::Review;
+        assert_eq!(t.ask_headline(), None, "only while it waits");
+    }
 
     #[test]
     fn a_setting_to_make_is_a_thing_to_do_not_a_question() {

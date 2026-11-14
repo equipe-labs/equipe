@@ -693,6 +693,7 @@
   "models.updating": "Mise à jour de Claude Code — les membres l'utilisent dès leur prochain tour.",
   "models.effort_not_taken": "pas pour ce modèle",
   "models.recommended": "Recommandé · {model}",
+  "tickets.ev_retitled": "renommé, avant :",
   "usage.window_used": "{window} {used} % utilisé",
   "usage.window_out": "{window} · Limite atteinte · réinitialisé dans {span}",
   "models.plan_unread": "Forfait pas encore lu",

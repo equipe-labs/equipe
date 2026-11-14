@@ -1089,7 +1089,6 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
     let need = Need::Ticket(id);
     let group = SharedString::from(format!("trow-{id}"));
     let chosen = shell.board.view.chosen.contains(&id);
-    let closed = t.status.is_closed();
     let compact = shell.board.list_width < 760.;
     let narrow = shell.board.list_width < 600.;
     let anchors = &shell.board.tk.anchors;
@@ -1216,16 +1215,7 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
             .tip(p, t!("tickets.tip_status", status = shell.model.state_word_of(t)), Some("S")),
         )
         .child(div().w(px(46.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(120.))
-                .truncate()
-                .pl(px(depth as f32 * 18.))
-                .text_color(if closed { p.muted } else { p.text })
-                .when(yours, |d| d.font_weight(FontWeight::MEDIUM))
-                .child(if depth > 0 { format!("↳ {}", t.title) } else { t.title.clone() }),
-        )
+        .child(super::board::title_cell(shell, t, depth, 120., yours))
         .child(
             h_flex().flex_none().max_w(px(if compact { 90. } else { 160. })).gap_1().justify_end().overflow_hidden().children(flags.into_iter().enumerate().map(|(i, (text, color, tip))| {
                 let chip = div().id(("tflag", i)).flex_none().px(px(6.)).h(px(18.)).flex().items_center().rounded(px(4.)).bg(p.wash).text_size(px(11.)).text_color(color).child(text);
@@ -2514,6 +2504,7 @@ fn entry_words(kind: &str) -> String {
         "not merged" => t!("tickets.ev_not_merged").into(),
         "kept on branch" => t!("tickets.ev_kept").into(),
         "edited" | "updated" => t!("tickets.ev_edited").into(),
+        "retitled" => t!("tickets.ev_retitled").into(),
         "reassigned" => t!("tickets.ev_reassigned").into(),
         "taken on" => t!("tickets.ev_taken_on").into(),
         "back to proposal" => t!("tickets.ev_back_to_proposal").into(),

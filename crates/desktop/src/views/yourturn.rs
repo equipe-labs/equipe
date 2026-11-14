@@ -96,7 +96,10 @@ const FREE: u8 = 2;
 #[derive(Clone)]
 pub struct Card {
     pub ticket: TicketId,
+    /// What to read first: the ticket's ask for the person, else its title.
     pub title: String,
+    /// The ticket's own title, smaller below the ask.
+    pub subtitle: Option<String>,
     /// Who it waits with: name, role, colour.
     pub who: Option<(String, String, Rgba)>,
     pub why: Option<String>,
@@ -154,7 +157,8 @@ impl Card {
             .and_then(|m| shell.link_view_of(m.session, cx));
         Some(Rc::new(Card {
             ticket: id,
-            title: t.map(|t| t.title.clone()).unwrap_or_default(),
+            title: t.map(|t| crate::glance::heading(t).main).unwrap_or_default(),
+            subtitle: t.and_then(|t| crate::glance::heading(t).below),
             who,
             why: t.and_then(|t| t.note.as_deref()).and_then(asks::waiting_why),
             asks,
@@ -245,7 +249,7 @@ pub fn looks(shell: &Shell, cx: &App) -> HashMap<TicketId, u64> {
             attached.sort();
             let _ = cx;
             let view = t.assignee.as_ref().or(t.owner.as_ref()).and_then(|name| model.members.iter().find(|m| &m.name == name)).and_then(|m| shell.link_view_of(m.session, cx));
-            (t.id, render::hash_of((format!("{:?}", t.status), t.asks(), answered, fields, notes, format!("{picks:?}"), &t.title, attached, view)))
+            (t.id, render::hash_of((format!("{:?}", t.status), t.asks(), answered, fields, notes, format!("{picks:?}"), &t.title, t.ask_headline(), attached, view)))
         })
         .collect()
 }
@@ -329,7 +333,13 @@ fn header(card: &Card, d: &Draw<'_>) -> impl IntoElement {
         .child(pill(p, d.tones))
         .child(ticket_link(p, card.ticket, d.key, &d.handle))
         .children(card.who.clone().map(|(name, role, _)| h_flex().flex_none().gap(px(5.)).items_center().text_color(p.text2).child(crate::theme::avatar(p, &role, &name, 15.)).child(name)))
-        .child(div().min_w_0().flex_1().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(card.title.clone()))
+        .child(
+            v_flex()
+                .min_w_0()
+                .flex_1()
+                .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(card.title.clone()))
+                .children(card.subtitle.clone().map(|sub| div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(10.5)).line_height(px(13.)).font_weight(FontWeight::NORMAL).text_color(p.muted).child(sub))),
+        )
 }
 
 /// A box on the card: the answer's, a note's, the words to the member.

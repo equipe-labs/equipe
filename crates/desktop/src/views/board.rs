@@ -2078,6 +2078,47 @@ fn meta(shell: &Shell, t: &Ticket) -> Meta {
     Meta { flags, activity, eta, time }
 }
 
+/// A ticket's chip: the sort of work, small and quiet.
+pub fn label_chip(p: Palette, ticket: &Ticket) -> Option<Div> {
+    let word = crate::glance::chip(ticket, crate::i18n::lang())?;
+    Some(div().flex_none().px(px(5.)).h(px(16.)).flex().items_center().rounded(px(4.)).bg(p.wash).text_size(px(10.5)).text_color(p.muted).child(word))
+}
+
+/// A ticket's name in a row, where the row's title goes: its chip, then what
+/// to read first — the ask when it waits on the person, else the title cut
+/// cleanly — with the title smaller below an ask. The number is its own
+/// column, in muted mono, never part of this.
+pub fn title_cell(shell: &Shell, t: &Ticket, depth: usize, min_w: f32, strong: bool) -> Div {
+    let p = shell.palette;
+    let heading = crate::glance::heading(t);
+    let closed = t.status.is_closed();
+    let main = if depth > 0 { format!("↳ {}", heading.main) } else { heading.main.clone() };
+    let two = heading.below.is_some();
+    h_flex()
+        .flex_1()
+        .min_w(px(min_w))
+        .gap(px(6.))
+        .items_center()
+        .overflow_hidden()
+        .pl(px(depth as f32 * 18.))
+        .children(label_chip(p, t))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .justify_center()
+                .child(
+                    div()
+                        .truncate()
+                        .when(two, |d| d.line_height(px(16.)))
+                        .text_color(if closed { p.muted } else { p.text })
+                        .when(strong || two, |d| d.font_weight(FontWeight::MEDIUM))
+                        .child(main),
+                )
+                .children(heading.below.map(|below| div().truncate().text_size(px(10.5)).line_height(px(13.)).text_color(p.muted).child(below))),
+        )
+}
+
 fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Context<Shell>) -> AnyElement {
     if let (true, Need::Ticket(id)) = (shell.tickets_on(), need) {
         return super::tickets::row(shell, id, depth, picked, cx);
@@ -2267,7 +2308,6 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
             let Some(t) = model.tickets.iter().find(|t| t.id == id) else { return div().into_any_element() };
             let m = meta(shell, t);
             let chosen = shell.board.view.chosen.contains(&id);
-            let closed = t.status.is_closed();
             let live = model.is_live(t);
             let can = shell.can_act();
             let quick = |id: &'static str, label: &'static str, cx: &mut Context<Shell>, act: fn(&mut Shell, &mut Window, &mut Context<Shell>)| {
@@ -2330,15 +2370,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 }))
                 .child(div().w(px(ID_W)).flex_none().whitespace_nowrap().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
                 .when(show_project, |r| r.child(project_col(Some(t))))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(TITLE_MIN))
-                        .truncate()
-                        .pl(px(depth as f32 * 18.))
-                        .text_color(if closed { p.muted } else { p.text })
-                        .child(if depth > 0 { format!("↳ {}", t.title) } else { t.title.clone() }),
-                )
+                .child(title_cell(shell, t, depth, TITLE_MIN, false))
                 .child(
                     h_flex()
                         .w(px(flags_w))

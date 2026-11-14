@@ -39,6 +39,7 @@ mod design;
 mod design_talk;
 mod dictation;
 mod flows;
+mod glance;
 mod failure;
 mod help;
 mod install;

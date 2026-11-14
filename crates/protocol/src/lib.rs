@@ -33,6 +33,7 @@ pub mod secrets;
 pub mod side_chat;
 pub mod signals;
 pub mod status;
+pub mod title;
 pub mod importance;
 
 /// How many subagents Claude Code runs at once on its own
@@ -374,6 +375,10 @@ pub struct Ticket {
     /// Where its work happens and what accepting it does.
     #[serde(default)]
     pub kind: TicketKind,
+    /// What sort of work it is, in a word, for the chip a list shows
+    /// (`None`: not said, as for a ticket written before labels).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<title::TicketLabel>,
     /// Who it is for: a role (`frontend`) or a member (`frontend-2`).
     pub owner: Option<String>,
     /// The member working on it, once it has been picked up.
@@ -3841,7 +3846,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
-            remaining: Vec::new(),
+            label: None, remaining: Vec::new(),
             images: Vec::new(),
             updated_at: None,
             priority: Default::default(), rank: 0,
