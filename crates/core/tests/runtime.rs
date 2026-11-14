@@ -5099,7 +5099,7 @@ async fn a_screen_asking_for_references_gets_a_page_of_patterns_and_may_read_the
     std::fs::write(refs.join("kpi-tile/notes.md"), "## Acme — Orders\n- Source: https://example.com/a (Gallery), 2026-10-02, `a.svg`\n- Take: one number\n").unwrap();
     std::fs::write(squad_home::path(&home, "acme").join("secret.svg"), svg).unwrap();
     let (_, mut screen) = handle.subscribe("acme").await.unwrap();
-    handle.send(Command::DesignRefs { squad: "acme".into(), project: None, query: String::new(), offset: 0 });
+    handle.send(Command::DesignRefs { squad: "acme".into(), project: None, ticket: None, query: String::new(), offset: 0 });
     let seen = until(&mut screen, |e| matches!(e, Event::DesignRefs { .. })).await;
     let Some(Event::DesignRefs { total, patterns, query, offset, .. }) = seen.last() else { unreachable!() };
     assert_eq!((*total, patterns.len(), query.as_str(), *offset), (2, 2, "", 0));
@@ -5110,7 +5110,7 @@ async fn a_screen_asking_for_references_gets_a_page_of_patterns_and_may_read_the
     assert_eq!(equipe_core::visuals::serve(&home, &ask(&picture), None).unwrap().mime, "image/svg+xml");
     let secret = squad_home::path(&home, "acme").join("secret.svg");
     assert!(equipe_core::visuals::serve(&home, &ask(&secret.to_string_lossy()), None).is_err(), "the rest of the squad's folder stays shut");
-    handle.send(Command::DesignRefs { squad: "acme".into(), project: None, query: "number".into(), offset: 0 });
+    handle.send(Command::DesignRefs { squad: "acme".into(), project: None, ticket: None, query: "number".into(), offset: 0 });
     let seen = until(&mut screen, |e| matches!(e, Event::DesignRefs { query, .. } if query == "number")).await;
     let Some(Event::DesignRefs { total, patterns, .. }) = seen.last() else { unreachable!() };
     assert_eq!((*total, patterns[0].name.as_str()), (1, "kpi-tile"));

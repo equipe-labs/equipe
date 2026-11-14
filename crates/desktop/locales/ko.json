@@ -1096,6 +1096,7 @@
   "design.refs_search_placeholder": "패턴과 노트 검색",
   "design.refs_search_clear": "검색 지우기",
   "design.refs_refresh": "레퍼런스 다시 읽기",
+  "design.refs_place_main": "메인",
   "design.refs_patterns.other": "패턴 {count}개",
   "design.refs_pictures.other": "사진 {count}장",
   "design.refs_notes.other": "노트 {count}개",

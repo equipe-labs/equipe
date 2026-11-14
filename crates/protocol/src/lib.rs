@@ -1712,11 +1712,15 @@ pub enum Command {
     /// the patterns the project has none of. `query` keeps the patterns whose
     /// name or notes hold it (any case); `offset` pages the patterns, in name
     /// order. Answered by [`Event::DesignRefs`]. Only reads; the pictures
-    /// come through `read_image`.
+    /// come through `read_image`. `ticket` picks the place read: none, the
+    /// one with the latest references work; `0`, the project's own folder;
+    /// a ticket's id, that ticket's worktree.
     DesignRefs {
         squad: SquadName,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ticket: Option<u64>,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         query: String,
         #[serde(default, skip_serializing_if = "is_zero")]
@@ -3299,6 +3303,15 @@ pub enum Event {
         squad: SquadName,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
+        /// The ask's `ticket`, as asked.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ticket: Option<u64>,
+        /// The place read: `0` the project's own folder, else a ticket's id.
+        #[serde(default, skip_serializing_if = "is_zero_u64")]
+        at: u64,
+        /// Every place that has references, the one read among them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        places: Vec<design::RefPlace>,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         query: String,
         #[serde(default, skip_serializing_if = "is_zero")]

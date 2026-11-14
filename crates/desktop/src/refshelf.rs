@@ -7,22 +7,27 @@
 //! `read_image`, as the rest of the design screen's do.
 
 use equipe_core::protocol::Command;
-use equipe_core::protocol::design::{RefNote, RefPattern, RefPicture, RefSource};
+use equipe_core::protocol::design::{RefNote, RefPattern, RefPicture, RefPlace, RefSource};
 
 /// What a request was for: the project (none: the squad's own), the words
-/// searched, and the page's start.
-type Key = (Option<String>, String, u32);
+/// searched, the page's start, and the place picked (none: the latest work's).
+type Key = (Option<String>, String, u32, Option<u64>);
 
 /// The daemon's answer, as far as it has come.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Answer {
     pub project: Option<String>,
+    /// The ask's place, as asked.
+    pub ticket: Option<u64>,
     pub query: String,
     /// How many patterns match; `patterns` are the ones that came.
     pub total: usize,
     pub patterns: Vec<RefPattern>,
     pub sources: Vec<RefSource>,
     pub folder: String,
+    /// Every place that has references, and the one read (`0`: the project's own).
+    pub places: Vec<RefPlace>,
+    pub at: u64,
 }
 
 /// The tab's state (`DesignUi::refs`).
@@ -33,6 +38,9 @@ pub struct RefsUi {
     asked: Option<Key>,
     /// The words the daemon was last asked for: the search once typing rests.
     pub query: String,
+    /// The place the person picked (`0`: the project's own, else a ticket);
+    /// none: where the latest work is.
+    pub ticket: Option<u64>,
     /// Read again at the next look: the tab was opened, or the folder moved.
     pub dirty: bool,
     /// The pattern open, by its folder's name.
@@ -67,28 +75,28 @@ impl RefsUi {
     /// The request for what is on screen, when it isn't what was last asked
     /// (or the folder may have moved): once, until answered.
     pub fn wanted(&mut self, squad: &str, project: Option<&str>) -> Option<Command> {
-        let key: Key = (project.map(str::to_owned), self.query.clone(), 0);
+        let key: Key = (project.map(str::to_owned), self.query.clone(), 0, self.ticket);
         if !self.dirty && self.asked.as_ref() == Some(&key) {
             return None;
         }
         self.dirty = false;
         self.asked = Some(key.clone());
-        Some(Command::DesignRefs { squad: squad.to_owned(), project: key.0, query: key.1, offset: 0 })
+        Some(Command::DesignRefs { squad: squad.to_owned(), project: key.0, ticket: key.3, query: key.1, offset: 0 })
     }
 
     /// The next page of the patterns, when there is one and it isn't asked.
     pub fn more(&mut self, squad: &str, project: Option<&str>) -> Option<Command> {
         let answer = self.answer.as_ref()?;
         let offset = answer.patterns.len();
-        if offset >= answer.total || answer.project.as_deref() != project || answer.query != self.query {
+        if offset >= answer.total || answer.project.as_deref() != project || answer.query != self.query || answer.ticket != self.ticket {
             return None;
         }
-        let key: Key = (project.map(str::to_owned), self.query.clone(), offset as u32);
+        let key: Key = (project.map(str::to_owned), self.query.clone(), offset as u32, self.ticket);
         if self.asked.as_ref() == Some(&key) {
             return None;
         }
         self.asked = Some(key.clone());
-        Some(Command::DesignRefs { squad: squad.to_owned(), project: key.0, query: key.1, offset: key.2 })
+        Some(Command::DesignRefs { squad: squad.to_owned(), project: key.0, ticket: key.3, query: key.1, offset: key.2 })
     }
 
     /// The search settled on `query`: asked at the next look.
@@ -105,20 +113,20 @@ impl RefsUi {
     /// before it; one for another project or other words than are on screen
     /// is an old answer and is let go. Whether anything changed.
     #[allow(clippy::too_many_arguments)]
-    pub fn arrived(&mut self, on_screen: Option<&str>, project: Option<String>, query: String, offset: u32, total: u32, patterns: Vec<RefPattern>, sources: Vec<RefSource>, folder: String) -> bool {
-        if project.as_deref() != on_screen || query != self.query {
+    pub fn arrived(&mut self, on_screen: Option<&str>, project: Option<String>, ticket: Option<u64>, at: u64, places: Vec<RefPlace>, query: String, offset: u32, total: u32, patterns: Vec<RefPattern>, sources: Vec<RefSource>, folder: String) -> bool {
+        if project.as_deref() != on_screen || query != self.query || ticket != self.ticket {
             return false;
         }
-        if self.asked.as_ref().is_some_and(|(p, q, o)| *p == project && *q == query && *o == offset) {
+        if self.asked.as_ref().is_some_and(|(p, q, o, t)| *p == project && *q == query && *o == offset && *t == ticket) {
             self.asked = None;
         }
         let total = total as usize;
         match self.answer.as_mut() {
-            Some(a) if offset > 0 && a.project == project && a.query == query && a.patterns.len() == offset as usize => {
+            Some(a) if offset > 0 && a.project == project && a.query == query && a.ticket == ticket && a.at == at && a.patterns.len() == offset as usize => {
                 a.patterns.extend(patterns);
                 a.total = total;
             }
-            _ => self.answer = Some(Answer { project, query, total, patterns, sources, folder }),
+            _ => self.answer = Some(Answer { project, ticket, query, total, patterns, sources, folder, places, at }),
         }
         // What was open may be gone.
         if self.pattern.as_ref().is_some_and(|name| self.answer.as_ref().is_none_or(|a| !a.patterns.iter().any(|p| &p.name == name))) && self.answer.as_ref().is_some_and(|a| a.patterns.len() >= a.total) {
@@ -127,6 +135,16 @@ impl RefsUi {
         if self.viewer.is_some_and(|at| at >= self.pictures().len()) {
             self.viewer = None;
         }
+        true
+    }
+
+    /// The person picked a place (`0`: the project's own, else a ticket's id).
+    pub fn pick_place(&mut self, ticket: u64) -> bool {
+        if self.answer.as_ref().is_some_and(|a| a.at == ticket) && self.ticket == Some(ticket) {
+            return false;
+        }
+        self.ticket = Some(ticket);
+        self.forget();
         true
     }
 
@@ -177,8 +195,17 @@ impl RefsUi {
 pub fn entries(pattern: &RefPattern) -> Vec<Entry> {
     let by_name = |note: &RefNote| note.picture.as_deref().and_then(|name| pattern.pictures.iter().position(|p| p.name.eq_ignore_ascii_case(name)));
     let mut note_of: Vec<Option<usize>> = vec![None; pattern.pictures.len()];
+    // A picture an entry links (`Image:`) is that entry's, whatever its name.
+    for (p, pic) in pattern.pictures.iter().enumerate() {
+        if let Some(n) = pic.note.map(|n| n as usize).filter(|n| *n < pattern.notes.len() && !note_of.contains(&Some(*n))) {
+            note_of[p] = Some(n);
+        }
+    }
     let mut loose: Vec<usize> = Vec::new();
     for (n, note) in pattern.notes.iter().enumerate() {
+        if note_of.contains(&Some(n)) {
+            continue;
+        }
         match by_name(note) {
             Some(p) if note_of[p].is_none() => note_of[p] = Some(n),
             _ => loose.push(n),
@@ -268,7 +295,7 @@ mod tests {
     use super::*;
 
     fn pic(name: &str) -> RefPicture {
-        RefPicture { path: format!("/d/references/p/{name}"), name: name.into(), size: 10, modified: 1 }
+        RefPicture { path: format!("/d/references/p/{name}"), name: name.into(), size: 10, modified: 1, note: None }
     }
 
     fn note(title: &str, picture: Option<&str>, take: &str) -> RefNote {
@@ -280,18 +307,18 @@ mod tests {
     }
 
     fn answer(ui: &mut RefsUi, project: Option<&str>, query: &str, offset: u32, total: u32, names: &[&str]) -> bool {
-        ui.arrived(project, project.map(str::to_owned), query.to_owned(), offset, total, names.iter().map(|n| pattern(n, &[], vec![])).collect(), vec![], "/d/references".into())
+        ui.arrived(project, project.map(str::to_owned), None, 0, vec![], query.to_owned(), offset, total, names.iter().map(|n| pattern(n, &[], vec![])).collect(), vec![], "/d/references".into())
     }
 
     #[test]
     fn a_look_is_asked_once_and_again_when_the_words_the_project_or_the_folder_change() {
         let mut ui = RefsUi::default();
-        let ask = Command::DesignRefs { squad: "acme".into(), project: None, query: String::new(), offset: 0 };
+        let ask = Command::DesignRefs { squad: "acme".into(), project: None, ticket: None, query: String::new(), offset: 0 };
         assert_eq!(ui.wanted("acme", None), Some(ask.clone()));
         assert_eq!(ui.wanted("acme", None), None, "asked, not asked again");
         assert!(ui.search("  table "));
         assert!(!ui.search("table"), "the same words");
-        assert_eq!(ui.wanted("acme", None), Some(Command::DesignRefs { squad: "acme".into(), project: None, query: "table".into(), offset: 0 }));
+        assert_eq!(ui.wanted("acme", None), Some(Command::DesignRefs { squad: "acme".into(), project: None, ticket: None, query: "table".into(), offset: 0 }));
         assert!(matches!(ui.wanted("acme", Some("web")), Some(Command::DesignRefs { project: Some(p), .. }) if p == "web"));
         ui.dirty = true;
         assert!(ui.wanted("acme", Some("web")).is_some(), "the folder moved");
@@ -305,7 +332,7 @@ mod tests {
         assert!(answer(&mut ui, None, "", 0, 3, &["a", "b"]));
         assert_eq!(ui.answer.as_ref().unwrap().patterns.len(), 2);
         let more = ui.more("acme", None);
-        assert_eq!(more, Some(Command::DesignRefs { squad: "acme".into(), project: None, query: String::new(), offset: 2 }));
+        assert_eq!(more, Some(Command::DesignRefs { squad: "acme".into(), project: None, ticket: None, query: String::new(), offset: 2 }));
         assert_eq!(ui.more("acme", None), None, "asked once");
         assert!(answer(&mut ui, None, "", 2, 3, &["c"]));
         assert_eq!(ui.answer.as_ref().unwrap().patterns.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["a", "b", "c"]);
@@ -313,7 +340,7 @@ mod tests {
         // A page that doesn't continue what is here starts over; one for other words or another project is dropped.
         assert!(answer(&mut ui, None, "", 40, 90, &["z"]));
         assert_eq!(ui.answer.as_ref().unwrap().patterns.len(), 1);
-        assert!(!ui.arrived(None, Some("web".into()), String::new(), 0, 1, vec![pattern("w", &[], vec![])], vec![], String::new()), "another project's");
+        assert!(!ui.arrived(None, Some("web".into()), None, 0, vec![], String::new(), 0, 1, vec![pattern("w", &[], vec![])], vec![], String::new()), "another project's");
         assert!(!answer(&mut ui, None, "old words", 0, 1, &["o"]), "words no longer typed");
         assert_eq!(ui.answer.as_ref().unwrap().patterns[0].name, "z");
     }
@@ -398,5 +425,17 @@ mod tests {
         for bad in ["javascript:alert(1)", "file:///etc/passwd", "ftp://x", "https://a b", "https://a\nb", "example.com", ""] {
             assert!(!safe_web(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_linked_picture_is_its_entrys_whatever_its_name_and_a_picked_place_is_asked_for() {
+        let mut p = pattern("data-table", &["a.png", "b.png"], vec![note("One", None, "x"), note("Two", None, "y")]);
+        p.pictures[0].note = Some(1);
+        p.pictures[1].note = Some(0);
+        let e = entries(&p);
+        assert_eq!(e, [Entry { picture: Some(0), note: Some(1) }, Entry { picture: Some(1), note: Some(0) }]);
+        let mut ui = RefsUi::default();
+        assert!(ui.pick_place(2562));
+        assert!(matches!(ui.wanted("acme", None), Some(Command::DesignRefs { ticket: Some(2562), .. })));
     }
 }

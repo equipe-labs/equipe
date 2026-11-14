@@ -1096,6 +1096,7 @@
   "design.refs_search_placeholder": "搜尋模式與筆記",
   "design.refs_search_clear": "清除搜尋",
   "design.refs_refresh": "重新讀取參考",
+  "design.refs_place_main": "主分支",
   "design.refs_patterns.other": "{count} 個模式",
   "design.refs_pictures.other": "{count} 張圖片",
   "design.refs_notes.other": "{count} 則筆記",

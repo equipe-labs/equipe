@@ -718,7 +718,7 @@ mod tests {
             Command::SearchDocs { squad: s(), query: "checkout".into() },
             Command::KeepDocCopy { squad: s(), session: 1, keep: "/h/docs/web/plans/2026-11-04-x.md".into() },
             Command::DesignVersions { squad: s(), project: None },
-            Command::DesignRefs { squad: s(), project: None, query: "table".into(), offset: 0 },
+            Command::DesignRefs { squad: s(), project: None, ticket: None, query: "table".into(), offset: 0 },
             Command::RestoreDesign { squad: s(), project: None, commit: "c".into() },
             Command::Taste { squad: s(), project: None, change: TasteChange::Add { text: "t".into() } },
         ]

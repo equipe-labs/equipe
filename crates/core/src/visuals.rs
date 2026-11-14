@@ -352,10 +352,12 @@ pub struct Shown {
     pub said: HashSet<String>,
     /// The squad's projects.
     pub projects: Vec<PathBuf>,
-    /// The references folders — the squad's and each project's
-    /// `design/references/` — whose pictures the design screen's References
-    /// tab shows (`crate::design::refgallery`): any picture inside one, read
-    /// against that folder alone.
+    /// The design folders — the squad's, each project's and each ticket's
+    /// worktree's `design/` — whose pictures the design screen's References
+    /// tab shows (`crate::design::refgallery`): the ones in a pattern's
+    /// folder and the ones its notes link, anywhere in `design/`. Any picture
+    /// inside one, read against that folder alone, so no link in it reaches
+    /// outside it.
     pub references: Vec<PathBuf>,
 }
 
@@ -409,8 +411,8 @@ pub fn shown(home: &Path, squad: &str) -> Shown {
     }
     let Ok(journal) = crate::journal::Journal::open(&db) else { return Shown::default() };
     let mut out = Shown { roots: vec![crate::squad_home::path(home, squad)], projects: journal.projects().unwrap_or_default(), ..Shown::default() };
-    let refs = |base: &Path| base.join(crate::design::folder::DIR).join(crate::design::refgallery::DIR);
-    out.references = std::iter::once(refs(&crate::squad_home::path(home, squad))).chain(out.projects.iter().map(|p| refs(p))).collect();
+    let design = |base: &Path| base.join(crate::design::folder::DIR);
+    out.references = std::iter::once(design(&crate::squad_home::path(home, squad))).chain(out.projects.iter().map(|p| design(p))).collect();
     for set in journal.questions() {
         out.paths.extend(set.images().map(str::to_owned));
     }
@@ -421,6 +423,7 @@ pub fn shown(home: &Path, squad: &str) -> Shown {
     for ticket in tickets {
         out.paths.extend(ticket.images.iter().cloned());
         out.kept.extend(kept_of(&ticket, home, &homes, squad));
+        out.references.extend(ticket.worktree.as_deref().map(design));
         out.roots.extend(ticket.worktree);
     }
     let (design, folders) = crate::design::folder::shown(home, squad);
@@ -462,7 +465,7 @@ fn said(journal: &crate::journal::Journal, home: &Path, squad: &str, out: &mut S
     }
 }
 
-/// The references folder `path` is a picture inside, if it is (no `..`: [`check`] says the rest).
+/// The design folder `path` is a picture inside, if it is (no `..`: [`check`] says the rest).
 fn in_references<'a>(shown: &'a Shown, path: &str) -> Option<&'a PathBuf> {
     let asked = Path::new(path);
     (is_image_name(path) && asked.is_absolute() && !asked.components().any(|c| matches!(c, Component::ParentDir | Component::CurDir))).then(|| shown.references.iter().find(|dir| asked.starts_with(dir) && asked != dir.as_path())).flatten()
@@ -1044,13 +1047,16 @@ mod tests {
         assert!(serve(&home, &ask(&at("kpi-tile/link.png")), None).is_err(), "a link to a picture elsewhere in the squad's folder");
         assert!(serve(&home, &ask(&at("kpi-tile/notes.txt.png")), None).is_err(), "bytes that are no picture");
         assert!(serve(&home, &ask(&at("kpi-tile/../../brand-secret.png")), None).is_err(), "no way up");
-        assert!(serve(&home, &ask(&folder.join("design/tokens-pic.png").to_string_lossy()), None).is_err(), "the rest of the design folder is not shown by this");
+        assert_eq!(serve(&home, &ask(&folder.join("design/tokens-pic.png").to_string_lossy()), None).unwrap().width, Some(5), "a picture a note links, elsewhere in design/");
+        assert!(serve(&home, &ask(&folder.join("brand-secret.png").to_string_lossy()), None).is_err(), "nothing beside design/");
+        symlink(folder.join("brand-secret.png"), folder.join("design/out.png")).unwrap();
+        assert!(serve(&home, &ask(&folder.join("design/out.png").to_string_lossy()), None).is_err(), "a link out of design/");
         assert!(serve(&home, &ReadImage { squad: "zeta".into(), ..ask(&at("kpi-tile/a.png")) }, None).is_err(), "another squad's ask");
         std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
-    fn a_screen_gets_a_design_systems_pictures_and_nothing_else_of_its_folder() {
+    fn a_screen_gets_a_design_systems_pictures_and_no_file_but_a_picture_of_its_folder() {
         let home = dir("design");
         crate::journal::Journal::for_squad(&home, "acme").unwrap();
         let design = crate::squad_home::path(&home, "acme").join("design");
@@ -1062,7 +1068,8 @@ mod tests {
         std::os::unix::fs::symlink(home.join("secret.png"), design.join("assets/logo/sneaky.png")).unwrap();
         let ask = |path: &Path| ReadImage { squad: "acme".into(), path: path.canonicalize().map_or_else(|_| path.to_string_lossy().into_owned(), |p| p.to_string_lossy().into_owned()), max: None };
         assert_eq!(serve(&home, &ask(&design.join("assets/logo/mark.png")), None).unwrap().width, Some(20));
-        for refused in [design.join("loose.png"), design.join("tokens.json"), home.join("secret.png"), design.join("assets/logo/sneaky.png"), design.join("assets/logo/../../loose.png")] {
+        assert_eq!(serve(&home, &ask(&design.join("loose.png")), None).unwrap().width, Some(4), "the design folder's own pictures show to the References tab");
+        for refused in [design.join("tokens.json"), home.join("secret.png"), design.join("assets/logo/sneaky.png")] {
             assert!(serve(&home, &ask(&refused), None).is_err(), "{}", refused.display());
         }
         let mut climbing = ask(&design.join("assets/logo/mark.png"));

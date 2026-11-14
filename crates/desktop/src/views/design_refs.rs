@@ -7,7 +7,7 @@
 //! pattern), a card's source opens in the browser. A search filters patterns
 //! and notes. With none yet, what references are.
 
-use equipe_core::protocol::design::{RefPattern, RefSource};
+use equipe_core::protocol::design::{RefPattern, RefPlace, RefSource};
 use equipe_core::t;
 use gpui_kit::component::input::Input;
 use gpui_kit::component::*;
@@ -79,6 +79,7 @@ fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         .pb(px(8.))
         .gap_2()
         .items_center()
+        .children(places(shell, cx))
         .when(searching, |bar| {
             bar.child(
                 h_flex()
@@ -109,6 +110,38 @@ fn toolbar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         .child(div().flex_1())
         .when(searching, |bar| bar.child(div().flex_none().text_size(px(META)).text_color(p.muted).child(t!("design.refs_patterns", count = total))))
         .child(ui::icon_button(p, "design-refs-refresh", Icon::Reload, t!("design.refs_refresh"), None).on_click(cx.listener(|this, _, _, cx| this.refs_refresh(cx))))
+}
+
+/// Where the references are read from, when more than one place has some: the
+/// project's own, and each ticket's worktree where they are being made.
+fn places(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let p = shell.palette;
+    let answer = shell.design.refs.answer.as_ref().filter(|a| a.places.len() > 1)?;
+    let mut seg = h_flex().flex_none().flex_wrap().h(px(26.)).p(px(2.)).gap(px(2.)).rounded(px(R_MD)).bg(p.wash);
+    for place in &answer.places {
+        let ticket = place.ticket.unwrap_or(0);
+        let on = answer.at == ticket;
+        let label: SharedString = match place.ticket {
+            None => t!("design.refs_place_main").into(),
+            Some(id) if place.review => t!("design.in_review", id = id).into(),
+            Some(id) => t!("design.working_chip", id = id).into(),
+        };
+        let chip = div()
+            .id(SharedString::from(format!("design-refs-place-{ticket}")))
+            .h_full()
+            .px_2()
+            .flex()
+            .items_center()
+            .rounded(px(6.))
+            .text_size(px(SMALL))
+            .cursor_pointer()
+            .when(on, |d| d.bg(p.raised).text_color(p.text).shadow_sm())
+            .when(!on, |d| d.text_color(p.text2).hover(move |s| s.bg(p.wash)))
+            .child(label)
+            .on_click(cx.listener(move |this, _, _, cx| this.refs_pick_place(ticket, cx)));
+        seg = seg.child(if place.title.is_empty() { chip.into_any_element() } else { chip.tip(p, place.title.clone(), None).into_any_element() });
+    }
+    Some(seg.into_any_element())
 }
 
 /// A picture of the references, as the daemon read it: drawn, coming, or why not.
@@ -523,6 +556,13 @@ impl Shell {
         cx.notify();
     }
 
+    /// The person picked a place to read the references from.
+    pub fn refs_pick_place(&mut self, ticket: u64, cx: &mut Context<Self>) {
+        if self.design.refs.pick_place(ticket) {
+            cx.notify();
+        }
+    }
+
     /// Read again: a designer may have added some.
     pub fn refs_refresh(&mut self, cx: &mut Context<Self>) {
         self.design.refs.dirty = true;
@@ -546,12 +586,12 @@ impl Shell {
 
     /// The daemon's page of references.
     #[allow(clippy::too_many_arguments)]
-    pub fn refs_arrived(&mut self, squad: String, project: Option<String>, query: String, offset: u32, total: u32, patterns: Vec<RefPattern>, sources: Vec<RefSource>, folder: String) -> bool {
+    pub fn refs_arrived(&mut self, squad: String, project: Option<String>, ticket: Option<u64>, at: u64, places: Vec<RefPlace>, query: String, offset: u32, total: u32, patterns: Vec<RefPattern>, sources: Vec<RefSource>, folder: String) -> bool {
         if squad != self.model.squad {
             return false;
         }
         let on_screen = self.design.source_project();
-        self.design.refs.arrived(on_screen.as_deref(), project, query, offset, total, patterns, sources, folder)
+        self.design.refs.arrived(on_screen.as_deref(), project, ticket, at, places, query, offset, total, patterns, sources, folder)
     }
 
     /// Each draw, while the tab is on show: the references asked for when
@@ -564,6 +604,7 @@ impl Shell {
         // What is here is another folder's (the source changed under it).
         if self.design.refs.answer.as_ref().is_some_and(|a| a.project != project) {
             self.design.refs.forget();
+            self.design.refs.ticket = None;
         }
         if let Some(ask) = self.design.refs.wanted(&self.model.squad, project.as_deref()) {
             self.send_command(ask);

@@ -1096,6 +1096,7 @@
   "design.refs_search_placeholder": "パターンとノートを検索",
   "design.refs_search_clear": "検索をクリア",
   "design.refs_refresh": "リファレンスを再読み込み",
+  "design.refs_place_main": "メイン",
   "design.refs_patterns.other": "パターン {count} 件",
   "design.refs_pictures.other": "画像 {count} 枚",
   "design.refs_notes.other": "ノート {count} 件",

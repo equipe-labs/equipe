@@ -1131,6 +1131,7 @@
   "design.refs_search_placeholder": "Buscar patrones y notas",
   "design.refs_search_clear": "Borrar la búsqueda",
   "design.refs_refresh": "Volver a leer las referencias",
+  "design.refs_place_main": "Principal",
   "design.refs_patterns.one": "{count} patrón",
   "design.refs_patterns.other": "{count} patrones",
   "design.refs_pictures.one": "{count} imagen",

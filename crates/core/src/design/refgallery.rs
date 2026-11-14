@@ -4,10 +4,15 @@
 //! — and `design/references/sources.md`, in a project's design folder and, for
 //! the patterns the project has none of, the squad's own.
 //!
-//! Read only, and only inside the references folder: a pattern is a real
-//! folder (never a link) right in it, a picture one `read_image` may give
+//! Read only: a pattern is a real folder (never a link) right in the
+//! references folder, a picture one `read_image` may give
 //! ([`visuals::check`]: no `..`, no link out of the folder, an image of a kind
-//! taken), a notes file a regular file. Everything is bounded — patterns
+//! taken), a notes file a regular file. A picture lives in its pattern's
+//! folder, or is linked from an entry of `notes.md` with an `Image:` line (a
+//! path from the notes file): that one counts only when it really is a file
+//! inside the same `design/` folder — no `..` out of it, no link out of it.
+//! The places read are the project's own references and each ticket's
+//! worktree that has some; the one with the latest work shows first. Everything is bounded — patterns
 //! looked at, the page sent, pictures per pattern, how much of a notes file or
 //! a sources file is read, and how long a line may be — so a folder that grew
 //! big costs a screen one page. Pictures are served through `read_image`
@@ -16,7 +21,7 @@
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use equipe_protocol::design::{RefNote, RefPattern, RefPicture, RefSource};
+use equipe_protocol::design::{RefNote, RefPattern, RefPicture, RefPlace, RefSource};
 
 use crate::visuals;
 
@@ -49,19 +54,123 @@ pub struct Found {
     pub sources: Vec<RefSource>,
     /// Where the references are kept (the project's, else the squad's).
     pub folder: String,
+    /// Every place that has references, and the one read (`0`: the project's own).
+    pub places: Vec<RefPlace>,
+    pub at: u64,
 }
 
-/// The references folders to read: the one asked for first, then the squad's
-/// own when it is a project that is asked about.
-fn folders(home: &Path, squad: &str, project: Option<&str>) -> Vec<(PathBuf, bool)> {
-    let mut out = Vec::new();
-    if project.is_some()
-        && let Some(design) = super::folder::accepted_dir(home, squad, project)
-    {
-        out.push((design.join(DIR), false));
+/// A place that has references, on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Place {
+    pub info: RefPlace,
+    /// Its `design/references` folder.
+    pub dir: PathBuf,
+}
+
+/// The project's own `design/` folder (the squad's when none), where it is.
+fn main_design(home: &Path, squad: &str, project: Option<&str>) -> Option<PathBuf> {
+    let Some(project) = project else { return Some(crate::squad_home::path(home, squad).join(super::folder::DIR)) };
+    let journal = crate::journal::Journal::open(&crate::journal::squad_dir(home, squad).join("squad.db")).ok()?;
+    journal.projects().unwrap_or_default().into_iter().find(|p| crate::board::project_name(p) == project).map(|p| p.join(super::folder::DIR))
+}
+
+/// A `design/references` folder is there when it and `design/` are real folders.
+fn has_refs(dir: &Path) -> bool {
+    dir.parent().is_some_and(real_dir) && real_dir(dir)
+}
+
+/// The latest change among the files under `refs` (notes, pictures, sources),
+/// skipping the ones `same_as` has as they are: a worktree's checkout of
+/// what the project has already is no work of its own.
+fn activity(refs: &Path, same_as: Option<&Path>) -> u64 {
+    let mut latest = 0;
+    let mut seen = 0usize;
+    let mut stack = vec![(refs.to_owned(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            seen += 1;
+            if seen > FILES_SCAN * 4 {
+                return latest;
+            }
+            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else { continue };
+            if meta.is_dir() && depth < 2 {
+                stack.push((entry.path(), depth + 1));
+            } else if meta.is_file() {
+                let same = same_as.zip(entry.path().strip_prefix(refs).ok()).and_then(|(base, rel)| std::fs::symlink_metadata(base.join(rel)).ok()).is_some_and(|m| m.is_file() && m.len() == meta.len());
+                if !same {
+                    latest = latest.max(secs(&meta));
+                }
+            }
+        }
     }
-    let own = crate::squad_home::path(home, squad).join(super::folder::DIR).join(DIR);
-    out.push((own, project.is_some()));
+    latest
+}
+
+/// Every place of `project` (the squad's own when none) that has
+/// `design/references/`: its own folder, and each ticket's worktree — at work
+/// or in review — with references of its own. The project's first, then the
+/// tickets by the latest references work.
+pub fn places(home: &Path, squad: &str, project: Option<&str>) -> Vec<Place> {
+    if !crate::squads::valid_name(squad) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let main = main_design(home, squad, project).map(|d| d.join(DIR)).filter(|d| has_refs(d));
+    if let Some(dir) = &main {
+        out.push(Place { info: RefPlace { patterns: pattern_dirs(dir).len() as u32, updated: activity(dir, None), ..RefPlace::default() }, dir: dir.clone() });
+    }
+    let db = crate::journal::squad_dir(home, squad).join("squad.db");
+    if !db.exists() {
+        return out;
+    }
+    let Ok(journal) = crate::journal::Journal::open(&db) else { return out };
+    let mut tickets = Vec::new();
+    for ticket in journal.tickets().unwrap_or_default() {
+        use equipe_protocol::{TicketKind, TicketStatus};
+        let review = match ticket.status {
+            TicketStatus::Review => true,
+            TicketStatus::InProgress | TicketStatus::Waiting => false,
+            _ => continue,
+        };
+        let of = if ticket.kind == TicketKind::Code { ticket.project.as_deref().map(crate::board::project_name) } else { None };
+        let Some(worktree) = ticket.worktree.as_ref().filter(|_| of.as_deref() == project) else { continue };
+        let dir = worktree.join(super::folder::DIR).join(DIR);
+        if !has_refs(&dir) {
+            continue;
+        }
+        let updated = activity(&dir, main.as_deref());
+        // With the project's own to compare to, a checkout that added nothing is no place of its own.
+        if main.is_some() && updated == 0 {
+            continue;
+        }
+        tickets.push(Place { info: RefPlace { ticket: Some(u64::from(ticket.id)), title: ticket.title.clone(), review, patterns: pattern_dirs(&dir).len() as u32, updated }, dir });
+    }
+    tickets.sort_by_key(|p| std::cmp::Reverse(p.info.updated));
+    out.extend(tickets);
+    out
+}
+
+/// The place to read of `places`: the one asked for (`0`: the project's own,
+/// else a ticket's id), else the one with the latest references work — the
+/// project's own on a tie.
+fn pick(places: &[Place], ticket: Option<u64>) -> Option<&Place> {
+    let asked = ticket.and_then(|t| places.iter().find(|p| p.info.ticket == (t != 0).then_some(t)));
+    asked.or_else(|| places.iter().rev().max_by_key(|p| p.info.updated))
+}
+
+/// The references folders to read: the one picked first, then the squad's
+/// own when it is a project that is asked about.
+fn folders(home: &Path, squad: &str, project: Option<&str>, picked: Option<&Place>) -> Vec<(PathBuf, bool)> {
+    let mut out = Vec::new();
+    match picked {
+        Some(place) => out.push((place.dir.clone(), false)),
+        None => out.extend(main_design(home, squad, project).filter(|_| project.is_some()).map(|d| (d.join(DIR), false))),
+    }
+    if project.is_some() || picked.is_none() {
+        let own = crate::squad_home::path(home, squad).join(super::folder::DIR).join(DIR);
+        out.push((own, project.is_some()));
+    }
     out
 }
 
@@ -71,13 +180,20 @@ fn real_dir(path: &Path) -> bool {
 }
 
 /// The references a screen asks for: `project`'s (the squad's own when
-/// none), the squad's for the patterns the project has none of, the patterns
-/// holding `query` (any case) in their name or notes, and the page at `offset`.
-pub fn read(home: &Path, squad: &str, project: Option<&str>, query: &str, offset: usize) -> Found {
+/// none) — in the place `ticket` names, else where the latest work is — the
+/// squad's for the patterns the project has none of, the patterns holding
+/// `query` (any case) in their name or notes, and the page at `offset`.
+pub fn read(home: &Path, squad: &str, project: Option<&str>, ticket: Option<u64>, query: &str, offset: usize) -> Found {
     if !crate::squads::valid_name(squad) {
         return Found::default();
     }
-    read_in(folders(home, squad, project), query, offset)
+    let all = places(home, squad, project);
+    let picked = pick(&all, ticket);
+    let at = picked.and_then(|p| p.info.ticket).unwrap_or(0);
+    let mut found = read_in(folders(home, squad, project, picked), query, offset);
+    found.at = at;
+    found.places = all.iter().map(|p| p.info.clone()).collect();
+    found
 }
 
 /// [`read`] of the references folders given — each with whether it is the
@@ -146,11 +262,37 @@ fn read_text(path: &Path, max: u64) -> String {
     text
 }
 
+/// `rel`, a path an `Image:` line gives, from `dir` (where `notes.md` is), as
+/// a picture of the same `design/` folder: the path written out without `..`
+/// (it must stay inside `design`), and the real file it is (links resolved,
+/// still inside `design`, a regular file, an image of a kind taken, not too
+/// big — [`visuals::check`]).
+fn linked(dir: &Path, design: &Path, rel: &str) -> Option<(PathBuf, PathBuf)> {
+    use std::path::Component;
+    let rel = Path::new(rel);
+    let mut path = dir.to_owned();
+    for part in rel.components() {
+        match part {
+            Component::Normal(p) => path.push(p),
+            Component::CurDir => {}
+            Component::ParentDir if path.pop() => {}
+            _ => return None,
+        }
+    }
+    if !path.starts_with(design) || path == design {
+        return None;
+    }
+    let real = visuals::check(&path, std::slice::from_ref(&design.to_path_buf())).ok()?;
+    Some((path, real))
+}
+
 fn pattern(name: &str, dir: &Path, shared: bool) -> RefPattern {
     let raw = read_text(&dir.join(NOTES), NOTES_MAX);
-    let (notes, agree) = parse_notes(&raw);
+    let (notes, images, agree) = parse_notes_with_images(&raw);
     let mut updated = std::fs::symlink_metadata(dir.join(NOTES)).ok().filter(|m| m.is_file()).map_or(0, |m| secs(&m));
     let root = dir.parent().and_then(|p| std::fs::canonicalize(p).ok());
+    // The `design/` folder the references are in: where linked pictures may be.
+    let design = dir.parent().filter(|refs| refs.file_name().is_some_and(|n| n == DIR)).and_then(Path::parent).map(Path::to_path_buf);
     let mut files: Vec<(String, std::fs::Metadata)> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten().take(FILES_SCAN) {
@@ -166,21 +308,50 @@ fn pattern(name: &str, dir: &Path, shared: bool) -> RefPattern {
         }
     }
     files.sort_by_key(|(n, _)| n.to_lowercase());
-    let pictures_total = files.len() as u32;
-    let mut pictures = Vec::new();
+    let mut pictures_total = files.len() as u32;
+    let mut pictures: Vec<RefPicture> = Vec::new();
+    // What each picture really is, to tell the same file linked twice.
+    let mut reals: Vec<PathBuf> = Vec::new();
     for (file, link_meta) in files {
         if pictures.len() >= PICTURES {
             updated = updated.max(secs(&link_meta));
             continue;
         }
         let path = dir.join(&file);
-        let ok = root.as_ref().is_some_and(|root| visuals::check(&path, std::slice::from_ref(root)).is_ok());
-        if !ok {
-            continue;
-        }
+        let Some(real) = root.as_ref().and_then(|root| visuals::check(&path, std::slice::from_ref(root)).ok()) else { continue };
         let meta = std::fs::metadata(&path).unwrap_or(link_meta);
         updated = updated.max(secs(&meta));
-        pictures.push(RefPicture { path: path.to_string_lossy().into_owned(), name: file, size: meta.len(), modified: secs(&meta) });
+        reals.push(real);
+        pictures.push(RefPicture { path: path.to_string_lossy().into_owned(), name: file, size: meta.len(), modified: secs(&meta), note: None });
+    }
+    // The pictures the entries link, by `Image:` lines — each to its own entry.
+    if let Some(design) = &design {
+        let mut looked = 0;
+        for (n, links) in images.iter().enumerate() {
+            for rel in links {
+                looked += 1;
+                if looked > PICTURES * 2 {
+                    break;
+                }
+                let Some((path, real)) = linked(dir, design, rel) else { continue };
+                if let Some(at) = reals.iter().position(|r| *r == real) {
+                    // Already there (in the pattern's folder, or linked by another entry): the first entry keeps it.
+                    if let Some(pic) = pictures.get_mut(at).filter(|p| p.note.is_none()) {
+                        pic.note = Some(n as u32);
+                    }
+                    continue;
+                }
+                let Ok(meta) = std::fs::metadata(&real) else { continue };
+                pictures_total += 1;
+                updated = updated.max(secs(&meta));
+                if pictures.len() >= PICTURES {
+                    continue;
+                }
+                let name = path.file_name().and_then(|f| f.to_str()).unwrap_or_default().to_owned();
+                reals.push(real);
+                pictures.push(RefPicture { path: path.to_string_lossy().into_owned(), name, size: meta.len(), modified: secs(&meta), note: Some(n as u32) });
+            }
+        }
     }
     RefPattern { name: name.to_owned(), shared, notes, agree, raw, pictures, pictures_total, updated }
 }
@@ -202,6 +373,7 @@ enum Field {
     Take,
     Leave,
     Fit,
+    Image,
 }
 
 /// A bullet line `- Key: value` (any bold around the key) of one of the four fields.
@@ -217,6 +389,7 @@ fn field_line(line: &str) -> Option<(Field, &str)> {
         "take" => Field::Take,
         "leave" => Field::Leave,
         "fit" => Field::Fit,
+        "image" => Field::Image,
         _ => return None,
     };
     Some((field, value))
@@ -226,6 +399,8 @@ fn field_line(line: &str) -> Option<(Field, &str)> {
 struct Draft {
     title: String,
     fields: [String; 4],
+    /// The paths its `Image:` lines give.
+    images: Vec<String>,
     seen: bool,
     /// Text after the fields, past a blank line: what the examples agree on.
     tail: Vec<String>,
@@ -239,6 +414,30 @@ impl Draft {
 
 /// `notes.md` as entries, and the closing lines on what the examples agree on.
 pub fn parse_notes(raw: &str) -> (Vec<RefNote>, String) {
+    let (notes, _, agree) = parse_notes_with_images(raw);
+    (notes, agree)
+}
+
+/// The path an `Image:` value gives: in backticks, the target of a Markdown
+/// image or link, in `<…>`, or the plain text. Never an address or an
+/// absolute path.
+fn image_path(value: &str) -> Option<String> {
+    let value = value.trim();
+    let path = if let Some(ticked) = backticked(value) {
+        ticked
+    } else if let Some(open) = value.find("](") {
+        let rest = &value[open + 2..];
+        rest[..rest.find(')')?].trim()
+    } else {
+        value.trim_matches(['<', '>', '"', '\'', ' ']).trim_end_matches(['.', ',', ';'])
+    };
+    let path = path.trim_matches(['<', '>']);
+    let bad = path.is_empty() || path.contains("://") || path.starts_with('/') || path.starts_with('\\') || path.contains(':') || path.chars().any(char::is_control) || path.len() > 400;
+    (!bad).then(|| path.to_owned())
+}
+
+/// [`parse_notes`], with each entry's `Image:` paths too (in the entries' order).
+fn parse_notes_with_images(raw: &str) -> (Vec<RefNote>, Vec<Vec<String>>, String) {
     let mut drafts: Vec<Draft> = Vec::new();
     let mut last: Option<Field> = None;
     let mut blank = false;
@@ -259,7 +458,14 @@ pub fn parse_notes(raw: &str) -> (Vec<RefNote>, String) {
         if trimmed.starts_with('#') {
             continue;
         }
-        if let Some((field, value)) = field_line(line) {
+        if let Some((Field::Image, value)) = field_line(line) {
+            draft.seen = true;
+            if draft.images.len() < 8 {
+                draft.images.extend(image_path(value));
+            }
+            last = None;
+            blank = false;
+        } else if let Some((field, value)) = field_line(line) {
             draft.seen = true;
             let slot = draft.field(field);
             if !slot.is_empty() {
@@ -279,6 +485,7 @@ pub fn parse_notes(raw: &str) -> (Vec<RefNote>, String) {
         }
     }
     let mut notes = Vec::new();
+    let mut images = Vec::new();
     let mut agree = String::new();
     let count = drafts.len();
     for (i, d) in drafts.into_iter().enumerate() {
@@ -294,13 +501,15 @@ pub fn parse_notes(raw: &str) -> (Vec<RefNote>, String) {
         }
         if notes.len() < ENTRIES {
             notes.push(note(&d));
+            images.push(d.images.clone());
         }
     }
-    (notes, agree)
+    (notes, images, agree)
 }
 
 fn note(d: &Draft) -> RefNote {
     let [source, take, leave, fit] = &d.fields;
+    let linked = d.images.first().and_then(|p| p.rsplit('/').next()).filter(|p| !p.is_empty()).map(str::to_owned);
     let (product, screen) = [" — ", " – ", " - "].iter().find_map(|sep| d.title.split_once(sep)).map_or((d.title.as_str(), ""), |(a, b)| (a.trim(), b.trim()));
     let url = url_in(source);
     let host = url.as_deref().and_then(host_of);
@@ -314,7 +523,7 @@ fn note(d: &Draft) -> RefNote {
         host,
         source: name.filter(|n| !n.is_empty()).map(clip),
         date: date_in(source),
-        picture: backticked(source).and_then(|p| p.rsplit('/').next().map(str::to_owned)).filter(|p| !p.is_empty()),
+        picture: linked.or_else(|| backticked(source).and_then(|p| p.rsplit('/').next().map(str::to_owned)).filter(|p| !p.is_empty())),
         take: clip(take),
         leave: clip(leave),
         fit: clip(fit),
@@ -522,19 +731,19 @@ mod tests {
             png(&refs.join(name).join("a.png"));
         }
         std::fs::write(refs.join("kpi-tile/notes.md"), NOTES_MD).unwrap();
-        let all = read(&home, "acme", None, "", 0);
+        let all = read(&home, "acme", None, None, "", 0);
         assert_eq!(all.total, 4);
         assert_eq!(all.patterns.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["data-table", "Filter-bar", "kpi-tile", "toast"], "by name, any case");
         assert!(all.patterns.iter().all(|p| !p.shared) && all.folder.ends_with("design/references"));
-        let by_name = read(&home, "acme", None, "  FILTER ", 0);
+        let by_name = read(&home, "acme", None, None, "  FILTER ", 0);
         assert_eq!((by_name.total, by_name.patterns[0].name.as_str()), (1, "Filter-bar"));
-        let by_notes = read(&home, "acme", None, "sparkline", 0);
+        let by_notes = read(&home, "acme", None, None, "sparkline", 0);
         assert_eq!((by_notes.total, by_notes.patterns[0].name.as_str()), (1, "kpi-tile"), "the notes are searched too");
-        let paged = read(&home, "acme", None, "", 3);
+        let paged = read(&home, "acme", None, None, "", 3);
         assert_eq!((paged.total, paged.patterns.len()), (4, 1));
-        assert_eq!(read(&home, "acme", None, "", 99).patterns.len(), 0);
-        assert_eq!(read(&home, "../acme", None, "", 0), Found::default(), "a squad name is checked");
-        assert_eq!(read(&home, "nobody", None, "", 0).total, 0);
+        assert_eq!(read(&home, "acme", None, None, "", 99).patterns.len(), 0);
+        assert_eq!(read(&home, "../acme", None, None, "", 0), Found::default(), "a squad name is checked");
+        assert_eq!(read(&home, "nobody", None, None, "", 0).total, 0);
         std::fs::remove_dir_all(home).unwrap();
     }
 
@@ -557,5 +766,175 @@ mod tests {
         assert_eq!((first.pictures.len(), first.pictures_total as usize), (PICTURES, PICTURES + 7));
         assert!(first.notes[0].take.chars().count() <= FIELD_CHARS + 1);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A project's `design/` folder in a scratch dir, with its references folder.
+    fn design_with_refs(root: &Path) -> PathBuf {
+        let design = root.join("design");
+        std::fs::create_dir_all(design.join("references")).unwrap();
+        design
+    }
+
+    #[test]
+    fn a_picture_an_entry_links_inside_design_is_counted_and_belongs_to_its_entry() {
+        let root = scratch("linked");
+        let design = design_with_refs(&root);
+        let refs = design.join("references");
+        png(&design.join("directions/t1-references/data-table/mercury.png"));
+        png(&design.join("directions/t1-references/data-table/linear.png"));
+        png(&refs.join("data-table/own.png"));
+        std::fs::write(
+            refs.join("data-table/notes.md"),
+            "# data-table\n\n## Mercury — Transactions\n- Source: https://example.com/m (Gallery), 2026-11-01\n- Image: `../../directions/t1-references/data-table/mercury.png`\n- Take: quiet rows\n\n## Linear — Issues\n- Image: ../../directions/t1-references/data-table/linear.png\n- Take: dense\n\n## Own — Table\n- Take: with a picture in the folder\n",
+        )
+        .unwrap();
+        let table = pattern("data-table", &refs.join("data-table"), false);
+        assert_eq!(table.pictures_total, 3, "the folder's and the two linked");
+        let by: Vec<(&str, Option<u32>)> = table.pictures.iter().map(|p| (p.name.as_str(), p.note)).collect();
+        assert_eq!(by, [("own.png", None), ("mercury.png", Some(0)), ("linear.png", Some(1))]);
+        assert_eq!(table.notes[0].picture.as_deref(), Some("mercury.png"));
+        let mercury = &table.pictures[1];
+        assert_eq!(Path::new(&mercury.path), design.join("directions/t1-references/data-table/mercury.png"), "written out, no `..`");
+        assert!(visuals::check(Path::new(&mercury.path), std::slice::from_ref(&design)).is_ok(), "read_image's check passes");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_link_out_of_design_through_dots_a_link_or_an_address_is_never_a_picture() {
+        use std::os::unix::fs::symlink;
+        let root = scratch("escape");
+        let design = design_with_refs(&root);
+        let refs = design.join("references");
+        png(&root.join("outside.png"));
+        png(&root.join("elsewhere/secret.png"));
+        png(&design.join("fine.png"));
+        symlink(root.join("outside.png"), design.join("sneaky.png")).unwrap();
+        symlink(root.join("elsewhere"), design.join("door")).unwrap();
+        symlink(design.join("fine.png"), design.join("inner-link.png")).unwrap();
+        std::fs::create_dir_all(refs.join("p")).unwrap();
+        let notes: String = [
+            "../../../outside.png",
+            "../../../elsewhere/secret.png",
+            "../../sneaky.png",
+            "../../door/secret.png",
+            "/etc/passwd.png",
+            "https://example.com/a.png",
+            "../../../design/../outside.png",
+            "../../missing.png",
+            "../../fine.png/../../outside.png",
+            "../../inner-link.png",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, rel)| format!("## E{i}\n- Image: `{rel}`\n- Take: x\n\n"))
+        .collect();
+        std::fs::write(refs.join("p/notes.md"), notes).unwrap();
+        let found = pattern("p", &refs.join("p"), false);
+        let names: Vec<&str> = found.pictures.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["inner-link.png"], "only a link that stays inside design/ — {names:?}");
+        assert_eq!(found.pictures_total, 1);
+        // A pattern whose folder isn't in `design/references` gets no linked pictures at all.
+        let loose = root.join("refs-only/p");
+        png(&root.join("refs-only/x.png"));
+        std::fs::create_dir_all(&loose).unwrap();
+        std::fs::write(loose.join("notes.md"), "## A\n- Image: ../x.png\n- Take: x\n").unwrap();
+        assert_eq!(pattern("p", &loose, false).pictures_total, 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A ticket in `worktree` (squad `acme`), at work or in review; its id.
+    fn ticket_in(home: &Path, title: &str, worktree: &Path, review: bool) -> u64 {
+        use crate::protocol::{Ticket, TicketKind, TicketStatus};
+        let journal = crate::journal::Journal::for_squad(home, "acme").unwrap();
+        let ticket = Ticket {
+            id: 0,
+            title: title.into(),
+            body: "".into(),
+            status: if review { TicketStatus::Review } else { TicketStatus::InProgress },
+            kind: TicketKind::Task,
+            owner: Some("designer".into()),
+            assignee: Some("designer".into()),
+            project: None,
+            depends_on: vec![],
+            branch: None,
+            worktree: None,
+            execution: None,
+            merged: None,
+            off_main: None,
+            design_qa: None,
+            plan: None,
+            model: None,
+            created_by: "pm".into(),
+            note: None,
+            asks: vec![],
+            label: None,
+            remaining: vec![],
+            images: vec![],
+            priority: Default::default(),
+            rank: 0,
+            updated_at: None,
+        };
+        let id = journal.create_ticket(&ticket).unwrap();
+        journal.set_ticket_work(id, &crate::journal::TicketWork { worktree: Some(worktree.to_owned()), ..Default::default() }).unwrap();
+        u64::from(id)
+    }
+
+    fn touch(path: &Path, secs_ago: u64) {
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(secs_ago);
+        std::fs::File::options().write(true).open(path).unwrap().set_modified(when).unwrap();
+    }
+
+    #[test]
+    fn the_source_defaults_to_the_worktree_with_the_latest_references_work() {
+        let home = scratch("places");
+        let squad = crate::squad_home::path(&home, "acme");
+        let main = squad.join("design/references");
+        png(&main.join("kpi/a.png"));
+        touch(&main.join("kpi/a.png"), 5000);
+        let (old, new, bare, same) = (home.join("wt/old"), home.join("wt/new"), home.join("wt/bare"), home.join("wt/same"));
+        png(&old.join("design/references/toast/a.png"));
+        touch(&old.join("design/references/toast/a.png"), 3000);
+        png(&new.join("design/references/data-table/b.png"));
+        std::fs::write(new.join("design/references/data-table/notes.md"), "## A — B\n- Take: x\n").unwrap();
+        std::fs::create_dir_all(bare.join("design")).unwrap();
+        png(&same.join("design/references/kpi/a.png"));
+        let bare_id = ticket_in(&home, "no references", &bare, false);
+        let new_id = ticket_in(&home, "references", &new, false);
+        let old_id = ticket_in(&home, "old", &old, true);
+        ticket_in(&home, "a copy of main", &same, false);
+        let all = places(&home, "acme", None);
+        let ids: Vec<Option<u64>> = all.iter().map(|p| p.info.ticket).collect();
+        assert_eq!(ids, [None, Some(new_id), Some(old_id)], "main, then by the latest work; none for no references or only a copy of main's");
+        assert!(all[2].info.review && all[1].info.patterns == 1 && !all[1].info.review);
+        let auto = read(&home, "acme", None, None, "", 0);
+        assert_eq!(auto.at, new_id);
+        assert_eq!(auto.patterns.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["data-table"]);
+        assert_eq!(auto.places.len(), 3);
+        assert!(auto.folder.ends_with("new/design/references"));
+        let main_read = read(&home, "acme", None, Some(0), "", 0);
+        assert_eq!((main_read.at, main_read.patterns[0].name.as_str()), (0, "kpi"));
+        let old_read = read(&home, "acme", None, Some(old_id), "", 0);
+        assert_eq!((old_read.at, old_read.patterns[0].name.as_str()), (old_id, "toast"));
+        assert_eq!(read(&home, "acme", None, Some(bare_id), "", 0).at, new_id, "no references there: the default instead");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn without_a_project_folder_of_its_own_the_only_worktree_with_references_is_the_source() {
+        // The designer's layout: notes in design/references/<pattern>/, pictures in design/directions/<ticket>-references/<pattern>/.
+        let home = scratch("t2562");
+        let wt = home.join("wt/t2562");
+        let refs = wt.join("design/references");
+        for name in ["data-table", "kpi-cards"] {
+            png(&wt.join(format!("design/directions/t2562-references/{name}/M-one.png")));
+            std::fs::create_dir_all(refs.join(name)).unwrap();
+            std::fs::write(refs.join(name).join("notes.md"), format!("## One — {name}\n- Source: https://example.com (Gallery), 2026-11-10\n- Image: `../../directions/t2562-references/{name}/M-one.png`\n- Take: a\n- Leave: b\n- Fit: high\n")).unwrap();
+        }
+        let id = ticket_in(&home, "references", &wt, false);
+        let found = read(&home, "acme", None, None, "", 0);
+        assert_eq!(found.at, id);
+        assert_eq!(found.patterns.len(), 2);
+        assert!(found.patterns.iter().all(|p| p.pictures_total == 1 && p.pictures[0].note == Some(0)), "{:?}", found.patterns);
+        std::fs::remove_dir_all(home).unwrap();
     }
 }
