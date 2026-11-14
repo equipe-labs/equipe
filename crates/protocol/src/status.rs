@@ -160,6 +160,8 @@ pub enum Note {
     Out { engine: Engine, back_at: Option<u64> },
     /// The squad runs fewer at once to make the plan last: `at_once` runs on this engine.
     Pacing { engine: Engine, at_once: u32 },
+    /// Under its weekly reserve: only the PM's and urgent or high work start on this engine.
+    Reserve { engine: Engine },
 }
 
 /// The four numbers.
@@ -293,6 +295,85 @@ fn is_zero_u32(n: &u32) -> bool {
     *n == 0
 }
 
+/// What holds the work back most, as the "Why not faster?" headline names it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Limit {
+    /// Nothing holds work back: what can run, runs.
+    #[default]
+    Flowing,
+    /// Nothing is open to run.
+    Idle,
+    /// Tickets are ready and free to start, but the squad's caps are full.
+    Cap,
+    /// Tickets wait for the person — directly, or behind a ticket that does.
+    You,
+    /// Tickets wait for an engine out of its limit, or kept in reserve.
+    Engine,
+    /// Tickets are ready but nobody on the squad takes their role.
+    NoMember,
+    /// Tickets wait for other tickets to finish.
+    Tickets,
+}
+
+/// Of the open work: where it stands, and what holds it back. Every count is
+/// of tickets (a run is a ticket's); the counts of what waits don't overlap.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Flow {
+    /// Runs going now.
+    pub running: u32,
+    /// Ready, with room to start: they start within a moment.
+    pub starting: u32,
+    /// Ready, but the caps (per member, per engine) are full.
+    pub held_by_cap: u32,
+    /// Ready, but no member takes their role.
+    pub no_member: u32,
+    /// Ready, but their engine is out of its limit or kept in reserve; and
+    /// runs paused for the same.
+    pub on_engine: u32,
+    /// Waiting for other tickets, none of them behind the person.
+    pub on_tickets: u32,
+    /// Waiting for the person: decisions, approvals, proposals, hand-ins.
+    pub on_you: u32,
+    /// Waiting for other tickets that wait for the person.
+    pub behind_you: u32,
+    pub limit: Limit,
+}
+
+/// One engine's weekly outlook at a speed: when the week runs out at that
+/// speed, or that it lasts until it starts over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Outlook {
+    /// Runs out at this time, before the week starts over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runs_out_at: Option<u64>,
+    /// Lasts until the week starts over.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lasts: bool,
+}
+
+/// An engine's weekly outlook at full speed and balanced: an estimate from
+/// the week's pace of late, scaled by how many runs each speed would have
+/// going. Both equal when the work to do, not the cap, sets the pace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpeedOutlook {
+    pub engine: Engine,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full: Option<Outlook>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balanced: Option<Outlook>,
+}
+
+/// The Speed card: the squad's parallel work, and what each speed does to
+/// the budget.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Speed {
+    pub parallel: crate::lanes::Parallel,
+    pub outlook: Vec<SpeedOutlook>,
+}
+
 /// Everything the Status screen shows.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SquadStatus {
@@ -325,6 +406,12 @@ pub struct SquadStatus {
     /// The squad has no members or tickets yet.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub empty: bool,
+    /// Speed and its budget outlook; none from a daemon that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<Speed>,
+    /// Why the work isn't faster; none from a daemon that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow: Option<Flow>,
 }
 
 #[cfg(test)]
@@ -395,6 +482,24 @@ mod tests {
         assert_eq!(ask.utc_offset_secs, 0, "an older screen sends no offset");
         let watch: crate::Command = serde_json::from_value(json!({ "type": "watch_ticket", "squad": "acme", "ticket": 7, "watch": true })).unwrap();
         assert!(matches!(watch, crate::Command::WatchTicket { ticket: 7, watch: true, .. }));
+    }
+
+    #[test]
+    fn the_speed_and_the_flow_ride_along_and_an_older_daemons_status_has_neither() {
+        let status = SquadStatus {
+            speed: Some(Speed {
+                parallel: crate::lanes::Parallel::max(6, 16),
+                outlook: vec![SpeedOutlook { engine: Engine::Claude, full: Some(Outlook { runs_out_at: Some(1_760_000_000), lasts: false }), balanced: Some(Outlook { runs_out_at: None, lasts: true }) }],
+            }),
+            flow: Some(Flow { running: 5, on_you: 14, behind_you: 31, limit: Limit::You, ..Flow::default() }),
+            ..SquadStatus::default()
+        };
+        let back: SquadStatus = serde_json::from_str(&serde_json::to_string(&status).unwrap()).unwrap();
+        assert_eq!(back, status);
+        assert_eq!(serde_json::to_value(Limit::NoMember).unwrap(), json!("no_member"));
+        let old: SquadStatus = serde_json::from_value(json!({ "squad": "a", "at": 1, "mood": "good", "tiles": {}, "waste": {}, "watched": {} })).unwrap();
+        assert!(old.speed.is_none() && old.flow.is_none());
+        assert!(serde_json::to_value(&old).unwrap().get("flow").is_none());
     }
 
     #[test]

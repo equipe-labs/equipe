@@ -2295,7 +2295,7 @@ async fn the_pm_sets_parallel_work_to_max_only_on_the_persons_tap_and_back_to_au
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
 
     let read = tool(&handle, "pm", "settings", serde_json::json!({})).await;
-    assert!(read.text.contains("Parallel work (parallel): auto"), "{}", read.text);
+    assert!(read.text.contains("Speed (parallel): balanced"), "{}", read.text);
     let out_of_range = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "parallel", "value": "max", "per_member": 40 })).await;
     assert!(out_of_range.is_error && out_of_range.text.contains("1 through 12"), "{}", out_of_range.text);
 
@@ -2313,7 +2313,7 @@ async fn the_pm_sets_parallel_work_to_max_only_on_the_persons_tap_and_back_to_au
     until(&mut events, |e| matches!(e, Event::ParallelChanged { parallel, .. } if *parallel == Parallel::max(8, 16))).await;
     assert!(asking.await.unwrap().text.starts_with("The person said yes"));
     let read = tool(&handle, "pm", "settings", serde_json::json!({})).await;
-    assert!(read.text.contains("Parallel work (parallel): max — up to 8 tickets per member and 16 per engine"), "{}", read.text);
+    assert!(read.text.contains("Speed (parallel): full — up to 8 tickets per member and 16 per engine"), "{}", read.text);
 
     // Auto only narrows: at once, max's caps kept.
     let narrowed = tool(&handle, "pm", "change_setting", serde_json::json!({ "setting": "parallel", "value": "auto" })).await;

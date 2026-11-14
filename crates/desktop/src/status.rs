@@ -11,7 +11,8 @@
 
 use std::time::Duration;
 
-use equipe_core::protocol::status::{Action, Block, Cause, EngineBudget, Handling, Mood, Note, Severity, SquadStatus, WasteKey};
+use equipe_core::protocol::lanes::{Parallel, ParallelMode};
+use equipe_core::protocol::status::{Action, Block, Cause, EngineBudget, Flow, Handling, Limit, Mood, Note, Outlook, Severity, SquadStatus, WasteKey};
 use equipe_core::protocol::{Engine, PauseWhy, TicketId};
 use equipe_core::t;
 
@@ -148,15 +149,21 @@ pub fn headline(s: &SquadStatus) -> String {
     let engine = engine_of(top.and_then(|b| b.engine));
     match s.mood {
         Mood::Good if s.empty => t!("status.good_empty").to_owned(),
-        Mood::Good => t!("status.good").to_owned(),
+        Mood::Good => carried(s).unwrap_or_else(|| t!("status.good").to_owned()),
         Mood::Stopped => match top.map(|b| b.cause) {
             Some(Cause::EngineOut) => t!("status.stop_engines").to_owned(),
             _ => t!("status.stop_breaker").to_owned(),
         },
-        Mood::Slowed => match top.map(|b| (b.cause, b.why)) {
+        // Only a row that slows the work names it; one that only waits on the person is no slowdown.
+        Mood::Slowed => match top.filter(|b| b.severity >= Severity::Amber).map(|b| (b.cause, b.why)) {
             None => {
                 let pacing = s.notes.iter().find_map(|n| if let Note::Pacing { engine, .. } = n { Some(*engine) } else { None });
-                t!("status.slow_pacing", engine = engine_of(pacing))
+                let reserve = s.notes.iter().find_map(|n| if let Note::Reserve { engine } = n { Some(*engine) } else { None });
+                match (&s.flow, reserve) {
+                    (Some(flow), _) if flow.held_by_cap > 0 => t!("status.slow_cap", count = flow.held_by_cap),
+                    (Some(_), Some(engine)) => t!("status.slow_reserve", engine = engine_of(Some(engine))),
+                    _ => t!("status.slow_pacing", engine = engine_of(pacing)),
+                }
             }
             Some((Cause::EngineOut, _)) => t!("status.slow_engine_out", engine = engine),
             Some((Cause::SignIn, _)) | Some((Cause::RunsPaused, Some(PauseWhy::SignIn))) => t!("status.slow_sign_in", engine = engine),
@@ -171,6 +178,17 @@ pub fn headline(s: &SquadStatus) -> String {
     }
 }
 
+/// "Going: Codex is out until Sun 23:34; Claude carries the work": an engine
+/// is out of its limit, holds nothing up, and another engine does the work.
+fn carried(s: &SquadStatus) -> Option<String> {
+    let (out, back) = s.notes.iter().find_map(|n| if let Note::Out { engine, back_at } = *n { Some((engine, back_at)) } else { None })?;
+    let other = s.engines.iter().find(|e| e.engine != out && e.out_until.is_none())?.engine;
+    Some(match back {
+        Some(at) => t!("status.good_out_back", engine = engine_name(out), when = when(at, s.at), other = engine_name(other)),
+        None => t!("status.good_out", engine = engine_name(out), other = engine_name(other)),
+    })
+}
+
 /// The muted second line: the engines' notes (`Codex limit · back in 3d · Claude pacing (6 at once)`), or how work goes.
 pub fn detail(s: &SquadStatus, now: u64) -> String {
     let notes: Vec<String> = s
@@ -180,6 +198,7 @@ pub fn detail(s: &SquadStatus, now: u64) -> String {
             Note::Out { engine, back_at: Some(at) } => t!("status.note_out_back", engine = engine_name(engine), span = span(at as i64, now as i64)),
             Note::Out { engine, back_at: None } => t!("status.note_out", engine = engine_name(engine)),
             Note::Pacing { engine, at_once } => t!("status.note_pacing", engine = engine_name(engine), count = at_once),
+            Note::Reserve { engine } => t!("status.note_reserve", engine = engine_name(engine)),
         })
         .collect();
     if !notes.is_empty() {
@@ -293,6 +312,102 @@ pub fn budget_line(e: &EngineBudget, now: u64) -> String {
     }
 }
 
+// ── speed ──
+
+/// The two speeds, as the Speed card's control offers them.
+pub fn speed_modes() -> Vec<(ParallelMode, String)> {
+    vec![(ParallelMode::Max, t!("status.speed_full").to_owned()), (ParallelMode::Auto, t!("status.speed_balanced").to_owned())]
+}
+
+/// One line on what a speed means.
+pub fn speed_about(mode: ParallelMode) -> &'static str {
+    match mode {
+        ParallelMode::Max => t!("status.speed_full_about"),
+        ParallelMode::Auto => t!("status.speed_balanced_about"),
+    }
+}
+
+/// How far the week lasts at a speed, in a few words.
+fn outlook_part(o: Option<Outlook>, week_end: Option<u64>, now: u64) -> String {
+    match o {
+        Some(Outlook { runs_out_at: Some(at), .. }) => t!("status.speed_until", when = when(at, now)),
+        Some(Outlook { lasts: true, .. }) => t!("status.speed_week", when = week_end.map(|at| when(at, now)).unwrap_or_default()),
+        _ => t!("status.speed_unknown").to_owned(),
+    }
+}
+
+/// "Claude: full speed lasts until Sun 01:33 · balanced lasts until Mon 09:10", one per engine
+/// whose week is read; "Claude: lasts until Mon 09:10 at either speed" when the work, not the cap, sets the pace.
+pub fn speed_lines(s: &SquadStatus, now: u64) -> Vec<String> {
+    let Some(speed) = &s.speed else { return Vec::new() };
+    speed
+        .outlook
+        .iter()
+        .filter(|o| o.full.is_some() || o.balanced.is_some())
+        .map(|o| {
+            let week_end = s.engines.iter().find(|e| e.engine == o.engine).and_then(|e| e.weekly).map(|w| w.resets_at.max(0) as u64);
+            let engine = engine_name(o.engine);
+            let (full, balanced) = (outlook_part(o.full, week_end, now), outlook_part(o.balanced, week_end, now));
+            if o.full.is_some() && o.full == o.balanced {
+                t!("status.speed_same", engine = engine, part = full)
+            } else {
+                t!("status.speed_outlook", engine = engine, full = full, balanced = balanced)
+            }
+        })
+        .collect()
+}
+
+/// The "Why not faster?" headline: what holds work back most, and what the person can do.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Why {
+    pub text: String,
+    /// The line under it, when it has one.
+    pub sub: Option<String>,
+    pub act: Option<WhyAct>,
+}
+
+/// The button on the headline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhyAct {
+    /// Answer what waits: the list of what needs the person.
+    Answer,
+    /// Switch to full speed.
+    FullSpeed,
+}
+
+pub fn why_of(s: &SquadStatus, parallel: &Parallel) -> Option<Why> {
+    let flow = s.flow.as_ref()?;
+    let t = &s.tiles;
+    let waiting = flow.on_you + flow.behind_you;
+    let (text, sub, act) = match flow.limit {
+        Limit::Flowing => (t!("status.why_flowing").to_owned(), None, None),
+        Limit::Idle => (t!("status.why_idle").to_owned(), None, None),
+        Limit::Cap if parallel.is_max() => (t!("status.why_cap_full", count = flow.held_by_cap), Some(t!("status.why_cap_full_sub", per_member = parallel.per_member, per_engine = parallel.per_engine)), None),
+        Limit::Cap => (t!("status.why_cap", count = flow.held_by_cap), None, Some(WhyAct::FullSpeed)),
+        Limit::You => (t!("status.why_you", count = waiting), Some(t!("status.tile_needs_sub", decisions = t.decisions, approvals = t.approvals)), Some(WhyAct::Answer)),
+        Limit::Engine => (t!("status.why_engine", count = flow.on_engine), None, None),
+        Limit::NoMember => (t!("status.why_no_member", count = flow.no_member), None, None),
+        Limit::Tickets => (t!("status.why_tickets", count = flow.on_tickets), None, None),
+    };
+    Some(Why { text, sub, act })
+}
+
+/// The breakdown of the open work, a label and its count, the rows that have any
+/// (what runs is always the first).
+pub fn flow_rows(flow: &Flow) -> Vec<(&'static str, u32)> {
+    let rows = [
+        (t!("status.flow_running"), flow.running, true),
+        (t!("status.flow_starting"), flow.starting, false),
+        (t!("status.flow_cap"), flow.held_by_cap, false),
+        (t!("status.flow_no_member"), flow.no_member, false),
+        (t!("status.flow_engine"), flow.on_engine, false),
+        (t!("status.flow_tickets"), flow.on_tickets, false),
+        (t!("status.flow_you"), flow.on_you, false),
+        (t!("status.flow_behind_you"), flow.behind_you, false),
+    ];
+    rows.into_iter().filter(|(_, n, always)| *always || *n > 0).map(|(label, n, _)| (label, n)).collect()
+}
+
 /// A waste measure's label.
 pub fn waste_label(key: WasteKey) -> &'static str {
     match key {
@@ -382,6 +497,106 @@ mod tests {
         assert!(headline(&s).contains("Claude"), "pacing alone slows the line: {}", headline(&s));
         let good = detail(&status(Mood::Good, vec![]), now);
         assert!(!good.is_empty());
+    }
+
+    fn engine(engine: Engine, out_until: Option<u64>) -> EngineBudget {
+        EngineBudget { engine, plan_type: None, weekly: None, five_hour: None, out_until, runs_out_at: None, lasts: false, pacing_at_once: None, stale: false }
+    }
+
+    #[test]
+    fn an_engine_out_that_holds_nothing_up_reads_green_with_who_carries_the_work() {
+        let now = 1_800_000_000;
+        let back = now + 3 * 86_400;
+        let mut s = status(Mood::Good, vec![]);
+        s.engines = vec![engine(Engine::Claude, None), engine(Engine::Codex, Some(back))];
+        s.notes = vec![Note::Out { engine: Engine::Codex, back_at: Some(back) }];
+        assert_eq!(headline(&s), t!("status.good_out_back", engine = engine_name(Engine::Codex), when = when(back, now), other = engine_name(Engine::Claude)));
+        assert_ne!(headline(&s), t!("status.good"));
+        // Nobody carries it: nothing to say but the plain green line.
+        s.engines = vec![engine(Engine::Codex, Some(back))];
+        assert_eq!(headline(&s), t!("status.good"));
+        // With no time known the line still says it.
+        s.engines = vec![engine(Engine::Claude, None), engine(Engine::Codex, Some(0))];
+        s.notes = vec![Note::Out { engine: Engine::Codex, back_at: None }];
+        assert_eq!(headline(&s), t!("status.good_out", engine = engine_name(Engine::Codex), other = engine_name(Engine::Claude)));
+    }
+
+    #[test]
+    fn slowed_by_the_cap_names_the_tickets_it_holds_and_a_row_that_only_waits_on_you_is_not_the_slowdown() {
+        let mut s = status(Mood::Slowed, vec![Block { severity: Severity::Info, handling: Handling::You { action: Action::Answer }, ..block(Cause::Decisions, 3) }]);
+        s.flow = Some(Flow { running: 8, held_by_cap: 6, limit: Limit::Cap, ..Flow::default() });
+        assert_eq!(headline(&s), t!("status.slow_cap", count = 6));
+        s.flow = Some(Flow { running: 8, on_engine: 2, limit: Limit::Engine, ..Flow::default() });
+        s.notes = vec![Note::Reserve { engine: Engine::Claude }];
+        assert_eq!(headline(&s), t!("status.slow_reserve", engine = engine_name(Engine::Claude)));
+        assert_eq!(detail(&s, 1_800_000_000), t!("status.note_reserve", engine = engine_name(Engine::Claude)));
+    }
+
+    #[test]
+    fn why_not_faster_names_the_top_limit_and_what_the_person_can_do_about_it() {
+        let mut s = status(Mood::Good, vec![]);
+        s.tiles = Tiles { decisions: 13, approvals: 1, needs_you: 14, ..Tiles::default() };
+        assert_eq!(why_of(&s, &Parallel::default()), None, "an older daemon: no card");
+        s.flow = Some(Flow { running: 5, starting: 1, on_tickets: 15, on_you: 14, behind_you: 31, limit: Limit::You, ..Flow::default() });
+        let you = why_of(&s, &Parallel::default()).unwrap();
+        assert_eq!(you.text, t!("status.why_you", count = 45), "the 14 and the 31 behind them");
+        assert_eq!(you.sub, Some(t!("status.tile_needs_sub", decisions = 13, approvals = 1)));
+        assert_eq!(you.act, Some(WhyAct::Answer));
+        s.flow = Some(Flow { running: 8, held_by_cap: 6, limit: Limit::Cap, ..Flow::default() });
+        let cap = why_of(&s, &Parallel::default()).unwrap();
+        assert_eq!((cap.text, cap.act), (t!("status.why_cap", count = 6), Some(WhyAct::FullSpeed)), "balanced: the way out is full speed");
+        let full = why_of(&s, &Parallel::max(4, 10)).unwrap();
+        assert_eq!((full.text, full.sub, full.act), (t!("status.why_cap_full", count = 6), Some(t!("status.why_cap_full_sub", per_member = 4, per_engine = 10)), None), "full speed: the caps are the way out");
+        for (limit, flow, text) in [
+            (Limit::Engine, Flow { on_engine: 3, ..Flow::default() }, t!("status.why_engine", count = 3)),
+            (Limit::NoMember, Flow { no_member: 2, ..Flow::default() }, t!("status.why_no_member", count = 2)),
+            (Limit::Tickets, Flow { on_tickets: 9, ..Flow::default() }, t!("status.why_tickets", count = 9)),
+            (Limit::Flowing, Flow { running: 2, ..Flow::default() }, t!("status.why_flowing").to_owned()),
+            (Limit::Idle, Flow::default(), t!("status.why_idle").to_owned()),
+        ] {
+            s.flow = Some(Flow { limit, ..flow });
+            let why = why_of(&s, &Parallel::default()).unwrap();
+            assert_eq!((why.text, why.act), (text, None), "{limit:?}");
+        }
+    }
+
+    #[test]
+    fn the_breakdown_always_shows_what_runs_and_only_the_rows_that_have_something() {
+        let flow = Flow { running: 5, starting: 1, on_tickets: 15, on_you: 14, behind_you: 31, ..Flow::default() };
+        let rows: Vec<u32> = flow_rows(&flow).into_iter().map(|(_, n)| n).collect();
+        assert_eq!(rows, [5, 1, 15, 14, 31]);
+        assert_eq!(flow_rows(&Flow::default()).len(), 1, "nothing running still says so");
+        let labels: std::collections::HashSet<_> = flow_rows(&Flow { running: 1, starting: 1, held_by_cap: 1, no_member: 1, on_engine: 1, on_tickets: 1, on_you: 1, behind_you: 1, ..Flow::default() }).into_iter().map(|(l, _)| l).collect();
+        assert_eq!(labels.len(), 8, "every row has words of its own");
+    }
+
+    #[test]
+    fn each_speed_reads_with_the_week_it_would_give() {
+        use equipe_core::protocol::status::{Speed, SpeedOutlook};
+        let now = 1_800_000_000;
+        let reset = now + 4 * 86_400;
+        let week = equipe_core::protocol::PlanWindow { used_percent: 40, resets_at: reset as i64 };
+        let mut s = status(Mood::Good, vec![]);
+        s.engines = vec![EngineBudget { weekly: Some(week), ..engine(Engine::Claude, None) }];
+        assert!(speed_lines(&s, now).is_empty(), "an older daemon says nothing");
+        let runs_out = Outlook { runs_out_at: Some(now + 2 * 86_400), lasts: false };
+        let lasts = Outlook { runs_out_at: None, lasts: true };
+        s.speed = Some(Speed { parallel: Parallel::default(), outlook: vec![SpeedOutlook { engine: Engine::Claude, full: Some(runs_out), balanced: Some(lasts) }] });
+        let claude = engine_name(Engine::Claude);
+        let until = t!("status.speed_until", when = when(now + 2 * 86_400, now));
+        let through = t!("status.speed_week", when = when(reset, now));
+        assert_eq!(speed_lines(&s, now), [t!("status.speed_outlook", engine = claude, full = until, balanced = through.clone())]);
+        // The work, not the cap, sets the pace: one line for both.
+        s.speed = Some(Speed { parallel: Parallel::default(), outlook: vec![SpeedOutlook { engine: Engine::Claude, full: Some(lasts), balanced: Some(lasts) }] });
+        assert_eq!(speed_lines(&s, now), [t!("status.speed_same", engine = claude, part = through)]);
+        // One speed not known yet is said so, not guessed.
+        s.speed = Some(Speed { parallel: Parallel::default(), outlook: vec![SpeedOutlook { engine: Engine::Claude, full: None, balanced: Some(lasts) }] });
+        assert!(speed_lines(&s, now)[0].contains(t!("status.speed_unknown")));
+        // Nothing to say about an engine with no pace at all.
+        s.speed = Some(Speed { parallel: Parallel::default(), outlook: vec![SpeedOutlook { engine: Engine::Claude, full: None, balanced: None }] });
+        assert!(speed_lines(&s, now).is_empty());
+        assert_eq!(speed_modes().iter().map(|(m, _)| *m).collect::<Vec<_>>(), [ParallelMode::Max, ParallelMode::Auto], "full speed first, as the card lists them");
+        assert_eq!((speed_about(ParallelMode::Max), speed_about(ParallelMode::Auto)), (t!("status.speed_full_about"), t!("status.speed_balanced_about")));
     }
 
     #[test]

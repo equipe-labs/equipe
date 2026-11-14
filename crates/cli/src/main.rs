@@ -184,6 +184,20 @@ enum Command {
         #[arg(long)]
         squad: Option<String>,
     },
+    /// How fast the squad works: `full` or `balanced`, with `--per-member` and `--per-engine` caps for full speed (no words: show it)
+    Speed {
+        /// `full` (as many tickets at once as the caps allow) or `balanced` (fewer as a plan runs low)
+        mode: Option<String>,
+        /// Full speed's tickets per member at once, 1 through 12
+        #[arg(long = "per-member")]
+        per_member: Option<u32>,
+        /// Full speed's tickets per engine at once, 1 through 32
+        #[arg(long = "per-engine")]
+        per_engine: Option<u32>,
+        /// The squad (default: the one this folder belongs to, else your first)
+        #[arg(long)]
+        squad: Option<String>,
+    },
     /// Check a member's tool call before its engine runs it: Claude Code's
     /// hook, the call's JSON on stdin (equipe sets this up for its members)
     #[command(hide = true)]
@@ -756,6 +770,20 @@ async fn run(cli: Cli) -> ExitCode {
             match home::squad_for(&home, &cwd, squad) {
                 None => Err(Failure::new("No squad yet. Run equipe to start one.")),
                 Some(squad) => match settings::send_apps(&home, &squad, &words.join(" ")) {
+                    Ok(line) => {
+                        println!("  {line}");
+                        Ok(())
+                    }
+                    Err(why) => Err(Failure::new(why)),
+                },
+            }
+        }
+        Command::Speed { mode, per_member, per_engine, squad } => {
+            let home = equipe_providers::credentials::equipe_home();
+            let cwd = std::env::current_dir().unwrap_or_default();
+            match home::squad_for(&home, &cwd, squad) {
+                None => Err(Failure::new(t!("main.no_squad"))),
+                Some(squad) => match settings::speed(&home, &daemon::socket(), &squad, mode.as_deref(), per_member, per_engine).await {
                     Ok(line) => {
                         println!("  {line}");
                         Ok(())

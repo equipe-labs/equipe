@@ -9,6 +9,7 @@
 //! The daemon works the figures out (`squad_status`); the words are
 //! [`crate::status`]'s. This only draws them, and polls (below).
 
+use equipe_core::protocol::lanes::{MOST_PER_ENGINE, MOST_PER_MEMBER, Parallel, ParallelMode};
 use equipe_core::protocol::status::{Block, EngineBudget, Goto, Handling, Mood, Severity, SquadStatus, Watched};
 use equipe_core::protocol::{Command, Engine, TicketId};
 use equipe_core::t;
@@ -16,9 +17,10 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::icons::{Icon, icon};
 use crate::state::{Conn, short_span};
 use crate::status::{self as words, Support, Tile};
-use crate::theme::{MONO, Palette, R_LG, R_MD, SMALL};
+use crate::theme::{ICON_SM, MONO, Palette, R_LG, R_MD, SMALL};
 use crate::tips::TipExt as _;
 use crate::ui::{self, Kind};
 use crate::{Screen, Shell};
@@ -180,6 +182,7 @@ fn page(shell: &Shell, s: &SquadStatus, cx: &mut Context<Shell>) -> AnyElement {
         .child(status_line(shell, s, now))
         .child(tiles(shell, s, cx))
         .child(blocked(shell, s, now, cx))
+        .children(speed_card(shell, s, now, cx))
         .children((!s.waiting.is_empty()).then(|| waiting(shell, s, cx)))
         .child(h_flex().w_full().flex_wrap().items_start().gap_4().child(budget(shell, s, now)).child(waste(shell, s)))
         .child(watched(shell, s, now, cx))
@@ -316,7 +319,7 @@ fn blocked_row(shell: &Shell, b: &Block, ix: usize, now: u64, cx: &mut Context<S
 }
 
 /// One engine's weekly bar, how used, and how far it lasts.
-fn engine_row(p: Palette, e: &EngineBudget, now: u64) -> AnyElement {
+fn engine_row(p: Palette, e: &EngineBudget, now: u64, holding: bool) -> AnyElement {
     let used = e.weekly.map(|w| w.used_percent.min(100));
     let color = if e.out_until.is_some() { p.danger() } else if used.is_some_and(|u| u >= 85) { p.orange } else if used.is_some_and(|u| u >= 70) { p.amber } else { p.good() };
     let bar = div().h(px(6.)).w_full().rounded_full().bg(p.hair).child(div().h_full().w(relative(f32::from(used.unwrap_or(0)) / 100.)).rounded_full().bg(color));
@@ -340,7 +343,8 @@ fn engine_row(p: Palette, e: &EngineBudget, now: u64) -> AnyElement {
         )
         .child(bar)
         .child(div().text_size(px(12.)).text_color(p.text2).child(words::budget_line(e, now)))
-        .children(e.pacing_at_once.map(|n| div().text_size(px(12.)).text_color(p.amber).child(t!("status.budget_pacing", count = n))))
+        // Amber only when running fewer at once holds a ready ticket back.
+        .children(e.pacing_at_once.map(|n| div().text_size(px(12.)).text_color(if holding { p.amber } else { p.muted }).child(t!("status.budget_pacing", count = n))))
         .children(e.stale.then(|| div().text_size(px(11.5)).text_color(p.muted).child(t!("status.budget_stale"))))
         .into_any_element()
 }
@@ -351,10 +355,141 @@ fn budget(shell: &Shell, s: &SquadStatus, now: u64) -> AnyElement {
     if s.engines.is_empty() {
         body = body.child(div().text_size(px(13.)).text_color(p.muted).child(t!("status.budget_empty")));
     }
+    let holding = s.flow.as_ref().is_some_and(|f| f.held_by_cap > 0);
     for e in &s.engines {
-        body = body.child(engine_row(p, e, now));
+        body = body.child(engine_row(p, e, now, holding));
     }
     div().flex_1().min_w(px(CARD_MIN)).child(card(p, "status-budget", t!("status.budget").to_owned(), None).child(body)).into_any_element()
+}
+
+/// One side of a stepper: an icon that sets the number to `to`.
+fn step_button(p: Palette, id: SharedString, glyph: Icon, to: u32, enabled: bool, set: impl Fn(&mut Shell, u32, &mut Context<Shell>) + 'static, cx: &mut Context<Shell>) -> Stateful<Div> {
+    h_flex()
+        .id(id)
+        .h_full()
+        .w(px(24.))
+        .justify_center()
+        .items_center()
+        .rounded(px(R_MD))
+        .when(!enabled, |s| s.opacity(0.4))
+        .when(enabled, |s| s.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| set(this, to, cx))))
+        .child(icon(glyph, ICON_SM, p.text2))
+}
+
+/// A small number with − and + either side, as the zoom control's pill.
+fn stepper(shell: &Shell, id: &'static str, label: &'static str, value: u32, least: u32, most: u32, step: u32, set: impl Fn(&mut Shell, u32, &mut Context<Shell>) + Clone + 'static, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let live = matches!(shell.model.conn, Conn::Connected { .. });
+    let less = step_button(p, SharedString::from(format!("{id}-less")), Icon::Minus, value.saturating_sub(step).max(least), live && value > least, set.clone(), cx);
+    let more = step_button(p, SharedString::from(format!("{id}-more")), Icon::Plus, (value + step).min(most), live && value < most, set, cx);
+    h_flex()
+        .id(id)
+        .flex_none()
+        .gap_2()
+        .items_center()
+        .child(div().text_size(px(12.)).text_color(p.text2).child(label))
+        .child(
+            h_flex()
+                .h(px(26.))
+                .p(px(2.))
+                .gap(px(2.))
+                .items_center()
+                .rounded(px(R_MD))
+                .bg(if p.is_dark() { p.wash } else { p.code_bg })
+                .child(less)
+                .child(div().min_w(px(26.)).text_center().font_family(MONO).text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(value.to_string()))
+                .child(more),
+        )
+        .into_any_element()
+}
+
+/// The Speed card: how many tickets run at once, what each speed does to the
+/// budget, and why the work isn't faster than it is.
+fn speed_card(shell: &Shell, s: &SquadStatus, now: u64, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    if s.speed.is_none() && s.flow.is_none() {
+        return None;
+    }
+    let p = shell.palette;
+    let connected = matches!(shell.model.conn, Conn::Connected { .. });
+    let parallel = shell.model.parallel;
+    let mut body = v_flex().px_3().py_3().gap_3();
+
+    // The control, and one line on what each speed means.
+    let control = if connected {
+        super::settings::segmented(shell, "status-speed", words::speed_modes(), parallel.mode, |shell, mode, _, cx| shell.set_speed(Parallel { mode, ..shell.model.parallel }, cx), cx)
+    } else {
+        div().text_size(px(13.)).text_color(p.text2).child(crate::switching::parallel_word(parallel.mode)).into_any_element()
+    };
+    let about = |id: &'static str, mode: ParallelMode, name: String| {
+        let on = parallel.mode == mode;
+        h_flex()
+            .id(id)
+            .gap_2()
+            .items_baseline()
+            .child(div().flex_none().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(if on { p.text } else { p.text2 }).child(name))
+            .child(div().min_w_0().text_size(px(12.5)).text_color(if on { p.text2 } else { p.muted }).child(words::speed_about(mode)))
+    };
+    let set_member = |shell: &mut Shell, n: u32, cx: &mut Context<Shell>| shell.set_speed(Parallel { per_member: n, ..shell.model.parallel }, cx);
+    let set_engine = |shell: &mut Shell, n: u32, cx: &mut Context<Shell>| shell.set_speed(Parallel { per_engine: n, ..shell.model.parallel }, cx);
+    body = body
+        .child(h_flex().w_full().items_center().child(control))
+        .child(about("status-speed-full", ParallelMode::Max, t!("status.speed_full").to_owned()))
+        .child(
+            h_flex()
+                .id("status-speed-caps")
+                .gap_4()
+                .pl_3()
+                .flex_wrap()
+                .opacity(if parallel.is_max() { 1. } else { 0.7 })
+                .child(stepper(shell, "status-speed-member", t!("status.speed_per_member"), parallel.per_member, 1, MOST_PER_MEMBER, 1, set_member, cx))
+                .child(stepper(shell, "status-speed-engine", t!("status.speed_per_engine"), parallel.per_engine, 1, MOST_PER_ENGINE, 2, set_engine, cx)),
+        )
+        .child(about("status-speed-balanced", ParallelMode::Auto, t!("status.speed_balanced").to_owned()));
+    for (ix, line) in words::speed_lines(s, now).into_iter().enumerate() {
+        body = body.child(div().id(("status-speed-outlook", ix)).text_size(px(12.5)).text_color(p.text).child(line));
+    }
+
+    // Why not faster?
+    if let Some(flow) = &s.flow {
+        body = body.child(div().h(px(1.)).w_full().bg(p.hair)).child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text2).child(t!("status.why")));
+        if let Some(why) = words::why_of(s, &parallel) {
+            let button: Option<AnyElement> = why.act.map(|act| match act {
+                words::WhyAct::Answer => ui::button(p, "status-why-act", Kind::Secondary, t!("status.act_answer")).on_click(cx.listener(|this, _, window, cx| this.status_go(Goto::NeedsYou, window, cx))).into_any_element(),
+                words::WhyAct::FullSpeed => ui::button(p, "status-why-act", Kind::Secondary, t!("status.speed_full")).disabled(!connected).on_click(cx.listener(|this, _, _, cx| this.set_speed(Parallel { mode: ParallelMode::Max, ..this.model.parallel }, cx))).into_any_element(),
+            });
+            body = body.child(
+                h_flex()
+                    .id("status-why")
+                    .w_full()
+                    .gap_3()
+                    .items_center()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(2.))
+                            .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(why.text))
+                            .children(why.sub.map(|sub| div().text_size(px(12.)).text_color(p.muted).child(sub))),
+                    )
+                    .children(button),
+            );
+        }
+        let mut rows = v_flex().w_full().gap(px(2.));
+        for (ix, (label, n)) in words::flow_rows(flow).into_iter().enumerate() {
+            rows = rows.child(
+                h_flex()
+                    .id(("status-flow", ix))
+                    .w_full()
+                    .min_h(px(24.))
+                    .gap_2()
+                    .items_center()
+                    .child(div().flex_1().min_w_0().text_size(px(12.5)).text_color(p.text2).child(label))
+                    .child(div().flex_none().font_family(MONO).text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(if n > 0 { p.text } else { p.muted }).child(n.to_string())),
+            );
+        }
+        body = body.child(rows);
+    }
+    Some(card(p, "status-speed-card", t!("status.speed").to_owned(), None).child(body).into_any_element())
 }
 
 fn waste(shell: &Shell, s: &SquadStatus) -> AnyElement {
@@ -487,6 +622,20 @@ impl Shell {
         self.show(Screen::Status, cx);
         self.status_ask(cx);
         cx.notify();
+    }
+
+    /// The Speed card's choice, from a click: sent as it is for settings and `/parallel`,
+    /// and the status asked for again a moment after, for the budget outlook.
+    pub fn set_speed(&mut self, parallel: Parallel, cx: &mut Context<Self>) {
+        if !self.can_act() {
+            return;
+        }
+        self.set_parallel(parallel, cx);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(600)).await;
+            this.update(cx, |this, cx| this.status_ask(cx)).ok();
+        })
+        .detach();
     }
 
     /// A row's button: where it leads.

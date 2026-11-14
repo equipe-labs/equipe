@@ -918,9 +918,9 @@ mod tests {
     #[test]
     fn parallel_work_says_its_mode_and_on_max_its_caps() {
         // The tests' screens speak Korean.
-        assert_eq!((parallel_word(ParallelMode::Auto), parallel_word(ParallelMode::Max)), ("자동", "최대"));
-        assert_eq!(parallel_short(&Parallel::default()), "병렬: 자동");
-        assert_eq!(parallel_short(&Parallel::max(6, 16)), "병렬: 최대 · 멤버당 6 · 엔진당 16");
+        assert_eq!((parallel_word(ParallelMode::Auto), parallel_word(ParallelMode::Max)), ("균형", "전속력"));
+        assert_eq!(parallel_short(&Parallel::default()), "병렬: 균형");
+        assert_eq!(parallel_short(&Parallel::max(6, 16)), "병렬: 전속력 · 멤버당 6 · 엔진당 16");
         assert!(parallel_about(&Parallel::max(8, 20)).contains("멤버당 최대 8개, 엔진당 최대 20개"));
         assert_eq!(parallel_about(&Parallel::default()), "플랜 사용량이 늘수록 한 번에 진행하는 티켓을 줄여요");
     }

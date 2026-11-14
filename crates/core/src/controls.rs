@@ -179,8 +179,15 @@ impl Change {
                 "auto" => Switching::Auto,
                 v => return Err(format!("Engine switching is off, suggest or auto, not {v:?}.")),
             }),
-            "parallel" => {
-                let mode = ParallelMode::parse(&value()?).ok_or("Parallel work is auto (by the plans' usage) or max (fixed caps, whatever the usage).")?;
+            // `speed` is the person's word for it: full speed is max, balanced is auto.
+            "parallel" | "speed" => {
+                // A cap named with no mode is a cap on full speed ("max 4 per member").
+                let capped = ["per_member", "per_engine"].iter().any(|k| args.get(*k).is_some_and(|v| !v.is_null()));
+                let mode = match s("value") {
+                    Some(v) => ParallelMode::parse(&v).ok_or("Speed is full (max — fixed caps, whatever the plans' usage) or balanced (auto — by the plans' usage).")?,
+                    None if capped => ParallelMode::Max,
+                    None => return Err("Give the new `value`: full or balanced.".to_owned()),
+                };
                 // A number as JSON or as text, within its bounds.
                 let cap = |key: &str, most: u32| -> Result<Option<u32>, String> {
                     let Some(v) = args.get(key).filter(|v| !v.is_null()) else { return Ok(None) };
@@ -329,8 +336,10 @@ the member runs on), effort (member, value, or default), engine (members — eve
 codex, optionally model and effort there, and when: next_ticket — the default: one on a ticket finishes it where it is and \
 moves before its next — or now: at the end of each one's current turn, a ticket in progress handed over, same branch, and \
 carried on there; one not on a ticket, you included, moves once its turn ends either way, its conversation handed over), \
-engine_switching (off | suggest | auto), parallel (value auto — by the plans' usage — | max — fixed caps whatever the \
-usage, optionally per_member 1 through 12 and per_engine 1 through 32), model_choice (quality — each ticket on the cheapest model and \
+engine_switching (off | suggest | auto), parallel — the person's \"speed\" (value balanced, or auto: by the plans' usage, fewer at once as a plan runs low | \
+full, or max: fixed caps whatever the usage, optionally per_member 1 through 12 and per_engine 1 through 32; a cap named alone is a cap on full speed). \
+Use it for \"go full speed\", \"slow down to save Claude\", \"max 4 per member\". When they ask why work isn't faster, read `settings` and the board: it is usually tickets waiting on \
+dependencies or on them, not the speed. model_choice (quality — each ticket on the cheapest model and \
 effort that does it well, up a step when its work comes back wrong — | off — members' own models), design_reviewer (who reviews the designer's work: auto — the other engine when \
 it is signed in with room, else the member's own in a fresh session — | same | other), remove_project (project), \
 hq (project, or none), run_routine (id), delete_routine (id), signal (project, name, value on | off), disallow (value: \
@@ -341,7 +350,7 @@ through `model`: moving a member to it is `engine`. Adding a project is `add_pro
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "subagents_at_once", "model", "effort", "engine", "engine_switching", "parallel", "model_choice", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch", "resting", "notify"] },
+                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "subagents_at_once", "model", "effort", "engine", "engine_switching", "parallel", "speed", "model_choice", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch", "resting", "notify"] },
                     "value": { "type": "string", "description": "The new value, as the setting takes it." },
                     "member": { "type": "string", "description": "The member, for mode (left out: the squad's), model, effort, engine and resting." },
                     "members": { "type": "array", "items": { "type": "string" }, "description": "engine: the members to move, on one card." },
@@ -456,6 +465,15 @@ mod tests {
         assert_eq!(change(json!({ "setting": "merge", "ticket": 4, "push": false })), Change::Merge { ticket: 4, push: false });
         assert_eq!(change(json!({ "setting": "parallel", "value": "auto" })), Change::Parallel { mode: ParallelMode::Auto, per_member: None, per_engine: None });
         assert_eq!(change(json!({ "setting": "parallel", "value": "Max", "per_member": 8, "per_engine": "20" })), Change::Parallel { mode: ParallelMode::Max, per_member: Some(8), per_engine: Some(20) });
+        // The person's words: full speed and balanced, and a cap alone is a cap on full speed.
+        assert_eq!(change(json!({ "setting": "speed", "value": "full" })), Change::Parallel { mode: ParallelMode::Max, per_member: None, per_engine: None });
+        assert_eq!(change(json!({ "setting": "speed", "value": "Balanced" })), Change::Parallel { mode: ParallelMode::Auto, per_member: None, per_engine: None });
+        assert_eq!(change(json!({ "setting": "parallel", "value": "full speed", "per_member": 4 })), Change::Parallel { mode: ParallelMode::Max, per_member: Some(4), per_engine: None });
+        assert_eq!(change(json!({ "setting": "speed", "per_member": 4 })), Change::Parallel { mode: ParallelMode::Max, per_member: Some(4), per_engine: None });
+        assert!(Change::parse(&json!({ "setting": "speed" })).unwrap_err().contains("full or balanced"));
+        assert!(Change::parse(&json!({ "setting": "speed", "value": "warp" })).unwrap_err().contains("balanced"));
+        assert!(change(json!({ "setting": "speed", "value": "full" })).needs_yes(Mode::Auto), "full speed spends the plan faster: the person's tap");
+        assert!(!change(json!({ "setting": "speed", "value": "balanced" })).needs_yes(Mode::Auto), "balanced only narrows: at once");
         let err = |args: Value| Change::parse(&args).unwrap_err();
         assert!(err(json!({ "setting": "parallel", "value": "turbo" })).contains("auto"));
         assert!(err(json!({ "setting": "parallel", "value": "max", "per_member": 13 })).contains("1 through 12"));

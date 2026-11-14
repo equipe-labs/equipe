@@ -50,6 +50,7 @@ pub mod lanes;
 pub mod pacing;
 pub mod logins;
 pub mod usage;
+pub mod speed;
 pub mod status;
 pub mod kept;
 pub mod language;
