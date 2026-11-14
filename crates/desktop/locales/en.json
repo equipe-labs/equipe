@@ -1697,6 +1697,7 @@
   "talk.rename_count": "{n}/{max}",
   "main.banner_needs_you": "Needs your attention",
   "main.banner_reconnecting": "Reconnecting — picks up on its own once it's back",
+  "main.banner_short": "Disconnected",
   "main.connecting_local": "Connecting to the daemon…",
   "main.connecting_ssh": "Connecting to {name} over SSH…",
   "main.copy_command": "Copy Command",

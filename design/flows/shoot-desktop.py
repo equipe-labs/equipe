@@ -260,6 +260,15 @@ state("studio/designer/waiting", "studio:205", {"FAKE_STUDIO": "blocked"}, wait=
 # ── Daemon disconnected ────────────────────────────────────────────────────
 state("connection/daemon/offline", "wait:2500", kill_daemon_ms=4000)
 state("connection/daemon/offline-large", "chat;zoom:150;wait:2500", kill_daemon_ms=4000, lang="ko", kind="offline", label="Daemon gone at 150% text: one line, the retry whole")
+W = [(1044, 700), (760, 600)]
+state("connection/daemon/offline-narrow", "chat;wait:2500", kill_daemon_ms=4000, sizes=W, kind="offline", label="Daemon gone, 1044 wide: the hint gives way, the retry whole, nothing wraps")
+state("connection/daemon/offline-narrow-ko", "chat;wait:6000", kill_daemon_ms=3000, sizes=W, lang="ko", kind="offline", label="Daemon gone, 1044 wide, Korean")
+state("connection/daemon/offline-narrow-large", "chat;zoom:150;wait:2500", kill_daemon_ms=4000, sizes=W, kind="offline", label="Daemon gone, 1044 wide, 150% text")
+PW = [(1044, 700), (1200, 760)]
+state("connection/daemon/offline-narrow-panel", "chat;zoom:150;term;wait:2500", kill_daemon_ms=4000, sizes=PW, kind="offline", label="Daemon gone, 150% text, terminal open: the sidebar steps aside, the retry whole")
+state("connection/daemon/offline-narrow-panel-ko", "chat;zoom:150;term;wait:6000", kill_daemon_ms=3000, sizes=PW, lang="ko", kind="offline", label="The same in Korean")
+state("connection/daemon/offline-narrow-panel-de", "chat;zoom:150;term;wait:6000", kill_daemon_ms=3000, sizes=PW, lang="de", kind="offline", label="The same in German, the longest words")
+state("connection/daemon/connected-narrow", "chat;wait:2500", sizes=W, label="Connected, 1044 wide: the same toolbar without the banner")
 state("connection/daemon/offline-first", "", no_daemon=True, home_squad=True, cli="fails", kind="offline")
 state("connection/install/default", "", no_daemon=True, cli="none")
 state("connection/chooser/default", "chooser;wait:500")

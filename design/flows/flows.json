@@ -1767,6 +1767,48 @@
               "note": "shot by design/flows/shoot-desktop.py: script `chat;zoom:150;wait:2500`; fake daemon stopped 4000 ms after the app opened; EQUIPE_LANG=ko"
             },
             {
+              "id": "offline-narrow",
+              "label": "Daemon gone, 1044 wide: the hint gives way, the retry whole, nothing wraps",
+              "kind": "offline",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;wait:2500`; fake daemon stopped 4000 ms after the app opened; widths 1044 and 760"
+            },
+            {
+              "id": "offline-narrow-ko",
+              "label": "Daemon gone, 1044 wide, Korean",
+              "kind": "offline",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;wait:6000`; fake daemon stopped 3000 ms after the app opened; EQUIPE_LANG=ko; widths 1044 and 760"
+            },
+            {
+              "id": "offline-narrow-large",
+              "label": "Daemon gone, 1044 wide, 150% text",
+              "kind": "offline",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;zoom:150;wait:2500`; fake daemon stopped 4000 ms after the app opened; widths 1044 and 760"
+            },
+            {
+              "id": "offline-narrow-panel",
+              "label": "Daemon gone, 150% text, terminal open: the sidebar steps aside, the retry whole",
+              "kind": "offline",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;zoom:150;term;wait:2500`; fake daemon stopped 4000 ms after the app opened; widths 1044 and 1200"
+            },
+            {
+              "id": "offline-narrow-panel-ko",
+              "label": "The same in Korean",
+              "kind": "offline",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;zoom:150;term;wait:6000`; fake daemon stopped 3000 ms after the app opened; EQUIPE_LANG=ko; widths 1044 and 1200"
+            },
+            {
+              "id": "offline-narrow-panel-de",
+              "label": "The same in German, the longest words",
+              "kind": "offline",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;zoom:150;term;wait:6000`; fake daemon stopped 3000 ms after the app opened; EQUIPE_LANG=de; widths 1044 and 1200"
+            },
+            {
+              "id": "connected-narrow",
+              "label": "Connected, 1044 wide: the same toolbar without the banner",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: script `chat;wait:2500`; widths 1044 and 760"
+            },
+            {
               "id": "offline-first",
               "label": "Daemon off, nothing shown yet",
               "kind": "offline",
