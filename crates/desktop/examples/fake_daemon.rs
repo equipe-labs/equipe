@@ -1749,7 +1749,27 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             pm_accepts: true,
                             role_models: switching::role_models(),
                             // `FAKE_SECRET=1`: backend waits for the NAS login, typed into a card.
-                            secret_asks: if std::env::var_os("FAKE_SECRET").is_some() {
+                            secret_asks: if std::env::var("FAKE_SECRET").is_ok_and(|v| v == "store") {
+                                // A member's `request_secret`: the key kept in the squad's secret store.
+                                vec![equipe_core::protocol::secrets::SecretAsk {
+                                    id: 42,
+                                    session: 3,
+                                    member: "backend".into(),
+                                    ticket: Some(117),
+                                    why: "Read API-key metadata, usage and cost reports".into(),
+                                    fields: vec![equipe_core::protocol::secrets::SecretField { key: "anthropic-admin-key".into(), label: "Anthropic admin key".into(), secret: true }],
+                                    save_to: String::new(),
+                                    at: 0,
+                                    store: Some(equipe_core::protocol::secrets::SecretStore {
+                                        name: "anthropic-admin-key".into(),
+                                        service: "anthropic".into(),
+                                        kind: equipe_core::protocol::secrets::SecretKind::ApiKey,
+                                        projects: Vec::new(),
+                                        create_url: Some("https://platform.claude.com/settings/admin-keys".into()),
+                                        scopes_hint: Some("Read-only is enough: the key only reads metadata, usage and cost.".into()),
+                                    }),
+                                }]
+                            } else if std::env::var_os("FAKE_SECRET").is_some() {
                                 vec![equipe_core::protocol::secrets::SecretAsk {
                                     id: 41,
                                     session: 3,
@@ -1762,6 +1782,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     ],
                                     save_to: "~/.config/atinum/nas.env".into(),
                                     at: 0,
+                                    store: None,
                                 }]
                             } else {
                                 Vec::new()

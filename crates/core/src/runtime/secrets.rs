@@ -6,7 +6,8 @@
 //! program equipe doesn't run; the member told — or that the person said
 //! no — and set going again.
 
-use crate::protocol::secrets::{SecretAsk, SecretValue};
+use crate::protocol::secrets::{SecretAsk, SecretStore, SecretValue};
+use crate::squad_secrets as ks;
 
 use super::*;
 
@@ -47,6 +48,7 @@ impl Runtime {
             fields: asked.fields,
             save_to: asked.shown.clone(),
             at: now_secs(),
+            store: None,
         };
         self.secret_asks(squad).retain(|a| !(a.session == id && a.save_to == ask.save_to));
         self.secret_asks(squad).push(ask.clone());
@@ -60,9 +62,91 @@ waiting for."
         ))
     }
 
+    /// `request_secret`: a member asks for a key from an outside service. One
+    /// card on every screen; the value goes from the person's paste into the
+    /// squad's secret store and never to the member.
+    pub(super) fn request_secret(&mut self, squad: &str, member: &str, id: SessionId, args: &Value) -> Result<String, String> {
+        let asked = crate::connections::check_request(args)?;
+        let existing = self.journal(squad).map(ks::read).unwrap_or_default().into_iter().find(|s| s.name == asked.name);
+        let projects = self.key_projects(squad, id, &asked.projects, existing.as_ref())?;
+        let ticket = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
+        let store = SecretStore { name: asked.name.clone(), service: asked.service, kind: asked.kind, projects, create_url: asked.create_url, scopes_hint: asked.scopes_hint };
+        self.put_store_card(squad, member, id, ticket, asked.why, store);
+        Ok(format!(
+            "The person is asked on a card to add {}: a button opens the key's page, a masked box takes the paste, and equipe keeps it in \
+this machine's secret store under that name — you never see the value. When they save it you are told `saved as {}` and carry on \
+(`secret_use` or `secret_write`). Meanwhile go on with what doesn't need it, or end your turn saying in a line what you're waiting for.",
+            asked.name, asked.name
+        ))
+    }
+
+    /// The person's own start, from Logins › Connections: the catalog service's card, no member waiting.
+    pub(super) fn request_service_key(&mut self, squad: &str, service: &str) {
+        let Some(found) = crate::connections::Service::by_id(service).filter(|s| s.takes_key()) else {
+            return self.error(None, format!("No key can be added for {service}."), None);
+        };
+        let store = SecretStore {
+            name: found.key_name.unwrap_or(found.id).to_owned(),
+            service: found.id.to_owned(),
+            kind: found.kind,
+            projects: Vec::new(),
+            create_url: found.key_url.map(str::to_owned),
+            scopes_hint: None,
+        };
+        self.put_store_card(squad, "", 0, None, String::new(), store);
+    }
+
+    fn put_store_card(&mut self, squad: &str, member: &str, id: SessionId, ticket: Option<TicketId>, why: String, store: SecretStore) {
+        let title = crate::connections::title_of(&store.name, &store.service);
+        let ask = SecretAsk {
+            id: now_secs() * 1000 + self.secret_asks(squad).len() as u64,
+            session: id,
+            member: member.to_owned(),
+            ticket,
+            why,
+            fields: vec![crate::protocol::secrets::SecretField { key: store.name.clone(), label: title, secret: true }],
+            save_to: String::new(),
+            at: now_secs(),
+            store: Some(store.clone()),
+        };
+        // Asked again for the same key: the old card is replaced.
+        self.secret_asks(squad).retain(|a| a.store.as_ref().is_none_or(|s| s.name != store.name));
+        self.secret_asks(squad).push(ask.clone());
+        self.keep_secret_asks(squad);
+        self.publish(Event::SecretAsked { squad: squad.to_owned(), ask });
+    }
+
+    /// A `request_secret` card's paste, into the squad's secret store.
+    async fn save_store_secret(&mut self, squad: &str, ask: SecretAsk, store: SecretStore, values: Vec<SecretValue>) {
+        let value = match values.as_slice() {
+            [one] if !one.0.trim().is_empty() && one.0.len() <= ks::MOST_BYTES && !one.0.contains(['\n', '\r', '\0']) => one.0.trim().to_owned(),
+            _ => return self.squad_error(squad, say!(self, "error.secret_not_saved", path = store.name, why = "a key is one line, and not empty")),
+        };
+        let draft = ks::Draft { name: store.name.clone(), service: store.service.clone(), kind: store.kind, value, projects: None, note: String::new() };
+        let who = if ask.member.is_empty() { "you".to_owned() } else { ask.member.clone() };
+        if let Err(why) = self.keep_secret(squad, &who, ask.session, draft, store.projects.clone()) {
+            return self.squad_error(squad, say!(self, "error.secret_not_saved", path = store.name, why = why));
+        }
+        self.secret_asks(squad).retain(|a| a.id != ask.id);
+        self.keep_secret_asks(squad);
+        self.publish(Event::SecretClosed { squad: squad.to_owned(), id: ask.id, saved: true });
+        // A card the person started has no member waiting.
+        if ask.member.is_empty() {
+            return;
+        }
+        let note = crate::connections::saved_note(&store.name);
+        if self.resume_waiting_on(squad, ask.ticket.unwrap_or_default(), &[super::decide::one_line(&ask.why)], &note).await {
+            return;
+        }
+        self.set_going(ask.session, format!("[equipe: {note} Carry on.]")).await;
+    }
+
     /// The person's values, to the file; the card closes and the member goes on.
     pub(super) async fn save_secret(&mut self, squad: &str, id: u64, values: Vec<SecretValue>) {
         let Some(ask) = self.secret_asks(squad).iter().find(|a| a.id == id).cloned() else { return };
+        if let Some(store) = ask.store.clone() {
+            return self.save_store_secret(squad, ask, store, values).await;
+        }
         let Some(home) = self.person_home() else { return };
         if values.len() != ask.fields.len() || values.iter().any(|v| v.0.contains(['\n', '\r', '\0'])) {
             return self.squad_error(squad, say!(self, "error.secret_not_saved", path = ask.save_to, why = "a value can't hold a line break"));
@@ -120,6 +204,9 @@ use them from there, and never print, echo or copy a value into chat, tickets, c
         self.secret_asks(squad).retain(|a| a.id != id);
         self.keep_secret_asks(squad);
         self.publish(Event::SecretClosed { squad: squad.to_owned(), id, saved: false });
+        if ask.member.is_empty() {
+            return;
+        }
         let keys = ask.fields.iter().map(|f| f.key.clone()).collect::<Vec<_>>().join(", ");
         let note = format!("The person didn't give {keys} for now. Go on without it, or say in a line what it would let you do.");
         if self.resume_waiting_on(squad, ask.ticket.unwrap_or_default(), &[super::decide::one_line(&ask.why)], &note).await {

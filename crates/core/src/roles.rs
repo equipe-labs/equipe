@@ -723,7 +723,8 @@ accepts it.",
         format!(
             "{tools} When a command or a config needs a password, key or token — a NAS login, an API key — ask for it \
 with `ask_secret`, never in words, and never print one. Keys and passwords you obtain go into equipe with `secret_save`; never paste \
-them into code, tickets, memory or chat. As you start anything that takes more than a couple of minutes \
+them into code, tickets, memory or chat. When you need a key from an outside service (an admin key, a token) call `request_secret` \
+instead of writing steps for the person, and never ask for one in chat; a site's sign-in is `sign_in`. As you start anything that takes more than a couple of minutes \
 — a ticket, research, subagents' work — call `estimate`. \
 Questions that sharpen a vague ask are `ask_decision` questions too. \
 When a decision is the person's to make and comes down to a few distinct options — an approach, a scope, a provider, \

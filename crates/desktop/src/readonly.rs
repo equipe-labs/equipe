@@ -181,6 +181,7 @@ pub fn reads(command: &Command) -> bool {
         | C::DeleteBrowserProfile { .. }
         | C::SaveSecret { .. }
         | C::DismissSecret { .. }
+        | C::RequestServiceKey { .. }
         | C::SetSquadSecretProjects { .. }
         | C::DeleteSquadSecret { .. }
         | C::RevealSquadSecret { .. }
@@ -611,6 +612,7 @@ mod tests {
             Command::BrowserProfiles,
             Command::SaveSecret { squad: s(), id: 1, values: vec![secrets::SecretValue("v".into())] },
             Command::DismissSecret { squad: s(), id: 1 },
+            Command::RequestServiceKey { squad: s(), service: "anthropic".into() },
             Command::SquadSecrets,
             Command::SetSquadSecretProjects { squad: s(), name: "k".into(), projects: Vec::new(), any_project: false },
             Command::DeleteSquadSecret { squad: s(), name: "k".into() },

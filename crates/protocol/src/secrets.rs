@@ -37,6 +37,31 @@ pub struct SecretAsk {
     pub save_to: String,
     /// When it was asked, unix seconds.
     pub at: u64,
+    /// Set for a `request_secret` card: the value goes into the squad's
+    /// secret store under this name instead of an environment variable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store: Option<SecretStore>,
+}
+
+/// Where a `request_secret` (or Connections) card's value is kept: the squad
+/// secret store, under `name`, with these facts. Nothing here is a value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretStore {
+    /// The name it is kept under (`anthropic-admin-key`).
+    pub name: String,
+    /// The service it is for: a catalog id (`anthropic`) or a site.
+    pub service: String,
+    pub kind: SecretKind,
+    /// The projects whose work may use it, by name (checked by the daemon).
+    #[serde(default)]
+    pub projects: Vec<String>,
+    /// The page on the service where the person creates the key (https).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_url: Option<String>,
+    /// What to create there ("read-only / usage scope"), as the member or the
+    /// catalog put it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes_hint: Option<String>,
 }
 
 /// A value the person typed: on the wire as a plain string, never in a log.

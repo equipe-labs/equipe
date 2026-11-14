@@ -2690,6 +2690,7 @@ impl Runtime {
             Command::BrowserProfiles => self.publish_browser_profiles(),
             Command::SaveSecret { squad, id, values } => self.save_secret(&squad, id, values).await,
             Command::DismissSecret { squad, id } => self.dismiss_secret(&squad, id).await,
+            Command::RequestServiceKey { squad, service } => self.request_service_key(&squad, &service),
             command @ (Command::SquadSecrets
             | Command::SetSquadSecretProjects { .. }
             | Command::DeleteSquadSecret { .. }
@@ -9029,6 +9030,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
             }
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
             crate::secrets::ASK_SECRET => self.ask_secret(&squad, &member, id, &args),
+            crate::connections::REQUEST => self.request_secret(&squad, &member, id, &args),
             crate::squad_secrets::SAVE => self.secret_save(&squad, &member, id, &args),
             crate::squad_secrets::LIST => self.secret_list(&squad),
             crate::squad_secrets::USE => self.secret_use(&squad, &member, id, &args),

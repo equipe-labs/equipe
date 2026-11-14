@@ -1261,6 +1261,11 @@ pub enum Command {
     SaveSecret { squad: SquadName, id: u64, values: Vec<secrets::SecretValue> },
     /// The person won't give it (now): the member is told.
     DismissSecret { squad: SquadName, id: u64 },
+    /// The person starts a key card themselves, from Logins › Connections: the
+    /// daemon puts the catalog service `service`'s card (`SecretAsk::store`)
+    /// on every screen — answered by [`Event::SecretAsked`]. No member waits
+    /// on it. Saving goes through [`Command::SaveSecret`].
+    RequestServiceKey { squad: SquadName, service: String },
     /// Every squad's keys, tokens and passwords members kept (`secret_save`):
     /// answered by [`Event::SquadSecrets`]. Names and facts only, never a value.
     SquadSecrets,
