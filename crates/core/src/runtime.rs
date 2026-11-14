@@ -286,6 +286,11 @@ enum Request {
     Desktop(DesktopRequest),
     /// A member's phone tools ([`crate::phone`]).
     Phone(phone::PhoneRequest),
+    /// An outside MCP server's proxy asks where to reach it, with its
+    /// credential; `Some(value)`: the server just refused that one.
+    McpUpstream(equipe_protocol::rpc::McpProxyOpen, Option<String>, oneshot::Sender<Result<crate::mcp_gateway::Upstream, String>>),
+    /// What a proxy's message showed of its server.
+    McpSeen(equipe_protocol::rpc::McpProxyOpen, crate::mcp_gateway::Seen),
     /// An engine's plan, read outside a turn.
     Usage(Engine, equipe_protocol::PlanUsage),
     /// The lease check, as if at this unix time (tests).
@@ -319,6 +324,19 @@ impl Handle {
     /// `squad` is the command's, when it named one.
     pub fn refused_person_only(&self, squad: Option<String>) {
         let _ = self.requests.send(Request::MemberRefused(squad));
+    }
+
+    /// Where an outside MCP server's proxy reaches its server, and the
+    /// credential it adds — for a member who gets it ([`crate::mcp_gateway`]).
+    pub async fn mcp_upstream(&self, open: &equipe_protocol::rpc::McpProxyOpen, rejected: Option<String>) -> Result<crate::mcp_gateway::Upstream, String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.requests.send(Request::McpUpstream(open.clone(), rejected, tx));
+        rx.await.unwrap_or_else(|_| Err("equipe is shutting down".to_owned()))
+    }
+
+    /// What a proxy's message showed of its server: the squad's status follows.
+    pub fn mcp_seen(&self, open: &equipe_protocol::rpc::McpProxyOpen, seen: crate::mcp_gateway::Seen) {
+        let _ = self.requests.send(Request::McpSeen(open.clone(), seen));
     }
 
     /// Everything `squad` has going, for a screen that attaches now.
@@ -1147,8 +1165,10 @@ enum Internal {
     Autopilot(autopilot::Note),
     /// A command-line sign-in's process, off the loop, has news ([`cli_signin::Note`]).
     CliSignIn(cli_signin::Note),
-    /// The engines' own tools said where a squad's outside MCP server stands ([`squad_mcp::Checked`]).
+    /// Where a squad's outside MCP server stands, as looked at off the loop ([`squad_mcp::Checked`]).
     McpChecked(squad_mcp::Checked),
+    /// What a proxy's credential, renewed off the loop, showed of its server.
+    McpSeen(equipe_protocol::rpc::McpProxyOpen, crate::mcp_gateway::Seen),
     /// A verification card's fill, or connecting Gmail, came back ([`verify::Note`]).
     Verify(verify::Note),
     /// A row of the sign-in record, from work done off the loop.
@@ -1563,6 +1583,8 @@ impl Wake {
             Wake::Request(Some(Request::BrowserHub(_))) => Borrowed("browser panel"),
             Wake::Request(Some(Request::Desktop(_))) => Borrowed("desktop lease"),
             Wake::Request(Some(Request::Phone(_))) => Borrowed("phone tool"),
+            Wake::Request(Some(Request::McpUpstream(..))) => Borrowed("an outside MCP server's proxy"),
+            Wake::Request(Some(Request::McpSeen(..))) => Borrowed("an outside MCP server's call"),
             Wake::Request(Some(Request::Usage(..))) => Borrowed("an engine's plan usage"),
             Wake::Request(Some(Request::CheckLeases(..))) => Borrowed("lease check"),
             Wake::Request(Some(Request::LookAtTurns(..))) => Borrowed("turns looked at"),
@@ -1597,6 +1619,7 @@ impl Wake {
             Wake::Internal(Internal::Autopilot(_)) => Borrowed("login autopilot"),
             Wake::Internal(Internal::CliSignIn(_)) => Borrowed("a command-line sign-in"),
             Wake::Internal(Internal::McpChecked(_)) => Borrowed("an outside MCP server checked"),
+            Wake::Internal(Internal::McpSeen(..)) => Borrowed("an outside MCP server's sign-in"),
             Wake::Internal(Internal::Verify(_)) => Borrowed("a verification code card"),
             Wake::Internal(Internal::LoginRecord { .. }) => Borrowed("a sign-in kept on the record"),
             Wake::Internal(Internal::SignIns { .. }) => Borrowed("a squad's kept sign-ins"),
@@ -1775,6 +1798,8 @@ impl Runtime {
                 }
                 Some(Request::Desktop(request)) => self.on_desktop(request),
                 Some(Request::Phone(request)) => self.on_phone(request),
+                Some(Request::McpUpstream(open, rejected, reply)) => self.mcp_upstream(open, rejected, reply),
+                Some(Request::McpSeen(open, seen)) => self.mcp_seen(open, seen),
                 Some(Request::Disk(reply)) => self.disk_report(Some(reply), false),
                 Some(Request::Status(ask, reply)) => self.squad_status(ask, reply),
                 Some(Request::DiskClean(ids, reply)) => self.disk_clean(ids, Some(reply)),
@@ -1866,6 +1891,7 @@ impl Runtime {
                 Internal::Autopilot(note) => self.autopilot_note(note).await,
                 Internal::CliSignIn(note) => self.cli_sign_in_note(note).await,
                 Internal::McpChecked(checked) => self.mcp_checked(checked),
+                Internal::McpSeen(open, seen) => self.mcp_seen(open, seen),
                 Internal::Verify(note) => self.verify_note(note).await,
                 Internal::LoginRecord { squad, entry } => self.login_record(&squad, entry),
                 Internal::SignIns { squad, record, turn } => self.sign_ins_read(&squad, record.map(|r| *r), turn),
@@ -5113,30 +5139,15 @@ for one project goes to it as tickets for its owners, with that project — and 
                         args.extend([json!("--run"), json!(run)]);
                     }
                 }
-                // The squad's outside servers: name and address, as they were signed in
-                // for — and a kept key's header, the whole config then in a private file.
+                // The squad's outside servers: equipe's proxy, which holds no
+                // credential (the daemon adds it); the engine-signed fallback by address.
+                let proxy = crate::squad_mcp::ProxyCommand { binary: binary.clone(), squad: squad.clone(), member: m.name.clone(), home: self.config.home.clone() };
                 for (server, credential) in &outside {
-                    servers[server.name.as_str()] = crate::squad_mcp::claude_entry(server, credential);
+                    servers[server.name.as_str()] = crate::squad_mcp::claude_entry(server, credential, &proxy);
                 }
-                let config = json!({ "mcpServers": servers }).to_string();
-                let private = crate::squad_mcp::private_config_path(&self.config.home, id);
-                if crate::squad_mcp::carries_secret(&outside.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>()) {
-                    match crate::squad_mcp::write_private_config(&private, &config) {
-                        Ok(()) => Some(private.to_string_lossy().into_owned()),
-                        Err(err) => {
-                            crate::daemon_log!("equipe: {}'s MCP config couldn't be written privately ({err}): its keyed servers are left out", m.name);
-                            for (server, credential) in &outside {
-                                if matches!(credential, crate::squad_mcp::Credential::Header { .. }) && let Some(map) = servers.as_object_mut() {
-                                    map.remove(&server.name);
-                                }
-                            }
-                            Some(json!({ "mcpServers": servers }).to_string())
-                        }
-                    }
-                } else {
-                    let _ = std::fs::remove_file(&private);
-                    Some(config)
-                }
+                // A key no longer goes in a config file: one an earlier equipe wrote goes.
+                let _ = std::fs::remove_file(crate::squad_mcp::private_config_path(&self.config.home, id));
+                Some(json!({ "mcpServers": servers }).to_string())
             }
             _ => None,
         };
@@ -5414,9 +5425,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                             server["tool_timeout_sec"] = json!(600);
                             servers[crate::phone::SERVER] = server;
                         }
-                        // The squad's outside servers: by address, Codex finding the sign-in by name and address.
+                        // The squad's outside servers: equipe's proxy (the fallback: by address, Codex finding its own sign-in).
+                        let proxy = crate::squad_mcp::ProxyCommand { binary: binary.clone(), squad: squad.clone(), member: m.name.clone(), home: self.config.home.clone() };
                         for (server, credential) in &outside {
-                            servers[server.name.as_str()] = crate::squad_mcp::codex_entry(server, matches!(mode, Mode::Auto | Mode::Full), credential);
+                            servers[server.name.as_str()] = crate::squad_mcp::codex_entry(server, matches!(mode, Mode::Auto | Mode::Full), credential, &proxy);
                         }
                         Some(servers)
                     }

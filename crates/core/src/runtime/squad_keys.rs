@@ -51,6 +51,8 @@ impl Runtime {
     pub(super) fn publish_squad_secrets(&mut self) {
         let secrets = self.all_squad_secrets();
         self.publish(Event::SquadSecrets { secrets });
+        // A keyed outside server stands on its key: shown anew with it.
+        self.mcp_keys_changed();
     }
 
     /// A kept value: the masking list first (read once, at start), else the secret store.

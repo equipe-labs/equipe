@@ -50,6 +50,10 @@ pub enum Kind {
     ClaudeMcp,
     /// `codex mcp login <server>`: an outside MCP server, for Codex members.
     CodexMcp,
+    /// equipe's own sign-in to an outside MCP server ([`crate::mcp_oauth`]),
+    /// for every engine: no tool runs; its page's redirect comes back to the
+    /// daemon's loopback address, or the person pastes where it ended.
+    EquipeMcp,
 }
 
 impl Kind {
@@ -65,12 +69,13 @@ impl Kind {
             Self::Az => "az",
             Self::ClaudeMcp => "claude_mcp",
             Self::CodexMcp => "codex_mcp",
+            Self::EquipeMcp => "equipe_mcp",
         }
     }
 
     /// An outside MCP server's sign-in: started by equipe, never asked for by a member.
     pub fn is_mcp(self) -> bool {
-        matches!(self, Self::ClaudeMcp | Self::CodexMcp)
+        matches!(self, Self::ClaudeMcp | Self::CodexMcp | Self::EquipeMcp)
     }
 
     pub fn parse(word: &str) -> Option<Self> {
@@ -94,6 +99,7 @@ impl Kind {
             Self::Az => "Azure",
             Self::ClaudeMcp => "Claude Code",
             Self::CodexMcp => "Codex",
+            Self::EquipeMcp => "equipe",
         }
     }
 
@@ -105,6 +111,7 @@ impl Kind {
             Self::Az => "az",
             Self::ClaudeMcp => "claude",
             Self::CodexMcp => "codex",
+            Self::EquipeMcp => "equipe",
         }
     }
 
@@ -117,7 +124,7 @@ impl Kind {
 
     /// The flow has the person paste a code from the page back to the tool.
     pub fn wants_code(self) -> bool {
-        matches!(self, Self::Aws | Self::Gcloud | Self::ClaudeMcp)
+        matches!(self, Self::Aws | Self::Gcloud | Self::ClaudeMcp | Self::EquipeMcp)
     }
 
     /// What ends a pasted line: Claude Code reads its terminal raw, where
@@ -198,7 +205,7 @@ pub fn plan(kind: Kind, profile: Option<&str>, extra: &[String]) -> Result<Plan,
             args.extend(s(&["login", "--use-device-code"]));
             whoami_args.extend(s(&["account", "show", "--query", "user.name", "--output", "tsv"]));
         }
-        Kind::ClaudeMcp | Kind::CodexMcp => return Err("An MCP server's sign-in is equipe's to start (`crate::squad_mcp::signin_plan`).".into()),
+        Kind::ClaudeMcp | Kind::CodexMcp | Kind::EquipeMcp => return Err("An MCP server's sign-in is equipe's to start (`crate::squad_mcp`).".into()),
     }
     if let (Some(p), Kind::Aws | Kind::AwsSso) = (profile, kind) {
         args.extend(["--profile".to_owned(), p.to_owned()]);
@@ -414,6 +421,77 @@ impl Reader {
         }
         self.answered = Some(at);
         true
+    }
+}
+
+// ── where a sign-in page's last step lands ──
+
+/// `%xx` decoded (and `+` as a space), for one query value.
+fn unpct(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() && bytes[i + 1].is_ascii_hexdigit() && bytes[i + 2].is_ascii_hexdigit() => {
+                let hex = |b: u8| (b as char).to_digit(16).unwrap_or_default() as u8;
+                out.push(hex(bytes[i + 1]) * 16 + hex(bytes[i + 2]));
+                i += 3;
+                continue;
+            }
+            b'+' => out.push(b' '),
+            b => out.push(b),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The port a sign-in page sends its last step back to on the machine the
+/// tool runs on: its `redirect_uri` when that is a loopback address
+/// (`http://localhost:<port>/…`, `http://127.0.0.1:<port>/…`, `http://[::1]:<port>/…`),
+/// percent-encoded or not. None: the page finishes elsewhere (a device code,
+/// a code to paste back), so it opens on any machine as it is.
+pub fn loopback_port(url: &str) -> Option<u16> {
+    let query = url.split_once('?')?.1.split('#').next().unwrap_or_default();
+    let value = query.split('&').find_map(|pair| pair.strip_prefix("redirect_uri="))?;
+    let redirect = unpct(value);
+    let rest = redirect.strip_prefix("http://")?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let (host, port) = authority.rsplit_once(':')?;
+    if !matches!(host.to_ascii_lowercase().as_str(), "localhost" | "127.0.0.1" | "[::1]") {
+        return None;
+    }
+    port.parse::<u16>().ok().filter(|p| *p > 0)
+}
+
+/// How a screen opens a sign-in page so that its last step reaches the tool
+/// waiting on the daemon's machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// In this Mac's browser, as it is: the daemon is here, or the page
+    /// doesn't come back to a loopback address.
+    Here,
+    /// The loopback port forwarded over the screen's SSH connection to the
+    /// daemon's machine for the sign-in, then the page opened here: its
+    /// redirect lands on the daemon's machine through the tunnel.
+    Forward(u16),
+    /// In the daemon machine's own browser, the one the browser panel shows:
+    /// its redirect lands there by itself.
+    Panel,
+    /// Opened here; the address the page ends on is pasted back on the card.
+    Paste,
+}
+
+/// The way to open a sign-in page `url`: `remote`, the daemon is on another
+/// machine; `forward`, the screen can forward a port to it (an SSH
+/// connection, the port free here); `panel`, the daemon's browser can be shown.
+pub fn route(url: &str, remote: bool, forward: bool, panel: bool) -> Route {
+    match (remote, loopback_port(url)) {
+        (false, _) | (true, None) => Route::Here,
+        (true, Some(port)) if forward => Route::Forward(port),
+        (true, Some(_)) if panel => Route::Panel,
+        (true, Some(_)) => Route::Paste,
     }
 }
 
@@ -753,6 +831,43 @@ mod tests {
         assert_eq!(outcome, Outcome::Done);
         let ran_in = std::fs::read_to_string(dir.join("where")).unwrap();
         assert_eq!(std::path::Path::new(ran_in.trim()).canonicalize().unwrap(), dir.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn a_pages_loopback_redirect_port_is_read_encoded_or_not() {
+        let r = read(Kind::ClaudeMcp, CLAUDE_MCP);
+        assert!(loopback_port(&r.url.unwrap()).is_some_and(|p| p > 1024), "Claude Code's own page comes back to localhost");
+        assert_eq!(loopback_port("https://auth.example.com/authorize?client_id=x&redirect_uri=http%3A%2F%2Flocalhost%3A55531%2Fcallback&state=s"), Some(55531));
+        assert_eq!(loopback_port("https://accounts.google.com/o/oauth2/v2/auth?client_id=x&redirect_uri=http%3A%2F%2F127.0.0.1%3A53682&scope=y"), Some(53682));
+        assert_eq!(loopback_port("https://a.example.com/authorize?redirect_uri=http://[::1]:4100/cb"), Some(4100));
+        // Elsewhere: no tunnel, the page opens as it is.
+        for none in [
+            "https://github.com/login/device",
+            "https://device.sso.us-east-1.amazonaws.com/?user_code=KQRD-HMFB",
+            "https://accounts.google.com/o/oauth2/auth?redirect_uri=https%3A%2F%2Fsdk.cloud.google.com%2Fauthcode.html",
+            "https://a.example.com/authorize?redirect_uri=http%3A%2F%2Fevil.example.com%3A80%2Fcb",
+            "https://a.example.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%2Fcb",
+            "https://a.example.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A0%2Fcb",
+            "https://a.example.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A99999%2Fcb",
+        ] {
+            assert_eq!(loopback_port(none), None, "{none}");
+        }
+    }
+
+    #[test]
+    fn a_page_opens_here_through_a_tunnel_in_the_panel_or_with_a_paste_box() {
+        let mcp = "https://auth.example.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A55531%2Fcallback";
+        let device = "https://github.com/login/device";
+        // The daemon on this Mac: always here.
+        assert_eq!(route(mcp, false, true, true), Route::Here);
+        // On another Mac: a device page opens here as it is.
+        assert_eq!(route(device, true, true, true), Route::Here);
+        // A loopback redirect: through the SSH tunnel where it can be made...
+        assert_eq!(route(mcp, true, true, true), Route::Forward(55531));
+        // ...else in the daemon's own browser, in the panel...
+        assert_eq!(route(mcp, true, false, true), Route::Panel);
+        // ...else here, the address it ends on pasted back.
+        assert_eq!(route(mcp, true, false, false), Route::Paste);
     }
 
     #[test]

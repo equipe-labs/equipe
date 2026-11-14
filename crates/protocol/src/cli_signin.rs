@@ -68,6 +68,9 @@ pub struct CliSignIn {
     pub detail: Option<String>,
     /// When it was asked, unix seconds.
     pub at: u64,
+    /// The squad's outside MCP server it signs in to, for an MCP server's sign-in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
 }
 
 /// A code the person pasted: on the wire as a plain string, never in a log.

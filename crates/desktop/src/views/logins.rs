@@ -1270,6 +1270,7 @@ impl Shell {
                 who: None,
                 detail: None,
                 at: now,
+                server: None,
             }];
         }
     }

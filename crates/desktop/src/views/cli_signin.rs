@@ -308,6 +308,7 @@ mod tests {
             who: None,
             detail: None,
             at: 0,
+            server: None,
         }
     }
 

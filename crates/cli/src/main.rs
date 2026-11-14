@@ -1357,9 +1357,13 @@ enum McpAction {
         /// The roles whose members get it, comma-separated (default: the catalog's, else every member)
         #[arg(long, value_delimiter = ',')]
         roles: Vec<String>,
-        /// It speaks server-sent events rather than streamable HTTP (Claude Code members only)
+        /// It speaks server-sent events rather than streamable HTTP
         #[arg(long)]
         sse: bool,
+        /// Let each engine sign in itself (`claude mcp login`, `codex mcp login`)
+        /// instead of equipe: only for a server that won't let other apps sign in
+        #[arg(long)]
+        engine_signin: bool,
         /// The squad (default: the one this folder belongs to, else your first)
         #[arg(long)]
         squad: Option<String>,
@@ -1380,7 +1384,21 @@ enum McpAction {
         #[arg(long)]
         squad: Option<String>,
     },
-    /// Sign in to a server with the engine's own sign-in, here in this terminal
+    /// equipe's proxy for one server, as a member's engine runs it (stdio MCP;
+    /// the daemon adds the credential)
+    #[command(hide = true)]
+    Proxy {
+        #[arg(long)]
+        squad: String,
+        #[arg(long)]
+        server: String,
+        #[arg(long)]
+        member: String,
+        #[arg(long)]
+        home: std::path::PathBuf,
+    },
+    /// Sign in to a server: equipe's own sign-in (the page opens here), or —
+    /// for one connected with --engine-signin — the engine's own
     Login {
         name: String,
         /// `claude` or `codex` (default: Claude Code when it is installed)
@@ -1393,18 +1411,24 @@ enum McpAction {
 }
 
 async fn mcp_action(action: McpAction) -> Result<(), Failure> {
+    // The proxy speaks MCP on its standard streams: nothing else is printed.
+    if let McpAction::Proxy { squad, server, member, home } = &action {
+        return mcp_servers::proxy(home, squad, server, member).await.map_err(Failure::new);
+    }
     let home = equipe_providers::credentials::equipe_home();
     let cwd = std::env::current_dir().unwrap_or_default();
     let named = match &action {
         McpAction::Add { squad, .. } | McpAction::List { squad, .. } | McpAction::Remove { squad, .. } | McpAction::Login { squad, .. } => squad.clone(),
+        McpAction::Proxy { .. } => None,
     };
     let Some(squad) = home::squad_for(&home, &cwd, named) else {
         return Err(Failure::new(t!("main.no_squad")));
     };
     let socket = daemon::socket();
     let lines = match action {
-        McpAction::Add { name, url, roles, sse, .. } => mcp_servers::add(&home, &socket, &squad, &name, url.as_deref(), &roles, sse).await,
-        McpAction::List { no_check, .. } => mcp_servers::list(&home, &squad, !no_check).await,
+        McpAction::Add { name, url, roles, sse, engine_signin, .. } => mcp_servers::add(&home, &socket, &squad, &name, url.as_deref(), &roles, sse, engine_signin).await,
+        McpAction::List { no_check, .. } => mcp_servers::list(&home, &socket, &squad, !no_check).await,
+        McpAction::Proxy { .. } => Ok(Vec::new()),
         McpAction::Remove { name, .. } => mcp_servers::remove(&home, &socket, &squad, &name).await.map(|l| vec![l]),
         McpAction::Login { name, engine, .. } => mcp_servers::login(&home, &socket, &squad, &name, engine.as_deref()).await.map(|l| vec![l]),
     }
