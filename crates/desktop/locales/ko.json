@@ -4006,5 +4006,19 @@
   "status.watched_default": "고정한 것이 없어 긴급 티켓을 보여줘요",
   "status.watched_none": "지켜볼 티켓이 없어요. 티켓 페이지의 '지켜보기'로 고정해 보세요.",
   "status.watching": "지켜보는 중",
-  "status.weekdays_short": "일|월|화|수|목|금|토"
+  "status.weekdays_short": "일|월|화|수|목|금|토",
+  "desktop_setup.locked_title_far": "{host}: 화면이 잠겨 있어요 — 멤버가 그 Mac에서 클릭해야 해요",
+  "desktop_setup.locked_title": "이 Mac이 잠겨 있어요 — 멤버가 여기서 클릭해야 해요",
+  "desktop_setup.locked_body_far": "화면 공유로 잠금을 풀어 주세요. 비밀번호는 그 창에서 직접 입력해요 — equipe는 비밀번호를 보거나 저장하지 않아요.",
+  "desktop_setup.locked_body": "키보드에서 잠금을 풀어 주세요(비밀번호, Touch ID, Apple Watch). 멤버들은 알아서 이어서 일해요.",
+  "desktop_setup.locked_button": "잠금 풀기",
+  "desktop_setup.sharing_title_far": "{host}: 화면이 잠겨 있고 화면 공유도 꺼져 있어요",
+  "desktop_setup.sharing_body_far": "{host}에서 한 번만 켜 주세요: 시스템 설정 › 일반 › 공유 › 화면 공유. 그 Mac의 사용자만 할 수 있어요.",
+  "desktop_setup.sharing_copy": "방법 복사",
+  "desktop_setup.sharing_check": "다시 확인",
+  "desktop_setup.sharing_steps": "{host}의 잠금을 여기서 풀려면 그 Mac에서 화면 공유를 한 번 켜세요:\n1. {host}에서 시스템 설정 › 일반 › 공유를 엽니다.\n2. \"화면 공유\"를 켭니다.\n3. 여기로 돌아와 \"다시 확인\"을 누르면 equipe가 화면 공유를 열어 줘요.\n그 Mac의 사용자만 켤 수 있어요. equipe는 비밀번호를 보거나 저장하지 않아요.",
+  "status.act_unlock": "잠금 풀기",
+  "status.act_unlock_here": "키보드에서 풀기",
+  "status.cause_mac_locked.other": "Mac이 잠겨 있어요: 멤버 {count}명이 잠금 해제를 기다려요",
+  "status.slow_mac_locked": "진행 중이지만 느려졌어요: Mac이 잠겨 있어요"
 }

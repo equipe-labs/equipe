@@ -739,5 +739,7 @@
   "notice.batch_title": "{n} choses retiennent le travail",
   "notice.daily_title": "{n} éléments bloquent {blocks} tickets depuis {span}",
   "notice.missed_title": "Vous l’avez manqué {n} fois : {what}",
-  "notice.missed_body": "{impact}. Ouvrez-le pour le régler."
+  "notice.missed_body": "{impact}. Ouvrez-le pour le régler.",
+  "importance.deploy_words": "déploiement|deploiement|déployer|mise en production|mise en prod|mise en ligne|publication|livraison en production|lancement|mise en service",
+  "importance.hold_words": "suspend|geler|gel|bloque|attend|pause|retenir|retiens|stoppe"
 }

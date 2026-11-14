@@ -735,5 +735,7 @@
   "notice.batch_title": "{n}件が作業を止めています",
   "notice.daily_title": "{n}件が{span}にわたりチケット{blocks}件を止めています",
   "notice.missed_title": "これを{n}回見逃しています: {what}",
-  "notice.missed_body": "{impact}。開いて対応してください。"
+  "notice.missed_body": "{impact}。開いて対応してください。",
+  "importance.deploy_words": "デプロイ|リリース|ロールアウト|本番反映|本番適用|公開作業|ローンチ|出荷",
+  "importance.hold_words": "保留|凍結|止め|停止|待機|待って|待つ|ホールド"
 }

@@ -97,6 +97,9 @@ pub struct Facts {
     /// What waits on the person besides tickets: requests, questions, cards,
     /// secrets — with the tickets they are about, for [`importance`].
     pub asks: Vec<importance::Ask>,
+    /// Members of this squad waiting on clicks or typing because the daemon's
+    /// Mac is locked (`Desktop::locked_waiting`): only the person can unlock it.
+    pub mac_locked: u32,
 }
 
 /// What the squad's journal says.
@@ -120,12 +123,13 @@ fn rank(cause: Cause) -> u8 {
         Cause::BreakerOpen => 0,
         Cause::EngineOut => 1,
         Cause::SignIn => 2,
-        Cause::RunsPaused => 3,
-        Cause::Failing => 4,
-        Cause::Quiet => 5,
-        Cause::HandedBack => 6,
-        Cause::Approvals => 7,
-        Cause::Decisions => 8,
+        Cause::MacLocked => 3,
+        Cause::RunsPaused => 4,
+        Cause::Failing => 5,
+        Cause::Quiet => 6,
+        Cause::HandedBack => 7,
+        Cause::Approvals => 8,
+        Cause::Decisions => 9,
     }
 }
 
@@ -279,6 +283,11 @@ fn blocks(facts: &Facts, rows: &Rows, tiles: &Tiles, now: u64) -> Vec<Block> {
     for engine in &facts.signed_out {
         let held = take(&mut groups, PauseWhy::SignIn, Some(*engine)).unwrap_or_default();
         out.push(Block { engine: Some(*engine), tickets: held.tickets, ..block(Cause::SignIn, Severity::Amber, held.count, Handling::You { action: Action::Open }, Some(Goto::Logins)) });
+    }
+
+    // The Mac is locked and members wait on it: the person unlocks it.
+    if facts.mac_locked > 0 {
+        out.push(block(Cause::MacLocked, Severity::Amber, facts.mac_locked, Handling::You { action: Action::Unlock }, Some(Goto::UnlockMac)));
     }
 
     // The rest of the paused runs, by why.
@@ -679,6 +688,17 @@ mod tests {
         let row = s.blocked.iter().find(|b| b.cause == Cause::HandedBack).unwrap();
         assert_eq!((row.count, row.tickets.clone(), row.at), (2, vec![7, 8], Some(NOW - 3 * HOUR)));
         assert_eq!((row.handling, row.goto, row.severity), (Handling::You { action: Action::Look }, Some(Goto::Ticket(7)), Severity::Amber));
+    }
+
+    #[test]
+    fn a_locked_mac_with_members_waiting_is_a_row_the_person_can_unlock() {
+        let none = status(&healthy(), &quiet_rows());
+        assert!(!causes(&none).contains(&Cause::MacLocked), "locked or not, nobody waits: no row");
+        let facts = Facts { mac_locked: 2, ..healthy() };
+        let s = status(&facts, &quiet_rows());
+        let row = s.blocked.iter().find(|b| b.cause == Cause::MacLocked).expect("the row");
+        assert_eq!((row.count, row.severity, row.handling, row.goto), (2, Severity::Amber, Handling::You { action: Action::Unlock }, Some(Goto::UnlockMac)));
+        assert_eq!(s.mood, Mood::Slowed);
     }
 
     #[test]

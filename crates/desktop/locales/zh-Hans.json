@@ -4005,5 +4005,19 @@
   "status.watched_default": "没有固定的，显示紧急工单",
   "status.watched_none": "没有要关注的工单。在工单页面点“关注”即可固定。",
   "status.watching": "关注中",
-  "status.weekdays_short": "周日|周一|周二|周三|周四|周五|周六"
+  "status.weekdays_short": "周日|周一|周二|周三|周四|周五|周六",
+  "desktop_setup.locked_title_far": "{host} 已锁定 — 成员需要在那里点击",
+  "desktop_setup.locked_title": "这台 Mac 已锁定 — 成员需要在这里点击",
+  "desktop_setup.locked_body_far": "请用“屏幕共享”解锁。密码由你在那个窗口里亲自输入 — equipe 不会查看或保存密码。",
+  "desktop_setup.locked_body": "请在键盘上解锁(密码、Touch ID 或 Apple Watch)。成员会自动继续工作。",
+  "desktop_setup.locked_button": "解锁",
+  "desktop_setup.sharing_title_far": "{host} 已锁定，且那里的屏幕共享未开启",
+  "desktop_setup.sharing_body_far": "请在 {host} 上开启一次：系统设置 › 通用 › 共享 › 屏幕共享。只有那台 Mac 的用户才能操作。",
+  "desktop_setup.sharing_copy": "复制步骤",
+  "desktop_setup.sharing_check": "再检查一次",
+  "desktop_setup.sharing_steps": "要从这里解锁 {host}，请先在那台 Mac 上开启一次屏幕共享：\n1. 在 {host} 上打开 系统设置 › 通用 › 共享。\n2. 开启“屏幕共享”。\n3. 回到这里点“再检查一次”，equipe 就会为你打开屏幕共享。\n只有那台 Mac 的用户才能开启。equipe 不会查看或保存密码。",
+  "status.act_unlock": "解锁",
+  "status.act_unlock_here": "在键盘上解锁",
+  "status.cause_mac_locked.other": "Mac 已锁定：{count} 名成员在等待解锁",
+  "status.slow_mac_locked": "仍在运行，但变慢了：Mac 已锁定"
 }

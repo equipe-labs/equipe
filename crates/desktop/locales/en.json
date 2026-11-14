@@ -4107,5 +4107,20 @@
   "status.watched_default": "urgent tickets, nothing pinned",
   "status.watched_none": "Nothing to watch. Pin a ticket with Watch on its page.",
   "status.watching": "Watching",
-  "status.weekdays_short": "Sun|Mon|Tue|Wed|Thu|Fri|Sat"
+  "status.weekdays_short": "Sun|Mon|Tue|Wed|Thu|Fri|Sat",
+  "desktop_setup.locked_title_far": "{host} is locked — a member needs to click there",
+  "desktop_setup.locked_title": "This Mac is locked — a member needs to click here",
+  "desktop_setup.locked_body_far": "Unlock it with Screen Sharing: you type the Mac's password yourself in that window — equipe never sees or stores it.",
+  "desktop_setup.locked_body": "Unlock it at the keyboard (password, Touch ID or Apple Watch). Members carry on by themselves.",
+  "desktop_setup.locked_button": "Unlock it",
+  "desktop_setup.sharing_title_far": "{host} is locked, and Screen Sharing is off there",
+  "desktop_setup.sharing_body_far": "Turn it on once at {host}: System Settings › General › Sharing › Screen Sharing. Only that Mac's user can do that.",
+  "desktop_setup.sharing_copy": "Copy steps",
+  "desktop_setup.sharing_check": "Check again",
+  "desktop_setup.sharing_steps": "To unlock {host} from here, turn on Screen Sharing on that Mac once:\n1. At {host}, open System Settings › General › Sharing.\n2. Switch on \"Screen Sharing\".\n3. Come back here and press \"Check again\" — equipe then opens Screen Sharing for you.\nOnly that Mac's user can switch it on. equipe never sees or stores your password.",
+  "status.act_unlock": "Unlock",
+  "status.act_unlock_here": "unlock at the keyboard",
+  "status.cause_mac_locked.one": "The Mac is locked: {count} member is waiting for it to be unlocked",
+  "status.cause_mac_locked.other": "The Mac is locked: {count} members are waiting for it to be unlocked",
+  "status.slow_mac_locked": "Going, but slowed: the Mac is locked"
 }

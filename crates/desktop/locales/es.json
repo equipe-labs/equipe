@@ -4107,5 +4107,20 @@
   "status.watched_default": "tickets urgentes, nada fijado",
   "status.watched_none": "Nada que vigilar. Fija un ticket con «Vigilar» en su página.",
   "status.watching": "Vigilando",
-  "status.weekdays_short": "dom|lun|mar|mié|jue|vie|sáb"
+  "status.weekdays_short": "dom|lun|mar|mié|jue|vie|sáb",
+  "desktop_setup.locked_title_far": "{host} está bloqueado — un miembro necesita hacer clic allí",
+  "desktop_setup.locked_title": "Este Mac está bloqueado — un miembro necesita hacer clic aquí",
+  "desktop_setup.locked_body_far": "Desbloquéalo con Compartir pantalla: tú escribes la contraseña en esa ventana — equipe nunca la ve ni la guarda.",
+  "desktop_setup.locked_body": "Desbloquéalo en el teclado (contraseña, Touch ID o Apple Watch). Los miembros siguen solos.",
+  "desktop_setup.locked_button": "Desbloquear",
+  "desktop_setup.sharing_title_far": "{host} está bloqueado y Compartir pantalla está desactivado allí",
+  "desktop_setup.sharing_body_far": "Actívalo una vez en {host}: Ajustes del Sistema › General › Compartir › Compartir pantalla. Solo el usuario de ese Mac puede hacerlo.",
+  "desktop_setup.sharing_copy": "Copiar pasos",
+  "desktop_setup.sharing_check": "Comprobar de nuevo",
+  "desktop_setup.sharing_steps": "Para desbloquear {host} desde aquí, activa una vez Compartir pantalla en ese Mac:\n1. En {host}, abre Ajustes del Sistema › General › Compartir.\n2. Activa «Compartir pantalla».\n3. Vuelve aquí y pulsa «Comprobar de nuevo»: equipe abrirá Compartir pantalla por ti.\nSolo el usuario de ese Mac puede activarlo. equipe nunca ve ni guarda tu contraseña.",
+  "status.act_unlock": "Desbloquear",
+  "status.act_unlock_here": "desbloquear en el teclado",
+  "status.cause_mac_locked.one": "El Mac está bloqueado: {count} miembro espera el desbloqueo",
+  "status.cause_mac_locked.other": "El Mac está bloqueado: {count} miembros esperan el desbloqueo",
+  "status.slow_mac_locked": "Sigue en marcha, pero más lento: el Mac está bloqueado"
 }

@@ -79,6 +79,9 @@ pub enum Cause {
     Failing,
     /// An engine needs signing in again.
     SignIn,
+    /// The daemon's Mac is locked and `count` members wait on clicks or
+    /// typing because of it: only the person can unlock it.
+    MacLocked,
 }
 
 /// Who handles a row.
@@ -100,6 +103,8 @@ pub enum Action {
     Open,
     Answer,
     Look,
+    /// Unlock the daemon's Mac (through Screen Sharing, or at its keyboard).
+    Unlock,
 }
 
 /// Where a row's button leads.
@@ -114,6 +119,8 @@ pub enum Goto {
     Logins,
     /// The squad's progress.
     Progress,
+    /// The card that helps unlock the daemon's Mac.
+    UnlockMac,
 }
 
 /// One problem on the list.

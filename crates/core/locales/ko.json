@@ -735,5 +735,7 @@
   "notice.batch_title": "{n}가지가 일을 붙잡고 있어요",
   "notice.daily_title": "{n}가지가 {span} 동안 티켓 {blocks}개를 막고 있어요",
   "notice.missed_title": "이걸 {n}번 놓치셨어요: {what}",
-  "notice.missed_body": "{impact}. 열어서 처리해 주세요."
+  "notice.missed_body": "{impact}. 열어서 처리해 주세요.",
+  "importance.deploy_words": "배포|릴리스|릴리즈|롤아웃|출시|론칭|런칭|상용 반영|운영 반영|프로덕션 반영",
+  "importance.hold_words": "보류|동결|멈춰|멈추|중단|대기|기다|막아|막고|홀드"
 }

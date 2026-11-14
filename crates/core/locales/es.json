@@ -739,5 +739,7 @@
   "notice.batch_title": "{n} cosas están deteniendo trabajo",
   "notice.daily_title": "{n} elementos llevan {span} bloqueando {blocks} tickets",
   "notice.missed_title": "Lo has pasado por alto {n} veces: {what}",
-  "notice.missed_body": "{impact}. Ábrelo para resolverlo."
+  "notice.missed_body": "{impact}. Ábrelo para resolverlo.",
+  "importance.deploy_words": "despliegue|desplegar|lanzamiento|publicación|publicacion|puesta en producción|puesta en produccion|salida a producción|salida a produccion",
+  "importance.hold_words": "retener|retén|congel|detener|detén|espera|bloque|pausa|suspend"
 }

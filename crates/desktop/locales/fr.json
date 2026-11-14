@@ -4107,5 +4107,20 @@
   "status.watched_default": "tickets urgents, rien d'épinglé",
   "status.watched_none": "Rien à suivre. Épinglez un ticket avec « Suivre » sur sa page.",
   "status.watching": "Suivi",
-  "status.weekdays_short": "dim.|lun.|mar.|mer.|jeu.|ven.|sam."
+  "status.weekdays_short": "dim.|lun.|mar.|mer.|jeu.|ven.|sam.",
+  "desktop_setup.locked_title_far": "{host} est verrouillé — un membre doit y cliquer",
+  "desktop_setup.locked_title": "Ce Mac est verrouillé — un membre doit cliquer ici",
+  "desktop_setup.locked_body_far": "Déverrouillez-le avec le Partage d'écran : vous saisissez vous-même le mot de passe dans cette fenêtre — equipe ne le voit ni ne le garde.",
+  "desktop_setup.locked_body": "Déverrouillez-le au clavier (mot de passe, Touch ID ou Apple Watch). Les membres reprennent tout seuls.",
+  "desktop_setup.locked_button": "Déverrouiller",
+  "desktop_setup.sharing_title_far": "{host} est verrouillé et le Partage d'écran y est désactivé",
+  "desktop_setup.sharing_body_far": "Activez-le une fois sur {host} : Réglages Système › Général › Partage › Partage d'écran. Seul l'utilisateur de ce Mac peut le faire.",
+  "desktop_setup.sharing_copy": "Copier les étapes",
+  "desktop_setup.sharing_check": "Revérifier",
+  "desktop_setup.sharing_steps": "Pour déverrouiller {host} d'ici, activez une fois le Partage d'écran sur ce Mac :\n1. Sur {host}, ouvrez Réglages Système › Général › Partage.\n2. Activez « Partage d'écran ».\n3. Revenez ici et appuyez sur « Revérifier » — equipe ouvre alors le Partage d'écran pour vous.\nSeul l'utilisateur de ce Mac peut le faire. equipe ne voit ni ne garde votre mot de passe.",
+  "status.act_unlock": "Déverrouiller",
+  "status.act_unlock_here": "déverrouiller au clavier",
+  "status.cause_mac_locked.one": "Le Mac est verrouillé : {count} membre attend le déverrouillage",
+  "status.cause_mac_locked.other": "Le Mac est verrouillé : {count} membres attendent le déverrouillage",
+  "status.slow_mac_locked": "Ça avance, mais au ralenti : le Mac est verrouillé"
 }

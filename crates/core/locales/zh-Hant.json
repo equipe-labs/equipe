@@ -735,5 +735,7 @@
   "notice.batch_title": "有 {n} 件事卡住了工作",
   "notice.daily_title": "{n} 件事已卡住 {blocks} 張工單 {span}",
   "notice.missed_title": "這件事你已錯過 {n} 次：{what}",
-  "notice.missed_body": "{impact}。打開處理一下。"
+  "notice.missed_body": "{impact}。打開處理一下。",
+  "importance.deploy_words": "部署|發佈|發布|上線|發版|投產|灰度",
+  "importance.hold_words": "暫緩|凍結|暫停|等待|先別|阻止|擱置"
 }

@@ -8,7 +8,9 @@ goes away for good. The rules, then the table.
 1. A banner shows only when work is blocked and the person can unblock it with
    one action.
 2. It never shows for what resolves itself: installing, switching hosts, a
-   fresh restart, an update in progress, a locked screen.
+   fresh restart, an update in progress. A locked screen is not one of
+   them once a member is held by it: only the person can unlock it (see the
+   table).
 3. Once put away it stays away until the condition changes in a way the
    person must act on again. Dismissals are kept in the daemon's home
    (`<home>/desktop/setup.json`, per card and identity such as `grant:app` or
@@ -29,6 +31,7 @@ goes away for good. The rules, then the table.
 | What | Where | Shows when | Actionable | Goes away for good |
 |---|---|---|---|---|
 | Grant card ("Turn on equipe — one switch") | desktop strip, `views/desktop_setup.rs`; daemon `desktop/auto.rs` | Accessibility is off **and** a member's desktop call was refused for it, or this is the first set-up and the person hasn't skipped it; not on a locked screen; not if put away for this identity | Yes: on the daemon's Mac "Open System Settings" (the click asks macOS and opens the pane); on another Mac, a text naming that Mac, no button | The switch is seen on; or "Not now" (kept for this identity until the switch has been seen on and was taken back while a member needs it) |
+| Locked-screen card ("<Mac> is locked — a member needs to click there") | desktop strip, `views/desktop_setup.rs` + `unlock.rs`; daemon `desktop/auto.rs` (`lock_card`), `desktop/mod.rs` (`Desktop::locked_waiting`) | The Mac's screen is locked **and** a member's click or typing was refused for it and hasn't gone through since (a member that only reads, or a lock nobody waits on, shows nothing); not if put away for this lock | Daemon on another Mac: "Unlock it" opens Screen Sharing (`vnc://<the daemon's address>`) on the Mac in front of the person, who types the password there: equipe never sees, stores or sends it and never types at a lock screen. If port 5900 refuses the connection: how to turn Screen Sharing on there once (System Settings › General › Sharing), "Copy steps", "Check again". Daemon on this Mac: "This Mac is locked", no button (unlock at the keyboard, Touch ID or Apple Watch). The Status screen's blocked rows say the same ("Mac locked — Unlock") | The daemon sees the screen unlocked (checked every 4 s while the card is up; members resume by themselves); or "Not now" (kept as `locked` in `<home>/desktop/setup.json` until the screen has been seen unlocked) |
 | Failed card ("Desktop apps couldn't be set up") | same | The engine or helper set-up failed **and** a member is blocked on it, or it has failed for 10 minutes | Yes: "Try again" (works for a remote daemon too: it runs there) | The next try works; or "Not now" for that failure reason; "Try again" tells it afresh |
 | Installing strip | removed | It resolved itself; never a banner. (The first-run setup screen shows its own progress.) | no | n/a |
 | "Desktop control now runs as equipe" (old helper row) | removed | Was shown after equipe.app took over from the old helper; asked for pointless clean-up. The stale Accessibility row is harmless | no | n/a |
@@ -47,7 +50,9 @@ Edge cases covered by tests (`crates/core/src/desktop/auto.rs`):
 - two screens on one daemon: the daemon tells both, one "Not now" clears both;
 - the grant arrives while the card is up: the next look (4 seconds) removes it;
 - the person says no: nothing is asked again, the one card stays;
-- a locked screen: no card;
+- a locked screen nobody waits on: no card; a member held by it: the lock card
+  (remote or local words), gone when the screen is seen unlocked, and a "Not
+  now" stays until the next lock;
 - a daemon on another Mac: `grant_words` in `views/desktop_setup.rs` names it and
   has no button.
 

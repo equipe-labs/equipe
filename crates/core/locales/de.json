@@ -739,5 +739,7 @@
   "notice.batch_title": "{n} Dinge halten Arbeit auf",
   "notice.daily_title": "{n} Punkte blockieren seit {span} {blocks} Tickets",
   "notice.missed_title": "Du hast das {n}-mal verpasst: {what}",
-  "notice.missed_body": "{impact}. Öffne es, um es zu erledigen."
+  "notice.missed_body": "{impact}. Öffne es, um es zu erledigen.",
+  "importance.deploy_words": "bereitstellung|deployment|veröffentlich|auslieferung|produktivsetzung|inbetriebnahme|go-live|rollout|markteinführung",
+  "importance.hold_words": "halt|zurückhalt|einfrier|stopp|pausier|warte|blockier|anhalt"
 }

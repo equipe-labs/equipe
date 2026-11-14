@@ -290,7 +290,12 @@ fn blocked(shell: &Shell, s: &SquadStatus, now: u64, cx: &mut Context<Shell>) ->
 
 fn blocked_row(shell: &Shell, b: &Block, ix: usize, now: u64, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
-    let RowModel { severity, text, label, goto } = row_of(b, now);
+    let RowModel { severity, text, mut label, mut goto } = row_of(b, now);
+    // The Mac in front of the person is the daemon's: nothing to open, they unlock it where they sit.
+    if goto == Some(Goto::UnlockMac) && !shell.endpoint.is_remote() {
+        goto = None;
+        label = t!("status.act_unlock_here");
+    }
     let action: AnyElement = match goto {
         Some(goto) => ui::button(p, SharedString::from(format!("status-act-{ix}")), Kind::Secondary, label).on_click(cx.listener(move |this, _, window, cx| this.status_go(goto, window, cx))).into_any_element(),
         None => div().flex_none().text_size(px(12.)).text_color(p.muted).child(label).into_any_element(),
@@ -491,6 +496,13 @@ impl Shell {
             Goto::NeedsYou => self.open_side_menu(crate::board::Menu::Inbox, cx),
             Goto::Logins => self.open_logins(cx),
             Goto::Progress => self.open_progress(cx),
+            // Screen Sharing to the daemon's Mac, as the card's "Unlock it" does.
+            Goto::UnlockMac => {
+                let url = self.unlock.url(&self.mac_address());
+                if !cfg!(feature = "snapshot") {
+                    cx.open_url(&url);
+                }
+            }
         }
     }
 

@@ -2303,6 +2303,10 @@ impl Runtime {
 
     fn publish_desktop(&mut self) {
         let desktop = self.desktop.state();
+        // The setup's loop decides the one card about a locked screen.
+        if let Some(auto) = &self.desktop_auto {
+            auto.lock_held(!desktop.locked_waiting.is_empty());
+        }
         self.publish(Event::Desktop { desktop });
     }
 

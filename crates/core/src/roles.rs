@@ -781,7 +781,9 @@ person with `show_my_browser` as you would yours."
         "\n\nYou can work the computer's desktop apps (the `desktop` tools, experimental) on the person's own machine, \
 where they may be working too: open your `desktop-apps` skill before you use them. Read apps as an accessibility tree and \
 act on its refs (cheap, headless, side by side with others); screenshots are the fallback. Sending a message, a mail or \
-anything else to someone in the person's name waits for the person's yes."
+anything else to someone in the person's name waits for the person's yes. If the Mac's screen is locked, equipe shows \
+the person an \"Unlock this Mac\" card by itself: don't ask them in chat to unlock it, never try to unlock it yourself, \
+and carry on with other work until a desktop call goes through again."
     } else {
         ""
     };

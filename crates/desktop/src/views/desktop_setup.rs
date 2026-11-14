@@ -8,9 +8,10 @@
 //! |---|---|---|---|
 //! | Grant | a member's desktop call was refused for want of Accessibility (or the first set-up, never skipped), and the switch is still off | on the daemon's Mac: "Open System Settings" (a click, so macOS may prompt once); on another Mac: do it there (no button here) | the switch is seen on; or "Not now": kept per Mac and code identity in `<home>/desktop/setup.json`, back only after the switch was on and was taken back while a member needs it |
 //! | Failed | the engine or helper couldn't be set up and a member needs it (or it has failed for `FAILURE_GRACE`) | "Try again" | the next try works; or "Not now" for that reason, kept until a different reason |
+//! | Locked screen | the Mac is locked and a member's click or typing was refused for it (`DesktopReadiness::lock_card`) | another Mac: "Unlock it" opens Screen Sharing (`vnc://<its address>`; the person types the password there), or, if its port 5900 refuses, how to turn Screen Sharing on there once; this Mac: a note, no button | the daemon sees the screen unlocked; or "Not now" until then (`unlock.rs`) |
 //!
 //! Never a card, because they put themselves right: installing, a restart,
-//! switching hosts, an update in progress, a locked screen, and the old
+//! switching hosts, an update in progress, a lock no member waits on, and the old
 //! "equipe Desktop Helper" (its stale Accessibility row is harmless).
 //! System prompts follow the same rule (docs/PROMPTS.md): only the person's
 //! click asks macOS anything.
@@ -23,7 +24,9 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::*;
 
 use crate::icons::{Icon, icon};
+use crate::target::Endpoint;
 use crate::theme::{ICON_SM, SMALL};
+use crate::unlock;
 use crate::ui::{self, Kind};
 use crate::Shell;
 
@@ -67,11 +70,52 @@ pub fn banner(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             // Gone at once; the daemon keeps it gone until a member needs the desktop.
             if let Some(ready) = this.model.desktop_ready.as_mut() {
                 ready.setup = DesktopSetup::Idle;
+                ready.lock_card = false;
             }
             this.send_command(Command::DesktopAuto { action: DesktopAutoAction::Dismiss });
             cx.notify();
         })))
     };
+    // A locked Mac a member waits on: the daemon says so (`lock_card`), and only
+    // while no other card is up. It goes the moment the daemon sees the screen unlocked.
+    if matches!(ready.setup, DesktopSetup::Idle)
+        && let Some(card) = unlock::card(ready.lock_card, shell.endpoint.is_remote(), shell.unlock.sharing)
+    {
+        let name = shell.mac_name();
+        let words = lock_words(card, &name);
+        let url = shell.unlock.url(&shell.mac_address());
+        let steps = t!("desktop_setup.sharing_steps", host = name.as_str()).to_owned();
+        let unlock_button = words.can_unlock.then(|| {
+            div().flex_none().child(ui::button(p, "desktop-setup-unlock", Kind::Secondary, t!("desktop_setup.locked_button")).icon(Icon::Lock).disabled(!connected).on_click(cx.listener(move |_, _, _, cx| {
+                // Screen Sharing, on this Mac, to the daemon's: the person types the password there.
+                if !cfg!(feature = "snapshot") {
+                    cx.open_url(&url);
+                }
+            })))
+        });
+        let copy_button = words.can_copy.then(|| {
+            div().flex_none().child(ui::button(p, "desktop-setup-copy-steps", Kind::Secondary, t!("desktop_setup.sharing_copy")).icon(Icon::Copy).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(steps.clone()))))
+        });
+        let check_button = words.can_copy.then(|| {
+            div().flex_none().child(ui::button(p, "desktop-setup-check", Kind::Secondary, t!("desktop_setup.sharing_check")).icon(Icon::Retry).disabled(shell.unlock.sharing == unlock::Sharing::Checking).on_click(cx.listener(|this, _, _, cx| this.check_sharing(cx))))
+        });
+        return Some(
+            strip("desktop-setup-locked")
+                .child(div().flex_none().child(icon(Icon::Lock, ICON_SM, p.amber)))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().truncate().text_color(p.text).font_weight(FontWeight::SEMIBOLD).child(words.title))
+                        .child(div().truncate().text_color(p.muted).child(words.body)),
+                )
+                .children(unlock_button)
+                .children(copy_button)
+                .children(check_button)
+                .child(dismiss("desktop-setup-locked-close", cx))
+                .into_any_element(),
+        );
+    }
     match &ready.setup {
         // Installing resolves by itself: never a card.
         DesktopSetup::Installing => None,
@@ -138,6 +182,93 @@ pub fn grant_words(name: &str, remote: bool, host: &str) -> GrantWords {
     }
 }
 
+/// The locked-screen card's words, and which buttons it has.
+pub struct LockWords {
+    pub title: String,
+    pub body: String,
+    /// "Unlock it": opens Screen Sharing on this Mac to the daemon's.
+    pub can_unlock: bool,
+    /// "Copy steps" and "Check again": Screen Sharing is off there.
+    pub can_copy: bool,
+}
+
+/// What the card says for `card`, naming the daemon's Mac (`name`) when it isn't this one.
+pub fn lock_words(card: unlock::Card, name: &str) -> LockWords {
+    match card {
+        // On this Mac: nothing to open, the person unlocks it where they sit.
+        unlock::Card::ThisMac => LockWords { title: t!("desktop_setup.locked_title").to_owned(), body: t!("desktop_setup.locked_body").to_owned(), can_unlock: false, can_copy: false },
+        unlock::Card::Unlock => LockWords { title: t!("desktop_setup.locked_title_far", host = name).to_owned(), body: t!("desktop_setup.locked_body_far").to_owned(), can_unlock: true, can_copy: false },
+        unlock::Card::TurnOnSharing => LockWords { title: t!("desktop_setup.sharing_title_far", host = name).to_owned(), body: t!("desktop_setup.sharing_body_far", host = name).to_owned(), can_unlock: false, can_copy: true },
+    }
+}
+
+impl Shell {
+    /// What the daemon's Mac is called here: its Tailscale device's name when
+    /// known ("Tinum's Mac Mini"), else the address as it was typed.
+    pub fn mac_name(&self) -> String {
+        match &self.endpoint {
+            Endpoint::Ssh(host) => crate::tailnet::peer_for(&self.connect.peers, &host.host).map(|peer| peer.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| host.host.clone()),
+            Endpoint::Local { .. } => self.endpoint.label(),
+        }
+    }
+
+    /// The daemon's Mac's address as typed (Screen Sharing opens the one `ssh` resolved it to, once known).
+    pub fn mac_address(&self) -> String {
+        match &self.endpoint {
+            Endpoint::Ssh(host) => host.host.clone(),
+            Endpoint::Local { .. } => String::new(),
+        }
+    }
+
+    /// The daemon's word about the locked-screen card, as it came in: while it
+    /// stands, look once at whether Screen Sharing answers on the daemon's Mac
+    /// (another Mac only: a plain connection to port 5900, no login); once it
+    /// is gone, forget what was found, so the next lock looks afresh.
+    pub fn on_lock_card(&mut self, lock_card: bool, cx: &mut Context<Self>) {
+        if !lock_card {
+            self.unlock.reset();
+            return;
+        }
+        if self.endpoint.is_remote() && self.unlock.address.is_none() && self.unlock.task.is_none() {
+            self.check_sharing(cx);
+        }
+    }
+
+    /// Look at the daemon's Mac: its address as `ssh` resolves it, and whether
+    /// it takes Screen Sharing connections. Off the UI thread; the card is
+    /// redrawn with the answer.
+    pub fn check_sharing(&mut self, cx: &mut Context<Self>) {
+        let Endpoint::Ssh(host) = self.endpoint.clone() else { return };
+        if cfg!(feature = "snapshot") {
+            return;
+        }
+        self.unlock.sharing = unlock::Sharing::Checking;
+        let need_peers = self.connect.peers.is_empty();
+        self.unlock.task = Some(cx.spawn(async move |this, cx| {
+            let (address, sharing, peers) = cx
+                .background_executor()
+                .spawn(async move {
+                    let address = unlock::address(&host);
+                    let sharing = unlock::sharing(&address);
+                    // The device's own name for the card, when Tailscale knows it.
+                    let peers = if need_peers { crate::tailnet::load() } else { Vec::new() };
+                    (address, sharing, peers)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.unlock.address = Some(address);
+                this.unlock.sharing = sharing;
+                this.unlock.task = None;
+                if !peers.is_empty() {
+                    this.connect.peers = peers;
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+}
+
 /// What System Settings lists the helper as.
 fn helper_name(ready: &equipe_core::protocol::DesktopReadiness) -> &str {
     if ready.helper_name.is_empty() { "equipe" } else { &ready.helper_name }
@@ -154,6 +285,41 @@ mod tests {
         assert!(!far.can_open, "System Settings would open on the other Mac");
         let near = grant_words("equipe", false, "");
         assert!(near.can_open && !near.title.contains("{host}") && near.title != far.title);
+    }
+
+    #[core::prelude::v1::test]
+    fn the_lock_card_says_whose_mac_and_has_only_the_button_that_does_something_there() {
+        use unlock::Card;
+        let here = lock_words(Card::ThisMac, "");
+        assert!(!here.can_unlock && !here.can_copy, "nothing to open for the Mac in front of the person");
+        // Whatever language the test runs in: the Mac's name where there is one, no placeholder left, no key shown.
+        let said = |w: &LockWords| format!("{} {}", w.title, w.body);
+        assert!(!said(&here).contains('{') && !said(&here).contains("desktop_setup."), "{}", said(&here));
+        let far = lock_words(Card::Unlock, "Tinum's Mac Mini");
+        assert!(far.can_unlock && !far.can_copy);
+        assert!(far.title.contains("Tinum's Mac Mini") && !said(&far).contains('{'), "{}", said(&far));
+        assert_ne!(far.title, here.title, "another Mac is named; this one isn't");
+        let off = lock_words(Card::TurnOnSharing, "Tinum's Mac Mini");
+        assert!(!off.can_unlock && off.can_copy, "no button that would open a refused connection: it says how to turn it on there");
+        assert!(off.title.contains("Tinum's Mac Mini") && off.body.contains("Tinum's Mac Mini") && !said(&off).contains('{'), "{}", said(&off));
+        // The steps that "Copy steps" puts on the clipboard name the Mac.
+        let steps = t!("desktop_setup.sharing_steps", host = "Tinum's Mac Mini");
+        assert!(steps.contains("Tinum's Mac Mini") && steps.lines().count() >= 4 && !steps.contains('{'), "{steps}");
+    }
+
+    #[core::prelude::v1::test]
+    fn the_lock_card_is_up_only_while_the_daemon_says_so_and_goes_with_its_word() {
+        let mut ready = equipe_core::protocol::DesktopReadiness { supported: true, locked: true, lock_card: true, ..Default::default() };
+        // Remote daemon: the card with its button, whatever the port said until it refuses.
+        assert_eq!(unlock::card(ready.lock_card, true, unlock::Sharing::Unknown), Some(unlock::Card::Unlock));
+        assert_eq!(unlock::card(ready.lock_card, true, unlock::Sharing::Off), Some(unlock::Card::TurnOnSharing));
+        // The daemon on this Mac: the note only.
+        assert_eq!(unlock::card(ready.lock_card, false, unlock::Sharing::Off), Some(unlock::Card::ThisMac));
+        // The daemon sees the screen unlocked, or a member no longer waits, or the person said not now: its word goes and the card with it.
+        ready.lock_card = false;
+        for remote in [false, true] {
+            assert_eq!(unlock::card(ready.lock_card, remote, unlock::Sharing::On), None);
+        }
     }
 
     // `gpui_kit::*` brings a `test` macro of its own into scope.
