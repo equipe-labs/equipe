@@ -1346,6 +1346,7 @@
   "app.run_reason_not_resumed": "equipe の再起動後、続けられませんでした。メンバーがいないか、エンジンがここで再開できません。",
   "app.run_reason_migrated": "equipe が実行を記録する前から進行中で、続けられるものがありませんでした。",
   "app.run_reason_unknown": "実行が止まりました。",
+  "app.run_reason_waited_on_person": "あなたの対応（サインインなど）を待っていましたが、戻ってきませんでした。",
   "app.run_paused_why": "今は何も進めていません({who})。続く場合は実行停止になります。",
   "app.run_queued_for": "同じブランチと作業フォルダで再投入しました。{who} が空き次第始まります。",
   "app.run_branch": "ブランチ",

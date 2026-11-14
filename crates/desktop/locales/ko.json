@@ -3734,6 +3734,7 @@
   "run.reason_not_resumed": "equipe가 다시 시작하면서 이어 가지 못했어요. 멤버가 없거나 엔진이 여기서 이어서 할 수 없어요.",
   "run.reason_migrated": "equipe가 실행을 기록하기 전부터 진행 중이었고, 이어 갈 수 있는 게 없었어요.",
   "run.reason_unknown": "실행이 멈췄어요.",
+  "run.reason_waited_on_person": "요청한 일({what})을 기다렸는데 아무도 돌아오지 않았어요. 처리한 뒤 이어서 하기를 눌러 주세요.",
   "run.paused_idle": "{who}이(가) 지금 이 작업으로 턴을 돌리지 않아요. 계속 그러면 실행 멈춤으로 바뀌어요.",
   "run.paused_lease": "최근 실행 신호가 없어요. 계속 그러면 실행 멈춤으로 바뀌어요.",
   "run.queued_for": "같은 브랜치와 작업 폴더로 다시 맡겼어요. {who}이(가) 비면 시작해요.",

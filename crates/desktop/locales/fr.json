@@ -3826,6 +3826,7 @@
   "run.reason_not_resumed": "equipe a redémarré et n'a pas pu la poursuivre : son membre est parti, ou son moteur ne peut pas reprendre ici.",
   "run.reason_migrated": "En cours depuis avant qu'equipe ne suive les exécutions, et rien n'a pu la poursuivre.",
   "run.reason_unknown": "L'exécution s'est arrêtée.",
+  "run.reason_waited_on_person": "Il vous attendait — {what} — et personne n'est revenu. Faites-le, puis reprenez-le.",
   "run.paused_idle": "{who} n'exécute aucun tour dessus pour l'instant. Si cela dure, equipe le marque comme bloqué.",
   "run.paused_lease": "Aucun signe de son exécution récemment. Si cela dure, equipe la marque comme bloquée.",
   "run.queued_for": "Reprise sur la même branche et le même worktree ; elle démarre dès que {who} est libre.",

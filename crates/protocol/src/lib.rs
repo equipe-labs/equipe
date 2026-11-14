@@ -485,6 +485,11 @@ pub struct TicketExecution {
     /// stalled, kept as they are by every recovery. Left out when unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dirty: Option<u32>,
+    /// What the run waited on the person for when it stalled
+    /// ([`stall_reason::WAITED_ON_PERSON`]): the hand-off's why and site, in
+    /// the member's words. Left out otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waited_for: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -572,6 +577,10 @@ pub mod stall_reason {
     pub const NOT_RESUMED: &str = "not_resumed";
     /// From before equipe kept runs, and nothing could carry it on.
     pub const MIGRATED: &str = "migrated";
+    /// Its turn ended with something in the person's hands — its browser for
+    /// a sign-in — and they didn't come back to it in time
+    /// ([`super::TicketExecution::waited_for`] says what it was).
+    pub const WAITED_ON_PERSON: &str = "waited_on_person";
 }
 
 /// How the person recovers a stalled ticket ([`Command::Requeue`]). Each keeps
@@ -4352,6 +4361,7 @@ mod tests {
             pause: None,
             head: Some("1a2b3c4".into()),
             dirty: Some(2),
+            waited_for: None,
         };
         assert_eq!(serde_json::from_value::<TicketExecution>(serde_json::to_value(&execution).unwrap()).unwrap(), execution);
         // A paused run says why and when it goes on; a run that isn't says nothing of it.
@@ -4384,6 +4394,7 @@ mod tests {
                 pause: None,
                 head: None,
                 dirty: None,
+                waited_for: None,
             }))
         };
         let mut t = ticket(1);

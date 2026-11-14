@@ -524,6 +524,7 @@ mod tests {
             pause: None,
             head: None,
             dirty: None,
+            waited_for: None,
         }));
         tickets[5].branch = Some("b".into());
         tickets[5].merged = Some(false);

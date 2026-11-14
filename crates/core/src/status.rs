@@ -558,6 +558,7 @@ mod tests {
             pause: Some(RunPause { why, engine: Some(engine), resumes_at, moves_to: None, cause: None, attempt: 0 }),
             head: None,
             dirty: None,
+            waited_for: None,
         }));
         t
     }

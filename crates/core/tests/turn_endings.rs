@@ -585,6 +585,38 @@ async fn a_turn_the_person_stopped_is_left_alone_and_the_lease_is_still_the_net(
     handle.shutdown().await;
 }
 
+/// A turn that went silent — nothing from its engine for 45 minutes, nothing
+/// of its own running — is ended by equipe, its conversation kept, and
+/// reminded once how to finish; counted, for the hourly watch.
+#[tokio::test]
+async fn a_turn_that_went_silent_is_ended_and_reminded_once_how_to_finish() {
+    let engine = Engine0::new(Mode::Hangs);
+    let (home, repo) = squad();
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home, true));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    create(&handle, "Hero", "frontend").await;
+    engine.prompt_with("You're on T-1").await;
+    let run = run_of(&handle, 2).await;
+    // Still within the hour: a long turn is left to work.
+    handle.look_at_turns_after(Duration::from_secs(10 * 60)).await;
+    within(&mut events, Duration::from_millis(300)).await;
+    assert!(handle.snapshot("acme").await.sessions.iter().any(|s| s.session == run && s.state == SessionState::Working), "a turn working is left alone");
+    engine.set(Mode::Answers);
+    handle.look_at_turns_after(Duration::from_secs(46 * 60)).await;
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == run)).await;
+    let nudge = engine.prompt_with("went silent").await;
+    for way in ["submit_for_review", "block_on_person", "hand_back", "background"] {
+        assert!(nudge.contains(way), "{way}: {nudge}");
+    }
+    assert!(nudge.contains("--resume"), "the same conversation goes on: {nudge}");
+    until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("went silent"))).await;
+    assert_eq!(counted(&home, turn_ending::WENT_SILENT), 1);
+    assert!(counted(&home, turn_ending::NUDGED) >= 1);
+    assert_eq!(engine.said("went silent").len(), 1, "reminded once");
+    handle.shutdown().await;
+}
+
 /// The run of member `of`, once open.
 async fn run_of(handle: &Handle, of: u64) -> u64 {
     for _ in 0..200 {

@@ -3826,6 +3826,7 @@
   "run.reason_not_resumed": "equipe wurde neu gestartet und konnte ihn nicht fortsetzen: Das Mitglied ist weg, oder seine Engine kann hier nicht weitermachen.",
   "run.reason_migrated": "In Arbeit seit der Zeit, bevor equipe Läufe aufzeichnete, und nichts konnte ihn fortsetzen.",
   "run.reason_unknown": "Der Lauf hat aufgehört.",
+  "run.reason_waited_on_person": "Es hat auf dich gewartet – {what} – und niemand ist zurückgekommen. Erledige es und setze es dann fort.",
   "run.paused_idle": "{who} führt gerade keinen Zug daran aus. Bleibt es so, markiert equipe es als hängen geblieben.",
   "run.paused_lease": "In letzter Zeit kein Lebenszeichen des Laufs. Bleibt es so, markiert equipe ihn als hängen geblieben.",
   "run.queued_for": "Auf demselben Branch und Worktree zurückgeholt; es startet, sobald {who} frei ist.",

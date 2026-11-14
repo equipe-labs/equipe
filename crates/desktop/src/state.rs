@@ -2473,6 +2473,10 @@ impl Model {
         let who = t.assignee.clone().or_else(|| t.owner.clone()).unwrap_or_default();
         Some(match self.run_view(t)? {
             RunView::Active => return None,
+            // It waited on the person (a sign-in, say) past its grace: what for, to do and resume.
+            RunView::Stalled if let Some(e) = t.execution.as_ref().filter(|e| e.reason.as_deref() == Some(stall_reason::WAITED_ON_PERSON)) => {
+                t!("run.reason_waited_on_person", what = e.waited_for.as_deref().unwrap_or("…"))
+            }
             RunView::Stalled => stall_reason_words(t.execution.as_ref().and_then(|e| e.reason.as_deref())).to_owned(),
             // Paused by equipe: why, and when it goes on by itself.
             RunView::Paused if let Some(pause) = t.execution.as_ref().and_then(|e| e.pause.as_ref()) => pause_words(pause, self.unix as i64),
@@ -3488,6 +3492,23 @@ mod tests {
             for key in ["run.paused", "run.stalled", "run.queued", "state.section_stalled", "recover.resume", "recover.requeue", "recover.reassign", "recover.kept", "run.reason_lease_expired", "run.pause_limit", "run.pause_limit_at", "run.pause_limit_moves", "run.pause_retry", "run.pause_squad", "run.pause_sign_in"] {
                 assert!(crate::i18n::of(lang).own(key).is_some_and(|w| !w.trim().is_empty()), "{lang:?} {key}");
             }
+        }
+    }
+
+    #[test]
+    fn a_run_that_waited_on_the_person_past_its_grace_is_in_needs_you_with_what_it_waited_for() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "backend", "backend", SessionState::Ready)]), T0);
+        model.unix = 1_000;
+        let mut waited = with_run(ticket(3, "in_progress", None), "stalled", 0, Some(stall_reason::WAITED_ON_PERSON));
+        if let Some(run) = waited.execution.as_mut() {
+            run.waited_for = Some("Open the settings page (example.com)".into());
+        }
+        model.tickets = vec![waited.clone()];
+        assert_eq!(model.needs_you(), vec![(Section::Stalled, Need::Ticket(3))]);
+        assert!(model.run_reason(&waited).is_some_and(|r| r.contains("Open the settings page (example.com)")), "{:?}", model.run_reason(&waited));
+        for lang in equipe_core::i18n::Lang::ALL {
+            assert!(crate::i18n::of(lang).own("run.reason_waited_on_person").is_some_and(|w| w.contains("{what}")), "{lang:?}");
         }
     }
 

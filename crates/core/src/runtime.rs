@@ -290,6 +290,8 @@ enum Request {
     Usage(Engine, equipe_protocol::PlanUsage),
     /// The lease check, as if at this unix time (tests).
     CheckLeases(u64, oneshot::Sender<()>),
+    /// The minute's look at turns running, as if this much later (tests).
+    LookAtTurns(Duration, oneshot::Sender<()>),
     /// The minute tick, now (a measurement's).
     Minute(oneshot::Sender<()>),
     /// Paused runs looked at, as if at this unix time (tests).
@@ -571,6 +573,16 @@ impl Handle {
     pub async fn check_leases_at(&self, at: u64) {
         let (tx, rx) = oneshot::channel();
         if self.requests.send(Request::CheckLeases(at, tx)).is_ok() {
+            let _ = rx.await;
+        }
+    }
+
+    /// The minute's look at turns running — what went silent — as if `later`
+    /// from now, and answered once done: for tests, without waiting.
+    #[doc(hidden)]
+    pub async fn look_at_turns_after(&self, later: Duration) {
+        let (tx, rx) = oneshot::channel();
+        if self.requests.send(Request::LookAtTurns(later, tx)).is_ok() {
             let _ = rx.await;
         }
     }
@@ -928,6 +940,13 @@ struct Session {
     /// Stops one subagent of the turn running now, by its thread, through
     /// its engine (Codex's `turn/interrupt` on the subagent's own turn).
     stop_subagent: Option<mpsc::UnboundedSender<String>>,
+    /// Told to the turn running now (Claude Code's) once its ticket's work is
+    /// over — handed in, waiting, handed back: a turn whose answer is in then
+    /// isn't kept for commands it left running in the background.
+    work_over: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Ends the turn running now (Claude Code's) as far as it went, through
+    /// its provider, its conversation kept: for a turn that went silent.
+    wind_down: Option<oneshot::Sender<()>>,
     /// For each of those, the project the person was looking at (`None`: the whole squad).
     steer_threads: Vec<Option<String>>,
     /// Steers taken back after they went into the turn: not shown when the
@@ -1076,6 +1095,9 @@ enum Internal {
     DeskSaved { session: SessionId, name: String, saved: Result<Option<squad_home::Change>, String> },
     /// A turn's engine started, as this process.
     EngineStarted { session: SessionId, pid: u32 },
+    /// A turn whose answer was in but whose engine didn't end it was ended
+    /// by its provider, as completed: why ([`Activity::Settled`]).
+    TurnSettled { session: SessionId, why: String },
     /// Every process, as a look at members' commands found them (`None`: `ps` couldn't say).
     Processes(Option<Vec<crate::command_watch::Proc>>),
     Done(TurnDone),
@@ -1543,12 +1565,14 @@ impl Wake {
             Wake::Request(Some(Request::Phone(_))) => Borrowed("phone tool"),
             Wake::Request(Some(Request::Usage(..))) => Borrowed("an engine's plan usage"),
             Wake::Request(Some(Request::CheckLeases(..))) => Borrowed("lease check"),
+            Wake::Request(Some(Request::LookAtTurns(..))) => Borrowed("turns looked at"),
             Wake::Request(Some(Request::Minute(_))) => Borrowed("minute tick"),
             Wake::Request(Some(Request::TurnEndsDue(..))) => Borrowed("paused runs' time"),
             Wake::Request(Some(Request::Shutdown(_))) | Wake::Request(None) => Borrowed("shutdown"),
             Wake::Request(Some(Request::DesktopAuto)) => Borrowed("desktop setup"),
             Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
             Wake::Internal(Internal::EngineStarted { .. }) => Borrowed("an engine's start"),
+            Wake::Internal(Internal::TurnSettled { .. }) => Borrowed("a settled turn ended"),
             Wake::Internal(Internal::Processes(_)) => Borrowed("what members' commands run"),
             Wake::Internal(Internal::Done(_)) => Borrowed("a turn's end"),
             Wake::Internal(Internal::ConversationTitle(_)) => Borrowed("a conversation's title"),
@@ -1769,6 +1793,10 @@ impl Runtime {
                     self.recover_execution_leases(at).await;
                     let _ = reply.send(());
                 }
+                Some(Request::LookAtTurns(later, reply)) => {
+                    self.look_at_turns(std::time::Instant::now() + later).await;
+                    let _ = reply.send(());
+                }
                 Some(Request::TurnEndsDue(at, reply)) => {
                     self.turn_ends_due(at);
                     let _ = reply.send(());
@@ -1806,6 +1834,7 @@ impl Runtime {
                 }
                 Internal::DeskSaved { session, name, saved } => self.desk_saved(session, &name, saved),
                 Internal::EngineStarted { session, pid } => self.engine_started(session, pid),
+                Internal::TurnSettled { session, why } => self.turn_settled(session, &why),
                 Internal::Processes(procs) => self.on_processes(procs),
                 Internal::Done(done) => self.on_turn_done(done).await,
                 Internal::ConversationTitle(done) => self.on_conversation_title(done),
@@ -1902,7 +1931,10 @@ impl Runtime {
                 Internal::Reviewed { squad, ticket, member, result } => self.on_reviewed(&squad, ticket, member, result),
                 Internal::Prechecked { squad, qa, result, secs } => Box::pin(self.on_prechecked(&squad, qa, result, secs)).await,
                 Internal::ReviewPrechecked { squad, review, heads, secs } => Box::pin(self.on_review_prechecked(&squad, review, heads, secs)).await,
-                Internal::SubagentHeard { session, id } => self.subagent_heard(session, &id),
+                Internal::SubagentHeard { session, id } => {
+                    self.engine_heard(session);
+                    self.subagent_heard(session, &id);
+                }
                 Internal::Helper { session, id, activity } => self.helper_did(session, &id, activity),
                 Internal::HelperEnded { session, id, outcome } => self.helper_ended(session, &id, outcome),
                 Internal::HelperTimeUp { session, id } => self.stop_helper(session, &id, crate::helpers::Ended::TimeLimit),
@@ -1942,6 +1974,8 @@ impl Runtime {
         self.recover_execution_leases(now_secs()).await;
         pulse.step("minute tick: paused runs");
         self.turn_ends_due(now_secs());
+        pulse.step("minute tick: quiet turns");
+        self.look_at_turns(std::time::Instant::now()).await;
         self.plan_use_pass();
         pulse.step("minute tick: idle lanes");
         self.fold_idle_lanes();
@@ -4179,6 +4213,8 @@ runbooks and reports live there, and work across the projects or on running them
                 steer_threads: Vec::new(),
                 stop: None,
                 stop_subagent: None,
+                work_over: None,
+                wind_down: None,
                 taken_back: Vec::new(),
                 send_now_prompt: None,
                 subagents: Vec::new(),
@@ -4911,7 +4947,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             session.watch.begin(&prompt);
             if let Some(work) = session.work.as_mut() {
                 work.end.nudged = false;
-                work.end.with_person = false;
+                work.end.with_person = None;
             }
         }
         // A run equipe paused goes on with this turn, however it was asked.
@@ -5310,6 +5346,8 @@ for one project goes to it as tickets for its owners, with that project — and 
         let mut steer = None;
         let mut stop = None;
         let mut stop_subagent = None;
+        let mut work_over = None;
+        let mut wind_down = None;
         let turn = match session.engine {
             // The person's own Codex CLI: an agent with tools, in the worktree.
             Engine::Codex if session.codex.is_none() => {
@@ -5442,7 +5480,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                     if let Some(port) = browser {
                         browser::ready(port, Duration::from_secs(90)).await;
                     }
-                    let controls = codex_app::Controls { steering: Some(steer_rx), asks: Some(ask_tx), stop: Some(stop_rx), stop_subagent: Some(stop_sub_rx) };
+                    let controls = codex_app::Controls { steering: Some(steer_rx), asks: Some(ask_tx), stop: Some(stop_rx), stop_subagent: Some(stop_sub_rx), ..Default::default() };
                     let outcome = codex_app::run_turn_with(&binary, &cwd, request, controls, |activity| {
                         if matches!(activity, Activity::Text(_)) {
                             streamed = true;
@@ -5458,6 +5496,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                             }
                             Activity::SubagentHeard { id: sub } => {
                                 let _ = internal.send(Internal::SubagentHeard { session: id, id: sub });
+                            }
+                            Activity::Settled(why) => {
+                                let _ = internal.send(Internal::TurnSettled { session: id, why });
                             }
                             activity => {
                                 if let Some(event) = activity_event(id, activity) {
@@ -5568,6 +5609,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                 // Nor other squads' homes.
                 let (steer_tx, steer_rx) = mpsc::unbounded_channel::<String>();
                 steer = Some(steer_tx);
+                let over = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                work_over = Some(over.clone());
+                let (wind_tx, wind_rx) = oneshot::channel();
+                wind_down = Some(wind_tx);
                 // The desktop helper's token and signing key too.
                 let private: Vec<String> =
                     [self.config.home.join("browser"), self.config.home.join("credentials"), equipe_desktop_control::helper::dir(&self.config.home)]
@@ -5620,12 +5665,17 @@ for one project goes to it as tickets for its owners, with that project — and 
                         browser::ready(port, Duration::from_secs(90)).await;
                     }
                     let mut plan = engines::ToldPlan::default();
-                    let outcome = claude_code::run_turn(&binary, &cwd, request, Some(steer_rx), |activity| {
+                    let controls = claude_code::Controls { steering: Some(steer_rx), work_over: Some(over), wind_down: Some(wind_rx), ..Default::default() };
+                    let outcome = claude_code::run_turn_with(&binary, &cwd, request, controls, |activity| {
                         if matches!(activity, Activity::Text(_)) {
                             streamed = true;
                         }
                         if let Activity::Engine { pid } = activity {
                             let _ = internal.send(Internal::EngineStarted { session: id, pid });
+                            return;
+                        }
+                        if let Activity::Settled(why) = activity {
+                            let _ = internal.send(Internal::TurnSettled { session: id, why });
                             return;
                         }
                         if let Some(event) = plan.heard(&activity, std::time::Instant::now()).and_then(|again| activity_event(id, again)) {
@@ -5653,6 +5703,8 @@ for one project goes to it as tickets for its owners, with that project — and 
             session.steer = steer;
             session.stop = stop;
             session.stop_subagent = stop_subagent;
+            session.work_over = work_over;
+            session.wind_down = wind_down;
         }
     }
 
@@ -5986,6 +6038,10 @@ for one project goes to it as tickets for its owners, with that project — and 
     /// After a turn, finished or stopped: hand in work that was submitted,
     /// deliver memos, and let the rules hand out what is ready.
     async fn after_turn(&mut self, id: SessionId) {
+        // A turn that put something in the person's hands waits on them from now.
+        if let Some(waits) = self.sessions.get_mut(&id).and_then(|s| s.work.as_mut()).and_then(|w| w.end.with_person.as_mut()) {
+            waits.since = now_secs();
+        }
         // How long a turn at the desk took, for guessing the next ones'.
         if let Some(s) = self.sessions.get_mut(&id)
             && let (Some(began), None, Some(squad), Some(name)) = (s.turn_began.take(), &s.work, s.squad.clone(), s.name())
@@ -6634,21 +6690,25 @@ for one project goes to it as tickets for its owners, with that project — and 
     }
 
     /// Run `id`'s turn ended with something in the person's hands — its
-    /// browser for a sign-in, an approval it asked for: it is still on its
-    /// ticket, waiting for them to come back, not stalled.
-    fn run_waits_on_person(&self, id: SessionId, session: &Session) -> bool {
-        session.work.as_ref().is_some_and(|w| w.end.with_person) || self.pending.values().any(|p| p.approval.session == id)
+    /// browser for a sign-in, an approval it asked for: as of unix time `at`
+    /// it is still on its ticket, waiting for them to come back, not stalled.
+    /// A hand-off holds it for [`turn_end::WITH_PERSON_GRACE`]; an approval,
+    /// on its card in front of them, for as long as it is open.
+    fn run_waits_on_person(&self, id: SessionId, session: &Session, at: u64) -> bool {
+        session.work.as_ref().and_then(|w| w.end.with_person.as_ref()).is_some_and(|w| at.saturating_sub(w.since) < turn_end::WITH_PERSON_GRACE)
+            || self.pending.values().any(|p| p.approval.session == id)
     }
 
     /// Renew leases only for turns that this runtime can still observe. Late
     /// heartbeats are fenced by the stored generation and session id.
     fn renew_execution_leases(&mut self) {
+        let now = now_secs();
         let active: Vec<(String, SessionId, TicketId, u64)> = self
             .sessions
             .iter()
             // A run equipe paused holds its lease while it waits to go on, and
             // so does one waiting on the person (its browser in their hands).
-            .filter(|(id, session)| session.is_working() || session.is_preparing() || Runtime::is_parked(session) || self.run_waits_on_person(**id, session))
+            .filter(|(id, session)| session.is_working() || session.is_preparing() || Runtime::is_parked(session) || self.run_waits_on_person(**id, session, now))
             .filter_map(|(_, session)| {
                 let work = session.work.as_ref()?;
                 Some((session.squad.clone()?, work.execution_session, work.ticket, work.execution_generation))
@@ -6674,7 +6734,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 .iter()
                 .filter(|(id, session)| {
                     session.squad.as_deref() == Some(squad.as_str())
-                        && (session.is_working() || session.is_preparing() || Runtime::is_parked(session) || self.run_waits_on_person(**id, session))
+                        && (session.is_working() || session.is_preparing() || Runtime::is_parked(session) || self.run_waits_on_person(**id, session, at))
                 })
                 .map(|(_, session)| session)
                 .filter_map(|session| session.work.as_ref().map(|work| work.execution_session))
@@ -6684,6 +6744,19 @@ for one project goes to it as tickets for its owners, with that project — and 
                 continue;
             }
             for ticket in stalled {
+                // One that waited on the person past its grace says what for.
+                let waited = self
+                    .sessions
+                    .values()
+                    .filter(|s| s.squad.as_deref() == Some(squad.as_str()))
+                    .filter_map(|s| s.work.as_ref())
+                    .find(|w| w.ticket == ticket)
+                    .and_then(|w| w.end.with_person.as_ref().map(|p| p.what.clone()));
+                if let Some(what) = waited
+                    && let Some(journal) = self.journal(&squad)
+                {
+                    let _ = journal.set_waited_on_person(ticket, &what);
+                }
                 self.stalled(&squad, ticket, true);
             }
             Box::pin(self.dispatch(&squad)).await;
@@ -6726,14 +6799,28 @@ for one project goes to it as tickets for its owners, with that project — and 
         let _ = journal.ticket_event(ticket_id, "equipe", "stalled", &reason);
         let Some(ticket) = journal.ticket(ticket_id).ok().flatten() else { return };
         let (title, who) = (ticket.title.clone(), ticket.assignee.clone().unwrap_or_default());
+        let waited = ticket.execution.as_ref().and_then(|e| e.waited_for.clone());
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
         if tell {
-            let line = format!(
-                "T-{ticket_id}'s run stopped: {who}'s turn ended without a hand-in or a wait, and nothing ran it since. It stays in \
-progress with its branch and worktree as they are. The person resumes, requeues or reassigns it on its card — you can't, and \
-don't open a new ticket for it."
-            );
-            let shown = say!(self, "news.stalled", id = ticket_id, name = who, title = title);
+            let (line, shown) = match waited {
+                Some(what) => (
+                    format!(
+                        "T-{ticket_id}'s run stopped: {who} waited on the person for {} minutes ({what}) and they haven't come \
+back to it. It stays in progress with its branch and worktree as they are, in the person's Needs-you with what it waited \
+for: they do it and resume it on its card — you can't, and don't open a new ticket for it.",
+                        turn_end::WITH_PERSON_GRACE / 60
+                    ),
+                    say!(self, "news.stalled_on_person", id = ticket_id, name = who, what = what, title = title),
+                ),
+                None => (
+                    format!(
+                        "T-{ticket_id}'s run stopped: {who}'s turn ended without a hand-in or a wait, and nothing ran it since. It \
+stays in progress with its branch and worktree as they are. The person resumes, requeues or reassigns it on its card — you \
+can't, and don't open a new ticket for it."
+                    ),
+                    say!(self, "news.stalled", id = ticket_id, name = who, title = title),
+                ),
+            };
             self.brief_pm(squad, line, Some(shown));
         }
     }
@@ -7812,7 +7899,12 @@ there, end your turn, and carry on when they say they're done."
             });
             return;
         }
+        let caller = self.caller_id(&call);
         let result = self.run_tool(call);
+        // A hand-in, a wait, a hand-back: the turn only winds down now.
+        if let Some(id) = caller {
+            self.tell_work_over(id);
+        }
         // Whatever changed, the rules look again.
         self.dispatch(&squad).await;
         let _ = reply.send(match result {
@@ -7824,8 +7916,14 @@ there, end your turn, and carry on when they say they're done."
     /// The member that made `call` put something in the person's hands —
     /// its browser, a sign-in: its turn may end waiting on them.
     fn with_person(&mut self, call: &ToolCall) {
+        let said = |key: &str| call.arguments.get(key).and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned);
+        let what = match (said("why"), said("site").or_else(|| said("url"))) {
+            (Some(why), Some(site)) => format!("{why} ({site})"),
+            (Some(what), None) | (None, Some(what)) => what,
+            (None, None) => call.name.clone(),
+        };
         if let Some(work) = self.caller_id(call).and_then(|id| self.sessions.get_mut(&id)).and_then(|s| s.work.as_mut()) {
-            work.end.with_person = true;
+            work.end.with_person = Some(turn_end::WithPerson { since: now_secs(), what: crate::signals::one_line(&what) });
         }
     }
 
@@ -9721,6 +9819,8 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
                         steer_threads: Vec::new(),
                         stop: None,
                         stop_subagent: None,
+                        work_over: None,
+                        wind_down: None,
                         taken_back: Vec::new(),
                         send_now_prompt: None,
                         subagents: Vec::new(),
@@ -10617,6 +10717,8 @@ fn lane_of(main: SessionId, m: &Session, project: Option<String>, thread: DeskTh
         steer_threads: Vec::new(),
         stop: None,
         stop_subagent: None,
+        work_over: None,
+        wind_down: None,
         taken_back: Vec::new(),
         send_now_prompt: None,
         subagents: Vec::new(),
@@ -10859,7 +10961,7 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
         Activity::Plan { five_hour, seven_day } => Event::PlanUsage { usage: claude_plan(five_hour, seven_day), engine: Engine::Claude },
         Activity::Limits(_) => return None,
         // The loop's to know, never a screen's: sent apart by the turn.
-        Activity::Engine { .. } | Activity::Spent(_) | Activity::SubagentHeard { .. } => return None,
+        Activity::Engine { .. } | Activity::Spent(_) | Activity::SubagentHeard { .. } | Activity::Settled(_) => return None,
     })
 }
 

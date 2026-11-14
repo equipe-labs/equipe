@@ -51,7 +51,18 @@ pub mod turn_ending {
     pub const LIMITED: &str = "limited";
     /// Several fast failures at once: the squad's starts paused.
     pub const SQUAD_PAUSED: &str = "squad_paused";
+    /// The turn's answer was in but its engine didn't end the turn (a
+    /// command left running in the background held it): ended as completed.
+    pub const ENDED_QUIET: &str = "ended_quiet";
+    /// Nothing came from the turn for [`super::SILENT_AFTER`] with nothing of
+    /// its own running: equipe stopped it (and reminded it how to finish).
+    pub const WENT_SILENT: &str = "went_silent";
 }
+
+/// A turn that says nothing this long — no word from its engine, no command
+/// of its own running, nothing asked of the person — went silent: it is
+/// stopped, and a run on a ticket reminded once how to finish.
+pub(super) const SILENT_AFTER: std::time::Duration = std::time::Duration::from_secs(45 * 60);
 
 /// A failure within this many seconds, with nothing done, is a fast one.
 pub(super) const FAST_SECS: u64 = 20;
@@ -89,6 +100,8 @@ pub(super) struct TurnWatch {
     pub(super) prompt: Option<String>,
     /// The person (or equipe) stopped it.
     pub(super) stopped: bool,
+    /// equipe stopped it because it went silent ([`SILENT_AFTER`]).
+    pub(super) silent: bool,
     /// How it ended, until the turn's end is acted on.
     pub(super) ended: Option<Ending>,
 }
@@ -111,6 +124,8 @@ pub(super) struct Ending {
     prompt: Option<String>,
     /// Its engine said it reached its plan's limit.
     pub(super) limit: bool,
+    /// equipe stopped it because it went silent ([`SILENT_AFTER`]).
+    silent: bool,
 }
 
 impl Ending {
@@ -150,11 +165,27 @@ pub(super) struct RunEnd {
     /// Set by `hand_back` (or by equipe): the ticket goes back when the turn ends.
     pub(super) handed_back: Option<HandBack>,
     /// Its browser is in the person's hands, or a sign-in was asked of them,
-    /// this turn: its end waits on them.
-    pub(super) with_person: bool,
+    /// this turn: its end waits on them — for [`WITH_PERSON_GRACE`].
+    pub(super) with_person: Option<WithPerson>,
     /// What it last wrote on its ticket's record.
     pub(super) last_comment: Option<String>,
 }
+
+/// What a run put in the person's hands, and since when it waits on them.
+#[derive(Debug, Clone)]
+pub(super) struct WithPerson {
+    /// When it was asked, or the turn that asked ended (unix seconds): the
+    /// wait starts when the turn stops working.
+    pub(super) since: u64,
+    /// What for, in the member's words: the hand-off's why, and its site.
+    pub(super) what: String,
+}
+
+/// How long a run whose turn ended waiting on the person (its browser handed
+/// to them, a sign-in asked) holds its ticket for them. Past it, the run stalls
+/// as `waited_on_person`, in the person's Needs-you with what it waited for, to
+/// do and resume; a pending approval card holds it for as long as it is open.
+pub(super) const WITH_PERSON_GRACE: u64 = 30 * 60;
 
 /// A run paused by equipe.
 pub(super) struct Park {
@@ -348,6 +379,7 @@ impl Runtime {
                     text,
                     prompt: watch.prompt.clone(),
                     limit,
+                    silent: watch.silent,
                 };
                 watch.ended = Some(ending);
                 return limit;
@@ -404,7 +436,9 @@ impl Runtime {
         }
         let Some(work) = s.work.as_ref().filter(|w| !w.preparing) else { return false };
         let (Some(squad), Some(name)) = (s.squad.clone(), s.name().map(str::to_owned)) else { return false };
-        if ending.outcome == TurnOutcome::Interrupted {
+        // Stopped by the person, it is left as it was; stopped by equipe for
+        // going silent, it has no end to its work, and is carried on below.
+        if ending.outcome == TurnOutcome::Interrupted && !ending.silent {
             // A test turn stopped tells nothing: the next one comes later.
             self.probe_over(&squad, id);
             return false;
@@ -432,7 +466,7 @@ impl Runtime {
         // it; without them it says so in words, and the person accepts.
         let Some(s) = self.sessions.get(&id) else { return false };
         let board_tools = has_tools(s) && self.config.equipe_binary.is_some();
-        let waits_on_person = self.run_waits_on_person(id, s);
+        let waits_on_person = self.run_waits_on_person(id, s, now_secs());
         // What the person said meanwhile goes to it first: that is its next turn.
         let said_meanwhile = !s.queued.is_empty() || !s.steering.is_empty();
         if !board_tools || waits_on_person || said_meanwhile {
@@ -440,9 +474,9 @@ impl Runtime {
         }
         let nudged = s.work.as_ref().is_some_and(|w| w.end.nudged);
         let last = s.work.as_ref().and_then(|w| w.end.last_comment.clone()).or_else(|| ending.last_words()).unwrap_or_else(|| "(it said nothing)".to_owned());
-        self.count_ending(&squad, turn_ending::NO_END, Some(ticket), &name);
+        self.count_ending(&squad, if ending.silent { turn_ending::WENT_SILENT } else { turn_ending::NO_END }, Some(ticket), &name);
         if !nudged {
-            self.nudge(id, &squad, &name, ticket);
+            self.nudge(id, &squad, &name, ticket, ending.silent);
             return true;
         }
         if let Some(work) = self.sessions.get_mut(&id).and_then(|s| s.work.as_mut()) {
@@ -452,13 +486,109 @@ impl Runtime {
         true
     }
 
-    /// Resume run `id`'s conversation once with the ways to finish its ticket.
-    fn nudge(&mut self, id: SessionId, squad: &str, name: &str, ticket: TicketId) {
+    /// A turn's provider ended it, settled: its answer was in but its engine
+    /// kept running ([`Activity::Settled`]). It ends as completed, as usual;
+    /// counted, so the hourly watch sees how often engines hang on.
+    pub(super) fn turn_settled(&mut self, id: SessionId, why: &str) {
+        let Some(s) = self.sessions.get(&id) else { return };
+        let (squad, name, ticket) = (s.squad.clone(), s.name().unwrap_or("agent").to_owned(), s.work.as_ref().map(|w| w.ticket));
+        let at = ticket.map(|t| format!(" on T-{t}")).unwrap_or_default();
+        match squad {
+            Some(squad) => {
+                crate::daemon_log!("equipe: {squad}: {name}'s turn{at} ended here, completed: {why}");
+                self.count_ending(&squad, turn_ending::ENDED_QUIET, ticket, &name);
+            }
+            None => crate::daemon_log!("equipe: {name}'s turn ended here, completed: {why}"),
+        }
+    }
+
+    /// Whether run `id`'s ticket work is over by the workflow's account — handed
+    /// in, waiting, handed back, or a question to the person left open — so its
+    /// turn is only winding down.
+    fn work_is_over(&mut self, id: SessionId) -> bool {
+        let Some(work) = self.sessions.get(&id).and_then(|s| s.work.as_ref()) else { return false };
+        if work.handed_in.is_some() || work.waiting.is_some() || work.end.handed_back.is_some() {
+            return true;
+        }
+        self.asked_waiting_note(id).is_some()
+    }
+
+    /// Tell the turn running on session `id` that its work is over, once it is:
+    /// its engine isn't kept running then for commands left in the background.
+    pub(super) fn tell_work_over(&mut self, id: SessionId) {
+        let Some(over) = self.sessions.get(&id).and_then(|s| s.work_over.clone()) else { return };
+        if !over.load(std::sync::atomic::Ordering::Relaxed) && self.work_is_over(id) {
+            over.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// The minute's look at turns running: each one's work told if it is over,
+    /// and each that went silent ([`SILENT_AFTER`]) stopped — on a ticket, carried
+    /// on with a reminder of how to finish ([`Self::unfinished_turn`]).
+    pub(super) async fn look_at_turns(&mut self, now: std::time::Instant) {
+        let running: Vec<SessionId> = self.sessions.iter().filter(|(_, s)| s.turn.as_ref().is_some_and(|t| !t.is_finished())).map(|(&id, _)| id).collect();
+        for &id in &running {
+            self.tell_work_over(id);
+        }
+        let silent: Vec<SessionId> = running
+            .into_iter()
+            .filter(|&id| {
+                self.engine_quiet_for(id, now).is_some_and(|quiet| quiet >= SILENT_AFTER)
+                    && !self.command_running(id)
+                    && !self.pending.values().any(|p| p.approval.session == id)
+                    && self.sessions.get(&id).is_some_and(|s| s.compacting.is_none())
+            })
+            .collect();
+        for id in silent {
+            self.went_silent(id).await;
+        }
+    }
+
+    /// Session `id`'s turn went silent: ended, its end acted on as one with
+    /// no end to the work. Its provider ends it, keeping its conversation;
+    /// one that can't, or that is still running a minute on, is stopped.
+    async fn went_silent(&mut self, id: SessionId) {
+        let Some(s) = self.sessions.get_mut(&id) else { return };
+        if !s.watch.silent {
+            s.watch.silent = true;
+            let (squad, name) = (s.squad.clone().unwrap_or_default(), s.name().unwrap_or("agent").to_owned());
+            let at = s.work.as_ref().map(|w| format!(" on T-{}", w.ticket)).unwrap_or_default();
+            let off_ticket = s.work.is_none();
+            crate::daemon_log!("equipe: {squad}: {name}'s turn{at} went silent ({} minutes, nothing of its own running): ended", SILENT_AFTER.as_secs() / 60);
+            // Off a ticket there is nothing to carry on: only counted.
+            if off_ticket && !squad.is_empty() {
+                self.count_ending(&squad, turn_ending::WENT_SILENT, None, &name);
+            }
+        }
+        if let Some(s) = self.sessions.get_mut(&id)
+            && let Some(wind) = s.wind_down.take()
+            && wind.send(()).is_ok()
+        {
+            return;
+        }
+        if self.stop_turn(id) {
+            self.after_turn(id).await;
+        }
+    }
+
+    /// Resume run `id`'s conversation once with the ways to finish its
+    /// ticket — after a turn that went silent ([`SILENT_AFTER`]), saying so.
+    fn nudge(&mut self, id: SessionId, squad: &str, name: &str, ticket: TicketId, silent: bool) {
         self.count_ending(squad, turn_ending::NUDGED, Some(ticket), name);
         let designer = self.sessions.get(&id).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role == design_qa::DESIGNER);
         let qa = if designer { "\n- a design QA ticket checked: `design_qa` with your verdict;" } else { "" };
+        let opening = if silent {
+            format!(
+                "[equipe] Your turn on T-{ticket} went silent: nothing came from it for {} minutes and nothing of yours was \
+running, so equipe stopped it. A command you left running in the background may have stopped with it — look at where \
+things stand first, and run what you still need again, waiting for it within the turn.",
+                SILENT_AFTER.as_secs() / 60
+            )
+        } else {
+            format!("[equipe] Your turn on T-{ticket} ended without ending the work, so the ticket would sit unfinished.")
+        };
         let prompt = format!(
-            "[equipe] Your turn on T-{ticket} ended without ending the work, so the ticket would sit unfinished. Every turn on \
+            "{opening} Every turn on \
 a ticket ends in exactly one of these ways:\n- done: `submit_for_review` with a short summary;\n- you need the person: \
 `block_on_person` with what they must do (or `ask_decision`, then end your turn, when only their answer is missing);\n- you \
 shouldn't or can't do it: `hand_back` — `waiting_on` the tickets it waits for (named in `tickets`), `duplicate`, \
@@ -466,7 +596,7 @@ shouldn't or can't do it: `hand_back` — `waiting_on` the tickets it waits for 
 you started in the background doesn't wake you once your turn has ended: wait for it within the turn. Don't repeat work \
 already done — look at where you are, then end the turn in one of the ways above."
         );
-        let text = say!(self, "notice.nudged", id = ticket);
+        let text = if silent { say!(self, "notice.went_silent", id = ticket) } else { say!(self, "notice.nudged", id = ticket) };
         self.publish(Event::Notice { undo: None, session: id, text });
         self.start_turn(id, prompt);
         if let Some(work) = self.sessions.get_mut(&id).and_then(|s| s.work.as_mut()) {
@@ -1054,7 +1184,7 @@ mod tests {
 
     #[test]
     fn a_fast_failure_did_nothing_within_seconds() {
-        let ending = |outcome, secs, tools, tokens| Ending { outcome, secs, tools, tokens, error: None, text: String::new(), prompt: None, limit: false };
+        let ending = |outcome, secs, tools, tokens| Ending { outcome, secs, tools, tokens, error: None, text: String::new(), prompt: None, limit: false, silent: false };
         assert!(ending(TurnOutcome::Failed, 2, 0, 0).fast());
         assert!(!ending(TurnOutcome::Failed, 2, 1, 0).fast(), "it used a tool");
         assert!(!ending(TurnOutcome::Failed, 300, 0, 0).fast(), "it ran for minutes");

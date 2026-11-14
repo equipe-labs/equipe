@@ -156,6 +156,11 @@ impl Runtime {
         }
     }
 
+    /// How long `id`'s turn's engine has said nothing; `None` before it started.
+    pub(super) fn engine_quiet_for(&self, id: SessionId, now: std::time::Instant) -> Option<Duration> {
+        self.commands.by.get(&id).filter(|w| w.pid.is_some()).map(|w| now.saturating_duration_since(w.heard))
+    }
+
     /// Whether `id`'s engine runs a command of the member's now.
     pub(super) fn command_running(&self, id: SessionId) -> bool {
         self.commands.by.get(&id).is_some_and(|w| w.pid.is_some() && !w.open.is_empty())
