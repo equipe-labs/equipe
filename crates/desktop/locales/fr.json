@@ -3882,6 +3882,7 @@
   "logins.offer_where": "Saisi ici seulement, gardé dans le coffre de secrets de {machine} — jamais montré à un membre, jamais dans une conversation.",
   "logins.offer_never": "Jamais pour ce site",
   "logins.offer_open": "Garder…",
+  "logins.offer_save": "Enregistrer dans equipe",
   "logins.offer_whose": "dans le navigateur de {name}",
   "desktop_setup.installing": "Préparation des apps de bureau…",
   "desktop_setup.failed_title": "Impossible de préparer les apps de bureau",

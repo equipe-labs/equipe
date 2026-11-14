@@ -198,6 +198,9 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
         if let Some(squad) = self.journals.keys().min().cloned() {
             self.login_record(&squad, Entry::new(now_secs(), &was.site, "", Kind::SignedIn, None, Some(BY_PERSON)));
         }
+        // The person's main profile is every squad's: kept for each.
+        let squads: Vec<String> = self.journals.keys().cloned().collect();
+        self.collect_sign_in(squads, "", &was.site);
         self.reload_waiting(&was.site, "");
         self.offer_login(None, None, &was.site, &was.url)
     }
@@ -219,6 +222,8 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
         let Some((squad, key)) = lane.split_once('/') else { return };
         let (squad, member, profile) = (squad.to_owned(), browser::member_of(key).to_owned(), browser::split_profile(key).1.is_some());
         self.login_record(&squad, Entry::new(now_secs(), &was.site, &member, Kind::SignedIn, None, Some(BY_PERSON)));
+        // Kept for the squad, in the profile it was made in.
+        self.collect_sign_in(vec![squad.clone()], browser::split_profile(key).1.unwrap_or_default(), &was.site);
         self.reload_waiting(&was.site, lane);
         self.release_login_waiters(lane).await;
         // Another person's browser keeps their accounts: not the person's to keep in the vault.

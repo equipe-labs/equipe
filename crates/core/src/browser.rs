@@ -302,9 +302,42 @@ pub enum HostEvent {
         #[serde(default)]
         png: Option<Hidden>,
     },
+    /// Sign-in cookies went into a profile's Chrome: a sign-in view's for
+    /// `lane` (`cookies`), or the squad's kept sign-ins (`restore`, no lane).
+    /// How many went in, and how many Chrome refused — never a value.
+    Cookies {
+        #[serde(default)]
+        lane: Option<String>,
+        #[serde(default)]
+        profile: String,
+        added: usize,
+        failed: usize,
+        #[serde(default)]
+        restore: bool,
+    },
+    /// A profile's cookies of a site the person just signed in to
+    /// (`collect`), for the squad's kept sign-ins: values and all, so never
+    /// printed ([`HiddenCookies`]).
+    Collected {
+        token: u64,
+        #[serde(default)]
+        cookies: HiddenCookies,
+    },
     /// The host is gone (its Chrome closed, or it failed).
     #[serde(skip)]
     Exited,
+}
+
+/// Cookies the host hands the daemon: `Debug` leaves the values out
+/// (`HandoffCookie`'s own does).
+#[derive(Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(transparent)]
+pub struct HiddenCookies(pub Vec<equipe_protocol::HandoffCookie>);
+
+impl std::fmt::Debug for HiddenCookies {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HiddenCookies({} cookies)", self.0.len())
+    }
 }
 
 /// Text the host hands the daemon that holds a secret (a passkey's private
@@ -1810,6 +1843,19 @@ mod tests {
         let HostEvent::Tabs { pages, .. } = serde_json::from_str::<HostEvent>(raw).unwrap() else { panic!() };
         assert_eq!(pages[0].clone().page().favicon.as_deref(), Some("https://a.com/favicon.ico"));
         assert!(pages[0].signals.as_ref().unwrap().password);
+    }
+
+    #[test]
+    fn the_host_tells_how_many_sign_in_cookies_went_in_and_hands_collected_ones_unprinted() {
+        let raw = r#"{"type":"cookies","lane":"acme/qa","profile":"","added":30,"failed":1,"restore":false}"#;
+        assert_eq!(serde_json::from_str::<HostEvent>(raw).unwrap(), HostEvent::Cookies { lane: Some("acme/qa".into()), profile: String::new(), added: 30, failed: 1, restore: false });
+        let raw = r#"{"type":"cookies","lane":null,"profile":"jh","added":4,"failed":0,"restore":true}"#;
+        assert!(matches!(serde_json::from_str::<HostEvent>(raw).unwrap(), HostEvent::Cookies { lane: None, restore: true, added: 4, .. }));
+        let raw = r#"{"type":"collected","token":7,"cookies":[{"name":"sid","value":"v-secret","domain":".app.example","path":"/","expires":null,"secure":true,"http_only":true,"same_site":"Lax"}]}"#;
+        let event = serde_json::from_str::<HostEvent>(raw).unwrap();
+        let HostEvent::Collected { token: 7, cookies } = &event else { panic!("{event:?}") };
+        assert_eq!(cookies.0[0].value, "v-secret");
+        assert!(!format!("{event:?}").contains("v-secret"), "never printed");
     }
 
     #[test]

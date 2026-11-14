@@ -3789,6 +3789,7 @@
   "logins.offer_where": "只在这里输入，保存在 {machine} 的安全存储中——绝不显示给成员，也不会出现在对话里。",
   "logins.offer_never": "此网站不再询问",
   "logins.offer_open": "保存…",
+  "logins.offer_save": "保存到 equipe",
   "logins.offer_whose": "在 {name} 的浏览器中",
   "desktop_setup.installing": "正在准备桌面应用…",
   "desktop_setup.failed_title": "无法准备桌面应用",

@@ -3882,6 +3882,7 @@
   "logins.offer_where": "Typed here only, kept in {machine}'s secret store — never shown to a member, never in a conversation.",
   "logins.offer_never": "Never for this site",
   "logins.offer_open": "Save…",
+  "logins.offer_save": "Save to equipe",
   "logins.offer_whose": "in {name}'s browser",
   "desktop_setup.installing": "Setting up desktop apps…",
   "desktop_setup.failed_title": "Desktop apps couldn't be set up",

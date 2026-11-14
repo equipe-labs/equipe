@@ -3790,6 +3790,7 @@
   "logins.offer_where": "여기에만 입력하고 {machine}의 보안 저장소에 저장해요. 멤버에게도, 대화에도 절대 보이지 않아요.",
   "logins.offer_never": "이 사이트는 묻지 않기",
   "logins.offer_open": "저장…",
+  "logins.offer_save": "equipe에 저장",
   "logins.offer_whose": "{name}의 브라우저에서",
   "desktop_setup.installing": "데스크톱 앱 준비 중…",
   "desktop_setup.failed_title": "데스크톱 앱을 준비하지 못했어요",

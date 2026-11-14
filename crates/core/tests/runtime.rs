@@ -4325,6 +4325,9 @@ for line in sys.stdin:
         # The sign-in's cookies went in and the page loaded again.
         pages[op["lane"]][1] = op.get("url") or pages[op["lane"]][1]
         tabs(op["lane"])
+    elif op.get("op") == "exit":
+        # The host and its Chrome went away (a test says so); the next browser starts it again.
+        sys.exit(0)
     elif op.get("op") == "suspend":
         # The profile's Chrome closed: its tabs are gone, and the daemon is told.
         pages.clear()
@@ -4553,6 +4556,83 @@ async fn a_sign_in_view_on_a_remote_screen_hands_its_scoped_cookies_to_the_membe
     let prompt = arg(all.last().unwrap(), "-p").unwrap();
     assert!(prompt.contains("pressed Done") && prompt.contains(why) && prompt.contains(url), "{prompt}");
     assert!(!prompt.contains("v-secret"), "a cookie's value never reaches a member");
+}
+
+/// The line of the host's requests that matches, waited for.
+async fn host_line(ops: &Path, wanted: impl Fn(&str) -> bool) -> String {
+    for _ in 0..200 {
+        if let Some(line) = std::fs::read_to_string(ops).unwrap_or_default().lines().rev().find(|l| wanted(l)) {
+            return line.to_owned();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("no such request to the host: {}", std::fs::read_to_string(ops).unwrap_or_default());
+}
+
+#[tokio::test]
+async fn a_sign_in_made_once_is_kept_for_the_squad_put_back_into_every_browser_and_asked_again_only_when_the_site_ends_it() {
+    // The kept sign-ins' key goes to a secret store in memory: never the Keychain.
+    unsafe { std::env::set_var("EQUIPE_VAULT_IN_MEMORY", "1") };
+    let repo = repo();
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    let _ = fake_plain_chrome(&home);
+    let (npx, ops) = fake_host_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), browser_host: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "qa")).await;
+    add(&handle, &mut events, 3, member(&repo, "backend")).await;
+    let hub = handle.browser_hub().await.unwrap();
+    hub.screen(true);
+    hub.web_view(true);
+    let sent = || std::fs::read_to_string(&ops).unwrap_or_default();
+    let kept = equipe_core::signin_store::path(&home, "acme");
+
+    // pm hands its browser over; the person signs in to the app through Google in the view, and Done.
+    let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": "https://app.example/login", "why": "Sign in to the app" })).await;
+    assert!(said.text.contains("sign-in view"), "{said:?}");
+    let _ = until(&mut events, |e| matches!(e, Event::BrowserWindow { open: true, .. })).await;
+    handle.send(Command::BrowserCookies {
+        lane: "acme/pm".into(),
+        hosts: vec!["accounts.google.com".into(), "app.example".into()],
+        // A session cookie (no expiry), and Google's `__Host-` one with the dot the web view gives every domain.
+        cookies: vec![cookie("app_session", ".app.example"), cookie("__Host-GAPS", ".accounts.google.com"), cookie("SID", ".google.com")],
+        failed: false,
+    });
+    handle.send(Command::BrowserControl { lane: "acme/pm".into(), take: false });
+    let line = host_line(&ops, |l| l.contains("\"op\":\"cookies\"") && l.contains("acme/pm")).await;
+    assert!(line.contains("\"domain\":\"accounts.google.com\"") && !line.contains("\".accounts.google.com\""), "a `__Host-` cookie goes in host-only, or Chrome refuses the lot: {line}");
+    for _ in 0..200 {
+        if kept.is_file() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let sealed = String::from_utf8_lossy(&std::fs::read(&kept).expect("kept for the squad")).into_owned();
+    assert!(!sealed.contains("v-secret") && !sealed.contains("app_session") && !sealed.contains("app.example"), "sealed: no value, no name, no site");
+
+    // qa needs the app too: the kept sign-in goes into its browser and its page loads again — the person isn't asked.
+    let said = tool(&handle, "qa", "show_my_browser", serde_json::json!({ "url": "https://app.example/dashboard", "why": "Sign in to the app" })).await;
+    assert!(!said.is_error && said.text.contains("equipe keeps that sign-in") && !said.text.contains("sign-in view"), "{said:?}");
+    assert!(!said.text.contains("v-secret"), "a value never reaches a member");
+    let line = host_line(&ops, |l| l.contains("\"op\":\"cookies\"") && l.contains("acme/qa")).await;
+    assert!(line.contains("app_session") && line.contains("__Host-GAPS") && line.contains("https://app.example/dashboard"), "{line}");
+
+    // The host's Chrome goes away; the next browser starts it again, and the kept sign-ins go back in —
+    // the session's own too, which a clean exit of Chrome drops.
+    assert_eq!(sent().matches("\"op\":\"restore\"").count(), 0, "the Chrome that took the sign-in holds it: nothing to put back");
+    assert!(hub.op(&serde_json::json!({ "op": "exit" })));
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let said = tool(&handle, "backend", "show_my_browser", serde_json::json!({ "url": "https://other.example/", "why": "Sign in to the other site" })).await;
+    assert!(said.text.contains("sign-in view"), "nothing kept for that site: the person is asked: {said:?}");
+    let line = host_line(&ops, |l| l.contains("\"op\":\"restore\"")).await;
+    assert!(line.contains("app_session") && line.contains("\"expires\":null") && line.contains("__Host-GAPS"), "{line}");
+
+    // qa's page still asks: the site ended that sign-in. Now — once — the person is asked, and it is kept no more.
+    let said = tool(&handle, "qa", "show_my_browser", serde_json::json!({ "url": "https://app.example/dashboard", "why": "The saved sign-in no longer works" })).await;
+    assert!(said.text.contains("sign-in view"), "{said:?}");
+    let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": "https://app.example/", "why": "Sign in to the app" })).await;
+    assert!(!said.text.contains("equipe keeps that sign-in"), "the ended sign-in isn't tried again: {said:?}");
 }
 
 #[tokio::test]

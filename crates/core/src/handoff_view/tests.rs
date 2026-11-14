@@ -153,3 +153,34 @@ fn two_members_each_have_a_view_and_a_screen_that_goes_ends_them_all() {
     assert!(v.is_empty());
     assert!(!v.done(t, "acme/qa"), "no view: Done is for the panel");
 }
+
+#[test]
+fn a_host_prefixed_cookie_is_host_only_whatever_the_web_view_said() {
+    // The web view's list gives every domain a leading dot; Chrome refuses a
+    // `__Host-` cookie with a domain, and Playwright then refused the whole batch.
+    let mut host = cookie("__Host-GAPS", ".accounts.google.com");
+    host.path = "/signin".into();
+    host.secure = false;
+    let mut secure = cookie("__Secure-1PSID", ".google.com");
+    secure.secure = false;
+    let scoped = scope_cookies(vec![host, secure, cookie("__host-other", ".evil.example"), cookie("SID", ".google.com")], "https://accounts.google.com/", &[]);
+    let by = |n: &str| scoped.cookies.iter().find(|c| c.name == n).unwrap().clone();
+    let gaps = by("__Host-GAPS");
+    assert_eq!((gaps.domain.as_str(), gaps.path.as_str(), gaps.secure), ("accounts.google.com", "/", true));
+    let psid = by("__Secure-1PSID");
+    assert_eq!((psid.domain.as_str(), psid.secure), (".google.com", true));
+    assert_eq!(by("SID").domain, ".google.com", "an ordinary cookie keeps its domain");
+    assert!(!scoped.cookies.iter().any(|c| c.name == "__host-other"), "another site's: left out");
+    assert_eq!(normalize(cookie("__host-x", ".app.example.com")).domain, "app.example.com", "the prefix in any case, as Chrome reads it");
+}
+
+#[test]
+fn a_cookie_with_no_same_site_policy_is_lax_not_none() {
+    let mut none = cookie("pref", "example.com");
+    none.secure = false;
+    none.same_site = Some("None".into());
+    assert_eq!(normalize(none).same_site.as_deref(), Some("Lax"));
+    let mut real = cookie("x", "example.com");
+    real.same_site = Some("None".into());
+    assert_eq!(normalize(real).same_site.as_deref(), Some("None"), "a secure SameSite=None cookie is what it says");
+}

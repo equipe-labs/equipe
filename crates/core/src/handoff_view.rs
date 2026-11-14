@@ -12,7 +12,10 @@
 //! 3. the daemon keeps only the cookies of that site and the hosts the sign-in
 //!    went through ([`scope_cookies`]), adds them to the member's browser
 //!    profile (the host's `cookies` request: Playwright `addCookies`), loads the
-//!    page again, and hands the browser back.
+//!    page again, and hands the browser back;
+//! 4. the sign-in is kept, sealed, for the member's squad
+//!    (`crate::signin_store`): every member's browser gets it back, and no
+//!    member asks for it again while the site takes it.
 //!
 //! Only the cookies the sign-in made are carried, never anything else of the
 //! screen's browsing, and a cookie's value is never printed. Nothing here
@@ -86,15 +89,37 @@ pub fn scope_cookies(cookies: Vec<HandoffCookie>, site: &str, visited: &[String]
         .into_iter()
         .filter(|c| !c.name.is_empty() && c.value.len() <= MAX_VALUE && domain_is_ours(&c.domain, &hosts))
         .take(MAX_COOKIES)
-        .map(|mut c| {
-            if c.path.is_empty() {
-                c.path = "/".to_owned();
-            }
-            c.domain = c.domain.trim().to_ascii_lowercase();
-            c
-        })
+        .map(normalize)
         .collect();
     Scoped { dropped: total - kept.len(), cookies: kept }
+}
+
+/// A cookie as Chrome takes it. The web view's cookie list can't tell a
+/// host-only cookie from a domain one (every domain comes with a leading dot,
+/// `signin_view.rs`), and Chrome refuses a `__Host-` cookie that names a
+/// domain — and with one refused, Playwright's `addCookies` refused the whole
+/// sign-in (every Google and many app sign-ins carry one: nothing went in).
+/// A `__Host-` cookie is host-only by definition: its domain loses the dot,
+/// its path is `/`, it is secure. A `__Secure-` cookie is secure. A cookie
+/// that says `SameSite=None` without being secure is one the web view had no
+/// policy for (`wry` reports none as `None`): Chrome's default, `Lax`.
+pub fn normalize(mut c: HandoffCookie) -> HandoffCookie {
+    if c.path.is_empty() {
+        c.path = "/".to_owned();
+    }
+    c.domain = c.domain.trim().to_ascii_lowercase();
+    let prefixed = |p: &str| c.name.len() >= p.len() && c.name.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes());
+    if prefixed("__Host-") {
+        c.domain = c.domain.trim_start_matches('.').to_owned();
+        c.path = "/".to_owned();
+        c.secure = true;
+    } else if prefixed("__Secure-") {
+        c.secure = true;
+    }
+    if c.same_site.as_deref() == Some("None") && !c.secure {
+        c.same_site = Some("Lax".to_owned());
+    }
+    c
 }
 
 /// One view's progress.

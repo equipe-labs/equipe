@@ -84,6 +84,7 @@ mod secrets;
 mod cli_signin;
 mod squad_keys;
 mod logins;
+mod sign_ins;
 mod window;
 mod autopilot;
 mod design_qa;
@@ -638,7 +639,11 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         crate::daemon_log!("equipe: no Nebius key yet (Settings › AI platforms, or `equipe login nebius`): handed-in work isn't reviewed by Nemotron");
     }
     // The logins: their passwords in the system's secret store (in memory for tests).
-    let secrets: Box<dyn vault::Secrets> = if std::env::var_os("EQUIPE_VAULT_IN_MEMORY").is_some() { Box::new(vault::InMemory::default()) } else { vault::system_store() };
+    let in_memory = std::env::var_os("EQUIPE_VAULT_IN_MEMORY").is_some();
+    let secrets: Box<dyn vault::Secrets> = if in_memory { Box::new(vault::InMemory::default()) } else { vault::system_store() };
+    // Kept sign-ins need the secret store for their key: equipe's own home's, or a test's in memory —
+    // a scratch home never reaches the person's Keychain for them.
+    let kept_sign_ins = sign_ins::Kept::new(in_memory || config.home == equipe_home());
     let vault = vault::Vault::open(&config.home, secrets);
     let logins = vault.logins.clone();
     let (never_offer, can_keep_logins) = (vault.never_offer.clone(), vault.can_keep());
@@ -657,6 +662,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         person_sign_in: Default::default(),
         relogins: HashMap::new(),
         relogin_tries: HashMap::new(),
+        kept_sign_ins,
         sign_in_joined: HashMap::new(),
         login_waiters: HashMap::new(),
         asked_site: HashMap::new(),
@@ -1117,6 +1123,10 @@ enum Internal {
     CliSignIn(cli_signin::Note),
     /// A row of the sign-in record, from work done off the loop.
     LoginRecord { squad: String, entry: crate::logins::Entry },
+    /// A squad's kept sign-ins as read or just kept off the loop
+    /// (`crate::signin_store`); `None`: they couldn't be read.
+    /// `turn`: the order the read or change was begun in (a later one wins).
+    SignIns { squad: String, record: Option<Box<crate::signin_store::Record>>, turn: u64 },
     /// Something waits for a conversation to act on — work handed in for the
     /// PM to accept: it is woken with `prompt` (read at its next step, at work).
     Wake { session: SessionId, prompt: String },
@@ -1439,6 +1449,8 @@ struct Runtime {
     relogins: HashMap<String, logins::Relogin>,
     /// When equipe last tried signing in with each login by itself.
     relogin_tries: HashMap<u32, Vec<std::time::Instant>>,
+    /// Each squad's kept sign-ins, once read ([`crate::signin_store`]).
+    kept_sign_ins: sign_ins::Kept,
     /// Members that asked to sign in with a login a card already asks the
     /// person about: they wait on that card (by its id), not one of their own.
     sign_in_joined: HashMap<u64, Vec<Pending>>,
@@ -1548,6 +1560,7 @@ impl Wake {
             Wake::Internal(Internal::Autopilot(_)) => Borrowed("login autopilot"),
             Wake::Internal(Internal::CliSignIn(_)) => Borrowed("a command-line sign-in"),
             Wake::Internal(Internal::LoginRecord { .. }) => Borrowed("a sign-in kept on the record"),
+            Wake::Internal(Internal::SignIns { .. }) => Borrowed("a squad's kept sign-ins"),
             Wake::Internal(Internal::DeskSaved { .. }) => Borrowed("a desk turn's changes saved"),
             Wake::Internal(Internal::Wake { .. }) => Borrowed("work waits for a conversation"),
             Wake::Internal(Internal::DiskTrimmed(..)) => Borrowed("a trim of the build caches"),
@@ -1809,6 +1822,7 @@ impl Runtime {
                 Internal::Autopilot(note) => self.autopilot_note(note).await,
                 Internal::CliSignIn(note) => self.cli_sign_in_note(note).await,
                 Internal::LoginRecord { squad, entry } => self.login_record(&squad, entry),
+                Internal::SignIns { squad, record, turn } => self.sign_ins_read(&squad, record.map(|r| *r), turn),
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
                 Internal::DiskTrimmed(freed, lines) => self.on_disk_trimmed(freed, lines),
@@ -7627,6 +7641,12 @@ It starts when {owner} is free."
             self.with_person(&call);
             let url = call.arguments["url"].as_str().map(str::to_owned);
             let why = call.arguments["why"].as_str().unwrap_or_default().to_owned();
+            // First what equipe can do by itself: the login autopilot, or the
+            // sign-in the person made before put back. Only then the person.
+            if let Some(text) = self.try_kept_sign_in(&call, url.as_deref(), &why) {
+                let _ = reply.send(ToolResult { text, is_error: false, image: None });
+                return;
+            }
             // Kept with its cause — or, the person signing in to the same site
             // in another member's browser now, this one waits on that.
             if let Some(text) = self.handoff_asked(&call, url.as_deref(), &why) {
@@ -8353,7 +8373,12 @@ there, end your turn, and carry on when they say they're done."
                     browser::navigate(&client, port, &page).await;
                 }
             });
+            let lane = running.is_lane();
             self.browsers.insert(key.clone(), running);
+            // The squad's kept sign-ins: whatever its profile's Chrome lacks of them goes in.
+            if lane {
+                self.restore_sign_ins(squad, name);
+            }
         }
         self.browsers.get_mut(&key).map(|b| {
             b.last_used = std::time::Instant::now();
@@ -8373,6 +8398,8 @@ there, end your turn, and carry on when they say they're done."
             self.browsers.retain(|_, b| !b.is_lane());
             self.host = browser::Host::start(npx, &self.config.home, &self.hub, self.host_events.clone()).ok();
             self.hub.set_host(self.host.clone());
+            // A new Chrome: the kept sign-ins go in again as lanes open.
+            self.sign_ins_restart(None);
             self.suspend_again();
         }
         self.host.clone()
@@ -8596,6 +8623,8 @@ there, end your turn, and carry on when they say they're done."
             HostEvent::Visited { token, page } => self.on_visited(token, page),
             HostEvent::Passkey { token, credential } => self.on_passkey(token, credential),
             HostEvent::Snap { token, png } => self.on_snap(token, png),
+            HostEvent::Cookies { lane, profile, added, failed, restore } => self.cookies_went_in(lane.as_deref(), &profile, added, failed, restore),
+            HostEvent::Collected { token, cookies } => self.on_collected(token, cookies.0),
             HostEvent::Wants { lane, page, action } => {
                 let (squad, _) = self.lane_session(&lane);
                 self.publish(Event::BrowserWants { squad, lane, page, action });

@@ -136,6 +136,46 @@ pub fn chrome_args(dir: &Path, url: &str) -> Vec<String> {
     args
 }
 
+/// What [`keep_sessions`] did to a profile folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kept {
+    /// Its last exit is marked as a crash now.
+    Marked,
+    /// It was already.
+    Already,
+    /// No `Preferences` yet: a profile Chrome never ran.
+    Nothing,
+    /// Not Chrome's JSON, or it couldn't be written: left as it was.
+    Untouched,
+}
+
+/// Before a plain Chrome starts on `dir`, its last exit is marked the way
+/// Chrome marks a crash, as the browser host does before its own Chrome
+/// starts (`assets/keep-sessions.js`): Chrome then keeps the old session's
+/// cookies — sign-ins "for the session" — and nothing else of it. The
+/// automated browser stepped aside with a clean exit, so without this the
+/// person's window started by dropping every such sign-in of the members'.
+pub fn keep_sessions(dir: &Path) -> Kept {
+    let file = dir.join("Default").join("Preferences");
+    let Ok(text) = std::fs::read_to_string(&file) else { return Kept::Nothing };
+    let Ok(serde_json::Value::Object(mut prefs)) = serde_json::from_str::<serde_json::Value>(&text) else { return Kept::Untouched };
+    let profile = prefs.entry("profile").or_insert_with(|| serde_json::json!({}));
+    if !profile.is_object() {
+        *profile = serde_json::json!({});
+    }
+    if profile["exit_type"] == "Crashed" {
+        return Kept::Already;
+    }
+    profile["exit_type"] = serde_json::json!("Crashed");
+    let tmp = file.with_extension("equipe-tmp");
+    let written = serde_json::to_vec(&prefs).ok().is_some_and(|bytes| std::fs::write(&tmp, bytes).is_ok() && std::fs::rename(&tmp, &file).is_ok());
+    if !written {
+        let _ = std::fs::remove_file(&tmp);
+        return Kept::Untouched;
+    }
+    Kept::Marked
+}
+
 /// Whether a Chrome has `dir` in use: its `SingletonLock` names a process
 /// that is still there. A lock left by a Chrome that is gone doesn't count.
 pub fn profile_locked(dir: &Path) -> bool {
@@ -212,6 +252,9 @@ impl Machine for System {
         {
             use std::os::unix::process::CommandExt as _;
             command.process_group(0);
+        }
+        if keep_sessions(dir) == Kept::Untouched {
+            crate::daemon_log!("equipe: the session sign-ins of {} may not survive the window (its Preferences couldn't be marked)", dir.display());
         }
         self.windows.insert(profile.to_owned(), command.spawn()?);
         Ok(())

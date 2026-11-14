@@ -3882,6 +3882,7 @@
   "logins.offer_where": "Se escribe solo aquí y se guarda en el almacén de secretos de {machine}: nunca se muestra a un miembro ni en una conversación.",
   "logins.offer_never": "Nunca para este sitio",
   "logins.offer_open": "Guardar…",
+  "logins.offer_save": "Guardar en equipe",
   "logins.offer_whose": "en el navegador de {name}",
   "desktop_setup.installing": "Preparando las apps de escritorio…",
   "desktop_setup.failed_title": "No se pudieron preparar las apps de escritorio",

@@ -174,6 +174,8 @@ pub struct BrowserPanel {
     view: Option<SignInView>,
     view_lane: Option<String>,
     view_ask: Option<(String, String)>,
+    /// The window drew the panel in its latest frame ([`Self::set_drawn`]).
+    drawn: bool,
     dialogs: Vec<Dialog>,
     selected: Option<(String, u64)>,
     follow: bool,
@@ -320,6 +322,7 @@ impl BrowserPanel {
             view: None,
             view_lane: None,
             view_ask: None,
+            drawn: false,
             dialogs: Vec::new(),
             selected: None,
             follow: true,
@@ -558,6 +561,12 @@ impl BrowserPanel {
                         self.view = None;
                         self.view_lane = None;
                         self.view_ask = Some((lane.clone(), view.url.clone()));
+                        // Its card is what the panel opens on (the view shows only under it):
+                        // not a page of another lane picked before.
+                        if self.selected.as_ref().is_some_and(|(l, _)| !self.windows.contains(l)) {
+                            self.selected = None;
+                            self.follow = false;
+                        }
                     }
                 } else {
                     self.windows.remove(lane);
@@ -673,6 +682,10 @@ impl BrowserPanel {
             self.drop_pictures(window);
             if self.focus.is_focused(window) {
                 window.blur(cx);
+            }
+            // Shut, the panel isn't drawn again to hide it: the sign-in view goes now.
+            if let Some(view) = self.view.as_mut() {
+                view.set_visible(false);
             }
         }
         self.rewatch(window, cx);
@@ -1293,13 +1306,17 @@ impl BrowserPanel {
     }
 
     /// Open the asked-for sign-in view once the panel is up and has a box, and
-    /// keep it over the viewport — hidden while the panel is shut.
+    /// keep it over the viewport under its card — hidden whenever it shouldn't
+    /// show ([`browse::view_shown`]): the panel shut, out of sight or not drawn,
+    /// its box not measured where it is now, or another card on screen.
     fn sync_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(at) = self.view_at(window) else { return };
-        if self.open
-            && self.view.is_none()
-            && let Some((lane, url)) = self.view_ask.clone()
-        {
+        let at = self.view_at(window);
+        let card = browse::card_lane(self.selected.as_ref().map(|(l, _)| l.as_str()), &self.windows).map(str::to_owned);
+        let (open, in_sight, drawn, boxed) = (self.open, self.shown, self.drawn, at.is_some());
+        let shows = |view_lane: Option<&str>| browse::view_shown(&browse::ViewPlace { open, in_sight, drawn, boxed, view_lane, card_lane: card.as_deref() });
+        let ask = self.view_ask.clone().filter(|(lane, _)| self.view.is_none() && shows(Some(lane.as_str())));
+        let shown = shows(self.view_lane.as_deref());
+        if let (Some((lane, url)), Some(at)) = (ask, at) {
             self.view_ask = None;
             match SignInView::open(window, &url, at) {
                 Ok(view) => {
@@ -1309,11 +1326,32 @@ impl BrowserPanel {
                 // No view here: the daemon gives the person its own Chrome window instead.
                 Err(_) => self.command(Command::BrowserCookies { lane, hosts: Vec::new(), cookies: Vec::new(), failed: true }, cx),
             }
+            return;
         }
-        let shown = self.open;
         if let Some(view) = self.view.as_mut() {
-            view.set_bounds(at);
+            // Placed first, then shown: never a frame at an old place.
+            if let Some(at) = at.filter(|_| shown) {
+                view.set_bounds(at);
+            }
             view.set_visible(shown);
+        }
+    }
+
+    /// The window drew the panel this frame, or didn't (shut, another screen,
+    /// a document in its place). Undrawn, the sign-in view hides at once —
+    /// nothing of the panel's own drawing would — and the box measured for it
+    /// is forgotten: the next is measured where the panel is drawn again,
+    /// never taken from an earlier layout.
+    pub fn set_drawn(&mut self, drawn: bool) {
+        if self.drawn == drawn {
+            return;
+        }
+        self.drawn = drawn;
+        if !drawn {
+            *self.viewport.borrow_mut() = None;
+            if let Some(view) = self.view.as_mut() {
+                view.set_visible(false);
+            }
         }
     }
 
@@ -1322,12 +1360,7 @@ impl BrowserPanel {
     /// nothing to stream: who, what it asked, where the window is (on this
     /// Mac, or the daemon's — say so plainly), and Done.
     fn window_card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let selected = self.selected.as_ref().map(|(l, _)| l.as_str());
-        let lane = match selected {
-            Some(l) if self.windows.contains(l) => l.to_owned(),
-            Some(_) => return None,
-            None => self.windows.iter().next()?.clone(),
-        };
+        let lane = browse::card_lane(self.selected.as_ref().map(|(l, _)| l.as_str()), &self.windows)?.to_owned();
         let p = self.palette;
         let name = self.member_name(&lane);
         let hue = self.lane_color(&lane);
@@ -1971,8 +2004,9 @@ impl BrowserPanel {
                 canvas(
                     move |bounds, _, _| bounds,
                     move |bounds, _, window, cx| {
-                        // A new box: drawn again, so the page is asked for at it.
-                        let moved = viewport.borrow().is_none_or(|b| b.size != bounds.size);
+                        // A new box — moved, or sized anew: drawn again, so the page is asked
+                        // for at it and the sign-in view goes where it is now.
+                        let moved = viewport.borrow().is_none_or(|b| b != bounds);
                         *viewport.borrow_mut() = Some(bounds);
                         if moved {
                             window.refresh();
