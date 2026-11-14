@@ -748,7 +748,7 @@ choosing blind; work like that is handed in with its pictures in `images` too.{}
             if role.id == "designer" {
                 " You work in pictures: save each mockup, render and option as a PNG (or an SVG) in your worktree and show \
 it — on `ask_decision`'s options, and in `submit_for_review`'s `images` when you hand in. Say why in a sentence, but \
-never only describe what something looks like."
+never only describe what something looks like, and give each its change note (`changes`): what changed and why it is better."
             } else {
                 ""
             }

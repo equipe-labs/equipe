@@ -231,9 +231,9 @@ async fn a_design_choice_reacted_to_in_one_click_goes_to_the_designer_and_into_t
         image::RgbaImage::new(8, 8).save(folder.join("brand").join(name)).unwrap();
     }
     let options = json!([
-        { "label": "Calm (Recommended)", "images": "brand/calm.png" },
-        { "label": "Bold", "images": "brand/bold.png" },
-        { "label": "Warm", "images": "brand/warm.png" },
+        { "label": "Calm (Recommended)", "images": "brand/calm.png", "changes": [{ "area": "type", "after": "light type", "why": "easy on the eyes" }], "unchanged": "content" },
+        { "label": "Bold", "images": "brand/bold.png", "changes": [{ "area": "type", "after": "heavy type", "why": "remembered" }], "unchanged": "content" },
+        { "label": "Warm", "images": "brand/warm.png", "changes": [{ "area": "shape", "after": "round corners", "why": "approachable" }], "unchanged": "content" },
     ]);
     let ask = json!({ "questions": [
         { "question": "Which direction?", "aspects": ["type", "colour", "shape"], "options": options },
@@ -272,8 +272,8 @@ async fn a_visual_choice_shows_its_pictures_found_where_the_member_works_and_a_b
     }
     std::fs::write(project.join("elsewhere.png"), b"x").unwrap();
     let logo = |a: &str| json!({ "questions": [{ "question": "Which logo?", "options": [
-        { "label": "Blue dot (Recommended)", "images": [a] },
-        { "label": "Grey dot", "images": "brand/b.png" },
+        { "label": "Blue dot (Recommended)", "images": [a], "before": "brand/b.png", "preview_url": "https://brand-git-blue-dot-acme.vercel.app/", "changes":[{ "area": "colour", "before": "grey dot", "after": "blue dot", "why": "one mark for site and app" }], "unchanged": "the name and the e" },
+        { "label": "Grey dot", "images": "brand/b.png", "changes": [{ "area": "colour", "after": "grey dot kept", "why": "as the stores have it" }], "unchanged": "everything" },
     ] }] });
 
     // A picture that isn't where it works: said, to fix — nothing is asked.
@@ -288,6 +288,13 @@ async fn a_visual_choice_shows_its_pictures_found_where_the_member_works_and_a_b
     let real = |name: &str| folder.join("brand").join(name).canonicalize().unwrap().to_string_lossy().into_owned();
     assert_eq!(set.questions[0].options[0].images, [real("a.png")]);
     assert_eq!(set.questions[0].options[1].images, [real("b.png")]);
+    // Its picture of before is found the same way; its live page and change note go as given.
+    assert_eq!(set.questions[0].options[0].before, real("b.png"));
+    assert_eq!(set.questions[0].options[0].preview_url, "https://brand-git-blue-dot-acme.vercel.app/");
+    assert_eq!(set.questions[0].options[0].changes[0].after, "blue dot");
+    // Pictures without a change note: refused, with what to add, and nothing is asked.
+    let bare = tool(&handle, "designer", "ask_decision", json!({ "questions": [{ "question": "Which logo?", "options": [{ "label": "A", "images": "brand/a.png" }, { "label": "B", "images": "brand/b.png" }] }] })).await;
+    assert!(bare.is_error && bare.text.contains("change note") && bare.text.contains("`changes`"), "{bare:?}");
 
     // Asked in words alone: it goes, and the member is told to show them next time.
     let blind = tool(&handle, "designer", "ask_decision", json!({ "questions": [{ "question": "로고 마스터는 어느 안으로 할까요?", "options": ["e. + 파란 원 점 (추천)", "e. 회색 점 유지"] }] })).await;

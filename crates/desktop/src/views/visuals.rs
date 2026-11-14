@@ -25,7 +25,7 @@ use crate::icons::{Icon, icon};
 use crate::motion;
 use crate::theme::{CONTROL, ICON, MEASURE, MONO, Palette, R_LG, R_MD, R_SM};
 use crate::tips::tip;
-use crate::visuals::{self as rules, Listing, Look, Owner, Shot, Size, Viewer, Visuals};
+use crate::visuals::{self as rules, Ground, Listing, Look, Owner, Shot, Size, Viewer, Visuals};
 
 /// How long a picture that just came fades in.
 const FADE: Duration = Duration::from_millis(240);
@@ -241,6 +241,23 @@ pub fn picture(
     top_only: bool,
     pad: f32,
 ) -> Div {
+    picture_on(shots, id, path, look, (w, h), radius, top_only, pad, Ground::Checker)
+}
+
+/// [`picture`], on `ground`: on the theme's surface a transparent picture is
+/// flattened on it and letterboxed — no checkerboard.
+#[allow(clippy::too_many_arguments)]
+pub fn picture_on(
+    shots: &Shots,
+    id: u64,
+    path: &str,
+    look: Look,
+    (w, h): (f32, f32),
+    radius: f32,
+    top_only: bool,
+    pad: f32,
+    ground: Ground,
+) -> Div {
     let p = shots.p;
     let corners = |el: Div| {
         if top_only {
@@ -249,7 +266,7 @@ pub fn picture(
             el.rounded(px(radius))
         }
     };
-    let board = checker(p, w, h).map(|board| {
+    let board = (ground == Ground::Checker).then(|| checker(p, w, h)).flatten().map(|board| {
         let board = img(board)
             .absolute()
             .top_0()
@@ -301,7 +318,7 @@ pub fn picture(
             .w(px(w))
             .h(px(h))
             .overflow_hidden()
-            .bg(p.wash),
+            .bg(if ground == Ground::Surface { p.bg } else { p.wash }),
     )
     .children(board)
     .child(face)
@@ -1250,7 +1267,9 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
             // The board made once at the picture's whole size and stretched
             // with it: one made at every scale a pinch passes through would be
             // a new (and, far in, a huge) picture each frame.
-            let board = checker(p, size.0, size.1);
+            // A decision's or a board's picture: on the theme's surface instead.
+            let surface = rules::ground(&viewer.owner) == Ground::Surface;
+            let board = (!surface).then(|| checker(p, size.0, size.1)).flatten();
             let size = zoomed;
             let board = board.map(|b| {
                 img(b)
@@ -1268,6 +1287,7 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
                 .h(px(size.1))
                 .rounded(px(10.))
                 .overflow_hidden()
+                .when(surface, |d| d.bg(p.bg))
                 .children(board)
                 .child(
                     img(shot.image.clone())
@@ -1421,6 +1441,10 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
                 .text_color(rgb(0xFFFFFF))
                 .child(item.label.clone()),
         )
+        // The screen as it is now, before that option.
+        .when(item.before, |r| {
+            r.child(div().flex_none().h(px(20.)).px(px(7.)).flex().items_center().rounded(px(5.)).bg(rgba(0xFFFFFF26)).text_size(px(11.5)).font_weight(FontWeight::MEDIUM).text_color(rgb(0xFFFFFF)).child(t!("decide.before")))
+        })
         .when(on_board && !item.note.is_empty(), |r| {
             r.child(
                 div()

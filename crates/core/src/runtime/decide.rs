@@ -67,6 +67,9 @@ impl Runtime {
             q.images = visuals::resolve_all(&q.images, &cwd, &roots, visuals::PER_QUESTION).map_err(|e| format!("Question {}: {e}. {fix}", n + 1))?;
             for (m, option) in q.options.iter_mut().enumerate() {
                 option.images = visuals::resolve_all(&option.images, &cwd, &roots, visuals::PER_OPTION).map_err(|e| format!("Question {}, option {}: {e}. {fix}", n + 1, m + 1))?;
+                if !option.before.is_empty() {
+                    option.before = visuals::resolve(&option.before, &cwd, &roots).map_err(|e| format!("Question {}, option {}, its `before`: {e}. {fix}", n + 1, m + 1))?;
+                }
                 // A board's tiles: each picture found, its source and line kept.
                 let mut tiles: Vec<equipe_protocol::decide::Tile> = Vec::new();
                 for mut tile in std::mem::take(&mut option.tiles) {

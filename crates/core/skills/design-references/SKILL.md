@@ -93,6 +93,11 @@ server or API when the squad has connected one; `equipe design component` pulls 
 restyle it to the project's tokens, and note its source and licence in the pattern's notes. Never paste a premium or
 paid component the squad hasn't licensed.
 
+Where the project deploys previews (a Vercel or Netlify preview deployment for each branch, say), push each option to
+its own preview branch and give its address in the option's `preview_url`: the person clicks through the real page,
+not a picture of it. Its screenshots still go on the card — full-size 1440 and 390 renders, cropped to the content, no
+transparent padding — with its change note: each point's `why` names the reference or the `ui-*` rule it follows.
+
 ## A taste board, when the person's taste is what you need
 
 When what you need is the person's taste — which direction, which family of products to be near — don't describe it

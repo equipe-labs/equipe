@@ -3134,14 +3134,59 @@ async fn a_designer_hands_a_screen_in_only_once_it_was_checked_and_seen_fresh() 
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    let refused = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    // A screen changed: first, what changed and why it is better — and what stayed.
+    let unsaid = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    assert!(unsaid.is_error && unsaid.text.contains("changes a screen") && unsaid.text.contains("`changes`") && unsaid.text.contains("`unchanged`"), "{unsaid:?}");
+    let refused = tool(&handle, "designer", "submit_for_review", home_done()).await;
     assert!(refused.is_error && refused.text.contains("design/mockups/home.html was edited and not checked") && refused.text.contains("equipe design second-look"), "{refused:?}");
 
     // Checked and seen: nothing is left in its ledger, and it hands in.
     std::fs::remove_file(&ledger).unwrap();
-    let handed = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    let handed = tool(&handle, "designer", "submit_for_review", home_done()).await;
     assert!(!handed.is_error, "{handed:?}");
     handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_designers_screen_change_is_handed_in_with_what_changed_why_it_is_better_and_what_stayed() {
+    let site = named("site");
+    let turn = format!("case \"$*\" in *\"You're on T-\"*) mkdir -p shots; echo 'pretend png' > shots/home.png; sleep 3;; esac\n{}", answering("working on it"));
+    let (claude, _recorded) = recording_claude(&turn);
+    let home = squad_home(&[&site]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "designer")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Home polish", "body": "Polish the home screen.", "owner": "designer", "kind": "task" })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    exists(&ws.path.join("shots/home.png")).await;
+
+    // It says it changes a screen: without its change note, refused with what to add.
+    let bare = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done.", "images": "shots/home.png", "changes_screens": true })).await;
+    assert!(bare.is_error && bare.text.contains("`changes`") && bare.text.contains("`unchanged`") && bare.text.contains("features, content and data"), "{bare:?}");
+    let no_why = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done.", "changes_screens": true, "changes": [{ "area": "layout", "after": "two columns" }], "unchanged": "copy" })).await;
+    assert!(no_why.is_error && no_why.text.contains("`why`"), "{no_why:?}");
+    // With it: handed in, the note under its summary for the person.
+    let mut noted = home_done();
+    noted["images"] = serde_json::json!("shots/home.png");
+    noted["changes_screens"] = serde_json::json!(true);
+    let handed = tool(&handle, "designer", "submit_for_review", noted).await;
+    assert!(!handed.is_error, "{handed:?}");
+    let review = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
+    let note = ticket_changed(&review).pop().and_then(|t| t.note).unwrap_or_default();
+    assert!(note.starts_with("Home done."), "{note}");
+    assert!(note.contains("What changed and why it is better:\n- layout: one long column \u{2192} hero over two columns \u{2014} the references keep the primary action in the first screenful"), "{note}");
+    assert!(note.contains("- Not changed: features, content and copy"), "{note}");
+    handle.shutdown().await;
+}
+
+/// A designer's hand-in of the home screen, with its change note.
+fn home_done() -> serde_json::Value {
+    serde_json::json!({
+        "summary": "Home done.",
+        "changes": [{ "area": "layout", "before": "one long column", "after": "hero over two columns", "why": "the references keep the primary action in the first screenful" }],
+        "unchanged": "features, content and copy",
+    })
 }
 
 #[tokio::test]
@@ -3164,11 +3209,11 @@ async fn the_same_refusal_twice_hands_the_work_in_with_the_gap_marked_and_the_pm
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    let first = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    let first = tool(&handle, "designer", "submit_for_review", home_done()).await;
     assert!(first.is_error && first.text.contains("design/mockups/home.html was edited and not checked") && first.text.contains("again the same way"), "it says what a second time does: {first:?}");
     // Nothing changed: the second refusal would be the first's again. It
     // goes in, with what wasn't cleared marked for the person, and the PM hears.
-    let second = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    let second = tool(&handle, "designer", "submit_for_review", home_done()).await;
     assert!(!second.is_error && second.text.contains("Handed in T-1") && second.text.contains("marked"), "{second:?}");
     let told = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("T-1") && text.contains("not cleared"))).await;
     assert!(!told.is_empty());
@@ -3200,7 +3245,7 @@ async fn after_three_looks_in_a_row_asking_for_fixes_the_hand_in_goes_with_them_
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     // Not refused first: the looks already went round three times.
-    let handed = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    let handed = tool(&handle, "designer", "submit_for_review", home_done()).await;
     assert!(!handed.is_error && handed.text.contains("Handed in T-1") && handed.text.contains("marked"), "{handed:?}");
     let told = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("T-1") && text.contains("not cleared"))).await;
     assert!(!told.is_empty());

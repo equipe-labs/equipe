@@ -581,7 +581,7 @@ mod tests {
         assert_eq!(claude_entry(&m, &none), json!({ "type": "http", "url": "https://api.mobbin.com/mcp" }));
         let codex = codex_entry(&m, false, &none);
         assert_eq!((codex["url"].as_str(), codex["default_tools_approval_mode"].as_str()), (Some("https://api.mobbin.com/mcp"), Some("prompt")));
-        assert!(!carries_secret(&[none.clone()]));
+        assert!(!carries_secret(std::slice::from_ref(&none)));
         for entry in [claude_entry(&m, &none), codex_entry(&m, true, &none)] {
             let text = entry.to_string().to_ascii_lowercase();
             for word in ["header", "token", "authorization", "bearer", "env"] {
