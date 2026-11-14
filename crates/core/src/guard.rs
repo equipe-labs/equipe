@@ -20,6 +20,11 @@
 //!   simulator, never on the host (`equipe_desktop_control::system_guard`
 //!   refuses the same through the desktop tools).
 //!
+//! After a command ran (`PostToolUse`), one answer more: a shell `screencapture`
+//! or `osascript` UI script that macOS refused for want of a permission is
+//! answered with a pointer to equipe's desktop tools, which hold the
+//! permissions themselves ([`SHELL_SCREEN_FAILED`]).
+//!
 //! The guard only refuses: what it lets through goes on to the engine's own
 //! permission rules and the operating system's fence, as before.
 
@@ -53,6 +58,29 @@ pub const SYSTEM_TOGGLE_REFUSED: &str = "Blocked: that command starts or stops V
 display or keyboard setting on the person's Mac, which is theirs, not yours to change while working. Test screen readers without \
 touching this Mac's settings: read the browser's accessibility tree (Playwright's ARIA snapshot, axe, Chrome's accessibility \
 snapshot), use VoiceOver or the Accessibility Inspector inside the iOS Simulator, or ask the person.";
+
+/// What a member is told when a shell `screencapture` or `osascript` UI script
+/// failed for want of a permission: those run as the command-line binary,
+/// never as equipe, so they fail for want of a permission equipe's own desktop
+/// tools hold, and the person is never asked to give it to the binary.
+pub const SHELL_SCREEN_FAILED: &str = "That shell command (screencapture / osascript UI scripting) runs as the command-line binary, which has no Screen \
+Recording or Accessibility permission, and the person is never asked to grant it. Use equipe's desktop tools instead: \
+mcp__desktop__screenshot, snapshot and act do the same (and click Office's \"Grant File Access\" dialog); equipe holds the \
+permissions itself. If the screen is locked, wait for it to unlock. Only if a desktop tool itself says a permission is missing, call \
+`block_on_person` with `permission` (one card with one button for the person) — never write steps.";
+
+/// What a failed `screencapture` or UI script says when macOS withholds the
+/// permission — error codes and macOS's own English wording, whatever
+/// language the person's Mac is in.
+const SHELL_SCREEN_FAILURES: [&str; 7] = [
+    "could not create image from display",
+    "not allowed assistive access",
+    "not allowed to send keystrokes",
+    "not authorized to send apple events",
+    "(-1719)",
+    "(-25211)",
+    "(-1743)",
+];
 
 /// Set in a member's commands' environment: `equipe browser` refuses there.
 pub const MEMBER_ENV: &str = "EQUIPE_MEMBER";
@@ -151,13 +179,57 @@ pub fn hooks(binary: &Path, work: &Path, read_only: &[PathBuf]) -> Value {
     for dir in read_only {
         command.push_str(&format!(" --read-only {}", quote(&dir.to_string_lossy())));
     }
-    json!({ "PreToolUse": [{ "matcher": MATCHER, "hooks": [{ "type": "command", "command": command, "timeout": HOOK_TIMEOUT_SECS }] }] })
+    let hook = json!({ "type": "command", "command": command, "timeout": HOOK_TIMEOUT_SECS });
+    json!({
+        "PreToolUse": [{ "matcher": MATCHER, "hooks": [hook.clone()] }],
+        // After a shell command: a screenshot or UI script that failed for want of a permission.
+        "PostToolUse": [{ "matcher": "Bash", "hooks": [hook] }],
+    })
+}
+
+/// The hook's answer after a command ran: [`SHELL_SCREEN_FAILED`] when a
+/// `screencapture` or `osascript` UI script came back refused by macOS.
+pub fn after(call: &Value) -> Option<Value> {
+    if call.get("tool_name").and_then(Value::as_str)? != "Bash" {
+        return None;
+    }
+    let command = call.get("tool_input")?.get("command").and_then(Value::as_str)?;
+    if !parse(command).iter().any(|c| drives_the_screen(&c.words, command)) {
+        return None;
+    }
+    let said = call.get("tool_response")?.to_string().to_lowercase();
+    if !SHELL_SCREEN_FAILURES.iter().any(|f| said.contains(f)) {
+        return None;
+    }
+    Some(json!({
+        "decision": "block",
+        "reason": SHELL_SCREEN_FAILED,
+        "hookSpecificOutput": { "hookEventName": "PostToolUse", "additionalContext": SHELL_SCREEN_FAILED },
+    }))
+}
+
+/// Whether one command takes a picture of the screen or scripts another app's
+/// interface (`osascript` through System Events).
+fn drives_the_screen(words: &[String], line: &str) -> bool {
+    let words: &[String] = if words.first().is_some_and(|w| w == "sudo") { &words[1..] } else { words };
+    let Some(first) = words.first() else { return false };
+    match first.rsplit('/').next().unwrap_or(first).to_lowercase().as_str() {
+        "screencapture" => true,
+        "osascript" | "jxa" => {
+            let line = line.to_lowercase();
+            ["system events", "keystroke", "key code", "ui element", "click at"].iter().any(|n| line.contains(n))
+        }
+        _ => false,
+    }
 }
 
 /// The hook's answer to Claude Code for one call (its JSON on stdin): a
 /// refusal, or nothing — never an approval, which would skip the engine's
 /// own rules.
 pub fn answer(call: &Value, work: &Path, read_only: &[PathBuf]) -> Option<Value> {
+    if call.get("hook_event_name").and_then(Value::as_str) == Some("PostToolUse") {
+        return after(call);
+    }
     let tool = call.get("tool_name").and_then(Value::as_str)?;
     let input = call.get("tool_input")?;
     let cwd = call.get("cwd").and_then(Value::as_str).map_or_else(|| work.to_path_buf(), PathBuf::from);
@@ -638,6 +710,36 @@ mod tests {
         ] {
             assert_eq!(bash(command), None, "{command}");
         }
+    }
+
+    #[test]
+    fn a_shell_screenshot_or_ui_script_refused_by_macos_points_at_the_desktop_tools() {
+        let ran = |command: &str, said: &str| {
+            after(&json!({ "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": { "command": command }, "tool_response": { "stdout": "", "stderr": said } }))
+        };
+        for (command, said) in [
+            ("screencapture -x /tmp/a.png", "could not create image from display 0x1"),
+            ("/usr/sbin/screencapture -x a.png", "Could not create image from display"),
+            ("osascript -e 'tell application \"System Events\" to click button 1 of window 1'", "execution error: osascript is not allowed assistive access. (-25211)"),
+            ("osascript -e 'tell application \"System Events\" to keystroke \"a\"'", "System Events got an error: osascript is not allowed to send keystrokes. (1002)"),
+        ] {
+            let out = ran(command, said).unwrap_or_else(|| panic!("{command} let through"));
+            assert_eq!(out["reason"], SHELL_SCREEN_FAILED);
+            assert_eq!(out["hookSpecificOutput"]["hookEventName"], "PostToolUse");
+        }
+        for word in ["mcp__desktop__screenshot", "snapshot", "act", "Grant File Access", "unlock", "block_on_person", "never write steps"] {
+            assert!(SHELL_SCREEN_FAILED.contains(word), "{word}");
+        }
+        // It worked, or it was something else, or nothing failed.
+        assert!(ran("screencapture -x a.png", "").is_none());
+        assert!(ran("ls /nowhere", "could not create image from display").is_none());
+        assert!(ran("osascript -e 'return 1'", "(-1743)").is_none(), "not UI scripting");
+        // The same answer comes through `answer`, and the hooks ask for it.
+        let call = json!({ "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": { "command": "screencapture a.png" }, "tool_response": "could not create image from display" });
+        assert!(answer(&call, Path::new(WORK), &[]).is_some());
+        let hooks = hooks(Path::new("/opt/equipe"), Path::new(WORK), &[]);
+        assert_eq!(hooks["PostToolUse"][0]["matcher"], "Bash");
+        assert_eq!(hooks["PostToolUse"][0]["hooks"][0]["command"], hooks["PreToolUse"][0]["hooks"][0]["command"]);
     }
 
     #[test]

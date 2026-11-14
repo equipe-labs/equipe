@@ -84,7 +84,7 @@ pub enum Pointer {
 
 /// What a member is told when it asks for a picture and Screen Recording isn't
 /// granted: nothing is captured, so macOS isn't asked anything.
-pub const NO_PICTURE: &str = "No picture of the screen is available until the person grants Screen Recording (`equipe desktop setup`): read the app with `snapshot` / `find` (the accessibility tree) meanwhile.";
+pub const NO_PICTURE: &str = "No picture of the screen is available until the person grants Screen Recording (`equipe desktop setup`): read the app with `snapshot` / `find` (the accessibility tree) meanwhile. To ask for it, call `block_on_person` with `permission: [\"screen_recording\"]` — one card with one button for the person, no steps.";
 
 /// The Mac, as the tools use it.
 pub trait Desktop {

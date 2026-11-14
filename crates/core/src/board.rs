@@ -743,10 +743,18 @@ again with `waive_findings` saying why they aren't real.",
             "description": "Put the ticket you are on down when you can't go on without something only the person \
 can do — a token or secret to issue, an account or a setting to change. The ticket waits for them with what you \
 list as their checklist; you are free for other work meanwhile, and get it back, in the same worktree, once they \
-have done it. Your changes so far are kept. Then end your turn.",
+have done it. Your changes so far are kept. Then end your turn. Never list macOS privacy-permission steps \
+(System Settings panes, adding equipe's binary with +, restarting equipe): equipe's desktop tools hold Accessibility and \
+Screen Recording themselves, so use them for screenshots, clicks and dialogs; if one says a permission is missing, call \
+this with `permission` — the person gets one card with one button — and no steps.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "permission": {
+                        "type": "array",
+                        "items": { "type": "string", "enum": ["accessibility", "screen_recording"] },
+                        "description": "Only when a desktop tool says this permission is missing for equipe: the person gets one card with one button that asks macOS and opens System Settings at the right pane (on another Mac it says where to do it). Use this instead of writing steps; it is refused when equipe's desktop already has the permission.",
+                    },
                     "needs": {
                         "type": "array",
                         "items": { "type": "string" },
@@ -757,7 +765,6 @@ a label (`[AWS sign-in](https://…)`), which the card draws as a button. In the
                     },
                     "why": { "type": "string", "description": "What it is for, in one line — in the person's language." },
                 },
-                "required": ["needs"],
             },
         }),
         json!({

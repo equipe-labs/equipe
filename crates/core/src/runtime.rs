@@ -8942,9 +8942,16 @@ End your turn now with a short summary.",
             }
             board::BLOCK_ON_PERSON => {
                 let asked = board::arg_strs(&args, "needs");
-                if asked.is_empty() {
+                let permissions: Vec<crate::protocol::asks::Permission> =
+                    board::arg_strs(&args, "permission").iter().filter_map(|p| crate::protocol::asks::Permission::parse(p)).collect();
+                if asked.is_empty() && permissions.is_empty() {
                     return Err("List what the person has to do, one thing per item.".into());
                 }
+                // Steps asking the person to change macOS privacy permissions: refused when
+                // equipe's desktop tools already hold them, else one card with one button.
+                let ready = self.desktop_auto.as_ref().and_then(desktop::auto::Auto::latest);
+                let judged = crate::permission_chore::judge(&asked, &permissions, ready.as_ref())?;
+                let (asked, chore_told) = (judged.asks, judged.told);
                 // What the person left open last time (not yet, later) is asked again with these.
                 let on = self.sessions.get(&id).and_then(|s| s.work.as_ref()).map(|w| w.ticket);
                 let open = on.and_then(|t| self.journal(&squad).and_then(|j| j.ticket(t).ok().flatten())).map(|t| t.remaining).unwrap_or_default();
@@ -8962,9 +8969,10 @@ End your turn now with a short summary.",
                 } else {
                     String::new()
                 };
+                let chore_told = chore_told.map(|t| format!(" {t}")).unwrap_or_default();
                 Ok(format!(
                     "T-{} waits for the person when this turn ends; your changes are kept in your worktree and you get \
-it back there once they have done it.{again} End your turn now with a short line on what you need.",
+it back there once they have done it.{again}{chore_told} End your turn now with a short line on what you need.",
                     work.ticket
                 ))
             }

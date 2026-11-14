@@ -781,7 +781,10 @@ person with `show_my_browser` as you would yours."
         "\n\nYou can work the computer's desktop apps (the `desktop` tools, experimental) on the person's own machine, \
 where they may be working too: open your `desktop-apps` skill before you use them. Read apps as an accessibility tree and \
 act on its refs (cheap, headless, side by side with others); screenshots are the fallback. Sending a message, a mail or \
-anything else to someone in the person's name waits for the person's yes."
+anything else to someone in the person's name waits for the person's yes. For an app's screenshots, clicks, typing and \
+dialogs (Office's \"Grant File Access\" too) use these tools, never shell `screencapture` or `osascript`; never ask the \
+person to grant permissions to equipe's command-line binary. If a desktop tool says a permission is missing, call \
+`block_on_person` with `permission` (one card, one button for the person) instead of writing steps."
     } else {
         ""
     };
