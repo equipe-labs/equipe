@@ -1,0 +1,75 @@
+<!doctype html>
+<!--
+  https://equipe.im/o/ — the https form of an equipe link:
+
+    https://equipe.im/o/#<squad>/<kind>/<id>?host=<machine>
+
+  Chat apps often don't make `equipe://` clickable, so people share this form
+  instead. The part after `#` (the fragment) never reaches a server; this page
+  reads it in the browser and hands it to the app as
+  `equipe://open/<squad>/<kind>/<id>?host=<machine>`.
+
+  Copy this file to the website as `o/index.html`. It has no dependencies.
+  The link grammar is documented in crates/protocol/src/deeplink.rs.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Open in equipe</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fafaf9; --text: #1c1917; --muted: #78716c; --line: #e7e5e4; --accent: #1c1917; --on-accent: #fafaf9; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #151413; --text: #f5f5f4; --muted: #a8a29e; --line: #292524; --accent: #f5f5f4; --on-accent: #151413; } }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: grid; place-items: center; padding: 0 16px; }
+  main { width: 100%; max-width: 420px; text-align: center; }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  p { margin: 8px 0; color: var(--muted); }
+  .what { color: var(--text); word-break: break-word; }
+  a.button { display: inline-block; margin: 20px 0 8px; padding: 10px 20px; border-radius: 10px; background: var(--accent); color: var(--on-accent); text-decoration: none; font-weight: 600; }
+  .note { margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 14px; }
+  .note a { color: inherit; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <section id="ok" hidden>
+    <h1>Opening in equipe…</h1>
+    <p class="what" id="what"></p>
+    <a class="button" id="open" href="#">Open in equipe</a>
+    <div class="note" id="note" hidden>
+      <p>Nothing happened? equipe may not be installed on this computer.</p>
+      <p><a href="https://equipe.im/">Get equipe</a>, then press the button again. The link is for the Mac the squad runs on, so you will also need to be connected to it (for example over Tailscale).</p>
+    </div>
+  </section>
+  <section id="bad" hidden>
+    <h1>This isn't an equipe link</h1>
+    <p>An equipe link looks like <code>https://equipe.im/o/#squad/ticket/T-12</code>. Ask whoever sent it to copy the link again from equipe.</p>
+    <p><a href="https://equipe.im/">equipe.im</a></p>
+  </section>
+</main>
+<script>
+(function () {
+  // `#squad/kind/id?host=machine`, percent-encoded, nothing else: the app
+  // rejects anything it doesn't understand, and so does this page.
+  var raw = location.hash.replace(/^#\/?/, '').replace(/[.,;:!?*_~\/]+$/, '');
+  var valid = /^[A-Za-z0-9%._~\-]+\/(ticket|conversation|member|decision|needs-you|status)(\/[A-Za-z0-9%._~\-]+)?(\?[A-Za-z0-9%._~\-=&]*)?$/i.test(raw);
+  if (!valid) {
+    document.getElementById('bad').hidden = false;
+    return;
+  }
+  var target = 'equipe://open/' + raw;
+  var parts = raw.split('?')[0].split('/');
+  var decode = function (s) { try { return decodeURIComponent(s); } catch (e) { return s; } };
+  document.getElementById('what').textContent = decode(parts[0]) + ' · ' + parts[1] + (parts[2] ? ' ' + decode(parts[2]) : '');
+  document.getElementById('open').href = target;
+  document.getElementById('ok').hidden = false;
+  // If the app took the link, this page is behind it; if not, say why after a moment.
+  setTimeout(function () { document.getElementById('note').hidden = false; }, 1800);
+  location.replace(target);
+})();
+</script>
+</body>
+</html>

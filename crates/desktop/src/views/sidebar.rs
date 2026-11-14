@@ -2057,6 +2057,23 @@ fn member_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             );
         }
     }
+    // Its link, to share in a chat.
+    {
+        use crate::deeplink::CopyAs;
+        use equipe_core::protocol::deeplink::Target;
+        rows.push(div().my_1().h(px(1.)).bg(p.hair).into_any_element());
+        for (id, label, how) in [("mm-copy-link", t!("link.copy"), CopyAs::Link), ("mm-copy-text", t!("link.copy_text"), CopyAs::Text)] {
+            let who = name.clone();
+            rows.push(
+                item(id, IconName::Copy, label.to_owned(), None)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.board.member_menu = None;
+                        this.copy_link_to("member-link", Target::Member(who.clone()), how, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+    }
     Some(
         deferred(
             anchored().position(at).snap_to_window().child(

@@ -50,6 +50,7 @@ pub fn sections() -> Vec<Section> {
                 ("⌘U", t!("help.nav_usage")),
                 ("⌘/", t!("help.nav_help")),
                 ("⌘⇧K", t!("help.nav_connect")),
+                ("⌘⇧C", t!("help.nav_copy_link")),
                 ("⌘⇧N", t!("menu.new_window")),
                 (t!("help.nav_link_key"), t!("help.nav_link")),
             ]),

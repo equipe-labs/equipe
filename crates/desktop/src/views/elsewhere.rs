@@ -33,6 +33,8 @@ pub enum Goal {
     Ticket(u32),
     /// A conversation with the PM the person opened.
     Conversation(equipe_core::protocol::SessionId),
+    /// A place a shared link names (`crate::deeplink`).
+    Link(equipe_core::protocol::deeplink::Target),
 }
 
 /// Open a window of its own, as `opening` says — once the click that asked
@@ -77,6 +79,7 @@ impl Shell {
             Goal::Project(name) => self.open_project_page(name, window, cx),
             Goal::Ticket(id) => self.open_ticket(id, cx),
             Goal::Conversation(id) => self.open_side(crate::state::Side::Conversation(id), window, cx),
+            Goal::Link(target) => self.open_link_target(target, window, cx),
         }
         cx.notify();
     }

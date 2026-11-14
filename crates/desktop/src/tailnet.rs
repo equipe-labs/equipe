@@ -42,6 +42,9 @@ impl Peer {
 struct Status {
     #[serde(rename = "Peer", default)]
     peer: std::collections::HashMap<String, Node>,
+    /// This computer, as the tailnet names it.
+    #[serde(rename = "Self", default)]
+    me: Option<Node>,
 }
 
 #[derive(Deserialize)]
@@ -80,6 +83,24 @@ pub fn parse(json: &str) -> Vec<Peer> {
     // shared from another tailnet, so when it was last seen says more.
     peers.sort_by(|a, b| a.last_seen.map(std::cmp::Reverse).cmp(&b.last_seen.map(std::cmp::Reverse)).then_with(|| a.short().cmp(b.short())));
     peers
+}
+
+/// What the tailnet calls this computer: its MagicDNS name (without the last
+/// dot) first, then its host name — the names another Mac connects to it by.
+pub fn parse_self(json: &str) -> Vec<String> {
+    let Ok(status) = serde_json::from_str::<Status>(json) else { return Vec::new() };
+    let Some(me) = status.me else { return Vec::new() };
+    [me.dns_name.trim_end_matches('.').to_owned(), me.host_name.replace('\u{a0}', " ")].into_iter().filter(|n| !n.is_empty()).collect()
+}
+
+/// This computer's names on the tailnet; none without Tailscale. Blocks
+/// briefly: call it off the UI thread.
+pub fn load_self() -> Vec<String> {
+    let Some(bin) = binary() else { return Vec::new() };
+    match Command::new(bin).args(["status", "--json"]).output() {
+        Ok(out) => parse_self(&String::from_utf8_lossy(&out.stdout)),
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Devices not seen for this long are left out of the list, until searched for.
@@ -232,6 +253,12 @@ mod tests {
         assert_eq!(peers[1].last_seen, Some(1_793_337_359), "2026-10-30 05:15:59 UTC");
         assert!(parse("not json").is_empty());
         assert!(peers[1].fresh(1_793_337_359 + 86_400) && !peers[1].fresh(1_793_337_359 + STALE), "two weeks unseen: stale");
+    }
+
+    #[test]
+    fn this_computers_names_are_its_magicdns_name_then_its_host_name() {
+        assert_eq!(parse_self(STATUS), ["abel-macmini.tail5abbbf.ts.net", "Abel의 Mac mini"]);
+        assert!(parse_self("not json").is_empty() && parse_self("{}").is_empty());
     }
 
     #[test]

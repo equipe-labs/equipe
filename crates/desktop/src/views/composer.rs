@@ -241,6 +241,8 @@ pub struct Composer {
     /// conversation replied to ("Reply"), or only quoted to ask about
     /// ("Ask about this"). Kept with the draft.
     pub replies: Vec<crate::quote::Reply>,
+    /// Equipe links pasted into the box, as chips until sent (`crate::refs`).
+    pub refs: Vec<crate::refs::Ref>,
     /// The card the keys are on (Tab from the box), the box keeping the focus.
     pub card: Option<usize>,
     /// The card under the pointer: its passage shows over it.
@@ -331,6 +333,7 @@ impl Composer {
             flash: None,
             stop_armed: None,
             replies: Vec::new(),
+            refs: Vec::new(),
             card: None,
             peek: None,
             cards_scroll: ScrollHandle::new(),
@@ -652,6 +655,9 @@ impl Shell {
         // then what was typed in the box.
         let quoted = !self.composer.replies.is_empty() && !typed.trim().starts_with('/');
         let typed_with_quotes = if quoted { crate::quote::message_all(&self.composer.replies, &typed) } else { typed.clone() };
+        // Links pasted as chips go before the words: each as its title and link.
+        let referenced = !self.composer.refs.is_empty() && !typed.trim().starts_with('/');
+        let typed_with_quotes = if referenced { crate::refs::message(&self.composer.refs, &typed_with_quotes) } else { typed_with_quotes };
         // What was pointed at on the design screen goes before them, its pictures attached.
         let pointed = !self.composer.context.is_empty() && !typed.trim().starts_with('/') && (!typed_with_quotes.trim().is_empty() || !tags.is_empty());
         let (typed_with_quotes, all_tags) = if pointed {
@@ -678,6 +684,9 @@ impl Shell {
             self.composer.replies.clear();
             self.composer.card = None;
             self.composer.peek = None;
+        }
+        if referenced && plan.restore.is_none() && !plan.commands.is_empty() {
+            self.composer.refs.clear();
         }
         // And what was pointed at.
         if pointed && plan.restore.is_none() && !plan.commands.is_empty() {
@@ -1089,6 +1098,11 @@ impl Shell {
         let inline = std::mem::take(&mut self.composer.inline_paste);
         if let Some(sources) = attach::from_clipboard(item) {
             self.attach_sources(sources, cx);
+            return true;
+        }
+        // An equipe link (or a link with its title): a chip, not an address.
+        if !inline && let Some(chip) = item.text().and_then(|text| self.link_chip(&text)) {
+            self.add_ref(chip, cx);
             return true;
         }
         match item.text() {
@@ -1879,6 +1893,7 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         .children(completion(shell, cx))
         .children(menu_layer(shell, cx))
         .children(super::design_talk::chips(shell, INSET, cx))
+        .children(super::linkshare::chips(shell, INSET, cx))
         .children(super::quote::cards(shell, INSET, cx))
         .children(strip(shell, cx))
         .child(
@@ -2148,7 +2163,7 @@ fn bar(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
     let stopping = working && model.viewed().is_some_and(|s| composer.stopping == Some(s));
     let text = composer.text(cx);
     // The cards are words too: they send with an empty box.
-    let has_words = !text.trim().is_empty() || !composer.replies.is_empty();
+    let has_words = !text.trim().is_empty() || !composer.replies.is_empty() || !composer.refs.is_empty();
     let has_any = has_words || composer.strip.ready() > 0;
     let steerable = member.is_some_and(|m| m.engine.is_some());
     let (to_label, to_color) = recipient(p, model, &text);

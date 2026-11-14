@@ -1147,8 +1147,7 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
         _ => None,
     };
     let stat = shell.board.stat(t).filter(|s| !s.files.is_empty()).map(|s| (s.added, s.removed));
-    let el = h_flex()
-        .id(SharedString::from(format!("ticket-{id}")))
+    let el = super::linkshare::on_right_click(h_flex().id(SharedString::from(format!("ticket-{id}"))), "row-link", equipe_core::protocol::deeplink::Target::Ticket(id), cx)
         .role(Role::ListItem)
         .aria_label(format!("T-{id} {}", t.title))
         .aria_selected(picked)
@@ -1619,8 +1618,7 @@ fn card(shell: &Shell, id: TicketId, status: TicketStatus, next: Option<TicketId
             this.card_hover(dragged, status, id, next, e.bounds, e.event.position, cx);
         }))
         .child(
-            v_flex()
-                .id(SharedString::from(format!("card-{id}")))
+            super::linkshare::on_right_click(v_flex().id(SharedString::from(format!("card-{id}"))), "row-link", equipe_core::protocol::deeplink::Target::Ticket(id), cx)
                 .role(Role::ListItem)
                 .aria_label(format!("T-{id} {}", t.title))
                 .aria_selected(picked)

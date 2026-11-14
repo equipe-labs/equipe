@@ -38,6 +38,7 @@ pub mod setup;
 pub mod switching;
 pub mod header;
 pub mod links;
+pub mod linkshare;
 pub mod icons;
 pub mod pair;
 pub mod peek;

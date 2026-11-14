@@ -1513,5 +1513,9 @@
   "secrets.fact_name": "密钥:{squad}/{name}",
   "secrets.fact_kind": "类型:{kind},用于 {service}",
   "secrets.fact_projects": "可使用于:{projects}",
-  "secrets.fact_saved": "{member} 于 {when} 保存"
+  "secrets.fact_saved": "{member} 于 {when} 保存",
+  "open.bad_link": "“{text}”不是 equipe 链接。链接的样子是 equipe://open/<小队>/ticket/T-12 或 https://equipe.im/o/#<小队>/ticket/T-12",
+  "open.no_app": "没有应用打开 {link}。请安装 equipe 桌面应用(equipe.app),启动一次后再试。",
+  "open.opening": "正在 equipe 中打开 {link}",
+  "open.unsupported": "equipe open 目前支持 macOS 和 Linux。链接是 {link}"
 }

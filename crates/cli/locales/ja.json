@@ -1513,5 +1513,9 @@
   "secrets.fact_name": "キー: {squad}/{name}",
   "secrets.fact_kind": "種類: {kind}({service}用)",
   "secrets.fact_projects": "使える場所: {projects}",
-  "secrets.fact_saved": "{when}に{member}が保存"
+  "secrets.fact_saved": "{when}に{member}が保存",
+  "open.bad_link": "「{text}」はequipeのリンクではありません。リンクは equipe://open/<スクワッド>/ticket/T-12 または https://equipe.im/o/#<スクワッド>/ticket/T-12 の形です",
+  "open.no_app": "{link} を開くアプリがありません。equipe のデスクトップアプリ(equipe.app)をインストールし、一度起動してから、もう一度お試しください。",
+  "open.opening": "equipe で {link} を開いています",
+  "open.unsupported": "equipe open は今のところ macOS と Linux で使えます。リンクは {link} です"
 }

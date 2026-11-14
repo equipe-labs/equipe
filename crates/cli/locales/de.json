@@ -1536,5 +1536,9 @@
   "secrets.fact_name": "Schlüssel: {squad}/{name}",
   "secrets.fact_kind": "Art: {kind}, für {service}",
   "secrets.fact_projects": "Nutzbar in: {projects}",
-  "secrets.fact_saved": "Abgelegt {when} von {member}"
+  "secrets.fact_saved": "Abgelegt {when} von {member}",
+  "open.bad_link": "„{text}“ ist kein equipe-Link. Ein Link sieht so aus: equipe://open/<Squad>/ticket/T-12 oder https://equipe.im/o/#<Squad>/ticket/T-12",
+  "open.no_app": "Keine App hat {link} geöffnet. Installiere die equipe-Desktop-App (equipe.app), starte sie einmal und versuche es erneut.",
+  "open.opening": "{link} wird in equipe geöffnet",
+  "open.unsupported": "equipe open funktioniert vorerst unter macOS und Linux. Der Link lautet {link}"
 }

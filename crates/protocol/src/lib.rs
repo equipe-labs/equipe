@@ -18,6 +18,7 @@ pub mod briefs;
 pub mod by_words;
 pub mod call;
 pub mod decide;
+pub mod deeplink;
 pub mod disk;
 pub mod metrics;
 pub mod plan_use;

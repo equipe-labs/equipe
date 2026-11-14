@@ -29,6 +29,7 @@ mod accept;
 mod activity;
 mod convo;
 mod decide;
+mod deeplink;
 mod deck;
 mod daemon;
 mod disk;
@@ -51,6 +52,7 @@ mod pair;
 mod pane;
 mod queue;
 mod quote;
+mod refs;
 mod readonly;
 mod screen_look;
 mod setup;
@@ -150,6 +152,8 @@ actions!(equipe, [DismissOverlay, NewSquad]);
 actions!(equipe, [ZoomIn, ZoomOut, ActualSize]);
 // Orchestration (⌘⇧L), from the View menu or anywhere.
 actions!(equipe, [ShowOrchestration]);
+// A ticket's link, copied (⌘⇧C): the ticket open or picked.
+actions!(equipe, [CopyTicketLink]);
 // The Window menu's: one more window (⌘⇧N), and the Mac's own two.
 actions!(equipe, [NewWindow, MinimizeWindow, ZoomWindow]);
 // Back and forward through the places the window has been (⌘[ ⌘], ⌘← ⌘→), as
@@ -2681,6 +2685,7 @@ impl Render for Shell {
                 this.show(next, cx);
             }))
             .on_action(cx.listener(|this, _: &ShowOrchestration, _, cx| this.open_orchestra(cx)))
+            .on_action(cx.listener(|this, _: &CopyTicketLink, _, cx| this.copy_ticket_link(cx)))
             .on_action(cx.listener(|this, _: &ChooseTarget, window, cx| this.open_chooser(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleDocFocus, window, cx| this.toggle_doc_focus(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleBrowser, window, cx| this.toggle_browser(window, cx)))
@@ -2989,6 +2994,7 @@ fn window_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-shift-b", ToggleBrowser, None),
         KeyBinding::new("cmd-shift-f", ToggleDocFocus, None),
         KeyBinding::new("cmd-shift-l", ShowOrchestration, None),
+        KeyBinding::new("cmd-shift-c", CopyTicketLink, None),
         KeyBinding::new("ctrl-`", ToggleTerminal, None),
         KeyBinding::new("cmd-\\", ToggleSidebar, None),
         KeyBinding::new("cmd-n", NewMessage, None),
@@ -3177,8 +3183,18 @@ fn main() {
         }
         cx.activate(true);
     });
+    // A link opened (`equipe://…` clicked in a chat app or passed to the app),
+    // from the system or the command line: handled once the app runs.
+    let (link_tx, link_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    {
+        let tx = link_tx.clone();
+        app.on_open_urls(move |urls| urls.into_iter().for_each(|url| drop(tx.send(url))));
+    }
+    std::env::args().skip(1).filter(|arg| equipe_core::protocol::deeplink::parse(arg).is_some()).for_each(|arg| drop(link_tx.send(arg)));
+    deeplink::warm();
     app.run(|cx| {
         gpui_kit::init(cx);
+        follow_links(link_rx, cx);
         // The notification centre's delegate, before a click can come back;
         // a click goes to the window showing the squad it came from.
         notify::start();
@@ -3221,6 +3237,18 @@ fn follow_notice_clicks(cx: &mut App) {
                 let Some(shell) = shell.upgrade() else { return };
                 let _ = handle.update(cx, |_, window, cx| shell.update(cx, |shell, cx| shell.go(click.go, window, cx)));
             });
+        }
+    })
+    .detach();
+}
+
+/// Open the links that come: from the system's open-URL event and the
+/// command line. Each goes to the window on its machine and squad
+/// (`deeplink.rs`).
+fn follow_links(mut links: tokio::sync::mpsc::UnboundedReceiver<String>, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        while let Some(link) = links.recv().await {
+            cx.update(|cx| deeplink::handle(&link, cx));
         }
     })
     .detach();
@@ -3313,6 +3341,11 @@ mod tests {
         assert_eq!(bound("alt-cmd-n"), ["equipe::AddMembers"], "adding members moved over for it");
         assert_eq!(bound("cmd-m"), ["equipe::MinimizeWindow"]);
         assert_eq!(bound("cmd-n"), ["equipe::NewMessage"], "⌘N stays a new message");
+    }
+
+    #[test]
+    fn a_tickets_link_has_a_key() {
+        assert_eq!(bound("cmd-shift-c"), ["equipe::CopyTicketLink"]);
     }
 
     #[test]

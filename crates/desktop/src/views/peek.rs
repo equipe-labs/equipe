@@ -267,7 +267,6 @@ fn code_review(p: Palette, review: &equipe_core::protocol::review::CodeReview) -
 fn head(shell: &Shell, t: &Ticket, wide: bool, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let model = &shell.model;
-    let _ = cx;
     let who = rules::who(t).map(str::to_owned);
     let mut facts: Vec<AnyElement> = Vec::new();
     if let Some(project) = model.ticket_project_name(t) {
@@ -294,11 +293,19 @@ fn head(shell: &Shell, t: &Ticket, wide: bool, cx: &mut Context<Shell>) -> AnyEl
         .gap_2()
         .child(
             h_flex()
+                .w_full()
                 .gap_2()
                 .items_center()
                 .child(icons::status(p, t.status, 14.))
                 .child(div().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{}", t.id)))
-                .child(div().text_size(px(12.)).text_color(icons::color(p, t.status)).child(model.state_word_of(t))),
+                .child(div().text_size(px(12.)).text_color(icons::color(p, t.status)).child(model.state_word_of(t)))
+                .child(div().flex_1())
+                // "Copy link": the ticket's link, to share in a chat.
+                .child({
+                    let target = equipe_core::protocol::deeplink::Target::Ticket(t.id);
+                    let title = shell.link_title(&target);
+                    super::linkshare::button(shell, "ticket-link", target, title, cx)
+                }),
         )
         .child(super::tickets::title(shell, t, if wide { 22. } else { 16. }, cx))
         .child(h_flex().flex_wrap().gap_x_3().gap_y_1().text_size(px(12.)).text_color(p.muted).children(facts))

@@ -1536,5 +1536,9 @@
   "secrets.fact_name": "Clave: {squad}/{name}",
   "secrets.fact_kind": "Tipo: {kind}, para {service}",
   "secrets.fact_projects": "Puede usarse en: {projects}",
-  "secrets.fact_saved": "Guardada {when} por {member}"
+  "secrets.fact_saved": "Guardada {when} por {member}",
+  "open.bad_link": "«{text}» no es un enlace de equipe. Uno se ve así: equipe://open/<equipo>/ticket/T-12 o https://equipe.im/o/#<equipo>/ticket/T-12",
+  "open.no_app": "Ninguna app abrió {link}. Instala la app de escritorio de equipe (equipe.app), ábrela una vez e inténtalo de nuevo.",
+  "open.opening": "Abriendo {link} en equipe",
+  "open.unsupported": "equipe open funciona por ahora en macOS y Linux. El enlace es {link}"
 }
