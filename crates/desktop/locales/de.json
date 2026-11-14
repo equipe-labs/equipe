@@ -693,6 +693,7 @@
   "models.updating": "Claude Code wird aktualisiert — Mitglieder nutzen es ab ihrem nächsten Zug.",
   "models.effort_not_taken": "nicht für dieses Modell",
   "models.recommended": "Empfohlen · {model}",
+  "tickets.ev_retitled": "umbenannt, vorher:",
   "usage.window_used": "{window} {used} % genutzt",
   "usage.window_out": "{window} · Limit erreicht · zurück in {span}",
   "models.plan_unread": "Tarif noch nicht gelesen",

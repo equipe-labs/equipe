@@ -421,6 +421,18 @@ fn seed_repos() {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// `t` with the chip of its sort of work (`fix`, `check`…).
+fn labelled(mut t: Ticket, label: &str) -> Ticket {
+    t.label = serde_json::from_value(label.into()).ok();
+    t
+}
+
+/// A ticket put down for the person, with the one-line ask a list leads with.
+fn waits(id: u32, project: &str, who: &str, title: &str, headline: &str, asks: &[&str]) -> Ticket {
+    let asks: Vec<String> = asks.iter().map(|a| (*a).to_owned()).collect();
+    ticket(id, "waiting", project, who, title, "", &[], None, Some(&equipe_core::protocol::asks::waiting_note_headed(&asks, None, Some(headline))))
+}
+
 fn ticket(id: u32, status: &str, project: &str, who: &str, title: &str, body: &str, deps: &[u32], branch: Option<&str>, note: Option<&str>) -> Ticket {
     serde_json::from_value(serde_json::json!({"id": id, "title": title, "body": body, "status": status, "owner": who, "assignee": who, "project": repo(project), "depends_on": deps, "branch": branch, "created_by": "pm", "note": note})).unwrap()
 }
@@ -490,8 +502,29 @@ fn board() -> Vec<Ticket> {
         out.extend([
             ticket(42, "review", "web", "frontend", "Checkout page payment method choice", "- [ ] Both card and bank transfer can be chosen\n- [ ] The choice survives a refresh\n- [ ] Nothing breaks at mobile width", &[], Some("equipe/t-42-checkout"), Some(&checkout_note())),
             ticket(71, "review", "api", "backend", "Rate-limit middleware", "- [ ] 429 past 60 a minute\n- [ ] The remaining count in a header", &[], Some("equipe/t-71-rate-limit"), Some("Added a 60-a-minute limit with a token bucket. 6 tests added.")),
-            ticket(55, "waiting", "web", "frontend", "Connect the payment test key", "Run a payment all the way through in Stripe's test mode.", &[], None, Some("Waiting on you:\n- [ ] Make a test key in the Stripe dashboard\n- [ ] Put STRIPE_KEY in `.env.local`\n- [ ] Add the same key to the Vercel project")),
-            ticket(73, "waiting", "api", "backend", "Read-only production DB account", "", &[], None, Some("Waiting on you:\n- [ ] Share the production DB's read-only password")),
+            labelled(
+                ticket(
+                    55,
+                    "waiting",
+                    "web",
+                    "frontend",
+                    "Connect the payment test key",
+                    "Run a payment all the way through in Stripe's test mode.",
+                    &[],
+                    None,
+                    Some(&equipe_core::protocol::asks::waiting_note_headed(
+                        &["Make a test key in the Stripe dashboard".to_owned(), "Put STRIPE_KEY in `.env.local`".to_owned(), "Add the same key to the Vercel project".to_owned()],
+                        None,
+                        Some("Make a Stripe test key and add it in 2 places · 5 min"),
+                    )),
+                ),
+                "feature",
+            ),
+            labelled(waits(73, "api", "backend", "Read-only production DB account", "Share the read-only database password · 1 min", &["Share the production DB's read-only password"]), "chore"),
+            labelled(
+                waits(74, "api", "backend", "Nightly business-plan sync workflow failing two nights running (ECS task failed)", "Restart the nightly sync task in AWS · 2 min", &["Restart the ECS task `nightly-sync` in the AWS console"]),
+                "fix",
+            ),
             ticket(52, "proposed", "web", "frontend", "Dark mode toggle", "Dark mode in the user settings would likely lengthen night-time use.\n\n- [ ] Follows the system setting\n- [ ] Can be picked by hand", &[], None, None),
             ticket(64, "proposed", "app", "designer", "Empty-state illustration set", "", &[], None, None),
             // The person's ideas, kept for later — and one the PM brought back.
@@ -548,7 +581,7 @@ fn board() -> Vec<Ticket> {
     if busy() {
         out.extend(BUSY.iter().map(|(id, _, who, title)| ticket(*id, "in_progress", "web", who, title, "", &[], None, None)));
         out.extend([
-            ticket(84, "waiting", "web", "frontend", "Check the domain's DNS records", "", &[], None, Some("Waiting on you:\n- [ ] Add a CNAME to the DNS")),
+            labelled(waits(84, "web", "frontend", "Check the domain's DNS records", "Add one CNAME record to the domain's DNS · 3 min", &["Add a CNAME to the DNS"]), "deploy"),
             ticket(85, "todo", "web", "frontend", "Cart quantity button accessibility", "", &[], None, None),
             ticket(86, "todo", "web", "qa", "Checkout regression test list", "", &[], None, None),
             ticket(87, "done", "web", "qa", "Sign-in error message copy", "", &[], None, None),

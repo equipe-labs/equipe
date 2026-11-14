@@ -290,12 +290,23 @@ model says.
 | Tool | Who | Does |
 |---|---|---|
 | `board` | everyone | the open tickets as text |
-| `create_ticket` | everyone | the PM's are `todo`; anyone else's are proposals |
-| `update_ticket` | the PM | change a `proposed`/`todo`/`waiting` ticket; accept or drop a proposal; resume a waiting one |
+| `create_ticket` | everyone | the PM's are `todo`; anyone else's are proposals. The title is held to the title rule (below) and may carry a `label` |
+| `update_ticket` | the PM | change a `proposed`/`todo`/`waiting` ticket; accept or drop a proposal; resume a waiting one. A new title is held to the rule; the old one is kept in the ticket's history |
+| `retitle_open_tickets` | the PM | without `titles`, lists the open tickets whose title breaks the rule; with them, applies the titles the PM wrote (equipe writes none itself) |
 | `comment` | everyone | add to a ticket's record |
 | `submit_for_review` | the member on a ticket | hand it in; on a `code` ticket in a squad with a designer, `changes_screens` (and screenshots in `images`) says whether it goes to design QA |
 | `design_qa` | a designer on a design QA ticket | `pass` (on to the person's review) or `changes` (back to its engineer), with findings |
-| `block_on_person` | the member on a ticket | put it down until the person does their part |
+| `block_on_person` | the member on a ticket | put it down until the person does their part; `ask` (one line, what they must do) and `effort_minutes` are required: lists show them, with the ticket's title smaller below, in place of the title |
+
+**The title rule** (`equipe_protocol::title`, checked by the daemon when a ticket is
+created or renamed): a short outcome in the squad's language, at most 60
+characters and 12 words (ideally 40 and 8), saying what changes or is checked for
+whom. Refused, with what to change: a ticket id or test code (`T-12`, `TP-3`, `#12`),
+a `[bracketed]` prefix, an arrow, a title cut off with `…`, or one not in the squad's
+script (each locale names its script in `title.script`). What the title drops goes in
+the body; the sort of work goes in the ticket's `label` (feature, fix, check, deploy,
+design, chore), a small chip in lists. It is separate from `kind`, which says where
+the work happens.
 
 `--strict-mcp-config` keeps the person's own MCP servers (mail, calendar…) away
 from the squad, and `--allowedTools mcp__equipe` lets a headless run use equipe's

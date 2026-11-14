@@ -693,6 +693,7 @@
   "models.updating": "Actualizando Claude Code: los miembros lo usan desde su siguiente turno.",
   "models.effort_not_taken": "no para este modelo",
   "models.recommended": "Recomendado · {model}",
+  "tickets.ev_retitled": "renombró, antes:",
   "usage.window_used": "{window} {used}% usado",
   "usage.window_out": "{window} · Límite alcanzado · se reinicia en {span}",
   "models.plan_unread": "Plan aún sin leer",

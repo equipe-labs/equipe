@@ -693,6 +693,7 @@
   "models.updating": "Updating Claude Code — members use the new one from their next turn.",
   "models.effort_not_taken": "not for this model",
   "models.recommended": "Recommended · {model}",
+  "tickets.ev_retitled": "renamed, was:",
   "usage.window_used": "{window} {used}% used",
   "usage.window_out": "{window} · Limit reached · resets in {span}",
   "models.plan_unread": "Plan not read yet",

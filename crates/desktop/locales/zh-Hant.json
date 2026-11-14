@@ -668,6 +668,7 @@
   "models.updating": "正在更新 Claude Code —— 成員從下一輪起使用新版本。",
   "models.effort_not_taken": "此模型不支援",
   "models.recommended": "推薦 · {model}",
+  "tickets.ev_retitled": "改名，原標題：",
   "usage.window_used": "{window} 已用 {used}%",
   "usage.window_out": "{window}已達上限 · {span}後重置",
   "models.plan_unread": "尚未讀取用量",

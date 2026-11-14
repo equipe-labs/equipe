@@ -668,6 +668,7 @@
   "models.updating": "Claude Code を更新中 — メンバーは次のターンから新しい版を使います。",
   "models.effort_not_taken": "このモデルでは不可",
   "models.recommended": "おすすめ · {model}",
+  "tickets.ev_retitled": "名前を変更、元:",
   "usage.window_used": "{window} {used}% 使用",
   "usage.window_out": "{window} 上限に到達 · {span}後にリセット",
   "models.plan_unread": "使用量はまだ読めていません",

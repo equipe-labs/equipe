@@ -534,7 +534,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
-            remaining: vec![],
+            label: None, remaining: vec![],
             images: vec![],
             priority: Priority::Normal,
             rank: 0,

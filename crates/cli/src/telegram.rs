@@ -1057,7 +1057,7 @@ mod tests {
             created_by: "pm".into(),
             note: Some("Done: <form> & tests".into()),
             asks: vec![],
-            remaining: Vec::new(), images: Vec::new(),
+            label: None, remaining: Vec::new(), images: Vec::new(),
             updated_at: None,
             priority: Default::default(), rank: 0,
         }

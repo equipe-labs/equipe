@@ -674,7 +674,7 @@ mod tests {
             created_by: "equipe".into(),
             note: None,
             asks: vec![],
-            remaining: vec![],
+            label: None, remaining: vec![],
             images: vec![],
             updated_at: None,
             priority: Default::default(),

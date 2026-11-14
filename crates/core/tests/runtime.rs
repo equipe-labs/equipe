@@ -1412,7 +1412,7 @@ async fn work_not_on_main_says_why_can_be_kept_on_its_branch_and_settles_when_no
                     created_by: "pm".into(),
                     note: None,
                     asks: vec![],
-                    remaining: Vec::new(), images: Vec::new(),
+                    label: None, remaining: Vec::new(), images: Vec::new(),
                     updated_at: None,
                     priority: Default::default(), rank: 0,
                 })
@@ -1500,7 +1500,7 @@ async fn dependencies_that_conflict_hold_the_ticket_and_say_why() {
                     created_by: "pm".into(),
                     note: None,
                     asks: vec![],
-                    remaining: Vec::new(), images: Vec::new(),
+                    label: None, remaining: Vec::new(), images: Vec::new(),
                     updated_at: None,
                     priority: Default::default(), rank: 0,
                 })
@@ -1680,19 +1680,27 @@ async fn a_member_waiting_on_the_person_takes_its_next_ticket_and_comes_back_to_
     // The next ticket runs beside it, in a worktree of its own.
     until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 2, .. })).await;
     // Said from the member's own conversation, with two runs: neither is picked.
-    let which = tool(&handle, "backend", "block_on_person", serde_json::json!({ "needs": ["GitHub token"] })).await;
+    let which = tool(&handle, "backend", "block_on_person", serde_json::json!({ "ask": "Do the one thing", "effort_minutes": 1, "needs": ["GitHub token"] })).await;
     assert!(which.is_error && which.text.contains("not on a ticket"), "{which:?}");
     // It can't go on without the person: the ticket waits, with their checklist.
     let empty = tool_on(&handle, "backend", 1, "block_on_person", serde_json::json!({ "needs": [] })).await;
     assert!(empty.is_error, "{empty:?}");
+    // What the person must do, in one line with how long it takes, is required.
+    let headless = tool_on(&handle, "backend", 1, "block_on_person", serde_json::json!({ "needs": ["GitHub token"] })).await;
+    assert!(headless.is_error && headless.text.contains("`ask`"), "{headless:?}");
+    let no_effort = tool_on(&handle, "backend", 1, "block_on_person", serde_json::json!({ "ask": "Issue two tokens", "needs": ["GitHub token"] })).await;
+    assert!(no_effort.is_error && no_effort.text.contains("effort_minutes"), "{no_effort:?}");
+    let coded = tool_on(&handle, "backend", 1, "block_on_person", serde_json::json!({ "ask": "Do T-1 TP-3 → done", "effort_minutes": 1, "needs": ["GitHub token"] })).await;
+    assert!(coded.is_error && coded.text.contains("T-1"), "{coded:?}");
     let blocked = tool_on(&handle, "backend", 1, "block_on_person", serde_json::json!({
-        "needs": ["GitHub token", "PostHog secrets"], "why": "to deploy",
+        "ask": "Issue the GitHub and PostHog keys", "effort_minutes": 5, "needs": ["GitHub token", "PostHog secrets"], "why": "to deploy",
     }))
     .await;
     assert!(!blocked.is_error, "{blocked:?}");
     let waiting = until(&mut events, |e| is_waiting(e, 1)).await;
     let ticket = ticket_changed(&waiting).pop().unwrap();
-    assert_eq!(ticket.note.as_deref(), Some("Waiting on you:\n- [ ] GitHub token\n- [ ] PostHog secrets\n(to deploy)"));
+    assert_eq!(ticket.note.as_deref(), Some("Waiting on you:\n> Issue the GitHub and PostHog keys · 5 min\n- [ ] GitHub token\n- [ ] PostHog secrets\n(to deploy)"));
+    assert_eq!(ticket.ask_headline().as_deref(), Some("Issue the GitHub and PostHog keys · 5 min"), "what a list reads in place of the title");
     assert_eq!(ticket.asks, ["GitHub token", "PostHog secrets"], "the asks travel as a list");
     assert_eq!(ticket.assignee.as_deref(), Some("backend"));
     assert!(first.path.exists(), "the worktree stays while the ticket waits");
@@ -1730,7 +1738,7 @@ async fn what_the_person_leaves_open_stays_on_the_ticket_and_is_asked_again_next
     tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "App Store", "body": "-", "owner": "backend" })).await;
     until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
     let needs = ["App Review 연락처를 알려 주세요.", "EU DSA 상태를 trader로 바꿔 주세요.", "가격을 정해 주세요."];
-    tool(&handle, "backend", "block_on_person", serde_json::json!({ "needs": needs })).await;
+    tool(&handle, "backend", "block_on_person", serde_json::json!({ "ask": "Do the one thing", "effort_minutes": 1, "needs": needs })).await;
     until(&mut events, |e| is_waiting(e, 1)).await;
 
     // Answered in part: one in words, one put off, one handed back.
@@ -1747,7 +1755,7 @@ async fn what_the_person_leaves_open_stays_on_the_ticket_and_is_asked_again_next
     assert!(prompt.contains(equipe_core::roles::ANSWERS_GUIDE), "what each answer means: {prompt}");
 
     // Put down again: what was left is asked again, after the new asks.
-    let blocked = tool(&handle, "backend", "block_on_person", serde_json::json!({ "needs": ["빌드 번호를 알려 주세요."] })).await;
+    let blocked = tool(&handle, "backend", "block_on_person", serde_json::json!({ "ask": "Do the one thing", "effort_minutes": 1, "needs": ["빌드 번호를 알려 주세요."] })).await;
     assert!(blocked.text.contains("left 1 thing(s) open last time"), "{blocked:?}");
     handle.send(Command::Submit { session: 2, text: "end your turn".into(), about: None });
     let waiting = until(&mut events, |e| is_waiting(e, 1)).await;
@@ -1768,7 +1776,7 @@ async fn a_waiting_ticket_stays_put_through_a_restart_until_the_pm_resumes_it() 
         add(&handle, &mut events, 2, member(&repo, "backend")).await;
         tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Deploy", "body": "-", "owner": "backend" })).await;
         until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
-        tool(&handle, "backend", "block_on_person", serde_json::json!({ "needs": "a Vercel token" })).await;
+        tool(&handle, "backend", "block_on_person", serde_json::json!({ "ask": "Do the one thing", "effort_minutes": 1, "needs": "a Vercel token" })).await;
         // The turn may already be over: a new message makes sure one ends after the tool call.
         handle.send(Command::Submit { session: 2, text: "end your turn".into(), about: None });
         until(&mut events, |e| is_waiting(e, 1)).await;
@@ -5771,7 +5779,7 @@ fn ticket_in(home: &Path, squad: &str, project: &Path, worktree: &Path) {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
-            remaining: Vec::new(),
+            label: None, remaining: Vec::new(),
             images: Vec::new(),
             updated_at: None,
             priority: Default::default(),
@@ -6481,13 +6489,16 @@ async fn a_long_board_comes_in_pages_each_within_the_cap() {
     let repo = repo();
     let home = squad_home(&[&repo]);
     let (claude, _recorded) = recording_claude(&answering("ok"));
+    // Ideas wait on nothing: a board of 400 tickets with long titles, written before the title rule.
+    {
+        let journal = Journal::for_squad(&home, "acme").unwrap();
+        for n in 0..400 {
+            let long = Ticket { status: TicketStatus::Idea, ..old_ticket(&format!("Idea number {n} for the roadmap: {}", "a long title ".repeat(10))) };
+            journal.create_ticket(&long).unwrap();
+        }
+    }
     let (handle, mut events) = runtime::start(with_tools(&claude, &home));
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
-    // Ideas wait on nothing: a board of 400 tickets, each with a long body in its note.
-    for n in 0..400 {
-        let made = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": format!("Idea number {n} for the roadmap: {}", "a long title ".repeat(10)), "body": "-", "idea": true })).await;
-        assert!(!made.is_error, "{made:?}");
-    }
     let page = tool(&handle, "pm", "board", serde_json::json!({})).await;
     assert!(!page.is_error);
     assert!(page.text.contains("more open ticket(s) not shown") && page.text.contains("call `board` with `after: "), "{}", page.text);
@@ -6769,4 +6780,124 @@ async fn a_conversation_whose_first_turn_failed_is_named_after_the_persons_first
     let (handle, mut events) = runtime::start(config(&claude, &home, true));
     until(&mut events, |e| matches!(e, Event::ConversationTitle { session: 50, title, named: false } if title == "Fix the checkout total")).await;
     handle.shutdown().await;
+}
+
+
+#[tokio::test]
+async fn a_title_is_a_short_outcome_in_the_squads_language_and_a_rename_keeps_the_old_one() {
+    let repo = repo();
+    let claude = fake_claude(true, &answering("ok"));
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&repo]), false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    // The person writes in English: that is the language a title is held to.
+    handle.send(Command::Submit { session: 1, text: "Let's build the website for the launch next week".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    for (title, said) in [
+        ("[T-1326 continue] Save the six forms", "bracketed prefix"),
+        ("Check the exit-plan sheets (T-896)", "T-896"),
+        ("Save, edit, then submit → withdraw", "arrow"),
+        ("Verify all four exit-plan sheets after deployment and publish the fund-map report", "characters"),
+        ("Publish the fund-map re…", "ellipsis"),
+        ("구글시트를 서비스 계정에 공유", "English"),
+    ] {
+        let refused = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": title, "body": "-", "owner": "backend" })).await;
+        assert!(refused.is_error && refused.text.contains(said), "{title}: {refused:?}");
+    }
+    assert!(handle.snapshot("acme").await.tickets.is_empty(), "nothing was written");
+    // A good one goes in, with its label.
+    let made = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Share the 3 sheets with the account", "body": "-", "owner": "backend", "label": "check" })).await;
+    assert!(!made.is_error, "{made:?}");
+    let bad_label = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Share the sheets", "body": "-", "label": "qa" })).await;
+    assert!(bad_label.is_error && bad_label.text.contains("feature, fix, check"), "{bad_label:?}");
+    let ticket = handle.snapshot("acme").await.tickets.into_iter().find(|t| t.id == 1).unwrap();
+    assert_eq!(ticket.label, Some(equipe_core::protocol::title::TicketLabel::Check));
+    // A rename is held to the rule too; the old title stays in the history.
+    let coded = tool(&handle, "pm", "update_ticket", serde_json::json!({ "id": 1, "title": "TP-1~24 sheets" })).await;
+    assert!(coded.is_error && coded.text.contains("TP-1"), "{coded:?}");
+    let renamed = tool(&handle, "pm", "update_ticket", serde_json::json!({ "id": 1, "title": "Share the sheets with the account", "label": "chore" })).await;
+    assert!(!renamed.is_error, "{renamed:?}");
+    let ticket = handle.snapshot("acme").await.tickets.into_iter().find(|t| t.id == 1).unwrap();
+    assert_eq!((ticket.title.as_str(), ticket.label), ("Share the sheets with the account", Some(equipe_core::protocol::title::TicketLabel::Chore)));
+    handle.send(Command::TicketHistory { squad: "acme".into(), ticket: 1 });
+    let history = until(&mut events, |e| matches!(e, Event::TicketHistory { .. })).await;
+    let Some(Event::TicketHistory { entries, .. }) = history.last() else { panic!("{history:#?}") };
+    assert!(entries.iter().any(|e| e.kind == "retitled" && e.text == "Share the 3 sheets with the account"), "{entries:?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_pm_retitles_open_tickets_that_break_the_rule_and_equipe_applies_only_what_the_pm_writes() {
+    let repo = repo();
+    let claude = fake_claude(true, &answering("ok"));
+    let home = squad_home(&[&repo]);
+    // Written before the rule: put straight into the board's file.
+    {
+        let journal = Journal::for_squad(&home, "acme").unwrap();
+        for title in ["[T-1326 continue] ERP drafts: save → edit → submit", "Share the sheets with the account", "Verify all four exit-plan sheets after deployment and publish fund-map re…"] {
+            journal.create_ticket(&old_ticket(title)).unwrap();
+        }
+        journal.create_ticket(&Ticket { status: TicketStatus::Done, ..old_ticket("Done and dusted (T-9)") }).unwrap();
+    }
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    let listed = tool(&handle, "pm", "retitle_open_tickets", serde_json::json!({})).await;
+    assert!(!listed.is_error, "{listed:?}");
+    assert!(listed.text.contains("T-1 ") && listed.text.contains("T-3 ") && !listed.text.contains("T-2 ") && !listed.text.contains("T-4 "), "{}", listed.text);
+    assert!(listed.text.contains("Nothing has changed yet"), "{}", listed.text);
+    let unchanged = handle.snapshot("acme").await.tickets.into_iter().find(|t| t.id == 1).unwrap();
+    assert!(unchanged.title.starts_with("[T-1326"), "listing changes nothing");
+    // Only the PM's call applies; each title is held to the rule.
+    let member = tool(&handle, "backend", "retitle_open_tickets", serde_json::json!({})).await;
+    assert!(member.is_error, "{member:?}");
+    let applied = tool(&handle, "pm", "retitle_open_tickets", serde_json::json!({ "titles": [
+        { "id": 1, "title": "Check the six ERP drafts end to end", "label": "check" },
+        { "id": 3, "title": "Still T-3 → broken" },
+        { "id": 4, "title": "Done ticket" },
+    ] })).await;
+    assert!(!applied.is_error && applied.text.contains("Retitled 1: T-1"), "{applied:?}");
+    assert!(applied.text.contains("T-3") && applied.text.contains("T-4: not an open ticket"), "{}", applied.text);
+    let tickets = handle.snapshot("acme").await.tickets;
+    let title = |id| tickets.iter().find(|t| t.id == id).unwrap().title.clone();
+    assert_eq!(title(1), "Check the six ERP drafts end to end");
+    assert!(title(3).ends_with('…'), "a refused title leaves the ticket as it was");
+    assert_eq!(title(4), "Done and dusted (T-9)");
+    handle.send(Command::TicketHistory { squad: "acme".into(), ticket: 1 });
+    let history = until(&mut events, |e| matches!(e, Event::TicketHistory { .. })).await;
+    let Some(Event::TicketHistory { entries, .. }) = history.last() else { panic!("{history:#?}") };
+    assert!(entries.iter().any(|e| e.kind == "retitled" && e.text.starts_with("[T-1326")), "the old title is kept: {entries:?}");
+    let again = tool(&handle, "pm", "retitle_open_tickets", serde_json::json!({})).await;
+    assert!(again.text.contains("T-3 ") && !again.text.contains("T-1 "), "{}", again.text);
+    handle.shutdown().await;
+}
+
+/// A ticket as the board had it before the title rule: written straight into the journal.
+fn old_ticket(title: &str) -> Ticket {
+    Ticket {
+        id: 0,
+        title: title.into(),
+        body: "-".into(),
+        status: TicketStatus::Todo,
+        owner: Some("backend".into()),
+        assignee: None,
+        project: None,
+        depends_on: Vec::new(),
+        branch: None,
+        worktree: None,
+        execution: None,
+        merged: None,
+        off_main: None,
+        design_qa: None,
+        plan: None,
+        model: None,
+        kind: equipe_core::protocol::TicketKind::Task,
+        created_by: "pm".into(),
+        note: None,
+        asks: vec![],
+        label: None,
+        remaining: Vec::new(),
+        images: Vec::new(),
+        updated_at: None,
+        priority: Default::default(),
+        rank: 0,
+    }
 }
