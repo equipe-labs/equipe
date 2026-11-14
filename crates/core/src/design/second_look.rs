@@ -66,6 +66,8 @@ type read as one system? Does it use the system's components and roles, or inven
 copy — no placeholder, no invented figures, customers or quotes? Does it look like this product, or like any \
 generated template? Each failure of the taste checklist is a fix too: {checklist}.\n\
 \n\
+{kinds} Each failure of it is a fix too.\n\
+\n\
 Ask only for facts the brief, the project's files or the design system give. When the screen needs a fact none of \
 them has — a name, a label, a number, a date — that is not a fix and not a reason to withhold a pass: put it in \
 \"questions\", with neutral wording the screen can use until someone answers.";
@@ -97,7 +99,7 @@ fix first, at most eight, each tied to a region and, where it differs, a width. 
 
 /// The prompt: the reviewer's role, what it is given, and how to answer.
 pub fn prompt(ask: &Ask) -> String {
-    let mut out = ROLE.replace("{checklist}", super::critique::TASTE_CHECKLIST);
+    let mut out = ROLE.replace("{checklist}", super::critique::TASTE_CHECKLIST).replace("{kinds}", super::critique::KIND_CHECKLIST);
     if ask.first {
         out.push_str("\n\n");
         out.push_str(FIRST);
@@ -228,6 +230,7 @@ mod tests {
     fn with_references_it_judges_the_tier_and_always_the_taste_checklist() {
         let bare = prompt(&ask());
         assert!(bare.contains(crate::design::critique::TASTE_CHECKLIST) && !bare.contains("{checklist}"), "the checklist, with or without references");
+        assert!(bare.contains(crate::design::critique::KIND_CHECKLIST) && !bare.contains("{kinds}"), "the product kind's bar, always");
         assert!(!bare.contains("Beside it, the references"));
         let refs = vec![PathBuf::from("design/references/kpi-tile/a-1280.png"), PathBuf::from("design/references/filter-bar/b-1280.png")];
         let given = Ask { references: refs, ..ask() };

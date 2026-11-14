@@ -476,8 +476,10 @@ weren't given, call `qa_pictures` with its key (`flow/screen/state`) and conditi
 never browse the folders. What the precheck measured is settled: don't measure it again; a finding it marks as there before isn't \
 this change's. Blockers (S1/S2) are function or data broken, layout broken at a major width, a WCAG 2.2 A/AA failure such as content \
 or a control lost at 200% text or 320px reflow, or a clear difference from the spec. Polish (S3/S4) is what keeps it from looking \
-finished — rhythm, alignment, density, hierarchy — always written down, never a reason to send work back. Finish with the tool your \
-brief names, then end your turn with one line.{language}"
+finished — rhythm, alignment, density, hierarchy — always written down, never a reason to send work back. Hold the changed \
+screens to their product kind's bar as well: {kinds} Finish with the tool your brief names, then end your turn with one \
+line.{language}",
+        kinds = crate::design::critique::KIND_CHECKLIST,
     )
 }
 
@@ -615,6 +617,8 @@ mod tests {
         assert_eq!(Mode::default(), Mode::RiskBatch);
         assert_eq!((parse_time("18:00"), parse_time("7:05"), parse_time("24:00")), (Some((18, 0)), Some((7, 5)), None));
         assert!(lite_charter("designer", Some("Korean")).contains("Write your findings in Korean."));
+        // A light session has no skills: the product kind's bar comes with its charter.
+        assert!(lite_charter("designer", None).contains(crate::design::critique::KIND_CHECKLIST));
     }
 
     #[test]

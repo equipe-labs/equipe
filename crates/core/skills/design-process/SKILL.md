@@ -8,22 +8,24 @@ description: Use for any design work — a small change, a new flow or screen, a
 First size the work. A small change — a tweak to a screen or component that exists, inside its system (a state, a
 spacing, a label, a control, a column) — is one version: render it on the real screen, put it beside the references of
 the patterns it touches (reused where the `design-references` skill finds them) and iterate yourself until it stands
-in their tier; then the checks below and the second look, which is its critic. It needs no directions, comparison
-sheet or brief, no decision card unless it holds a taste call (brand, colours, typefaces, which of two), and no design
+in their tier and passes the `ui-review` checklists of the parts it touches; then the checks below and the second
+look, which is its critic. It needs no directions, comparison sheet or brief, no decision card unless it holds a taste call (brand, colours, typefaces, which of two), and no design
 QA ticket of its own: equipe sends a one-screen build into the daily design review, and keeps a separate design QA for
 new screens and changes that reach many screens. Everything else — a new flow or screen, a redesign, a direction — takes the whole
 process below.
 
-Work in this order and say which step you are on: define the problem and how success shows; research references for
-each pattern it uses, as the `design-references` skill says, before any drawing; for a new flow or screen, its
-information architecture and the flow step by step, then low-fidelity wireframes, before any visual;
+Before anything else, name the product kind — landing page, web product or mobile app — as the `ui-product-kinds`
+skill says: it sets the references, the rules and the bar. Work in this order and say which step you are on: define
+the problem and how success shows; research references for each pattern it uses, as the `design-references` skill
+says, before any drawing; for a new flow or screen, its information architecture and the flow step by step, then low-fidelity wireframes, before any visual;
 explore two or three options that differ in concept, each from a named reference family and built as a real page, as
 the `design-references` skill says (colour alone doesn't make another; two strong beat three similar), and put them
 side by side in one comparison sheet with your recommendation and why; take the person's critique; refine only the
-chosen option, at full fidelity — every state it can have (the UI map's kinds, in the `ui-map` skill), light and dark, the widths it supports, real
-copy; where it moves or flows across screens, a clickable HTML prototype, recorded step by step; hand off a spec an
-engineer can build without guessing (token names, states, responsive rules, motion, accessibility, copy, asset paths);
-after the engineer builds it, equipe opens its design QA — never open one yourself.
+chosen option, at full fidelity — every state it can have (the UI map's kinds, in the `ui-map` skill), light and
+dark, the widths it supports, real copy; where it moves or flows across screens, a clickable HTML prototype, recorded
+step by step; hand off a spec an engineer can build without guessing (token names, states, responsive rules, motion, accessibility, copy, asset paths);
+after the engineer builds it, equipe opens its design QA — never open one yourself. Build the chosen option to the
+`ui-*` skill of each part it has.
 
 Show design options as they would live: each applied to the product's real screens — the UI map's pictures
 (`design/flows/`) shot again or mocked up with that option's tokens, or `equipe design specimen --tokens <file> --png`
@@ -38,7 +40,8 @@ and a one-line visual thesis. A system the person accepted is locked and you bui
 the references' tier is reset, once, with the person's decision, as `design-references` says.
 
 Directions differ in structure — layout, type, imagery, density — not in colour alone. Each takes a different approach
-from the references, named. Never grade your own work, and
+from the references, named. Before any critic sees a picture, run the `ui-review` skill on it yourself and fix what it
+finds — a pre-check, never a verdict. Never grade your own work, and
 never show the person a picture the critic hasn't seen: every direction, refined screen and revision goes first to a
 fresh critic — the other engine when it's available: `equipe design critique <pictures…> --reference <the reference's
 shot> [--before <the round before>] [--goal "…"]` sends them, with `brand.md`, to a reviewer that saw none of the work

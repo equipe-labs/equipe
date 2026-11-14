@@ -27,3 +27,23 @@ crates.io; the patched GPUI crates under `vendor/` keep their own license files.
 - The test fixtures under `crates/desktop-control/src/engine/fixtures/` are
   written by hand in the JSON shape agent-desktop documents; they contain no
   agent-desktop code.
+
+## UI design skills — adapted guidance
+
+The `ui-*` skills under `crates/core/skills/` are equipe's own writing. They
+adapt rules and structure, rewritten in our own words, from two MIT-licensed
+projects; the full list of sources they draw on is in
+`crates/core/skills/ui-review/references/sources.md`.
+
+- **Web Interface Guidelines** — <https://github.com/vercel-labs/web-interface-guidelines>
+  (Vercel Labs). License: MIT, Copyright (c) 2025 Vercel Labs — full text in
+  [licenses/web-interface-guidelines-MIT.txt](./licenses/web-interface-guidelines-MIT.txt).
+  Its interaction, form, motion, layout and content guidance informs
+  `ui-polish`, `ui-forms`, `ui-motion`, `ui-accessibility`, `ui-foundations`
+  and `ui-writing`.
+- **Mobbin skills** — <https://github.com/mobbin/skills> (Mobbin). License:
+  MIT, Copyright (c) 2026 Mobbin — full text in
+  [licenses/mobbin-skills-MIT.txt](./licenses/mobbin-skills-MIT.txt). The
+  `redesign-screen` skill's job walk, its cap on changes per pass and its
+  rules for placing a new part are adapted in `ui-review` and
+  `ui-layout-and-states`.

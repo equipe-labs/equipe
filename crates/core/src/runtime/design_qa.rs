@@ -698,7 +698,8 @@ and polish (S3/S4), what keeps it from looking finished — rhythm, alignment, d
 passes, with where and how to fix, and never a reason to send it back. Then the quality bar (your `design-references` skill): \
 the changed screens beside the references of their patterns in the project's `design/references/`, at the same width, and say in \
 findings whether they stand in their tier — a gap the build opened against its spec is a blocker, one the spec itself has is \
-polish and one design ticket to raise it.";
+polish and one design ticket to raise it. Run your `ui-review` skill's checklists on them too: the kind checklist, and \
+the checklist of each part they change (forms, tables and charts, motion, copy).";
     match precheck {
         Some(brief) => out.push_str(&format!(
             "\nequipe's precheck already rendered the screens this change touches — each width, light and dark, at normal size, \
@@ -776,6 +777,7 @@ mod tests {
         assert!(given.contains("never a reason to send it back"), "polish never blocks");
         for text in [&plain, &given] {
             assert!(text.contains("`design-references`") && text.contains("stand in their tier") && text.contains("a gap the build opened against its spec is a blocker"), "the quality bar: {text}");
+            assert!(text.contains("`ui-review` skill's checklists"), "the review checklists: {text}");
         }
     }
 
