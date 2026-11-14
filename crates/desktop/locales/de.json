@@ -4171,5 +4171,20 @@
   "keys.reveal": "Einmal anzeigen",
   "keys.reveal_ask": "Den Wert von {name} auf diesem Bildschirm anzeigen? Jeder, der hinschaut, sieht ihn.",
   "keys.reveal_yes": "Anzeigen",
-  "keys.delete_ask": "{name} löschen? Der Wert verlässt den Geheimnisspeicher, und Mitglieder können ihn nicht mehr nutzen."
+  "keys.delete_ask": "{name} löschen? Der Wert verlässt den Geheimnisspeicher, und Mitglieder können ihn nicht mehr nutzen.",
+  "desktop_setup.locked_title_far": "{host} ist gesperrt — ein Mitglied muss dort klicken",
+  "desktop_setup.locked_title": "Dieser Mac ist gesperrt — ein Mitglied muss hier klicken",
+  "desktop_setup.locked_body_far": "Entsperre ihn per Bildschirmfreigabe: Das Passwort tippst du selbst in diesem Fenster ein — equipe sieht oder speichert es nie.",
+  "desktop_setup.locked_body": "Entsperre ihn an der Tastatur (Passwort, Touch ID oder Apple Watch). Die Mitglieder machen von selbst weiter.",
+  "desktop_setup.locked_button": "Entsperren",
+  "desktop_setup.sharing_title_far": "{host} ist gesperrt, und die Bildschirmfreigabe ist dort aus",
+  "desktop_setup.sharing_body_far": "Schalte sie einmal an {host} ein: Systemeinstellungen › Allgemein › Teilen › Bildschirmfreigabe. Das kann nur der Benutzer dieses Macs.",
+  "desktop_setup.sharing_copy": "Schritte kopieren",
+  "desktop_setup.sharing_check": "Erneut prüfen",
+  "desktop_setup.sharing_steps": "Um {host} von hier aus zu entsperren, schalte dort einmalig die Bildschirmfreigabe ein:\n1. Öffne an {host} Systemeinstellungen › Allgemein › Teilen.\n2. Schalte „Bildschirmfreigabe“ ein.\n3. Komm hierher zurück und drücke „Erneut prüfen“ — equipe öffnet dann die Bildschirmfreigabe für dich.\nDas kann nur der Benutzer dieses Macs. equipe sieht oder speichert dein Passwort nie.",
+  "status.act_unlock": "Entsperren",
+  "status.act_unlock_here": "an der Tastatur entsperren",
+  "status.cause_mac_locked.one": "Der Mac ist gesperrt: {count} Mitglied wartet auf das Entsperren",
+  "status.cause_mac_locked.other": "Der Mac ist gesperrt: {count} Mitglieder warten auf das Entsperren",
+  "status.slow_mac_locked": "Läuft, aber langsamer: Der Mac ist gesperrt"
 }

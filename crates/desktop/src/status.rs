@@ -166,6 +166,7 @@ pub fn headline(s: &SquadStatus) -> String {
             Some((Cause::Failing, _)) => t!("status.slow_failing").to_owned(),
             Some((Cause::BreakerOpen, _)) => t!("status.stop_breaker").to_owned(),
             Some((Cause::Decisions | Cause::Approvals, _)) => t!("status.slow_waiting").to_owned(),
+            Some((Cause::MacLocked, _)) => t!("status.slow_mac_locked").to_owned(),
         },
     }
 }
@@ -225,6 +226,7 @@ pub fn cause_text(b: &Block, now: u64) -> String {
         Cause::Approvals => t!("status.cause_approvals", count = count),
         Cause::Quiet => join(t!("status.cause_quiet", count = count), ago(b.at)),
         Cause::Failing => t!("status.cause_failing", count = count),
+        Cause::MacLocked => t!("status.cause_mac_locked", count = count),
     }
 }
 
@@ -236,6 +238,7 @@ pub fn handling_word(h: Handling) -> &'static str {
         Handling::You { action: Action::Open } => t!("status.act_open"),
         Handling::You { action: Action::Answer } => t!("status.act_answer"),
         Handling::You { action: Action::Look } => t!("status.act_look"),
+        Handling::You { action: Action::Unlock } => t!("status.act_unlock"),
     }
 }
 
@@ -386,7 +389,7 @@ mod tests {
         // Every key the words reach exists in every language (the same test the rest of the app's words go through).
         let problems = equipe_core::i18n::problems(crate::i18n::FILES);
         assert!(problems.is_empty(), "{}", problems.join("\n"));
-        for cause in [Cause::BreakerOpen, Cause::RunsPaused, Cause::HandedBack, Cause::Decisions, Cause::Approvals, Cause::Quiet, Cause::EngineOut, Cause::Failing, Cause::SignIn] {
+        for cause in [Cause::BreakerOpen, Cause::RunsPaused, Cause::HandedBack, Cause::Decisions, Cause::Approvals, Cause::Quiet, Cause::EngineOut, Cause::Failing, Cause::SignIn, Cause::MacLocked] {
             for why in [None, Some(PauseWhy::EngineLimit), Some(PauseWhy::Retrying), Some(PauseWhy::SignIn), Some(PauseWhy::SquadPaused)] {
                 let b = Block { why, engine: Some(Engine::Claude), at: Some(5), detail: Some("x".into()), ..block(cause, 2) };
                 let text = cause_text(&b, 1_800_000_000);

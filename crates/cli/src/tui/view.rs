@@ -3316,7 +3316,7 @@ mod tests {
         let (mut app, _) = working();
         assert!(!screen(&app, 120, 18).contains("▣"), "nothing while nobody uses it");
         let here = |m: &str| MemberRef { squad: app.squad.clone(), member: m.into() };
-        let desktop = DesktopState { holder: Some(here("frontend")), queue: vec![here("backend")], stopped: false };
+        let desktop = DesktopState { holder: Some(here("frontend")), queue: vec![here("backend")], stopped: false, ..Default::default() };
         app.on_event(Event::Desktop { desktop });
         let shot = screen(&app, 120, 18);
         assert!(shot.contains("▣ frontend on the screen · 1 waiting"), "{shot}");

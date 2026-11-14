@@ -751,5 +751,7 @@
   "secrets.grant.any": "はい、どのプロジェクトでも",
   "secrets.grant.any_desc": "このキーについては、もう確認しません。",
   "secrets.grant.no": "いいえ",
-  "secrets.grant.no_desc": "メンバーはそのキーなしで続けます。"
+  "secrets.grant.no_desc": "メンバーはそのキーなしで続けます。",
+  "importance.deploy_words": "デプロイ|リリース|ロールアウト|本番反映|本番適用|公開作業|ローンチ|出荷",
+  "importance.hold_words": "保留|凍結|止め|停止|待機|待って|待つ|ホールド"
 }

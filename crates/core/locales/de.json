@@ -755,5 +755,7 @@
   "secrets.grant.any": "Ja, in jedem Projekt",
   "secrets.grant.any_desc": "Für diesen Schlüssel wird nicht mehr gefragt.",
   "secrets.grant.no": "Nein",
-  "secrets.grant.no_desc": "Das Mitglied macht ohne ihn weiter."
+  "secrets.grant.no_desc": "Das Mitglied macht ohne ihn weiter.",
+  "importance.deploy_words": "bereitstellung|deployment|veröffentlich|auslieferung|produktivsetzung|inbetriebnahme|go-live|rollout|markteinführung",
+  "importance.hold_words": "halt|zurückhalt|einfrier|stopp|pausier|warte|blockier|anhalt"
 }

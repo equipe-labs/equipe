@@ -66,6 +66,10 @@ pub fn serve_as_app(home: &std::path::Path) -> std::io::Result<()> {
 /// this long (seconds), so a member that wandered off doesn't keep the line waiting.
 pub const LEASE_IDLE: f64 = 120.0;
 
+/// How long a member refused for a locked screen counts as waiting for the
+/// person to unlock it, when it doesn't ask again (seconds).
+pub const LOCK_HELD_FOR: f64 = 600.0;
+
 /// How long the person must have left mouse and keyboard alone before a member's
 /// input goes in again (seconds).
 pub const PERSON_QUIET: f64 = 30.0;
@@ -214,10 +218,10 @@ impl std::fmt::Display for Refusal {
                 left.ceil() as u64
             ),
             Refusal::Locked => f.write_str(
-                "The Mac's screen is locked: nothing was clicked or typed. Members can't unlock it; ask the person to (or to turn on \"Work while the screen is locked\", which lets act on a ref run while it is).",
+                "The Mac's screen is locked: nothing was clicked or typed. Members can't unlock it, and nothing is ever typed at the lock screen. equipe has already shown the person an \"Unlock this Mac\" card (they unlock it themselves), so don't ask them in chat to unlock it and don't retry in a loop: do other work and call again later; it works by itself once they have.",
             ),
             Refusal::LockedPhysical => f.write_str(
-                "The Mac's screen is locked: pointer and keyboard input (headed, double/right click, focusing windows, screenshots-and-click) waits until it is unlocked, since macOS sends it to the lock screen. Reading (snapshot, find) and act on a ref without `headed` work while it is locked: use those, or ask the person to unlock.",
+                "The Mac's screen is locked: pointer and keyboard input (headed, double/right click, focusing windows, screenshots-and-click) waits until it is unlocked, since macOS sends it to the lock screen. Reading (snapshot, find) and act on a ref without `headed` work while it is locked: use those. equipe has already shown the person an \"Unlock this Mac\" card (they unlock it themselves), so don't ask them in chat to unlock it and don't retry in a loop: do other work and call again later.",
             ),
             Refusal::NoSession => f.write_str(
                 "Nobody is logged in at the Mac's screen, or equipe's daemon isn't running in the person's login session: nothing was done. Ask the person to log in at the Mac and run `equipe daemon install`.",
@@ -237,6 +241,9 @@ pub struct Desktop {
     epoch: Instant,
     /// Where the person's "Work while the screen is locked" is kept; `None`: off.
     home: Option<std::path::PathBuf>,
+    /// Members refused for a locked screen, and when (on [`Desktop::now`]'s
+    /// clock): the ones waiting for the person to unlock it.
+    lock_held: Vec<(MemberRef, f64)>,
 }
 
 impl Desktop {
@@ -245,7 +252,7 @@ impl Desktop {
     }
 
     pub fn with(probe: Box<dyn Probe>, idle: f64, quiet: f64) -> Self {
-        Self { lease: Lease::new(idle), presence: Presence::new(quiet), probe, epoch: Instant::now(), home: None }
+        Self { lease: Lease::new(idle), presence: Presence::new(quiet), probe, epoch: Instant::now(), home: None, lock_held: Vec::new() }
     }
 
     /// Read the person's "Work while the screen is locked" from `home` (at each ask while locked).
@@ -271,6 +278,33 @@ impl Desktop {
     }
 
     fn ask_at(&mut self, who: &MemberRef, what: Use, now: f64) -> Result<(), Refusal> {
+        let answer = self.decide(who, what, now);
+        match &answer {
+            // Held by the lock: it waits for the person, who is shown a card.
+            Err(Refusal::Locked | Refusal::LockedPhysical) => {
+                match self.lock_held.iter_mut().find(|(m, _)| m == who) {
+                    Some((_, at)) => *at = now,
+                    None => self.lock_held.push((who.clone(), now)),
+                }
+            }
+            // The screen is open and it got through: nothing holds it.
+            Ok(()) if !self.lock_held.is_empty() && self.probe.screen() == Screen::Open => self.lock_held.retain(|(m, _)| m != who),
+            _ => {}
+        }
+        answer
+    }
+
+    /// Members held by a locked screen now: refused for it, not since let
+    /// through, and the screen is still locked.
+    pub fn locked_waiting(&self) -> Vec<MemberRef> {
+        if self.lock_held.is_empty() || self.probe.screen() != Screen::Locked {
+            return Vec::new();
+        }
+        let now = self.now();
+        self.lock_held.iter().filter(|(_, at)| now - at < LOCK_HELD_FOR).map(|(m, _)| m.clone()).collect()
+    }
+
+    fn decide(&mut self, who: &MemberRef, what: Use, now: f64) -> Result<(), Refusal> {
         // Through Accessibility only: nobody's pointer or keyboard, so no
         // line to stand in, and the person keeps working meanwhile.
         if matches!(what, Use::Read | Use::Headless) {
@@ -329,13 +363,20 @@ impl Desktop {
     /// or its turn ended. Returns whether anything changed.
     pub fn leave(&mut self, who: &MemberRef) -> bool {
         let now = self.now();
-        self.lease.leave(who, now)
+        let held = self.lock_held.len();
+        self.lock_held.retain(|(m, _)| m != who);
+        self.lease.leave(who, now) || self.lock_held.len() != held
     }
 
-    /// Let go of a holder that stayed away too long. Returns whether anything changed.
+    /// Let go of a holder that stayed away too long, and of the members that
+    /// waited for an unlock that came (or never mattered). Returns whether
+    /// anything changed.
     pub fn expire(&mut self) -> bool {
         let now = self.now();
-        self.lease.expire(now)
+        let held = self.lock_held.len();
+        let locked = self.probe.screen() == Screen::Locked;
+        self.lock_held.retain(|(_, at)| locked && now - at < LOCK_HELD_FOR);
+        self.lease.expire(now) || self.lock_held.len() != held
     }
 
     pub fn stop(&mut self) -> bool {
@@ -351,6 +392,7 @@ impl Desktop {
             holder: self.lease.holder().cloned(),
             queue: self.lease.queue().cloned().collect(),
             stopped: self.lease.stopped(),
+            locked_waiting: self.locked_waiting(),
         }
     }
 }
@@ -376,6 +418,60 @@ mod tests {
         mac.0.lock().unwrap().1 = Screen::Locked;
         assert_eq!(d.ask(&a, Use::Headless), Err(Refusal::Locked));
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_member_refused_for_a_locked_screen_is_held_until_it_is_unlocked() {
+        let (mut d, mac) = desktop(Some(600.0), Screen::Locked);
+        let (a, b) = (member("frontend"), member("qa"));
+        assert!(d.state().locked_waiting.is_empty(), "locked, but nobody asked");
+        assert_eq!(d.ask(&a, Use::Input), Err(Refusal::Locked));
+        assert_eq!(d.ask(&a, Use::Input), Err(Refusal::Locked));
+        assert_eq!(d.ask(&b, Use::Headless), Err(Refusal::Locked));
+        assert_eq!(d.state().locked_waiting, vec![a.clone(), b.clone()], "each once, in the order they were refused");
+        assert!(!d.state().is_quiet());
+        // Reading is fine while locked and isn't held by it.
+        let (mut r, _) = desktop(Some(600.0), Screen::Locked);
+        assert_eq!(r.ask(&a, Use::Read), Ok(()));
+        assert!(r.state().locked_waiting.is_empty());
+        // The person unlocks: nobody is held, whether or not anyone asks again.
+        mac.0.lock().unwrap().1 = Screen::Open;
+        assert!(d.state().locked_waiting.is_empty());
+        assert!(d.expire(), "the tick finds the change and tells the screens");
+        assert!(!d.expire());
+        // Locked once more: held only by a new refusal.
+        mac.0.lock().unwrap().1 = Screen::Locked;
+        assert!(d.state().locked_waiting.is_empty());
+        assert_eq!(d.ask(&a, Use::Input), Err(Refusal::Locked));
+        assert_eq!(d.state().locked_waiting, vec![a.clone()]);
+        // A member that leaves the line (its turn ended) is no longer waiting.
+        assert!(d.leave(&a));
+        assert!(d.state().locked_waiting.is_empty());
+    }
+
+    #[test]
+    fn a_member_let_through_is_no_longer_held_and_an_old_refusal_runs_out() {
+        let (mut d, mac) = desktop(Some(600.0), Screen::Locked);
+        let a = member("frontend");
+        assert_eq!(d.ask_at(&a, Use::Input, 0.0), Err(Refusal::Locked));
+        assert_eq!(d.lock_held.len(), 1);
+        mac.0.lock().unwrap().1 = Screen::Open;
+        assert_eq!(d.ask_at(&a, Use::Input, 1.0), Ok(()));
+        assert!(d.lock_held.is_empty());
+        mac.0.lock().unwrap().1 = Screen::Locked;
+        assert_eq!(d.ask_at(&a, Use::Input, 2.0), Err(Refusal::Locked));
+        d.lock_held[0].1 = d.now() - LOCK_HELD_FOR - 1.0;
+        assert!(d.locked_waiting().is_empty(), "it never asked again: not waiting any more");
+        assert!(d.expire());
+        assert!(d.lock_held.is_empty());
+    }
+
+    #[test]
+    fn the_refusal_tells_members_the_person_has_the_card_and_not_to_ask_in_chat() {
+        for refusal in [Refusal::Locked, Refusal::LockedPhysical] {
+            let text = refusal.to_string();
+            assert!(text.contains("Unlock this Mac") && text.contains("don't ask them in chat"), "{text}");
+        }
     }
 
     #[test]
@@ -531,7 +627,7 @@ mod tests {
         assert_eq!(d.ask(&a, Use::Input), Ok(()));
         let _ = d.ask(&b, Use::Input);
         assert!(d.stop());
-        assert_eq!(d.state(), DesktopState { holder: None, queue: vec![], stopped: true });
+        assert_eq!(d.state(), DesktopState { holder: None, queue: vec![], stopped: true, ..Default::default() });
         assert_eq!(d.ask(&a, Use::Input), Err(Refusal::Stopped));
         assert_eq!(d.ask(&b, Use::Look), Err(Refusal::Stopped));
         assert!(d.resume());

@@ -4371,7 +4371,7 @@ mod tests {
         let mut model = Model::new("acme");
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
         assert_eq!(screen_line(&model.desktop, "acme"), None);
-        let busy = DesktopState { holder: Some(m("acme", "frontend")), queue: vec![m("tax", "pm"), m("acme", "qa")], stopped: false };
+        let busy = DesktopState { holder: Some(m("acme", "frontend")), queue: vec![m("tax", "pm"), m("acme", "qa")], stopped: false, ..Default::default() };
         assert!(model.apply(Update::Event(Event::Desktop { desktop: busy }), T0));
         let line = screen_line(&model.desktop, "acme").unwrap();
         assert!(line.contains("frontend") && line.contains("tax/pm"), "{line}");

@@ -4213,25 +4213,25 @@ async fn two_members_at_the_screen_take_turns_and_desktop_stop_refuses_both() {
     };
     let (start, refusal) = start;
     assert!(refusal.starts_with(&format!("{} is using the screen; you are number 1 in line", first.member)), "{refusal}");
-    shows(&mut events, DesktopState { holder: Some(first.clone()), queue: vec![second.clone()], stopped: false }).await;
+    shows(&mut events, DesktopState { holder: Some(first.clone()), queue: vec![second.clone()], stopped: false, ..Default::default() }).await;
     handle.desktop_done(first.clone(), start, true);
     assert!(handle.desktop_ask(second.clone(), Use::Look).await.is_err(), "looking waits its turn too");
 
     // The first one's turn ends: the one waiting carries on.
     let session = if first.member == "frontend" { 1 } else { 2 };
     handle.send(Command::Submit { session, text: "go".into(), about: None });
-    shows(&mut events, DesktopState { holder: Some(second.clone()), queue: vec![], stopped: false }).await;
+    shows(&mut events, DesktopState { holder: Some(second.clone()), queue: vec![], stopped: false, ..Default::default() }).await;
     assert!(handle.desktop_ask(second.clone(), Use::Input).await.is_ok());
     assert!(handle.desktop_ask(first.clone(), Use::Input).await.is_err());
 
     // The person takes it back: nobody's click or keystroke goes in, nobody waits.
     handle.send(Command::Desktop { open: false });
-    shows(&mut events, DesktopState { holder: None, queue: vec![], stopped: true }).await;
+    shows(&mut events, DesktopState { holder: None, queue: vec![], stopped: true, ..Default::default() }).await;
     for member in [&first, &second] {
         let refusal = handle.desktop_ask(member.clone(), Use::Input).await.unwrap_err();
         assert!(refusal.contains("/desktop stop"), "{refusal}");
     }
-    assert_eq!(handle.busy().await.desktop, DesktopState { holder: None, queue: vec![], stopped: true });
+    assert_eq!(handle.busy().await.desktop, DesktopState { holder: None, queue: vec![], stopped: true, ..Default::default() });
     assert!(handle.snapshot("acme").await.desktop.stopped);
 
     // Opened again; a member lets go of it itself.

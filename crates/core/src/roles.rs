@@ -785,7 +785,10 @@ act on its refs (cheap, headless, side by side with others); screenshots are the
 anything else to someone in the person's name waits for the person's yes. For an app's screenshots, clicks, typing and \
 dialogs (Office's \"Grant File Access\" too) use these tools, never shell `screencapture` or `osascript`; never ask the \
 person to grant permissions to equipe's command-line binary. If a desktop tool says a permission is missing, call \
-`block_on_person` with `permission` (one card, one button for the person) instead of writing steps."
+`block_on_person` with `permission` (one card, one button for the person) instead of writing steps. \
+If the Mac's screen is locked, equipe shows \
+the person an \"Unlock this Mac\" card by itself: don't ask them in chat to unlock it, never try to unlock it yourself, \
+and carry on with other work until a desktop call goes through again."
     } else {
         ""
     };

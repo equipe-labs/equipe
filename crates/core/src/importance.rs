@@ -74,25 +74,69 @@ fn is_work(t: &Ticket) -> bool {
     matches!(t.status, TicketStatus::Todo | TicketStatus::InProgress | TicketStatus::Waiting | TicketStatus::Review)
 }
 
-/// The words that make a ticket deploy work: its title says it ships something.
-const DEPLOY_WORDS: [&str; 6] = ["deploy", "release", "rollout", "publish", "launch", "ship"];
+/// Commands and paths that make a ticket deploy work whatever language it is
+/// written in: they are what the work touches or runs, not words of a
+/// language. Matched in the ticket's title, body and the PM's note.
+const DEPLOY_MARKERS: [&str; 18] = [
+    ".github/workflows/deploy",
+    ".github/workflows/release",
+    ".github/workflows/publish",
+    "cdk deploy",
+    "terraform apply",
+    "kubectl apply",
+    "helm upgrade",
+    "serverless deploy",
+    "sls deploy",
+    "vercel deploy",
+    "vercel --prod",
+    "fly deploy",
+    "wrangler deploy",
+    "firebase deploy",
+    "npm publish",
+    "cargo publish",
+    "docker push",
+    "deploy.sh",
+];
 
-fn deploy_word(text: &str) -> bool {
-    text.to_lowercase().split(|c: char| !c.is_alphanumeric()).any(|w| DEPLOY_WORDS.iter().any(|d| w.starts_with(d)))
+/// Whether `word` is written without spaces between words (Han, kana,
+/// Hangul): it is looked for anywhere in the text, not at the start of a word.
+fn unspaced(word: &str) -> bool {
+    word.chars().any(|c| matches!(c, '\u{AC00}'..='\u{D7A3}' | '\u{1100}'..='\u{11FF}' | '\u{3040}'..='\u{30FF}' | '\u{4E00}'..='\u{9FFF}'))
 }
 
-/// Whether a ticket is deploy or release work.
+/// Whether `text` holds one of `words` (a locale's `|`-separated lists, every
+/// language's together): a word of a spaced language at the start of a word
+/// of the text (`shipping`, `Deployments`); a phrase, or a word of an unspaced
+/// language, anywhere in it.
+fn has_word(text: &str, words: &[&str]) -> bool {
+    let text = text.to_lowercase();
+    let tokens: Vec<&str> = text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    words.iter().map(|w| w.to_lowercase()).any(|w| if unspaced(&w) || w.chars().any(|c| !c.is_alphanumeric()) { text.contains(&w) } else { tokens.iter().any(|t| t.starts_with(&w)) })
+}
+
+/// The words that say deploy or release work, in every language equipe speaks
+/// (`importance.deploy_words` in the locale files).
+fn deploy_word(text: &str) -> bool {
+    has_word(text, crate::i18n::every("importance.deploy_words"))
+}
+
+fn deploy_marker(text: &str) -> bool {
+    let text = text.to_lowercase();
+    DEPLOY_MARKERS.iter().any(|m| text.contains(m))
+}
+
+/// Whether a ticket is deploy or release work: it touches a deploy workflow or
+/// runs a deploy command (in its title or body, in any language), or its title
+/// says so in any of the languages equipe speaks.
 pub fn is_deploy_work(t: &Ticket) -> bool {
-    deploy_word(&t.title)
+    deploy_marker(&t.title) || deploy_marker(&t.body) || deploy_word(&t.title)
 }
 
 /// Whether the PM's note on a ticket says to hold deploys for it ("Hold
-/// every deploy until the migration is approved").
+/// every deploy until the migration is approved"), in any language
+/// (`importance.hold_words`).
 pub fn pm_holds_deploys(t: &Ticket) -> bool {
-    t.note.as_deref().is_some_and(|n| {
-        let n = n.to_lowercase();
-        n.contains("hold") && deploy_word(&n)
-    })
+    t.note.as_deref().is_some_and(|n| (deploy_word(n) || deploy_marker(n)) && has_word(n, crate::i18n::every("importance.hold_words")))
 }
 
 fn priority_points(priority: Priority, own: bool) -> u32 {
@@ -506,5 +550,81 @@ mod tests {
         let quiet = waiting_list(&[ticket(9, "pick", TicketStatus::Waiting, Priority::Normal, &[])], &[], false);
         assert_eq!(pm_note(&quiet, 3, 0), None);
         assert_eq!(pm_note(&[], 3, 0), None);
+    }
+
+    fn titled(title: &str) -> Ticket {
+        ticket(1, title, TicketStatus::Todo, Priority::Normal, &[])
+    }
+
+    #[test]
+    fn deploy_titles_count_in_every_language_equipe_speaks() {
+        for title in [
+            "Deploy the API",
+            "v2 rollout",
+            "운영 배포",
+            "배포",
+            "릴리스 준비",
+            "운영배포 일정",
+            "デプロイ作業",
+            "リリース",
+            "部署到生产环境",
+            "发布 2.0",
+            "發佈新版本",
+            "Bereitstellung der API",
+            "Deployment vorbereiten",
+            "Release-Notes veröffentlichen",
+            "Déploiement du site",
+            "Mise en production vendredi",
+            "Despliegue a producción",
+            "Lanzamiento de la versión 2",
+        ] {
+            assert!(is_deploy_work(&titled(title)), "{title}");
+        }
+        for title in ["Pick a font", "relation table", "글꼴 고르기", "フォントを選ぶ", "选择字体", "Schriftart wählen", "Choisir une police", "Elegir una fuente"] {
+            assert!(!is_deploy_work(&titled(title)), "{title}");
+        }
+    }
+
+    #[test]
+    fn the_work_itself_says_it_deploys_whatever_the_title_is_written_in() {
+        let mut t = titled("인프라 정리");
+        assert!(!is_deploy_work(&t));
+        t.body = "`.github/workflows/deploy-prod.yml` 수정, 그 다음 `cdk deploy`".into();
+        assert!(is_deploy_work(&t));
+        let mut u = titled("設定の見直し");
+        u.body = "Runs npm publish at the end".into();
+        assert!(is_deploy_work(&u));
+    }
+
+    #[test]
+    fn a_pm_hold_note_works_in_any_language_and_needs_both_a_hold_and_a_deploy() {
+        for note in [
+            "Hold every release until this is picked.",
+            "이게 끝날 때까지 모든 배포 보류",
+            "デプロイは保留にしてください",
+            "在此之前暂缓发布",
+            "Bereitstellung bitte anhalten",
+            "Suspendre le déploiement en attendant",
+            "Retener el despliegue hasta que se apruebe",
+        ] {
+            let mut t = titled("x");
+            t.note = Some(note.into());
+            assert!(pm_holds_deploys(&t), "{note}");
+        }
+        for note in ["Done, merged.", "배포 완료", "Hold the font choice"] {
+            let mut t = titled("x");
+            t.note = Some(note.into());
+            assert!(!pm_holds_deploys(&t), "{note}");
+        }
+    }
+
+    #[test]
+    fn every_language_lists_its_own_deploy_and_hold_words() {
+        for lang in crate::i18n::Lang::ALL {
+            for key in ["importance.deploy_words", "importance.hold_words"] {
+                let words = crate::i18n::core(lang).own(key).unwrap_or_default();
+                assert!(words.split('|').filter(|w| !w.is_empty()).count() >= 3, "{}: {key}", lang.code());
+            }
+        }
     }
 }

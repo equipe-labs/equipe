@@ -2157,12 +2157,17 @@ pub struct DesktopState {
     /// The person took it back (`/desktop stop`): no member uses it until they reopen it.
     #[serde(default)]
     pub stopped: bool,
+    /// Members whose clicks or typing were refused because the Mac's screen
+    /// is locked, and who haven't had the screen since: they wait for the
+    /// person to unlock it. Empty once it is unlocked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub locked_waiting: Vec<MemberRef>,
 }
 
 impl DesktopState {
-    /// Nothing to show: nobody on it, nobody waiting, not stopped.
+    /// Nothing to show: nobody on it, nobody waiting, not stopped, nobody held by a lock.
     pub fn is_quiet(&self) -> bool {
-        self.holder.is_none() && self.queue.is_empty() && !self.stopped
+        self.holder.is_none() && self.queue.is_empty() && !self.stopped && self.locked_waiting.is_empty()
     }
 
     /// One line for a screen following squad `here` (members of other squads
@@ -2277,6 +2282,14 @@ pub struct DesktopReadiness {
     /// screen is locked ([`Command::DesktopLocked`]). Off unless turned on.
     #[serde(default)]
     pub work_locked: bool,
+    /// The one card about a locked screen is up: the screen is locked **and**
+    /// a member is waiting on clicks or typing because of it, and the person
+    /// hasn't put the card away. The daemon decides, so every screen agrees
+    /// and a "Not now" on one clears all; it goes by itself the moment the
+    /// screen is seen unlocked. A screen says whose Mac it is and what the
+    /// person can do about it (`views/desktop_setup.rs`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lock_card: bool,
 }
 
 impl DesktopReadiness {
@@ -3827,6 +3840,17 @@ mod tests {
         // A daemon from before the setup was automatic sends none of it.
         let old: DesktopReadiness = serde_json::from_value(json!({ "supported": true, "helper": true, "accessibility": false })).unwrap();
         assert_eq!(old.setup, DesktopSetup::Idle);
+        assert!(!old.lock_card, "an older daemon never asks for the lock card");
+        let held = DesktopReadiness { supported: true, locked: true, lock_card: true, ..Default::default() };
+        let back: DesktopReadiness = serde_json::from_str(&serde_json::to_string(&held).unwrap()).unwrap();
+        assert!(back.lock_card && back.locked);
+        assert!(serde_json::to_value(DesktopReadiness::default()).unwrap().get("lock_card").is_none(), "left out when not asked: an older screen reads it as before");
+        let waiting = DesktopState { locked_waiting: vec![MemberRef { squad: "acme".into(), member: "qa".into() }], ..Default::default() };
+        let back: DesktopState = serde_json::from_str(&serde_json::to_string(&waiting).unwrap()).unwrap();
+        assert_eq!(back, waiting);
+        assert!(!waiting.is_quiet() && DesktopState::default().is_quiet());
+        let old: DesktopState = serde_json::from_value(json!({ "holder": null, "queue": [], "stopped": false })).unwrap();
+        assert!(old.locked_waiting.is_empty());
         let command: Command = serde_json::from_value(json!({ "type": "desktop_auto", "action": "dismiss" })).unwrap();
         assert!(matches!(command, Command::DesktopAuto { action: DesktopAutoAction::Dismiss }));
     }
@@ -3835,7 +3859,7 @@ mod tests {
     fn the_screens_line_names_other_squads_members_in_full() {
         let m = |squad: &str, member: &str| MemberRef { squad: squad.into(), member: member.into() };
         assert_eq!(DesktopState::default().summary(Some("acme")), None);
-        let desktop = DesktopState { holder: Some(m("acme", "frontend")), queue: vec![m("tax", "pm"), m("acme", "qa")], stopped: false };
+        let desktop = DesktopState { holder: Some(m("acme", "frontend")), queue: vec![m("tax", "pm"), m("acme", "qa")], stopped: false, ..Default::default() };
         assert_eq!(desktop.summary(Some("acme")).as_deref(), Some("frontend on the screen · 2 waiting"));
         assert_eq!(desktop.summary(Some("tax")).as_deref(), Some("acme/frontend on the screen · 2 waiting"));
         let stopped = DesktopState { stopped: true, ..Default::default() };

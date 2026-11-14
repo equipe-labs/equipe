@@ -751,5 +751,7 @@
   "secrets.grant.any": "允许,在任何项目上",
   "secrets.grant.any_desc": "此密钥不会再询问。",
   "secrets.grant.no": "不允许",
-  "secrets.grant.no_desc": "成员将在没有它的情况下继续。"
+  "secrets.grant.no_desc": "成员将在没有它的情况下继续。",
+  "importance.deploy_words": "部署|发布|上线|发版|投产|灰度",
+  "importance.hold_words": "暂缓|冻结|暂停|等待|先别|阻止|搁置"
 }

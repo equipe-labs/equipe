@@ -82,6 +82,7 @@ impl Runtime {
             signed_out,
             pm_accepts: self.journals.get(squad).is_none_or(Journal::pm_accepts),
             asks: self.waiting_asks(squad),
+            mac_locked: self.desktop.locked_waiting().iter().filter(|m| m.squad == squad).count() as u32,
         }
     }
 

@@ -755,5 +755,7 @@
   "secrets.grant.any": "Yes, on any project",
   "secrets.grant.any_desc": "You won't be asked again for this key.",
   "secrets.grant.no": "No",
-  "secrets.grant.no_desc": "The member goes on without it."
+  "secrets.grant.no_desc": "The member goes on without it.",
+  "importance.deploy_words": "deploy|release|rollout|roll out|publish|launch|ship|go live|go-live|cutover",
+  "importance.hold_words": "hold|freeze|block|pause|wait|halt"
 }

@@ -64,6 +64,10 @@ use tokio::sync::Notify;
 use super::ready;
 use crate::keychain::prompts;
 
+/// The key under which the person's "Not now" on the locked-screen card is
+/// kept (`<home>/desktop/setup.json`); it clears when the screen is seen unlocked.
+const LOCK_CARD: &str = "locked";
+
 /// A set-up failure nobody is blocked on is told only once it has lasted this
 /// long (seconds): the quiet retries usually mend it first.
 pub const FAILURE_GRACE: u64 = 10 * 60;
@@ -201,6 +205,9 @@ struct Inner {
     needed_setup: bool,
     /// The person was told the desktop was ready before this daemon started.
     granted_before: bool,
+    /// A member waits on clicks or typing because the screen is locked
+    /// ([`Auto::lock_held`]), as the daemon's screen last said.
+    lock_held: bool,
 }
 
 struct Shared {
@@ -294,7 +301,23 @@ impl Auto {
     pub fn decorate(&self, ready: &mut DesktopReadiness) {
         if let Some(last) = self.latest() {
             ready.setup = last.setup;
+            ready.lock_card = last.lock_card;
         }
+    }
+
+    /// Whether a member waits on clicks or typing because the screen is
+    /// locked: the screen's own news (`Desktop::locked_waiting`). While it
+    /// does, and the screen is seen locked, the one card about it shows.
+    pub fn lock_held(&self, held: bool) {
+        let mut inner = self.shared.inner();
+        if inner.lock_held == held {
+            return;
+        }
+        inner.lock_held = held;
+        // A member waiting for the screen wants the desktop: look now.
+        inner.wanted |= held;
+        drop(inner);
+        self.shared.wake.notify_one();
     }
 
     /// Set up again now, after a failure.
@@ -588,9 +611,22 @@ impl Worker {
                 }
             }
         }
+        // 4. A locked screen a member waits on: the person unlocks it (nothing
+        // here can). Seen unlocked, the condition is over: a card put away
+        // for it is spent, and the next lock a member waits on shows afresh.
+        if status.is_some() && !ready.locked {
+            self.edit(|saved| saved.dismissed.retain(|key| key != LOCK_CARD));
+        }
+        if status.is_some() && ready.locked && self.shared.inner().lock_held && setup == DesktopSetup::Idle && card.is_none() {
+            ready.lock_card = true;
+            card = Some(LOCK_CARD.to_owned());
+            // The person is about to unlock it: see that, and take the card away, soon.
+            idle = idle.min(POLL_FAST);
+        }
         if !wanted {
             setup = DesktopSetup::Idle;
             card = None;
+            ready.lock_card = false;
         }
         // A card put away by an older daemon (one time, for whatever card it was).
         if let Some(key) = card.clone()
@@ -605,6 +641,7 @@ impl Worker {
         if card.as_ref().is_some_and(|key| self.saved.dismissed.contains(key)) {
             setup = DesktopSetup::Idle;
             card = None;
+            ready.lock_card = false;
         }
         self.card = card;
         self.publish(ready, setup);
@@ -1234,6 +1271,66 @@ mod tests {
         rig.fake.locked.store(false, Ordering::SeqCst);
         rig.worker.step().await;
         assert_eq!(rig.setup(), DesktopSetup::Grant);
+    }
+
+    fn lock_card(rig: &Rig) -> bool {
+        rig.heard.lock().unwrap().last().is_some_and(|r| r.lock_card)
+    }
+
+    #[tokio::test]
+    async fn the_lock_card_shows_only_while_locked_and_a_member_waits_and_goes_when_unlocked() {
+        let mut rig = rig();
+        rig.fake.granted.store(true, Ordering::SeqCst);
+        rig.fake.locked.store(true, Ordering::SeqCst);
+        rig.auto.wanted();
+        for _ in 0..3 {
+            rig.worker.step().await;
+        }
+        assert!(!lock_card(&rig), "locked, but no member waits on it: it may be nobody's business");
+        rig.auto.lock_held(true);
+        rig.worker.step().await;
+        assert!(lock_card(&rig), "a member waits on the lock");
+        assert!(rig.heard.lock().unwrap().last().unwrap().locked);
+        // The person unlocks: the next look takes the card away; members resume by themselves.
+        rig.fake.locked.store(false, Ordering::SeqCst);
+        rig.worker.step().await;
+        assert!(!lock_card(&rig));
+        // A member holds on a screen that was never locked: no card.
+        rig.auto.lock_held(false);
+        rig.auto.lock_held(true);
+        rig.worker.step().await;
+        assert!(!lock_card(&rig), "unlocked: nothing to unlock");
+    }
+
+    #[tokio::test]
+    async fn a_lock_card_put_away_stays_away_until_the_screen_has_been_unlocked_and_locked_again() {
+        let mut rig = rig();
+        rig.fake.granted.store(true, Ordering::SeqCst);
+        rig.fake.locked.store(true, Ordering::SeqCst);
+        rig.auto.wanted();
+        rig.auto.lock_held(true);
+        for _ in 0..2 {
+            rig.worker.step().await;
+        }
+        assert!(lock_card(&rig));
+        rig.auto.dismiss();
+        rig.worker.step().await;
+        assert!(!lock_card(&rig));
+        // Still the same lock: it stays away, however often it is looked at.
+        for _ in 0..3 {
+            rig.worker.step().await;
+        }
+        assert!(!lock_card(&rig));
+        // A daemon restart doesn't bring it back either (kept in the home).
+        let saved = Saved::load(&rig.home);
+        assert!(saved.dismissed.iter().any(|k| k == LOCK_CARD));
+        // Unlocked, then locked again with a member waiting: a new condition, a new card.
+        rig.fake.locked.store(false, Ordering::SeqCst);
+        rig.worker.step().await;
+        assert!(Saved::load(&rig.home).dismissed.iter().all(|k| k != LOCK_CARD), "the condition cleared");
+        rig.fake.locked.store(true, Ordering::SeqCst);
+        rig.worker.step().await;
+        assert!(lock_card(&rig));
     }
 
     #[tokio::test]

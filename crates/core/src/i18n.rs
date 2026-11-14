@@ -1090,7 +1090,7 @@ mod tests {
     fn who_has_the_screen_reads_as_before_in_english_and_counts_in_each_language() {
         use equipe_protocol::{DesktopState, MemberRef};
         let who = |squad: &str, member: &str| MemberRef { squad: squad.into(), member: member.into() };
-        let state = DesktopState { holder: Some(who("acme", "qa")), queue: vec![who("beta", "pm")], stopped: false };
+        let state = DesktopState { holder: Some(who("acme", "qa")), queue: vec![who("beta", "pm")], stopped: false, ..Default::default() };
         assert_eq!(label::desktop(Lang::En, &state, Some("acme")), state.summary(Some("acme")));
         assert_eq!(label::desktop(Lang::Ko, &state, Some("acme")).as_deref(), Some("qa가 화면 사용 중 · 1명 대기"));
         let two = DesktopState { queue: vec![who("a", "x"), who("b", "y")], ..DesktopState::default() };

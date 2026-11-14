@@ -58,6 +58,7 @@ mod side_chat;
 mod sidecar;
 mod squad_form;
 mod ssh;
+mod unlock;
 mod sshkey;
 #[cfg(feature = "snapshot")]
 mod snapshot;
@@ -334,6 +335,8 @@ pub struct Shell {
     relaunch_after_daemon: bool,
     /// The redraw each half second while something waits in words (`views/words.rs`).
     pub(crate) words_tick: Option<Task<()>>,
+    /// What the card about a locked daemon Mac knows: its address and whether Screen Sharing answers (`unlock.rs`).
+    pub(crate) unlock: unlock::Ui,
     /// The status page's releases, as last found.
     /// The banner's "restart now" asked once: the next click restarts.
     pub(crate) daemon_restart_armed: bool,
@@ -541,6 +544,7 @@ impl Shell {
             daemon_update: None,
             relaunch_after_daemon: false,
             words_tick: None,
+            unlock: Default::default(),
             daemon_restart_armed: false,
             board_ticket: None,
             bell: Default::default(),
@@ -1225,6 +1229,10 @@ impl Shell {
                             && ready.setup == equipe_core::protocol::DesktopSetup::JustReady
                         {
                             this.composer.flash = Some(t!("desktop_setup.ready").into());
+                        }
+                        // A locked Mac a member waits on: look at whether Screen Sharing answers there; forget it when it's over.
+                        if let daemon::Update::Event(Event::DesktopReady { ready }) = &update {
+                            this.on_lock_card(ready.lock_card, cx);
                         }
                         // The engines: settings' AI platforms, never the model's.
                         if let daemon::Update::Event(event @ (Event::Engines { .. } | Event::Nebius { .. } | Event::Providers { .. } | Event::ProviderTested { .. } | Event::SignIn { .. } | Event::EngineAuth { .. } | Event::EngineInstall { .. })) = &update {

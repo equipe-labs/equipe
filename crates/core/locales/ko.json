@@ -751,5 +751,7 @@
   "secrets.grant.any": "네, 모든 프로젝트에서",
   "secrets.grant.any_desc": "이 키는 다시 묻지 않아요.",
   "secrets.grant.no": "아니요",
-  "secrets.grant.no_desc": "멤버는 그 키 없이 계속해요."
+  "secrets.grant.no_desc": "멤버는 그 키 없이 계속해요.",
+  "importance.deploy_words": "배포|릴리스|릴리즈|롤아웃|출시|론칭|런칭|상용 반영|운영 반영|프로덕션 반영",
+  "importance.hold_words": "보류|동결|멈춰|멈추|중단|대기|기다|막아|막고|홀드"
 }

@@ -755,5 +755,7 @@
   "secrets.grant.any": "Oui, sur n'importe quel projet",
   "secrets.grant.any_desc": "Cette clé ne vous sera plus redemandée.",
   "secrets.grant.no": "Non",
-  "secrets.grant.no_desc": "Le membre continue sans elle."
+  "secrets.grant.no_desc": "Le membre continue sans elle.",
+  "importance.deploy_words": "déploiement|deploiement|déployer|mise en production|mise en prod|mise en ligne|publication|livraison en production|lancement|mise en service",
+  "importance.hold_words": "suspend|geler|gel|bloque|attend|pause|retenir|retiens|stoppe"
 }

@@ -4069,5 +4069,19 @@
   "keys.reveal": "一度だけ表示",
   "keys.reveal_ask": "{name}の値をこの画面に表示しますか?画面を見ている人にも見えます。",
   "keys.reveal_yes": "表示する",
-  "keys.delete_ask": "{name}を削除しますか?値はシークレットストアから消え、メンバーは二度と使えません。"
+  "keys.delete_ask": "{name}を削除しますか?値はシークレットストアから消え、メンバーは二度と使えません。",
+  "desktop_setup.locked_title_far": "{host} はロックされています — メンバーがそこでクリックする必要があります",
+  "desktop_setup.locked_title": "この Mac はロックされています — メンバーがここでクリックする必要があります",
+  "desktop_setup.locked_body_far": "画面共有でロックを解除してください。パスワードはそのウィンドウで自分で入力します — equipe がパスワードを見たり保存したりすることはありません。",
+  "desktop_setup.locked_body": "キーボードでロックを解除してください(パスワード、Touch ID、Apple Watch)。メンバーは自動で作業を再開します。",
+  "desktop_setup.locked_button": "ロックを解除",
+  "desktop_setup.sharing_title_far": "{host} はロックされていて、画面共有もオフです",
+  "desktop_setup.sharing_body_far": "{host} で一度だけオンにしてください: システム設定 › 一般 › 共有 › 画面共有。その Mac のユーザーだけが設定できます。",
+  "desktop_setup.sharing_copy": "手順をコピー",
+  "desktop_setup.sharing_check": "もう一度確認",
+  "desktop_setup.sharing_steps": "{host} のロックをここから解除するには、その Mac で画面共有を一度オンにします:\n1. {host} でシステム設定 › 一般 › 共有を開きます。\n2. 「画面共有」をオンにします。\n3. ここに戻って「もう一度確認」を押すと、equipe が画面共有を開きます。\nオンにできるのはその Mac のユーザーだけです。equipe がパスワードを見たり保存したりすることはありません。",
+  "status.act_unlock": "ロック解除",
+  "status.act_unlock_here": "キーボードで解除",
+  "status.cause_mac_locked.other": "Mac がロックされています: メンバー {count} 人が解除を待っています",
+  "status.slow_mac_locked": "動いていますが遅くなっています: Mac がロックされています"
 }

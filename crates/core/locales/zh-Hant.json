@@ -751,5 +751,7 @@
   "secrets.grant.any": "允許,在任何專案上",
   "secrets.grant.any_desc": "此金鑰不會再詢問。",
   "secrets.grant.no": "不允許",
-  "secrets.grant.no_desc": "成員將在沒有它的情況下繼續。"
+  "secrets.grant.no_desc": "成員將在沒有它的情況下繼續。",
+  "importance.deploy_words": "部署|發佈|發布|上線|發版|投產|灰度",
+  "importance.hold_words": "暫緩|凍結|暫停|等待|先別|阻止|擱置"
 }

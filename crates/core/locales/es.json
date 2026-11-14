@@ -755,5 +755,7 @@
   "secrets.grant.any": "Sí, en cualquier proyecto",
   "secrets.grant.any_desc": "No se volverá a preguntar por esta clave.",
   "secrets.grant.no": "No",
-  "secrets.grant.no_desc": "El miembro sigue sin ella."
+  "secrets.grant.no_desc": "El miembro sigue sin ella.",
+  "importance.deploy_words": "despliegue|desplegar|lanzamiento|publicación|publicacion|puesta en producción|puesta en produccion|salida a producción|salida a produccion",
+  "importance.hold_words": "retener|retén|congel|detener|detén|espera|bloque|pausa|suspend"
 }
