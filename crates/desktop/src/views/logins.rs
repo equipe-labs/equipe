@@ -79,6 +79,8 @@ pub struct LoginsUi {
     pub autopilot: super::autopilot::AutopilotUi,
     /// "Keys & secrets": what members kept, and a value shown once (`views::keys`).
     pub keys: super::keys::KeysUi,
+    /// "Connections": the service whose Disconnect waits for its second click.
+    pub connections: super::connections::ConnectionsUi,
     stops: RefCell<HashMap<String, FocusHandle>>,
 }
 
@@ -107,6 +109,7 @@ impl LoginsUi {
             scroll: ScrollHandle::new(),
             autopilot: super::autopilot::AutopilotUi::new(window, cx),
             keys: super::keys::KeysUi::new(window, cx),
+            connections: super::connections::ConnectionsUi::default(),
             stops: RefCell::new(HashMap::new()),
         }
     }
@@ -297,7 +300,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     for offer in offers_section(shell, cx) {
         column = column.child(offer);
     }
-    column = column.child(waiting_section(shell, cx)).child(saved_section(shell, cx)).child(super::keys::section(shell, cx)).child(autopilot_section(shell, cx)).child(asked_section(shell, cx)).child(never_section(shell, cx));
+    column = column.child(waiting_section(shell, cx)).child(saved_section(shell, cx)).child(super::connections::section(shell, cx)).child(super::keys::section(shell, cx)).child(autopilot_section(shell, cx)).child(asked_section(shell, cx)).child(never_section(shell, cx));
     column = column.child(div().w_full().px_1().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(t!("loginspage.foot", machine = shell.endpoint.label())));
 
     let body = div().id("logins-body").flex_1().min_h_0().overflow_y_scroll().track_scroll(&ui.scroll).child(div().w_full().px_5().py_5().flex().justify_center().child(column));
@@ -1170,9 +1173,59 @@ impl Shell {
                 self.logins_ui.days = 30;
                 self.snapshot_logins_seed(cx);
             }
+            // The Connections section on a sample: keys kept, a sign-in or two, and — `connections:card` — a Connect card up.
+            ("connections", card) => {
+                self.snapshot_logins_seed(cx);
+                self.snapshot_connections_seed(card == "card");
+                self.secrets_sync(window, cx);
+                self.logins_ui.scroll.set_offset(point(px(0.), px(0.)));
+            }
             _ => {}
         }
         cx.notify();
+    }
+
+    /// Sample kept keys for Connections, with no daemon asked: an Anthropic admin key used lately,
+    /// a GitHub token never used, and (`card`) a Vercel token's card waiting on the person.
+    #[cfg(feature = "snapshot")]
+    pub fn snapshot_connections_seed(&mut self, card: bool) {
+        use equipe_core::protocol::secrets::{SecretAsk, SecretField, SecretKind, SecretStore, SecretUse, SquadSecret};
+        let now = now_secs();
+        let squad = self.model.squad.clone();
+        let key = |name: &str, service: &str, kind: SecretKind, used: Option<u64>| SquadSecret {
+            squad: squad.clone(),
+            name: name.into(),
+            kind,
+            service: service.into(),
+            projects: Vec::new(),
+            any_project: true,
+            created_by: "backend".into(),
+            created_ticket: None,
+            created_at: now - 86_400 * 3,
+            note: String::new(),
+            last_used: used.map(|ago| SecretUse { at: now - ago, member: "backend".into(), ticket: None, project: String::new(), how: "env".into() }),
+        };
+        self.model.squad_secrets = vec![key("anthropic-admin-key", "anthropic", SecretKind::ApiKey, Some(2 * 3_600)), key("github-token", "github", SecretKind::Token, None), key("acme-deploy-token", "deploy.acme.example", SecretKind::Token, Some(86_400))];
+        if card {
+            self.model.secret_asks = vec![SecretAsk {
+                id: 77,
+                session: 0,
+                member: String::new(),
+                ticket: None,
+                why: String::new(),
+                fields: vec![SecretField { key: "vercel-token".into(), label: "Vercel token".into(), secret: true }],
+                save_to: String::new(),
+                at: now,
+                store: Some(SecretStore {
+                    name: "vercel-token".into(),
+                    service: "vercel".into(),
+                    kind: SecretKind::Token,
+                    projects: Vec::new(),
+                    create_url: Some("https://vercel.com/account/tokens".into()),
+                    scopes_hint: None,
+                }),
+            }];
+        }
     }
 
     /// Sample logins, a record, waits and nevers for the page, with no daemon asked.

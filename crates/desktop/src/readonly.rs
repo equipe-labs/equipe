@@ -184,6 +184,7 @@ pub fn reads(command: &Command) -> bool {
         | C::SubmitCliSignInCode { .. }
         | C::RestartCliSignIn { .. }
         | C::CancelCliSignIn { .. }
+        | C::RequestServiceKey { .. }
         | C::SetSquadSecretProjects { .. }
         | C::DeleteSquadSecret { .. }
         | C::RevealSquadSecret { .. }
@@ -617,6 +618,7 @@ mod tests {
             Command::SubmitCliSignInCode { squad: s(), id: 1, code: equipe_core::protocol::cli_signin::PastedCode("c".into()) },
             Command::RestartCliSignIn { squad: s(), id: 1 },
             Command::CancelCliSignIn { squad: s(), id: 1 },
+            Command::RequestServiceKey { squad: s(), service: "anthropic".into() },
             Command::SquadSecrets,
             Command::SetSquadSecretProjects { squad: s(), name: "k".into(), projects: Vec::new(), any_project: false },
             Command::DeleteSquadSecret { squad: s(), name: "k".into() },

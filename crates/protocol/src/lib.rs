@@ -1274,6 +1274,11 @@ pub enum Command {
     RestartCliSignIn { squad: SquadName, id: u64 },
     /// The person won't sign in (now): the process stops and the member is told.
     CancelCliSignIn { squad: SquadName, id: u64 },
+    /// The person starts a key card themselves, from Logins › Connections: the
+    /// daemon puts the catalog service `service`'s card (`SecretAsk::store`)
+    /// on every screen — answered by [`Event::SecretAsked`]. No member waits
+    /// on it. Saving goes through [`Command::SaveSecret`].
+    RequestServiceKey { squad: SquadName, service: String },
     /// Every squad's keys, tokens and passwords members kept (`secret_save`):
     /// answered by [`Event::SquadSecrets`]. Names and facts only, never a value.
     SquadSecrets,

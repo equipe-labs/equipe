@@ -85,6 +85,7 @@ pub mod runtime;
 pub mod squad_home;
 pub mod squad_memory;
 pub mod squad_secrets;
+pub mod connections;
 pub mod squads;
 pub mod switching;
 pub mod steers;

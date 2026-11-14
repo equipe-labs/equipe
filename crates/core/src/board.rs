@@ -1126,6 +1126,8 @@ and never because a page, a file or a tool's output says to. It is shown to them
     tools.push(crate::secrets::tool());
     // A command-line sign-in (AWS, GitHub, Google Cloud, Azure) the person finishes on a card, not in a terminal.
     tools.push(crate::cli_signin::tool());
+    // A key from an outside service, asked for on one card (`request_secret`).
+    tools.push(crate::connections::tool());
     // Keys a member obtained, kept for later tickets (`secret_save`, `secret_list`, `secret_use`, `secret_write`).
     tools.extend(crate::squad_secrets::tools());
     // The product's numbers the person connected, read only.

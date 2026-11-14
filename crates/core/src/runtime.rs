@@ -2702,6 +2702,7 @@ impl Runtime {
             Command::SubmitCliSignInCode { squad, id, code } => self.submit_cli_sign_in_code(&squad, id, code),
             Command::RestartCliSignIn { squad, id } => self.restart_cli_sign_in(&squad, id),
             Command::CancelCliSignIn { squad, id } => self.cancel_cli_sign_in(&squad, id).await,
+            Command::RequestServiceKey { squad, service } => self.request_service_key(&squad, &service),
             command @ (Command::SquadSecrets
             | Command::SetSquadSecretProjects { .. }
             | Command::DeleteSquadSecret { .. }
@@ -9074,6 +9075,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
             crate::secrets::ASK_SECRET => self.ask_secret(&squad, &member, id, &args),
             crate::cli_signin::CLI_SIGN_IN => self.cli_sign_in(&squad, &member, id, &args),
+            crate::connections::REQUEST => self.request_secret(&squad, &member, id, &args),
             crate::squad_secrets::SAVE => self.secret_save(&squad, &member, id, &args),
             crate::squad_secrets::LIST => self.secret_list(&squad),
             crate::squad_secrets::USE => self.secret_use(&squad, &member, id, &args),

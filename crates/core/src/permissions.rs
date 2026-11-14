@@ -138,6 +138,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::SubmitCliSignInCode { .. }
         | C::RestartCliSignIn { .. }
         | C::CancelCliSignIn { .. }
+        | C::RequestServiceKey { .. }
         // The keys members kept: who may use them where, deleting them, and seeing one.
         | C::SquadSecrets
         | C::SetSquadSecretProjects { .. }
