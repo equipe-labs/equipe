@@ -27,3 +27,7 @@ holds. Use the registry's component, installed with `npx shadcn add`; when it la
 the designer for it in the system (a variant, a component, a token) rather than build a one-off. A real exception is
 kept only with its reason, scoped to its file: `equipe design lint --waive system-component --scope <file> --why "…"`.
 A component you build for the registry follows the `design-system` skill and the registry reference it points to.
+
+Build to the craft skills you're offered: `ui-forms` for any input, `ui-accessibility` on every screen, `ui-motion`
+wherever something moves, and `ui-polish` before you hand in. Their review checklists are what design QA holds your
+screens to — run them on what you changed, as drawn, before the hand-in.

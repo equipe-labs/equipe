@@ -93,6 +93,31 @@ const SOURCES: &[Source] = &[
     Source { dir: "marketing-playbook", files: &[file!("marketing-playbook", "SKILL.md")], offered: |r, _| r.id == crate::roles::MARKETING },
 ];
 
+/// Who builds what people see, besides the designer who designs it.
+fn builds_ui(role: &Role) -> bool {
+    matches!(role.id, "designer" | "frontend" | "mobile")
+}
+
+/// The UI craft library: the rules, numbers and review checklists for each
+/// part of a screen, for the three kinds of product — opened on demand. The
+/// designer gets all of it; engineers who build screens get the parts they
+/// build to. Long, and only of use with a file to open, so an engine that
+/// can't read one isn't sent it inline.
+const LIBRARY: &[Source] = &[
+    Source { dir: "ui-product-kinds", files: &[file!("ui-product-kinds", "SKILL.md")], offered: |r, _| r.id == "designer" },
+    Source { dir: "ui-foundations", files: &[file!("ui-foundations", "SKILL.md")], offered: |r, _| r.id == "designer" },
+    Source { dir: "ui-layout-and-states", files: &[file!("ui-layout-and-states", "SKILL.md")], offered: |r, _| r.id == "designer" },
+    Source { dir: "ui-data-display", files: &[file!("ui-data-display", "SKILL.md")], offered: |r, _| r.id == "designer" },
+    Source { dir: "ui-forms", files: &[file!("ui-forms", "SKILL.md")], offered: |r, _| builds_ui(r) },
+    Source { dir: "ui-mobile", files: &[file!("ui-mobile", "SKILL.md")], offered: |r, _| matches!(r.id, "designer" | "mobile") },
+    Source { dir: "ui-motion", files: &[file!("ui-motion", "SKILL.md")], offered: |r, _| builds_ui(r) },
+    Source { dir: "ui-accessibility", files: &[file!("ui-accessibility", "SKILL.md")], offered: |r, _| builds_ui(r) },
+    Source { dir: "ui-writing", files: &[file!("ui-writing", "SKILL.md")], offered: |r, _| r.id == "designer" },
+    Source { dir: "ui-polish", files: &[file!("ui-polish", "SKILL.md")], offered: |r, _| builds_ui(r) },
+    Source { dir: "ui-review", files: &[file!("ui-review", "SKILL.md"), file!("ui-review", "references/sources.md")], offered: |r, _| r.id == "designer" },
+    Source { dir: "ui-vocabulary", files: &[file!("ui-vocabulary", "SKILL.md")], offered: |r, _| r.id == "designer" },
+];
+
 /// A skill as one member gets it: its files rendered for its role and squad.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Skill {
@@ -102,6 +127,8 @@ pub struct Skill {
     /// `SKILL.md` first (front matter and all), then its references, by path
     /// inside the skill's folder.
     pub files: Vec<(String, String)>,
+    /// Part of the UI craft library: opened from a file, never sent inline.
+    pub library: bool,
 }
 
 impl Skill {
@@ -127,14 +154,14 @@ pub fn front_matter(text: &str) -> Option<(&str, &str, &str)> {
 
 /// The skills a member of `role` is offered in this squad, rendered for it.
 pub fn offered(role: &Role, ctx: &Context<'_>) -> Vec<Skill> {
-    SOURCES
-        .iter()
-        .filter(|s| (s.offered)(role, ctx))
-        .map(|s| {
+    let sources = SOURCES.iter().map(|s| (s, false)).chain(LIBRARY.iter().map(|s| (s, true)));
+    sources
+        .filter(|(s, _)| (s.offered)(role, ctx))
+        .map(|(s, library)| {
             let files: Vec<(String, String)> = s.files.iter().map(|(path, text)| ((*path).to_owned(), render(text, role, ctx))).collect();
             let (name, description) =
                 front_matter(&files[0].1).map_or_else(|| (s.dir.to_owned(), String::new()), |(name, description, _)| (name.to_owned(), description.to_owned()));
-            Skill { name, description, files }
+            Skill { name, description, files, library }
         })
         .collect()
 }
@@ -179,7 +206,7 @@ pub fn for_charter(skills: &[Skill], delivery: Delivery<'_>) -> String {
         None => format!("\n- `{}`: {}", s.name, s.description),
     };
     match delivery {
-        Delivery::Inline => skills.iter().map(|s| format!("\n\nYour `{}` skill. {}\n\n{}", s.name, s.description, s.text())).collect(),
+        Delivery::Inline => skills.iter().filter(|s| !s.library).map(|s| format!("\n\nYour `{}` skill. {}\n\n{}", s.name, s.description, s.text())).collect(),
         Delivery::Plugin(dir) => {
             let list: String = skills.iter().map(|s| item(s, None)).collect();
             format!(
@@ -391,7 +418,7 @@ mod tests {
         }
         walk(&root, &root, &mut on_disk);
         on_disk.sort();
-        let mut built: Vec<String> = SOURCES.iter().flat_map(|s| s.files.iter().map(move |(path, _)| format!("{}/{path}", s.dir))).collect();
+        let mut built: Vec<String> = SOURCES.iter().chain(LIBRARY).flat_map(|s| s.files.iter().map(move |(path, _)| format!("{}/{path}", s.dir))).collect();
         built.sort();
         assert_eq!(on_disk, built, "a file under skills/ that no skill carries, or one it names that isn't there");
     }
@@ -461,9 +488,13 @@ mod tests {
         let base = ctx(&team);
         let all = Context { browser: true, desktop: true, design: true, ..ctx(&team) };
         assert_eq!(names(PM, &base), ["office-hours", "planning", "working-with-design", "routines-and-signals", "product-ideas", "research-report"]);
-        assert_eq!(names("designer", &base), ["plan-review", "research-report", "design-system", "design-process", "design-references", "design-tools", "ui-map", "design-qa"]);
+        let craft = ["ui-product-kinds", "ui-foundations", "ui-layout-and-states", "ui-data-display", "ui-forms", "ui-mobile", "ui-motion", "ui-accessibility", "ui-writing", "ui-polish", "ui-review", "ui-vocabulary"];
+        let designer_has = ["plan-review", "research-report", "design-system", "design-process", "design-references", "design-tools", "ui-map", "design-qa"];
+        assert_eq!(names("designer", &base), designer_has.iter().chain(&craft).copied().collect::<Vec<_>>());
         assert!(names("designer", &all).contains(&"design-remix".to_owned()));
-        assert_eq!(names("frontend", &base), ["plan-review", "research-report", "design-system", "ui-floor"]);
+        // Engineers who build screens get the parts of the craft they build to.
+        assert_eq!(names("frontend", &base), ["plan-review", "research-report", "design-system", "ui-floor", "ui-forms", "ui-motion", "ui-accessibility", "ui-polish"]);
+        assert_eq!(names("mobile", &base), ["plan-review", "research-report", "ui-forms", "ui-mobile", "ui-motion", "ui-accessibility", "ui-polish"]);
         // An engineer gets the component system, not the designer's setup of a brand.
         let text = |id: &str, c: &Context<'_>, name: &str| offered(role(id).unwrap(), c).into_iter().find(|s| s.name == name).unwrap().text();
         let frontend = text("frontend", &base, "design-system");
@@ -471,7 +502,7 @@ mod tests {
         assert!(!frontend.contains("five steps in order") && !frontend.contains("builds one from the brand"));
         let designer = text("designer", &base, "design-system");
         assert!(designer.contains("five steps in order") && designer.contains("builds one from the brand") && !designer.contains("You build the components the designer specifies"));
-        for id in ["backend", "mobile", "qa"] {
+        for id in ["backend", "qa"] {
             assert_eq!(names(id, &base), ["plan-review", "research-report"], "{id}");
         }
         assert_eq!(names("data", &base), ["research-report"]);
@@ -532,6 +563,26 @@ mod tests {
     }
 
     #[test]
+    fn the_ui_craft_library_stays_short_enough_to_load_cites_its_sources_and_speaks_english() {
+        for source in LIBRARY {
+            let (path, text) = source.files[0];
+            let (name, description, body) = front_matter(text).unwrap_or_else(|| panic!("{}: front matter", source.dir));
+            assert_eq!(name, source.dir);
+            assert!(description.starts_with("Use ") && description.split_whitespace().count() <= 25, "{name}: a short index line: {description}");
+            assert!(body.lines().count() <= 250, "{name}/{path}: {} lines", body.lines().count());
+            assert!(body.contains("Sources: ") || name == "ui-vocabulary", "{name}: cites what it draws on");
+            for (file, text) in source.files {
+                assert!(!text.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c) || ('\u{1100}'..='\u{11FF}').contains(&c)), "{name}/{file}: English only");
+            }
+        }
+        // Where an MIT source was adapted, it is named with its licence.
+        let sources = LIBRARY.iter().find(|s| s.dir == "ui-review").unwrap().files[1].1.split_whitespace().collect::<Vec<_>>().join(" ");
+        for part in ["github.com/vercel-labs/web-interface-guidelines", "github.com/mobbin/skills", "MIT, Copyright (c) 2025 Vercel Labs", "MIT, Copyright (c) 2026 Mobbin"] {
+            assert!(sources.contains(part), "{part}");
+        }
+    }
+
+    #[test]
     fn the_index_names_each_skill_and_when_and_how_to_open_it() {
         let home = scratch("index");
         let team = [Teammate { name: "pm", role: PM }];
@@ -553,6 +604,16 @@ mod tests {
         let inline = for_charter(&skills, Delivery::Inline);
         assert!(skills.iter().all(|s| inline.contains(&s.text())));
         assert_eq!(for_charter(&[], Delivery::Plugin(&at)), "");
+        // The UI craft library is indexed like any skill, but never sent inline.
+        let designer = offered(role("designer").unwrap(), &ctx(&team));
+        let library: Vec<&Skill> = designer.iter().filter(|s| s.library).collect();
+        assert_eq!(library.len(), 12, "{:?}", library.iter().map(|s| &s.name).collect::<Vec<_>>());
+        let (indexed, inline) = (for_charter(&designer, Delivery::Plugin(&at)), for_charter(&designer, Delivery::Inline));
+        for skill in &library {
+            assert!(indexed.contains(&format!("- `{}`: {}", skill.name, skill.description)), "{indexed}");
+            assert!(!inline.contains(&format!("Your `{}` skill.", skill.name)) && !inline.contains(skill.body().trim()), "{}", skill.name);
+        }
+        assert!(designer.iter().filter(|s| !s.library).all(|s| inline.contains(&s.text())), "the rest still inline");
         let rules = allowed_tools(&dir, &skills);
         assert!(rules.contains(&"Skill(equipe:office-hours)".to_owned()), "{rules:?}");
         assert!(rules.contains(&format!("Read(/{}/**)", dir.display())), "{rules:?}");

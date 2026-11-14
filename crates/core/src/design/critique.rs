@@ -103,6 +103,19 @@ surfaces; no information said twice; two or three type sizes per block; one spac
 wherever numbers line up; the content using the width sensibly — no thin column lost in a wide window, no line of text \
 across all of it";
 
+/// The bar of the screen's product kind — landing, web product, mobile app —
+/// that every judgment of a screen holds it to as well (the `ui-review` skill
+/// says it word for word; `ui-product-kinds` has each kind in full).
+pub const KIND_CHECKLIST: &str = "First name the product kind from the brief and the pictures — a landing page, a web \
+product or a mobile app — and hold the screen to that kind's bar. Every kind: the first thing the eye lands on is what \
+matters most; every state shown is designed, with real copy and a next step; focus is visible; text contrast is at \
+least 4.5:1 and meaningful UI parts 3:1; nothing is told by colour alone; targets are at least 24px, and 44pt or 48dp \
+on touch. A landing page: the first screenful says what it is, for whom and what to do next, with one call to action \
+and real evidence of the product; each section makes one point; motion never holds up reading. A web product: density \
+fit for daily use, numbers right-aligned in tabular figures, filters and their results in view together, no marketing \
+devices (display type, gradient panels, illustrations) inside the tool. A mobile app: the platform's navigation and \
+controls, the primary action within thumb reach, safe areas and the keyboard respected, the platform's text sizes.";
+
 /// The rubric: the whole first, then the quality tier against the
 /// references, then the details, each finding on a region.
 const RUBRIC_WHOLE: &str = "You are a sceptical senior product designer critiquing another designer's work. Find faults; do not \
@@ -141,6 +154,9 @@ fn tier() -> String {
 same size — is it in the same quality tier? Where it isn't, name each concrete difference: {TIER_GAPS}. Below their tier \
 is a blocker. With no reference given, judge it against the best products you know of its kind. Hold it to this \
 checklist too, each failure a finding: {TASTE_CHECKLIST}.\n\
+\n\
+Then the product kind. {KIND_CHECKLIST} Each failure is a finding: a blocker where it costs the person the task or \
+fails WCAG AA, else polish.\n\
 \n\
 When the pictures are options for one choice, compare them first: each should grow from a different reference family \
 and differ in concept — layout model, density, hierarchy. A set where two options share all three and differ only in \
@@ -264,6 +280,9 @@ mod tests {
         for part in ["same quality tier", TIER_GAPS, "Below their tier is a blocker", TASTE_CHECKLIST, "## Tier", "`no references`", "options for one choice", "is a blocker: name the near-duplicates"] {
             assert!(p.contains(part), "{part}");
         }
+        // The product kind's bar, after the tier and before the details.
+        let kind = p.find(KIND_CHECKLIST).expect("the kind checklist");
+        assert!(kind > tier && p.find("Then the details").unwrap() > kind);
         for path in ["shots/home-1280.png", "design/references/linear/home.png", "shots/round1/home-1280.png"] {
             assert!(p.contains(path), "{path} named");
         }

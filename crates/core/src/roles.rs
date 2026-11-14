@@ -153,7 +153,9 @@ platform's code, and design QA compares the built screens with that component an
 How you work is in your skills — open the matching one before you start, every time: `design-system` for the \
 `design/` folder, a project's setup, its brand and its system; `design-process` for any design work, a small change \
 included; `design-references` before you design, redesign or judge a screen or component; `design-tools` before you \
-run `equipe design …`; `ui-map` whenever a screen, state or flow changes; `design-qa` on a design QA ticket. Hold \
+run `equipe design …`; `ui-map` whenever a screen, state or flow changes; `design-qa` on a design QA ticket; \
+`ui-product-kinds` first on any UI work, the `ui-*` skill of each part a screen has, and `ui-review` before you judge \
+one. Hold \
 every screen to the level of the best products, not of the screen you were handed: build inside the system the \
 person accepted, and where that system itself keeps screens below it, propose a one-time foundation reset to the \
 person rather than patch inside it. Taste calls — brand direction, colours, typefaces, which option — are the person's: offer \
@@ -2152,6 +2154,61 @@ invent one."), "{id}: true numbers");
         for line in suggested.lines().filter(|l| l.starts_with("- ")) {
             assert!(docs.contains(line), "docs/DESIGN-SYSTEM.md lacks: {line}");
         }
+    }
+
+    #[test]
+    fn the_designer_classifies_the_product_kind_and_reviews_by_the_ui_craft_checklists_keeping_every_guarantee() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "designer", role: "designer" }, Teammate { name: "frontend", role: "frontend" }];
+        let c = ctx(&team, &[], true);
+        let charter_only = charter(role("designer").unwrap(), "designer", &c);
+        assert!(
+            charter_only.contains("`ui-product-kinds` first on any UI work, the `ui-*` skill of each part a screen has, and `ui-review` before you judge one"),
+            "the role text names the library in one clause: {charter_only}"
+        );
+        // Each part of the craft, with its numbers and a checklist to review by.
+        for name in ["ui-product-kinds", "ui-foundations", "ui-layout-and-states", "ui-data-display", "ui-forms", "ui-mobile", "ui-motion", "ui-accessibility", "ui-writing", "ui-polish", "ui-review"] {
+            assert!(skill("designer", &c, name).contains("## Review checklist"), "{name}");
+        }
+        assert!(skill("designer", &c, "ui-vocabulary").contains("**Command palette** —"));
+        // The kinds switch the references, the rules and the bar.
+        let kinds = skill("designer", &c, "ui-product-kinds");
+        for part in ["`Kind: landing`, `Kind: web product` or `Kind: mobile app`", "Marketing galleries are never a reference for this kind", "galleries of marketing sites fit here and only here", "Apple's Human Interface Guidelines for iOS, Material 3 for Android", "Never a website's layout"] {
+            assert!(kinds.contains(part), "{part}");
+        }
+        let refs = skill("designer", &c, "design-references");
+        assert!(refs.contains("`fits:` names the product kinds of the `ui-product-kinds` skill") && refs.contains("a website is never the reference for a mobile app"), "{refs}");
+        for line in include_str!("../skills/design-references/references/sources.md").lines().filter(|l| l.starts_with("- ")) {
+            let fits = line.split(" — fits: ").nth(1).and_then(|rest| rest.split(" — ").next()).unwrap_or_else(|| panic!("no fit: {line}"));
+            assert!(["landing", "web product", "mobile app", "any"].iter().any(|kind| fits.contains(kind)), "{line}");
+        }
+        // The process starts from the kind; the designer's own review is a pre-check, never the verdict.
+        let process = skill("designer", &c, "design-process");
+        for part in ["name the product kind", "run the `ui-review` skill on it yourself and fix what it finds — a pre-check, never a verdict", "passes the `ui-review` checklists of the parts it touches"] {
+            assert!(process.contains(part), "{part}");
+        }
+        // The critic, the second look, design QA and the skill say the kind's bar in the same words.
+        assert!(skill("designer", &c, "ui-review").contains(crate::design::critique::KIND_CHECKLIST));
+        assert!(skill("designer", &c, "ui-review").contains("never replaces the critic, the second look or design QA"));
+        assert!(skill("designer", &c, "design-qa").contains("run the `ui-review` skill's checklists on each changed screen"));
+        // Every existing guarantee still reaches the designer, every turn where it was every turn.
+        for part in ["on which you change only its `design/`", "Never grade your own work", "never show the person a picture the critic hasn't seen", "are the person's", "Applied is done"] {
+            assert!(charter_only.contains(part), "every turn: {part}");
+        }
+        for delivery in [Delivery::Plugin(SKILLS_AT), Delivery::Files(SKILLS_AT)] {
+            let told_so = told("designer", "designer", &Context { skills: delivery, ..c });
+            for part in ["Never grade your own work", "A hand-in is refused until every UI file you edited", "on which you change only its `design/`", "are the person's", "Applied is done", "The choice is theirs"] {
+                assert!(told_so.contains(part), "{part}");
+            }
+        }
+        // An engine that can't open a file gets what it got before, not the library.
+        let inline = charter(role("designer").unwrap(), "designer", &Context { skills: Delivery::Inline, ..c });
+        assert!(!inline.contains("# Foundations: space, grid, density, type, colour") && inline.contains("Never grade your own work"));
+        // Frontend builds to the parts it builds; the designer's own process stays the designer's.
+        let frontend = told("frontend", "frontend", &c);
+        for name in ["ui-forms", "ui-motion", "ui-accessibility", "ui-polish"] {
+            assert!(skill("frontend", &c, name).contains("## Review checklist"), "{name}");
+        }
+        assert!(frontend.contains("Build to the craft skills you're offered") && !frontend.contains("`Kind: landing`") && !frontend.contains("## The kind checklist"));
     }
 
     #[test]

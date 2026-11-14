@@ -16,8 +16,9 @@ you design and whenever it is judged.
 2. For each, read the project's `design/references/<pattern>/notes.md` first. Reuse it when it holds at least three
    examples that fit this product and none is older than six months; research only what is missing or stale, and add
    to the notes rather than start them again.
-3. Gather three to six best-in-class examples of each pattern from real products, at the width the product is used at
-   (1280 or 1440 for a desktop tool, 390 for a phone): from the squad's sources (below); from a connected MCP server
+3. Gather three to six best-in-class examples of each pattern from real products, at the primary widths of the
+   product's kind (`ui-product-kinds`: 1440 and 390 for a landing page, 1280 or 1440 for a web product, 390 for a
+   mobile app): from the squad's sources (below) that fit the kind; from a connected MCP server
    that serves UI references; from public pages in your own browser, or shot with `equipe design refs shoot <url>
    --learn "…" --aspect pattern` (paced, as robots.txt allows). A paid library only through its official MCP server
    or API, when the squad has connected one; a site behind a sign-in is never scraped or captured in bulk. Keep each
@@ -43,11 +44,13 @@ The squad's sources are a file: the project's `design/references/sources.md`, el
 the squad's folder. A line for each source — what it is, what it is good for, the kinds of product it fits, how it is
 reached:
 
-`- <name> — <URL> — good for: <patterns> — fits: <dense tools | consumer apps | mobile | marketing sites | …> — access: <public | browser | mcp:<server>>`
+`- <name> — <URL> — good for: <patterns> — fits: <landing | web product | mobile app | any> — access: <public | browser | mcp:<server>>`
 
-Respect the fit: a gallery of marketing sites is for landing pages, never the reference for a dense dashboard, and a
-consumer app's onboarding isn't one for an admin table. When neither file exists, start the project's from
-`references/sources.md` next to this file, keep only the lines that fit the product, and tell the person they can add
+`fits:` names the product kinds of the `ui-product-kinds` skill (`any` for writing on craft). Classify the work first,
+then use a source only for a kind it fits: a gallery of marketing sites is for landing pages, never the reference for a
+dense dashboard; a consumer app's onboarding isn't one for an admin table; a website is never the reference for a
+mobile app. An older file's `dense tools`, `mobile` and `marketing sites` read as web product, mobile app and
+landing. When neither file exists, start the project's from `references/sources.md` next to this file, keep only the lines that fit the product, and tell the person they can add
 their own (a library they pay for and have connected, products they admire). Public design systems' docs and writing
 on interaction craft count as sources too: they show a pattern's states and the reasons behind its proportions. So do
 component registries (`kind: component registry`), for the parts a real page is built from.
