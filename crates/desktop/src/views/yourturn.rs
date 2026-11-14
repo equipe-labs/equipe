@@ -336,8 +336,27 @@ fn header(card: &Card, d: &Draw<'_>) -> impl IntoElement {
 }
 
 /// A box on the card: the answer's, a note's, the words to the member.
-fn boxed(p: Palette, field: &Entity<TextareaState>, size: f32) -> Div {
-    div().w_full().min_w_0().px_3().py(px(2.)).rounded(px(R_SM + 2.)).bg(p.bg).border_1().border_color(p.hair).text_size(px(size)).child(Textarea::new(field).appearance(false).bordered(false))
+fn boxed(p: Palette, field: &Entity<TextareaState>, size: f32, focused: bool) -> Div {
+    let to_focus = field.clone();
+    div()
+        .w_full()
+        .min_w_0()
+        .px_3()
+        .py(px(2.))
+        .rounded(px(R_SM + 2.))
+        .bg(p.bg)
+        .border_1()
+        .border_color(if focused { p.accent } else { p.hair })
+        .cursor_text()
+        // A click anywhere in the box (its padding too) puts the caret in it.
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| to_focus.update(cx, |s, cx| s.focus(window, cx)))
+        .text_size(px(size))
+        .child(Textarea::new(field).appearance(false).bordered(false))
+}
+
+/// Whether `field` has the keyboard now (its box then shows the accent ring).
+fn has_focus(field: &Entity<TextareaState>, window: Option<&Window>, cx: &App) -> bool {
+    window.is_some_and(|w| field.read(cx).focus_handle(cx).is_focused(w))
 }
 
 /// The asks, each answered in place, the words to the member, and the foot.
@@ -358,7 +377,10 @@ fn pending(card: &Card, d: &Draw<'_>, cx: &mut App) -> AnyElement {
     let id = card.ticket;
     let handle = d.handle.clone();
     let answering = d.place != Place::Side;
-    let free = card.free.clone().filter(|_| answering).map(|free| boxed(p, &free, 13.5).mt_1());
+    let free = card.free.clone().filter(|_| answering).map(|free| {
+        let focused = has_focus(&free, d.window.as_deref(), cx);
+        boxed(p, &free, 13.5, focused).mt_1()
+    });
     let body = v_flex()
         .id(("turn-card", key))
         .w_full()
@@ -527,6 +549,8 @@ fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElem
     let to = super::composer::AttachTo::Turn(card.ticket, n);
     let field = card.fields.get(n).cloned().flatten().filter(|_| answering && want != Want::Do).map(|field| {
         let picked = card.picks.contains_key(&n);
+        let focused = has_focus(&field, d.window.as_deref(), cx);
+        let to_focus = field.clone();
         div()
             .w_full()
             .min_w_0()
@@ -535,7 +559,10 @@ fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElem
             .rounded(px(R_SM + 2.))
             .bg(p.bg)
             .border_1()
-            .border_color(p.hair)
+            .border_color(if focused { p.accent } else { p.hair })
+            .cursor_text()
+            // A click anywhere in the box puts the caret in it.
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| to_focus.update(cx, |s, cx| s.focus(window, cx)))
             .text_size(px(14.))
             .child(super::composer::answer_box(&field, to, d.handle.clone()))
             .on_drop(super::composer::on_answer_drop(to, d.handle.clone()))
@@ -553,7 +580,10 @@ fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElem
             handle.update(cx, |shell, cx| shell.turn_next(id, cx)).ok();
         })
     });
-    let note = card.notes.get(n).cloned().flatten().filter(|_| answering).map(|note| boxed(p, &note, 13.));
+    let note = card.notes.get(n).cloned().flatten().filter(|_| answering).map(|note| {
+        let focused = has_focus(&note, d.window.as_deref(), cx);
+        boxed(p, &note, 13., focused)
+    });
     let _ = cx;
     h_flex()
         .w_full()

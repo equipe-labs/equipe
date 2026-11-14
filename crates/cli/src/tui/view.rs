@@ -3920,7 +3920,7 @@ mod tests {
         let (mut app, _) = working();
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: ticket(1, TicketStatus::Review, "Pricing") });
         let mut t = ticket(2, TicketStatus::Waiting, "Analytics");
-        t.note = Some("Waiting on you:\n- [ ] GitHub token\n- [ ] PostHog secrets\n(to deploy)".into());
+        t.note = Some("Waiting on you:\n- [ ] GitHub token\n- [ ] PostHog secrets\n(for the dashboard)".into());
         app.on_event(Event::TicketChanged { squad: "acme".into(), ticket: t });
         app.flash = None;
         let shot = screen(&app, 120, 30);
