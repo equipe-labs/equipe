@@ -383,6 +383,8 @@ pub struct DesignUi {
     pub versions: HashMap<String, Vec<DesignVersion>>,
     /// The source asked for and not answered yet.
     pub versions_asked: Option<String>,
+    /// The References tab: the designer's references, as the daemon last said.
+    pub refs: crate::refshelf::RefsUi,
 }
 
 impl Default for DesignUi {
@@ -425,6 +427,7 @@ impl Default for DesignUi {
             versions_open: false,
             versions: HashMap::new(),
             versions_asked: None,
+            refs: Default::default(),
         }
     }
 }

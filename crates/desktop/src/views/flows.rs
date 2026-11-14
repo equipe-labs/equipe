@@ -736,6 +736,11 @@ impl Shell {
         self.design.map.zoomed = false;
         self.design.lightbox = None;
         self.design.component_shot = None;
+        self.design.refs.viewer = None;
+        // Read again each time the tab is opened: a designer may have added some.
+        if tab == Tab::References {
+            self.design.refs.dirty = true;
+        }
         cx.notify();
     }
 

@@ -222,6 +222,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::ProjectDocs { .. }
         | C::SearchDocs { .. }
         | C::DesignVersions { .. }
+        | C::DesignRefs { .. }
         | C::Taste { .. } => false,
     }
 }
@@ -607,6 +608,7 @@ mod tests {
             Command::Logins,
             Command::LoginInsights { days: 7 },
             Command::SearchDocs { squad: "a".into(), query: "checkout".into() },
+            Command::DesignRefs { squad: "a".into(), project: None, query: String::new(), offset: 0 },
             Command::OnPhone { command: Box::new(Command::Submit { session: 1, text: "hi".into(), about: None }) },
         ];
         for command in &shared {

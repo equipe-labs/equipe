@@ -1651,6 +1651,22 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
     },
+    /// The references a design system's designers keep
+    /// (`design/references/<pattern>/`, `design/references/sources.md`): the
+    /// project's (`project` none: the squad's own), with the squad's own for
+    /// the patterns the project has none of. `query` keeps the patterns whose
+    /// name or notes hold it (any case); `offset` pages the patterns, in name
+    /// order. Answered by [`Event::DesignRefs`]. Only reads; the pictures
+    /// come through `read_image`.
+    DesignRefs {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        query: String,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        offset: u32,
+    },
     /// The person asks for a design system's folder back as it was at one of
     /// its versions (`commit`, one [`Event::DesignVersions`] listed): a
     /// ticket for the designer, which restores it in its worktree and hands
@@ -3206,6 +3222,28 @@ pub enum Event {
         #[serde(default)]
         versions: Vec<design::DesignVersion>,
     },
+    /// The references [`Command::DesignRefs`] asked for. `query` and `offset`
+    /// are the ask's, so a screen can tell an old answer from the latest.
+    DesignRefs {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        query: String,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        offset: u32,
+        /// How many patterns match, of which `patterns` are the page at `offset`.
+        #[serde(default)]
+        total: u32,
+        #[serde(default)]
+        patterns: Vec<design::RefPattern>,
+        /// The squad's sources (`sources.md`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        sources: Vec<design::RefSource>,
+        /// Where the references are kept, for the person to put some in.
+        #[serde(default)]
+        folder: String,
+    },
 }
 
 impl Event {
@@ -3265,7 +3303,8 @@ impl Event {
             | Event::CallRoute { squad, .. }
             | Event::CallSummary { squad, .. }
             | Event::DocCopyKept { squad, .. }
-            | Event::DesignVersions { squad, .. } => Some(squad),
+            | Event::DesignVersions { squad, .. }
+            | Event::DesignRefs { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserWindow { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             Event::SideChatOpened { squad, .. } | Event::SideChat { squad, .. } | Event::SideChatClosed { squad, .. } => squad.as_deref(),
             _ => None,
@@ -3382,6 +3421,7 @@ impl Event {
             | Event::CallRoute { .. }
             | Event::CallSummary { .. }
             | Event::DocCopyKept { .. }
+            | Event::DesignRefs { .. }
             | Event::DesignVersions { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }

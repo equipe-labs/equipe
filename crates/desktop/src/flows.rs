@@ -12,23 +12,26 @@ use std::sync::Arc;
 use equipe_core::protocol::design::{Flow, FlowMap, Picture, STATE_KINDS, Screen, ScreenState, Walkthrough};
 use gpui_kit::{Image, ScrollHandle};
 
-/// The design screen's two tabs.
+/// The design screen's tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tab {
     /// UI map.
     Map,
     /// Design system.
     System,
+    /// The designer's references, by interface pattern.
+    References,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 2] = [Tab::Map, Tab::System];
+    pub const ALL: [Tab; 3] = [Tab::Map, Tab::System, Tab::References];
 
     /// As it is kept (`desktop-target`) and as a script names it.
     pub fn code(self) -> &'static str {
         match self {
             Tab::Map => "map",
             Tab::System => "system",
+            Tab::References => "references",
         }
     }
 
@@ -36,6 +39,7 @@ impl Tab {
         match word {
             "map" | "flows" => Some(Tab::Map),
             "system" | "tokens" => Some(Tab::System),
+            "references" | "refs" => Some(Tab::References),
             _ => None,
         }
     }
@@ -44,6 +48,7 @@ impl Tab {
         crate::i18n::catalog().get(match self {
             Tab::Map => "flows.tab_map",
             Tab::System => "flows.tab_system",
+            Tab::References => "flows.tab_references",
         })
     }
 
@@ -567,6 +572,8 @@ mod tests {
         for tab in Tab::ALL {
             assert_eq!(Tab::parse(tab.code()), Some(tab));
         }
+        assert_eq!(Tab::shown(Some(Tab::References), true), Tab::References, "the references tab is remembered like the others");
+        assert_eq!(Tab::parse("refs"), Some(Tab::References));
     }
 
     #[test]

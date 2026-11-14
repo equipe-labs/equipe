@@ -1882,6 +1882,7 @@ impl App {
                 | Event::CallRoute { .. }
                 | Event::CallSummary { .. }
                 | Event::DocCopyKept { .. }
+                | Event::DesignRefs { .. }
                 | Event::DesignVersions { .. } => {}
                 Event::Error { message, next, .. } => {
                     failure.get_or_insert(Failure { message, next });
