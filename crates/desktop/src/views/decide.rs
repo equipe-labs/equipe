@@ -266,7 +266,7 @@ impl Shell {
     }
 
     /// The words typed in each of a set's boxes, by question.
-    fn decide_others(&self, id: u64, cx: &App) -> Vec<String> {
+    pub(super) fn decide_others(&self, id: u64, cx: &App) -> Vec<String> {
         let count = self.model.asked.get(id).map_or(0, |s| s.questions.len());
         (0..count)
             .map(|n| {
@@ -310,7 +310,7 @@ impl Shell {
                 },
                 _ => return Took::Pass,
             },
-            Screen::Settings | Screen::Design | Screen::Roadmap | Screen::Metrics | Screen::Project | Screen::Progress | Screen::Status | Screen::Orchestration | Screen::Usage | Screen::Logins | Screen::Docs | Screen::Studio => return Took::Pass,
+            Screen::Settings | Screen::Design | Screen::Roadmap | Screen::Metrics | Screen::Project | Screen::Progress | Screen::Status | Screen::Orchestration | Screen::Usage | Screen::Logins | Screen::Docs | Screen::Studio | Screen::Taste => return Took::Pass,
         };
         // The list of them open: ↑↓ through it, ⏎ to the one picked, Esc away.
         if !peek && let Some(at) = self.decide.listing && self.composer.text(cx).is_empty() {
@@ -1026,6 +1026,13 @@ fn card(shell: &Shell, id: u64, place: Place, nav: Option<Nav>, cx: &mut Context
             handle.update(cx, |shell, cx| shell.decide_again(id, window, cx)).ok();
         })
     });
+    // A taste choice browsed as a board: the pictures big and many, in the main area.
+    let board = q.wants_board().then(|| {
+        let handle = handle.clone();
+        ui::button(p, ("decide-board", id), if q.board || q.options.iter().any(|o| !o.tiles.is_empty()) { Kind::Primary } else { Kind::Secondary }, t!("taste.open_board")).icon(Icon::Expand).tip(t!("taste.open_board_tip"), None).on_click(move |_, window, cx| {
+            handle.update(cx, |shell, cx| shell.open_taste(id, window, cx)).ok();
+        })
+    });
     let back = (draft.step > 0).then(|| {
         let handle = handle.clone();
         ui::button(p, ("decide-back", id), Kind::Ghost, t!("decide.back")).key("⇧←").on_click(move |_, window, cx| {
@@ -1040,6 +1047,9 @@ fn card(shell: &Shell, id: u64, place: Place, nav: Option<Nav>, cx: &mut Context
     said.push(h_flex().gap(px(5.)).items_center().child(crate::theme::member_mark(shell.palette, &shell.model, &name, 15.)).child(t!("decide.asks", name = name)).into_any_element());
     if !q.header.is_empty() && total > 1 {
         said.push(div().child(format!("· {}", q.header)).into_any_element());
+    }
+    if draft.liked_count() > 0 {
+        said.push(div().child(format!("· {}", t!("taste.liked_count", count = draft.liked_count()))).into_any_element());
     }
     if let Some(t) = set.ticket {
         said.push(h_flex().gap(px(5.)).child("·").child(div().font_family(MONO).child(format!("T-{t}"))).into_any_element());
@@ -1089,7 +1099,7 @@ fn card(shell: &Shell, id: u64, place: Place, nav: Option<Nav>, cx: &mut Context
                 .child(h_flex().gap(px(5.)).items_center().flex_wrap().children(said))
                 .child(div().opacity(0.8).overflow_hidden().whitespace_nowrap().text_ellipsis().child(keys)),
         )
-        .child(h_flex().flex_none().ml_auto().gap_2().children(back).children(again).child(skip).child(next));
+        .child(h_flex().flex_none().ml_auto().gap_2().children(back).children(board).children(again).child(skip).child(next));
     let inner = v_flex().w_full().min_h_0().gap_3().child(body).child(foot.flex_none());
     // Never taller than the window has room for: past it, the options scroll.
     let tallest = card_tallest(shell, place);
@@ -1144,7 +1154,7 @@ fn follow(scroll: &ScrollHandle, seen: &Cell<Option<(usize, usize)>>, draft: &Dr
 }
 
 /// A number key's badge, or a key's name: filled when its row is picked.
-fn key_badge(p: Palette, key: &str, on: bool) -> impl IntoElement {
+pub(super) fn key_badge(p: Palette, key: &str, on: bool) -> impl IntoElement {
     div()
         .flex_none()
         .min_w(px(20.))
@@ -1253,9 +1263,11 @@ fn option_tile(shots: &Shots, id: u64, step: usize, n: usize, q: &Question, pick
     let key = render::hash_of(("decide-tile", id, step, n));
     let (fw, h) = (w - 2., (w * visual::RATIO).floor());
     let frame = visual::frame(visual::TileState { picked, cursor, hover: 0. });
-    let face: AnyElement = match option.images.first() {
+    // A board's family shows its first tile; a click on it opens the board.
+    let cover = option.images.first().cloned().or_else(|| option.tiles.first().map(|t| t.image.clone()));
+    let face: AnyElement = match cover.as_ref() {
         Some(path) => {
-            let more = option.images.len() - 1;
+            let more = option.images.len().max(option.tiles.len()) - 1;
             let look = shots.ask(path, Size::Thumb, cx);
             let face = super::visuals::picture(shots, key, path, look, fw, h, R_LG - 1., true, 12.)
                 .when(more > 0, |f| f.child(div().absolute().bottom(px(8.)).right(px(8.)).h(px(18.)).px(px(6.)).flex().items_center().rounded(px(9.)).bg(rgba(0x0000008C)).text_size(px(10.5)).text_color(rgb(0xFFFFFF)).child(format!("+{more}"))));
@@ -1265,6 +1277,18 @@ fn option_tile(shots: &Shots, id: u64, step: usize, n: usize, q: &Question, pick
                     cx.stop_propagation();
                     if let Some(viewer) = viewer.clone() {
                         handle.update(cx, |shell, cx| shell.open_viewer(viewer, cx)).ok();
+                    }
+                }
+            };
+            let open = {
+                let handle = handle.clone();
+                let board = option.images.is_empty();
+                move |e: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    if board {
+                        cx.stop_propagation();
+                        handle.update(cx, |shell, cx| shell.open_taste(id, window, cx)).ok();
+                    } else {
+                        open(e, window, cx);
                     }
                 }
             };

@@ -2154,11 +2154,18 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
             .cursor_pointer()
             .when(picked, |r| r.bg(p.wash))
             .when(!picked, |r| r.hover(move |s| s.bg(p.wash)))
-            .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                 if e.click_count() >= 2 {
                     this.board.view.page = Some(Tab::Overview);
                 }
                 this.board_pick(need, cx);
+                // A taste choice: a second click opens its board.
+                if e.click_count() >= 2
+                    && let Need::Questions(id) = need
+                    && this.model.asked.get(id).is_some_and(|s| s.questions.iter().any(|q| q.wants_board()))
+                {
+                    this.open_taste(id, window, cx);
+                }
             }));
         // Right-click: its link, to share.
         match need {

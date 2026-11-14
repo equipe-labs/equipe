@@ -647,7 +647,7 @@ fn viewer_of(id: TicketId, pictures: &[String], at: &str, label: &str) -> Option
         .iter()
         .map(|p| {
             let width = equipe_core::design::studio::width_of(p).map(|w| format!(" · {w}px")).unwrap_or_default();
-            crate::visuals::Item { path: p.clone(), choice: None, label: format!("{label}{width}") }
+            crate::visuals::Item { path: p.clone(), choice: None, label: format!("{label}{width}"), tile: None, note: String::new() }
         })
         .collect();
     let at = items.iter().position(|i| i.path == at)?;

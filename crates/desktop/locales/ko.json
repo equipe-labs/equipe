@@ -4257,5 +4257,22 @@
   "link.what_member": "{name}",
   "link.what_needs_you": "확인 필요",
   "link.what_status": "상태",
-  "link.what_ticket": "티켓 T-{id}"
+  "link.what_ticket": "티켓 T-{id}",
+  "taste.title": "취향 보드",
+  "taste.back": "돌아가기",
+  "taste.back_tip": "질문으로 돌아가기",
+  "taste.gone": "이 질문은 이미 답했거나 닫혔어요.",
+  "taste.all": "전체",
+  "taste.pick_family": "이 계열로 정하기",
+  "taste.family_picked": "선택함",
+  "taste.picked_family": "선택: {family}",
+  "taste.like": "좋아요",
+  "taste.unlike": "좋아요 취소",
+  "taste.liked": "좋아함",
+  "taste.liked_count": "좋아요 {count}개",
+  "taste.tiles.other": "사진 {count}장",
+  "taste.keys": "←→↑↓ 이동 · Space 좋아요 · ⏎ 크게 보기 · P 계열 정하기 · 0–9 필터 · ⌘⏎ 보내기 · Esc 돌아가기",
+  "taste.send": "보내기",
+  "taste.open_board": "보드 열기",
+  "taste.open_board_tip": "핀보드처럼 사진을 훑어보세요. 마음에 드는 사진에 좋아요를 누르고 계열을 정해요"
 }

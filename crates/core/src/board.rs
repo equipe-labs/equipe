@@ -920,7 +920,10 @@ giving each option its `images`; the person sees them side by side and picks fro
 option its `aspects` too (its type, colour, shape — in the person's language) and the person can answer in one click: \
 this one, this one with an aspect of another (a mix), or another round. Links — a sign-in page, a document — go in a \
 question's `links` with a label each, never inside its `question` text: the person gets them as buttons under the \
-question, and the question stays a short sentence.",
+question, and the question stays a short sentence. A taste choice — which direction, which family of references — \
+is a board: set `board`, and give each option (2 to 3 clearly different families) its `tiles`, 6 to 12 pictures each, \
+every tile with its source and a line on what to take from it; the person browses them like a pinboard, likes tiles, \
+and answers with the family plus the tiles they liked.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -945,12 +948,14 @@ question, and the question stays a short sentence.",
                                         "description": { "type": "string", "description": "One line: what it means, or what it costs." },
                                         "images": IMAGES_SCHEMA.clone(),
                                         "aspects": ASPECTS_SCHEMA.clone(),
+                                        "tiles": TILES_SCHEMA.clone(),
                                         "recommended": { "type": "boolean", "description": "Set on the option you recommend — one at most, put first. equipe shows the person it is the recommended one, in their language." },
                                     },
                                     "required": ["label"],
                                 },
                             },
                             "multi_select": { "type": "boolean", "description": "Set when several options can be picked together." },
+                            "board": { "type": "boolean", "description": "A taste board: the options are families of references (their `description` is the family's one line), each with `tiles`. The person browses the pictures in a masonry, likes tiles and picks a family." },
                             "links": {
                                 "type": "array",
                                 "maxItems": LINKS,
@@ -1224,6 +1229,7 @@ pub fn questions_arg(args: &Value) -> Result<Vec<crate::protocol::decide::Questi
                     images: arg_strs(o, "images"),
                     aspects: aspects_arg(o),
                     recommended: o.get("recommended").and_then(Value::as_bool).unwrap_or(false),
+                    tiles: tiles_arg(o),
                 }),
             })
             // A label that says it is recommended, in any language: the mark,
@@ -1260,7 +1266,8 @@ pub fn questions_arg(args: &Value) -> Result<Vec<crate::protocol::decide::Questi
         let multi_select = !options.is_empty() && item.get("multi_select").and_then(Value::as_bool).unwrap_or(false);
         // Pictures as the member named them; the runtime finds them where it works.
         let images = arg_strs(item, "images");
-        let mut question = Question { question: question.to_owned(), header, options, multi_select, images, links: links_arg(item) };
+        let board = !options.is_empty() && item.get("board").and_then(Value::as_bool).unwrap_or(false);
+        let mut question = Question { question: question.to_owned(), header, options, multi_select, images, links: links_arg(item), board };
         // A link written into the words moves to `links`: screens draw it as a row of its own.
         question.move_links();
         out.push(question);
@@ -1311,6 +1318,49 @@ fn aspects_arg(item: &Value) -> Vec<String> {
         let aspect = aspect.chars().take(24).collect::<String>().trim_end().to_owned();
         if !out.contains(&aspect) && out.len() < ASPECTS {
             out.push(aspect);
+        }
+    }
+    out
+}
+
+/// The `tiles` of a taste board's option.
+static TILES_SCHEMA: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+    json!({
+        "type": "array",
+        "maxItems": crate::protocol::decide::TILES,
+        "description": "A taste board's family: 6 to 12 pictures, each with where it is from and what to take from it.",
+        "items": {
+            "type": "object",
+            "properties": {
+                "image": { "type": "string", "description": "The picture: PNG, JPG, WebP, GIF or SVG, by its path in your worktree or the squad's folder." },
+                "source": { "type": "string", "description": "Where it is from: the page's address (the person sees its host) or a name." },
+                "take": { "type": "string", "description": "What to take from it, one line in the person's language: \"row density, quiet chrome\"." },
+                "reference": { "type": "string", "description": "Its id among the design references you keep, when it is one." },
+            },
+            "required": ["image"],
+        },
+    })
+});
+
+/// The tiles of an option (`[{image, source, take, reference}]`; a bare path
+/// counts as a tile without the rest): blanks dropped, a picture once, at most
+/// [`TILES`](crate::protocol::decide::TILES).
+fn tiles_arg(option: &Value) -> Vec<crate::protocol::decide::Tile> {
+    use crate::protocol::decide::{TILES, Tile};
+    let line = |t: &Value, key: &str, max: usize| arg_str(t, key).unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ").chars().take(max).collect::<String>();
+    let items: &[Value] = match option.get("tiles") {
+        Some(Value::Array(items)) => items,
+        Some(one @ (Value::Object(_) | Value::String(_))) => std::slice::from_ref(one),
+        _ => &[],
+    };
+    let mut out: Vec<Tile> = Vec::new();
+    for item in items {
+        let tile = match item {
+            Value::String(image) => Tile { image: image.trim().to_owned(), ..Tile::default() },
+            t => Tile { image: line(t, "image", 1024), source: line(t, "source", 300), take: line(t, "take", 160), reference: line(t, "reference", 80) },
+        };
+        if !tile.image.is_empty() && !out.iter().any(|o| o.image == tile.image) && out.len() < TILES {
+            out.push(tile);
         }
     }
     out
@@ -1893,6 +1943,42 @@ mod tests {
             assert!(doc.contains("leave `options` out") && doc.contains("never write them as a numbered list"), "{doc}");
             assert_eq!(questions["items"]["required"], json!(["question"]));
         }
+    }
+
+    #[test]
+    fn a_taste_board_is_options_with_tiles_each_with_its_source_and_what_to_take() {
+        let asked = questions_arg(&json!({ "questions": [{
+            "question": "Which direction?",
+            "board": true,
+            "options": [
+                { "label": "Dense tool", "description": "Tight rows", "tiles": [
+                    { "image": "refs/a.png", "source": "https://linear.example/x", "take": "  row   density\n" },
+                    { "image": "refs/a.png", "take": "the same picture twice" },
+                    { "image": " " },
+                    "refs/b.png"
+                ] },
+                { "label": "Calm", "tiles": [{ "image": "refs/c.png", "reference": "ref-3" }] },
+            ],
+        }] })).unwrap();
+        let q = &asked[0];
+        assert!(q.board && q.wants_board());
+        let tiles = &q.options[0].tiles;
+        assert_eq!(tiles.iter().map(|t| t.image.as_str()).collect::<Vec<_>>(), ["refs/a.png", "refs/b.png"], "blank and repeated pictures dropped");
+        assert_eq!((tiles[0].source.as_str(), tiles[0].take.as_str()), ("https://linear.example/x", "row density"));
+        assert_eq!(q.options[1].tiles[0].reference, "ref-3");
+        // A board of nothing but words is no board; too many tiles are cut.
+        let words = questions_arg(&json!({ "questions": [{ "question": "?", "board": true, "options": ["a", "b"] }] })).unwrap();
+        assert!(words[0].board, "asked for, with options: kept");
+        assert!(!questions_arg(&json!({ "questions": [{ "question": "?", "board": true }] })).unwrap()[0].board);
+        let many: Vec<Value> = (0..20).map(|n| json!({ "image": format!("t{n}.png") })).collect();
+        let cut = questions_arg(&json!({ "questions": [{ "question": "?", "options": [{ "label": "a", "tiles": many }, "b"] }] })).unwrap();
+        assert_eq!(cut[0].options[0].tiles.len(), crate::protocol::decide::TILES);
+        // The schema offers both, and the description says what a board is.
+        let tool = tools(false).into_iter().find(|t| t["name"] == ASK_DECISION).unwrap();
+        let item = &tool["inputSchema"]["properties"]["questions"]["items"]["properties"];
+        assert_eq!(item["board"]["type"], "boolean");
+        assert_eq!(item["options"]["items"]["properties"]["tiles"]["items"]["required"], json!(["image"]));
+        assert!(tool["description"].as_str().unwrap().contains("taste choice"));
     }
 
     #[test]

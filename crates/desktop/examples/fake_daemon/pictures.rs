@@ -10,6 +10,10 @@
 //! drawn on the product's home screen (calm, bold, warm), every option with
 //! the aspects the person can mix — type, colour, shape.
 //!
+//! `FAKE_DECIDE=board`: the designer's taste board instead — three families
+//! of generated reference pictures (`taste.rs`), each tile with its source and
+//! what to take from it.
+//!
 //! `FAKE_DECIDE_CASE=<case>[,<case>…]` puts other logo questions to the
 //! person instead, one a step, for the grid's edge cases: `four` (the Gallery
 //! Y question — a picture of its own over four options, as a member once
@@ -27,7 +31,12 @@ use image::{Rgba, RgbaImage};
 
 /// Whether the logo decision (or the brand directions) and the brand hand-in are on.
 pub fn on() -> bool {
-    std::env::var("FAKE_DECIDE").is_ok_and(|v| v == "logo" || v == "brand")
+    std::env::var("FAKE_DECIDE").is_ok_and(|v| v == "logo" || v == "brand" || v == "board")
+}
+
+/// Whether the taste board is asked.
+fn board() -> bool {
+    std::env::var("FAKE_DECIDE").is_ok_and(|v| v == "board")
 }
 
 /// Whether the brand directions are asked, rather than the logo.
@@ -299,6 +308,7 @@ pub fn make() {
     let _ = std::fs::create_dir_all(&dir);
     make_cases(&dir);
     make_brand(&dir);
+    crate::taste::make(&dir);
     if dir.join("palette.png").exists() {
         return;
     }
@@ -410,6 +420,18 @@ fn case(name: &str) -> Option<Question> {
 pub fn question_set(now: u64) -> QuestionSet {
     let option = |label: &str, description: &str, image: &str| Choice { label: label.into(), description: description.into(), images: vec![at(image)], ..Choice::default() };
     let aspects = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+    if board() {
+        return QuestionSet {
+            id: 9003,
+            session: 4,
+            member: "designer".into(),
+            ticket: Some(150),
+            questions: vec![crate::taste::question(at)],
+            asked_at: now.saturating_sub(180),
+            review: false,
+            retro: None,
+        };
+    }
     if brand() {
         let direction = |label: &str, description: &str, image: &str| Choice { aspects: aspects(&["Type", "Colour", "Shape"]), ..option(label, description, image) };
         return QuestionSet {

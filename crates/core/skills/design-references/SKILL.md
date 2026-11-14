@@ -93,6 +93,23 @@ server or API when the squad has connected one; `equipe design component` pulls 
 restyle it to the project's tokens, and note its source and licence in the pattern's notes. Never paste a premium or
 paid component the squad hasn't licensed.
 
+## A taste board, when the person's taste is what you need
+
+When what you need is the person's taste — which direction, which family of products to be near — don't describe it
+in words and don't build full options yet: put a board to them. One `ask_decision` question with `board: true` and two
+or three clearly different families as its options (a dense tool in the manner of Linear, calm finance in the manner of
+Mercury, a data dashboard in the manner of Stripe), the one-line summary of each family as its `description`, and for
+each 6 to 12 `tiles` from your references. Every tile has its `image`, its `source` (the page's address) and a `take`
+line — what to take from it, concretely ("row density, one accent"). The families differ in concept, as options do.
+The person browses the pictures like a pinboard, likes the tiles that speak to them (as many as they like), picks a
+family and may add a note; the answer comes back as the family, the liked tiles (path, source, take) and the note.
+
+Record it in `design/decisions/<date>-<question>.md`: the family picked, each liked tile (its path and why it was
+liked, from its `take` and the person's note), and the families passed over. From then on the liked tiles are the
+strongest references you have: put them in the pattern's `notes.md` first, hold your work beside them and name them in
+`--reference` for the critic. A family picked with no tile liked is a direction, not yet a taste: ask for likes before
+you build much on it. Tiles are internal study material, like every reference: never copied into the product.
+
 ## When the baseline is below the bar
 
 A system the person accepted is locked, and that is good: day-to-day tickets build inside it, for consistency. What

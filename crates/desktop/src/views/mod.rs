@@ -63,6 +63,7 @@ pub mod sidebar;
 pub mod signin;
 pub mod side_chat;
 pub mod studio;
+pub mod taste;
 pub mod subagent;
 pub mod team;
 pub mod telemetry;

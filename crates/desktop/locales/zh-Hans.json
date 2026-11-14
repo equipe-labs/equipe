@@ -4256,5 +4256,22 @@
   "link.what_member": "{name}",
   "link.what_needs_you": "需要你处理",
   "link.what_status": "状态",
-  "link.what_ticket": "工单 T-{id}"
+  "link.what_ticket": "工单 T-{id}",
+  "taste.title": "品味板",
+  "taste.back": "返回",
+  "taste.back_tip": "返回问题",
+  "taste.gone": "这个问题已回答或已关闭。",
+  "taste.all": "全部",
+  "taste.pick_family": "选这一类",
+  "taste.family_picked": "已选",
+  "taste.picked_family": "已选：{family}",
+  "taste.like": "喜欢",
+  "taste.unlike": "取消喜欢",
+  "taste.liked": "已喜欢",
+  "taste.liked_count": "已喜欢 {count} 张",
+  "taste.tiles.other": "{count} 张图",
+  "taste.keys": "←→↑↓ 移动 · Space 喜欢 · ⏎ 打开 · P 选这一类 · 0–9 筛选 · ⌘⏎ 发送 · Esc 返回",
+  "taste.send": "发送",
+  "taste.open_board": "打开图板",
+  "taste.open_board_tip": "像钉板一样浏览图片：给喜欢的图点赞，再选一类"
 }

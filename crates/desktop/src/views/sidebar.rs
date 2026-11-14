@@ -2768,6 +2768,8 @@ impl Shell {
             Screen::Logins => self.open_logins(cx),
             Screen::Orchestration => self.open_orchestra(cx),
             Screen::Docs => self.open_docs(cx),
+            // A board belongs to the question it was opened from: back to where that is.
+            Screen::Taste => self.open_side(Side::Pm, window, cx),
             Screen::Studio => match place.ticket.or(self.studio.ticket) {
                 Some(id) => self.open_studio(id, window, cx),
                 None => self.open_side(Side::Pm, window, cx),

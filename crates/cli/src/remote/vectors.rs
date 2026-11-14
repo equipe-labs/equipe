@@ -663,6 +663,7 @@ fn questions() -> QuestionSet {
                 multi_select: false,
                 images: Vec::new(),
                 links: Vec::new(),
+                board: false,
             },
             Question {
                 question: "어떤 로그인을 먼저 낼까요?".into(),
@@ -671,6 +672,7 @@ fn questions() -> QuestionSet {
                 multi_select: true,
                 images: Vec::new(),
                 links: Vec::new(),
+                board: false,
             },
         ],
         asked_at: NOW / 1000,
@@ -700,6 +702,7 @@ fn visual_questions() -> QuestionSet {
             multi_select: false,
             images: Vec::new(),
             links: Vec::new(),
+            board: false,
         }],
         asked_at: NOW / 1000,
         review: false,
