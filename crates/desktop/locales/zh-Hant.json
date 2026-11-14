@@ -4256,5 +4256,22 @@
   "link.what_member": "{name}",
   "link.what_needs_you": "需要你處理",
   "link.what_status": "狀態",
-  "link.what_ticket": "工單 T-{id}"
+  "link.what_ticket": "工單 T-{id}",
+  "taste.title": "品味板",
+  "taste.back": "返回",
+  "taste.back_tip": "返回問題",
+  "taste.gone": "這個問題已回答或已關閉。",
+  "taste.all": "全部",
+  "taste.pick_family": "選這一類",
+  "taste.family_picked": "已選",
+  "taste.picked_family": "已選：{family}",
+  "taste.like": "喜歡",
+  "taste.unlike": "取消喜歡",
+  "taste.liked": "已喜歡",
+  "taste.liked_count": "已喜歡 {count} 張",
+  "taste.tiles.other": "{count} 張圖",
+  "taste.keys": "←→↑↓ 移動 · Space 喜歡 · ⏎ 開啟 · P 選這一類 · 0–9 篩選 · ⌘⏎ 傳送 · Esc 返回",
+  "taste.send": "傳送",
+  "taste.open_board": "開啟圖板",
+  "taste.open_board_tip": "像釘板一樣瀏覽圖片：替喜歡的圖按讚，再選一類"
 }

@@ -1329,6 +1329,8 @@ mod visuals;
 
 #[path = "fake_daemon/pictures.rs"]
 mod pictures;
+#[path = "fake_daemon/taste.rs"]
+mod taste;
 #[path = "fake_daemon/team.rs"]
 mod team;
 #[path = "fake_daemon/routine.rs"]

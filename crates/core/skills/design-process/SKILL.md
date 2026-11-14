@@ -68,6 +68,12 @@ they confirm it, correct it or remove it on the design screen. After each decisi
 `design/decisions/<date>-<question>.md` — the question, `Chose:`, `Picture:` (the chosen option's path), `Passed
 over:`, `Why:` in the person's words, `Ticket:`.
 
+When what you need is the person's taste itself (a direction, a family to be near), put it to them as a taste board
+rather than in words: one `ask_decision` question with `board: true`, two or three clearly different reference
+families as options, 6 to 12 `tiles` each, every tile with its source and a `take` line (`design-references` says
+how). Record their pick and their liked tiles in `design/decisions/` too, and use the liked tiles as the strongest
+references afterwards.
+
 Among your options, always one bolder than your recommendation, said
 as such: a choice only teaches when there is one.
 

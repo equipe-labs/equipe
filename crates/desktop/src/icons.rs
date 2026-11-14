@@ -11,7 +11,7 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     Chosen,
     [
-        ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CornerDownRight, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, Eye, FileText, Flag, Folder, Globe, Hand, Inbox, Info, Keyboard, Laptop, Lightbulb, Link, Locate, Lock, Maximize2, MessageSquare, Mic, Reply, Minimize2, Minus, Paperclip, Pencil, Pin, Play, Plug, Plus, RotateCcw, RotateCw, Search, Server, Settings, Compass, AppWindow, PenTool, Bug, ChartNoAxesColumn, Megaphone, ShieldCheck, Smartphone, Sparkles, SquareSlash, SquareTerminal, Ticket, Trash, TriangleAlert, Undo2, Users, X
+        ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CornerDownRight, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, Eye, FileText, Flag, Folder, Globe, Hand, Heart, Inbox, Info, Keyboard, Laptop, Lightbulb, Link, Locate, Lock, Maximize2, MessageSquare, Mic, Reply, Minimize2, Minus, Paperclip, Pencil, Pin, Play, Plug, Plus, RotateCcw, RotateCw, Search, Server, Settings, Compass, AppWindow, PenTool, Bug, ChartNoAxesColumn, Megaphone, ShieldCheck, Smartphone, Sparkles, SquareSlash, SquareTerminal, Ticket, Trash, TriangleAlert, Undo2, Users, X
     ]
 );
 
@@ -126,11 +126,13 @@ pub enum Icon {
     Trash,
     /// A link to share.
     Link,
+    /// A tile liked on a taste board.
+    Heart,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 71] = [
+    pub const ALL: [Icon; 72] = [
         Icon::ArrowDown,
         Icon::ArrowLeft,
         Icon::ArrowRight,
@@ -202,6 +204,7 @@ impl Icon {
         Icon::Eye,
         Icon::Trash,
         Icon::Link,
+        Icon::Heart,
     ];
 
     pub fn path(self) -> &'static str {
@@ -247,6 +250,7 @@ impl Icon {
             Icon::Eye => "icons/eye.svg",
             Icon::Trash => "icons/trash.svg",
             Icon::Link => "icons/link.svg",
+            Icon::Heart => "icons/heart.svg",
             Icon::Settings => "icons/settings.svg",
             Icon::Shield => "icons/shield-check.svg",
             Icon::Users => "icons/users.svg",

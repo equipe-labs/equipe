@@ -4256,5 +4256,22 @@
   "link.what_member": "{name}",
   "link.what_needs_you": "要確認",
   "link.what_status": "状況",
-  "link.what_ticket": "チケット T-{id}"
+  "link.what_ticket": "チケット T-{id}",
+  "taste.title": "テイストボード",
+  "taste.back": "戻る",
+  "taste.back_tip": "質問に戻る",
+  "taste.gone": "この質問はすでに回答済みか、閉じられました。",
+  "taste.all": "すべて",
+  "taste.pick_family": "この系統を選ぶ",
+  "taste.family_picked": "選択済み",
+  "taste.picked_family": "選択: {family}",
+  "taste.like": "お気に入り",
+  "taste.unlike": "お気に入りを外す",
+  "taste.liked": "お気に入り済み",
+  "taste.liked_count": "お気に入り {count} 件",
+  "taste.tiles.other": "画像 {count} 枚",
+  "taste.keys": "←→↑↓ 移動 · Space お気に入り · ⏎ 開く · P 系統を選ぶ · 0–9 絞り込み · ⌘⏎ 送信 · Esc 戻る",
+  "taste.send": "送信",
+  "taste.open_board": "ボードを開く",
+  "taste.open_board_tip": "ピンボードのように画像を眺めて、気に入ったものにハートを付け、系統を選びます"
 }

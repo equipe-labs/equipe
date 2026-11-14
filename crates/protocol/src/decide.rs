@@ -16,6 +16,42 @@ use serde::{Deserialize, Serialize};
 
 use crate::{SessionId, TicketId};
 
+/// One picture of a taste board's family: the picture itself, where it is
+/// from, and what to take from it. The person likes tiles one by one, so the
+/// member learns which details they meant, not just which family.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tile {
+    /// Its path on the daemon's machine.
+    pub image: String,
+    /// Where it is from: a page address or a name; screens show its host.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    /// What to take from it, in a line, in the person's language.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub take: String,
+    /// The id of the reference it is, when the designer keeps it among its
+    /// references; written back beside the path.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reference: String,
+}
+
+impl Tile {
+    /// The host of its source ("linear.app"), or its source as written when
+    /// that is no address.
+    pub fn host(&self) -> String {
+        let source = self.source.trim();
+        let Some((_, rest)) = source.split_once("://") else { return source.to_owned() };
+        let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+        host.trim_start_matches("www.").to_owned()
+    }
+}
+
+/// How many pictures a family of a taste board shows at most.
+pub const TILES: usize = 12;
+/// From this many pictures over its options, a visual question can be browsed
+/// as a board even when its member didn't ask for one.
+pub const BOARD_FROM: usize = 6;
+
 /// One option of a question: a short label, a line on what it means, and —
 /// a visual choice — the pictures of it (renders, mockups).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,9 +72,19 @@ pub struct Choice {
     /// not (and from an older daemon, whose labels may say it: [`recommended`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub recommended: bool,
+    /// A taste board's family: its pictures with their sources and what to
+    /// take from each; left out when none (and from an older daemon).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tiles: Vec<Tile>,
 }
 
 impl Choice {
+    /// What the board shows of this option: its tiles, else its plain
+    /// pictures as tiles without a source or a line.
+    pub fn board_tiles(&self) -> Vec<Tile> {
+        if self.tiles.is_empty() { self.images.iter().map(|image| Tile { image: image.clone(), ..Tile::default() }).collect() } else { self.tiles.clone() }
+    }
+
     /// Its label as shown, and whether it is the one recommended — by its
     /// mark, or (from before the mark) by its label's own words.
     pub fn shown(&self) -> (String, bool) {
@@ -88,6 +134,10 @@ pub struct Question {
     /// one in their words: [`Question::shown`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<crate::links::Link>,
+    /// Its options are families of a taste board to browse (a masonry of
+    /// pictures, liked one by one); left out when not (and from an older daemon).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub board: bool,
 }
 
 impl Question {
@@ -113,12 +163,18 @@ impl Question {
     /// Whether any option is shown as a picture: then the options are a
     /// grid of pictures rather than a list.
     pub fn is_visual(&self) -> bool {
-        self.options.iter().any(|c| !c.images.is_empty())
+        self.options.iter().any(|c| !c.images.is_empty() || !c.tiles.is_empty())
     }
 
-    /// Its own pictures, then each option's, in order.
+    /// Whether it can be browsed as a board: its member asked for one, an
+    /// option carries tiles, or there are pictures enough over its options.
+    pub fn wants_board(&self) -> bool {
+        self.board || self.options.iter().any(|c| !c.tiles.is_empty()) || (self.options.len() >= 2 && self.options.iter().map(|c| c.images.len()).sum::<usize>() >= BOARD_FROM)
+    }
+
+    /// Its own pictures, then each option's, then its tiles', in order.
     pub fn images(&self) -> impl Iterator<Item = &str> {
-        self.images.iter().chain(self.options.iter().flat_map(|c| &c.images)).map(String::as_str)
+        self.images.iter().chain(self.options.iter().flat_map(|c| &c.images)).chain(self.options.iter().flat_map(|c| c.tiles.iter().map(|t| &t.image))).map(String::as_str)
     }
 }
 
@@ -174,6 +230,17 @@ pub struct Answer {
     /// older screen).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reaction: Option<Reaction>,
+    /// A taste board's tiles the person liked, in the order they did; left
+    /// out for any other answer (and from an older screen).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub liked: Vec<Like>,
+}
+
+/// One tile liked: option `option`'s `tile`th.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Like {
+    pub option: usize,
+    pub tile: usize,
 }
 
 /// How the person reacted to a design choice's options, beyond a pick.
@@ -200,16 +267,16 @@ impl Answer {
     /// Option `base` with option `from`'s `aspect`: `base` is what is
     /// picked, so a reader that knows no mixes still sees the choice.
     pub fn mix(base: usize, from: usize, aspect: impl Into<String>) -> Self {
-        Self { picked: vec![base], other: None, reaction: Some(Reaction::Mix { base, from, aspect: aspect.into() }) }
+        Self { picked: vec![base], other: None, reaction: Some(Reaction::Mix { base, from, aspect: aspect.into() }), liked: Vec::new() }
     }
 
     /// None of these: another round, with why if they said.
     pub fn again(why: Option<String>) -> Self {
-        Self { picked: Vec::new(), other: why.map(|w| w.trim().to_owned()).filter(|w| !w.is_empty()), reaction: Some(Reaction::Again) }
+        Self { picked: Vec::new(), other: why.map(|w| w.trim().to_owned()).filter(|w| !w.is_empty()), reaction: Some(Reaction::Again), liked: Vec::new() }
     }
 
     pub fn is_skipped(&self) -> bool {
-        self.reaction.is_none() && self.picked.is_empty() && self.other.as_deref().is_none_or(|o| o.trim().is_empty())
+        self.reaction.is_none() && self.picked.is_empty() && self.liked.is_empty() && self.other.as_deref().is_none_or(|o| o.trim().is_empty())
     }
 }
 
@@ -233,6 +300,13 @@ const AGAIN: &str = "another round — none of these";
 /// What the member is told to do with a mix, and with another round.
 const MIX_THEN: &str = "For a mix: make it, and ask again with it beside the two it came from.";
 const AGAIN_THEN: &str = "For another round: bring options genuinely different from these, minding why.";
+/// What a taste board's answer says when only tiles were liked, and what the
+/// member is told to do with likes.
+const LIKED_ONLY: &str = "no family picked — liked tiles below";
+const LIKED_THEN: &str = "Liked tiles are the person's strongest references: record the pick and the likes in design/decisions/, and build from those tiles first.";
+/// What the line of liked tiles starts with: `   liked «Family»: path (source — take); …`.
+const LIKED_LINE: &str = "   liked «";
+const LIKED_AT: &str = "»: ";
 /// The first words of the message a set the person closed goes back in.
 pub const DISMISSED_HEAD: &str = "The person closed your question without answering";
 
@@ -261,7 +335,7 @@ fn one_line(text: &str) -> String {
 pub fn answer_message(set: &QuestionSet, answers: &[Answer]) -> String {
     let many = set.questions.len() > 1;
     let mut out = format!("{ANSWERS_HEAD}{}:", if many { "s" } else { "" });
-    let (mut mixed, mut again) = (false, false);
+    let (mut mixed, mut again, mut liked) = (false, false, false);
     for (n, q) in set.questions.iter().enumerate() {
         let answer = answers.get(n).cloned().unwrap_or_default();
         let labels: Vec<String> = answer.picked.iter().filter_map(|&i| q.options.get(i)).map(|c| one_line(&c.label)).collect();
@@ -275,6 +349,8 @@ pub fn answer_message(set: &QuestionSet, answers: &[Answer]) -> String {
             (true, _, Some(why)) => format!("{AGAIN}{NOTE}{why})"),
             (false, Some(mix), None) => mix,
             (false, Some(mix), Some(other)) => format!("{mix}{NOTE}{other})"),
+            (false, None, None) if labels.is_empty() && !answer.liked.is_empty() => LIKED_ONLY.to_owned(),
+            (false, None, Some(other)) if labels.is_empty() && !answer.liked.is_empty() => format!("{LIKED_ONLY}{NOTE}{other})"),
             (false, None, None) if labels.is_empty() => SKIPPED.to_owned(),
             (false, None, Some(other)) if labels.is_empty() => format!("{OWN}{other}"),
             (false, None, None) => labels.join(", "),
@@ -283,13 +359,51 @@ pub fn answer_message(set: &QuestionSet, answers: &[Answer]) -> String {
         mixed |= said.starts_with(MIX);
         again |= said.starts_with(AGAIN);
         out.push_str(&format!("\n{}) {} → {said}", n + 1, one_line(&q.question)));
+        for line in liked_lines(q, &answer.liked) {
+            out.push_str(&format!("\n{line}"));
+            liked = true;
+        }
     }
-    for (then, says) in [(mixed, MIX_THEN), (again, AGAIN_THEN)] {
+    for (then, says) in [(mixed, MIX_THEN), (again, AGAIN_THEN), (liked, LIKED_THEN)] {
         if then {
             out.push_str(&format!("\n{says}"));
         }
     }
     out
+}
+
+/// A tile as the member is told of it: its picture's path, the reference it
+/// is if any, and its source and what to take from it.
+fn tile_text(tile: &crate::decide::Tile) -> String {
+    let mut out = one_line(&tile.image);
+    if !tile.reference.trim().is_empty() {
+        out.push_str(&format!(" #{}", one_line(&tile.reference)));
+    }
+    let said: Vec<String> = [tile.host(), one_line(&tile.take)].into_iter().filter(|w| !w.is_empty()).collect();
+    if !said.is_empty() {
+        out.push_str(&format!(" ({})", said.join(" — ")));
+    }
+    out
+}
+
+/// The lines naming the tiles liked on question `q`, one per family, in the
+/// order each family was first liked: `   liked «Family»: path (source — take); …`.
+pub fn liked_lines(q: &Question, liked: &[Like]) -> Vec<String> {
+    let mut families: Vec<(usize, Vec<String>)> = Vec::new();
+    for like in liked {
+        let Some(option) = q.options.get(like.option) else { continue };
+        let Some(tile) = option.board_tiles().get(like.tile).cloned() else { continue };
+        let text = tile_text(&tile);
+        match families.iter_mut().find(|(o, _)| *o == like.option) {
+            Some((_, tiles)) => {
+                if !tiles.contains(&text) {
+                    tiles.push(text);
+                }
+            }
+            None => families.push((like.option, vec![text])),
+        }
+    }
+    families.into_iter().map(|(o, tiles)| format!("{LIKED_LINE}{}{LIKED_AT}{}", one_line(&recommended(&q.options[o].label).0), tiles.join("; "))).collect()
 }
 
 /// The message a set the person closed without answering goes back in.
@@ -314,6 +428,8 @@ pub struct Read {
     pub mix: Option<Mixed>,
     /// Another round asked for (why in `note`).
     pub again: bool,
+    /// The tiles of a taste board liked, each as written (path, source, line).
+    pub liked: Vec<String>,
 }
 
 /// A mix, read back: the two labels and the aspect, as written.
@@ -340,8 +456,15 @@ pub fn read_answers(message: &str) -> Option<Vec<Read>> {
     if !(head == format!("{ANSWERS_HEAD}:") || head == format!("{ANSWERS_HEAD}s:")) {
         return None;
     }
-    let mut out = Vec::new();
+    let mut out: Vec<Read> = Vec::new();
     for line in lines {
+        // The tiles liked on the question above.
+        if let Some(rest) = line.strip_prefix(LIKED_LINE) {
+            if let (Some(last), Some((_, tiles))) = (out.last_mut(), rest.split_once(LIKED_AT)) {
+                last.liked.extend(tiles.split("; ").map(str::to_owned));
+            }
+            continue;
+        }
         let digits = line.chars().take_while(char::is_ascii_digit).count();
         let Some(rest) = line[digits..].strip_prefix(") ").filter(|_| digits > 0) else { continue };
         let Some((question, said)) = rest.split_once(" → ") else { continue };
@@ -352,7 +475,7 @@ pub fn read_answers(message: &str) -> Option<Vec<Read>> {
             None => (said.strip_prefix(OWN).unwrap_or(said).to_owned(), None),
         };
         let (mix, again) = (read_mix(&answer), answer == AGAIN);
-        out.push(Read { question: question.to_owned(), answer, note, skipped, mix, again });
+        out.push(Read { question: question.to_owned(), answer, note, skipped, mix, again, liked: Vec::new() });
     }
     (!out.is_empty()).then_some(out)
 }
@@ -795,5 +918,76 @@ mod tests {
         assert_eq!(serde_json::from_value::<QuestionSet>(wire).unwrap(), s);
         assert!(s.questions[0].is_visual() && !s.questions[1].is_visual(), "a question's own picture alone doesn't make its options a grid");
         assert_eq!(s.images().collect::<Vec<_>>(), ["/w/t-144/now.png", "/w/t-144/a.png", "/w/t-144/a-dark.png", "/w/t-144/b.svg"]);
+    }
+
+    /// A taste board: two families, each a set of tiles with a source and what to take.
+    fn board() -> QuestionSet {
+        let tile = |name: &str, source: &str, take: &str| Tile { image: format!("/w/{name}.png"), source: source.into(), take: take.into(), reference: String::new() };
+        let mut s = set();
+        s.questions = vec![Question {
+            question: "Which direction?".into(),
+            board: true,
+            options: vec![
+                Choice { label: "Dense tool".into(), description: "Tight rows, keyboard first".into(), tiles: vec![tile("a1", "https://www.example.com/app/x?y=1", "row density"), tile("a2", "example.org", "command bar")], ..Default::default() },
+                Choice { label: "Calm finance".into(), tiles: vec![tile("b1", "", "quiet palette"), Tile { reference: "ref-7".into(), ..tile("b2", "https://calm.example/", "") }], ..Default::default() },
+            ],
+            ..Default::default()
+        }];
+        s
+    }
+
+    #[test]
+    fn a_board_carries_tiles_and_leaves_them_out_when_there_are_none() {
+        let s = board();
+        let wire = serde_json::to_value(&s).unwrap();
+        assert_eq!(wire["questions"][0]["board"], true);
+        assert_eq!(wire["questions"][0]["options"][0]["tiles"][0], json!({ "image": "/w/a1.png", "source": "https://www.example.com/app/x?y=1", "take": "row density" }));
+        assert!(wire["questions"][0]["options"][1]["tiles"][0].get("source").is_none(), "no source: left out");
+        assert_eq!(serde_json::from_value::<QuestionSet>(wire).unwrap(), s);
+        let plain = serde_json::to_value(set()).unwrap();
+        assert!(plain["questions"][0].get("board").is_none() && plain["questions"][0]["options"][0].get("tiles").is_none(), "the wire as before");
+        assert!(s.questions[0].wants_board() && s.questions[0].is_visual());
+        assert_eq!(s.images().collect::<Vec<_>>(), ["/w/a1.png", "/w/a2.png", "/w/b1.png", "/w/b2.png"], "tiles' pictures are fetched like any other");
+        assert_eq!(s.questions[0].options[0].tiles[0].host(), "example.com");
+        assert_eq!(s.questions[0].options[0].tiles[1].host(), "example.org", "a name stays as written");
+    }
+
+    #[test]
+    fn plain_pictures_become_a_board_only_when_asked_for_or_plentiful() {
+        let option = |n: usize| Choice { label: format!("o{n}"), images: (0..n).map(|i| format!("/w/{n}-{i}.png")).collect(), ..Default::default() };
+        let q = |options| Question { question: "?".into(), options, ..Default::default() };
+        assert!(!q(vec![option(2), option(2)]).wants_board(), "a few pictures stay a card");
+        assert!(q(vec![option(3), option(3)]).wants_board(), "six or more can be browsed");
+        assert!(Question { board: true, ..q(vec![option(1), option(1)]) }.wants_board());
+        let tiles = q(vec![option(2), option(1)]).options[0].board_tiles();
+        assert_eq!((tiles.len(), tiles[0].image.as_str(), tiles[0].source.as_str()), (2, "/w/2-0.png", ""));
+    }
+
+    #[test]
+    fn liked_tiles_go_back_with_the_family_picked_and_the_note() {
+        let mut likes = Answer::pick(0);
+        likes.other = Some("denser than that, please".into());
+        likes.liked = vec![Like { option: 0, tile: 1 }, Like { option: 1, tile: 1 }, Like { option: 0, tile: 0 }, Like { option: 0, tile: 1 }, Like { option: 9, tile: 0 }];
+        let message = answer_message(&board(), &[likes.clone()]);
+        assert_eq!(
+            message,
+            "Answers to your question:\n\
+             1) Which direction? → Dense tool (+ note: denser than that, please)\n   \
+             liked «Dense tool»: /w/a2.png (example.org — command bar); /w/a1.png (example.com — row density)\n   \
+             liked «Calm finance»: /w/b2.png #ref-7 (calm.example)\n\
+             Liked tiles are the person's strongest references: record the pick and the likes in design/decisions/, and build from those tiles first."
+        );
+        let read = read_answers(&message).unwrap();
+        assert_eq!(read.len(), 1, "the liked lines and the closing line aren't answers");
+        assert_eq!((read[0].answer.as_str(), read[0].note.as_deref()), ("Dense tool", Some("denser than that, please")));
+        assert_eq!(read[0].liked, ["/w/a2.png (example.org — command bar)", "/w/a1.png (example.com — row density)", "/w/b2.png #ref-7 (calm.example)"]);
+        // Only likes: not a skip.
+        let only = Answer { liked: vec![Like { option: 1, tile: 0 }], ..Default::default() };
+        assert!(!only.is_skipped());
+        let message = answer_message(&board(), &[only]);
+        assert!(message.contains("→ no family picked — liked tiles below\n   liked «Calm finance»: /w/b1.png (quiet palette)"), "{message}");
+        // The wire of an answer without likes is as before.
+        assert_eq!(serde_json::to_value(Answer::pick(1)).unwrap(), json!({ "picked": [1] }));
+        assert_eq!(serde_json::from_value::<Answer>(serde_json::to_value(&likes).unwrap()).unwrap(), likes);
     }
 }

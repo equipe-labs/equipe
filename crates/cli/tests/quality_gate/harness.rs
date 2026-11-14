@@ -469,10 +469,10 @@ impl Run {
                         .iter()
                         .map(|q| {
                             if q.options.is_empty() {
-                                Answer { picked: vec![], other: Some("No preference — use your judgement.".into()), reaction: None }
+                                Answer { picked: vec![], other: Some("No preference — use your judgement.".into()), reaction: None, liked: Vec::new() }
                             } else {
                                 let pick = q.options.iter().position(|o| o.shown().1).unwrap_or(0);
-                                Answer { picked: vec![pick], other: None, reaction: None }
+                                Answer { picked: vec![pick], other: None, reaction: None, liked: Vec::new() }
                             }
                         })
                         .collect();

@@ -647,6 +647,8 @@ pub enum Owner {
     Ticket(TicketId),
     /// The pictures of one row of the conversation: those it embeds, then its folders'.
     Reply(u64),
+    /// A taste board's tiles: set and question; a like or a pick from here is the person's.
+    Board { set: u64, step: usize },
 }
 
 /// One picture of the big view, and what it is.
@@ -657,6 +659,10 @@ pub struct Item {
     pub choice: Option<usize>,
     /// What it is called: the option's label, or the file's name.
     pub label: String,
+    /// A board's tile, by index in its option.
+    pub tile: Option<usize>,
+    /// Where it is from and what to take from it (a board's tile).
+    pub note: String,
 }
 
 /// How far the big view is zoomed in on its picture, and where: 1 is the
@@ -743,8 +749,8 @@ pub fn name_of(path: &str) -> &str {
 impl Viewer {
     /// A question's pictures — its own, then each option's — open at `path`.
     pub fn of_question(set: u64, step: usize, q: &Question, path: &str) -> Option<Self> {
-        let own = q.images.iter().map(|p| Item { path: p.clone(), choice: None, label: name_of(p).to_owned() });
-        let options = q.options.iter().enumerate().flat_map(|(n, c)| c.images.iter().map(move |p| Item { path: p.clone(), choice: Some(n), label: recommended(&c.label).0 }));
+        let own = q.images.iter().map(|p| Item { path: p.clone(), choice: None, label: name_of(p).to_owned(), tile: None, note: String::new() });
+        let options = q.options.iter().enumerate().flat_map(|(n, c)| c.images.iter().map(move |p| Item { path: p.clone(), choice: Some(n), label: recommended(&c.label).0, tile: None, note: String::new() }));
         let items: Vec<Item> = own.chain(options).collect();
         let at = items.iter().position(|i| i.path == path)?;
         Some(Self { owner: Owner::Decision { set, step }, items, at })
@@ -752,7 +758,7 @@ impl Viewer {
 
     /// A hand-in's pictures, open at `path`.
     pub fn of_ticket(id: TicketId, images: &[String], path: &str) -> Option<Self> {
-        let items: Vec<Item> = images.iter().map(|p| Item { path: p.clone(), choice: None, label: name_of(p).to_owned() }).collect();
+        let items: Vec<Item> = images.iter().map(|p| Item { path: p.clone(), choice: None, label: name_of(p).to_owned(), tile: None, note: String::new() }).collect();
         let at = items.iter().position(|i| i.path == path)?;
         Some(Self { owner: Owner::Ticket(id), items, at })
     }
@@ -763,11 +769,27 @@ impl Viewer {
         for (p, label) in pictures {
             if !items.iter().any(|i| i.path == *p) {
                 let label = if label.trim().is_empty() { name_of(p).to_owned() } else { label.clone() };
-                items.push(Item { path: p.clone(), choice: None, label });
+                items.push(Item { path: p.clone(), choice: None, label, tile: None, note: String::new() });
             }
         }
         let at = items.iter().position(|i| i.path == path)?;
         Some(Self { owner: Owner::Reply(row), items, at })
+    }
+
+    /// A board's tiles, `order` as they are on show (a filtered board shows
+    /// one family's), open at tile `at` — `(option, tile)`.
+    pub fn of_board(set: u64, step: usize, q: &Question, order: &[(usize, usize)], at: (usize, usize)) -> Option<Self> {
+        let items: Vec<Item> = order
+            .iter()
+            .filter_map(|&(option, tile)| {
+                let choice = q.options.get(option)?;
+                let t = choice.board_tiles().get(tile)?.clone();
+                let note = [t.host(), t.take.clone()].into_iter().filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" · ");
+                Some(Item { path: t.image, choice: Some(option), label: recommended(&choice.label).0, tile: Some(tile), note })
+            })
+            .collect();
+        let at = items.iter().position(|i| (i.choice, i.tile) == (Some(at.0), Some(at.1)))?;
+        Some(Self { owner: Owner::Board { set, step }, items, at })
     }
 
     pub fn item(&self) -> &Item {
@@ -794,6 +816,36 @@ impl Viewer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_big_view_of_a_board_goes_through_the_tiles_on_show_and_says_where_each_is_from() {
+        use equipe_core::protocol::decide::{Choice, Tile};
+        let tile = |n: &str, source: &str, take: &str| Tile { image: format!("/w/{n}.png"), source: source.into(), take: take.into(), reference: String::new() };
+        let q = Question {
+            question: "Which?".into(),
+            board: true,
+            options: vec![
+                Choice { label: "Dense (Recommended)".into(), tiles: vec![tile("a", "https://www.dense.example/x", "tight rows"), tile("b", "", "")], ..Choice::default() },
+                Choice { label: "Calm".into(), images: vec!["/w/c.png".into()], ..Choice::default() },
+            ],
+            ..Question::default()
+        };
+        // All three, in order: a family's plain pictures count as tiles too.
+        let order = [(0, 0), (0, 1), (1, 0)];
+        let mut v = Viewer::of_board(9, 0, &q, &order, (0, 1)).expect("opens");
+        assert_eq!((v.items.len(), v.at, v.owner.clone()), (3, 1, Owner::Board { set: 9, step: 0 }));
+        assert_eq!((v.item().label.as_str(), v.item().tile, v.item().choice), ("Dense", Some(1), Some(0)));
+        v.step(false);
+        assert_eq!((v.item().path.as_str(), v.item().note.as_str()), ("/w/a.png", "dense.example · tight rows"), "host without www, then what to take");
+        v.step(false);
+        assert_eq!((v.item().path.as_str(), v.item().label.as_str(), v.item().note.as_str()), ("/w/c.png", "Calm", ""), "round the ends");
+        // A filtered board shows one family's: ←/→ stay in it.
+        let one = Viewer::of_board(9, 0, &q, &[(1, 0)], (1, 0)).unwrap();
+        assert_eq!(one.items.len(), 1);
+        // A tile that isn't on show can't be opened.
+        assert!(Viewer::of_board(9, 0, &q, &[(1, 0)], (0, 0)).is_none());
+        assert!(Viewer::of_board(9, 0, &q, &[(5, 5)], (5, 5)).is_none());
+    }
 
     #[test]
     fn a_short_card_shows_a_whole_row_of_smaller_tiles_rather_than_cut_captions() {

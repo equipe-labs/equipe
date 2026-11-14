@@ -69,6 +69,7 @@ mod snapshot;
 mod state;
 mod stream;
 mod studio;
+mod taste;
 mod target;
 mod theme;
 mod routine;
@@ -248,6 +249,8 @@ pub enum Screen {
     Docs,
     /// The designer studio: a ticket's design work, watched as it happens (`views/studio.rs`).
     Studio,
+    /// A taste board: a decision's families of references, browsed like a pinboard (`views/taste.rs`).
+    Taste,
 }
 
 pub struct Shell {
@@ -317,6 +320,8 @@ pub struct Shell {
     pub status: status::StatusUi,
     /// Taste & decisions' box for a note.
     pub design_taste: views::design_taste::Inputs,
+    /// The taste board of a decision, when one is open.
+    pub taste: views::taste::TasteUi,
     /// The shared Chrome, live, beside the conversation (⌘⇧B).
     pub browser: Entity<BrowserPanel>,
     /// The terminal at the right, while one runs.
@@ -543,6 +548,7 @@ impl Shell {
             metrics_ui: Default::default(),
             status: Default::default(),
             design_taste: Default::default(),
+            taste: Default::default(),
             browser,
             terminal: None,
             term_offered: None,
@@ -837,6 +843,15 @@ impl Shell {
             if this.update(cx, |shell, cx| shell.on_viewer_key(key, &modifiers, window, cx)).unwrap_or(false) {
                 cx.stop_propagation();
                 return;
+            }
+            // A taste board on screen: arrows, Space, ⏎, P, digits, ⌘⏎, Esc — and its note's typing.
+            match this.update(cx, |shell, cx| shell.on_taste_key(key, &modifiers, window, cx)).unwrap_or(views::decide::Took::Pass) {
+                views::decide::Took::Taken => {
+                    cx.stop_propagation();
+                    return;
+                }
+                views::decide::Took::Typing => return,
+                views::decide::Took::Pass => {}
             }
             // Renaming the conversation: ⏎ saves, Esc puts the card away (a composition's first).
             match this.update(cx, |shell, cx| shell.on_rename_key(key, &modifiers, window, cx)).unwrap_or(views::decide::Took::Pass) {
@@ -2165,6 +2180,7 @@ impl Shell {
                     Screen::Orchestration => views::orchestra::render(self, cx),
                     Screen::Docs => views::docs::render(self, cx),
                     Screen::Studio => views::studio::render(self, cx),
+                    Screen::Taste => views::taste::render(self, cx),
                 };
                 v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).children(views::desktop_setup::banner(self, cx)).children(views::usage::banner(self, cx)).child(screen).into_any_element()
             }
