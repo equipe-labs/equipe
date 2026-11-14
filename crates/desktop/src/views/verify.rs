@@ -41,6 +41,8 @@ pub struct VerifyUi {
     /// The person's own OAuth client, for a build without one: its two boxes.
     pub client_id: Option<Entity<InputState>>,
     pub client_secret: Option<Entity<InputState>>,
+    /// Google's redirect brought back to the daemon's Mac over SSH, while connecting from another Mac.
+    pub tunnel: Option<crate::tunnel::Tunnel>,
 }
 
 impl VerifyUi {
@@ -173,13 +175,42 @@ impl Shell {
         if let Some(why) = error {
             self.verify.connecting = false;
             self.verify.connect_error = Some(why.to_owned());
+            if let Some(tunnel) = self.verify.tunnel.take() {
+                std::thread::spawn(move || tunnel.close());
+            }
         }
         if let Some(url) = url
             && self.verify.connecting
             && url.starts_with("https://accounts.google.com/")
             && !cfg!(feature = "snapshot")
         {
-            cx.open_url(url);
+            // Google comes back to a listener on the daemon's Mac: from another
+            // Mac, its port is forwarded there first (`crate::tunnel`), for as
+            // long as connecting may take.
+            let route = equipe_core::cli_signin::route(url, self.endpoint.is_remote(), true, false);
+            match (route, &self.endpoint) {
+                (equipe_core::cli_signin::Route::Forward(port), crate::target::Endpoint::Ssh(host)) => {
+                    let (host, url) = (host.clone(), url.to_owned());
+                    let opened = cx.background_spawn(async move { crate::tunnel::open(&host, port) });
+                    cx.spawn(async move |this, cx| {
+                        let opened = opened.await;
+                        let _ = this.update(cx, |this, cx| {
+                            if let Ok(tunnel) = opened {
+                                this.verify.tunnel = Some(tunnel);
+                            }
+                            cx.open_url(&url);
+                        });
+                        cx.background_executor().timer(std::time::Duration::from_secs(6 * 60)).await;
+                        let _ = this.update(cx, |this, _| {
+                            if let Some(tunnel) = this.verify.tunnel.take() {
+                                std::thread::spawn(move || tunnel.close());
+                            }
+                        });
+                    })
+                    .detach();
+                }
+                _ => cx.open_url(url),
+            }
         }
         cx.notify();
     }

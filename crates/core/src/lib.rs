@@ -76,6 +76,8 @@ pub mod routines;
 pub mod secrets;
 pub mod cli_signin;
 pub mod squad_mcp;
+pub mod mcp_gateway;
+pub mod mcp_oauth;
 pub mod side_chat;
 pub mod signal_sources;
 pub mod signals;

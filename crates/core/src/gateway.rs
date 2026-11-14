@@ -315,6 +315,8 @@ async fn serve_client(
     // A screen with a browser panel, counted while it is attached.
     let mut panel_screen: Option<std::sync::Arc<crate::browser::Hub>> = None;
     let mut view_screen: Option<std::sync::Arc<crate::browser::Hub>> = None;
+    // An outside MCP server's proxy on this connection: where its messages go.
+    let mut proxy: Option<mpsc::UnboundedSender<serde_json::Value>> = None;
     loop {
         // A screen let go for reading too slowly is done with, whatever it sends.
         let line = tokio::select! {
@@ -429,6 +431,50 @@ async fn serve_client(
                     let result = core.tool(call).await;
                     let _ = out.send(Message::response(id, result));
                 });
+            }
+            (Some(rpc::MCP_PROXY), Some(id)) => {
+                let Some(open) = message.params_as::<rpc::McpProxyOpen>() else {
+                    let _ = out_tx.send(Message::failure(id, -32602, "mcp_proxy needs { squad, server, member }"));
+                    continue;
+                };
+                // Checked first: a server this member doesn't get is refused here.
+                if let Err(why) = core.mcp_upstream(&open, None).await {
+                    let _ = out_tx.send(Message::failure(id, -32000, why));
+                    continue;
+                }
+                let (to_server, from_client) = mpsc::unbounded_channel::<serde_json::Value>();
+                let (to_client, mut from_server) = mpsc::unbounded_channel::<serde_json::Value>();
+                proxy = Some(to_server);
+                let ask: crate::mcp_gateway::Ask = {
+                    let (core, open) = (core.clone(), open.clone());
+                    std::sync::Arc::new(move |rejected| {
+                        let (core, open) = (core.clone(), open.clone());
+                        Box::pin(async move { core.mcp_upstream(&open, rejected).await })
+                    })
+                };
+                let tell: crate::mcp_gateway::Tell = {
+                    let (core, open) = (core.clone(), open.clone());
+                    std::sync::Arc::new(move |seen| core.mcp_seen(&open, seen))
+                };
+                let on_call: std::sync::Arc<dyn Fn(&str) + Send + Sync> = {
+                    let open = open.clone();
+                    std::sync::Arc::new(move |tool: &str| crate::daemon_log!("equipe: {}/{} called {}'s tool {tool}", open.squad, open.member, open.server))
+                };
+                tokio::spawn(crate::mcp_gateway::serve(crate::mcp_gateway::client(), ask, tell, from_client, to_client, on_call));
+                let out = out_tx.clone();
+                tokio::spawn(async move {
+                    while let Some(message) = from_server.recv().await {
+                        if out.send(Message::notification(rpc::MCP_PROXY_RECV, rpc::McpProxyMessage { message })).is_err() {
+                            break;
+                        }
+                    }
+                });
+                let _ = out_tx.send(Message::response(id, true));
+            }
+            (Some(rpc::MCP_PROXY_SEND), _) => {
+                if let (Some(to_server), Some(sent)) = (&proxy, message.params_as::<rpc::McpProxyMessage>()) {
+                    let _ = to_server.send(sent.message);
+                }
             }
             (Some(rpc::VERSION), Some(id)) => {
                 let _ = out_tx.send(Message::response(id, rpc::Version { version: version.clone(), protocol: rpc::PROTOCOL }));

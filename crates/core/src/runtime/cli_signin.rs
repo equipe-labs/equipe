@@ -106,6 +106,7 @@ impl Runtime {
             who: None,
             detail: None,
             at: now_secs(),
+            server: None,
         };
         let card_id = card.id;
         self.cli_signins(squad).push(Live { card, kind: asked.kind, plan, run: 0, codes: None, task: None, approving: None, server: None });
@@ -149,12 +150,27 @@ or end your turn saying in a line what you're waiting for.",
             who: None,
             detail: None,
             at: now_secs(),
+            server: None,
         };
+        let card = CliSignIn { server: Some(server.to_owned()), ..card };
         let card_id = card.id;
         self.cli_signins(squad).push(Live { card, kind, plan, run: 0, codes: None, task: None, approving: None, server: Some(server.to_owned()) });
         self.run_cli_sign_in(squad, card_id);
         self.publish_card(squad, card_id);
+        crate::daemon_log!("equipe: {squad}: a sign-in card for the outside MCP server {server} on {} is up", kind.name());
         card_id
+    }
+
+    /// The person asked again for outside server `server`'s sign-in on
+    /// `kind`'s engine while its card is up: the card is sent again (a screen
+    /// puts it back in front of them), started over where it had ended.
+    pub(super) fn reshow_mcp_card(&mut self, squad: &str, server: &str, kind: Kind) {
+        let Some((id, phase)) = self.cli_signins(squad).iter().find(|l| l.kind == kind && l.server.as_deref() == Some(server)).map(|l| (l.card.id, l.card.phase)) else { return };
+        if matches!(phase, Phase::Expired | Phase::Failed) {
+            self.restart_cli_sign_in(squad, id);
+        } else {
+            self.publish_card(squad, id);
+        }
     }
 
     /// The sign-in cards for outside server `server`, taken away (it left the squad).
@@ -177,6 +193,29 @@ or end your turn saying in a line what you're waiting for.",
         let (run, kind, plan) = (live.run, live.kind, live.plan.clone());
         let (tx, rx) = mpsc::unbounded_channel();
         live.codes = Some(tx);
+        // equipe's own sign-in to an outside MCP server: no tool runs.
+        if kind == Kind::EquipeMcp {
+            let server = live.server.clone().unwrap_or_default();
+            let (url, sse) = self.mcp_url_of(squad, &server).unwrap_or_default();
+            let store = self.mcp_store();
+            let Some(live) = self.cli_signins(squad).iter_mut().find(|l| l.card.id == id) else { return };
+            live.task = Some(tokio::spawn(async move {
+                let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(15)).timeout(Duration::from_secs(30)).build().unwrap_or_default();
+                let seen = {
+                    let (internal, squad) = (internal.clone(), squad_s.clone());
+                    move |page: &str| {
+                        let _ = internal.send(Internal::CliSignIn(Note::Seen { squad: squad.clone(), id, run, url: Some(page.to_owned()), code: None }));
+                    }
+                };
+                let outcome = match crate::mcp_oauth::sign_in(&http, store, &squad_s, &server, &url, sse, cs::WAIT, rx, seen).await {
+                    crate::mcp_oauth::Ended::Done => Outcome::Done,
+                    crate::mcp_oauth::Ended::Expired => Outcome::Expired,
+                    crate::mcp_oauth::Ended::Failed(why) => Outcome::Failed(why),
+                };
+                let _ = internal.send(Internal::CliSignIn(Note::Ended { squad: squad_s, id, run, outcome, who: None }));
+            }));
+            return;
+        }
         live.task = Some(tokio::spawn(async move {
             let seen = {
                 let (internal, squad) = (internal.clone(), squad_s.clone());
@@ -249,6 +288,9 @@ or end your turn saying in a line what you're waiting for.",
                 }
                 let card = live.card.clone();
                 let server = live.server.clone();
+                if let Some(name) = &server {
+                    crate::daemon_log!("equipe: {squad}: the sign-in to the outside MCP server {name} ended: {:?}{}", card.phase, card.detail.as_deref().map(|d| format!(" ({d})")).unwrap_or_default());
+                }
                 if let Some(cli) = approving {
                     self.device_card_ended(cli);
                 }

@@ -1871,6 +1871,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                         who: (kind == "done").then(|| "arn:aws:iam::123456789012:user/atinum-admin".to_owned()),
                                         detail: None,
                                         at: 0,
+                                        server: None,
                                     }]
                                 }
                                 _ => Vec::new(),

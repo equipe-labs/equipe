@@ -3,11 +3,10 @@
 //! each, and how each engine on the daemon's machine reaches it.
 //!
 //! Nothing here is a credential. Who holds a server's credential is its
-//! [`McpAuth`]: the engine's own command-line tool (`claude mcp login`, `codex
-//! mcp login`), which keeps an OAuth token in its own store and equipe only
-//! knows whether that tool says the server is connected; or an API key the
-//! person saved in the squad's secret store, which only the daemon reads, at
-//! a member's launch — referred to here by the key's name, never its value.
+//! [`McpAuth`]: equipe itself (its own OAuth sign-in, the tokens in the
+//! squad's secret store), an API key the person saved there, or — a
+//! fallback for a server that won't let other apps sign in — the engine's
+//! own command-line tool. Keys are referred to by name, never by value.
 
 use serde::{Deserialize, Serialize};
 
@@ -50,26 +49,36 @@ impl McpTransport {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum McpAuth {
-    /// The engine's own OAuth sign-in (or none needed): the engine's CLI
-    /// signs in and keeps the token; equipe never sees it.
+    /// equipe's own connection (the default, and what a record from before
+    /// it reads as): no credential when the server asks for none, else
+    /// equipe's own OAuth sign-in — the person signs in once, to equipe,
+    /// which keeps and refreshes the tokens in the squad's secret store.
+    /// Every member, whatever its engine, gets the server through equipe's
+    /// proxy (`equipe mcp proxy`), which never holds the token.
     #[default]
-    Engine,
+    Oauth,
     /// An API key the person saved in the squad's secret store under
-    /// `secret`, sent to the server as the header `header`: put into the
-    /// member's engine config by the daemon at launch, out of the member's reach.
+    /// `secret`, sent to the server as the header `header` by equipe's proxy.
     Key { secret: String, header: String },
-    /// equipe-managed OAuth, for an engine that can't sign in itself (a
-    /// plain model API with no agent harness): equipe runs the sign-in, keeps
-    /// the access and refresh tokens in the secret store under `secret`,
-    /// refreshes them, and serves the member the server's tools through a
-    /// local proxy of its own, so the member never holds a token. Not
-    /// available yet: see docs/LOGINS.md, "Outside MCP servers".
-    Gateway { secret: String },
+    /// The fallback for a server that won't let other apps sign in: each
+    /// engine's own command-line tool signs in (`claude mcp login`, `codex
+    /// mcp login`) and keeps the token; members get the server's address.
+    Engine,
 }
 
 impl McpAuth {
+    /// The default: said by saying nothing.
+    pub fn is_default(&self) -> bool {
+        *self == Self::Oauth
+    }
+
     pub fn is_engine(&self) -> bool {
         *self == Self::Engine
+    }
+
+    /// Reached through equipe's proxy (its own sign-in, or a kept key).
+    pub fn proxied(&self) -> bool {
+        !self.is_engine()
     }
 }
 
@@ -91,7 +100,7 @@ pub struct McpServer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog: Option<String>,
     /// Who holds its credential.
-    #[serde(default, skip_serializing_if = "McpAuth::is_engine")]
+    #[serde(default, skip_serializing_if = "McpAuth::is_default")]
     pub auth: McpAuth,
 }
 
@@ -104,6 +113,12 @@ impl McpServer {
     pub fn serves(&self, role: &str) -> bool {
         self.roles.is_empty() || self.roles.iter().any(|r| r.eq_ignore_ascii_case(role))
     }
+
+    /// Whether a member on `engine` can be given it: through equipe's proxy
+    /// every engine can; the engine-signed fallback only over a transport the engine speaks.
+    pub fn reaches(&self, engine: Engine) -> bool {
+        self.auth.proxied() || self.transport.on(engine)
+    }
 }
 
 /// Where a server stands on one engine, as that engine's own tool said.
@@ -115,8 +130,10 @@ pub enum McpState {
     Unchecked,
     /// Reached, its tools listed (or no sign-in needed).
     Connected,
-    /// It wants the person signed in first.
+    /// It wants the person signed in first (the engine's own OAuth sign-in).
     NeedsSignIn,
+    /// Its API key isn't saved yet ([`McpAuth::Key`]): the key card, never a sign-in.
+    NeedsKey,
     /// It could not be reached (`detail` says why).
     #[serde(other)]
     Failing,
@@ -144,11 +161,13 @@ pub struct McpServerStatus {
 }
 
 impl McpServerStatus {
-    /// What a screen shows in one word: needs sign-in where any engine does,
+    /// What a screen shows in one word: needs its key, else needs sign-in where any engine does,
     /// else failing where any does, else connected once one said so.
     pub fn overall(&self) -> McpState {
         let any = |s: McpState| self.engines.iter().any(|e| e.state == s);
-        if any(McpState::NeedsSignIn) {
+        if any(McpState::NeedsKey) {
+            McpState::NeedsKey
+        } else if any(McpState::NeedsSignIn) {
             McpState::NeedsSignIn
         } else if any(McpState::Failing) {
             McpState::Failing
@@ -171,8 +190,15 @@ mod tests {
 
     #[test]
     fn a_server_round_trips_and_old_or_short_records_read_with_defaults() {
-        let server = McpServer { name: "mobbin".into(), url: "https://api.mobbin.com/mcp".into(), transport: McpTransport::Http, roles: vec!["designer".into(), "frontend".into()], enabled: true, catalog: Some("mobbin".into()), auth: McpAuth::Engine };
-        assert!(!serde_json::to_string(&server).unwrap().contains("auth"), "the engine's own sign-in: said by saying nothing");
+        let server = McpServer { name: "mobbin".into(), url: "https://api.mobbin.com/mcp".into(), transport: McpTransport::Http, roles: vec!["designer".into(), "frontend".into()], enabled: true, catalog: Some("mobbin".into()), auth: McpAuth::Oauth };
+        assert!(!serde_json::to_string(&server).unwrap().contains("auth"), "equipe's own connection: said by saying nothing");
+        // A record from before equipe signed in itself reads as equipe's own connection: it moves to the proxy.
+        let old: McpServer = serde_json::from_str(r#"{"name":"mobbin","url":"https://api.mobbin.com/mcp"}"#).unwrap();
+        assert_eq!(old.auth, McpAuth::Oauth);
+        let engine = McpServer { auth: McpAuth::Engine, ..server.clone() };
+        assert!(serde_json::to_string(&engine).unwrap().contains(r#""auth":{"kind":"engine"}"#));
+        assert!(server.reaches(Engine::Codex) && McpServer { transport: McpTransport::Sse, ..server.clone() }.reaches(Engine::Codex), "through the proxy, every engine");
+        assert!(!McpServer { transport: McpTransport::Sse, ..engine.clone() }.reaches(Engine::Codex));
         let keyed = McpServer { auth: McpAuth::Key { secret: "21st-api-key".into(), header: "x-api-key".into() }, ..server.clone() };
         let text = serde_json::to_string(&keyed).unwrap();
         assert!(text.contains(r#""auth":{"kind":"key","secret":"21st-api-key","header":"x-api-key"}"#), "{text}");
@@ -196,5 +222,7 @@ mod tests {
         assert_eq!(status(&[McpState::Connected, McpState::Failing]).overall(), McpState::Failing);
         assert_eq!(status(&[McpState::Connected]).overall(), McpState::Connected);
         assert_eq!(status(&[]).overall(), McpState::Unchecked);
+        assert_eq!(status(&[McpState::NeedsKey]).overall(), McpState::NeedsKey);
+        assert_eq!(serde_json::to_string(&McpState::NeedsKey).unwrap(), "\"needs_key\"");
     }
 }

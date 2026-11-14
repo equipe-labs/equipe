@@ -7,9 +7,17 @@
 //! Mac; what is pasted here goes straight to the waiting process and is
 //! cleared from the box at once — never into a conversation, never to a
 //! member.
+//!
+//! An outside MCP server's sign-in (equipe's own, `equipe_mcp`) ends with the
+//! page redirecting to the daemon's loopback address. With the daemon on
+//! another Mac, "Open sign-in page" first forwards that port over the SSH
+//! connection (`crate::tunnel`) — else opens the page in the daemon's own
+//! browser, in the browser panel — else here, the paste box catching the
+//! address it ended on (`equipe_core::cli_signin::route`).
 
 use std::collections::{HashMap, HashSet};
 
+use equipe_core::cli_signin::Route;
 use equipe_core::protocol::Command;
 use equipe_core::protocol::cli_signin::{CliSignIn, PastedCode, Phase};
 use equipe_core::t;
@@ -30,6 +38,12 @@ pub struct CliSignInUi {
     subscriptions: HashMap<u64, Subscription>,
     /// Cards whose link was copied (shown "Copied").
     copied: HashSet<u64>,
+    /// How each card's page was opened, once it was.
+    pub routes: HashMap<u64, Route>,
+    /// Cards whose page waits for its tunnel to the daemon's Mac.
+    pub tunneling: HashSet<u64>,
+    /// The tunnels up, by card: taken down when the card ends.
+    tunnels: HashMap<u64, crate::tunnel::Tunnel>,
 }
 
 impl CliSignInUi {
@@ -59,9 +73,25 @@ pub fn where_note(remote: bool, machine: &str, wants_code: bool) -> String {
     }
 }
 
-/// An outside MCP server's sign-in (the engine's own `mcp login`), as opposed to a CLI tool's.
+/// An outside MCP server's sign-in (equipe's own, or the engine's own `mcp login`), as opposed to a CLI tool's.
 pub fn is_mcp(card: &CliSignIn) -> bool {
     card.tool.ends_with("_mcp")
+}
+
+/// equipe's own sign-in to an outside MCP server, for every engine.
+pub fn is_equipe(card: &CliSignIn) -> bool {
+    card.tool == "equipe_mcp"
+}
+
+/// equipe's own sign-in's note: where it runs, and — from another Mac —
+/// how the page's last step gets back there (`route`, once it was opened).
+pub fn equipe_note(remote: bool, machine: &str, route: Option<Route>) -> String {
+    match (remote, route) {
+        (false, _) => t!("cli_signin.equipe_note_local").to_string(),
+        (true, Some(Route::Forward(_))) => t!("cli_signin.equipe_note_tunnel", machine = machine).to_string(),
+        (true, Some(Route::Panel)) => t!("cli_signin.equipe_note_panel", machine = machine).to_string(),
+        (true, _) => t!("cli_signin.equipe_note_paste", machine = machine).to_string(),
+    }
 }
 
 /// An MCP sign-in's note: the engine's own sign-in on the daemon's Mac,
@@ -111,6 +141,14 @@ impl Shell {
         self.cli_signin.inputs.retain(|id, _| cards.iter().any(|c| c.id == *id));
         self.cli_signin.subscriptions.retain(|id, _| cards.iter().any(|c| c.id == *id));
         self.cli_signin.copied.retain(|id| cards.iter().any(|c| c.id == *id));
+        self.cli_signin.routes.retain(|id, _| cards.iter().any(|c| c.id == *id));
+        // A tunnel goes down when its sign-in ends, or its card goes.
+        let ended: Vec<u64> = self.cli_signin.tunnels.keys().copied().filter(|id| !cards.iter().any(|c| c.id == *id && matches!(c.phase, Phase::Starting | Phase::Waiting | Phase::Checking))).collect();
+        for id in ended {
+            if let Some(tunnel) = self.cli_signin.tunnels.remove(&id) {
+                std::thread::spawn(move || tunnel.close());
+            }
+        }
         for card in cards.iter().filter(|c| c.wants_code) {
             if self.cli_signin.inputs.contains_key(&card.id) {
                 continue;
@@ -126,6 +164,13 @@ impl Shell {
             });
             self.cli_signin.inputs.insert(card.id, input);
             self.cli_signin.subscriptions.insert(card.id, subscription);
+        }
+    }
+
+    /// Card `id`'s paste box gets the keyboard (its sheet just came up).
+    pub fn cli_signin_focus(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(input) = self.cli_signin.inputs.get(&id).cloned() {
+            input.update(cx, |s, cx| s.focus(window, cx));
         }
     }
 
@@ -167,11 +212,61 @@ impl Shell {
         cx.notify();
     }
 
-    /// The sign-in page, in this Mac's browser: the Mac the person is looking at.
+    /// The sign-in page, in this Mac's browser: the Mac the person is looking
+    /// at. A page that returns to the daemon's loopback address, with the
+    /// daemon on another Mac: through a tunnel to it, else in its own browser
+    /// in the panel, else here with the paste box.
     pub fn open_cli_signin_page(&mut self, id: u64, cx: &mut Context<Self>) {
         let Some(url) = self.model.cli_sign_ins.iter().find(|c| c.id == id).and_then(|c| c.url.clone()) else { return };
-        if !cfg!(feature = "snapshot") {
-            cx.open_url(&url);
+        let host = match &self.endpoint {
+            crate::target::Endpoint::Ssh(host) => Some(host.clone()),
+            crate::target::Endpoint::Local { .. } => None,
+        };
+        let route = equipe_core::cli_signin::route(&url, self.endpoint.is_remote(), host.is_some(), true);
+        if cfg!(feature = "snapshot") {
+            self.cli_signin.routes.insert(id, route);
+            cx.notify();
+            return;
+        }
+        match (route, host) {
+            (Route::Forward(port), Some(host)) => {
+                // Already up for this card: the page again.
+                if self.cli_signin.tunnels.get(&id).is_some_and(|t| t.port() == port) {
+                    cx.open_url(&url);
+                    return;
+                }
+                self.cli_signin.tunneling.insert(id);
+                let opened = cx.background_spawn(async move { crate::tunnel::open(&host, port) });
+                cx.spawn(async move |this, cx| {
+                    let opened = opened.await;
+                    this.update(cx, |this, cx| {
+                        this.cli_signin.tunneling.remove(&id);
+                        match opened {
+                            Ok(tunnel) => {
+                                this.cli_signin.tunnels.insert(id, tunnel);
+                                this.cli_signin.routes.insert(id, Route::Forward(port));
+                                cx.open_url(&url);
+                            }
+                            // No tunnel (the port taken here, no connection that takes it): the daemon's own browser.
+                            Err(_) => {
+                                this.cli_signin.routes.insert(id, Route::Panel);
+                                this.sign_in_to(&url, cx);
+                            }
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            (Route::Panel, _) => {
+                self.cli_signin.routes.insert(id, Route::Panel);
+                self.sign_in_to(&url, cx);
+            }
+            (route, _) => {
+                self.cli_signin.routes.insert(id, route);
+                cx.open_url(&url);
+            }
         }
         // The code's box is next.
         cx.notify();
@@ -238,7 +333,8 @@ pub fn card(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> Option<AnyElemen
     }
     let mut actions = h_flex().gap_2().items_center();
     if matches!(c.phase, Phase::Waiting | Phase::Checking) && c.url.is_some() {
-        actions = actions.child(ui::button(p, ("cli-open", id), Kind::Primary, t!("cli_signin.open")).icon(Icon::External).on_click(cx.listener(move |this, _, _, cx| this.open_cli_signin_page(id, cx))));
+        let label = if shell.cli_signin.tunneling.contains(&id) { t!("cli_signin.opening_tunnel", machine = machine.clone()).to_string() } else { t!("cli_signin.open").to_string() };
+        actions = actions.child(ui::button(p, ("cli-open", id), Kind::Primary, label).icon(Icon::External).on_click(cx.listener(move |this, _, _, cx| this.open_cli_signin_page(id, cx))));
         let copied = shell.cli_signin.copied.contains(&id);
         actions = actions.child(ui::button(p, ("cli-copy", id), Kind::Ghost, if copied { t!("cli_signin.copied") } else { t!("cli_signin.copy") }).on_click(cx.listener(move |this, _, _, cx| this.copy_cli_signin_link(id, cx))));
         if c.wants_code && c.phase == Phase::Waiting {
@@ -269,7 +365,13 @@ pub fn card(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> Option<AnyElemen
             .child(body)
             .child(div().id(("cli-status", id)).text_size(px(13.)).text_color(status_color).child(progress(&c)))
             .child(actions)
-            .child(div().text_size(px(SMALL)).line_height(px(18.)).text_color(p.muted).child(if is_mcp(&c) { mcp_note(remote, &machine, c.wants_code) } else { where_note(remote, &machine, c.wants_code) }))
+            .child(div().text_size(px(SMALL)).line_height(px(18.)).text_color(p.muted).child(if is_equipe(&c) {
+                equipe_note(remote, &machine, shell.cli_signin.routes.get(&id).copied())
+            } else if is_mcp(&c) {
+                mcp_note(remote, &machine, c.wants_code)
+            } else {
+                where_note(remote, &machine, c.wants_code)
+            }))
             .into_any_element(),
     )
 }
@@ -308,6 +410,7 @@ mod tests {
             who: None,
             detail: None,
             at: 0,
+            server: None,
         }
     }
 
@@ -346,6 +449,20 @@ mod tests {
         mcp.why = "acme-docs".into();
         assert!(super::purpose(&mcp).contains("acme-docs"));
         assert_eq!(super::purpose(&card(Phase::Waiting)), "deploy the staging stack");
+    }
+
+    #[test]
+    fn equipes_own_sign_in_says_how_its_page_gets_back_to_the_daemons_mac() {
+        use equipe_core::cli_signin::Route;
+        let mut own = card(Phase::Waiting);
+        own.tool = "equipe_mcp".into();
+        assert!(super::is_equipe(&own) && is_mcp(&own));
+        let local = super::equipe_note(false, "mac-mini", None);
+        let tunnel = super::equipe_note(true, "mac-mini", Some(Route::Forward(55531)));
+        let panel = super::equipe_note(true, "mac-mini", Some(Route::Panel));
+        let paste = super::equipe_note(true, "mac-mini", None);
+        assert!(!local.contains("mac-mini") && tunnel.contains("SSH") && panel.contains("mac-mini") && paste.contains("mac-mini"), "{tunnel}");
+        assert!(local != tunnel && tunnel != panel && panel != paste);
     }
 
     #[test]

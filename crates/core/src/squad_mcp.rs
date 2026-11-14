@@ -1,44 +1,34 @@
 //! Outside MCP servers a squad connects for its members: a design library's
-//! official server from the Connections catalog (Mobbin), or any server
-//! added by its address. Kept in the squad's settings
-//! ([`crate::journal::Journal::mcp_servers`]), given to the members of its
-//! roles in their engine's own MCP config, and signed in by the engine's own
-//! command-line tool.
+//! official server from the Connections catalog (Mobbin, 21st.dev), or any
+//! server added by its address. Kept in the squad's settings
+//! ([`crate::journal::Journal::mcp_servers`]) and given to the members of its
+//! roles from their next turn.
 //!
-//! How a sign-in reaches a member, on each engine:
+//! The person connects a server to equipe once, and it works for every
+//! engine a member runs on — Claude Code, Codex, and the model providers that
+//! run on Codex's agent. Who holds the credential is the server's [`McpAuth`]:
 //!
-//! - Claude Code keeps an MCP server's OAuth tokens in its own credential
-//!   store under the server's name and a hash of its type, URL and headers
-//!   (`<name>|<sha256(type, url, headers)>`, whatever scope the server was
-//!   configured in). A member runs with `--mcp-config` and
-//!   `--strict-mcp-config`; its entry for the server is `{"type": "http",
-//!   "url": …}` with the same name and no headers, so it finds the token the
-//!   person's sign-in left. The sign-in itself is `claude mcp login <name>`,
-//!   which needs the server configured somewhere: equipe adds it in local
-//!   scope to a folder of its own per squad ([`signin_dir`]), so it never
-//!   shows in the person's own Claude Code sessions.
-//! - Codex keys its tokens the same way (server name and URL) and takes the
-//!   server as a config override: `codex mcp login <name> -c
-//!   mcp_servers.<name>.url="…"`, and the member's thread config names the
-//!   same server and URL.
+//! - [`McpAuth::Oauth`] (the default): equipe's own connection. A server that
+//!   asks for no sign-in needs nothing; one that does is signed in to once,
+//!   with equipe as the OAuth client ([`crate::mcp_oauth`]), the tokens kept
+//!   in the squad's secret store and refreshed there.
+//! - [`McpAuth::Key`]: an API key the person saved through the key card
+//!   (21st.dev's `x-api-key`), in the same store.
 //!
-//! equipe never reads, keeps or passes such a token: no header, no
-//! environment variable, no file of its own. Whether a server is connected
-//! comes from the engines' own tools (`claude mcp get`, `codex mcp list --json`).
+//! Either way each member's engine gets a stdio entry for equipe's proxy
+//! (`equipe mcp proxy --squad … --server … --member … --home …`): it holds
+//! nothing, and the daemon forwards each message to the server with the
+//! credential added ([`crate::mcp_gateway`]). No token, key or header is in
+//! a member's config, environment, files or process. Where the server
+//! stands is equipe's own connection's ([`probe`]), the same for every engine.
 //!
-//! Who holds a server's credential is its [`McpAuth`] — the one place that
-//! decides how a member's engine is given it ([`credential`]):
-//!
-//! - [`McpAuth::Engine`]: the engine's own OAuth, as above.
-//! - [`McpAuth::Key`]: an API key the person saved in the squad's secret store
-//!   through the key card (21st.dev's `x-api-key`). The daemon reads it at a
-//!   member's launch and puts it in the engine's config as a header: Claude
-//!   Code's `--mcp-config` is then a file in equipe's private folder (which a
-//!   fenced member's commands can't read), never an argument; Codex gets it in
-//!   the thread's config over its app-server connection. It is a kept key, so
-//!   it is masked out of everything a member says.
-//! - [`McpAuth::Gateway`]: equipe-managed OAuth for an engine that can't sign
-//!   in itself — the data model only for now; the plan is in docs/LOGINS.md.
+//! - [`McpAuth::Engine`]: the fallback for a server that won't let other
+//!   apps sign in (no dynamic client registration). Each engine's own CLI
+//!   signs in (`claude mcp login`, in local scope in a folder of equipe's per
+//!   squad, [`signin_dir`]; `codex mcp login` with a config override) and
+//!   members get the server's address; status comes from those tools
+//!   (`claude mcp get`, `codex mcp list --json`). equipe never reads, keeps
+//!   or passes such a token.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -79,11 +69,34 @@ pub fn check_name(name: &str) -> Result<String, String> {
 /// ([`connections::clean_url`]: no credentials, port, IP or localhost), and
 /// nothing that would break out of a config value.
 pub fn check_url(url: &str) -> Result<String, String> {
+    if loopback_allowed()
+        && let Some(url) = loopback_url(url)
+    {
+        return Ok(url);
+    }
     let url = connections::clean_url(url)?;
     if url.chars().any(|c| matches!(c, '"' | '\'' | '\\' | '`' | '<' | '>' | '{' | '}' | '|' | '^')) {
         return Err(format!("{url:?}: not a plain address (an https address like https://api.mobbin.com/mcp)."));
     }
     Ok(url)
+}
+
+/// Whether a server may be on this machine's own loopback address
+/// (`http://127.0.0.1:<port>/…`): only in a debug build run with
+/// `EQUIPE_MCP_ALLOW_LOOPBACK=1`, to try the flows end to end against a
+/// stand-in server. A release build never takes such an address.
+fn loopback_allowed() -> bool {
+    cfg!(debug_assertions) && std::env::var("EQUIPE_MCP_ALLOW_LOOPBACK").is_ok_and(|v| v == "1")
+}
+
+/// `url` when it is `http://127.0.0.1:<port>/…` or `http://localhost:<port>/…`, plain.
+fn loopback_url(url: &str) -> Option<String> {
+    let url = url.trim();
+    let rest = url.strip_prefix("http://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let (host, port) = authority.rsplit_once(':')?;
+    let plain = !url.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '"' | '\'' | '\\' | '`' | '<' | '>' | '{' | '}' | '|' | '^' | '@'));
+    (plain && matches!(host, "127.0.0.1" | "localhost") && port.parse::<u16>().is_ok_and(|p| p > 0)).then(|| url.to_owned())
 }
 
 /// The roles named: lowercase words, each once. None: every member.
@@ -124,46 +137,60 @@ pub fn server(name: &str, url: Option<&str>, roles: Option<&[String]>, transport
     let catalog = catalog.filter(|(_, mcp)| mcp.url == url);
     let auth = match catalog.and_then(|(id, mcp)| Some((Service::by_id(id)?.key_name?, mcp.key_header?))) {
         Some((secret, header)) => McpAuth::Key { secret: secret.to_owned(), header: header.to_owned() },
-        None => McpAuth::Engine,
+        None => McpAuth::Oauth,
     };
     Ok(McpServer { name, url, transport, roles, enabled: true, catalog: catalog.map(|(id, _)| id.to_owned()), auth })
 }
 
-/// How a member's engine is given a server's credential at launch.
-#[derive(Clone, PartialEq, Eq)]
+/// How a member's engine is given a server at launch.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Credential {
-    /// The engine signs in itself and keeps its own token: nothing to give.
+    /// The engine signs in itself and keeps its own token: its address.
     Engine,
-    /// A header the daemon puts in the engine's config (its value from the secret store).
-    Header { name: String, value: String },
+    /// equipe's proxy, which adds the credential in the daemon.
+    Proxy,
     /// Its key isn't saved yet (`secret`): the server is left out, and the key card asked for.
     MissingKey { secret: String },
-    /// equipe-managed OAuth: not available yet, so the server is left out.
-    Unavailable,
+    /// equipe isn't signed in to it: left out, and the sign-in card asked for.
+    NeedsSignIn,
 }
 
-impl std::fmt::Debug for Credential {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Engine => f.write_str("Engine"),
-            Self::Header { name, .. } => write!(f, "Header({name}: •••)"),
-            Self::MissingKey { secret } => write!(f, "MissingKey({secret})"),
-            Self::Unavailable => f.write_str("Unavailable"),
-        }
-    }
-}
-
-/// How `server`'s credential reaches a member: `key` reads a kept key's
-/// value by name (the daemon's secret store), asked only for a keyed server.
-pub fn credential(server: &McpServer, key: impl FnOnce(&str) -> Option<String>) -> Credential {
+/// How `server` reaches a member: `kept`, whether a keyed server's key is
+/// saved; `state`, where it was last seen to stand.
+pub fn credential(server: &McpServer, kept: bool, state: Option<McpState>) -> Credential {
     match &server.auth {
         McpAuth::Engine => Credential::Engine,
-        McpAuth::Key { secret, header } => match key(secret).filter(|v| !v.trim().is_empty()) {
-            Some(value) => Credential::Header { name: header.clone(), value },
-            None => Credential::MissingKey { secret: secret.clone() },
-        },
-        McpAuth::Gateway { .. } => Credential::Unavailable,
+        McpAuth::Key { secret, .. } if !kept => Credential::MissingKey { secret: secret.clone() },
+        McpAuth::Key { .. } => Credential::Proxy,
+        McpAuth::Oauth if state == Some(McpState::NeedsSignIn) => Credential::NeedsSignIn,
+        McpAuth::Oauth => Credential::Proxy,
     }
+}
+
+/// What a member's proxy entry runs: equipe's own binary, for this squad,
+/// member and home.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyCommand {
+    pub binary: PathBuf,
+    pub squad: String,
+    pub member: String,
+    pub home: PathBuf,
+}
+
+impl ProxyCommand {
+    /// `mcp proxy --squad … --server … --member … --home …`: names only, never a credential.
+    pub fn args(&self, server: &str) -> Vec<String> {
+        let mut args = strs(&["mcp", "proxy", "--squad"]);
+        args.extend([self.squad.clone(), "--server".into(), server.to_owned(), "--member".into(), self.member.clone(), "--home".into(), self.home.to_string_lossy().into_owned()]);
+        args
+    }
+}
+
+/// Where a keyed server ([`McpAuth::Key`]) stands: on whether its key is
+/// kept — connected, or waiting for its key. Never "needs sign-in": no
+/// engine's sign-in can give it a key.
+pub fn key_state(kept: bool) -> McpState {
+    if kept { McpState::Connected } else { McpState::NeedsKey }
 }
 
 /// The catalog service a server is, for its words and links.
@@ -201,54 +228,75 @@ pub fn with(servers: &[McpServer], server: McpServer) -> Result<Vec<McpServer>, 
 /// The servers a member of `role` on `engine` gets: on, for its role, over a
 /// transport its engine speaks.
 pub fn for_member<'a>(servers: &'a [McpServer], role: &str, engine: Engine) -> Vec<&'a McpServer> {
-    servers.iter().filter(|s| s.enabled && s.serves(role) && s.transport.on(engine)).collect()
+    servers.iter().filter(|s| s.enabled && s.serves(role) && s.reaches(engine)).collect()
 }
 
-/// A server's entry in a Claude Code member's `--mcp-config`: its type and
-/// URL — for the engine's own sign-in nothing else, the same name, type and
-/// URL (and no headers) the sign-in was made for, so Claude Code finds the
-/// token in its own store; for a kept key, its header too.
-pub fn claude_entry(server: &McpServer, credential: &Credential) -> Value {
-    let mut entry = json!({ "type": server.transport.code(), "url": server.url });
-    if let Credential::Header { name, value } = credential {
-        entry["headers"] = json!({ name.as_str(): value });
+/// A server's entry in a Claude Code member's `--mcp-config`: equipe's
+/// proxy over stdio; for the engine-signed fallback, its type and URL — the
+/// same name, type and URL (and no headers) the sign-in was made for, so
+/// Claude Code finds the token in its own store.
+pub fn claude_entry(server: &McpServer, credential: &Credential, proxy: &ProxyCommand) -> Value {
+    match credential {
+        Credential::Engine => json!({ "type": server.transport.code(), "url": server.url }),
+        _ => json!({ "type": "stdio", "command": proxy.binary, "args": proxy.args(&server.name) }),
     }
-    entry
 }
 
-/// A server's entry in a Codex member's thread config: its URL (Codex finds
-/// its own sign-in by name and URL), and a kept key's header, sent over the
-/// app-server connection — never an argument, a variable or a file.
-/// `approved`: its tools run without asking.
-pub fn codex_entry(server: &McpServer, approved: bool, credential: &Credential) -> Value {
-    let mut entry = equipe_providers::codex_app::mcp_http_server(&server.url, approved);
-    if let Credential::Header { name, value } = credential {
-        entry["http_headers"] = json!({ name.as_str(): value });
+/// A server's entry in a Codex member's thread config: equipe's proxy; for
+/// the engine-signed fallback, its URL (Codex finds its own sign-in by name
+/// and URL). `approved`: its tools run without asking.
+pub fn codex_entry(server: &McpServer, approved: bool, credential: &Credential, proxy: &ProxyCommand) -> Value {
+    match credential {
+        Credential::Engine => equipe_providers::codex_app::mcp_http_server(&server.url, approved),
+        _ => equipe_providers::codex_app::mcp_server(&proxy.binary, &proxy.args(&server.name), approved),
     }
-    entry
 }
 
-/// Whether a Claude Code member's MCP config carries a secret, and so goes
-/// in a private file rather than on its command line.
-pub fn carries_secret(credentials: &[Credential]) -> bool {
-    credentials.iter().any(|c| matches!(c, Credential::Header { .. }))
-}
-
-/// Where a member's Claude Code MCP config is written when it carries a key:
-/// equipe's private folder, which fenced commands can't read.
+/// Where an earlier equipe wrote a member's MCP config when it carried a key
+/// (a key now stays in the daemon): removed at the member's next launch.
 pub fn private_config_path(home: &Path, session: u64) -> PathBuf {
     home.join("credentials").join("mcp").join(format!("{session}.json"))
 }
 
-/// Write `config` there, readable by the person only.
-pub fn write_private_config(path: &Path, config: &str) -> std::io::Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+// ───────────────────────── equipe's own connection ─────────────────────────
+
+/// How long equipe's own look at a server may take.
+const PROBE_WAIT: Duration = Duration::from_secs(20);
+
+/// Where a server stands as equipe's own connection finds it: `header`, the
+/// credential (none: not signed in yet, or no key). An `initialize` it
+/// answers is connected; a refusal means a sign-in (or, `keyed`, its key).
+pub async fn probe(http: &reqwest::Client, server: &McpServer, header: Option<(&str, &str)>, keyed: bool) -> (McpState, Option<String>) {
+    let request = match server.transport {
+        McpTransport::Http => http.post(&server.url).header("content-type", "application/json").header("accept", "application/json, text/event-stream").body(crate::mcp_oauth::initialize_message().to_string()),
+        McpTransport::Sse => http.get(&server.url).header("accept", "text/event-stream"),
+    };
+    let request = match header {
+        Some((name, value)) => request.header(name, value),
+        None => request,
+    };
+    let response = match tokio::time::timeout(PROBE_WAIT, request.send()).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) if e.is_connect() => return (McpState::Failing, Some("it couldn't be reached".to_owned())),
+        Ok(Err(_)) => return (McpState::Failing, Some("the connection to it failed".to_owned())),
+        Err(_) => return (McpState::Failing, Some(format!("it didn't answer in {} s", PROBE_WAIT.as_secs()))),
+    };
+    let status = response.status().as_u16();
+    // A session it opened for the look is closed again.
+    if let Some(id) = response.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()).map(str::to_owned) {
+        let mut close = http.delete(&server.url).header("mcp-session-id", id);
+        if let Some((name, value)) = header {
+            close = close.header(name, value);
+        }
+        drop(response);
+        let _ = tokio::time::timeout(Duration::from_secs(5), close.send()).await;
     }
-    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
-    file.write_all(config.as_bytes())
+    match status {
+        200..=299 => (McpState::Connected, None),
+        401 | 403 if keyed => (McpState::NeedsKey, header.map(|_| "the saved key was refused".to_owned())),
+        401 | 403 => (McpState::NeedsSignIn, header.map(|_| "the sign-in was refused".to_owned())),
+        other => (McpState::Failing, Some(format!("it answered {other}"))),
+    }
 }
 
 /// The rule that lets a Claude Code member use every tool of `server` without asking.
@@ -271,8 +319,8 @@ pub fn charter_note(servers: &[&McpServer]) -> Option<String> {
         .collect();
     Some(format!(
         "Outside MCP servers the squad connected for you: {}. Use them where they fit — a design library's server for \
-references instead of browsing its site. When one says it needs a sign-in, say so in a line and carry on without \
-it: equipe has already put one card for it in front of the person.",
+references instead of browsing its site. When one says it needs a sign-in or a key, say so in a line and carry on \
+without it: equipe has already put one card for it in front of the person.",
         each.join("; ")
     ))
 }
@@ -439,12 +487,47 @@ async fn run(program: &str, args: &[String], cwd: Option<&Path>) -> Result<(bool
     Ok((out.status.success(), text))
 }
 
+/// One change at a time to Claude Code's settings for a squad's sign-in
+/// folder, across processes (the daemon and `equipe mcp …` alike): two
+/// `claude mcp add`s of one server at once leave the second "already exists
+/// in local config". Held while the lock file's descriptor is open.
+struct ConfigLock(#[allow(dead_code)] std::fs::File);
+
+impl ConfigLock {
+    async fn take(dir: &Path) -> Result<Self, String> {
+        use std::os::fd::AsRawFd as _;
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let file = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(dir.join(".equipe-lock")).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let deadline = tokio::time::Instant::now() + CHECK_WAIT * 2;
+        loop {
+            // SAFETY: a plain `flock` on a descriptor this function owns.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                return Ok(Self(file));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err("another change to Claude Code's MCP settings didn't finish".to_owned());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
+
+fn first_line(said: &str, otherwise: &str) -> String {
+    short(said.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(otherwise))
+}
+
 /// Make sure `server` is configured, as members name it, in `dir` for
 /// Claude Code (`claude mcp add`, in local scope): what `claude mcp login`
 /// and `claude mcp get` need. Where it stands, as `claude mcp get` says.
+///
+/// Idempotent: one already there at the same address is reused as it is
+/// (its sign-in with it); one at another address is replaced. Never fails
+/// because the server "already exists".
 pub async fn prepare_claude(binary: &str, dir: &Path, server: &McpServer) -> Result<(McpState, Option<String>), String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let (_, said) = run(binary, &claude_get_args(&server.name), Some(dir)).await?;
+    let _lock = ConfigLock::take(dir).await?;
+    let get_args = claude_get_args(&server.name);
+    let get = || run(binary, &get_args, Some(dir));
+    let (_, said) = get().await?;
     match parse_claude_get(&said, server) {
         ClaudeGet::Status(state, detail) => return Ok((state, detail)),
         // Another address under the name: the old one goes (with its sign-in, which was for that address).
@@ -455,9 +538,22 @@ pub async fn prepare_claude(binary: &str, dir: &Path, server: &McpServer) -> Res
     }
     let (added, said) = run(binary, &claude_add_args(server), Some(dir)).await?;
     if !added {
-        return Err(short(said.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("claude mcp add failed")));
+        if !said.contains("already exists") {
+            return Err(first_line(&said, "claude mcp add failed"));
+        }
+        // Kept meanwhile, or by an equipe from before this lock: the same
+        // server is reused; anything else under the name is replaced.
+        let (_, again) = get().await?;
+        if let ClaudeGet::Status(state, detail) = parse_claude_get(&again, server) {
+            return Ok((state, detail));
+        }
+        let _ = run(binary, &claude_remove_args(&server.name), Some(dir)).await?;
+        let (added, said) = run(binary, &claude_add_args(server), Some(dir)).await?;
+        if !added {
+            return Err(first_line(&said, "claude mcp add failed"));
+        }
     }
-    let (_, said) = run(binary, &claude_get_args(&server.name), Some(dir)).await?;
+    let (_, said) = get().await?;
     match parse_claude_get(&said, server) {
         ClaudeGet::Status(state, detail) => Ok((state, detail)),
         _ => Err("Claude Code didn't keep the server".to_owned()),
@@ -493,14 +589,17 @@ pub async fn check(engine: Engine, binary: &str, dir: &Path, server: &McpServer,
 /// the engine's for that pair, whichever squad made it.
 pub async fn forget(engine: Engine, binary: &str, dir: &Path, server: &McpServer) {
     let _ = match engine {
-        Engine::Claude if dir.is_dir() => run(binary, &claude_remove_args(&server.name), Some(dir)).await,
+        Engine::Claude if dir.is_dir() => {
+            let Ok(_lock) = ConfigLock::take(dir).await else { return };
+            run(binary, &claude_remove_args(&server.name), Some(dir)).await
+        }
         Engine::Claude => return,
         Engine::Codex => run(binary, &codex_logout_args(server), None).await,
     };
 }
 
-/// The sign-in a card runs for `server` on `engine`: the engine's own
-/// interactive login, in a terminal of its own, its page printed for the card.
+/// The sign-in a card runs for an engine-signed `server` on `engine`: the
+/// engine's own interactive login, in a terminal of its own, its page printed for the card.
 pub fn signin_plan(engine: Engine, binary: &str, dir: &Path, server: &McpServer) -> crate::cli_signin::Plan {
     let env = vec![("NO_COLOR".to_owned(), "1".to_owned()), ("BROWSER".to_owned(), "echo".to_owned()), ("TERM".to_owned(), "xterm".to_owned())];
     let (args, cwd) = match engine {
@@ -570,11 +669,14 @@ mod tests {
     }
 
     #[test]
-    fn a_server_reaches_only_its_roles_when_on_and_sse_only_claude_code() {
+    fn a_server_reaches_only_its_roles_when_on_through_the_proxy_on_any_engine() {
         let mut servers = vec![mobbin(), server("docs", Some("https://docs.example.com/mcp"), None, Some("sse")).unwrap()];
         let names = |role: &str, engine: Engine, s: &[McpServer]| for_member(s, role, engine).iter().map(|s| s.name.clone()).collect::<Vec<_>>();
         assert_eq!(names("designer", Engine::Claude, &servers), ["mobbin", "docs"]);
-        assert_eq!(names("designer", Engine::Codex, &servers), ["mobbin"], "Codex speaks streamable HTTP only");
+        assert_eq!(names("designer", Engine::Codex, &servers), ["mobbin", "docs"], "through the proxy, Codex too, over SSE as well");
+        servers[1].auth = McpAuth::Engine;
+        assert_eq!(names("designer", Engine::Codex, &servers), ["mobbin"], "signed in by the engine: Codex speaks streamable HTTP only");
+        servers[1].auth = McpAuth::Oauth;
         assert_eq!(names("backend", Engine::Claude, &servers), ["docs"], "no roles named: everyone");
         servers[0].enabled = false;
         assert_eq!(names("frontend", Engine::Claude, &servers), ["docs"], "off: no one");
@@ -585,18 +687,27 @@ mod tests {
         assert!(with(&full, mobbin()).is_err());
     }
 
+    fn proxy() -> ProxyCommand {
+        ProxyCommand { binary: PathBuf::from("/opt/equipe"), squad: "acme".into(), member: "dana".into(), home: PathBuf::from("/h") }
+    }
+
     #[test]
-    fn a_members_entry_is_the_address_and_never_a_token() {
+    fn every_engine_gets_equipes_proxy_and_never_a_token() {
         let m = mobbin();
-        let none = credential(&m, |_| panic!("no key is read for the engine's own sign-in"));
-        assert_eq!(none, Credential::Engine);
-        assert_eq!(claude_entry(&m, &none), json!({ "type": "http", "url": "https://api.mobbin.com/mcp" }));
-        let codex = codex_entry(&m, false, &none);
-        assert_eq!((codex["url"].as_str(), codex["default_tools_approval_mode"].as_str()), (Some("https://api.mobbin.com/mcp"), Some("prompt")));
-        assert!(!carries_secret(std::slice::from_ref(&none)));
-        for entry in [claude_entry(&m, &none), codex_entry(&m, true, &none)] {
+        assert_eq!(m.auth, McpAuth::Oauth, "equipe signs in itself");
+        assert_eq!(credential(&m, false, None), Credential::Proxy, "not looked at yet: given, the proxy says where it stands");
+        assert_eq!(credential(&m, false, Some(McpState::NeedsSignIn)), Credential::NeedsSignIn);
+        let claude = claude_entry(&m, &Credential::Proxy, &proxy());
+        assert_eq!(claude, json!({ "type": "stdio", "command": "/opt/equipe", "args": ["mcp", "proxy", "--squad", "acme", "--server", "mobbin", "--member", "dana", "--home", "/h"] }));
+        let codex = codex_entry(&m, false, &Credential::Proxy, &proxy());
+        assert_eq!((codex["command"].as_str(), codex["args"][1].as_str(), codex["default_tools_approval_mode"].as_str()), (Some("/opt/equipe"), Some("proxy"), Some("prompt")));
+        // The keyed server: the key stays in the daemon too.
+        let ui = server("21st", None, None, None).unwrap();
+        assert_eq!(credential(&ui, false, None), Credential::MissingKey { secret: "21st-api-key".into() });
+        assert_eq!(credential(&ui, true, None), Credential::Proxy);
+        for entry in [claude, codex, claude_entry(&ui, &Credential::Proxy, &proxy()), codex_entry(&ui, true, &Credential::Proxy, &proxy())] {
             let text = entry.to_string().to_ascii_lowercase();
-            for word in ["header", "token", "authorization", "bearer", "env"] {
+            for word in ["header", "token", "authorization", "bearer", "x-api-key", "env", "https://"] {
                 assert!(!text.contains(word), "{word} in {text}");
             }
         }
@@ -604,46 +715,36 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_members_thread_has_the_server_by_address_over_the_persons_own_of_that_name() {
+    fn the_engine_signed_fallback_gets_the_address_as_before() {
+        let m = McpServer { auth: McpAuth::Engine, ..mobbin() };
+        assert_eq!(credential(&m, false, Some(McpState::NeedsSignIn)), Credential::Engine);
+        assert_eq!(claude_entry(&m, &Credential::Engine, &proxy()), json!({ "type": "http", "url": "https://api.mobbin.com/mcp" }));
+        assert_eq!(codex_entry(&m, false, &Credential::Engine, &proxy())["url"], "https://api.mobbin.com/mcp");
+    }
+
+    #[test]
+    fn a_codex_members_thread_has_the_server_over_the_persons_own_of_that_name() {
         use equipe_providers::codex_app::{others_off, thread_config};
         let m = mobbin();
-        let ours = json!({ "equipe": { "command": "/opt/equipe" }, "mobbin": codex_entry(&m, true, &Credential::Engine) });
+        let ours = json!({ "equipe": { "command": "/opt/equipe" }, "mobbin": codex_entry(&m, true, &Credential::Proxy, &proxy()) });
         // The person's own Codex servers: one named the same (theirs is replaced, not switched off), one other (off).
         let listing = json!({ "data": [{ "name": "mobbin" }, { "name": "shadcn" }] });
         let config = thread_config(Some(&ours), Some(&others_off(&listing, &ours)));
-        assert_eq!(config["mcp_servers"]["mobbin"]["url"], "https://api.mobbin.com/mcp");
+        assert_eq!(config["mcp_servers"]["mobbin"]["args"][1], "proxy");
         assert!(config["mcp_servers"]["mobbin"].get("enabled").is_none(), "ours, not switched off");
         assert_eq!(config["mcp_servers"]["shadcn"], json!({ "enabled": false }));
         assert!(!config.to_string().to_ascii_lowercase().contains("token"));
     }
 
     #[test]
-    fn a_keyed_server_gets_its_header_from_the_store_only_at_launch_and_is_left_out_without_it() {
+    fn a_keyed_server_is_the_catalogs_at_its_own_address_only() {
         let ui = server("21st", None, None, None).unwrap();
         assert_eq!(ui.auth, McpAuth::Key { secret: "21st-api-key".into(), header: "x-api-key".into() });
         assert_eq!((ui.url.as_str(), ui.roles.clone()), ("https://21st.dev/api/mcp", vec!["designer".to_owned(), "frontend".to_owned()]));
-        let missing = credential(&ui, |_| None);
-        assert_eq!(missing, Credential::MissingKey { secret: "21st-api-key".into() });
-        let given = credential(&ui, |name| (name == "21st-api-key").then(|| "21st_sk_test_value".to_owned()));
-        assert!(!format!("{given:?}").contains("21st_sk"), "never in a log line");
-        assert_eq!(claude_entry(&ui, &given)["headers"], json!({ "x-api-key": "21st_sk_test_value" }));
-        assert_eq!(codex_entry(&ui, true, &given)["http_headers"], json!({ "x-api-key": "21st_sk_test_value" }));
-        assert!(carries_secret(&[Credential::Engine, given]));
         // At another address, someone's own server: no key of the catalog's goes to it.
-        assert_eq!(server("21st", Some("https://mcp.example.com/x"), None, None).unwrap().auth, McpAuth::Engine);
-        // equipe-managed OAuth: modelled, not given yet.
-        assert_eq!(credential(&McpServer { auth: McpAuth::Gateway { secret: "x".into() }, ..ui }, |_| None), Credential::Unavailable);
-    }
-
-    #[test]
-    fn a_private_config_is_the_persons_alone() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let home = std::env::temp_dir().join(format!("equipe-mcp-private-{}", std::process::id()));
-        let path = private_config_path(&home, 7);
-        assert!(path.starts_with(home.join("credentials")), "under the folder fenced commands can't read");
-        write_private_config(&path, "{}").unwrap();
-        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
-        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(server("21st", Some("https://mcp.example.com/x"), None, None).unwrap().auth, McpAuth::Oauth);
+        assert_eq!(key_state(false), McpState::NeedsKey, "never needs sign-in");
+        assert_eq!(key_state(true), McpState::Connected);
     }
 
     #[test]

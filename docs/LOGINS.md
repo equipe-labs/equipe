@@ -587,91 +587,99 @@ out) isn't recognised.
 
 A squad can connect an outside MCP server for its members — a design
 library's official server from the Connections catalog (Mobbin: "search real
-product screens and flows for design references", Pro plan or higher), or any
-server by its https address (`crates/core/src/squad_mcp.rs`).
+product screens and flows for design references", Pro plan or higher;
+21st.dev: "proven React, Tailwind and shadcn/ui components to adapt"), or any
+server by its https address (`crates/core/src/squad_mcp.rs`). The person
+connects it to equipe **once**, and it works for every engine a member runs
+on — Claude Code, Codex, and the model providers that run on Codex's agent.
 
 - **Kept.** In the squad's journal (`mcp_servers`): name, address (https only,
-  checked as strictly as a key card's page), transport (streamable HTTP; SSE
-  for Claude Code members only), the roles that get it (the catalog's by
-  default, else every member) and an on/off switch. The person adds one from
-  Logins › Connections ("Connect" on a catalog row, or "Add an MCP server" at
-  the end), from a terminal (`equipe mcp add mobbin`, `equipe mcp add <name>
-  <url> --roles designer,frontend`, `list`, `remove`, `login`), or through the
-  PM's `change_setting` (`mcp_server`), which adds or turns one on only after
-  the person's tap on an approval card. Members never add one.
-- **Given.** From their next turn, each member of those roles gets it in its
-  engine's own config — Claude Code: `{"type": "http", "url": …}` in
-  `--mcp-config`, `--strict-mcp-config` kept; Codex: its URL in the thread's
-  `mcp_servers` — and one line in its charter naming it and what it is for.
-  No header, environment variable or token is ever in either. Its tools run
-  without asking in Auto and Full, and ask in Ask.
-- **Signed in by the engine.** Claude Code keys an MCP server's OAuth tokens
-  by the server's name and a hash of its type, URL and headers, whatever scope
-  it was configured in, so a token the engine's own `claude mcp login` got is
-  found by a headless member run that names the same server and URL. `claude
-  mcp login` needs the server configured: equipe adds it in local scope to
-  the squad's own folder (`squads/<squad>/mcp-signin`), so it never shows in
-  the person's own sessions. Codex keys its tokens by name and URL too, and
-  takes the server as a config override (`codex mcp login <name> -c
-  mcp_servers.<name>.url="…"`). The sign-in runs on the daemon's Mac on the
-  same card as `cli_sign_in` — "Open sign-in page" on the screen the person
-  looks at; from another Mac, Claude Code's page ends on an error (it returns
-  to the daemon's Mac) and its address is pasted back on the card. equipe
-  never reads, keeps or passes the token.
-- **Status.** Connected, needs sign-in or not reachable, from the engines' own
-  tools (`claude mcp get` in that folder, `codex mcp list --json` with the
-  override), never from token files. A member whose server needs a sign-in
-  puts one card in front of the person; "Not now" isn't asked again until the
-  person asks (Sign in on the row, or `equipe mcp login`).
-- **Removed.** Members stop getting it; the engines' own entry and sign-in
-  for it are cleared unless another squad uses the same name and address.
+  checked as strictly as a key card's page), transport (streamable HTTP, or
+  the older HTTP+SSE), the roles that get it (the catalog's by default, else
+  every member), an on/off switch, and who holds its credential (`auth`). The
+  person adds one from Logins › Connections ("Connect" on a catalog row, or
+  "Add an MCP server" at the end), from a terminal (`equipe mcp add mobbin`,
+  `equipe mcp add <name> <url> --roles designer,frontend`, `list`, `remove`,
+  `login`), or through the PM's `change_setting` (`mcp_server`), which adds or
+  turns one on only after the person's tap on an approval card. Members never
+  add one. The app and the CLI send the same commands to the daemon and show
+  the same states; adding one already there changes nothing.
+- **Signed in by equipe.** equipe is the OAuth client (`crates/core/src/mcp_oauth.rs`):
+  the server's 401 names its protected-resource metadata (RFC 9728), which
+  names its authorization server and its metadata (RFC 8414, or OpenID
+  discovery); equipe registers itself for the sign-in (RFC 7591 dynamic client
+  registration), opens the page with PKCE S256 and the server as `resource`
+  (RFC 8707, plus `offline_access` where the server offers it, for a refresh
+  token), and the page's redirect comes back to a one-off listener on the
+  daemon's loopback address. The access token, refresh token, expiry and
+  client registration are one JSON value in the squad's secret store (the
+  Keychain on a Mac) under `mcp-oauth-<server>` — never in a journal, an
+  event, a log, a screen or a member's reach — and on the masking list. A
+  token about to run out, or one the server refuses, is renewed with the
+  refresh token, one renewal at a time per server; a renewal the server
+  refuses means the person signs in again, on one card.
+- **The card.** Connect, Sign in (and "Sign in again" in a connected row's ⋯
+  menu) open the sign-in card as a sheet over the page: "Open sign-in page",
+  its progress, and a box for the address the page ended on. A member who
+  gets a server that needs a sign-in puts the same card up once (in the
+  conversation); "Not now" isn't asked again until the person asks. From the
+  app on another Mac over SSH, "Open sign-in page" forwards the redirect's
+  loopback port to the daemon's Mac for the sign-in's length (over the
+  window's shared SSH connection, else an `ssh -N -L` of its own that never
+  asks anything — `crates/desktop/src/tunnel.rs`), so the page finishes by
+  itself; when the port is taken here or no connection takes the forward,
+  the page opens in the daemon's own browser in the browser panel; the paste
+  box is the last resort (`equipe_core::cli_signin::route`). Gmail's mailbox
+  connect gets the same tunnel. `equipe mcp login <name>` starts the same
+  card on the daemon and opens its page in the terminal's browser.
+- **Given.** From their next turn, each member of those roles gets the
+  server through equipe's proxy: a stdio entry (`equipe mcp proxy --squad …
+  --server … --member … --home …`) in Claude Code's `--mcp-config`
+  (`--strict-mcp-config` kept) and in Codex's thread `mcp_servers` alike, and
+  one line in its charter naming it. The proxy holds nothing: it hands each
+  JSON-RPC message to the daemon over its socket (`mcp_proxy`), where
+  `crates/core/src/mcp_gateway.rs` forwards it — streamable HTTP (JSON or
+  event-stream answers, the session id kept) or HTTP+SSE — with the
+  credential added, and hands back what the server says. The daemon serves a
+  proxy only for a member whose role gets the server. No token, key, header
+  or address is in a member's config, environment, files or process. Tool
+  calls are logged by name only. Its tools run without asking in Auto and
+  Full, and ask in Ask. A server that needs a sign-in (or its key) isn't
+  given until it has one.
+- **Status.** Connected, needs sign-in, needs its key, or not reachable (with
+  why), from equipe's own connection — an `initialize` with the credential,
+  and what the proxies' calls show — the same for every engine. It is looked
+  at when connected, when a member who gets it starts a turn and it isn't
+  known (or was seen long ago), after a sign-in, and when a kept key changes;
+  never on a timer. The daemon logs a server's state only when it changes.
+- **Removed.** Members stop getting it, its cards close, and equipe's tokens
+  for it leave the secret store (a kept key stays, on the Keys list).
 
 ### Who holds the credential
 
 Each server's `auth` (`McpAuth`, `crates/protocol/src/mcp_servers.rs`) says
-who holds its credential; `squad_mcp::credential` is the one place that turns
-it into what a member's engine is given at launch.
+who holds its credential; `squad_mcp::credential` turns it into what a
+member's engine is given at launch.
 
-- **`engine`** (the default; Mobbin): engine-managed OAuth, as above. equipe
-  never sees the token.
-- **`key`** (21st.dev: "proven React, Tailwind and shadcn/ui components to
-  adapt", `https://21st.dev/api/mcp`, header `x-api-key`): the person pastes
-  the API key on the usual key card (steps, and one click to
+- **`oauth`** (the default, and what a record from before reads as; Mobbin):
+  equipe's own connection, as above. A server that asks for no sign-in is
+  simply connected.
+- **`key`** (21st.dev, `https://21st.dev/api/mcp`, header `x-api-key`): the
+  person pastes the API key on the usual key card (steps, and one click to
   `https://21st.dev/mcp`, where the key is created) into the squad's secret
-  store. At each launch the daemon reads it and adds the header to the
-  member's engine config — Claude Code: `--mcp-config` then names a file in
-  `credentials/mcp/<session>.json` (mode 0600, inside the folder fenced
-  commands can't read; removed when no keyed server is left), never a
-  command-line argument or an environment variable; Codex: `http_headers` in
-  the thread's config, sent over its app-server connection. As a kept key it
-  is masked out of everything a member says. Without the key the server isn't
-  given, and one key card is put up (again only when the person asks).
-  Limit: a member in Full mode, whose commands run outside the fence, could
-  read that file, as it could any file of the person's.
-- **`gateway`** (data model only, not available yet): equipe-managed OAuth
-  for an engine with no harness of its own (a plain model API). A server set
-  to it is not given to members, and shows "not reachable" with why. The plan:
-  1. Sign-in: equipe is the OAuth client — protected-resource and
-     authorization-server discovery from the server's 401 challenge (RFC 9728,
-     RFC 8414), dynamic client registration (RFC 7591), PKCE S256, a loopback
-     redirect on the daemon's Mac — on the same sign-in card (open the page
-     here; from another Mac, paste the address the page ended on).
-  2. Storage: client registration, access token, refresh token and expiry as
-     one JSON value in the squad's secret store under the server's `secret`
-     (`equipe.secrets:<squad>/<secret>`), never in a journal, an event or a
-     log; masked like any kept key.
-  3. Use: members get the server through a stdio MCP server of equipe's own
-     (`equipe mcp --server outside --name <server>`, started per member like
-     the desktop's), which forwards each JSON-RPC message to the remote
-     streamable-HTTP endpoint with `Authorization: Bearer …` added, and passes
-     the answers (JSON or SSE) back. The member's process never holds the
-     token — it isn't in its config, environment or files.
-  4. Refresh: on expiry, or a 401, the proxy asks the daemon (over its
-     socket) for a fresh token; the daemon refreshes it with the refresh
-     token, keeps the new pair, and answers. A refresh that fails marks the
-     server "needs sign-in" and puts one card up.
-  5. Status: from the last call's outcome and the token's expiry, not from
-     any engine.
+  store. It needs its key — never a sign-in — and stands connected once the
+  key is kept and the server takes it; a key it refuses shows as needing its
+  key again. The proxy adds the header in the daemon, as for a token.
+- **`engine`** (a fallback, `equipe mcp add … --engine-signin`): for a server
+  that won't let other apps register. Each engine's own CLI signs in and
+  keeps the token — `claude mcp login`, with the server added in local scope
+  to the squad's own folder (`squads/<squad>/mcp-signin`, under a lock, an
+  entry already there reused, so adding never fails with "already exists"),
+  or `codex mcp login` with a config override — and members get the
+  server's address. Its status comes from those tools (`claude mcp get`,
+  `codex mcp list --json`); one card per engine. Removed: the engines' own
+  entry and sign-in are cleared unless another squad uses the same server
+  that way.
 
 ## Left to the person
 
