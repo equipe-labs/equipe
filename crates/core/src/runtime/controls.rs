@@ -4,7 +4,7 @@
 //! (never the member's words), done by the daemon on the person's yes.
 
 use super::*;
-use crate::controls::{self, Change, ModelFit, Mover, engine_name};
+use crate::controls::{self, Change, McpAction, ModelFit, Mover, engine_name};
 
 impl Runtime {
     /// The squad's parallel work, kept and told; more room on max starts
@@ -105,6 +105,21 @@ impl Runtime {
             out.push(format!("- signal {} in {}: {}.", s.name, s.project, on(s.on)));
         }
         out.push(format!("\"Always allow\" rules: {}.", if allowed.is_empty() { "none".to_owned() } else { allowed.join(", ") }));
+        let outside = self.mcp_servers_of(squad);
+        let status = self.mcp_status_of(squad);
+        if outside.is_empty() {
+            out.push("Outside MCP servers (mcp_server): none.".into());
+        }
+        for server in &outside {
+            let roles = if server.roles.is_empty() { "every member".to_owned() } else { server.roles.join(", ") };
+            let stands = match status.iter().find(|s| s.name == server.name).map(|s| s.overall()) {
+                Some(crate::squad_mcp::McpState::Connected) => "connected",
+                Some(crate::squad_mcp::McpState::NeedsSignIn) => "needs the person's sign-in",
+                Some(crate::squad_mcp::McpState::Failing) => "failing",
+                _ => "not checked yet",
+            };
+            out.push(format!("- outside MCP server {} ({}) for {roles}: {}, {stands}.", server.name, server.url, on(server.enabled)));
+        }
         out.join("\n")
     }
 
@@ -251,6 +266,20 @@ impl Runtime {
                     return Err("You can't rest yourself: the PM stays on duty.".to_owned());
                 }
                 Command::SetResting { squad: squad_name, member, resting, stop: false }
+            }
+            Change::McpServer { action: McpAction::Add, name, url, roles, transport } => {
+                let server = crate::squad_mcp::server(&name, url.as_deref(), roles.as_deref(), transport.as_deref())?;
+                Command::AddMcpServer { squad: squad_name, server, sign_in: true }
+            }
+            Change::McpServer { action, name, .. } => {
+                let name = name.trim().to_ascii_lowercase();
+                if !self.mcp_servers_of(squad).iter().any(|s| s.name == name) {
+                    return Err(format!("The squad has no outside MCP server {name}; `settings` lists them."));
+                }
+                match action {
+                    McpAction::Remove => Command::RemoveMcpServer { squad: squad_name, name },
+                    _ => Command::SetMcpServerEnabled { squad: squad_name, name, on: action == McpAction::On },
+                }
             }
         })
     }
@@ -457,6 +486,24 @@ impl Runtime {
             }
             Change::Resting { member, resting: true } => say!(self, "control.resting_on", member = member),
             Change::Resting { member, resting: false } => say!(self, "control.resting_off", member = member),
+            Change::McpServer { action, name, url, roles, transport } => {
+                let kept = self.mcp_servers_of(squad).into_iter().find(|s| s.name == name.trim().to_ascii_lowercase());
+                let server = match action {
+                    McpAction::Add => crate::squad_mcp::server(name, url.as_deref(), roles.as_deref(), transport.as_deref()).ok(),
+                    _ => kept,
+                };
+                let name = server.as_ref().map_or_else(|| name.clone(), crate::squad_mcp::label);
+                let roles = match server.as_ref().map(|s| s.roles.clone()) {
+                    Some(r) if !r.is_empty() => r.join(", "),
+                    _ => say!(self, "control.mcp_everyone"),
+                };
+                match action {
+                    McpAction::Add => say!(self, "control.mcp_add", name = name, url = server.map(|s| s.url).unwrap_or_default(), roles = roles),
+                    McpAction::Remove => say!(self, "control.mcp_remove", name = name),
+                    McpAction::On => say!(self, "control.mcp_on", name = name, roles = roles),
+                    McpAction::Off => say!(self, "control.mcp_off", name = name),
+                }
+            }
         }
     }
 }

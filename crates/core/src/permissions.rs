@@ -139,6 +139,11 @@ pub fn person_only(command: &Command) -> bool {
         | C::RestartCliSignIn { .. }
         | C::CancelCliSignIn { .. }
         | C::RequestServiceKey { .. }
+        | C::AddMcpServer { .. }
+        | C::RemoveMcpServer { .. }
+        | C::SetMcpServerEnabled { .. }
+        | C::SignInMcpServer { .. }
+        | C::CheckMcpServers { .. }
         // The keys members kept: who may use them where, deleting them, and seeing one.
         | C::SquadSecrets
         | C::SetSquadSecretProjects { .. }

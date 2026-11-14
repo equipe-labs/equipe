@@ -54,7 +54,7 @@ impl Runtime {
     }
 
     /// A kept value: the masking list first (read once, at start), else the secret store.
-    fn key_value(&self, squad: &str, name: &str) -> Result<String, String> {
+    pub(super) fn key_value(&self, squad: &str, name: &str) -> Result<String, String> {
         if let Some(value) = ks::watched(&ks::watch_key(squad, name)) {
             return Ok(value);
         }

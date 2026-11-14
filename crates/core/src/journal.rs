@@ -930,6 +930,16 @@ impl Journal {
         Ok(pinned)
     }
 
+    /// The outside MCP servers the squad connected for its members
+    /// (`crate::squad_mcp`), in the order they were added.
+    pub fn mcp_servers(&self) -> Vec<equipe_protocol::mcp_servers::McpServer> {
+        self.meta("mcp_servers").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    pub fn set_mcp_servers(&self, servers: &[equipe_protocol::mcp_servers::McpServer]) -> Result<()> {
+        self.set_meta("mcp_servers", &serde_json::to_string(servers).unwrap_or_default())
+    }
+
     /// When the PM was last asked about the person's stale waits (unix seconds).
     pub fn stale_waits_asked_at(&self) -> Option<u64> {
         self.meta("stale_waits_asked_at").and_then(|at| at.parse().ok())

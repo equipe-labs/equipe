@@ -109,7 +109,7 @@ impl LoginsUi {
             scroll: ScrollHandle::new(),
             autopilot: super::autopilot::AutopilotUi::new(window, cx),
             keys: super::keys::KeysUi::new(window, cx),
-            connections: super::connections::ConnectionsUi::default(),
+            connections: super::connections::ConnectionsUi::new(window, cx),
             stops: RefCell::new(HashMap::new()),
         }
     }
@@ -1177,7 +1177,11 @@ impl Shell {
             ("connections", card) => {
                 self.snapshot_logins_seed(cx);
                 self.snapshot_connections_seed(card == "card");
+                if card == "mcp" || card == "mcp-signin" {
+                    self.snapshot_mcp_seed(card == "mcp-signin");
+                }
                 self.secrets_sync(window, cx);
+                self.cli_signin_sync(window, cx);
                 self.logins_ui.scroll.set_offset(point(px(0.), px(0.)));
             }
             _ => {}
@@ -1227,6 +1231,45 @@ impl Shell {
                     create_url: Some("https://vercel.com/account/tokens".into()),
                     scopes_hint: None,
                 }),
+            }];
+        }
+    }
+
+    /// Sample outside MCP servers for Connections, with no daemon asked: Mobbin
+    /// connected for designers and frontend engineers, waiting on a sign-in for
+    /// Codex, and a server of the squad's own by its address; `signin`: Mobbin's
+    /// sign-in card up, its page printed.
+    #[cfg(feature = "snapshot")]
+    pub fn snapshot_mcp_seed(&mut self, signin: bool) {
+        use equipe_core::protocol::Engine;
+        use equipe_core::protocol::cli_signin::{CliSignIn, Phase};
+        use equipe_core::protocol::mcp_servers::{McpEngineStatus, McpServerStatus, McpState};
+        let now = now_secs();
+        let mobbin = equipe_core::squad_mcp::server("mobbin", None, None, None).expect("the catalog's");
+        let docs = equipe_core::squad_mcp::server("acme-docs", Some("https://docs.acme.example/mcp"), Some(&["backend".to_owned()]), None).expect("a plain server");
+        let engine = |engine: Engine, state: McpState, detail: Option<&str>| McpEngineStatus { engine, state, detail: detail.map(str::to_owned), checked_at: now };
+        self.model.mcp_status = vec![
+            McpServerStatus { name: mobbin.name.clone(), engines: vec![engine(Engine::Claude, if signin { McpState::NeedsSignIn } else { McpState::Connected }, None)] },
+            McpServerStatus { name: docs.name.clone(), engines: vec![engine(Engine::Claude, McpState::Failing, Some("HTTP 503 from the server"))] },
+        ];
+        self.model.mcp_servers = vec![mobbin, docs];
+        if signin {
+            self.model.cli_sign_ins = vec![CliSignIn {
+                id: 91,
+                session: 0,
+                member: "designer".into(),
+                ticket: Some(14),
+                tool: "claude_mcp".into(),
+                name: "Mobbin (Claude Code)".into(),
+                profile: None,
+                why: equipe_core::squad_mcp::signin_why(&self.model.mcp_servers[0]),
+                url: Some("https://auth.example.com/oauth/authorize?client_id=x&redirect_uri=http%3A%2F%2Flocalhost%3A55531%2Fcallback".into()),
+                user_code: None,
+                wants_code: true,
+                phase: Phase::Waiting,
+                who: None,
+                detail: None,
+                at: now,
             }];
         }
     }
@@ -1290,5 +1333,6 @@ impl Shell {
         ui.note.update(cx, |s, cx| s.set_placeholder(t!("accounts.note_placeholder"), window, cx));
         ui.password.update(cx, |s, cx| s.set_placeholder(t!("accounts.password_placeholder"), window, cx));
         ui.signin.update(cx, |s, cx| s.set_placeholder(t!("loginspage.signin_placeholder"), window, cx));
+        ui.connections.relocalize(window, cx);
     }
 }

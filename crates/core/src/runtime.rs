@@ -82,6 +82,7 @@ mod gate;
 pub(crate) use gate::checks_scratch;
 mod secrets;
 mod cli_signin;
+mod squad_mcp;
 mod squad_keys;
 mod logins;
 mod window;
@@ -665,6 +666,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         autopilot: Default::default(),
         secret_asks: HashMap::new(),
         cli_signins: HashMap::new(),
+        mcp: squad_mcp::McpBook::default(),
         secret_env: HashMap::new(),
         secret_nudge: Default::default(),
         delta_tail: HashMap::new(),
@@ -1115,6 +1117,8 @@ enum Internal {
     Autopilot(autopilot::Note),
     /// A command-line sign-in's process, off the loop, has news ([`cli_signin::Note`]).
     CliSignIn(cli_signin::Note),
+    /// The engines' own tools said where a squad's outside MCP server stands ([`squad_mcp::Checked`]).
+    McpChecked(squad_mcp::Checked),
     /// A row of the sign-in record, from work done off the loop.
     LoginRecord { squad: String, entry: crate::logins::Entry },
     /// Something waits for a conversation to act on — work handed in for the
@@ -1460,6 +1464,9 @@ struct Runtime {
     secret_asks: HashMap<String, Vec<crate::protocol::secrets::SecretAsk>>,
     /// Command-line sign-ins the person is finishing on cards (`cli_sign_in`), by squad.
     cli_signins: HashMap<String, Vec<cli_signin::Live>>,
+    /// The squads' outside MCP servers: where each stands, checks under way,
+    /// and the sign-ins the person put off ([`squad_mcp`]).
+    mcp: squad_mcp::McpBook,
     /// Kept keys members asked their commands to get as environment
     /// variables (`secret_use`), by session: `(variable, key name)`. The value
     /// is looked up — and the right to it checked again — when a turn starts.
@@ -1545,6 +1552,7 @@ impl Wake {
             Wake::Internal(Internal::Relogin { .. }) => Borrowed("equipe's own sign-in ending"),
             Wake::Internal(Internal::Autopilot(_)) => Borrowed("login autopilot"),
             Wake::Internal(Internal::CliSignIn(_)) => Borrowed("a command-line sign-in"),
+            Wake::Internal(Internal::McpChecked(_)) => Borrowed("an outside MCP server checked"),
             Wake::Internal(Internal::LoginRecord { .. }) => Borrowed("a sign-in kept on the record"),
             Wake::Internal(Internal::DeskSaved { .. }) => Borrowed("a desk turn's changes saved"),
             Wake::Internal(Internal::Wake { .. }) => Borrowed("work waits for a conversation"),
@@ -1805,6 +1813,7 @@ impl Runtime {
                 Internal::Relogin { lane, outcome } => self.relogin_done(lane, outcome).await,
                 Internal::Autopilot(note) => self.autopilot_note(note).await,
                 Internal::CliSignIn(note) => self.cli_sign_in_note(note).await,
+                Internal::McpChecked(checked) => self.mcp_checked(checked),
                 Internal::LoginRecord { squad, entry } => self.login_record(&squad, entry),
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
@@ -2703,6 +2712,11 @@ impl Runtime {
             Command::RestartCliSignIn { squad, id } => self.restart_cli_sign_in(&squad, id),
             Command::CancelCliSignIn { squad, id } => self.cancel_cli_sign_in(&squad, id).await,
             Command::RequestServiceKey { squad, service } => self.request_service_key(&squad, &service),
+            Command::AddMcpServer { squad, server, sign_in } => self.add_mcp_server(&squad, server, sign_in),
+            Command::RemoveMcpServer { squad, name } => self.remove_mcp_server(&squad, &name),
+            Command::SetMcpServerEnabled { squad, name, on } => self.set_mcp_server_enabled(&squad, &name, on),
+            Command::SignInMcpServer { squad, name } => self.sign_in_mcp_server(&squad, &name),
+            Command::CheckMcpServers { squad } => self.check_mcp_servers(&squad, None, None),
             command @ (Command::SquadSecrets
             | Command::SetSquadSecretProjects { .. }
             | Command::DeleteSquadSecret { .. }
@@ -4934,6 +4948,12 @@ for one project goes to it as tickets for its owners, with that project — and 
             (Some(on), Some(sq)) => self.tickets(&sq).into_iter().find(|t| t.id == on).is_some_and(|t| crate::design::brand::is_branding(&t.title, &t.body)),
             _ => false,
         };
+        // The outside MCP servers the squad connected for this member's role,
+        // on its engine — a card for one that needs a sign-in, once (`squad_mcp`).
+        let outside: Vec<(crate::squad_mcp::McpServer, crate::squad_mcp::Credential)> = match &squad {
+            Some(sq) if board_tools && !lite => self.mcp_for_member(sq, id),
+            _ => Vec::new(),
+        };
         let Some(session) = self.sessions.get(&id) else {
             return;
         };
@@ -4997,7 +5017,30 @@ for one project goes to it as tickets for its owners, with that project — and 
                         args.extend([json!("--run"), json!(run)]);
                     }
                 }
-                Some(json!({ "mcpServers": servers }).to_string())
+                // The squad's outside servers: name and address, as they were signed in
+                // for — and a kept key's header, the whole config then in a private file.
+                for (server, credential) in &outside {
+                    servers[server.name.as_str()] = crate::squad_mcp::claude_entry(server, credential);
+                }
+                let config = json!({ "mcpServers": servers }).to_string();
+                let private = crate::squad_mcp::private_config_path(&self.config.home, id);
+                if crate::squad_mcp::carries_secret(&outside.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>()) {
+                    match crate::squad_mcp::write_private_config(&private, &config) {
+                        Ok(()) => Some(private.to_string_lossy().into_owned()),
+                        Err(err) => {
+                            crate::daemon_log!("equipe: {}'s MCP config couldn't be written privately ({err}): its keyed servers are left out", m.name);
+                            for (server, credential) in &outside {
+                                if matches!(credential, crate::squad_mcp::Credential::Header { .. }) && let Some(map) = servers.as_object_mut() {
+                                    map.remove(&server.name);
+                                }
+                            }
+                            Some(json!({ "mcpServers": servers }).to_string())
+                        }
+                    }
+                } else {
+                    let _ = std::fs::remove_file(&private);
+                    Some(config)
+                }
             }
             _ => None,
         };
@@ -5068,6 +5111,11 @@ for one project goes to it as tickets for its owners, with that project — and 
             let charter = roles::charter(role, &m.name, &roles::Context { skills: delivery, ..ctx });
             skill_plugin = Some((dir, offered));
             charter
+        });
+        // Told of its outside servers only when it has some: nobody else's charter changes.
+        let charter = charter.map(|text| match crate::squad_mcp::charter_note(&outside.iter().map(|(server, _)| server).collect::<Vec<_>>()) {
+            Some(note) => format!("{text}\n\n{note}"),
+            None => text,
         });
         watchdog::mark("turn start: engine");
         let (cwd, access, resume, history, ticket, add_dirs) = match &session.work {
@@ -5268,6 +5316,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                             server["tool_timeout_sec"] = json!(600);
                             servers[crate::phone::SERVER] = server;
                         }
+                        // The squad's outside servers: by address, Codex finding the sign-in by name and address.
+                        for (server, credential) in &outside {
+                            servers[server.name.as_str()] = crate::squad_mcp::codex_entry(server, matches!(mode, Mode::Auto | Mode::Full), credential);
+                        }
                         Some(servers)
                     }
                     _ => None,
@@ -5420,6 +5472,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                 }
                 if design.is_some() && matches!(mode, Mode::Auto | Mode::Full) {
                     allowed.push(format!("mcp__{DESIGN_SERVER}"));
+                }
+                // An outside server's tools ask in Ask, as the desktop's do; in Auto and Full they run.
+                if mcp_config.is_some() && matches!(mode, Mode::Auto | Mode::Full) {
+                    allowed.extend(outside.iter().map(|(server, _)| crate::squad_mcp::allowed_rule(server)));
                 }
                 // The ticket's own simulator or emulator, nothing else: no asking.
                 if phone {
@@ -9364,6 +9420,8 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
             role_models: self.journals.get(squad).map(Journal::role_models).unwrap_or_default(),
             secret_asks: self.secret_asks(squad).clone(),
             cli_sign_ins: self.cli_sign_in_cards(squad),
+            mcp_servers: self.mcp_servers_of(squad),
+            mcp_status: self.mcp_status_of(squad),
             login_offers: self.login_offers_now(),
             engine_proposals: self.engines.proposals(squad),
             hand_overs,
