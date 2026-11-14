@@ -36,6 +36,71 @@ pub fn browser_max(home: &Path, n: Option<&str>) -> Result<String, String> {
     }
 }
 
+/// The squad's speed as a few words: `Full speed — up to 6 tickets per member…`.
+pub fn speed_words(parallel: &equipe_core::protocol::lanes::Parallel) -> (String, String) {
+    use equipe_core::t;
+    if parallel.is_max() {
+        (t!("speed.full").to_owned(), t!("speed.full_about", per_member = parallel.per_member, per_engine = parallel.per_engine))
+    } else {
+        (t!("speed.balanced").to_owned(), t!("speed.balanced_about").to_owned())
+    }
+}
+
+/// What `equipe speed [full|balanced] [--per-member N] [--per-engine N]`
+/// asks for, against the speed the squad has: the new speed, or `None` when
+/// nothing was asked (say what it is). A cap named with no speed is a cap on
+/// full speed. Caps are kept on balanced too, so full speed comes back as the
+/// person left it.
+pub fn speed_change(now: equipe_core::protocol::lanes::Parallel, mode: Option<&str>, per_member: Option<u32>, per_engine: Option<u32>) -> Result<Option<equipe_core::protocol::lanes::Parallel>, String> {
+    use equipe_core::protocol::lanes::{MOST_PER_ENGINE, MOST_PER_MEMBER, Parallel, ParallelMode};
+    use equipe_core::t;
+    let cap = |name: &str, n: Option<u32>, most: u32| match n {
+        Some(n) if !(1..=most).contains(&n) => Err(t!("speed.bad_cap", name = name, most = most)),
+        other => Ok(other),
+    };
+    let (per_member, per_engine) = (cap("--per-member", per_member, MOST_PER_MEMBER)?, cap("--per-engine", per_engine, MOST_PER_ENGINE)?);
+    let mode = match mode {
+        Some(word) => ParallelMode::parse(word).ok_or_else(|| t!("speed.usage").to_owned())?,
+        None if per_member.is_some() || per_engine.is_some() => ParallelMode::Max,
+        None => return Ok(None),
+    };
+    Ok(Some(Parallel { mode, per_member: per_member.unwrap_or(now.per_member), per_engine: per_engine.unwrap_or(now.per_engine) }.clamped()))
+}
+
+/// `equipe speed …` for `squad`: what to tell the person. Through the daemon
+/// at `socket` when it runs — its screens and the work move at once — else
+/// kept in the squad's journal for when it does.
+pub async fn speed(home: &Path, socket: &Path, squad: &str, mode: Option<&str>, per_member: Option<u32>, per_engine: Option<u32>) -> Result<String, String> {
+    use equipe_core::protocol::{Command, Event};
+    use equipe_core::t;
+    let journal = equipe_core::journal::Journal::for_squad(home, squad).map_err(|err| format!("Couldn't open the squad's settings: {err}"))?;
+    let now = journal.parallel();
+    let Some(next) = speed_change(now, mode, per_member, per_engine)? else {
+        let (name, about) = speed_words(&now);
+        return Ok(t!("speed.now", mode = name, about = about));
+    };
+    if equipe_core::gateway::is_running(socket).await {
+        let (mut client, _) = equipe_core::gateway::Client::connect(socket, &crate::daemon::build_id(), squad).await.map_err(|e| e.to_string())?;
+        client.send(Command::SetParallel { squad: squad.to_owned(), parallel: next });
+        let answer = async {
+            while let Some(event) = client.next_event().await {
+                if matches!(&event, Event::ParallelChanged { squad: s, parallel } if s == squad && *parallel == next) {
+                    return true;
+                }
+            }
+            false
+        };
+        match tokio::time::timeout(std::time::Duration::from_secs(10), answer).await {
+            Ok(true) => {}
+            _ => return Err(t!("speed.no_answer").to_owned()),
+        }
+    } else {
+        journal.set_parallel(next).map_err(|err| format!("Couldn't keep it: {err}"))?;
+    }
+    let (name, about) = speed_words(&next);
+    Ok(t!("speed.set", mode = name, about = about))
+}
+
 /// What `equipe squad <words>` does. `dry_run` only checks the folder and says
 /// what would happen, so a screen can ask before it does.
 pub fn squad(home: &Path, cwd: &Path, current: Option<String>, words: &[&str], dry_run: bool) -> Result<Vec<String>, String> {
@@ -202,6 +267,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn speed_changes_follow_the_words_and_a_cap_alone_is_a_cap_on_full_speed() {
+        use equipe_core::protocol::lanes::{Parallel, ParallelMode};
+        let now = Parallel::default();
+        assert_eq!(speed_change(now, None, None, None).unwrap(), None, "nothing asked: say what it is");
+        assert_eq!(speed_change(now, Some("full"), None, None).unwrap(), Some(Parallel::max(6, 16)));
+        assert_eq!(speed_change(now, Some("Full speed"), Some(4), None).unwrap(), Some(Parallel::max(4, 16)));
+        assert_eq!(speed_change(now, None, Some(4), Some(10)).unwrap(), Some(Parallel::max(4, 10)), "caps alone: full speed at them");
+        assert_eq!(speed_change(Parallel::max(8, 20), Some("balanced"), None, None).unwrap(), Some(Parallel { mode: ParallelMode::Auto, per_member: 8, per_engine: 20 }), "balanced keeps the caps full speed comes back to");
+        assert!(speed_change(now, Some("full"), Some(13), None).unwrap_err().contains("--per-member") && speed_change(now, None, None, Some(0)).is_err());
+        assert!(speed_change(now, Some("warp"), None, None).unwrap_err().contains("equipe speed"));
+        let (name, about) = speed_words(&Parallel::max(8, 20));
+        assert!(name == "Full speed" && about.contains('8') && about.contains("20"), "{name}: {about}");
+    }
+
+    #[tokio::test]
+    async fn with_no_daemon_a_speed_is_kept_in_the_journal_and_read_back() {
+        let home = scratch("speed");
+        let socket = home.join("equipe.sock");
+        equipe_core::squads::create_without_project(&home, "acme").unwrap();
+        let said = speed(&home, &socket, "acme", None, None, None).await.unwrap();
+        assert!(said.starts_with("Speed: Balanced"), "{said}");
+        let said = speed(&home, &socket, "acme", Some("full"), Some(4), None).await.unwrap();
+        assert!(said.starts_with("Speed set to Full speed") && said.contains("4 tickets per member"), "{said}");
+        assert_eq!(equipe_core::journal::Journal::for_squad(&home, "acme").unwrap().parallel(), equipe_core::protocol::lanes::Parallel::max(4, 16));
+        assert!(speed(&home, &socket, "acme", None, None, None).await.unwrap().starts_with("Speed: Full speed"));
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

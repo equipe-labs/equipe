@@ -342,6 +342,12 @@ impl Runtime {
         self.engines.loads = loads.into_iter().collect();
     }
 
+    /// How much of `engine`'s plan the week burns a day at its pace of late,
+    /// in basis points, when known.
+    pub(super) fn week_burn(&self, engine: Engine) -> Option<u32> {
+        self.engines.loads.get(&engine).and_then(|l| l.pace).map(|p| p.per_day_bp)
+    }
+
     /// The engines' latest readings, each with its week's pace when known.
     fn readings(&self) -> Vec<Reading> {
         self.engines
