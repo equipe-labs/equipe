@@ -16,6 +16,20 @@ a fraction of a screenshot.
 `key`, `open_app`, `focus_window`, `elements`. One member at a time, only after the person has left the Mac alone for a
 while. Use them for what the tree can't reach: a canvas, a game, an app whose tree is empty, a shortcut (`key`).
 
+## Permissions are never the person's errand
+
+For an app's screenshot, a click, typing or a dialog — Office's "Grant File Access" included — use these `desktop`
+tools (`screenshot`, `snapshot`, `act`), never shell `screencapture` or `osascript` UI scripting: the shell runs as
+the command-line binary, which has no permission and never will. equipe's desktop tools run as equipe itself and
+already hold Accessibility and Screen Recording whenever the person has switched them on. Never ask the person to add
+or grant anything to equipe's binary, to open Privacy & Security panes, or to restart equipe; such a hand-off is
+refused when the desktop already has the permission. If the screen is locked, wait for it to unlock.
+
+If a desktop tool says a permission is missing, don't write steps: call `block_on_person` with
+`permission: ["screen_recording"]` and/or `["accessibility"]`. The person gets one card with one button that asks
+macOS and opens System Settings at the right pane (on another Mac the card says where to do it), plus "Reveal equipe
+in Finder" for the drag-in case. Then end your turn; the tools work by themselves once it is on.
+
 ## The loop
 
 1. **Look.** `snapshot` with `app`. A small app: that's all. A big one (Slack, Teams, Xcode): `skeleton: true` first,

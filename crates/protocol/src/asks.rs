@@ -363,9 +363,59 @@ fn answer_words() -> &'static [&'static str] {
     crate::words::every("match.answers")
 }
 
+/// A macOS permission equipe's desktop control holds for the person, and the
+/// one card that asks for it ([`permission_ask`]): never a list of steps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Permission {
+    /// Accessibility: reading apps and acting in them.
+    Accessibility,
+    /// Screen Recording: pictures of the screen.
+    ScreenRecording,
+}
+
+impl Permission {
+    pub const ALL: [Permission; 2] = [Permission::Accessibility, Permission::ScreenRecording];
+
+    /// Its name on the wire, as a member passes it to `block_on_person`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Permission::Accessibility => "accessibility",
+            Permission::ScreenRecording => "screen_recording",
+        }
+    }
+
+    pub fn parse(key: &str) -> Option<Permission> {
+        let key = key.trim().to_lowercase().replace([' ', '-'], "_");
+        Permission::ALL.into_iter().find(|p| p.key() == key)
+    }
+}
+
+/// What an ask that is a permission card starts with.
+pub const PERMISSION_MARK: &str = "equipe-permission:";
+
+/// The ask that screens draw as the permission card (one primary button that
+/// asks macOS and opens System Settings at the pane, and "Reveal equipe in
+/// Finder") instead of as text: `equipe-permission: accessibility, screen_recording`.
+pub fn permission_ask(kinds: &[Permission]) -> String {
+    let mut kinds = kinds.to_vec();
+    kinds.sort();
+    kinds.dedup();
+    format!("{PERMISSION_MARK} {}", kinds.iter().map(|k| k.key()).collect::<Vec<_>>().join(", "))
+}
+
+/// The permissions a permission-card ask names, or `None` for any other ask.
+pub fn permission_kinds(ask: &str) -> Option<Vec<Permission>> {
+    let rest = ask.trim().strip_prefix(PERMISSION_MARK)?;
+    let kinds: Vec<Permission> = rest.split(',').filter_map(Permission::parse).collect();
+    (!kinds.is_empty()).then_some(kinds)
+}
+
 /// What `ask` wants back: an OK when it asks for a look (and says what an OK
 /// would be), words when it asks something, else a thing to do.
 pub fn want_of(ask: &str) -> Want {
+    if permission_kinds(ask).is_some() {
+        return Want::Do;
+    }
     // A link's `?` and words aren't the ask's: `…/new?plan=free` asks nothing.
     let lower: String = ask.to_lowercase().split_whitespace().filter(|w| !w.contains("://")).collect::<Vec<_>>().join(" ");
     // A word in a script that spaces its words, ASCII aside, counts at a
@@ -487,6 +537,17 @@ impl crate::Ticket {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_permission_card_is_one_ask_that_round_trips_and_is_a_thing_to_do() {
+        let ask = permission_ask(&[Permission::ScreenRecording, Permission::Accessibility, Permission::ScreenRecording]);
+        assert_eq!(ask, "equipe-permission: accessibility, screen_recording");
+        assert_eq!(permission_kinds(&ask), Some(vec![Permission::Accessibility, Permission::ScreenRecording]));
+        assert_eq!(permission_kinds("Turn on Accessibility for equipe"), None);
+        assert_eq!(permission_kinds("equipe-permission: nonsense"), None);
+        assert_eq!(want_of(&ask), Want::Do);
+        assert_eq!(Permission::parse("Screen Recording"), Some(Permission::ScreenRecording));
+    }
 
     #[test]
     fn a_setting_to_make_is_a_thing_to_do_not_a_question() {

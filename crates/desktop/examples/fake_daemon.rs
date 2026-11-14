@@ -55,7 +55,8 @@
 //! contact) and a thing to do (the EU DSA status in App Store Connect), as the
 //! person once saw it — with its news last in the PM's conversation;
 //! `FAKE_TURN=files` asks the older three, one naming a folder with spaces and
-//! a file it made under the app's repository; `FAKE_TURN=elsewhere` also
+//! a file it made under the app's repository; `FAKE_TURN=permission` asks for
+//! Accessibility and Screen Recording as the one-click permission card; `FAKE_TURN=elsewhere` also
 //! answers it from "another screen" after `FAKE_TURN_AFTER` ms (default 5000).
 //!
 //! `FAKE_DECIDE=1` has the PM put a decision to the person — two questions,
@@ -941,7 +942,15 @@ fn turn_ticket() -> Ticket {
     let _ = std::fs::create_dir_all(&shots);
     let _ = std::fs::write(repo("app").join("listing.json"), "{ \"name\": \"equipe\" }\n");
     let files = your_turn().as_deref() == Some("files");
-    let asks: Vec<String> = if files { TURN_ASKS_FILES.iter().map(|a| (*a).to_owned()).collect() } else { TURN_ASKS.iter().map(|a| (*a).to_owned()).collect() };
+    // `FAKE_TURN=permission`: the one card a member's permission steps become.
+    let permission = your_turn().as_deref() == Some("permission");
+    let asks: Vec<String> = if permission {
+        vec![equipe_core::protocol::asks::permission_ask(&equipe_core::protocol::asks::Permission::ALL)]
+    } else if files {
+        TURN_ASKS_FILES.iter().map(|a| (*a).to_owned()).collect()
+    } else {
+        TURN_ASKS.iter().map(|a| (*a).to_owned()).collect()
+    };
     let note = equipe_core::protocol::asks::waiting_note(&asks, Some("Needed for the App Store review submission"));
     let mut t = ticket(117, "waiting", "app", "frontend", "App Store submission", "Submit 1.0 in App Store Connect.", &[], None, Some(&note));
     t.kind = equipe_core::protocol::TicketKind::Task;

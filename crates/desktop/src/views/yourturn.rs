@@ -120,6 +120,8 @@ pub struct Card {
     pub current: Option<usize>,
     /// The member's session, when a sign-in view of its browser is open here.
     pub view: Option<SessionId>,
+    /// The daemon's Mac, when it isn't the one in front of the person.
+    pub far: Option<String>,
 }
 
 impl Card {
@@ -173,6 +175,7 @@ impl Card {
             now: crate::state::now_unix(),
             current,
             view,
+            far: model.remote.then(|| model.host.clone()),
         }))
     }
 
@@ -446,7 +449,10 @@ fn line(card: &Card, d: &Draw<'_>, n: usize, ask: &str) -> AnyElement {
     let reply = card.replies.get(n).cloned().unwrap_or_default();
     let set = !reply.is_empty();
     let done = reply == Reply::Done;
-    let words: String = equipe_core::protocol::links::words(ask).lines().next().unwrap_or_default().replace("**", "").replace('`', "");
+    let words: String = match asks::permission_kinds(ask) {
+        Some(kinds) => permission_words(&kinds, &card.member(), card.far.as_deref()).title,
+        None => equipe_core::protocol::links::words(ask).lines().next().unwrap_or_default().replace("**", "").replace('`', ""),
+    };
     let handle = d.handle.clone();
     h_flex()
         .id(("turn-line", hash(d.key, n)))
@@ -510,7 +516,11 @@ fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElem
     let shown = rules::mark_paths(&words, card.named.get(n).map(Vec::as_slice).unwrap_or_default());
     let link_rows = super::links::rows(p, hash(key, n << 3 | 7), &link_list, card.view, &d.handle);
     let quiet = done || matches!(reply, Reply::Yours | Reply::Later);
-    let text = super::chat::markdown(p, ("turn-ask", hash(key, n)), &shown, crate::theme::UI, crate::theme::UI_PROSE_LINE, if quiet { p.muted } else { p.text }, &d.handle);
+    // A permission asked for with `block_on_person`'s `permission`: one card, one button.
+    let text = match asks::permission_kinds(ask) {
+        Some(kinds) => permission_card(card, d, n, &kinds, quiet),
+        None => super::chat::markdown(p, ("turn-ask", hash(key, n)), &shown, crate::theme::UI, crate::theme::UI_PROSE_LINE, if quiet { p.muted } else { p.text }, &d.handle).into_any_element(),
+    };
     let files = card.named.get(n).filter(|f| !f.is_empty()).map(|files| h_flex().flex_wrap().gap_1p5().children(files.iter().enumerate().map(|(k, f)| file_chip(p, f, hash(key, n << 8 | k)))));
     let answering = d.place != Place::Side;
     // The box, faded while a pick stands in for it (typing takes the pick back).
@@ -551,6 +561,75 @@ fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElem
         .items_start()
         .child(number)
         .child(v_flex().flex_1().min_w_0().gap_2().child(text).children(link_rows).children(files).children(field).children(attached).children(choices).children(note).children(next.map(|b| h_flex().justify_end().child(b))))
+        .into_any_element()
+}
+
+/// What the permission card says, in the person's language: its title and
+/// body, naming the Mac when the daemon is on another one (and then saying
+/// where to do it, with no button that would open the wrong Mac).
+pub struct PermissionWords {
+    pub title: String,
+    pub body: String,
+    /// The daemon's Mac is the one in front of the person: the buttons work here.
+    pub can_open: bool,
+}
+
+pub fn permission_words(kinds: &[asks::Permission], member: &str, far: Option<&str>) -> PermissionWords {
+    let names: Vec<&str> = kinds
+        .iter()
+        .map(|k| match k {
+            asks::Permission::Accessibility => t!("turn.permission_accessibility"),
+            asks::Permission::ScreenRecording => t!("turn.permission_screen"),
+        })
+        .collect();
+    let names = match names.as_slice() {
+        [one] => (*one).to_owned(),
+        [first, second] => t!("turn.permission_and", first = *first, second = *second).to_owned(),
+        _ => names.join(", "),
+    };
+    match far {
+        Some(host) => PermissionWords {
+            title: t!("turn.permission_title_far", names = names.as_str(), host = host).to_owned(),
+            body: t!("turn.permission_body_far", host = host, names = names.as_str(), name = member).to_owned(),
+            can_open: false,
+        },
+        None => PermissionWords {
+            title: t!("turn.permission_title", names = names.as_str()).to_owned(),
+            body: t!("turn.permission_body", name = member).to_owned(),
+            can_open: true,
+        },
+    }
+}
+
+/// The card for a missing permission: what it is, one primary button that is
+/// the person-initiated flow (macOS's own prompt, and System Settings open at
+/// the exact pane — `Command::DesktopCheck { guide: true }`, on the daemon's
+/// Mac), and "Reveal equipe in Finder" for the drag-in case.
+fn permission_card(card: &Card, d: &Draw<'_>, n: usize, kinds: &[asks::Permission], quiet: bool) -> AnyElement {
+    let p = d.p;
+    let words = permission_words(kinds, &card.member(), card.far.as_deref());
+    let handle = d.handle.clone();
+    let buttons = words.can_open.then(|| {
+        h_flex()
+            .flex_wrap()
+            .gap_2()
+            .child(ui::button(p, ("turn-permission-open", hash(d.key, n)), Kind::Primary, t!("turn.permission_open")).icon(Icon::Shield).on_click(move |_, _, cx| {
+                // Asks macOS (once, on this click) and opens System Settings at the pane still off.
+                handle.update(cx, |shell, cx| {
+                    shell.send_command(Command::DesktopCheck { guide: true });
+                    cx.notify();
+                }).ok();
+            }))
+            .child(ui::button(p, ("turn-permission-reveal", hash(d.key, n)), Kind::Secondary, t!("turn.permission_reveal")).icon(Icon::Folder).on_click(move |_, _, _| {
+                crate::relaunch::reveal();
+            }))
+    });
+    v_flex()
+        .w_full()
+        .gap_2()
+        .child(div().text_size(px(crate::theme::UI)).line_height(px(crate::theme::UI_PROSE_LINE)).font_weight(FontWeight::SEMIBOLD).text_color(if quiet { p.muted } else { p.text }).child(words.title))
+        .child(div().text_size(px(13.)).line_height(px(19.)).text_color(p.muted).child(words.body))
+        .children(buttons)
         .into_any_element()
 }
 
@@ -1035,5 +1114,25 @@ impl Shell {
             }
             None => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `gpui_kit::*` brings a `test` macro of its own into scope.
+    #[core::prelude::v1::test]
+    fn the_permission_card_names_the_mac_and_only_opens_it_where_it_is() {
+        let both = [asks::Permission::Accessibility, asks::Permission::ScreenRecording];
+        let near = permission_words(&both, "designer", None);
+        assert!(near.can_open, "System Settings opens on this Mac");
+        assert!(near.body.contains("designer") && !near.body.contains('{') && !near.title.contains('{'), "{} / {}", near.title, near.body);
+        let far = permission_words(&both[1..], "designer", Some("Tinum's Mac Mini"));
+        assert!(!far.can_open, "no button that would open the wrong Mac");
+        assert!(far.title.contains("Tinum's Mac Mini") && far.body.contains("Tinum's Mac Mini"), "{} / {}", far.title, far.body);
+        assert_ne!(near.title, far.title);
+        // One permission and two read differently.
+        assert_ne!(permission_words(&both[1..], "designer", None).title, near.title);
     }
 }
