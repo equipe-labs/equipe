@@ -17,7 +17,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::*;
 use gpui_kit::*;
 
-use crate::icons::{Icon, icon};
+use crate::icons::Icon;
 use crate::motion;
 use crate::theme::{CONTROL, MONO, R_LG, R_MD, SMALL, look};
 use crate::ui::{self, Kind};
