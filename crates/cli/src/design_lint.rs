@@ -81,6 +81,9 @@ pub struct SecondLookArgs {
     /// The brief (default: design/brand.md)
     #[arg(long)]
     pub brief: Option<PathBuf>,
+    /// A reference it is held to: a best-in-class product's screen for a pattern it uses, at about the same width (repeatable)
+    #[arg(long = "reference")]
+    pub references: Vec<PathBuf>,
     /// Who looks (default: as the squad sets it — the other engine when it has room, else a fresh run of this one)
     #[arg(long, value_parser = ["codex", "claude"])]
     pub engine: Option<String>,
@@ -319,6 +322,9 @@ pub async fn second_look(args: SecondLookArgs) -> Result<(), String> {
     if pictures.is_empty() {
         return Err(format!("{screen}'s pictures are gone: check it again with --render"));
     }
+    if let Some(missing) = args.references.iter().find(|p| !p.is_file()) {
+        return Err(format!("{}: no such picture", missing.display()));
+    }
     let read = |p: &Path| std::fs::read_to_string(p).ok();
     let brief = args.brief.clone().or_else(|| Some(design.join("brand.md"))).and_then(|p| read(&p));
     let criteria = args.criteria.as_ref().map(|c| if Path::new(c).is_file() { read(Path::new(c)).unwrap_or_default() } else { c.clone() });
@@ -331,6 +337,7 @@ pub async fn second_look(args: SecondLookArgs) -> Result<(), String> {
         tokens: Some(design.join("tokens.json")).filter(|p| p.is_file()),
         first: args.first,
         kept: rec.summary.waived.clone(),
+        references: args.references.clone(),
     };
     if args.prompt {
         println!("{}", second_look::prompt(&ask));

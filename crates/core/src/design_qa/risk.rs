@@ -8,7 +8,8 @@
 //! - a new S1/S2 finding the engineer didn't waive: the hand-in is
 //!   **refused** back to the engineer at once (no designer turn);
 //! - a high-risk change — new screens or states on the UI map, many screens
-//!   at once, a designer's spec attached, findings the engineer waived, a
+//!   at once, a designer's spec across more than one screen (a spec'd tweak
+//!   of one screen is a small change), findings the engineer waived, a
 //!   re-check after a designer's send-back, or what the precheck couldn't
 //!   see: a designer looks at it now (**per ticket**), in a light session;
 //! - everything else goes on without a designer turn and is collected into
@@ -252,7 +253,10 @@ pub fn route(ask: &RouteAsk<'_>) -> RouteCall {
     if r.changed_screens().len() >= broad {
         risks.push(Risk::Broad);
     }
-    if ask.spec {
+    // A spec held to one screen, with nothing new on it, is a small change:
+    // the daily review checks it; a new screen or a wider change still gets
+    // its own look.
+    if ask.spec && r.changed_screens().len() > 1 {
         risks.push(Risk::Spec);
     }
     if ask.recheck {
@@ -527,7 +531,9 @@ mod tests {
         let broad = report((0..BROAD_SCREENS).map(|n| shot(&format!("app/s{n}/default"), true, true)).collect(), vec![]);
         assert_eq!(routed(&broad, |_| {}).risks, [Risk::Broad]);
         let small = report(vec![shot("settings/main/default", true, true)], vec![]);
-        assert_eq!(routed(&small, |a| a.spec = true).risks, [Risk::Spec]);
+        assert_eq!(routed(&small, |a| a.spec = true).route, Route::Batch, "a spec'd tweak of one screen is a small change");
+        let two = report(vec![shot("settings/main/default", true, true), shot("settings/profile/default", true, true)], vec![]);
+        assert_eq!(routed(&two, |a| a.spec = true).risks, [Risk::Spec]);
         assert_eq!(routed(&small, |a| a.recheck = true).risks, [Risk::Recheck]);
         let large = Report { unmapped: (0..12).map(|i| format!("src/components/C{i}.tsx")).collect(), ..small.clone() };
         let call = routed(&large, |_| {});

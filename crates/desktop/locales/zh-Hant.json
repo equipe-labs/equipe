@@ -1603,6 +1603,8 @@
   "check.rule.image-size": "圖片尺寸",
   "check.rule.line-length": "行長",
   "check.rule.touch-target": "觸控區域",
+  "check.rule.type-sizes": "字級數量",
+  "check.rule.border-levels": "邊框層級",
   "flows.video_ask": "請人錄製影片",
   "flows.video_ask_message": "請錄製一段從頭到尾走完介面地圖中「{flow}」流程的影片：equipe design flows record --flow {flow_id}。標出每個畫面出現的時間，就能在這裡直接找到。",
   "flows.video_elsewhere": "這部影片要在執行守護程式的 Mac 上播放。路徑已複製：{path}",

@@ -300,7 +300,7 @@ say when (`crates/core/skills/design-tools/` and the rest).
 | `check [dir] [--json]` | What to fix before handing in: tokens the screen can't read, no semantic layer, no component tokens, no dark values, text under AA (a component's text against its own fill), no family for the script the product is written in (read from the language of `brand.md` and `guidelines.md` — Korean, Japanese, Chinese, Arabic, Hebrew, Thai, Devanagari; right to left said where it applies), body line height, no `brand.md` or voice, no logo or dark logo, no component previews, the stock looks of AI-made screens. Exits non-zero on errors. |
 
 | `lint <files\|folder\|url> [--render] [--url …] [--widths …] [--tier floor\|all] [--screen flow/screen] [--json]` | Holds a screen to its design system in code (below). Exits 1 when the floor fails, 2 when habits are left, 0 when clean. `--waive <id> --why "…"` keeps a habit; `--rules` lists every rule. |
-| `second-look <flow/screen> [--first] [--criteria …]` | A fresh, read-only reviewer judges the checked pictures, given only them, the brief and criteria, and the system's guidelines and tokens; its verdict is kept on the screen's record. `--prompt` / `--answer <file>` for a fresh subagent when no engine can run. |
+| `second-look <flow/screen> [--first] [--criteria …] [--reference <picture>…]` | A fresh, read-only reviewer judges the checked pictures, given only them, the brief and criteria, the system's guidelines and tokens, and the references of the screen's patterns when given — then it also answers whether the screen is in their quality tier (`tier`: `same`, `below`, `no references`; `below` is never a pass); its verdict is kept on the screen's record. `--prompt` / `--answer <file>` for a fresh subagent when no engine can run. |
 | `direction propose\|choose\|list` | The directions proposed and chosen (`design/directions/log.json`) by layout, type, palette, density and motion; a proposal that repeats a recent chosen one in every dimension the brand leaves free, or differs from its fellow options only in colour, is refused. |
 | `kept record\|check <files\|url> --screen …` | A screen's links, fields, actions and headings, recorded before a redesign (`design/kept/`) and checked after; a removal only where the brief or a decision says `Remove <kind>: <item>`. |
 | `refs sources\|search\|shoot\|add\|board\|list` | A brief's reference board, below. |
@@ -308,12 +308,90 @@ say when (`crates/core/skills/design-tools/` and the rest).
 | `type <Heading/Body>… [--locales en,ko,…\|all]` | One to four Google Fonts pairs set as a specimen — headline at 56, 36 and 24, lede, body, UI labels, figures — and each other language's headline and body; what each family lacks of each language (from the `unicode-range`s Google Fonts serves), its licence (from its folder in Google Fonts' repository) and what the specimen loaded of it. `design/type/specimen.{html,png}`. |
 | `component <page \| registry item \| npx shadcn add line>` | A public component's source into `design/vendor/<name>/` with a `SOURCE.md`: where it came from, when, its licence and dependencies, and every colour, palette class, family and remote picture to restyle to the tokens. A registry its site closes to tools (robots.txt) or that wants a key is not fetched: its page and licence are recorded, and that is said. |
 
+### Reference research and the quality bar — every screen
+
+A designer's screens are held to the level of the best products, not to the
+level of the screen it was handed (the `design-references` skill,
+`crates/core/skills/design-references/`; the role text says it in one line).
+
+- **Research before designing.** For a screen or component, the designer lists
+  the patterns it uses (data table, KPI tile, filter bar, side navigation,
+  chart, empty state, toast, sheet…) and, for each, keeps three to six
+  best-in-class examples from real products in the project's
+  `design/references/<pattern>/` — their pictures, and a `notes.md` with each
+  one's source and date, what to take (density, spacing, hierarchy,
+  interaction), what to leave, and its fit for this product. Notes are reused
+  on later tickets and refreshed when stale (older than six months) or thin.
+  References are internal study material: patterns, structure and proportion,
+  never another product's brand, assets or words. A paid library only through
+  its official MCP server or API when the squad has connected one; a site
+  behind a sign-in is never scraped.
+- **Sources are per project and squad**: `design/references/sources.md` in the
+  project, else in the squad's shared `design/`, a line per source with what it
+  is good for, the kinds of product it fits and how it is reached. Fit is
+  respected: marketing-site galleries are for landing pages, never for a dense
+  dashboard. The suggested starting list
+  (`crates/core/skills/design-references/references/sources.md`) — public,
+  generic, nothing paid:
+
+- Carbon Design System — https://carbondesignsystem.com — good for: data tables, filters, dashboards, forms, notifications — fits: dense tools — access: public
+- Polaris — https://polaris-react.shopify.com — good for: admin layouts, index tables, filters, empty states, settings — fits: dense tools — access: public
+- Primer — https://primer.style — good for: navigation, lists, tables, forms, status — fits: dense tools, developer tools — access: public
+- Geist (Vercel) — https://vercel.com/geist — good for: dashboards, tables, navigation, empty states, type and spacing scales — fits: dense tools, developer tools — access: public
+- Atlassian Design System — https://atlassian.design — good for: navigation, tables, forms, messages — fits: dense tools — access: public
+- shadcn/ui blocks — https://ui.shadcn.com/blocks — good for: dashboards, sidebars, KPI cards, charts, sign-in — fits: dense tools, SaaS apps — access: public
+- shadcn/ui registry — https://ui.shadcn.com/docs/components — good for: proven components to build a real page on (React, Tailwind) — fits: dense tools, SaaS apps — access: public — kind: component registry
+- 21st.dev — https://21st.dev — good for: community components and blocks for React, Tailwind and shadcn/ui — fits: SaaS apps, marketing sites — access: public, or mcp:<its official server> (the free tier limits copies a day) — kind: component registry
+- Material Design 3 — https://m3.material.io — good for: components, navigation, states, motion — fits: consumer apps, mobile — access: public
+- Apple Human Interface Guidelines — https://developer.apple.com/design/human-interface-guidelines — good for: platform patterns, navigation, sheets, settings — fits: mobile, desktop apps — access: public
+- GOV.UK Design System — https://design-system.service.gov.uk — good for: forms, one question per page, error messages, plain content — fits: forms and public services — access: public
+- Nielsen Norman Group articles — https://www.nngroup.com/articles — good for: why a pattern works, interaction details, states — fits: any product (writing, not pictures) — access: public
+- Lapa Ninja — https://www.lapa.ninja — good for: landing pages, hero sections, pricing — fits: marketing sites only — access: browser
+- Land-book — https://land-book.com — good for: landing pages, page sections — fits: marketing sites only — access: browser
+
+- **The quality bar.** Every judgment of a screen — the designer's own, the
+  critic's (`equipe design critique … --reference`), the second look's
+  (`--reference`) and design QA's — puts it beside its patterns' references at
+  the same size and answers: same quality tier? Where not, it names concrete
+  differences (density, type scale, spacing rhythm, borders and surfaces,
+  information said twice, primary-action clarity, alignment). The taste
+  checklist: one primary action per view; no card inside a card; at most two
+  levels of borders or surfaces; no information said twice; two or three type
+  sizes per block; one spacing scale; tabular figures; the width used
+  sensibly. Countable parts are counted — design QA's precheck reports
+  `nested-cards`, `border-levels`, `type-sizes` (per block), `duplicate-text`
+  and `primary-actions` as polish, and `lint --render` notes `type-sizes` (per
+  screen) and `border-levels`; the rest is judged. Below the bar, the critic
+  says `revise`, the second look `fix`; in design QA a gap the build opened
+  against its spec is a blocker, and one the spec itself has is polish plus one
+  design ticket to raise it.
+- **Options worth a choice.** Options put to the person grow from named
+  reference families and differ in concept (layout model, density, hierarchy);
+  two strong beat three similar, and the critic rejects a near-duplicate set.
+  Each is built as a real page on the project's own component library (or a
+  proven open one for its stack) under `design/directions/<name>/`, starting
+  from a proven component in a component registry where the stack has one
+  (through the registry's official MCP server or API when the squad connected
+  it), restyled to the project's tokens, its source and licence noted; never a
+  premium component the squad hasn't licensed.
+- **Locked, and reset once.** A system the person accepted is locked and
+  day-to-day tickets build inside it. A foundation that keeps screens below
+  their references (type scale, spacing, surfaces, colour, density) can be
+  reset once: the designer proposes it as the person's decision, with the
+  references as evidence; once chosen it is a design system ticket of its own,
+  and the new system is locked again.
+- **Small changes stay small.** A tweak to an existing screen is one version,
+  compared with its references and iterated by the designer, then lint and the
+  second look (its critic); no directions, comparison sheet, brief or decision
+  card unless it holds a taste call. In `risk_batch` design QA a spec'd change
+  of one screen with nothing new goes to the daily review; new screens and
+  wide changes keep their own design QA.
+
 ### References and taste — `equipe design refs`
 
 These are for brand work — a brand, a rebrand, a new visual direction — and
-only brand work changes what a designer is told: every other ticket's charter,
-skills and board tools are exactly as before (`members_without_phone` pins
-them). A ticket is brand work when its body has a line `Design: brand` (or
+only brand work gets this full pass and its `design_tools` board tool; every
+other ticket's board tools are as before (`members_without_phone` pins them). A ticket is brand work when its body has a line `Design: brand` (or
 `Design: rebrand`, `Design: new direction`), the PM's explicit flag, or when
 its title or body asks for one in so many words — a rebrand, a brand or visual
 identity, a new visual direction (`design::brand::is_branding`). On such a
@@ -376,7 +454,8 @@ id, a tier, what it checks and how to fix it (`equipe design lint --rules`).
   exception is a `Waive` line scoped to its file or screen. The registry's own
   components and the theme's stylesheet aren't held to it.
 - **Finish** — said, never blocking: name the token, tabular figures, heading
-  order, image size, line length, touch targets.
+  order, image size, line length, touch targets, more than six type sizes on a
+  screen, boxes framed more than two deep.
 
 The source is read loosely (CSS, HTML, JSX, Vue, Svelte). `--render` draws
 the page in the Mac's Chrome at 360, 390, 768, 1024, 1280, 1440 and 1920:

@@ -8,7 +8,8 @@
 //     sits on (in its dark scheme too, where it has one, at the narrowest
 //     and widest widths), whether focus shows as Tab moves through the controls, where
 //     the elements marked data-primary are, how much text is centred, the
-//     radius and shadow of raised blocks, line lengths and target sizes; and
+//     radius and shadow of raised blocks, line lengths, target sizes and how
+//     deep framed boxes sit in framed boxes; and
 //     a picture, whole (<width>.png) and the first screenful (<width>.first.png).
 //   lint.mjs <url|file> --inventory --json <file>
 //     what the page offers: its links, fields, actions and headings.
@@ -158,6 +159,28 @@ const measure = () => {
     const r = el.getBoundingClientRect();
     return { selector: name(el), w: r.width, h: r.height };
   });
+  // Boxes drawn as boxes — a border on three sides or more, or a shadow that
+  // shows — and how many such boxes deep each sits; controls and table cells
+  // have borders of their own and aren't counted.
+  const clear = (c) => /rgba\([^)]*[,/]\s*0(\.0+)?\)/.test(c) || c === 'transparent';
+  const framed = (el) => {
+    if (el.matches('a, button, input, select, textarea, hr, img, td, th, tr, thead, tbody, tfoot, [role=button]')) return false;
+    const st = getComputedStyle(el);
+    if (st.display === 'inline' || st.display === 'contents') return false;
+    const sides = ['Top', 'Right', 'Bottom', 'Left'].filter((s) => parseFloat(st[`border${s}Width`]) > 0 && st[`border${s}Style`] !== 'none' && !clear(st[`border${s}Color`])).length;
+    const shadow = st.boxShadow !== 'none' && st.boxShadow.split(/,(?![^(]*\))/).some((part) => !clear((part.match(/rgba?\([^)]*\)/) || [''])[0]));
+    if (sides < 3 && !shadow) return false;
+    const r = el.getBoundingClientRect();
+    return r.width >= 80 && r.height >= 32 && shown(el);
+  };
+  const boxes = new Set(all.filter(framed));
+  const frames = [];
+  for (const el of boxes) {
+    let depth = 1;
+    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) if (boxes.has(p)) depth++;
+    if (depth > 2) frames.push({ selector: name(el), depth });
+  }
+  frames.sort((a, b) => b.depth - a.depth);
   return {
     scrollWidth: document.documentElement.scrollWidth,
     clientWidth: vw,
@@ -169,6 +192,7 @@ const measure = () => {
     blocks,
     lines,
     targets,
+    frames: frames.slice(0, 10),
   };
 };
 

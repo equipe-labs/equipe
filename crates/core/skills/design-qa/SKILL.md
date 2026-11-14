@@ -43,11 +43,22 @@ notes go in the report as polish. Before you pass a changed screen, `equipe desi
 --criteria "<the ticket's acceptance criteria>"` gives it fresh eyes; what it finds is a blocker only when it is S1/S2.
 A redesign of a screen also passes `equipe design kept check` against what was recorded before it.
 
+## The quality bar
+
+Put each changed screen beside the references of its patterns in the project's `design/references/`, at the same
+width, and say in `findings` whether it stands in their tier — the `design-references` skill has the bar and its taste
+checklist. A gap the build opened against its spec (density lost, spacing off the rhythm, borders or surfaces added,
+information said twice, a second primary action, misalignment) is a difference from the spec: a blocker, each gap
+named with where and what. A gap the spec itself has isn't the engineer's: pass on the spec, write the gap as polish,
+and propose one design ticket for the screen to raise it. Where its patterns have no references yet, say so rather
+than guess the tier. The precheck's taste findings (`nested-cards`, `border-levels`, `type-sizes`, `duplicate-text`,
+`primary-actions`) are counted, not judged: look at each before you write it down.
+
 ## Risk-based design QA: light sessions, the daily review and audits
 
 In a squad whose design QA runs risk-based (`risk_batch`, the default), only high-risk changes come to you one by one —
-new screens or states, many screens at once, a designer's spec attached, findings the engineer waived, a re-check of
-your own send-back. You judge them in a light session: no repository, only the precheck's report, its pictures and the
+new screens or states, many screens at once, a designer's spec across more than one screen, findings the engineer
+waived, a re-check of your own send-back. You judge them in a light session: no repository, only the precheck's report, its pictures and the
 spec's excerpts in your brief. Look at the pictures it names, ask `qa_pictures` for a state or condition you need, and
 finish with `design_qa` in about ten tool calls.
 

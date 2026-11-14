@@ -151,9 +151,12 @@ sizes, and show them to the person, rendered on a real screen of the product, no
 component's rules (its markdown and preview) are its spec: the platform's ticket turns them into a component in that \
 platform's code, and design QA compares the built screens with that component and the sheet.\n\
 How you work is in your skills — open the matching one before you start, every time: `design-system` for the \
-`design/` folder, a project's setup, its brand and its system; `design-process` for any work that brings the person \
-options; `design-tools` before you run `equipe design …`; `ui-map` whenever a screen, state or flow changes; \
-`design-qa` on a design QA ticket. Taste calls — brand direction, colours, typefaces, which option — are the person's: offer \
+`design/` folder, a project's setup, its brand and its system; `design-process` for any design work, a small change \
+included; `design-references` before you design, redesign or judge a screen or component; `design-tools` before you \
+run `equipe design …`; `ui-map` whenever a screen, state or flow changes; `design-qa` on a design QA ticket. Hold \
+every screen to the level of the best products, not of the screen you were handed: build inside the system the \
+person accepted, and where that system itself keeps screens below it, propose a one-time foundation reset to the \
+person rather than patch inside it. Taste calls — brand direction, colours, typefaces, which option — are the person's: offer \
 options with reasons and let them decide, and remember what they chose. Never grade your own work, and never show \
 the person a picture the critic hasn't seen: every direction, refined screen and revision goes first to a fresh \
 critic — the other engine when it's available — as `design-process` says. Check accessibility in the browser's accessibility tree, \
@@ -2098,6 +2101,57 @@ invent one."), "{id}: true numbers");
     }
 
     #[test]
+    fn the_designer_studies_the_best_products_per_pattern_and_holds_every_screen_to_their_tier() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "designer", role: "designer" }];
+        let c = ctx(&team, &[], true);
+        let charter = charter(role("designer").unwrap(), "designer", &c);
+        for part in ["`design-references` before you design, redesign or judge a screen or component", "not of the screen you were handed", "propose a one-time foundation reset to the person"] {
+            assert!(charter.contains(part), "the role text, always on: {part}");
+        }
+        let refs = skill("designer", &c, "design-references");
+        for part in [
+            // Research per pattern, kept and reused.
+            "`design/references/<pattern>/notes.md`",
+            "three to six best-in-class examples",
+            "- Take: density, spacing, hierarchy, interaction",
+            "Reuse it when it holds at least three examples",
+            // Sources per project and squad, with their fit; paid libraries only officially.
+            "the project's `design/references/sources.md`, else `design/references/sources.md` in the squad's folder",
+            "a gallery of marketing sites is for landing pages, never the reference for a dense dashboard",
+            "A paid library only through its official MCP server or API",
+            "never another product's brand, logo, icons, illustrations, pictures or words",
+            // The bar, the options, the lock.
+            "is it in the same quality tier?",
+            "Two strong options beat three similar ones",
+            "on its own component library",
+            "`design/directions/<name>/`",
+            "look for a proven component in a component registry",
+            "Never paste a premium or paid component the squad hasn't licensed",
+            "can be reset once",
+            "the new system is locked again",
+            "The choice is theirs",
+        ] {
+            assert!(refs.contains(part), "{part}: {refs}");
+        }
+        // The critic, the second look and the skill say the bar in the same words.
+        assert!(refs.contains(crate::design::critique::TIER_GAPS) && refs.contains(crate::design::critique::TASTE_CHECKLIST), "{refs}");
+        let process = skill("designer", &c, "design-process");
+        for part in ["First size the work. A small change", "iterate yourself until it stands in their tier", "no design QA ticket of its own", "never open one yourself", "differ in concept"] {
+            assert!(process.contains(part), "{part}");
+        }
+        // Every existing guarantee still reaches the designer.
+        for part in ["Never grade your own work", "never show the person a picture the critic hasn't seen", "are the person's", "A hand-in is refused until every UI file you edited", "on which you change only its `design/`", "Applied is done"] {
+            assert!(told("designer", "designer", &c).contains(part), "{part}");
+        }
+        // The suggested sources in the docs are the skill's, line for line.
+        let docs = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/DESIGN-SYSTEM.md")).unwrap();
+        let suggested = include_str!("../skills/design-references/references/sources.md");
+        for line in suggested.lines().filter(|l| l.starts_with("- ")) {
+            assert!(docs.contains(line), "docs/DESIGN-SYSTEM.md lacks: {line}");
+        }
+    }
+
+    #[test]
     fn the_designer_keeps_the_design_system_in_its_folder_in_the_tokens_format() {
         let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "designer", role: "designer" }];
         let text = skill("designer", &ctx(&team, &[], true), "design-system");
@@ -2121,10 +2175,10 @@ invent one."), "{id}: true numbers");
             "from the system, not from the screen",
             "in its own repository, under its `design/` folder",
             "only principles shared by every project",
-            // The steps, three real options side by side, the person deciding.
+            // The steps, references per pattern, options that differ in concept side by side, the person deciding.
             "define the problem",
-            "collect references",
-            "at least three genuinely different options",
+            "research references for each pattern it uses",
+            "two or three options that differ in concept",
             "one comparison sheet",
             "full fidelity",
             "hand off a spec an engineer can build without guessing",

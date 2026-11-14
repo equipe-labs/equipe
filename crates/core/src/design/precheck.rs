@@ -7,7 +7,8 @@
 //! 200% and with the page zoomed to 200% (18 conditions by default). In each
 //! rendered page `precheck.mjs` measures what is deterministic: text cut off
 //! by its box, text over text, what reaches past the window, the page
-//! scrolling sideways, and axe-core's WCAG A/AA rules. Each normal picture is
+//! scrolling sideways, axe-core's WCAG A/AA rules, and the countable part of
+//! the designer's taste checklist ([`Taste`], polish only). Each normal picture is
 //! compared, pixel by pixel, with the map's picture committed at the base.
 //!
 //! The judging is here, so it is tested like the rest: [`assemble`] turns the
@@ -495,6 +496,54 @@ pub struct Dom {
     pub clipped: Vec<Clip>,
     pub overlaps: Vec<Overlap>,
     pub axe: Option<Axe>,
+    /// The taste checklist's countable part; never a blocker.
+    pub taste: Option<Taste>,
+}
+
+/// What `precheck.mjs` counts of the taste checklist (the `design-references`
+/// skill): what the designer's judgment weighs, said as polish.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Taste {
+    /// Framed boxes (a border on three sides or more, or a shadow) inside
+    /// framed boxes: a card in a card, or three levels or more.
+    pub frames: Vec<Framed>,
+    /// Blocks (framed boxes with none inside) setting more than three type sizes.
+    pub blocks: Vec<TypeBlock>,
+    /// A label or heading said two or three times on one screen.
+    pub repeated: Vec<Repeated>,
+    /// Buttons that look primary in the first screenful, when there are two or more.
+    pub primaries: Vec<Placed>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Framed {
+    pub selector: String,
+    /// How many framed boxes deep, itself counted.
+    pub depth: u32,
+    /// Two levels, both with rounded corners: a card in a card.
+    pub card_in_card: bool,
+    pub rect: Rect,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TypeBlock {
+    pub selector: String,
+    /// Its distinct type sizes, in px.
+    pub sizes: Vec<u32>,
+    pub rect: Rect,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Repeated {
+    pub text: String,
+    pub count: u32,
+    /// The second time it is said.
+    pub selector: String,
+    pub rect: Rect,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1046,6 +1095,24 @@ fn judge(t: &Taken, condition: &Condition) -> Vec<Finding> {
             push(&format!("axe/{}", v.id), wcag && serious, if wcag && serious { Class::Content } else { Class::Cosmetic }, node.map_or("", |n| n.target.as_str()), "", format!("{} — {}{more}", v.help, v.impact), node.and_then(|n| n.rect));
         }
     }
+    // The taste checklist's countable part: polish, read at normal size only.
+    if let Some(taste) = dom.taste.as_ref().filter(|_| condition.variant == Variant::Normal) {
+        for f in &taste.frames {
+            let (rule, evidence) = if f.card_in_card && f.depth == 2 { ("nested-cards", "a card inside a card".to_owned()) } else { ("border-levels", format!("{} framed boxes deep (two at most)", f.depth)) };
+            push(rule, false, Class::Cosmetic, &f.selector, "", evidence, Some(f.rect));
+        }
+        for b in &taste.blocks {
+            let sizes = b.sizes.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
+            push("type-sizes", false, Class::Cosmetic, &b.selector, "", format!("{} type sizes in one block ({sizes}px; two or three is enough)", b.sizes.len()), Some(b.rect));
+        }
+        for r in &taste.repeated {
+            push("duplicate-text", false, Class::Cosmetic, &r.selector, &r.text, format!("said {} times on one screen", r.count), Some(r.rect));
+        }
+        if let Some(first) = taste.primaries.first().filter(|_| taste.primaries.len() >= 2) {
+            let all = taste.primaries.iter().map(|p| format!("“{}”", clip(&p.text, 20))).collect::<Vec<_>>().join(", ");
+            push("primary-actions", false, Class::Cosmetic, &first.selector, &first.text, format!("{} buttons look primary in the first screenful: {all}", taste.primaries.len()), Some(first.rect));
+        }
+    }
     out
 }
 
@@ -1457,6 +1524,26 @@ mod tests {
                 ("axe/region".to_owned(), Severity::Polish),
             ]
         );
+    }
+
+    #[test]
+    fn the_taste_checklists_countable_part_is_polish_at_normal_size_only() {
+        let taste = Taste {
+            frames: vec![Framed { selector: "div.kpi".into(), depth: 2, card_in_card: true, rect: Rect::default() }, Framed { selector: "div.badge".into(), depth: 3, card_in_card: false, rect: Rect::default() }],
+            blocks: vec![TypeBlock { selector: "div.kpi".into(), sizes: vec![11, 12, 13, 28], rect: Rect::default() }],
+            repeated: vec![Repeated { text: "Net asset value".into(), count: 2, selector: "h3".into(), rect: Rect::default() }],
+            primaries: vec![Placed { selector: "button".into(), text: "Export".into(), rect: Rect::default() }, Placed { selector: "button".into(), text: "Add fund".into(), rect: Rect::default() }],
+        };
+        let normal = Condition::new(1280, "light", Variant::Normal);
+        let t = Taken { key: "funds/overview/default".into(), condition: normal.code(), dom: Some(Dom { scroll_width: 1280., client_width: 1280., taste: Some(taste), ..Dom::default() }), ..Taken::default() };
+        let found = judge(&t, &normal);
+        let rules: Vec<&str> = found.iter().map(|f| f.rule.as_str()).collect();
+        assert_eq!(rules, ["nested-cards", "border-levels", "type-sizes", "duplicate-text", "primary-actions"]);
+        assert!(found.iter().all(|f| f.severity == Severity::Polish && f.class == Class::Cosmetic), "never a blocker");
+        let said: Vec<&str> = found.iter().map(|f| f.evidence.as_str()).collect();
+        assert!(said.contains(&"4 type sizes in one block (11, 12, 13, 28px; two or three is enough)") && said.contains(&"2 buttons look primary in the first screenful: “Export”, “Add fund”"), "{said:?}");
+        let large = Condition::new(1280, "light", Variant::Text200);
+        assert!(judge(&Taken { condition: large.code(), ..t }, &large).is_empty(), "text at 200% isn't a taste call");
     }
 
     #[test]

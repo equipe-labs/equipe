@@ -35,6 +35,10 @@ pub struct Ask {
     pub first: bool,
     /// What the lint found and the designer kept on purpose, so it isn't asked again.
     pub kept: Vec<(String, String)>,
+    /// The best products' screens for the patterns it uses (the project's
+    /// `design/references/`), drawn at about the same width: the tier it is
+    /// held to.
+    pub references: Vec<PathBuf>,
 }
 
 /// How much of the guidelines it is given.
@@ -60,18 +64,32 @@ thing the eye lands on the thing that matters most? Is the hierarchy clear at ea
 crowd, stack badly or bury the primary action? Is the spacing on one rhythm, are things aligned to a grid, does the \
 type read as one system? Does it use the system's components and roles, or invent its own? Is every word real \
 copy — no placeholder, no invented figures, customers or quotes? Does it look like this product, or like any \
-generated template?\n\
+generated template? Each failure of the taste checklist is a fix too: {checklist}.\n\
 \n\
 Ask only for facts the brief, the project's files or the design system give. When the screen needs a fact none of \
 them has — a name, a label, a number, a date — that is not a fix and not a reason to withhold a pass: put it in \
 \"questions\", with neutral wording the screen can use until someone answers.";
+
+/// With references: the tier question.
+fn tier(references: &[PathBuf]) -> String {
+    let mut out = format!(
+        "Beside it, the references: the best products' screens for the patterns it uses, drawn at about the same width. \
+Is the screen in the same quality tier? Below it is a fix: name each concrete difference — {} — tied to a region.\n\
+The references:",
+        super::critique::TIER_GAPS
+    );
+    for path in references {
+        out.push_str(&format!("\n- {}", path.display()));
+    }
+    out
+}
 
 const FIRST: &str = "These pictures are only the first screenful of a new screen, before the rest of it is built. Judge \
 whether this opening is right to build on: what it leads with, its hierarchy, its density and its tone. Don't ask \
 for what is below the fold.";
 
 const ANSWER: &str = "Answer with one JSON object and nothing after it:\n\
-{\"verdict\": \"pass\" | \"fix\", \"summary\": \"two sentences on the whole\", \"fixes\": [{\"where\": \"the region \
+{\"verdict\": \"pass\" | \"fix\", \"summary\": \"two sentences on the whole\", \"tier\": \"same\" | \"below\" | \"no references\", \"fixes\": [{\"where\": \"the region \
 (top bar, second card, the form at 360)\", \"what\": \"what to change\", \"why\": \"what it costs the person now\"}], \
 \"questions\": [{\"what\": \"the fact that is missing\", \"wording\": \"what the screen can say without it\"}]}\n\
 Say \"pass\" only when nothing needs fixing before a person sees it; polish you'd merely like is not a fix. Worst \
@@ -79,7 +97,7 @@ fix first, at most eight, each tied to a region and, where it differs, a width. 
 
 /// The prompt: the reviewer's role, what it is given, and how to answer.
 pub fn prompt(ask: &Ask) -> String {
-    let mut out = String::from(ROLE);
+    let mut out = ROLE.replace("{checklist}", super::critique::TASTE_CHECKLIST);
     if ask.first {
         out.push_str("\n\n");
         out.push_str(FIRST);
@@ -87,6 +105,10 @@ pub fn prompt(ask: &Ask) -> String {
     out.push_str(&format!("\n\nThe screen: {}\nIts pictures, one per width:", ask.screen));
     for (width, path) in &ask.pictures {
         out.push_str(&format!("\n- {width}px: {}", path.display()));
+    }
+    if !ask.references.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(&tier(&ask.references));
     }
     if let Some(criteria) = ask.criteria.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
         out.push_str(&format!("\n\nWhat it must do (the acceptance criteria):\n<criteria>\n{criteria}\n</criteria>"));
@@ -118,7 +140,7 @@ pub fn command(engine: Engine, ask: &Ask, answer: &Path) -> (String, Vec<String>
     match engine {
         Engine::Codex => {
             let mut args: Vec<String> = ["exec", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--color", "never"].map(String::from).into();
-            for (_, image) in &ask.pictures {
+            for image in ask.pictures.iter().map(|(_, p)| p).chain(&ask.references) {
                 args.extend(["--image".into(), image.display().to_string()]);
             }
             args.extend(["--output-last-message".into(), answer.display().to_string(), text]);
@@ -144,9 +166,11 @@ pub fn verdict_of(answer: &str) -> Option<Verdict> {
             let questions: Vec<Question> = value.get("questions").and_then(|q| serde_json::from_value(q.clone()).ok()).unwrap_or_default();
             let questions: Vec<Question> = questions.into_iter().filter(|q| !q.what.trim().is_empty()).collect();
             // A missing fact is asked, never a fix: a "fix" answer that lists
-            // nothing to fix but questions passes.
-            let pass = (v.trim().eq_ignore_ascii_case("pass") || !questions.is_empty()) && fixes.is_empty();
-            found = Some(Verdict { pass, fixes, questions, summary: value.get("summary").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned(), ..Verdict::default() });
+            // nothing to fix but questions passes. Below its references' tier never does.
+            let said = |key: &str| value.get(key).and_then(serde_json::Value::as_str).unwrap_or_default().trim().to_owned();
+            let tier = said("tier");
+            let pass = (v.trim().eq_ignore_ascii_case("pass") || !questions.is_empty()) && fixes.is_empty() && !tier.eq_ignore_ascii_case("below");
+            found = Some(Verdict { pass, fixes, questions, summary: said("summary"), tier, ..Verdict::default() });
         }
     }
     found
@@ -155,6 +179,9 @@ pub fn verdict_of(answer: &str) -> Option<Verdict> {
 /// The verdict as a person reads it.
 pub fn text(v: &Verdict) -> String {
     let mut out = format!("{}{}\n", if v.pass { "Pass" } else { "Fix" }, if v.summary.is_empty() { String::new() } else { format!(" — {}", v.summary) });
+    if !v.tier.is_empty() {
+        out.push_str(&format!("Tier against the references: {}\n", v.tier));
+    }
     for f in &v.fixes {
         out.push_str(&format!("- {}: {}{}\n", f.place, f.what, if f.why.is_empty() { String::new() } else { format!(" ({})", f.why) }));
     }
@@ -193,7 +220,35 @@ mod tests {
             tokens: Some("design/tokens.json".into()),
             first: false,
             kept: vec![("tracked-caps".into(), "the brand's labels".into())],
+            references: vec![],
         }
+    }
+
+    #[test]
+    fn with_references_it_judges_the_tier_and_always_the_taste_checklist() {
+        let bare = prompt(&ask());
+        assert!(bare.contains(crate::design::critique::TASTE_CHECKLIST) && !bare.contains("{checklist}"), "the checklist, with or without references");
+        assert!(!bare.contains("Beside it, the references"));
+        let refs = vec![PathBuf::from("design/references/kpi-tile/a-1280.png"), PathBuf::from("design/references/filter-bar/b-1280.png")];
+        let given = Ask { references: refs, ..ask() };
+        let p = prompt(&given);
+        for must in ["same quality tier", "Below it is a fix", crate::design::critique::TIER_GAPS, "- design/references/kpi-tile/a-1280.png", "\"tier\": \"same\" | \"below\""] {
+            assert!(p.contains(must), "{must}");
+        }
+        let (_, args) = command(Engine::Codex, &given, Path::new("a.md"));
+        let images: Vec<&str> = args.windows(2).filter(|w| w[0] == "--image").map(|w| w[1].as_str()).collect();
+        assert_eq!(
+            images,
+            ["design/checks/settings/notifications/360.png", "design/checks/settings/notifications/1280.png", "design/references/kpi-tile/a-1280.png", "design/references/filter-bar/b-1280.png"],
+            "the references attached after the work"
+        );
+        let v = verdict_of("{\"verdict\": \"fix\", \"tier\": \"below\", \"summary\": \"Looser than the references.\", \"fixes\": [{\"where\": \"KPI row\", \"what\": \"tighten to the references' density\"}]}").unwrap();
+        assert!(!v.pass && v.tier == "below");
+        assert!(!verdict_of("{\"verdict\": \"pass\", \"tier\": \"below\", \"fixes\": []}").unwrap().pass, "below the references' tier is never a pass");
+        assert!(verdict_of("{\"verdict\": \"pass\", \"tier\": \"same\", \"fixes\": []}").unwrap().pass);
+        assert!(text(&v).contains("Tier against the references: below"), "{}", text(&v));
+        let older: Verdict = serde_json::from_str("{\"pass\": true}").unwrap();
+        assert!(older.tier.is_empty(), "a verdict kept before tiers reads back");
     }
 
     #[test]

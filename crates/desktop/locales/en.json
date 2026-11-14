@@ -1653,6 +1653,8 @@
   "check.rule.image-size": "Image size",
   "check.rule.line-length": "Line length",
   "check.rule.touch-target": "Touch target",
+  "check.rule.type-sizes": "Type sizes",
+  "check.rule.border-levels": "Border levels",
   "flows.video_ask": "Ask for a video",
   "flows.video_ask_message": "Please record a video going through the “{flow}” flow of the UI map from start to finish: equipe design flows record --flow {flow_id}. Mark when each screen comes so it can be found here at once.",
   "flows.video_elsewhere": "This video plays on the Mac the daemon runs on. Its path is copied: {path}",

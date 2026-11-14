@@ -1653,6 +1653,8 @@
   "check.rule.image-size": "Bildgröße",
   "check.rule.line-length": "Zeilenlänge",
   "check.rule.touch-target": "Touch-Fläche",
+  "check.rule.type-sizes": "Schriftgrößen",
+  "check.rule.border-levels": "Rahmenebenen",
   "flows.video_ask": "Video anfragen",
   "flows.video_ask_message": "Bitte nimm ein Video auf, das den Ablauf „{flow}“ der UI-Karte von Anfang bis Ende durchläuft: equipe design flows record --flow {flow_id}. Markiere, wann jeder Screen kommt, damit er sich hier sofort finden lässt.",
   "flows.video_elsewhere": "Dieses Video läuft auf dem Mac, auf dem der Daemon läuft. Pfad kopiert: {path}",

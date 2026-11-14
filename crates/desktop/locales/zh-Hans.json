@@ -1603,6 +1603,8 @@
   "check.rule.image-size": "图片尺寸",
   "check.rule.line-length": "行长",
   "check.rule.touch-target": "触控区域",
+  "check.rule.type-sizes": "字号数量",
+  "check.rule.border-levels": "边框层级",
   "flows.video_ask": "请人录制视频",
   "flows.video_ask_message": "请录制一段从头到尾走完界面地图中“{flow}”流程的视频：equipe design flows record --flow {flow_id}。标出每个界面出现的时间，就能在这里直接找到。",
   "flows.video_elsewhere": "这个视频要在运行守护进程的 Mac 上播放。路径已复制：{path}",

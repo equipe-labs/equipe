@@ -75,6 +75,11 @@ const SOURCES: &[Source] = &[
         offered: |r, _| matches!(r.id, "designer" | "frontend"),
     },
     Source { dir: "design-process", files: &[file!("design-process", "SKILL.md")], offered: |r, _| r.id == "designer" },
+    Source {
+        dir: "design-references",
+        files: &[file!("design-references", "SKILL.md"), file!("design-references", "references/sources.md")],
+        offered: |r, _| r.id == "designer",
+    },
     Source { dir: "design-tools", files: &[file!("design-tools", "SKILL.md")], offered: |r, _| r.id == "designer" },
     Source {
         dir: "ui-map",
@@ -456,7 +461,7 @@ mod tests {
         let base = ctx(&team);
         let all = Context { browser: true, desktop: true, design: true, ..ctx(&team) };
         assert_eq!(names(PM, &base), ["office-hours", "planning", "working-with-design", "routines-and-signals", "product-ideas", "research-report"]);
-        assert_eq!(names("designer", &base), ["plan-review", "research-report", "design-system", "design-process", "design-tools", "ui-map", "design-qa"]);
+        assert_eq!(names("designer", &base), ["plan-review", "research-report", "design-system", "design-process", "design-references", "design-tools", "ui-map", "design-qa"]);
         assert!(names("designer", &all).contains(&"design-remix".to_owned()));
         assert_eq!(names("frontend", &base), ["plan-review", "research-report", "design-system", "ui-floor"]);
         // An engineer gets the component system, not the designer's setup of a brand.
