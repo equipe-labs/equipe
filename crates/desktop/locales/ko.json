@@ -1608,6 +1608,8 @@
   "check.rule.image-size": "이미지 크기",
   "check.rule.line-length": "줄 길이",
   "check.rule.touch-target": "터치 영역",
+  "check.rule.type-sizes": "글자 크기 수",
+  "check.rule.border-levels": "테두리 중첩",
   "flows.video_ask": "영상 만들어 달라고 하기",
   "flows.video_ask_message": "화면 지도의 ‘{flow}’ 흐름을 처음부터 끝까지 지나가는 영상을 녹화해 주세요: equipe design flows record --flow {flow_id}. 화면마다 나오는 때를 표시해 두면 여기서 바로 찾아볼 수 있어요.",
   "flows.video_elsewhere": "이 영상은 데몬이 있는 Mac에서 재생돼요. 경로를 복사했어요: {path}",

@@ -1608,6 +1608,8 @@
   "check.rule.image-size": "画像サイズ",
   "check.rule.line-length": "行の長さ",
   "check.rule.touch-target": "タップ領域",
+  "check.rule.type-sizes": "文字サイズの数",
+  "check.rule.border-levels": "枠の入れ子",
   "flows.video_ask": "動画を頼む",
   "flows.video_ask_message": "画面マップの「{flow}」フローを最初から最後まで通る動画を録画してください: equipe design flows record --flow {flow_id}。画面ごとに出てくるタイミングを記しておくと、ここですぐ探せます。",
   "flows.video_elsewhere": "この動画はデーモンのある Mac で再生されます。パスをコピーしました: {path}",

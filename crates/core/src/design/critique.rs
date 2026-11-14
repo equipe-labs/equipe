@@ -90,15 +90,29 @@ impl Ask {
     }
 }
 
-/// The rubric: the whole first, then the details, each finding on a region.
-const RUBRIC: &str = "You are a sceptical senior product designer critiquing another designer's work. Find faults; do not \
+/// Where a screen falls short of its references' tier, said concretely: what
+/// every judgment of a screen names (the critic, the second look, the
+/// `design-references` skill, which says it word for word).
+pub const TIER_GAPS: &str = "density, type scale, spacing rhythm, how many borders and surfaces, information said twice, \
+how clear the primary action is, alignment";
+
+/// The taste checklist every judgment of a screen holds it to (the
+/// `design-references` skill says it word for word).
+pub const TASTE_CHECKLIST: &str = "one primary action per view; no card inside a card; at most two levels of borders or \
+surfaces; no information said twice; two or three type sizes per block; one spacing scale, kept; tabular figures \
+wherever numbers line up; the content using the width sensibly — no thin column lost in a wide window, no line of text \
+across all of it";
+
+/// The rubric: the whole first, then the quality tier against the
+/// references, then the details, each finding on a region.
+const RUBRIC_WHOLE: &str = "You are a sceptical senior product designer critiquing another designer's work. Find faults; do not \
 praise, and do not soften. You did not make this, and you are not grading effort.\n\
 \n\
 First the whole. At a three-second glance, and again squinting: where does the eye go first, second, third — and is \
 that the right order? Does it breathe — whitespace, rhythm, a clear grid — or is it cramped or scattered? Next to the \
-reference, does it look finished and expensive, or like a template? Hide the logo: could this be another company?\n\
-\n\
-Then the details: hierarchy and density; alignment and spacing on one scale; type (scale, line length, set for \
+reference, does it look finished and expensive, or like a template? Hide the logo: could this be another company?";
+
+const RUBRIC_DETAILS: &str = "Then the details: hierarchy and density; alignment and spacing on one scale; type (scale, line length, set for \
 the product's language — a family with its script, its line breaking, right to left where it reads so, no orphans — \
 numbers in tabular figures); colour roles and contrast (text under WCAG AA \
 is a blocker); brand fidelity against the brief; states and real copy (placeholder text, missing empty or error \
@@ -110,6 +124,8 @@ it fixed — say so plainly.\n\
 Answer in this shape, in the language of the brief:\n\
 ## Whole\n\
 Two or three sentences on the impression, against the reference.\n\
+## Tier\n\
+`same` or `below` the references' tier, and the differences that decide it — or `no references` when none was given.\n\
 ## Findings\n\
 One line each, worst first: `[blocker|polish] <picture> · <region> — what is wrong — what to do`. A blocker must \
 be fixed before the person sees it; polish should be. Name the region (top bar, hero headline, second card, \
@@ -117,9 +133,24 @@ footer…), never just \"the page\".\n\
 ## Verdict\n\
 `revise` or `show` — show only when no blocker is left — and the one change that would help most.";
 
+/// The quality tier: the work beside its references at the same size, and
+/// the taste checklist.
+fn tier() -> String {
+    format!(
+        "Then the quality tier. Beside the references — the best products' screens for the patterns this uses, drawn at the \
+same size — is it in the same quality tier? Where it isn't, name each concrete difference: {TIER_GAPS}. Below their tier \
+is a blocker. With no reference given, judge it against the best products you know of its kind. Hold it to this \
+checklist too, each failure a finding: {TASTE_CHECKLIST}.\n\
+\n\
+When the pictures are options for one choice, compare them first: each should grow from a different reference family \
+and differ in concept — layout model, density, hierarchy. A set where two options share all three and differ only in \
+small tweaks is a blocker: name the near-duplicates; two strong options beat three similar ones."
+    )
+}
+
 /// The prompt for the critic: the rubric, the brief, and what each picture is.
 pub fn prompt(ask: &Ask) -> String {
-    let mut out = String::from(RUBRIC);
+    let mut out = format!("{RUBRIC_WHOLE}\n\n{}\n\n{RUBRIC_DETAILS}", tier());
     let list = |title: &str, paths: &[PathBuf], out: &mut String| {
         if paths.is_empty() {
             return;
@@ -226,6 +257,11 @@ mod tests {
         let whole = p.find("three-second glance").expect("the whole first");
         assert!(p.find("Then the details").unwrap() > whole);
         for part in ["squinting", "breathe", "expensive", "Hide the logo", "loses the whole", "[blocker|polish]", "region", "`revise` or `show`"] {
+            assert!(p.contains(part), "{part}");
+        }
+        let tier = p.find("Then the quality tier").expect("the tier against the references");
+        assert!(tier > whole && p.find("Then the details").unwrap() > tier);
+        for part in ["same quality tier", TIER_GAPS, "Below their tier is a blocker", TASTE_CHECKLIST, "## Tier", "`no references`", "options for one choice", "is a blocker: name the near-duplicates"] {
             assert!(p.contains(part), "{part}");
         }
         for path in ["shots/home-1280.png", "design/references/linear/home.png", "shots/round1/home-1280.png"] {

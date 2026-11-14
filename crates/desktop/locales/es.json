@@ -1658,6 +1658,8 @@
   "check.rule.image-size": "Tamaño de imagen",
   "check.rule.line-length": "Longitud de línea",
   "check.rule.touch-target": "Área táctil",
+  "check.rule.type-sizes": "Tamaños de letra",
+  "check.rule.border-levels": "Niveles de borde",
   "flows.video_ask": "Pedir un vídeo",
   "flows.video_ask_message": "Graba un vídeo que recorra de principio a fin el flujo «{flow}» del mapa de pantallas: equipe design flows record --flow {flow_id}. Marca cuándo aparece cada pantalla para encontrarla aquí al momento.",
   "flows.video_elsewhere": "Este vídeo se reproduce en el Mac donde corre el daemon. Ruta copiada: {path}",
