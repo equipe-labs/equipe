@@ -268,6 +268,7 @@ pub struct Shell {
     title_shown: String,
     /// The boxes of members' asks for a secret.
     pub secrets: views::secrets::SecretsUi,
+    pub cli_signin: views::cli_signin::CliSignInUi,
     pub login_offers: views::login_offers::LoginOffersUi,
     /// The boxes the person writes to a member in, on its request for permission.
     pub approval_words: views::approvals::Words,
@@ -508,6 +509,7 @@ impl Shell {
             seat_told: None,
             title_shown: String::new(),
             secrets: Default::default(),
+            cli_signin: Default::default(),
             login_offers: Default::default(),
             approval_words: Default::default(),
             decide: Default::default(),
@@ -794,7 +796,7 @@ impl Shell {
             }
             // Typing in a "your turn" card's box or one of the browser panel's: T, N,
             // y, 1… are letters there, not shortcuts. Esc still leaves; Tab and ⌘⏎ are the card's own.
-            if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx) || shell.secrets.typing(window, cx) || shell.login_offers.typing(window, cx) || shell.logins_ui.typing(window, cx) || shell.browser.read(cx).typing(window, cx) || shell.design_taste.typing(window, cx)).unwrap_or(false) {
+            if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx) || shell.secrets.typing(window, cx) || shell.cli_signin.typing(window, cx) || shell.login_offers.typing(window, cx) || shell.logins_ui.typing(window, cx) || shell.browser.read(cx).typing(window, cx) || shell.design_taste.typing(window, cx)).unwrap_or(false) {
                 return;
             }
             // Writing to a member on its request: Esc closes the box; every other
@@ -998,6 +1000,7 @@ impl Shell {
         self.turn_sync(window, cx);
         self.decide_sync(window, cx);
         self.secrets_sync(window, cx);
+        self.cli_signin_sync(window, cx);
         self.login_offers_sync(window, cx);
         self.chat_sync(cx);
         self.board_sync(cx);

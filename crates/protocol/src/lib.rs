@@ -29,6 +29,7 @@ pub mod harness;
 pub mod design;
 pub mod look;
 pub mod routines;
+pub mod cli_signin;
 pub mod secrets;
 pub mod side_chat;
 pub mod signals;
@@ -1266,6 +1267,13 @@ pub enum Command {
     SaveSecret { squad: SquadName, id: u64, values: Vec<secrets::SecretValue> },
     /// The person won't give it (now): the member is told.
     DismissSecret { squad: SquadName, id: u64 },
+    /// The person pasted the code a CLI sign-in card waits for
+    /// (`cli_sign_in`): written to the waiting process, never kept.
+    SubmitCliSignInCode { squad: SquadName, id: u64, code: cli_signin::PastedCode },
+    /// "Get a new link": the sign-in runs again, from the start.
+    RestartCliSignIn { squad: SquadName, id: u64 },
+    /// The person won't sign in (now): the process stops and the member is told.
+    CancelCliSignIn { squad: SquadName, id: u64 },
     /// Every squad's keys, tokens and passwords members kept (`secret_save`):
     /// answered by [`Event::SquadSecrets`]. Names and facts only, never a value.
     SquadSecrets,
@@ -3046,6 +3054,11 @@ pub enum Event {
     SecretAsked { squad: SquadName, ask: secrets::SecretAsk },
     /// It was saved (`saved`) or turned down: the card closes everywhere.
     SecretClosed { squad: SquadName, id: u64, saved: bool },
+    /// A member asks the person to finish a command-line sign-in on a card,
+    /// or one stands differently now (its page, its phase): the whole card.
+    CliSignInChanged { squad: SquadName, card: cli_signin::CliSignIn },
+    /// The sign-in's card closes everywhere.
+    CliSignInClosed { squad: SquadName, id: u64 },
     /// Every squad's kept keys, as facts ([`Command::SquadSecrets`]): for every screen.
     SquadSecrets { secrets: Vec<secrets::SquadSecret> },
     /// A kept key the person asked to see ([`Command::RevealSquadSecret`]): to be shown
@@ -3216,6 +3229,8 @@ impl Event {
             | Event::RoleModelsChanged { squad, .. }
             | Event::SecretAsked { squad, .. }
             | Event::SecretClosed { squad, .. }
+            | Event::CliSignInChanged { squad, .. }
+            | Event::CliSignInClosed { squad, .. }
             | Event::ProjectsChanged { squad, .. }
             | Event::RoutinesChanged { squad, .. }
             | Event::RoutineProposed { squad, .. }
@@ -3319,6 +3334,8 @@ impl Event {
             | Event::RoleModelsChanged { .. }
             | Event::SecretAsked { .. }
             | Event::SecretClosed { .. }
+            | Event::CliSignInChanged { .. }
+            | Event::CliSignInClosed { .. }
             | Event::SquadSecrets { .. }
             | Event::SquadSecretRevealed { .. }
             | Event::ProjectsChanged { .. }
@@ -3782,6 +3799,9 @@ pub struct Snapshot {
     /// Secrets members asked for that wait for the person.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secret_asks: Vec<secrets::SecretAsk>,
+    /// Command-line sign-ins members asked the person to finish on a card.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cli_sign_ins: Vec<cli_signin::CliSignIn>,
     /// equipe's offers to keep a login the person just signed in with by
     /// hand, waiting for an answer (every squad's: logins are the machine's).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -4325,6 +4345,7 @@ mod tests {
             pm_accepts: true,
             role_models: vec![RoleModel { role: "qa".into(), engine: Engine::Codex, model: Some("gpt-6.1-sol".into()), effort: Some("high".into()) }],
             secret_asks: Vec::new(),
+            cli_sign_ins: Vec::new(),
             login_offers: Vec::new(),
             engine_proposals: Vec::new(),
             desktop: DesktopState::default(),

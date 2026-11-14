@@ -150,6 +150,7 @@ with a short line, or carry on with work that doesn't depend on the answer.";
             needs.extend(set.questions.iter().map(|q| one_line(&q.question)));
         }
         needs.extend(self.secret_asks(squad).iter().filter(|a| a.ticket == Some(ticket)).map(|a| one_line(&a.why)));
+        needs.extend(self.cli_sign_in_waits(squad, ticket));
         needs.retain(|n| !n.is_empty());
         needs
     }

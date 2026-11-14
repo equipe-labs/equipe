@@ -723,7 +723,9 @@ accepts it.",
         format!(
             "{tools} When a command or a config needs a password, key or token — a NAS login, an API key — ask for it \
 with `ask_secret`, never in words, and never print one. Keys and passwords you obtain go into equipe with `secret_save`; never paste \
-them into code, tickets, memory or chat. As you start anything that takes more than a couple of minutes \
+them into code, tickets, memory or chat. When the person must sign in to a command-line tool on this machine — AWS, GitHub, Google Cloud, \
+Azure — use a machine credential if one exists (a GitHub App token, an access key already set up); otherwise call `cli_sign_in`, which \
+shows them one card with the sign-in page and code, instead of asking them to open a terminal. Never ask for their password in chat. As you start anything that takes more than a couple of minutes \
 — a ticket, research, subagents' work — call `estimate`. \
 Questions that sharpen a vague ask are `ask_decision` questions too. \
 When a decision is the person's to make and comes down to a few distinct options — an approach, a scope, a provider, \

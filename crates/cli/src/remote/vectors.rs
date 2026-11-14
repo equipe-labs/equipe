@@ -998,6 +998,7 @@ fn snapshot() -> Snapshot {
         pm_accepts: true,
         role_models: Vec::new(),
         secret_asks: Vec::new(),
+        cli_sign_ins: Vec::new(),
         login_offers: Vec::new(),
         engine_proposals: vec![engine_proposal(Why::Shift, false)],
         hand_overs: Vec::new(),

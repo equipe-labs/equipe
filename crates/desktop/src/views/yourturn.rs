@@ -553,6 +553,8 @@ fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElem
         Some(kinds) => permission_card(card, d, n, &kinds, quiet),
         None => super::chat::markdown(p, ("turn-ask", hash(key, n)), &shown, crate::theme::UI, crate::theme::UI_PROSE_LINE, if quiet { p.muted } else { p.text }, &d.handle).into_any_element(),
     };
+    // A command the person is to run on the daemon's Mac: typed into equipe's terminal, never run for them.
+    let runs = (!done).then(|| run_here(p, hash(key, n << 5 | 3), &crate::term::commands_in(ask), &d.handle)).flatten();
     let files = card.named.get(n).filter(|f| !f.is_empty()).map(|files| h_flex().flex_wrap().gap_1p5().children(files.iter().enumerate().map(|(k, f)| file_chip(p, f, hash(key, n << 8 | k)))));
     let answering = d.place != Place::Side;
     // The box, faded while a pick stands in for it (typing takes the pick back).
@@ -600,7 +602,7 @@ fn item(card: &Card, d: &Draw<'_>, n: usize, ask: &str, cx: &mut App) -> AnyElem
         .gap_2p5()
         .items_start()
         .child(number)
-        .child(v_flex().flex_1().min_w_0().gap_2().child(text).children(link_rows).children(files).children(field).children(attached).children(choices).children(note).children(next.map(|b| h_flex().justify_end().child(b))))
+        .child(v_flex().flex_1().min_w_0().gap_2().child(text).children(link_rows).children(runs).children(files).children(field).children(attached).children(choices).children(note).children(next.map(|b| h_flex().justify_end().child(b))))
         .into_any_element()
 }
 
@@ -671,6 +673,32 @@ fn permission_card(card: &Card, d: &Draw<'_>, n: usize, kinds: &[asks::Permissio
         .child(div().text_size(px(13.)).line_height(px(19.)).text_color(p.muted).child(words.body))
         .children(buttons)
         .into_any_element()
+}
+
+/// "Run it here" under a step that asks for a shell command: the command, and a
+/// button that opens the terminal (on the daemon's Mac, through its ssh
+/// connection when it isn't this one) with it typed at the prompt — not run:
+/// the person checks it and presses Enter, and types any password there
+/// themselves; equipe doesn't capture what is typed.
+fn run_here(p: Palette, key: u64, commands: &[String], handle: &WeakEntity<Shell>) -> Option<AnyElement> {
+    if commands.is_empty() {
+        return None;
+    }
+    let rows = commands.iter().take(2).enumerate().map(|(k, command)| {
+        let (handle, line) = (handle.clone(), command.clone());
+        let button = ui::button(p, ("turn-run-here", hash(key, k)), Kind::Secondary, t!("term.run_it_here")).icon(Icon::Terminal).on_click(move |_, window, cx| {
+            let line = line.clone();
+            handle.update(cx, |shell, cx| shell.open_terminal(Some(line), window, cx)).ok();
+        });
+        h_flex()
+            .w_full()
+            .min_w_0()
+            .gap_2()
+            .items_center()
+            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_family(MONO).text_size(px(12.5)).text_color(p.text2).child(command.clone()))
+            .child(button)
+    });
+    Some(v_flex().w_full().gap_1p5().children(rows).into_any_element())
 }
 
 /// An ask's choices: its quick OK where it asks for one, its picks (one at
