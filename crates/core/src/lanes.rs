@@ -184,6 +184,7 @@ pub fn reads_only(tool: &str) -> bool {
         crate::controls::SETTINGS,
         crate::metrics::tool::METRICS,
         crate::plan_use::TOOL,
+        crate::squad_secrets::LIST,
     ]
     .contains(&tool)
 }

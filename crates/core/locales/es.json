@@ -739,5 +739,15 @@
   "notice.batch_title": "{n} cosas están deteniendo trabajo",
   "notice.daily_title": "{n} elementos llevan {span} bloqueando {blocks} tickets",
   "notice.missed_title": "Lo has pasado por alto {n} veces: {what}",
-  "notice.missed_body": "{impact}. Ábrelo para resolverlo."
+  "notice.missed_body": "{impact}. Ábrelo para resolverlo.",
+  "notice.squad_secret_saved": "{member} guardó la clave «{name}» de {service} en el almacén de secretos de este equipo. A partir de ahora equipe la oculta.",
+  "secrets.no_project": "ningún proyecto (la carpeta del escuadrón)",
+  "secrets.grant.header": "Clave",
+  "secrets.grant.question": "¿Puede {member} usar la clave «{name}» ({service}) en {project}?",
+  "secrets.grant.here": "Sí, en {project}",
+  "secrets.grant.here_desc": "Se pregunta una sola vez por proyecto.",
+  "secrets.grant.any": "Sí, en cualquier proyecto",
+  "secrets.grant.any_desc": "No se volverá a preguntar por esta clave.",
+  "secrets.grant.no": "No",
+  "secrets.grant.no_desc": "El miembro sigue sin ella."
 }

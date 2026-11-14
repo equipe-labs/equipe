@@ -37,7 +37,7 @@ impl Runtime {
         self.questions.entry(squad.to_owned()).or_default()
     }
 
-    fn save_questions(&mut self, squad: &str) {
+    pub(super) fn save_questions(&mut self, squad: &str) {
         let sets = self.questions.get(squad).cloned().unwrap_or_default();
         if let Some(journal) = self.journal(squad) {
             let _ = journal.set_questions(&sets);
@@ -242,6 +242,8 @@ with a short line, or carry on with work that doesn't depend on the answer.";
             let _ = journal.ticket_event(ticket, "you", "decided", &message);
         }
         self.decision_settled(squad, &set, Some(&answers));
+        // A kept key's first use on a project: the person's word is applied.
+        self.secret_card_settled(squad, &set, Some(&answers));
         self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id, answers: Some(answers) });
         // Its ticket waited for this answer: it goes back to its member with the answers.
         if self.resume_asked(squad, &set, &message).await {
@@ -270,6 +272,7 @@ with a short line, or carry on with work that doesn't depend on the answer.";
     pub(super) async fn dismiss_questions(&mut self, squad: &str, id: u64) {
         let Some(set) = self.take_questions(squad, id) else { return };
         self.decision_settled(squad, &set, None);
+        self.secret_card_settled(squad, &set, None);
         self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id, answers: None });
         let message = decide::dismissed_message(&set);
         if self.resume_asked(squad, &set, &message).await {

@@ -735,5 +735,15 @@
   "notice.batch_title": "有 {n} 件事卡住了工作",
   "notice.daily_title": "{n} 件事已卡住 {blocks} 張工單 {span}",
   "notice.missed_title": "這件事你已錯過 {n} 次：{what}",
-  "notice.missed_body": "{impact}。打開處理一下。"
+  "notice.missed_body": "{impact}。打開處理一下。",
+  "notice.squad_secret_saved": "{member} 已把 {service} 的金鑰「{name}」存入本機的金鑰庫。從現在起 equipe 會將其遮蔽。",
+  "secrets.no_project": "無專案(小隊資料夾)",
+  "secrets.grant.header": "金鑰",
+  "secrets.grant.question": "允許 {member} 在 {project} 上使用金鑰「{name}」({service})嗎?",
+  "secrets.grant.here": "允許,在 {project} 上",
+  "secrets.grant.here_desc": "每個專案只詢問一次。",
+  "secrets.grant.any": "允許,在任何專案上",
+  "secrets.grant.any_desc": "此金鑰不會再詢問。",
+  "secrets.grant.no": "不允許",
+  "secrets.grant.no_desc": "成員將在沒有它的情況下繼續。"
 }

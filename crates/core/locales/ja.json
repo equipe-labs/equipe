@@ -735,5 +735,15 @@
   "notice.batch_title": "{n}件が作業を止めています",
   "notice.daily_title": "{n}件が{span}にわたりチケット{blocks}件を止めています",
   "notice.missed_title": "これを{n}回見逃しています: {what}",
-  "notice.missed_body": "{impact}。開いて対応してください。"
+  "notice.missed_body": "{impact}。開いて対応してください。",
+  "notice.squad_secret_saved": "{member}が{service}用のキー「{name}」をこのマシンのシークレットストアに保管しました。以降は equipe が伏せ字にします。",
+  "secrets.no_project": "プロジェクトなし(スクワッドのフォルダ)",
+  "secrets.grant.header": "キー",
+  "secrets.grant.question": "{member}が{project}でキー「{name}」({service})を使ってもよいですか?",
+  "secrets.grant.here": "はい、{project}で",
+  "secrets.grant.here_desc": "確認はプロジェクトごとに一度だけです。",
+  "secrets.grant.any": "はい、どのプロジェクトでも",
+  "secrets.grant.any_desc": "このキーについては、もう確認しません。",
+  "secrets.grant.no": "いいえ",
+  "secrets.grant.no_desc": "メンバーはそのキーなしで続けます。"
 }

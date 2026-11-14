@@ -39,6 +39,20 @@ pub trait Secrets: Send {
     fn available(&self) -> bool {
         true
     }
+    /// A secret under a service of its own (`equipe.secrets`, squads' keys
+    /// members obtained). On the Keychain it is `equipe.secrets:<account>` in
+    /// the same one item; elsewhere the service leads the account's name.
+    fn set_in(&mut self, service: &str, account: &str, value: &str) -> Result<(), String> {
+        self.set_named(&format!("{service}:{account}"), value)
+    }
+    /// `interactive`: the person asked for it now, so a Keychain that was
+    /// refused a while ago may ask again.
+    fn get_in(&self, service: &str, account: &str, _interactive: bool) -> Result<String, String> {
+        self.get_named(&format!("{service}:{account}"))
+    }
+    fn delete_in(&mut self, service: &str, account: &str) -> Result<(), String> {
+        self.delete_named(&format!("{service}:{account}"))
+    }
     fn set(&mut self, id: u32, password: &str) -> Result<(), String> {
         self.set_named(&id.to_string(), password)
     }
@@ -92,6 +106,18 @@ impl Secrets for SecretStore {
 
     fn delete_named(&mut self, account: &str) -> Result<(), String> {
         crate::keychain::global().delete(SERVICE, account)
+    }
+
+    fn set_in(&mut self, service: &str, account: &str, value: &str) -> Result<(), String> {
+        crate::keychain::global().set(service, account, value)
+    }
+
+    fn get_in(&self, service: &str, account: &str, interactive: bool) -> Result<String, String> {
+        crate::keychain::global().get(service, account, interactive)
+    }
+
+    fn delete_in(&mut self, service: &str, account: &str) -> Result<(), String> {
+        crate::keychain::global().delete(service, account)
     }
 }
 
@@ -782,6 +808,20 @@ impl Vault {
             Some(v) => self.secrets.set_named(account, v),
             None => self.secrets.delete_named(account),
         }
+    }
+
+    /// A key a squad's member obtained, kept under `equipe.secrets:<squad>/<name>`
+    /// ([`crate::squad_secrets`]); its facts are in the squad's journal.
+    pub fn set_squad_secret(&mut self, squad: &str, name: &str, value: &str) -> Result<(), String> {
+        self.secrets.set_in(crate::squad_secrets::SERVICE, &crate::squad_secrets::account(squad, name), value)
+    }
+
+    pub fn squad_secret(&self, squad: &str, name: &str, interactive: bool) -> Result<String, String> {
+        self.secrets.get_in(crate::squad_secrets::SERVICE, &crate::squad_secrets::account(squad, name), interactive)
+    }
+
+    pub fn delete_squad_secret(&mut self, squad: &str, name: &str) -> Result<(), String> {
+        self.secrets.delete_in(crate::squad_secrets::SERVICE, &crate::squad_secrets::account(squad, name))
     }
 
     /// The logins for `site`.

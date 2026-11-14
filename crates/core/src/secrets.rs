@@ -94,7 +94,7 @@ pub fn check(args: &Value, home: &Path) -> Result<Asked, String> {
     Ok(Asked { why, fields, path, shown })
 }
 
-fn valid_key(key: &str) -> bool {
+pub(crate) fn valid_key(key: &str) -> bool {
     (1..=64).contains(&key.len()) && key.starts_with(|c: char| c.is_ascii_uppercase()) && key.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 

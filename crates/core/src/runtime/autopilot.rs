@@ -186,7 +186,13 @@ impl Runtime {
 
     pub(super) async fn autopilot_note(&mut self, note: Note) {
         match note {
-            Note::CliValues(values) => self.autopilot.cli_values = values,
+            Note::CliValues(values) => {
+                // What members' commands get from the person's kept values is cut out of every transcript.
+                for (id, value) in &values {
+                    crate::squad_secrets::watch(&format!("env:{id}"), value);
+                }
+                self.autopilot.cli_values = values;
+            }
             Note::Look { token } => self.look_again(token),
             Note::Changed(Ok(())) => {
                 self.reload_cli_values();
@@ -251,6 +257,9 @@ impl Runtime {
 
     /// Values just kept for members' commands: in their next runs at once.
     pub(super) fn keep_run_values(&mut self, values: Vec<(u32, String)>) {
+        for (id, value) in &values {
+            crate::squad_secrets::watch(&format!("env:{id}"), value);
+        }
         self.autopilot.cli_values.extend(values);
     }
 

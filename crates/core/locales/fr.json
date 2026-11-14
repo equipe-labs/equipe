@@ -739,5 +739,15 @@
   "notice.batch_title": "{n} choses retiennent le travail",
   "notice.daily_title": "{n} éléments bloquent {blocks} tickets depuis {span}",
   "notice.missed_title": "Vous l’avez manqué {n} fois : {what}",
-  "notice.missed_body": "{impact}. Ouvrez-le pour le régler."
+  "notice.missed_body": "{impact}. Ouvrez-le pour le régler.",
+  "notice.squad_secret_saved": "{member} a gardé la clé « {name} » pour {service} dans le coffre de secrets de cette machine. equipe la masque désormais.",
+  "secrets.no_project": "aucun projet (le dossier de l'équipe)",
+  "secrets.grant.header": "Clé",
+  "secrets.grant.question": "{member} peut-il utiliser la clé « {name} » ({service}) sur {project} ?",
+  "secrets.grant.here": "Oui, sur {project}",
+  "secrets.grant.here_desc": "La question n'est posée qu'une fois par projet.",
+  "secrets.grant.any": "Oui, sur n'importe quel projet",
+  "secrets.grant.any_desc": "Cette clé ne vous sera plus redemandée.",
+  "secrets.grant.no": "Non",
+  "secrets.grant.no_desc": "Le membre continue sans elle."
 }

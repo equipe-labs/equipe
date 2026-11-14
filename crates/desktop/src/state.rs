@@ -390,6 +390,8 @@ pub struct Model {
     pub autopilot: equipe_core::protocol::vault::AutopilotStatus,
     /// What the Logins page shows of the sign-in record, as last read.
     pub login_insights: Option<equipe_core::protocol::vault::LoginInsights>,
+    /// The keys, tokens and passwords members kept, every squad's: facts only (Logins › Keys & secrets).
+    pub squad_secrets: Vec<equipe_core::protocol::secrets::SquadSecret>,
     /// The PM accepts the team's handed-in work itself: the person's inbox
     /// keeps only what is theirs.
     pub pm_accepts: bool,
@@ -619,6 +621,7 @@ impl Model {
             logins: Vec::new(),
             autopilot: Default::default(),
             login_insights: None,
+            squad_secrets: Vec::new(),
             pm_accepts: false,
             role_models: Vec::new(),
             catalogs: HashMap::new(),
@@ -1476,6 +1479,7 @@ impl Model {
             Event::RoutinesChanged { squad, routines } if *squad == self.squad => self.routines = routines.clone(),
             Event::Logins { logins } => self.logins = logins.clone(),
             Event::Autopilot { status } => self.autopilot = status.clone(),
+            Event::SquadSecrets { secrets } => self.squad_secrets = secrets.clone(),
             Event::LoginInsights { insights } => self.login_insights = Some(insights.clone()),
             Event::BrowserProfiles { profiles } => self.browser_profiles = profiles.clone(),
             Event::ProjectsChanged { squad, projects, hq } if *squad == self.squad => {

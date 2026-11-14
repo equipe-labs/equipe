@@ -77,6 +77,8 @@ pub struct LoginsUi {
     pub scroll: ScrollHandle,
     /// Login autopilot's switches and boxes (`views::autopilot`).
     pub autopilot: super::autopilot::AutopilotUi,
+    /// "Keys & secrets": what members kept, and a value shown once (`views::keys`).
+    pub keys: super::keys::KeysUi,
     stops: RefCell<HashMap<String, FocusHandle>>,
 }
 
@@ -104,13 +106,14 @@ impl LoginsUi {
             days: rules::RANGES[0],
             scroll: ScrollHandle::new(),
             autopilot: super::autopilot::AutopilotUi::new(window, cx),
+            keys: super::keys::KeysUi::new(window, cx),
             stops: RefCell::new(HashMap::new()),
         }
     }
 
     /// Whether one of the boxes has the keyboard: what is typed is the box's.
     pub fn typing(&self, window: &Window, cx: &App) -> bool {
-        [&self.search, &self.site, &self.username, &self.url, &self.note, &self.password, &self.signin].iter().any(|i| i.read(cx).focus_handle(cx).is_focused(window))
+        [&self.search, &self.site, &self.username, &self.url, &self.note, &self.password, &self.signin].iter().any(|i| i.read(cx).focus_handle(cx).is_focused(window)) || self.keys.typing(window, cx)
     }
 
     /// A button's place in the Tab order, steady between draws.
@@ -294,7 +297,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     for offer in offers_section(shell, cx) {
         column = column.child(offer);
     }
-    column = column.child(waiting_section(shell, cx)).child(saved_section(shell, cx)).child(autopilot_section(shell, cx)).child(asked_section(shell, cx)).child(never_section(shell, cx));
+    column = column.child(waiting_section(shell, cx)).child(saved_section(shell, cx)).child(super::keys::section(shell, cx)).child(autopilot_section(shell, cx)).child(asked_section(shell, cx)).child(never_section(shell, cx));
     column = column.child(div().w_full().px_1().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(t!("loginspage.foot", machine = shell.endpoint.label())));
 
     let body = div().id("logins-body").flex_1().min_h_0().overflow_y_scroll().track_scroll(&ui.scroll).child(div().w_full().px_5().py_5().flex().justify_center().child(column));
@@ -896,6 +899,7 @@ impl Shell {
         self.send_command(Command::Logins);
         self.send_command(Command::LoginInsights { days: self.logins_ui.days });
         self.send_command(Command::Autopilot);
+        self.keys_open();
         self.show(Screen::Logins, cx);
         cx.notify();
     }

@@ -735,5 +735,15 @@
   "notice.batch_title": "有 {n} 件事卡住了工作",
   "notice.daily_title": "{n} 件事已卡住 {blocks} 个工单 {span}",
   "notice.missed_title": "这件事你已错过 {n} 次：{what}",
-  "notice.missed_body": "{impact}。打开处理一下。"
+  "notice.missed_body": "{impact}。打开处理一下。",
+  "notice.squad_secret_saved": "{member} 已把 {service} 的密钥“{name}”存入本机的密钥库。从现在起 equipe 会将其遮蔽。",
+  "secrets.no_project": "无项目(小队文件夹)",
+  "secrets.grant.header": "密钥",
+  "secrets.grant.question": "允许 {member} 在 {project} 上使用密钥“{name}”({service})吗?",
+  "secrets.grant.here": "允许,在 {project} 上",
+  "secrets.grant.here_desc": "每个项目只询问一次。",
+  "secrets.grant.any": "允许,在任何项目上",
+  "secrets.grant.any_desc": "此密钥不会再询问。",
+  "secrets.grant.no": "不允许",
+  "secrets.grant.no_desc": "成员将在没有它的情况下继续。"
 }

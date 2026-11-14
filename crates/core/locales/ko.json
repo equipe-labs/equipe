@@ -735,5 +735,15 @@
   "notice.batch_title": "{n}가지가 일을 붙잡고 있어요",
   "notice.daily_title": "{n}가지가 {span} 동안 티켓 {blocks}개를 막고 있어요",
   "notice.missed_title": "이걸 {n}번 놓치셨어요: {what}",
-  "notice.missed_body": "{impact}. 열어서 처리해 주세요."
+  "notice.missed_body": "{impact}. 열어서 처리해 주세요.",
+  "notice.squad_secret_saved": "{member}이(가) {service}용 키 “{name}”을(를) 이 기기의 비밀 저장소에 보관했어요. 이제부터 equipe가 가려요.",
+  "secrets.no_project": "프로젝트 없음(스쿼드 폴더)",
+  "secrets.grant.header": "키",
+  "secrets.grant.question": "{member}이(가) {project}에서 키 “{name}”({service})을(를) 써도 될까요?",
+  "secrets.grant.here": "네, {project}에서",
+  "secrets.grant.here_desc": "프로젝트마다 한 번씩만 물어봐요.",
+  "secrets.grant.any": "네, 모든 프로젝트에서",
+  "secrets.grant.any_desc": "이 키는 다시 묻지 않아요.",
+  "secrets.grant.no": "아니요",
+  "secrets.grant.no_desc": "멤버는 그 키 없이 계속해요."
 }
