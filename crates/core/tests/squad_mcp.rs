@@ -12,6 +12,8 @@
 //!   the daemon;
 //! - the PM connects one only on the person's tap;
 //! - the engine-signed fallback still signs in with Claude Code's own login.
+// One test at a time (`SERIAL`), held across each whole test on purpose.
+#![allow(clippy::await_holding_lock)]
 
 #![cfg(unix)]
 
@@ -35,6 +37,10 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// One test at a time: they share the process's in-memory secret store, where
+/// the same squad and server names would meet.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn setup() {
     // SAFETY: set before any runtime starts, to the same values by every test here.
@@ -232,6 +238,7 @@ fn request(id: u64, method: &str, params: Value) -> Value {
 
 #[tokio::test]
 async fn equipe_signs_in_once_and_every_member_of_its_roles_gets_the_server_through_its_proxy() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let fake = Fake::start().await;
     let (handle, mut events, bin, home, _) = squad_with(&[(1, "pm"), (2, "designer"), (3, "qa")]).await;
 
@@ -310,6 +317,7 @@ async fn equipe_signs_in_once_and_every_member_of_its_roles_gets_the_server_thro
 
 #[tokio::test]
 async fn over_the_daemons_socket_a_proxy_reaches_an_sse_server_and_a_member_without_it_is_refused() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     setup();
     let fake = Fake::start().await;
     let (claude, _bin) = fake_claude();
@@ -408,6 +416,7 @@ async fn over_the_daemons_socket_a_proxy_reaches_an_sse_server_and_a_member_with
 
 #[tokio::test]
 async fn a_keyed_server_needs_its_key_never_a_sign_in_and_the_key_stays_in_the_daemon() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     setup();
     let fake = Fake::start().await;
     let (claude, bin) = fake_claude();
@@ -463,6 +472,7 @@ async fn a_keyed_server_needs_its_key_never_a_sign_in_and_the_key_stays_in_the_d
 
 #[tokio::test]
 async fn the_pm_connects_a_server_only_on_the_persons_tap_and_takes_one_off_at_once() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let fake = Fake::start().await;
     let (handle, mut events, _bin, _home, _) = squad_with(&[(1, "pm"), (2, "designer")]).await;
     let url = fake.url("/mcp");
@@ -493,6 +503,7 @@ async fn the_pm_connects_a_server_only_on_the_persons_tap_and_takes_one_off_at_o
 
 #[tokio::test]
 async fn the_engine_signed_fallback_signs_in_with_claude_codes_own_login_and_adds_idempotently() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let (handle, mut events, bin, home, _) = squad_with(&[(1, "pm"), (2, "designer")]).await;
     let mobbin = McpServer { auth: McpAuth::Engine, ..squad_mcp::server("mobbin", None, None, None).unwrap() };
     // An entry an earlier equipe left in Claude Code's local config: reused, never "already exists".

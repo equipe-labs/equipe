@@ -161,9 +161,15 @@ impl Runtime {
         if !self.keep_mcp(squad, &servers) {
             return;
         }
-        // A server changed under its name: what was known of it no longer holds.
-        if !same && let Some(known) = self.mcp.status.get_mut(squad) {
-            known.remove(&server.name);
+        // A server changed under its name: what was known of it no longer
+        // holds — nor do tokens a sign-in to what stood there before left.
+        if !same {
+            if let Some(known) = self.mcp.status.get_mut(squad) {
+                known.remove(&server.name);
+            }
+            if server.auth == McpAuth::Oauth && !now.iter().any(|s| s.name == server.name && s.url == server.url) {
+                mcp_oauth::forget(self.mcp_store().as_ref(), squad, &server.name);
+            }
         }
         self.mcp.put_off.retain(|(s, n, _)| !(s == squad && *n == server.name));
         self.mcp.key_asked.remove(&(squad.to_owned(), server.name.clone()));
