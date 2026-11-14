@@ -1943,8 +1943,14 @@ fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, impacts: Op
             match impacts.and_then(|m| m.get(need)).filter(|i| i.is_blocking()) {
                 Some(impact) => {
                     let color = if impact.is_pressing() { p.red } else { p.amber };
+                    let picked = pick == Some(*need);
+                    // The badge's slot is part of the row: its hover and its pick fill the whole width.
                     h_flex()
+                        .id(SharedString::from(format!("impact-row-{need:?}")))
                         .items_center()
+                        .rounded(px(6.))
+                        .when(picked, |r| r.bg(p.wash))
+                        .when(!picked, |r| r.hover(move |s| s.bg(p.wash)))
                         .child(div().flex_1().min_w_0().child(row))
                         .child(
                             div()
@@ -2116,15 +2122,16 @@ pub fn title_cell(shell: &Shell, t: &Ticket, depth: usize, min_w: f32, strong: b
                 .flex_1()
                 .min_w_0()
                 .justify_center()
+                .when(two, |c| c.gap(px(2.)))
                 .child(
                     div()
                         .truncate()
-                        .when(two, |d| d.line_height(px(16.)))
+                        .when(two, |d| d.line_height(px(17.)))
                         .text_color(if closed { p.muted } else { p.text })
                         .when(strong || two, |d| d.font_weight(FontWeight::MEDIUM))
                         .child(main),
                 )
-                .children(heading.below.map(|below| div().truncate().text_size(px(10.5)).line_height(px(13.)).text_color(p.muted).child(below))),
+                .children(heading.below.map(|below| div().truncate().text_size(px(11.)).line_height(px(14.)).text_color(p.muted).child(below))),
         )
 }
 
@@ -2144,7 +2151,9 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
             .aria_selected(picked)
             .group(group.clone())
             .relative()
-            .h(px(ROW))
+            // One line is 32 tall; a two-line title (what to do, then the ticket) gets room to breathe.
+            .min_h(px(ROW))
+            .py(px(5.))
             .flex_none()
             .pr_3()
             .gap_2()
