@@ -201,6 +201,9 @@ pub struct Chat {
     /// A member's question just asked here: its card comes to the front of
     /// the others, unless a more pressing one is there.
     pub dock_bring: std::cell::Cell<bool>,
+    /// Which kind of card is in front over the composer, as last drawn
+    /// ([`DOCK_APPROVAL`] for a request): a key answers only the card in sight.
+    pub dock_front: std::cell::Cell<Option<usize>>,
     pub blocks: Rc<Vec<Block>>,
     derived: ConversationDerived,
     /// Whose conversation `blocks` are, the ticket it shows the work of, and
@@ -313,6 +316,7 @@ impl Chat {
             follow: true,
             dock_at: std::cell::Cell::new(0),
             dock_bring: std::cell::Cell::new(false),
+            dock_front: std::cell::Cell::new(None),
             faded_in: None,
             seen_revision: 0,
             expanded: false,
@@ -702,6 +706,9 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
 /// confirm, a change to the team, an engine's — one at a time, so the
 /// conversation stays in sight: the one in front, and "1 / 3 ‹ ›" to go
 /// through the others. Answered, the next comes to the front.
+/// The request card's place in [`dock`]'s order.
+pub const DOCK_APPROVAL: usize = 2;
+
 fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     // The member's questions are the fourth kind: a new one comes forward over those after it.
     const DECIDE: usize = 3;
@@ -724,6 +731,7 @@ fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     .collect();
     let count = cards.len();
     if count == 0 {
+        shell.chat.dock_front.set(None);
         return None;
     }
     if shell.chat.dock_bring.take()
@@ -732,8 +740,9 @@ fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     {
         shell.chat.dock_at.set(decide);
     }
-    let cards: Vec<AnyElement> = cards.into_iter().map(|(_, c)| c).collect();
     let at = shell.chat.dock_at.get().min(count - 1);
+    shell.chat.dock_front.set(cards.get(at).map(|(kind, _)| *kind));
+    let cards: Vec<AnyElement> = cards.into_iter().map(|(_, c)| c).collect();
     let card = cards.into_iter().nth(at)?;
     if count == 1 {
         return Some(card);
