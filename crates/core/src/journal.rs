@@ -1028,6 +1028,37 @@ impl Journal {
         self.set_meta("secret_asks", json)
     }
 
+    /// The facts of the keys, tokens and passwords this squad's members kept
+    /// (`crate::squad_secrets`), as JSON — never a value, those live in the
+    /// secret store.
+    pub fn squad_secrets(&self) -> Option<String> {
+        self.meta("squad_secrets")
+    }
+
+    pub fn set_squad_secrets(&self, json: &str) -> Result<()> {
+        self.set_meta("squad_secrets", json)
+    }
+
+    /// Every use of a kept key, newest last, as JSON: who, on which ticket
+    /// and project, when — never the value.
+    pub fn secret_uses(&self) -> Option<String> {
+        self.meta("secret_uses")
+    }
+
+    pub fn set_secret_uses(&self, json: &str) -> Result<()> {
+        self.set_meta("secret_uses", json)
+    }
+
+    /// Questions put to the person about a kept key's first use on a project
+    /// that still wait, as JSON (`crate::squad_secrets::Grant`).
+    pub fn secret_grants(&self) -> Option<String> {
+        self.meta("secret_grants")
+    }
+
+    pub fn set_secret_grants(&self, json: &str) -> Result<()> {
+        self.set_meta("secret_grants", json)
+    }
+
     pub fn pm_accepts(&self) -> bool {
         self.meta("pm_accepts").as_deref() != Some("off")
     }

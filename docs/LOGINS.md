@@ -412,6 +412,59 @@ To check on a machine with Node and Chrome (no real accounts):
 cargo test -p equipe-core --lib autopilot
 ```
 
+## Keys members obtain
+
+A member that gets a key — a PostHog project key from a dashboard, a token a
+CLI printed, a database password — keeps it with `secret_save`
+(`crates/core/src/squad_secrets.rs`), instead of it living only in a host's
+environment variables, so a later ticket can use it.
+
+- **Where.** The value is in the same Keychain item as the logins, as
+  `equipe.secrets:<squad>/<name>` (elsewhere: the secret store, never a file).
+  The facts — name, kind (`api_key`, `token`, `password`,
+  `connection_string`, `other`), service, the projects that may use it, who
+  saved it, on which ticket and when, its last use — are the squad's journal's.
+- **Member tools** (the board's MCP server): `secret_save {name, service,
+  kind, value, projects?, note?}` (the answer never repeats the value),
+  `secret_list` (facts only), `secret_use {name, as_env}` and
+  `secret_write {name, path, format?, key?}`. No engine shell can have a
+  variable added mid-turn, so `secret_use` makes the key an environment
+  variable of the member's **next** turns (and is checked again each time),
+  and `secret_write` writes it now into a file of the member's worktree:
+  `env` (a `KEY="value"` line, other lines kept), `json` (a field) or `raw`.
+  The file must be inside the worktree, not a link, not in `.git`,
+  **git-ignored and untracked** — otherwise refused, saying how to fix it.
+  It is made readable by the person only. To hand a key to a service the
+  member uses the CLI it already has against that file (for example
+  `vercel env add POSTHOG_KEY < …`, `gh secret set`); equipe itself sends
+  nothing off the machine.
+- **Who and where.** Only the saving squad's members; on a project only where
+  the person allowed it. The first use on a new project is a decision card
+  (this project / any project / no), asked once; "any project" is also the
+  person's switch on the Logins page. Every use is recorded — who, ticket,
+  project, when — in the journal and on the ticket.
+- **Masking.** Every stored value is cut out verbatim (and its JSON-escaped
+  form, and each line of a multi-line one) from what leaves a member: events
+  (the conversation, tool output, notices, ticket text), the arguments of its
+  board tools (tickets, comments, hand-ins, memory), and the daemon's log. A
+  streaming answer is held back by the longest value's length so a value split
+  across fragments is still cut whole. Values shorter than six characters
+  aren't masked. What *looks* like a key but wasn't saved (a well-known
+  prefix, the password of a connection string, a `…KEY=`/`…TOKEN:` value,
+  `Bearer …`) is cut out of command output and the member's board-tool
+  arguments, and the member is told, with its next tool's answer, to
+  `secret_save` it.
+- **The person.** Logins › Keys & secrets lists them, with show-once (after a
+  confirmation; hidden after 30 seconds, never to a phone), copy, the projects
+  it may be used on, and delete. `equipe secrets list | show <name> | delete
+  <name>` does the same from a terminal; `show` and `delete` ask first and
+  refuse a member's command or anything that isn't a terminal.
+
+What it does not do: the engine's own session files hold what a member typed
+before it saved a key (equipe can't edit those); a key already committed in
+code is not found; and a value a member splits or re-encodes (base64, spaced
+out) isn't recognised.
+
 ## Left to the person
 
 CAPTCHAs and "verify you are human" walls; push approvals and codes only a

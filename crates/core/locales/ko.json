@@ -714,5 +714,15 @@
   "usage.signal.endings.todo": "엔진 로그인과 플랜 사용량을 확인하고, 되돌려진 티켓을 읽어 보세요.",
   "usage.ending.limited": "플랜 한도 도달",
   "usage.ending.failed_fast": "즉시 실패",
-  "usage.ending.handed_back": "되돌려짐"
+  "usage.ending.handed_back": "되돌려짐",
+  "notice.squad_secret_saved": "{member}이(가) {service}용 키 “{name}”을(를) 이 기기의 비밀 저장소에 보관했어요. 이제부터 equipe가 가려요.",
+  "secrets.no_project": "프로젝트 없음(스쿼드 폴더)",
+  "secrets.grant.header": "키",
+  "secrets.grant.question": "{member}이(가) {project}에서 키 “{name}”({service})을(를) 써도 될까요?",
+  "secrets.grant.here": "네, {project}에서",
+  "secrets.grant.here_desc": "프로젝트마다 한 번씩만 물어봐요.",
+  "secrets.grant.any": "네, 모든 프로젝트에서",
+  "secrets.grant.any_desc": "이 키는 다시 묻지 않아요.",
+  "secrets.grant.no": "아니요",
+  "secrets.grant.no_desc": "멤버는 그 키 없이 계속해요."
 }

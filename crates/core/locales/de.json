@@ -718,5 +718,15 @@
   "usage.signal.endings.todo": "Prüfe die Anmeldungen und die Plannutzung der Engines und lies die zurückgegebenen Tickets.",
   "usage.ending.limited": "Plangrenze erreicht",
   "usage.ending.failed_fast": "sofort fehlgeschlagen",
-  "usage.ending.handed_back": "zurückgegeben"
+  "usage.ending.handed_back": "zurückgegeben",
+  "notice.squad_secret_saved": "{member} hat den Schlüssel „{name}“ für {service} im Geheimnisspeicher dieses Geräts abgelegt. equipe maskiert ihn ab jetzt.",
+  "secrets.no_project": "kein Projekt (Ordner des Squads)",
+  "secrets.grant.header": "Schlüssel",
+  "secrets.grant.question": "Darf {member} den Schlüssel „{name}“ ({service}) in {project} verwenden?",
+  "secrets.grant.here": "Ja, in {project}",
+  "secrets.grant.here_desc": "Sie werden pro Projekt nur einmal gefragt.",
+  "secrets.grant.any": "Ja, in jedem Projekt",
+  "secrets.grant.any_desc": "Für diesen Schlüssel wird nicht mehr gefragt.",
+  "secrets.grant.no": "Nein",
+  "secrets.grant.no_desc": "Das Mitglied macht ohne ihn weiter."
 }

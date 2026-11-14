@@ -29,6 +29,7 @@ mod usage;
 mod onboard;
 mod remote;
 mod review;
+mod secrets;
 mod settings;
 mod telegram;
 mod telemetry;
@@ -344,6 +345,11 @@ enum Command {
         #[command(subcommand)]
         action: logins::LoginsAction,
     },
+    /// The keys, tokens and passwords members obtained and equipe keeps: `list`, `show <name>`, `delete <name>`
+    Secrets {
+        #[command(subcommand)]
+        action: secrets::SecretsAction,
+    },
     /// Where the squad's tokens went and what looks wasted: by day, member and kind, with waste signals
     Usage(usage::UsageArgs),
     /// What an AWS CLI profile's credential_process runs (login autopilot sets it up)
@@ -596,6 +602,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Design { action } => design::command(action).await.map_err(Failure::new),
         Command::Brief { action } => brief::command(action).await.map_err(Failure::new),
         Command::Logins { action } => logins::command(action).map_err(Failure::new),
+        Command::Secrets { action } => secrets::command(action).map_err(Failure::new),
         Command::Usage(args) => usage::command(args).map_err(Failure::new),
         Command::Credential { kind, name } => logins::credential(&kind, &name).map_err(Failure::new),
         Command::CallSim { squad, no_llm } => call_sim::run(squad, no_llm).await.map_err(Failure::new),
@@ -1802,6 +1809,8 @@ impl App {
                 | Event::StatusChanged { .. }
                 | Event::SignalsChanged { .. }
                 | Event::Logins { .. }
+                | Event::SquadSecrets { .. }
+                | Event::SquadSecretRevealed { .. }
                 | Event::Autopilot { .. }
                 | Event::LoginInsights { .. }
                 | Event::LoginOffered { .. }

@@ -79,6 +79,7 @@ pub mod skills;
 pub mod runtime;
 pub mod squad_home;
 pub mod squad_memory;
+pub mod squad_secrets;
 pub mod squads;
 pub mod switching;
 pub mod steers;
@@ -101,7 +102,8 @@ pub mod worktree;
 macro_rules! daemon_log {
     ($($arg:tt)*) => {{
         use std::io::Write as _;
-        let _ = writeln!(std::io::stderr(), $($arg)*);
+        // Every key equipe keeps is cut out of the log, wherever it came from.
+        let _ = writeln!(std::io::stderr(), "{}", $crate::squad_secrets::mask(&format!($($arg)*)));
     }};
 }
 

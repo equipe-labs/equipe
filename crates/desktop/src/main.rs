@@ -1156,6 +1156,12 @@ impl Shell {
                             changed = true;
                             continue;
                         }
+                        // A kept key the person asked to see: the page's, held for a moment and dropped.
+                        if let daemon::Update::Event(Event::SquadSecretRevealed { squad, name, ask, value }) = &update {
+                            this.keys_revealed(squad, name, *ask, value.0.clone(), cx);
+                            changed = true;
+                            continue;
+                        }
                         // The shared Chrome's tabs and hands: the browser panel's.
                         if let daemon::Update::Event(
                             event @ (Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. } | Event::BrowserWants { .. } | Event::BrowserWindow { .. }),
@@ -2008,6 +2014,8 @@ impl Shell {
 
     pub fn show(&mut self, screen: Screen, cx: &mut Context<Self>) {
         if self.screen != screen {
+            // A key shown on the Logins page doesn't outlive it.
+            self.logins_ui.keys.forget();
             if let Some(doc) = self.doc.as_mut() {
                 (doc.focus, doc.more) = (None, false);
             }

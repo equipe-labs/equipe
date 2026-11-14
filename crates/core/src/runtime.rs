@@ -80,6 +80,7 @@ mod accept;
 mod gate;
 pub(crate) use gate::checks_scratch;
 mod secrets;
+mod squad_keys;
 mod logins;
 mod window;
 mod autopilot;
@@ -661,6 +662,9 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         next_fill: 0,
         autopilot: Default::default(),
         secret_asks: HashMap::new(),
+        secret_env: HashMap::new(),
+        secret_nudge: Default::default(),
+        delta_tail: HashMap::new(),
         calls: HashMap::new(),
         call_llm: crate::call::judge::LlmConfig::from_env(),
         calls_ended_at: HashMap::new(),
@@ -763,6 +767,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         runtime.hand_on_work_of_departed();
         // Chrome's first start, off the loop, before a reply's card waits on it.
         let _ = crate::visuals::card::warm_up(&runtime.config.home);
+        // The keys members kept, into the list every transcript is masked by.
+        runtime.load_squad_secrets();
     }
     let pulse = watchdog::Pulse::new();
     watchdog::watch(&pulse);
@@ -1444,6 +1450,16 @@ struct Runtime {
     /// Secrets members asked the person for (`ask_secret`), by squad — read
     /// from its journal when first wanted.
     secret_asks: HashMap<String, Vec<crate::protocol::secrets::SecretAsk>>,
+    /// Kept keys members asked their commands to get as environment
+    /// variables (`secret_use`), by session: `(variable, key name)`. The value
+    /// is looked up — and the right to it checked again — when a turn starts.
+    secret_env: HashMap<SessionId, Vec<(String, String)>>,
+    /// Sessions whose command printed something that looks like a key that
+    /// wasn't saved: told to `secret_save` it with their next tool's answer.
+    secret_nudge: std::collections::HashSet<SessionId>,
+    /// The end of a streaming answer held back while kept values exist, so a
+    /// value split across fragments is still cut out whole.
+    delta_tail: HashMap<SessionId, String>,
     /// Calls under way, by id (`call.rs`).
     calls: HashMap<String, crate::call::Call>,
     /// The model a call's judge asks.
@@ -1953,6 +1969,17 @@ impl Runtime {
     /// the screens following its squad. `squad` names the squad of an event that
     /// has no session to say it (a failed start, a board error).
     fn publish_in(&mut self, squad: Option<&str>, mut event: Event) {
+        // Every key equipe keeps is cut out of what leaves a member (`squad_keys`).
+        if let Some(flush) = self.guard_event(&mut event) {
+            self.publish_in_guarded(squad, flush);
+        }
+        if matches!(&event, Event::TextDelta { text, .. } if text.is_empty()) {
+            return;
+        }
+        self.publish_in_guarded(squad, event);
+    }
+
+    fn publish_in_guarded(&mut self, squad: Option<&str>, mut event: Event) {
         // A turn's end, a member gone, the person's word: its helpers follow.
         self.follow_helpers(&mut event);
         // A command step starting or answered, a turn's end: its watch follows.
@@ -2656,6 +2683,10 @@ impl Runtime {
             Command::BrowserProfiles => self.publish_browser_profiles(),
             Command::SaveSecret { squad, id, values } => self.save_secret(&squad, id, values).await,
             Command::DismissSecret { squad, id } => self.dismiss_secret(&squad, id).await,
+            command @ (Command::SquadSecrets
+            | Command::SetSquadSecretProjects { .. }
+            | Command::DeleteSquadSecret { .. }
+            | Command::RevealSquadSecret { .. }) => self.squad_secret_command(command),
             Command::SaveRoutine { squad, routine } => self.save_routine(&squad, routine),
             Command::DeleteRoutine { squad, id } => self.delete_routine(&squad, id),
             Command::RunRoutine { squad, id } => {
@@ -5078,6 +5109,8 @@ for one project goes to it as tickets for its owners, with that project — and 
             && let Some(squad) = squad.as_deref()
         {
             env.extend(self.member_run_env(squad));
+            // Keys the member asked its commands to get (`secret_use`), where it may still have them.
+            env.extend(self.secret_env_for(squad, id));
         }
         // A member's commands know they are a member's: `equipe browser` refuses there.
         if let Some(m) = &session.member {
@@ -7463,7 +7496,21 @@ It starts when {owner} is free."
 
     /// A member's tool call. A request for permission waits for the person; the
     /// rest are answered at once.
-    async fn tool(&mut self, call: ToolCall, reply: oneshot::Sender<ToolResult>) {
+    async fn tool(&mut self, mut call: ToolCall, reply: oneshot::Sender<ToolResult>) {
+        // Kept keys and what looks like one cut out of what the member wrote;
+        // told to keep one it let slip, with the answer to this very call.
+        let reply = if self.guard_call(&mut call) {
+            let (inner, answered) = oneshot::channel::<ToolResult>();
+            tokio::spawn(async move {
+                if let Ok(mut result) = answered.await {
+                    result.text = format!("{}\n\n{}", result.text, crate::squad_secrets::SAVE_NUDGE);
+                    let _ = reply.send(result);
+                }
+            });
+            inner
+        } else {
+            reply
+        };
         // A run that no longer holds its ticket changes nothing: no ticket,
         // no question or permission to the person, no estimate, no hand-in.
         // Reading the board is still fine.
@@ -8961,6 +9008,10 @@ it back there once they have done it.{again} End your turn now with a short line
             }
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
             crate::secrets::ASK_SECRET => self.ask_secret(&squad, &member, id, &args),
+            crate::squad_secrets::SAVE => self.secret_save(&squad, &member, id, &args),
+            crate::squad_secrets::LIST => self.secret_list(&squad),
+            crate::squad_secrets::USE => self.secret_use(&squad, &member, id, &args),
+            crate::squad_secrets::WRITE => self.secret_write(&squad, &member, id, &args),
             board::DESIGN_QA => self.finish_design_qa(&squad, id, &args),
             board::DESIGN_REVIEW => self.finish_design_review(&squad, id, &args),
             board::QA_PICTURES => self.qa_pictures(&squad, id, &args),

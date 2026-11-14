@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{SessionId, TicketId};
+use crate::{SessionId, SquadName, TicketId};
 
 /// One value asked for: the key it is saved under, how the card names it,
 /// and whether it is typed hidden.
@@ -50,9 +50,100 @@ impl std::fmt::Debug for SecretValue {
     }
 }
 
+/// What a key a member obtained is: how a screen labels it, and what a
+/// member says when it saves one (`secret_save`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretKind {
+    ApiKey,
+    Token,
+    Password,
+    ConnectionString,
+    #[default]
+    Other,
+}
+
+impl SecretKind {
+    pub const ALL: [SecretKind; 5] = [Self::ApiKey, Self::Token, Self::Password, Self::ConnectionString, Self::Other];
+
+    /// The word members and the CLI use for it.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::ApiKey => "api_key",
+            Self::Token => "token",
+            Self::Password => "password",
+            Self::ConnectionString => "connection_string",
+            Self::Other => "other",
+        }
+    }
+
+    pub fn parse(word: &str) -> Option<Self> {
+        let word = word.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+        Self::ALL.into_iter().find(|k| k.code() == word)
+    }
+}
+
+/// One use of a squad secret, as the journal keeps it: who, on which
+/// ticket and project, when. Never the value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretUse {
+    pub at: u64,
+    pub member: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<TicketId>,
+    /// The project it was used on; empty: no project (the squad's own folder).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project: String,
+    /// `env` (a turn's environment) or `file` (written into the worktree).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub how: String,
+}
+
+/// A key, token or password a member of a squad obtained and gave to equipe
+/// to keep (`secret_save`): what a screen may see about it. The value lives
+/// only in the machine's secret store; nothing here carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SquadSecret {
+    pub squad: SquadName,
+    pub name: String,
+    pub kind: SecretKind,
+    /// The service or site it is for: `posthog`, `vercel`, `app.posthog.com`.
+    #[serde(default)]
+    pub service: String,
+    /// The projects whose work may use it.
+    #[serde(default)]
+    pub projects: Vec<String>,
+    /// The person marked it usable on any project: no first-use question.
+    #[serde(default)]
+    pub any_project: bool,
+    /// The member that saved it, and the ticket it was on.
+    pub created_by: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_ticket: Option<TicketId>,
+    pub created_at: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_used: Option<SecretUse>,
+}
+
+/// What stands for "no project" in a secret's list of projects: work in the
+/// squad's own folder, on no repository.
+pub const NO_PROJECT: &str = "";
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_kind_is_said_in_one_word_and_read_back_loosely() {
+        for kind in SecretKind::ALL {
+            assert_eq!(SecretKind::parse(kind.code()), Some(kind));
+        }
+        assert_eq!(SecretKind::parse("API-Key"), Some(SecretKind::ApiKey));
+        assert_eq!(SecretKind::parse("connection string"), Some(SecretKind::ConnectionString));
+        assert_eq!(SecretKind::parse("pgp"), None);
+    }
 
     #[test]
     fn a_typed_value_never_shows_in_a_log() {

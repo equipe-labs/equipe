@@ -134,6 +134,11 @@ pub fn person_only(command: &Command) -> bool {
         | C::DeleteBrowserProfile { .. }
         | C::SaveSecret { .. }
         | C::DismissSecret { .. }
+        // The keys members kept: who may use them where, deleting them, and seeing one.
+        | C::SquadSecrets
+        | C::SetSquadSecretProjects { .. }
+        | C::DeleteSquadSecret { .. }
+        | C::RevealSquadSecret { .. }
         | C::SetNebiusKey { .. }
         | C::AddProvider { .. }
         | C::RemoveProvider { .. }
@@ -554,6 +559,10 @@ mod tests {
             Command::WatchTicket { squad: "a".into(), ticket: 3, watch: true },
             Command::Disallow { squad: "a".into(), rule: "Bash(rm:*)".into() },
             Command::DeleteLogin { id: 1 },
+            // Keys members kept: who may use them where, deleting one, seeing one — the person's.
+            Command::SetSquadSecretProjects { squad: "a".into(), name: "k".into(), projects: Vec::new(), any_project: true },
+            Command::DeleteSquadSecret { squad: "a".into(), name: "k".into() },
+            Command::RevealSquadSecret { squad: "a".into(), name: "k".into(), ask: 1 },
             Command::SetNebiusKey { key: None },
             Command::Desktop { open: true },
             Command::DesktopCheck { guide: true },

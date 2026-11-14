@@ -1256,6 +1256,18 @@ pub enum Command {
     SaveSecret { squad: SquadName, id: u64, values: Vec<secrets::SecretValue> },
     /// The person won't give it (now): the member is told.
     DismissSecret { squad: SquadName, id: u64 },
+    /// Every squad's keys, tokens and passwords members kept (`secret_save`):
+    /// answered by [`Event::SquadSecrets`]. Names and facts only, never a value.
+    SquadSecrets,
+    /// The person changes where a kept key may be used: exactly `projects`
+    /// (names; empty for work on no project), or on any project (`any_project`),
+    /// which skips the first-use question. Answered by [`Event::SquadSecrets`].
+    SetSquadSecretProjects { squad: SquadName, name: String, projects: Vec<String>, any_project: bool },
+    /// The person deletes a kept key, from the secret store too.
+    DeleteSquadSecret { squad: SquadName, name: String },
+    /// The person asks to see a kept key once: answered by [`Event::SquadSecretRevealed`],
+    /// carrying `ask` back. Never to a phone.
+    RevealSquadSecret { squad: SquadName, name: String, ask: u64 },
     /// The screen watches `session`'s browser (`None`: none): equipe sends it
     /// a picture of the page every moment or so ([`Event::BrowserFrame`]).
     WatchBrowser { squad: SquadName, session: Option<SessionId> },
@@ -3011,6 +3023,11 @@ pub enum Event {
     SecretAsked { squad: SquadName, ask: secrets::SecretAsk },
     /// It was saved (`saved`) or turned down: the card closes everywhere.
     SecretClosed { squad: SquadName, id: u64, saved: bool },
+    /// Every squad's kept keys, as facts ([`Command::SquadSecrets`]): for every screen.
+    SquadSecrets { secrets: Vec<secrets::SquadSecret> },
+    /// A kept key the person asked to see ([`Command::RevealSquadSecret`]): to be shown
+    /// once, by the screen whose `ask` it is, and dropped.
+    SquadSecretRevealed { squad: SquadName, name: String, ask: u64, value: secrets::SecretValue },
     /// The squad's routines now, each with its next run.
     RoutinesChanged { squad: SquadName, routines: Vec<routines::Routine> },
     /// The PM proposes a routine (`propose_routine`): it waits for the
@@ -3272,6 +3289,8 @@ impl Event {
             | Event::RoleModelsChanged { .. }
             | Event::SecretAsked { .. }
             | Event::SecretClosed { .. }
+            | Event::SquadSecrets { .. }
+            | Event::SquadSecretRevealed { .. }
             | Event::ProjectsChanged { .. }
             | Event::SquadDeleted { .. }
             | Event::SquadNotDeleted { .. }
@@ -3362,6 +3381,8 @@ impl Event {
                 | Event::EngineInstall { .. }
                 | Event::Models { .. }
                 | Event::Logins { .. }
+                | Event::SquadSecrets { .. }
+                | Event::SquadSecretRevealed { .. }
                 | Event::Autopilot { .. }
                 | Event::LoginInsights { .. }
                 | Event::LoginOffered { .. }

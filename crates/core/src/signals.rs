@@ -533,10 +533,15 @@ fn clip(text: &str, most: usize) -> String {
     cut
 }
 
+/// How well-known keys and tokens begin: GitHub's, OpenAI-style `sk-`,
+/// Slack's, PostHog's, AWS access key ids. Shared with what spots a key a
+/// member obtained ([`crate::squad_secrets::keys_in`]).
+pub const KEY_PREFIXES: [&str; 10] = ["ghp_", "gho_", "ghs_", "ghu_", "github_pat_", "sk-", "xox", "phc_", "phx_", "AKIA"];
+
 /// Anything that looks like a key or a token — a long unbroken run of
 /// letters and digits, or one with a known key's prefix — blanked.
 pub fn redact(text: &str) -> String {
-    const PREFIXES: [&str; 10] = ["ghp_", "gho_", "ghs_", "ghu_", "github_pat_", "sk-", "xox", "phc_", "phx_", "AKIA"];
+    const PREFIXES: [&str; 10] = KEY_PREFIXES;
     let word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
     let mut out = String::with_capacity(text.len());
     let mut run = String::new();
