@@ -1346,6 +1346,7 @@
   "app.run_reason_not_resumed": "equipe 重启后无法继续：成员已不在，或其引擎无法在此恢复。",
   "app.run_reason_migrated": "在 equipe 记录运行之前就已在进行中，且无法继续。",
   "app.run_reason_unknown": "运行已停止。",
+  "app.run_reason_waited_on_person": "它在等你处理（例如登录），但一直没人回来。",
   "app.run_paused_why": "目前没有在运行（{who}）。若持续如此，equipe 会把它标为运行停止。",
   "app.run_queued_for": "已在同一分支和工作目录上恢复；{who} 空闲时开始。",
   "app.run_branch": "分支",

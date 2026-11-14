@@ -361,6 +361,21 @@ pub struct TurnCollector {
     /// each): input, output, cache read, cache write, of it kept an hour.
     /// The result's own `usage` is the member's alone.
     subagent_use: std::collections::HashMap<String, [u64; 5]>,
+    /// The member's latest request ended its turn — stop reason `end_turn`,
+    /// no tool called — as far as the stream told.
+    answered: bool,
+    /// The `result` came, and the member hasn't spoken since (a background
+    /// command's end can wake it for more).
+    result_last: bool,
+}
+
+/// How a turn whose process runs on stands, by its stream ([`TurnCollector::settled`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Settled {
+    /// Its `result` came; Claude Code still runs, waiting on background commands, if any.
+    Result,
+    /// Its final message came — `end_turn`, no tool call left — but no `result`.
+    Answered,
 }
 
 /// A subagent run in the background answers its tool call at once with this;
@@ -472,6 +487,11 @@ impl TurnCollector {
             "stream_event"
                 if event.get("event").and_then(|e| e.get("type")).and_then(Value::as_str) == Some("message_delta") =>
             {
+                // The member's own request ended: its turn, unless it calls a tool.
+                if parent(event).is_none() {
+                    let stop = event.get("event").and_then(|e| e.get("delta")).and_then(|d| d.get("stop_reason")).and_then(Value::as_str);
+                    self.answered = stop == Some("end_turn") && self.pending.is_empty();
+                }
                 let tokens = event.get("event").and_then(|e| e.get("usage")).and_then(|u| u.get("output_tokens")).and_then(Value::as_u64);
                 match tokens {
                     Some(n) => {
@@ -483,6 +503,12 @@ impl TurnCollector {
             }
             // A subagent's words are its own: the member's answer is the member's.
             "stream_event" if parent(event).is_some() => Vec::new(),
+            // The member speaks again (woken by a background command's end, say): not settled.
+            "stream_event" if event.get("event").and_then(|e| e.get("type")).and_then(Value::as_str) == Some("message_start") => {
+                self.answered = false;
+                self.result_last = false;
+                Vec::new()
+            }
             "stream_event" => match (text_delta(event), thinking_delta(event)) {
                 (Some(text), _) => {
                     self.streamed.push_str(text);
@@ -532,6 +558,16 @@ impl TurnCollector {
                 let text = message_text(event);
                 if !text.is_empty() {
                     self.last_message = text;
+                }
+                // The member's own message: a tool call keeps its turn going;
+                // one that says it ended the turn, with none, settles it.
+                let calls_tool = content_blocks(event).any(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"));
+                let stop = event.get("message").and_then(|m| m.get("stop_reason")).and_then(Value::as_str);
+                self.result_last = false;
+                if calls_tool {
+                    self.answered = false;
+                } else if stop == Some("end_turn") {
+                    self.answered = self.pending.is_empty();
                 }
                 let mut out = tool_uses(event);
                 // A to-do list written: its every step, beside the line above.
@@ -613,10 +649,48 @@ impl TurnCollector {
                     usage.calls = (!self.calls.is_empty()).then_some(self.calls.len() as u64);
                 }
                 self.result = Some(result);
+                self.result_last = true;
                 Vec::new()
             }
             _ => Vec::new(),
         }
+    }
+
+    /// Whether the turn is over by its stream — its `result` came, or its
+    /// final message did — with no tool call of the member's or subagent
+    /// still out. `None` while it works.
+    pub fn settled(&self) -> Option<Settled> {
+        if !self.pending.is_empty() || !self.subagents.is_empty() {
+            return None;
+        }
+        if self.result_last {
+            Some(Settled::Result)
+        } else if self.answered {
+            Some(Settled::Answered)
+        } else {
+            None
+        }
+    }
+
+    /// Commands the member started in the background still running, as far as the stream told.
+    pub fn background_running(&self) -> bool {
+        !self.background.is_empty()
+    }
+
+    /// The turn ended here: without a `result` since the member last spoke,
+    /// its last message is its answer, with `status` — `completed` for one
+    /// settled ([`Self::settled`]).
+    fn end_here(&mut self, status: &str) {
+        if self.result_last {
+            return;
+        }
+        let usage = match &self.result {
+            Some(Ok(earlier)) => earlier.usage.clone(),
+            _ => None,
+        };
+        let text = if self.last_message.is_empty() { self.streamed.clone() } else { self.last_message.clone() };
+        self.result = Some(Ok(TurnResult { text, status: status.into(), usage }));
+        self.result_last = true;
     }
 
     /// The turn, once the stream has ended. `diagnostics` is what to show when
@@ -986,14 +1060,65 @@ fn result_from(event: &Value, streamed: &str, last_message: &str, subagents: [u6
     })
 }
 
+/// How long a turn that is over by its stream ([`TurnCollector::settled`])
+/// may stay quiet before it is ended here: Claude Code ends a turn by itself
+/// in moments once its answer is in.
+pub const SETTLE_AFTER: std::time::Duration = std::time::Duration::from_secs(90);
+/// A settled turn kept for its background commands is looked at again this often.
+const SETTLE_RECHECK: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long Claude Code has to exit once its input ended, before it is stopped.
+const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// What the caller has a say in while a turn runs ([`run_turn_with`]).
+#[derive(Default)]
+pub struct Controls {
+    /// What the person says meanwhile, read at the turn's next step.
+    pub steering: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+    /// Set by the caller once the turn's work is over by its own account (a
+    /// ticket handed in, say): a turn whose `result` came then isn't kept
+    /// for the commands it left running in the background.
+    pub work_over: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// A word here ends the turn now, as far as it went — its conversation
+    /// kept to resume, as when it settles: for a turn that went silent.
+    pub wind_down: Option<tokio::sync::oneshot::Receiver<()>>,
+    /// [`SETTLE_AFTER`], unless set (tests).
+    pub settle_after: Option<std::time::Duration>,
+}
+
+/// Whether a turn quiet past its settle time ends now: one with its final
+/// message but no `result` does, and one with its `result` whose process
+/// runs on for no background command of its own; one kept for its
+/// background commands ends once the caller says its work is over.
+fn ends_settled(settled: Option<Settled>, background: bool, work_over: bool) -> bool {
+    match settled {
+        Some(Settled::Answered) => true,
+        Some(Settled::Result) => !background || work_over,
+        None => false,
+    }
+}
+
 /// Run one headless turn through the user's Claude Code, reporting activity as it happens.
 pub async fn run_turn(
     binary: &str,
     cwd: &Path,
     request: TurnRequest<'_>,
-    mut steering: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
-    mut on_activity: impl FnMut(Activity),
+    steering: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+    on_activity: impl FnMut(Activity),
 ) -> Result<Turn> {
+    run_turn_with(binary, cwd, request, Controls { steering, ..Controls::default() }, on_activity).await
+}
+
+/// [`run_turn`], with [`Controls`] beyond it.
+///
+/// A turn that is over by its stream but whose process doesn't end it —
+/// Claude Code keeps running while a command it started in the background
+/// does, and a dev server never ends — is ended here once it has been quiet
+/// for [`SETTLE_AFTER`] ([`ends_settled`]): its input closed, the process
+/// stopped if it doesn't exit, and the turn kept as completed, its
+/// conversation resumable as ever.
+pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, controls: Controls, mut on_activity: impl FnMut(Activity)) -> Result<Turn> {
+    let Controls { mut steering, work_over, mut wind_down, settle_after } = controls;
+    let settle_after = settle_after.unwrap_or(SETTLE_AFTER);
     let mut command = crate::tools_path::command(binary);
     // A directory added for reading brings its own CLAUDE.md, so the project's
     // conventions are known from wherever the turn runs.
@@ -1037,11 +1162,29 @@ pub async fn run_turn(
     let mut collector = TurnCollector::new();
     let mut stray = Vec::new();
     let mut lines = BufReader::new(stdout).lines();
+    // When Claude Code last said anything (or was told something), and when a
+    // settled turn kept for its background commands is looked at next.
+    let mut heard = tokio::time::Instant::now();
+    let mut look_again: Option<tokio::time::Instant> = None;
+    let mut settled_why: Option<String> = None;
     loop {
         let steer = async {
             match (&mut steering, stdin.is_some()) {
                 (Some(rx), true) => rx.recv().await,
                 _ => std::future::pending().await,
+            }
+        };
+        let look_at = collector.settled().map(|_| (heard + settle_after).max(look_again.unwrap_or(heard)));
+        let quiet = async {
+            match look_at {
+                Some(at) => tokio::time::sleep_until(at).await,
+                None => std::future::pending().await,
+            }
+        };
+        let told_to_end = async {
+            match &mut wind_down {
+                Some(rx) => rx.await.is_ok(),
+                None => std::future::pending().await,
             }
         };
         let line = tokio::select! {
@@ -1050,14 +1193,55 @@ pub async fn run_turn(
                 match (text, &mut stdin) {
                     (Some(text), Some(input)) => {
                         let _ = input.write_all(user_message(&text).as_bytes()).await;
+                        heard = tokio::time::Instant::now();
+                        look_again = None;
                     }
                     // Nobody will steer any more.
                     _ => steering = None,
                 }
                 continue;
             }
+            () = quiet => {
+                let settled = collector.settled();
+                let over = work_over.as_ref().is_some_and(|w| w.load(std::sync::atomic::Ordering::Relaxed));
+                if !ends_settled(settled, collector.background_running(), over) {
+                    look_again = Some(tokio::time::Instant::now() + SETTLE_RECHECK);
+                    continue;
+                }
+                let secs = settle_after.as_secs();
+                let why = match settled {
+                    Some(Settled::Answered) => format!("its final message came, but no result in {secs}s"),
+                    _ if collector.background_running() => format!("its work was over and it stayed {secs}s on commands it left running in the background"),
+                    _ => format!("its result came, but Claude Code didn't exit in {secs}s"),
+                };
+                collector.end_here("completed");
+                // Its input ends; what doesn't exit then is stopped. Nothing more is
+                // read: a command left running may hold the output open.
+                drop(stdin.take());
+                if tokio::time::timeout(EXIT_WAIT, child.wait()).await.is_err() {
+                    let _ = child.kill().await;
+                }
+                settled_why = Some(why);
+                break;
+            }
+            told = told_to_end => {
+                // The sender gone is no word: nobody will tell any more.
+                if !told {
+                    wind_down = None;
+                    continue;
+                }
+                collector.end_here(if collector.settled().is_some() { "completed" } else { "incomplete" });
+                drop(stdin.take());
+                if tokio::time::timeout(EXIT_WAIT, child.wait()).await.is_err() {
+                    let _ = child.kill().await;
+                }
+                stderr_task.abort();
+                return collector.finish("");
+            }
         };
         let Some(line) = line else { break };
+        heard = tokio::time::Instant::now();
+        look_again = None;
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -1078,6 +1262,12 @@ pub async fn run_turn(
         }
     }
 
+    // Ended here, settled: completed, its conversation kept to resume.
+    if let Some(why) = settled_why {
+        stderr_task.abort();
+        on_activity(Activity::Settled(why));
+        return collector.finish("");
+    }
     let status = child.wait().await?;
     let stderr = stderr_task.await.unwrap_or_default();
     let mut diagnostics: Vec<String> = stray;
@@ -1962,6 +2152,110 @@ EOF"#,
         .unwrap();
         assert_eq!(seen, "pong");
         assert_eq!(turn.result.text, "pong");
+    }
+
+    /// The member's final message, `end_turn` with no tool call, as Claude Code streams it.
+    const ANSWERED: &str = r#"{"type":"system","subtype":"init","model":"claude-sonnet-5-5","session_id":"s-1"}
+{"type":"stream_event","event":{"type":"message_start","message":{"id":"m1"}}}
+{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"Handed in T-7."}],"stop_reason":null}}
+{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}}"#;
+
+    #[test]
+    fn a_turn_is_settled_by_its_final_message_or_its_result_not_while_a_tool_is_out() {
+        let mut c = TurnCollector::new();
+        assert_eq!(c.settled(), None);
+        c.on_event(&json!({ "type": "assistant", "message": { "id": "m1", "content": [{ "type": "tool_use", "id": "t1", "name": "Read", "input": { "file_path": "/a" } }], "stop_reason": "tool_use" } }));
+        assert_eq!(c.settled(), None, "a tool call out");
+        c.on_event(&json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": "x" }] } }));
+        c.on_event(&json!({ "type": "stream_event", "event": { "type": "message_start", "message": { "id": "m2" } } }));
+        c.on_event(&json!({ "type": "assistant", "message": { "id": "m2", "content": [{ "type": "text", "text": "done" }], "stop_reason": null } }));
+        assert_eq!(c.settled(), None, "its request hasn't ended");
+        c.on_event(&json!({ "type": "stream_event", "event": { "type": "message_delta", "delta": { "stop_reason": "end_turn" } } }));
+        assert_eq!(c.settled(), Some(Settled::Answered));
+        c.on_event(&success("done"));
+        assert_eq!(c.settled(), Some(Settled::Result));
+        // Woken again (a background command ended): working, until it settles again.
+        c.on_event(&json!({ "type": "stream_event", "event": { "type": "message_start", "message": { "id": "m3" } } }));
+        assert_eq!(c.settled(), None);
+        assert!(ends_settled(Some(Settled::Answered), true, false), "a final message with no result ends");
+        assert!(ends_settled(Some(Settled::Result), false, false), "a result with nothing in the background ends");
+        assert!(!ends_settled(Some(Settled::Result), true, false), "kept for its background command while its work goes on");
+        assert!(ends_settled(Some(Settled::Result), true, true), "not once its work is over");
+        assert!(!ends_settled(None, false, true));
+    }
+
+    /// Evidence from a member's night: Claude Code wrote its final message
+    /// after the hand-in and never ended the turn. After a quiet spell it is
+    /// ended here: completed, its words and conversation kept.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_turn_that_answered_but_never_ended_is_ended_as_completed() {
+        let (bin, dir) = fake_claude(&format!("cat <<'EOF'\n{ANSWERED}\nEOF\ncat >/dev/null"));
+        let mut settled = Vec::new();
+        let controls = Controls { settle_after: Some(std::time::Duration::from_millis(300)), ..Controls::default() };
+        let run = run_turn_with(bin.to_str().unwrap(), &dir, TurnRequest { prompt: "go", ..Default::default() }, controls, |a| {
+            if let Activity::Settled(why) = a {
+                settled.push(why);
+            }
+        });
+        let turn = tokio::time::timeout(std::time::Duration::from_secs(20), run).await.expect("ended, not hung").unwrap();
+        assert_eq!((turn.result.text.as_str(), turn.result.status.as_str()), ("Handed in T-7.", "completed"));
+        assert_eq!(turn.session_id.as_deref(), Some("s-1"), "resumable");
+        assert!(settled.len() == 1 && settled[0].contains("no result"), "{settled:?}");
+    }
+
+    /// Its result came, but a dev server it started in the background runs on,
+    /// so Claude Code does too: kept while the work goes on (a background
+    /// command's end may wake it), ended once the caller says the work is over.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_turn_kept_for_a_background_command_ends_once_its_work_is_over() {
+        let lines = format!(
+            "{}\n{}\n{ANSWERED}\n{}",
+            r#"{"type":"assistant","message":{"id":"m0","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"npm run dev","run_in_background":true}}],"stop_reason":"tool_use"}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Command running in background with ID: b1"}]}}"#,
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"Handed in T-7.","session_id":"s-1"}"#,
+        );
+        let (bin, dir) = fake_claude(&format!("cat <<'EOF'\n{lines}\nEOF\ncat >/dev/null"));
+        let quick = Some(std::time::Duration::from_millis(200));
+        let kept = run_turn_with(bin.to_str().unwrap(), &dir, TurnRequest { prompt: "go", ..Default::default() }, Controls { settle_after: quick, ..Controls::default() }, |_| {});
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(2), kept).await.is_err(), "its work goes on: kept for the background command");
+        let over = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let mut settled = Vec::new();
+        let controls = Controls { settle_after: quick, work_over: Some(over), ..Controls::default() };
+        let run = run_turn_with(bin.to_str().unwrap(), &dir, TurnRequest { prompt: "go", ..Default::default() }, controls, |a| {
+            if let Activity::Settled(why) = a {
+                settled.push(why);
+            }
+        });
+        let turn = tokio::time::timeout(std::time::Duration::from_secs(20), run).await.expect("ended once its work was over").unwrap();
+        assert_eq!((turn.result.text.as_str(), turn.result.status.as_str()), ("Handed in T-7.", "completed"));
+        assert!(settled.len() == 1 && settled[0].contains("background"), "{settled:?}");
+    }
+
+    /// A turn told to wind down (it went silent) ends at once, as far as it went.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_turn_told_to_wind_down_ends_as_far_as_it_went() {
+        let line = r#"{"type":"assistant","message":{"id":"m0","content":[{"type":"text","text":"Looking."},{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/a"}}],"stop_reason":"tool_use"},"session_id":"s-2"}"#;
+        let (bin, dir) = fake_claude(&format!("cat <<'EOF'\n{line}\nEOF\ncat >/dev/null"));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let controls = Controls { wind_down: Some(rx), ..Controls::default() };
+        // Told once its tool call was heard: it is mid-step, its words in.
+        let (heard_tx, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        let run = run_turn_with(bin.to_str().unwrap(), &dir, TurnRequest { prompt: "go", ..Default::default() }, controls, |a| {
+            if matches!(a, Activity::Tool { .. }) {
+                let _ = heard_tx.send(());
+            }
+        });
+        let told = async {
+            heard.recv().await;
+            let _ = tx.send(());
+        };
+        let (turn, ()) = tokio::join!(tokio::time::timeout(std::time::Duration::from_secs(20), run), told);
+        let turn = turn.expect("ended when told").unwrap();
+        assert_eq!((turn.result.text.as_str(), turn.result.status.as_str()), ("Looking.", "incomplete"));
+        assert_eq!(turn.session_id.as_deref(), Some("s-2"));
     }
 
     #[cfg(unix)]

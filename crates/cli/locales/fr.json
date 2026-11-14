@@ -1369,6 +1369,7 @@
   "app.run_reason_not_resumed": "equipe a redémarré et n'a pas pu la poursuivre : son membre est parti, ou son moteur ne peut pas reprendre ici.",
   "app.run_reason_migrated": "En cours depuis avant qu'equipe ne suive les exécutions, et rien n'a pu la poursuivre.",
   "app.run_reason_unknown": "L'exécution s'est arrêtée.",
+  "app.run_reason_waited_on_person": "Il vous attendait (une connexion, par exemple) et personne n'est revenu.",
   "app.run_paused_why": "Rien ne l'exécute pour l'instant ({who}). Si cela dure, equipe le marque comme bloqué.",
   "app.run_queued_for": "Reprise sur la même branche et le même worktree ; elle démarre dès que {who} est libre.",
   "app.run_branch": "Branche",

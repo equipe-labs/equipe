@@ -1346,6 +1346,7 @@
   "app.run_reason_not_resumed": "equipe가 다시 시작하면서 이어 가지 못했어요. 멤버가 없거나 엔진이 여기서 이어서 할 수 없어요.",
   "app.run_reason_migrated": "equipe가 실행을 기록하기 전부터 진행 중이었고, 이어 갈 수 있는 게 없었어요.",
   "app.run_reason_unknown": "실행이 멈췄어요.",
+  "app.run_reason_waited_on_person": "사람 손을 기다렸는데(로그인 등) 아무도 돌아오지 않았어요.",
   "app.run_paused_why": "지금 아무것도 진행하지 않아요({who}). 계속 그러면 실행 멈춤으로 바뀌어요.",
   "app.run_queued_for": "같은 브랜치와 작업 폴더로 다시 맡겼어요. {who}이(가) 비면 시작해요.",
   "app.run_branch": "브랜치",

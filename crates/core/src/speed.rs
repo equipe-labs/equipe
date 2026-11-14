@@ -382,6 +382,7 @@ mod tests {
                 pause: Some(RunPause { why, engine: Some(Engine::Claude), resumes_at: None, moves_to: None, cause: None, attempt: 0 }),
                 head: None,
                 dirty: None,
+                waited_for: None,
             }));
             t
         };

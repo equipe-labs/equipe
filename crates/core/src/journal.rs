@@ -418,6 +418,12 @@ fn status_str(status: TicketStatus) -> &'static str {
     }
 }
 
+/// What a stalled run waited on the person for — only while that is why it
+/// stalled: a later run of the ticket leaves an old one behind.
+fn waited_for(reason: Option<&str>, what: Option<String>) -> Option<String> {
+    what.filter(|_| reason == Some(equipe_protocol::stall_reason::WAITED_ON_PERSON))
+}
+
 fn status_from(s: &str) -> TicketStatus {
     match s {
         "proposed" => TicketStatus::Proposed,
@@ -605,8 +611,9 @@ impl Journal {
         for column in ["role TEXT", "name TEXT", "joined INTEGER", "mode TEXT"] {
             let _ = conn.execute(&format!("ALTER TABLE sessions ADD COLUMN {column}"), []);
         }
-        // Why an active run is paused, while it is (JSON, `RunPause`).
-        for column in ["head TEXT", "dirty INTEGER", "pause TEXT"] {
+        // Why an active run is paused, while it is (JSON, `RunPause`); what a
+        // run stalled waiting on the person waited for.
+        for column in ["head TEXT", "dirty INTEGER", "pause TEXT", "waited_for TEXT"] {
             let _ = conn.execute(&format!("ALTER TABLE ticket_executions ADD COLUMN {column}"), []);
         }
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN merged INTEGER", []);
@@ -1210,7 +1217,7 @@ impl Journal {
     pub fn execution(&self, ticket: TicketId) -> Result<Option<TicketExecution>> {
         self.conn
             .query_row(
-                "SELECT state, session, operation, generation, heartbeat_at, lease_expires_at, reason, head, dirty, pause
+                "SELECT state, session, operation, generation, heartbeat_at, lease_expires_at, reason, head, dirty, pause, waited_for
                  FROM ticket_executions WHERE ticket = ?1",
                 [ticket],
                 |r| {
@@ -1225,6 +1232,7 @@ impl Journal {
                         pause: r.get::<_, Option<String>>(9)?.and_then(|p| serde_json::from_str(&p).ok()),
                         head: r.get(7)?,
                         dirty: r.get::<_, Option<i64>>(8)?.map(|n| n.clamp(0, i64::from(u32::MAX)) as u32),
+                        waited_for: waited_for(r.get::<_, Option<String>>(6)?.as_deref(), r.get(10)?),
                     })
                 },
             )
@@ -1401,6 +1409,16 @@ impl Journal {
             params![at as i64, equipe_protocol::stall_reason::MIGRATED],
         )?;
         tx.commit()
+    }
+
+    /// `ticket`'s run, just stalled, waited on the person for `what` (a
+    /// sign-in, say) past its grace: said so, with what it was. Whether it
+    /// was stalled.
+    pub fn set_waited_on_person(&self, ticket: TicketId, what: &str) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE ticket_executions SET reason = ?1, waited_for = ?2 WHERE ticket = ?3 AND state = 'stalled'",
+            params![equipe_protocol::stall_reason::WAITED_ON_PERSON, what, ticket],
+        )? == 1)
     }
 
     /// `ticket`'s run, still active although nothing runs it any more — its
@@ -2297,7 +2315,8 @@ impl Journal {
         let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT t.id, t.title, t.body, t.status, t.owner, t.assignee, t.project, t.depends_on, t.branch, t.created_by, t.note, t.worktree, t.merged, t.kind, t.off_main, t.updated_at,
                     t.priority, t.rank, t.remaining, t.images, t.design_qa, t.plan, t.model,
-                    e.state, e.session, e.operation, e.generation, e.heartbeat_at, e.lease_expires_at, e.reason, e.head, e.dirty, e.pause, t.label
+                    e.state, e.session, e.operation, e.generation, e.heartbeat_at, e.lease_expires_at, e.reason, e.head, e.dirty, e.pause, t.label,
+                    e.waited_for
              FROM tickets t LEFT JOIN ticket_executions e ON e.ticket = t.id {filter} ORDER BY t.id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -2344,6 +2363,7 @@ impl Journal {
                     pause: r.get::<_, Option<String>>(32)?.and_then(|p| serde_json::from_str(&p).ok()),
                     head: r.get(30)?,
                     dirty: r.get::<_, Option<i64>>(31)?.map(|n| n.clamp(0, i64::from(u32::MAX)) as u32),
+                    waited_for: waited_for(r.get::<_, Option<String>>(29)?.as_deref(), r.get(34)?),
                 })),
                 None => None,
             };

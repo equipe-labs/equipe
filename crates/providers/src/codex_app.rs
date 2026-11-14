@@ -583,6 +583,9 @@ pub struct TurnCollector {
     /// An error the app-server reported on the way.
     error: Option<String>,
     result: Option<Result<TurnResult>>,
+    /// The latest item was the member's final answer (an `agentMessage` of
+    /// phase `final_answer`), with nothing started since.
+    final_answer: bool,
 }
 
 impl TurnCollector {
@@ -737,6 +740,7 @@ impl TurnCollector {
 
     fn item_started(&mut self, item: &Value) -> Vec<Activity> {
         let Some(id) = item.get("id").and_then(Value::as_str) else { return Vec::new() };
+        self.final_answer = false;
         let uses: Vec<(String, Option<String>)> = match item.get("type").and_then(Value::as_str).unwrap_or("") {
             "commandExecution" => vec![command_tool(item)],
             "fileChange" => {
@@ -771,6 +775,7 @@ impl TurnCollector {
                     self.last_message = text.to_owned();
                     self.after_message = true;
                 }
+                self.final_answer = item.get("phase").and_then(Value::as_str) == Some("final_answer");
                 out
             }
             "contextCompaction" => vec![Activity::Compacted],
@@ -970,6 +975,20 @@ impl TurnCollector {
                 status: if status == "interrupted" { "interrupted".into() } else { "completed".into() },
                 usage: self.usage(),
             }),
+        }
+    }
+
+    /// Whether the turn gave its final answer, with no tool use under way,
+    /// but hasn't completed.
+    pub fn settled(&self) -> bool {
+        self.result.is_none() && self.final_answer && self.pending.is_empty()
+    }
+
+    /// The turn ended here, settled ([`Self::settled`]): its final answer is
+    /// its outcome, and it completed.
+    pub fn settle(&mut self) {
+        if self.result.is_none() {
+            self.result = Some(Ok(TurnResult { text: self.answer(), status: "completed".into(), usage: self.usage() }));
         }
     }
 
@@ -1389,7 +1408,7 @@ pub async fn run_turn(
     stop: Option<oneshot::Receiver<()>>,
     on_activity: impl FnMut(Activity),
 ) -> Result<Turn> {
-    run_turn_with(binary, cwd, request, Controls { steering, asks, stop, stop_subagent: None }, on_activity).await
+    run_turn_with(binary, cwd, request, Controls { steering, asks, stop, ..Controls::default() }, on_activity).await
 }
 
 /// What the caller has a say in while a turn runs ([`run_turn_with`]).
@@ -1404,11 +1423,19 @@ pub struct Controls {
     /// A subagent of the turn's to stop, by its thread: its own turn is
     /// interrupted, once it was heard starting; the member's goes on.
     pub stop_subagent: Option<mpsc::UnboundedReceiver<String>>,
+    /// [`crate::claude_code::SETTLE_AFTER`], unless set (tests).
+    pub settle_after: Option<Duration>,
 }
 
 /// [`run_turn`], with [`Controls`] beyond it.
+///
+/// A turn that gave its final answer but never completed — the app-server
+/// quiet past [`crate::claude_code::SETTLE_AFTER`], no tool use under way —
+/// is ended here as completed: interrupted in the app-server, its thread
+/// kept to resume.
 pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, controls: Controls, mut on_activity: impl FnMut(Activity)) -> Result<Turn> {
-    let Controls { mut steering, asks, stop, mut stop_subagent } = controls;
+    let Controls { mut steering, asks, stop, mut stop_subagent, settle_after } = controls;
+    let settle_after = settle_after.unwrap_or(crate::claude_code::SETTLE_AFTER);
     // On another provider, through a relay on the loopback that keeps its tools plain.
     let relay = match request.provider {
         Some(provider) => Some(crate::relay::start(&provider.base_url, provider.wire).await?),
@@ -1472,8 +1499,18 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
     let mut stop = stop;
     let mut stopping: Option<tokio::time::Instant> = None;
     let mut interrupt_sent = false;
+    // When the app-server last said anything; set once a settled turn was ended here.
+    let mut heard = tokio::time::Instant::now();
+    let mut settled = false;
     let looped: Result<()> = async {
         loop {
+            let settle_at = (collector.settled() && stopping.is_none()).then(|| heard + settle_after);
+            let quiet = async {
+                match settle_at {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            };
             let steer = async {
                 match &mut steering {
                     Some(rx) => rx.recv().await,
@@ -1503,6 +1540,7 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
             tokio::select! {
                 message = server.next() => {
                     let Some(message) = message? else { break };
+                    heard = tokio::time::Instant::now();
                     match message {
                         Incoming::Answer { id, result } if id == turn_request => match result {
                             Ok(started) => {
@@ -1546,6 +1584,16 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
                     stopping = Some(tokio::time::Instant::now() + INTERRUPT_WAIT);
                 }
                 () = deadline => break,
+                () = quiet => {
+                    // Its answer is in and it went quiet without completing:
+                    // interrupted there, so its thread is left whole, and done.
+                    if let Some(turn) = collector.turn().map(str::to_owned) {
+                        let _ = server.request("turn/interrupt", json!({ "threadId": thread, "turnId": turn })).await;
+                    }
+                    collector.settle();
+                    settled = true;
+                    break;
+                }
                 sub = stop_sub => match sub {
                     Some(sub) => {
                         if let Some(turn) = collector.subagent_turn(&sub).map(str::to_owned) {
@@ -1572,6 +1620,9 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
     .await;
     let diagnostics = server.close().await;
     let requests = relay.as_ref().map(crate::relay::Relay::exchanges).unwrap_or_default();
+    if settled {
+        on_activity(Activity::Settled(format!("its final answer came, but the turn didn't complete in {}s", settle_after.as_secs())));
+    }
     // Stopped: however it wound down, it ended because it was told to.
     if stopping.is_some() {
         return Ok(Turn { result: collector.interrupted(), thread_id: Some(thread), provider_requests: requests });
@@ -1679,6 +1730,24 @@ mod tests {
         let provider = Provider { id: "nebius".into(), name: "Nebius".into(), base_url: "http://127.0.0.1:9/v1".into(), env_key: "NEBIUS_API_KEY".into(), config: Vec::new(), wire: crate::relay::Wire::default() };
         let plain = start_params(&TurnRequest { provider: Some(&provider), ..request }, Path::new("/r"), None);
         assert!(plain["config"].get("agents").is_none() && plain["config"]["features"]["multi_agent"] == false, "{plain}");
+    }
+
+    #[test]
+    fn a_turn_that_gave_its_final_answer_but_never_completed_settles_as_completed() {
+        let mut c = TurnCollector::new();
+        c.set_thread("t");
+        feed(&mut c, &[note("item/completed", item("agentMessage", json!({ "id": "a1", "text": "Looking.", "phase": "commentary" })))]);
+        assert!(!c.settled(), "commentary is not its answer");
+        feed(&mut c, &[note("item/started", item("commandExecution", json!({ "id": "c1", "command": "npm run dev", "commandActions": [{ "type": "unknown" }] })))]);
+        feed(&mut c, &[note("item/completed", item("agentMessage", json!({ "id": "a2", "text": "Handed in.", "phase": "final_answer" })))]);
+        assert!(!c.settled(), "a command still under way");
+        feed(&mut c, &[note("item/completed", item("commandExecution", json!({ "id": "c1", "command": "npm run dev", "commandActions": [{ "type": "unknown" }], "status": "completed", "exitCode": 0 })))]);
+        feed(&mut c, &[note("item/completed", item("agentMessage", json!({ "id": "a3", "text": "Handed in.", "phase": "final_answer" })))]);
+        assert!(c.settled());
+        c.settle();
+        assert!(!c.settled(), "settled once");
+        let result = c.finish("").unwrap();
+        assert_eq!((result.text.as_str(), result.status.as_str()), ("Handed in.", "completed"));
     }
 
     #[test]

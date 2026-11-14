@@ -1369,6 +1369,7 @@
   "app.run_reason_not_resumed": "equipe se reinició y no pudo continuarla: su miembro ya no está, o su motor no puede reanudar aquí.",
   "app.run_reason_migrated": "En curso desde antes de que equipe registrara ejecuciones, y nada pudo continuarla.",
   "app.run_reason_unknown": "La ejecución se detuvo.",
+  "app.run_reason_waited_on_person": "Te esperaba (un inicio de sesión, por ejemplo) y nadie volvió.",
   "app.run_paused_why": "Nada lo ejecuta ahora ({who}). Si sigue así, equipe lo marca como detenido.",
   "app.run_queued_for": "Recuperada en la misma rama y worktree; empieza cuando {who} esté libre.",
   "app.run_branch": "Rama",

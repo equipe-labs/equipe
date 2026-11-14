@@ -228,6 +228,7 @@ pub fn stall_reason_words(code: Option<&str>) -> &'static str {
         Some(stall_reason::LEASE_EXPIRED) => t!("app.run_reason_lease_expired"),
         Some(stall_reason::NOT_RESUMED) => t!("app.run_reason_not_resumed"),
         Some(stall_reason::MIGRATED) => t!("app.run_reason_migrated"),
+        Some(stall_reason::WAITED_ON_PERSON) => t!("app.run_reason_waited_on_person"),
         _ => t!("app.run_reason_unknown"),
     }
 }

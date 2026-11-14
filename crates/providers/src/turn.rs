@@ -112,6 +112,11 @@ pub enum Activity {
     Compacted,
     /// The compaction failed: why, as the engine said it.
     CompactFailed(String),
+    /// The turn's answer was in, but the engine's process didn't end the
+    /// turn — it waited on, quiet, on something nobody needed (a dev server
+    /// left running in the background, say) — so the turn was ended here, as
+    /// completed and resumable: why, in a line for the log.
+    Settled(String),
 }
 
 /// How a tool use ended, as the engine answered it.

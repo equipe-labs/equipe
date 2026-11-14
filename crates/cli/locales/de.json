@@ -1369,6 +1369,7 @@
   "app.run_reason_not_resumed": "equipe wurde neu gestartet und konnte ihn nicht fortsetzen: Das Mitglied ist weg, oder seine Engine kann hier nicht weitermachen.",
   "app.run_reason_migrated": "In Arbeit seit der Zeit, bevor equipe Läufe aufzeichnete, und nichts konnte ihn fortsetzen.",
   "app.run_reason_unknown": "Der Lauf hat aufgehört.",
+  "app.run_reason_waited_on_person": "Es hat auf dich gewartet (etwa eine Anmeldung), und niemand ist zurückgekommen.",
   "app.run_paused_why": "Gerade führt ihn nichts aus ({who}). Bleibt es so, markiert equipe ihn als hängen geblieben.",
   "app.run_queued_for": "Auf demselben Branch und Worktree zurückgeholt; es startet, sobald {who} frei ist.",
   "app.run_branch": "Branch",

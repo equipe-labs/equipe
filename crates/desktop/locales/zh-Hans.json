@@ -3723,6 +3723,7 @@
   "run.reason_not_resumed": "equipe 重启后无法继续：成员已不在，或其引擎无法在此恢复。",
   "run.reason_migrated": "在 equipe 记录运行之前就已在进行中，且无法继续。",
   "run.reason_unknown": "运行已停止。",
+  "run.reason_waited_on_person": "它在等你处理（{what}），但一直没人回来。处理后请继续。",
   "run.paused_idle": "{who} 现在没有在这个工单上运行。若持续如此，equipe 会把它标为运行停止。",
   "run.paused_lease": "最近没有运行的迹象。若持续如此，equipe 会把它标为运行停止。",
   "run.queued_for": "已在同一分支和工作目录上恢复；{who} 空闲时开始。",

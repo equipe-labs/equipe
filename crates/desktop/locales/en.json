@@ -3816,6 +3816,7 @@
   "run.reason_not_resumed": "equipe restarted and couldn't carry it on: its member is gone, or its engine can't resume here.",
   "run.reason_migrated": "In progress from before equipe kept runs, and nothing could carry it on.",
   "run.reason_unknown": "Its run stopped.",
+  "run.reason_waited_on_person": "It waited on you — {what} — and nobody came back to it. Do it, then resume it.",
   "run.paused_idle": "{who} isn't running a turn on it now. If that lasts, equipe marks it stalled.",
   "run.paused_lease": "No sign of its run lately. If that lasts, equipe marks it stalled.",
   "run.queued_for": "Brought back on the same branch and worktree; it starts when {who} is free.",

@@ -3723,6 +3723,7 @@
   "run.reason_not_resumed": "equipe の再起動後、続けられませんでした。メンバーがいないか、エンジンがここで再開できません。",
   "run.reason_migrated": "equipe が実行を記録する前から進行中で、続けられるものがありませんでした。",
   "run.reason_unknown": "実行が止まりました。",
+  "run.reason_waited_on_person": "あなたの対応（{what}）を待っていましたが、戻ってきませんでした。対応してから再開してください。",
   "run.paused_idle": "{who} は今このチケットのターンを動かしていません。続く場合は実行停止になります。",
   "run.paused_lease": "最近、実行の気配がありません。続く場合は実行停止になります。",
   "run.queued_for": "同じブランチと作業フォルダで再投入しました。{who} が空き次第始まります。",

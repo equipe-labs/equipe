@@ -3816,6 +3816,7 @@
   "run.reason_not_resumed": "equipe se reinició y no pudo continuarla: su miembro ya no está, o su motor no puede reanudar aquí.",
   "run.reason_migrated": "En curso desde antes de que equipe registrara ejecuciones, y nada pudo continuarla.",
   "run.reason_unknown": "La ejecución se detuvo.",
+  "run.reason_waited_on_person": "Te esperaba — {what} — y nadie volvió. Hazlo y luego reanúdalo.",
   "run.paused_idle": "{who} no está ejecutando ningún turno en él ahora. Si sigue así, equipe lo marca como detenido.",
   "run.paused_lease": "Sin señales de su ejecución últimamente. Si sigue así, equipe la marca como detenida.",
   "run.queued_for": "Recuperada en la misma rama y worktree; empieza cuando {who} esté libre.",
