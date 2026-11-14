@@ -498,6 +498,96 @@ before it saved a key (equipe can't edit those); a key already committed in
 code is not found; and a value a member splits or re-encodes (base64, spaced
 out) isn't recognised.
 
+## Outside MCP servers
+
+A squad can connect an outside MCP server for its members — a design
+library's official server from the Connections catalog (Mobbin: "search real
+product screens and flows for design references", Pro plan or higher), or any
+server by its https address (`crates/core/src/squad_mcp.rs`).
+
+- **Kept.** In the squad's journal (`mcp_servers`): name, address (https only,
+  checked as strictly as a key card's page), transport (streamable HTTP; SSE
+  for Claude Code members only), the roles that get it (the catalog's by
+  default, else every member) and an on/off switch. The person adds one from
+  Logins › Connections ("Connect" on a catalog row, or "Add an MCP server" at
+  the end), from a terminal (`equipe mcp add mobbin`, `equipe mcp add <name>
+  <url> --roles designer,frontend`, `list`, `remove`, `login`), or through the
+  PM's `change_setting` (`mcp_server`), which adds or turns one on only after
+  the person's tap on an approval card. Members never add one.
+- **Given.** From their next turn, each member of those roles gets it in its
+  engine's own config — Claude Code: `{"type": "http", "url": …}` in
+  `--mcp-config`, `--strict-mcp-config` kept; Codex: its URL in the thread's
+  `mcp_servers` — and one line in its charter naming it and what it is for.
+  No header, environment variable or token is ever in either. Its tools run
+  without asking in Auto and Full, and ask in Ask.
+- **Signed in by the engine.** Claude Code keys an MCP server's OAuth tokens
+  by the server's name and a hash of its type, URL and headers, whatever scope
+  it was configured in, so a token the engine's own `claude mcp login` got is
+  found by a headless member run that names the same server and URL. `claude
+  mcp login` needs the server configured: equipe adds it in local scope to
+  the squad's own folder (`squads/<squad>/mcp-signin`), so it never shows in
+  the person's own sessions. Codex keys its tokens by name and URL too, and
+  takes the server as a config override (`codex mcp login <name> -c
+  mcp_servers.<name>.url="…"`). The sign-in runs on the daemon's Mac on the
+  same card as `cli_sign_in` — "Open sign-in page" on the screen the person
+  looks at; from another Mac, Claude Code's page ends on an error (it returns
+  to the daemon's Mac) and its address is pasted back on the card. equipe
+  never reads, keeps or passes the token.
+- **Status.** Connected, needs sign-in or not reachable, from the engines' own
+  tools (`claude mcp get` in that folder, `codex mcp list --json` with the
+  override), never from token files. A member whose server needs a sign-in
+  puts one card in front of the person; "Not now" isn't asked again until the
+  person asks (Sign in on the row, or `equipe mcp login`).
+- **Removed.** Members stop getting it; the engines' own entry and sign-in
+  for it are cleared unless another squad uses the same name and address.
+
+### Who holds the credential
+
+Each server's `auth` (`McpAuth`, `crates/protocol/src/mcp_servers.rs`) says
+who holds its credential; `squad_mcp::credential` is the one place that turns
+it into what a member's engine is given at launch.
+
+- **`engine`** (the default; Mobbin): engine-managed OAuth, as above. equipe
+  never sees the token.
+- **`key`** (21st.dev: "proven React, Tailwind and shadcn/ui components to
+  adapt", `https://21st.dev/api/mcp`, header `x-api-key`): the person pastes
+  the API key on the usual key card (steps, and one click to
+  `https://21st.dev/mcp`, where the key is created) into the squad's secret
+  store. At each launch the daemon reads it and adds the header to the
+  member's engine config — Claude Code: `--mcp-config` then names a file in
+  `credentials/mcp/<session>.json` (mode 0600, inside the folder fenced
+  commands can't read; removed when no keyed server is left), never a
+  command-line argument or an environment variable; Codex: `http_headers` in
+  the thread's config, sent over its app-server connection. As a kept key it
+  is masked out of everything a member says. Without the key the server isn't
+  given, and one key card is put up (again only when the person asks).
+  Limit: a member in Full mode, whose commands run outside the fence, could
+  read that file, as it could any file of the person's.
+- **`gateway`** (data model only, not available yet): equipe-managed OAuth
+  for an engine with no harness of its own (a plain model API). A server set
+  to it is not given to members, and shows "not reachable" with why. The plan:
+  1. Sign-in: equipe is the OAuth client — protected-resource and
+     authorization-server discovery from the server's 401 challenge (RFC 9728,
+     RFC 8414), dynamic client registration (RFC 7591), PKCE S256, a loopback
+     redirect on the daemon's Mac — on the same sign-in card (open the page
+     here; from another Mac, paste the address the page ended on).
+  2. Storage: client registration, access token, refresh token and expiry as
+     one JSON value in the squad's secret store under the server's `secret`
+     (`equipe.secrets:<squad>/<secret>`), never in a journal, an event or a
+     log; masked like any kept key.
+  3. Use: members get the server through a stdio MCP server of equipe's own
+     (`equipe mcp --server outside --name <server>`, started per member like
+     the desktop's), which forwards each JSON-RPC message to the remote
+     streamable-HTTP endpoint with `Authorization: Bearer …` added, and passes
+     the answers (JSON or SSE) back. The member's process never holds the
+     token — it isn't in its config, environment or files.
+  4. Refresh: on expiry, or a 401, the proxy asks the daemon (over its
+     socket) for a fresh token; the daemon refreshes it with the refresh
+     token, keeps the new pair, and answers. A refresh that fails marks the
+     server "needs sign-in" and puts one card up.
+  5. Status: from the last call's outcome and the token's expiry, not from
+     any engine.
+
 ## Left to the person
 
 CAPTCHAs and "verify you are human" walls; push approvals and codes only a

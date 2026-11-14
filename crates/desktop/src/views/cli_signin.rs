@@ -59,11 +59,37 @@ pub fn where_note(remote: bool, machine: &str, wants_code: bool) -> String {
     }
 }
 
+/// An outside MCP server's sign-in (the engine's own `mcp login`), as opposed to a CLI tool's.
+pub fn is_mcp(card: &CliSignIn) -> bool {
+    card.tool.ends_with("_mcp")
+}
+
+/// An MCP sign-in's note: the engine's own sign-in on the daemon's Mac,
+/// equipe never seeing the token; from another Mac, the page's last address
+/// pasted back (Claude Code), or the sign-in finished on that Mac (Codex).
+pub fn mcp_note(remote: bool, machine: &str, wants_code: bool) -> String {
+    match (remote, wants_code) {
+        (false, _) => t!("cli_signin.mcp_note_local").to_string(),
+        (true, true) => t!("cli_signin.mcp_note_remote_paste", machine = machine).to_string(),
+        (true, false) => t!("cli_signin.mcp_note_remote", machine = machine).to_string(),
+    }
+}
+
+/// What the card is for: a member's own words; for an MCP server's sign-in
+/// (whose `why` is the catalog id or the server's name), that service's words
+/// in the person's language, else a line about the server.
+pub fn purpose(card: &CliSignIn) -> String {
+    if !is_mcp(card) {
+        return card.why.clone();
+    }
+    super::secrets::service_words(&card.why, "use").unwrap_or_else(|| t!("cli_signin.mcp_for_server", name = card.why.clone()).to_string())
+}
+
 /// The line that says where it stands.
 pub fn progress(card: &CliSignIn) -> String {
     match card.phase {
         Phase::Starting => t!("cli_signin.starting").to_string(),
-        Phase::Waiting if card.wants_code => t!("cli_signin.waiting_code").to_string(),
+        Phase::Waiting if card.wants_code && !is_mcp(card) => t!("cli_signin.waiting_code").to_string(),
         Phase::Waiting => t!("cli_signin.waiting").to_string(),
         Phase::Checking => t!("cli_signin.checking").to_string(),
         Phase::SignedIn => match card.who.as_deref() {
@@ -90,7 +116,8 @@ impl Shell {
                 continue;
             }
             // Hidden: nobody beside the screen needs to read it.
-            let input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("cli_signin.paste_placeholder")));
+            let placeholder = if is_mcp(card) { t!("cli_signin.mcp_paste_placeholder") } else { t!("cli_signin.paste_placeholder") };
+            let input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(placeholder));
             let id = card.id;
             let subscription = cx.subscribe_in(&input, window, move |shell, _, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
@@ -191,7 +218,7 @@ pub fn card(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> Option<AnyElemen
             body = body.child(
                 v_flex()
                     .gap_1()
-                    .child(div().text_size(px(12.)).text_color(p.muted).child(t!("cli_signin.paste_label")))
+                    .child(div().text_size(px(12.)).text_color(p.muted).child(if is_mcp(&c) { t!("cli_signin.mcp_paste_label") } else { t!("cli_signin.paste_label") }))
                     .child(
                         div()
                             .w_full()
@@ -238,11 +265,11 @@ pub fn card(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> Option<AnyElemen
                     .children(c.ticket.map(|t| div().text_color(p.muted).child(format!("T-{t}")))),
             )
             .child(div().id(("cli-title", id)).text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title(&c)))
-            .child(div().text_size(px(13.)).text_color(p.text2).child(t!("cli_signin.for", why = c.why.clone())))
+            .child(div().text_size(px(13.)).text_color(p.text2).child(t!("cli_signin.for", why = purpose(&c))))
             .child(body)
             .child(div().id(("cli-status", id)).text_size(px(13.)).text_color(status_color).child(progress(&c)))
             .child(actions)
-            .child(div().text_size(px(SMALL)).line_height(px(18.)).text_color(p.muted).child(where_note(remote, &machine, c.wants_code)))
+            .child(div().text_size(px(SMALL)).line_height(px(18.)).text_color(p.muted).child(if is_mcp(&c) { mcp_note(remote, &machine, c.wants_code) } else { where_note(remote, &machine, c.wants_code) }))
             .into_any_element(),
     )
 }
@@ -261,7 +288,7 @@ pub fn docked(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: it would bring gpui's own `test` attribute along.
-    use super::{progress, title, where_note};
+    use super::{is_mcp, mcp_note, progress, title, where_note};
     use equipe_core::protocol::cli_signin::{CliSignIn, Phase};
 
     fn card(phase: Phase) -> CliSignIn {
@@ -301,6 +328,24 @@ mod tests {
         assert!(remote.contains("mac-mini") && remote.contains("지금 쓰고 있는 이 Mac에서 열려요"), "{remote}");
         assert_ne!(where_note(false, "m", false), where_note(false, "m", true), "a pasted code is explained where the flow has one");
         assert_ne!(where_note(true, "m", false), where_note(false, "m", false));
+    }
+
+    #[test]
+    fn an_mcp_sign_in_says_the_engines_own_sign_in_runs_and_what_to_paste_from_another_mac() {
+        let mut mcp = card(Phase::Waiting);
+        mcp.tool = "claude_mcp".into();
+        assert!(is_mcp(&mcp) && !is_mcp(&card(Phase::Waiting)));
+        let local = mcp_note(false, "mac-mini", true);
+        let paste = mcp_note(true, "mac-mini", true);
+        let codex = mcp_note(true, "mac-mini", false);
+        assert!(!local.contains("mac-mini") && paste.contains("mac-mini") && codex.contains("mac-mini"));
+        assert!(local != paste && paste != codex);
+        // What it is for: the catalog's own words, else the server's name.
+        mcp.why = "mobbin".into();
+        assert!(super::purpose(&mcp).contains("디자인 참고용"), "{}", super::purpose(&mcp));
+        mcp.why = "acme-docs".into();
+        assert!(super::purpose(&mcp).contains("acme-docs"));
+        assert_eq!(super::purpose(&card(Phase::Waiting)), "deploy the staging stack");
     }
 
     #[test]

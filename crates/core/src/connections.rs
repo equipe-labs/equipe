@@ -40,6 +40,26 @@ pub struct Service {
     /// What a key is called by default; `None`: no key is added here.
     pub key_name: Option<&'static str>,
     pub kind: SecretKind,
+    /// Its official MCP server, for a service members use through one
+    /// (`crate::squad_mcp`): "Connect" adds it to the squad and signs in.
+    pub mcp: Option<McpService>,
+}
+
+/// A catalog service's official MCP server, from its provider's docs.
+#[derive(Debug, Clone, Copy)]
+pub struct McpService {
+    /// The server's address (https, streamable HTTP).
+    pub url: &'static str,
+    /// The roles whose members get it by default.
+    pub roles: &'static [&'static str],
+    /// Where the person signs up or picks the plan it needs.
+    pub sign_up_url: &'static str,
+    /// The provider's page on its MCP server.
+    pub docs_url: &'static str,
+    /// The header its server takes the service's API key in (the catalog's
+    /// `key_name`, saved through the key card); `None`: it signs in with
+    /// OAuth through the engine's own CLI.
+    pub key_header: Option<&'static str>,
 }
 
 /// The catalog. Sources (public documentation, checked 2026-11-14):
@@ -54,7 +74,13 @@ pub struct Service {
 ///   (US Cloud; EU Cloud and self-hosted use their own host). The docs name no sign-in address.
 /// - AWS: "Sign in to the AWS Management Console", docs.aws.amazon.com/signin — `console.aws.amazon.com`.
 ///   Console sign-in only: no key is created from here.
-pub const CATALOG: [Service; 6] = [
+/// - Mobbin: "Mobbin MCP", docs.mobbin.com/mcp/introduction.md, and the official plugin's `mcp.json`
+///   (mobbin/skills, MIT) — server `api.mobbin.com/mcp` over streamable HTTP, signed in with OAuth in the
+///   browser (no key); it needs a Pro plan or higher (`mobbin.com/pricing`). An MCP service only.
+/// - 21st.dev: 21st.dev/llms.txt and 21st.dev/auth.md — server `21st.dev/api/mcp` (streamable HTTP), an API key
+///   (`21st_sk_…`) created at `21st.dev/mcp` and sent as the `x-api-key` header (what `npx @21st-dev/cli init --client
+///   claude` prints). The server also offers OAuth; the key is what its own setup uses.
+pub const CATALOG: [Service; 8] = [
     Service {
         id: "anthropic",
         label: "Anthropic Console",
@@ -63,8 +89,9 @@ pub const CATALOG: [Service; 6] = [
         key_url: Some("https://platform.claude.com/settings/admin-keys"),
         key_name: Some("anthropic-admin-key"),
         kind: SecretKind::ApiKey,
+        mcp: None,
     },
-    Service { id: "openai", label: "OpenAI platform", hosts: &["platform.openai.com", "openai.com"], sign_in_url: None, key_url: None, key_name: Some("openai-admin-key"), kind: SecretKind::ApiKey },
+    Service { id: "openai", label: "OpenAI platform", hosts: &["platform.openai.com", "openai.com"], sign_in_url: None, key_url: None, key_name: Some("openai-admin-key"), kind: SecretKind::ApiKey, mcp: None },
     Service {
         id: "github",
         label: "GitHub",
@@ -73,8 +100,9 @@ pub const CATALOG: [Service; 6] = [
         key_url: Some("https://github.com/settings/personal-access-tokens/new"),
         key_name: Some("github-token"),
         kind: SecretKind::Token,
+        mcp: None,
     },
-    Service { id: "vercel", label: "Vercel", hosts: &["vercel.com"], sign_in_url: None, key_url: Some("https://vercel.com/account/tokens"), key_name: Some("vercel-token"), kind: SecretKind::Token },
+    Service { id: "vercel", label: "Vercel", hosts: &["vercel.com"], sign_in_url: None, key_url: Some("https://vercel.com/account/tokens"), key_name: Some("vercel-token"), kind: SecretKind::Token, mcp: None },
     Service {
         id: "posthog",
         label: "PostHog",
@@ -83,8 +111,41 @@ pub const CATALOG: [Service; 6] = [
         key_url: Some("https://us.posthog.com/settings/user-api-keys"),
         key_name: Some("posthog-personal-key"),
         kind: SecretKind::ApiKey,
+        mcp: None,
     },
-    Service { id: "aws", label: "AWS", hosts: &["aws.amazon.com", "amazon.com"], sign_in_url: Some("https://console.aws.amazon.com/"), key_url: None, key_name: None, kind: SecretKind::Other },
+    Service { id: "aws", label: "AWS", hosts: &["aws.amazon.com", "amazon.com"], sign_in_url: Some("https://console.aws.amazon.com/"), key_url: None, key_name: None, kind: SecretKind::Other, mcp: None },
+    Service {
+        id: "mobbin",
+        label: "Mobbin",
+        hosts: &["mobbin.com"],
+        sign_in_url: None,
+        key_url: None,
+        key_name: None,
+        kind: SecretKind::Other,
+        mcp: Some(McpService {
+            url: "https://api.mobbin.com/mcp",
+            roles: &["designer", "frontend"],
+            sign_up_url: "https://mobbin.com/pricing",
+            docs_url: "https://docs.mobbin.com/mcp/introduction.md",
+            key_header: None,
+        }),
+    },
+    Service {
+        id: "21st",
+        label: "21st.dev",
+        hosts: &["21st.dev"],
+        sign_in_url: None,
+        key_url: Some("https://21st.dev/mcp"),
+        key_name: Some("21st-api-key"),
+        kind: SecretKind::ApiKey,
+        mcp: Some(McpService {
+            url: "https://21st.dev/api/mcp",
+            roles: &["designer", "frontend"],
+            sign_up_url: "https://21st.dev/mcp",
+            docs_url: "https://21st.dev/llms.txt",
+            key_header: Some("x-api-key"),
+        }),
+    },
 ];
 
 impl Service {
@@ -97,6 +158,11 @@ impl Service {
     /// Whether a key can be added here.
     pub fn takes_key(&self) -> bool {
         self.key_name.is_some()
+    }
+
+    /// Whether members use it through its official MCP server.
+    pub fn is_mcp(&self) -> bool {
+        self.mcp.is_some()
     }
 
     pub fn by_id(id: &str) -> Option<&'static Service> {
@@ -353,8 +419,32 @@ mod tests {
             assert_eq!(s.takes_key(), s.key_name.is_some());
             assert!(Service::of(s.id).is_some_and(|f| f.id == s.id) && Service::of(s.label).is_some_and(|f| f.id == s.id));
         }
+        for (service, mcp) in CATALOG.iter().filter_map(|s| s.mcp.map(|m| (s, m))) {
+            for url in [mcp.url, mcp.sign_up_url, mcp.docs_url] {
+                assert_eq!(clean_url(url).as_deref(), Ok(url), "{}: {url}", service.id);
+                assert!(service.hosts.iter().any(|h| serves(h, url)), "{}: {url} is not one of its hosts", service.id);
+            }
+            assert!(!mcp.roles.is_empty() && mcp.roles.iter().all(|r| crate::roles::role(r).is_some()), "{}: real roles", service.id);
+            assert_eq!(service.takes_key(), mcp.key_header.is_some(), "{}: a key exactly when its server takes one", service.id);
+        }
         assert_eq!(Service::by_id("anthropic").unwrap().key_url, Some("https://platform.claude.com/settings/admin-keys"));
         assert!(Service::by_id("openai").unwrap().key_url.is_none(), "not in the provider's public docs: left out");
+    }
+
+    #[test]
+    fn mobbin_is_an_mcp_service_for_designers_and_frontend_engineers() {
+        let mobbin = Service::by_id("mobbin").unwrap();
+        let mcp = mobbin.mcp.unwrap();
+        assert_eq!((mcp.url, mcp.roles), ("https://api.mobbin.com/mcp", &["designer", "frontend"][..]));
+        assert_eq!((mcp.sign_up_url, mcp.docs_url), ("https://mobbin.com/pricing", "https://docs.mobbin.com/mcp/introduction.md"));
+        assert!(mobbin.is_mcp() && !mobbin.takes_key() && mobbin.sign_in_target().is_none(), "no key, no browser sign-in: its server's own");
+        assert_eq!(Service::of("api.mobbin.com").map(|s| s.id), Some("mobbin"));
+        assert!(CATALOG.iter().filter(|s| !["mobbin", "21st"].contains(&s.id)).all(|s| !s.is_mcp()));
+        // 21st.dev: an API key through the key card, sent as its server's `x-api-key`.
+        let ui = Service::by_id("21st").unwrap();
+        let m = ui.mcp.unwrap();
+        assert_eq!((m.url, m.key_header, ui.key_url, ui.key_name), ("https://21st.dev/api/mcp", Some("x-api-key"), Some("https://21st.dev/mcp"), Some("21st-api-key")));
+        assert_eq!(m.roles, &["designer", "frontend"][..]);
     }
 
     #[test]

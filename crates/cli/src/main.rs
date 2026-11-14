@@ -27,6 +27,7 @@ mod launchd;
 mod logins;
 mod notify;
 mod usage;
+mod mcp_servers;
 mod onboard;
 mod open;
 mod remote;
@@ -216,33 +217,37 @@ enum Command {
         #[arg(long)]
         images: Option<std::path::PathBuf>,
     },
-    /// Serve a member's board tools over MCP (equipe starts this for its engines)
-    #[command(hide = true)]
+    /// Connect outside MCP servers to the squad's members: `add`, `list`,
+    /// `remove`, `login` (without one, equipe serves a member's board tools
+    /// over MCP: it starts that for its engines)
+    #[command(subcommand_negates_reqs = true, args_conflicts_with_subcommands = true)]
     Mcp {
+        #[command(subcommand)]
+        action: Option<McpAction>,
         /// `equipe` (the board), `desktop` or `phone`
-        #[arg(long, default_value = "equipe")]
+        #[arg(long, default_value = "equipe", hide = true)]
         server: String,
-        #[arg(long)]
-        squad: String,
-        #[arg(long)]
-        member: String,
-        #[arg(long)]
-        role: String,
-        #[arg(long)]
-        home: std::path::PathBuf,
+        #[arg(long, hide = true, required = true)]
+        squad: Option<String>,
+        #[arg(long, hide = true, required = true)]
+        member: Option<String>,
+        #[arg(long, hide = true, required = true)]
+        role: Option<String>,
+        #[arg(long, hide = true, required = true)]
+        home: Option<std::path::PathBuf>,
         /// The member's engine has no subagents of its own: equipe's helpers too
-        #[arg(long)]
+        #[arg(long, hide = true)]
         helpers: bool,
         /// A designer on brand work: its reference tools (`design_tools`) too
-        #[arg(long)]
+        #[arg(long, hide = true)]
         branding: bool,
         /// A light design QA session: only its few tools (`design_qa`, `design_review`, `qa_pictures`, `comment`)
-        #[arg(long)]
+        #[arg(long, hide = true)]
         qa_lite: bool,
         /// The ticket run this server serves (`session:ticket:generation`):
         /// every call says it, and the daemon takes a call that changes the
         /// ticket only from the run that holds it now
-        #[arg(long)]
+        #[arg(long, hide = true)]
         run: Option<String>,
     },
     /// Sign in to sites in a browser, for the squad to work in as you
@@ -802,10 +807,12 @@ async fn run(cli: Cli) -> ExitCode {
                 },
             }
         }
-        Command::Mcp { server, squad, member, role, home, helpers, branding, qa_lite, run } => {
+        Command::Mcp { action: Some(action), .. } => mcp_action(action).await,
+        Command::Mcp { action: None, server, squad: Some(squad), member: Some(member), role: Some(role), home: Some(home), helpers, branding, qa_lite, run } => {
             let run = run.as_deref().and_then(protocol::rpc::RunKey::parse);
             serve_mcp(&server, squad, member, role, home, helpers, branding, qa_lite, run).await
         }
+        Command::Mcp { .. } => Err(Failure::new(t!("mcp.usage"))),
         // Answered in `main`, before anything starts.
         Command::Hook { .. } => Ok(()),
         Command::Desktop { action } => desktop::run(action.map(|a| match a {
@@ -1338,6 +1345,76 @@ fn show_whereabouts(p: &ui::Painter, w: &daemon::Whereabouts) {
 }
 
 /// What went wrong, and the command that fixes it when there is one.
+/// `equipe mcp …`: the squad's outside MCP servers.
+#[derive(Subcommand)]
+enum McpAction {
+    /// Connect a server: a catalog name (`mobbin`), or a name and its https address
+    Add {
+        /// Its name (`mobbin`, or one of your own: letters, digits, `-`, `_`)
+        name: String,
+        /// Its https address (left out for a catalog service)
+        url: Option<String>,
+        /// The roles whose members get it, comma-separated (default: the catalog's, else every member)
+        #[arg(long, value_delimiter = ',')]
+        roles: Vec<String>,
+        /// It speaks server-sent events rather than streamable HTTP (Claude Code members only)
+        #[arg(long)]
+        sse: bool,
+        /// The squad (default: the one this folder belongs to, else your first)
+        #[arg(long)]
+        squad: Option<String>,
+    },
+    /// The squad's servers, and where each stands on each engine here
+    List {
+        /// Don't ask the engines where each stands
+        #[arg(long)]
+        no_check: bool,
+        /// The squad (default: the one this folder belongs to, else your first)
+        #[arg(long)]
+        squad: Option<String>,
+    },
+    /// Take a server off the squad
+    Remove {
+        name: String,
+        /// The squad (default: the one this folder belongs to, else your first)
+        #[arg(long)]
+        squad: Option<String>,
+    },
+    /// Sign in to a server with the engine's own sign-in, here in this terminal
+    Login {
+        name: String,
+        /// `claude` or `codex` (default: Claude Code when it is installed)
+        #[arg(long)]
+        engine: Option<String>,
+        /// The squad (default: the one this folder belongs to, else your first)
+        #[arg(long)]
+        squad: Option<String>,
+    },
+}
+
+async fn mcp_action(action: McpAction) -> Result<(), Failure> {
+    let home = equipe_providers::credentials::equipe_home();
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let named = match &action {
+        McpAction::Add { squad, .. } | McpAction::List { squad, .. } | McpAction::Remove { squad, .. } | McpAction::Login { squad, .. } => squad.clone(),
+    };
+    let Some(squad) = home::squad_for(&home, &cwd, named) else {
+        return Err(Failure::new(t!("main.no_squad")));
+    };
+    let socket = daemon::socket();
+    let lines = match action {
+        McpAction::Add { name, url, roles, sse, .. } => mcp_servers::add(&home, &socket, &squad, &name, url.as_deref(), &roles, sse).await,
+        McpAction::List { no_check, .. } => mcp_servers::list(&home, &squad, !no_check).await,
+        McpAction::Remove { name, .. } => mcp_servers::remove(&home, &socket, &squad, &name).await.map(|l| vec![l]),
+        McpAction::Login { name, engine, .. } => mcp_servers::login(&home, &socket, &squad, &name, engine.as_deref()).await.map(|l| vec![l]),
+    }
+    .map_err(Failure::new)?;
+    for line in lines {
+        println!("  {line}");
+    }
+    Ok(())
+}
+
 struct Failure {
     message: String,
     next: Option<String>,
@@ -1873,6 +1950,7 @@ impl App {
                 | Event::SecretClosed { .. }
                 | Event::CliSignInChanged { .. }
                 | Event::CliSignInClosed { .. }
+                | Event::McpServers { .. }
                 | Event::Allowed { .. }
                 | Event::Design { .. }
                 | Event::ProjectDocs { .. }

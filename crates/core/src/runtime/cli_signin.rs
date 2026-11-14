@@ -5,6 +5,10 @@
 //! person pastes goes to the process and is dropped — it is not in a card,
 //! an event, a journal or a log. When it ends signed in, the member is woken
 //! with as whom.
+//!
+//! An outside MCP server's sign-in (`crate::squad_mcp`) is a card of the same
+//! kind, started by equipe: when it ends signed in, the server is checked
+//! again and its members have it from their next turn; nobody is woken.
 
 use crate::cli_signin::{self as cs, Kind, Outcome};
 use crate::protocol::cli_signin::{CliSignIn, PastedCode, Phase};
@@ -27,6 +31,8 @@ pub(super) struct Live {
     /// The device sign-in approval equipe took over for this run, where the
     /// person let it approve that tool's sign-ins (login autopilot).
     approving: Option<u32>,
+    /// The outside MCP server it signs in to, for an MCP sign-in.
+    pub server: Option<String>,
 }
 
 impl Drop for Live {
@@ -102,7 +108,7 @@ impl Runtime {
             at: now_secs(),
         };
         let card_id = card.id;
-        self.cli_signins(squad).push(Live { card, kind: asked.kind, plan, run: 0, codes: None, task: None, approving: None });
+        self.cli_signins(squad).push(Live { card, kind: asked.kind, plan, run: 0, codes: None, task: None, approving: None, server: None });
         self.run_cli_sign_in(squad, card_id);
         self.publish_card(squad, card_id);
         let whose = asked.profile.as_deref().map(|p| format!(" (profile {p})")).unwrap_or_default();
@@ -113,6 +119,50 @@ and carry on from there; if the link runs out they get a new one from the card. 
 or end your turn saying in a line what you're waiting for.",
             asked.kind.name()
         ))
+    }
+
+    /// Whether a sign-in card for outside server `server` on `kind`'s engine
+    /// is up (whatever its phase): one card per server and engine, never two.
+    pub(super) fn mcp_card_up(&mut self, squad: &str, server: &str, kind: Kind) -> bool {
+        self.cli_signins(squad).iter().any(|l| l.kind == kind && l.server.as_deref() == Some(server))
+    }
+
+    /// An outside MCP server's sign-in on a card, started at once: `name` is
+    /// how the card names it ("Mobbin (Claude Code)"), `session` and `member`
+    /// the member it came up for (none: the person asked for it).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn start_mcp_card(&mut self, squad: &str, kind: Kind, plan: cs::Plan, server: &str, name: String, why: String, by: Option<(SessionId, String, Option<TicketId>)>) -> u64 {
+        let (session, member, ticket) = by.unwrap_or((0, String::new(), None));
+        let card = CliSignIn {
+            id: now_secs() * 1000 + self.cli_signins(squad).len() as u64,
+            session,
+            member,
+            ticket,
+            tool: kind.word().to_owned(),
+            name,
+            profile: None,
+            why,
+            url: None,
+            user_code: None,
+            wants_code: kind.wants_code(),
+            phase: Phase::Starting,
+            who: None,
+            detail: None,
+            at: now_secs(),
+        };
+        let card_id = card.id;
+        self.cli_signins(squad).push(Live { card, kind, plan, run: 0, codes: None, task: None, approving: None, server: Some(server.to_owned()) });
+        self.run_cli_sign_in(squad, card_id);
+        self.publish_card(squad, card_id);
+        card_id
+    }
+
+    /// The sign-in cards for outside server `server`, taken away (it left the squad).
+    pub(super) fn close_mcp_cards(&mut self, squad: &str, server: &str) {
+        let ids: Vec<u64> = self.cli_signins(squad).iter().filter(|l| l.server.as_deref() == Some(server)).map(|l| l.card.id).collect();
+        for id in ids {
+            self.close_card(squad, id);
+        }
     }
 
     /// Start (or start again) the process behind card `id`.
@@ -134,8 +184,9 @@ or end your turn saying in a line what you're waiting for.",
                     let _ = internal.send(Internal::CliSignIn(Note::Seen { squad: squad.clone(), id, run, url: url.map(str::to_owned), code: code.map(str::to_owned) }));
                 }
             };
-            let outcome = cs::drive(kind, &plan.program, &plan.args, &plan.env, cs::WAIT, rx, seen).await;
-            let who = if outcome == Outcome::Done { cs::whoami(&plan).await } else { None };
+            let outcome = cs::drive_in(kind, plan.cwd.as_deref(), &plan.program, &plan.args, &plan.env, cs::WAIT, rx, seen).await;
+            // An MCP server's sign-in says nothing of as whom: it is checked again instead.
+            let who = if outcome == Outcome::Done && !kind.is_mcp() { cs::whoami(&plan).await } else { None };
             let _ = internal.send(Internal::CliSignIn(Note::Ended { squad: squad_s, id, run, outcome, who }));
         }));
     }
@@ -197,6 +248,7 @@ or end your turn saying in a line what you're waiting for.",
                     }
                 }
                 let card = live.card.clone();
+                let server = live.server.clone();
                 if let Some(cli) = approving {
                     self.device_card_ended(cli);
                 }
@@ -207,7 +259,11 @@ or end your turn saying in a line what you're waiting for.",
                         tokio::time::sleep(TICKED_FOR).await;
                         let _ = internal.send(Internal::CliSignIn(Note::Sweep { squad: swept, id }));
                     });
-                    self.cli_signed_in(&squad, &card).await;
+                    match server {
+                        // Its members have it from their next turn: checked again, nobody woken.
+                        Some(server) => self.check_mcp_servers(&squad, Some(&server), None),
+                        None => self.cli_signed_in(&squad, &card).await,
+                    }
                 }
             }
             Note::Sweep { squad, id } => {
@@ -263,8 +319,14 @@ or end your turn saying in a line what you're waiting for.",
 
     /// The person won't sign in (now): the process stops, the card closes, the member hears it.
     pub(super) async fn cancel_cli_sign_in(&mut self, squad: &str, id: u64) {
+        let mcp = self.cli_signins(squad).iter().find(|l| l.card.id == id).and_then(|l| l.server.clone().map(|s| (s, l.kind)));
         let Some(card) = self.close_card(squad, id) else { return };
         if card.phase == Phase::SignedIn {
+            return;
+        }
+        // An outside server's sign-in, put off: not asked again for it until the person asks.
+        if let Some((server, kind)) = mcp {
+            self.mcp_put_off(squad, &server, kind);
             return;
         }
         let note = format!("The person didn't sign in to {} for now. Go on without it, or say in a line what it would let you do.", card.name);

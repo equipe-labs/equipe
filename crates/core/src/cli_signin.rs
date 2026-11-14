@@ -11,6 +11,11 @@
 //! `gcloud auth login --no-launch-browser`, `az login --use-device-code`):
 //! equipe never reads a password, never bypasses a provider's sign-in, and
 //! the credentials stay in the tool's own files.
+//!
+//! The same card signs the person in to an outside MCP server the squad
+//! connected (`crate::squad_mcp`): the engine's own `claude mcp login
+//! --no-browser` or `codex mcp login`. Those are equipe's to start, never a
+//! member's to ask for.
 
 use std::io::{Read as _, Write as _};
 use std::time::Duration;
@@ -38,6 +43,13 @@ pub enum Kind {
     Gcloud,
     /// `az login --use-device-code`.
     Az,
+    /// `claude mcp login <server> --no-browser`: an outside MCP server, for
+    /// Claude Code members. The page's redirect finishes it by itself on the
+    /// daemon's machine; elsewhere the person pastes the address the page
+    /// ended on.
+    ClaudeMcp,
+    /// `codex mcp login <server>`: an outside MCP server, for Codex members.
+    CodexMcp,
 }
 
 impl Kind {
@@ -51,7 +63,14 @@ impl Kind {
             Self::Gh => "gh",
             Self::Gcloud => "gcloud",
             Self::Az => "az",
+            Self::ClaudeMcp => "claude_mcp",
+            Self::CodexMcp => "codex_mcp",
         }
+    }
+
+    /// An outside MCP server's sign-in: started by equipe, never asked for by a member.
+    pub fn is_mcp(self) -> bool {
+        matches!(self, Self::ClaudeMcp | Self::CodexMcp)
     }
 
     pub fn parse(word: &str) -> Option<Self> {
@@ -73,6 +92,8 @@ impl Kind {
             Self::Gh => "GitHub",
             Self::Gcloud => "Google Cloud",
             Self::Az => "Azure",
+            Self::ClaudeMcp => "Claude Code",
+            Self::CodexMcp => "Codex",
         }
     }
 
@@ -82,6 +103,8 @@ impl Kind {
             Self::Gh => "gh",
             Self::Gcloud => "gcloud",
             Self::Az => "az",
+            Self::ClaudeMcp => "claude",
+            Self::CodexMcp => "codex",
         }
     }
 
@@ -94,7 +117,13 @@ impl Kind {
 
     /// The flow has the person paste a code from the page back to the tool.
     pub fn wants_code(self) -> bool {
-        matches!(self, Self::Aws | Self::Gcloud)
+        matches!(self, Self::Aws | Self::Gcloud | Self::ClaudeMcp)
+    }
+
+    /// What ends a pasted line: Claude Code reads its terminal raw, where
+    /// Enter is a carriage return.
+    fn enter(self) -> &'static [u8] {
+        if self == Self::ClaudeMcp { b"\r" } else { b"\n" }
     }
 }
 
@@ -106,6 +135,8 @@ pub struct Plan {
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
     pub whoami: (String, Vec<String>),
+    /// Where it runs, when that matters (Claude Code finds a local-scope server by its folder).
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 fn word_safe(w: &str) -> bool {
@@ -167,6 +198,7 @@ pub fn plan(kind: Kind, profile: Option<&str>, extra: &[String]) -> Result<Plan,
             args.extend(s(&["login", "--use-device-code"]));
             whoami_args.extend(s(&["account", "show", "--query", "user.name", "--output", "tsv"]));
         }
+        Kind::ClaudeMcp | Kind::CodexMcp => return Err("An MCP server's sign-in is equipe's to start (`crate::squad_mcp::signin_plan`).".into()),
     }
     if let (Some(p), Kind::Aws | Kind::AwsSso) = (profile, kind) {
         args.extend(["--profile".to_owned(), p.to_owned()]);
@@ -177,7 +209,7 @@ pub fn plan(kind: Kind, profile: Option<&str>, extra: &[String]) -> Result<Plan,
     if kind == Kind::Gh && !extra.iter().any(|a| a == "--hostname" || a == "-h") {
         args.extend(s(&["--hostname", "github.com"]));
     }
-    Ok(Plan { program: kind.program().to_owned(), args, env, whoami: (kind.program().to_owned(), whoami_args) })
+    Ok(Plan { program: kind.program().to_owned(), args, env, whoami: (kind.program().to_owned(), whoami_args), cwd: None })
 }
 
 /// A call, checked.
@@ -416,11 +448,14 @@ struct Proc {
 
 /// Start `program` with a terminal of its own (its echo off), or — for a
 /// tool that asks questions only a terminal answers — with plain pipes.
-fn start(tty: bool, program: &str, args: &[String], env: &[(String, String)]) -> std::io::Result<Proc> {
+fn start(tty: bool, program: &str, args: &[String], env: &[(String, String)], cwd: Option<&std::path::Path>) -> std::io::Result<Proc> {
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
     use std::process::Stdio;
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args).envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str()))).kill_on_drop(true);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
     let (tx, chunks) = unbounded_channel::<String>();
     if !tty {
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -512,8 +547,14 @@ pub enum Outcome {
 /// the code as they become known; `codes` is what the person pastes, written
 /// to the tool's standard input as one line and dropped — never kept, never
 /// in a log.
-pub async fn drive(kind: Kind, program: &str, args: &[String], env: &[(String, String)], wait: Duration, mut codes: UnboundedReceiver<PastedCode>, mut on_seen: impl FnMut(Option<&str>, Option<&str>)) -> Outcome {
-    let mut proc = match start(kind.tty(), program, args, env) {
+pub async fn drive(kind: Kind, program: &str, args: &[String], env: &[(String, String)], wait: Duration, codes: UnboundedReceiver<PastedCode>, on_seen: impl FnMut(Option<&str>, Option<&str>)) -> Outcome {
+    drive_in(kind, None, program, args, env, wait, codes, on_seen).await
+}
+
+/// [`drive`], run in `cwd`.
+#[allow(clippy::too_many_arguments)]
+pub async fn drive_in(kind: Kind, cwd: Option<&std::path::Path>, program: &str, args: &[String], env: &[(String, String)], wait: Duration, mut codes: UnboundedReceiver<PastedCode>, mut on_seen: impl FnMut(Option<&str>, Option<&str>)) -> Outcome {
+    let mut proc = match start(kind.tty(), program, args, env, cwd) {
         Ok(p) => p,
         Err(e) => return Outcome::Failed(e.to_string()),
     };
@@ -541,7 +582,7 @@ pub async fn drive(kind: Kind, program: &str, args: &[String], env: &[(String, S
                     Some(code) => {
                         let line = code.0.trim().replace(['\r', '\n'], "");
                         proc.input.send(line.as_bytes()).await;
-                        proc.input.send(b"\n").await;
+                        proc.input.send(kind.enter()).await;
                     }
                     None => codes_open = false,
                 }
@@ -678,6 +719,42 @@ mod tests {
         assert!(plan(Kind::Aws, None, &["$(x)".into()]).is_err());
     }
 
+    // Recorded from Claude Code 2.1.308 (`claude mcp login mobbin --no-browser`, in a terminal);
+    // its state and challenge long expired.
+    const CLAUDE_MCP: &str = include_str!("../tests/fixtures/cli_signin/claude_mcp_login.txt");
+
+    #[test]
+    fn claude_codes_mcp_login_gives_its_authorization_page_and_wants_the_redirect_back() {
+        let r = read(Kind::ClaudeMcp, CLAUDE_MCP);
+        let url = r.url.unwrap();
+        assert!(url.starts_with("https://") && url.contains("/oauth/authorize?") && url.contains("redirect_uri=http%3A%2F%2Flocalhost"), "{url}");
+        assert_eq!(r.code, None);
+        assert!(Kind::ClaudeMcp.wants_code() && !Kind::CodexMcp.wants_code());
+        assert!(Kind::ClaudeMcp.is_mcp() && !Kind::Gh.is_mcp());
+        // Members never start one: not a tool word, and no plan of `cli_sign_in`'s.
+        assert!(Kind::parse("claude_mcp").is_none() && Kind::parse("codex_mcp").is_none());
+        assert!(plan(Kind::ClaudeMcp, None, &[]).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_redirect_pasted_into_claude_code_ends_with_a_carriage_return_in_its_folder() {
+        // Claude Code reads raw: the line is taken at a carriage return. And it runs where its server is configured.
+        let script = fake("claude-mcp", r#"stty -icrnl; pwd > where; echo 'Visit this URL to authorize:'; echo '  https://auth.example.com/oauth/authorize?state=x '; printf 'Or paste the redirect URL here: '; url=$(head -c 47); end=$(head -c 1 | od -An -tx1 | tr -d ' '); case "$end $url" in "0d http://localhost:"*code=*) echo 'Authenticated with "mobbin".'; exit 0 ;; esac; echo "bad: $end"; exit 2"#);
+        let dir = script.parent().unwrap().to_path_buf();
+        let (tx, rx) = unbounded_channel();
+        // Pasted once the page is on the card, as the person would: the tool has set its terminal up by then.
+        let sent = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            tx.send(PastedCode("http://localhost:5555/callback?code=abc&state=x".into())).unwrap();
+            tx
+        });
+        let outcome = drive_in(Kind::ClaudeMcp, Some(&dir), "/bin/bash", &[script.to_string_lossy().into_owned()], &[], Duration::from_secs(20), rx, |_, _| {}).await;
+        let _keep = sent.await.unwrap();
+        assert_eq!(outcome, Outcome::Done);
+        let ran_in = std::fs::read_to_string(dir.join("where")).unwrap();
+        assert_eq!(std::path::Path::new(ran_in.trim()).canonicalize().unwrap(), dir.canonicalize().unwrap());
+    }
+
     #[test]
     fn a_call_is_checked() {
         let ok = check(&json!({ "tool": "AWS", "why": "deploy", "profile": "atinum" })).unwrap();
@@ -766,7 +843,7 @@ mod tests {
     #[tokio::test]
     async fn whoami_is_the_first_line_of_the_tools_own_answer() {
         let script = fake("who", "echo 'arn:aws:iam::123456789012:user/atinum-admin'");
-        let plan = Plan { program: String::new(), args: Vec::new(), env: Vec::new(), whoami: (script.to_string_lossy().into_owned(), Vec::new()) };
+        let plan = Plan { program: String::new(), args: Vec::new(), env: Vec::new(), whoami: (script.to_string_lossy().into_owned(), Vec::new()), cwd: None };
         assert_eq!(whoami(&plan).await.as_deref(), Some("arn:aws:iam::123456789012:user/atinum-admin"));
     }
 }

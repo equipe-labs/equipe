@@ -186,6 +186,11 @@ pub fn reads(command: &Command) -> bool {
         | C::RestartCliSignIn { .. }
         | C::CancelCliSignIn { .. }
         | C::RequestServiceKey { .. }
+        | C::AddMcpServer { .. }
+        | C::RemoveMcpServer { .. }
+        | C::SetMcpServerEnabled { .. }
+        | C::SignInMcpServer { .. }
+        | C::CheckMcpServers { .. }
         | C::SetSquadSecretProjects { .. }
         | C::DeleteSquadSecret { .. }
         | C::RevealSquadSecret { .. }
@@ -621,6 +626,11 @@ mod tests {
             Command::RestartCliSignIn { squad: s(), id: 1 },
             Command::CancelCliSignIn { squad: s(), id: 1 },
             Command::RequestServiceKey { squad: s(), service: "anthropic".into() },
+            Command::AddMcpServer { squad: s(), server: equipe_core::squad_mcp::server("mobbin", None, None, None).unwrap(), sign_in: true },
+            Command::RemoveMcpServer { squad: s(), name: "mobbin".into() },
+            Command::SetMcpServerEnabled { squad: s(), name: "mobbin".into(), on: false },
+            Command::SignInMcpServer { squad: s(), name: "mobbin".into() },
+            Command::CheckMcpServers { squad: s() },
             Command::SquadSecrets,
             Command::SetSquadSecretProjects { squad: s(), name: "k".into(), projects: Vec::new(), any_project: false },
             Command::DeleteSquadSecret { squad: s(), name: "k".into() },

@@ -31,6 +31,7 @@ pub mod design;
 pub mod look;
 pub mod routines;
 pub mod cli_signin;
+pub mod mcp_servers;
 pub mod secrets;
 pub mod side_chat;
 pub mod signals;
@@ -1280,6 +1281,25 @@ pub enum Command {
     /// on every screen — answered by [`Event::SecretAsked`]. No member waits
     /// on it. Saving goes through [`Command::SaveSecret`].
     RequestServiceKey { squad: SquadName, service: String },
+    /// The person connects an outside MCP server to the squad (or changes one
+    /// of the same name), from Logins › Connections, `equipe mcp add`, or the
+    /// PM's approval card: kept in the squad's settings and given to the
+    /// members of its roles from their next turn. `sign_in`: once its status
+    /// is known, the engines where it needs a sign-in get the sign-in card.
+    /// Answered by [`Event::McpServers`].
+    AddMcpServer { squad: SquadName, server: mcp_servers::McpServer, #[serde(default)] sign_in: bool },
+    /// The person takes an outside MCP server off the squad: members stop
+    /// getting it, and the engines' own sign-in for it is cleared where no
+    /// other squad uses the same server.
+    RemoveMcpServer { squad: SquadName, name: String },
+    /// The person turns an outside MCP server off (kept, given to no one) or on again.
+    SetMcpServerEnabled { squad: SquadName, name: String, on: bool },
+    /// The person signs in to an outside MCP server: the engines' own sign-in
+    /// runs on the daemon's machine, on a sign-in card ([`Event::CliSignInChanged`]).
+    SignInMcpServer { squad: SquadName, name: String },
+    /// Look again at where the squad's outside MCP servers stand, through each
+    /// engine's own tool: answered by [`Event::McpServers`].
+    CheckMcpServers { squad: SquadName },
     /// Every squad's keys, tokens and passwords members kept (`secret_save`):
     /// answered by [`Event::SquadSecrets`]. Names and facts only, never a value.
     SquadSecrets,
@@ -3091,6 +3111,8 @@ pub enum Event {
     CliSignInChanged { squad: SquadName, card: cli_signin::CliSignIn },
     /// The sign-in's card closes everywhere.
     CliSignInClosed { squad: SquadName, id: u64 },
+    /// The squad's outside MCP servers and where each stands, whole, whenever either changes.
+    McpServers { squad: SquadName, servers: Vec<mcp_servers::McpServer>, status: Vec<mcp_servers::McpServerStatus> },
     /// Every squad's kept keys, as facts ([`Command::SquadSecrets`]): for every screen.
     SquadSecrets { secrets: Vec<secrets::SquadSecret> },
     /// A kept key the person asked to see ([`Command::RevealSquadSecret`]): to be shown
@@ -3285,6 +3307,7 @@ impl Event {
             | Event::SecretClosed { squad, .. }
             | Event::CliSignInChanged { squad, .. }
             | Event::CliSignInClosed { squad, .. }
+            | Event::McpServers { squad, .. }
             | Event::ProjectsChanged { squad, .. }
             | Event::RoutinesChanged { squad, .. }
             | Event::RoutineProposed { squad, .. }
@@ -3392,6 +3415,7 @@ impl Event {
             | Event::SecretClosed { .. }
             | Event::CliSignInChanged { .. }
             | Event::CliSignInClosed { .. }
+            | Event::McpServers { .. }
             | Event::SquadSecrets { .. }
             | Event::SquadSecretRevealed { .. }
             | Event::ProjectsChanged { .. }
@@ -3879,6 +3903,12 @@ pub struct Snapshot {
     /// Command-line sign-ins members asked the person to finish on a card.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cli_sign_ins: Vec<cli_signin::CliSignIn>,
+    /// The outside MCP servers the squad connected for its members.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<mcp_servers::McpServer>,
+    /// Where each of them stands, as the engines' own tools last said.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_status: Vec<mcp_servers::McpServerStatus>,
     /// equipe's offers to keep a login the person just signed in with by
     /// hand, waiting for an answer (every squad's: logins are the machine's).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -4424,6 +4454,8 @@ mod tests {
             role_models: vec![RoleModel { role: "qa".into(), engine: Engine::Codex, model: Some("gpt-6.1-sol".into()), effort: Some("high".into()) }],
             secret_asks: Vec::new(),
             cli_sign_ins: Vec::new(),
+            mcp_servers: Vec::new(),
+            mcp_status: Vec::new(),
             login_offers: Vec::new(),
             engine_proposals: Vec::new(),
             desktop: DesktopState::default(),

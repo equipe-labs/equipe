@@ -431,6 +431,9 @@ pub struct Model {
     pub secret_asks: Vec<equipe_core::protocol::secrets::SecretAsk>,
     /// Command-line sign-ins a member asked the person to finish on a card (`cli_sign_in`).
     pub cli_sign_ins: Vec<equipe_core::protocol::cli_signin::CliSignIn>,
+    /// The outside MCP servers the squad connected, and where each stands (Logins › Connections).
+    pub mcp_servers: Vec<equipe_core::protocol::mcp_servers::McpServer>,
+    pub mcp_status: Vec<equipe_core::protocol::mcp_servers::McpServerStatus>,
     /// equipe's offers to keep a login the person just signed in with by hand.
     pub login_offers: Vec<equipe_core::protocol::vault::LoginOffer>,
     /// The browser profiles besides the main one (other people's accounts).
@@ -640,6 +643,8 @@ impl Model {
             auto_put_away: true,
             secret_asks: Vec::new(),
             cli_sign_ins: Vec::new(),
+            mcp_servers: Vec::new(),
+            mcp_status: Vec::new(),
             login_offers: Vec::new(),
             browser_profiles: Vec::new(),
             mode: Mode::default(),
@@ -1267,6 +1272,8 @@ impl Model {
         self.auto_put_away = !snapshot.auto_put_away_off;
         self.secret_asks = snapshot.secret_asks.clone();
         self.cli_sign_ins = snapshot.cli_sign_ins.clone();
+        self.mcp_servers = snapshot.mcp_servers.clone();
+        self.mcp_status = snapshot.mcp_status.clone();
         self.login_offers = snapshot.login_offers.clone();
         self.routines = snapshot.routines.clone();
         self.reviews = snapshot.reviews.iter().map(|r| (r.ticket, r.clone())).collect();
@@ -1423,6 +1430,11 @@ impl Model {
             }
             Event::CliSignInClosed { squad, id } if *squad == self.squad => {
                 self.cli_sign_ins.retain(|c| c.id != *id);
+                self.revision += 1;
+            }
+            Event::McpServers { squad, servers, status } if *squad == self.squad => {
+                self.mcp_servers = servers.clone();
+                self.mcp_status = status.clone();
                 self.revision += 1;
             }
             Event::LoginOffered { offer } => {
