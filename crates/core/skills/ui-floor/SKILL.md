@@ -29,5 +29,6 @@ kept only with its reason, scoped to its file: `equipe design lint --waive syste
 A component you build for the registry follows the `design-system` skill and the registry reference it points to.
 
 Build to the craft skills you're offered: `ui-forms` for any input, `ui-accessibility` on every screen, `ui-motion`
-wherever something moves, and `ui-polish` before you hand in. Their review checklists are what design QA holds your
+wherever something moves, `ui-design-systems` for the public docs of the component you build, and `ui-polish` before
+you hand in. Their review checklists are what design QA holds your
 screens to — run them on what you changed, as drawn, before the hand-in.

@@ -13,7 +13,8 @@ look or design QA, and it never grades your own work as done.
 
 - The pictures `equipe design lint --render` drew (360 to 1920), light and dark, and each state the screen has; on
   design QA, the precheck's pictures and the spec beside them.
-- The references of the screen's patterns at the same width (`design-references`).
+- The references of the screen's patterns at the same width (`design-references`), and for each component the two or
+  three public design-system pages that fit the kind (`ui-design-systems`): hold the component beside what they agree on.
 - The brief or ticket: what the screen is for and its acceptance criteria.
 
 ## The steps

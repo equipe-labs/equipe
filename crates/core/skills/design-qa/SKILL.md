@@ -54,6 +54,9 @@ and propose one design ticket for the screen to raise it. Where its patterns hav
 than guess the tier. The precheck's taste findings (`nested-cards`, `border-levels`, `type-sizes`, `duplicate-text`,
 `primary-actions`) are counted, not judged: look at each before you write it down.
 
+Where a changed component's behaviour is in doubt, open two or three of its pages from the `ui-design-systems` skill
+and name a difference from what they agree on as a finding.
+
 Then run the `ui-review` skill's checklists on each changed screen: the kind checklist for its product kind, and the
 review checklist of each part the change touched (`ui-forms`, `ui-data-display`, `ui-motion`, `ui-accessibility`,
 `ui-writing`, `ui-polish`). A failure there is a blocker only where it meets the S1/S2 line above; otherwise it is
