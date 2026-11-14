@@ -1951,6 +1951,9 @@ impl App {
                 | Event::CliSignInChanged { .. }
                 | Event::CliSignInClosed { .. }
                 | Event::McpServers { .. }
+                | Event::VerificationChanged { .. }
+                | Event::VerificationClosed { .. }
+                | Event::MailboxConnect { .. }
                 | Event::Allowed { .. }
                 | Event::Design { .. }
                 | Event::ProjectDocs { .. }

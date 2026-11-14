@@ -151,8 +151,10 @@ fn chip(p: Palette, text: String, tone: Rgba) -> Div {
 pub fn section(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let mut body = v_flex().w_full().rounded(px(R_LG)).border_1().border_color(p.hair).bg(p.raised).overflow_hidden();
-    for (ix, row) in rows(shell).iter().enumerate() {
-        body = body.child(row_view(shell, row, ix > 0, cx));
+    // The mailbox verification codes are read from, first: it serves every site.
+    body = body.child(super::verify::mailbox_row(shell, cx));
+    for row in rows(shell).iter() {
+        body = body.child(row_view(shell, row, true, cx));
     }
     // The key cards asked for — by Connect here or by a member — right where the person is.
     let ids: Vec<u64> = shell.model.secret_asks.iter().filter(|a| a.store.is_some()).map(|a| a.id).collect();

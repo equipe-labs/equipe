@@ -1875,6 +1875,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                 }
                                 _ => Vec::new(),
                             },
+                            verifications: Vec::new(),
                             engine_proposals: switching::proposals(),
                             hand_overs: moved::hand_overs(),
                             squad: params.squad,

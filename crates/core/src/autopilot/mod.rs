@@ -93,13 +93,16 @@ pub const CODE_WAIT_SECS: u64 = 180;
 #[serde(default)]
 pub struct Settings {
     pub mailbox: Option<crate::protocol::vault::Mailbox>,
+    /// Gmail, connected read-only for verification codes (`crate::verify`);
+    /// its grant is in the secret store ([`crate::vault::account::GMAIL`]).
+    pub gmail: Option<crate::protocol::vault::Gmail>,
     pub sms: bool,
     pub keepalive_hours: u32,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { mailbox: None, sms: false, keepalive_hours: keepalive::DEFAULT_HOURS }
+        Settings { mailbox: None, gmail: None, sms: false, keepalive_hours: keepalive::DEFAULT_HOURS }
     }
 }
 

@@ -84,6 +84,7 @@ pub mod telemetry;
 pub mod team;
 pub mod transcript;
 pub mod vault;
+pub mod verify;
 pub mod review;
 pub mod watch;
 pub mod words;
@@ -1276,6 +1277,25 @@ pub enum Command {
     RestartCliSignIn { squad: SquadName, id: u64 },
     /// The person won't sign in (now): the process stops and the member is told.
     CancelCliSignIn { squad: SquadName, id: u64 },
+    /// "Fill code from email" on a verification card ([`Event::VerificationChanged`]):
+    /// the daemon reads the matching mail from the connected mailbox and types
+    /// the code into the member's page. Only ever the person's click; the code
+    /// goes nowhere but that page.
+    FillVerificationCode { squad: SquadName, id: u64 },
+    /// "I'll type it": the card closes and the page's code field takes the
+    /// person's typing in the hand-off view.
+    TypeVerificationCode { squad: SquadName, id: u64 },
+    /// The person connects Gmail as the mailbox verification codes are read
+    /// from (read-only access, `gmail.readonly`): the daemon opens Google's
+    /// consent page in the person's own browser ([`Event::MailboxConnect`]).
+    /// `client`: an OAuth client of their own, where this build has none.
+    ConnectGmail {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client: Option<vault::GmailClient>,
+    },
+    /// The person disconnects Gmail: the kept grant is dropped from the
+    /// secret store (revoke it in their Google Account too).
+    DisconnectGmail,
     /// The person starts a key card themselves, from Logins › Connections: the
     /// daemon puts the catalog service `service`'s card (`SecretAsk::store`)
     /// on every screen — answered by [`Event::SecretAsked`]. No member waits
@@ -3113,6 +3133,20 @@ pub enum Event {
     CliSignInClosed { squad: SquadName, id: u64 },
     /// The squad's outside MCP servers and where each stands, whole, whenever either changes.
     McpServers { squad: SquadName, servers: Vec<mcp_servers::McpServer>, status: Vec<mcp_servers::McpServerStatus> },
+    /// A verification card is up, or stands differently now: the whole card
+    /// ([`verify::Verification`]); it never carries the code.
+    VerificationChanged { squad: SquadName, card: verify::Verification },
+    /// The card closes everywhere.
+    VerificationClosed { squad: SquadName, id: u64 },
+    /// Connecting Gmail ([`Command::ConnectGmail`]): Google's consent page to
+    /// open in the person's own browser, or why it couldn't go on. Once
+    /// connected, [`Event::Autopilot`] says as whom.
+    MailboxConnect {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// Every squad's kept keys, as facts ([`Command::SquadSecrets`]): for every screen.
     SquadSecrets { secrets: Vec<secrets::SquadSecret> },
     /// A kept key the person asked to see ([`Command::RevealSquadSecret`]): to be shown
@@ -3308,6 +3342,8 @@ impl Event {
             | Event::CliSignInChanged { squad, .. }
             | Event::CliSignInClosed { squad, .. }
             | Event::McpServers { squad, .. }
+            | Event::VerificationChanged { squad, .. }
+            | Event::VerificationClosed { squad, .. }
             | Event::ProjectsChanged { squad, .. }
             | Event::RoutinesChanged { squad, .. }
             | Event::RoutineProposed { squad, .. }
@@ -3416,6 +3452,8 @@ impl Event {
             | Event::CliSignInChanged { .. }
             | Event::CliSignInClosed { .. }
             | Event::McpServers { .. }
+            | Event::VerificationChanged { .. }
+            | Event::VerificationClosed { .. }
             | Event::SquadSecrets { .. }
             | Event::SquadSecretRevealed { .. }
             | Event::ProjectsChanged { .. }
@@ -3438,6 +3476,7 @@ impl Event {
             | Event::SignalsChanged { .. }
             | Event::Logins { .. }
             | Event::Autopilot { .. }
+            | Event::MailboxConnect { .. }
             | Event::LoginInsights { .. }
             | Event::LoginOffered { .. }
             | Event::LoginOfferClosed { .. }
@@ -3514,6 +3553,7 @@ impl Event {
                 | Event::SquadSecrets { .. }
                 | Event::SquadSecretRevealed { .. }
                 | Event::Autopilot { .. }
+                | Event::MailboxConnect { .. }
                 | Event::LoginInsights { .. }
                 | Event::LoginOffered { .. }
                 | Event::LoginOfferClosed { .. }
@@ -3909,6 +3949,10 @@ pub struct Snapshot {
     /// Where each of them stands, as the engines' own tools last said.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_status: Vec<mcp_servers::McpServerStatus>,
+    /// Verification cards waiting on the person: a code a site emailed while
+    /// a member's browser waits on it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verifications: Vec<verify::Verification>,
     /// equipe's offers to keep a login the person just signed in with by
     /// hand, waiting for an answer (every squad's: logins are the machine's).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -4456,6 +4500,7 @@ mod tests {
             cli_sign_ins: Vec::new(),
             mcp_servers: Vec::new(),
             mcp_status: Vec::new(),
+            verifications: Vec::new(),
             login_offers: Vec::new(),
             engine_proposals: Vec::new(),
             desktop: DesktopState::default(),

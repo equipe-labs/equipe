@@ -139,6 +139,10 @@ pub fn person_only(command: &Command) -> bool {
         | C::SubmitCliSignInCode { .. }
         | C::RestartCliSignIn { .. }
         | C::CancelCliSignIn { .. }
+        | C::FillVerificationCode { .. }
+        | C::TypeVerificationCode { .. }
+        | C::ConnectGmail { .. }
+        | C::DisconnectGmail
         | C::RequestServiceKey { .. }
         | C::AddMcpServer { .. }
         | C::RemoveMcpServer { .. }

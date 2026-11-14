@@ -136,6 +136,49 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Imap<S> {
             .collect())
     }
 
+    /// Mail from `domains` (or their subdomains) since `since`, read without
+    /// marking anything read — and nothing else: the server searches for the
+    /// sender, only the matches' sender and date are fetched, and the text
+    /// only of the newest `most` whose sender is truly one of `domains`.
+    pub async fn matching(&mut self, since: u64, domains: &[String], most: usize) -> Result<Vec<Message>, String> {
+        self.run("EXAMINE INBOX").await?;
+        let day = imap_date(since.saturating_sub(24 * 3600));
+        let domains: Vec<&String> = domains.iter().filter(|d| !d.is_empty() && !d.contains(['"', '\\', '\r', '\n'])).collect();
+        let Some((last, rest)) = domains.split_last() else { return Ok(Vec::new()) };
+        // `OR FROM a OR FROM b FROM c`: IMAP's OR takes two keys.
+        let from = rest.iter().rev().fold(format!("FROM {}", quoted(last)), |keys, d| format!("OR FROM {} {keys}", quoted(d)));
+        let found = self.run(&format!("UID SEARCH SINCE {day} {from}")).await?;
+        let mut uids: Vec<u64> = found.iter().filter_map(|(l, _)| l.strip_prefix("* SEARCH")).flat_map(|rest| rest.split_whitespace().filter_map(|u| u.parse().ok()).collect::<Vec<_>>()).collect();
+        uids.sort_unstable();
+        let latest: Vec<String> = uids.iter().rev().take(20).map(u64::to_string).collect();
+        if latest.is_empty() {
+            return Ok(Vec::new());
+        }
+        let heads = self.run(&format!("UID FETCH {} (UID INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])", latest.join(","))).await?;
+        let mut mine: Vec<(u64, Message)> = heads
+            .into_iter()
+            .filter(|(l, lits)| l.starts_with("* ") && l.contains("FETCH") && !lits.is_empty())
+            .filter_map(|(line, lits)| {
+                let uid = line.split_once("UID ").and_then(|(_, r)| r.split(|c: char| !c.is_ascii_digit()).next()).and_then(|u| u.parse::<u64>().ok())?;
+                let at = line.split_once("INTERNALDATE \"").and_then(|(_, r)| r.split_once('"')).and_then(|(d, _)| parse_internal_date(d)).unwrap_or(0);
+                let headers = String::from_utf8_lossy(&lits[0]).into_owned();
+                let from = header_value(&headers, "from");
+                let ours = codes::sender_domain(&from).is_some_and(|d| domains.iter().any(|base| d == **base || d.ends_with(&format!(".{base}"))));
+                (ours && at + 60 >= since).then(|| (uid, Message { from, at, subject: decode_words(&header_value(&headers, "subject")), text: String::new() }))
+            })
+            .collect();
+        mine.sort_by_key(|(_, m)| std::cmp::Reverse(m.at));
+        mine.truncate(most);
+        for (uid, message) in &mut mine {
+            let body = self.run(&format!("UID FETCH {uid} (BODY.PEEK[HEADER.FIELDS (CONTENT-TYPE CONTENT-TRANSFER-ENCODING)] BODY.PEEK[TEXT]<0.65536>)")).await?;
+            if let Some((_, lits)) = body.into_iter().find(|(l, lits)| l.starts_with("* ") && l.contains("FETCH") && lits.len() >= 2) {
+                let headers = String::from_utf8_lossy(&lits[0]).into_owned();
+                message.text = readable(&header_value(&headers, "content-type"), &header_value(&headers, "content-transfer-encoding"), &lits[1]);
+            }
+        }
+        Ok(mine.into_iter().map(|(_, m)| m).collect())
+    }
+
     pub async fn logout(&mut self) {
         let _ = self.run("LOGOUT").await;
     }
@@ -272,7 +315,7 @@ fn quoted_printable(text: &str) -> Vec<u8> {
 }
 
 /// HTML as the text a person would read: tags and styles out, entities in.
-fn html_text(html: &str) -> String {
+pub fn html_as_text(html: &str) -> String {
     let lower = html.to_ascii_lowercase();
     let mut out = String::with_capacity(html.len() / 2);
     let mut i = 0;
@@ -321,7 +364,7 @@ fn readable(content_type: &str, encoding: &str, body: &[u8]) -> String {
         _ => body.to_vec(),
     };
     let text = String::from_utf8_lossy(&bytes).into_owned();
-    if lower.contains("html") { html_text(&text) } else { text }
+    if lower.contains("html") { html_as_text(&text) } else { text }
 }
 
 /// Connect to the mailbox over TLS: the system's trusted certificates, the
@@ -345,9 +388,22 @@ pub async fn connect(host: &str, port: u16) -> Result<Imap<tokio_rustls::client:
 pub async fn look_once(host: &str, port: u16, user: &str, password: &str, wanted: &Wanted) -> Result<Option<String>, String> {
     let mut imap = connect(host, port).await?;
     imap.login(user, password).await?;
-    let messages = imap.recent(wanted.since, 15).await;
+    // Only the site's own mail is fetched, not the inbox's latest.
+    let mut domains = vec![codes::registrable(&wanted.site)];
+    domains.extend(wanted.mail_from.as_deref().map(|m| m.trim().trim_start_matches('@').to_ascii_lowercase()).filter(|m| !m.is_empty()));
+    let messages = imap.matching(wanted.since, &domains, 3).await;
     imap.logout().await;
     Ok(code_in(&messages?, wanted))
+}
+
+/// Look once in the mailbox for mail from `domains` since `since`: only
+/// those messages ([`Imap::matching`]).
+pub async fn matching_once(host: &str, port: u16, user: &str, password: &str, since: u64, domains: &[String]) -> Result<Vec<Message>, String> {
+    let mut imap = connect(host, port).await?;
+    imap.login(user, password).await?;
+    let messages = imap.matching(since, domains, crate::verify::gmail::READ_AT_MOST).await;
+    imap.logout().await;
+    messages
 }
 
 #[cfg(test)]
@@ -378,6 +434,46 @@ mod tests {
         assert_eq!(code_in(&[m("noreply@github.com", 100, "Your code: 111222")], &wanted), None, "from before the sign-in");
         let newest = [m("noreply@github.com", 1_010, "Your code: 111222"), m("noreply@github.com", 1_020, "Your code: 333444")];
         assert_eq!(code_in(&newest, &wanted).as_deref(), Some("333444"), "the newest");
+    }
+
+    #[tokio::test]
+    async fn only_the_senders_mail_is_searched_for_and_only_its_text_is_fetched() {
+        let (client, server) = tokio::io::duplex(1 << 16);
+        let script = tokio::spawn(async move {
+            let mut s = BufReader::new(server);
+            let mut said = Vec::new();
+            s.get_mut().write_all(b"* OK IMAP ready\r\n").await.unwrap();
+            let gh = "From: GitHub <noreply@github.com>\r\nSubject: [GitHub] Sudo email verification code\r\n\r\n";
+            let evil = "From: x@github.com.evil.io\r\nSubject: code\r\n\r\n";
+            let heads = format!(
+                "* 1 FETCH (UID 9 INTERNALDATE \"13-Nov-2026 09:00:00 +0000\" BODY[HEADER.FIELDS (FROM SUBJECT)] {{{}}}\r\n{gh})\r\n* 2 FETCH (UID 11 INTERNALDATE \"13-Nov-2026 09:00:30 +0000\" BODY[HEADER.FIELDS (FROM SUBJECT)] {{{}}}\r\n{evil})\r\nTAG OK done\r\n",
+                gh.len(),
+                evil.len()
+            );
+            let (h, t) = ("Content-Type: text/plain\r\n\r\n", "Verification code: 48213907\r\n");
+            let body = format!("* 1 FETCH (UID 9 BODY[HEADER.FIELDS (CONTENT-TYPE CONTENT-TRANSFER-ENCODING)] {{{}}}\r\n{h} BODY[TEXT]<0> {{{}}}\r\n{t})\r\nTAG OK done\r\n", h.len(), t.len());
+            let replies = ["TAG OK logged in\r\n".to_owned(), "TAG OK [READ-ONLY] done\r\n".to_owned(), "* SEARCH 9 11\r\nTAG OK done\r\n".to_owned(), heads, body, "TAG OK bye\r\n".to_owned()];
+            for reply in replies {
+                let mut line = String::new();
+                s.read_line(&mut line).await.unwrap();
+                let tag = line.split_whitespace().next().unwrap().to_owned();
+                said.push(line.trim_end().to_owned());
+                s.get_mut().write_all(reply.replace("TAG", &tag).as_bytes()).await.unwrap();
+            }
+            said
+        });
+        let mut imap = Imap::open(client).await.unwrap();
+        imap.login("me@example.com", "pw").await.unwrap();
+        let since = parse_internal_date("13-Nov-2026 08:59:00 +0000").unwrap();
+        let found = imap.matching(since, &["github.com".to_owned()], 3).await.unwrap();
+        imap.logout().await;
+        assert_eq!(found.len(), 1, "the lookalike sender is passed over: {found:?}");
+        assert!(found[0].text.contains("48213907") && found[0].from.contains("noreply@github.com"));
+        let said = script.await.unwrap();
+        assert!(said[1].ends_with("EXAMINE INBOX"), "read-only");
+        assert!(said[2].contains("UID SEARCH SINCE") && said[2].ends_with(r#"FROM "github.com""#), "searched for the sender on the server: {said:?}");
+        assert!(said[3].contains("UID FETCH 11,9") && said[3].contains("BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)]") && !said[3].contains("TEXT"), "heads only first: {said:?}");
+        assert!(said[4].contains("UID FETCH 9 ") && said[4].contains("BODY.PEEK[TEXT]"), "the text of the sender's own mail alone: {said:?}");
     }
 
     #[tokio::test]

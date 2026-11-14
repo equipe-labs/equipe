@@ -762,7 +762,9 @@ signed in. Before you work in it, open your `browser` skill: doing the whole job
 handing a step to the person. Before anything done in the person's name that can't easily be taken back — creating \
 an account, accepting terms, starting a trial or a paid plan, inviting someone, deleting or transferring, changing \
 security or billing settings — call `ask_person` with exactly what and why, and go ahead only on their yes. Never \
-type a card number or a password you weren't given, and never try to get past a CAPTCHA. Your windows are yours alone, but sign-ins are shared by \
+type a card number or a password you weren't given, and never try to get past a CAPTCHA. Never ask the person for a verification \
+code in chat, or type one yourself: when a page asks for a code the site emailed, the person gets a card that fills it from their \
+mailbox on their click (if none came up, call `block_on_person` with `verification`) — then wait. Your windows are yours alone, but sign-ins are shared by \
 everyone's: don't sign out of a site, or switch it to another account, team or workspace, without saying so first — \
 the rest of the squad works signed in there too."
     } else {

@@ -12,6 +12,7 @@ signs in once and isn't asked again for the same thing. The pieces:
 | Signing in to a site in equipe's own browser (`equipe browser`, the app's "Sign in to a site") | `crates/core/src/signin.rs`, `Runtime::start_sign_in` (`crates/core/src/runtime.rs`), `follow_person_tabs` (`runtime/logins.rs`) |
 | Cards, the Logins page, Settings › Accounts | `crates/desktop/src/views/login_offers.rs`, `views/logins.rs` (logic: `crates/desktop/src/logins.rs`), `views/accounts.rs` |
 | Login autopilot: codes, passkey, keep-alive, command-line sign-ins | `crates/core/src/autopilot/`, `crates/core/src/runtime/autopilot.rs`, `views/autopilot.rs` (on the Logins page) |
+| Verification codes from email, filled on the person's click | `crates/core/src/verify/`, `crates/core/src/runtime/verify.rs`, `views/verify.rs` |
 
 ## Invariants
 
@@ -353,7 +354,7 @@ names of their own (`vault::account`); `vault.json`, `autopilot.json` and
 | Step | What equipe does | What the person does once | Limits |
 |---|---|---|---|
 | `totp` | On the site's code page, types the code made from the login's authenticator seed (RFC 6238; SHA-1/256/512, 6–8 digits). | Pastes the `otpauth://` address or the secret, or presses "Read QR" with the site's setup page open in their own tab of equipe's browser (the picture is read on this machine, `rqrr`, and dropped). | Time-based codes only; push approvals (Microsoft Authenticator, Google prompts, Apple trusted devices) stay the person's. |
-| `email` | Watches the connected mailbox (IMAP over TLS, read-only `EXAMINE`/`BODY.PEEK`) for up to 3 minutes for mail from the site's own domain (or the domain the person named), takes the code-shaped token, types it. | Connects a mailbox with an app password. | Gmail API OAuth isn't built (IMAP with an app password covers Gmail); magic links aren't followed. |
+| `email` | Watches the connected mailbox (IMAP over TLS, read-only `EXAMINE`/`BODY.PEEK`) for up to 3 minutes for mail from the site's own domain (or the domain the person named) — searched for on the server, so no other mail is fetched — takes the code-shaped token, types it. | Connects a mailbox with an app password. | IMAP only (Gmail's API is used by verification codes, below); magic links aren't followed. |
 | `sms` | Reads the newest text from Messages (`~/Library/Messages/chat.db`, read-only) that is bound to the site's host (WebOTP `@host #code`) or names it, within 3 minutes. | Turns it on, and grants equipe Full Disk Access (System Settings › Privacy & Security › Full Disk Access). Without the grant it refuses and says so. | macOS with Text Message Forwarding only; Windows and Linux refuse. |
 | `passkey` | Gives the page equipe's own passkey for the moment (Chrome's virtual authenticator, CDP `WebAuthn`) and presses its passkey button; the credential's counter is kept up to date. | Presses "Add equipe's passkey", then adds a passkey on the site's security page in equipe's browser within 10 minutes. It is a separate device on the site, revocable there. | The person's own Touch ID passkeys are never used. A site that offers no passkey button, or only a conditional prompt, stays the person's. |
 | `remember` | Ticks "Remember me", "Keep me signed in", "Trust this device" boxes on the forms equipe fills (words of every locale, `match.remember_words`). | Nothing: on by default for a login equipe signs in with; one switch turns it off. | Only boxes on the site's own form. |
@@ -443,6 +444,90 @@ To check on a machine with Node and Chrome (no real accounts):
 
 ```sh
 cargo test -p equipe-core --lib autopilot
+```
+
+## Verification codes from email
+
+Some steps exist to show a person is present — GitHub's "Confirm access"
+(sudo), Google's "Verify it's you", any "enter the code we emailed you".
+When a member's page reaches one, the code is never the member's: it never
+reads, receives or types it, and never asks for it in chat (its charter,
+`browser` skill, `block_on_person` description and the browser gate all say
+so).
+
+| Piece | Code |
+|---|---|
+| Which page is an emailed-code step, which mail is its, the click | `crates/core/src/verify/mod.rs` |
+| Gmail: read-only OAuth (PKCE, loopback), the search, the text | `crates/core/src/verify/gmail.rs` |
+| IMAP: the sender searched for on the server | `Imap::matching` in `crates/core/src/autopilot/mail.rs` |
+| Cards, the click, connecting Gmail, the member told | `crates/core/src/runtime/verify.rs` |
+| The card (`Verification`, never a code), commands, events | `crates/protocol/src/verify.rs` |
+| The card over the composer, Logins › Connections' mailbox row | `crates/desktop/src/views/verify.rs` |
+
+- **One card.** A member's page with a code field that says the code went
+  by email (`verify::email_step`), or a member's `block_on_person` with
+  `verification: {site, channel: "email"}`, raises one card per browser and
+  site: "GitHub sent a verification code to <mailbox>", the steps, **Fill
+  code from email**, **Open email** (the mailbox's own web page searched for
+  the site's mail of the last hour, in the person's own browser) and **I'll
+  type it** (the page in their hands, its code field focused). Without a
+  mailbox the card offers to connect one.
+- **Only on the click.** Raising a card never fetches anything
+  (`verify::Board`); the person-only `FillVerificationCode` is the one way
+  to a fetch. The daemon then looks in the mailbox every 5 seconds for up
+  to a minute, takes the code out of the matching mail, and types it into
+  that page through the browser host's `fill` (the page's own host, https,
+  the member's tools held off the tab), pressing the page's own button as
+  part of the same click. No matching mail in time: the card says so, with
+  how to get a new code.
+- **Only the matching mail** (`verify::pick`): from the site's own sender
+  domain (or the domain the person named on its login), received after the
+  page asked for it (90 seconds' allowance) and within the last 10 minutes,
+  saying it is a verification code; the newest wins; only a strict code
+  (6–8 digits, or a short run of capitals and digits next to a code word)
+  leaves it. Gmail is searched with `from:(<domain>) after:<time>` and only
+  the newest three matches' text is read; IMAP is searched `FROM "<domain>"`
+  on the server, and only matches' headers, then texts, are fetched.
+- **Nowhere but the page.** The card and every event carry no code;
+  `verify::Outcome` has no place for one and `verify::Pick`'s `Debug` hides
+  it; the log says only what happened. For 10 minutes after it is fetched
+  the code is cut out of anything a member writes (`squad_secrets::watch`).
+  The member hears "the person confirmed access on <site>" — after the page
+  is back in its hands — and, if the site didn't take the code, the card
+  says so and the person decides.
+
+### The mailbox
+
+Gmail, over its API with the one scope `gmail.readonly` — the narrowest that
+can read a message's text (`gmail.metadata` can't, and can't search). The
+grant can't send, delete or change anything. It is chosen over reading
+webmail in a signed-in browser profile: that would put the mailbox in the
+squad's shared browser that members drive, and scrape a page that changes.
+Any other mailbox works over IMAP (the one Login autopilot uses, with an app
+password; read-only `EXAMINE`/`BODY.PEEK`).
+
+Connecting is Google's flow for desktop apps: **Connect Gmail** in Logins ›
+Connections opens Google's consent page in the person's own browser; it
+comes back to a one-off listener on `127.0.0.1` with a code, which the
+daemon trades, with its PKCE verifier, for a refresh token. A grant for more
+than read-only mail is refused. The token (and the client it belongs to) goes
+to the secret store under `mailbox.gmail`, never to a member, a screen, an
+event or the log; `autopilot.json` keeps only the address. **Disconnect**
+drops it (revoke it in the Google Account too).
+
+The OAuth client: a build carries one when `EQUIPE_GOOGLE_CLIENT_ID` and
+`EQUIPE_GOOGLE_CLIENT_SECRET` are set at build time or in the daemon's
+environment. Without one, the Connections row asks for the person's own: a
+Google Cloud project with the Gmail API on, its consent screen published
+(a testing one's grants run out after 7 days), and an OAuth client of type
+"Desktop app" — its ID and secret pasted once.
+
+Limits: the listener is on the daemon's machine, so connect Gmail from the
+Mac equipe runs on; a code that arrives only by text message or in an
+authenticator app stays the person's to type; magic links aren't followed.
+
+```sh
+cargo test -p equipe-core --lib verify
 ```
 
 ## Keys members obtain
