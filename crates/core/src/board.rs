@@ -755,6 +755,8 @@ again with `waive_findings` saying why they aren't real.",
                         "description": "Screen-changing code tickets: confirm that the attached screenshots cover every relevant language, supported width, light and dark appearance, and large text by giving all four values: languages, widths, light_dark, large_text."
                     },
                     "waive_findings": { "type": "string", "description": "Only after equipe's precheck sent this hand-in back: why each of its S1/S2 findings isn't a real problem for the person. A designer then judges them before the person reviews." },
+                    "changes": CHANGES_SCHEMA.clone(),
+                    "unchanged": { "type": "string", "description": "A designer's hand-in that changes a screen, with `changes`: what it leaves as it was — features, content, data, copy unless asked." },
                 },
                 "required": ["summary"],
             },
@@ -930,7 +932,9 @@ visual choice — a logo, colours, a layout, a screen, an icon, an illustration 
 render or mock up each option first (PNG, JPG, WebP, GIF or SVG, in your worktree or the squad's folder), then ask, \
 giving each option its `images`; the person sees them side by side and picks from the pictures. Give a design \
 option its `aspects` too (its type, colour, shape — in the person's language) and the person can answer in one click: \
-this one, this one with an aspect of another (a mix), or another round. Links — a sign-in page, a document — go in a \
+this one, this one with an aspect of another (a mix), or another round. An option with `images` also says what \
+changed and why it is better (`changes`, `unchanged`), and gives its live page in `preview_url` when the project \
+deploys previews. Links — a sign-in page, a document — go in a \
 question's `links` with a label each, never inside its `question` text: the person gets them as buttons under the \
 question, and the question stays a short sentence. A taste choice — which direction, which family of references — \
 is a board: set `board`, and give each option (2 to 3 clearly different families) its `tiles`, 6 to 12 pictures each, \
@@ -962,6 +966,10 @@ and answers with the family plus the tiles they liked.",
                                         "aspects": ASPECTS_SCHEMA.clone(),
                                         "tiles": TILES_SCHEMA.clone(),
                                         "recommended": { "type": "boolean", "description": "Set on the option you recommend — one at most, put first. equipe shows the person it is the recommended one, in their language." },
+                                        "preview_url": { "type": "string", "description": "This option as a live page the person clicks through on their screen — its own preview deployment (a branch's Vercel or Netlify preview, say): https, a real host, no credentials or port." },
+                                        "before": { "type": "string", "description": "The same screen as it is now, by its path: the person flips the option's first picture between before and after." },
+                                        "changes": CHANGES_SCHEMA.clone(),
+                                        "unchanged": { "type": "string", "description": "With `changes`: what this option leaves as it was — features, content, data, copy unless asked — in a line, in the person's language." },
                                     },
                                     "required": ["label"],
                                 },
@@ -1242,6 +1250,10 @@ pub fn questions_arg(args: &Value) -> Result<Vec<crate::protocol::decide::Questi
                     aspects: aspects_arg(o),
                     recommended: o.get("recommended").and_then(Value::as_bool).unwrap_or(false),
                     tiles: tiles_arg(o),
+                    preview_url: arg_str(o, "preview_url").unwrap_or_default().to_owned(),
+                    before: arg_str(o, "before").unwrap_or_default().to_owned(),
+                    changes: changes_arg(o),
+                    unchanged: arg_str(o, "unchanged").unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ").chars().take(300).collect(),
                 }),
             })
             // A label that says it is recommended, in any language: the mark,
@@ -1279,6 +1291,21 @@ pub fn questions_arg(args: &Value) -> Result<Vec<crate::protocol::decide::Questi
         // Pictures as the member named them; the runtime finds them where it works.
         let images = arg_strs(item, "images");
         let board = !options.is_empty() && item.get("board").and_then(Value::as_bool).unwrap_or(false);
+        // A design option shown in pictures says what changed and why it is
+        // better; its live page is a real site's; its before has an after.
+        for (m, option) in options.iter_mut().enumerate() {
+            let which = format!("Question {n}, option {} («{}»)", m + 1, option.label);
+            if !option.preview_url.is_empty() {
+                option.preview_url = crate::connections::clean_url(&option.preview_url).map_err(|e| format!("{which}: `preview_url` {e} Give the option's own preview deployment, or leave it out, and ask again."))?;
+            }
+            if !option.before.is_empty() && option.images.is_empty() {
+                return Err(format!("{which} has a `before` but no `images`: give the after in `images` (its first picture is flipped with `before`), then ask again."));
+            }
+            let pictured = !option.images.is_empty() && !board && option.tiles.is_empty();
+            if let Some(gap) = change_note_gap(&option.changes, &option.unchanged).filter(|_| pictured) {
+                return Err(format!("{which} shows pictures but its change note is missing: add {gap}. Then ask again."));
+            }
+        }
         let mut question = Question { question: question.to_owned(), header, options, multi_select, images, links: links_arg(item), board };
         // A link written into the words moves to `links`: screens draw it as a row of its own.
         question.move_links();
@@ -1353,6 +1380,62 @@ static TILES_SCHEMA: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
         },
     })
 });
+
+/// At most this many points in a change note.
+const CHANGES: usize = 8;
+
+/// A change note's points: on a design option, and on a designer's hand-in
+/// that changes a screen.
+static CHANGES_SCHEMA: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+    json!({
+        "type": "array",
+        "maxItems": CHANGES,
+        "description": "What changed, a point each — required on an option with `images`. Before → after, and why the after is better: tied to a reference or a rule of the ui-* skills. In the person's language.",
+        "items": {
+            "type": "object",
+            "properties": {
+                "area": { "type": "string", "description": "layout, hierarchy, density, type, colour, components or interaction." },
+                "before": { "type": "string", "description": "What it was." },
+                "after": { "type": "string", "description": "What it is now." },
+                "why": { "type": "string", "description": "Why that is better: the reference or the rule." },
+            },
+            "required": ["area", "after", "why"],
+        },
+    })
+});
+
+/// The points of a change note (`[{area, before, after, why}]`): blanks
+/// dropped, each part one line within its length, at most [`CHANGES`].
+pub fn changes_arg(item: &Value) -> Vec<crate::protocol::decide::Change> {
+    use crate::protocol::decide::Change;
+    let line = |t: &Value, key: &str, max: usize| arg_str(t, key).unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ").chars().take(max).collect::<String>();
+    let items: &[Value] = match item.get("changes") {
+        Some(Value::Array(items)) => items,
+        Some(one @ Value::Object(_)) => std::slice::from_ref(one),
+        _ => &[],
+    };
+    items
+        .iter()
+        .map(|c| Change { area: line(c, "area", 40), before: line(c, "before", 240), after: line(c, "after", 240), why: line(c, "why", 300) })
+        .filter(|c| !c.after.is_empty())
+        .take(CHANGES)
+        .collect()
+}
+
+/// What a change note lacks, said so the member can add it; `None` when it
+/// is whole: at least one point, each with its area and why, and what stayed.
+pub fn change_note_gap(changes: &[crate::protocol::decide::Change], unchanged: &str) -> Option<String> {
+    let mut gap = Vec::new();
+    if changes.is_empty() {
+        gap.push("`changes`: a point for each thing that changed — area (layout, hierarchy, density, type, colour, components or interaction), before, after, and why the after is better, tied to a reference or a rule of the ui-* skills");
+    } else if changes.iter().any(|c| c.area.is_empty() || c.why.is_empty()) {
+        gap.push("an `area` and a `why` on every point of `changes` (why it is better: the reference or the ui-* rule)");
+    }
+    if unchanged.trim().is_empty() {
+        gap.push("`unchanged`: what it leaves as it was — features, content, data, copy unless the ticket asked");
+    }
+    (!gap.is_empty()).then(|| gap.join("; and "))
+}
 
 /// The tiles of an option (`[{image, source, take, reference}]`; a bare path
 /// counts as a tile without the rest): blanks dropped, a picture once, at most
@@ -2021,8 +2104,8 @@ mod tests {
             "question": "Which logo?",
             "images": "brand/now.png",
             "options": [
-                { "label": "Blue dot (Recommended)", "images": ["brand/a.png", " ", "brand/a-dark.png"] },
-                { "label": "Grey dot", "images": "brand/b.svg" },
+                { "label": "Blue dot (Recommended)", "images": ["brand/a.png", " ", "brand/a-dark.png"], "changes": [{ "area": "colour", "before": "grey dot", "after": "blue dot", "why": "reads at 16px" }], "unchanged": "the name and the e" },
+                { "label": "Grey dot", "images": "brand/b.svg", "changes": { "area": "shape", "after": "round dot", "why": "matches the site" }, "unchanged": "the colours" },
                 "Four blue dots",
             ],
         }] }))
@@ -2049,6 +2132,53 @@ mod tests {
             let doc = hand_in["description"].as_str().unwrap();
             assert!(doc.contains("`images`") && doc.contains("visual") && doc.contains("`screen_checks`"), "{doc}");
         }
+    }
+
+    #[test]
+    fn a_design_option_in_pictures_says_what_changed_and_why_and_may_give_its_live_preview_and_its_before() {
+        let note = json!([{ "area": "layout", "before": "one long  column", "after": "list beside detail", "why": "the references keep the list in view" }, { "area": "type", "after": "" }]);
+        let ask = |option: Value| questions_arg(&json!({ "questions": [{ "question": "Which direction?", "options": [option, { "label": "B", "images": "b.png", "changes": note.clone(), "unchanged": "features and copy" }] }] }));
+        let asked = ask(json!({
+            "label": "A", "images": ["a-1440.png", "a-390.png"], "before": "now-1440.png",
+            "preview_url": " https://app-git-direction-a-acme.vercel.app/inbox ",
+            "changes": note.clone(), "unchanged": "features, content, data and copy",
+        }))
+        .unwrap();
+        let a = &asked[0].options[0];
+        assert_eq!(a.preview_url, "https://app-git-direction-a-acme.vercel.app/inbox");
+        assert_eq!(a.before, "now-1440.png");
+        assert_eq!(a.changes.len(), 1, "a point with no after is dropped");
+        assert_eq!((a.changes[0].before.as_str(), a.changes[0].why.as_str()), ("one long column", "the references keep the list in view"));
+        assert_eq!(a.unchanged, "features, content, data and copy");
+        // Netlify's deploy previews are a real site's addresses too.
+        assert!(ask(json!({ "label": "A", "images": "a.png", "preview_url": "https://deploy-preview-42--acme.netlify.app/", "changes": note.clone(), "unchanged": "copy" })).is_ok());
+        // Pictures without a change note: refused, with what to add.
+        let bare = ask(json!({ "label": "A", "images": "a.png" })).unwrap_err();
+        assert!(bare.contains("option 1 («A»)") && bare.contains("`changes`") && bare.contains("`unchanged`") && bare.contains("why"), "{bare}");
+        let no_why = ask(json!({ "label": "A", "images": "a.png", "changes": [{ "area": "layout", "after": "two columns" }], "unchanged": "copy" })).unwrap_err();
+        assert!(no_why.contains("`why`") && !no_why.contains("`unchanged`:"), "{no_why}");
+        let no_stay = ask(json!({ "label": "A", "images": "a.png", "changes": note.clone() })).unwrap_err();
+        assert!(no_stay.contains("`unchanged`") && !no_stay.contains("a point for each"), "{no_stay}");
+        // A live page that isn't a real site's https page, or a before without an after: refused.
+        for bad in ["http://acme.vercel.app/", "https://localhost:3000/", "https://127.0.0.1/", "https://user:pw@acme.vercel.app/", "https://acme.vercel.app:8443/", "file:///tmp/a.html"] {
+            let err = ask(json!({ "label": "A", "images": "a.png", "preview_url": bad, "changes": note.clone(), "unchanged": "copy" })).unwrap_err();
+            assert!(err.contains("`preview_url`"), "{bad}: {err}");
+        }
+        assert!(ask(json!({ "label": "A", "before": "now.png" })).unwrap_err().contains("`before`"));
+        // Options without pictures, and a board's families, need no note.
+        assert!(questions_arg(&json!({ "questions": [{ "question": "Which?", "options": ["A", "B"] }] })).is_ok());
+        assert!(questions_arg(&json!({ "questions": [{ "question": "Which family?", "board": true, "options": [{ "label": "A", "images": "a.png", "tiles": ["a1.png"] }, { "label": "B", "tiles": ["b1.png"] }] }] })).is_ok());
+        // The schema says it, on options and on the hand-in.
+        let tools = tools(false);
+        let decide = tools.iter().find(|t| t["name"] == ASK_DECISION).unwrap();
+        let option = &decide["inputSchema"]["properties"]["questions"]["items"]["properties"]["options"]["items"]["properties"];
+        assert_eq!(option["changes"]["items"]["required"], json!(["area", "after", "why"]));
+        for key in ["preview_url", "before", "unchanged"] {
+            assert_eq!(option[key]["type"], "string", "{key}");
+        }
+        assert!(decide["description"].as_str().unwrap().contains("`preview_url`"));
+        let hand_in = tools.iter().find(|t| t["name"] == SUBMIT_FOR_REVIEW).unwrap();
+        assert_eq!(hand_in["inputSchema"]["properties"]["changes"]["type"], "array");
     }
 
     #[test]
@@ -2082,8 +2212,8 @@ mod tests {
             "question": "어느 방향으로 갈까요?",
             "aspects": ["글꼴", "색", "모양"],
             "options": [
-                { "label": "차분 (Recommended)", "images": "a.png" },
-                { "label": "선명", "images": "b.png", "aspects": ["색", " ", "색", "a very long aspect name past its limit", "모양", "여백", "더"] },
+                { "label": "차분 (Recommended)", "images": "a.png", "changes": [{ "area": "type", "after": "light", "why": "calm" }], "unchanged": "content" },
+                { "label": "선명", "images": "b.png", "changes": [{ "area": "type", "after": "heavy", "why": "bold" }], "unchanged": "content", "aspects":["색", " ", "색", "a very long aspect name past its limit", "모양", "여백", "더"] },
                 "따뜻",
             ],
         }] }))

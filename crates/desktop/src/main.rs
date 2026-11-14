@@ -847,6 +847,11 @@ impl Shell {
                 cx.stop_propagation();
                 return;
             }
+            // A decision's options side by side: Esc — and nothing typed underneath.
+            if this.update(cx, |shell, cx| shell.on_side_key(key, &modifiers, cx)).unwrap_or(false) {
+                cx.stop_propagation();
+                return;
+            }
             // A taste board on screen: arrows, Space, ⏎, P, digits, ⌘⏎, Esc — and its note's typing.
             match this.update(cx, |shell, cx| shell.on_taste_key(key, &modifiers, window, cx)).unwrap_or(views::decide::Took::Pass) {
                 views::decide::Took::Taken => {
@@ -2841,6 +2846,7 @@ impl Render for Shell {
             .children(views::composer::lightbox(self, cx))
             .children(views::design::lightbox(self, cx))
             .children(views::attached::gallery(self, cx))
+            .children(views::decide::side_by_side(self, window, cx))
             .children(views::visuals::viewer(self, window, cx))
             .children(views::deck::presentation(self, window, cx))
             .children(views::sheet::sheet(self, window, cx))

@@ -29,7 +29,18 @@ after the engineer builds it, equipe opens its design QA — never open one your
 
 Show design options as they would live: each applied to the product's real screens — the UI map's pictures
 (`design/flows/`) shot again or mocked up with that option's tokens, or `equipe design specimen --tokens <file> --png`
-when no screen exists yet — never as swatches alone.
+when no screen exists yet — never as swatches alone. When the project deploys previews (a Vercel or Netlify preview
+deployment for each branch, say), put each direction on its own preview branch or page and give its address in the
+option's `preview_url`: the person clicks through a real page instead of judging a picture. The pictures still go on
+the card: full-size renders at 1440 and 390, cropped to the content, on an opaque background with no transparent
+padding — and the screen as it is now in the option's `before`, so the person can flip between before and after.
+
+Every design option you put to the person and every hand-in that changes a screen carries a short change note:
+`changes` on the option or on `submit_for_review`, a point for each area that moved — layout, hierarchy, density,
+type, colour, components, interaction — with before → after and why the after is better, tied to a reference or to a
+rule of the `ui-*` skills ("36px rows, as in the references' lists" — never "cleaner" or "more modern"); and
+`unchanged`, what did not change: features, content, data, and copy unless the ticket asked. equipe refuses an option
+in pictures, or a screen hand-in, without one.
 
 Keep the squad's reference library in its folder, `design/references/`: a folder for each pattern with its pictures
 and `notes.md`, as the `design-references` skill says — read it before you search anew, and add to it whatever you
@@ -83,7 +94,9 @@ a direction that repeats one of the last three the person chose in every dimensi
 differs from its fellow options only in colour; change it until it is taken, never reword it to pass. When the person
 chooses, `equipe design direction choose <name> --ticket T-<n>`.
 
-Before you redesign a screen that exists, write down what it offers: `equipe design kept record <its source or URL>
+A redesign or polish keeps the product as it is: its functions, content, data and information architecture stay
+unless the ticket says otherwise, and only presentation and interaction change. Its change note confirms it in
+`unchanged`. Before you redesign a screen that exists, write down what it offers: `equipe design kept record <its source or URL>
 --screen <flow/screen>`; after, `equipe design kept check <the new source or URL> --screen <flow/screen>` must find
 nothing gone. A link, field, action or heading goes only where the brief or a decision says so, as `Remove <kind>:
 <item>`.

@@ -76,6 +76,53 @@ pub struct Choice {
     /// take from each; left out when none (and from an older daemon).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tiles: Vec<Tile>,
+    /// A live page of it — a preview deployment of its own branch — for the
+    /// person to click through on their screen: an https address the daemon
+    /// checked. Left out when none (and from an older daemon).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub preview_url: String,
+    /// The picture of what is there now, the same screen before it: screens
+    /// toggle its first picture between that and this. Left out when none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub before: String,
+    /// What changed, point by point, and why each is better: a design
+    /// option's change note. Left out when none (and from an older daemon).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<Change>,
+    /// What it leaves as it was — features, content, data, copy — in a line.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub unchanged: String,
+}
+
+/// One point of a change note: the area it is about (layout, hierarchy,
+/// density, type, colour, components, interaction), what it was, what it is
+/// now, and why that is better — tied to a reference or a rule.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Change {
+    pub area: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub before: String,
+    pub after: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub why: String,
+}
+
+impl Change {
+    /// The point in a line: `Layout: one long column → two columns — why`.
+    pub fn line(&self) -> String {
+        let moved = if self.before.is_empty() { self.after.clone() } else { format!("{} \u{2192} {}", self.before, self.after) };
+        let said = if self.area.is_empty() { moved } else { format!("{}: {moved}", self.area) };
+        if self.why.is_empty() { said } else { format!("{said} \u{2014} {}", self.why) }
+    }
+}
+
+/// A change note as text, a line a point, then what stayed as it was.
+pub fn change_note(changes: &[Change], unchanged: &str) -> String {
+    let mut lines: Vec<String> = changes.iter().map(|c| format!("- {}", c.line())).collect();
+    if !unchanged.trim().is_empty() {
+        lines.push(format!("- Not changed: {}", unchanged.trim()));
+    }
+    lines.join("\n")
 }
 
 impl Choice {
@@ -172,9 +219,21 @@ impl Question {
         self.board || self.options.iter().any(|c| !c.tiles.is_empty()) || (self.options.len() >= 2 && self.options.iter().map(|c| c.images.len()).sum::<usize>() >= BOARD_FROM)
     }
 
-    /// Its own pictures, then each option's, then its tiles', in order.
+    /// Its own pictures, then each option's, then its tiles', then the
+    /// options' pictures of before, in order.
     pub fn images(&self) -> impl Iterator<Item = &str> {
-        self.images.iter().chain(self.options.iter().flat_map(|c| &c.images)).chain(self.options.iter().flat_map(|c| c.tiles.iter().map(|t| &t.image))).map(String::as_str)
+        self.images
+            .iter()
+            .chain(self.options.iter().flat_map(|c| &c.images))
+            .chain(self.options.iter().flat_map(|c| c.tiles.iter().map(|t| &t.image)))
+            .chain(self.options.iter().map(|c| &c.before).filter(|b| !b.is_empty()))
+            .map(String::as_str)
+    }
+
+    /// Whether its options can be put side by side: a choice that isn't a
+    /// board, two options or more of it showing a picture.
+    pub fn side_by_side(&self) -> bool {
+        !self.board && self.options.iter().all(|c| c.tiles.is_empty()) && self.options.iter().filter(|c| !c.images.is_empty()).count() >= 2
     }
 }
 
@@ -950,6 +1009,39 @@ mod tests {
         assert_eq!(s.images().collect::<Vec<_>>(), ["/w/a1.png", "/w/a2.png", "/w/b1.png", "/w/b2.png"], "tiles' pictures are fetched like any other");
         assert_eq!(s.questions[0].options[0].tiles[0].host(), "example.com");
         assert_eq!(s.questions[0].options[0].tiles[1].host(), "example.org", "a name stays as written");
+    }
+
+    #[test]
+    fn a_design_option_carries_its_live_preview_its_before_and_its_change_note_and_the_wire_is_as_before_without() {
+        let mut s = set();
+        let plain = serde_json::to_value(&s).unwrap();
+        for key in ["preview_url", "before", "changes", "unchanged"] {
+            assert!(plain["questions"][0]["options"][0].get(key).is_none(), "{key}: the wire as before");
+        }
+        s.questions[0].options[0].images = vec!["/w/a-1440.png".into(), "/w/a-390.png".into()];
+        s.questions[0].options[0].preview_url = "https://app-git-direction-a-team.vercel.app/".into();
+        s.questions[0].options[0].before = "/w/now-1440.png".into();
+        s.questions[0].options[0].changes = vec![
+            Change { area: "Layout".into(), before: "one long column".into(), after: "list and detail side by side".into(), why: "the references keep the list in view while reading one".into() },
+            Change { area: "Type".into(), after: "two sizes per block".into(), ..Change::default() },
+        ];
+        s.questions[0].options[0].unchanged = "features, content, data and copy".into();
+        s.questions[0].options[1].images = vec!["/w/b-1440.png".into()];
+        let wire = serde_json::to_value(&s).unwrap();
+        let option = &wire["questions"][0]["options"][0];
+        assert_eq!(option["preview_url"], "https://app-git-direction-a-team.vercel.app/");
+        assert_eq!(option["before"], "/w/now-1440.png");
+        assert_eq!(option["changes"][1], json!({ "area": "Type", "after": "two sizes per block" }), "an empty before or why is left out");
+        assert_eq!(serde_json::from_value::<QuestionSet>(wire).unwrap(), s);
+        // Its picture of before is fetched like any other, after the rest.
+        assert_eq!(s.questions[0].images().collect::<Vec<_>>(), ["/w/a-1440.png", "/w/a-390.png", "/w/b-1440.png", "/w/now-1440.png"]);
+        assert!(s.questions[0].side_by_side(), "two options with pictures go side by side");
+        assert!(!board().questions[0].side_by_side(), "a board is browsed, not put side by side");
+        let note = change_note(&s.questions[0].options[0].changes, &s.questions[0].options[0].unchanged);
+        assert_eq!(
+            note,
+            "- Layout: one long column \u{2192} list and detail side by side \u{2014} the references keep the list in view while reading one\n- Type: two sizes per block\n- Not changed: features, content, data and copy"
+        );
     }
 
     #[test]

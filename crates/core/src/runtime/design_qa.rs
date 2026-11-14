@@ -139,6 +139,33 @@ impl Runtime {
         Ok((!gap.is_empty()).then_some(gap))
     }
 
+    /// What a designer's hand-in that changes a screen carries beyond its
+    /// summary: its change note — before → after a point, why each is better,
+    /// and what stayed as it was. It changes a screen when it says so
+    /// (`changes_screens`), when it edited or checked a UI file since the
+    /// hand-in before, or when its branch touches one outside `design/`.
+    /// Refused with what to add; `Ok(Some(note))`, the note to put under the
+    /// summary (given unasked, it is kept too).
+    pub(super) fn designer_change_note(&self, id: SessionId, args: &Value) -> Result<Option<String>, String> {
+        let Some(session) = self.sessions.get(&id) else { return Ok(None) };
+        if session.member.as_ref().is_none_or(|m| m.role != DESIGNER) {
+            return Ok(None);
+        }
+        let Some(work) = session.work.as_ref() else { return Ok(None) };
+        let changes = board::changes_arg(args);
+        let unchanged = board::arg_str(args, "unchanged").unwrap_or_default();
+        let said = args.get("changes_screens").and_then(Value::as_bool) == Some(true);
+        let ledger = crate::design::lint::record::read_pending(&work.cwd.join(crate::design::DIR));
+        let touched = || work.sandbox.as_ref().and_then(|s| s.touched_files().ok()).unwrap_or_default();
+        let screens = said || !ledger.edited.is_empty() || !ledger.checked.is_empty() || touched().iter().any(|f| !f.starts_with(&format!("{DESIGN_DIR}/")) && precheck::ui_file(f));
+        if screens && let Some(gap) = board::change_note_gap(&changes, unchanged) {
+            return Err(format!(
+                "This hand-in changes a screen, so it says what changed and why it is better: add {gap}. Keep features, content and data as they were unless the ticket asked otherwise, and say so in `unchanged`. Then hand in again."
+            ));
+        }
+        Ok((!changes.is_empty()).then(|| crate::protocol::decide::change_note(&changes, unchanged)))
+    }
+
     /// What `submit_for_review` asks of an engineer's code ticket: whether
     /// users see the change, and if so fresh screenshots across the design QA
     /// range. A squad with a designer sends a complete hand-in to design QA.

@@ -592,6 +592,96 @@ pub fn contain(dims: (u32, u32), room: (f32, f32)) -> (f32, f32) {
     ((w * scale).floor(), (h * scale).floor())
 }
 
+/// What a picture is drawn on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ground {
+    /// A quiet checkerboard, so a transparent mark shows it is one: an asset's
+    /// own tile, a hand-in's gallery.
+    Checker,
+    /// The theme's plain surface, a transparent picture flattened on it and
+    /// letterboxed: what is judged as a screen — a decision's options, a
+    /// board's references — never reads as a mark on a checkerboard.
+    Surface,
+}
+
+/// What the pictures of the big view's `owner` are drawn on.
+pub fn ground(owner: &Owner) -> Ground {
+    match owner {
+        Owner::Decision { .. } | Owner::Board { .. } => Ground::Surface,
+        Owner::Ticket(_) | Owner::Reply(_) => Ground::Checker,
+    }
+}
+
+/// A decision's option picture is never lower than this, in points…
+pub const HERO_LOW: f32 = 180.;
+/// …nor higher: a tall screen shows its top, whole in the big view.
+pub const HERO_HIGH: f32 = 560.;
+/// A picture whose size isn't known yet is taken to be a desktop screen's shape.
+const HERO_GUESS: (u32, u32) = (1440, 900);
+
+/// A design option's picture on its card: the card's whole `width`, at the
+/// picture's own shape, between [`HERO_LOW`] and [`HERO_HIGH`] high — the
+/// picture whole inside it (contain), the rest the theme's surface.
+pub fn hero_box(dims: Option<(u32, u32)>, width: f32) -> (f32, f32) {
+    let (w, h) = dims.filter(|(w, h)| *w > 0 && *h > 0).unwrap_or(HERO_GUESS);
+    let width = width.max(1.).floor();
+    (width, (width * h as f32 / w as f32).clamp(HERO_LOW, HERO_HIGH).floor())
+}
+
+/// The picture an option shows big on its card: its first, or — flipped to
+/// before — the picture of what is there now.
+pub fn hero_of(option: &equipe_core::protocol::decide::Choice, before: bool) -> Option<&str> {
+    if before && !option.before.is_empty() {
+        return Some(&option.before);
+    }
+    option.images.first().map(String::as_str)
+}
+
+/// One column of options put side by side: a picture, the option it shows
+/// (none for a picture of before), and whether it is one of before.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Column {
+    pub path: String,
+    pub choice: Option<usize>,
+    pub before: bool,
+}
+
+/// What a question's options side by side shows, left to right: the screen
+/// as it is now (each picture of before once, when its options give one),
+/// then every option that shows a picture, in the member's order, by its
+/// first picture. Options without a picture are left out.
+pub fn columns_of(q: &Question) -> Vec<Column> {
+    let mut out: Vec<Column> = Vec::new();
+    for option in &q.options {
+        if !option.before.is_empty() && !option.images.is_empty() && !out.iter().any(|c| c.path == option.before) {
+            out.push(Column { path: option.before.clone(), choice: None, before: true });
+        }
+    }
+    for (n, option) in q.options.iter().enumerate() {
+        if let Some(first) = option.images.first() {
+            out.push(Column { path: first.clone(), choice: Some(n), before: false });
+        }
+    }
+    out
+}
+
+/// The space between columns side by side.
+pub const SIDE_GAP: f32 = 16.;
+
+/// Each column's picture side by side in `width`, all at one scale — the
+/// most that lets the widest fit its share of the row — so the same thing is
+/// the same size in each and the screens compare as they are; a picture whose
+/// size isn't known is taken to be a desktop screen's. Never bigger than a
+/// pixel a point.
+pub fn side_boxes(width: f32, dims: &[Option<(u32, u32)>]) -> Vec<(f32, f32)> {
+    let n = dims.len().max(1) as f32;
+    let share = ((width - SIDE_GAP * (n - 1.)) / n).max(1.);
+    let sized: Vec<(f32, f32)> = dims.iter().map(|d| d.filter(|(w, h)| *w > 0 && *h > 0).unwrap_or(HERO_GUESS)).map(|(w, h)| (w as f32, h as f32)).collect();
+    let scale = sized.iter().map(|(w, _)| share / w).fold(1f32, f32::min);
+    // A hair over before flooring: 1440 × (250 / 1440) is 249.99… in floats.
+    sized.iter().map(|(w, h)| ((w * scale + 1e-3).floor(), (h * scale + 1e-3).floor())).collect()
+}
+
 /// The box a picture in a reply takes in a column `column` wide: its own
 /// shape, never wider than the column nor taller than [`INLINE_HIGH`], nor
 /// bigger than it is (a pixel a point); 4:3 while its size isn't known.
@@ -663,6 +753,8 @@ pub struct Item {
     pub tile: Option<usize>,
     /// Where it is from and what to take from it (a board's tile).
     pub note: String,
+    /// The picture of what is there now, before its option (a decision's).
+    pub before: bool,
 }
 
 /// How far the big view is zoomed in on its picture, and where: 1 is the
@@ -747,18 +839,32 @@ pub fn name_of(path: &str) -> &str {
 }
 
 impl Viewer {
-    /// A question's pictures — its own, then each option's — open at `path`.
+    /// A question's pictures — its own, then each option's, its picture of
+    /// before after its own — open at `path`: ←/→ go across all the options.
     pub fn of_question(set: u64, step: usize, q: &Question, path: &str) -> Option<Self> {
-        let own = q.images.iter().map(|p| Item { path: p.clone(), choice: None, label: name_of(p).to_owned(), tile: None, note: String::new() });
-        let options = q.options.iter().enumerate().flat_map(|(n, c)| c.images.iter().map(move |p| Item { path: p.clone(), choice: Some(n), label: recommended(&c.label).0, tile: None, note: String::new() }));
+        let own = q.images.iter().map(|p| Item { path: p.clone(), choice: None, label: name_of(p).to_owned(), tile: None, note: String::new(), before: false });
+        let options = q.options.iter().enumerate().flat_map(|(n, c)| {
+            let label = recommended(&c.label).0;
+            let before = (!c.before.is_empty() && !c.images.is_empty()).then(|| Item { path: c.before.clone(), choice: Some(n), label: label.clone(), tile: None, note: String::new(), before: true });
+            c.images.iter().map(move |p| Item { path: p.clone(), choice: Some(n), label: label.clone(), tile: None, note: String::new(), before: false }).collect::<Vec<_>>().into_iter().chain(before)
+        });
         let items: Vec<Item> = own.chain(options).collect();
         let at = items.iter().position(|i| i.path == path)?;
         Some(Self { owner: Owner::Decision { set, step }, items, at })
     }
 
+    /// A question's pictures as [`Viewer::of_question`] has them, open at
+    /// option `n`'s picture of before.
+    pub fn of_before(set: u64, step: usize, q: &Question, n: usize) -> Option<Self> {
+        let path = q.options.get(n).map(|c| c.before.clone()).filter(|b| !b.is_empty())?;
+        let mut viewer = Self::of_question(set, step, q, &path)?;
+        viewer.at = viewer.items.iter().position(|i| i.before && i.choice == Some(n))?;
+        Some(viewer)
+    }
+
     /// A hand-in's pictures, open at `path`.
     pub fn of_ticket(id: TicketId, images: &[String], path: &str) -> Option<Self> {
-        let items: Vec<Item> = images.iter().map(|p| Item { path: p.clone(), choice: None, label: name_of(p).to_owned(), tile: None, note: String::new() }).collect();
+        let items: Vec<Item> = images.iter().map(|p| Item { path: p.clone(), choice: None, label: name_of(p).to_owned(), tile: None, note: String::new(), before: false }).collect();
         let at = items.iter().position(|i| i.path == path)?;
         Some(Self { owner: Owner::Ticket(id), items, at })
     }
@@ -769,7 +875,7 @@ impl Viewer {
         for (p, label) in pictures {
             if !items.iter().any(|i| i.path == *p) {
                 let label = if label.trim().is_empty() { name_of(p).to_owned() } else { label.clone() };
-                items.push(Item { path: p.clone(), choice: None, label, tile: None, note: String::new() });
+                items.push(Item { path: p.clone(), choice: None, label, tile: None, note: String::new(), before: false });
             }
         }
         let at = items.iter().position(|i| i.path == path)?;
@@ -785,7 +891,7 @@ impl Viewer {
                 let choice = q.options.get(option)?;
                 let t = choice.board_tiles().get(tile)?.clone();
                 let note = [t.host(), t.take.clone()].into_iter().filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" · ");
-                Some(Item { path: t.image, choice: Some(option), label: recommended(&choice.label).0, tile: Some(tile), note })
+                Some(Item { path: t.image, choice: Some(option), label: recommended(&choice.label).0, tile: Some(tile), note, before: false })
             })
             .collect();
         let at = items.iter().position(|i| (i.choice, i.tile) == (Some(at.0), Some(at.1)))?;
@@ -1274,5 +1380,87 @@ mod tests {
         assert!(Viewer::of_question(7, 0, &q, "/w/elsewhere.png").is_none());
         let t = Viewer::of_ticket(144, &["/w/brand/a.png".into(), "/w/brand/b.svg".into()], "/w/brand/b.svg").unwrap();
         assert_eq!((t.owner.clone(), t.at, t.item().label.as_str()), (Owner::Ticket(144), 1, "b.svg"));
+    }
+
+    /// Three directions on one screen, two with the screen as it is now.
+    fn directions() -> Question {
+        let option = |label: &str, images: &[&str], before: &str| Choice { label: label.into(), images: images.iter().map(|i| (*i).to_owned()).collect(), before: before.into(), ..Choice::default() };
+        Question {
+            question: "Which direction?".into(),
+            options: vec![option("Calm (Recommended)", &["/w/calm-1440.png", "/w/calm-390.png"], "/w/now.png"), option("Without a picture", &[], "/w/ignored.png"), option("Bold", &["/w/bold-1440.png"], "/w/now.png"), option("Warm", &["/w/warm-1440.png"], "")],
+            ..Question::default()
+        }
+    }
+
+    #[test]
+    fn a_decisions_pictures_are_judged_on_the_themes_surface_never_on_a_checkerboard() {
+        // A decision's options and a board's references: the theme's surface,
+        // a transparent picture flattened and letterboxed on it.
+        assert_eq!(ground(&Owner::Decision { set: 1, step: 0 }), Ground::Surface);
+        assert_eq!(ground(&Owner::Board { set: 1, step: 0 }), Ground::Surface);
+        // A hand-in's assets and a reply's pictures keep the checkerboard that says a mark is transparent.
+        assert_eq!(ground(&Owner::Ticket(4)), Ground::Checker);
+        assert_eq!(ground(&Owner::Reply(9)), Ground::Checker);
+    }
+
+    #[test]
+    fn an_options_picture_fills_the_card_at_its_own_shape_within_bounds() {
+        // A desktop screen: the card's width, its shape kept.
+        assert_eq!(hero_box(Some((1440, 900)), 640.), (640., 400.));
+        // A phone screen or a tall page: as high as a card allows; the picture whole inside, the rest surface.
+        assert_eq!(hero_box(Some((390, 844)), 640.), (640., HERO_HIGH));
+        // A wide strip: never a sliver.
+        assert_eq!(hero_box(Some((2400, 240)), 640.), (640., HERO_LOW));
+        // Not known yet: a desktop screen's shape, so nothing jumps when it comes.
+        assert_eq!(hero_box(None, 640.), (640., 400.));
+        assert_eq!(hero_box(Some((0, 0)), 640.), (640., 400.));
+        // Many times the smallest 4:3 tile of old, at this card's width.
+        let (w, h) = hero_box(Some((1440, 900)), 640.);
+        assert!(w * h > 8. * (TILE_MIN * TILE_MIN * RATIO), "{w}x{h}");
+        // Flipped to before, the screen as it is now; without one, its first picture.
+        let q = directions();
+        assert_eq!(hero_of(&q.options[0], false), Some("/w/calm-1440.png"));
+        assert_eq!(hero_of(&q.options[0], true), Some("/w/now.png"));
+        assert_eq!(hero_of(&q.options[3], true), Some("/w/warm-1440.png"));
+        assert_eq!(hero_of(&q.options[1], false), None);
+    }
+
+    #[test]
+    fn side_by_side_shows_before_first_then_each_option_in_order_all_at_one_scale() {
+        let q = directions();
+        let columns = columns_of(&q);
+        // Before once, though two options give it; an option without a picture
+        // (its before too) left out; the others in the member's order, by their first picture.
+        assert_eq!(
+            columns,
+            vec![
+                Column { path: "/w/now.png".into(), choice: None, before: true },
+                Column { path: "/w/calm-1440.png".into(), choice: Some(0), before: false },
+                Column { path: "/w/bold-1440.png".into(), choice: Some(2), before: false },
+                Column { path: "/w/warm-1440.png".into(), choice: Some(3), before: false },
+            ]
+        );
+        // One scale for all: the widest fits its share, the rest drawn at the same scale.
+        let boxes = side_boxes(1000. + 3. * SIDE_GAP, &[Some((1440, 900)), Some((1440, 2400)), Some((720, 900)), None]);
+        assert_eq!(boxes, vec![(250., 156.), (250., 416.), (125., 156.), (250., 156.)]);
+        // Never bigger than it is.
+        assert_eq!(side_boxes(4000., &[Some((400, 300)), Some((200, 300))]), vec![(400., 300.), (200., 300.)]);
+    }
+
+    #[test]
+    fn the_big_view_of_a_decision_goes_across_every_option_and_each_before() {
+        let q = directions();
+        let mut v = Viewer::of_question(7, 0, &q, "/w/bold-1440.png").unwrap();
+        let shown: Vec<(&str, Option<usize>, bool)> = v.items.iter().map(|i| (i.path.as_str(), i.choice, i.before)).collect();
+        assert_eq!(
+            shown,
+            [("/w/calm-1440.png", Some(0), false), ("/w/calm-390.png", Some(0), false), ("/w/now.png", Some(0), true), ("/w/bold-1440.png", Some(2), false), ("/w/now.png", Some(2), true), ("/w/warm-1440.png", Some(3), false)]
+        );
+        assert_eq!(v.at, 3);
+        v.step(true);
+        assert!(v.item().before && v.item().label == "Bold");
+        let b = Viewer::of_before(7, 0, &q, 2).unwrap();
+        assert_eq!((b.at, b.item().choice, b.item().before), (4, Some(2), true), "opened at that option's before, not the first like it");
+        assert!(Viewer::of_before(7, 0, &q, 3).is_none());
     }
 }

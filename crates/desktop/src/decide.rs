@@ -569,6 +569,22 @@ pub fn reacts(q: &Question) -> bool {
     q.is_visual() && !q.multi_select && q.options.len() > 1
 }
 
+/// Whether a question's options are drawn one under another, each with its
+/// picture big at its own shape: a choice in pictures that isn't a board's
+/// families (those stay a grid of covers, and open the board).
+pub fn shows_heroes(q: &Question) -> bool {
+    q.is_visual() && !q.board && q.options.iter().all(|o| o.tiles.is_empty())
+}
+
+/// An option's live preview as the card opens it: an https page of a real
+/// site's, as the daemon checked it — checked again here, so a card never
+/// opens anything else on the person's screen.
+pub fn preview_of(option: &equipe_core::protocol::decide::Choice) -> Option<(String, String)> {
+    let url = equipe_core::connections::clean_url(&option.preview_url).ok()?;
+    let host = equipe_core::connections::host_of(&url);
+    Some((url, host))
+}
+
 /// One line of an option's mix menu: what goes into it, from which option.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MixItem {

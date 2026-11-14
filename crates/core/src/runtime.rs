@@ -9129,6 +9129,11 @@ there, end your turn, and carry on when they say they're done."
                 // Their thumbnails made now, off the loop: the hand-in's card shows them at once.
                 crate::visuals::thumbs::warm(&self.config.home, shown.clone());
                 let screens = self.screens_handed_in(&squad, id, &args, shown.len())?;
+                // A designer's screen change says what changed and why it is better, under its summary.
+                let summary = match self.designer_change_note(id, &args)? {
+                    Some(note) => format!("{summary}\n\nWhat changed and why it is better:\n{note}"),
+                    None => summary,
+                };
                 let gap = self.designer_hand_in(id)?;
                 let session = self.sessions.get_mut(&id).ok_or("You're not on the squad.")?;
                 let work = session.work.as_mut().ok_or("You're not on a ticket — there is nothing to hand in.")?;
