@@ -408,7 +408,7 @@ fn layout_key(agent: &Agent, width: usize, turns: u64) -> LayoutKey {
         Entry::Tool { tool, target, .. } => tool.len() + target.as_ref().map_or(0, String::len),
         Entry::Error { message, .. } => message.len(),
         Entry::Landed { stat, .. } => stat.len(),
-        Entry::Thread { .. } => 0,
+        Entry::Thread { .. } | Entry::Plan { .. } => 0,
     });
     (width, entries.len(), last, agent.queued.len(), agent.expanded, agent.showing, turns, agent.thread_view.clone())
 }
@@ -2025,7 +2025,7 @@ fn transcript_lines(agent: &Agent, looks: &Looks, turns: &Turns, theme: Theme, w
                     lines.push(Line::from(Span::styled(format!("  {}", row.trim()), theme.dim())));
                 }
             }
-            Entry::Tool { .. } => {}
+            Entry::Tool { .. } | Entry::Plan { .. } => {}
         }
     }
     flush(&mut run, &mut lines, &mut last);

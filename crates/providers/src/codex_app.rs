@@ -32,7 +32,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::claude_code::{Access, cap_diff, tool_target};
 use crate::error::{Error, Result};
-use crate::turn::{Activity, LimitWindow, Limits, ToolDone, TurnResult, TurnUsage};
+use crate::turn::{Activity, LimitWindow, Limits, PlanStep, StepState, ToolDone, TurnResult, TurnUsage};
 
 /// The executable equipe runs unless told otherwise.
 pub const DEFAULT_BINARY: &str = "codex";
@@ -905,12 +905,31 @@ impl TurnCollector {
             Some(step) => format!("{finished}/{} · {}", steps.len(), step.lines().next().unwrap_or("").chars().take(100).collect::<String>()),
             None => format!("{finished}/{}", steps.len()),
         };
-        if self.plan.as_deref() == Some(line.as_str()) {
+        // Every step, not just the line: a step's words or state may change
+        // while the line reads the same.
+        let all: Vec<PlanStep> = steps
+            .iter()
+            .filter(|(step, _)| !step.trim().is_empty())
+            .map(|(step, status)| PlanStep {
+                text: step.trim().to_owned(),
+                state: match *status {
+                    "completed" => StepState::Done,
+                    "inProgress" => StepState::Active,
+                    _ => StepState::Pending,
+                },
+            })
+            .collect();
+        let key = format!("{line}\n{all:?}");
+        if self.plan.as_deref() == Some(key.as_str()) {
             return Vec::new();
         }
-        self.plan = Some(line.clone());
+        self.plan = Some(key);
         let pending = Pending { name: "TodoWrite".into(), target: Some(line.clone()), since: Instant::now() };
-        vec![Activity::Tool { name: "TodoWrite".into(), target: Some(line), label: None, background: false }, Activity::ToolDone(done(pending, true, None, Some(0), String::new(), None))]
+        let mut out = vec![Activity::Tool { name: "TodoWrite".into(), target: Some(line), label: None, background: false }, Activity::ToolDone(done(pending, true, None, Some(0), String::new(), None))];
+        if !all.is_empty() {
+            out.push(Activity::PlanSteps(all));
+        }
+        out
     }
 
     fn usage(&self) -> Option<TurnUsage> {
@@ -1746,7 +1765,14 @@ mod tests {
         assert_eq!(search[0], Activity::Tool { name: "WebSearch".into(), target: Some("codex app-server".into()), label: None, background: false });
         let plan = json!({ "threadId": "t", "plan": [{ "step": "Read the code", "status": "completed" }, { "step": "Write the test", "status": "inProgress" }, { "step": "Fix", "status": "pending" }] });
         assert_eq!(c.on_notification("turn/plan/updated", &plan)[0], Activity::Tool { name: "TodoWrite".into(), target: Some("1/3 · Write the test".into()), label: None, background: false });
-        assert!(c.on_notification("turn/plan/updated", &plan).is_empty(), "the same plan again shows nothing new");
+        let again = c.on_notification("turn/plan/updated", &plan);
+        assert!(again.is_empty(), "the same plan again shows nothing new");
+        let moved = json!({ "threadId": "t", "plan": [{ "step": "Read the code", "status": "completed" }, { "step": "Write the test", "status": "completed" }, { "step": "Fix", "status": "inProgress" }] });
+        assert_eq!(c.on_notification("turn/plan/updated", &moved).last(), Some(&Activity::PlanSteps(vec![
+            PlanStep { text: "Read the code".into(), state: StepState::Done },
+            PlanStep { text: "Write the test".into(), state: StepState::Done },
+            PlanStep { text: "Fix".into(), state: StepState::Active },
+        ])));
     }
 
     #[test]

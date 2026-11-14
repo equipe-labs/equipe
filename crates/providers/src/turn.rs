@@ -31,6 +31,21 @@ pub struct TurnResult {
     pub usage: Option<TurnUsage>,
 }
 
+/// Where one step of an agent's plan stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepState {
+    Pending,
+    Active,
+    Done,
+}
+
+/// One step of an agent's plan (Claude Code's to-do list, Codex's plan).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanStep {
+    pub text: String,
+    pub state: StepState,
+}
+
 /// Something worth showing while a turn runs.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Activity {
@@ -50,6 +65,10 @@ pub enum Activity {
     },
     /// A tool use came back (the `Tool` with this `name` and `target`).
     ToolDone(ToolDone),
+    /// The agent's plan as it stands now, every step: it replaces the one
+    /// before. Comes beside the plan's one-line `Tool` (`TodoWrite`), which
+    /// stays for the screens that show only lines.
+    PlanSteps(Vec<PlanStep>),
     /// A fragment of the model's reasoning, as the engine shows it — not
     /// part of the answer.
     Thinking(String),

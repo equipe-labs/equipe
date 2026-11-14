@@ -312,7 +312,7 @@ pub struct Turn {
     pub session_id: Option<String>,
 }
 
-pub use crate::turn::{Activity, ToolDone};
+pub use crate::turn::{Activity, PlanStep, StepState, ToolDone};
 
 /// A tool use waiting for its answer.
 struct Pending {
@@ -534,6 +534,12 @@ impl TurnCollector {
                     self.last_message = text;
                 }
                 let mut out = tool_uses(event);
+                // A to-do list written: its every step, beside the line above.
+                for block in content_blocks(event).filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use") && b.get("name").and_then(Value::as_str) == Some("TodoWrite")) {
+                    if let Some(steps) = todo_steps(block.get("input")) {
+                        out.push(Activity::PlanSteps(steps));
+                    }
+                }
                 // Each call waits for its answer, timed from now.
                 let now = std::time::Instant::now();
                 for block in content_blocks(event).filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use")) {
@@ -691,6 +697,31 @@ fn tool_uses(event: &Value) -> Vec<Activity> {
             Some(Activity::Tool { name, target, label, background })
         })
         .collect()
+}
+
+/// The steps of a `TodoWrite` call's `todos`: each one's words (`activeForm`,
+/// the present-tense form, for the step in progress) and where it stands.
+/// `None` for an empty list or one with no readable step.
+pub(crate) fn todo_steps(input: Option<&Value>) -> Option<Vec<PlanStep>> {
+    let steps: Vec<PlanStep> = input?
+        .get("todos")?
+        .as_array()?
+        .iter()
+        .filter_map(|todo| {
+            let state = match todo.get("status").and_then(Value::as_str) {
+                Some("completed") => StepState::Done,
+                Some("in_progress") => StepState::Active,
+                _ => StepState::Pending,
+            };
+            let said = |key: &str| todo.get(key).and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
+            let text = match state {
+                StepState::Active => said("activeForm").or_else(|| said("content")),
+                _ => said("content").or_else(|| said("activeForm")),
+            }?;
+            Some(PlanStep { text: text.to_owned(), state })
+        })
+        .collect();
+    (!steps.is_empty()).then_some(steps)
 }
 
 /// What a command does, in the agent's own words (Bash's `description`):
@@ -1424,6 +1455,29 @@ mod tests {
             Activity::Tool { name: "Bash".into(), target: Some("ls -la".into()), label: None, background: false },
             Activity::Tool { name: "TodoWrite".into(), target: None, label: None, background: false },
         ]);
+    }
+
+    #[test]
+    fn a_todo_list_carries_every_step_beside_its_line() {
+        let mut collector = TurnCollector::new();
+        let activity = collector.on_event(&json!({ "type": "assistant", "message": { "content": [
+            { "type": "tool_use", "id": "t1", "name": "TodoWrite", "input": { "todos": [
+                { "content": "Read the code", "status": "completed", "activeForm": "Reading the code" },
+                { "content": "Write the test", "status": "in_progress", "activeForm": "Writing the test" },
+                { "content": "Fix it", "status": "pending" },
+                { "content": "  ", "status": "pending", "activeForm": "" },
+            ] } },
+        ]}}));
+        assert_eq!(activity, vec![
+            Activity::Tool { name: "TodoWrite".into(), target: None, label: None, background: false },
+            Activity::PlanSteps(vec![
+                PlanStep { text: "Read the code".into(), state: StepState::Done },
+                PlanStep { text: "Writing the test".into(), state: StepState::Active },
+                PlanStep { text: "Fix it".into(), state: StepState::Pending },
+            ]),
+        ]);
+        assert_eq!(todo_steps(Some(&json!({ "todos": [] }))), None, "an empty list shows no plan");
+        assert_eq!(todo_steps(None), None);
     }
 
     #[test]

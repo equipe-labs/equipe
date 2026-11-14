@@ -72,6 +72,9 @@ const PART_ROUTINE: u32 = PART_MORE + 4;
 const PART_BACKGROUND: u32 = PART_MORE + 5;
 const PART_CHECK: u32 = PART_MORE + 6;
 const PART_LOOK: u32 = PART_MORE + 7;
+const PART_PLAN: u32 = PART_MORE + 8;
+/// A plan longer than this many steps shows that many, and "+N more".
+const PLAN_SHOWN: usize = 8;
 /// A call of an open group, by its number in it.
 const PART_ROW: u32 = 1 << 21;
 /// The side panel's width; the conversation keeps the rest.
@@ -1290,10 +1293,93 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             .into_any_element(),
         Block::Pending { text, steer, at } => pending_row(rows, key, text, *steer, *at, rows.project_of(ix), cx),
         Block::HandOver { name, why, live } => handed_row(rows, key, name, why, *live),
+        Block::Plan { steps, stale, working } => plan_row(rows, key, steps, *stale, *working, window, cx),
         Block::DesignCheck(summary) => check_row(rows, key, summary, superseded(&rows.blocks, ix), window, cx),
         Block::SecondLook { screen, verdict } => look_row(rows, key, screen, verdict, superseded(&rows.blocks, ix), window, cx),
         Block::QaReport(report) => qa_row(rows, key, report, cx),
     }
+}
+
+/// Which of a plan's steps show: all of them, or — past `PLAN_SHOWN` and not
+/// opened — a window of that many around the step at hand (the first not
+/// done), and how many it leaves out.
+fn plan_window(steps: &[equipe_core::protocol::PlanStep], open: bool) -> (std::ops::Range<usize>, usize) {
+    use equipe_core::protocol::PlanState;
+    if open || steps.len() <= PLAN_SHOWN {
+        return (0..steps.len(), 0);
+    }
+    let at = steps.iter().position(|s| s.state != PlanState::Done).unwrap_or(steps.len() - 1);
+    let start = at.saturating_sub(2).min(steps.len() - PLAN_SHOWN);
+    (start..start + PLAN_SHOWN, steps.len() - PLAN_SHOWN)
+}
+
+/// The member's plan as a checklist card: each step with where it stands —
+/// done (filled check, dimmed), the one at hand (a turning ring while the
+/// member works, emphasized), still to do (a dashed ring). Past the person's
+/// next message it is "Plan from before your last message", quieter, until a
+/// newer plan takes its place.
+fn plan_row(rows: &Rows, key: u64, steps: &[equipe_core::protocol::PlanStep], stale: bool, working: bool, window: &mut Window, cx: &mut App) -> AnyElement {
+    use equipe_core::protocol::PlanState;
+    let p = rows.p;
+    let open = rows.is_open(key, PART_PLAN, false);
+    let (shown, hidden) = plan_window(steps, open);
+    let done = steps.iter().filter(|s| s.state == PlanState::Done).count();
+    let moving = working && !stale;
+    let mark = |state: PlanState| -> AnyElement {
+        let ring = 15.;
+        match state {
+            PlanState::Done => div().size(px(ring)).flex_none().rounded_full().bg(p.accent).flex().items_center().justify_center().child(icon(Icon::Check, 10., p.on_accent)).into_any_element(),
+            PlanState::Active if moving => div().size(px(ring)).flex_none().flex().items_center().justify_center().child(motion::spinner(ring, p.accent)).into_any_element(),
+            PlanState::Active => div().size(px(ring)).flex_none().rounded_full().border_2().border_color(p.accent).flex().items_center().justify_center().child(div().size(px(5.)).rounded_full().bg(p.accent)).into_any_element(),
+            PlanState::Pending => div().size(px(ring)).flex_none().rounded_full().border_1().border_dashed().border_color(p.muted).into_any_element(),
+        }
+    };
+    let title = if stale { t!("chat.plan_stale") } else { t!("chat.plan") };
+    let head = h_flex()
+        .gap(px(8.))
+        .items_center()
+        .text_size(px(SMALL))
+        .child(div().min_w_0().font_weight(FontWeight::SEMIBOLD).text_color(if stale { p.muted } else { p.text }).child(title))
+        .child(div().flex_1())
+        .child(div().flex_none().text_size(px(META)).text_color(p.muted).child(format!("{done}/{}", steps.len())));
+    let list = v_flex().gap(px(5.)).children(shown.map(|n| {
+        let step = &steps[n];
+        let (color, weight) = match step.state {
+            PlanState::Done => (p.muted, FontWeight::NORMAL),
+            PlanState::Active => (p.text, FontWeight::SEMIBOLD),
+            PlanState::Pending => (p.text2, FontWeight::NORMAL),
+        };
+        h_flex()
+            .gap(px(8.))
+            .items_start()
+            .text_size(px(SMALL))
+            .line_height(px(SMALL_LINE))
+            .when(step.state == PlanState::Done, |d| d.opacity(0.65))
+            // The mark sits on the first line of the words, however many there are.
+            .child(div().h(px(SMALL_LINE)).flex_none().flex().items_center().child(mark(step.state)))
+            .child(div().flex_1().min_w_0().font_weight(weight).text_color(color).child(SelectableText::new(("plan-step", key ^ ((n as u64 + 1) << 32)), step.text.clone())))
+    }));
+    let more = (steps.len() > PLAN_SHOWN).then(|| {
+        let progress = motion::openness(("plan-open", key), open, window, cx);
+        disclosure_head(rows, ("plan-more", key), PART_PLAN, key, false, window, cx)
+            .pl(px(23.))
+            .child(div().child(if open { t!("chat.plan_less").to_owned() } else { t!("chat.plan_more", count = hidden) }))
+            .child(chevron(p.muted, progress))
+    });
+    v_flex()
+        .w_full()
+        .max_w(px(MEASURE))
+        .px(px(14.))
+        .py(px(10.))
+        .gap(px(8.))
+        .rounded(px(R_LG))
+        .border_1()
+        .border_color(p.hair)
+        .when(stale, |d| d.opacity(0.75))
+        .child(head)
+        .child(list)
+        .children(more)
+        .into_any_element()
 }
 
 /// A flow tested on the ticket's phone: its verdict, each step with what was
@@ -1642,7 +1728,7 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
     };
     let group: SharedString = format!("reply-{key}").into();
     // After a group of calls or the news, a little air before the words.
-    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::HandOver { .. } | Block::Thought { .. } | Block::Background { .. } | Block::Worked(_) | Block::Summarized | Block::Moved { .. } | Block::DesignCheck(_) | Block::SecondLook { .. } | Block::QaReport(_));
+    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::HandOver { .. } | Block::Thought { .. } | Block::Background { .. } | Block::Worked(_) | Block::Summarized | Block::Moved { .. } | Block::DesignCheck(_) | Block::SecondLook { .. } | Block::QaReport(_) | Block::Plan { .. });
     let actions = (!live && rows.turn_ends.contains(&ix)).then(|| {
         let raw = text.to_owned();
         let mut items: Vec<AnyElement> = vec![action_button(p, ("reply-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))).into_any_element()];
@@ -3136,6 +3222,19 @@ mod tests {
         ];
         let signed_out = super::ConversationDerived::of(&signed_out, &[None, None], now);
         assert_eq!(signed_out.sign_in, Some((0, equipe_core::protocol::Engine::Claude, true)));
+    }
+
+    #[test]
+    fn a_long_plan_shows_eight_steps_around_the_one_at_hand_and_opens_in_place() {
+        use equipe_core::protocol::{PlanState, PlanStep};
+        let plan = |done: usize, total: usize| -> Vec<PlanStep> {
+            (0..total).map(|n| PlanStep { text: format!("step {n}"), state: if n < done { PlanState::Done } else { PlanState::Pending } }).collect()
+        };
+        assert_eq!(super::plan_window(&plan(0, 8), false), (0..8, 0), "eight fit");
+        assert_eq!(super::plan_window(&plan(0, 12), false), (0..8, 4), "the start, and what it leaves out");
+        assert_eq!(super::plan_window(&plan(6, 12), false), (4..12, 4), "the step at hand stays in view");
+        assert_eq!(super::plan_window(&plan(12, 12), false), (4..12, 4), "all done: the end");
+        assert_eq!(super::plan_window(&plan(0, 12), true), (0..12, 0), "opened: all of it");
     }
 
     #[test]
