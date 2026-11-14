@@ -149,8 +149,7 @@ pub struct BoardUi {
     /// use differs, they are written again ([`BoardUi::relocalize`]).
     pub words: equipe_core::i18n::Lang,
     /// Where the window has been, for back and forward.
-    pub history: Vec<super::sidebar::Place>,
-    pub history_at: usize,
+    pub nav: super::sidebar::NavHistory,
     /// The keys' sheet is open (?).
     pub keys_open: bool,
     /// The window is wide enough for the peek beside the list.
@@ -234,8 +233,7 @@ impl BoardUi {
             popup_closed: None,
             language: equipe_core::i18n::saved(&equipe_providers::credentials::equipe_home()),
             words: crate::i18n::lang(),
-            history: Vec::new(),
-            history_at: 0,
+            nav: super::sidebar::NavHistory::default(),
             keys_open: false,
             wide: true,
             list_width: 900.,

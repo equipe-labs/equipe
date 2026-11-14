@@ -208,8 +208,8 @@ pub fn title_buttons(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement
         .gap(px(BUTTON_GAP))
         .items_center()
         .child(icon_button(p, "toggle-sidebar", IconName::PanelLeft, true, Some(tip.into())).on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))))
-        .child(icon_button(p, "back", IconName::ArrowLeft, ui.history_at > 0, Some(t!("sidebar.back").into())).on_click(cx.listener(|this, _, window, cx| this.go_back(window, cx))))
-        .child(icon_button(p, "forward", IconName::ArrowRight, ui.history_at + 1 < ui.history.len(), Some(t!("sidebar.forward").into())).on_click(cx.listener(|this, _, window, cx| this.go_forward(window, cx))))
+        .child(icon_button(p, "back", IconName::ArrowLeft, ui.nav.can_back(), Some(t!("sidebar.back").into())).on_click(cx.listener(|this, _, window, cx| this.go_back(window, cx))))
+        .child(icon_button(p, "forward", IconName::ArrowRight, ui.nav.can_forward(), Some(t!("sidebar.forward").into())).on_click(cx.listener(|this, _, window, cx| this.go_forward(window, cx))))
 }
 
 pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
@@ -2715,29 +2715,18 @@ impl Shell {
     /// Called from each draw: a new place goes on the history.
     pub fn note_place(&mut self) {
         let here = self.place();
-        let ui = &mut self.board;
-        if ui.history.get(ui.history_at) == Some(&here) {
-            return;
-        }
-        ui.history.truncate(ui.history_at + 1);
-        ui.history.push(here);
-        if ui.history.len() > 100 {
-            ui.history.remove(0);
-        }
-        ui.history_at = ui.history.len() - 1;
+        self.board.nav.note(here);
     }
 
     pub fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.board.history_at > 0 {
-            self.board.history_at -= 1;
-            self.go_to(self.board.history[self.board.history_at], window, cx);
+        if let Some(place) = self.board.nav.back() {
+            self.go_to(place, window, cx);
         }
     }
 
     pub fn go_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.board.history_at + 1 < self.board.history.len() {
-            self.board.history_at += 1;
-            self.go_to(self.board.history[self.board.history_at], window, cx);
+        if let Some(place) = self.board.nav.forward() {
+            self.go_to(place, window, cx);
         }
     }
 
@@ -2782,6 +2771,68 @@ pub struct Place {
     pub menu: Menu,
     pub member: Option<equipe_core::protocol::SessionId>,
     pub ticket: Option<TicketId>,
+}
+
+/// The places a window has been, and where in them it is: what back and
+/// forward (the title bar's arrows, ⌘[ and ⌘], the mouse's side buttons) walk.
+#[derive(Debug, Default)]
+pub struct NavHistory {
+    places: Vec<Place>,
+    at: usize,
+}
+
+impl NavHistory {
+    const MAX: usize = 100;
+
+    /// The window is at `here`: a new place goes after the current one, and
+    /// what was ahead of it (the forward trail) is dropped, as a browser does.
+    pub fn note(&mut self, here: Place) {
+        if self.places.get(self.at) == Some(&here) {
+            return;
+        }
+        self.places.truncate(self.at + 1);
+        self.places.push(here);
+        if self.places.len() > Self::MAX {
+            self.places.remove(0);
+        }
+        self.at = self.places.len() - 1;
+    }
+
+    pub fn can_back(&self) -> bool {
+        self.at > 0
+    }
+
+    pub fn can_forward(&self) -> bool {
+        self.at + 1 < self.places.len()
+    }
+
+    /// One step back: the place now current, if there was one before.
+    pub fn back(&mut self) -> Option<Place> {
+        self.can_back().then(|| {
+            self.at -= 1;
+            self.places[self.at]
+        })
+    }
+
+    /// One step forward: the place now current, if there is one ahead.
+    pub fn forward(&mut self) -> Option<Place> {
+        self.can_forward().then(|| {
+            self.at += 1;
+            self.places[self.at]
+        })
+    }
+}
+
+/// The sidebar's top items in order, ⌘1, ⌘2…: what Needs you, Status (when
+/// the daemon offers it) and Progress open.
+pub fn top_places(status_offered: bool, menu: Menu) -> Vec<Place> {
+    let at = |screen| Place { screen, menu, member: None, ticket: None };
+    let mut places = vec![Place { screen: Screen::Board, menu: Menu::Inbox, member: None, ticket: None }];
+    if status_offered {
+        places.push(at(Screen::Status));
+    }
+    places.push(at(Screen::Progress));
+    places
 }
 
 #[cfg(test)]
@@ -3038,6 +3089,42 @@ mod tests {
         // Reduce motion: nothing moves.
         m.note(&[], &[], t2 + Duration::from_millis(10), false);
         assert!(m.arriving(t2).is_empty() && m.leaving(t2 + Duration::from_millis(10)).is_empty());
+    }
+
+    fn place(ticket: u32) -> super::Place {
+        super::Place { screen: crate::Screen::Chat, menu: crate::board::Menu::Inbox, member: None, ticket: Some(ticket) }
+    }
+
+    /// Back and forward walk the places the window has been, as the title bar's arrows and ⌘[ ⌘] do.
+    #[test]
+    fn back_and_forward_move_through_the_history() {
+        let mut h = super::NavHistory::default();
+        assert!(!h.can_back() && !h.can_forward());
+        assert_eq!((h.back(), h.forward()), (None, None));
+        for n in 1..=3 {
+            h.note(place(n));
+        }
+        h.note(place(3));
+        assert_eq!(h.back(), Some(place(2)));
+        assert_eq!(h.back(), Some(place(1)));
+        assert_eq!(h.back(), None, "nothing before the first place");
+        assert_eq!(h.forward(), Some(place(2)));
+        assert!(h.can_back() && h.can_forward());
+        // A new place after going back drops what was ahead, as a browser does.
+        h.note(place(9));
+        assert!(!h.can_forward());
+        assert_eq!(h.back(), Some(place(2)));
+        assert_eq!(h.forward(), Some(place(9)));
+    }
+
+    #[test]
+    fn the_sidebars_top_items_are_numbered_in_order_skipping_status_when_it_is_not_offered() {
+        use crate::Screen;
+        let menu = crate::board::Menu::Inbox;
+        let with: Vec<Screen> = super::top_places(true, menu).iter().map(|p| p.screen).collect();
+        assert_eq!(with, [Screen::Board, Screen::Status, Screen::Progress]);
+        let without: Vec<Screen> = super::top_places(false, menu).iter().map(|p| p.screen).collect();
+        assert_eq!(without, [Screen::Board, Screen::Progress]);
     }
 }
 
