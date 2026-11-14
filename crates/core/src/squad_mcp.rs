@@ -171,6 +171,16 @@ pub fn service_of(server: &McpServer) -> Option<&'static Service> {
     server.catalog.as_deref().and_then(Service::by_id).filter(|s| s.is_mcp())
 }
 
+/// The catalog service a server is for display (its logo, its row): the one
+/// it was added from, else the one whose official server it is by address —
+/// a server added by URL (`https://mcp.figma.com/mcp`) is still Figma's.
+pub fn catalog_service(server: &McpServer) -> Option<&'static Service> {
+    service_of(server).or_else(|| {
+        let host = crate::vault::site_of(&server.url);
+        crate::connections::CATALOG.iter().find(|s| !host.is_empty() && s.mcp.is_some_and(|m| crate::vault::site_of(m.url) == host))
+    })
+}
+
 /// How a server is named for the person: the catalog's label, else its name.
 pub fn label(server: &McpServer) -> String {
     service_of(server).map_or_else(|| server.name.clone(), |s| s.label.to_owned())
@@ -272,6 +282,8 @@ fn purpose(id: &str) -> &'static str {
     match id {
         "mobbin" => "search real product screens and flows for design references",
         "21st" => "proven React, Tailwind and shadcn/ui components to adapt",
+        "figma" => "read and draw design files",
+        "framer" => "build and edit Framer sites",
         _ => "the service's own tools",
     }
 }

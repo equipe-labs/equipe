@@ -1247,12 +1247,17 @@ impl Shell {
         let now = now_secs();
         let mobbin = equipe_core::squad_mcp::server("mobbin", None, None, None).expect("the catalog's");
         let docs = equipe_core::squad_mcp::server("acme-docs", Some("https://docs.acme.example/mcp"), Some(&["backend".to_owned()]), None).expect("a plain server");
+        // Figma added by its address under a name of the squad's own, and Framer from the catalog: both on their catalog rows.
+        let figma = equipe_core::squad_mcp::server("design-files", Some("https://mcp.figma.com/mcp"), Some(&["designer".to_owned()]), None).expect("a plain server");
+        let framer = equipe_core::squad_mcp::server("framer", None, None, None).expect("the catalog's");
         let engine = |engine: Engine, state: McpState, detail: Option<&str>| McpEngineStatus { engine, state, detail: detail.map(str::to_owned), checked_at: now };
         self.model.mcp_status = vec![
+            McpServerStatus { name: figma.name.clone(), engines: vec![engine(Engine::Claude, McpState::Connected, None)] },
+            McpServerStatus { name: framer.name.clone(), engines: vec![engine(Engine::Claude, McpState::NeedsSignIn, None)] },
             McpServerStatus { name: mobbin.name.clone(), engines: vec![engine(Engine::Claude, if signin { McpState::NeedsSignIn } else { McpState::Connected }, None)] },
             McpServerStatus { name: docs.name.clone(), engines: vec![engine(Engine::Claude, McpState::Failing, Some("HTTP 503 from the server"))] },
         ];
-        self.model.mcp_servers = vec![mobbin, docs];
+        self.model.mcp_servers = vec![mobbin, docs, figma, framer];
         if signin {
             self.model.cli_sign_ins = vec![CliSignIn {
                 id: 91,

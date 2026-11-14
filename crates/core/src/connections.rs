@@ -80,7 +80,12 @@ pub struct McpService {
 /// - 21st.dev: 21st.dev/llms.txt and 21st.dev/auth.md — server `21st.dev/api/mcp` (streamable HTTP), an API key
 ///   (`21st_sk_…`) created at `21st.dev/mcp` and sent as the `x-api-key` header (what `npx @21st-dev/cli init --client
 ///   claude` prints). The server also offers OAuth; the key is what its own setup uses.
-pub const CATALOG: [Service; 8] = [
+/// - Figma: "Figma MCP server", help.figma.com/hc/en-us/articles/32132100833559 — the remote server `mcp.figma.com/mcp`
+///   (streamable HTTP), signed in with OAuth in the browser (no key). Reading needs only access to the file; drawing needs a
+///   paid Figma seat with edit access. An MCP service only.
+/// - Framer: "Framer MCP", framer.com/developers/mcp — server `mcp.framer.com/mcp`, signed in in the browser (no key).
+///   An MCP service only.
+pub const CATALOG: [Service; 10] = [
     Service {
         id: "anthropic",
         label: "Anthropic Console",
@@ -144,6 +149,38 @@ pub const CATALOG: [Service; 8] = [
             sign_up_url: "https://21st.dev/mcp",
             docs_url: "https://21st.dev/llms.txt",
             key_header: Some("x-api-key"),
+        }),
+    },
+    Service {
+        id: "figma",
+        label: "Figma",
+        hosts: &["figma.com"],
+        sign_in_url: None,
+        key_url: None,
+        key_name: None,
+        kind: SecretKind::Other,
+        mcp: Some(McpService {
+            url: "https://mcp.figma.com/mcp",
+            roles: &["designer"],
+            sign_up_url: "https://www.figma.com/pricing/",
+            docs_url: "https://help.figma.com/hc/en-us/articles/32132100833559",
+            key_header: None,
+        }),
+    },
+    Service {
+        id: "framer",
+        label: "Framer",
+        hosts: &["framer.com"],
+        sign_in_url: None,
+        key_url: None,
+        key_name: None,
+        kind: SecretKind::Other,
+        mcp: Some(McpService {
+            url: "https://mcp.framer.com/mcp",
+            roles: &["designer"],
+            sign_up_url: "https://www.framer.com/pricing",
+            docs_url: "https://www.framer.com/developers/mcp",
+            key_header: None,
         }),
     },
 ];
@@ -439,12 +476,28 @@ mod tests {
         assert_eq!((mcp.sign_up_url, mcp.docs_url), ("https://mobbin.com/pricing", "https://docs.mobbin.com/mcp/introduction.md"));
         assert!(mobbin.is_mcp() && !mobbin.takes_key() && mobbin.sign_in_target().is_none(), "no key, no browser sign-in: its server's own");
         assert_eq!(Service::of("api.mobbin.com").map(|s| s.id), Some("mobbin"));
-        assert!(CATALOG.iter().filter(|s| !["mobbin", "21st"].contains(&s.id)).all(|s| !s.is_mcp()));
+        assert!(CATALOG.iter().filter(|s| !["mobbin", "21st", "figma", "framer"].contains(&s.id)).all(|s| !s.is_mcp()));
         // 21st.dev: an API key through the key card, sent as its server's `x-api-key`.
         let ui = Service::by_id("21st").unwrap();
         let m = ui.mcp.unwrap();
         assert_eq!((m.url, m.key_header, ui.key_url, ui.key_name), ("https://21st.dev/api/mcp", Some("x-api-key"), Some("https://21st.dev/mcp"), Some("21st-api-key")));
         assert_eq!(m.roles, &["designer", "frontend"][..]);
+    }
+
+    #[test]
+    fn figma_and_framer_are_oauth_mcp_services_for_designers_and_their_hosts_map_to_them() {
+        let figma = Service::by_id("figma").unwrap();
+        let m = figma.mcp.unwrap();
+        assert_eq!((m.url, m.roles, m.docs_url, m.key_header), ("https://mcp.figma.com/mcp", &["designer"][..], "https://help.figma.com/hc/en-us/articles/32132100833559", None));
+        assert!(figma.is_mcp() && !figma.takes_key() && figma.sign_in_target().is_none(), "OAuth in the browser: no key");
+        let framer = Service::by_id("framer").unwrap();
+        let m = framer.mcp.unwrap();
+        assert_eq!((m.url, m.roles, m.docs_url, m.key_header), ("https://mcp.framer.com/mcp", &["designer"][..], "https://www.framer.com/developers/mcp", None));
+        assert!(framer.is_mcp() && !framer.takes_key());
+        for (text, id) in [("https://mcp.figma.com/mcp", "figma"), ("mcp.figma.com", "figma"), ("www.figma.com", "figma"), ("https://mcp.framer.com/mcp", "framer"), ("framer.com", "framer"), ("Figma", "figma")] {
+            assert_eq!(Service::of(text).map(|s| s.id), Some(id), "{text}");
+        }
+        assert!(Service::of("notfigma.com").is_none());
     }
 
     #[test]

@@ -86,6 +86,7 @@ mod tips;
 mod transcribe;
 mod ui;
 mod i18n;
+mod brands;
 mod icons;
 mod motion;
 mod relaunch;
