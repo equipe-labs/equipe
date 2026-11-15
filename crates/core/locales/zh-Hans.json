@@ -780,5 +780,14 @@
   "secrets.grant.no": "不允许",
   "secrets.grant.no_desc": "成员将在没有它的情况下继续。",
   "importance.deploy_words": "部署|发布|上线|发版|投产|灰度",
-  "importance.hold_words": "暂缓|冻结|暂停|等待|先别|阻止|搁置"
+  "importance.hold_words": "暂缓|冻结|暂停|等待|先别|阻止|搁置",
+  "design_session.header": "设计会话",
+  "design_session.question": "先就 {screen} 做一次简短的设计会话吗？",
+  "design_session.start": "开始 20–30 分钟的会话",
+  "design_session.tune": "先调校我的偏好（2 分钟）",
+  "design_session.not_now": "现在不",
+  "design_session.go_ahead": "让设计师直接做",
+  "design_session.kickoff": "我们以短轮次一起做 {page}。",
+  "design_session.no_designer": "团队里还没有可以做设计会话的设计师。请让 PM 加一位。",
+  "design_session.no_page": "请写明设计会话要做的页面或界面。"
 }

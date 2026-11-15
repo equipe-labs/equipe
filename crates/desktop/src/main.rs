@@ -38,6 +38,8 @@ mod docs;
 mod compare;
 mod design;
 mod design_talk;
+mod design_session;
+mod tuner;
 mod dictation;
 mod flows;
 mod glance;
@@ -256,6 +258,8 @@ pub enum Screen {
     Studio,
     /// A taste board: a decision's families of references, browsed like a pinboard (`views/taste.rs`).
     Taste,
+    /// A design session: the designer's conversation beside the page it makes, live (`views/design_session.rs`).
+    DesignSession,
 }
 
 pub struct Shell {
@@ -327,6 +331,10 @@ pub struct Shell {
     pub status: status::StatusUi,
     /// Taste & decisions' box for a note.
     pub design_taste: views::design_taste::Inputs,
+    /// A design session with the designer, the page live beside it (`views/design_session.rs`).
+    pub session: views::design_session::SessionUi,
+    /// The taste tuner, over the design screen (`views/tuner.rs`).
+    pub tuner: tuner::TunerUi,
     /// The taste board of a decision, when one is open.
     pub taste: views::taste::TasteUi,
     /// The shared Chrome, live, beside the conversation (⌘⇧B).
@@ -556,6 +564,8 @@ impl Shell {
             metrics_ui: Default::default(),
             status: Default::default(),
             design_taste: Default::default(),
+            session: Default::default(),
+            tuner: Default::default(),
             taste: Default::default(),
             browser,
             terminal: None,
@@ -1243,6 +1253,20 @@ impl Shell {
                             changed = true;
                             continue;
                         }
+                        // A design session began: its screen opens here when this screen asked, or the PM brought it.
+                        if let daemon::Update::Event(event @ Event::DesignSessionStarted { .. }) = &update {
+                            this.design_session_started(event, window, cx);
+                            changed = true;
+                            continue;
+                        }
+                        // The person chose to tune their taste first, on the PM's card: the tuner opens.
+                        if let daemon::Update::Event(Event::OpenTasteTuner { squad, project }) = &update {
+                            if *squad == this.model.squad {
+                                this.tuner_open(project.clone(), cx);
+                            }
+                            changed = true;
+                            continue;
+                        }
                         // A kept key the person asked to see: the page's, held for a moment and dropped.
                         if let daemon::Update::Event(Event::SquadSecretRevealed { squad, name, ask, value }) = &update {
                             this.keys_revealed(squad, name, *ask, value.0.clone(), cx);
@@ -1257,6 +1281,8 @@ impl Shell {
                             // Told the squad first: these come right after the snapshot.
                             this.sync_browser(window, cx);
                             this.browser.update(cx, |b, cx| b.on_event(event, window, cx));
+                            // The person's own tabs: where a design session's page is.
+                            this.design_session_tabs(event, window);
                             // A page waiting for the person: Needs you, and a notification.
                             changed |= this.model.on_browser(event);
                             continue;
@@ -2216,6 +2242,7 @@ impl Shell {
                     Screen::Docs => views::docs::render(self, cx),
                     Screen::Studio => views::studio::render(self, cx),
                     Screen::Taste => views::taste::render(self, cx),
+                    Screen::DesignSession => views::design_session::render(self, cx),
                 };
                 v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).children(views::desktop_setup::banner(self, cx)).children(views::usage::banner(self, cx)).child(screen).into_any_element()
             }
@@ -2651,6 +2678,7 @@ impl Render for Shell {
         self.board_prepare(window, cx);
         self.design_prepare(window, cx);
         self.studio_prepare(window, cx);
+        self.design_session_prepare(window, cx);
         // What the person did here (accepted, answered, a project in focus) changes Needs you too.
         self.sync_badge();
         self.sync_window(window);
@@ -2860,6 +2888,7 @@ impl Render for Shell {
             .children(views::composer::drop_overlay(self, cx))
             .children(views::composer::lightbox(self, cx))
             .children(views::design::lightbox(self, cx))
+            .children(views::tuner::layer(self, cx))
             .children(views::attached::gallery(self, cx))
             .children(views::decide::side_by_side(self, window, cx))
             .children(views::visuals::viewer(self, window, cx))

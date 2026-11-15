@@ -104,6 +104,32 @@ pub fn bar(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                     .child(div().flex_1().min_w_0().h(px(FIELD)).px_3().flex().items_center().rounded(px(R_MD)).border_1().border_color(p.hair).bg(p.bg).text_size(px(SMALL)).child(Input::new(&shell.design_redo).appearance(false).bordered(false)))
                     .child(ui::button(p, "design-compare-redo-send", ui::Kind::Primary, t!("design.compare_redo_send")).field().key("⏎").disabled(!typed).on_click(cx.listener(|this, _, window, cx| this.design_redo_send(window, cx)))),
             )
+            // Why it goes back, in a tap: kept with the person's taste.
+            .child(h_flex().px(px(24.)).pb_2().gap_1p5().flex_wrap().items_center().bg(Rgba { a: 0.05, ..p.amber }).border_b_1().border_color(p.hair).child(div().text_size(px(META)).text_color(p.muted).child(t!("decide.why_not"))).children(equipe_core::protocol::design::PickReason::ALL.into_iter().map(|reason| {
+                let lit = shell.session.send_back.contains(&reason);
+                div()
+                    .id(("design-redo-reason", reason as usize))
+                    .h(px(22.))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .rounded(px(11.))
+                    .border_1()
+                    .border_color(if lit { p.accent } else { p.hair })
+                    .when(lit, |d| d.bg(p.accent_bg))
+                    .text_size(px(META))
+                    .text_color(if lit { p.accent } else { p.text2 })
+                    .cursor_pointer()
+                    .child(super::design_session::reason_words(reason))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(at) = this.session.send_back.iter().position(|r| *r == reason) {
+                            this.session.send_back.remove(at);
+                        } else {
+                            this.session.send_back.push(reason);
+                        }
+                        cx.notify();
+                    }))
+            })))
         })
         .into_any_element()
 }
@@ -424,6 +450,14 @@ impl Shell {
             Some(about) => crate::quote::message(&about, &words),
             None => words,
         };
+        // The reasons tapped: said to the designer, and kept with the person's taste.
+        let reasons = std::mem::take(&mut self.session.send_back);
+        let note = if reasons.is_empty() { note } else { format!("{note}\n({})", reasons.iter().map(|r| super::design_session::reason_words(*r)).collect::<Vec<_>>().join(", ")) };
+        if !reasons.is_empty() {
+            let project = t.project.as_ref().map(|p| equipe_core::board::project_name(p));
+            let signals = vec![equipe_core::protocol::design::TasteSignal::Rejected { what: t.title.clone(), picture: None, reasons }];
+            self.send_command(equipe_core::protocol::Command::TasteSignals { squad: self.model.squad.clone(), project, signals });
+        }
         self.hold(t.id, t!("board.toast_send_back", id = t.id), vec![Command::Reopen { squad: self.model.squad.clone(), ticket: t.id, note }], cx);
         self.design_redo.update(cx, |s, cx| s.set_value(String::new(), window, cx));
         self.design.end_compare();

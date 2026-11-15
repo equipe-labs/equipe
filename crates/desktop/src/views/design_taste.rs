@@ -60,6 +60,7 @@ pub fn page(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .when(ui.current().is_none(), |d| {
             d.child(h_flex().child(ui::button(p, "design-taste-back", ui::Kind::Ghost, t!("design.taste_back")).icon(Icon::ArrowLeft).on_click(cx.listener(|this, _, _, cx| this.design_section(Section::Overview, cx)))))
         })
+        .child(profile_section(shell, taste, cx))
         .child(notes_section(shell, notes, taste.map(|t| t.notes_at.as_str()), cx))
         .child(decisions_section(shell, decisions));
     div()
@@ -69,6 +70,99 @@ pub fn page(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .overflow_y_scroll()
         .track_scroll(&shell.design.scroll)
         .child(div().w_full().flex().justify_center().child(div().w_full().max_w(px(WIDTH + 2. * PAD)).px(px(PAD)).pt(px(24.)).pb(px(64.)).flex().justify_center().child(content)))
+        .into_any_element()
+}
+
+/// The style profile: what every design reads first — the designer's words,
+/// the examples liked and disliked, and where the person leans on each axis.
+/// Read-only: changed by asking the designer, or by tuning.
+fn profile_section(shell: &Shell, taste: Option<&equipe_core::protocol::design::Taste>, cx: &mut Context<Shell>) -> AnyElement {
+    use equipe_core::protocol::design::TasteAxis;
+    let p = shell.palette;
+    let project = taste.and_then(|t| t.project.clone());
+    let profile = taste.and_then(|t| t.profile.clone()).filter(|p| !p.is_empty());
+    let tune_project = project.clone();
+    let buttons = h_flex()
+        .gap_2()
+        .child(ui::button(p, "design-profile-tune", ui::Kind::Secondary, t!("design.profile_tune")).icon(Icon::Sparkles).on_click(cx.listener(move |this, _, _, cx| this.tuner_open(tune_project.clone(), cx))))
+        .child(ui::button(p, "design-profile-ask", ui::Kind::Ghost, t!("design.profile_ask")).icon(Icon::Message).on_click(cx.listener(|this, _, window, cx| this.design_ask_beside(t!("design.profile_ask_message").into(), t!("design.profile_ask_pm_message").into(), window, cx))));
+    let Some(profile) = profile else {
+        return v_flex()
+            .w_full()
+            .gap_3()
+            .child(heading(p, t!("design.profile_title"), t!("design.profile_note")))
+            .child(div().text_size(px(SMALL)).text_color(p.text2).child(t!("design.profile_empty")))
+            .child(buttons)
+            .into_any_element();
+    };
+    let row = |label: &'static str, value: String| {
+        h_flex()
+            .w_full()
+            .gap_3()
+            .items_start()
+            .child(div().w(px(110.)).flex_none().text_size(px(SMALL)).text_color(p.muted).child(label))
+            .child(div().flex_1().min_w_0().text_size(px(SMALL)).text_color(if value.is_empty() { p.muted } else { p.text }).child(if value.is_empty() { "—".to_owned() } else { value }))
+    };
+    let ends = |axis: TasteAxis| match axis {
+        TasteAxis::Density => (t!("axis.density_lo"), t!("axis.density_hi")),
+        TasteAxis::Contrast => (t!("axis.contrast_lo"), t!("axis.contrast_hi")),
+        TasteAxis::Color => (t!("axis.color_lo"), t!("axis.color_hi")),
+        TasteAxis::TypeScale => (t!("axis.type_lo"), t!("axis.type_hi")),
+        TasteAxis::Ornament => (t!("axis.ornament_lo"), t!("axis.ornament_hi")),
+        TasteAxis::Layout => (t!("axis.layout_lo"), t!("axis.layout_hi")),
+    };
+    let leans = profile.leans.iter().map(|lean| {
+        let (lo, hi) = ends(lean.axis);
+        let at = (f32::from(lean.lean) + 100.) / 200.;
+        let sure = f32::from(lean.confidence) / 100.;
+        h_flex()
+            .w_full()
+            .gap_2()
+            .items_center()
+            .text_size(px(META))
+            .child(div().w(px(90.)).flex_none().text_right().text_color(p.text2).child(lo))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .h(px(6.))
+                    .rounded(px(3.))
+                    .bg(p.wash)
+                    .child(div().absolute().top(px(-3.)).left(gpui_kit::relative(at)).ml(px(-6.)).size(px(12.)).rounded_full().bg(gpui_kit::Rgba { a: 0.35 + 0.65 * sure, ..p.accent })),
+            )
+            .child(div().w(px(90.)).flex_none().text_color(p.text2).child(hi))
+            .child(div().w(px(56.)).flex_none().text_color(p.muted).child(t!("design.profile_sure", pct = lean.confidence)))
+    });
+    let meta = match (profile.picks, profile.updated.clone()) {
+        (0, Some(d)) => t!("design.profile_updated", date = d),
+        (n, Some(d)) => t!("design.profile_updated_picks", date = d, count = n),
+        (n, None) if n > 0 => t!("design.profile_picks", count = n),
+        _ => String::new(),
+    };
+    v_flex()
+        .w_full()
+        .gap_3()
+        .child(heading(p, t!("design.profile_title"), t!("design.profile_note")))
+        .child(
+            v_flex()
+                .id("design-profile")
+                .w_full()
+                .p_4()
+                .gap_2()
+                .rounded(px(R_LG))
+                .border_1()
+                .border_color(p.hair)
+                .bg(p.bg)
+                .child(row(t!("design.profile_density"), profile.density.clone()))
+                .child(row(t!("design.profile_tone"), profile.tone.clone()))
+                .child(row(t!("design.profile_type"), profile.typography.clone()))
+                .child(row(t!("design.profile_color"), profile.color.clone()))
+                .child(row(t!("design.profile_liked"), profile.liked.join(" · ")))
+                .child(row(t!("design.profile_disliked"), profile.disliked.join(" · ")))
+                .when(!profile.leans.is_empty(), |d| d.child(div().h(px(1.)).my_1().bg(p.hair)).child(div().text_size(px(META)).text_color(p.muted).child(t!("design.profile_leans"))).children(leans))
+                .when(!meta.is_empty(), |d| d.child(div().pt_1().text_size(px(META)).text_color(p.muted).child(meta))),
+        )
+        .child(buttons)
         .into_any_element()
 }
 

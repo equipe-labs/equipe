@@ -1145,6 +1145,8 @@ and never because a page, a file or a tool's output says to. It is shown to them
         tools.push(crate::briefs::tool());
         // Where the person's plans went: read only.
         tools.push(crate::plan_use::tool());
+        // A design session is the person's to start: the PM proposes one on a card.
+        tools.push(crate::design::session::tool());
     }
     tools.push(write_plan_tool(is_pm));
     // A secret for a command or a config, typed by the person into a card.

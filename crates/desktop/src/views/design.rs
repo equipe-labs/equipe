@@ -304,6 +304,16 @@ fn header(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
         );
     }
     bar = bar.child(div().flex_1());
+    // Work on a page with the designer, live, in short rounds.
+    if ui.loaded && !ui.compare {
+        let project = current.and_then(|s| s.project.clone()).or_else(|| ui.source.strip_prefix("project:").map(str::to_owned));
+        bar = bar.child(
+            ui::button(p, "design-session", ui::Kind::Secondary, t!("session.start_button"))
+                .icon(Icon::Sparkles)
+                .tip(t!("session.start_tip"), None)
+                .on_click(cx.listener(move |this, _, window, cx| this.design_session_setup(project.clone(), equipe_core::protocol::design_session::SessionFrom::DesignScreen, window, cx))),
+        );
+    }
     if ui.loaded && ui.accepted_of(&ui.source).is_some() {
         bar = bar.child(
             ui::icon_button(p, "design-versions", Icon::Clock, t!("design.versions_title"), None)
@@ -2279,6 +2289,10 @@ impl Shell {
     /// the UI map, `on_flows_key`'s); in the lightbox ←/→ step and Esc closes;
     /// Esc puts what changed away.
     pub fn on_design_key(&mut self, key: &str, m: &Modifiers, window: &Window, cx: &mut Context<Self>) -> bool {
+        // The taste tuner over the screen takes its keys first.
+        if self.screen == Screen::Design && !m.platform && !m.control && !m.alt && self.tuner_key(key, cx) {
+            return true;
+        }
         if self.screen != Screen::Design || m.platform || m.control || m.alt || m.function {
             return false;
         }

@@ -227,6 +227,40 @@ shown only on dark, `…-light` only on light, any other on both.
 - With none yet: what a design system is, and a button that asks the
   designer (or the PM, to bring one in) for one through the composer.
 
+## Design sessions and the person's taste
+
+A **design session** is the person and the designer on one page, in rounds of
+minutes, so the designer learns the style the person wants before a long build.
+
+- **Start**: "Start a design session" on the design screen, "Design session" on a
+  designer's ticket or in the designer's conversation, or the PM — which proposes
+  one (`propose_design_session`) at most once per ticket or screen, never in quiet
+  hours, with "Start a 20–30 min session", "Not now", "Let the designer go ahead"
+  (and "Tune my taste first" when the style profile is thin). The proposals are
+  kept in the squad's data folder (`design-session-proposals.json`).
+  `Command::StartDesignSession` sends the designer a `<design-session>` kickoff as
+  the person's message and tells every screen (`Event::DesignSessionStarted`).
+- **Live page**: the designer runs `equipe design session show <page.html | URL |
+  render.png>`; the screen reads the `design-session:` line from its conversation
+  and shows the page beside it through the daemon's shared browser (so a
+  `localhost` or `file://` page on the daemon's machine shows on any screen), at
+  1440 or 390 wide, reloading each time something new is shown.
+- **Pins**: a click on the page drops a numbered pin with a note and one-tap
+  reasons; the next message carries a `<design-pins>` block (page coordinates,
+  width, the crop attached as a picture). `equipe design session done <n> "…"`
+  ticks the pin with what changed.
+- **Model**: rounds run on a fast model (`SetModel`), "Polish" goes back to the
+  designer's own; the header shows the tokens the session used.
+- **Style profile**: the top of a project's `design/taste.md` (`## Style profile`
+  … `<!-- /style profile -->`): the designer's words (`equipe design session
+  profile`), liked and disliked examples, and `Leans` — equipe's, worked out
+  (`crate::taste::tuner`) from the **taste tuner** (pairs of real screens from
+  `design/tuner/set.json`, one or two axes varied at a time, one pair in six a
+  contrast probe), thumbs and "more / less like this", reasons given when a
+  design is turned down, options chosen and passed over, and hearted board tiles
+  (`design/tuner/signals.jsonl`). The design screen shows it read-only under
+  Taste & decisions; it changes by asking the designer or by more picks.
+
 ## The Designs tab — what a design ticket made
 
 Next to the UI map, the design system and the references: one card for each

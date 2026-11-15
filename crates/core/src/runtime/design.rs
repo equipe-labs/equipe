@@ -41,7 +41,7 @@ impl Runtime {
 
     /// Look at `squad`'s folders off the loop; read them when they changed
     /// (or `always`).
-    fn look_at_design(&mut self, squad: &str, always: bool) {
+    pub(super) fn look_at_design(&mut self, squad: &str, always: bool) {
         if !self.design_busy.insert(squad.to_owned()) {
             // Asked while a look is under way: an ask always gets an answer,
             // so it is owed once that look ends.

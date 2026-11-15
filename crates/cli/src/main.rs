@@ -16,6 +16,7 @@ mod daemon;
 mod design;
 mod design_lint;
 mod design_qa;
+mod design_session;
 mod design_taste;
 mod design_system;
 mod desktop;
@@ -1980,6 +1981,8 @@ impl App {
                 | Event::MailboxConnect { .. }
                 | Event::Allowed { .. }
                 | Event::Design { .. }
+                | Event::DesignSessionStarted { .. }
+                | Event::OpenTasteTuner { .. }
                 | Event::ProjectDocs { .. }
                 | Event::DocsFound { .. }
                 | Event::CallStarted { .. }

@@ -49,6 +49,8 @@
 //!   rendered at each condition, measured, compared with the map's pictures —
 //!   before any designer turn (docs/DESIGN-QA.md).
 //! - `qa_stats`: what design QA costs and decides, read from a squad's journal.
+//! - `session`: design sessions — the kickoff, the person's pins, the lines
+//!   `equipe design session` prints, and the PM's proposals, once per ticket.
 
 pub mod brand;
 pub mod check;
@@ -73,6 +75,7 @@ pub mod kept;
 pub mod review;
 pub mod reviewer;
 pub mod second_look;
+pub mod session;
 pub mod studio;
 pub mod system;
 pub mod tokens;

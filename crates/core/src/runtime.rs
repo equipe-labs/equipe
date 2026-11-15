@@ -75,6 +75,7 @@ mod glance;
 mod room;
 mod engines;
 mod design;
+mod design_session;
 mod briefs;
 mod plans;
 mod accept;
@@ -2984,6 +2985,8 @@ impl Runtime {
             Command::DesignResults { squad } => self.design_results_asked(squad),
             Command::RestoreDesign { squad, project, commit } => self.restore_design_asked(squad, project, commit),
             Command::Taste { squad, project, change } => self.taste_changed(squad, project, change),
+            Command::TasteSignals { squad, project, signals } => self.taste_signals(squad, project, signals),
+            Command::StartDesignSession { squad, project, page, from } => self.start_design_session(squad, project, page, from).await,
         }
     }
 
@@ -7906,6 +7909,18 @@ there, end your turn, and carry on when they say they're done."
                 None => Err("You're not on the squad.".into()),
             };
             self.dispatch(&squad).await;
+            let _ = reply.send(match result {
+                Ok(text) => ToolResult { text, is_error: false, image: None },
+                Err(text) => ToolResult { text, is_error: true, image: None },
+            });
+            return;
+        }
+        // A design session proposed, or started at once: it may send the designer its kickoff.
+        if call.name == crate::design::session::PROPOSE {
+            let result = match self.caller_id(&call) {
+                Some(id) => self.propose_design_session(&squad, &call.member, id, &call.arguments).await,
+                None => Err("You're not on the squad.".into()),
+            };
             let _ = reply.send(match result {
                 Ok(text) => ToolResult { text, is_error: false, image: None },
                 Err(text) => ToolResult { text, is_error: true, image: None },

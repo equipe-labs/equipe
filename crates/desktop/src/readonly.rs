@@ -256,7 +256,9 @@ pub fn reads(command: &Command) -> bool {
         | C::ShowEngineSetup { .. }
         | C::MoveEngine { .. }
         | C::RestoreDesign { .. }
-        | C::Taste { .. } => false,
+        | C::Taste { .. }
+        | C::TasteSignals { .. }
+        | C::StartDesignSession { .. } => false,
     }
 }
 
@@ -723,6 +725,8 @@ mod tests {
             Command::DesignResults { squad: s() },
             Command::RestoreDesign { squad: s(), project: None, commit: "c".into() },
             Command::Taste { squad: s(), project: None, change: TasteChange::Add { text: "t".into() } },
+            Command::TasteSignals { squad: s(), project: None, signals: vec![] },
+            Command::StartDesignSession { squad: s(), project: None, page: "Home".into(), from: equipe_core::protocol::design_session::SessionFrom::DesignScreen },
         ]
     }
 

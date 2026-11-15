@@ -780,5 +780,14 @@
   "secrets.grant.no": "아니요",
   "secrets.grant.no_desc": "멤버는 그 키 없이 계속해요.",
   "importance.deploy_words": "배포|릴리스|릴리즈|롤아웃|출시|론칭|런칭|상용 반영|운영 반영|프로덕션 반영",
-  "importance.hold_words": "보류|동결|멈춰|멈추|중단|대기|기다|막아|막고|홀드"
+  "importance.hold_words": "보류|동결|멈춰|멈추|중단|대기|기다|막아|막고|홀드",
+  "design_session.header": "디자인 세션",
+  "design_session.question": "{screen}부터 짧은 디자인 세션을 해볼까요?",
+  "design_session.start": "20–30분 세션 시작",
+  "design_session.tune": "먼저 취향 맞추기 (2분)",
+  "design_session.not_now": "나중에",
+  "design_session.go_ahead": "디자이너가 알아서 진행",
+  "design_session.kickoff": "{page}을(를) 짧은 라운드로 같이 만들어 봐요.",
+  "design_session.no_designer": "아직 디자인 세션을 할 디자이너가 팀에 없어요. PM에게 디자이너를 데려와 달라고 하세요.",
+  "design_session.no_page": "디자인 세션에서 다룰 페이지나 화면 이름을 알려 주세요."
 }

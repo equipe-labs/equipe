@@ -1381,6 +1381,8 @@ mod switching;
 
 #[path = "fake_daemon/design.rs"]
 mod design;
+#[path = "fake_daemon/session.rs"]
+mod session;
 #[path = "fake_daemon/design_results.rs"]
 mod design_results;
 #[path = "fake_daemon/refgallery.rs"]
@@ -2078,6 +2080,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             other => other,
                         };
                         match command {
+                            // A message with pins to the designer in a design session: answered as the designer would.
+                            Command::Submit { .. } if session::on_command(&command, &events) => {}
                             Command::Submit { session, text, about } => {
                                 let working = |id: SessionId| {
                                     let turns = turns.clone();
@@ -2317,7 +2321,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     }
                                     continue;
                                 }
-                                if signin::on_command(&other, &events) || browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || signals::on_command(&other, &events) || disk::on_command(&other, &events) || plan_use::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) || refgallery::on_command(&other, &events) || design_results::on_command(&other, &events) || briefs::on_command(&other, &events) || moved::on_command(&other, &events) {
+                                if signin::on_command(&other, &events) || browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || signals::on_command(&other, &events) || disk::on_command(&other, &events) || plan_use::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) || session::on_command(&other, &events) || refgallery::on_command(&other, &events) || design_results::on_command(&other, &events) || briefs::on_command(&other, &events) || moved::on_command(&other, &events) {
                                     continue;
                                 }
                                 if let Some(said) = on_board_command(&other) {

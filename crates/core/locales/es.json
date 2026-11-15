@@ -784,5 +784,14 @@
   "secrets.grant.no": "No",
   "secrets.grant.no_desc": "El miembro sigue sin ella.",
   "importance.deploy_words": "despliegue|desplegar|lanzamiento|publicación|publicacion|puesta en producción|puesta en produccion|salida a producción|salida a produccion",
-  "importance.hold_words": "retener|retén|congel|detener|detén|espera|bloque|pausa|suspend"
+  "importance.hold_words": "retener|retén|congel|detener|detén|espera|bloque|pausa|suspend",
+  "design_session.header": "Sesión de diseño",
+  "design_session.question": "¿Primero una sesión de diseño corta sobre {screen}?",
+  "design_session.start": "Empezar una sesión de 20–30 min",
+  "design_session.tune": "Primero afinar mi gusto (2 min)",
+  "design_session.not_now": "Ahora no",
+  "design_session.go_ahead": "Que el diseñador siga solo",
+  "design_session.kickoff": "Trabajemos juntos en {page}, en rondas cortas.",
+  "design_session.no_designer": "Aún no hay diseñador en el equipo para una sesión de diseño. Pide al PM que añada uno.",
+  "design_session.no_page": "Indica la página o pantalla de la sesión de diseño."
 }

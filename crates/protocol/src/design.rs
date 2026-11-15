@@ -497,6 +497,256 @@ pub struct Taste {
     /// Newest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub decisions: Vec<Decision>,
+    /// The short style profile at the top of the notes file, when it has one
+    /// (a project's `design/taste.md`): what every design reads first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<StyleProfile>,
+    /// The taste tuner's pictures (`design/tuner/set.json`), when the
+    /// designer prepared a set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tuner: Vec<TunerItem>,
+    /// The tuner pairs already picked or skipped, each as `(a, b)` pictures,
+    /// so the next pairs are new ones.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tuned: Vec<(String, String)>,
+}
+
+/// The person's style in short, at the top of a project's `design/taste.md`
+/// (`## Style profile`): the designer's words for how dense, what tone, what
+/// type and how colour is used, the examples they liked and disliked — and
+/// where they lean on each [`TasteAxis`], worked out by equipe from the taste
+/// tuner's picks and the person's reactions. Read-only on screens; changed by
+/// asking the designer, or by more picks.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StyleProfile {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub density: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tone: String,
+    #[serde(default, rename = "type", skip_serializing_if = "String::is_empty")]
+    pub typography: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub color: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub liked: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disliked: Vec<String>,
+    /// Where the person leans on each axis the picks touched, in axis order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub leans: Vec<Lean>,
+    /// How many tuner picks it is worked out from.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub picks: u32,
+    /// When it was last written, `YYYY-MM-DD`, when the file says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated: Option<String>,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+impl StyleProfile {
+    /// Nothing in it yet: a template's empty lines.
+    pub fn is_empty(&self) -> bool {
+        self.filled() == 0 && self.leans.is_empty()
+    }
+
+    /// How many of its six worded parts say something: under three is thin.
+    pub fn filled(&self) -> usize {
+        [&self.density, &self.tone, &self.typography, &self.color].iter().filter(|f| !f.trim().is_empty()).count() + usize::from(!self.liked.is_empty()) + usize::from(!self.disliked.is_empty())
+    }
+
+    /// Too little to design by: fewer than three parts said and fewer than
+    /// [`TUNER_FIRST`] picks.
+    pub fn is_thin(&self) -> bool {
+        self.filled() < 3 && self.picks < TUNER_FIRST
+    }
+}
+
+/// The picks that give a first profile; more refine it.
+pub const TUNER_FIRST: u32 = 20;
+
+/// An axis of visual style the taste tuner varies, one or two at a time.
+/// Each runs from its low end to its high end (`ends`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TasteAxis {
+    /// Airy to dense.
+    Density,
+    /// Light and soft to dark and high-contrast.
+    Contrast,
+    /// Restrained, neutral to colourful.
+    Color,
+    /// Small, even type to large, dramatic type.
+    TypeScale,
+    /// Sharp and plain to rounded and ornamented.
+    Ornament,
+    /// Strict grid to free, editorial layout.
+    Layout,
+}
+
+impl TasteAxis {
+    pub const ALL: [TasteAxis; 6] = [TasteAxis::Density, TasteAxis::Contrast, TasteAxis::Color, TasteAxis::TypeScale, TasteAxis::Ornament, TasteAxis::Layout];
+
+    /// Its name in files: `density`, `type_scale`.
+    pub fn key(self) -> &'static str {
+        match self {
+            TasteAxis::Density => "density",
+            TasteAxis::Contrast => "contrast",
+            TasteAxis::Color => "color",
+            TasteAxis::TypeScale => "type_scale",
+            TasteAxis::Ornament => "ornament",
+            TasteAxis::Layout => "layout",
+        }
+    }
+
+    pub fn parse(key: &str) -> Option<TasteAxis> {
+        let key = key.trim().to_ascii_lowercase().replace([' ', '-'], "_");
+        TasteAxis::ALL.into_iter().find(|a| a.key() == key || (key == "colour" && *a == TasteAxis::Color) || (key == "type" && *a == TasteAxis::TypeScale))
+    }
+
+    /// Its low and high ends, as files write them.
+    pub fn ends(self) -> (&'static str, &'static str) {
+        match self {
+            TasteAxis::Density => ("airy", "dense"),
+            TasteAxis::Contrast => ("light", "dark"),
+            TasteAxis::Color => ("restrained", "colorful"),
+            TasteAxis::TypeScale => ("small type", "large type"),
+            TasteAxis::Ornament => ("plain", "ornate"),
+            TasteAxis::Layout => ("grid", "freeform"),
+        }
+    }
+}
+
+/// Where the person leans on one axis: `lean` from -100 (its low end) to 100
+/// (its high end), and how sure equipe is of it, 0 to 100.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lean {
+    pub axis: TasteAxis,
+    pub lean: i8,
+    pub confidence: u8,
+}
+
+/// One picture of the taste tuner's set (`design/tuner/set.json`, prepared
+/// by the designer): a real product screen, where it came from, and where it
+/// sits on each axis, -100 to 100 (an axis left out sits at 0).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TunerItem {
+    /// Where it is on the daemon's machine, as `read_image` asks for it.
+    pub picture: String,
+    /// "Product — Pricing".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub axes: Vec<(TasteAxis, i8)>,
+}
+
+impl TunerItem {
+    /// Where it sits on `axis`.
+    pub fn at(&self, axis: TasteAxis) -> i8 {
+        self.axes.iter().find(|(a, _)| *a == axis).map_or(0, |(_, v)| *v)
+    }
+}
+
+/// Which of a pair the person liked more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PickSide {
+    A,
+    B,
+}
+
+/// A one-tap reason given with a pick: what put them off the other one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PickReason {
+    TooDense,
+    TooPlain,
+    Colors,
+    Type,
+    Layout,
+    /// "Doesn't feel like us": off the brand, whatever the part.
+    NotUs,
+}
+
+impl PickReason {
+    pub const ALL: [PickReason; 6] = [PickReason::TooDense, PickReason::TooPlain, PickReason::Colors, PickReason::Type, PickReason::Layout, PickReason::NotUs];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            PickReason::TooDense => "too_dense",
+            PickReason::TooPlain => "too_plain",
+            PickReason::Colors => "colors",
+            PickReason::Type => "type",
+            PickReason::Layout => "layout",
+            PickReason::NotUs => "not_us",
+        }
+    }
+
+    /// Its words in files, the same in every language: what the designer reads.
+    pub fn words(self) -> &'static str {
+        match self {
+            PickReason::TooDense => "too dense",
+            PickReason::TooPlain => "too plain",
+            PickReason::Colors => "the colors",
+            PickReason::Type => "the type",
+            PickReason::Layout => "the layout",
+            PickReason::NotUs => "doesn't feel like us",
+        }
+    }
+}
+
+/// A quick reaction to a render or a reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuickReaction {
+    Up,
+    Down,
+    MoreLikeThis,
+    LessLikeThis,
+}
+
+impl QuickReaction {
+    /// Whether it says the person likes it.
+    pub fn liked(self) -> bool {
+        matches!(self, QuickReaction::Up | QuickReaction::MoreLikeThis)
+    }
+}
+
+/// Something the person did that tells their taste, sent as it happens
+/// ([`crate::Command::TasteSignals`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TasteSignal {
+    /// A taste tuner pick between two of its pictures (`chose` none: skipped).
+    Pick {
+        a: String,
+        b: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chose: Option<PickSide>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        reasons: Vec<PickReason>,
+    },
+    /// A quick reaction in a design session to a render or reference:
+    /// `label` is what it is, as the person saw it ("Round 3 hero").
+    React {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        picture: Option<String>,
+        label: String,
+        reaction: QuickReaction,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        reasons: Vec<PickReason>,
+    },
+    /// The person turned a design down ("another round" on a decision card,
+    /// a designer's work sent back) with one-tap reasons: `what` it was.
+    Rejected {
+        what: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        picture: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        reasons: Vec<PickReason>,
+    },
 }
 
 impl Taste {
@@ -1050,5 +1300,46 @@ mod tests {
         // The pictures to show first: the hero, then the screen as it was at the hero's width.
         assert_eq!(full.headline(), vec![("after", "/w/design/directions/t7-x/mock-b-1440.png"), ("before", "/w/design/directions/t7-x/before-1440.png")]);
         assert!(bare.headline().is_empty());
+    }
+
+    #[test]
+    fn a_style_profile_and_the_tuner_travel_and_come_back_as_they_were() {
+        let profile = StyleProfile {
+            density: "airy".into(),
+            tone: "calm".into(),
+            typography: "big serif heads".into(),
+            liked: vec!["Pricing A".into()],
+            leans: vec![Lean { axis: TasteAxis::Density, lean: -60, confidence: 70 }],
+            picks: 24,
+            updated: Some("2026-11-16".into()),
+            ..Default::default()
+        };
+        let wire = serde_json::to_value(&profile).unwrap();
+        assert_eq!(wire["type"], "big serif heads", "type, as files say it");
+        assert_eq!(wire["leans"][0], serde_json::json!({ "axis": "density", "lean": -60, "confidence": 70 }));
+        assert_eq!(serde_json::from_value::<StyleProfile>(wire).unwrap(), profile);
+        assert_eq!(profile.filled(), 4);
+        assert!(!profile.is_thin(), "24 picks");
+        assert!(StyleProfile { picks: 3, ..StyleProfile::default() }.is_thin());
+        assert!(StyleProfile::default().is_empty());
+        let item = TunerItem { picture: "/w/design/references/a.png".into(), source: "A".into(), axes: vec![(TasteAxis::Color, 80)] };
+        assert_eq!(item.at(TasteAxis::Color), 80);
+        assert_eq!(item.at(TasteAxis::Layout), 0);
+        let taste = Taste { project: Some("web".into()), profile: Some(profile), tuner: vec![item], tuned: vec![("a".into(), "b".into())], ..Taste::default() };
+        assert_eq!(serde_json::from_str::<Taste>(&serde_json::to_string(&taste).unwrap()).unwrap(), taste);
+        let old: Taste = serde_json::from_str(r#"{"project":"web"}"#).unwrap();
+        assert!(old.profile.is_none() && old.tuner.is_empty(), "an older daemon's taste reads");
+        for signal in [
+            TasteSignal::Pick { a: "a".into(), b: "b".into(), chose: Some(PickSide::B), reasons: vec![PickReason::TooDense] },
+            TasteSignal::Pick { a: "a".into(), b: "b".into(), chose: None, reasons: vec![] },
+            TasteSignal::React { picture: Some("/r.png".into()), label: "Round 2".into(), reaction: QuickReaction::LessLikeThis, reasons: vec![PickReason::NotUs] },
+            TasteSignal::Rejected { what: "Hero options".into(), picture: None, reasons: vec![PickReason::Type] },
+        ] {
+            assert_eq!(serde_json::from_str::<TasteSignal>(&serde_json::to_string(&signal).unwrap()).unwrap(), signal);
+        }
+        assert_eq!(TasteAxis::parse("Type scale"), Some(TasteAxis::TypeScale));
+        assert_eq!(TasteAxis::parse("colour"), Some(TasteAxis::Color));
+        assert!(TasteAxis::ALL.iter().all(|a| TasteAxis::parse(a.key()) == Some(*a)));
+        assert!(QuickReaction::MoreLikeThis.liked() && !QuickReaction::Down.liked());
     }
 }

@@ -250,6 +250,9 @@ with a short line, or carry on with work that doesn't depend on the answer.";
             for (decision, picture) in crate::taste::decisions::from_answers(&set, &answers, &crate::squad_memory::date(now_secs())) {
                 self.record_decision(squad, project.as_deref(), &decision, Some(std::path::Path::new(&picture)), crate::squad_home::PERSON);
             }
+            // What was chosen and passed over, and the tiles hearted: the style profile learns it too.
+            let records = crate::taste::tuner::from_answers(&set, &answers, &crate::squad_memory::date(now_secs()));
+            self.learn_signals(squad, project.as_deref(), &records);
         }
         if let (Some(ticket), Some(journal)) = (set.ticket, self.journal(squad)) {
             let _ = journal.ticket_event(ticket, "you", "decided", &message);
@@ -257,7 +260,9 @@ with a short line, or carry on with work that doesn't depend on the answer.";
         self.decision_settled(squad, &set, Some(&answers));
         // A kept key's first use on a project: the person's word is applied.
         self.secret_card_settled(squad, &set, Some(&answers));
-        self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id, answers: Some(answers) });
+        self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id, answers: Some(answers.clone()) });
+        // A design session the PM proposed: started, the tuner opened, or held back.
+        self.design_proposal_settled(squad, &set, Some(&answers)).await;
         // Its ticket waited for this answer: it goes back to its member with the answers.
         if self.resume_asked(squad, &set, &message).await {
             return;
@@ -287,6 +292,7 @@ with a short line, or carry on with work that doesn't depend on the answer.";
         self.decision_settled(squad, &set, None);
         self.secret_card_settled(squad, &set, None);
         self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id, answers: None });
+        self.design_proposal_settled(squad, &set, None).await;
         let message = decide::dismissed_message(&set);
         if self.resume_asked(squad, &set, &message).await {
             return;

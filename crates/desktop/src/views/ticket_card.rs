@@ -1082,6 +1082,18 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
                     }
                 })
             });
+            // A designer's ticket: work on it with the designer, live.
+            let designer = t.assignee.as_deref().or(t.owner.as_deref()).is_some_and(|n| n == "designer" || shell.model.members.iter().any(|m| m.name == n && m.role == "designer"));
+            let session = (designer && !matches!(t.status, TicketStatus::Done | TicketStatus::Cancelled)).then(|| {
+                let handle = handle.clone();
+                btn(p, "card-session", t!("session.title"), None, false, true).h(px(26.)).on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    put_away(cx);
+                    if let Some(shell) = handle.upgrade() {
+                        shell.update(cx, |s, cx| s.design_session_for_ticket(id, cx));
+                    }
+                })
+            });
             h_flex()
                 .flex_wrap()
                 .gap_2()
@@ -1102,6 +1114,7 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
                     })
                 }))
                 .children(studio)
+                .children(session)
                 .into_any_element()
         }
     };

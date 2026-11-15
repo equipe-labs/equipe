@@ -28,6 +28,8 @@ pub mod design_refs;
 pub mod design_results;
 pub mod design_news;
 pub mod design_talk;
+pub mod design_session;
+pub mod tuner;
 pub mod design_taste;
 pub mod desktop_setup;
 pub mod diffview;

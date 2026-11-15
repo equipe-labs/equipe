@@ -780,5 +780,14 @@
   "secrets.grant.no": "いいえ",
   "secrets.grant.no_desc": "メンバーはそのキーなしで続けます。",
   "importance.deploy_words": "デプロイ|リリース|ロールアウト|本番反映|本番適用|公開作業|ローンチ|出荷",
-  "importance.hold_words": "保留|凍結|止め|停止|待機|待って|待つ|ホールド"
+  "importance.hold_words": "保留|凍結|止め|停止|待機|待って|待つ|ホールド",
+  "design_session.header": "デザインセッション",
+  "design_session.question": "まず {screen} について短いデザインセッションをしませんか？",
+  "design_session.start": "20〜30分のセッションを始める",
+  "design_session.tune": "先に好みを調整する（2分）",
+  "design_session.not_now": "今はしない",
+  "design_session.go_ahead": "デザイナーに任せる",
+  "design_session.kickoff": "{page} を短いラウンドで一緒に作りましょう。",
+  "design_session.no_designer": "デザインセッションをするデザイナーがまだチームにいません。PM に頼んで迎えてもらってください。",
+  "design_session.no_page": "デザインセッションで扱うページか画面の名前を入れてください。"
 }

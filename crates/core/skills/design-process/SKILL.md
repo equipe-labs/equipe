@@ -77,7 +77,8 @@ best round, not the last; say in your hand-in what the critic found and what you
 references of the screen's patterns too (`--reference`, drawn at the same width): it holds the work to the quality bar
 and its taste checklist, and below the references' tier is a revise.
 
-The person's taste is a list
+A project's `design/taste.md` opens with its style profile — density, tone, type, colour, the examples the person
+liked and disliked, and where they lean on each axis: read it first, before any design. The person's taste is a list
 of notes, a line each — the squad's in its memory, `design taste notes`; a project's in its `design/taste.md`. Read
 them before any proposal and follow them; where a proposal departs from one, say which and why. A note ending in
 `confirmed` or written by the person outranks one still waiting for their yes; where they disagree, follow the

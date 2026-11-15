@@ -321,7 +321,7 @@ impl Shell {
                 },
                 _ => return Took::Pass,
             },
-            Screen::Settings | Screen::Design | Screen::Roadmap | Screen::Metrics | Screen::Project | Screen::Progress | Screen::Status | Screen::Orchestration | Screen::Usage | Screen::Logins | Screen::Docs | Screen::Studio | Screen::Taste => return Took::Pass,
+            Screen::Settings | Screen::Design | Screen::Roadmap | Screen::Metrics | Screen::Project | Screen::Progress | Screen::Status | Screen::Orchestration | Screen::Usage | Screen::Logins | Screen::Docs | Screen::Studio | Screen::Taste | Screen::DesignSession => return Took::Pass,
         };
         // The list of them open: ↑↓ through it, ⏎ to the one picked, Esc away.
         if !peek && let Some(at) = self.decide.listing && self.composer.text(cx).is_empty() {
@@ -482,7 +482,29 @@ impl Shell {
 
     /// "Again": another round, the box's words as why.
     pub fn decide_again(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        // The reasons tapped go with the person's taste: what was turned down, and why.
+        let reasons = self.session.rejections.remove(&id).unwrap_or_default();
+        if !reasons.is_empty()
+            && let Some(set) = self.model.asked.get(id)
+        {
+            let step = self.decide.drafts.get(&id).map_or(0, |d| d.step);
+            let what = set.questions.get(step).map(|q| q.question.clone()).unwrap_or_default();
+            let project = set.ticket.and_then(|t| self.model.tickets.iter().find(|x| x.id == t)).and_then(|t| t.project.as_ref()).map(|p| equipe_core::board::project_name(p));
+            let signals = vec![equipe_core::protocol::design::TasteSignal::Rejected { what, picture: None, reasons }];
+            self.send_command(equipe_core::protocol::Command::TasteSignals { squad: self.model.squad.clone(), project, signals });
+        }
         self.decide_react(id, window, cx, |draft, set, others| draft.again(set, others));
+    }
+
+    /// A reason tapped under a design choice, for "Again".
+    pub fn decide_reason(&mut self, id: u64, reason: equipe_core::protocol::design::PickReason, cx: &mut Context<Self>) {
+        let list = self.session.rejections.entry(id).or_default();
+        if let Some(at) = list.iter().position(|r| *r == reason) {
+            list.remove(at);
+        } else {
+            list.push(reason);
+        }
+        cx.notify();
     }
 
     /// "Mix": option `base`'s mix menu, opened or closed.
@@ -1218,7 +1240,32 @@ fn card(shell: &Shell, id: u64, place: Place, nav: Option<Nav>, cx: &mut Context
                 .child(div().opacity(0.8).overflow_hidden().whitespace_nowrap().text_ellipsis().child(keys)),
         )
         .child(h_flex().max_w_full().ml_auto().gap_2().flex_wrap().justify_end().children(back).children(side).children(board).children(again).child(skip).child(next));
-    let inner = v_flex().w_full().min_h_0().gap_3().child(body).child(foot.flex_none());
+    // A design choice: why none of these, in a tap, before "Again".
+    let why = reacts.then(|| {
+        let on = shell.session.rejections.get(&id).cloned().unwrap_or_default();
+        h_flex().flex_none().w_full().flex_wrap().gap_1p5().items_center().child(div().text_size(px(12.)).text_color(p.muted).child(t!("decide.why_not"))).children(equipe_core::protocol::design::PickReason::ALL.into_iter().map(|reason| {
+            let lit = on.contains(&reason);
+            let handle = handle.clone();
+            div()
+                .id(("decide-reason", render::hash_of((id, reason as usize))))
+                .h(px(22.))
+                .px_2()
+                .flex()
+                .items_center()
+                .rounded(px(11.))
+                .border_1()
+                .border_color(if lit { p.accent } else { p.hair })
+                .when(lit, |d| d.bg(p.accent_bg))
+                .text_size(px(12.))
+                .text_color(if lit { p.accent } else { p.text2 })
+                .cursor_pointer()
+                .child(super::design_session::reason_words(reason))
+                .on_click(move |_, _, cx| {
+                    handle.update(cx, |shell, cx| shell.decide_reason(id, reason, cx)).ok();
+                })
+        }))
+    });
+    let inner = v_flex().w_full().min_h_0().gap_3().child(body).children(why).child(foot.flex_none());
     // Never taller than the window has room for: past it, the options scroll.
     let tallest = card_tallest(shell, place);
     Some(match place {

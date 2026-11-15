@@ -139,6 +139,16 @@ pub enum DesignAction {
     Matrix(crate::design_system::MatrixArgs),
     /// Check registry.json before a release — files, dependencies, sources and licences, no other brand's assets — build it, and install a sample into a scratch project
     Registry(crate::design_system::RegistryArgs),
+    /// A design session with the person: show a page live beside it, tick their pins, keep the style profile
+    Session {
+        #[command(subcommand)]
+        action: crate::design_session::SessionAction,
+    },
+    /// The taste tuner's set of pictures, which the person picks between to tune their style profile
+    Tuner {
+        #[command(subcommand)]
+        action: crate::design_session::TunerAction,
+    },
     /// The UI map: every flow, its screens in order, each in every state, pictured light and dark at each width
     Flows {
         #[command(subcommand)]
@@ -317,6 +327,8 @@ pub async fn command(action: DesignAction) -> Result<(), String> {
             run_script("audit.mjs", &[&url, "--pages", &pages.to_string(), "--out", out.to_string_lossy().as_ref(), "--locale", &audit_locale(locale)]).await
         }
         DesignAction::Flows { action } => flows_command(action).await,
+        DesignAction::Session { action } => crate::design_session::session_command(action),
+        DesignAction::Tuner { action } => crate::design_session::tuner_command(action),
         DesignAction::Lint(args) => crate::design_lint::lint(args).await,
         DesignAction::SecondLook(args) => crate::design_lint::second_look(args).await,
         DesignAction::Direction { action } => crate::design_lint::direction(action),

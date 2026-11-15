@@ -665,6 +665,8 @@ impl Shell {
         } else {
             (typed_with_quotes, tags.clone())
         };
+        // In a design session, the pins dropped on the page go before the words.
+        let typed_with_quotes = if typed.trim().starts_with('/') { typed_with_quotes } else { self.design_session_wrap(typed_with_quotes) };
         let text = attach::message(&typed_with_quotes, &all_tags);
         let carries = !tags.is_empty() && !typed.trim().starts_with('/');
         let plan = compose::plan(&self.model, &text, later);

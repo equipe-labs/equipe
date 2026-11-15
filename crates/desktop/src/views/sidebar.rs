@@ -2770,6 +2770,9 @@ impl Shell {
             Screen::Docs => self.open_docs(cx),
             // A board belongs to the question it was opened from: back to where that is.
             Screen::Taste => self.open_side(Side::Pm, window, cx),
+            // A session ended or not: back to it while it runs, else the design screen.
+            Screen::DesignSession if self.session.on.is_some() => self.show(Screen::DesignSession, cx),
+            Screen::DesignSession => self.open_design(cx),
             Screen::Studio => match place.ticket.or(self.studio.ticket) {
                 Some(id) => self.open_studio(id, window, cx),
                 None => self.open_side(Side::Pm, window, cx),

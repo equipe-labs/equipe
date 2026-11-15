@@ -784,5 +784,14 @@
   "secrets.grant.no": "No",
   "secrets.grant.no_desc": "The member goes on without it.",
   "importance.deploy_words": "deploy|release|rollout|roll out|publish|launch|ship|go live|go-live|cutover",
-  "importance.hold_words": "hold|freeze|block|pause|wait|halt"
+  "importance.hold_words": "hold|freeze|block|pause|wait|halt",
+  "design_session.header": "Design session",
+  "design_session.question": "A short design session on {screen} first?",
+  "design_session.start": "Start a 20–30 min session",
+  "design_session.tune": "Tune my taste first (2 min)",
+  "design_session.not_now": "Not now",
+  "design_session.go_ahead": "Let the designer go ahead",
+  "design_session.kickoff": "Let's work on {page} together, in short rounds.",
+  "design_session.no_designer": "There's no designer on the team for a design session yet. Ask the PM to bring one in.",
+  "design_session.no_page": "Name the page or screen the design session is on."
 }

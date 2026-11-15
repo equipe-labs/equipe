@@ -460,6 +460,8 @@ fn said(journal: &crate::journal::Journal, home: &Path, squad: &str, out: &mut S
     let Ok(worktrees) = home.join("worktrees").canonicalize() else { return };
     for cwd in cwds {
         if cwd.canonicalize().is_ok_and(|real| real.starts_with(&worktrees) && real.components().count() >= worktrees.components().count() + 2) && !out.roots.contains(&cwd) {
+            // Its design folder too: what a design session shows from there (a render, a reference).
+            out.references.push(cwd.join(crate::design::folder::DIR));
             out.roots.push(cwd);
         }
     }

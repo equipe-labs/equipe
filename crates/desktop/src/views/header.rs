@@ -219,6 +219,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .children(context)
         // The buttons stay whole; the words before them give way.
         .children(studio_button(shell, cx))
+        .children(session_button(shell, cx))
         .child(div().flex_none().child(terminal_button(shell, cx)))
         .child(div().flex_none().child(browser_button(shell, cx)))
 }
@@ -246,6 +247,32 @@ fn studio_button(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElem
                 .icon(crate::icons::Icon::Eye)
                 .tip(t!("studio.open_tip"), None)
                 .on_click(cx.listener(move |this, _, window, cx| this.open_studio(ticket, window, cx))),
+        ),
+    )
+}
+
+/// "Design session", where the conversation or ticket in view is the
+/// designer's: a designer's ticket starts one on its own page; the
+/// designer's own conversation asks which page.
+fn session_button(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
+    let p = shell.palette;
+    let selected = shell.model.selected_member().map(|m| (m.role.as_str(), m.ticket));
+    let opened = shell.model.opened.and_then(|id| shell.model.tickets.iter().find(|t| t.id == id)).map(|t| {
+        let owner = t.assignee.as_deref().or(t.owner.as_deref());
+        let role = owner.and_then(|n| shell.model.members.iter().find(|m| m.name == n)).map(|m| m.role.clone()).or_else(|| owner.map(str::to_owned));
+        (t.id, role)
+    });
+    let start = crate::design_session::start_for(selected, opened.as_ref().map(|(id, role)| (*id, role.as_deref())))?;
+    let focus = shell.model.focus.clone();
+    Some(
+        div().flex_none().child(
+            crate::ui::button(p, "header-session", crate::ui::Kind::Ghost, t!("session.title"))
+                .icon(crate::icons::Icon::Sparkles)
+                .tip(t!("session.start_tip"), None)
+                .on_click(cx.listener(move |this, _, window, cx| match start {
+                    crate::design_session::Start::Ticket(id) => this.design_session_for_ticket(id, cx),
+                    crate::design_session::Start::Ask => this.design_session_setup(focus.clone(), equipe_core::protocol::design_session::SessionFrom::Member, window, cx),
+                })),
         ),
     )
 }

@@ -155,7 +155,7 @@ How you work is in your skills — open the matching one before you start, every
 included; `design-references` before you design, redesign or judge a screen or component; `design-tools` before you \
 run `equipe design …`; `ui-map` whenever a screen, state or flow changes; `design-qa` on a design QA ticket; \
 `ui-product-kinds` first on any UI work, the `ui-*` skill of each part a screen has, and `ui-review` before you judge \
-one. Hold \
+one. Open `design-session` when the person starts a design session with you. Hold \
 every screen to the level of the best products, not of the screen you were handed: build inside the system the \
 person accepted, and where that system itself keeps screens below it, propose a one-time foundation reset to the \
 person rather than patch inside it. Taste calls — brand direction, colours, typefaces, which option — are the person's: offer \
@@ -2221,6 +2221,46 @@ invent one."), "{id}: true numbers");
             assert!(text.contains(part), "{part}: {text}");
         }
         assert!(!told("frontend", "frontend", &ctx(&team, &[], true)).contains("`design/tokens.json`"), "the designer's to keep");
+    }
+
+    /// A design session is short and live, and keeps every guarantee the
+    /// designer has: only `design/` is changed, the critic sees a take before
+    /// the person, the designer never grades its own work, and taste calls
+    /// stay the person's. The PM proposes one at the right moments, through
+    /// its tool, each ticket once.
+    #[test]
+    fn a_design_session_is_short_and_live_and_keeps_the_designers_guarantees() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "designer", role: "designer" }];
+        let c = ctx(&team, &[], true);
+        let charter_only = charter(role("designer").unwrap(), "designer", &c);
+        assert!(charter_only.contains("Open `design-session` when the person starts a design session with you."), "one line in the skill index");
+        let session = skill("designer", &c, "design-session");
+        for part in [
+            "rounds of minutes",
+            "3–6 references",
+            "one rough take",
+            "something visible and one focused question",
+            "Never go quiet",
+            "`equipe design session show",
+            "only `design/` is yours to change",
+            "goes once to `equipe design critique",
+            "Never grade your own work",
+            "Taste calls are the person's",
+            "`equipe design session done <n>",
+            "`equipe design session profile",
+            "`design/tuner/set.json`",
+            "`equipe design tuner check`",
+        ] {
+            assert!(session.contains(part), "{part}: {session}");
+        }
+        assert!(skill("designer", &c, "design-process").contains("opens with its style profile"), "every design reads the profile first");
+        let pm = skill(PM, &c, "working-with-design");
+        for part in ["`propose_design_session`", "turned a design down", "missing or thin", "explore several", "at most once per ticket or screen", "quiet hours", "Not now", "`asked`"] {
+            assert!(pm.contains(part), "{part}: {pm}");
+        }
+        let tools = crate::board::tools(true);
+        assert!(tools.iter().any(|t| t["name"] == crate::design::session::PROPOSE), "the PM has the tool");
+        assert!(!crate::board::tools(false).iter().any(|t| t["name"] == crate::design::session::PROPOSE), "only the PM");
     }
 
     #[test]

@@ -784,5 +784,14 @@
   "secrets.grant.no": "Nein",
   "secrets.grant.no_desc": "Das Mitglied macht ohne ihn weiter.",
   "importance.deploy_words": "bereitstellung|deployment|veröffentlich|auslieferung|produktivsetzung|inbetriebnahme|go-live|rollout|markteinführung",
-  "importance.hold_words": "halt|zurückhalt|einfrier|stopp|pausier|warte|blockier|anhalt"
+  "importance.hold_words": "halt|zurückhalt|einfrier|stopp|pausier|warte|blockier|anhalt",
+  "design_session.header": "Design-Session",
+  "design_session.question": "Zuerst eine kurze Design-Session zu {screen}?",
+  "design_session.start": "Session von 20–30 Min. starten",
+  "design_session.tune": "Erst meinen Geschmack abstimmen (2 Min.)",
+  "design_session.not_now": "Nicht jetzt",
+  "design_session.go_ahead": "Den Designer einfach machen lassen",
+  "design_session.kickoff": "Lass uns {page} gemeinsam in kurzen Runden gestalten.",
+  "design_session.no_designer": "Im Team gibt es noch keinen Designer für eine Design-Session. Bitte den PM, einen dazuzuholen.",
+  "design_session.no_page": "Nenne die Seite oder den Screen der Design-Session."
 }

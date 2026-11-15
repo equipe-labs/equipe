@@ -11,7 +11,7 @@ use crate::design::review::{self, Gate};
 
 impl Runtime {
     /// `squad`'s designer, in its own conversation.
-    fn designer_of(&self, squad: &str) -> Option<SessionId> {
+    pub(super) fn designer_of(&self, squad: &str) -> Option<SessionId> {
         self.sessions
             .iter()
             .find(|(_, s)| s.squad.as_deref() == Some(squad) && s.is_member_itself() && s.member.as_ref().is_some_and(|m| m.role == review::ROLE))

@@ -161,8 +161,23 @@ pub fn tags(items: &[DesignContext]) -> String {
     items.iter().filter_map(DesignContext::picture).map(|path| format!("{} ", attach::tag(Kind::of(Path::new(path)), path, &Meta::default(), &[], None))).collect()
 }
 
-/// A message read back: the labels of what it pointed at, and the rest.
+/// A message read back: the labels of what it pointed at, and the rest — a
+/// design session's kickoff and pins read as chips too
+/// (`equipe_core::design::session`).
 pub fn split(text: &str) -> (Vec<String>, String) {
+    use equipe_core::design::session;
+    if let Some((page, rest)) = session::split_kickoff(text) {
+        let (mut labels, rest) = split(&rest);
+        labels.insert(0, t!("session.chip", page = page));
+        return (labels, rest);
+    }
+    let (pins, rest) = session::split_pins(text);
+    if !pins.is_empty() {
+        let (more, rest) = split(&rest);
+        let mut labels: Vec<String> = pins.into_iter().map(|(n, note)| t!("session.pin_chip", n = n, note = note)).collect();
+        labels.extend(more);
+        return (labels, rest);
+    }
     let trimmed = text.trim_start();
     let Some(after) = trimmed.strip_prefix(OPEN) else { return (Vec::new(), text.to_owned()) };
     let Some((inside, rest)) = after.split_once(CLOSE) else { return (Vec::new(), text.to_owned()) };
@@ -295,6 +310,17 @@ mod tests {
         assert_eq!(split("그냥 말"), (Vec::new(), "그냥 말".to_owned()));
         assert_eq!(split("<design-context>\n- 끝이 없음"), (Vec::new(), "<design-context>\n- 끝이 없음".to_owned()), "not a block without its end");
         assert_eq!(split(&message(&[accent()], "")).1, "");
+    }
+
+    #[test]
+    fn a_design_sessions_kickoff_and_pins_read_back_as_chips() {
+        use equipe_core::design::session::{self, Pin};
+        use equipe_core::protocol::design_session::SessionFrom;
+        let kickoff = session::kickoff("가격 페이지", Some("web"), &SessionFrom::DesignScreen, None, "같이 다듬어 봐요.");
+        assert_eq!(split(&kickoff), (vec!["디자인 세션 · 가격 페이지".to_owned()], "같이 다듬어 봐요.".to_owned()));
+        let pins = [Pin { n: 1, x: 10, y: 20, width: 1440, note: "너무 튀어요".into(), ..Pin::default() }, Pin { n: 2, x: 5, y: 5, width: 1440, note: "로고 작게".into(), ..Pin::default() }];
+        let said = session::with_pins("http://localhost:5173/", &pins, "이 두 곳");
+        assert_eq!(split(&said), (vec!["핀 1 · 너무 튀어요".to_owned(), "핀 2 · 로고 작게".to_owned()], "이 두 곳".to_owned()));
     }
 
     #[test]

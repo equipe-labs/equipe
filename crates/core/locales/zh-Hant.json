@@ -780,5 +780,14 @@
   "secrets.grant.no": "不允許",
   "secrets.grant.no_desc": "成員將在沒有它的情況下繼續。",
   "importance.deploy_words": "部署|發佈|發布|上線|發版|投產|灰度",
-  "importance.hold_words": "暫緩|凍結|暫停|等待|先別|阻止|擱置"
+  "importance.hold_words": "暫緩|凍結|暫停|等待|先別|阻止|擱置",
+  "design_session.header": "設計會話",
+  "design_session.question": "先就 {screen} 做一次簡短的設計會話嗎？",
+  "design_session.start": "開始 20–30 分鐘的會話",
+  "design_session.tune": "先調校我的偏好（2 分鐘）",
+  "design_session.not_now": "現在不",
+  "design_session.go_ahead": "讓設計師直接做",
+  "design_session.kickoff": "我們以短輪次一起做 {page}。",
+  "design_session.no_designer": "團隊裡還沒有可以做設計會話的設計師。請讓 PM 加一位。",
+  "design_session.no_page": "請寫明設計會話要做的頁面或畫面。"
 }

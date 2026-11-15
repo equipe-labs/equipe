@@ -234,7 +234,10 @@ pub fn person_only(command: &Command) -> bool {
         | C::DesignVersions { .. }
         | C::DesignRefs { .. }
         | C::DesignResults { .. }
-        | C::Taste { .. } => false,
+        | C::Taste { .. }
+        | C::TasteSignals { .. }
+        // The person's message to the designer, as Submit is.
+        | C::StartDesignSession { .. } => false,
     }
 }
 

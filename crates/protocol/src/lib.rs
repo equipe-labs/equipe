@@ -28,6 +28,7 @@ pub mod links;
 pub mod tiers;
 pub mod harness;
 pub mod design;
+pub mod design_session;
 pub mod look;
 pub mod routines;
 pub mod cli_signin;
@@ -1751,6 +1752,28 @@ pub enum Command {
         project: Option<String>,
         change: design::TasteChange,
     },
+    /// What the person did that tells their design taste (taste tuner
+    /// picks, quick reactions in a design session) for the squad
+    /// (`project` none) or a project: kept with its taste, its style profile
+    /// worked out again. Answered by [`Event::Design`].
+    TasteSignals {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        signals: Vec<design::TasteSignal>,
+    },
+    /// The person starts a design session with the squad's designer on
+    /// `page` (a page or screen of `project`, `None`: the squad's own): its
+    /// kickoff goes to the designer as the person's message, and every screen
+    /// is told with [`Event::DesignSessionStarted`] — or an error when the
+    /// squad has no designer or the page has no name.
+    StartDesignSession {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        page: String,
+        from: design_session::SessionFrom,
+    },
 }
 
 /// Where the daemon's Nebius Token Factory key comes from.
@@ -3249,6 +3272,24 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         taste: Vec<design::Taste>,
     },
+    /// A design session started ([`Command::StartDesignSession`], or the
+    /// person took the PM's proposal): the designer's conversation `designer`
+    /// is now about `page`, live beside it on a screen.
+    DesignSessionStarted {
+        squad: SquadName,
+        designer: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        page: String,
+        from: design_session::SessionFrom,
+    },
+    /// The person chose to tune their taste first (on the PM's proposal of
+    /// a design session): screens open the taste tuner for `project`.
+    OpenTasteTuner {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
     /// The squad's briefs and plans as they are now ([`Command::ProjectDocs`]):
     /// every project's, then its own folder's, newest first in each. Its own
     /// event rather than a field of [`Event::ProjectsChanged`]: they are read
@@ -3394,6 +3435,8 @@ impl Event {
             | Event::SignalsChanged { squad, .. }
             | Event::PutAwayChanged { squad, .. }
             | Event::Design { squad, .. }
+            | Event::DesignSessionStarted { squad, .. }
+            | Event::OpenTasteTuner { squad, .. }
             | Event::ProjectDocs { squad, .. }
             | Event::DocsFound { squad, .. }
             | Event::CallStarted { squad, .. }
@@ -3517,6 +3560,8 @@ impl Event {
             | Event::BrowserSignIn { .. }
             | Event::BrowserProfiles { .. }
             | Event::Design { .. }
+            | Event::DesignSessionStarted { .. }
+            | Event::OpenTasteTuner { .. }
             | Event::ProjectDocs { .. }
             | Event::DocsFound { .. }
             | Event::CallStarted { .. }
@@ -4304,6 +4349,42 @@ mod tests {
             serde_json::to_value(&cmd).unwrap(),
             json!({ "type": "submit", "session": 1, "text": "hi" })
         );
+    }
+
+    #[test]
+    fn design_session_and_taste_commands_and_events_round_trip() {
+        use design::{PickReason, PickSide, QuickReaction, TasteSignal};
+        use design_session::SessionFrom;
+        let commands = [
+            Command::StartDesignSession { squad: "acme".into(), project: Some("web".into()), page: "Pricing".into(), from: SessionFrom::Ticket { ticket: 9 } },
+            Command::StartDesignSession { squad: "acme".into(), project: None, page: "Home".into(), from: SessionFrom::DesignScreen },
+            Command::TasteSignals {
+                squad: "acme".into(),
+                project: Some("web".into()),
+                signals: vec![
+                    TasteSignal::Pick { a: "/a.png".into(), b: "/b.png".into(), chose: Some(PickSide::A), reasons: vec![PickReason::Colors] },
+                    TasteSignal::React { picture: None, label: "Round 1".into(), reaction: QuickReaction::Up, reasons: vec![] },
+                ],
+            },
+        ];
+        for command in commands {
+            let json = serde_json::to_string(&command).unwrap();
+            assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), command, "{json}");
+        }
+        assert_eq!(
+            serde_json::to_value(Command::StartDesignSession { squad: "a".into(), project: None, page: "Home".into(), from: SessionFrom::Member }).unwrap(),
+            json!({ "type": "start_design_session", "squad": "a", "page": "Home", "from": { "kind": "member" } })
+        );
+        let events = [
+            Event::DesignSessionStarted { squad: "acme".into(), designer: 4, project: Some("web".into()), page: "Pricing".into(), from: SessionFrom::Pm { ticket: Some(9) } },
+            Event::OpenTasteTuner { squad: "acme".into(), project: None },
+        ];
+        for event in events {
+            let json = serde_json::to_string(&event).unwrap();
+            assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event, "{json}");
+            assert_eq!(event.squad(), Some("acme"));
+            assert_eq!(event.session(), None, "a screen's, never a conversation's");
+        }
     }
 
     #[test]

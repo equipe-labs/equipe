@@ -87,6 +87,7 @@ const SOURCES: &[Source] = &[
         offered: |r, _| r.id == "designer",
     },
     Source { dir: "design-qa", files: &[file!("design-qa", "SKILL.md")], offered: |r, _| r.id == "designer" },
+    Source { dir: "design-session", files: &[file!("design-session", "SKILL.md")], offered: |r, _| r.id == "designer" },
     Source { dir: "ui-floor", files: &[file!("ui-floor", "SKILL.md")], offered: |r, _| r.id == "frontend" },
     Source { dir: "design-remix", files: &[file!("design-remix", "SKILL.md")], offered: |r, c| r.id == "designer" && c.design },
     Source { dir: "security-review", files: &[file!("security-review", "SKILL.md")], offered: |r, _| r.id == crate::roles::SECURITY },
@@ -494,7 +495,7 @@ mod tests {
         let all = Context { browser: true, desktop: true, design: true, ..ctx(&team) };
         assert_eq!(names(PM, &base), ["office-hours", "planning", "working-with-design", "routines-and-signals", "product-ideas", "research-report"]);
         let craft = ["ui-product-kinds", "ui-foundations", "ui-layout-and-states", "ui-data-display", "ui-forms", "ui-mobile", "ui-motion", "ui-accessibility", "ui-writing", "ui-polish", "ui-review", "ui-vocabulary", "ui-design-systems"];
-        let designer_has = ["plan-review", "research-report", "design-system", "design-process", "design-references", "design-tools", "ui-map", "design-qa"];
+        let designer_has = ["plan-review", "research-report", "design-system", "design-process", "design-references", "design-tools", "ui-map", "design-qa", "design-session"];
         assert_eq!(names("designer", &base), designer_has.iter().chain(&craft).copied().collect::<Vec<_>>());
         assert!(names("designer", &all).contains(&"design-remix".to_owned()));
         // Engineers who build screens get the parts of the craft they build to.
