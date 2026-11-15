@@ -53,6 +53,7 @@ mod pane;
 mod queue;
 mod quote;
 mod refs;
+mod designs;
 mod refshelf;
 mod readonly;
 mod screen_look;
@@ -1192,6 +1193,10 @@ impl Shell {
                                 changed |= this.refs_arrived(squad, project, ticket, at, places, query, offset, total, patterns, sources, folder);
                                 continue;
                             }
+                            daemon::Update::Event(Event::DesignResults { squad, designs }) => {
+                                changed |= this.designs_arrived(squad, designs);
+                                continue;
+                            }
                             daemon::Update::Event(Event::DesignVersions { squad, project, versions }) => {
                                 changed |= this.design_versions_arrived(squad, project, versions);
                                 continue;
@@ -1275,6 +1280,9 @@ impl Shell {
                         if let daemon::Update::Event(Event::StatusChanged { squad }) = &update {
                             if *squad == this.model.squad {
                                 this.status_ask(cx);
+                                // Work was handed in or accepted, maybe: a design to look at.
+                                this.design.results.dirty = true;
+                                this.designs_watch();
                             }
                             continue;
                         }

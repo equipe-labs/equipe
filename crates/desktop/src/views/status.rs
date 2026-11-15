@@ -180,6 +180,7 @@ fn page(shell: &Shell, s: &SquadStatus, cx: &mut Context<Shell>) -> AnyElement {
         .w_full()
         .gap_4()
         .child(status_line(shell, s, now, cx))
+        .children(super::design_news::status_card(shell, cx))
         .child(tiles(shell, s, cx))
         .child(blocked(shell, s, now, cx))
         .children(speed_card(shell, s, now, cx))
@@ -190,7 +191,7 @@ fn page(shell: &Shell, s: &SquadStatus, cx: &mut Context<Shell>) -> AnyElement {
 }
 
 /// A card: its heading, a hairline, its parts.
-fn card(p: Palette, id: &'static str, heading: String, note: Option<String>) -> Stateful<Div> {
+pub(super) fn card(p: Palette, id: &'static str, heading: String, note: Option<String>) -> Stateful<Div> {
     v_flex()
         .id(id)
         .w_full()
@@ -698,8 +699,17 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             loop {
                 let wait = match this.update_in(cx, |this, _, cx| {
+                    let ready = this.status_can_ask();
                     this.status_ask(cx);
-                    if this.screen == Screen::Status { words::POLL_OPEN } else { words::POLL_CLOSED }
+                    this.designs_watch();
+                    // Not attached yet: look again soon, so what is new shows as the window comes up.
+                    if !ready {
+                        std::time::Duration::from_secs(4)
+                    } else if this.screen == Screen::Status {
+                        words::POLL_OPEN
+                    } else {
+                        words::POLL_CLOSED
+                    }
                 }) {
                     Ok(wait) => wait,
                     Err(_) => break,

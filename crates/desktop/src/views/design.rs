@@ -87,6 +87,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         _ if !ui.loaded => waiting(shell),
         _ if tab == Tab::Map => super::flows::page(shell, cx),
         _ if tab == Tab::References => super::design_refs::page(shell, cx),
+        _ if tab == Tab::Designs => super::design_results::page(shell, cx),
         None if ui.section == Section::Taste => super::design_taste::page(shell, cx),
         None => empty(shell, cx),
         Some(system) => page(shell, system, cx),
@@ -2050,6 +2051,9 @@ impl Shell {
         if self.design_tab() == Tab::References {
             self.refs_prepare(cx);
         }
+        if self.design_tab() == Tab::Designs {
+            self.designs_prepare();
+        }
         // The conversation beside it is the designer's (or the PM's): once
         // this frame is drawn, the one on screen and in the box becomes theirs.
         if self.design_talk_open(window, cx) && self.design_talk_behind() {
@@ -2321,6 +2325,14 @@ impl Shell {
         if key == "escape" && self.design.compare {
             self.design_compare(false, cx);
             return true;
+        }
+        if self.design_tab() == Tab::Designs {
+            // Esc goes back to the cards (a picture big comes first, the viewer's own).
+            if key == "escape" && self.design.results.open.is_some() && self.viewer.is_none() {
+                self.designs_back(cx);
+                return true;
+            }
+            return false;
         }
         if self.design_tab() == Tab::References {
             // Esc goes back to the patterns; the other keys are the search box's.

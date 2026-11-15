@@ -42,6 +42,16 @@ rule of the `ui-*` skills ("36px rows, as in the references' lists" — never "c
 `unchanged`, what did not change: features, content, data, and copy unless the ticket asked. equipe refuses an option
 in pictures, or a screen hand-in, without one.
 
+A hand-in of visual work is found again on the design screen's Designs tab, where the person goes to see what you made:
+name the pictures so it picks the right ones. Say your hero render and your before render by path, one to a line of the
+hand-in text — `Hero: design/directions/t<n>-<name>/boards/mock-b-1440.png` and `Before: design/directions/t<n>-<name>/boards/before-1440.png`
+— the hero being the direction you recommend (or the chosen one), the before being the screen as it was, at the same
+width. Name every render the same way, in a folder of `design/directions/` that starts with the ticket's number
+(`t<n>-…`): `before-1440.png`, `mock-a-1440.png`, `mock-a-390.png`, `direction-calm-ledger-1440.png` — a kind, a key,
+a width — so each direction pairs with the before at its own width. Keep the change notes in a `CHANGES.md` in that
+folder, one `## Direction A` section each (before → after → why, then what is unchanged), and give each live preview's
+https address in the hand-in or a comment, with the direction it shows named on the same line.
+
 Keep the squad's reference library in its folder, `design/references/`: a folder for each pattern with its pictures
 and `notes.md`, as the `design-references` skill says — read it before you search anew, and add to it whatever you
 find; with the `design` tools, the design library (`design_library_search`) is part of it.

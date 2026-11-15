@@ -233,6 +233,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::SearchDocs { .. }
         | C::DesignVersions { .. }
         | C::DesignRefs { .. }
+        | C::DesignResults { .. }
         | C::Taste { .. } => false,
     }
 }
@@ -619,6 +620,7 @@ mod tests {
             Command::LoginInsights { days: 7 },
             Command::SearchDocs { squad: "a".into(), query: "checkout".into() },
             Command::DesignRefs { squad: "a".into(), project: None, ticket: None, query: String::new(), offset: 0 },
+            Command::DesignResults { squad: "a".into() },
             Command::OnPhone { command: Box::new(Command::Submit { session: 1, text: "hi".into(), about: None }) },
         ];
         for command in &shared {

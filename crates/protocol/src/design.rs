@@ -755,6 +755,148 @@ pub struct RefSource {
     pub access: String,
 }
 
+// ── what a design ticket made ──
+
+/// Where a design ticket stands, in the person's words: at work, waiting on
+/// them, handed in, accepted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesignState {
+    #[default]
+    Working,
+    WaitingOnYou,
+    HandedIn,
+    Accepted,
+}
+
+/// One render of a design ticket (`design/directions/<ticket>/…`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignShot {
+    /// Its path on the daemon's machine, as `read_image` is asked for it.
+    pub path: String,
+    /// Its file's name.
+    pub name: String,
+    /// The width it was drawn at, from its name (`mock-a-1440.png`); 0 when unknown.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub width: u32,
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
+}
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
+}
+
+/// One direction a designer drew: its renders, desktop and mobile.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignDirection {
+    /// What its files call it (`a`, `calm-ledger`); empty for a single, unnamed design.
+    pub key: String,
+    /// The decision record names it as the one chosen.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chosen: bool,
+    /// Its renders, the widest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shots: Vec<DesignShot>,
+}
+
+/// What `CHANGES.md` says of one direction: before, after, why — as written.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignChange {
+    /// The direction it is about (its `key`); empty for the notes that are for all.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub direction: String,
+    /// The heading as written.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    /// The section's text (Markdown, cut at a limit).
+    pub text: String,
+}
+
+/// A page to look at live: a preview deployment.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignLink {
+    /// An https address that passed the one check every card's link does.
+    pub url: String,
+    /// The direction it shows (its `key`), when the text said or the path does.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub direction: String,
+    /// Where it was found: `comment`, `hand-in` or `changes`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub from: String,
+}
+
+/// The decision record (`design/decisions/<date>-<question>.md`) about the work.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignDecision {
+    /// The file's name.
+    pub file: String,
+    /// Its first heading, else its name.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    /// What it says was chosen (`Chose:`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub chose: String,
+    /// The record as written (cut at a limit).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+}
+
+/// What a design ticket made, for the Designs tab: one card.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignWork {
+    pub ticket: TicketId,
+    pub title: String,
+    #[serde(default)]
+    pub state: DesignState,
+    /// The project it is in, by name; `None`: the squad's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// When the ticket last changed, Unix seconds.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub updated: u64,
+    /// The picture that stands for the work: the one the hand-in named, else
+    /// the chosen direction's, else the first mock's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hero: Option<String>,
+    /// The screen as it was: one render per width.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub before: Vec<DesignShot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub directions: Vec<DesignDirection>,
+    /// Other pictures the hand-in shows.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pictures: Vec<DesignShot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<DesignChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<DesignLink>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DesignDecision>,
+    /// The hand-in's words, cut.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+}
+
+impl DesignWork {
+    /// The pictures to show the person first, each with its word (`after`,
+    /// `before`): the hero, then the screen as it was at the hero's width.
+    pub fn headline(&self) -> Vec<(&'static str, &str)> {
+        let mut out: Vec<(&'static str, &str)> = Vec::new();
+        if let Some(hero) = &self.hero {
+            out.push(("after", hero));
+        }
+        let width = self.directions.iter().flat_map(|d| &d.shots).find(|s| Some(&s.path) == self.hero.as_ref()).map(|s| s.width);
+        let before = width.and_then(|w| self.before.iter().find(|b| b.width == w)).or_else(|| self.before.first());
+        if let Some(before) = before {
+            out.push(("before", &before.path));
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -881,5 +1023,32 @@ mod tests {
         assert_eq!(serde_json::from_str::<RefPattern>(&serde_json::to_string(&full).unwrap()).unwrap(), full);
         let source: RefSource = serde_json::from_str(r#"{"name":"Gallery"}"#).unwrap();
         assert!(source.url.is_none() && source.good_for.is_empty());
+    }
+
+    #[test]
+    fn a_design_card_travels_without_what_it_lacks_and_round_trips_whole() {
+        let bare: DesignWork = serde_json::from_str(r#"{"ticket":7,"title":"Dashboard"}"#).unwrap();
+        assert_eq!(bare, DesignWork { ticket: 7, title: "Dashboard".into(), ..Default::default() });
+        assert_eq!(serde_json::to_string(&bare).unwrap(), r#"{"ticket":7,"title":"Dashboard","state":"working"}"#);
+        let shot = |name: &str, width: u32| DesignShot { path: format!("/w/design/directions/t7-x/{name}"), name: name.into(), width };
+        let full = DesignWork {
+            ticket: 7,
+            title: "Dashboard".into(),
+            state: DesignState::HandedIn,
+            project: Some("web".into()),
+            updated: 1_700_000_000,
+            hero: Some(shot("mock-b-1440.png", 1440).path),
+            before: vec![shot("before-1440.png", 1440), shot("before-390.png", 390)],
+            directions: vec![DesignDirection { key: "b".into(), chosen: true, shots: vec![shot("mock-b-1440.png", 1440)] }],
+            pictures: vec![shot("extra.png", 0)],
+            changes: vec![DesignChange { direction: "b".into(), title: "Direction B".into(), text: "- Rows: 56px -> 40px".into() }],
+            links: vec![DesignLink { url: "https://x-git-b.vercel.app/b".into(), direction: "b".into(), from: "comment".into() }],
+            decision: Some(DesignDecision { file: "2026-11-14-x.md".into(), title: "X".into(), chose: "B".into(), text: "Chose: B".into() }),
+            summary: "Three directions.".into(),
+        };
+        assert_eq!(serde_json::from_str::<DesignWork>(&serde_json::to_string(&full).unwrap()).unwrap(), full);
+        // The pictures to show first: the hero, then the screen as it was at the hero's width.
+        assert_eq!(full.headline(), vec![("after", "/w/design/directions/t7-x/mock-b-1440.png"), ("before", "/w/design/directions/t7-x/before-1440.png")]);
+        assert!(bare.headline().is_empty());
     }
 }

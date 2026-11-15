@@ -595,6 +595,8 @@ impl Shell {
             }
             // A page waiting for the person: the panel, on it, in their hands.
             Need::Browser(page) => self.reveal_browser(page, cx),
+            // A design to look at: its card on the design screen.
+            Need::Design(id) => self.designs_show(id, cx),
             // Typed into its card, in the peek.
             Need::Secret(_) | Need::LoginOffer(_) => {
                 self.board.view.peek = true;
@@ -619,7 +621,7 @@ impl Shell {
                     self.board_yes(cx);
                 }
             }
-            Some(Need::Questions(_) | Need::Team(_) | Need::Routine(_) | Need::Accept(_) | Need::Browser(_) | Need::Secret(_) | Need::LoginOffer(_)) | None => {}
+            Some(Need::Questions(_) | Need::Team(_) | Need::Routine(_) | Need::Accept(_) | Need::Browser(_) | Need::Secret(_) | Need::LoginOffer(_) | Need::Design(_)) | None => {}
         }
     }
 
@@ -846,7 +848,7 @@ impl Shell {
                 self.advance_from(&before, Need::Accept(id), cx);
             }
             // Closed on its card (✕), where what it closes is in sight.
-            Some(Need::Questions(_) | Need::Browser(_)) | None => {}
+            Some(Need::Questions(_) | Need::Browser(_) | Need::Design(_)) | None => {}
             Some(Need::Secret(id)) => self.dismiss_secret_card(id, cx),
             Some(Need::LoginOffer(id)) => self.dismiss_login_offer(id, false, cx),
         }
@@ -2171,6 +2173,11 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 if e.click_count() >= 2 {
                     this.board.view.page = Some(Tab::Overview);
                 }
+                // A design to look at: its card, at once.
+                if let Need::Design(id) = need {
+                    this.designs_show(id, cx);
+                    return;
+                }
                 this.board_pick(need, cx);
                 // A taste choice: a second click opens its board.
                 if e.click_count() >= 2
@@ -2248,6 +2255,22 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .child(div().flex_1().min_w(px(TITLE_MIN)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
                 .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
+                .child(cell(eta_w))
+                .child(cell(34.))
+                .into_any_element()
+        }
+        // What a designer handed in or the PM accepted: a light line to look at, its card one click away.
+        Need::Design(id) => {
+            let Some((title, said)) = super::design_news::row_text(shell, id) else { return div().into_any_element() };
+            base(SharedString::from(format!("design-news-{id}")), format!("{title}, {said}"), cx)
+                .pl_2()
+                .child(div().w(px(14.)).flex_none())
+                .child(super::design_news::mark(p))
+                .child(div().w(px(ID_W)).flex_none().whitespace_nowrap().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
+                .when(show_project, |r| r.child(project_col(model.tickets.iter().find(|t| t.id == id))))
+                .child(div().flex_1().min_w(px(TITLE_MIN)).truncate().text_color(p.text).child(title))
+                .child(div().w(px(flags_w)).flex_none())
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(p.muted).child(div().min_w_0().truncate().child(said)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()

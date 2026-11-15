@@ -35,6 +35,10 @@
 //!   `components/` and each matrix — and the ticket at work on each.
 //! - `studio`: a ticket's design work as it is on disk, for a screen that
 //!   watches it (checks, directions, critiques, references, pictures).
+//! - `results`: what a design ticket made — its renders paired with the
+//!   screen as it was, its change notes, preview links and decision record —
+//!   one card each, for the Designs tab, the Needs-you item and the PM's
+//!   acceptance message.
 //! - `system`: a project's design system as code — its tokens, its
 //!   component registry and docs pages, found wherever they are kept; each
 //!   component's matrix of variants, states and themes checked in a browser;
@@ -54,6 +58,7 @@ pub mod palette;
 pub mod precheck;
 pub mod qa_stats;
 pub mod refgallery;
+pub mod results;
 pub mod refs;
 pub mod kit;
 pub mod lint;

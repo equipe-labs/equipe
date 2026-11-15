@@ -2981,6 +2981,7 @@ impl Runtime {
             Command::KeepDocCopy { squad, session, keep } => self.keep_doc_copy(squad, session, keep),
             Command::DesignVersions { squad, project } => self.design_versions_asked(squad, project),
             Command::DesignRefs { squad, project, ticket, query, offset } => self.design_refs_asked(squad, project, ticket, query, offset),
+            Command::DesignResults { squad } => self.design_results_asked(squad),
             Command::RestoreDesign { squad, project, commit } => self.restore_design_asked(squad, project, commit),
             Command::Taste { squad, project, change } => self.taste_changed(squad, project, change),
         }

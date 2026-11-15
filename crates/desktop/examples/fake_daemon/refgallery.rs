@@ -35,7 +35,7 @@ const BLUE: Color = [0x35, 0x62, 0xE8, 255];
 const AMBER: Color = [0xE3, 0xA2, 0x2B, 255];
 
 /// A rounded rectangle, as a wireframe is drawn.
-fn rrect(img: &mut RgbaImage, x: i32, y: i32, w: i32, h: i32, r: i32, c: Color) {
+pub(super) fn rrect(img: &mut RgbaImage, x: i32, y: i32, w: i32, h: i32, r: i32, c: Color) {
     for py in y.max(0)..(y + h).min(img.height() as i32) {
         for px in x.max(0)..(x + w).min(img.width() as i32) {
             let (dx, dy) = ((x + r - px).max(px - (x + w - 1 - r)).max(0), (y + r - py).max(py - (y + h - 1 - r)).max(0));
@@ -47,12 +47,12 @@ fn rrect(img: &mut RgbaImage, x: i32, y: i32, w: i32, h: i32, r: i32, c: Color) 
 }
 
 /// A rounded rectangle with a one-pixel edge.
-fn boxed(img: &mut RgbaImage, x: i32, y: i32, w: i32, h: i32, r: i32, fill: Color, edge: Color) {
+pub(super) fn boxed(img: &mut RgbaImage, x: i32, y: i32, w: i32, h: i32, r: i32, fill: Color, edge: Color) {
     rrect(img, x, y, w, h, r, edge);
     rrect(img, x + 1, y + 1, w - 2, h - 2, (r - 1).max(0), fill);
 }
 
-fn bar(img: &mut RgbaImage, x: i32, y: i32, w: i32, h: i32, c: Color) {
+pub(super) fn bar(img: &mut RgbaImage, x: i32, y: i32, w: i32, h: i32, c: Color) {
     rrect(img, x, y, w, h, h / 2, c);
 }
 
