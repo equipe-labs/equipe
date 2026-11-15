@@ -1,14 +1,22 @@
 #!/bin/bash
-# Build the desktop app for people to download: equipe.app (arm64 + x86_64),
-# in equipe.dmg (drag to Applications), and the Sparkle appcast its updates
-# come from. One command, on a Mac:
+# Build the desktop app for people to download: equipe.app in a disk image
+# (drag to Applications), and the Sparkle appcast its updates come from.
+# One command, on a Mac:
 #
-#   scripts/desktop-dmg.sh            # → dist/equipe.dmg (+ dist/appcast.xml)
+#   scripts/desktop-dmg.sh                            # universal: dist/equipe.dmg (+ appcast.xml)
+#   EQUIPE_DMG_ARCHS=aarch64 scripts/desktop-dmg.sh   # Apple silicon: dist/equipe-arm64.dmg (+ appcast-arm64.xml)
+#   EQUIPE_DMG_ARCHS=x86_64 scripts/desktop-dmg.sh    # Intel: dist/equipe-x86_64.dmg (+ appcast-x86_64.xml)
+#
+# Each build has its own feed. The app reads its Mac's own (src/relaunch.rs,
+# `feed_for`): a universal copy moves to its Mac's build with its next update,
+# and an Intel Mac never reads the Apple silicon feed, whose items also carry
+# `sparkle:hardwareRequirements arm64`, which Sparkle itself enforces.
 #
 # What it does with what it finds (docs/DESKTOP.md "Shipping the app"):
 #   - A "Developer ID Application" identity (EQUIPE_SIGN_IDENTITY, else the
-#     first in the keychain): signs with Hardened Runtime. Without one the app
-#     is signed ad hoc, and macOS warns on first open — the script says so.
+#     first in the keychain): signs with Hardened Runtime. Without one (or with
+#     EQUIPE_SIGN_IDENTITY=-) the app is signed ad hoc, and macOS warns on
+#     first open — the script says so.
 #   - Notary credentials (EQUIPE_NOTARY_PROFILE, a `notarytool store-credentials`
 #     profile; or EQUIPE_NOTARY_KEY/_KEY_ID/_ISSUER, an App Store Connect API
 #     key): notarizes the app, then the DMG, and staples each its ticket.
@@ -17,19 +25,26 @@
 #     crates/desktop/macos/sparkle-public-ed-key): bundles Sparkle so the app
 #     updates itself. With the private half too (SPARKLE_ED_PRIVATE_KEY, the
 #     `generate_keys -x` file's contents, or SPARKLE_ED_KEY_FILE) it writes a
-#     signed appcast.xml for this DMG.
+#     signed appcast for this DMG, with Sparkle's generate_appcast. Given the
+#     disk images of earlier versions of the same build (EQUIPE_DMG_PREVIOUS, a
+#     folder of <version>.dmg files; scripts/desktop-previous.sh fetches them),
+#     it also makes binary deltas from each (EQUIPE_DMG_DELTAS at most, 5 by
+#     default): equipe-<arch>-<version>-<from>.delta, a few MB where the whole
+#     app is tens. Sparkle downloads the full DMG when no delta fits.
 # Secrets come only from the environment or the keychain, never the repository.
 #
-# Other knobs: EQUIPE_DMG_OUT (dist), EQUIPE_DMG_ARCHS ("aarch64 x86_64"; one
-# arch for a quicker local build), EQUIPE_DMG_PREBUILT (the per-arch
-# equipe-desktop binaries, built elsewhere — CI builds each arch on its own
-# machine at once — to package instead of building), EQUIPE_DMG_PREBUILT_CLI
-# (the per-arch `equipe` binaries the app carries, likewise; built here when
-# not given), EQUIPE_APPCAST_URL / EQUIPE_DMG_URL (where
-# the app looks for updates and where the appcast says this DMG is; default the
-# GitHub release of this version), EQUIPE_BUNDLE_ID (im.equipe.desktop; another
-# one for a local test build, so its notification permission and defaults are
-# its own and not the installed app's).
+# Other knobs: EQUIPE_DMG_OUT (dist), EQUIPE_DMG_ARCHS ("aarch64 x86_64", the
+# universal build; one arch for that arch's build), EQUIPE_DMG_PREBUILT (the
+# equipe-desktop binaries, one per arch in EQUIPE_DMG_ARCHS's order, built
+# elsewhere — CI builds each arch on its own machine at once — to package
+# instead of building), EQUIPE_DMG_PREBUILT_CLI (the `equipe` binaries the app
+# carries, likewise; built here when not given), EQUIPE_APPCAST_URL (the feed
+# Info.plist names; default this build's under the latest GitHub release),
+# EQUIPE_DOWNLOAD_PREFIX (where the appcast says this DMG and its deltas are;
+# default this version's GitHub release), EQUIPE_DMG_FORMAT (ULMO, LZMA, which
+# macOS 10.15+ opens; UDZO is a third larger), EQUIPE_BUNDLE_ID
+# (im.equipe.desktop; another one for a local test build, so its notification
+# permission and defaults are its own and not the installed app's).
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -63,8 +78,25 @@ version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 [ -n "$version" ] || die "no workspace version in Cargo.toml"
 out="${EQUIPE_DMG_OUT:-$root/dist}"
 archs="${EQUIPE_DMG_ARCHS:-aarch64 x86_64}"
-appcast_url="${EQUIPE_APPCAST_URL:-https://github.com/$repo/releases/latest/download/appcast.xml}"
-dmg_url="${EQUIPE_DMG_URL:-https://github.com/$repo/releases/download/v$version/equipe.dmg}"
+# Which build: one arch's, or both in one (universal). Its disk image, feed
+# and deltas are named after it, so the three can sit in one release.
+# shellcheck disable=SC2086 # one arch per word
+case "$(printf '%s\n' $archs | sort -u | tr '\n' ' ')" in
+  "aarch64 ") flavor=arm64 lipo_archs="arm64" ;;
+  "x86_64 ") flavor=x86_64 lipo_archs="x86_64" ;;
+  "aarch64 x86_64 ") flavor=universal lipo_archs="arm64 x86_64" ;;
+  *) die "EQUIPE_DMG_ARCHS is aarch64, x86_64 or both, not \"$archs\"" ;;
+esac
+if [ "$flavor" = universal ]; then
+  dmg_name="equipe.dmg" feed_name="appcast.xml"
+else
+  dmg_name="equipe-$flavor.dmg" feed_name="appcast-$flavor.xml"
+fi
+appcast_url="${EQUIPE_APPCAST_URL:-https://github.com/$repo/releases/latest/download/$feed_name}"
+download_prefix="${EQUIPE_DOWNLOAD_PREFIX:-https://github.com/$repo/releases/download/v$version/}"
+case "$download_prefix" in */) ;; *) download_prefix="$download_prefix/" ;; esac
+dmg_format="${EQUIPE_DMG_FORMAT:-ULMO}"
+max_deltas="${EQUIPE_DMG_DELTAS:-5}"
 target_dir="${CARGO_TARGET_DIR:-$root/target}"
 work="$target_dir/desktop-dmg"
 cargo="$(command -v cargo || echo "$HOME/.cargo/bin/cargo")"
@@ -73,7 +105,9 @@ rustup="$(command -v rustup || echo "$HOME/.cargo/bin/rustup")"
 # --- What we have to sign with ----------------------------------------------
 
 identity="${EQUIPE_SIGN_IDENTITY:-}"
-if [ -z "$identity" ]; then
+if [ "$identity" = "-" ]; then
+  identity="" # ad hoc, asked for
+elif [ -z "$identity" ]; then
   identity="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)"
 fi
 notarize=""
@@ -93,15 +127,16 @@ fi
 
 # --- Build -------------------------------------------------------------------
 
-say "equipe desktop $version ($archs)"
+say "equipe desktop $version ($flavor: $archs)"
 binaries=()
+build_archs="$archs"
 # shellcheck disable=SC2206 # one path per word
-[ -n "${EQUIPE_DMG_PREBUILT:-}" ] && binaries=($EQUIPE_DMG_PREBUILT) && archs=""
+[ -n "${EQUIPE_DMG_PREBUILT:-}" ] && binaries=($EQUIPE_DMG_PREBUILT) && build_archs=""
 # (Bash 3.2, the Mac's, calls an empty array unbound under `set -u`.)
 for path in ${binaries[@]+"${binaries[@]}"}; do
   [ -f "$path" ] || die "no prebuilt $path"
 done
-for arch in $archs; do
+for arch in $build_archs; do
   triple="$arch-apple-darwin"
   if ! "$rustup" target list --installed 2>/dev/null | grep -qx "$triple"; then
     "$rustup" target add "$triple"
@@ -119,7 +154,7 @@ for path in ${cli_binaries[@]+"${cli_binaries[@]}"}; do
   [ -f "$path" ] || die "no prebuilt $path"
 done
 if [ ${#cli_binaries[@]} -eq 0 ]; then
-  for arch in ${EQUIPE_DMG_ARCHS:-aarch64 x86_64}; do
+  for arch in $archs; do
     triple="$arch-apple-darwin"
     if ! "$rustup" target list --installed 2>/dev/null | grep -qx "$triple"; then
       "$rustup" target add "$triple"
@@ -140,6 +175,12 @@ lipo -create "${binaries[@]}" -output "$app/Contents/MacOS/equipe-desktop"
 mkdir -p "$app/Contents/Helpers"
 lipo -create "${cli_binaries[@]}" -output "$app/Contents/Helpers/equipe"
 chmod +x "$app/Contents/Helpers/equipe"
+# Exactly this build's architectures in both, never more or fewer: an Apple
+# silicon build that reached an Intel Mac wouldn't open.
+for bin in MacOS/equipe-desktop Helpers/equipe; do
+  got="$(lipo -archs "$app/Contents/$bin" | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+  [ "$got" = "$lipo_archs" ] || die "$bin is \"$got\", but the $flavor build is \"$lipo_archs\" (EQUIPE_DMG_PREBUILT / EQUIPE_DMG_PREBUILT_CLI don't match EQUIPE_DMG_ARCHS)"
+done
 cp crates/desktop/macos/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 # The languages the app speaks, each with its name and its reasons for the
 # microphone and speech recognition: macOS lists equipe under System Settings ›
@@ -320,13 +361,13 @@ stage="$work/dmg"
 mkdir -p "$stage"
 cp -R "$app" "$stage/"
 ln -s /Applications "$stage/Applications"
-dmg="$out/equipe.dmg"
+dmg="$out/$dmg_name"
 rm -f "$dmg"
 # hdiutil fails now and then on CI runners ("Resource busy") with nothing
 # wrong: try again a few times before giving up.
 made=""
 for try in 1 2 3 4; do
-  if hdiutil create -volname "equipe $version" -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dmg"; then
+  if hdiutil create -volname "equipe $version" -srcfolder "$stage" -fs HFS+ -format "$dmg_format" -ov "$dmg"; then
     made=1
     break
   fi
@@ -337,7 +378,7 @@ done
 [ -n "$identity" ] && codesign --force --timestamp --sign "$identity" "$dmg"
 
 if [ -n "$notarize" ]; then
-  say "notarizing equipe.dmg (this waits for Apple)"
+  say "notarizing $dmg_name (this waits for Apple)"
   notarize_file "$dmg"
   staple_retry staple "$dmg"
   spctl --assess --type open --context context:primary-signature -v "$dmg"
@@ -346,41 +387,74 @@ fi
 # --- Appcast -------------------------------------------------------------------
 
 appcast=""
+deltas_made=0
 key_file="${SPARKLE_ED_KEY_FILE:-}"
 if [ -z "$key_file" ] && [ -n "${SPARKLE_ED_PRIVATE_KEY:-}" ]; then
   key_file="$work/sparkle-private-key"
+  trap 'rm -f "$work/sparkle-private-key"' EXIT
   (umask 077 && printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$key_file")
 fi
 if [ -n "$public_key" ] && [ -n "$key_file" ]; then
-  sign_update="$target_dir/sparkle/$sparkle_version/bin/sign_update"
-  enclosure="$("$sign_update" --ed-key-file "$key_file" "$dmg")"
-  appcast="$out/appcast.xml"
-  cat > "$appcast" <<EOF
-<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
-  <channel>
-    <title>equipe</title>
-    <link>https://github.com/$repo/releases</link>
-    <item>
-      <title>equipe $version</title>
-      <pubDate>$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S +0000')</pubDate>
-      <sparkle:version>$version</sparkle:version>
-      <sparkle:shortVersionString>$version</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>$min_macos</sparkle:minimumSystemVersion>
-      <sparkle:fullReleaseNotesLink>https://github.com/$repo/releases/tag/v$version</sparkle:fullReleaseNotesLink>
-      <enclosure url="$dmg_url" type="application/octet-stream" $enclosure />
-    </item>
-  </channel>
-</rss>
-EOF
-  "$sign_update" --ed-key-file "$key_file" "$appcast" >/dev/null
-  "$sign_update" --verify --ed-key-file "$key_file" "$appcast" >/dev/null
+  sparkle_bin="$target_dir/sparkle/$sparkle_version/bin"
+  # generate_appcast reads the folder: this DMG under its published name, and
+  # earlier versions of the same build to make deltas from. Only older ones:
+  # a newer (or the same) version would become the feed's item instead.
+  feed_dir="$work/appcast"
+  mkdir -p "$feed_dir"
+  cp "$dmg" "$feed_dir/$dmg_name"
+  previous_dir="${EQUIPE_DMG_PREVIOUS:-}"
+  if [ -n "$previous_dir" ] && [ -d "$previous_dir" ]; then
+    for old in "$previous_dir"/*.dmg; do
+      [ -f "$old" ] || continue
+      from="$(basename "$old" .dmg)"
+      if [ "$from" != "$version" ] && [ "$(printf '%s\n%s\n' "$from" "$version" | sort -V | tail -1)" = "$version" ]; then
+        cp "$old" "$feed_dir/previous-$from.dmg"
+      else
+        say "skipping $old: not older than $version"
+      fi
+    done
+  fi
+  froms="$(find "$feed_dir" -name 'previous-*.dmg' -exec basename {} .dmg \; | sed 's/^previous-//' | sort -V | tr '\n' ' ')"
+  say "writing $feed_name${froms:+, with deltas from $froms}"
+  "$sparkle_bin/generate_appcast" --ed-key-file "$key_file" \
+    --download-url-prefix "$download_prefix" \
+    --full-release-notes-url "https://github.com/$repo/releases/tag/v$version" \
+    --maximum-versions 1 --maximum-deltas "$max_deltas" \
+    -o "$feed_dir/$feed_name" "$feed_dir"
+  appcast="$out/$feed_name"
+  cp "$feed_dir/$feed_name" "$appcast"
+  # Deltas are named after the app (equipe<version>-<from>.delta), the same
+  # for every build: named after this one instead, so all sit in one release.
+  for delta in "$feed_dir"/*.delta; do
+    [ -f "$delta" ] || continue
+    name="$(basename "$delta")"
+    case "$name" in equipe[0-9]*) ;; *) die "unexpected delta name $name" ;; esac
+    ours="equipe-$flavor-${name#equipe}"
+    cp "$delta" "$out/$ours"
+    OLD="$download_prefix$name\"" NEW="$download_prefix$ours\"" perl -pi -e 's/\Q$ENV{OLD}\E/$ENV{NEW}/g' "$appcast"
+    grep -qF "$download_prefix$ours\"" "$appcast" || die "the appcast doesn't name $ours"
+    deltas_made=$((deltas_made + 1))
+  done
+  # Signed again after the renames (sign_update replaces the signature inside).
+  "$sparkle_bin/sign_update" --ed-key-file "$key_file" "$appcast" >/dev/null
+  "$sparkle_bin/sign_update" --verify --ed-key-file "$key_file" "$appcast" >/dev/null
+  # What the feed must say, checked: one item, this version, this DMG, and
+  # the Apple silicon requirement exactly when the build is Apple silicon's.
+  [ "$(grep -c '<item>' "$appcast")" = 1 ] || die "$feed_name has more than one item"
+  grep -qF "<sparkle:version>$version</sparkle:version>" "$appcast" || die "$feed_name doesn't name $version"
+  grep -qF "url=\"$download_prefix$dmg_name\"" "$appcast" || die "$feed_name doesn't point at $download_prefix$dmg_name"
+  if grep -q '<sparkle:hardwareRequirements>[^<]*arm64' "$appcast"; then
+    [ "$flavor" = arm64 ] || die "$feed_name asks for Apple silicon, but the $flavor build runs on Intel too"
+  else
+    [ "$flavor" != arm64 ] || die "$feed_name doesn't ask for Apple silicon"
+  fi
+  ! grep -q "/equipe[0-9][^\"]*\.delta\"" "$appcast" || die "$feed_name names a delta that wasn't renamed"
 fi
 [ "$key_file" = "$work/sparkle-private-key" ] && rm -f "$key_file"
 
 # --- What came out -------------------------------------------------------------
 
-(cd "$out" && shasum -a 256 equipe.dmg > equipe.dmg.sha256)
+(cd "$out" && shasum -a 256 "$dmg_name" > "$dmg_name.sha256")
 echo
 say "built $dmg ($(du -h "$dmg" | cut -f1 | tr -d ' '), $(lipo -archs "$app/Contents/MacOS/equipe-desktop"))"
 if [ -n "$identity" ]; then
@@ -390,14 +464,14 @@ else
   echo "                (System Settings › Privacy & Security › Open Anyway). See docs/DESKTOP.md."
 fi
 if [ -n "$notarize" ]; then
-  echo "    notarized:  YES — tickets stapled to equipe.app and equipe.dmg"
+  echo "    notarized:  YES — tickets stapled to equipe.app and $dmg_name"
 else
   echo "    notarized:  NO${identity:+ — set EQUIPE_NOTARY_PROFILE or EQUIPE_NOTARY_KEY/_KEY_ID/_ISSUER}"
 fi
 if [ -z "$public_key" ]; then
   echo "    updates:    OFF — no Sparkle public key (SPARKLE_PUBLIC_ED_KEY or $key_file_in_repo)"
 elif [ -n "$appcast" ]; then
-  echo "    updates:    on, feed $appcast_url; signed $appcast"
+  echo "    updates:    on, feed $appcast_url (the app reads its Mac's own); signed $appcast, $deltas_made delta(s)"
 else
   echo "    updates:    on, feed $appcast_url; NO appcast written (no SPARKLE_ED_PRIVATE_KEY / SPARKLE_ED_KEY_FILE)"
 fi
