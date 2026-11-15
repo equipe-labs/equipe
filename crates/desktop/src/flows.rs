@@ -21,10 +21,12 @@ pub enum Tab {
     System,
     /// The designer's references, by interface pattern.
     References,
+    /// What the design tickets made: renders, change notes, previews.
+    Designs,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 3] = [Tab::Map, Tab::System, Tab::References];
+    pub const ALL: [Tab; 4] = [Tab::Map, Tab::Designs, Tab::System, Tab::References];
 
     /// As it is kept (`desktop-target`) and as a script names it.
     pub fn code(self) -> &'static str {
@@ -32,6 +34,7 @@ impl Tab {
             Tab::Map => "map",
             Tab::System => "system",
             Tab::References => "references",
+            Tab::Designs => "designs",
         }
     }
 
@@ -40,6 +43,7 @@ impl Tab {
             "map" | "flows" => Some(Tab::Map),
             "system" | "tokens" => Some(Tab::System),
             "references" | "refs" => Some(Tab::References),
+            "designs" | "results" => Some(Tab::Designs),
             _ => None,
         }
     }
@@ -49,6 +53,7 @@ impl Tab {
             Tab::Map => "flows.tab_map",
             Tab::System => "flows.tab_system",
             Tab::References => "flows.tab_references",
+            Tab::Designs => "flows.tab_designs",
         })
     }
 
@@ -574,6 +579,9 @@ mod tests {
         }
         assert_eq!(Tab::shown(Some(Tab::References), true), Tab::References, "the references tab is remembered like the others");
         assert_eq!(Tab::parse("refs"), Some(Tab::References));
+        assert_eq!(Tab::parse("designs"), Some(Tab::Designs));
+        assert_eq!(Tab::shown(Some(Tab::Designs), false), Tab::Designs);
+        assert_eq!(Tab::ALL.map(Tab::code), ["map", "designs", "system", "references"]);
     }
 
     #[test]

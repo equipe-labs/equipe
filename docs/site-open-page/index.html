@@ -55,7 +55,7 @@
   // `#squad/kind/id?host=machine`, percent-encoded, nothing else: the app
   // rejects anything it doesn't understand, and so does this page.
   var raw = location.hash.replace(/^#\/?/, '').replace(/[.,;:!?*_~\/]+$/, '');
-  var valid = /^[A-Za-z0-9%._~\-]+\/(ticket|conversation|member|decision|needs-you|status)(\/[A-Za-z0-9%._~\-]+)?(\?[A-Za-z0-9%._~\-=&]*)?$/i.test(raw);
+  var valid = /^[A-Za-z0-9%._~\-]+\/(ticket|conversation|member|decision|design|needs-you|status)(\/[A-Za-z0-9%._~\-]+)?(\?[A-Za-z0-9%._~\-=&]*)?$/i.test(raw);
   if (!valid) {
     document.getElementById('bad').hidden = false;
     return;

@@ -238,6 +238,9 @@ pub enum Need {
     Browser(u64),
     /// equipe's offer to keep a login the person just signed in with, by its id.
     LoginOffer(u64),
+    /// What a designer handed in or the PM accepted, to look at on the design
+    /// screen's Designs tab (`crate::designs`), by its ticket.
+    Design(TicketId),
 }
 
 /// A thing waiting for the person with what it holds up
@@ -508,6 +511,11 @@ pub struct Model {
     /// Tickets the person just acted on, as they looked then: out of what
     /// waits for them until the daemon says they changed.
     pub acted: HashMap<TicketId, Look>,
+    /// Designs handed in or accepted that the person may not have looked at
+    /// (`crate::designs::news`), as the daemon last said.
+    pub design_news: Vec<crate::designs::News>,
+    /// The tickets whose design the person looked at.
+    pub design_seen: std::collections::HashSet<TicketId>,
     /// Tickets that moved since the person last looked at them: news.
     pub news: std::collections::HashSet<TicketId>,
     /// The daemon's own version, as it said when the window attached.
@@ -680,6 +688,8 @@ impl Model {
             since: HashMap::new(),
             said_at: HashMap::new(),
             acted: HashMap::new(),
+            design_news: Vec::new(),
+            design_seen: Default::default(),
             news: Default::default(),
             daemon_version: String::new(),
             member_modes: HashMap::new(),
@@ -2223,7 +2233,20 @@ impl Model {
             }
             out.extend(tickets.into_iter().map(|t| (*section, Need::Ticket(t.id))));
         }
+        // A design handed in or accepted, to look at: light, under the review it may belong to.
+        out.extend(self.new_designs().map(|d| (Section::Review, Need::Design(d.ticket))));
         out
+    }
+
+    /// The designs to look at: handed in or accepted lately, not looked at,
+    /// and of a ticket the board still has.
+    pub fn new_designs(&self) -> impl Iterator<Item = &crate::designs::News> {
+        self.design_news.iter().filter(|d| !self.design_seen.contains(&d.ticket) && self.in_focus_ticket(d.ticket))
+    }
+
+    /// Whether the project in focus is the one ticket `id` is in (all, with none in focus).
+    fn in_focus_ticket(&self, id: TicketId) -> bool {
+        self.focus.is_none() || self.tickets.iter().find(|t| t.id == id).is_none_or(|t| self.in_focus(t))
     }
 
     /// What `need` waits on, for [`equipe_core::importance`] to score: the
@@ -2284,6 +2307,10 @@ impl Model {
                 }
             }
             Need::LoginOffer(_) => {}
+            // Nothing waits on a design to be looked at: it ranks by how long it has been there.
+            Need::Design(id) => {
+                w.since = self.design_news.iter().find(|d| d.ticket == id).map_or(0, |d| d.at);
+            }
             Need::Ticket(id) => {
                 w.kind = match section {
                     Section::Stalled => WaitKind::Stalled,
@@ -2358,7 +2385,7 @@ impl Model {
             Need::Questions(id) => self.asked.open().find(|s| s.id == id).and_then(|s| by(s.ticket, s.session)),
             Need::Accept(id) => self.accepts.open().find(|c| c.id == id).and_then(|c| c.tickets.first().copied()).and_then(ticket),
             Need::Secret(id) => self.secret_asks.iter().find(|a| a.id == id).and_then(|a| by(a.ticket, a.session)),
-            Need::Ticket(id) => ticket(id),
+            Need::Ticket(id) | Need::Design(id) => ticket(id),
             _ => None,
         }
     }
@@ -2859,6 +2886,24 @@ mod tests {
         model.on_browser(&Event::BrowserTabs { squad: Some("acme".into()), lane: "acme/qa-2".into(), session: None, member: None, color: None, pages: vec![BrowserPage { id: 1, url: "https://github.com/".into(), ..Default::default() }], agent_page: Some(1) });
         let rows: Vec<Need> = model.needs_you().into_iter().map(|(_, n)| n).filter(|n| matches!(n, Need::Browser(_))).collect();
         assert_eq!(rows, [Need::Browser(2), Need::Browser(3)]);
+    }
+
+    #[test]
+    fn a_design_handed_in_or_accepted_is_a_light_line_in_review_until_looked_at() {
+        use crate::designs::News;
+        let mut model = Model::new("acme");
+        model.design_news = vec![News { ticket: 7, title: "Dashboard".into(), accepted: true, at: 5, hero: Some("/p/d.png".into()) }, News { ticket: 8, title: "Settings".into(), accepted: false, at: 9, hero: None }];
+        let designs = |model: &Model| model.needs_you().into_iter().filter(|(_, n)| matches!(n, Need::Design(_))).collect::<Vec<_>>();
+        assert_eq!(designs(&model), [(Section::Review, Need::Design(7)), (Section::Review, Need::Design(8))]);
+        assert_eq!(model.needs_you_count(), 2, "they count with what waits");
+        // It ranks by how long it has been there, holding nothing up.
+        let ranked: Vec<Need> = model.needs_ranked().into_iter().map(|r| r.need).collect();
+        assert_eq!(ranked.len(), 2);
+        assert!(model.needs_ranked().iter().all(|r| !r.impact.is_pressing()));
+        // Looked at: gone, and the sidebar's count with it.
+        model.design_seen.insert(7);
+        assert_eq!(designs(&model), [(Section::Review, Need::Design(8))]);
+        assert_eq!(model.needs_you_count(), 1);
     }
 
     #[test]

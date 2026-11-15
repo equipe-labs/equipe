@@ -9,7 +9,8 @@
 //!   server; the page at that address only hands it back to the first form.
 //!
 //! Kinds: `ticket` (`T-2391`), `conversation` (a session id), `member` (a
-//! name), `decision` (a question set's id), `needs-you` and `status` (no id).
+//! name), `decision` (a question set's id), `design` (the card of what a
+//! design ticket made, `T-2562`), `needs-you` and `status` (no id).
 //! `host` names the machine the squad's daemon runs on — its Tailscale
 //! (MagicDNS) name or host name — so the app can tell which of the daemons it
 //! knows the link is about. Squads are only named per daemon, so two Macs can
@@ -36,6 +37,8 @@ pub enum Target {
     Member(String),
     /// A question set (`QuestionSet::id`).
     Decision(u64),
+    /// What a design ticket made: its card on the design screen's Designs tab.
+    Design(u32),
     NeedsYou,
     Status,
 }
@@ -48,6 +51,7 @@ impl Target {
             Target::Conversation(_) => "conversation",
             Target::Member(_) => "member",
             Target::Decision(_) => "decision",
+            Target::Design(_) => "design",
             Target::NeedsYou => "needs-you",
             Target::Status => "status",
         }
@@ -74,7 +78,7 @@ impl DeepLink {
         out.push('/');
         out.push_str(self.target.kind());
         match &self.target {
-            Target::Ticket(n) => out.push_str(&format!("/T-{n}")),
+            Target::Ticket(n) | Target::Design(n) => out.push_str(&format!("/T-{n}")),
             Target::Conversation(id) | Target::Decision(id) => out.push_str(&format!("/{id}")),
             Target::Member(name) => {
                 out.push('/');
@@ -202,6 +206,7 @@ fn read(body: &str) -> Option<DeepLink> {
         "ticket" => Target::Ticket(u32::try_from(number(id)?).ok()?),
         "conversation" => Target::Conversation(number(id)?),
         "decision" => Target::Decision(number(id)?),
+        "design" => Target::Design(u32::try_from(number(id)?).ok()?),
         "member" => Target::Member(unescape(id?)?).filter_named()?,
         "needs-you" | "needsyou" | "needs_you" => Target::NeedsYou,
         "status" => Target::Status,
@@ -349,6 +354,7 @@ mod tests {
             DeepLink::new("web", Target::Conversation(1782345678901234), None),
             DeepLink::new("my squad", Target::Member("Jean-Luc Zoë".into()), Some("Mac mini.local".into())),
             DeepLink::new("웹", Target::Decision(77), Some("mini.tail3383cf.ts.net".into())),
+            DeepLink::new("web", Target::Design(2562), Some("mini".into())),
             DeepLink::new("web", Target::NeedsYou, Some("mini".into())),
             DeepLink::new("web", Target::Status, None),
         ];
@@ -364,6 +370,9 @@ mod tests {
         assert_eq!(ticket().uri(), "equipe://open/web/ticket/T-2391?host=mini");
         assert_eq!(ticket().web(), "https://equipe.im/o/#web/ticket/T-2391?host=mini");
         assert_eq!(DeepLink::new("web", Target::Status, None).uri(), "equipe://open/web/status");
+        assert_eq!(DeepLink::new("web", Target::Design(2562), None).uri(), "equipe://open/web/design/T-2562");
+        assert_eq!(parse("equipe://open/web/design/t2562?host=mini").unwrap().target, Target::Design(2562));
+        assert_eq!(parse("equipe://open/web/design"), None);
         assert_eq!(DeepLink::new("web", Target::NeedsYou, None).web(), "https://equipe.im/o/#web/needs-you");
     }
 

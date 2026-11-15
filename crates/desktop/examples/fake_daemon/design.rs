@@ -600,6 +600,10 @@ pub fn read_image(ask: &ReadImage) -> Result<ImageRead, String> {
     if let Ok(read) = super::refgallery::read_image(ask) {
         return Ok(read);
     }
+    // A render a design ticket made (`FAKE_DESIGN_RESULTS=1`).
+    if let Ok(read) = super::design_results::read_image(ask) {
+        return Ok(read);
+    }
     let places = places();
     let (mut systems, _) = folder::catalog_of(&places, Lang::En);
     super::flows::dress(&mut systems);

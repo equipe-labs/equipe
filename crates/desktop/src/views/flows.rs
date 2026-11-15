@@ -47,17 +47,22 @@ pub fn tabs(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> 
     let p = shell.palette;
     let on = shell.design_tab();
     let mut row = h_flex().flex_none().gap_4().items_center();
+    // A design handed in or accepted that the person hasn't looked at: a dot on its tab.
+    let fresh = shell.model.new_designs().count();
     for tab in Tab::ALL {
         let active = tab == on;
         row = row.child(
-            div()
+            h_flex()
                 .id(SharedString::from(format!("design-tab-top-{}", tab.code())))
                 .flex_none()
+                .gap(px(6.))
+                .items_center()
                 .cursor_pointer()
                 .text_size(px(15.))
                 .text_color(if active { p.text } else { p.muted })
                 .when(!active, |d| d.hover(move |s| s.text_color(p.text2)))
                 .child(ui::steady(tab.label(), FontWeight::SEMIBOLD, active, false))
+                .when(tab == Tab::Designs && fresh > 0, |d| d.child(div().size(px(7.)).flex_none().rounded_full().bg(p.accent)))
                 .on_click(cx.listener(move |this, _, _, cx| this.design_set_tab(tab, cx))),
         );
     }
@@ -740,6 +745,10 @@ impl Shell {
         // Read again each time the tab is opened: a designer may have added some.
         if tab == Tab::References {
             self.design.refs.dirty = true;
+        }
+        if tab == Tab::Designs {
+            self.design.results.dirty = true;
+            self.designs_watch();
         }
         cx.notify();
     }

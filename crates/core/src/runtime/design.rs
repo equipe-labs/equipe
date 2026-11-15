@@ -114,6 +114,19 @@ impl Runtime {
         });
     }
 
+    /// A screen asked what the squad's design tickets made: read off the
+    /// loop (`crate::design::results`), one answer, sent. Read only.
+    pub(super) fn design_results_asked(&mut self, squad: String) {
+        if !crate::squads::valid_name(&squad) {
+            return;
+        }
+        let (home, internal) = (self.config.home.clone(), self.internal.clone());
+        tokio::task::spawn_blocking(move || {
+            let designs = ds::results::read(&home, &squad);
+            let _ = internal.send(Internal::DesignRefs(Box::new(Event::DesignResults { squad, designs })));
+        });
+    }
+
     pub(super) fn on_design_versions(&mut self, squad: String, project: Option<String>, versions: Vec<DesignVersion>) {
         self.publish(Event::DesignVersions { squad, project, versions });
     }

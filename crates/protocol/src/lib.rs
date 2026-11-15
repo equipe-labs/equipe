@@ -1726,6 +1726,11 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "is_zero")]
         offset: u32,
     },
+    /// What the squad's design tickets made — renders, change notes, preview
+    /// links, the decision record — one card each, newest first: answered by
+    /// [`Event::DesignResults`]. Only reads (`design/` of the project and of
+    /// each ticket's worktree); the pictures come through `read_image`.
+    DesignResults { squad: SquadName },
     /// The person asks for a design system's folder back as it was at one of
     /// its versions (`commit`, one [`Event::DesignVersions`] listed): a
     /// ticket for the designer, which restores it in its worktree and hands
@@ -3297,6 +3302,12 @@ pub enum Event {
         #[serde(default)]
         versions: Vec<design::DesignVersion>,
     },
+    /// What the squad's design tickets made ([`Command::DesignResults`]), newest first.
+    DesignResults {
+        squad: SquadName,
+        #[serde(default)]
+        designs: Vec<design::DesignWork>,
+    },
     /// The references [`Command::DesignRefs`] asked for. `query` and `offset`
     /// are the ask's, so a screen can tell an old answer from the latest.
     DesignRefs {
@@ -3391,6 +3402,7 @@ impl Event {
             | Event::CallSummary { squad, .. }
             | Event::DocCopyKept { squad, .. }
             | Event::DesignVersions { squad, .. }
+            | Event::DesignResults { squad, .. }
             | Event::DesignRefs { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserWindow { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             Event::SideChatOpened { squad, .. } | Event::SideChat { squad, .. } | Event::SideChatClosed { squad, .. } => squad.as_deref(),
@@ -3513,6 +3525,7 @@ impl Event {
             | Event::CallSummary { .. }
             | Event::DocCopyKept { .. }
             | Event::DesignRefs { .. }
+            | Event::DesignResults { .. }
             | Event::DesignVersions { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
@@ -5065,6 +5078,22 @@ mod tests {
         assert_eq!(serde_json::from_value::<Snapshot>(wire).unwrap(), rested);
         let older: Snapshot = serde_json::from_value(json!({ "squad": "acme", "sessions": [] })).unwrap();
         assert!(older.resting.is_empty());
+    }
+
+    #[test]
+    fn what_design_tickets_made_is_asked_and_told_as_json_and_belongs_to_its_squad() {
+        let ask = Command::DesignResults { squad: "acme".into() };
+        assert_eq!(serde_json::to_value(&ask).unwrap(), json!({ "type": "design_results", "squad": "acme" }));
+        assert_eq!(serde_json::from_value::<Command>(serde_json::to_value(&ask).unwrap()).unwrap(), ask);
+        let work = design::DesignWork { ticket: 2562, title: "Dashboard".into(), state: design::DesignState::Accepted, hero: Some("/p/design/directions/t2562-x/mock-b-1440.png".into()), ..Default::default() };
+        let told = Event::DesignResults { squad: "acme".into(), designs: vec![work] };
+        let wire = serde_json::to_value(&told).unwrap();
+        assert_eq!(wire["type"], "design_results");
+        assert_eq!(serde_json::from_value::<Event>(wire).unwrap(), told);
+        assert_eq!(told.squad(), Some("acme"));
+        // An older daemon's answer, with nothing in it, is no designs.
+        let bare: Event = serde_json::from_value(json!({ "type": "design_results", "squad": "acme" })).unwrap();
+        assert_eq!(bare, Event::DesignResults { squad: "acme".into(), designs: vec![] });
     }
 
     #[test]

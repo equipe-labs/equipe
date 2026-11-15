@@ -243,6 +243,7 @@ pub fn what(target: &Target) -> String {
         Target::Conversation(_) => t!("link.what_conversation").into(),
         Target::Member(name) => t!("link.what_member", name = name),
         Target::Decision(_) => t!("link.what_decision").into(),
+        Target::Design(id) => t!("link.what_design", id = id),
         Target::NeedsYou => t!("link.what_needs_you").into(),
         Target::Status => t!("link.what_status").into(),
     }
@@ -317,6 +318,7 @@ impl Shell {
             Target::Ticket(id) => model.tickets.iter().find(|t| t.id == *id).map_or_else(|| format!("T-{id}"), |t| format!("T-{id} {}", t.title)),
             Target::Conversation(session) => model.conversations().into_iter().find(|l| l.session == *session).and_then(|l| l.title.clone()).unwrap_or_else(|| t!("sidebar.new_conversation").into()),
             Target::Member(name) => name.clone(),
+            Target::Design(id) => model.tickets.iter().find(|t| t.id == *id).map_or_else(|| format!("T-{id}"), |t| format!("T-{id} {}", t.title)),
             Target::Decision(id) => model.asked.get(*id).and_then(|set| set.questions.first().map(|q| q.question.clone())).unwrap_or_else(|| t!("link.what_decision").into()),
             Target::NeedsYou => t!("link.title_needs_you", squad = model.squad),
             Target::Status => t!("link.title_status", squad = model.squad),
@@ -397,6 +399,14 @@ impl Shell {
                 Some((session, ticket)) => self.show_asked(session, ticket, window, cx),
                 None => self.say(t!("link.gone_decision")),
             },
+            // The card of what a design ticket made, once the daemon has said there is one.
+            Target::Design(id) => {
+                if self.model.tickets.iter().any(|t| t.id == id) {
+                    self.designs_show(id, cx);
+                } else {
+                    self.say(t!("link.gone_design", id = id));
+                }
+            }
             Target::NeedsYou => self.go_to(Place { screen: Screen::Board, menu: Menu::Inbox, member: None, ticket: None }, window, cx),
             Target::Status => self.go_to(Place { screen: Screen::Status, menu: Menu::Inbox, member: None, ticket: None }, window, cx),
         }
@@ -444,6 +454,15 @@ mod tests {
         assert_eq!(plan(&link("web", Some("mini")), &known), Plan::Go(1), "the host decides between two squads called web");
         assert_eq!(plan(&link("web", Some("macbook.local")), &known), Plan::Go(0));
         assert_eq!(plan(&link("web", None), &known), Plan::Go(0), "no host: the first window on the squad");
+    }
+
+    #[test]
+    fn a_link_to_a_design_is_routed_like_any_and_says_which_ticket_it_is_about() {
+        let design = DeepLink::new("web", Target::Design(2562), Some("mini".into()));
+        let known = [window(Endpoint::this_mac(), &["macbook"], "web", &["web"], 0), window(ssh("me@mini.tail3383cf.ts.net"), &["mini.tail3383cf.ts.net"], "web", &["web"], 1)];
+        assert_eq!(plan(&design, &known), Plan::Go(1));
+        assert!(what(&design.target).contains("2562"), "{}", what(&design.target));
+        assert_eq!(design.uri(), "equipe://open/web/design/T-2562?host=mini");
     }
 
     #[test]

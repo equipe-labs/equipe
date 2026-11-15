@@ -232,6 +232,8 @@ pub struct Remembered {
     /// The design screen's tab the person last picked (`map`, `system`);
     /// none: the map when there is one.
     pub design_tab: Option<String>,
+    /// The designs the person looked at (`<squad>\t<ticket>`), newest last: each stops being new once looked at.
+    pub designs_seen: Vec<String>,
     /// The designer's conversation beside the design screen, open or folded
     /// as the person left it; none: open where there is room.
     pub design_talk: Option<bool>,
@@ -499,6 +501,10 @@ impl Remembered {
                 };
             } else if let Some(rest) = line.strip_prefix("design-tab ") {
                 out.design_tab = Some(rest.trim().to_owned()).filter(|t| !t.is_empty());
+            } else if let Some(rest) = line.strip_prefix("design-seen ") {
+                if rest.split_once('\t').is_some_and(|(squad, id)| !squad.is_empty() && id.trim().parse::<u32>().is_ok()) {
+                    out.designs_seen.push(rest.trim_end().to_owned());
+                }
             } else if let Some((on, rest)) = line.strip_prefix("quiet ").map(|r| (false, r)).or_else(|| line.strip_prefix("ping ").map(|r| (true, r))) {
                 if let Some(ping) = Ping::ALL.into_iter().find(|p| p.code() == rest.trim()) {
                     out.pings.set(ping, on);
@@ -630,6 +636,9 @@ impl Remembered {
         if let Some(tab) = &self.design_tab {
             text.push_str(&format!("design-tab {tab}\n"));
         }
+        for seen in &self.designs_seen {
+            text.push_str(&format!("design-seen {seen}\n"));
+        }
         if let Some(open) = self.design_talk {
             text.push_str(if open { "design-talk open\n" } else { "design-talk folded\n" });
         }
@@ -660,6 +669,20 @@ impl Remembered {
             text.push_str(&format!("view {}\t{}\t{}\t{}\n", u8::from(view.pinned), clean(&view.group), clean(&view.name), clean(&view.query)));
         }
         text
+    }
+
+    /// The tickets of `squad` whose design the person looked at.
+    pub fn designs_seen_in(&self, squad: &str) -> std::collections::HashSet<u32> {
+        self.designs_seen.iter().filter_map(|s| s.split_once('\t')).filter(|(q, _)| *q == squad).filter_map(|(_, id)| id.trim().parse().ok()).collect()
+    }
+
+    /// The person looked at ticket `id`'s design: it is not new any more. Only the latest 200 are kept.
+    pub fn see_design(&mut self, squad: &str, id: u32) {
+        let line = format!("{}\t{id}", squad.replace(['\t', '\n'], " "));
+        self.designs_seen.retain(|s| *s != line);
+        self.designs_seen.push(line);
+        let extra = self.designs_seen.len().saturating_sub(200);
+        self.designs_seen.drain(..extra);
     }
 
     /// What accepting lands in `project`, if the person said.
@@ -981,6 +1004,32 @@ mod tests {
         std::fs::write(dir.join("conf.d/skip.txt"), "Host skipped\n").unwrap();
         assert_eq!(config_hosts(&dir), ["work-box", "mini", "nas", "dev"]);
         assert!(config_hosts(&dir.join("missing")).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_designs_looked_at_are_kept_per_squad_and_only_the_latest_are() {
+        let dir = std::env::temp_dir().join(format!("equipe-designs-seen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut prefs = Remembered::default();
+        prefs.see_design("web", 2562);
+        prefs.see_design("docs", 7);
+        prefs.see_design("web", 2562);
+        assert_eq!(prefs.designs_seen_in("web"), std::collections::HashSet::from([2562]));
+        assert_eq!(prefs.designs_seen_in("docs"), std::collections::HashSet::from([7]));
+        assert!(prefs.designs_seen_in("other").is_empty());
+        prefs.save(&dir);
+        let loaded = Remembered::load(&dir);
+        assert_eq!(loaded.designs_seen_in("web"), std::collections::HashSet::from([2562]));
+        // A hand-edited line that isn't a squad and a number is let go.
+        std::fs::write(dir.join("desktop-target"), "design-seen web\tx\ndesign-seen \t5\ndesign-seen web\t9\n").unwrap();
+        assert_eq!(Remembered::load(&dir).designs_seen_in("web"), std::collections::HashSet::from([9]));
+        for id in 0..250 {
+            prefs.see_design("web", id);
+        }
+        assert_eq!(prefs.designs_seen.len(), 200);
+        assert!(prefs.designs_seen_in("web").contains(&249) && !prefs.designs_seen_in("web").contains(&0));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

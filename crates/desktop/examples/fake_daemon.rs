@@ -139,6 +139,10 @@
 //! draft; `working`: T-378 still making the squad's UI map, the designer at
 //! it; `empty`: none yet (`fake_daemon/design.rs`). Pictures come through
 //! `read_image`, as from the daemon. `FAKE_NO_DESIGNER=1`: a team with no designer.
+//! With `FAKE_DESIGN_RESULTS=1` too: three design tickets' work — a dashboard
+//! in three directions accepted by the PM (T-2562), a settings page handed in
+//! (T-2563), one at work (T-2565) — for the Designs tab, the Needs-you item
+//! and the Status line (`fake_daemon/design_results.rs`).
 //!
 //! Pairing a phone: a code at once, and two phones paired already.
 //! `FAKE_PAIR=ask` has a phone ask 1.5 s after the code shows (`allow` pairs
@@ -536,6 +540,7 @@ fn board() -> Vec<Ticket> {
         task.kind = equipe_core::protocol::TicketKind::Task;
         out.push(task);
         out.extend(design::ticket());
+        out.extend(design_results::tickets());
         let mut done = ticket(51, "done", "web", "frontend", "Tidy the footer links", "", &[], Some("equipe/t-51-footer"), Some("Tidied the links."));
         done.merged = Some(false);
         out.push(done);
@@ -1376,6 +1381,8 @@ mod switching;
 
 #[path = "fake_daemon/design.rs"]
 mod design;
+#[path = "fake_daemon/design_results.rs"]
+mod design_results;
 #[path = "fake_daemon/refgallery.rs"]
 mod refgallery;
 #[path = "fake_daemon/components.rs"]
@@ -1459,6 +1466,7 @@ async fn main() {
     let listener = UnixListener::bind(&socket).expect("bind the fake daemon's socket");
     seed_repos();
     design::seed();
+    design_results::seed();
     studio::seed();
     briefs::seed();
     if pictures::on() || review::on() {
@@ -2309,7 +2317,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     }
                                     continue;
                                 }
-                                if signin::on_command(&other, &events) || browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || signals::on_command(&other, &events) || disk::on_command(&other, &events) || plan_use::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) || refgallery::on_command(&other, &events) || briefs::on_command(&other, &events) || moved::on_command(&other, &events) {
+                                if signin::on_command(&other, &events) || browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || signals::on_command(&other, &events) || disk::on_command(&other, &events) || plan_use::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) || refgallery::on_command(&other, &events) || design_results::on_command(&other, &events) || briefs::on_command(&other, &events) || moved::on_command(&other, &events) {
                                     continue;
                                 }
                                 if let Some(said) = on_board_command(&other) {

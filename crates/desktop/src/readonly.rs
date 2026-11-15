@@ -88,6 +88,7 @@ pub fn reads(command: &Command) -> bool {
         | C::SearchDocs { .. }
         | C::DesignVersions { .. }
         | C::DesignRefs { .. }
+        | C::DesignResults { .. }
         | C::DiskScan
         // Where the plans went: a look.
         | C::PlanUse { .. }
@@ -719,6 +720,7 @@ mod tests {
             Command::KeepDocCopy { squad: s(), session: 1, keep: "/h/docs/web/plans/2026-11-04-x.md".into() },
             Command::DesignVersions { squad: s(), project: None },
             Command::DesignRefs { squad: s(), project: None, ticket: None, query: "table".into(), offset: 0 },
+            Command::DesignResults { squad: s() },
             Command::RestoreDesign { squad: s(), project: None, commit: "c".into() },
             Command::Taste { squad: s(), project: None, change: TasteChange::Add { text: "t".into() } },
         ]
@@ -758,7 +760,7 @@ mod tests {
         variants.sort();
         assert_eq!(sampled, variants, "each command once: a new one is sampled here, and placed in `reads`");
         let going: Vec<String> = commands.iter().filter(|c| reads(c)).map(name).collect();
-        assert_eq!(going, ["ticket_history", "hand_over", "logins", "autopilot", "login_insights", "browser_profiles", "squad_secrets", "watch_browser", "devices", "disk_scan", "plan_use", "words_log", "engines", "providers", "models", "design", "project_docs", "search_docs", "design_versions", "design_refs"]);
+        assert_eq!(going, ["ticket_history", "hand_over", "logins", "autopilot", "login_insights", "browser_profiles", "squad_secrets", "watch_browser", "devices", "disk_scan", "plan_use", "words_log", "engines", "providers", "models", "design", "project_docs", "search_docs", "design_versions", "design_refs", "design_results"]);
         // What a screen does as the person works is never among them.
         for kept in ["submit", "say", "undo_words", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "start_side_chat", "side_chat_submit", "taste", "disk_clean", "add_provider", "remove_provider", "test_provider", "keep_doc_copy"] {
             assert!(!going.iter().any(|g| g == kept), "{kept} changes something");

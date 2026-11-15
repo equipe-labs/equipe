@@ -1988,6 +1988,7 @@ impl App {
                 | Event::CallSummary { .. }
                 | Event::DocCopyKept { .. }
                 | Event::DesignRefs { .. }
+                | Event::DesignResults { .. }
                 | Event::DesignVersions { .. } => {}
                 Event::Error { message, next, .. } => {
                     failure.get_or_insert(Failure { message, next });

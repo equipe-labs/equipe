@@ -661,7 +661,7 @@ https://equipe.im/o/#<squad>/<kind>/<id>?host=<machine>
 ```
 
 Kinds: `ticket` (`T-2391`), `conversation` (a kept conversation's session id),
-`member` (a name), `decision` (a question set's id), `needs-you`, `status` (the
+`member` (a name), `decision` (a question set's id), `design` (what a design ticket made, `T-2562`: its card on the design screen's Designs tab), `needs-you`, `status` (the
 last two have no id). Squad, name and host are percent-encoded. `host` is the
 daemon machine's stable name: its Tailscale (MagicDNS) name, else its host name;
 for a window connected over SSH, the name that window connects by. The

@@ -227,8 +227,43 @@ shown only on dark, `…-light` only on light, any other on both.
 - With none yet: what a design system is, and a button that asks the
   designer (or the PM, to bring one in) for one through the composer.
 
+## The Designs tab — what a design ticket made
+
+Next to the UI map, the design system and the references: one card for each
+design ticket (newest first; `crates/core/src/design/results.rs`), so finished
+work is where the person looks for it. A card shows its hero picture — the one
+the hand-in named (`Hero: <path>`), else the direction a decision record names
+(`design/decisions/*.md` that mention the ticket, `Chose:` / `Picture:`), else
+the first mock — its title, where it stands (in progress, waiting on you,
+handed in, accepted), when, and badges: directions, preview links, change notes.
+Opened, it shows the screen as it was beside each direction at one scale (the
+decision card's side-by-side; a click shows a picture big), the change notes
+of `CHANGES.md` per direction, a button for each live preview (https only,
+checked as every link on a card is), the decision record and a way to the
+ticket. Nothing is asked of the designer beyond its naming:
+
+- renders under `design/directions/t<n>-<name>/` (any folder there that starts
+  with the ticket's number), named by kind, key and width — `before-1440.png`,
+  `mock-a-1440.png`, `mock-a-390.png`, `direction-calm-ledger-1440.png`; a
+  direction pairs with the before at its own width;
+- `CHANGES.md` beside them, a `## Direction A` section each;
+- the hand-in names its hero and before renders (`Hero:` and `Before:` lines,
+  by path); a picture it embeds counts too;
+- preview links are taken from the hand-in, the ticket's comments, the comments
+  of tickets that wait on it, and `CHANGES.md`.
+
+Read only, from `design/` of the project and of the ticket's worktree (a
+picture must be a real file inside it: no `..`, no link out), every walk and
+list bounded. A design handed in or accepted lately, not yet looked at, is a
+"New design: <title>" line in Needs you (Review) and a card on the Status
+screen, a dot on the tab, and — when the PM accepts — its hero and before
+pictures come back in the `accept_work` reply for the PM to embed in its
+message to the person. `equipe://open/<squad>/design/T-<n>` opens the card.
+
 ## How it travels
 
+- `command` `{ "type": "design_results", "squad" }` → `event` `{ "type":
+  "design_results", "squad", "designs": [DesignWork…] }`: the cards above.
 - `command` `{ "type": "design", "squad" }` → `event`
   `{ "type": "design", "squad", "systems": [DesignSystem…], "folder" }`
   (`crates/protocol/src/design.rs`): each system with its `project`
