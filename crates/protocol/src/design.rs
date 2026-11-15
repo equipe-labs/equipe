@@ -407,7 +407,8 @@ pub struct Picture {
     /// When it was taken (its file's time), in Unix seconds.
     #[serde(default)]
     pub taken: u64,
-    /// What it holds, as a short hex digest of its bytes — worked out while
+    /// What it holds, as a short hex digest of its bytes (the start of git's
+    /// blob name for them, told by git when it has them as checked out) — worked out while
     /// a draft of its system is in review, so a screen can tell the pictures
     /// the draft changed from the copies it only kept. `None`: not worked out.
     #[serde(default, skip_serializing_if = "Option::is_none")]

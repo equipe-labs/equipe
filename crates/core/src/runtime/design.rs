@@ -3,7 +3,9 @@
 //! while any screen follows the squad, their folders are looked at every
 //! [`LOOK_EVERY`] — metadata only — and sent again when one changed, so the
 //! screen follows what the designer saves. Nothing is read for a squad no
-//! screen asked about. The person's taste notes and the decisions made ride
+//! screen asked about. A folder whose stamp hasn't moved is not read again
+//! (`crate::design::folder`): a board's worktrees each hold a copy of a
+//! system, and they change one at a time. The person's taste notes and the decisions made ride
 //! along (`crate::taste`); the person changes a note with `Command::Taste`.
 //!
 //! A system's accepted versions (`Command::DesignVersions`) are read from

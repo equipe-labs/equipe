@@ -10,6 +10,7 @@
 //! its pictures are the images in `assets/` and `components/` that pass
 //! [`visuals::check`], the same check `read_image` makes when a screen asks.
 
+use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -187,6 +188,11 @@ pub fn stamp(places: &[Place]) -> u64 {
             // A link's target counts too: retargeted, it shows something else.
             std::fs::metadata(&path).ok().map(|m| (m.len(), m.modified().ok())).hash(&mut h);
         }
+        // The screens' latest checks, which their map shows.
+        for path in check_records(&place.dir) {
+            path.hash(&mut h);
+            std::fs::metadata(&path).ok().map(|m| (m.len(), m.modified().ok())).hash(&mut h);
+        }
         // The components' records, and the repository's registry and folders.
         for path in super::gallery::watched(&place.dir, repo_of(place)) {
             path.hash(&mut h);
@@ -200,6 +206,34 @@ pub fn stamp(places: &[Place]) -> u64 {
         }
     }
     h.finish()
+}
+
+/// The checks kept in `dir` (`lint::record`): a screen's is
+/// `checks/<flow>/<screen>.json`, the rest right under `checks/` — not the
+/// pictures drawn beside them, which are many.
+fn check_records(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![(dir.join(super::lint::record::DIR), 0)];
+    while let Some((at, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&at) else { continue };
+        for entry in entries.flatten() {
+            if out.len() >= FILES_MAX {
+                return out;
+            }
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else { continue };
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            if kind.is_dir() && depth == 0 {
+                stack.push((path, 1));
+            } else if kind.is_file() && path.extension().is_some_and(|e| e == "json") {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 /// The repository a project's design folder is in, where its code is.
@@ -281,10 +315,21 @@ pub fn say(problem: &Problem, lang: Lang) -> String {
 
 /// What `place` holds, read.
 pub fn read(place: &Place, lang: Lang) -> DesignSystem {
+    let (mut system, owed) = read_owed(place, lang);
+    if let Some(map) = system.flows.as_mut() {
+        owed.settle().apply(map);
+    }
+    system
+}
+
+/// [`read`], all but which of its map's screens' code changed after their
+/// pictures, which is owed (`flows::Owed`): only worked out for a system
+/// that is shown.
+fn read_owed(place: &Place, lang: Lang) -> (DesignSystem, super::flows::Owed) {
     let words = crate::i18n::core(lang);
     let mut system = DesignSystem { project: place.project.clone(), draft: place.draft.clone(), dir: place.dir.to_string_lossy().into_owned(), ..DesignSystem::default() };
     if !is_design_dir(&place.dir) {
-        return system;
+        return (system, super::flows::Owed::default());
     }
     match inside(&place.dir, TOKENS, TOKENS_MAX) {
         Some(bytes) if bytes.len() as u64 > TOKENS_MAX => system.problems.push(words.fill("design.problem_too_big", &[("file", TOKENS.into()), ("limit", format!("{} MB", TOKENS_MAX >> 20))])),
@@ -318,7 +363,8 @@ pub fn read(place: &Place, lang: Lang) -> DesignSystem {
         Some(person) if app == super::flows::DESKTOP_APP => Some(person.version.clone()),
         _ => super::flows::installed(app),
     };
-    system.flows = super::flows::read_with(&place.dir, repo, place.live.as_deref(), lang, &installed);
+    let (flows, owed) = super::flows::read_owed(&place.dir, repo, place.live.as_deref(), lang, &installed).unzip();
+    system.flows = flows;
     if let (Some(map), Some(person)) = (system.flows.as_mut(), &place.installed)
         && map.installed.as_ref() == Some(&person.version)
     {
@@ -326,7 +372,95 @@ pub fn read(place: &Place, lang: Lang) -> DesignSystem {
     }
     system.setup = super::flows::setup(&place.dir);
     system.stamp = stamp(std::slice::from_ref(place));
-    system
+    (system, owed.unwrap_or_default())
+}
+
+/// How long a place read is taken as read while nothing in it changed: its
+/// map's staleness also follows code outside it, which no stamp watches.
+const READ_FOR: std::time::Duration = std::time::Duration::from_secs(120);
+/// How many places read are kept before the list starts again.
+const READS_KEPT: usize = 512;
+
+/// A place as read, by its folder, the language and its stamp: when it was
+/// read, the system, and what its map still owes (none once worked out).
+type Kept = HashMap<(PathBuf, Lang, u64), (std::time::Instant, DesignSystem, Option<super::flows::Owed>)>;
+
+fn reads() -> &'static std::sync::Mutex<Kept> {
+    static READS: std::sync::OnceLock<std::sync::Mutex<Kept>> = std::sync::OnceLock::new();
+    READS.get_or_init(Default::default)
+}
+
+/// [`read_owed`], kept: a place whose stamp is the same as a moment ago is
+/// not read again — the folders are many (every ticket's worktree with a
+/// copy of a system is one) and change one at a time.
+fn read_kept(place: &Place, lang: Lang) -> (DesignSystem, Option<super::flows::Owed>) {
+    let key = (place.dir.clone(), lang, stamp(std::slice::from_ref(place)));
+    if let Some((at, system, owed)) = reads().lock().unwrap_or_else(|e| e.into_inner()).get(&key)
+        && at.elapsed() < READ_FOR
+    {
+        return (system.clone(), owed.clone());
+    }
+    let (system, owed) = read_owed(place, lang);
+    let owed = (!owed.is_empty()).then_some(owed);
+    let mut kept = reads().lock().unwrap_or_else(|e| e.into_inner());
+    if kept.len() >= READS_KEPT {
+        kept.retain(|_, (at, ..)| at.elapsed() < READ_FOR);
+        if kept.len() >= READS_KEPT {
+            kept.clear();
+        }
+    }
+    // Kept by the stamp it was read at: a change while it was read makes the next look read it again.
+    kept.insert((key.0, key.1, system.stamp), (std::time::Instant::now(), system.clone(), owed.clone()));
+    (system, owed)
+}
+
+/// The copy kept of `system`, read at the same stamp, changed by `change`.
+fn keep_back(system: &DesignSystem, lang: Lang, change: impl FnOnce(&mut DesignSystem, &mut Option<super::flows::Owed>)) {
+    let key = (PathBuf::from(&system.dir), lang, system.stamp);
+    if let Some((_, kept, owed)) = reads().lock().unwrap_or_else(|e| e.into_inner()).get_mut(&key) {
+        change(kept, owed);
+    }
+}
+
+/// What a place's map owed, worked out, said on it and on the copy kept.
+fn settle_kept(system: &mut DesignSystem, settled: &super::flows::Settled, lang: Lang) {
+    if let Some(map) = system.flows.as_mut() {
+        settled.apply(map);
+    }
+    keep_back(system, lang, |kept, owing| {
+        if owing.is_some() {
+            if let Some(map) = kept.flows.as_mut() {
+                settled.apply(map);
+            }
+            *owing = None;
+        }
+    });
+}
+
+/// The pictures of a map, in order, to change.
+fn pictures(map: &mut FlowMap) -> Vec<&mut equipe_protocol::design::Picture> {
+    map.flows.iter_mut().flat_map(|f| &mut f.screens).flat_map(|s| &mut s.states).flat_map(|s| &mut s.pictures).collect()
+}
+
+/// The pictures of a map, in order.
+fn pictures_of(map: &FlowMap) -> impl Iterator<Item = &equipe_protocol::design::Picture> {
+    map.flows.iter().flat_map(|f| &f.screens).flat_map(|s| &s.states).flat_map(|s| &s.pictures)
+}
+
+/// The names [`fingerprint`] gave `system`'s pictures, kept with its copy:
+/// a board of worktrees holds many pictures, each read whole to be named.
+fn hashes_kept(system: &DesignSystem, lang: Lang) {
+    let Some(map) = system.flows.as_ref() else { return };
+    let hashes: Vec<Option<String>> = pictures_of(map).map(|p| p.hash.clone()).collect();
+    keep_back(system, lang, |kept, _| {
+        let Some(map) = kept.flows.as_mut() else { return };
+        let pictures = pictures(map);
+        if pictures.len() == hashes.len() {
+            for (picture, hash) in pictures.into_iter().zip(hashes) {
+                picture.hash = hash;
+            }
+        }
+    });
 }
 
 /// The biggest picture a hash is worked out for; past it, none.
@@ -334,10 +468,13 @@ const HASH_MAX: u64 = 32 << 20;
 /// How many pictures' hashes are kept before the list starts again.
 const HASHES_KEPT: usize = 20_000;
 
-/// What a picture holds, as a short hex digest of its bytes — read once
+/// How much of git's name for a picture is sent: enough to tell two apart.
+const HASH_LEN: usize = 16;
+
+/// What a picture holds, as the start of git's name for its bytes (`git
+/// hash-object`: a SHA-1 of `blob <length>\0` and the bytes) — read once
 /// while its length and time stay the same. `None`: not a file, or too big.
 pub fn picture_hash(path: &Path) -> Option<String> {
-    use std::collections::HashMap;
     use std::sync::Mutex;
     type Kept = HashMap<PathBuf, (u64, Option<std::time::SystemTime>, String)>;
     static KEPT: Mutex<Option<Kept>> = Mutex::new(None);
@@ -347,9 +484,10 @@ pub fn picture_hash(path: &Path) -> Option<String> {
         return Some(hash.clone());
     }
     let bytes = std::fs::read(path).ok()?;
-    let mut h = DefaultHasher::new();
-    bytes.hash(&mut h);
-    let hash = format!("{:016x}", h.finish());
+    let mut digest = ring::digest::Context::new(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY);
+    digest.update(format!("blob {}\0", bytes.len()).as_bytes());
+    digest.update(&bytes);
+    let hash: String = digest.finish().as_ref().iter().take(HASH_LEN / 2).map(|b| format!("{b:02x}")).collect();
     let mut kept = KEPT.lock().ok()?;
     let kept = kept.get_or_insert_with(HashMap::new);
     if kept.len() >= HASHES_KEPT {
@@ -359,18 +497,67 @@ pub fn picture_hash(path: &Path) -> Option<String> {
     Some(hash)
 }
 
+/// The files under `design` git has as checked out, by real path, each with
+/// its blob's name — what [`picture_hash`] would work out from its bytes,
+/// told without reading them. Only what git tracks, unchanged since (as
+/// `git diff-files` says, which reads nothing it need not), not a link, in a
+/// SHA-1 repository; empty where git can't say.
+fn blob_ids(design: &Path) -> HashMap<PathBuf, String> {
+    use crate::worktree::{GIT_TIMEOUT, git_command, output_within};
+    let Ok(root) = std::fs::canonicalize(design) else { return HashMap::new() };
+    let git = |args: &[&str]| {
+        let mut command = git_command(&root);
+        command.args(args);
+        output_within(command, GIT_TIMEOUT).ok().filter(|out| out.status.success()).map(|out| out.stdout)
+    };
+    // Paths from `root`, as both print them here.
+    let Some(changed) = git(&["diff-files", "-z", "--name-only", "--relative", "--", "."]) else { return HashMap::new() };
+    let changed: std::collections::HashSet<&[u8]> = changed.split(|b| *b == 0).filter(|p| !p.is_empty()).collect();
+    let Some(listed) = git(&["ls-files", "--stage", "-z", "--", "."]) else { return HashMap::new() };
+    let mut out = HashMap::new();
+    // `<mode> <name> <stage>\t<path>`, each ended by a NUL.
+    for entry in listed.split(|b| *b == 0) {
+        let Some(tab) = entry.iter().position(|b| *b == b'\t') else { continue };
+        let (head, path) = (&entry[..tab], &entry[tab + 1..]);
+        let mut fields = head.split(|b| *b == b' ');
+        let (Some(mode), Some(name), Some(b"0")) = (fields.next(), fields.next(), fields.next()) else { continue };
+        if !mode.starts_with(b"100") || name.len() != 40 || changed.contains(path) {
+            continue;
+        }
+        out.insert(root.join(String::from_utf8_lossy(path).as_ref()), String::from_utf8_lossy(&name[..HASH_LEN]).into_owned());
+    }
+    out
+}
+
 /// Each UI map picture's hash, in the systems that have a draft in review
 /// and in their drafts — so a screen can tell what a draft changed from the
-/// copies its worktree only kept. Nothing is read when there is no draft.
+/// copies its worktree only kept. Nothing is read when there is no draft. A
+/// picture git has as checked out is named by git, unread; one a kept read
+/// already named keeps its name.
 pub fn fingerprint(systems: &mut [DesignSystem]) {
     let drafted: Vec<Option<String>> = systems.iter().filter(|s| s.draft.is_some()).map(|s| s.project.clone()).collect();
-    for system in systems.iter_mut().filter(|s| drafted.contains(&s.project)) {
+    let mut wanting: Vec<usize> = Vec::new();
+    for (at, system) in systems.iter_mut().enumerate() {
         let Some(map) = system.flows.as_mut() else { continue };
-        for picture in map.flows.iter_mut().flat_map(|f| &mut f.screens).flat_map(|s| &mut s.states).flat_map(|s| &mut s.pictures) {
-            picture.hash = picture_hash(Path::new(&picture.path));
+        if !drafted.contains(&system.project) {
+            pictures(map).into_iter().for_each(|p| p.hash = None);
+        } else if pictures(map).iter().any(|p| p.hash.is_none()) {
+            wanting.push(at);
+        }
+    }
+    // What git already knows, a folder each, a few at once: a board of worktrees is many folders.
+    let dirs: Vec<PathBuf> = wanting.iter().map(|at| PathBuf::from(&systems[*at].dir)).collect();
+    let named = super::each_at_once(&dirs, AT_ONCE, |dir| blob_ids(dir));
+    for (at, ids) in wanting.into_iter().zip(named) {
+        let Some(map) = systems[at].flows.as_mut() else { continue };
+        for picture in pictures(map).into_iter().filter(|p| p.hash.is_none()) {
+            picture.hash = ids.get(Path::new(&picture.path)).cloned().or_else(|| picture_hash(Path::new(&picture.path)));
         }
     }
 }
+
+/// How many folders are read, or asked of git, at once.
+const AT_ONCE: usize = 8;
 
 /// A UI map as what it shows: where its pictures are, when they were taken
 /// and its recordings left out, so a worktree's copy reads as the same.
@@ -413,22 +600,40 @@ pub fn catalog(home: &Path, squad: &str, lang: Lang) -> (Vec<DesignSystem>, Stri
 /// The same, of places already found.
 pub fn catalog_of(places: &[Place], lang: Lang) -> (Vec<DesignSystem>, String) {
     let folder = places.first().map(|p| p.dir.to_string_lossy().into_owned()).unwrap_or_default();
-    let mut read: Vec<DesignSystem> = places.iter().filter(|p| is_design_dir(&p.dir)).map(|p| read(p, lang)).collect();
+    // Read as kept, and without the staleness git tells (`flows::Owed`): it
+    // isn't part of what makes a copy the same, and a board of worktrees
+    // holding copies of a system would ask git for every screen of each.
+    let places: Vec<&Place> = places.iter().filter(|p| is_design_dir(&p.dir)).collect();
+    let (mut read, owed): (Vec<DesignSystem>, Vec<Option<super::flows::Owed>>) = super::each_at_once(&places, AT_ONCE, |p| read_kept(p, lang)).into_iter().unzip();
     fingerprint(&mut read);
+    for system in &read {
+        hashes_kept(system, lang);
+    }
     // The components a ticket is making or changing, said on the accepted system.
     super::gallery::mark_work(&mut read);
-    let systems: Vec<DesignSystem> = read
+    let shown: Vec<bool> = read
         .iter()
-        .filter(|s| match &s.draft {
+        .map(|s| match &s.draft {
             // A ticket's worktree holds a copy of the accepted folder: a draft only where it differs.
             Some(_) => !read.iter().any(|a| a.draft.is_none() && a.project == s.project && same_content(a, s)),
             None => true,
         })
-        .cloned()
         .collect();
     // Work under way beside a draft in review of the same system: the one in review is shown.
-    let reviewed: Vec<Option<String>> = systems.iter().filter(|s| s.draft.as_ref().is_some_and(|d| !d.working)).map(|s| s.project.clone()).collect();
-    let systems = systems.into_iter().filter(|s| !(s.draft.as_ref().is_some_and(|d| d.working) && reviewed.contains(&s.project))).collect();
+    let reviewed: Vec<Option<String>> = read.iter().zip(&shown).filter(|(s, shown)| **shown && s.draft.as_ref().is_some_and(|d| !d.working)).map(|(s, _)| s.project.clone()).collect();
+    let (mut systems, owed): (Vec<DesignSystem>, Vec<Option<super::flows::Owed>>) = read
+        .into_iter()
+        .zip(owed)
+        .zip(shown)
+        .filter(|((system, _), shown)| *shown && !(system.draft.as_ref().is_some_and(|d| d.working) && reviewed.contains(&system.project)))
+        .map(|(read, _)| read)
+        .unzip();
+    // What the systems shown owe, worked out together.
+    let owing: Vec<usize> = owed.iter().enumerate().filter_map(|(at, o)| o.as_ref().map(|_| at)).collect();
+    let asked: Vec<&super::flows::Owed> = owed.iter().flatten().collect();
+    for (at, settled) in owing.into_iter().zip(super::flows::settle_all(&asked)) {
+        settle_kept(&mut systems[at], &settled, lang);
+    }
     (systems, folder)
 }
 
@@ -774,11 +979,87 @@ mod tests {
         let (systems, _) = catalog_of(&places, Lang::En);
         assert_eq!(systems.iter().map(|s| s.key()).collect::<Vec<_>>(), ["squad", "squad#T-170"], "the copy that changed nothing isn't a draft");
         let (now, after) = (pictures(&systems[0]), pictures(&systems[1]));
-        assert!(now.iter().chain(&after).all(|h| h.as_ref().is_some_and(|h| h.len() == 16)), "{now:?} {after:?}");
+        assert!(now.iter().chain(&after).all(|h| h.as_ref().is_some_and(|h| h.len() == HASH_LEN)), "{now:?} {after:?}");
         assert_ne!(now[0], after[0], "home was shot again");
         assert_eq!(now[1], after[1], "pay is the same picture, in another folder");
         assert_eq!(picture_hash(&accepted.join("flows/app/home/default.light.390.png")), now[0], "kept, and the same when asked again");
         assert!(picture_hash(&accepted.join("nowhere.png")).is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_folder_read_is_kept_until_its_stamp_moves_and_a_screen_check_moves_it() {
+        let root = dir("kept");
+        let design = root.join(DIR);
+        std::fs::create_dir_all(&design).unwrap();
+        std::fs::write(design.join(TOKENS), TOKENS_JSON).unwrap();
+        let places = [Place { project: None, draft: None, dir: design.clone(), live: None, installed: None }];
+        let (first, _) = catalog_of(&places, Lang::En);
+        let (again, _) = catalog_of(&places, Lang::En);
+        assert_eq!(first, again, "nothing changed: the same");
+        std::fs::write(design.join(TOKENS), r##"{ "color": { "$type": "color", "bg": { "$value": "#101010" }, "fg": { "$value": "#FAFAFA" } } }"##).unwrap();
+        let (changed, _) = catalog_of(&places, Lang::En);
+        assert_eq!(changed[0].tokens.len(), 2, "tokens.json saved again: read again");
+        let before = stamp(&places);
+        std::fs::create_dir_all(design.join("checks/app")).unwrap();
+        std::fs::write(design.join("checks/app/home.json"), "{}").unwrap();
+        let checked = stamp(&places);
+        assert_ne!(before, checked, "a screen's check");
+        std::fs::create_dir_all(design.join("checks/app/home")).unwrap();
+        std::fs::write(design.join("checks/app/home/sheet.png"), "drawn").unwrap();
+        assert_eq!(checked, stamp(&places), "the pictures drawn beside it aren't followed");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git").arg("-C").arg(dir).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]).args(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    #[test]
+    fn a_picture_git_has_as_checked_out_is_named_as_git_names_it_and_the_same_bytes_read_name_the_same() {
+        const MAP: &str = r#"{ "flows": [ { "id": "app", "title": "App", "screens": [ { "id": "home", "title": "Home", "states": [ { "id": "default" } ] }, { "id": "pay", "title": "Pay", "states": [ { "id": "default" } ] } ] } ] }"#;
+        let root = dir("named");
+        let repo = root.join("repo");
+        let design = repo.join(DIR);
+        std::fs::create_dir_all(design.join("flows/app/home")).unwrap();
+        std::fs::create_dir_all(design.join("flows/app/pay")).unwrap();
+        std::fs::write(design.join(TOKENS), TOKENS_JSON).unwrap();
+        std::fs::write(design.join("flows/flows.json"), MAP).unwrap();
+        let shot = |path: PathBuf, c: [u8; 4]| image::RgbaImage::from_pixel(4, 4, image::Rgba(c)).save(path).unwrap();
+        shot(design.join("flows/app/home/default.light.390.png"), [20, 90, 250, 255]);
+        shot(design.join("flows/app/pay/default.light.390.png"), [9, 9, 9, 255]);
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-qm", "design"]);
+        // Edited since: git's name for it is no longer what it holds.
+        shot(design.join("flows/app/pay/default.light.390.png"), [200, 9, 9, 255]);
+        let named = blob_ids(&design);
+        let home = design.join("flows/app/home/default.light.390.png");
+        let pay = design.join("flows/app/pay/default.light.390.png");
+        let short = |name: String| name[..HASH_LEN].to_owned();
+        assert_eq!(named.get(&home).cloned(), Some(short(git(&repo, &["rev-parse", "HEAD:design/flows/app/home/default.light.390.png"]))), "as committed: git's name, unread");
+        assert!(!named.contains_key(&pay), "edited: read instead");
+        assert_eq!(picture_hash(&home), named.get(&home).cloned(), "the same bytes read are named the same");
+        assert_eq!(picture_hash(&pay), Some(short(git(&repo, &["hash-object", "design/flows/app/pay/default.light.390.png"]))));
+        // A copy of the folder outside git, beside it as a draft: the same picture reads as the same.
+        let copy = root.join("t9").join(DIR);
+        std::fs::create_dir_all(copy.join("flows/app/home")).unwrap();
+        std::fs::create_dir_all(copy.join("flows/app/pay")).unwrap();
+        for rel in [TOKENS, "flows/flows.json", "flows/app/home/default.light.390.png"] {
+            std::fs::copy(design.join(rel), copy.join(rel)).unwrap();
+        }
+        shot(copy.join("flows/app/pay/default.light.390.png"), [9, 9, 9, 255]);
+        let places = [Place { project: None, draft: None, dir: design.clone(), live: None, installed: None }, Place { project: None, draft: Some(DraftOf { ticket: 9, title: "T9".into(), working: false }), dir: copy, live: None, installed: None }];
+        let (systems, _) = catalog_of(&places, Lang::En);
+        let hashes = |s: &DesignSystem| s.flows.as_ref().unwrap().flows[0].screens.iter().map(|sc| sc.states[0].pictures[0].hash.clone()).collect::<Vec<_>>();
+        let (now, after) = (hashes(&systems[0]), hashes(&systems[1]));
+        assert_eq!(now[0], after[0], "home: git's name and the copy's bytes agree");
+        assert_ne!(now[1], after[1], "pay was edited in the repository");
+        // Asked again with nothing changed: the same, from what was kept.
+        let (again, _) = catalog_of(&places, Lang::En);
+        assert_eq!(again, systems);
         std::fs::remove_dir_all(root).unwrap();
     }
 }
