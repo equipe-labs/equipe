@@ -4426,5 +4426,8 @@
   "design.news_open": "打开设计",
   "design.news_status_heading": "有新设计可看",
   "link.what_design": "T-{id} 的设计",
-  "link.gone_design": "T-{id} 没有可显示的设计。"
+  "link.gone_design": "T-{id} 没有可显示的设计。",
+  "chat.cards_folded": "{count} 张卡片待处理 · 已收起",
+  "chat.cards_show": "展开",
+  "chat.cards_hide": "收起卡片"
 }

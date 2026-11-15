@@ -4544,5 +4544,8 @@
   "design.news_open": "Open the design",
   "design.news_status_heading": "New design to look at",
   "link.what_design": "the design of T-{id}",
-  "link.gone_design": "T-{id} has no design to show."
+  "link.gone_design": "T-{id} has no design to show.",
+  "chat.cards_folded": "{count} cards waiting — folded",
+  "chat.cards_show": "Show",
+  "chat.cards_hide": "Fold the cards"
 }

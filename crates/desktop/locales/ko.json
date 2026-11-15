@@ -4427,5 +4427,8 @@
   "design.news_open": "디자인 열기",
   "design.news_status_heading": "새로 볼 디자인",
   "link.what_design": "T-{id}의 디자인",
-  "link.gone_design": "T-{id}에는 보여 줄 디자인이 없어요."
+  "link.gone_design": "T-{id}에는 보여 줄 디자인이 없어요.",
+  "chat.cards_folded": "카드 {count}장 대기 중 · 접어 둠",
+  "chat.cards_show": "펼치기",
+  "chat.cards_hide": "카드 접기"
 }

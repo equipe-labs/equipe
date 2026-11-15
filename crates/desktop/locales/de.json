@@ -4544,5 +4544,8 @@
   "design.news_open": "Entwurf öffnen",
   "design.news_status_heading": "Neue Entwürfe zum Ansehen",
   "link.what_design": "der Entwurf von T-{id}",
-  "link.gone_design": "T-{id} hat keinen Entwurf zum Anzeigen."
+  "link.gone_design": "T-{id} hat keinen Entwurf zum Anzeigen.",
+  "chat.cards_folded": "{count} Karten warten · eingeklappt",
+  "chat.cards_show": "Zeigen",
+  "chat.cards_hide": "Karten einklappen"
 }

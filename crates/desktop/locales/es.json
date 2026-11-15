@@ -4544,5 +4544,8 @@
   "design.news_open": "Abrir el diseño",
   "design.news_status_heading": "Diseños nuevos para ver",
   "link.what_design": "el diseño de T-{id}",
-  "link.gone_design": "T-{id} no tiene ningún diseño que mostrar."
+  "link.gone_design": "T-{id} no tiene ningún diseño que mostrar.",
+  "chat.cards_folded": "{count} tarjetas esperando · plegadas",
+  "chat.cards_show": "Mostrar",
+  "chat.cards_hide": "Plegar las tarjetas"
 }

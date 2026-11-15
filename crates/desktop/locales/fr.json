@@ -4544,5 +4544,8 @@
   "design.news_open": "Ouvrir le design",
   "design.news_status_heading": "Nouveaux designs à regarder",
   "link.what_design": "le design de T-{id}",
-  "link.gone_design": "T-{id} n'a pas de design à montrer."
+  "link.gone_design": "T-{id} n'a pas de design à montrer.",
+  "chat.cards_folded": "{count} cartes en attente · repliées",
+  "chat.cards_show": "Afficher",
+  "chat.cards_hide": "Replier les cartes"
 }

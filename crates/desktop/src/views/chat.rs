@@ -204,6 +204,9 @@ pub struct Chat {
     /// Which kind of card is in front over the composer, as last drawn
     /// ([`DOCK_APPROVAL`] for a request): a key answers only the card in sight.
     pub dock_front: std::cell::Cell<Option<usize>>,
+    /// The cards over the composer folded to one line, and how many there
+    /// were then: a new one unfolds them.
+    pub dock_folded: std::cell::Cell<Option<usize>>,
     pub blocks: Rc<Vec<Block>>,
     derived: ConversationDerived,
     /// Whose conversation `blocks` are, the ticket it shows the work of, and
@@ -317,6 +320,7 @@ impl Chat {
             dock_at: std::cell::Cell::new(0),
             dock_bring: std::cell::Cell::new(false),
             dock_front: std::cell::Cell::new(None),
+            dock_folded: std::cell::Cell::new(None),
             faded_in: None,
             seen_revision: 0,
             expanded: false,
@@ -741,14 +745,64 @@ fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     {
         shell.chat.dock_at.set(decide);
     }
+    let p = shell.palette;
+    // Folded to one line until the person opens them again, or a new card comes.
+    if let Some(seen) = shell.chat.dock_folded.get() {
+        if count > seen {
+            shell.chat.dock_folded.set(None);
+        } else {
+            shell.chat.dock_folded.set(Some(count));
+            // Out of sight: no key answers a folded card.
+            shell.chat.dock_front.set(None);
+            let row = h_flex()
+                .id("dock-unfold")
+                .w_full()
+                .px_3()
+                .py(px(6.))
+                .mb_2()
+                .gap_2()
+                .items_center()
+                .rounded(px(R_SM))
+                .bg(p.raised)
+                .border_1()
+                .border_color(p.hair)
+                .cursor_pointer()
+                .hover(move |s| s.bg(p.wash))
+                .text_size(px(META))
+                .text_color(p.text2)
+                .child(icon(Icon::ChevronUp, 12., p.text2))
+                .child(div().flex_1().child(t!("chat.cards_folded", count = count)))
+                .child(div().text_color(p.accent).child(t!("chat.cards_show")))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.chat.dock_folded.set(None);
+                    cx.notify();
+                }));
+            return Some(row.into_any_element());
+        }
+    }
     let at = shell.chat.dock_at.get().min(count - 1);
     shell.chat.dock_front.set(cards.get(at).map(|(kind, _)| *kind));
     let cards: Vec<AnyElement> = cards.into_iter().map(|(_, c)| c).collect();
     let card = cards.into_iter().nth(at)?;
+    let fold = div()
+        .id("dock-fold")
+        .size(px(22.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(R_SM))
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.wash))
+        .child(icon(Icon::ChevronDown, 12., p.text2))
+        .tip(p, t!("chat.cards_hide"), None)
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.chat.dock_folded.set(Some(count));
+            cx.notify();
+        }));
     if count == 1 {
-        return Some(card);
+        let bar = h_flex().justify_end().items_center().pb_1().child(fold);
+        return Some(v_flex().min_h_0().child(bar).child(card).into_any_element());
     }
-    let p = shell.palette;
     let step = |id: &'static str, glyph: Icon, by: isize, cx: &mut Context<Shell>| {
         div()
             .id(id)
@@ -774,7 +828,8 @@ fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         .text_color(p.muted)
         .child(t!("chat.cards_waiting", at = at + 1, count = count))
         .child(step("dock-prev", Icon::ArrowLeft, -1, cx))
-        .child(step("dock-next", Icon::ArrowRight, 1, cx));
+        .child(step("dock-next", Icon::ArrowRight, 1, cx))
+        .child(fold);
     Some(v_flex().min_h_0().child(bar).child(card).into_any_element())
 }
 

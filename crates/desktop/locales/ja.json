@@ -4426,5 +4426,8 @@
   "design.news_open": "デザインを開く",
   "design.news_status_heading": "新しく見るデザイン",
   "link.what_design": "T-{id} のデザイン",
-  "link.gone_design": "T-{id} には表示できるデザインがありません。"
+  "link.gone_design": "T-{id} には表示できるデザインがありません。",
+  "chat.cards_folded": "カード {count} 件 · たたみ中",
+  "chat.cards_show": "開く",
+  "chat.cards_hide": "カードをたたむ"
 }
