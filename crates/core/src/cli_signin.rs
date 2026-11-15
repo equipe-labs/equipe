@@ -821,8 +821,16 @@ mod tests {
         let dir = script.parent().unwrap().to_path_buf();
         let (tx, rx) = unbounded_channel();
         // Pasted once the page is on the card, as the person would: the tool has set its terminal up by then.
+        let started = dir.join("where");
         let sent = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(600)).await;
+            // Once the tool is up (it wrote where it runs, after setting its terminal), not after a guessed wait.
+            for _ in 0..400 {
+                if started.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
             tx.send(PastedCode("http://localhost:5555/callback?code=abc&state=x".into())).unwrap();
             tx
         });
