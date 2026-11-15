@@ -173,3 +173,43 @@ fn cleaning_members_scratch_folders_never_takes_the_kept_sign_ins() {
     assert_eq!(names(&load(&home, "acme", &keys).unwrap().live("", NOW)), ["session"]);
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn every_squad_shares_one_store_unless_it_keeps_its_own() {
+    let home = home("shared");
+    assert_eq!(store_of(&home, "acme"), SHARED, "shared by default");
+    assert_eq!(path(&home, SHARED), home.join("sign-ins.sealed"));
+    assert_eq!(key_account(SHARED), "sign-ins");
+    set_keeps_own(&home, "beta", true).unwrap();
+    assert!(keeps_own(&home, "beta"));
+    assert_eq!(store_of(&home, "beta"), "beta", "a squad for another company keeps its own");
+    assert_eq!(path(&home, "beta"), crate::journal::squad_dir(&home, "beta").join("sign-ins.sealed"));
+    set_keeps_own(&home, "beta", false).unwrap();
+    assert_eq!(store_of(&home, "beta"), SHARED);
+    set_keeps_own(&home, "beta", false).unwrap();
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn squads_own_files_move_into_the_shared_store_once_the_newer_sign_in_winning() {
+    let home = home("migrate");
+    let mut keys = MemKeys::default();
+    update(&home, "acme", &mut keys, NOW, |r| r.remember("", "app.example", vec![cookie("old", "app.example", None)], NOW)).unwrap();
+    update(&home, "beta", &mut keys, NOW, |r| r.remember("", "app.example", vec![cookie("new", "app.example", None)], NOW + 60)).unwrap();
+    update(&home, "beta", &mut keys, NOW, |r| r.remember("", "erp.example", vec![cookie("erp", "erp.example", None)], NOW + 60)).unwrap();
+    update(&home, "gamma", &mut keys, NOW, |r| r.remember("", "own.example", vec![cookie("own", "own.example", None)], NOW)).unwrap();
+    set_keeps_own(&home, "gamma", true).unwrap();
+    let squads = ["acme", "beta", "gamma", "delta"].map(str::to_owned);
+    let mut moved = migrate(&home, &squads, &mut keys, NOW + 120).unwrap();
+    moved.sort();
+    assert_eq!(moved, ["acme", "beta"], "a squad keeping its own, or with nothing kept, stays out");
+    let shared = load(&home, SHARED, &keys).unwrap();
+    assert_eq!(names(&shared.for_site("", "app.example", NOW + 180).unwrap().1), ["new"], "the newer sign-in to a site wins");
+    assert!(shared.for_site("", "erp.example", NOW + 180).is_some());
+    assert!(shared.for_site("", "own.example", NOW + 180).is_none(), "another company's stays its own");
+    assert!(!path(&home, "acme").exists() && !path(&home, "beta").exists(), "moved once");
+    assert!(path(&home, "gamma").is_file());
+    assert!(!String::from_utf8_lossy(&std::fs::read(path(&home, SHARED)).unwrap()).contains("s3cret"), "sealed to sealed");
+    assert!(migrate(&home, &squads, &mut keys, NOW + 240).unwrap().is_empty(), "nothing left to move");
+    let _ = std::fs::remove_dir_all(&home);
+}

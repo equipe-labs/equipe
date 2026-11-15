@@ -403,6 +403,7 @@
   "error.login_auto_stopped": "equipe 未能自動以 {username} 登入 {site}：登入表單又出現了（密碼可能已變更）。在你於 設定 › 帳號 中更新該登入資訊之前，不會再嘗試。",
   "notice.browser_given_back": "🖐 你交還了瀏覽器。",
   "notice.browser_in_panel": "🖥 {name} 的瀏覽器在瀏覽器面板中開啟：{why}",
+  "notice.browser_reauth_hint": "(這一步是網站自己的驗證:在敏感頁面之前或在尚未信任的裝置上會再次要求,equipe 無法代勞。如果出現「在此裝置上不再詢問」,請勾選:所有成員共用這個瀏覽器,對大家都有效。)",
   "notice.browser_on_screen": "🖥 {name} 的瀏覽器出現在這台 Mac 的螢幕上：{why}",
   "notice.browser_view": "🖥 {name} 的登入在瀏覽器面板的登入檢視中開啟：{why}",
   "notice.browser_window": "🖥 {name} 的登入在 {host} 的一般 Chrome 視窗中開啟：{why}",

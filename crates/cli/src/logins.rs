@@ -15,6 +15,19 @@ use serde_json::json;
 pub enum LoginsAction {
     /// How often you were asked to sign in for members, where, and why
     Stats(StatsArgs),
+    /// Whether a squad shares the sign-ins every squad on this machine keeps
+    /// (on, the default) or keeps its own (off: one machine working for
+    /// different companies)
+    Share(ShareArgs),
+}
+
+#[derive(Args)]
+pub struct ShareArgs {
+    /// The squad
+    pub squad: String,
+    /// on: share every squad's sign-ins; off: keep its own
+    #[arg(value_parser = ["on", "off"])]
+    pub share: String,
 }
 
 /// `equipe credential aws <profile>`: what an AWS CLI profile's
@@ -56,7 +69,21 @@ pub struct StatsArgs {
 pub fn command(action: LoginsAction) -> Result<(), String> {
     match action {
         LoginsAction::Stats(args) => stats(args),
+        LoginsAction::Share(args) => share(args),
     }
+}
+
+/// `equipe logins share <squad> on|off`: the squad's mark, read by the daemon
+/// at each sign-in it keeps or puts back (`equipe_core::signin_store`).
+fn share(a: ShareArgs) -> Result<(), String> {
+    let home = equipe_providers::credentials::equipe_home();
+    if !equipe_core::squads::exists(&home, &a.squad) {
+        return Err(t!("logins.share_no_squad", squad = a.squad).to_owned());
+    }
+    let own = a.share == "off";
+    equipe_core::signin_store::set_keeps_own(&home, &a.squad, own).map_err(|e| e.to_string())?;
+    println!("{}", if own { t!("logins.share_off", squad = a.squad) } else { t!("logins.share_on", squad = a.squad) });
+    Ok(())
 }
 
 fn now() -> i64 {

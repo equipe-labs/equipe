@@ -407,6 +407,7 @@
   "error.login_auto_stopped": "equipe couldn't sign in to {site} as {username} by itself: the sign-in form came back (a changed password?). It won't try again until you update that login in Settings › Accounts.",
   "notice.browser_given_back": "🖐 The person gave the browser back.",
   "notice.browser_in_panel": "🖥 {name}'s browser opens in the person's browser panel: {why}",
+  "notice.browser_reauth_hint": "(This step is the site's own: it asks again before sensitive pages and on devices it doesn't trust yet — equipe can't do it for you. If it offers \"Don't ask again on this device\", tick it: every member uses this browser, so it counts for all of them.)",
   "notice.browser_on_screen": "🖥 {name}'s browser comes up on this Mac's screen: {why}",
   "notice.browser_view": "🖥 {name}'s sign-in opens in a sign-in view in your browser panel: {why}",
   "notice.browser_window": "🖥 {name}'s sign-in opens in a normal Chrome window on {host}: {why}",

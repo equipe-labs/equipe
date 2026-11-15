@@ -122,10 +122,13 @@ pub fn chrome_path(home: &Path) -> Option<PathBuf> {
 /// Nothing that makes the browser automated or hides that it is — a normal
 /// launch. `--hide-crash-restore-bubble`: the folder's last exit is marked as
 /// a crash to keep session sign-ins (`assets/keep-sessions.js`); no "Restore
-/// pages?" bubble for that.
+/// pages?" bubble for that. `--profile-directory`: the profile the members'
+/// browser opens in that folder ([`crate::browser::pinned_profile`]) — not the
+/// one Chrome last used — so the person signs in where the members are.
 pub fn chrome_args(dir: &Path, url: &str) -> Vec<String> {
     let mut args = vec![
         format!("--user-data-dir={}", dir.display()),
+        format!("--profile-directory={}", crate::browser::pinned_profile(dir)),
         "--no-first-run".to_owned(),
         "--no-default-browser-check".to_owned(),
         "--hide-crash-restore-bubble".to_owned(),
@@ -156,7 +159,7 @@ pub enum Kept {
 /// automated browser stepped aside with a clean exit, so without this the
 /// person's window started by dropping every such sign-in of the members'.
 pub fn keep_sessions(dir: &Path) -> Kept {
-    let file = dir.join("Default").join("Preferences");
+    let file = dir.join(crate::browser::pinned_profile(dir)).join("Preferences");
     let Ok(text) = std::fs::read_to_string(&file) else { return Kept::Nothing };
     let Ok(serde_json::Value::Object(mut prefs)) = serde_json::from_str::<serde_json::Value>(&text) else { return Kept::Untouched };
     let profile = prefs.entry("profile").or_insert_with(|| serde_json::json!({}));
@@ -240,6 +243,8 @@ impl Machine for System {
     fn open(&mut self, profile: &str, dir: &Path, url: &str) -> std::io::Result<()> {
         let chrome = self.chrome().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Chrome is not installed"))?;
         std::fs::create_dir_all(dir)?;
+        // The members' profile, decided now: the window opens in it.
+        crate::browser::chrome_profile(dir);
         let mut command = std::process::Command::new(chrome);
         command.args(chrome_args(dir, url)).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
         // One window per profile: another page goes to it as a tab (that

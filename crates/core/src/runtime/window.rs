@@ -94,18 +94,19 @@ impl Runtime {
         let id = self.member_id(&call.squad, &call.member).ok_or(PanelWhy::NoWindow)?;
         let (squad, key) = self.browser_key(id).ok_or(PanelWhy::NoWindow)?;
         let lane = format!("{squad}/{key}");
-        // A screen that can take the sign-in in a view of its own, wherever it is: there.
-        if self.hub.has_web_view() {
-            self.begin_view_handoff(&squad, &key, url, why).await;
-            return Ok(true);
-        }
-        let (profile, dir) = profile_of(&self.config.home, &lane);
         // Where to open it, and to come back to: the address it names, else where its member is.
         let at = url
             .map(str::to_owned)
             .or_else(|| self.lane_page(&lane).map(|p| p.url).filter(|u| u.starts_with("http")))
             .or_else(|| self.last_url.get(&(squad.clone(), key.clone())).cloned())
             .unwrap_or_default();
+        // A screen that can take the sign-in in a view of its own, wherever it is: there —
+        // unless the site's sign-in holds only in the browser that made it (Google's).
+        if self.hub.has_web_view() && !handoff_view::binds_to_browser(&at) {
+            self.begin_view_handoff(&squad, &key, url, why).await;
+            return Ok(true);
+        }
+        let (profile, dir) = profile_of(&self.config.home, &lane);
         let chrome = self.windows.machine.chrome().is_some();
         let actions = self.windows.handoffs.begin(std::time::Instant::now(), &profile, &dir, &lane, &at, chrome);
         if let Some(why) = actions.iter().find_map(|a| if let Action::Panel { why, .. } = a { Some(*why) } else { None }) {
@@ -291,15 +292,11 @@ impl Runtime {
                 Action::Resume { profile, lanes } => self.resume_profile(&profile, &lanes),
                 Action::HandBack { lanes } => {
                     for lane in lanes {
-                        // What the person signed in to in their own window: kept for the squad.
-                        if let Some(site) = self.asked_site.get(&lane).cloned()
-                            && let Some((squad, _)) = lane.split_once('/')
-                        {
-                            let profile = profile_of(&self.config.home, &lane).0;
-                            self.collect_sign_in(vec![squad.to_owned()], &profile, &site);
-                        }
                         // The same as the person pressing Done in the panel: the
-                        // member is told, with where its page is now.
+                        // member is told, with where its page is now — and once
+                        // that page shows the site past its sign-in, the sign-in
+                        // is on the record, kept, and offered to save
+                        // (`Runtime::verify_back`).
                         Box::pin(self.on_host(HostEvent::Control { lane, by: None, refused: false })).await;
                     }
                 }
@@ -335,6 +332,7 @@ impl Runtime {
         }
         self.windows.reopen.entry(profile.to_owned()).or_default().extend(reopen);
         // Its tabs went with it.
+        self.host_pages.retain(|lane, _| tabs_profile(lane) != profile);
         let gone: Vec<String> = self.tabs.keys().filter(|lane| tabs_profile(lane) == profile).cloned().collect();
         for lane in gone {
             if let Some(Event::BrowserTabs { squad, session, member, color, .. }) = self.tabs.remove(&lane) {
@@ -350,6 +348,9 @@ impl Runtime {
     /// Open a profile's automated browser again, on the folder the sign-in
     /// went into, and take each lane back to where it was.
     fn resume_profile(&mut self, profile: &str, lanes: &[(String, String)]) {
+        // The profile its Chrome opens again: where the person was, should their sign-in have moved to another.
+        let dir = if profile.is_empty() { browser::host_profile(&self.config.home) } else { browser::profile_dir(&self.config.home, profile) };
+        browser::chrome_profile(&dir);
         self.hub.op(&json!({ "op": "resume", "profile": profile }));
         // Its Chrome starts again: the kept sign-ins go in again as its lanes open.
         self.sign_ins_restart(Some(profile));

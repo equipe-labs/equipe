@@ -62,6 +62,13 @@ impl Relogin {
 /// with the task that waits, which registers before it asks.
 pub(super) type FillWaits = std::sync::Arc<std::sync::Mutex<HashMap<u64, oneshot::Sender<Option<String>>>>>;
 
+/// How long a member told to look at its own page first is not told again
+/// for the same site: asked again within it, the person is asked.
+const LOOK_FIRST_AGAIN: u64 = 10 * 60;
+
+/// How long a lane back from the person's hands is watched for its sign-in's finish.
+const VERIFY_BACK_WAIT: Duration = Duration::from_secs(120);
+
 /// How long a fill waits for the browser host's answer (it holds the tab a
 /// few seconds after submitting, `browser-host.cjs`).
 const FILL_WAIT: Duration = Duration::from_secs(20);
@@ -103,7 +110,8 @@ impl Runtime {
         let check = page.as_ref().filter(|p| site.is_empty() || vault::serves(&site, &p.url)).and_then(|p| p.check);
         let known = !site.is_empty() && self.site_known(&squad, &site);
         let cause = logins::cause_of_handoff(why, Some(&at), check, known);
-        if cause.is_sign_in()
+        self.asking_cause = Some(cause);
+        if cause.is_shared_step()
             && !site.is_empty()
             && let Some(other) = self.lane_signing_in_to(&site, &lane)
         {
@@ -115,10 +123,87 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
             ));
         }
         self.login_record(&squad, Entry::new(now_secs(), &site, &call.member, Kind::Handoff, Some(cause), None));
-        if cause.is_sign_in() && !site.is_empty() {
+        if cause.is_shared_step() && !site.is_empty() {
             self.asked_site.insert(lane, site);
         }
         None
+    }
+
+    /// A member about to hand its browser over to sign in, whose own page on
+    /// that site shows no sign-in: every member shares the browser's sign-ins,
+    /// so it most likely is signed in already. `Some(text)`: look first —
+    /// once per site in a while; asked again, it goes to the person.
+    pub(super) fn look_first(&mut self, call: &ToolCall, url: Option<&str>, why: &str) -> Option<String> {
+        let id = self.caller_id(call)?;
+        let (squad, key) = self.browser_key(id)?;
+        let lane = format!("{squad}/{key}");
+        let page = self.lane_page(&lane)?;
+        let site = vault::site_of(url.unwrap_or(&page.url));
+        if site.is_empty() || page.loading || page.check.is_some() || !vault::serves(&site, &page.url) || browser::sign_in_address(&page.url) {
+            return None;
+        }
+        // Said to be for a sign-in, not for a step only the person can do.
+        if !logins::cause_of_handoff(why, Some(&page.url), None, true).is_sign_in() {
+            return None;
+        }
+        let now = now_secs();
+        self.looked_first.retain(|_, at| now.saturating_sub(*at) < LOOK_FIRST_AGAIN);
+        if self.looked_first.contains_key(&(lane.clone(), site.clone())) {
+            return None;
+        }
+        self.looked_first.insert((lane, site.clone()), now);
+        Some(format!(
+            "Your browser is on {site} and the page shows no sign-in: every member shares one browser and the person's sign-ins, so you are most likely signed in already. Don't ask the person yet — take a snapshot of the page you need and carry on. Only if that page asks you to sign in (or a step only the person can do), call `show_my_browser` again from there."
+        ))
+    }
+
+    /// A lane back from the person's hands: once its page shows the site the
+    /// sign-in was for — or, from an identity provider's page, the site it
+    /// sent the browser on to — past any sign-in, the sign-in went through:
+    /// on the record as the person's, kept for every squad sharing it, other
+    /// members' pages waiting on it reloaded, and saving the login offered
+    /// once. Nothing like it seen in [`VERIFY_BACK_WAIT`]: no finish.
+    pub(super) async fn verify_back(&mut self, lane: &str, pages: &[browser::HostPage], agent: Option<u64>) {
+        let Some((site, since)) = self.verify_back.get(lane).cloned() else { return };
+        if since.elapsed() > VERIFY_BACK_WAIT {
+            self.verify_back.remove(lane);
+            return;
+        }
+        let Some(page) = agent.and_then(|a| pages.iter().find(|p| p.id == a)).or(pages.last()) else { return };
+        // Still asking may be a page from before the hand-off on its way to the
+        // site: watched on until the wait is over.
+        let on = match logins::back_verdict(&site, page) {
+            logins::Back::Wait | logins::Back::StillAsks => return,
+            logins::Back::SignedIn { on } => on,
+        };
+        self.verify_back.remove(lane);
+        let Some((squad, key)) = lane.split_once('/') else { return };
+        let (squad, member, profile) = (squad.to_owned(), browser::member_of(key).to_owned(), browser::split_profile(key).1.unwrap_or_default().to_owned());
+        crate::daemon_log!("equipe: {member}'s browser is signed in to {site} after the person's hand-off");
+        self.login_record(&squad, Entry::new(now_secs(), &site, &member, Kind::SignedIn, None, Some(BY_PERSON)));
+        let squads = self.sharing_squads(&squad, &profile);
+        self.collect_sign_in(squads.clone(), &profile, &site);
+        if on != site {
+            self.collect_sign_in(squads, &profile, &on);
+        }
+        self.reload_waiting(&site, lane);
+        if profile.is_empty() {
+            let at = if vault::serves(&site, &page.url) { page.url.clone() } else { format!("https://{site}/") };
+            self.offer_login(Some(&squad), Some(&member), &site, &at);
+        }
+    }
+
+    /// The squads a sign-in made in `squad`'s browser is kept for: every squad
+    /// sharing the machine's store (they share the browser), else `squad` alone.
+    fn sharing_squads(&self, squad: &str, profile: &str) -> Vec<String> {
+        if !profile.is_empty() || crate::signin_store::keeps_own(&self.config.home, squad) {
+            return vec![squad.to_owned()];
+        }
+        let mut all: Vec<String> = self.journals.keys().filter(|q| !crate::signin_store::keeps_own(&self.config.home, q)).cloned().collect();
+        if !all.iter().any(|q| q == squad) {
+            all.push(squad.to_owned());
+        }
+        all
     }
 
     /// The tab a lane's member works in, as last told.
@@ -221,6 +306,9 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
         }
         let Some((squad, key)) = lane.split_once('/') else { return };
         let (squad, member, profile) = (squad.to_owned(), browser::member_of(key).to_owned(), browser::split_profile(key).1.is_some());
+        // Seen through in their hands: nothing to look at again once it is handed back.
+        self.finished_in_hands.insert(lane.to_owned());
+        self.verify_back.remove(lane);
         self.login_record(&squad, Entry::new(now_secs(), &was.site, &member, Kind::SignedIn, None, Some(BY_PERSON)));
         // Kept for the squad, in the profile it was made in.
         self.collect_sign_in(vec![squad.clone()], browser::split_profile(key).1.unwrap_or_default(), &was.site);

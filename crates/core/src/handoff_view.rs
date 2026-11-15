@@ -46,6 +46,16 @@ pub const BACK_AT_LEAST: Duration = Duration::from_millis(1500);
 /// A view whose screen never answers (it left, or it hung) is given up after this.
 pub const VIEW_WAIT: Duration = Duration::from_secs(45 * 60);
 
+/// Whether a site's sign-in is tied to the browser that made it, so a copy
+/// carried from a sign-in view into the members' Chrome doesn't hold: Google
+/// ends a session it sees come back from another browser, and asks for the
+/// person's second step again. Such a sign-in is made in the members' own
+/// Chrome profile instead (the person's window on it, or the panel).
+pub fn binds_to_browser(site: &str) -> bool {
+    let host = crate::vault::site_of(site);
+    ["google.com", "youtube.com", "gmail.com"].iter().any(|d| host == *d || host.ends_with(&format!(".{d}")))
+}
+
 /// A host name as a web address has it: lowercase letters, digits, `-`, `.`,
 /// without a port.
 fn host_of(text: &str) -> Option<String> {

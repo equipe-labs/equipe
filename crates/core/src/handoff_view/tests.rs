@@ -184,3 +184,13 @@ fn a_cookie_with_no_same_site_policy_is_lax_not_none() {
     real.same_site = Some("None".into());
     assert_eq!(normalize(real).same_site.as_deref(), Some("None"), "a secure SameSite=None cookie is what it says");
 }
+
+#[test]
+fn a_google_sign_in_is_made_in_the_members_own_browser_not_carried_from_a_view() {
+    for site in ["https://accounts.google.com/v3/signin", "console.cloud.google.com", "google.com", "mail.google.com"] {
+        assert!(binds_to_browser(site), "{site}");
+    }
+    for site in ["github.com", "slack.com", "notgoogle.com", "google.com.evil.example"] {
+        assert!(!binds_to_browser(site), "{site}");
+    }
+}

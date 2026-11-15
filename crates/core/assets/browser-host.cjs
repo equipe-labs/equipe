@@ -34,8 +34,9 @@
 //   {"op":"unfit","page":3}  (no panel watches it: its own size again)
 //   {"op":"newtab","url":"…"}  {"op":"closetab","page":3}
 //   {"op":"control","lane":"squad/name","by":"person"|null,"why":"check"?,"ifUntouched":true?}
-//   {"op":"cookies","lane":"squad/name","cookies":[{name,value,domain,path,expires,secure,httpOnly,sameSite}],"url":"…"}
-//     (a sign-in the person made in a view of their screen: added to the lane's profile, the page loaded again)
+//   {"op":"cookies","lane":"squad/name","cookies":[{name,value,domain,path,expires,secure,httpOnly,sameSite}],"url":"…","missing":true?}
+//     (a sign-in the person made in a view of their screen: added to the lane's profile, the page loaded again;
+//     `missing`: a kept sign-in put back — only the cookies the profile lacks)
 //   {"op":"goto","lane":"squad/name","url":"…"}  {"op":"dialog","page":3,"accept":true,"text":"…"}
 //   {"op":"popout","page":3,"bounds":{"left":0,"top":0,"width":900,"height":800}}
 //   {"op":"fill","lane":"squad/name","page":3,"script":"() => …","token":7}
@@ -189,7 +190,9 @@ const startProfile = async (name, profile, STATE) => {
     // --hide-crash-restore-bubble: the last exit is marked as a crash to keep
     // session sign-ins (above); no "Restore pages?" bubble for that.
     ignoreDefaultArgs: ['--enable-automation'],
-    args: ['--disable-blink-features=AutomationControlled', '--test-type', '--disable-notifications', '--hide-crash-restore-bubble'],
+    // --profile-directory: the profile the daemon pinned (`browser::chrome_profile`),
+    // the same one the person's own window opens — never whichever Chrome used last.
+    args: ['--disable-blink-features=AutomationControlled', '--test-type', '--disable-notifications', '--hide-crash-restore-bubble', `--profile-directory=${pinnedProfile(profile, fs, path)}`],
   });
 
   const owner = new Map(); // page -> lane id ("" for the person's own)
@@ -1151,10 +1154,18 @@ const startProfile = async (name, profile, STATE) => {
     }
     return { added, failed: ok.length - added };
   };
-  const cookies = async ({ lane: laneId, cookies: list = [], url }) => {
+  // `missing`: only what this profile lacks — a kept sign-in put back before
+  // the person is asked must never write over a cookie the site rotated since
+  // (Google ends a session it sees an older copy of come back).
+  const lacking = async (list) => {
+    const key = (c) => `${c.name}\u0000${String(c.domain).replace(/^\./, '')}\u0000${c.path || '/'}`;
+    const have = new Set((await context.cookies().catch(() => [])).map(key));
+    return list.filter((c) => c && c.name && c.domain && !have.has(key(c)));
+  };
+  const cookies = async ({ lane: laneId, cookies: list = [], url, missing }) => {
     const lane = lanes.get(laneId);
     if (!lane) return;
-    const { added, failed } = await addAll(list);
+    const { added, failed } = await addAll(missing ? await lacking(list) : list);
     if (failed) console.error(`equipe browser host: ${failed} of ${added + failed} sign-in cookies were not added`);
     emit({ type: 'cookies', lane: laneId, profile: name || '', added, failed, restore: false });
     const page = pages.get(lane.agent) || tabsOf(laneId).at(-1) || (await openTab(laneId));
@@ -1164,9 +1175,7 @@ const startProfile = async (name, profile, STATE) => {
   // The squad's kept sign-ins (`signin_store.rs`), back in this profile: only
   // what it lacks — a cookie it holds may be fresher than the kept copy.
   const restore = async ({ cookies: list = [] }) => {
-    const key = (c) => `${c.name}\u0000${String(c.domain).replace(/^\./, '')}\u0000${c.path || '/'}`;
-    const have = new Set((await context.cookies().catch(() => [])).map(key));
-    const { added, failed } = await addAll(list.filter((c) => c && c.name && c.domain && !have.has(key(c))));
+    const { added, failed } = await addAll(await lacking(list));
     emit({ type: 'cookies', lane: null, profile: name || '', added, failed, restore: true });
   };
   // A sign-in the person finished in this profile (a member's browser in

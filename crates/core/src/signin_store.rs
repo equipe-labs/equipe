@@ -16,8 +16,15 @@
 //! - Profiles stay apart: a named profile is another person's accounts
 //!   (`browser::split_profile`), and its sign-ins never reach another profile.
 //!
-//! On disk it is one sealed file per squad (`squads/<squad>/sign-ins.sealed`,
-//! readable by the person alone): ChaCha20-Poly1305 under a key of its own
+//! - One store for every squad on the machine, by default: the person signs
+//!   in once anywhere in equipe. A squad can keep a store of its own instead
+//!   (`equipe logins share <squad> off`, [`set_keeps_own`]) — one machine may
+//!   work for different companies. Squads' own files from before the shared
+//!   store are moved into it, sealed to sealed, by [`migrate`].
+//!
+//! On disk it is one sealed file (`sign-ins.sealed` in equipe's home, or
+//! `squads/<squad>/sign-ins.sealed` for a squad that keeps its own; readable
+//! by the person alone): ChaCha20-Poly1305 under a key of its own
 //! kept in the system's secret store (`crate::vault`: the Keychain on a Mac).
 //! It is not under `tmp`, so no cleanup of members' scratch folders reaches
 //! it. A cookie's value is never printed (`HandoffCookie`'s `Debug` leaves it
@@ -39,14 +46,60 @@ pub const MAX_SITES: usize = 200;
 /// What a sealed file starts with, and is bound to.
 const MAGIC: &[u8] = b"equipe-sign-ins-1";
 
-/// The secret store's name for a squad's key.
-pub fn key_account(squad: &str) -> String {
-    format!("sign-ins.{squad}")
+/// The store every squad shares unless it keeps its own: its name where a
+/// store is named (`store` below is this, or a squad's name).
+pub const SHARED: &str = "";
+
+/// The secret store's name for a store's key.
+pub fn key_account(store: &str) -> String {
+    if store == SHARED { "sign-ins".to_owned() } else { format!("sign-ins.{store}") }
 }
 
-/// Where a squad's sign-ins are kept.
-pub fn path(home: &Path, squad: &str) -> PathBuf {
-    crate::journal::squad_dir(home, squad).join("sign-ins.sealed")
+/// Where a store's sign-ins are kept.
+pub fn path(home: &Path, store: &str) -> PathBuf {
+    if store == SHARED { home.join("sign-ins.sealed") } else { crate::journal::squad_dir(home, store).join("sign-ins.sealed") }
+}
+
+/// The mark of a squad that keeps its sign-ins to itself.
+fn own_mark(home: &Path, squad: &str) -> PathBuf {
+    crate::journal::squad_dir(home, squad).join("sign-ins.own")
+}
+
+/// Whether `squad` keeps a store of its own rather than the shared one.
+pub fn keeps_own(home: &Path, squad: &str) -> bool {
+    !squad.is_empty() && own_mark(home, squad).is_file()
+}
+
+/// Let `squad` keep a store of its own (`own`), or share the machine's again.
+/// What it kept on its own goes into the shared store when it shares again ([`migrate`]).
+pub fn set_keeps_own(home: &Path, squad: &str, own: bool) -> std::io::Result<()> {
+    let mark = own_mark(home, squad);
+    if own {
+        if let Some(dir) = mark.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(mark, "")
+    } else {
+        match std::fs::remove_file(mark) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// The store `squad`'s sign-ins are in: the shared one, or its own.
+pub fn store_of(home: &Path, squad: &str) -> String {
+    if keeps_own(home, squad) { squad.to_owned() } else { SHARED.to_owned() }
+}
+
+/// What a store is called in the log.
+pub fn store_name(store: &str) -> String {
+    if store == SHARED { "every squad".to_owned() } else { store.to_owned() }
+}
+
+/// Where a squad's own file goes once moved into the shared store.
+fn moved(home: &Path, squad: &str) -> PathBuf {
+    path(home, squad).with_extension("sealed.moved")
 }
 
 /// One site's sign-in: when the person finished it, and its cookies.
@@ -149,6 +202,23 @@ impl Record {
         let saved = sites.iter().filter(|(kept, saved)| covers(kept, saved, site)).map(|(_, s)| s).max_by_key(|s| s.at)?;
         let cookies: Vec<HandoffCookie> = saved.cookies.iter().filter(|c| alive(c, saved.at, now)).cloned().collect();
         (!cookies.is_empty()).then_some((saved.at, cookies))
+    }
+
+    /// Another store's sign-ins taken in: per profile and site, the newer
+    /// sign-in of the two stays.
+    pub fn absorb(&mut self, other: Record) {
+        for (profile, theirs) in other.profiles {
+            let sites = self.profiles.entry(profile).or_default();
+            for (site, saved) in theirs {
+                if sites.get(&site).is_none_or(|mine| mine.at < saved.at) {
+                    sites.insert(site, saved);
+                }
+            }
+            while sites.len() > MAX_SITES {
+                let Some(oldest) = sites.iter().min_by_key(|(_, s)| s.at).map(|(k, _)| k.clone()) else { break };
+                sites.remove(&oldest);
+            }
+        }
     }
 
     /// The sites kept for `profile`, for the log.
@@ -263,6 +333,38 @@ fn read(home: &Path, squad: &str, keys: &dyn Keys) -> Result<Record, String> {
 /// makes the squad's key. The record as kept now.
 pub fn update(home: &Path, squad: &str, keys: &mut dyn Keys, now: u64, change: impl FnOnce(&mut Record)) -> Result<Record, String> {
     let _one = FILES.lock().map_err(|_| "the sign-ins are unusable".to_owned())?;
+    write(home, squad, keys, now, change)
+}
+
+/// Squads' own files, of squads that share the store now, moved into the
+/// shared one: each opened with its key and taken in ([`Record::absorb`]) —
+/// in memory, nothing of it printed — then set aside (`sign-ins.sealed.moved`),
+/// so it is moved once. A file whose key can't be had stays where it is.
+/// The squads moved.
+pub fn migrate(home: &Path, squads: &[String], keys: &mut dyn Keys, now: u64) -> Result<Vec<String>, String> {
+    let _one = FILES.lock().map_err(|_| "the sign-ins are unusable".to_owned())?;
+    let mut taken = Record::default();
+    let mut from = Vec::new();
+    for squad in squads.iter().filter(|q| !q.is_empty() && !keeps_own(home, q) && path(home, q).is_file()) {
+        match read(home, squad, &*keys) {
+            Ok(record) => {
+                taken.absorb(record);
+                from.push(squad.clone());
+            }
+            Err(why) => crate::daemon_log!("equipe: {squad}'s kept sign-ins stay its own for now: {why}"),
+        }
+    }
+    if from.is_empty() {
+        return Ok(from);
+    }
+    write(home, SHARED, keys, now, |r| r.absorb(taken))?;
+    for squad in &from {
+        let _ = std::fs::rename(path(home, squad), moved(home, squad));
+    }
+    Ok(from)
+}
+
+fn write(home: &Path, squad: &str, keys: &mut dyn Keys, now: u64, change: impl FnOnce(&mut Record)) -> Result<Record, String> {
     let file = path(home, squad);
     let kept_key = keys.get(&key_account(squad)).ok().and_then(|k| decode_key(&k));
     let mut record = match (read(home, squad, &*keys), file.exists()) {

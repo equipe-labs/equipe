@@ -888,8 +888,9 @@ browser with `show_my_browser` to sign in themselves. Never ask for a password i
     tools.push(json!({
         "name": SHOW_BROWSER,
         "description": "Hand your browser to the person — for them to sign in, to look at something with you, or \
-to do a step only they can (a code, a CAPTCHA). Always use this rather than only asking in words. Give the page to \
-open and, as `why`, exactly what to do there. It opens in their hands in equipe's browser panel (or on their \
+to do a step only they can (a code, a CAPTCHA). Always use this rather than only asking in words. Every member shares \
+one browser and the person's sign-ins: before handing it over to sign in, open the page you need and look (a snapshot) — \
+hand it over only if that page really asks. Give the page to open and, as `why`, exactly what to do there. It opens in their hands in equipe's browser panel (or on their \
 screen when this turn ends), with `why` over it; end your turn then. When they hand it back you get a message and \
 carry on by yourself. Never run `equipe browser` yourself.",
         "inputSchema": {

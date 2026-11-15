@@ -65,6 +65,13 @@ impl Cause {
     pub fn is_sign_in(self) -> bool {
         matches!(self, Cause::SessionExpired | Cause::NoLoginKept)
     }
+
+    /// Whether one person's step serves every member asking for it on that
+    /// site — a sign-in, or the code or passkey after it — since they all
+    /// share one browser: a second member waits on the first hand-off.
+    pub fn is_shared_step(self) -> bool {
+        self.is_sign_in() || matches!(self, Cause::TwoFactor | Cause::Passkey)
+    }
 }
 
 /// What happened.
@@ -268,6 +275,36 @@ impl SignInWatch {
     /// The browser host went: its pages with it.
     pub fn clear(&mut self) {
         self.pages.clear();
+    }
+}
+
+/// What a member's page says, once back from the person's hands, of the
+/// sign-in to `site` it was handed over for ([`back_verdict`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Back {
+    /// Past the sign-in, on `site` — or, handed over on an identity
+    /// provider's page, on the site the provider sent it on to (`on`).
+    SignedIn { on: String },
+    /// Still on a sign-in, or the code after it: the person didn't get through.
+    StillAsks,
+    /// Loading, or somewhere that says nothing yet.
+    Wait,
+}
+
+/// Whether a page back from the person's hands shows the sign-in to `site` went through.
+pub fn back_verdict(site: &str, page: &crate::browser::HostPage) -> Back {
+    if page.loading {
+        return Back::Wait;
+    }
+    if crate::browser::signing_in(&page.url, &page.title, page.signals.as_ref()) {
+        return Back::StillAsks;
+    }
+    let on = crate::vault::site_of(&page.url);
+    let went_on = crate::vault::idp_provider(site).is_some() && crate::vault::idp_provider(&on).is_none();
+    if (crate::vault::serves(site, &page.url) || went_on) && crate::browser::past_sign_in(&page.url, &page.title, page.signals.as_ref(), page.loading) {
+        Back::SignedIn { on }
+    } else {
+        Back::Wait
     }
 }
 
@@ -768,6 +805,36 @@ mod tests {
             favicon: None,
             signals: Some(crate::browser::Signals { password, otp, ..Default::default() }),
             crashed: false,
+        }
+    }
+
+    #[test]
+    fn a_page_back_from_the_persons_hands_tells_whether_their_sign_in_went_through() {
+        // Their own window: the member's page loads again on the site, signed in.
+        assert_eq!(back_verdict("github.com", &host_page(3, "https://github.com/acme", false, false)), Back::SignedIn { on: "github.com".into() });
+        // Handed over on Google's sign-in, back on the console it was for.
+        assert_eq!(
+            back_verdict("accounts.google.com", &host_page(3, "https://console.cloud.google.com/home", false, false)),
+            Back::SignedIn { on: "console.cloud.google.com".into() }
+        );
+        // Still on the form, or the code after it: not through.
+        assert_eq!(back_verdict("github.com", &host_page(3, "https://github.com/login", true, false)), Back::StillAsks);
+        assert_eq!(back_verdict("github.com", &host_page(3, "https://github.com/sessions/two-factor", false, true)), Back::StillAsks);
+        // Still loading, still on the provider, or elsewhere: nothing to say yet.
+        let mut loading = host_page(3, "https://github.com/acme", false, false);
+        loading.loading = true;
+        assert_eq!(back_verdict("github.com", &loading), Back::Wait);
+        assert_eq!(back_verdict("accounts.google.com", &host_page(3, "https://accounts.google.com/v3/signin/identifier", false, false)), Back::Wait);
+        assert_eq!(back_verdict("slack.com", &host_page(3, "https://evil.example/", false, false)), Back::Wait, "another site than the one asked");
+    }
+
+    #[test]
+    fn one_persons_step_on_a_site_serves_every_member_asking_for_it() {
+        for cause in [Cause::SessionExpired, Cause::NoLoginKept, Cause::TwoFactor, Cause::Passkey] {
+            assert!(cause.is_shared_step(), "{cause:?}");
+        }
+        for cause in [Cause::Captcha, Cause::Consent, Cause::DeviceCode, Cause::Other] {
+            assert!(!cause.is_shared_step(), "{cause:?}");
         }
     }
 

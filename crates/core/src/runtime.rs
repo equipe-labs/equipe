@@ -699,6 +699,11 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         sign_in_joined: HashMap::new(),
         login_waiters: HashMap::new(),
         asked_site: HashMap::new(),
+        verify_back: HashMap::new(),
+        finished_in_hands: HashSet::new(),
+        host_pages: HashMap::new(),
+        looked_first: HashMap::new(),
+        asking_cause: None,
         fill_waits: Default::default(),
         next_fill: 0,
         autopilot: Default::default(),
@@ -1177,6 +1182,7 @@ enum Internal {
     /// A squad's kept sign-ins as read or just kept off the loop
     /// (`crate::signin_store`); `None`: they couldn't be read.
     /// `turn`: the order the read or change was begun in (a later one wins).
+    /// `squad`: the store's name (`signin_store::store_of`: `""` the shared one).
     SignIns { squad: String, record: Option<Box<crate::signin_store::Record>>, turn: u64 },
     /// Something waits for a conversation to act on — work handed in for the
     /// PM to accept: it is woken with `prompt` (read at its next step, at work).
@@ -1510,6 +1516,20 @@ struct Runtime {
     login_waiters: HashMap<String, Vec<(SessionId, String)>>,
     /// The site a browser was handed to the person to sign in to, by lane.
     asked_site: HashMap<String, String>,
+    /// Sign-ins back from the person's hands — a window, a sign-in view, the
+    /// panel — whose finish isn't seen yet: the lane's page is looked at as
+    /// it comes back (`logins::verify_back`). By lane: the site, and since when.
+    verify_back: HashMap<String, (String, std::time::Instant)>,
+    /// Lanes whose sign-in was seen finished while in the person's hands.
+    finished_in_hands: HashSet<String>,
+    /// Each lane's pages as the host last told them, with what was read off
+    /// them, and its member's tab: for a hand-back whose page is loaded already.
+    host_pages: HashMap<String, (Vec<browser::HostPage>, Option<u64>)>,
+    /// `(lane, site)` a member was told to look at its own page before handing
+    /// it over for a sign-in it may already have: when.
+    looked_first: HashMap<(String, String), u64>,
+    /// The cause of the hand-off being asked for now, for what the person is told.
+    asking_cause: Option<crate::logins::Cause>,
     /// equipe's fills of a kept login waiting for the browser host's answer, by token.
     fill_waits: logins::FillWaits,
     next_fill: u64,
@@ -7812,6 +7832,11 @@ It starts when {owner} is free."
             self.with_person(&call);
             let url = call.arguments["url"].as_str().map(str::to_owned);
             let why = call.arguments["why"].as_str().unwrap_or_default().to_owned();
+            // Its own page on that site shows no sign-in: it looks before anyone is asked.
+            if let Some(text) = self.look_first(&call, url.as_deref(), &why) {
+                let _ = reply.send(ToolResult { text, is_error: false, image: None });
+                return;
+            }
             // First what equipe can do by itself: the login autopilot, or the
             // sign-in the person made before put back. Only then the person.
             if let Some(text) = self.try_kept_sign_in(&call, url.as_deref(), &why) {
@@ -7820,10 +7845,17 @@ It starts when {owner} is free."
             }
             // Kept with its cause — or, the person signing in to the same site
             // in another member's browser now, this one waits on that.
+            self.asking_cause = None;
             if let Some(text) = self.handoff_asked(&call, url.as_deref(), &why) {
                 let _ = reply.send(ToolResult { text, is_error: false, image: None });
                 return;
             }
+            // A site's own second step (a code, "verify it's you" before a sensitive page):
+            // the person is told it is the site's, once, and how to make it rarer.
+            let why = match self.asking_cause.take() {
+                Some(crate::logins::Cause::TwoFactor) => format!("{why} {}", say!(self, "notice.browser_reauth_hint")),
+                _ => why,
+            };
             // A sign-in the person does in a normal Chrome window of their own, the
             // automated browser stepping aside — a site's human check lets a person
             // through there. Not possible (no Chrome): the panel, with the reason.
@@ -8305,7 +8337,9 @@ there, end your turn, and carry on when they say they're done."
             ([], _) => {
                 self.login_record(&call.squad, crate::logins::Entry::new(now_secs(), &site, &call.member, crate::logins::Kind::NoLogin, Some(crate::logins::Cause::NoLoginKept), None));
                 let _ = reply.send(ToolResult::error(format!(
-                    "The person keeps no login for {}. Ask them to add one in equipe (Settings › Accounts), or hand them your browser with `show_my_browser` to sign in themselves.",
+                    "The person keeps no login for {}. First look whether you are signed in already: every member shares one browser and the \
+person's sign-ins — open the page you need and take a snapshot. Only if it asks you to sign in, hand them your browser with \
+`show_my_browser` to sign in themselves (or ask them to add a login in equipe, Settings › Accounts).",
                     vault::site_of(&site)
                 )));
                 return;
@@ -8719,6 +8753,11 @@ there, end your turn, and carry on when they say they're done."
                 self.see_verification_pages(&lane, &pages);
                 // A sign-in page that turned into its site: a sign-in finished.
                 self.follow_sign_ins(&lane, &pages, touched).await;
+                // Back from the person: whether the sign-in they were handed it for went through.
+                self.verify_back(&lane, &pages, agent).await;
+                if !lane.is_empty() {
+                    self.host_pages.insert(lane.clone(), (pages.clone(), agent));
+                }
                 // The person's own tabs, in the panel or the Chrome window: a sign-in they started, or any.
                 if lane.is_empty() {
                     self.follow_person_tabs(&pages);
@@ -8747,8 +8786,23 @@ there, end your turn, and carry on when they say they're done."
                 // again — its pages on that site reloaded, its members told.
                 if by.is_none() {
                     let site = checked.as_ref().map(|(_, url, _)| vault::site_of(url)).or_else(|| self.asked_site.get(&lane).cloned());
-                    if let Some(site) = site {
-                        self.reload_waiting(&site, &lane);
+                    if let Some(site) = &site {
+                        self.reload_waiting(site, &lane);
+                    }
+                    // Its finish not seen in their hands (their own window, a sign-in view, a page
+                    // reloaded after): its page is looked at as it comes back.
+                    // Only for a sign-in or the step after it: a CAPTCHA passed is no sign-in.
+                    let seen = self.finished_in_hands.remove(&lane);
+                    let signing_in = match &checked {
+                        Some((_, _, check)) => matches!(check, equipe_protocol::HumanCheck::SignIn | equipe_protocol::HumanCheck::TwoFactor),
+                        None => asked.is_some() && self.asked_site.contains_key(&lane),
+                    };
+                    if let Some(site) = site.filter(|s| !s.is_empty() && !seen && signing_in) {
+                        self.verify_back.insert(lane.clone(), (site, std::time::Instant::now()));
+                        // Loaded already (a sign-in view's page waits for that): looked at now.
+                        if let Some((pages, agent)) = self.host_pages.get(&lane).cloned() {
+                            self.verify_back(&lane, &pages, agent).await;
+                        }
                     }
                     self.release_login_waiters(&lane).await;
                 }
@@ -8848,6 +8902,9 @@ there, end your turn, and carry on when they say they're done."
                     self.release_login_waiters(&lane).await;
                 }
                 self.asked_site.clear();
+                self.verify_back.clear();
+                self.finished_in_hands.clear();
+                self.host_pages.clear();
             }
         }
     }

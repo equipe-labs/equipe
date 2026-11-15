@@ -407,6 +407,7 @@
   "error.login_auto_stopped": "equipe n’a pas pu se connecter tout seul à {site} en tant que {username} : le formulaire de connexion est revenu (un mot de passe changé ?). Il ne réessaiera pas tant que vous n’aurez pas mis à jour cet identifiant dans Réglages › Comptes.",
   "notice.browser_given_back": "🖐 Vous avez rendu le navigateur.",
   "notice.browser_in_panel": "🖥 Le navigateur de {name} s'ouvre dans votre panneau de navigateur : {why}",
+  "notice.browser_reauth_hint": "(Cette étape est une vérification propre au site : il la redemande avant les pages sensibles et sur les appareils qu'il ne connaît pas encore — equipe ne peut pas la faire à votre place. S'il propose « Ne plus demander sur cet appareil », cochez-le : tous les membres utilisent ce navigateur, cela vaut donc pour tous.)",
   "notice.browser_on_screen": "🖥 Le navigateur de {name} apparaît sur l'écran de ce Mac : {why}",
   "notice.browser_view": "🖥 La connexion de {name} s'ouvre dans une vue de connexion de votre panneau de navigateur : {why}",
   "notice.browser_window": "🖥 La connexion de {name} s'ouvre dans une fenêtre Chrome normale sur {host} : {why}",

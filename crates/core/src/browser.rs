@@ -3,10 +3,18 @@
 //! way a person would — open a dashboard, create a project, connect a domain,
 //! find a key — on the person's own accounts.
 //!
-//! Each member gets a browser of its own, with a profile kept on disk, that
-//! starts from the squad's sign-ins (Playwright storage state). Whatever it
-//! signs in to — an account it made with the person's yes — goes back into
-//! them, so the next member is signed in too.
+//! On a Mac, every member, lane and ticket of every squad works in one
+//! shared Chrome — the browser host ([`Host`], `assets/browser-host.cjs`) —
+//! on one user-data folder (`browser/chrome`) and one pinned Chrome profile
+//! in it ([`chrome_profile`]): the person signs in once and every member is
+//! signed in, across turns, restarts and updates. The person's own window for
+//! a hand-off opens that same profile.
+//!
+//! Where there is no host (other systems), each member gets a browser of its
+//! own, with a profile kept on disk, that starts from the squad's sign-ins
+//! (Playwright storage state, [`state_file`]). Whatever it signs in to goes
+//! back into them, so the next member is signed in too. On a Mac that file
+//! stays empty: the shared profile itself is what is shared.
 
 use std::path::{Path, PathBuf};
 
@@ -220,6 +228,67 @@ const HOST: &str = include_str!("../assets/browser-host.cjs");
 /// The profile the browser host's Chrome keeps: the person's sign-ins, once.
 pub fn host_profile(home: &Path) -> PathBuf {
     home.join("browser").join("chrome")
+}
+
+/// The file in one of equipe's Chrome folders naming the Chrome profile
+/// (`Default`, `Profile 2`) that every Chrome equipe starts on the folder
+/// opens: the members' automated one and the person's own window alike.
+pub const PINNED_PROFILE: &str = "equipe-profile";
+
+/// Whether `name` can be a Chrome profile's folder inside a user-data folder.
+fn chrome_profile_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && !name.starts_with('.')
+        && !name.contains(['/', '\\', '\0'])
+        && !matches!(name, "System Profile" | "Guest Profile")
+}
+
+/// The profile `dir` is pinned to, as written; `Default` before anything is.
+pub fn pinned_profile(dir: &Path) -> String {
+    std::fs::read_to_string(dir.join(PINNED_PROFILE)).ok().map(|s| s.trim().to_owned()).filter(|s| chrome_profile_name(s)).unwrap_or_else(|| "Default".to_owned())
+}
+
+/// The profile Chrome itself last used in `dir` (its `Local State`), if its folder is there.
+fn last_used_profile(dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join("Local State")).ok()?;
+    let state: Value = serde_json::from_str(&text).ok()?;
+    let name = state["profile"]["last_used"].as_str()?.to_owned();
+    (chrome_profile_name(&name) && dir.join(&name).join("Preferences").is_file()).then_some(name)
+}
+
+/// The Chrome profile equipe's Chrome opens in `dir`, decided before each
+/// start and pinned there ([`PINNED_PROFILE`]), so members and the person's
+/// window always share one profile — one cookie jar, and one device to the
+/// sites that remember devices.
+///
+/// Without a pin, Chrome opens whichever profile it last used. A sign-in can
+/// make a new profile in the same folder — Chrome offers a separate profile
+/// for a work account, and an organization can require one — after which
+/// the next start opened that one, and every other site's sign-in seemed gone.
+///
+/// First time: the profile Chrome last used (the one members last worked
+/// in), else `Default`. After that the pin holds, except when Chrome's own
+/// record says another profile of the folder was used last: equipe's Chrome
+/// only ever opens the pinned one, so that is the person's choice or a
+/// profile their sign-in moved to — it is followed, and said in the log.
+pub fn chrome_profile(dir: &Path) -> String {
+    let pinned = std::fs::read_to_string(dir.join(PINNED_PROFILE)).ok().map(|s| s.trim().to_owned()).filter(|s| chrome_profile_name(s) && dir.join(s).is_dir());
+    let last = last_used_profile(dir);
+    let chosen = match (&pinned, last) {
+        (Some(p), Some(l)) if *p != l => {
+            crate::daemon_log!("equipe: {} now opens Chrome profile {l:?}, where the person last was (it opened {p:?})", dir.display());
+            l
+        }
+        (Some(p), _) => p.clone(),
+        (None, Some(l)) => l,
+        (None, None) => "Default".to_owned(),
+    };
+    if pinned.as_deref() != Some(chosen.as_str()) {
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::write(dir.join(PINNED_PROFILE), &chosen);
+    }
+    chosen
 }
 
 /// What the browser host says, besides pictures (`assets/browser-host.cjs`).
@@ -498,6 +567,13 @@ pub fn signing_in(url: &str, title: &str, signals: Option<&Signals>) -> bool {
     }
 }
 
+/// Whether an address is a sign-in one, by its words alone (`/login`,
+/// `accounts.`, `/sso`).
+pub fn sign_in_address(url: &str) -> bool {
+    let url_l = url.to_lowercase();
+    sign_in_words().any(|w| url_l.contains(w))
+}
+
 /// Whether a page is past signing in: nothing on it waits for a person, no
 /// password or code field in sight, and its address isn't a sign-in one.
 /// A page still loading says nothing yet.
@@ -568,6 +644,8 @@ impl Host {
         }
         let profile = host_profile(home);
         std::fs::create_dir_all(&profile)?;
+        // The host's Chrome opens the pinned profile (`browser-host.cjs` reads it).
+        chrome_profile(&profile);
         let log = std::fs::OpenOptions::new().create(true).append(true).open(home.join("browser").join("host.log"))?;
         let mut command = std::process::Command::new(npx);
         command
@@ -1073,6 +1151,7 @@ pub fn lane(host: &SharedHost, home: &Path, squad: &str, key: &str, output: &Pat
 pub fn with_profile(request: &mut Value, home: &Path, name: &str) {
     let dir = profile_dir(home, name);
     let _ = std::fs::create_dir_all(&dir);
+    chrome_profile(&dir);
     request["profile"] = json!(name);
     request["profileDir"] = json!(dir);
     request["state"] = json!(profile_state(home, name));
@@ -1747,12 +1826,54 @@ mod tests {
         std::fs::write(&prefs, "not json").unwrap();
         assert_eq!(run(&dir), "unreadable");
         assert_eq!(std::fs::read_to_string(&prefs).unwrap(), "not json");
+        // The profile the folder is pinned to is the one marked, not Default.
+        let pinned = dir.join("Profile 2").join("Preferences");
+        std::fs::create_dir_all(pinned.parent().unwrap()).unwrap();
+        std::fs::write(&pinned, r#"{"profile":{"exit_type":"Normal"}}"#).unwrap();
+        std::fs::write(dir.join(PINNED_PROFILE), "Profile 2").unwrap();
+        assert_eq!(run(&dir), "marked");
+        let kept: Value = serde_json::from_str(&std::fs::read_to_string(&pinned).unwrap()).unwrap();
+        assert_eq!(kept["profile"]["exit_type"], "Crashed");
         let _ = std::fs::remove_dir_all(&dir);
         // The host as written: Node reads it whole.
         let host = HOST.replace("__DRIVING__", DRIVING).replace("__GATE__", GATE).replace("__KEEP_SESSIONS__", KEEP_SESSIONS);
         assert!(host.contains("keepSessions(profile, fs, path)") && host.contains("--hide-crash-restore-bubble"));
+        assert!(host.contains("--profile-directory=${pinnedProfile(profile, fs, path)}"), "the host's Chrome opens the pinned profile");
         let parsed = std::process::Command::new(&node).arg("-e").arg(format!("new Function({})", serde_json::to_string(&format!("return async () => {{ {host} }}")).unwrap())).output().expect("node runs");
         assert!(parsed.status.success(), "{}", String::from_utf8_lossy(&parsed.stderr));
+    }
+
+    #[test]
+    fn every_chrome_on_the_folder_opens_one_pinned_profile_and_follows_the_person_to_another() {
+        let dir = std::env::temp_dir().join(format!("equipe-pinned-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(chrome_profile(&dir), "Default", "a folder Chrome never ran");
+        assert_eq!(pinned_profile(&dir), "Default");
+        let _ = std::fs::remove_file(dir.join(PINNED_PROFILE));
+        let made = |name: &str| {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+            std::fs::write(dir.join(name).join("Preferences"), "{}").unwrap();
+        };
+        let last = |name: &str| std::fs::write(dir.join("Local State"), json!({ "profile": { "last_used": name } }).to_string()).unwrap();
+        made("Default");
+        made("Profile 2");
+        // Chrome last used another profile than Default: where members last were, kept.
+        last("Profile 2");
+        assert_eq!(chrome_profile(&dir), "Profile 2");
+        assert_eq!(pinned_profile(&dir), "Profile 2", "pinned for the person's window too");
+        assert_eq!(chrome_profile(&dir), "Profile 2", "the same on every start");
+        // A sign-in moved the person to a new profile of the folder: followed.
+        made("Profile 3");
+        last("Profile 3");
+        assert_eq!(chrome_profile(&dir), "Profile 3");
+        // Chrome naming one that isn't there, or not a profile at all: the pin holds.
+        last("Profile 9");
+        assert_eq!(chrome_profile(&dir), "Profile 3");
+        last("../elsewhere");
+        assert_eq!(chrome_profile(&dir), "Profile 3");
+        std::fs::write(dir.join(PINNED_PROFILE), "../x").unwrap();
+        assert_eq!(pinned_profile(&dir), "Default", "a pin that isn't a profile's name is none");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

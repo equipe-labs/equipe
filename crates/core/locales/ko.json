@@ -403,6 +403,7 @@
   "error.login_auto_stopped": "equipe가 {site}에 {username} 계정으로 직접 로그인하지 못했어요. 로그인 화면이 다시 나왔어요(비밀번호가 바뀌었을 수 있어요). 설정 › 계정에서 그 로그인을 고칠 때까지 다시 시도하지 않아요.",
   "notice.browser_given_back": "🖐 브라우저를 돌려줬어요.",
   "notice.browser_in_panel": "🖥 {name}의 브라우저가 브라우저 패널에 열려요: {why}",
+  "notice.browser_reauth_hint": "(이 단계는 사이트 자체의 확인이에요. 민감한 페이지 앞이나 아직 신뢰하지 않는 기기에서 다시 묻기 때문에 equipe가 대신할 수 없어요. \"이 기기에서 다시 묻지 않기\"가 보이면 체크해 주세요. 모든 멤버가 이 브라우저를 함께 쓰니 모두에게 적용돼요.)",
   "notice.browser_on_screen": "🖥 {name}의 브라우저가 이 Mac 화면에 떠요: {why}",
   "notice.browser_view": "🖥 {name}의 로그인이 브라우저 패널의 로그인 화면에서 열려요: {why}",
   "notice.browser_window": "🖥 {name}의 로그인이 {host}의 일반 Chrome 창에서 열려요: {why}",

@@ -1,6 +1,7 @@
 //! Signing in once, on the daemon (`crate::signin_store`): every sign-in the
-//! person finishes for a squad is kept, sealed, per browser profile and site,
-//! and members' browsers never ask for it again while the site takes it.
+//! person finishes is kept, sealed, per browser profile and site — in the
+//! store every squad on the machine shares, or a squad's own where it keeps
+//! one — and members' browsers never ask for it again while the site takes it.
 //!
 //! - kept: a sign-in view's cookies at Done (`window.rs`); a sign-in the
 //!   person finished in a member's browser in their hands, in their own
@@ -29,11 +30,12 @@ use super::*;
 pub(super) struct Kept {
     /// Whether sign-ins are kept at all: their key needs the secret store.
     enabled: bool,
-    /// Each squad's, once read.
+    /// Each store's (`signin_store::store_of`: the shared one, `""`, or a
+    /// squad's own), once read.
     read: HashMap<String, Record>,
-    /// Squads being read now.
+    /// Stores being read now.
     reading: HashSet<String>,
-    /// `(squad, profile)` whose kept sign-ins went into the profile's Chrome
+    /// `(store, profile)` whose kept sign-ins went into the profile's Chrome
     /// since it last started.
     restored: HashSet<(String, String)>,
     /// `(lane, site)` whose kept sign-in was put back before asking the
@@ -44,7 +46,7 @@ pub(super) struct Kept {
     collecting: HashMap<u64, (Vec<String>, String, String)>,
     next: u64,
     /// Reads and changes off the loop, numbered as begun: what one brings back
-    /// is taken only if nothing begun after it was taken already.
+    /// is taken only if nothing begun after it was taken already. By store.
     turns: u64,
     taken: HashMap<String, u64>,
 }
@@ -71,49 +73,71 @@ fn profile_of_key(key: &str) -> String {
 }
 
 impl Runtime {
-    /// Read a squad's kept sign-ins off the loop (the secret store may ask
-    /// the person first), unless they are read or being read.
+    /// The store `squad`'s sign-ins are kept in: the shared one, or its own.
+    fn sign_in_store(&self, squad: &str) -> String {
+        signin_store::store_of(&self.config.home, squad)
+    }
+
+    /// Read the kept sign-ins of `squad`'s store off the loop (the secret
+    /// store may ask the person first), unless they are read or being read.
+    /// The shared store takes in squads' own files from before it first.
     pub(super) fn want_sign_ins(&mut self, squad: &str) {
-        if !self.kept_sign_ins.enabled || self.kept_sign_ins.read.contains_key(squad) || !self.kept_sign_ins.reading.insert(squad.to_owned()) {
+        let store = self.sign_in_store(squad);
+        if !self.kept_sign_ins.enabled || self.kept_sign_ins.read.contains_key(&store) || !self.kept_sign_ins.reading.insert(store.clone()) {
             return;
         }
         let turn = self.kept_sign_ins.turn();
-        let (vault, internal, home, squad) = (self.vault.clone(), self.internal.clone(), self.config.home.clone(), squad.to_owned());
+        let (vault, internal, home) = (self.vault.clone(), self.internal.clone(), self.config.home.clone());
         tokio::task::spawn_blocking(move || {
             let record = match vault.lock() {
-                Ok(v) => signin_store::load(&home, &squad, &*v).map_err(|why| crate::daemon_log!("equipe: {squad}'s kept sign-ins couldn't be read: {why}")).ok(),
+                Ok(mut v) => {
+                    if store == signin_store::SHARED {
+                        let squads: Vec<String> = crate::squads::list(&home).into_iter().map(|s| s.name).collect();
+                        match signin_store::migrate(&home, &squads, &mut *v, now_secs()) {
+                            Ok(moved) if !moved.is_empty() => crate::daemon_log!("equipe: the kept sign-ins of {} now go for every squad", moved.join(", ")),
+                            Ok(_) => {}
+                            Err(why) => crate::daemon_log!("equipe: squads' kept sign-ins weren't moved into the shared ones: {why}"),
+                        }
+                    }
+                    let name = signin_store::store_name(&store);
+                    signin_store::load(&home, &store, &*v).map_err(|why| crate::daemon_log!("equipe: the sign-ins kept for {name} couldn't be read: {why}")).ok()
+                }
                 Err(_) => None,
             };
-            let _ = internal.send(Internal::SignIns { squad, record: record.map(Box::new), turn });
+            let _ = internal.send(Internal::SignIns { squad: store, record: record.map(Box::new), turn });
         });
     }
 
-    /// A squad's kept sign-ins, read or just kept: the profiles with a lane
-    /// open that haven't had them since their Chrome started get them now.
-    pub(super) fn sign_ins_read(&mut self, squad: &str, record: Option<Record>, turn: u64) {
-        self.kept_sign_ins.reading.remove(squad);
+    /// A store's kept sign-ins, read or just kept: the profiles with a lane
+    /// open, of a squad using that store, that haven't had them since their
+    /// Chrome started get them now.
+    pub(super) fn sign_ins_read(&mut self, store: &str, record: Option<Record>, turn: u64) {
+        self.kept_sign_ins.reading.remove(store);
         let Some(record) = record else { return };
         // Older than what memory holds already (a read begun before a change).
-        if self.kept_sign_ins.taken.get(squad).is_some_and(|t| *t > turn) {
+        if self.kept_sign_ins.taken.get(store).is_some_and(|t| *t > turn) {
             return;
         }
-        self.kept_sign_ins.taken.insert(squad.to_owned(), turn);
-        self.kept_sign_ins.read.insert(squad.to_owned(), record);
-        let keys: Vec<String> = self.browsers.iter().filter(|((q, _), b)| q == squad && b.is_lane()).map(|((_, k), _)| k.clone()).collect();
-        for key in keys {
-            self.restore_sign_ins(squad, &key);
+        self.kept_sign_ins.taken.insert(store.to_owned(), turn);
+        self.kept_sign_ins.read.insert(store.to_owned(), record);
+        let lanes: Vec<(String, String)> = self.browsers.iter().filter(|(_, b)| b.is_lane()).map(|(k, _)| k.clone()).collect();
+        for (squad, key) in lanes {
+            if self.sign_in_store(&squad) == store {
+                self.restore_sign_ins(&squad, &key);
+            }
         }
     }
 
-    /// The squad's kept sign-ins into the Chrome of `key`'s profile, once
-    /// per start of it: only the cookies it lacks.
+    /// The kept sign-ins of the squad's store into the Chrome of `key`'s
+    /// profile, once per start of it: only the cookies it lacks.
     pub(super) fn restore_sign_ins(&mut self, squad: &str, key: &str) {
         let profile = profile_of_key(key);
-        let Some(record) = self.kept_sign_ins.read.get(squad) else {
+        let store = self.sign_in_store(squad);
+        let Some(record) = self.kept_sign_ins.read.get(&store) else {
             self.want_sign_ins(squad);
             return;
         };
-        let at = (squad.to_owned(), profile.clone());
+        let at = (store, profile.clone());
         if self.kept_sign_ins.restored.contains(&at) {
             return;
         }
@@ -142,8 +166,9 @@ impl Runtime {
     }
 
     /// Keep a sign-in the person finished to `site` in `profile` for each of
-    /// `squads`: in memory at once (for the next member's ask), sealed on
-    /// disk off the loop. Its site may be tried again before asking.
+    /// `squads` — in each one's store, once per store: in memory at once (for
+    /// the next member's ask), sealed on disk off the loop. Its site may be
+    /// tried again before asking.
     pub(super) fn keep_sign_in(&mut self, squads: Vec<String>, profile: &str, site: &str, cookies: Vec<HandoffCookie>) {
         let site = vault::site_of(site);
         if !self.kept_sign_ins.enabled || cookies.is_empty() || site.is_empty() {
@@ -151,7 +176,10 @@ impl Runtime {
         }
         let now = now_secs();
         self.kept_sign_ins.tried.retain(|(_, s), _| !vault::serves(s, &site));
-        for squad in squads {
+        let mut stores: Vec<String> = squads.iter().map(|q| self.sign_in_store(q)).collect();
+        stores.sort();
+        stores.dedup();
+        for squad in stores {
             let turn = self.kept_sign_ins.turn();
             if let Some(record) = self.kept_sign_ins.read.get_mut(&squad) {
                 record.remember(profile, &site, cookies.clone(), now);
@@ -164,19 +192,22 @@ impl Runtime {
                     Ok(mut v) => signin_store::update(&home, &squad, &mut *v, now, |r| r.remember(&profile, &site, cookies, now)),
                     Err(_) => Err("the logins are unusable".into()),
                 };
+                let name = signin_store::store_name(&squad);
                 match kept {
                     Ok(record) => {
-                        crate::daemon_log!("equipe: the sign-in to {site} is kept for {squad}");
+                        crate::daemon_log!("equipe: the sign-in to {site} is kept for {name}");
                         let _ = internal.send(Internal::SignIns { squad, record: Some(Box::new(record)), turn });
                     }
-                    Err(why) => crate::daemon_log!("equipe: the sign-in to {site} wasn't kept for {squad}: {why}"),
+                    Err(why) => crate::daemon_log!("equipe: the sign-in to {site} wasn't kept for {name}: {why}"),
                 }
             });
         }
     }
 
-    /// The site no longer takes the sign-in kept for it: it goes.
+    /// The site no longer takes the sign-in kept for it: it goes from `squad`'s store.
     fn forget_sign_in(&mut self, squad: &str, profile: &str, site: &str, made: u64) {
+        let store = self.sign_in_store(squad);
+        let squad = store.as_str();
         let turn = self.kept_sign_ins.turn();
         if let Some(record) = self.kept_sign_ins.read.get_mut(squad) {
             record.forget(profile, site, made);
@@ -189,7 +220,7 @@ impl Runtime {
                     r.forget(&profile, &site, made);
                 })
             {
-                crate::daemon_log!("equipe: the ended sign-in to {site} wasn't dropped for {squad}: {why}");
+                crate::daemon_log!("equipe: the ended sign-in to {site} wasn't dropped for {}: {why}", signin_store::store_name(&squad));
             }
         });
     }
@@ -279,8 +310,13 @@ impl Runtime {
 to the person. End your turn now saying you wait for that sign-in: you get a message when it is done, and carry on then."
             ));
         }
+        // A copy of a sign-in that holds only in the browser that made it (Google's) is
+        // refused — worse, taken for a stolen one: what the profile holds is all there is.
+        if handoff_view::binds_to_browser(&site) {
+            return None;
+        }
         let profile = profile_of_key(&key);
-        let Some(record) = self.kept_sign_ins.read.get(&squad) else {
+        let Some(record) = self.kept_sign_ins.read.get(&self.sign_in_store(&squad)) else {
             self.want_sign_ins(&squad);
             return None;
         };
@@ -302,7 +338,8 @@ to the person. End your turn now saying you wait for that sign-in: you get a mes
             return None;
         }
         self.kept_sign_ins.tried.insert(tried, made);
-        let request = json!({ "op": "cookies", "lane": lane, "cookies": cookies.iter().map(host_cookie).collect::<Vec<_>>(), "url": at });
+        // Only what its Chrome lacks: a cookie it holds may be fresher than the kept copy.
+        let request = json!({ "op": "cookies", "lane": lane, "cookies": cookies.iter().map(host_cookie).collect::<Vec<_>>(), "url": at, "missing": true });
         if !self.hub.op(&request) {
             return None;
         }

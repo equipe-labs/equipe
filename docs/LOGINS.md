@@ -317,7 +317,8 @@ Fix: before the host starts Chrome, it marks the profile's last exit the way
 Chrome marks a crash (`profile.exit_type: "Crashed"`, `keep-sessions.js`).
 Chrome then restores the old session's cookies and nothing else: no tab or
 window comes back, and `--hide-crash-restore-bubble` keeps the "Restore
-pages?" bubble away. Only that one field of `Default/Preferences` changes; a
+pages?" bubble away. Only that one field of the pinned profile's `Preferences`
+(see "One Chrome profile" below; `Default` unless pinned otherwise) changes; a
 profile Chrome never ran, or a file that isn't Chrome's JSON, is left alone.
 The profile itself is never wiped. Each named profile's Chrome gets the same.
 
@@ -327,6 +328,70 @@ To check on a machine with Node and Chrome:
 cargo test -p equipe-core --test session_cookies_live -- --ignored --nocapture
 cargo test -p equipe-core --test relogin_live -- --ignored --nocapture
 ```
+
+## One Chrome profile, pinned
+
+Finding (an affected Mac, November 2026): equipe's user-data folder
+(`browser/chrome`) held three Chrome profiles — `Default` and two named after a
+Google Workspace domain, made by Chrome when the person signed in to a work
+account (Chrome offers a separate profile for one, and an organization can
+require it). Neither the host's Chrome nor the person's window named a
+profile, so each start opened whichever profile Chrome had used last: members
+worked in all three at different times, each with its own cookies, and each a
+new device to Google. A sign-in made in one was gone at the next restart, every
+other site's sign-in looked gone after a switch, and Google asked for its
+second step again. Session sign-ins were lost on top of that: only
+`Default/Preferences` was marked to keep them.
+
+Fix (`browser::chrome_profile`): before any Chrome starts on the folder — the
+host's, a resumed one, the person's window — the daemon decides its profile
+and pins it in `equipe-profile` in the folder; both are started with
+`--profile-directory=<pinned>`, and `keep-sessions` marks that profile. The
+first pin is the profile Chrome last used (the one members last worked in), else
+`Default`. Afterwards the pin holds, except when Chrome's own `Local State`
+says another existing profile of the folder was used last: equipe's Chrome
+only ever opens the pinned one, so that is the person's choice, or the profile
+their sign-in was moved to — it is followed, and the daemon log says so.
+
+## Seeing a hand-off through
+
+A sign-in the person makes in their own Chrome window, or in a sign-in view,
+happens where no member's tab can watch it. When such a browser is handed
+back (and its finish wasn't seen while in the person's hands), the daemon
+watches the member's page as it comes back for two minutes
+(`logins::back_verdict`): on the site it was for — or, handed over on an
+identity provider's page, on the site the provider sent it to — past any
+sign-in, it is a sign-in finished: recorded as the person's, its cookies kept,
+other members' pages waiting on it reloaded, and "Save this login?" offered
+once. Before, these hand-offs never recorded a finish, so every later ask
+counted as a first sign-in (`no_login_kept`) and no save was ever offered.
+
+Before a hand-off, a member whose own page on that site shows no sign-in is
+told to look first (once per site in ten minutes; asked again, the person is
+asked). One person's step on a site — a sign-in, the code or passkey after it —
+serves every member asking for it: a second member waits on the first
+hand-off. A hand-off for a site's own second step tells the person it is the
+site's, and to tick "Don't ask again on this device" where offered.
+
+Google's sign-in is never carried from a sign-in view into the members' Chrome
+(`handoff_view::binds_to_browser`): Google ends a session it sees come back
+from another browser. It is made in the members' own profile (the person's
+window on it), and a kept Google sign-in is never put back by copy. A kept
+sign-in put back before asking only adds the cookies the profile lacks, never
+over a fresher one.
+
+## One store of sign-ins for every squad
+
+The sign-ins equipe keeps (`signin_store`) are one sealed store for every squad
+on the machine (`sign-ins.sealed` in equipe's home, key `sign-ins` in the secret
+store): one sign-in counts everywhere in equipe. A squad working for another
+company can keep its own: `equipe logins share <squad> off` (a
+`sign-ins.own` mark in its folder; `on` shares again). Squads' own files from
+before are moved into the shared store the first time it is read — opened with
+their keys and taken in, newer sign-in per site winning, nothing printed —
+then set aside as `sign-ins.sealed.moved`. A squad that keeps its own still
+shares the Mac's one Chrome; for accounts that must never meet, use another
+browser profile (another person's accounts, above).
 
 ## Saving a login is the person's leave
 

@@ -387,6 +387,7 @@ fn the_setting_is_panel_or_window_and_the_default_stands_until_it_is_set() {
 fn the_window_is_a_plain_launch_with_nothing_of_automation_in_it() {
     let args = chrome_args(Path::new("/h/browser/chrome"), "https://auth.openai.com/log-in");
     assert_eq!(args[0], "--user-data-dir=/h/browser/chrome");
+    assert_eq!(args[1], "--profile-directory=Default", "the members' profile, never whichever Chrome used last");
     assert_eq!(args.last().map(String::as_str), Some("https://auth.openai.com/log-in"));
     for arg in &args {
         for automated in ["remote-debugging", "enable-automation", "disable-blink-features", "headless", "test-type", "user-agent", "no-sandbox"] {
@@ -459,7 +460,7 @@ fn bringing_the_window_forward_hands_chrome_no_page() {
 
 #[test]
 fn the_persons_window_keeps_the_sessions_sign_ins_as_the_automated_browser_does() {
-    let dir = std::env::temp_dir().join(format!("equipe-keep-sessions-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("equipe-window-keep-sessions-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(keep_sessions(&dir), Kept::Nothing, "a profile Chrome never ran: nothing to mark");
     std::fs::create_dir_all(dir.join("Default")).unwrap();
@@ -474,6 +475,13 @@ fn the_persons_window_keeps_the_sessions_sign_ins_as_the_automated_browser_does(
     assert_eq!(keep_sessions(&dir), Kept::Already);
     std::fs::write(&prefs, "not json").unwrap();
     assert_eq!(keep_sessions(&dir), Kept::Untouched);
+    // The folder pinned to another profile: that one's last exit is marked.
+    let other = dir.join("Profile 2").join("Preferences");
+    std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+    std::fs::write(&other, r#"{"profile":{"exit_type":"Normal"}}"#).unwrap();
+    std::fs::write(dir.join(crate::browser::PINNED_PROFILE), "Profile 2").unwrap();
+    assert_eq!(keep_sessions(&dir), Kept::Marked);
+    assert!(chrome_args(&dir, "").contains(&"--profile-directory=Profile 2".to_owned()), "the person's window opens it too");
     assert_eq!(std::fs::read_to_string(&prefs).unwrap(), "not json", "a file that isn't Chrome's is left as it was");
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -4349,7 +4349,7 @@ def say(m):
     sys.stdout.buffer.flush()
 def tabs(lane):
     pid, url = pages[lane]
-    say({{"type": "tabs", "lane": lane, "member": lane.split("/")[1], "pages": [{{"id": pid, "url": url, "title": ""}}], "agent": pid}})
+    say({{"type": "tabs", "lane": lane, "member": lane.split("/")[1], "pages": [{{"id": pid, "url": url, "title": "", "signals": {{}}}}], "agent": pid}})
 say({{"type": "ready"}})
 for line in sys.stdin:
     with open({ops:?}, "a") as f:
@@ -4440,6 +4440,10 @@ async fn a_member_hands_its_browser_to_the_panel_of_a_screen_on_another_mac_and_
 
     // That screen gone and none other attached: the window on this Mac, as before.
     handle.browser_hub().await.unwrap().screen(false);
+    // Its page on the site shows no sign-in: it is told to look first, once…
+    let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": "https://appstoreconnect.apple.com/", "why": why })).await;
+    assert!(said.text.contains("shows no sign-in") && said.text.contains("Don't ask the person yet"), "{said:?}");
+    // …and asking again, the person is asked.
     let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": "https://appstoreconnect.apple.com/", "why": why })).await;
     assert!(said.text.contains("comes up on the person's screen"), "{said:?}");
     assert!(Journal::for_squad(&home, "acme").unwrap().browser_shown("pm"));
@@ -4603,6 +4607,39 @@ async fn a_sign_in_view_on_a_remote_screen_hands_its_scoped_cookies_to_the_membe
     assert!(!prompt.contains("v-secret"), "a cookie's value never reaches a member");
 }
 
+#[tokio::test]
+async fn a_sign_in_the_person_made_where_no_member_could_watch_is_seen_through_when_the_browser_comes_back() {
+    unsafe { std::env::set_var("EQUIPE_VAULT_IN_MEMORY", "1") };
+    let repo = repo();
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    let _ = fake_plain_chrome(&home);
+    let (npx, _ops) = fake_host_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), browser_host: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    let hub = handle.browser_hub().await.unwrap();
+    hub.screen(true);
+    hub.web_view(true);
+    // The person signs in in a sign-in view — no member's tab sees it — and presses Done.
+    let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": "https://erp.example/home", "why": "Sign in to the ERP" })).await;
+    assert!(said.text.contains("sign-in view"), "{said:?}");
+    let _ = until(&mut events, |e| matches!(e, Event::BrowserWindow { open: true, .. })).await;
+    handle.send(Command::BrowserCookies { lane: "acme/pm".into(), hosts: vec!["erp.example".into()], cookies: vec![cookie("erp_session", "erp.example")], failed: false });
+    handle.send(Command::BrowserControl { lane: "acme/pm".into(), take: false });
+    // pm's page is back on the ERP, past its sign-in: a sign-in finished, on the record as the person's.
+    let db = equipe_core::journal::squad_dir(&home, "acme").join("squad.db");
+    let mut finished = false;
+    for _ in 0..200 {
+        let rows = equipe_core::logins::read(&db, 0).unwrap_or_default();
+        if rows.iter().any(|r| r.kind == equipe_core::logins::Kind::SignedIn && r.site == "erp.example" && r.member == "pm" && r.by.as_deref() == Some("person")) {
+            finished = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(finished, "{:?}", equipe_core::logins::read(&db, 0));
+}
+
 /// The line of the host's requests that matches, waited for.
 async fn host_line(ops: &Path, wanted: impl Fn(&str) -> bool) -> String {
     for _ in 0..200 {
@@ -4631,7 +4668,8 @@ async fn a_sign_in_made_once_is_kept_for_the_squad_put_back_into_every_browser_a
     hub.screen(true);
     hub.web_view(true);
     let sent = || std::fs::read_to_string(&ops).unwrap_or_default();
-    let kept = equipe_core::signin_store::path(&home, "acme");
+    // Kept in the store every squad on the machine shares.
+    let kept = equipe_core::signin_store::path(&home, equipe_core::signin_store::SHARED);
 
     // pm hands its browser over; the person signs in to the app through Google in the view, and Done.
     let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": "https://app.example/login", "why": "Sign in to the app" })).await;
@@ -4662,6 +4700,7 @@ async fn a_sign_in_made_once_is_kept_for_the_squad_put_back_into_every_browser_a
     assert!(!said.text.contains("v-secret"), "a value never reaches a member");
     let line = host_line(&ops, |l| l.contains("\"op\":\"cookies\"") && l.contains("acme/qa")).await;
     assert!(line.contains("app_session") && line.contains("__Host-GAPS") && line.contains("https://app.example/dashboard"), "{line}");
+    assert!(line.contains("\"missing\":true"), "only what its Chrome lacks, never over a fresher cookie: {line}");
 
     // The host's Chrome goes away; the next browser starts it again, and the kept sign-ins go back in —
     // the session's own too, which a clean exit of Chrome drops.
