@@ -896,7 +896,10 @@ mod tests {
 
     fn fake(name: &str, body: &str) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt as _;
-        let dir = std::env::temp_dir().join(format!("equipe-cli-signin-{}-{name}", std::process::id()));
+        // A folder of its own per call: tests run side by side, and two may fake the same tool.
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("equipe-cli-signin-{}-{name}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("fakecli");
         std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
