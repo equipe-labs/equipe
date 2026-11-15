@@ -22,10 +22,33 @@ workspace `version` in `Cargo.toml`; pushing it runs
    ```
 
 The workflow builds the command line for four targets, builds, signs and
-notarizes the desktop app (`equipe.dmg`, with its Sparkle `appcast.xml`),
-installs the archives on clean macOS and Linux machines, then publishes the
-GitHub Release and updates the Homebrew formula and cask. It usually takes
-about 25 minutes. Most of that is the desktop app and Apple's notarization.
+notarizes the desktop app, installs the archives on clean macOS and Linux
+machines, then publishes the GitHub Release and updates the Homebrew formula
+and cask. It usually takes about 25 minutes. Most of that is the desktop app
+and Apple's notarization.
+
+The desktop app comes in three builds, made at once on separate machines:
+
+| Build | Disk image | Update feed |
+|---|---|---|
+| Apple silicon | `equipe-arm64.dmg` | `appcast-arm64.xml`, with deltas `equipe-arm64-<version>-<from>.delta` |
+| Intel | `equipe-x86_64.dmg` | `appcast-x86_64.xml`, with deltas `equipe-x86_64-<version>-<from>.delta` |
+| Universal | `equipe.dmg` | `appcast.xml` |
+
+The app reads the feed for the Mac it runs on, so a universal copy moves to
+its Mac's own build with its next update ([docs/DESKTOP.md](DESKTOP.md),
+"Which feed a copy of the app reads"). The universal build stays for older
+links to `equipe.dmg` and for copies installed before the per-architecture
+builds.
+
+The deltas come from the disk images of the last five versions of each build,
+which the workflow downloads from earlier releases
+(`scripts/desktop-previous.sh`). They make a typical update a few MB instead
+of the whole app. If an image can't be fetched, the release still goes out,
+with a warning, and that update is a full download. So don't delete the
+`equipe-<arch>.dmg` assets of recent releases. The first release with
+per-architecture builds has no earlier ones, so its updates are full
+downloads, and deltas start with the release after it.
 
 ## Fast release
 
@@ -39,10 +62,11 @@ With `[fast]`, only the command line is built and published, which usually
 takes about 10 minutes. The workflow skips:
 
 - **The desktop app.** It is not rebuilt, signed or notarized. The release
-  carries the previous release's `equipe.dmg`, `equipe.dmg.sha256` and
-  `appcast.xml` unchanged. The appcast still names the previous version, so
-  the app offers no update and downloads keep working. The Homebrew cask is
-  left alone, and the formula is updated as usual.
+  carries the previous release's disk images, their `.sha256` files and the
+  appcasts unchanged. The appcasts still name the previous version, and their
+  deltas stay on the release that made them, so the app offers no update and
+  downloads keep working. The Homebrew cask is left alone, and the formula is
+  updated as usual.
 - **The clean-machine install check** (`try-install`). Each build still runs
   its own `equipe --version` smoke test.
 

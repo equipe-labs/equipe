@@ -2,14 +2,17 @@ name: Release
 
 # Push a tag like v0.1.0 (matching the workspace version) to build equipe for
 # macOS and Linux and publish a GitHub Release with the binaries, their
-# checksums and install.sh, and the desktop app (equipe.dmg, with the appcast
-# its updates come from). Run it by hand to build without publishing.
+# checksums and install.sh, and the desktop app: equipe-arm64.dmg (Apple
+# silicon) and equipe-x86_64.dmg (Intel), each with its own appcast and update
+# deltas, plus the universal equipe.dmg and its appcast.xml for older links and
+# for copies from before the per-architecture builds (docs/DESKTOP.md
+# "Shipping the app"). Run it by hand to build without publishing.
 #
 # Fast release: when the tagged commit's message contains `[fast]`, only the
 # command line is built and published. The desktop app, its notarization and
 # the clean-machine install check are skipped, and the release carries the
-# previous release's equipe.dmg and appcast.xml unchanged, so the app keeps
-# its current version and downloads keep working. See docs/RELEASING.md.
+# previous release's disk images and appcasts unchanged, so the app keeps its
+# current version and downloads keep working. See docs/RELEASING.md.
 
 on:
   push:
@@ -203,17 +206,39 @@ jobs:
         # 16 it was 3.8 MB larger a chip, and twice.
         run: cargo build --release --locked -p equipe-desktop --target ${{ matrix.arch }}-apple-darwin
 
+      # Not named equipe-*: publish takes the equipe-* artifacts (the CLI
+      # archives) to the release, and this bare binary isn't for people.
       - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
-          name: equipe-desktop-${{ matrix.arch }}
+          name: desktop-bin-${{ matrix.arch }}
           path: target/${{ matrix.arch }}-apple-darwin/release/equipe-desktop
 
+  # Each build of the app on its own machine, at once: Apple silicon's and
+  # Intel's (what people download, and what each updates to), and the
+  # universal one (the older links' equipe.dmg, and the update for copies from
+  # before the per-architecture builds, whose feed is appcast.xml; from it the
+  # app moves on to its Mac's own build).
   desktop:
-    name: desktop (equipe.dmg)
+    name: desktop (${{ matrix.dmg }})
     concurrency:
-      group: release-desktop-dmg
+      group: release-desktop-dmg-${{ matrix.flavor }}
       cancel-in-progress: true
     needs: [desktop-bin, build]
+    strategy:
+      matrix:
+        include:
+          - flavor: arm64
+            archs: aarch64
+            dmg: equipe-arm64.dmg
+            lipo: arm64
+          - flavor: x86_64
+            archs: x86_64
+            dmg: equipe-x86_64.dmg
+            lipo: x86_64
+          - flavor: universal
+            archs: aarch64 x86_64
+            dmg: equipe.dmg
+            lipo: x86_64 arm64
     runs-on: macos-15
     env:
       MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
@@ -237,7 +262,7 @@ jobs:
 
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
-          pattern: equipe-desktop-*
+          pattern: desktop-bin-*
           path: prebuilt
 
       # The CLI for each chip, as the build job packed it.
@@ -277,35 +302,62 @@ jobs:
             echo "EQUIPE_NOTARY_ISSUER=$APPLE_API_ISSUER"
           } >> "$GITHUB_ENV"
 
-      - name: Build equipe.dmg
+      # The disk images of this build's last few versions, for update deltas
+      # (a few MB instead of the whole app). Missing ones only mean full
+      # downloads: the script warns and goes on.
+      - name: Earlier versions
+        if: matrix.flavor != 'universal'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FLAVOR: ${{ matrix.flavor }}
+        run: scripts/desktop-previous.sh "$FLAVOR" previous 5
+
+      - name: Build ${{ matrix.dmg }}
         env:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
-          EQUIPE_DMG_PREBUILT: prebuilt/equipe-desktop-aarch64/equipe-desktop prebuilt/equipe-desktop-x86_64/equipe-desktop
-          EQUIPE_DMG_PREBUILT_CLI: prebuilt-cli/equipe-aarch64-apple-darwin/equipe prebuilt-cli/equipe-x86_64-apple-darwin/equipe
+          EQUIPE_DMG_ARCHS: ${{ matrix.archs }}
         run: |
           chmod +x prebuilt/*/equipe-desktop prebuilt-cli/*/equipe
+          EQUIPE_DMG_PREBUILT="" EQUIPE_DMG_PREBUILT_CLI=""
+          for arch in $EQUIPE_DMG_ARCHS; do
+            EQUIPE_DMG_PREBUILT="$EQUIPE_DMG_PREBUILT prebuilt/desktop-bin-$arch/equipe-desktop"
+            EQUIPE_DMG_PREBUILT_CLI="$EQUIPE_DMG_PREBUILT_CLI prebuilt-cli/equipe-$arch-apple-darwin/equipe"
+          done
+          export EQUIPE_DMG_PREBUILT EQUIPE_DMG_PREBUILT_CLI
+          if [ -d previous ]; then export EQUIPE_DMG_PREVIOUS=previous; fi
           scripts/desktop-dmg.sh
 
       - name: Check the DMG
+        env:
+          DMG: ${{ matrix.dmg }}
+          LIPO: ${{ matrix.lipo }}
         run: |
-          hdiutil verify dist/equipe.dmg
-          mount="$(hdiutil attach -nobrowse -readonly dist/equipe.dmg | tail -1 | cut -f3)"
-          lipo -archs "$mount/equipe.app/Contents/MacOS/equipe-desktop" | grep -q "x86_64 arm64"
-          lipo -archs "$mount/equipe.app/Contents/Helpers/equipe" | grep -q "x86_64 arm64"
-          "$mount/equipe.app/Contents/Helpers/equipe" --version
+          hdiutil verify "dist/$DMG"
+          mount="$(hdiutil attach -nobrowse -readonly "dist/$DMG" | tail -1 | cut -f3)"
+          # Exactly this build's architectures: an Apple silicon build must
+          # never reach an Intel Mac.
+          test "$(lipo -archs "$mount/equipe.app/Contents/MacOS/equipe-desktop")" = "$LIPO"
+          test "$(lipo -archs "$mount/equipe.app/Contents/Helpers/equipe")" = "$LIPO"
+          # The runner is Apple silicon: the Intel build runs under Rosetta, if it's there.
+          if [ "$LIPO" != x86_64 ] || arch -x86_64 /usr/bin/true 2>/dev/null; then
+            "$mount/equipe.app/Contents/Helpers/equipe" --version
+          else
+            echo "::notice::No Rosetta on this runner: the Intel build's equipe wasn't started"
+          fi
           codesign --verify --deep --strict "$mount/equipe.app"
           if [ -n "$APPLE_API_KEY" ] && [ -n "$MACOS_CERTIFICATE" ]; then
             # Apple's ticket service drops a connection now and then: a few tries.
             for try in 1 2 3 4 5; do xcrun stapler validate "$mount/equipe.app" && break; [ "$try" = 5 ] && exit 1; sleep $((try * 15)); done
             spctl -a -vv -t exec "$mount/equipe.app"
-            for try in 1 2 3 4 5; do xcrun stapler validate dist/equipe.dmg && break; [ "$try" = 5 ] && exit 1; sleep $((try * 15)); done
+            for try in 1 2 3 4 5; do xcrun stapler validate "dist/$DMG" && break; [ "$try" = 5 ] && exit 1; sleep $((try * 15)); done
           fi
           test -L "$mount/Applications"
           hdiutil detach "$mount"
+          ls -l dist
 
       - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
-          name: equipe-desktop
+          name: desktop-dmg-${{ matrix.flavor }}
           path: dist/*
 
   # The install script against the archive just built, on a clean machine.
@@ -324,6 +376,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
+          pattern: equipe-*
           path: dist
           merge-multiple: true
       - name: install.sh
@@ -351,26 +404,44 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+      # The CLI archives, and the app's disk images, appcasts and deltas (not
+      # the bare desktop-bin-* binaries, which aren't for people).
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
+          pattern: equipe-*
           path: dist
           merge-multiple: true
-      # Fast: the app as the newest release has it. Its appcast still names
-      # that version and that release's DMG, so no app update is offered.
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        if: needs.mode.outputs.fast != 'true'
+        with:
+          pattern: desktop-dmg-*
+          path: dist
+          merge-multiple: true
+      # Fast: the app as the newest release has it. Its appcasts still name
+      # that version and that release's DMGs and deltas, so no app update is
+      # offered. (A release from before the per-architecture builds has only
+      # the universal ones.)
       - name: The previous release's app
         if: needs.mode.outputs.fast == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download --repo "${GITHUB_REPOSITORY}" -D dist \
-            --pattern equipe.dmg --pattern equipe.dmg.sha256 --pattern appcast.xml
+          has="$(gh release view --repo "${GITHUB_REPOSITORY}" --json assets -q '.assets[].name')"
+          for name in equipe.dmg equipe.dmg.sha256 appcast.xml \
+            equipe-arm64.dmg equipe-arm64.dmg.sha256 appcast-arm64.xml \
+            equipe-x86_64.dmg equipe-x86_64.dmg.sha256 appcast-x86_64.xml; do
+            if printf '%s\n' "$has" | grep -qxF "$name"; then
+              gh release download --repo "${GITHUB_REPOSITORY}" -D dist --pattern "$name"
+            fi
+          done
           ls -l dist/equipe.dmg dist/appcast.xml
+          ls -l dist/appcast-*.xml 2>/dev/null || true
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp install.sh paste-setup.sh dist/
-          (cd dist && cat *.sha256 > SHA256SUMS)
+          (cd dist && cat ./*.sha256 > SHA256SUMS)
           prerelease=""
           case "${GITHUB_REF_NAME}" in *-*) prerelease="--prerelease" ;; esac
           gh release create "${GITHUB_REF_NAME}" dist/* \
@@ -406,6 +477,13 @@ jobs:
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         if: env.TAP_TOKEN != ''
         with:
+          pattern: equipe-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        if: env.TAP_TOKEN != '' && env.FAST != 'true'
+        with:
+          pattern: desktop-dmg-*
           path: dist
           merge-multiple: true
       - name: Update equipe-labs/homebrew-tap
@@ -455,17 +533,20 @@ jobs:
           end
           EOF
           # The Mac app as a cask beside the formula: brew install --cask
-          # equipe-labs/tap/equipe. It updates itself (Sparkle), so brew
-          # leaves its updates to it.
+          # equipe-labs/tap/equipe, each Mac its own build. It updates itself
+          # (Sparkle), so brew leaves its updates to it.
           mkdir -p tap/Casks
           # Fast: the app didn't change, nor does its cask.
           if [ "$FAST" != "true" ]; then
           cat > tap/Casks/equipe.rb <<EOF
           cask "equipe" do
-            version "${version}"
-            sha256 "$(cut -d' ' -f1 dist/equipe.dmg.sha256)"
+            arch arm: "arm64", intel: "x86_64"
 
-            url "${url}/equipe.dmg"
+            version "${version}"
+            sha256 arm:   "$(cut -d' ' -f1 dist/equipe-arm64.dmg.sha256)",
+                   intel: "$(cut -d' ' -f1 dist/equipe-x86_64.dmg.sha256)"
+
+            url "${url}/equipe-#{arch}.dmg"
             name "equipe"
             desc "Desktop app for a squad of AI agents on your own Claude Code and Codex plans"
             homepage "https://equipe.im"

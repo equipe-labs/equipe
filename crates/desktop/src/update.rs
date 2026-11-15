@@ -24,6 +24,11 @@
 //! Sparkle 2.3+ lets it be called again if a quit is cancelled) instead of
 //! starting a check.
 //!
+//! Each kind of Mac has its own build and feed: the delegate hands Sparkle
+//! `appcast-arm64.xml` or `appcast-x86_64.xml` beside Info.plist's feed
+//! (`relaunch::feed_for`), so the universal build, whose feed is the shared
+//! `appcast.xml`, moves to its Mac's own build with its next update.
+//!
 //! Run any other way (`cargo run`, a build without a signing key) there is no
 //! framework next to the binary, so there is nothing to start and the menu item
 //! is greyed out.
@@ -39,6 +44,7 @@ use block2::{Block, RcBlock};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Bool, NSObject};
 use objc2::{AllocAnyThread as _, define_class, msg_send};
+use objc2_foundation::NSString;
 
 thread_local! {
     /// Sparkle's "install and relaunch now", once an update is downloaded.
@@ -56,6 +62,17 @@ define_class!(
         // SAFETY (each method below): SPUUpdaterDelegate's, as Sparkle 2.10's
         // SPUUpdaterDelegate.h declares it; the objects are Sparkle's, valid
         // during the call. Sparkle calls its delegate on the main thread.
+
+        /// The feed of this Mac's own build (`relaunch::feed_for`): the
+        /// universal build moves to its Mac's own, and an Intel Mac never
+        /// reads the Apple silicon feed. Nil: Info.plist's `SUFeedURL`.
+        // SAFETY: SPUUpdaterDelegate's
+        // `- (nullable NSString *)feedURLStringForUpdater:(SPUUpdater *)updater`;
+        // the string is returned autoreleased, as Sparkle expects.
+        #[unsafe(method_id(feedURLStringForUpdater:))]
+        fn feed_url(&self, _updater: &AnyObject) -> Option<Retained<NSString>> {
+            crate::relaunch::this_macs_feed().map(|feed| NSString::from_str(&feed))
+        }
 
         #[unsafe(method(updater:didFindValidUpdate:))]
         fn did_find(&self, _updater: &AnyObject, item: &AnyObject) {
@@ -194,7 +211,7 @@ fn describe(error: &AnyObject) -> String {
             if info.is_null() {
                 break;
             }
-            let key = objc2_foundation::NSString::from_str("NSUnderlyingError");
+            let key = NSString::from_str("NSUnderlyingError");
             let under: *mut AnyObject = msg_send![info, objectForKey: &*key];
             under
         };
@@ -274,6 +291,7 @@ impl Updater {
             crate::relaunch::log("Sparkle didn't start");
             return None;
         }
+        crate::relaunch::log(&format!("feed {}", crate::relaunch::this_macs_feed().unwrap_or_else(|| "from Info.plist".into())));
         // Where it runs decides whether it can replace itself: say so at once.
         let misplaced = crate::relaunch::misplaced();
         crate::relaunch::log(&format!("started from {} ({})", crate::relaunch::bundle().map(|b| b.display().to_string()).unwrap_or_default(), misplaced.map_or("can update itself".into(), |m| format!("{m:?}"))));

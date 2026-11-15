@@ -65,8 +65,9 @@ on your Claude plan, or Codex on your ChatGPT plan.
 
 ### macOS: the desktop app
 
-Download [equipe.dmg](https://github.com/equipe-labs/equipe/releases/latest/download/equipe.dmg),
-drag equipe to Applications and open it. The first window walks you through setup: it
+Download the app for your Mac: [Apple silicon](https://github.com/equipe-labs/equipe/releases/latest/download/equipe-arm64.dmg)
+(M1 and later) or [Intel](https://github.com/equipe-labs/equipe/releases/latest/download/equipe-x86_64.dmg)
+( › About This Mac says which), drag equipe to Applications and open it. The first window walks you through setup: it
 installs Apple's developer tools if git is missing, lets you pick a project folder (or none)
 and name your squad, then opens **Settings → AI platforms**, where you can install Claude Code
 or Codex with its maker's own installer and sign in. The app starts the daemon for you.

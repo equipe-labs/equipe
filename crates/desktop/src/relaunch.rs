@@ -198,6 +198,80 @@ pub fn feed_url(plist: &str) -> Option<String> {
     Some(after[start..end].trim().to_owned()).filter(|u| u.starts_with("https://"))
 }
 
+/// The kind of Mac the app runs on, which picks its update feed. Each kind
+/// has its own build (scripts/desktop-dmg.sh): `appcast-arm64.xml` offers
+/// only Apple silicon builds, `appcast-x86_64.xml` only Intel ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Machine {
+    AppleSilicon,
+    Intel,
+}
+
+impl Machine {
+    /// The architecture name the feed and the disk image are named after.
+    pub fn arch(self) -> &'static str {
+        match self {
+            Machine::AppleSilicon => "arm64",
+            Machine::Intel => "x86_64",
+        }
+    }
+
+    /// This Mac. An arm64 binary only runs on Apple silicon. An x86_64 one
+    /// runs on Intel, or on Apple silicon under Rosetta, which only Apple
+    /// silicon reports (`sysctl.proc_translated`). So an Intel Mac is never
+    /// taken for Apple silicon: when the check can't be made, it is Intel.
+    pub fn this() -> Self {
+        if cfg!(target_arch = "aarch64") || translated() {
+            Machine::AppleSilicon
+        } else {
+            Machine::Intel
+        }
+    }
+}
+
+/// Whether this process is an x86_64 binary running under Rosetta.
+#[cfg(target_os = "macos")]
+fn translated() -> bool {
+    let mut value: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    // SAFETY: a valid NUL-terminated name, and an out-buffer of the size given.
+    let status = unsafe { libc::sysctlbyname(c"sysctl.proc_translated".as_ptr(), (&raw mut value).cast(), &raw mut size, std::ptr::null_mut(), 0) };
+    status == 0 && value == 1
+}
+
+#[cfg(not(target_os = "macos"))]
+fn translated() -> bool {
+    false
+}
+
+/// The feed this Mac's own build updates from, beside the one Info.plist
+/// names: `…/appcast.xml` (the universal build's) or `…/appcast-<arch>.xml`
+/// becomes `…/appcast-<this Mac's arch>.xml`. So a universal build moves to
+/// its Mac's own build with its next update, and a copy of the Intel build
+/// on Apple silicon (under Rosetta) moves to the Apple silicon one. Any other
+/// feed (a test server's) is kept as it is.
+pub fn feed_for(feed: &str, machine: Machine) -> String {
+    let (dir, name) = feed.rsplit_once('/').unwrap_or(("", feed));
+    let ours = name == "appcast.xml" || name.strip_prefix("appcast-").and_then(|rest| rest.strip_suffix(".xml")).is_some_and(|arch| !arch.is_empty() && !arch.contains(['/', '?', '#']));
+    if ours && !dir.is_empty() {
+        format!("{dir}/appcast-{}.xml", machine.arch())
+    } else {
+        feed.to_owned()
+    }
+}
+
+/// The feed this copy of the app updates from: Info.plist's, made this Mac's
+/// own ([`feed_for`]). `None` when the app has no (https) feed, and Sparkle
+/// then goes by Info.plist alone.
+pub fn this_macs_feed() -> Option<String> {
+    static FEED: OnceLock<Option<String>> = OnceLock::new();
+    FEED.get_or_init(|| {
+        let plist = std::fs::read_to_string(bundle()?.join("Contents/Info.plist")).ok()?;
+        Some(feed_for(&feed_url(&plist)?, Machine::this()))
+    })
+    .clone()
+}
+
 /// The note a restart into the newest leaves for the app starting again:
 /// the release to land on, and when it was asked (Unix seconds).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -318,8 +392,7 @@ pub fn look_at_feed() {
         }
         *last = Some(std::time::Instant::now());
     }
-    let Some(plist) = bundle().and_then(|b| std::fs::read_to_string(b.join("Contents/Info.plist")).ok()) else { return };
-    let Some(url) = feed_url(&plist) else { return };
+    let Some(url) = this_macs_feed() else { return };
     std::thread::spawn(move || {
         let out = std::process::Command::new("/usr/bin/curl").args(["-fsSL", "--max-time", "20", &url]).output();
         if let Some(newest) = out.ok().filter(|o| o.status.success()).and_then(|o| feed_version(&String::from_utf8_lossy(&o.stdout))) {
@@ -674,6 +747,32 @@ mod tests {
         let plist = "<dict>\n\t<key>SUFeedURL</key>\n\t<string>https://github.com/equipe-labs/equipe/releases/latest/download/appcast.xml</string>\n</dict>";
         assert_eq!(feed_url(plist).as_deref(), Some("https://github.com/equipe-labs/equipe/releases/latest/download/appcast.xml"));
         assert_eq!(feed_url("<key>SUFeedURL</key><string>http://plain</string>"), None, "only https");
+    }
+
+    #[test]
+    fn each_mac_updates_from_its_own_builds_feed() {
+        let base = "https://github.com/equipe-labs/equipe/releases/latest/download";
+        let (arm, intel) = (Machine::AppleSilicon, Machine::Intel);
+        // The universal build (the feed it was built with) moves to its Mac's own.
+        assert_eq!(feed_for(&format!("{base}/appcast.xml"), arm), format!("{base}/appcast-arm64.xml"));
+        assert_eq!(feed_for(&format!("{base}/appcast.xml"), intel), format!("{base}/appcast-x86_64.xml"));
+        // Each build keeps its own; the Intel build under Rosetta moves to Apple silicon's.
+        assert_eq!(feed_for(&format!("{base}/appcast-arm64.xml"), arm), format!("{base}/appcast-arm64.xml"));
+        assert_eq!(feed_for(&format!("{base}/appcast-x86_64.xml"), intel), format!("{base}/appcast-x86_64.xml"));
+        assert_eq!(feed_for(&format!("{base}/appcast-x86_64.xml"), arm), format!("{base}/appcast-arm64.xml"));
+        // An Intel Mac never reads the Apple silicon feed, whatever the app was built with.
+        for name in ["appcast.xml", "appcast-arm64.xml", "appcast-x86_64.xml"] {
+            assert_eq!(feed_for(&format!("{base}/{name}"), intel), format!("{base}/appcast-x86_64.xml"), "{name}");
+        }
+        // Someone else's feed (a test server's) stays as it is.
+        for other in ["https://example.com/feed.xml", "https://example.com/appcast-.xml", "https://example.com/appcast.xml?x=1", "appcast.xml"] {
+            assert_eq!(feed_for(other, arm), other);
+        }
+        assert_eq!(Machine::AppleSilicon.arch(), "arm64");
+        assert_eq!(Machine::Intel.arch(), "x86_64");
+        if cfg!(target_arch = "aarch64") {
+            assert_eq!(Machine::this(), Machine::AppleSilicon, "an arm64 binary runs only on Apple silicon");
+        }
     }
 
     #[test]
