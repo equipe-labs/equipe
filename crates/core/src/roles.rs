@@ -768,7 +768,11 @@ type a card number or a password you weren't given, and never try to get past a 
 code in chat, or type one yourself: when a page asks for a code the site emailed, the person gets a card that fills it from their \
 mailbox on their click (if none came up, call `block_on_person` with `verification`) — then wait. Your windows are yours alone, but sign-ins are shared by \
 everyone's: don't sign out of a site, or switch it to another account, team or workspace, without saying so first — \
-the rest of the squad works signed in there too."
+the rest of the squad works signed in there too. A tool or an MCP server is connected in equipe, never in an AI app's own \
+settings on the web (claude.ai or chatgpt.com connectors and the like): those are the person's account, not your work's, and \
+they refuse automated browsers. To have one connected — or to see its sign-in or consent page as a client does — ask the \
+person with `block_on_person` to connect it in equipe (Logins › Connections, or `equipe mcp add <url>` then `equipe mcp login \
+<name>`); its tools come to you once it is."
     } else {
         ""
     };
@@ -1839,7 +1843,7 @@ invent one."), "{id}: true numbers");
         }
         // What it must hold to whenever it browses stays in its charter, with where the rest is.
         let charter = charter(role(PM).unwrap(), "pm", &browsing);
-        for part in ["Before you work in it, open your `browser` skill", "call `ask_person` with exactly what", "never try to get past a CAPTCHA", "don't sign out of a site"] {
+        for part in ["Before you work in it, open your `browser` skill", "call `ask_person` with exactly what", "never try to get past a CAPTCHA", "don't sign out of a site", "never in an AI app's own settings on the web", "`equipe mcp add <url>`"] {
             assert!(charter.contains(part), "{part}: {charter}");
         }
         // `equipe browser` is refused where it runs, saying why and what instead: no word for it here.
