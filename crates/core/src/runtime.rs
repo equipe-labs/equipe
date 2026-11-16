@@ -10154,11 +10154,17 @@ check what is already done in your worktree first."
             .collect();
         let keep: Vec<u32> = self.commands.engine_pids();
         let squads: Vec<String> = self.journals.keys().cloned().collect();
-        let mut repos: Vec<PathBuf> = squads.iter().flat_map(|s| self.projects(s)).collect();
+        let by_squad: Vec<(String, Vec<PathBuf>)> = squads.iter().map(|s| (s.clone(), self.projects(s))).collect();
+        let mut repos: Vec<PathBuf> = by_squad.iter().flat_map(|(_, p)| p.iter().cloned()).collect();
         repos.sort();
         repos.dedup();
         std::thread::spawn(move || {
             for line in crate::disk::tidy_lane_tmp(&home, &open, &keep) {
+                crate::daemon_log!("equipe: {line}");
+            }
+            // A desk's full copy of a project (a deploy's `cp -R` or clone):
+            // named once, so it shows why a worktree would have done.
+            for line in crate::disk::warn_desk_clones(&home, &by_squad) {
                 crate::daemon_log!("equipe: {line}");
             }
             for line in crate::disk::clear_git_garbage(&repos) {
