@@ -3277,6 +3277,7 @@
   "signin.signing_in": "{engine}に再びサインインしています",
   "signin.starting": "{place}でサインインを始めています。",
   "signin.browser_body": "{place}でブラウザが開きました。承認すれば完了です。",
+  "signin.browser_equipe": "{place} の equipe のブラウザでサインインページを開きました。たいていはすでにサインイン済みです。そこで承認すれば、止まった作業は自動で続きます。",
   "signin.paste_far": "「ページを開く」でサインインページを開いて承認してください。表示されたコードを下に貼り付ければ完了です。",
   "signin.paste_here": "開いたブラウザで承認すれば完了です。ページにコードが表示されたら、下に貼り付けてください。",
   "signin.code_body": "{url} でこのコードを入力してください。",

@@ -3277,6 +3277,7 @@
   "signin.signing_in": "正在重新登录 {engine}",
   "signin.starting": "正在 {place} 上开始登录。",
   "signin.browser_body": "{place} 上已打开浏览器。在那里批准即可完成。",
+  "signin.browser_equipe": "已在 {place} 的 equipe 浏览器中打开登录页面，你通常已在那里登录。在那里批准后，停下的工作会自动继续。",
   "signin.paste_far": "点击“打开页面”打开登录页并批准。把页面上显示的代码粘贴到下面即可完成。",
   "signin.paste_here": "在打开的浏览器中批准即可完成。如果页面显示代码，请粘贴到下面。",
   "signin.code_body": "请在 {url} 输入此代码。",

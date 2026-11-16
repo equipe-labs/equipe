@@ -3353,6 +3353,7 @@
   "signin.signing_in": "Signing in to {engine} again",
   "signin.starting": "Starting the sign-in on {place}.",
   "signin.browser_body": "A browser opened on {place}. Approve there and you're done.",
+  "signin.browser_equipe": "The sign-in page is open in equipe's browser on {place}, where you're usually signed in already. Approve there and the stopped work carries on by itself.",
   "signin.paste_far": "Open the sign-in page with “Open page” and approve. Paste the code it shows below and you're done.",
   "signin.paste_here": "Approve in the browser that opened and you're done. If the page shows a code, paste it below.",
   "signin.code_body": "Enter this code at {url}.",

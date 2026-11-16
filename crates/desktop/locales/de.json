@@ -3353,6 +3353,7 @@
   "signin.signing_in": "{engine} wird wieder angemeldet",
   "signin.starting": "Die Anmeldung startet auf {place}.",
   "signin.browser_body": "Auf {place} hat sich ein Browser geöffnet. Dort bestätigen, fertig.",
+  "signin.browser_equipe": "Die Anmeldeseite ist im equipe-Browser auf {place} geöffnet, wo du meist schon angemeldet bist. Dort bestätigen, dann geht die angehaltene Arbeit von selbst weiter.",
   "signin.paste_far": "Öffne die Anmeldeseite mit „Seite öffnen“ und bestätige. Füge den angezeigten Code unten ein, fertig.",
   "signin.paste_here": "Im geöffneten Browser bestätigen, fertig. Zeigt die Seite einen Code, füge ihn unten ein.",
   "signin.code_body": "Gib diesen Code auf {url} ein.",

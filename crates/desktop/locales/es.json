@@ -3353,6 +3353,7 @@
   "signin.signing_in": "Volviendo a iniciar sesión en {engine}",
   "signin.starting": "Empezando el inicio de sesión en {place}.",
   "signin.browser_body": "Se abrió un navegador en {place}. Apruébalo allí y listo.",
+  "signin.browser_equipe": "La página de inicio de sesión está abierta en el navegador de equipe en {place}, donde normalmente ya tienes la sesión iniciada. Apruébala allí y el trabajo detenido sigue solo.",
   "signin.paste_far": "Abre la página de inicio de sesión con «Abrir página» y apruébala. Pega abajo el código que muestra y listo.",
   "signin.paste_here": "Aprueba en el navegador que se abrió y listo. Si la página muestra un código, pégalo abajo.",
   "signin.code_body": "Introduce este código en {url}.",

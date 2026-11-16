@@ -3278,6 +3278,7 @@
   "signin.signing_in": "{engine}에 다시 로그인하는 중이에요",
   "signin.starting": "{place}에서 로그인을 시작하고 있어요.",
   "signin.browser_body": "{place}에 브라우저가 열렸어요. 승인하면 끝나요.",
+  "signin.browser_equipe": "{place}의 equipe 브라우저에 로그인 페이지를 열었어요. 보통 이미 로그인돼 있어요. 거기서 승인하면 멈췄던 일이 저절로 이어져요.",
   "signin.paste_far": "‘페이지 열기’로 로그인 페이지를 열고 승인해 주세요. 페이지에 나온 코드를 아래에 붙여 넣으면 끝나요.",
   "signin.paste_here": "열린 브라우저에서 승인하면 끝나요. 페이지에 코드가 나오면 아래에 붙여 넣어 주세요.",
   "signin.code_body": "{url}에서 이 코드를 입력해 주세요.",
