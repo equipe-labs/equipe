@@ -1425,11 +1425,35 @@ pub fn tidy_lane_tmp(home: &Path, open: &[(String, Vec<TicketId>)], keep: &[u32]
             let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let stale = match lane_tmp_ticket(&name) {
                 Some(id) => !tickets.contains(&id),
-                None => newest_deep(&dir).and_then(|at| at.elapsed().ok()).is_some_and(|ago| ago >= DESK_TMP_IDLE),
+                None => idle_for_a_day(&dir),
             };
             if stale {
                 done.extend(clear_lane_tmp(home, &dir, keep));
+            } else if lane_tmp_ticket(&name).is_none() {
+                // A desk in daily use is never idle as a whole, so what it left
+                // behind (a deploy's clone, a build) would pile up for good:
+                // each thing in it untouched for a day goes on its own.
+                done.extend(tidy_desk(home, &dir, keep));
             }
+        }
+    }
+    done
+}
+
+/// Untouched for [`DESK_TMP_IDLE`], by what's newest inside.
+fn idle_for_a_day(path: &Path) -> bool {
+    newest_deep(path).and_then(|at| at.elapsed().ok()).is_some_and(|ago| ago >= DESK_TMP_IDLE)
+}
+
+/// What a member's desk folder holds, each entry untouched for
+/// [`DESK_TMP_IDLE`] removed (what stands in it stopped first); the rest stays.
+fn tidy_desk(home: &Path, desk: &Path, keep: &[u32]) -> Vec<String> {
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(desk).into_iter().flatten().flatten().map(|e| e.path()).collect();
+    entries.sort();
+    let mut done = Vec::new();
+    for entry in entries {
+        if idle_for_a_day(&entry) {
+            done.extend(clear_lane_tmp(home, &entry, keep));
         }
     }
     done
@@ -2382,6 +2406,23 @@ mod tests {
             assert_eq!(dir(squad, name).exists(), kept, "{squad}/{name}");
         }
         assert!(tidy_lane_tmp(&tree.home, &open, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_desk_in_daily_use_still_gives_back_what_it_left_untouched_for_a_day() {
+        let tree = Tree::new();
+        let desk = tree.home.join("tmp").join("acme").join("pm");
+        for name in ["web-deploy-old", "web-deploy-new"] {
+            fill(&desk.join(name), 100);
+        }
+        std::fs::write(desk.join("old.log"), "x").unwrap();
+        aged(&desk.join("web-deploy-old"), 30);
+        let old_log = std::fs::File::open(desk.join("old.log")).unwrap();
+        old_log.set_modified(std::time::SystemTime::now() - Duration::from_secs(30 * 3600)).unwrap();
+        let done = tidy_lane_tmp(&tree.home, &[("acme".to_owned(), Vec::new())], &[]);
+        assert_eq!(done.iter().filter(|l| l.starts_with("removed ")).count(), 2, "{done:?}");
+        assert!(!desk.join("web-deploy-old").exists() && !desk.join("old.log").exists(), "a day untouched: given back");
+        assert!(desk.join("web-deploy-new").join("blob").exists(), "in use: kept, and the desk with it");
     }
 
     #[test]
