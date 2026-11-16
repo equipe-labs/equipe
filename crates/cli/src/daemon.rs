@@ -84,8 +84,8 @@ fn raise_soft_limit(wanted: u64) -> (u64, u64) {
     if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
         return (0, 0);
     }
-    let before = limit.rlim_cur as u64;
-    let mut cap = limit.rlim_max as u64;
+    let before: u64 = limit.rlim_cur;
+    let mut cap: u64 = limit.rlim_max;
     #[cfg(target_os = "macos")]
     {
         let mut per_proc: libc::c_int = 0;
@@ -100,7 +100,7 @@ fn raise_soft_limit(wanted: u64) -> (u64, u64) {
     if target <= before {
         return (before, before);
     }
-    limit.rlim_cur = target as libc::rlim_t;
+    limit.rlim_cur = target;
     // SAFETY: setrlimit reads only the struct it is given.
     if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } != 0 {
         return (before, before);
@@ -891,8 +891,8 @@ mod open_files_tests {
         assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) }, 0);
         let (before, after) = super::raise_soft_limit(4096);
         assert!(after >= before, "never lowered: {before} -> {after}");
-        assert!(after <= limit.rlim_max as u64, "never past the hard limit");
-        assert!(after >= before.min(4096).min(limit.rlim_max as u64));
+        assert!(after <= limit.rlim_max, "never past the hard limit");
+        assert!(after >= before.min(4096).min(limit.rlim_max));
     }
 }
 
