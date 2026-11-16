@@ -255,9 +255,12 @@ enum Command {
     Browser {
         /// Where to start (default: a page of sites squads often need) — or
         /// `handoff panel|window`: where a member's sign-in opens (the
-        /// automated browser in the app's panel, or a normal Chrome window)
+        /// automated browser in the app's panel, or a normal Chrome window) —
+        /// or `profile [<Chrome profile>]`: which of equipe's Chrome profiles
+        /// (which Google account) members work in
         url: Option<String>,
-        /// With `handoff`: `panel` or `window` (no value: show it)
+        /// With `handoff`: `panel` or `window`; with `profile`: the profile
+        /// (no value: show it)
         value: Option<String>,
         /// Forget every sign-in: members have no browser until you sign in again
         #[arg(long)]
@@ -744,6 +747,7 @@ async fn run(cli: Cli) -> ExitCode {
             return ExitCode::FAILURE;
         }
         Command::Browser { url: Some(word), value, .. } if word == "handoff" => browser_handoff(value.as_deref()),
+        Command::Browser { url: Some(word), value, .. } if word == "profile" => browser_profile(value.as_deref()),
         Command::Browser { max: Some(n), .. } => match settings::browser_max(&equipe_providers::credentials::equipe_home(), n.as_deref()) {
             Ok(line) => {
                 println!("  {line}");
@@ -1022,6 +1026,33 @@ fn browser_handoff(value: Option<&str>) -> CmdResult {
         }
     };
     println!("  {line}");
+    Ok(())
+}
+
+/// `equipe browser profile [<name>]`: the Chrome profiles of equipe's
+/// browser, the Google account signed in to each (masked) and the one members
+/// work in; with a name, members work in that one from the browser's next start.
+fn browser_profile(value: Option<&str>) -> CmdResult {
+    use equipe_core::browser;
+    let home = equipe_providers::credentials::equipe_home();
+    let dir = browser::host_profile(&home);
+    if let Some(name) = value {
+        browser::choose_chrome_profile(&dir, name).map_err(Failure::new)?;
+        println!("  {}", t!("main.browser_profile_set", profile = name));
+        return Ok(());
+    }
+    let profiles = browser::chrome_profiles(&dir);
+    if profiles.is_empty() {
+        println!("  {}", t!("main.browser_profile_none"));
+        return Ok(());
+    }
+    let pinned = browser::pinned_profile(&dir);
+    for p in profiles {
+        let mark = if p.dir == pinned { "▸" } else { " " };
+        let account = p.account.unwrap_or_else(|| t!("main.browser_profile_no_account").to_owned());
+        let managed = if p.managed { format!(" · {}", t!("main.browser_profile_managed")) } else { String::new() };
+        println!("  {mark} {} — {account}{managed}", p.dir);
+    }
     Ok(())
 }
 

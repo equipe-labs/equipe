@@ -8626,6 +8626,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
             self.browsers.retain(|_, b| !b.is_lane());
             self.host = browser::Host::start(npx, &self.config.home, &self.hub, self.host_events.clone()).ok();
             self.hub.set_host(self.host.clone());
+            self.tell_profile_separation();
             // A new Chrome: the kept sign-ins go in again as lanes open.
             self.sign_ins_restart(None);
             self.suspend_again();

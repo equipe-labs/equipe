@@ -27,15 +27,26 @@ pub(super) struct Windows {
     reopen: HashMap<String, Vec<(String, String, bool)>>,
     /// What is on disk about the hand-offs, to write only what changed.
     kept: Vec<handoff::Saved>,
+    /// Sites whose sign-in made in a sign-in view didn't hold in the members'
+    /// Chrome (the site still asked): signed in to in the members' own browser
+    /// from then on ([`no_carry_file`]).
+    no_carry: std::collections::BTreeSet<String>,
+}
+
+/// Where the sites a sign-in view's sign-in doesn't carry over for are kept.
+fn no_carry_file(home: &Path) -> PathBuf {
+    home.join("browser").join("view-no-carry")
 }
 
 impl Windows {
     pub(super) fn new(home: &Path) -> Self {
-        Self::with(Box::new(handoff::System::new(home)))
+        let mut windows = Self::with(Box::new(handoff::System::new(home)));
+        windows.no_carry = std::fs::read_to_string(no_carry_file(home)).unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
+        windows
     }
 
     pub(super) fn with(machine: Box<dyn handoff::Machine>) -> Self {
-        Self { handoffs: handoff::Handoffs::default(), views: handoff_view::Views::default(), machine, reopen: HashMap::new(), kept: Vec::new() }
+        Self { handoffs: handoff::Handoffs::default(), views: handoff_view::Views::default(), machine, reopen: HashMap::new(), kept: Vec::new(), no_carry: Default::default() }
     }
 }
 
@@ -102,7 +113,8 @@ impl Runtime {
             .unwrap_or_default();
         // A screen that can take the sign-in in a view of its own, wherever it is: there —
         // unless the site's sign-in holds only in the browser that made it (Google's).
-        if self.hub.has_web_view() && !handoff_view::binds_to_browser(&at) {
+        let carries = !handoff_view::binds_to_browser(&at) && !self.windows.no_carry.iter().any(|s| vault::serves(s, &at));
+        if self.hub.has_web_view() && carries {
             self.begin_view_handoff(&squad, &key, url, why).await;
             return Ok(true);
         }
@@ -180,6 +192,32 @@ impl Runtime {
         self.run_window_actions(actions).await;
     }
 
+    /// A view's sign-in that the site didn't take in the member's Chrome: the
+    /// member's own browser into the person's hands in the panel, at `url`.
+    /// Whether it went there.
+    fn view_to_panel(&mut self, lane: &str, url: &str) -> bool {
+        let Some((squad, key)) = lane.split_once('/') else { return false };
+        let (squad, member) = (squad.to_owned(), browser::member_of(key).to_owned());
+        let site = vault::site_of(url);
+        if !site.is_empty() && self.windows.no_carry.insert(site.clone()) {
+            let all: Vec<&str> = self.windows.no_carry.iter().map(String::as_str).collect();
+            let _ = std::fs::write(no_carry_file(&self.config.home), all.join("\n") + "\n");
+        }
+        // What the view handed over is no sign-in there: not kept to be put back later.
+        self.forget_sign_in(&squad, browser::split_profile(key).1.unwrap_or_default(), &site, 0);
+        let why = self.asked_in.get(lane).cloned().unwrap_or_default();
+        if !self.ask_in_panel(&squad, &member, Some(url), &why) {
+            return false;
+        }
+        crate::daemon_log!("equipe: the sign-in to {site} from the view didn't hold in {lane}'s browser; it is in the person's hands in the panel");
+        let (_, session) = self.lane_session(lane);
+        if let Some(session) = session {
+            let text = say!(self, "notice.view_didnt_carry", name = member, site = site);
+            self.publish(Event::Notice { undo: None, session, text });
+        }
+        true
+    }
+
     /// A view is over: its screens drop it.
     fn finish_view(&mut self, lane: &str, challenged: bool) {
         let (squad, _) = self.lane_session(lane);
@@ -197,8 +235,19 @@ impl Runtime {
         let now = std::time::Instant::now();
         let loaded: std::collections::HashSet<String> = self.windows.views.lanes().into_iter().filter(|l| self.lane_loaded(l)).collect();
         for (lane, _stale) in self.windows.views.ready(now, |l| loaded.contains(l)) {
-            let challenged = self.lane_page(&lane).is_some_and(|p| p.check.is_some());
+            let page = self.lane_page(&lane);
+            let challenged = page.as_ref().is_some_and(|p| p.check.is_some());
             self.finish_view(&lane, challenged);
+            // The view's sign-in didn't hold in the member's Chrome (the site still asks
+            // for it): the browser itself goes into the person's hands, in the panel, at
+            // once — the same hand-off, not a new question — and that site goes there
+            // directly from now on.
+            let still = page.filter(|p| matches!(p.check, Some(equipe_protocol::HumanCheck::SignIn | equipe_protocol::HumanCheck::TwoFactor)));
+            if let Some(page) = still
+                && self.view_to_panel(&lane, &page.url)
+            {
+                continue;
+            }
             Box::pin(self.on_host(HostEvent::Control { lane, by: None, refused: false })).await;
         }
         // The screen that took them went: each goes where a person can still sign in.
@@ -351,6 +400,7 @@ impl Runtime {
         // The profile its Chrome opens again: where the person was, should their sign-in have moved to another.
         let dir = if profile.is_empty() { browser::host_profile(&self.config.home) } else { browser::profile_dir(&self.config.home, profile) };
         browser::chrome_profile(&dir);
+        self.tell_profile_separation();
         self.hub.op(&json!({ "op": "resume", "profile": profile }));
         // Its Chrome starts again: the kept sign-ins go in again as its lanes open.
         self.sign_ins_restart(Some(profile));
@@ -412,6 +462,34 @@ impl Runtime {
     /// What the daemon says in the member's conversation when the window opened.
     pub(super) fn window_notice(&self, member: &str, why: &str) -> String {
         say!(self, "notice.browser_window", name = member, host = this_mac(), why = why)
+    }
+
+    /// The person's Google Workspace keeps each work account in a Chrome
+    /// profile of its own (enterprise profile separation): told once, plainly,
+    /// which account members work as, how to choose another, and the setting
+    /// their Workspace admin can change so Chrome stops making a profile per
+    /// account — optional: equipe works either way.
+    pub(super) fn tell_profile_separation(&mut self) {
+        let home = self.config.home.clone();
+        let dir = browser::host_profile(&home);
+        let told = home.join("browser").join("told-profile-separation");
+        if told.exists() || !browser::separated(&dir) {
+            return;
+        }
+        let _ = std::fs::write(&told, "");
+        let pinned = browser::pinned_profile(&dir);
+        let account = browser::chrome_profiles(&dir).into_iter().find(|p| p.dir == pinned).and_then(|p| p.account).unwrap_or_else(|| pinned.clone());
+        crate::daemon_log!("equipe: Chrome keeps each work account in a profile of its own in {}; members use {pinned:?}", dir.display());
+        let text = say!(self, "notice.profile_separation", account = account);
+        let line = format!(
+            "equipe: the person's Google Workspace requires a separate Chrome profile for each work account, so equipe's browser has one per \
+account signed in to; members work as {account}. The person was told how to choose another account and what their admin can change. \
+Nothing for you to do; if a page needs another Google account, say so — don't ask the person to sign in again."
+        );
+        let squads: Vec<String> = self.journals.keys().cloned().collect();
+        for squad in squads {
+            self.brief_pm(&squad, line.clone(), Some(text.clone()));
+        }
     }
 
     /// Paused profiles told to a host that started again: it knows nothing of them.

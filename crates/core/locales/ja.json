@@ -404,6 +404,8 @@
   "notice.browser_given_back": "🖐 ブラウザを返しました。",
   "notice.browser_in_panel": "🖥 {name} のブラウザがブラウザパネルで開きます: {why}",
   "notice.browser_reauth_hint": "(この手順はサイト自身の確認です。重要なページの前や、まだ信頼されていない端末では再度求められるため、equipe が代わりに行うことはできません。「このデバイスでは今後確認しない」が表示されたらチェックしてください。全メンバーがこのブラウザを使うので、全員に有効です。)",
+  "notice.profile_separation": "🔐 Google Workspace が仕事用アカウントごとに別の Chrome プロフィールを必須にしているため、equipe のブラウザもサインインしたアカウントごとにプロフィールを持っています。メンバーは {account} として作業し、ほかのサイトのサインインもそこに保管されます。別のアカウントで作業させるには `equipe browser profile`。任意です(どちらでも equipe は動きます): Workspace 管理者が Google Admin console › Devices › Chrome › Settings › User & browser settings › Sign-in settings › Enterprise profile separation を \"Suggest profile separation\" / \"Disable profile separation\" にすると、Chrome はアカウントごとにプロフィールを作らなくなります (https://support.google.com/chrome/a/answer/11198768)。",
+  "notice.view_didnt_carry": "🖥 ビューでのサインインが {name} のブラウザに引き継がれませんでした({site} がまだ求めています)。そのため {name} のブラウザそのものをパネルでお渡ししています。そこで一度だけサインインしてください。今後 {site} は直接そこで開きます。",
   "notice.browser_on_screen": "🖥 {name} のブラウザがこの Mac の画面に表示されます: {why}",
   "notice.browser_view": "🖥 {name} のサインインがブラウザパネルのサインインビューで開きます: {why}",
   "notice.browser_window": "🖥 {name} のサインインが {host} の通常の Chrome ウィンドウで開きます: {why}",

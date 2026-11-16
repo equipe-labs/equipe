@@ -471,6 +471,40 @@ async fn a_keyed_server_needs_its_key_never_a_sign_in_and_the_key_stays_in_the_d
 }
 
 #[tokio::test]
+async fn a_sign_in_card_the_person_let_go_is_not_put_up_again_by_members_after_a_restart() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let fake = Fake::start().await;
+    let (handle, mut events, bin, home, _) = squad_with(&[(2, "designer")]).await;
+    let docs = squad_mcp::server("docs", Some(&fake.url("/mcp")), Some(&["designer".to_owned()]), None).unwrap();
+    handle.send(Command::AddMcpServer { squad: "acme".into(), server: docs, sign_in: false });
+    overall(&handle, "docs", McpState::NeedsSignIn).await;
+    // A member's turn puts the card up once; the person lets it go.
+    turn(&handle, &mut events, &bin, 2).await;
+    let card = waiting_card(&handle, "equipe_mcp").await;
+    handle.send(Command::CancelCliSignIn { squad: "acme".into(), id: card.id });
+    for _ in 0..100 {
+        if handle.snapshot("acme").await.cli_sign_ins.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    handle.shutdown().await;
+
+    // equipe starts again: the member's turns don't put it up again; Connections still says it needs a sign-in.
+    // (The squad comes back from its journal, the designer with it.)
+    let (claude, bin) = fake_claude();
+    let (handle, mut events) = runtime::start(config(&claude, &home));
+    turn(&handle, &mut events, &bin, 2).await;
+    overall(&handle, "docs", McpState::NeedsSignIn).await;
+    turn(&handle, &mut events, &bin, 2).await;
+    assert!(handle.snapshot("acme").await.cli_sign_ins.iter().all(|c| c.tool != "equipe_mcp"), "not asked again by a member");
+    // The person asks for it in Connections: the card, at once.
+    handle.send(Command::SignInMcpServer { squad: "acme".into(), name: "docs".into() });
+    waiting_card(&handle, "equipe_mcp").await;
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn the_pm_connects_a_server_only_on_the_persons_tap_and_takes_one_off_at_once() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let fake = Fake::start().await;

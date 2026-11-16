@@ -4349,7 +4349,7 @@ def say(m):
     sys.stdout.buffer.flush()
 def tabs(lane):
     pid, url = pages[lane]
-    say({{"type": "tabs", "lane": lane, "member": lane.split("/")[1], "pages": [{{"id": pid, "url": url, "title": "", "signals": {{}}}}], "agent": pid}})
+    say({{"type": "tabs", "lane": lane, "member": lane.split("/")[1], "pages": [{{"id": pid, "url": url, "title": "", "signals": {{"password": "still-asks" in url}}}}], "agent": pid}})
 say({{"type": "ready"}})
 for line in sys.stdin:
     with open({ops:?}, "a") as f:
@@ -4524,6 +4524,51 @@ async fn a_sign_in_hand_off_goes_to_a_plain_chrome_window_and_the_automated_brow
 }
 
 #[tokio::test]
+async fn a_sign_in_the_person_finishes_in_their_own_chrome_window_is_recorded_kept_and_offered_to_save() {
+    // The real path on a Mac: the shared host Chrome, the person's own window on its profile.
+    unsafe { std::env::set_var("EQUIPE_VAULT_IN_MEMORY", "1") };
+    let repo = repo();
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    let launches = fake_plain_chrome(&home);
+    let (npx, ops) = fake_host_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), browser_host: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "backend")).await;
+    handle.browser_hub().await.unwrap().screen(true);
+    handle.send(Command::BrowserNewTab { url: None, profile: None });
+    for _ in 0..400 {
+        if std::fs::read_to_string(&ops).unwrap_or_default().contains("\"op\":\"newtab\"") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let url = "https://erp.example/home";
+    let said = tool(&handle, "backend", "show_my_browser", serde_json::json!({ "url": url, "why": "Sign in to the ERP" })).await;
+    assert!(said.text.contains("normal Chrome window"), "{said:?}");
+    for _ in 0..400 {
+        if !std::fs::read_to_string(&launches).unwrap_or_default().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(std::fs::read_to_string(&launches).unwrap_or_default().contains("--profile-directory="), "the members' own profile");
+    // The person signs in there and presses Done: the browser comes back on the ERP, past its sign-in.
+    handle.send(Command::BrowserControl { lane: "acme/backend".into(), take: false });
+    let seen = until(&mut events, |e| matches!(e, Event::LoginOffered { .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::LoginOffered { offer } if offer.site == "erp.example")), "saving the login is offered once: {seen:?}");
+    let db = equipe_core::journal::squad_dir(&home, "acme").join("squad.db");
+    let rows = equipe_core::logins::read(&db, 0).unwrap();
+    assert!(
+        rows.iter().any(|r| r.kind == equipe_core::logins::Kind::SignedIn && r.site == "erp.example" && r.member == "backend" && r.by.as_deref() == Some("person")),
+        "{rows:?}"
+    );
+    assert_eq!(equipe_core::logins::summarize(&rows).signed_in, 1, "`equipe logins stats` counts it");
+    // Its cookies are asked of the profile's Chrome, to keep for every squad.
+    let line = host_line(&ops, |l| l.contains("\"op\":\"collect\"")).await;
+    assert!(line.contains("erp.example"), "{line}");
+}
+
+#[tokio::test]
 async fn a_sign_in_hand_off_without_chrome_goes_to_the_panel_and_says_why() {
     let repo = repo();
     let (claude, _) = recording_claude(&answering("ok"));
@@ -4638,6 +4683,33 @@ async fn a_sign_in_the_person_made_where_no_member_could_watch_is_seen_through_w
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(finished, "{:?}", equipe_core::logins::read(&db, 0));
+}
+
+#[tokio::test]
+async fn a_sign_in_from_a_view_the_site_doesnt_take_goes_on_in_the_members_own_browser_and_that_site_skips_the_view_after() {
+    let repo = repo();
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    let _ = fake_plain_chrome(&home);
+    let (npx, ops) = fake_host_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), browser_host: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "backend")).await;
+    let hub = handle.browser_hub().await.unwrap();
+    hub.screen(true);
+    hub.web_view(true);
+    // A site that ties its session to the browser that made it: still asking once the view's cookies went in.
+    let url = "https://chat.example/login?still-asks";
+    let said = tool(&handle, "backend", "show_my_browser", serde_json::json!({ "url": url, "why": "Sign in to the chat" })).await;
+    assert!(said.text.contains("sign-in view"), "{said:?}");
+    let _ = until(&mut events, |e| matches!(e, Event::BrowserWindow { open: true, .. })).await;
+    handle.send(Command::BrowserCookies { lane: "acme/backend".into(), hosts: vec!["chat.example".into()], cookies: vec![cookie("chat_d", "chat.example")], failed: false });
+    handle.send(Command::BrowserControl { lane: "acme/backend".into(), take: false });
+    // Not handed back to the member: its own browser goes into the person's hands, said plainly.
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("didn't hold"))).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::TurnEnded { .. })), "the member isn't told to carry on yet: {seen:?}");
+    let line = host_line(&ops, |l| l.contains("\"op\":\"control\"") && l.contains("\"by\":\"person\"")).await;
+    assert!(line.contains("acme/backend"), "{line}");
+    assert!(std::fs::read_to_string(home.join("browser").join("view-no-carry")).unwrap_or_default().contains("chat.example"));
 }
 
 /// The line of the host's requests that matches, waited for.

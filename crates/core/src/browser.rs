@@ -257,34 +257,102 @@ fn last_used_profile(dir: &Path) -> Option<String> {
     (chrome_profile_name(&name) && dir.join(&name).join("Preferences").is_file()).then_some(name)
 }
 
+/// The mark of a profile the person chose for members (`equipe browser profile`).
+pub const CHOSEN_PROFILE: &str = "equipe-profile.chosen";
+
+/// One Chrome profile of a folder, as Chrome's `Local State` lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChromeProfile {
+    /// Its folder's name: `Default`, `Profile 3`.
+    pub dir: String,
+    /// The Google account signed in to Chrome in it, masked (`a***@example.com`).
+    pub account: Option<String>,
+    /// Managed by an organization: Chrome made it for a work account that
+    /// had to be kept apart (enterprise profile separation).
+    pub managed: bool,
+}
+
+/// An address as equipe shows it: its first letter and its domain.
+fn masked(address: &str) -> String {
+    match address.split_once('@') {
+        Some((user, domain)) => format!("{}***@{domain}", user.chars().next().unwrap_or('*')),
+        None => "***".to_owned(),
+    }
+}
+
+/// The profiles of `dir`, in Chrome's own order (the order they were made
+/// in), only those whose folder is there.
+pub fn chrome_profiles(dir: &Path) -> Vec<ChromeProfile> {
+    let Some(state) = std::fs::read_to_string(dir.join("Local State")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return Vec::new() };
+    let cache = state["profile"]["info_cache"].as_object().cloned().unwrap_or_default();
+    let mut order: Vec<String> = state["profile"]["profiles_order"].as_array().into_iter().flatten().filter_map(|n| n.as_str().map(str::to_owned)).collect();
+    let mut rest: Vec<String> = cache.keys().filter(|k| !order.contains(k)).cloned().collect();
+    rest.sort_by_key(|n| (n != "Default", n.trim_start_matches("Profile ").parse::<u32>().unwrap_or(u32::MAX), n.clone()));
+    order.extend(rest);
+    order
+        .into_iter()
+        .filter(|n| chrome_profile_name(n) && dir.join(n).join("Preferences").is_file())
+        .map(|n| {
+            let entry = &cache.get(&n).cloned().unwrap_or_default();
+            let user = entry["user_name"].as_str().unwrap_or_default();
+            let gaia = entry["gaia_id"].as_str().unwrap_or_default();
+            let account = (!user.is_empty() || !gaia.is_empty()).then(|| masked(user));
+            let managed = entry["is_managed"].as_bool().unwrap_or(false) || entry["is_managed"].as_u64().unwrap_or(0) > 0;
+            ChromeProfile { dir: n, account, managed }
+        })
+        .collect()
+}
+
+/// Whether Chrome keeps work accounts in profiles of their own in `dir`:
+/// their organization requires it (enterprise profile separation), so each
+/// such account signed in to made a profile.
+pub fn separated(dir: &Path) -> bool {
+    chrome_profiles(dir).iter().any(|p| p.managed && p.account.is_some())
+}
+
+/// The person chooses the profile members use in `dir` (`equipe browser
+/// profile <name>`): kept over anything equipe would choose itself.
+pub fn choose_chrome_profile(dir: &Path, name: &str) -> Result<(), String> {
+    if !chrome_profiles(dir).iter().any(|p| p.dir == name) {
+        return Err(format!("no Chrome profile {name:?} in {}", dir.display()));
+    }
+    std::fs::write(dir.join(PINNED_PROFILE), name).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(CHOSEN_PROFILE), "").map_err(|e| e.to_string())
+}
+
 /// The Chrome profile equipe's Chrome opens in `dir`, decided before each
 /// start and pinned there ([`PINNED_PROFILE`]), so members and the person's
 /// window always share one profile — one cookie jar, and one device to the
 /// sites that remember devices.
 ///
-/// Without a pin, Chrome opens whichever profile it last used. A sign-in can
-/// make a new profile in the same folder — Chrome offers a separate profile
-/// for a work account, and an organization can require one — after which
-/// the next start opened that one, and every other site's sign-in seemed gone.
+/// Without a pin, Chrome opens whichever profile it last used, and a sign-in
+/// can make a new one in the same folder: Chrome offers a separate profile for
+/// a work account, and an organization can require one per account
+/// (enterprise profile separation) — each new account, a new profile holding
+/// only that account. Following Chrome to each new profile dropped every other
+/// site's sign-in, so equipe never moves to a profile because it is new.
 ///
-/// First time: the profile Chrome last used (the one members last worked
-/// in), else `Default`. After that the pin holds, except when Chrome's own
-/// record says another profile of the folder was used last: equipe's Chrome
-/// only ever opens the pinned one, so that is the person's choice or a
-/// profile their sign-in moved to — it is followed, and said in the log.
+/// The profile is: the one the person chose ([`choose_chrome_profile`]); else
+/// the first profile holding a Google account signed in to Chrome — the
+/// squad's working account, the first one signed in, whose sessions members
+/// built up there; else the pinned one; else the one Chrome last used (the
+/// first time); else `Default`. Another account's profile stays as it is,
+/// for the person to choose when members must work as that account.
 pub fn chrome_profile(dir: &Path) -> String {
     let pinned = std::fs::read_to_string(dir.join(PINNED_PROFILE)).ok().map(|s| s.trim().to_owned()).filter(|s| chrome_profile_name(s) && dir.join(s).is_dir());
-    let last = last_used_profile(dir);
-    let chosen = match (&pinned, last) {
-        (Some(p), Some(l)) if *p != l => {
-            crate::daemon_log!("equipe: {} now opens Chrome profile {l:?}, where the person last was (it opened {p:?})", dir.display());
-            l
-        }
-        (Some(p), _) => p.clone(),
-        (None, Some(l)) => l,
-        (None, None) => "Default".to_owned(),
-    };
+    let profiles = chrome_profiles(dir);
+    let chosen_by_person = pinned.as_ref().filter(|p| dir.join(CHOSEN_PROFILE).is_file() && profiles.iter().any(|q| q.dir == **p)).cloned();
+    let main = profiles.iter().find(|p| p.account.is_some()).map(|p| p.dir.clone());
+    let chosen = chosen_by_person
+        .or(main.clone())
+        .or(pinned.clone())
+        .or_else(|| last_used_profile(dir))
+        .unwrap_or_else(|| "Default".to_owned());
     if pinned.as_deref() != Some(chosen.as_str()) {
+        if let Some(before) = &pinned {
+            let why = if main.as_deref() == Some(chosen.as_str()) { "the first one with a Google account signed in" } else { "chosen by the person" };
+            crate::daemon_log!("equipe: {} opens Chrome profile {chosen:?}, {why} (it opened {before:?})", dir.display());
+        }
         let _ = std::fs::create_dir_all(dir);
         let _ = std::fs::write(dir.join(PINNED_PROFILE), &chosen);
     }
@@ -1844,33 +1912,57 @@ mod tests {
     }
 
     #[test]
-    fn every_chrome_on_the_folder_opens_one_pinned_profile_and_follows_the_person_to_another() {
+    fn members_stay_in_the_profile_of_the_squads_account_and_never_hop_to_a_new_one() {
         let dir = std::env::temp_dir().join(format!("equipe-pinned-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(chrome_profile(&dir), "Default", "a folder Chrome never ran");
-        assert_eq!(pinned_profile(&dir), "Default");
         let _ = std::fs::remove_file(dir.join(PINNED_PROFILE));
         let made = |name: &str| {
             std::fs::create_dir_all(dir.join(name)).unwrap();
             std::fs::write(dir.join(name).join("Preferences"), "{}").unwrap();
         };
-        let last = |name: &str| std::fs::write(dir.join("Local State"), json!({ "profile": { "last_used": name } }).to_string()).unwrap();
+        // Chrome's record: which profiles, in the order made, who is signed in to each.
+        let state = |last: &str, accounts: &[(&str, &str, bool)]| {
+            let order: Vec<&str> = ["Default", "Profile 2", "Profile 3", "Profile 4"].into_iter().filter(|p| dir.join(p).is_dir()).collect();
+            let cache: serde_json::Map<String, Value> = order
+                .iter()
+                .map(|p| {
+                    let (user, managed) = accounts.iter().find(|a| a.0 == *p).map(|a| (a.1, a.2)).unwrap_or(("", false));
+                    ((*p).to_owned(), json!({ "user_name": user, "gaia_id": if user.is_empty() { "" } else { "1" }, "is_managed": i32::from(managed) }))
+                })
+                .collect();
+            std::fs::write(dir.join("Local State"), json!({ "profile": { "last_used": last, "profiles_order": order, "info_cache": cache } }).to_string()).unwrap();
+        };
         made("Default");
         made("Profile 2");
-        // Chrome last used another profile than Default: where members last were, kept.
-        last("Profile 2");
+        // Members last worked in Profile 2, no account signed in to Chrome anywhere: kept.
+        state("Profile 2", &[]);
         assert_eq!(chrome_profile(&dir), "Profile 2");
         assert_eq!(pinned_profile(&dir), "Profile 2", "pinned for the person's window too");
-        assert_eq!(chrome_profile(&dir), "Profile 2", "the same on every start");
-        // A sign-in moved the person to a new profile of the folder: followed.
+        // A new, empty profile Chrome used last: never followed.
         made("Profile 3");
-        last("Profile 3");
+        state("Profile 3", &[]);
+        assert_eq!(chrome_profile(&dir), "Profile 2");
+        assert!(!separated(&dir));
+        // The squad's work account signed in, and the organization keeps it in a profile of its own: that one.
+        state("Profile 3", &[("Profile 3", "ai@corp.example", true)]);
         assert_eq!(chrome_profile(&dir), "Profile 3");
-        // Chrome naming one that isn't there, or not a profile at all: the pin holds.
-        last("Profile 9");
+        assert!(separated(&dir));
+        // The person's own work account makes another: members stay with the squad's.
+        made("Profile 4");
+        state("Profile 4", &[("Profile 3", "ai@corp.example", true), ("Profile 4", "jane@corp.example", true)]);
         assert_eq!(chrome_profile(&dir), "Profile 3");
-        last("../elsewhere");
-        assert_eq!(chrome_profile(&dir), "Profile 3");
+        let listed = chrome_profiles(&dir);
+        assert_eq!(listed.iter().map(|p| (p.dir.as_str(), p.account.as_deref(), p.managed)).collect::<Vec<_>>(), [
+            ("Default", None, false),
+            ("Profile 2", None, false),
+            ("Profile 3", Some("a***@corp.example"), true),
+            ("Profile 4", Some("j***@corp.example"), true),
+        ], "addresses masked");
+        // The person chooses the other account for members: kept over equipe's own choice.
+        choose_chrome_profile(&dir, "Profile 4").unwrap();
+        assert_eq!(chrome_profile(&dir), "Profile 4");
+        assert!(choose_chrome_profile(&dir, "Profile 9").is_err());
         std::fs::write(dir.join(PINNED_PROFILE), "../x").unwrap();
         assert_eq!(pinned_profile(&dir), "Default", "a pin that isn't a profile's name is none");
         let _ = std::fs::remove_dir_all(&dir);

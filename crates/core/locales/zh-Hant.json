@@ -404,6 +404,8 @@
   "notice.browser_given_back": "🖐 你交還了瀏覽器。",
   "notice.browser_in_panel": "🖥 {name} 的瀏覽器在瀏覽器面板中開啟：{why}",
   "notice.browser_reauth_hint": "(這一步是網站自己的驗證:在敏感頁面之前或在尚未信任的裝置上會再次要求,equipe 無法代勞。如果出現「在此裝置上不再詢問」,請勾選:所有成員共用這個瀏覽器,對大家都有效。)",
+  "notice.profile_separation": "🔐 你的 Google Workspace 要求每個工作帳號使用獨立的 Chrome 設定檔,所以 equipe 的瀏覽器為每個登入過的帳號各保留一個。成員以 {account} 工作,其他網站的登入也都保存在那裡。要讓他們用其他帳號工作:`equipe browser profile`。可選(兩種情況下 equipe 都能運作):Workspace 管理員可以在 Google Admin console › Devices › Chrome › Settings › User & browser settings › Sign-in settings › Enterprise profile separation 中設為 \"Suggest profile separation\" / \"Disable profile separation\",Chrome 就不會為每個帳號新增設定檔(https://support.google.com/chrome/a/answer/11198768)。",
+  "notice.view_didnt_carry": "🖥 在檢視中完成的登入沒有在 {name} 的瀏覽器中生效({site} 仍在要求登入),所以現在把 {name} 自己的瀏覽器交到你手中,在面板裡登入一次即可。之後 {site} 會直接在那裡開啟。",
   "notice.browser_on_screen": "🖥 {name} 的瀏覽器出現在這台 Mac 的螢幕上：{why}",
   "notice.browser_view": "🖥 {name} 的登入在瀏覽器面板的登入檢視中開啟：{why}",
   "notice.browser_window": "🖥 {name} 的登入在 {host} 的一般 Chrome 視窗中開啟：{why}",

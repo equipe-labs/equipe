@@ -404,6 +404,8 @@
   "notice.browser_given_back": "🖐 브라우저를 돌려줬어요.",
   "notice.browser_in_panel": "🖥 {name}의 브라우저가 브라우저 패널에 열려요: {why}",
   "notice.browser_reauth_hint": "(이 단계는 사이트 자체의 확인이에요. 민감한 페이지 앞이나 아직 신뢰하지 않는 기기에서 다시 묻기 때문에 equipe가 대신할 수 없어요. \"이 기기에서 다시 묻지 않기\"가 보이면 체크해 주세요. 모든 멤버가 이 브라우저를 함께 쓰니 모두에게 적용돼요.)",
+  "notice.profile_separation": "🔐 회사 Google Workspace가 업무 계정마다 별도의 Chrome 프로필을 요구해서, equipe 브라우저도 로그인한 계정마다 프로필을 하나씩 두고 있어요. 멤버들은 {account} 계정으로 일하고, 다른 사이트 로그인도 모두 그 프로필에 보관돼요. 다른 계정으로 일하게 하려면 `equipe browser profile`을 쓰세요. 선택 사항이에요(어느 쪽이든 equipe는 동작해요): Workspace 관리자가 Google Admin console › Devices › Chrome › Settings › User & browser settings › Sign-in settings › Enterprise profile separation에서 \"Suggest profile separation\" / \"Disable profile separation\"로 바꾸면 Chrome이 계정마다 프로필을 만들지 않아요 (https://support.google.com/chrome/a/answer/11198768).",
+  "notice.view_didnt_carry": "🖥 뷰에서 한 로그인이 {name}의 브라우저에 유지되지 않았어요({site}가 계속 요청해요). 그래서 지금 {name}의 브라우저를 패널에서 직접 넘겨드려요. 거기서 한 번만 로그인해 주세요. 앞으로 {site}는 바로 거기서 열려요.",
   "notice.browser_on_screen": "🖥 {name}의 브라우저가 이 Mac 화면에 떠요: {why}",
   "notice.browser_view": "🖥 {name}의 로그인이 브라우저 패널의 로그인 화면에서 열려요: {why}",
   "notice.browser_window": "🖥 {name}의 로그인이 {host}의 일반 Chrome 창에서 열려요: {why}",

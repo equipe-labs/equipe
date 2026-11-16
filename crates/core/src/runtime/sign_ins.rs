@@ -205,7 +205,7 @@ impl Runtime {
     }
 
     /// The site no longer takes the sign-in kept for it: it goes from `squad`'s store.
-    fn forget_sign_in(&mut self, squad: &str, profile: &str, site: &str, made: u64) {
+    pub(super) fn forget_sign_in(&mut self, squad: &str, profile: &str, site: &str, made: u64) {
         let store = self.sign_in_store(squad);
         let squad = store.as_str();
         let turn = self.kept_sign_ins.turn();

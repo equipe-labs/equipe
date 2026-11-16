@@ -34,12 +34,22 @@ pub(super) struct McpBook {
     /// card is for where one turns out needed: a member (its session, name
     /// and ticket), or the person (`Some(None)`); `None`: no card.
     checking: HashMap<(String, String), Option<CardFor>>,
-    /// Sign-ins the person put off, by squad, server name and engine (a
-    /// server equipe signs in to itself: under Claude Code's).
+    /// Sign-ins the person put off, or whose card already ended unanswered
+    /// or refused, by squad, server name and engine (a server equipe signs in
+    /// to itself: under Claude Code's). Kept on disk ([`put_off_file`]): a
+    /// member's turn never puts that card up again, after a restart either —
+    /// Connections shows it needs a sign-in until the person asks.
     put_off: HashSet<(String, String, Engine)>,
+    /// Squads whose put-off sign-ins were read from disk.
+    put_off_read: HashSet<String>,
     /// Keyed servers whose key card a member's turn has already put up, by
     /// squad and server name: asked once, then only when the person asks.
     key_asked: HashSet<(String, String)>,
+}
+
+/// Where a squad's put-off sign-ins are kept.
+fn put_off_file(home: &Path, squad: &str) -> PathBuf {
+    crate::journal::squad_dir(home, squad).join("mcp-put-off.json")
 }
 
 /// A member a sign-in card comes up for (its session, name and ticket); `None`: the person asked.
@@ -171,7 +181,7 @@ impl Runtime {
                 mcp_oauth::forget(self.mcp_store().as_ref(), squad, &server.name);
             }
         }
-        self.mcp.put_off.retain(|(s, n, _)| !(s == squad && *n == server.name));
+        self.clear_put_off(squad, &server.name);
         self.mcp.key_asked.remove(&(squad.to_owned(), server.name.clone()));
         crate::daemon_log!("equipe: {squad} connected the outside MCP server {} ({})", server.name, server.url);
         self.publish_mcp(squad);
@@ -241,7 +251,7 @@ impl Runtime {
     /// too); a keyed one its key card; the engine-signed fallback a card for
     /// each engine not connected, after a fresh look.
     pub(super) fn sign_in_mcp_server(&mut self, squad: &str, name: &str) {
-        self.mcp.put_off.retain(|(s, n, _)| !(s == squad && n == name));
+        self.clear_put_off(squad, name);
         self.mcp.key_asked.remove(&(squad.to_owned(), name.to_owned()));
         let Some(server) = self.mcp_servers_of(squad).into_iter().find(|s| s.name == name && s.enabled) else {
             return self.squad_error(squad, format!("{name} isn't connected to this squad, or it is off."));
@@ -349,6 +359,10 @@ impl Runtime {
                 }
             }
         }
+        // Signed in after all (elsewhere, or by the person): nothing put off any more.
+        if statuses.iter().any(|s| s.state == McpState::Connected) && self.mcp.put_off.iter().any(|(q, n, _)| q == squad && *n == server.name) {
+            self.clear_put_off(squad, &server.name);
+        }
         self.mcp.status.entry(squad.to_owned()).or_default().insert(server.name.clone(), statuses);
         self.publish_mcp(squad);
     }
@@ -377,10 +391,50 @@ impl Runtime {
         }
     }
 
-    /// The person put off the sign-in to `server` on `kind`'s engine.
+    /// The person put off the sign-in to `server` on `kind`'s engine — or
+    /// its card ended without one (refused, or left to run out): not put up
+    /// again by a member's turn until the person asks.
     pub(super) fn mcp_put_off(&mut self, squad: &str, server: &str, kind: Kind) {
         let engine = if kind == Kind::CodexMcp { Engine::Codex } else { OWN };
-        self.mcp.put_off.insert((squad.to_owned(), server.to_owned(), engine));
+        self.read_put_off(squad);
+        if self.mcp.put_off.insert((squad.to_owned(), server.to_owned(), engine)) {
+            self.keep_put_off(squad);
+        }
+    }
+
+    /// A squad's put-off sign-ins from disk, once.
+    fn read_put_off(&mut self, squad: &str) {
+        if !self.mcp.put_off_read.insert(squad.to_owned()) {
+            return;
+        }
+        let kept: Vec<(String, Engine)> = std::fs::read_to_string(put_off_file(&self.config.home, squad)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        for (server, engine) in kept {
+            self.mcp.put_off.insert((squad.to_owned(), server, engine));
+        }
+    }
+
+    /// A squad's put-off sign-ins, written as they are now.
+    fn keep_put_off(&self, squad: &str) {
+        let mut kept: Vec<(&str, Engine)> = self.mcp.put_off.iter().filter(|(q, _, _)| q == squad).map(|(_, n, e)| (n.as_str(), *e)).collect();
+        kept.sort_by(|a, b| a.0.cmp(b.0).then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1))));
+        let file = put_off_file(&self.config.home, squad);
+        if kept.is_empty() {
+            let _ = std::fs::remove_file(file);
+        } else if let Some(dir) = file.parent()
+            && std::fs::create_dir_all(dir).is_ok()
+        {
+            let _ = std::fs::write(file, serde_json::to_string(&kept).unwrap_or_default());
+        }
+    }
+
+    /// The person asks for `name`'s sign-in again (or reconnected it): no longer put off.
+    fn clear_put_off(&mut self, squad: &str, name: &str) {
+        self.read_put_off(squad);
+        let before = self.mcp.put_off.len();
+        self.mcp.put_off.retain(|(s, n, _)| !(s == squad && n == name));
+        if before != self.mcp.put_off.len() {
+            self.keep_put_off(squad);
+        }
     }
 
     /// One sign-in card for `server` (on `engine`, for the fallback) — unless
@@ -410,6 +464,7 @@ impl Runtime {
             return;
         }
         let engine = if server.auth.is_engine() { engine } else { OWN };
+        self.read_put_off(squad);
         if by.is_some() && self.mcp.put_off.contains(&(squad.to_owned(), server.name.clone(), engine)) {
             return;
         }

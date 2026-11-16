@@ -346,12 +346,32 @@ second step again. Session sign-ins were lost on top of that: only
 Fix (`browser::chrome_profile`): before any Chrome starts on the folder — the
 host's, a resumed one, the person's window — the daemon decides its profile
 and pins it in `equipe-profile` in the folder; both are started with
-`--profile-directory=<pinned>`, and `keep-sessions` marks that profile. The
-first pin is the profile Chrome last used (the one members last worked in), else
-`Default`. Afterwards the pin holds, except when Chrome's own `Local State`
-says another existing profile of the folder was used last: equipe's Chrome
-only ever opens the pinned one, so that is the person's choice, or the profile
-their sign-in was moved to — it is followed, and the daemon log says so.
+`--profile-directory=<pinned>`, and `keep-sessions` marks that profile.
+
+Second finding (the same Mac, after that fix): the Workspace enforces
+enterprise profile separation, so every work account signed in to makes a new
+managed profile holding only that account — the squad's account made one, the
+person's own account another. Following Chrome's "last used" profile hopped
+members into each new, empty profile and dropped every other session. So
+equipe never moves to a profile because it is new. The profile is, in order:
+
+1. the one the person chose: `equipe browser profile <name>` (a
+   `equipe-profile.chosen` mark); `equipe browser profile` lists the profiles,
+   the account signed in to each (masked) and the one members use;
+2. the first profile, in Chrome's own order, holding a Google account signed
+   in to Chrome — the squad's working account, the first one signed in;
+3. the pinned one; the first time, the one Chrome last used; else `Default`.
+
+Members can work in one Chrome profile at a time (one Chrome per folder);
+another account's profile stays as it is, for the person to choose. Sites'
+kept sign-ins (below) go into whichever profile members use, as its Chrome
+starts. When managed profiles show up, the person is told once (in the PM's
+conversation) which account members use, how to choose another, and — as an
+optional fix, equipe works either way — the setting their Workspace admin can
+change: Google Admin console › Devices › Chrome › Settings › User & browser
+settings › Sign-in settings › **Enterprise profile separation**: "Suggest
+profile separation" or "Disable profile separation"
+([Google's help](https://support.google.com/chrome/a/answer/11198768)).
 
 ## Seeing a hand-off through
 
@@ -373,6 +393,12 @@ serves every member asking for it: a second member waits on the first
 hand-off. A hand-off for a site's own second step tells the person it is the
 site's, and to tick "Don't ask again on this device" where offered.
 
+A sign-in view whose sign-in the site doesn't take in the members' Chrome
+(the member's page still asks for it once the cookies went in) doesn't end
+the hand-off: the member's own browser goes into the person's hands in the
+panel right away, where the sign-in is made in place, and that site skips the
+view from then on (`browser/view-no-carry`).
+
 Google's sign-in is never carried from a sign-in view into the members' Chrome
 (`handoff_view::binds_to_browser`): Google ends a session it sees come back
 from another browser. It is made in the members' own profile (the person's
@@ -392,6 +418,14 @@ their keys and taken in, newer sign-in per site winning, nothing printed —
 then set aside as `sign-ins.sealed.moved`. A squad that keeps its own still
 shares the Mac's one Chrome; for accounts that must never meet, use another
 browser profile (another person's accounts, above).
+
+## Outside servers' sign-in cards, once
+
+A sign-in card for an outside MCP server that the person put off, that the
+server refused, or that ran out unanswered is not put up again by a member's
+turn — after a restart either (`squads/<squad>/mcp-put-off.json`).
+Connections keeps showing that it needs a sign-in; the person's own "Sign in"
+there, reconnecting the server, or the server answering signed in clears it.
 
 ## Saving a login is the person's leave
 

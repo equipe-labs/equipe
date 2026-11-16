@@ -290,6 +290,14 @@ or end your turn saying in a line what you're waiting for.",
                 let server = live.server.clone();
                 if let Some(name) = &server {
                     crate::daemon_log!("equipe: {squad}: the sign-in to the outside MCP server {name} ended: {:?}{}", card.phase, card.detail.as_deref().map(|d| format!(" ({d})")).unwrap_or_default());
+                    // Refused, or left to run out: shown once — Connections keeps
+                    // saying it needs a sign-in, and no member's turn asks again.
+                    if matches!(card.phase, Phase::Expired | Phase::Failed) {
+                        let kind = self.cli_signins(&squad).iter().find(|l| l.card.id == id && l.run == run).map(|l| l.kind);
+                        if let Some(kind) = kind {
+                            self.mcp_put_off(&squad, name, kind);
+                        }
+                    }
                 }
                 if let Some(cli) = approving {
                     self.device_card_ended(cli);
