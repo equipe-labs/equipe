@@ -1341,6 +1341,10 @@ pub fn clear_ticket_leftovers(id: TicketId, temp: &[PathBuf], worktrees: &[PathB
 /// How long a desk session's temporary folder must be left untouched before
 /// tidy removes it: a member may come back to its desk the next day.
 const DESK_TMP_IDLE: Duration = Duration::from_secs(24 * 60 * 60);
+/// While the disk is low, a desk's things untouched this long go too.
+const DESK_TMP_IDLE_LOW: Duration = Duration::from_secs(60 * 60);
+/// A `tmp_pack_*` git left behind (a fetch or repack cut short) this old is garbage.
+const GIT_GARBAGE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// The environment that points a lane's temporary files at `dir`: `TMPDIR`
 /// (macOS and Linux tools), `TMP` and `TEMP` (those that read the others).
@@ -1410,6 +1414,8 @@ pub fn clear_ticket_tmp(home: &Path, squad: &str, id: TicketId, keep: &[u32]) ->
 /// left alone. What was done, for the log.
 pub fn tidy_lane_tmp(home: &Path, open: &[(String, Vec<TicketId>)], keep: &[u32]) -> Vec<String> {
     off_the_loop("disk::tidy_lane_tmp");
+    let low = volume(home).is_some_and(|(_, free, total)| level_at(free, total, 100) >= DiskLevel::Low);
+    let desk_idle = if low { DESK_TMP_IDLE_LOW } else { DESK_TMP_IDLE };
     let mut done = Vec::new();
     for (squad, tickets) in open {
         let root = home.join("tmp").join(squad);
@@ -1433,7 +1439,7 @@ pub fn tidy_lane_tmp(home: &Path, open: &[(String, Vec<TicketId>)], keep: &[u32]
                 // A desk in daily use is never idle as a whole, so what it left
                 // behind (a deploy's clone, a build) would pile up for good:
                 // each thing in it untouched for a day goes on its own.
-                done.extend(tidy_desk(home, &dir, keep));
+                done.extend(tidy_desk(home, &dir, keep, desk_idle));
             }
         }
     }
@@ -1442,18 +1448,48 @@ pub fn tidy_lane_tmp(home: &Path, open: &[(String, Vec<TicketId>)], keep: &[u32]
 
 /// Untouched for [`DESK_TMP_IDLE`], by what's newest inside.
 fn idle_for_a_day(path: &Path) -> bool {
-    newest_deep(path).and_then(|at| at.elapsed().ok()).is_some_and(|ago| ago >= DESK_TMP_IDLE)
+    idle_for(path, DESK_TMP_IDLE)
 }
 
-/// What a member's desk folder holds, each entry untouched for
-/// [`DESK_TMP_IDLE`] removed (what stands in it stopped first); the rest stays.
-fn tidy_desk(home: &Path, desk: &Path, keep: &[u32]) -> Vec<String> {
+/// Untouched for `long`, by what's newest inside.
+fn idle_for(path: &Path, long: Duration) -> bool {
+    newest_deep(path).and_then(|at| at.elapsed().ok()).is_some_and(|ago| ago >= long)
+}
+
+/// What a member's desk folder holds, each entry untouched for `idle` (a day;
+/// an hour while the disk is low) removed, what stands in it stopped first;
+/// the rest stays.
+fn tidy_desk(home: &Path, desk: &Path, keep: &[u32], idle: Duration) -> Vec<String> {
     let mut entries: Vec<PathBuf> = std::fs::read_dir(desk).into_iter().flatten().flatten().map(|e| e.path()).collect();
     entries.sort();
     let mut done = Vec::new();
     for entry in entries {
-        if idle_for_a_day(&entry) {
+        if idle_for(&entry, idle) {
             done.extend(clear_lane_tmp(home, &entry, keep));
+        }
+    }
+    done
+}
+
+/// Packs git began and never finished (`.git/objects/pack/tmp_pack_*`, from
+/// a fetch or repack cut short) in each of `repos`, older than a day: removed.
+/// Gigabytes each, and git itself only prunes them after two weeks. What
+/// went, one line each, for the log.
+pub fn clear_git_garbage(repos: &[PathBuf]) -> Vec<String> {
+    off_the_loop("disk::clear_git_garbage");
+    let mut done = Vec::new();
+    for repo in repos {
+        let pack = repo.join(".git").join("objects").join("pack");
+        if !std::fs::symlink_metadata(repo.join(".git")).is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
+        for entry in std::fs::read_dir(&pack).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Ok(meta) = entry.metadata() else { continue };
+            let old = meta.modified().ok().and_then(|at| at.elapsed().ok()).is_some_and(|ago| ago >= GIT_GARBAGE_AFTER);
+            if name.starts_with("tmp_pack_") && meta.is_file() && old && std::fs::remove_file(entry.path()).is_ok() {
+                done.push(format!("removed {} ({} MB git left unfinished)", entry.path().display(), meta.len() / MB));
+            }
         }
     }
     done
@@ -2423,6 +2459,26 @@ mod tests {
         assert_eq!(done.iter().filter(|l| l.starts_with("removed ")).count(), 2, "{done:?}");
         assert!(!desk.join("web-deploy-old").exists() && !desk.join("old.log").exists(), "a day untouched: given back");
         assert!(desk.join("web-deploy-new").join("blob").exists(), "in use: kept, and the desk with it");
+    }
+
+    #[test]
+    fn packs_git_left_unfinished_go_after_a_day_and_real_packs_stay() {
+        let tree = Tree::new();
+        let repo = tree.home.join("proj");
+        let pack = repo.join(".git").join("objects").join("pack");
+        std::fs::create_dir_all(&pack).unwrap();
+        for name in ["tmp_pack_old", "tmp_pack_new", "pack-abc.pack"] {
+            std::fs::write(pack.join(name), vec![1u8; 10]).unwrap();
+        }
+        let day_ago = std::time::SystemTime::now() - Duration::from_secs(30 * 3600);
+        for name in ["tmp_pack_old", "pack-abc.pack"] {
+            std::fs::File::options().write(true).open(pack.join(name)).unwrap().set_modified(day_ago).unwrap();
+        }
+        let done = clear_git_garbage(std::slice::from_ref(&repo));
+        assert_eq!(done.len(), 1, "{done:?}");
+        assert!(!pack.join("tmp_pack_old").exists(), "a day old: garbage");
+        assert!(pack.join("tmp_pack_new").exists(), "maybe a fetch going on");
+        assert!(pack.join("pack-abc.pack").exists(), "a real pack is never touched");
     }
 
     #[test]
