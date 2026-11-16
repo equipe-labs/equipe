@@ -427,8 +427,14 @@ async fn serve_client(
                 // is busy, and this connection must keep reading meanwhile.
                 let core = core.clone();
                 let out = out_tx.clone();
+                let home = home.clone();
                 tokio::spawn(async move {
-                    let result = core.tool(call).await;
+                    // A member working in the person's own Chrome points them at
+                    // its window there instead of handing off a browser.
+                    let result = match crate::real_chrome::redirect(&home, &call).await {
+                        Some(pointed) => pointed,
+                        None => core.tool(call).await,
+                    };
                     let _ = out.send(Message::response(id, result));
                 });
             }

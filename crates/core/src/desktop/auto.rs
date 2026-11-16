@@ -353,16 +353,16 @@ impl Auto {
             return None;
         }
         let tool = tool.rsplit("__").next().unwrap_or(tool);
-        let engine_tool = equipe_desktop_control::engine::handles(tool);
+        let engine_tool = equipe_desktop_control::engine::handles(tool) || equipe_desktop_control::chrome::needs_engine(tool);
         // A picture needs Screen Recording, which only the person's own action
         // asks for: until it is on, members read the accessibility tree, and
         // nothing here makes macOS ask (no card either: it is not the switch
         // the setup is about).
-        if tool == "screenshot" && last.helper && last.screen == Some(false) {
+        if matches!(tool, "screenshot" | "chrome_capture") && last.helper && last.screen == Some(false) {
             return Some(equipe_desktop_control::controller::NO_PICTURE.to_owned());
         }
         // Pictures of the screen need no Accessibility.
-        let needs_grant = !matches!(tool, "screenshot" | "list_windows");
+        let needs_grant = !matches!(tool, "screenshot" | "list_windows" | "chrome_capture");
         let mut grant = false;
         let message = if engine_tool && !last.engine {
             Some(match last.setup {

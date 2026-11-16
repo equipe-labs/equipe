@@ -6,6 +6,10 @@
 > The rest of this page is how the screenshot path came to be, and still holds
 > for it.
 
+> **The person's own Chrome:** members can also work in windows of the
+> person's real Chrome profiles through the same engine — see
+> [REAL-CHROME.md](./REAL-CHROME.md) (experimental, off by default).
+
 > **Windows:** the same tools use Windows Graphics Capture for display/window
 > images and UI Automation for the element tree, focus checks, Invoke actions,
 > and window targeting. Text goes through Unicode `SendInput` (including Korean

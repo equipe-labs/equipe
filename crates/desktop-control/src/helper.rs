@@ -27,6 +27,8 @@ use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
 use crate::controller::{Controller, Desktop};
 #[cfg(any(unix, windows))]
+use crate::chrome::{self, Chrome};
+#[cfg(any(unix, windows))]
 use crate::engine::Engine;
 #[cfg(any(unix, windows))]
 use crate::controller::{Reply, SETUP};
@@ -142,6 +144,7 @@ pub fn serve<D: Desktop>(home: &Path, controller: &mut Controller<D>, status: im
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
     eprintln!("equipe desktop helper: listening at {}", socket.display());
     let engine = engine(home);
+    let chrome = chrome_of(home, engine.as_ref());
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
@@ -153,14 +156,15 @@ pub fn serve<D: Desktop>(home: &Path, controller: &mut Controller<D>, status: im
         // no screen, so one member's slow snapshot holds nobody else up.
         if let Some(engine) = engine.as_ref().filter(|_| for_engine(home, &line)) {
             let engine = std::sync::Arc::clone(engine);
+            let chrome = chrome.clone();
             std::thread::spawn(move || {
-                let result = engine_answer(&engine, &line);
+                let result = engine_answer(&engine, chrome.as_deref(), &line);
                 let mut out = &stream;
                 let _ = out.write_all(format!("{}\n", serde_json::to_string(&result).unwrap_or_default()).as_bytes());
             });
             continue;
         }
-        let result = answer(home, controller, engine.as_deref(), &line, &status, &request);
+        let result = answer(home, controller, engine.as_deref(), chrome.as_deref(), &line, &status, &request);
         let mut out = &stream;
         let _ = out.write_all(format!("{}\n", serde_json::to_string(&result).unwrap_or_default()).as_bytes());
     }
@@ -173,12 +177,19 @@ fn engine(home: &Path) -> Option<std::sync::Arc<Engine>> {
     crate::engine::Cli::installed(home).map(|cli| std::sync::Arc::new(Engine::new(Box::new(cli))))
 }
 
-/// The tool a request names, and for `_scene` the tool it is about.
+/// The real-Chrome tools, on the engine ([`crate::chrome`]).
+#[cfg(any(unix, windows))]
+fn chrome_of(home: &Path, engine: Option<&std::sync::Arc<Engine>>) -> Option<std::sync::Arc<Chrome>> {
+    engine.map(|engine| std::sync::Arc::new(Chrome::new(home, std::sync::Arc::clone(engine), Box::new(chrome::os::System::new()))))
+}
+
+/// The tool a request names, and for `_scene` the tool it is about, when
+/// the engine's threads serve it (the real-Chrome tools included).
 #[cfg(any(unix, windows))]
 fn engine_tool(message: &Value) -> Option<&str> {
     let tool = message["tool"].as_str()?;
     let tool = if tool == SCENE { message["arguments"]["tool"].as_str()? } else { tool };
-    crate::engine::handles(tool).then_some(tool)
+    (crate::engine::handles(tool) || chrome::on_engine(tool)).then_some(tool)
 }
 
 /// Whether `line` is an authenticated request for the engine.
@@ -191,24 +202,56 @@ fn for_engine(home: &Path, line: &str) -> bool {
 
 /// An engine request's answer (its token already checked).
 #[cfg(any(unix, windows))]
-fn engine_answer(engine: &Engine, line: &str) -> ToolResult {
+fn engine_answer(engine: &Engine, chrome: Option<&Chrome>, line: &str) -> ToolResult {
     let Ok(message) = serde_json::from_str::<Value>(line) else {
         return ToolResult::error("unreadable request");
     };
     let member = message["member"].as_str().unwrap_or("someone");
     let tool = message["tool"].as_str().unwrap_or_default();
+    let arguments = &message["arguments"];
     if tool == SCENE {
-        let arguments = &message["arguments"];
-        return match engine.scene(member, arguments["tool"].as_str().unwrap_or_default(), &arguments["arguments"]) {
+        let inner = arguments["tool"].as_str().unwrap_or_default();
+        let scene = match (chrome, chrome::handles(inner)) {
+            (Some(chrome), true) => chrome.scene(member, &arguments["arguments"]),
+            (None, true) => Err(NO_CHROME.to_owned()),
+            (_, false) => match chrome.and_then(|c| c.guard_generic(member, inner, &arguments["arguments"])) {
+                Some(refused) => Err(refused),
+                None => engine.scene(member, inner, &arguments["arguments"]),
+            },
+        };
+        return match scene {
             Ok(scene) => ToolResult::ok(scene.to_string()),
             Err(refused) => ToolResult::error(refused),
         };
     }
-    let answer = engine.call(member, tool, &message["arguments"]);
+    if chrome::on_engine(tool) {
+        let Some(chrome) = chrome else { return ToolResult::error(NO_CHROME) };
+        if tool == chrome::WINDOW {
+            return match chrome.window_for_site(member, arguments["url"].as_str()) {
+                Ok(window) => ToolResult::ok(window.to_string()),
+                Err(none) => ToolResult::error(none),
+            };
+        }
+        let answer = chrome.call(member, tool, arguments);
+        eprintln!("equipe desktop helper: {member} {tool}{}", if answer.is_error { " (refused)" } else { "" });
+        return ToolResult { text: answer.text, is_error: answer.is_error, image: None };
+    }
+    if let Some(refused) = chrome.and_then(|c| c.guard_generic(member, tool, arguments)) {
+        return ToolResult::error(refused);
+    }
+    let answer = engine.call(member, tool, arguments);
+    let answer = match chrome {
+        Some(chrome) => chrome.guard_answer(member, tool, answer),
+        None => answer,
+    };
     // The tool's name only: what it read or typed stays out of the log.
     eprintln!("equipe desktop helper: {member} {tool}{}", if answer.is_error { " (refused)" } else { "" });
     ToolResult { text: answer.text, is_error: answer.is_error, image: None }
 }
+
+/// The real-Chrome tools without the accessibility engine.
+#[cfg(any(unix, windows))]
+const NO_CHROME: &str = "Working in the person's Chrome needs equipe's accessibility engine, which isn't installed on this machine yet: use your own browser tools meanwhile.";
 
 #[cfg(windows)]
 pub fn serve<D: Desktop>(home: &Path, controller: &mut Controller<D>, status: impl Fn(&D) -> Value, request: impl Fn(&D, Ask)) -> io::Result<()> {
@@ -220,6 +263,7 @@ pub fn serve<D: Desktop>(home: &Path, controller: &mut Controller<D>, status: im
         use tokio::net::windows::named_pipe::ServerOptions;
 
         let engine = engine(home);
+        let chrome = chrome_of(home, engine.as_ref());
         let mut first = true;
         loop {
             let mut options = ServerOptions::new();
@@ -232,7 +276,7 @@ pub fn serve<D: Desktop>(home: &Path, controller: &mut Controller<D>, status: im
             if tokio::time::timeout(Duration::from_secs(10), stream.read_line(&mut line)).await.is_err() {
                 continue;
             }
-            let result = answer(home, controller, engine.as_deref(), &line, &status, &request);
+            let result = answer(home, controller, engine.as_deref(), chrome.as_deref(), &line, &status, &request);
             let output = format!("{}\n", serde_json::to_string(&result).unwrap_or_default());
             let mut server = stream.into_inner();
             let _ = server.write_all(output.as_bytes()).await;
@@ -246,6 +290,7 @@ fn answer<D: Desktop>(
     home: &Path,
     controller: &mut Controller<D>,
     engine: Option<&Engine>,
+    chrome: Option<&Chrome>,
     line: &str,
     status: &impl Fn(&D) -> Value,
     request: &impl Fn(&D, Ask),
@@ -259,7 +304,7 @@ fn answer<D: Desktop>(
     }
     if engine_tool(&message).is_some() {
         return match engine {
-            Some(engine) => engine_answer(engine, line),
+            Some(engine) => engine_answer(engine, chrome, line),
             None => ToolResult::error("The accessibility tools aren't available on this platform yet: use screenshot, elements and click."),
         };
     }
@@ -291,6 +336,12 @@ fn answer<D: Desktop>(
             }
         }
         CAPTURE => reply(controller.capture()),
+        // A member's own Chrome window, and nothing else of the screen.
+        chrome::CAPTURE => match chrome.map(|c| c.capture_target(member, &message["arguments"])) {
+            Some(Ok(window)) => reply(controller.call(member, "screenshot", &json!({ "window": format!("w{window}") }))),
+            Some(Err(refused)) => ToolResult::error(refused),
+            None => ToolResult::error(NO_CHROME),
+        },
         _ => {
             let reply = controller.call(member, tool, &message["arguments"]);
             eprintln!("equipe desktop helper: {member} {tool}{}", if reply.is_error { " (refused)" } else { "" });

@@ -12,6 +12,7 @@
 //! Experimental: off for every member until the person turns it on, and
 //! behind the screen lease (T-22) and the send approval (T-23) in the daemon.
 
+pub mod chrome;
 pub mod controller;
 pub mod engine;
 pub mod geometry;

@@ -160,6 +160,93 @@ pub fn tools() -> Vec<Value> {
     all
 }
 
+/// The desktop tools, with the real-Chrome ones when the person turned that
+/// on for the squad ([`crate::chrome::enabled`]).
+pub fn tools_for(chrome: bool) -> Vec<Value> {
+    let mut all = tools();
+    if chrome {
+        all.extend(chrome_tools());
+    }
+    all
+}
+
+fn chrome_window() -> Value {
+    json!({ "type": "string", "description": "Your window's id from chrome_open (w-4521). Default: the one you opened last." })
+}
+
+/// The person's own Google Chrome (docs/REAL-CHROME.md): a window of their
+/// real profile, every sign-in already there, read and acted on through the
+/// accessibility tree, headless.
+pub fn chrome_tools() -> Vec<Value> {
+    vec![
+        tool(
+            "chrome_profiles",
+            "The person's Chrome profiles — each one's folder, name and Google account (masked) — and which profile this squad uses for which site. Pick one for chrome_open by the account a site needs; not plain which? ask the person (ask_decision) once, then pass `remember`.",
+            json!({}),
+            &[],
+        ),
+        tool(
+            "chrome_open",
+            "Open a web page in a new window of the person's own Google Chrome, in one of their profiles: their real browser, with their sign-ins already there — nothing to copy, no 'new device'. The window is yours alone until chrome_close; nobody else's windows are yours to touch. Opening shows Chrome once, so it waits until the person isn't using the Mac. A sign-in or a human check there is the person's: call show_my_browser and they do it in this same window.",
+            json!({
+                "url": { "type": "string", "description": "The page (https://…)." },
+                "profile": { "type": "string", "description": "A profile from chrome_profiles: its folder (\"Profile 1\"), name or masked account. Default: the one this squad uses for the site, or the only one." },
+                "remember": { "type": "boolean", "description": "Keep this profile as the squad's for the site (after the person chose it)." },
+            }),
+            &["url"],
+        ),
+        tool(
+            "chrome_snapshot",
+            "Read your Chrome window's page as a compact tree: one line per element, a ref (e12) on each you can act on. Big page: `skeleton` first, then `root` (a ref) to drill into one part. Interactive elements only unless `all`. A human check on the page is called out: never act on it.",
+            json!({
+                "window": chrome_window(),
+                "root": reference(),
+                "skeleton": { "type": "boolean" },
+                "all": { "type": "boolean", "description": "Keep text and containers too." },
+                "depth": { "type": "integer" },
+                "timeout_ms": { "type": "integer", "description": "How long the page may take to answer (default 8000)." },
+            }),
+            &[],
+        ),
+        tool(
+            "chrome_act",
+            "Act on a ref from your chrome_snapshot, headless (no pointer or keyboard taken, the person keeps working): click a link or button, type or set_value into a field, select an option, check, scroll. Then chrome_snapshot again to check; a page that loads: `wait` (app \"Google Chrome\", `text`) first. Payment, password and security pages take no input; sending in the person's name (Gmail, Slack…) waits for their yes. Text you type never shows in any log.",
+            json!({
+                "ref": reference(),
+                "action": { "type": "string", "enum": crate::chrome::ACTIONS, "description": "Default click." },
+                "text": { "type": "string", "description": "For type and set_value." },
+                "value": { "type": "string", "description": "For select: the option's text." },
+                "direction": { "type": "string", "enum": ["up", "down", "left", "right"], "description": "For scroll." },
+                "amount": { "type": "integer", "description": "For scroll (default 3)." },
+                "why": why(),
+            }),
+            &["ref"],
+        ),
+        tool(
+            "chrome_read",
+            "The text of your Chrome window's page in reading order, without refs: to read an article, a table, a result. `find` keeps only the lines that contain it.",
+            json!({
+                "window": chrome_window(),
+                "find": { "type": "string" },
+                "max_chars": { "type": "integer", "description": "Default 12000." },
+            }),
+            &[],
+        ),
+        tool(
+            "chrome_capture",
+            "A picture of your Chrome window only — never the rest of the screen — to check how a page looks. Needs Screen Recording; chrome_snapshot and chrome_read are cheaper.",
+            json!({ "window": chrome_window() }),
+            &[],
+        ),
+        tool(
+            "chrome_close",
+            "Close your Chrome window when you're done with it (yours only).",
+            json!({ "window": chrome_window() }),
+            &[],
+        ),
+    ]
+}
+
 /// Screenshots, coordinates, the real pointer and keyboard: one member at a
 /// time, after the person has left the Mac alone.
 fn pixel_tools() -> Vec<Value> {
@@ -299,5 +386,18 @@ mod tests {
         }
         let unique: std::collections::BTreeSet<&String> = names.iter().collect();
         assert_eq!(unique.len(), names.len(), "no two tools share a name");
+    }
+
+    #[test]
+    fn the_real_chrome_tools_are_offered_only_when_turned_on() {
+        let names = |tools: Vec<serde_json::Value>| -> Vec<String> { tools.iter().map(|t| t["name"].as_str().unwrap().to_owned()).collect() };
+        assert_eq!(names(super::tools_for(false)), names(super::tools()));
+        let on = names(super::tools_for(true));
+        for name in crate::chrome::TOOLS {
+            assert!(crate::chrome::handles(name) && on.iter().any(|n| n == name), "{name}");
+            assert!(!names(super::tools()).iter().any(|n| n == name), "{name} only when on");
+        }
+        let unique: std::collections::BTreeSet<&String> = on.iter().collect();
+        assert_eq!(unique.len(), on.len(), "no two tools share a name");
     }
 }

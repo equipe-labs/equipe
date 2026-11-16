@@ -161,8 +161,12 @@ impl Act {
             // The accessibility tools: reading, waiting, apps, windows and the
             // clipboard send nothing to anyone.
             "snapshot" | "find" | "wait" | "apps" | "windows" | "clipboard" => Act::Look,
-            // A ref action, by what it does to the element.
-            "act" => match action.as_str() {
+            // The person's own Chrome: opening, reading, picturing and
+            // closing a member's window send nothing to anyone.
+            "chrome_profiles" | "chrome_open" | "chrome_snapshot" | "chrome_read" | "chrome_capture" | "chrome_close" => Act::Look,
+            // A ref action, by what it does to the element (in an app, or a
+            // member's Chrome window).
+            "act" | "chrome_act" => match action.as_str() {
                 "focus" | "expand" | "collapse" | "scroll" | "scroll_to" => Act::Look,
                 "type" | "set_value" => Act::Type(input.get("text").or_else(|| input.get("value")).and_then(Value::as_str).unwrap_or_default().to_owned()),
                 // Emptying a field writes nothing anyone receives.
@@ -652,6 +656,26 @@ mod tests {
         assert_eq!(Act::of("notifications", &json!({ "action": "act", "index": 1, "name": "Reply" })), Act::Click);
         assert_eq!(Act::of("notifications", &json!({})), Act::Look);
         assert_eq!(Act::of("clipboard", &json!({ "action": "set", "text": "x" })), Act::Look);
+        // A member's own Chrome window: its ref actions judged as any app's.
+        assert_eq!(Act::of("mcp__desktop__chrome_act", &json!({ "ref": "e4" })), Act::Click);
+        assert_eq!(Act::of("chrome_act", &json!({ "ref": "e1", "action": "type", "text": "hi" })), Act::Type("hi".into()));
+        assert_eq!(Act::of("chrome_act", &json!({ "ref": "e1", "action": "scroll" })), Act::Look);
+        for look in ["chrome_profiles", "chrome_open", "chrome_snapshot", "chrome_read", "chrome_capture", "chrome_close"] {
+            assert_eq!(Act::of(look, &json!({})), Act::Look, "{look}");
+        }
+    }
+
+    #[test]
+    fn a_web_messaging_page_in_chrome_asks_like_its_app() {
+        // The scene the real-Chrome tools give the gate for Gmail's Send.
+        let scene = Scene {
+            app: App { name: "Mail".into(), bundle_id: None },
+            window: Some("Inbox (2) - someone@example.com - Gmail".into()),
+            target: Some(Element { role: "AXButton".into(), title: Some("Send".into()), ..Default::default() }),
+            focused: None,
+        };
+        let apps: Vec<String> = DEFAULT_APPS.iter().map(|a| a.to_string()).collect();
+        assert!(matches!(judge(&Act::of("chrome_act", &json!({ "ref": "e4" })), &scene, &apps), Verdict::Ask(_)));
     }
 
     #[test]

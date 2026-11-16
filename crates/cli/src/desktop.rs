@@ -17,6 +17,7 @@ pub enum Action {
     On { member: Option<String>, everyone: bool, squad: Option<String> },
     Off { member: Option<String>, everyone: bool, squad: Option<String> },
     Locked { state: Option<String> },
+    Chrome { state: Option<String>, squad: Option<String> },
     Remove,
     Serve { home: PathBuf },
 }
@@ -40,6 +41,7 @@ pub async fn run(action: Option<Action>) -> Result<(), String> {
         Action::On { member, everyone, squad } => set(&home, member, everyone, true, squad),
         Action::Off { member, everyone, squad } => set(&home, member, everyone, false, squad),
         Action::Locked { state } => locked(&home, state.as_deref()),
+        Action::Chrome { state, squad } => chrome(&home, state.as_deref(), squad),
         Action::Remove => {
             mac_only()?;
             let name = install::host().name();
@@ -91,6 +93,28 @@ fn locked(home: &Path, state: Option<&str>) -> Result<(), String> {
     println!("{}", p.ok_line(if on { t!("desktop.locked_on") } else { t!("desktop.locked_off") }));
     if on {
         println!("{}", p.note(2, t!("desktop.locked_note")));
+    }
+    Ok(())
+}
+
+/// `equipe desktop chrome on|off`: members work in the person's own Chrome
+/// (docs/REAL-CHROME.md), per squad. Off unless the person turns it on.
+fn chrome(home: &Path, state: Option<&str>, squad: Option<String>) -> Result<(), String> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let squad = crate::home::squad_for(home, &cwd, squad).ok_or("No squad yet. Run equipe to start one.")?;
+    let on = match state.map(str::to_ascii_lowercase).as_deref() {
+        None => equipe_desktop_control::chrome::enabled(home, &squad),
+        Some("on" | "true" | "yes") => true,
+        Some("off" | "false" | "no") => false,
+        Some(_) => return Err(t!("desktop.chrome_bad").to_owned()),
+    };
+    if state.is_some() {
+        equipe_desktop_control::chrome::set_enabled(home, &squad, on).map_err(|e| e.to_string())?;
+    }
+    let p = ui::out();
+    println!("{}", p.ok_line(&if on { t!("desktop.chrome_on", squad = squad) } else { t!("desktop.chrome_off", squad = squad) }));
+    if on {
+        println!("{}", p.note(2, t!("desktop.chrome_note")));
     }
     Ok(())
 }
