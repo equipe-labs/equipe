@@ -949,6 +949,11 @@ prints (\"token not valid\", \"not logged in\"): the login is fine, so never log
 run it outside the fence, which asks the person once; their \"always\" stops it asking. Rust builds go to \
 `$CARGO_TARGET_DIR`, one folder of yours kept from ticket to ticket, so a binary is under it, not under `./target`. Scratch copies, test builds and screenshots go in `$TMPDIR`: it is yours alone, \
 and equipe clears it when the ticket ends, so never make `/tmp/t<ticket number>` folders by hand. \
+To build, test or deploy a squad project outside your ticket's worktree, check it out with `git -C <project> worktree add \
+--detach \"$TMPDIR/<name>\" <ref>`, run outside the fence — it shares the repository, so nothing is copied or downloaded, and \
+equipe lets it through without asking — and remove it with \
+`git -C <project> worktree remove --force <path>` when done; never `cp -R` a project or `git clone` it again, and use the \
+project's own deploy script where it has one. \
 Look at a screenshot once: it stays in your context, so take a new one only after the screen has changed. \
 Run one command at a time where you can: a single command can be allowed for good, a chain only once.{sleep} Your memory \
 outlives every ticket: when the person corrects you, sends work back or tells you how they like things, save the \
