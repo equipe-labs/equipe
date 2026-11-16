@@ -640,6 +640,80 @@ pub fn perform(machine: &mut dyn Machine, handoffs: &mut Handoffs, now: Instant,
     }
 }
 
+// ── human checks ──
+
+/// How long a site's rounds in the person's own window count: a check that
+/// comes back within this after one is the same trouble, not a new one.
+pub const CHECK_ROUNDS_FOR: Duration = Duration::from_secs(15 * 60);
+
+/// Whether a check is one the person answers by clicking — a Cloudflare or
+/// Turnstile wall, reCAPTCHA, hCaptcha. Such a check is built to refuse a
+/// browser that automation drives, and the browser panel is one: it shows
+/// the member's automated Chrome and delivers the person's clicks to it over
+/// DevTools, so even their own click there can fail, again and again. These
+/// go to the person's own window instead, where nothing is attached.
+pub fn needs_real_browser(check: equipe_protocol::HumanCheck) -> bool {
+    matches!(check, equipe_protocol::HumanCheck::Challenge | equipe_protocol::HumanCheck::Captcha)
+}
+
+/// What to do about a site's check that stopped a member's browser, from
+/// how often the person already passed it in their own window lately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckRound {
+    /// Not lately: the card says what it is, and the person's hand on it
+    /// (Take over, the Chrome button) opens their own window.
+    Ask,
+    /// It came back right after the person passed it in their window (the
+    /// automated browser came back to it): their window once more, at once.
+    Again,
+    /// It came back after that too: no more rounds — the member gets its
+    /// browser back and is told to do without that site for its task.
+    GiveUp,
+}
+
+/// The rounds of human checks the person did in their own window, by site.
+#[derive(Debug, Default)]
+pub struct CheckRounds {
+    rounds: BTreeMap<String, Vec<Instant>>,
+    /// The lanes told to do without a site, `(lane, site)`: told once.
+    told: BTreeSet<(String, String)>,
+}
+
+impl CheckRounds {
+    /// How many rounds `site` had lately; older ones are forgotten.
+    fn recent(&mut self, now: Instant, site: &str) -> usize {
+        let Some(at) = self.rounds.get_mut(site) else { return 0 };
+        at.retain(|t| now.saturating_duration_since(*t) < CHECK_ROUNDS_FOR);
+        let n = at.len();
+        if n == 0 {
+            self.rounds.remove(site);
+            self.told.retain(|(_, s)| s != site);
+        }
+        n
+    }
+
+    /// What to do about `site`'s check now.
+    pub fn step(&mut self, now: Instant, site: &str) -> CheckRound {
+        match self.recent(now, site) {
+            0 => CheckRound::Ask,
+            1 => CheckRound::Again,
+            _ => CheckRound::GiveUp,
+        }
+    }
+
+    /// The person's window opened for `site`'s check.
+    pub fn began(&mut self, now: Instant, site: &str) {
+        self.recent(now, site);
+        self.rounds.entry(site.to_owned()).or_default().push(now);
+    }
+
+    /// Whether `lane`'s member is still to be told to do without `site`:
+    /// `true` once, while the site's rounds count.
+    pub fn tell(&mut self, lane: &str, site: &str) -> bool {
+        self.told.insert((lane.to_owned(), site.to_owned()))
+    }
+}
+
 // ── across a daemon restart ──
 
 fn saved_file(home: &Path) -> PathBuf {

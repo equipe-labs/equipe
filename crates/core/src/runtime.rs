@@ -2679,6 +2679,10 @@ impl Runtime {
                 if self.window_done(&lane, take).await {
                     return;
                 }
+                // A check that refuses automated browsers: taken in a normal Chrome window, not the panel.
+                if take && self.check_to_window(&lane).await {
+                    return;
+                }
                 self.hub.op(&json!({ "op": "control", "lane": lane, "by": take.then_some("person") }));
             }
             Command::BrowserDialog { page, accept, text } => {
@@ -2692,6 +2696,14 @@ impl Runtime {
                 if page == 0 {
                     let raise = self.windows.handoffs.raise();
                     self.run_window_actions(raise).await;
+                    return;
+                }
+                // A page stopped at a check that refuses automated browsers: bringing up the
+                // automated Chrome's own window wouldn't help — a normal one opens instead.
+                if let Some(lane) = self.lane_of_page(page)
+                    && self.checking.get(&lane).is_some_and(|c| c.0 == page)
+                    && self.check_to_window(&lane).await
+                {
                     return;
                 }
                 self.hub.op(&json!({ "op": "popout", "page": page, "bounds": bounds }));
@@ -8765,12 +8777,14 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 }
                 let pages: Vec<equipe_protocol::BrowserPage> = pages.into_iter().map(browser::HostPage::page).collect();
                 // The person's window, or the browser coming back from it: no check to ask about.
-                if !self.windows.handoffs.busy_lane(&lane) && !self.windows.views.holds(&lane) {
-                    self.watch_checks(&lane, session, &pages, agent);
-                }
+                let follow = if !self.windows.handoffs.busy_lane(&lane) && !self.windows.views.holds(&lane) { self.watch_checks(&lane, session, &pages, agent) } else { None };
                 let event = Event::BrowserTabs { squad, lane: lane.clone(), session, member, color, pages, agent_page: agent };
                 self.tabs.insert(lane, event.clone());
                 self.publish(event);
+                // After its tabs are told: a window that follows closes the browser they show.
+                if let Some(follow) = follow {
+                    self.check_follow(follow).await;
+                }
             }
             HostEvent::Control { lane, by, refused } => {
                 let (squad, session) = self.lane_session(&lane);
@@ -8914,20 +8928,33 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
     /// sign-in, a code from their phone: its browser goes into the person's
     /// hands (its tools wait, and say why), and the person is told. Passed
     /// before they put a hand on it, it goes back to its member by itself.
-    fn watch_checks(&mut self, lane: &str, session: Option<SessionId>, pages: &[equipe_protocol::BrowserPage], agent: Option<u64>) {
+    ///
+    /// A check the person answers by clicking goes to a normal Chrome window
+    /// once they reach for it (`window::check_to_window`); what follows here:
+    /// that window again at once when it came back right after they passed it
+    /// there, and no more rounds after that.
+    fn watch_checks(&mut self, lane: &str, session: Option<SessionId>, pages: &[equipe_protocol::BrowserPage], agent: Option<u64>) -> Option<window::CheckFollow> {
         if lane.is_empty() {
-            return;
+            return None;
         }
         // equipe is signing it in by itself: what its pages say waits for that.
         if self.relogins.contains_key(lane) {
-            return;
+            return None;
         }
         let let_go = |page: u64, url: &str| self.let_go.contains(&(lane.to_owned(), page, url.to_owned()));
         match browser::check_step(pages, agent, self.checking.contains_key(lane), self.held.contains_key(lane), let_go) {
             browser::CheckStep::Pause { page, url, check } => {
                 // A sign-in, a code or a passkey the person lets equipe do by itself: no one is asked.
                 if self.try_autopilot(lane, page, &url, check) {
-                    return;
+                    return None;
+                }
+                let round = self.check_round(&url, check);
+                // Passed twice in the person's window and back again: the site refuses this
+                // browser. Not the person's again — its member does without the site.
+                if round == crate::window_handoff::CheckRound::GiveUp {
+                    let site = vault::site_of(&url);
+                    self.let_go.insert((lane.to_owned(), page, url));
+                    return Some(window::CheckFollow::GiveUp(lane.to_owned(), site));
                 }
                 self.hub.op(&json!({ "op": "control", "lane": lane, "by": "person", "why": "check", "page": page }));
                 // Kept with its cause — or, the person on the same sign-in for
@@ -8939,12 +8966,22 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     self.publish(Event::Notice { undo: None, session, text });
                 }
                 self.checking.insert(lane.to_owned(), (page, url, check));
+                (round == crate::window_handoff::CheckRound::Again).then(|| window::CheckFollow::Window(lane.to_owned()))
             }
             browser::CheckStep::Release => {
                 self.hub.op(&json!({ "op": "control", "lane": lane, "by": null, "ifUntouched": true }));
+                None
             }
-            browser::CheckStep::Nothing => {}
+            browser::CheckStep::Nothing => None,
         }
+    }
+
+    /// The member lane a tab of the shared Chrome is in, as last told.
+    fn lane_of_page(&self, page: u64) -> Option<String> {
+        self.tabs.iter().find_map(|(lane, tabs)| match tabs {
+            Event::BrowserTabs { pages, .. } if !lane.is_empty() && pages.iter().any(|p| p.id == page) => Some(lane.clone()),
+            _ => None,
+        })
     }
 
     /// The person closed a tab of a member's browser: its member is told —
