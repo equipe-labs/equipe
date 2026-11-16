@@ -8031,6 +8031,18 @@ there, end your turn, and carry on when they say they're done."
         // anywhere — its own screenshots in the temp folder, another project —
         // without asking. Credentials still ask.
         let auto = self.sessions.get(&id).is_some_and(|s| s.mode.unwrap_or(squad_mode) == Mode::Auto);
+        // A squad project checked out beside its repository into the member's own
+        // temporary folder: it writes only the project's `.git/worktrees/` and that
+        // folder, which the fence can't open without opening the project, so it runs
+        // outside it, exactly as given back (hooks off), without asking.
+        if auto && tool == "Bash" && let Some(command) = self.project_checkout(id, &call.squad, &input) {
+            let mut input = input.clone();
+            input["command"] = json!(command);
+            input["dangerouslyDisableSandbox"] = json!(true);
+            self.audit(&call.squad, ticket, "equipe", "allowed", &command);
+            let _ = reply.send(verdict(Decision::Allow, &input, ""));
+            return;
+        }
         if auto && permissions::only_reads(&tool, &action, &input) {
             let _ = reply.send(verdict(Decision::Allow, &input, ""));
             return;
@@ -8052,6 +8064,16 @@ there, end your turn, and carry on when they say they're done."
             tokio::time::sleep(APPROVAL_WAIT).await;
             let _ = internal.send(Internal::ApprovalTimedOut(approval_id));
         });
+    }
+
+    /// The command to run for a member's shell call that checks out one of
+    /// its squad's projects beside the repository into its own temporary
+    /// folder ([`permissions::project_checkout`]); `None` for anything else.
+    fn project_checkout(&self, id: SessionId, squad: &str, input: &Value) -> Option<String> {
+        let session = self.sessions.get(&id)?;
+        let command = input.get("command").and_then(Value::as_str)?;
+        let tmp = journal::lane_tmp_dir(&self.config.home, squad, session.work.as_ref().map(|w| w.ticket), session.name()?);
+        permissions::project_checkout(command, &self.projects_cached(squad), &tmp)
     }
 
     /// What equipe refuses a member whatever its mode or the person's rules:

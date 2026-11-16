@@ -1415,7 +1415,12 @@ pub fn clear_ticket_tmp(home: &Path, squad: &str, id: TicketId, keep: &[u32]) ->
 pub fn tidy_lane_tmp(home: &Path, open: &[(String, Vec<TicketId>)], keep: &[u32]) -> Vec<String> {
     off_the_loop("disk::tidy_lane_tmp");
     let low = volume(home).is_some_and(|(_, free, total)| level_at(free, total, 100) >= DiskLevel::Low);
-    let desk_idle = if low { DESK_TMP_IDLE_LOW } else { DESK_TMP_IDLE };
+    tidy_lane_tmp_with(home, open, keep, if low { DESK_TMP_IDLE_LOW } else { DESK_TMP_IDLE })
+}
+
+/// [`tidy_lane_tmp`] with what a desk's entry must stand untouched for
+/// before it goes given, not read off the volume.
+fn tidy_lane_tmp_with(home: &Path, open: &[(String, Vec<TicketId>)], keep: &[u32], desk_idle: Duration) -> Vec<String> {
     let mut done = Vec::new();
     for (squad, tickets) in open {
         let root = home.join("tmp").join(squad);
@@ -2544,7 +2549,7 @@ mod tests {
         aged(&dir("acme", "frontend"), 2);
         // acme has T-2 open; beta has T-1 open and T-2 not; `gone` isn't known: left alone.
         let open = vec![("acme".to_owned(), vec![2]), ("beta".to_owned(), vec![1])];
-        let done = tidy_lane_tmp(&tree.home, &open, &[]);
+        let done = tidy_lane_tmp_with(&tree.home, &open, &[], DESK_TMP_IDLE);
         assert_eq!(done.iter().filter(|l| l.starts_with("removed ")).count(), 4, "{done:?}");
         for (squad, name, kept) in [
             ("acme", "t1", false),
@@ -2558,7 +2563,7 @@ mod tests {
         ] {
             assert_eq!(dir(squad, name).exists(), kept, "{squad}/{name}");
         }
-        assert!(tidy_lane_tmp(&tree.home, &open, &[]).is_empty());
+        assert!(tidy_lane_tmp_with(&tree.home, &open, &[], DESK_TMP_IDLE).is_empty());
     }
 
     #[test]
@@ -2572,10 +2577,28 @@ mod tests {
         aged(&desk.join("web-deploy-old"), 30);
         let old_log = std::fs::File::open(desk.join("old.log")).unwrap();
         old_log.set_modified(std::time::SystemTime::now() - Duration::from_secs(30 * 3600)).unwrap();
-        let done = tidy_lane_tmp(&tree.home, &[("acme".to_owned(), Vec::new())], &[]);
+        let done = tidy_lane_tmp_with(&tree.home, &[("acme".to_owned(), Vec::new())], &[], DESK_TMP_IDLE);
         assert_eq!(done.iter().filter(|l| l.starts_with("removed ")).count(), 2, "{done:?}");
         assert!(!desk.join("web-deploy-old").exists() && !desk.join("old.log").exists(), "a day untouched: given back");
         assert!(desk.join("web-deploy-new").join("blob").exists(), "in use: kept, and the desk with it");
+    }
+
+    #[test]
+    fn while_the_disk_is_low_a_desk_gives_back_what_it_left_untouched_for_an_hour() {
+        let tree = Tree::new();
+        let desk = tree.home.join("tmp").join("acme").join("pm");
+        for name in ["two-hours", "half-an-hour"] {
+            fill(&desk.join(name), 100);
+        }
+        aged(&desk.join("two-hours"), 2);
+        let at = std::time::SystemTime::now() - Duration::from_secs(30 * 60);
+        std::fs::File::open(desk.join("half-an-hour").join("blob")).unwrap().set_modified(at).unwrap();
+        std::fs::File::open(desk.join("half-an-hour")).unwrap().set_modified(at).unwrap();
+        let open = [("acme".to_owned(), Vec::new())];
+        assert!(tidy_lane_tmp_with(&tree.home, &open, &[], DESK_TMP_IDLE).is_empty(), "a day's rule: both stay");
+        let done = tidy_lane_tmp_with(&tree.home, &open, &[], DESK_TMP_IDLE_LOW);
+        assert_eq!(done.iter().filter(|l| l.starts_with("removed ")).count(), 1, "{done:?}");
+        assert!(!desk.join("two-hours").exists() && desk.join("half-an-hour").join("blob").exists(), "low: an hour untouched goes, the rest stays");
     }
 
     #[test]
