@@ -195,7 +195,7 @@ impl Shell {
     /// Open a live preview of `url` — a loopback page of the daemon's machine
     /// that `session`'s member serves. Whether it could open (any other
     /// address: no).
-    pub fn open_preview(&mut self, url: &str, session: Option<SessionId>, design: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub fn open_live_preview(&mut self, url: &str, session: Option<SessionId>, design: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Ok(target) = rules::loopback(url) else { return false };
         if self.preview.open.as_ref().is_some_and(|o| o.preview.target == target && o.session == session) {
             cx.notify();
@@ -739,8 +739,8 @@ fn area(shell: &Shell, open: &Open, cx: &mut Context<Shell>) -> impl IntoElement
                         let ((x, y, w, h), _) = place((f32::from(bounds.size.width) * zoom, f32::from(bounds.size.height) * zoom), width);
                         let frame = Bounds::new(point(bounds.origin.x + px(x / zoom), bounds.origin.y + px(y / zoom)), size(px(w / zoom), px(h / zoom)));
                         let mut quad = fill(frame, p.bg);
-                        quad.corner_radii = Corners::all(px(6.));
-                        quad.border_widths = Edges::all(px(1.));
+                        quad.corner_radii = gpui_kit::Corners::all(px(6.));
+                        quad.border_widths = gpui_kit::Edges::all(px(1.));
                         quad.border_color = p.hair.into();
                         window.paint_quad(quad);
                     }
@@ -810,7 +810,7 @@ impl Shell {
         match what {
             "open" => {
                 let session = self.model.members.iter().find(|m| m.role == "designer").or(self.model.members.first()).map(|m| m.session);
-                self.open_preview(rest, session, false, window, cx);
+                self.open_live_preview(rest, session, false, window, cx);
             }
             "down" | "up" => {
                 let up = what == "up";

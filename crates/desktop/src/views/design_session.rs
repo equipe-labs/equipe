@@ -328,7 +328,7 @@ fn live(shell: &Shell, session: &Session, cx: &mut Context<Shell>) -> impl IntoE
             Some(Live::Page(url)) if equipe_core::live_preview::previewable(url) => {
                 let (url, designer) = (url.clone(), session.designer);
                 Some(ui::button(p, "session-preview", ui::Kind::Primary, t!("preview.open")).icon(Icon::Expand).tip(t!("preview.open_tip"), None).on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_preview(&url, Some(designer), true, window, cx);
+                    this.open_live_preview(&url, Some(designer), true, window, cx);
                 })))
             }
             _ => None,
@@ -990,7 +990,7 @@ impl Shell {
                     match &shown.live {
                         Some(Live::Page(_)) if was == shown.live => self.preview_reload(window, cx),
                         Some(Live::Page(url)) => {
-                            self.open_preview(url, designer, true, window, cx);
+                            self.open_live_preview(url, designer, true, window, cx);
                         }
                         _ => {}
                     }

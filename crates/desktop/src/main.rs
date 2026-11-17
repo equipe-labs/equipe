@@ -748,7 +748,7 @@ impl Shell {
                 this.sync_browser(window, cx);
             }
             PanelEvent::Preview { url, session } => {
-                this.open_preview(url, *session, false, window, cx);
+                this.open_live_preview(url, *session, false, window, cx);
             }
             PanelEvent::Full => cx.notify(),
         }));
