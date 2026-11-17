@@ -61,6 +61,23 @@ changed screens already make a change high-risk, any new finding does, and the s
 person is told; after 10 audited changes in a row with no miss it relaxes, and the person is told again
 (`--relax` relaxes it by hand).
 
+### Follow-ups: one level of design QA, polish batched
+
+Findings used to feed themselves: each design QA or critique filed a ticket per polish point, each of those was
+built, shown across the whole width × theme × text range and given its own design QA, which filed more — chains a
+dozen tickets deep, most of them S3 polish of polish. So every ticket a designer files from the ticket it is on keeps
+its lineage (`design_follow_ups`: parent, root, generation, kind, severity; `crate::design_qa::follow_up`):
+
+- Filed from design QA, a review, or while working a follow-up, it must say its `severity` (`create_ticket`).
+- **S1/S2** is always a ticket, high priority — the quality bar holds at any depth.
+- **S3/S4** of ordinary work is one low-priority polish ticket per parent. A new fix or polish ticket waits for the
+  ticket its designer is on, and a later finding about the same work goes into it while nobody has started it.
+- **S3/S4** found while working a follow-up (generation 2 and on), or with 6 polish follow-ups already open in the
+  squad, is no ticket: it goes into the root's **design backlog**, an idea nothing starts, and the PM is told.
+- A follow-up's build that is polish, or a follow-up of a follow-up, gets **no designer turn of its own**: the
+  precheck still refuses a new S1/S2 and a designer still judges a waiver; the rest goes into the daily review.
+- A polish follow-up's hand-in is shown where its findings are; it need not repeat the whole screenshot range.
+
 ```sh
 equipe design qa-config --mode risk_batch --batch-at 18:00 --batch-size 12 --sample 15 --audit-miss 10
 equipe design qa-config --mode per_ticket          # back to a designer turn on every change

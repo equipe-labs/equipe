@@ -539,6 +539,21 @@ impl Runtime {
         }
     }
 
+    /// A hand-in that reached run `id` after its last turn's end was already
+    /// handled (a call that came in late, or one made outside any turn): no
+    /// turn end is coming to take it, so it is taken now, as that turn's end
+    /// would have. Left alone, the ticket would sit in progress with its
+    /// hand-in unread until its lease ran out. A wait or a question stays as
+    /// it is: it is the person's to answer, and a move carries it on.
+    pub(super) async fn take_late_hand_in(&mut self, id: SessionId) {
+        let Some(s) = self.sessions.get(&id) else { return };
+        // A turn still on its way (or its end not yet handled) takes it itself.
+        if s.turn.is_some() || s.last_turn.is_none() || !s.work.as_ref().is_some_and(|w| w.handed_in.is_some()) {
+            return;
+        }
+        Box::pin(self.after_turn(id)).await;
+    }
+
     /// The minute's look at turns running: each one's work told if it is over,
     /// and each that went silent ([`SILENT_AFTER`]) stopped — on a ticket, carried
     /// on with a reminder of how to finish ([`Self::unfinished_turn`]).

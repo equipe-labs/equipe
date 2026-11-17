@@ -94,6 +94,7 @@ mod window;
 mod autopilot;
 mod design_qa;
 mod design_review;
+mod follow_ups;
 mod usage_digest;
 mod team;
 mod heartbeat;
@@ -8573,6 +8574,10 @@ there, end your turn, and carry on when they say they're done."
         // A hand-in, a wait, a hand-back: the turn only winds down now.
         if let Some(id) = caller {
             self.tell_work_over(id);
+            // Handed in with its turn already over: taken now, not at a turn end that won't come.
+            if result.is_ok() {
+                self.take_late_hand_in(id).await;
+            }
         }
         // Whatever changed, the rules look again.
         self.dispatch(&squad).await;
@@ -9871,7 +9876,9 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 // on the board, its own unless it names someone else.
                 let just_do = !is_pm && self.journal(&squad).is_some_and(|j| j.pm_accepts());
                 let owner = board::arg_str(&args, "owner").map(str::to_owned).or_else(|| just_do.then(|| member.clone()));
-                let ticket = Ticket {
+                // A designer's ticket from the ticket it is on keeps where it came from (`follow_ups`).
+                let filing = if idea { None } else { self.follow_up_filing(&squad, id, &args)? };
+                let mut ticket = Ticket {
                     id: 0,
                     title: title.to_owned(),
                     body: body.to_owned(),
@@ -9904,9 +9911,17 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     updated_at: None,
                     priority: Default::default(), rank: 0,
                 };
+                if let Some(filing) = &filing
+                    && let Some(reply) = self.file_follow_up(&squad, &member, filing, &mut ticket)?
+                {
+                    return Ok(reply);
+                }
                 let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
                 let new_id = journal.create_ticket(&ticket).map_err(|e| e.to_string())?;
                 let _ = journal.ticket_event(new_id, &member, "created", title);
+                if let Some(filing) = &filing {
+                    self.keep_follow_up(&squad, new_id, filing);
+                }
                 let by = if is_pm { crate::telemetry::Maker::Pm } else { crate::telemetry::Maker::Member };
                 self.tell(&squad, crate::telemetry::Happened::TicketCreated { kind, by });
                 self.publish(Event::TicketChanged { squad: squad.clone(), ticket: Ticket { id: new_id, ..ticket } });
