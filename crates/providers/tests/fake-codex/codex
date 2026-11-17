@@ -14,6 +14,8 @@ What a turn does depends on its prompt:
   waits for its turn to be interrupted, and answers with what became of it;
 - "spend": reports a large token usage, then waits for `turn/interrupt`;
 - "findings": reads a file, then answers in a few lines of Markdown;
+- "slowly": the recorded turn below, two seconds in — long enough for a test
+  to call the board while it runs;
 - anything else: the recorded turn — a read, a new file written for real, an
   edit, a failing `cargo test`, a board tool, a web search, a plan, token
   usage and the plan's limits — ending "DONE".
@@ -30,6 +32,7 @@ Factory is), it needs no ChatGPT sign-in, as the real one doesn't.
 import json
 import os
 import sys
+import time
 
 THREAD = "thr-1"
 TURN = "turn-1"
@@ -304,6 +307,9 @@ def handle(message):
             spending_turn()
         elif "findings" in prompt:
             findings_turn()
+        elif "slowly" in prompt:
+            time.sleep(2)
+            recorded_turn(prompt)
         else:
             recorded_turn(prompt)
     elif method == "turn/interrupt":

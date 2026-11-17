@@ -179,7 +179,8 @@ async fn only_a_member_with_no_subagents_of_its_own_is_offered_helpers() {
     let board = &members[0]["config"]["mcp_servers"]["equipe"];
     let args: Vec<&str> = board["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
     assert!(args.contains(&"--helpers"), "{args:?}");
-    assert_eq!(board["tool_timeout_sec"], helpers::tool_timeout_secs(), "past helper_result's longest wait");
+    assert_eq!(board["tool_timeout_sec"], runtime::board_call_timeout_secs());
+    assert!(runtime::board_call_timeout_secs() >= helpers::tool_timeout_secs(), "past helper_result's longest wait");
     let charter = members[0]["developerInstructions"].as_str().unwrap();
     assert!(charter.contains("equipe gives you helpers instead") && !charter.contains("your Agent tool"), "{charter}");
     handle.send(Command::Interrupt { session: 1 });
@@ -189,7 +190,7 @@ async fn only_a_member_with_no_subagents_of_its_own_is_offered_helpers() {
     let (_, members) = starts(&log);
     let board = &members[0]["config"]["mcp_servers"]["equipe"];
     assert!(!board["args"].as_array().unwrap().iter().any(|a| a == "--helpers"), "{board}");
-    assert!(board.get("tool_timeout_sec").is_none(), "its board server as it was: {board}");
+    assert_eq!(board["tool_timeout_sec"], runtime::board_call_timeout_secs(), "past any card the person holds open: {board}");
     assert!(!members[0]["developerInstructions"].as_str().unwrap().contains("spawn_helper"));
     let refused = spawn(&handle, "look around", "look").await;
     assert!(refused.is_error && refused.text.contains("subagents of its own"), "{}", refused.text);

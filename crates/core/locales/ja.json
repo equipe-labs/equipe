@@ -695,6 +695,7 @@
   "disk.kind.ticket_temp": "終わったチケットの一時フォルダ",
   "disk.kind.lane_temp": "作業レーンの一時フォルダ",
   "news.stalled": "T-{id} の実行が提出なしで止まりました。ブランチと作業フォルダはそのままです。カードから再開・再投入・担当変更を選んでください · {title}。",
+  "news.stalled_resumed": "T-{id} の実行が提出なしで止まったため、equipe が一度だけ自動で再開しました。{to} が新しいセッションで続けます。ブランチと作業フォルダはそのままです · {title}。",
   "news.stalled_on_person": "T-{id} の実行が止まりました。{name} があなたの対応（{what}）を待っていましたが、戻ってきませんでした。対応してからカードで再開してください · {title}。",
   "news.recovery_resume": "T-{id} は {to} が新しいセッションで再開します。ブランチと作業フォルダはそのままです · {title}。",
   "news.recovery_requeue": "T-{id} を次に空いた {to} に再投入しました。ブランチと作業フォルダはそのままです · {title}。",

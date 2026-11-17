@@ -699,6 +699,7 @@
   "disk.kind.ticket_temp": "carpeta temporal de un ticket terminado",
   "disk.kind.lane_temp": "carpeta temporal de un carril de trabajo",
   "news.stalled": "La ejecución de T-{id} se detuvo sin entrega; su rama y su worktree se conservan tal cual. Reanúdalo, ponlo en cola o reasígnalo desde su tarjeta · {title}.",
+  "news.stalled_resumed": "La ejecución de T-{id} se detuvo sin entrega y equipe la retomó una vez por su cuenta: {to} sigue en una sesión nueva, en la misma rama y el mismo worktree · {title}.",
   "news.stalled_on_person": "La ejecución de T-{id} se detuvo: {name} te esperaba ({what}) y nadie volvió. Hazlo y luego reanúdala desde su tarjeta · {title}.",
   "news.recovery_resume": "T-{id} sigue con {to} en una sesión nueva, en la misma rama y el mismo worktree · {title}.",
   "news.recovery_requeue": "T-{id} queda en cola para el próximo {to} libre, en la misma rama y el mismo worktree · {title}.",

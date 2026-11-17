@@ -231,6 +231,10 @@ pub const STARTING: &str = "starting";
 /// person approved, nor a restart) begins.
 pub const START_OPERATION: &str = "start:";
 
+/// How the operation key of a stalled run equipe brought back on its own
+/// begins ([`Journal::resumed_by_itself_last`]).
+pub const AUTO_RESUME_OPERATION: &str = "auto-resume:";
+
 /// A ticket's work as its conversation kept it ([`Journal::ticket_lines`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TicketWorkLines {
@@ -1339,6 +1343,21 @@ impl Journal {
         )?;
         tx.commit()?;
         Ok(Requeued::Reserved)
+    }
+
+    /// Whether `ticket`'s latest run, leaving daemon restarts aside, is one
+    /// equipe brought back on its own after a stall ([`AUTO_RESUME_OPERATION`]):
+    /// stalled again, it waits for the person rather than come back again.
+    pub fn resumed_by_itself_last(&self, ticket: TicketId) -> Result<bool> {
+        let latest: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT operation FROM execution_operations WHERE ticket = ?1 AND operation NOT LIKE 'restart:%' ORDER BY rowid DESC LIMIT 1",
+                [ticket],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(latest.is_some_and(|op| op.starts_with(AUTO_RESUME_OPERATION)))
     }
 
     /// Renew only the exact generation/session that emitted the heartbeat.
@@ -3784,6 +3803,33 @@ mod tests {
         let home = Path::new("/h");
         assert_eq!(squad_dir(home, "acme"), PathBuf::from("/h/squads/acme"));
         assert_eq!(member_memory_dir(home, "acme", "frontend"), PathBuf::from("/h/squads/acme/members/frontend/memory"));
+    }
+
+    #[test]
+    fn a_run_equipe_brought_back_on_its_own_is_known_until_another_starts() {
+        let j = Journal::for_squad(&temp_home(), "auto").unwrap();
+        j.conn.execute(
+            "INSERT INTO tickets (id,title,body,status,depends_on,created_by,created_at,updated_at,kind)
+             VALUES (7,'recover','', 'in_progress','', 'you',1,1,'code')",
+            [],
+        ).unwrap();
+        assert!(!j.resumed_by_itself_last(7).unwrap(), "never run");
+        assert_eq!(j.acquire_execution(7, 11, "start:one", 100, 30).unwrap(), Some(1));
+        assert!(!j.resumed_by_itself_last(7).unwrap());
+        assert_eq!(j.recover_executions(&[], 131).unwrap(), vec![7]);
+        let auto = format!("{AUTO_RESUME_OPERATION}7-1");
+        assert_eq!(j.reserve_requeue(7, &auto, None, 132).unwrap(), Requeued::Reserved);
+        assert!(j.resumed_by_itself_last(7).unwrap());
+        assert_eq!(j.acquire_execution(7, 12, &auto, 133, 30).unwrap(), Some(2));
+        // A daemon restart carrying it on doesn't count as a new run.
+        assert_eq!(j.recover_executions(&[], 200).unwrap(), vec![7]);
+        assert_eq!(j.reserve_requeue(7, "restart:12", None, 201).unwrap(), Requeued::Reserved);
+        assert!(j.resumed_by_itself_last(7).unwrap(), "restarts left aside");
+        // The person's own recovery does.
+        assert_eq!(j.acquire_execution(7, 13, "restart:12", 202, 30).unwrap(), Some(3));
+        assert_eq!(j.recover_executions(&[], 300).unwrap(), vec![7]);
+        assert_eq!(j.reserve_requeue(7, "card:7:a", None, 301).unwrap(), Requeued::Reserved);
+        assert!(!j.resumed_by_itself_last(7).unwrap());
     }
 
     #[test]

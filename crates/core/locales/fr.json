@@ -699,6 +699,7 @@
   "disk.kind.ticket_temp": "dossier temporaire d'un ticket terminé",
   "disk.kind.lane_temp": "dossier temporaire d'une voie de travail",
   "news.stalled": "L'exécution de T-{id} s'est arrêtée sans remise ; sa branche et son worktree restent tels quels. Reprenez, relancez ou réattribuez-le depuis sa carte · {title}.",
+  "news.stalled_resumed": "L'exécution de T-{id} s'est arrêtée sans remise, et equipe l'a relancée une fois d'elle-même : {to} continue dans une nouvelle session, sur la même branche et le même worktree · {title}.",
   "news.stalled_on_person": "L'exécution de T-{id} s'est arrêtée : {name} vous attendait ({what}) et personne n'est revenu. Faites-le, puis reprenez-la depuis sa carte · {title}.",
   "news.recovery_resume": "T-{id} reprend avec {to} dans une nouvelle session, sur la même branche et le même worktree · {title}.",
   "news.recovery_requeue": "T-{id} est remis en file pour le prochain {to} libre, sur la même branche et le même worktree · {title}.",

@@ -999,10 +999,12 @@ impl Runtime {
         if s.work.as_ref().is_some_and(|w| w.handed_in.is_some() || w.waiting.is_some()) {
             return false;
         }
-        // An engine that is out of its limit runs no turn anyway: a run idle on
+        // An engine that is out of its limit runs no turn anyway, and the
+        // person's own "move now" is not to wait on them either: a run idle on
         // the person (waiting, handed in) or an open question doesn't hold the
-        // member there. Those runs go on with it ([`Self::switch_member`]).
-        let exhausted = due.why == Why::Exhausted;
+        // member there. Those runs go on with it, in a fresh conversation on
+        // the new engine with how theirs went so far ([`Self::switch_member`]).
+        let carried = due.why == Why::Exhausted || (due.why == Why::Person && due.mv.now);
         // Each of its runs at a clean point too; it starts no new one while
         // the move waits ([`Self::moving`]).
         let runs = self.runs_of(id);
@@ -1011,13 +1013,13 @@ impl Runtime {
             if r.is_working() || !r.queued.is_empty() || !r.steering.is_empty() || self.pending.values().any(|p| p.approval.session == *run) {
                 return false;
             }
-            if !exhausted && r.work.as_ref().is_some_and(|w| w.handed_in.is_some() || w.waiting.is_some()) {
+            if !carried && r.work.as_ref().is_some_and(|w| w.handed_in.is_some() || w.waiting.is_some()) {
                 return false;
             }
         }
         let on_ticket = s.work.is_some() || !runs.is_empty();
         let name = due.mv.member.clone();
-        if !exhausted && self.question_sets(squad).iter().any(|q| q.member == name) {
+        if !carried && self.question_sets(squad).iter().any(|q| q.member == name) {
             return false;
         }
         boundary(due.mv.in_place(), on_ticket, due.mv.now || due.why == Why::Exhausted)
