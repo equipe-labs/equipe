@@ -303,8 +303,9 @@ async fn a_signed_out_codex_cli_says_how_to_sign_in() {
     let spec = SessionSpec { engine: Some(Engine::Codex), model: None, access: Access::ReadOnly, cwd: scratch("cwd"), role: None, squad: None };
     let failed = add(&handle, &mut events, 1, spec).await;
     let Some(Event::Error { message, next, .. }) = failed.last() else { panic!("{failed:#?}") };
-    assert!(message.contains("Codex CLI isn't signed in"), "{message}");
-    assert_eq!(next.as_deref(), Some("equipe login codex"));
+    assert!(message.contains("Codex's sign-in") && message.contains("equipe is signing it in again"), "{message}");
+    assert!(!message.contains("codex login"), "no command for the person to run: {message}");
+    assert_eq!(next.as_deref(), Some("equipe login codex"), "the hint screens know a lost sign-in by");
 }
 
 /// What each turn the stand-in started was asked, in order.

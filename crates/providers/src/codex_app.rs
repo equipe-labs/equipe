@@ -103,6 +103,64 @@ pub async fn login_status(binary: &str) -> Result<Option<SignIn>> {
     Ok(Some(parse_login_status(output.status.success(), &said)))
 }
 
+// ── what a provider says when it refuses ──
+
+/// A provider's error as words for a person: the message inside the raw JSON
+/// body some errors come as (`{"type":"error","error":{"message":…}}`), with
+/// whatever came before it; anything else as it is. Raw JSON is never the
+/// message.
+pub fn plain_message(raw: &str) -> String {
+    let Some(at) = raw.find('{') else { return raw.to_owned() };
+    let Ok(body) = serde_json::from_str::<Value>(raw[at..].trim_end()) else { return raw.to_owned() };
+    let inner = body
+        .get("error")
+        .and_then(|e| e.get("message").or(Some(e)))
+        .and_then(Value::as_str)
+        .or_else(|| body.get("message").and_then(Value::as_str))
+        .or_else(|| body.get("detail").and_then(Value::as_str));
+    match inner.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(inner) => format!("{}{inner}", &raw[..at]),
+        None => raw.to_owned(),
+    }
+}
+
+/// The error code inside a raw JSON body, if there is one (`model_not_found`).
+fn body_code(raw: &str) -> Option<String> {
+    let at = raw.find('{')?;
+    let body = serde_json::from_str::<Value>(raw[at..].trim_end()).ok()?;
+    body.get("error").and_then(|e| e.get("code")).or_else(|| body.get("code")).and_then(Value::as_str).map(str::to_owned)
+}
+
+/// Whether an error says the account refused the model asked for — OpenAI's
+/// `model_not_found` ("The 'x' model is not supported when using Codex with a
+/// ChatGPT account.", "The model `x` does not exist or you do not have access
+/// to it.") — and the model it names (empty when it names none). Not a usage
+/// limit, not a sign-in: another model the account lists does the turn.
+pub fn refused_model(raw: &str, code: Option<&str>) -> Option<String> {
+    let words = plain_message(raw);
+    let lower = words.to_lowercase();
+    let coded = code == Some("model_not_found") || body_code(raw).as_deref() == Some("model_not_found") || lower.contains("model_not_found");
+    let said = lower.contains("model is not supported")
+        || lower.contains("model isn't supported")
+        || lower.contains("unsupported model")
+        || (lower.contains("model") && lower.contains("does not exist"));
+    if !(coded || said) {
+        return None;
+    }
+    let named = ['\'', '`', '"'].iter().find_map(|q| {
+        let start = words.find(*q)? + 1;
+        let len = words[start..].find(*q)?;
+        let name = &words[start..start + len];
+        (!name.is_empty() && name.len() <= 80 && !name.contains(char::is_whitespace)).then(|| name.to_owned())
+    });
+    Some(named.unwrap_or_default())
+}
+
+/// The model a refusal named, else the one the turn asked for.
+fn refused_or(named: &str, asked: Option<&str>) -> String {
+    if named.is_empty() { asked.unwrap_or_default().to_owned() } else { named.to_owned() }
+}
+
 // ── what a turn may do ──
 
 /// The sandbox a thread starts in, by what its turns may do.
@@ -644,6 +702,20 @@ impl TurnCollector {
         self.result.is_some()
     }
 
+    /// The model the account refused for this turn, when that is how it
+    /// failed ([`refused_model`]; empty when it didn't name it).
+    pub fn refused_model(&self) -> Option<String> {
+        match &self.result {
+            Some(Err(Error::Backend { message, code })) => refused_model(message, code.as_deref()),
+            _ => None,
+        }
+    }
+
+    /// Whether the turn said or did anything: answer text, a tool, output tokens.
+    pub fn did_anything(&self) -> bool {
+        !self.streamed.is_empty() || !self.last_message.is_empty() || !self.pending.is_empty() || !self.changes.is_empty() || self.output > 0
+    }
+
     /// Apply one notification. Returns what it shows.
     pub fn on_notification(&mut self, method: &str, params: &Value) -> Vec<Activity> {
         // The plan's limits are the account's, whatever thread they came with.
@@ -1179,7 +1251,18 @@ pub async fn read_limits(binary: &str, cwd: &Path) -> Result<Limits> {
     let mut server = Server::start(binary, cwd, &[], &[]).await?;
     let read = server.call("account/rateLimits/read", json!({}), ANSWER_WAIT).await?;
     server.close().await;
-    read.get("rateLimits").and_then(parse_limits).ok_or_else(|| Error::Protocol("codex reported no usage limits".into()))
+    limits_of_read(&read).ok_or_else(|| Error::Protocol("codex reported no usage limits".into()))
+}
+
+/// The plan's own bucket from `account/rateLimits/read`: the `codex` entry of
+/// its buckets by id when it lists them, else its single-bucket view — which
+/// may be a model's own bucket instead, left out ([`parse_limits`]).
+pub fn limits_of_read(read: &Value) -> Option<Limits> {
+    read.get("rateLimitsByLimitId")
+        .and_then(|by| by.get("codex"))
+        .filter(|s| !s.is_null())
+        .and_then(parse_limits)
+        .or_else(|| read.get("rateLimits").and_then(parse_limits))
 }
 
 /// Who the person's Codex is signed in as: the ChatGPT account's email and
@@ -1203,6 +1286,117 @@ fn account_of(read: &Value) -> Option<Account> {
     let account = read.get("account").filter(|a| !a.is_null())?;
     let text = |k: &str| account.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
     Some(Account { email: text("email"), plan: text("planType"), api_key: text("type").as_deref() == Some("apiKey") })
+}
+
+/// What Codex's own sign-in gives to show the person ([`login`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoginPage {
+    /// Open `url` in a browser on this machine: the page sends its last step
+    /// back to the login server Codex runs here, on `localhost`.
+    Browser { url: String },
+    /// Open `url` in any browser and enter `code` there.
+    DeviceCode { url: String, code: String },
+}
+
+/// How Codex's own sign-in ended ([`login`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoginEnd {
+    SignedIn,
+    /// Not finished in time.
+    Expired,
+    Failed(String),
+    /// This Codex has no sign-in over the app-server (an older one): its
+    /// command line (`codex login`) is the way.
+    Unsupported,
+}
+
+/// Sign the person's Codex in with its own ChatGPT sign-in, as Codex's IDE
+/// extension and desktop app do (`account/login/start`): Codex starts its
+/// login server here and hands back the page — it opens no browser itself —
+/// or, `device`, a page and a one-time code for a browser anywhere. `page`
+/// hears it; the end comes with `account/login/completed`. Codex keeps the
+/// login in its own files: equipe never sees a token, and the approval on the
+/// page is the person's. Dropped, the app-server (and its login server) goes.
+pub async fn login(binary: &str, cwd: &Path, device: bool, wait: Duration, page: impl FnOnce(LoginPage)) -> LoginEnd {
+    let mut server = match Server::start(binary, cwd, &[], &[]).await {
+        Ok(server) => server,
+        Err(err @ Error::Login(_)) => return LoginEnd::Failed(err.to_string()),
+        // No app-server to speak to: its command line, as before.
+        Err(_) => return LoginEnd::Unsupported,
+    };
+    let params = if device { json!({ "type": "chatgptDeviceCode" }) } else { json!({ "type": "chatgpt" }) };
+    let started = match server.call("account/login/start", params, ANSWER_WAIT).await {
+        Ok(started) => started,
+        Err(err) => {
+            let said = err.to_string();
+            server.close().await;
+            let lower = said.to_lowercase();
+            return if lower.contains("method not found") || lower.contains("unknown variant") || lower.contains("unknown method") || lower.contains("invalid request") {
+                LoginEnd::Unsupported
+            } else {
+                LoginEnd::Failed(plain_message(&said))
+            };
+        }
+    };
+    let text = |k: &str| started.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
+    let id = text("loginId");
+    let shown = match (text("authUrl"), text("verificationUrl"), text("userCode")) {
+        (Some(url), _, _) => LoginPage::Browser { url },
+        (None, Some(url), Some(code)) => LoginPage::DeviceCode { url, code },
+        _ => {
+            server.close().await;
+            return LoginEnd::Unsupported;
+        }
+    };
+    page(shown);
+    let early = std::mem::take(&mut server.early);
+    let ended = async {
+        if let Some(end) = early.iter().find_map(|(m, p)| login_completed(m, p, id.as_deref())) {
+            return end;
+        }
+        loop {
+            match server.next().await {
+                Ok(Some(Incoming::Notification { method, params })) => {
+                    if let Some(end) = login_completed(&method, &params, id.as_deref()) {
+                        return end;
+                    }
+                }
+                Ok(Some(Incoming::Request { id, method, params })) => {
+                    let _ = server.answer(id, reply(&method, &params, false)).await;
+                }
+                Ok(Some(Incoming::Answer { .. })) => {}
+                Ok(None) => return LoginEnd::Failed(format!("codex app-server ended before the sign-in did{}", server.diagnostics())),
+                Err(err) => return LoginEnd::Failed(err.to_string()),
+            }
+        }
+    };
+    let end = match tokio::time::timeout(wait, ended).await {
+        Ok(end) => end,
+        Err(_) => {
+            if let Some(id) = &id {
+                let _ = server.call("account/login/cancel", json!({ "loginId": id }), Duration::from_secs(5)).await;
+            }
+            LoginEnd::Expired
+        }
+    };
+    server.close().await;
+    end
+}
+
+/// `account/login/completed` for sign-in `id`: how it ended.
+fn login_completed(method: &str, params: &Value, id: Option<&str>) -> Option<LoginEnd> {
+    if method != "account/login/completed" {
+        return None;
+    }
+    let theirs = params.get("loginId").and_then(Value::as_str);
+    if theirs.is_some() && id.is_some() && theirs != id {
+        return None;
+    }
+    if params.get("success").and_then(Value::as_bool) == Some(true) {
+        return Some(LoginEnd::SignedIn);
+    }
+    let why = params.get("error").and_then(Value::as_str).map(plain_message).unwrap_or_default();
+    Some(if why.to_lowercase().contains("timed out") || why.to_lowercase().contains("expired") { LoginEnd::Expired } else { LoginEnd::Failed(why) })
 }
 
 /// The models the person's Codex offers, its default first.
@@ -1425,6 +1619,16 @@ pub struct Controls {
     pub stop_subagent: Option<mpsc::UnboundedReceiver<String>>,
     /// [`crate::claude_code::SETTLE_AFTER`], unless set (tests).
     pub settle_after: Option<Duration>,
+    /// Where the turn goes, once, when the account refuses its model before
+    /// it did anything ([`refused_model`]): another model the account lists.
+    pub fallback: Option<Fallback>,
+}
+
+/// The model (and effort) a turn is asked again on when its own is refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fallback {
+    pub model: String,
+    pub effort: Option<String>,
 }
 
 /// [`run_turn`], with [`Controls`] beyond it.
@@ -1434,7 +1638,7 @@ pub struct Controls {
 /// is ended here as completed: interrupted in the app-server, its thread
 /// kept to resume.
 pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, controls: Controls, mut on_activity: impl FnMut(Activity)) -> Result<Turn> {
-    let Controls { mut steering, asks, stop, mut stop_subagent, settle_after } = controls;
+    let Controls { mut steering, asks, stop, mut stop_subagent, settle_after, mut fallback } = controls;
     let settle_after = settle_after.unwrap_or(crate::claude_code::SETTLE_AFTER);
     // On another provider, through a relay on the loopback that keeps its tools plain.
     let relay = match request.provider {
@@ -1488,7 +1692,7 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
     }
     let mut collector = TurnCollector::new();
     collector.set_thread(&thread);
-    let turn_request = server.request("turn/start", turn_params(&request, cwd, &thread)).await?;
+    let mut turn_request = server.request("turn/start", turn_params(&request, cwd, &thread)).await?;
     for (method, params) in std::mem::take(&mut server.early) {
         collector.on_notification(&method, &params).into_iter().for_each(&mut on_activity);
     }
@@ -1549,6 +1753,15 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
                                 }
                             }
                             Err(message) => {
+                                // Its model refused on the spot: asked again, once, on another.
+                                if let Some(refused) = refused_model(&message, None)
+                                    && let Some(next) = fallback.take().filter(|f| Some(f.model.as_str()) != request.model)
+                                {
+                                    on_activity(Activity::ModelRefused { model: refused_or(&refused, request.model), instead: next.model.clone() });
+                                    let again = TurnRequest { model: Some(&next.model), effort: next.effort.as_deref(), ..request };
+                                    turn_request = server.request("turn/start", turn_params(&again, cwd, &thread)).await?;
+                                    continue;
+                                }
                                 return Err(Error::Backend { message: format!("codex couldn't start the turn: {message}"), code: None });
                             }
                         },
@@ -1556,6 +1769,19 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
                         Incoming::Notification { method, params } => {
                             collector.on_notification(&method, &params).into_iter().for_each(&mut on_activity);
                             if collector.done() {
+                                // The account refused its model before it did anything: asked again,
+                                // once, on another model it lists — the same words, the same thread.
+                                if let Some(refused) = collector.refused_model().filter(|_| !collector.did_anything())
+                                    && stopping.is_none()
+                                    && let Some(next) = fallback.take().filter(|f| Some(f.model.as_str()) != request.model)
+                                {
+                                    on_activity(Activity::ModelRefused { model: refused_or(&refused, request.model), instead: next.model.clone() });
+                                    collector = TurnCollector::new();
+                                    collector.set_thread(&thread);
+                                    let again = TurnRequest { model: Some(&next.model), effort: next.effort.as_deref(), ..request };
+                                    turn_request = server.request("turn/start", turn_params(&again, cwd, &thread)).await?;
+                                    continue;
+                                }
                                 break;
                             }
                         }
@@ -1634,6 +1860,47 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_providers_raw_json_error_becomes_its_words() {
+        let raw = r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.","code":"model_not_found"}}"#;
+        assert_eq!(plain_message(raw), "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.");
+        assert_eq!(plain_message(&format!("codex couldn't start the turn: {raw}")), "codex couldn't start the turn: The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.");
+        assert_eq!(plain_message(r#"{"detail":"Bad gateway"}"#), "Bad gateway");
+        assert_eq!(plain_message("plain words {not json"), "plain words {not json");
+        assert_eq!(plain_message(r#"{"other":1}"#), r#"{"other":1}"#, "nothing to say instead: as it was");
+    }
+
+    #[test]
+    fn a_refused_model_is_told_apart_from_a_limit_and_named() {
+        let raw = r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.","code":"model_not_found"}}"#;
+        assert_eq!(refused_model(raw, None).as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(refused_model("The model `gpt-9` does not exist or you do not have access to it.", None).as_deref(), Some("gpt-9"));
+        assert_eq!(refused_model("refused", Some("model_not_found")).as_deref(), Some(""), "coded, unnamed");
+        assert_eq!(refused_model("You've hit your usage limit. Try again at 5:00 PM.", Some("usageLimitExceeded")), None);
+        assert_eq!(refused_model("stream disconnected before completion", None), None);
+        assert_eq!(refused_or("", Some("gpt-6.1-sol")), "gpt-6.1-sol");
+    }
+
+    #[test]
+    fn the_plans_own_bucket_is_read_even_when_the_single_view_is_a_models() {
+        let plan = json!({ "limitId": "codex", "primary": { "usedPercent": 12.0, "windowDurationMins": 300, "resetsAt": 1 } });
+        let model = json!({ "limitId": "codex_sol", "primary": { "usedPercent": 100.0, "windowDurationMins": 300, "resetsAt": 1 } });
+        let read = json!({ "rateLimits": model, "rateLimitsByLimitId": { "codex": plan, "codex_sol": model } });
+        assert_eq!(limits_of_read(&read).map(|l| l.windows[0].used_percent), Some(12.0));
+        assert!(limits_of_read(&json!({ "rateLimits": model })).is_none(), "a model's own bucket is not the plan's");
+        assert!(limits_of_read(&json!({ "rateLimits": plan, "rateLimitsByLimitId": null })).is_some());
+    }
+
+    #[test]
+    fn a_sign_in_ends_as_codex_says() {
+        let done = |p: Value| login_completed("account/login/completed", &p, Some("l1"));
+        assert_eq!(done(json!({ "loginId": "l1", "success": true })), Some(LoginEnd::SignedIn));
+        assert_eq!(done(json!({ "loginId": "l2", "success": true })), None, "another sign-in's");
+        assert_eq!(done(json!({ "loginId": "l1", "success": false, "error": "login timed out" })), Some(LoginEnd::Expired));
+        assert_eq!(done(json!({ "loginId": "l1", "success": false, "error": "denied" })), Some(LoginEnd::Failed("denied".into())));
+        assert_eq!(login_completed("account/updated", &json!({}), Some("l1")), None);
+    }
 
     fn note(method: &str, params: Value) -> (String, Value) {
         (method.to_owned(), params)

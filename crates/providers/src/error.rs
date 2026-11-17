@@ -35,9 +35,9 @@ pub enum Error {
         code: Option<String>,
     },
 
-    /// The person's own `codex` CLI has no sign-in. equipe never signs it in
-    /// itself: `codex login` does, in the person's hands.
-    #[error("the codex CLI isn't signed in. Run `equipe login codex` — it runs `codex login`.")]
+    /// The person's own `codex` CLI has no sign-in. equipe starts Codex's own
+    /// sign-in; its page's approval is the person's.
+    #[error("the codex CLI isn't signed in: equipe starts Codex's own sign-in, to approve on its page.")]
     CodexSignedOut,
 
     #[error("login timed out. Retry `equipe login`.")]

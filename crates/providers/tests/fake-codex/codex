@@ -14,6 +14,8 @@ What a turn does depends on its prompt:
   waits for its turn to be interrupted, and answers with what became of it;
 - "spend": reports a large token usage, then waits for `turn/interrupt`;
 - "findings": reads a file, then answers in a few lines of Markdown;
+- "refuse": on gpt-6.1-sol, fails as an account that doesn't offer it does
+  (`model_not_found`, the raw body as the message); on any other model, answers;
 - "slowly": the recorded turn below, two seconds in — long enough for a test
   to call the board while it runs;
 - anything else: the recorded turn — a read, a new file written for real, an
@@ -22,6 +24,8 @@ What a turn does depends on its prompt:
 
 FAKE_CODEX_LOG: a file each message received is appended to, one JSON a line.
 FAKE_CODEX_SIGNED_OUT: set, it is signed out.
+FAKE_CODEX_LOGIN: `fail` (its sign-in fails), `old` (it has no `account/login/start`);
+  else `account/login/start` hands back a page and the sign-in completes at once.
 FAKE_CODEX_ARGS: a file each run's command line is appended to, one JSON a
 line, with whether NEBIUS_API_KEY was in its environment, and the names of
 the `*_API_KEY` variables there (never their values).
@@ -260,6 +264,17 @@ def handle(message):
         send({"id": request_id, "result": {"account": account, "requiresOpenaiAuth": not OTHER_PROVIDER}})
     elif method == "account/rateLimits/read":
         send({"id": request_id, "result": {"ordinaryUsageAllowed": True, "rateLimits": LIMITS, "rateLimitsByLimitId": {"codex": LIMITS}, "rateLimitResetCredits": None, "accountId": None, "rateLimitUpsell": None}})
+    elif method == "account/login/start":
+        how = os.environ.get("FAKE_CODEX_LOGIN", "")
+        if how == "old":
+            send({"id": request_id, "error": {"code": -32601, "message": "method not found: account/login/start"}})
+            return
+        if params.get("type") == "chatgptDeviceCode":
+            send({"id": request_id, "result": {"type": "chatgptDeviceCode", "loginId": "login-1", "verificationUrl": "https://auth.openai.com/codex/device", "userCode": "ABCD-EFGH2"}})
+        else:
+            send({"id": request_id, "result": {"type": "chatgpt", "loginId": "login-1", "authUrl": "https://auth.openai.com/oauth/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&state=s"}})
+        ok = how != "fail"
+        notify("account/login/completed", {"loginId": "login-1", "success": ok, "error": None if ok else "Login was not completed", "onboardingEntrypoint": None})
     elif method == "model/list":
         models = [("gpt-6-luna", False, False), ("gpt-6.1-sol", True, False), ("codex-auto-review", False, True), ("gpt-6-astra", False, False)]
         send({"id": request_id, "result": {"data": [{"id": m, "model": m, "displayName": m, "hidden": hidden, "isDefault": default} for m, default, hidden in models], "nextCursor": None}})
@@ -307,6 +322,15 @@ def handle(message):
             spending_turn()
         elif "findings" in prompt:
             findings_turn()
+        elif "refuse" in prompt:
+            model = params.get("model") or state["model"]
+            if model == "gpt-6.1-sol":
+                body = {"type": "error", "status": 400, "error": {"type": "invalid_request_error", "message": "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.", "code": "model_not_found"}}
+                notify("error", {"threadId": state["thread"], "turnId": TURN, "willRetry": False, "error": {"message": json.dumps(body)}})
+                turn_completed("failed", {"message": json.dumps(body), "codexErrorInfo": "other", "additionalDetails": None, "misalignment": None})
+            else:
+                say("a1", "Answered on " + model + ". DONE")
+                turn_completed()
         elif "slowly" in prompt:
             time.sleep(2)
             recorded_turn(prompt)

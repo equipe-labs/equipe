@@ -286,7 +286,9 @@ impl Filter {
         let who = who(t).unwrap_or_default().to_lowercase();
         let text = format!("{} {}", t.title.to_lowercase(), t.body.to_lowercase());
         let id = format!("t-{}", t.id);
-        self.words.iter().all(|w| text.contains(w.as_str()) || *w == id)
+        // A ticket's number finds it however it is typed: `t-3`, `#3`, `T3` or `3`.
+        let names_it = |w: &str| w == id || w.trim_start_matches(['#', 't', '-']) == t.id.to_string();
+        self.words.iter().all(|w| text.contains(w.as_str()) || names_it(w))
             && (self.project.is_empty() || self.project.contains(&project))
             && (self.member.is_empty() || self.member.contains(&who))
             && (self.status.is_empty() || self.status.contains(&t.status))
@@ -1606,6 +1608,8 @@ mod tests {
         let find = |q: &str| ids(&all(&m, &view, &Filter::parse(q), GroupBy::Status));
         assert_eq!(find("LOGIN"), vec![1, 2], "open first, then the finished, opened");
         assert_eq!(find("t-3"), vec![3]);
+        assert_eq!(find("3"), vec![3], "a bare number finds its ticket");
+        assert_eq!(find("#2"), vec![2], "finished work too");
         assert_eq!(find("is:blocked"), vec![1]);
         assert_eq!(find("project:b"), vec![3]);
         assert_eq!(find("status:todo project:a"), vec![1]);

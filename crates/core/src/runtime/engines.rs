@@ -403,7 +403,10 @@ impl Runtime {
         let memory = self.engines.squads.get(squad).map_or(&fallback, |s| &s.memory);
         let reading = self.readings().into_iter().find(|r| r.engine == engine)?;
         let assessed = rules::assess(&reading, memory, unix_now());
-        (assessed.level == Level::Exhausted).then_some(assessed.resets_at)
+        // A gate never outlives its evidence: a stale reading (none newer for
+        // `STALE_AFTER`) says nothing of now, so a turn may try — a real limit
+        // says so again at once, with a fresh reading.
+        (assessed.level == Level::Exhausted && !assessed.stale).then_some(assessed.resets_at)
     }
 
     /// `engine`'s weekly window for the reserve ([`crate::pacing`]) and
