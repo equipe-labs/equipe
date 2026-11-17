@@ -69,6 +69,7 @@ const OPEN_FILES_WANTED: u64 = 16_384;
 /// Raise the soft limit on open files towards [`OPEN_FILES_WANTED`], never
 /// past the hard limit (nor macOS's per-process ceiling). Logged when it
 /// can't go as high as wanted.
+#[cfg(unix)]
 fn raise_open_files() {
     let (before, after) = raise_soft_limit(OPEN_FILES_WANTED);
     if after < 4096 {
@@ -78,6 +79,7 @@ fn raise_open_files() {
 
 /// Set the soft `RLIMIT_NOFILE` to `wanted`, capped by the hard limit and,
 /// on macOS, by `kern.maxfilesperproc`. Returns (soft before, soft after).
+#[cfg(unix)]
 fn raise_soft_limit(wanted: u64) -> (u64, u64) {
     let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
     // SAFETY: getrlimit writes only the struct it is given.
@@ -107,6 +109,10 @@ fn raise_soft_limit(wanted: u64) -> (u64, u64) {
     }
     (before, target)
 }
+
+/// No `RLIMIT_NOFILE` to raise elsewhere (Windows has no such soft limit on handles).
+#[cfg(not(unix))]
+fn raise_open_files() {}
 
 /// How long a daemon in a temporary home waits, with no screen and no member
 /// at work, before it leaves.
@@ -882,7 +888,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod open_files_tests {
     #[test]
     fn the_open_files_limit_goes_up_and_never_past_the_hard_limit() {
