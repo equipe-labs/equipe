@@ -238,6 +238,9 @@ pub enum Need {
     Browser(u64),
     /// equipe's offer to keep a login the person just signed in with, by its id.
     LoginOffer(u64),
+    /// A sign-in card (an outside MCP server's, or a command-line tool's) that
+    /// waits for the person, by its id: where a remote person finds it.
+    SignIn(u64),
     /// What a designer handed in or the PM accepted, to look at on the design
     /// screen's Designs tab (`crate::designs`), by its ticket.
     Design(TicketId),
@@ -2300,6 +2303,8 @@ impl Model {
         out.extend(self.browser_waits.iter().filter(|w| self.first_for_site(w)).map(|w| (Section::Waiting, Need::Browser(w.page))));
         // A login they just signed in with, to keep if they like.
         out.extend(self.login_offers.iter().map(|o| (Section::Waiting, Need::LoginOffer(o.id))));
+        // A sign-in that waits for them — or ran out, with a new link a tap away.
+        out.extend(self.cli_sign_ins.iter().filter(|c| c.phase != equipe_core::protocol::cli_signin::Phase::SignedIn).map(|c| (Section::Waiting, Need::SignIn(c.id))));
         for section in &Section::TICKETS {
             let mut tickets: Vec<&Ticket> = self.tickets.iter().filter(|t| self.section_of(t) == Some(*section) && self.in_focus(t) && !self.is_acted(t)).collect();
             let since = |t: &Ticket| self.since.get(&t.id).copied().unwrap_or(0);
@@ -2384,6 +2389,13 @@ impl Model {
                 }
             }
             Need::LoginOffer(_) => {}
+            Need::SignIn(id) => {
+                w.kind = WaitKind::SignIn;
+                if let Some(c) = self.cli_sign_ins.iter().find(|c| c.id == id) {
+                    w.tickets = c.ticket.into_iter().collect();
+                    w.since = c.at;
+                }
+            }
             // Nothing waits on a design to be looked at: it ranks by how long it has been there.
             Need::Design(id) => {
                 w.since = self.design_news.iter().find(|d| d.ticket == id).map_or(0, |d| d.at);
@@ -2462,6 +2474,7 @@ impl Model {
             Need::Questions(id) => self.asked.open().find(|s| s.id == id).and_then(|s| by(s.ticket, s.session)),
             Need::Accept(id) => self.accepts.open().find(|c| c.id == id).and_then(|c| c.tickets.first().copied()).and_then(ticket),
             Need::Secret(id) => self.secret_asks.iter().find(|a| a.id == id).and_then(|a| by(a.ticket, a.session)),
+            Need::SignIn(id) => self.cli_sign_ins.iter().find(|c| c.id == id).and_then(|c| by(c.ticket, c.session)),
             Need::Ticket(id) | Need::Design(id) => ticket(id),
             _ => None,
         }

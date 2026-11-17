@@ -203,7 +203,11 @@ pub fn why_words(why: ImageWhy) -> &'static str {
 /// its button goes by). One that couldn't be loaded says so, not that the
 /// file is unreadable: the line or the daemon may have been the reason.
 fn gone(p: Palette, path: &str, why: ImageWhy, roomy: bool, retry: Option<(WeakEntity<Shell>, u64)>) -> AnyElement {
+    let name = rules::name_of(path).to_owned();
+    // Not there: said with its name in one line, so a missing picture is never an empty box.
+    let missing = why == ImageWhy::Missing;
     let words = if why == ImageWhy::Unreadable { t!("visuals.load_failed") } else { why_words(why) };
+    let whole = if missing { t!("visuals.not_found", name = name.clone()) } else { format!("{name} \u{2014} {words}") };
     let retry = retry.filter(|_| roomy).map(|(handle, id)| {
         let path = path.to_owned();
         div()
@@ -230,7 +234,8 @@ fn gone(p: Palette, path: &str, why: ImageWhy, roomy: bool, retry: Option<(WeakE
                 handle.update(cx, |shell, cx| shell.retry_shots(&paths, cx)).ok();
             })
     });
-    v_flex()
+    let face = v_flex()
+        .id(ElementId::Name(format!("shot-gone-{path}").into()))
         .absolute()
         .inset_0()
         .p_2()
@@ -239,7 +244,10 @@ fn gone(p: Palette, path: &str, why: ImageWhy, roomy: bool, retry: Option<(WeakE
         .justify_center()
         .text_color(p.muted)
         .child(icon(Icon::File, ICON, p.muted))
-        .when(roomy, |c| {
+        .when(roomy && missing, |c| {
+            c.child(div().max_w_full().text_center().text_size(px(11.5)).line_clamp(2).text_ellipsis().child(whole.clone()))
+        })
+        .when(roomy && !missing, |c| {
             c.child(
                 div()
                     .max_w_full()
@@ -247,14 +255,13 @@ fn gone(p: Palette, path: &str, why: ImageWhy, roomy: bool, retry: Option<(WeakE
                     .whitespace_nowrap()
                     .text_ellipsis()
                     .text_size(px(11.5))
-                    .child(rules::name_of(path).to_owned()),
+                    .child(name.clone()),
             )
+            .child(div().max_w_full().text_center().text_size(px(11.)).line_clamp(2).text_ellipsis().child(words))
         })
-        .when(roomy, |c| {
-            c.child(div().text_size(px(11.)).child(words))
-        })
-        .children(retry)
-        .into_any_element()
+        .children(retry);
+    // Too small for words: the pointer says them.
+    tip(face, p, whole, None).into_any_element()
 }
 
 /// One picture whole in a `w`×`h` box on the checkerboard, `pad` points
@@ -336,11 +343,42 @@ pub fn picture_on(
             }
         }
         Look::Gone(why) => gone(p, path, *why, w >= 100., Some((shots.handle.clone(), id))),
-        Look::Loading => waiting(
-            p,
-            ElementId::NamedInteger("shot-wait".into(), id),
-            shots.reduce,
-        ),
+        Look::Loading => {
+            let wash = waiting(
+                p,
+                ElementId::NamedInteger("shot-wait".into(), id),
+                shots.reduce,
+            );
+            // Roomy: what is coming, by name, so a slow picture never reads as an empty box.
+            if w >= 140. && h >= 60. {
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(wash)
+                    .child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .p_2()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .max_w_full()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_size(px(11.))
+                                    .text_color(p.muted)
+                                    .child(t!("visuals.loading_named", name = rules::name_of(path).to_owned())),
+                            ),
+                    )
+                    .into_any_element()
+            } else {
+                wash
+            }
+        }
     };
     corners(
         div()

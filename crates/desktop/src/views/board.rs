@@ -598,7 +598,7 @@ impl Shell {
             // A design to look at: its card on the design screen.
             Need::Design(id) => self.designs_show(id, cx),
             // Typed into its card, in the peek.
-            Need::Secret(_) | Need::LoginOffer(_) => {
+            Need::Secret(_) | Need::LoginOffer(_) | Need::SignIn(_) => {
                 self.board.view.peek = true;
                 cx.notify();
             }
@@ -621,7 +621,7 @@ impl Shell {
                     self.board_yes(cx);
                 }
             }
-            Some(Need::Questions(_) | Need::Team(_) | Need::Routine(_) | Need::Accept(_) | Need::Browser(_) | Need::Secret(_) | Need::LoginOffer(_) | Need::Design(_)) | None => {}
+            Some(Need::Questions(_) | Need::Team(_) | Need::Routine(_) | Need::Accept(_) | Need::Browser(_) | Need::Secret(_) | Need::LoginOffer(_) | Need::SignIn(_) | Need::Design(_)) | None => {}
         }
     }
 
@@ -848,7 +848,7 @@ impl Shell {
                 self.advance_from(&before, Need::Accept(id), cx);
             }
             // Closed on its card (✕), where what it closes is in sight.
-            Some(Need::Questions(_) | Need::Browser(_) | Need::Design(_)) | None => {}
+            Some(Need::Questions(_) | Need::Browser(_) | Need::Design(_) | Need::SignIn(_)) | None => {}
             Some(Need::Secret(id)) => self.dismiss_secret_card(id, cx),
             Some(Need::LoginOffer(id)) => self.dismiss_login_offer(id, false, cx),
         }
@@ -2271,6 +2271,21 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .child(div().flex_1().min_w(px(TITLE_MIN)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
                 .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(p.muted).child(div().min_w_0().truncate().child(said)))
+                .child(cell(eta_w))
+                .child(cell(34.))
+                .into_any_element()
+        }
+        Need::SignIn(id) => {
+            let Some((title, name)) = super::cli_signin::row_text(shell, id) else { return div().into_any_element() };
+            base(SharedString::from(format!("sign-in-{id}")), format!("{title}, {name}"), cx)
+                .pl_2()
+                .child(div().w(px(14.)).flex_none())
+                .child(super::cli_signin::mark(p, &title))
+                .child(div().w(px(ID_W)).flex_none())
+                .when(show_project, |r| r.child(project_col(None)))
+                .child(div().flex_1().min_w(px(TITLE_MIN)).truncate().text_color(p.text).child(title))
+                .child(div().w(px(flags_w)).flex_none())
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(p.muted).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()

@@ -298,6 +298,26 @@ read-only, to do this: equipe's proxy lists and lets through only their tools th
 (`readOnlyHint`, or a name that searches, lists or gets) and refuses the rest
 (`crates/core/src/mcp_gateway.rs`, `ReadOnly`).
 
+## Decisions tried live
+
+A decision card shows its options compact and side by side: each option's picture (Before |
+After inside it when the member gave the screen as it is now), its label, a line of what it
+means and, folded, what changed and why — opened one option at a time under the grid. Pictures
+are stills, though, and a choice about how something behaves — hover, pressed, focus,
+loading, motion, input, responsiveness — can't be judged from them. For those the member
+gives every option a live prototype (`try`, `crates/core/src/prototype.rs`): a page it serves
+on the daemon's machine, or a small HTML page it saved under `design/prototypes/`, which the
+daemon serves itself on `127.0.0.1` under a token, its folder's files only, nothing fetched
+from elsewhere. The tool refuses a question whose change notes name a behaviour area
+(`interaction`, `motion`, `states`, `input`, `responsive`) while an option has no prototype,
+and checks each prototype when the decision is asked: a page whose port answers, a saved page
+that is there and inside where the member works.
+
+On the card each such option has "Try it" on its picture, which opens it in the live preview
+pane; "Open side by side" shows every option's prototype live at once, one size each, in real
+web views of the person's screen — forwarded over the window's SSH link when the squad runs on
+another Mac (`crates/desktop/src/views/tryout.rs`). The pictures stay each option's thumbnail.
+
 ## What members are told
 
 Every role's charter (`crates/core/src/roles.rs`, `VISUALS`) has the same paragraph, with no

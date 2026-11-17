@@ -37,6 +37,8 @@ pub struct State {
     pub calls: Vec<(String, String)>,
     /// What every request's headers carried for credentials, to show none came from a member.
     pub seen_auth: Vec<String>,
+    /// How long the access tokens it gives last, in seconds (none: an hour).
+    pub expires_in: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -159,7 +161,7 @@ impl Fake {
                         let (access, refresh) = (format!("at-{}", s.issued), format!("rt-{}", s.issued));
                         s.valid.insert(access.clone());
                         s.refresh.insert(refresh.clone());
-                        Some(json_reply(200, &json!({ "access_token": access, "refresh_token": refresh, "token_type": "Bearer", "expires_in": 3600 }), ""))
+                        Some(json_reply(200, &json!({ "access_token": access, "refresh_token": refresh, "token_type": "Bearer", "expires_in": s.expires_in.unwrap_or(3600) }), ""))
                     }
                     Some("refresh_token") => {
                         if !f.get("refresh_token").is_some_and(|r| s.refresh.contains(r)) {
@@ -169,7 +171,7 @@ impl Fake {
                         s.issued += 1;
                         let access = format!("at-{}", s.issued);
                         s.valid.insert(access.clone());
-                        Some(json_reply(200, &json!({ "access_token": access, "token_type": "Bearer", "expires_in": 3600 }), ""))
+                        Some(json_reply(200, &json!({ "access_token": access, "token_type": "Bearer", "expires_in": s.expires_in.unwrap_or(3600) }), ""))
                     }
                     _ => Some(json_reply(400, &json!({ "error": "unsupported_grant_type" }), "")),
                 }

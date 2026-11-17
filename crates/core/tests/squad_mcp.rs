@@ -493,14 +493,34 @@ async fn a_sign_in_card_the_person_let_go_is_not_put_up_again_by_members_after_a
     }
     handle.shutdown().await;
 
-    // equipe starts again: the member's turns don't put it up again; Connections still says it needs a sign-in.
-    // (The squad comes back from its journal, the designer with it.)
+    // equipe starts again (the squad comes back from its journal, the designer with it). The
+    // designer needs it again: offered once more, saying so — and the designer's conversation says
+    // where the card is, for a person following from another Mac.
     let (claude, bin) = fake_claude();
     let (handle, mut events) = runtime::start(config(&claude, &home));
+    let told = |e: &Event| matches!(e, Event::Notice { session: 2, text, .. } if text.contains("Your turn"));
+    handle.send(Command::Submit { session: 2, text: "go".into(), about: None });
+    let during = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    if !during.iter().any(told) {
+        until(&mut events, told).await;
+    }
+    let again = waiting_card(&handle, "equipe_mcp").await;
+    assert!(again.why.contains("designer needs docs again") && again.why.contains("put off earlier"), "{}", again.why);
+    // Let go again: from now on only the person brings it back.
+    handle.send(Command::CancelCliSignIn { squad: "acme".into(), id: again.id });
+    for _ in 0..100 {
+        if handle.snapshot("acme").await.cli_sign_ins.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     turn(&handle, &mut events, &bin, 2).await;
     overall(&handle, "docs", McpState::NeedsSignIn).await;
-    turn(&handle, &mut events, &bin, 2).await;
+    let last = turn(&handle, &mut events, &bin, 2).await;
     assert!(handle.snapshot("acme").await.cli_sign_ins.iter().all(|c| c.tool != "equipe_mcp"), "not asked again by a member");
+    // The designer is told it is unavailable, why, and that only the person can bring it back — no guessing.
+    let said = last.join("\n");
+    assert!(said.contains("Not available this turn: `docs`") && said.contains("equipe isn't signed in to it") && said.contains("only they can turn it back on"), "{said}");
     // The person asks for it in Connections: the card, at once.
     handle.send(Command::SignInMcpServer { squad: "acme".into(), name: "docs".into() });
     waiting_card(&handle, "equipe_mcp").await;
@@ -574,5 +594,57 @@ async fn the_engine_signed_fallback_signs_in_with_claude_codes_own_login_and_add
     handle.send(Command::AddMcpServer { squad: "acme".into(), server: mobbin, sign_in: false });
     overall(&handle, "mobbin", McpState::NeedsSignIn).await;
     assert!(!handle.snapshot("acme").await.mcp_status.iter().any(|s| s.detail().is_some_and(|d| d.contains("already exists"))));
+    handle.shutdown().await;
+}
+
+/// The owner's bar: once connected, a server keeps working — across a daemon
+/// restart (an update), a member's fresh conversation, and its token running
+/// out — without the person doing anything, and without a card.
+#[tokio::test]
+async fn once_signed_in_a_server_stays_connected_across_restart_rotation_and_expiry_with_no_card() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let fake = Fake::start().await;
+    // Tokens that last 10 minutes: inside the daemon's renew-ahead window from the start.
+    fake.state.lock().unwrap().expires_in = Some(600);
+    let (handle, events, bin, home, _) = squad_with(&[(2, "designer")]).await;
+    let docs = squad_mcp::server("docs", Some(&fake.url("/mcp")), Some(&["designer".to_owned()]), None).unwrap();
+    handle.send(Command::AddMcpServer { squad: "acme".into(), server: docs, sign_in: true });
+    let card = waiting_card(&handle, "equipe_mcp").await;
+    assert!(fake_mcp::browse(card.url.as_deref().unwrap()).await.contains("Signed in"));
+    overall(&handle, "docs", McpState::Connected).await;
+    // Kept in equipe's own MCP credentials file, where the daemon reads it with nobody at the Mac.
+    assert!(equipe_core::mcp_keys::path(&home).is_file());
+    assert!(equipe_core::mcp_keys::get(&home, "acme", &equipe_core::mcp_oauth::secret_name("docs")).unwrap().is_some());
+    handle.shutdown().await;
+    let before = fake.state.lock().unwrap().refreshes;
+
+    // An update: the daemon starts again, with a fresh secret store (the tests' is in memory) —
+    // the sign-in comes from the file. The daemon's own look renews the token ahead of time.
+    let (claude, bin2) = fake_claude();
+    let _ = bin;
+    let (handle, mut events2) = runtime::start(config(&claude, &home));
+    drop(events);
+    handle.minute_now().await;
+    overall(&handle, "docs", McpState::Connected).await;
+    for _ in 0..100 {
+        if fake.state.lock().unwrap().refreshes > before {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(fake.state.lock().unwrap().refreshes > before, "renewed ahead by the daemon after the restart, before any member's call");
+
+    // A fresh conversation (a new engine) gets it through the proxy at once.
+    let call = turn(&handle, &mut events2, &bin2, 2).await;
+    assert_eq!(servers(&call)["docs"]["args"][1], "proxy");
+    assert!(!call.join("\n").contains("Not available this turn"));
+
+    // The server drops every token it gave (expiry, early): renewed on the next call, which goes through.
+    fake.revoke_all();
+    let (to, mut from) = proxy_on(&handle, "designer", "docs");
+    to.send(request(1, "tools/call", json!({ "name": "search_screens", "arguments": { "query": "pricing" } }))).unwrap();
+    assert_eq!(reply_to(&mut from, 1).await["result"]["content"][0]["text"], "3 screens for pricing");
+    overall(&handle, "docs", McpState::Connected).await;
+    assert!(handle.snapshot("acme").await.cli_sign_ins.iter().all(|c| c.tool != "equipe_mcp"), "the person was never asked again");
     handle.shutdown().await;
 }

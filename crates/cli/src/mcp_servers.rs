@@ -270,6 +270,10 @@ async fn login_through_daemon(socket: &Path, squad: &str, server: &McpServer) ->
     use tokio::io::AsyncBufReadExt as _;
     let (mut client, _) = attach(socket, squad).await.ok_or_else(|| t!("mcp.daemon_off").to_owned())??;
     client.send(Command::SignInMcpServer { squad: squad.to_owned(), name: server.name.clone() });
+    // Said at once: discovery and registration take a moment, and silence looks like a hang.
+    println!("  {}", t!("mcp.login_starting", name = sm::label(server)));
+    // Over SSH the daemon's Mac isn't the screen the person looks at: the page is theirs to open.
+    let remote = remote_session();
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     let mut card_id = None;
     let mut shown = false;
@@ -284,10 +288,17 @@ async fn login_through_daemon(socket: &Path, squad: &str, server: &McpServer) ->
                         Phase::Waiting | Phase::Checking => {
                             if let (Some(url), false) = (card.url.as_deref(), shown) {
                                 shown = true;
-                                println!("  {}", t!("mcp.login_page", name = sm::label(server)));
+                                if remote {
+                                    println!("  {}", t!("mcp.login_page_remote", name = sm::label(server)));
+                                } else {
+                                    println!("  {}", t!("mcp.login_page", name = sm::label(server)));
+                                }
                                 println!("  {url}");
                                 println!("  {}", t!("mcp.login_paste"));
-                                let _ = std::process::Command::new("open").arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+                                println!("  {}", t!("mcp.login_also_app"));
+                                if !remote {
+                                    let _ = std::process::Command::new("open").arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+                                }
                             }
                         }
                         Phase::SignedIn => return Ok(t!("mcp.signed_in_equipe", name = sm::label(server))),
@@ -316,6 +327,16 @@ async fn login_through_daemon(socket: &Path, squad: &str, server: &McpServer) ->
             _ = tokio::time::sleep_until(deadline) => return Err(t!("mcp.login_failed", name = sm::label(server))),
         }
     }
+}
+
+/// Whether this terminal reaches the Mac over SSH (or has no screen of its
+/// own): a page "opened" here would open on a screen nobody looks at.
+fn remote_session() -> bool {
+    remote_from(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
+}
+
+fn remote_from(set: impl Fn(&str) -> bool) -> bool {
+    ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"].iter().any(|n| set(n)) || (cfg!(target_os = "linux") && !set("DISPLAY") && !set("WAYLAND_DISPLAY"))
 }
 
 async fn login_with_engine(home: &Path, socket: &Path, squad: &str, server: &McpServer, engine: Option<&str>) -> Result<String, String> {
@@ -441,6 +462,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn over_ssh_the_page_is_printed_not_opened_on_the_unattended_mac() {
+        assert!(remote_from(|n| n == "SSH_CONNECTION"));
+        assert!(remote_from(|n| n == "SSH_TTY"));
+        if cfg!(target_os = "macos") {
+            assert!(!remote_from(|_| false), "a terminal on the Mac itself opens the page there");
+        }
+    }
 
     #[test]
     fn a_status_reads_in_the_persons_words() {

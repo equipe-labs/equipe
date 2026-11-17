@@ -76,6 +76,7 @@ pub mod team;
 pub mod telemetry;
 pub mod terminal;
 pub mod ticket_card;
+pub mod tryout;
 pub mod tickets;
 pub mod visuals;
 pub mod watch;

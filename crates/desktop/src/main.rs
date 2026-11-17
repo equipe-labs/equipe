@@ -1527,7 +1527,10 @@ impl Shell {
                         this.composer.flash = Some(flash);
                         changed = true;
                     }
-                    if let Some(problem) = this.model.take_problem() {
+                    // The squad's own problem: said in the PM's conversation — kept until it is on screen.
+                    if views::composer::squad_talk(this)
+                        && let Some(problem) = this.model.take_problem()
+                    {
                         this.composer.problem = Some(problem);
                         changed = true;
                     }
@@ -2792,6 +2795,12 @@ impl Render for Shell {
         self.design_session_prepare(window, cx);
         // The live preview's web view, where the pane was last drawn.
         self.preview_sync(window, cx);
+        // A decision's options tried live side by side: their web views where their boxes were drawn.
+        self.tryout_sync(window);
+        // "Try it" found its page: opened in the live preview pane.
+        if self.decide.try_pending.is_some() {
+            cx.defer_in(window, |this, window, cx| this.decide_try_settle(window, cx));
+        }
         // What the person did here (accepted, answered, a project in focus) changes Needs you too.
         self.sync_badge();
         self.sync_window(window);

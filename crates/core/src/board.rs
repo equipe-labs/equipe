@@ -988,7 +988,10 @@ giving each option its `images`; the person sees them side by side and picks fro
 option its `aspects` too (its type, colour, shape — in the person's language) and the person can answer in one click: \
 this one, this one with an aspect of another (a mix), or another round. An option with `images` also says what \
 changed and why it is better (`changes`, `unchanged`), and gives its live page in `preview_url` when the project \
-deploys previews. Links — a sign-in page, a document — go in a \
+deploys previews. A choice about how something behaves — interaction, motion, states (hover, pressed, focus, loading), \
+input, responsiveness — is tried, not looked at: give every option `try`, a live prototype (a page you serve here, or \
+an HTML page you saved) the person hovers, presses, tabs and types in, right in the card and side by side; pictures \
+alone are for still visuals. Links — a sign-in page, a document — go in a \
 question's `links` with a label each, never inside its `question` text: the person gets them as buttons under the \
 question, and the question stays a short sentence. A taste choice — which direction, which family of references — \
 is a board: set `board`, and give each option (2 to 3 clearly different families) its `tiles`, 6 to 12 pictures each, \
@@ -1021,6 +1024,7 @@ and answers with the family plus the tiles they liked.",
                                         "tiles": TILES_SCHEMA.clone(),
                                         "recommended": { "type": "boolean", "description": "Set on the option you recommend — one at most, put first. equipe shows the person it is the recommended one, in their language." },
                                         "preview_url": { "type": "string", "description": "This option as a live page the person clicks through on their screen — its own preview deployment (a branch's Vercel or Netlify preview, say): https, a real host, no credentials or port." },
+                                        "try": { "type": "string", "description": "This option as a live prototype the person tries right in the card — hovers, presses, tabs, types: a page you serve on this machine (http://localhost:<port>/…; keep its server running while they decide), or the path of an HTML page you saved in your worktree or the squad's folder (a file, or a folder with index.html; plain HTML, CSS and JS, nothing fetched from the internet). Required on every option when the choice is about interaction, motion, states (hover, pressed, focus, loading), input or responsiveness. Its `images` stay its thumbnail." },
                                         "before": { "type": "string", "description": "The same screen as it is now, by its path: the person flips the option's first picture between before and after." },
                                         "changes": CHANGES_SCHEMA.clone(),
                                         "unchanged": { "type": "string", "description": "With `changes`: what this option leaves as it was — features, content, data, copy unless asked — in a line, in the person's language." },
@@ -1309,6 +1313,7 @@ pub fn questions_arg(args: &Value) -> Result<Vec<crate::protocol::decide::Questi
                     recommended: o.get("recommended").and_then(Value::as_bool).unwrap_or(false),
                     tiles: tiles_arg(o),
                     preview_url: arg_str(o, "preview_url").unwrap_or_default().to_owned(),
+                    try_it: arg_str(o, "try").unwrap_or_default().trim().to_owned(),
                     before: arg_str(o, "before").unwrap_or_default().to_owned(),
                     changes: changes_arg(o),
                     unchanged: arg_str(o, "unchanged").unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ").chars().take(300).collect(),
@@ -1356,6 +1361,11 @@ pub fn questions_arg(args: &Value) -> Result<Vec<crate::protocol::decide::Questi
             if !option.preview_url.is_empty() {
                 option.preview_url = crate::connections::clean_url(&option.preview_url).map_err(|e| format!("{which}: `preview_url` {e} Give the option's own preview deployment, or leave it out, and ask again."))?;
             }
+            if option.try_it.contains("://") {
+                option.try_it = crate::live_preview::loopback(&option.try_it)
+                    .map(|_| option.try_it.clone())
+                    .map_err(|_| format!("{which}: `try` must be a page you serve on this machine (http://localhost:<port>/…), or the path of an HTML page you saved (a file, or a folder with index.html) — not {}. A deployed site goes in `preview_url`. Then ask again.", option.try_it))?;
+            }
             if !option.before.is_empty() && option.images.is_empty() {
                 return Err(format!("{which} has a `before` but no `images`: give the after in `images` (its first picture is flipped with `before`), then ask again."));
             }
@@ -1364,12 +1374,34 @@ pub fn questions_arg(args: &Value) -> Result<Vec<crate::protocol::decide::Questi
                 return Err(format!("{which} shows pictures but its change note is missing: add {gap}. Then ask again."));
             }
         }
+        // A choice about how something behaves is tried, not looked at: every
+        // option of it a live prototype (`try`).
+        if let Some(missing) = untried_interaction(&options) {
+            let untried: Vec<String> = options.iter().filter(|o| o.try_it.is_empty()).map(|o| format!("«{}»", o.label)).collect();
+            return Err(format!(
+                "Question {n} is about how the screen behaves (its change notes name {missing}), but {} {} no live prototype: give every option `try` — a page you serve here (http://localhost:<port>/…) or an HTML page you saved — so the person can hover, press, tab and type in each. Pictures alone can't show it. Then ask again.",
+                untried.join(", "),
+                if untried.len() == 1 { "has" } else { "have" }
+            ));
+        }
         let mut question = Question { question: question.to_owned(), header, options, multi_select, images, links: links_arg(item), board };
         // A link written into the words moves to `links`: screens draw it as a row of its own.
         question.move_links();
         out.push(question);
     }
     Ok(out)
+}
+
+/// The areas of a change note that are about behaviour — what a picture
+/// can't show: a choice naming one is tried live.
+pub const BEHAVIOUR_AREAS: [&str; 5] = ["interaction", "motion", "states", "input", "responsive"];
+
+/// When options shown in pictures change how the screen behaves (a point
+/// of a change note in one of [`BEHAVIOUR_AREAS`]) and one of them has no
+/// live prototype: the area named. A choice of stills needs none.
+pub fn untried_interaction(options: &[crate::protocol::decide::Choice]) -> Option<String> {
+    let behaves = options.iter().flat_map(|o| &o.changes).map(|c| c.area.trim().to_lowercase()).find(|area| BEHAVIOUR_AREAS.iter().any(|b| area == b || area.starts_with(b)))?;
+    options.iter().any(|o| o.try_it.is_empty() && (!o.images.is_empty() || !o.changes.is_empty())).then_some(behaves)
 }
 
 /// The links a question names (`[{label, url}]`; a bare address counts as a link
@@ -1452,7 +1484,7 @@ static CHANGES_SCHEMA: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
         "items": {
             "type": "object",
             "properties": {
-                "area": { "type": "string", "description": "layout, hierarchy, density, type, colour, components or interaction." },
+                "area": { "type": "string", "description": "One of these words, in English: layout, hierarchy, density, type, colour, components, interaction, motion, states, input or responsive. The last five are behaviour: every option then needs `try`." },
                 "before": { "type": "string", "description": "What it was." },
                 "after": { "type": "string", "description": "What it is now." },
                 "why": { "type": "string", "description": "Why that is better: the reference or the rule." },
@@ -2243,6 +2275,41 @@ mod tests {
         assert!(decide["description"].as_str().unwrap().contains("`preview_url`"));
         let hand_in = tools.iter().find(|t| t["name"] == SUBMIT_FOR_REVIEW).unwrap();
         assert_eq!(hand_in["inputSchema"]["properties"]["changes"]["type"], "array");
+    }
+
+    #[test]
+    fn a_choice_about_behaviour_is_tried_live_in_every_option_and_a_still_needs_no_prototype() {
+        let states = |area: &str| json!([{ "area": area, "before": "flat", "after": "darker on press", "why": "press reads as a press" }]);
+        let option = |label: &str, try_it: Option<&str>, area: &str| {
+            let mut o = json!({ "label": label, "images": format!("{label}.png"), "changes": states(area), "unchanged": "copy" });
+            if let Some(t) = try_it {
+                o["try"] = json!(t);
+            }
+            o
+        };
+        let ask = |a: Value, b: Value| questions_arg(&json!({ "questions": [{ "question": "Which press state?", "options": [a, b] }] }));
+        // States without a prototype on each option: refused, naming those without.
+        let err = ask(option("A", Some("http://localhost:5173/a"), "states"), option("B", None, "states")).unwrap_err();
+        assert!(err.contains("`try`") && err.contains("«B» has") && !err.contains("«A»"), "{err}");
+        assert!(ask(option("A", None, "Interaction"), option("B", None, "layout")).unwrap_err().contains("interaction"));
+        // Every option tried: kept as given.
+        let asked = ask(option("A", Some(" http://localhost:5173/a "), "states"), option("B", Some("design/proto/b"), "motion")).unwrap();
+        assert_eq!(asked[0].options[0].try_it, "http://localhost:5173/a");
+        assert_eq!(asked[0].options[1].try_it, "design/proto/b", "a path, found where the member works when asked");
+        assert!(asked[0].tryable() && asked[0].side_by_side());
+        // A still: no prototype needed.
+        assert!(ask(option("A", None, "colour"), option("B", None, "layout")).is_ok());
+        // Only this machine's pages: a deployed site is `preview_url`'s.
+        for bad in ["https://acme.vercel.app/", "http://192.168.0.4:3000/", "ftp://localhost/a"] {
+            let err = ask(option("A", Some(bad), "states"), option("B", Some("b.html"), "states")).unwrap_err();
+            assert!(err.contains("`try`"), "{bad}: {err}");
+        }
+        // The tool says it.
+        let tools = tools(false);
+        let decide = tools.iter().find(|t| t["name"] == ASK_DECISION).unwrap();
+        let schema = &decide["inputSchema"]["properties"]["questions"]["items"]["properties"]["options"]["items"]["properties"]["try"];
+        assert_eq!(schema["type"], "string");
+        assert!(decide["description"].as_str().unwrap().contains("`try`"));
     }
 
     #[test]

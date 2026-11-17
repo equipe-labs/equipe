@@ -284,6 +284,7 @@ pub const READ_METHODS: &[&str] = &[
     rpc::READ_UPLOAD,
     rpc::READ_IMAGE,
     rpc::LIST_IMAGES,
+    rpc::PROTOTYPE_URL,
     rpc::DESIGN_STUDIO,
     rpc::TELEMETRY,
     rpc::PERSON_LOOK,

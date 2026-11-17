@@ -101,6 +101,12 @@ impl Commands {
         self.ask(rpc::READ_IMAGE, rpc::ReadImage { squad: squad.to_owned(), path: path.to_owned(), max })
     }
 
+    /// Ask where a decision option's saved prototype is served
+    /// (`prototype_url`); answered as [`Commands::upload`] is.
+    pub fn prototype_url(&self, squad: &str, path: &str) -> std::sync::mpsc::Receiver<Result<serde_json::Value, String>> {
+        self.ask(rpc::PROTOTYPE_URL, rpc::PrototypeUrl { squad: squad.to_owned(), path: path.to_owned() })
+    }
+
     /// Ask for the pictures in a folder a reply names (`list_images`);
     /// answered as [`Commands::upload`] is.
     pub fn list_images(&self, squad: &str, folder: &str) -> std::sync::mpsc::Receiver<Result<serde_json::Value, String>> {

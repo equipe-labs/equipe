@@ -90,6 +90,14 @@ announced again ("equipe can run in the background"). Signed, the designated
 requirement is `identifier "equipe" and anchor apple generic and … certificate
 leaf[subject.OU] = <team>` for every release, and one answer lasts.
 
+With the secrets, a signing failure fails the build rather than shipping an
+ad-hoc binary: one ad-hoc release is a new identity on every Mac that installs
+it, and an unattended Mac can't answer the Keychain dialog that follows (its
+outside MCP servers, kept keys and sign-ins stop working until someone does).
+Apple's timestamp server fails now and then, so `codesign` is tried up to five
+times. Release 0.103.135 shipped ad hoc on Apple silicon for exactly this
+reason, before the retry.
+
 Without the secrets (a fork), the job warns and ships the binary ad hoc;
 everything still works, with macOS asking again after updates. Builds from
 source are ad hoc as well: sign your own with

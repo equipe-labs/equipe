@@ -808,6 +808,7 @@
   "notice.missed_title": "You’ve missed this {n} times: {what}",
   "notice.missed_body": "{impact}. Open it to deal with it.",
   "notice.squad_secret_saved": "{member} kept the key “{name}” for {service} in this machine's secret store. equipe masks it from now on.",
+  "notice.mcp_card_up": "{server} needs you before {member} can use it: the card is under Your turn.",
   "secrets.no_project": "no project (the squad's folder)",
   "secrets.grant.header": "Key",
   "secrets.grant.question": "Let {member} use the key “{name}” ({service}) on {project}?",

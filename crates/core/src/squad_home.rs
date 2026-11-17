@@ -80,8 +80,14 @@ pub fn ensure(home: &Path, squad: &str, language: Option<&str>) -> Result<bool, 
 /// disk — one that ran out of room left gigabytes of unfinished packs in a
 /// squad's folder: equipe repacks it itself while there is room
 /// (`disk::repack_if_room`).
+///
+/// Nor a file's inode change time in what git compares: equipe links the
+/// folder's files elsewhere and back (`design::captures` holding them through
+/// an upgrade), which changes it on every one, and git then read all of them
+/// anew — a `status` of a folder of 130,000 files took two minutes.
 fn quiet(dir: &Path) -> Result<(), String> {
     exclude_recordings(dir);
+    git(dir, &["config", "core.trustctime", "false"])?;
     git(dir, &["config", "commit.gpgsign", "false"])?;
     git(dir, &["config", "gc.auto", "0"])?;
     git(dir, &["config", "maintenance.auto", "false"])?;
@@ -280,7 +286,25 @@ pub fn save_in(dir: &Path, by: &str, why: &str, paths: &[&str]) -> Result<Option
     one_at_a_time(dir, || save_in_now(dir, by, why, paths))
 }
 
+/// A lock git holds on the folder's index longer than any git equipe runs
+/// may take is one a git that died left behind.
+const STALE_LOCK: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Take away the folder's index lock when it is older than [`STALE_LOCK`]:
+/// left by a git that was killed, it would refuse every save after it.
+/// Whether one was taken away.
+fn clear_stale_lock(dir: &Path) -> bool {
+    let lock = dir.join(".git").join("index.lock");
+    let old = std::fs::metadata(&lock).and_then(|m| m.modified()).ok().and_then(|at| at.elapsed().ok()).is_some_and(|age| age > STALE_LOCK);
+    if old && std::fs::remove_file(&lock).is_ok() {
+        crate::daemon_log!("equipe: {} had git's index lock left from {} minutes ago; taken away", dir.display(), STALE_LOCK.as_secs() / 60);
+        return true;
+    }
+    false
+}
+
 fn save_in_now(dir: &Path, by: &str, why: &str, paths: &[&str]) -> Result<Option<Change>, String> {
+    clear_stale_lock(dir);
     let with_paths = |args: &[&'static str]| -> Vec<&str> { args.iter().copied().chain(["--"]).chain(paths.iter().copied()).collect() };
     if !dir.join(".git").exists() || git(dir, &with_paths(&["status", "--porcelain"]))?.trim().is_empty() {
         return Ok(None);
@@ -443,6 +467,24 @@ pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lock_a_dead_git_left_long_ago_is_taken_away_before_a_save() {
+        let home = home();
+        ensure(&home, "s", None).unwrap();
+        let dir = path(&home, "s");
+        assert_eq!(git(&dir, &["config", "core.trustctime"]).unwrap().trim(), "false");
+        let lock = dir.join(".git/index.lock");
+        std::fs::write(&lock, "").unwrap();
+        std::fs::write(dir.join("notes/a.md"), "a").unwrap();
+        assert!(save(&dir, PERSON, "fresh lock").is_err(), "a lock held now is left alone");
+        assert!(lock.exists());
+        let old = std::time::SystemTime::now() - STALE_LOCK - std::time::Duration::from_secs(60);
+        std::fs::File::options().write(true).open(&lock).unwrap().set_modified(old).unwrap();
+        let change = save(&dir, PERSON, "old lock").unwrap().expect("saved");
+        assert_eq!(change.files, vec![("saved", "notes/a.md".to_owned())]);
+        assert!(!lock.exists());
+    }
 
     #[test]
     fn a_change_is_told_in_the_persons_language() {

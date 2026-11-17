@@ -890,6 +890,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         // The keys members kept, into the list every transcript is masked by.
         runtime.load_squad_secrets();
     }
+    // Outside servers' tokens are read anew by a daemon starting (`crate::mcp_keys`).
+    crate::mcp_oauth::forget_known();
     let pulse = watchdog::Pulse::new();
     watchdog::watch(&pulse);
     tokio::spawn(CORE_LOOP.scope((), watchdog::scoped(pulse.clone(), run(runtime, req_rx, internal_rx, host_rx, pulse.clone()))));
@@ -2167,6 +2169,8 @@ impl Runtime {
         self.recover_execution_leases(now_secs()).await;
         pulse.step("minute tick: paused runs");
         self.turn_ends_due(now_secs());
+        pulse.step("minute tick: outside MCP servers");
+        self.mcp_health_due(now_secs());
         pulse.step("minute tick: quiet turns");
         self.look_at_turns(std::time::Instant::now()).await;
         self.plan_use_pass();
@@ -5433,9 +5437,9 @@ for one project goes to it as tickets for its owners, with that project — and 
         };
         // The outside MCP servers the squad connected for this member's role,
         // on its engine — a card for one that needs a sign-in, once (`squad_mcp`).
-        let outside: Vec<(crate::squad_mcp::McpServer, crate::squad_mcp::Credential)> = match &squad {
+        let (outside, unavailable): squad_mcp::ForMember = match &squad {
             Some(sq) if board_tools && !lite => self.mcp_for_member(sq, id),
-            _ => Vec::new(),
+            _ => Default::default(),
         };
         let Some(session) = self.sessions.get(&id) else {
             return;
@@ -5582,6 +5586,11 @@ for one project goes to it as tickets for its owners, with that project — and 
         });
         // Told of its outside servers only when it has some: nobody else's charter changes.
         let charter = charter.map(|text| match crate::squad_mcp::charter_note(&outside.iter().map(|(server, _)| server).collect::<Vec<_>>()) {
+            Some(note) => format!("{text}\n\n{note}"),
+            None => text,
+        });
+        // Those it would have but doesn't this turn: why, in a line, so it never guesses.
+        let charter = charter.map(|text| match squad_mcp::unavailable_note(&unavailable) {
             Some(note) => format!("{text}\n\n{note}"),
             None => text,
         });
@@ -5835,6 +5844,8 @@ for one project goes to it as tickets for its owners, with that project — and 
                 // What Codex asks goes to the person as Claude Code's permission prompts do.
                 let (ask_tx, mut ask_rx) = mpsc::unbounded_channel::<codex_app::Ask>();
                 let asker = session_member(session);
+                // Who its engine works for, noted off the loop as it starts (`crate::engine_bind`).
+                let bind_as = session.member.as_ref().and(asker.clone());
                 let asker_run = run_key;
                 let forward = internal.clone();
                 tokio::spawn(async move {
@@ -5890,6 +5901,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         browser::ready(port, Duration::from_secs(90)).await;
                     }
                     let controls = codex_app::Controls { steering: Some(steer_rx), asks: Some(ask_tx), stop: Some(stop_rx), stop_subagent: Some(stop_sub_rx), fallback, refused_retry, ..Default::default() };
+                    let mut bound: Option<crate::engine_bind::Bound> = None;
                     let outcome = codex_app::run_turn_with(&binary, &cwd, request, controls, |activity| {
                         if matches!(activity, Activity::Text(_)) {
                             streamed = true;
@@ -5907,6 +5919,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                                 let _ = internal.send(Internal::CodexLimits(Some(limits)));
                             }
                             Activity::Engine { pid } => {
+                                if let Some(member) = &bind_as {
+                                    bound = Some(crate::engine_bind::bind(pid, member.clone()));
+                                }
                                 let _ = internal.send(Internal::EngineStarted { session: id, pid });
                             }
                             Activity::SubagentHeard { id: sub } => {
@@ -5926,6 +5941,8 @@ for one project goes to it as tickets for its owners, with that project — and 
                         }
                     })
                     .await;
+                    // The engine is gone: nothing is bound to it any more.
+                    drop(bound);
                     // Refused with nothing to fall back on: said before the turn's end, so its
                     // failure is never taken for the engine's limit.
                     if let Err(equipe_providers::Error::Backend { message, code }) = &outcome
@@ -6047,6 +6064,8 @@ for one project goes to it as tickets for its owners, with that project — and 
                 }
                 // The person's browser sign-ins and equipe's logins: no fenced command reads them.
                 // Nor other squads' homes.
+                // Who its engine works for, noted off the loop as it starts (`crate::engine_bind`).
+                let bind_as = session.member.as_ref().and(session_member(session));
                 let (steer_tx, steer_rx) = mpsc::unbounded_channel::<String>();
                 steer = Some(steer_tx);
                 let over = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -6105,12 +6124,16 @@ for one project goes to it as tickets for its owners, with that project — and 
                         browser::ready(port, Duration::from_secs(90)).await;
                     }
                     let mut plan = engines::ToldPlan::default();
+                    let mut bound: Option<crate::engine_bind::Bound> = None;
                     let controls = claude_code::Controls { steering: Some(steer_rx), work_over: Some(over), wind_down: Some(wind_rx), ..Default::default() };
                     let outcome = claude_code::run_turn_with(&binary, &cwd, request, controls, |activity| {
                         if matches!(activity, Activity::Text(_)) {
                             streamed = true;
                         }
                         if let Activity::Engine { pid } = activity {
+                            if let Some(member) = &bind_as {
+                                bound = Some(crate::engine_bind::bind(pid, member.clone()));
+                            }
                             let _ = internal.send(Internal::EngineStarted { session: id, pid });
                             return;
                         }
@@ -6126,6 +6149,8 @@ for one project goes to it as tickets for its owners, with that project — and 
                         }
                     })
                     .await;
+                    // The engine is gone: nothing is bound to it any more.
+                    drop(bound);
                     let claude_session = outcome.as_ref().ok().and_then(|turn| turn.session_id.clone());
                     let result = outcome.map(|turn| turn.result).map_err(claude_failure);
                     let lost = matches!(&result, Err((_, next)) if crate::engine_auth::lost_by(*next) == Some(Engine::Claude));

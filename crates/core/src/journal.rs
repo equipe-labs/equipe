@@ -126,6 +126,80 @@ pub fn squad_dir(home: &Path, squad: &str) -> PathBuf {
     home.join("squads").join(squad)
 }
 
+/// Who names a picture by its path, as a squad's journal says: a waiting
+/// decision, tickets' hand-ins — and the squad's projects, where such a
+/// picture may be.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Naming {
+    pub decision: bool,
+    pub tickets: Vec<TicketId>,
+    pub projects: Vec<PathBuf>,
+}
+
+/// Who names picture `path` in the squad's journal at `db`, read without
+/// opening it for writing (no schema work) and without reading the whole
+/// board: what a screen's picture is checked against, a dozen times a card.
+/// `None` when the journal can't be read.
+pub fn naming(db: &Path, path: &str) -> Option<Naming> {
+    use rusqlite::OpenFlags;
+    let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
+    conn.busy_timeout(std::time::Duration::from_secs(5)).ok()?;
+    let questions = questions_in(&conn)?;
+    let decision = questions.iter().any(|set| set.images().any(|p| p == path));
+    // Narrowed by SQLite, then read exactly: a path inside another's text doesn't count.
+    let tickets = if path.is_empty() {
+        Vec::new()
+    } else {
+        conn
+        .prepare("SELECT id, images FROM tickets WHERE images IS NOT NULL AND instr(images, ?1) > 0")
+        .and_then(|mut stmt| {
+            stmt.query_map([path], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+                .map(|rows| rows.filter_map(|row| row.ok()).filter(|(_, images)| serde_json::from_str::<Vec<String>>(images).is_ok_and(|i| i.iter().any(|p| p == path))).map(|(id, _)| id as TicketId).collect())
+        })
+        .unwrap_or_default()
+    };
+    let projects = conn
+        .prepare("SELECT path FROM projects ORDER BY added_at, rowid")
+        .and_then(|mut stmt| stmt.query_map([], |r| r.get::<_, String>(0)).map(|rows| rows.filter_map(|p| p.ok().map(PathBuf::from)).collect()))
+        .unwrap_or_default();
+    Some(Naming { decision, tickets, projects })
+}
+
+/// The waiting decisions a connection's journal keeps; `None` when it can't be read.
+fn questions_in(conn: &Connection) -> Option<Vec<equipe_protocol::decide::QuestionSet>> {
+    Some(conn.query_row("SELECT value FROM meta WHERE key = 'questions'", [], |r| r.get::<_, String>(0)).optional().ok()?.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default())
+}
+
+/// The squad's waiting decisions, read from its journal at `db` without
+/// opening it for writing. `None` when the journal can't be read.
+pub fn waiting_questions_at(db: &Path) -> Option<Vec<equipe_protocol::decide::QuestionSet>> {
+    use rusqlite::OpenFlags;
+    let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
+    conn.busy_timeout(std::time::Duration::from_secs(5)).ok()?;
+    questions_in(&conn)
+}
+
+/// [`Journal::said_with_paths`], on any connection to a journal.
+fn said_with_paths_in(conn: &Connection, limit: u64) -> Result<Vec<(PathBuf, Entry)>> {
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(s.cwd, c.cwd, (SELECT p.cwd FROM sessions p WHERE p.role = 'pm' AND p.open = 1 ORDER BY p.id LIMIT 1)), e.body
+         FROM entries e LEFT JOIN sessions s ON s.id = e.session LEFT JOIN conversations c ON c.id = e.session
+         WHERE (e.body LIKE '%/%' OR e.body LIKE '%![%') AND (s.id IS NOT NULL OR c.id IS NOT NULL) ORDER BY e.at DESC, e.seq DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![limit as i64], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)))?;
+    Ok(rows.filter_map(|row| row.ok()).filter_map(|(cwd, body)| Some((PathBuf::from(cwd?), serde_json::from_str(&body).ok()?))).collect())
+}
+
+/// [`Journal::said_with_paths`], read from the journal at `db` without
+/// opening it for writing: what a screen's picture in a reply is checked
+/// against. `None` when the journal can't be read.
+pub fn said_with_paths_at(db: &Path, limit: u64) -> Option<Vec<(PathBuf, Entry)>> {
+    use rusqlite::OpenFlags;
+    let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
+    conn.busy_timeout(std::time::Duration::from_secs(5)).ok()?;
+    said_with_paths_in(&conn, limit).ok()
+}
+
 /// Where a role's members keep what they learn. It belongs to the role, not to
 /// a project — like a person, a member carries what it learned from one project
 /// to the next — nor to one member: `backend-2`, brought in for a rush, learns
@@ -3030,13 +3104,7 @@ impl Journal {
     /// person's conversations with the PM count, from where the PM works (one
     /// opened before that was kept: where the open PM works now).
     pub fn said_with_paths(&self, limit: u64) -> Result<Vec<(PathBuf, Entry)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT COALESCE(s.cwd, c.cwd, (SELECT p.cwd FROM sessions p WHERE p.role = 'pm' AND p.open = 1 ORDER BY p.id LIMIT 1)), e.body
-             FROM entries e LEFT JOIN sessions s ON s.id = e.session LEFT JOIN conversations c ON c.id = e.session
-             WHERE (e.body LIKE '%/%' OR e.body LIKE '%![%') AND (s.id IS NOT NULL OR c.id IS NOT NULL) ORDER BY e.at DESC, e.seq DESC LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![limit as i64], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)))?;
-        Ok(rows.filter_map(|row| row.ok()).filter_map(|(cwd, body)| Some((PathBuf::from(cwd?), serde_json::from_str(&body).ok()?))).collect())
+        said_with_paths_in(&self.conn, limit)
     }
 
     pub fn open_sessions(&self) -> Result<Vec<SessionRecord>> {
