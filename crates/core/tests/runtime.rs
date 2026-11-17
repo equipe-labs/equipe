@@ -4383,9 +4383,14 @@ for line in sys.stdin:
         f.write(line)
     op = json.loads(line)
     if op.get("op") == "lane":
-        # Its MCP endpoint, as the host opens one per lane.
+        # Its MCP endpoint, as the host opens one per lane. The daemon picked the port by
+        # binding and letting it go, so another test may hold it by now: that costs only
+        # the endpoint, never this host and every tab it would tell after.
         if op["id"] not in pages:
-            s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", op["port"])); s.listen(); ports.append(s)
+            try:
+                s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", op["port"])); s.listen(); ports.append(s)
+            except OSError as e:
+                sys.stderr.write("no endpoint on port %s: %s\n" % (op["port"], e))
         pages.setdefault(op["id"], [9000001 + len(pages), "about:blank"])
         tabs(op["id"])
     elif op.get("op") == "goto" and op.get("lane") in pages:
@@ -4741,7 +4746,7 @@ async fn a_sign_in_from_a_view_the_site_doesnt_take_goes_on_in_the_members_own_b
 
 /// The line of the host's requests that matches, waited for.
 async fn host_line(ops: &Path, wanted: impl Fn(&str) -> bool) -> String {
-    for _ in 0..200 {
+    for _ in 0..LOOKS {
         if let Some(line) = std::fs::read_to_string(ops).unwrap_or_default().lines().rev().find(|l| wanted(l)) {
             return line.to_owned();
         }
