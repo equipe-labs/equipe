@@ -69,6 +69,7 @@ const OPEN_FILES_WANTED: u64 = 16_384;
 /// Raise the soft limit on open files towards [`OPEN_FILES_WANTED`], never
 /// past the hard limit (nor macOS's per-process ceiling). Logged when it
 /// can't go as high as wanted.
+#[cfg(unix)]
 fn raise_open_files() {
     let (before, after) = raise_soft_limit(OPEN_FILES_WANTED);
     if after < 4096 {
@@ -78,6 +79,7 @@ fn raise_open_files() {
 
 /// Set the soft `RLIMIT_NOFILE` to `wanted`, capped by the hard limit and,
 /// on macOS, by `kern.maxfilesperproc`. Returns (soft before, soft after).
+#[cfg(unix)]
 fn raise_soft_limit(wanted: u64) -> (u64, u64) {
     let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
     // SAFETY: getrlimit writes only the struct it is given.
@@ -85,17 +87,15 @@ fn raise_soft_limit(wanted: u64) -> (u64, u64) {
         return (0, 0);
     }
     let before: u64 = limit.rlim_cur;
-    let mut cap: u64 = limit.rlim_max;
+    let cap: u64 = limit.rlim_max;
     #[cfg(target_os = "macos")]
-    {
+    let cap = {
         let mut per_proc: libc::c_int = 0;
         let mut size = std::mem::size_of::<libc::c_int>();
         let name = c"kern.maxfilesperproc";
         // SAFETY: sysctlbyname writes at most `size` bytes into `per_proc`.
-        if unsafe { libc::sysctlbyname(name.as_ptr(), (&mut per_proc as *mut libc::c_int).cast(), &mut size, std::ptr::null_mut(), 0) } == 0 && per_proc > 0 {
-            cap = cap.min(per_proc as u64);
-        }
-    }
+        if unsafe { libc::sysctlbyname(name.as_ptr(), (&mut per_proc as *mut libc::c_int).cast(), &mut size, std::ptr::null_mut(), 0) } == 0 && per_proc > 0 { cap.min(per_proc as u64) } else { cap }
+    };
     let target = wanted.min(cap);
     if target <= before {
         return (before, before);
@@ -107,6 +107,10 @@ fn raise_soft_limit(wanted: u64) -> (u64, u64) {
     }
     (before, target)
 }
+
+/// No `RLIMIT_NOFILE` to raise elsewhere (Windows has no such soft limit on handles).
+#[cfg(not(unix))]
+fn raise_open_files() {}
 
 /// How long a daemon in a temporary home waits, with no screen and no member
 /// at work, before it leaves.
@@ -882,7 +886,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod open_files_tests {
     #[test]
     fn the_open_files_limit_goes_up_and_never_past_the_hard_limit() {

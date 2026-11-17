@@ -105,6 +105,18 @@ async fn latest_call(dir: &Path, wanted: impl Fn(&str) -> bool) -> Vec<String> {
     calls(dir).pop().unwrap()
 }
 
+/// The newest of all the calls so far that `wanted`, waited for: for a call
+/// that other turns, running beside it, may have followed with several more.
+async fn any_call(dir: &Path, wanted: impl Fn(&str) -> bool) -> Vec<String> {
+    for _ in 0..200 {
+        if let Some(call) = calls(dir).into_iter().rev().find(|call| arg(call, "-p").is_some_and(&wanted)) {
+            return call;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    calls(dir).pop().unwrap()
+}
+
 /// The value following `flag` in one call's arguments.
 fn arg<'a>(call: &'a [String], flag: &str) -> Option<&'a str> {
     call.iter().position(|a| a == flag).and_then(|i| call.get(i + 1)).map(String::as_str)
@@ -5919,7 +5931,8 @@ async fn in_risk_batch_a_low_risk_change_skips_the_designer_and_the_daily_review
     assert_eq!(journal.design_qa_batch(4).unwrap().kind, "audit");
     drop(journal);
     let first = match review.last() { Some(Event::WorkStarted { ticket, .. }) => *ticket, _ => unreachable!() };
-    let call = latest_call(&recorded, |p| p.contains(&format!("You're on T-{first}"))).await;
+    // The other review's turns run beside it and may have made several calls since.
+    let call = any_call(&recorded, |p| p.contains(&format!("You're on T-{first}"))).await;
     let prompt = arg(&call, "-p").unwrap();
     assert!(prompt.contains("T-1 Settings screen") && prompt.contains("design_review"), "{prompt}");
     // Every change needs its entry.
