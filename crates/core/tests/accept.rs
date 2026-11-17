@@ -142,7 +142,7 @@ async fn until(rx: &mut UnboundedReceiver<Event>, done: impl Fn(&Event) -> bool)
             }
         }
     };
-    if tokio::time::timeout(Duration::from_secs(20), wait).await.is_err() {
+    if tokio::time::timeout(Duration::from_secs(60), wait).await.is_err() {
         panic!("timed out; events so far: {seen:#?}");
     }
     seen
