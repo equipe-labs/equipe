@@ -194,3 +194,15 @@ fn a_google_sign_in_is_made_in_the_members_own_browser_not_carried_from_a_view()
         assert!(!binds_to_browser(site), "{site}");
     }
 }
+
+#[test]
+fn a_bot_checks_clearance_never_goes_from_the_view_into_the_members_browser() {
+    let scoped = scope_cookies(
+        vec![cookie("sessionKey", ".claude.ai"), cookie("cf_clearance", ".claude.ai"), cookie("__cf_bm", ".claude.ai"), cookie("_pxhd", "claude.ai"), cookie("datadome", ".claude.ai")],
+        "https://claude.ai/login",
+        &[],
+    );
+    assert_eq!(names(&scoped), ["sessionKey"], "the sign-in carries over, the check's clearance doesn't");
+    assert_eq!(scoped.dropped, 4);
+    assert!(is_clearance("CF_Clearance") && is_clearance("cf_chl_rc_m") && !is_clearance("session") && !is_clearance("cfid"));
+}

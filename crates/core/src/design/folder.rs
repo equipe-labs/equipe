@@ -62,9 +62,9 @@ pub struct Place {
 }
 
 /// Whether `dir` is a design system: a folder (not a link to one) with
-/// `tokens.json` or `guidelines.md` in it.
+/// `tokens.json` or `guidelines.md` in it, or a brand link (`inherit`).
 pub fn is_design_dir(dir: &Path) -> bool {
-    std::fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir()) && [TOKENS, GUIDELINES].iter().any(|f| dir.join(f).is_file())
+    std::fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir()) && [TOKENS, GUIDELINES, super::inherit::FILE].iter().any(|f| dir.join(f).is_file())
 }
 
 /// Where `squad`'s design systems are, or may be: its own (always, there or
@@ -331,7 +331,9 @@ fn read_owed(place: &Place, lang: Lang) -> (DesignSystem, super::flows::Owed) {
     if !is_design_dir(&place.dir) {
         return (system, super::flows::Owed::default());
     }
-    match inside(&place.dir, TOKENS, TOKENS_MAX) {
+    // A brand-linked project shows its resolved system.
+    let resolved = super::inherit::resolve(&super::inherit::root(), &place.dir).and_then(Result::ok).map(|r| r.text.into_bytes());
+    match resolved.or_else(|| inside(&place.dir, TOKENS, TOKENS_MAX)) {
         Some(bytes) if bytes.len() as u64 > TOKENS_MAX => system.problems.push(words.fill("design.problem_too_big", &[("file", TOKENS.into()), ("limit", format!("{} MB", TOKENS_MAX >> 20))])),
         Some(bytes) => {
             let parsed = tokens::parse(&String::from_utf8_lossy(&bytes));

@@ -43,6 +43,7 @@ pub async fn run_foreground() -> io::Result<()> {
         equipe_core::daemon_log!("equipe: a daemon already answers here, so this one leaves");
         return Ok(());
     }
+    raise_open_files();
     let config = runtime::Config::for_user(VERSION).persistent();
     // Telegram, when set up, follows the squads like one more screen.
     tokio::spawn(crate::telegram::serve_forever(equipe_home(), socket(), build_id()));
@@ -57,6 +58,59 @@ pub async fn run_foreground() -> io::Result<()> {
     }
     left_for(gateway::serve_leaving(config, &socket(), &build_id(), leave).await)
 }
+
+/// Open files the daemon asks for. Every member's turn connects several
+/// tools (its board tools, the desktop, each outside MCP server through
+/// equipe) and every screen holds a connection, all on the daemon's socket;
+/// a login service starts with a soft limit of 256 on macOS, which a busy
+/// squad passed — then no screen, tool or git command could open anything.
+const OPEN_FILES_WANTED: u64 = 16_384;
+
+/// Raise the soft limit on open files towards [`OPEN_FILES_WANTED`], never
+/// past the hard limit (nor macOS's per-process ceiling). Logged when it
+/// can't go as high as wanted.
+#[cfg(unix)]
+fn raise_open_files() {
+    let (before, after) = raise_soft_limit(OPEN_FILES_WANTED);
+    if after < 4096 {
+        equipe_core::daemon_log!("equipe: open files allowed: {after} (was {before}); a busy squad may need more");
+    }
+}
+
+/// Set the soft `RLIMIT_NOFILE` to `wanted`, capped by the hard limit and,
+/// on macOS, by `kern.maxfilesperproc`. Returns (soft before, soft after).
+#[cfg(unix)]
+fn raise_soft_limit(wanted: u64) -> (u64, u64) {
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: getrlimit writes only the struct it is given.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return (0, 0);
+    }
+    let before: u64 = limit.rlim_cur;
+    let cap: u64 = limit.rlim_max;
+    #[cfg(target_os = "macos")]
+    let cap = {
+        let mut per_proc: libc::c_int = 0;
+        let mut size = std::mem::size_of::<libc::c_int>();
+        let name = c"kern.maxfilesperproc";
+        // SAFETY: sysctlbyname writes at most `size` bytes into `per_proc`.
+        if unsafe { libc::sysctlbyname(name.as_ptr(), (&mut per_proc as *mut libc::c_int).cast(), &mut size, std::ptr::null_mut(), 0) } == 0 && per_proc > 0 { cap.min(per_proc as u64) } else { cap }
+    };
+    let target = wanted.min(cap);
+    if target <= before {
+        return (before, before);
+    }
+    limit.rlim_cur = target;
+    // SAFETY: setrlimit reads only the struct it is given.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } != 0 {
+        return (before, before);
+    }
+    (before, target)
+}
+
+/// No `RLIMIT_NOFILE` to raise elsewhere (Windows has no such soft limit on handles).
+#[cfg(not(unix))]
+fn raise_open_files() {}
 
 /// How long a daemon in a temporary home waits, with no screen and no member
 /// at work, before it leaves.
@@ -831,3 +885,18 @@ mod tests {
         assert_eq!(leave_for(Path::new("/tmp/t355home"), &temps, Some(Duration::from_secs(2))).idle, Some(Duration::from_secs(2)));
     }
 }
+
+#[cfg(all(test, unix))]
+mod open_files_tests {
+    #[test]
+    fn the_open_files_limit_goes_up_and_never_past_the_hard_limit() {
+        let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        // SAFETY: getrlimit writes only the struct it is given.
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) }, 0);
+        let (before, after) = super::raise_soft_limit(4096);
+        assert!(after >= before, "never lowered: {before} -> {after}");
+        assert!(after <= limit.rlim_max, "never past the hard limit");
+        assert!(after >= before.min(4096).min(limit.rlim_max));
+    }
+}
+

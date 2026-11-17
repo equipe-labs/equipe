@@ -167,6 +167,9 @@ const STOP_GRACE: Duration = Duration::from_secs(8);
 /// How often the Codex plan's usage is read while a squad has Codex members,
 /// and at most when a screen attaches.
 const CODEX_USAGE_EVERY: Duration = Duration::from_secs(5 * 60);
+/// How long (seconds) a model the Codex account refused is skipped before it
+/// is tried again: a refusal may be passing, so it is never for good.
+const REFUSED_FOR: u64 = 10 * 60;
 /// How long the Codex CLI's model list is kept.
 const CODEX_MODELS_KEPT: Duration = Duration::from_secs(10 * 60);
 
@@ -758,6 +761,10 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         codex_read: None,
         codex_reading: false,
         codex_models: None,
+        codex_kind: None,
+        codex_refused: HashMap::new(),
+        model_refused_turns: HashSet::new(),
+        engine_pages: HashMap::new(),
         tool_repeats: HashMap::new(),
         codex_listing: false,
         providers: HashMap::new(),
@@ -1206,6 +1213,12 @@ enum Internal {
     Engines(Vec<equipe_protocol::EngineStatus>),
     /// A sign-in (the one numbered so) ended.
     SignInEnded(Engine, u64),
+    /// An engine's own sign-in handed back its page, to open in equipe's
+    /// own browser on this machine (where its last step comes back).
+    EnginePage(Engine, String),
+    /// The Codex account refused `model` for a turn of `session`'s: asked
+    /// again on `instead`, or — none — the turn failed.
+    CodexModelRefused { session: SessionId, model: String, instead: Option<String> },
     /// Installing an engine's tool ended.
     InstallEnded(Engine),
     /// The Codex CLI's models, as just listed off the loop for the screens;
@@ -1385,6 +1398,18 @@ struct Runtime {
     codex_reading: bool,
     /// The models the Codex CLI offers, as last listed.
     codex_models: Option<(std::time::Instant, Vec<codex_app::ModelInfo>)>,
+    /// How the Codex CLI is signed in, as last asked: a refused model is the
+    /// account kind's (a ChatGPT plan's, an API key's).
+    codex_kind: Option<codex_app::SignIn>,
+    /// Models the Codex account refused lately (`model_not_found`), with when
+    /// and on which kind of account: skipped for [`REFUSED_FOR`], then tried
+    /// again — a refusal may pass.
+    codex_refused: HashMap<String, (u64, Option<codex_app::SignIn>)>,
+    /// Runs whose last turn failed on a refused model, with nothing to fall
+    /// back on: never an engine's limit.
+    model_refused_turns: HashSet<SessionId>,
+    /// Each engine's sign-in page under way, as its tool handed it back.
+    engine_pages: HashMap<Engine, String>,
     /// For each run, its latest tool call and how many times in a row it
     /// came: a loop raises its ticket's next lane (`runtime::tiers`).
     tool_repeats: HashMap<SessionId, (String, u32)>,
@@ -1658,6 +1683,8 @@ impl Wake {
             Wake::Request(Some(Request::DiskClean(..))) => Borrowed("a clean of the disk"),
             Wake::Internal(Internal::Engines(_)) => Borrowed("where the engines stand"),
             Wake::Internal(Internal::SignInEnded(..)) => Borrowed("a sign-in's end"),
+            Wake::Internal(Internal::EnginePage(..)) => Borrowed("an engine's sign-in page"),
+            Wake::Internal(Internal::CodexModelRefused { .. }) => Borrowed("a Codex model refused"),
             Wake::Internal(Internal::InstallEnded(..)) => Borrowed("an engine's install's end"),
             Wake::Internal(Internal::CodexModels(_)) => Borrowed("the Codex models listed"),
             Wake::Internal(Internal::ProviderListed { .. }) => Borrowed("a provider's models listed"),
@@ -1949,10 +1976,16 @@ impl Runtime {
                     self.publish_nebius();
                     self.publish_providers();
                 }
+                Internal::EnginePage(engine, url) => {
+                    self.engine_pages.insert(engine, url.clone());
+                    self.open_engine_page(&url);
+                }
+                Internal::CodexModelRefused { session, model, instead } => self.codex_model_refused(session, model, instead),
                 Internal::SignInEnded(engine, id) => {
                     if self.sign_ins.get(&engine).is_some_and(|(at, _)| *at == id) {
                         self.sign_ins.remove(&engine);
                         self.sign_in_codes.remove(&engine);
+                        self.engine_pages.remove(&engine);
                     }
                     // Signed in (or not): looked at again, and what it stopped carried on.
                     if let Some(fix) = self.auth.get_mut(&engine) {
@@ -2388,7 +2421,7 @@ impl Runtime {
         if let Some((at, models)) = &self.codex_models
             && at.elapsed() < CODEX_MODELS_KEPT
         {
-            return Ok(models.iter().map(|m| m.id.clone()).collect());
+            return Ok(models.iter().filter(|m| !self.codex_refuses(&m.id)).map(|m| m.id.clone()).collect());
         }
         let cwd = if self.config.home.is_dir() { self.config.home.clone() } else { std::env::temp_dir() };
         let listed = tokio::time::timeout(SERVER_WAIT, codex_app::list_model_infos(&self.config.codex_binary, &cwd)).await;
@@ -2397,7 +2430,7 @@ impl Runtime {
             Ok(Err(err)) => return Err(err.to_string()),
             Err(_) => return Err(format!("Codex didn't answer in {}s", SERVER_WAIT.as_secs())),
         };
-        let ids = models.iter().map(|m| m.id.clone()).collect();
+        let ids = models.iter().filter(|m| !self.codex_refuses(&m.id)).map(|m| m.id.clone()).collect();
         self.codex_models = Some((std::time::Instant::now(), models));
         Ok(ids)
     }
@@ -2679,10 +2712,19 @@ impl Runtime {
                 if self.window_done(&lane, take).await {
                     return;
                 }
+                // A check that refuses automated browsers: taken in a normal Chrome window, not the panel.
+                if take && self.check_to_window(&lane).await {
+                    return;
+                }
                 self.hub.op(&json!({ "op": "control", "lane": lane, "by": take.then_some("person") }));
             }
             Command::BrowserDialog { page, accept, text } => {
                 self.hub.op(&json!({ "op": "dialog", "page": page, "accept": accept, "text": text }));
+            }
+            // An engine's sign-in page, opened again from its card: as it was,
+            // no login to keep at its end — it is the engine's own.
+            Command::BrowserSignIn { url, .. } if self.engine_pages.values().any(|page| *page == url) => {
+                self.open_engine_page(&url);
             }
             Command::BrowserSignIn { url, window } => {
                 self.start_sign_in(&url, window);
@@ -2692,6 +2734,14 @@ impl Runtime {
                 if page == 0 {
                     let raise = self.windows.handoffs.raise();
                     self.run_window_actions(raise).await;
+                    return;
+                }
+                // A page stopped at a check that refuses automated browsers: bringing up the
+                // automated Chrome's own window wouldn't help — a normal one opens instead.
+                if let Some(lane) = self.lane_of_page(page)
+                    && self.checking.get(&lane).is_some_and(|c| c.0 == page)
+                    && self.check_to_window(&lane).await
+                {
                     return;
                 }
                 self.hub.op(&json!({ "op": "popout", "page": page, "bounds": bounds }));
@@ -3102,7 +3152,7 @@ impl Runtime {
         let task = tokio::spawn(async move {
             let tell = |step| drop(internal.send(Internal::Event(Box::new(Event::SignIn { engine, step }))));
             let end = match codes {
-                None => crate::engines::codex_login(&codex, device, tell).await,
+                None => crate::engines::codex_sign_in(&codex, device, tell, |url| drop(internal.send(Internal::EnginePage(engine, url)))).await,
                 Some(_) if crate::engine_auth::in_login_session() == Some(false) => {
                     let _ = internal.send(Internal::AuthRecheck(engine));
                     SignInStep::Failed { why: SignInFailure::Unsupported, detail: String::new() }
@@ -3220,6 +3270,7 @@ impl Runtime {
             let stopped = std::mem::take(&mut fix.stopped);
             fix.carried_on_at = (!stopped.is_empty()).then_some(now);
             fix.since = None;
+            fix.auto_started = false;
             let mut resumed = 0;
             for stopped in stopped {
                 if self.carry_on_signed_in(&stopped).await {
@@ -3236,11 +3287,23 @@ impl Runtime {
             return;
         }
         (fix.state, fix.detail) = (state, detail);
+        // Signed out with work stopped on it: equipe starts the engine's own
+        // sign-in itself — once for this sign-out, whoever it stopped — rather
+        // than telling the person to run a command. Its page opens in
+        // equipe's own browser; approving there stays the person's.
+        let start = state == AuthState::SignedOut && !fix.stopped.is_empty() && !fix.auto_started && !self.sign_ins.contains_key(&engine);
+        if start {
+            fix.auto_started = true;
+        }
         let event = fix.event(engine);
         let again = !fix.stopped.is_empty()
             && matches!(state, AuthState::KeychainLocked | AuthState::SignedOut | AuthState::Unknown)
             && fix.since.is_some_and(|since| now.saturating_sub(since) < AUTH_WATCH.as_secs());
         self.publish(event);
+        if start {
+            crate::daemon_log!("equipe: {} is signed out here and stopped work: equipe starts its own sign-in, once, for every member it stopped", engine_name(engine));
+            self.sign_in(engine, false);
+        }
         if again {
             let internal = self.internal.clone();
             tokio::spawn(async move {
@@ -3333,6 +3396,90 @@ impl Runtime {
         }
         let event = fix.event(Engine::Claude);
         self.publish(event);
+    }
+
+    /// An engine's own sign-in page, in equipe's own browser on this
+    /// machine — the browser panel of an attached screen, else its Chrome
+    /// window — where the person's web sign-ins usually are already, and
+    /// where the page's last step comes back to the tool's login server. No
+    /// login is kept for the members at its end: it is the engine's.
+    fn open_engine_page(&mut self, url: &str) -> bool {
+        use equipe_protocol::BrowserSignInState as State;
+        let window = !self.hub.has_panel();
+        let host = self.config.npx.clone().and_then(|npx| self.browser_host(&npx));
+        let opened = host.is_some_and(|host| {
+            host.lock()
+                .map(|mut h| {
+                    if window {
+                        h.person(url);
+                    } else {
+                        h.op(&json!({ "op": "newtab", "url": url }));
+                    }
+                })
+                .is_ok()
+        });
+        if opened {
+            self.publish(Event::BrowserSignIn { site: vault::site_of(url), state: State::Opened, window });
+        } else {
+            crate::daemon_log!("equipe: an engine's sign-in page couldn't open in equipe's browser here; its card offers it");
+        }
+        opened
+    }
+
+    // ── a model the Codex account refuses ──
+
+    /// Whether the Codex account refused `model` lately, on the kind of
+    /// account it is signed in with now.
+    fn codex_refuses(&self, model: &str) -> bool {
+        self.codex_refused.get(model).is_some_and(|(at, kind)| now_secs().saturating_sub(*at) < REFUSED_FOR && (kind.is_none() || self.codex_kind.is_none() || *kind == self.codex_kind))
+    }
+
+    /// The model a Codex turn on `model` goes to when the account refuses it:
+    /// never a dearer one — the strongest cheaper family it lists (Sol goes to
+    /// Luna, never up to Astra), else another version of the same family;
+    /// for a model of no known family, the account's default unless that is
+    /// the dearest. None refused lately; `effort` when that model takes it,
+    /// else its own default effort.
+    fn codex_fallback(&self, model: &str, effort: Option<&str>) -> Option<codex_app::Fallback> {
+        let (_, infos) = self.codex_models.as_ref()?;
+        let usable: Vec<&codex_app::ModelInfo> = infos.iter().filter(|m| m.id != model && !self.codex_refuses(&m.id)).collect();
+        let pick = codex_fallback_of(model, &usable)?;
+        let effort = match effort {
+            Some(e) if pick.efforts.is_empty() || pick.efforts.iter().any(|x| x == e) => Some(e.to_owned()),
+            _ => pick.default_effort.clone(),
+        };
+        Some(codex_app::Fallback { model: pick.id.clone(), effort })
+    }
+
+    /// The Codex account refused `model` for a turn of `id`'s: skipped for a
+    /// while (never for good), logged, and — asked again on `instead` — the
+    /// person told in a line; with nothing to fall back on, the run's failure
+    /// is never taken for the engine's limit.
+    fn codex_model_refused(&mut self, id: SessionId, model: String, instead: Option<String>) {
+        let kind = self.codex_kind;
+        if !model.is_empty() {
+            self.codex_refused.insert(model.clone(), (now_secs(), kind));
+        }
+        let who = self.sessions.get(&id).and_then(|s| s.name().map(str::to_owned)).unwrap_or_else(|| "a conversation".to_owned());
+        let account = match kind {
+            Some(codex_app::SignIn::ChatGpt) => "a ChatGPT plan",
+            Some(codex_app::SignIn::ApiKey) => "an API key",
+            _ => "this account",
+        };
+        match instead {
+            Some(instead) => {
+                crate::daemon_log!("equipe: Codex refused {model} for {who}'s turn (model_not_found, on {account}): asked again on {instead}; {model} is skipped for {} min", REFUSED_FOR / 60);
+                let text = say!(self, "news.codex_model_fallback", model = model, instead = instead);
+                self.publish(Event::Notice { undo: None, session: id, text });
+            }
+            None => {
+                crate::daemon_log!("equipe: Codex refused {model} for {who}'s turn (model_not_found, on {account}), with no other model listed to ask; {model} is skipped for {} min", REFUSED_FOR / 60);
+                self.model_refused_turns.insert(id);
+            }
+        }
+        if self.codex_models.is_none() {
+            self.models_asked(Engine::Codex);
+        }
     }
 
     // ── squads ──
@@ -4072,7 +4219,7 @@ runbooks and reports live there, and work across the projects or on running them
             Engine::Codex if codex_cli => {
                 if !on_nebius {
                     match codex_app::login_status(&self.config.codex_binary).await {
-                        Ok(Some(sign_in)) if sign_in.signed_in() => {}
+                        Ok(Some(sign_in)) if sign_in.signed_in() => self.codex_kind = Some(sign_in),
                         // Signed out, nothing else signed in, and a Token Factory key: Nemotron instead of failing.
                         Ok(_) if self.config.nemotron.is_some() && self.nothing_signed_in().await => on_nebius = true,
                         Ok(_) => return fail(self, say!(self, "error.codex_cli_signed_out"), Some("equipe login codex")),
@@ -5399,7 +5546,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 let nebius = session.model.as_deref().is_some_and(crate::nemotron::is_agent_model);
                 let open = if nebius { self.open_config(session.model.as_deref()) } else { Ok(None) };
                 // The provider is asked for the model by its own id.
-                let model = session.model.as_deref().map(|m| crate::model_providers::bare_model(m).to_owned());
+                let mut model = session.model.as_deref().map(|m| crate::model_providers::bare_model(m).to_owned());
                 let provider = match (open, nebius) {
                     (Ok(Some(cfg)), true) => {
                         env.push(cfg.codex_env());
@@ -5411,6 +5558,18 @@ for one project goes to it as tickets for its owners, with that project — and 
                     (_, false) => None,
                 };
                 let provider_name = provider.as_ref().filter(|p| p.id != crate::nemotron::CODEX_PROVIDER).map(|p| p.name.clone());
+                // On the person's own Codex: a model its account refused lately
+                // isn't asked for again yet, and one refused now has another to go to.
+                let mut fallback = None;
+                if provider.is_none() {
+                    if let Some(refused) = model.clone().filter(|m| self.codex_refuses(m))
+                        && let Some(instead) = self.codex_fallback(&refused, effort.as_deref())
+                    {
+                        crate::daemon_log!("equipe: {} asks Codex for {} instead of {refused}, which this account refused lately", session.name().unwrap_or("a conversation"), instead.model);
+                        (model, effort) = (Some(instead.model), instead.effort);
+                    }
+                    fallback = model.as_deref().and_then(|m| self.codex_fallback(m, effort.as_deref()));
+                }
                 // equipe's servers only, as Claude Code gets them: the board's tools
                 // never ask; the browser's and the desktop's ask unless the mode lets them.
                 let servers = match (&squad, &session.member, &self.config.equipe_binary) {
@@ -5521,7 +5680,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                     if let Some(port) = browser {
                         browser::ready(port, Duration::from_secs(90)).await;
                     }
-                    let controls = codex_app::Controls { steering: Some(steer_rx), asks: Some(ask_tx), stop: Some(stop_rx), stop_subagent: Some(stop_sub_rx), ..Default::default() };
+                    let controls = codex_app::Controls { steering: Some(steer_rx), asks: Some(ask_tx), stop: Some(stop_rx), stop_subagent: Some(stop_sub_rx), fallback, ..Default::default() };
                     let outcome = codex_app::run_turn_with(&binary, &cwd, request, controls, |activity| {
                         if matches!(activity, Activity::Text(_)) {
                             streamed = true;
@@ -5541,6 +5700,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                             Activity::Settled(why) => {
                                 let _ = internal.send(Internal::TurnSettled { session: id, why });
                             }
+                            Activity::ModelRefused { model, instead } => {
+                                let _ = internal.send(Internal::CodexModelRefused { session: id, model, instead: Some(instead) });
+                            }
                             activity => {
                                 if let Some(event) = activity_event(id, activity) {
                                     emit(event);
@@ -5549,6 +5711,15 @@ for one project goes to it as tickets for its owners, with that project — and 
                         }
                     })
                     .await;
+                    // Refused with nothing to fall back on: said before the turn's end, so its
+                    // failure is never taken for the engine's limit.
+                    if let Err(equipe_providers::Error::Backend { message, code }) = &outcome
+                        && let Some(refused) = codex_app::refused_model(message, code.as_deref())
+                        && !nebius
+                    {
+                        let refused = if refused.is_empty() { model.clone().unwrap_or_default() } else { refused };
+                        let _ = internal.send(Internal::CodexModelRefused { session: id, model: refused, instead: None });
+                    }
                     // On Token Factory: what was asked of it, for the log — never the key or the text.
                     if let (true, Ok(turn)) = (nebius, &outcome) {
                         crate::daemon_log!("{}", nebius_log(model.as_deref().unwrap_or_default(), turn));
@@ -6710,8 +6881,14 @@ for one project goes to it as tickets for its owners, with that project — and 
         }
         // Brand work, and only it, takes the designer's full reference pass.
         let designer = self.sessions.get(&id).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role == design_qa::DESIGNER);
-        if designer && crate::design::brand::is_branding(&ticket.title, &ticket.body) {
+        let branding = crate::design::brand::is_branding(&ticket.title, &ticket.body);
+        if designer && branding {
             prompt.push_str(&crate::design::brand::note(board_tools));
+        }
+        // A project that inherits a brand: its system is the brand's, changed only on a brand ticket.
+        let member = self.sessions.get(&id).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role != crate::roles::PM);
+        if member && let Some(note) = crate::design::inherit::prompt_note(&self.config.home.join(crate::design::inherit::DIR), &sandbox.as_ref().map_or_else(|| project.clone(), |s| within(s, &project)).join(crate::design::DIR), branding) {
+            prompt.push_str(&note);
         }
         if let Some(plan) = &ticket.plan {
             let repo = ticket.project.as_deref().filter(|_| !Path::new(plan).is_absolute());
@@ -8036,6 +8213,18 @@ there, end your turn, and carry on when they say they're done."
         // anywhere — its own screenshots in the temp folder, another project —
         // without asking. Credentials still ask.
         let auto = self.sessions.get(&id).is_some_and(|s| s.mode.unwrap_or(squad_mode) == Mode::Auto);
+        // A squad project checked out beside its repository into the member's own
+        // temporary folder: it writes only the project's `.git/worktrees/` and that
+        // folder, which the fence can't open without opening the project, so it runs
+        // outside it, exactly as given back (hooks off), without asking.
+        if auto && tool == "Bash" && let Some(command) = self.project_checkout(id, &call.squad, &input) {
+            let mut input = input.clone();
+            input["command"] = json!(command);
+            input["dangerouslyDisableSandbox"] = json!(true);
+            self.audit(&call.squad, ticket, "equipe", "allowed", &command);
+            let _ = reply.send(verdict(Decision::Allow, &input, ""));
+            return;
+        }
         if auto && permissions::only_reads(&tool, &action, &input) {
             let _ = reply.send(verdict(Decision::Allow, &input, ""));
             return;
@@ -8057,6 +8246,16 @@ there, end your turn, and carry on when they say they're done."
             tokio::time::sleep(APPROVAL_WAIT).await;
             let _ = internal.send(Internal::ApprovalTimedOut(approval_id));
         });
+    }
+
+    /// The command to run for a member's shell call that checks out one of
+    /// its squad's projects beside the repository into its own temporary
+    /// folder ([`permissions::project_checkout`]); `None` for anything else.
+    fn project_checkout(&self, id: SessionId, squad: &str, input: &Value) -> Option<String> {
+        let session = self.sessions.get(&id)?;
+        let command = input.get("command").and_then(Value::as_str)?;
+        let tmp = journal::lane_tmp_dir(&self.config.home, squad, session.work.as_ref().map(|w| w.ticket), session.name()?);
+        permissions::project_checkout(command, &self.projects_cached(squad), &tmp)
     }
 
     /// What equipe refuses a member whatever its mode or the person's rules:
@@ -8770,12 +8969,14 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 }
                 let pages: Vec<equipe_protocol::BrowserPage> = pages.into_iter().map(browser::HostPage::page).collect();
                 // The person's window, or the browser coming back from it: no check to ask about.
-                if !self.windows.handoffs.busy_lane(&lane) && !self.windows.views.holds(&lane) {
-                    self.watch_checks(&lane, session, &pages, agent);
-                }
+                let follow = if !self.windows.handoffs.busy_lane(&lane) && !self.windows.views.holds(&lane) { self.watch_checks(&lane, session, &pages, agent) } else { None };
                 let event = Event::BrowserTabs { squad, lane: lane.clone(), session, member, color, pages, agent_page: agent };
                 self.tabs.insert(lane, event.clone());
                 self.publish(event);
+                // After its tabs are told: a window that follows closes the browser they show.
+                if let Some(follow) = follow {
+                    self.check_follow(follow).await;
+                }
             }
             HostEvent::Control { lane, by, refused } => {
                 let (squad, session) = self.lane_session(&lane);
@@ -8919,20 +9120,33 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
     /// sign-in, a code from their phone: its browser goes into the person's
     /// hands (its tools wait, and say why), and the person is told. Passed
     /// before they put a hand on it, it goes back to its member by itself.
-    fn watch_checks(&mut self, lane: &str, session: Option<SessionId>, pages: &[equipe_protocol::BrowserPage], agent: Option<u64>) {
+    ///
+    /// A check the person answers by clicking goes to a normal Chrome window
+    /// once they reach for it (`window::check_to_window`); what follows here:
+    /// that window again at once when it came back right after they passed it
+    /// there, and no more rounds after that.
+    fn watch_checks(&mut self, lane: &str, session: Option<SessionId>, pages: &[equipe_protocol::BrowserPage], agent: Option<u64>) -> Option<window::CheckFollow> {
         if lane.is_empty() {
-            return;
+            return None;
         }
         // equipe is signing it in by itself: what its pages say waits for that.
         if self.relogins.contains_key(lane) {
-            return;
+            return None;
         }
         let let_go = |page: u64, url: &str| self.let_go.contains(&(lane.to_owned(), page, url.to_owned()));
         match browser::check_step(pages, agent, self.checking.contains_key(lane), self.held.contains_key(lane), let_go) {
             browser::CheckStep::Pause { page, url, check } => {
                 // A sign-in, a code or a passkey the person lets equipe do by itself: no one is asked.
                 if self.try_autopilot(lane, page, &url, check) {
-                    return;
+                    return None;
+                }
+                let round = self.check_round(&url, check);
+                // Passed twice in the person's window and back again: the site refuses this
+                // browser. Not the person's again — its member does without the site.
+                if round == crate::window_handoff::CheckRound::GiveUp {
+                    let site = vault::site_of(&url);
+                    self.let_go.insert((lane.to_owned(), page, url));
+                    return Some(window::CheckFollow::GiveUp(lane.to_owned(), site));
                 }
                 self.hub.op(&json!({ "op": "control", "lane": lane, "by": "person", "why": "check", "page": page }));
                 // Kept with its cause — or, the person on the same sign-in for
@@ -8944,12 +9158,22 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     self.publish(Event::Notice { undo: None, session, text });
                 }
                 self.checking.insert(lane.to_owned(), (page, url, check));
+                (round == crate::window_handoff::CheckRound::Again).then(|| window::CheckFollow::Window(lane.to_owned()))
             }
             browser::CheckStep::Release => {
                 self.hub.op(&json!({ "op": "control", "lane": lane, "by": null, "ifUntouched": true }));
+                None
             }
-            browser::CheckStep::Nothing => {}
+            browser::CheckStep::Nothing => None,
         }
+    }
+
+    /// The member lane a tab of the shared Chrome is in, as last told.
+    fn lane_of_page(&self, page: u64) -> Option<String> {
+        self.tabs.iter().find_map(|(lane, tabs)| match tabs {
+            Event::BrowserTabs { pages, .. } if !lane.is_empty() && pages.iter().any(|p| p.id == page) => Some(lane.clone()),
+            _ => None,
+        })
     }
 
     /// The person closed a tab of a member's browser: its member is told —
@@ -10159,11 +10383,17 @@ check what is already done in your worktree first."
             .collect();
         let keep: Vec<u32> = self.commands.engine_pids();
         let squads: Vec<String> = self.journals.keys().cloned().collect();
-        let mut repos: Vec<PathBuf> = squads.iter().flat_map(|s| self.projects(s)).collect();
+        let by_squad: Vec<(String, Vec<PathBuf>)> = squads.iter().map(|s| (s.clone(), self.projects(s))).collect();
+        let mut repos: Vec<PathBuf> = by_squad.iter().flat_map(|(_, p)| p.iter().cloned()).collect();
         repos.sort();
         repos.dedup();
         std::thread::spawn(move || {
             for line in crate::disk::tidy_lane_tmp(&home, &open, &keep) {
+                crate::daemon_log!("equipe: {line}");
+            }
+            // A desk's full copy of a project (a deploy's `cp -R` or clone):
+            // named once, so it shows why a worktree would have done.
+            for line in crate::disk::warn_desk_clones(&home, &by_squad) {
                 crate::daemon_log!("equipe: {line}");
             }
             for line in crate::disk::clear_git_garbage(&repos) {
@@ -11059,7 +11289,7 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
         Activity::Plan { five_hour, seven_day } => Event::PlanUsage { usage: claude_plan(five_hour, seven_day), engine: Engine::Claude },
         Activity::Limits(_) => return None,
         // The loop's to know, never a screen's: sent apart by the turn.
-        Activity::Engine { .. } | Activity::Spent(_) | Activity::SubagentHeard { .. } | Activity::Settled(_) => return None,
+        Activity::Engine { .. } | Activity::Spent(_) | Activity::SubagentHeard { .. } | Activity::Settled(_) | Activity::ModelRefused { .. } => return None,
     })
 }
 
@@ -11089,8 +11319,13 @@ fn codex_plan(limits: &equipe_providers::turn::Limits) -> equipe_protocol::PlanU
 fn codex_cli_failure(err: equipe_providers::Error, lang: crate::i18n::Lang) -> (String, Option<&'static str>) {
     match &err {
         equipe_providers::Error::CodexSignedOut => (crate::i18n::core(lang).get("error.codex_cli_signed_out").to_owned(), Some(crate::engine_auth::CODEX_HINT)),
-        equipe_providers::Error::Login(_) => (err.to_string(), Some("equipe status")),
-        _ => (err.to_string(), None),
+        equipe_providers::Error::Login(_) => (codex_app::plain_message(&err.to_string()), Some("equipe status")),
+        // A model the account refused: a line in the person's words, never the provider's JSON.
+        equipe_providers::Error::Backend { message, code } if codex_app::refused_model(message, code.as_deref()).is_some() => {
+            let model = codex_app::refused_model(message, code.as_deref()).filter(|m| !m.is_empty()).unwrap_or_else(|| "?".to_owned());
+            (crate::i18n::core(lang).fill("error.codex_model_refused", &[("model", model)]), None)
+        }
+        _ => (codex_app::plain_message(&err.to_string()), None),
     }
 }
 
@@ -11130,6 +11365,24 @@ fn nebius_failure(err: equipe_providers::Error, provider: Option<&str>, lang: cr
     codex_cli_failure(err, lang)
 }
 
+/// Of the models `usable`, the one a turn refused on `model` goes to — never
+/// a dearer one ([`Runtime::codex_fallback`]).
+fn codex_fallback_of<'a>(model: &str, usable: &[&'a codex_app::ModelInfo]) -> Option<&'a codex_app::ModelInfo> {
+    const FAMILIES: [&str; 3] = ["luna", "sol", "astra"];
+    let ids = |keep: &dyn Fn(Option<u8>) -> bool| -> Vec<String> { usable.iter().filter(|m| keep(crate::tiers::model_rank(Engine::Codex, &m.id))).map(|m| m.id.clone()).collect() };
+    let find = |id: Option<String>| id.and_then(|id| usable.iter().find(|m| m.id == id).copied());
+    match crate::tiers::model_rank(Engine::Codex, model) {
+        Some(rank) => {
+            let cheaper: Vec<&str> = FAMILIES[..usize::from(rank)].iter().rev().copied().collect();
+            find(roles::codex_family(&ids(&|r| r.is_some_and(|r| r < rank)), &cheaper)).or_else(|| find(roles::codex_family(&ids(&|r| r == Some(rank)), &[FAMILIES[usize::from(rank)]])))
+        }
+        None => {
+            let top = FAMILIES.len() as u8 - 1;
+            usable.iter().copied().filter(|m| crate::tiers::model_rank(Engine::Codex, &m.id) != Some(top)).find(|m| m.default).or_else(|| usable.iter().copied().find(|m| crate::tiers::model_rank(Engine::Codex, &m.id).is_some_and(|r| r < top)))
+        }
+    }
+}
+
 /// An engine whose lost sign-in stopped turns here, and its fix.
 #[derive(Debug)]
 struct AuthFix {
@@ -11145,11 +11398,15 @@ struct AuthFix {
     carried_on_at: Option<u64>,
     /// Since when turns have waited (unix seconds): looked at again for [`AUTH_WATCH`].
     since: Option<u64>,
+    /// equipe started the engine's own sign-in itself for this sign-out:
+    /// once, for every member and lane it stopped; again only when the
+    /// person asks, or after it signed in and was lost again.
+    auto_started: bool,
 }
 
 impl Default for AuthFix {
     fn default() -> Self {
-        Self { state: AuthState::Checking, detail: String::new(), stopped: Vec::new(), checking: false, carried_on_at: None, since: None }
+        Self { state: AuthState::Checking, detail: String::new(), stopped: Vec::new(), checking: false, carried_on_at: None, since: None, auto_started: false }
     }
 }
 
@@ -11332,6 +11589,21 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_codex_model_falls_back_to_a_cheaper_one_never_a_dearer_one() {
+        let info = |id: &str, default: bool| codex_app::ModelInfo { id: id.into(), default, ..Default::default() };
+        let listed = [info("gpt-6.1-sol", true), info("gpt-6-astra", false), info("gpt-6.1-terra", false), info("gpt-6-sol", false), info("gpt-6-luna", false), info("gpt-5.6-luna", false)];
+        let usable = |refused: &str| -> Vec<&codex_app::ModelInfo> { listed.iter().filter(|m| m.id != refused).collect() };
+        let pick = |refused: &str| codex_fallback_of(refused, &usable(refused)).map(|m| m.id.clone());
+        assert_eq!(pick("gpt-6.1-sol").as_deref(), Some("gpt-6-luna"), "Sol refused: the newest Luna, never Astra");
+        assert_eq!(pick("gpt-6-astra").as_deref(), Some("gpt-6.1-sol"), "Astra refused: the strongest cheaper family");
+        let no_luna: Vec<&codex_app::ModelInfo> = listed.iter().filter(|m| !m.id.contains("luna") && m.id != "gpt-6.1-sol").collect();
+        assert_eq!(codex_fallback_of("gpt-6.1-sol", &no_luna).map(|m| m.id.as_str()), Some("gpt-6-sol"), "no cheaper one: the same family's other version");
+        let only_astra = [&listed[1]];
+        assert!(codex_fallback_of("gpt-6.1-sol", &only_astra).is_none(), "never up to a dearer model");
+        assert_eq!(pick("gpt-6.1-terra").as_deref(), Some("gpt-6.1-sol"), "no known family: the account's default, unless it is the dearest");
+    }
 
     #[test]
     fn a_browser_handed_back_says_the_person_finished_where_the_page_is_and_to_look_itself() {

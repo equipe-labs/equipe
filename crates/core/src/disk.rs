@@ -1415,7 +1415,12 @@ pub fn clear_ticket_tmp(home: &Path, squad: &str, id: TicketId, keep: &[u32]) ->
 pub fn tidy_lane_tmp(home: &Path, open: &[(String, Vec<TicketId>)], keep: &[u32]) -> Vec<String> {
     off_the_loop("disk::tidy_lane_tmp");
     let low = volume(home).is_some_and(|(_, free, total)| level_at(free, total, 100) >= DiskLevel::Low);
-    let desk_idle = if low { DESK_TMP_IDLE_LOW } else { DESK_TMP_IDLE };
+    tidy_lane_tmp_with(home, open, keep, if low { DESK_TMP_IDLE_LOW } else { DESK_TMP_IDLE })
+}
+
+/// [`tidy_lane_tmp`] with what a desk's entry must stand untouched for
+/// before it goes given, not read off the volume.
+fn tidy_lane_tmp_with(home: &Path, open: &[(String, Vec<TicketId>)], keep: &[u32], desk_idle: Duration) -> Vec<String> {
     let mut done = Vec::new();
     for (squad, tickets) in open {
         let root = home.join("tmp").join(squad);
@@ -1469,6 +1474,123 @@ fn tidy_desk(home: &Path, desk: &Path, keep: &[u32], idle: Duration) -> Vec<Stri
         }
     }
     done
+}
+
+/// Full checkouts already warned about, so each is named once a daemon run.
+static DESK_CLONES_WARNED: std::sync::Mutex<std::collections::BTreeSet<PathBuf>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// A full git checkout (its own `.git` directory, not a worktree's `.git`
+/// file) in a member's desk folder that is a copy or a clone of one of its
+/// squad's projects — same origin, or the same root commit: a warning naming
+/// it, the first time it is seen. A copy of a big repository is gigabytes
+/// where a worktree costs next to nothing. Nothing is removed here: the idle
+/// rules of [`tidy_lane_tmp`] still decide that. `projects` is, for each
+/// squad, its projects.
+pub fn warn_desk_clones(home: &Path, projects: &[(String, Vec<PathBuf>)]) -> Vec<String> {
+    off_the_loop("disk::warn_desk_clones");
+    let mut warned = DESK_CLONES_WARNED.lock().unwrap_or_else(|e| e.into_inner());
+    desk_clones(home, projects, &mut warned)
+}
+
+fn desk_clones(home: &Path, projects: &[(String, Vec<PathBuf>)], seen: &mut std::collections::BTreeSet<PathBuf>) -> Vec<String> {
+    let mut done = Vec::new();
+    for (squad, repos) in projects {
+        if repos.is_empty() {
+            continue;
+        }
+        let mut roots: Vec<Option<Vec<String>>> = vec![None; repos.len()];
+        let desks = std::fs::read_dir(home.join("tmp").join(squad)).into_iter().flatten().flatten();
+        let mut desks: Vec<PathBuf> = desks.filter(|e| e.file_type().is_ok_and(|t| t.is_dir()) && lane_tmp_ticket(&e.file_name().to_string_lossy()).is_none()).map(|e| e.path()).collect();
+        desks.sort();
+        for desk in desks {
+            for checkout in full_checkouts(&desk) {
+                if !seen.insert(checkout.clone()) {
+                    continue;
+                }
+                let origin = origin_url(&checkout.join(".git"));
+                let mut copy_of = repos.iter().find(|repo| {
+                    origin.as_deref().is_some_and(|url| {
+                        origin_url(&repo.join(".git")).is_some_and(|theirs| same_remote(url, &theirs)) || same_remote(url, &repo.to_string_lossy())
+                    })
+                });
+                if copy_of.is_none() {
+                    let mine = root_commits(&checkout);
+                    for (i, repo) in repos.iter().enumerate() {
+                        let theirs = roots[i].get_or_insert_with(|| root_commits(repo));
+                        if mine.iter().any(|c| theirs.contains(c)) {
+                            copy_of = Some(repo);
+                            break;
+                        }
+                    }
+                }
+                if let Some(repo) = copy_of {
+                    done.push(format!(
+                        "warning: {} is a full copy of {} in a desk's temporary folder — `git -C {} worktree add --detach <path> <ref>` shares the repository instead",
+                        checkout.display(),
+                        repo.display(),
+                        repo.display()
+                    ));
+                }
+            }
+        }
+    }
+    done
+}
+
+/// Directories in `desk`, or one level below, with a `.git` directory of
+/// their own — not followed through links, nor searched inside.
+fn full_checkouts(desk: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![(desk.to_owned(), 0)];
+    while let Some((dir, depth)) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let path = entry.path();
+            if std::fs::symlink_metadata(path.join(".git")).is_ok_and(|m| m.is_dir()) {
+                found.push(path);
+            } else if depth < 1 {
+                stack.push((path, depth + 1));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// The `origin` remote's URL in a repository's `.git` directory, read from
+/// its config.
+fn origin_url(git_dir: &Path) -> Option<String> {
+    let config = std::fs::read_to_string(git_dir.join("config")).ok()?;
+    let mut in_origin = false;
+    for line in config.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_origin = line.split_whitespace().collect::<String>() == "[remote\"origin\"]";
+        } else if in_origin && let Some((key, value)) = line.split_once('=') && key.trim() == "url" {
+            return Some(value.trim().to_owned());
+        }
+    }
+    None
+}
+
+/// Whether two remotes name the same repository, however written: https or
+/// ssh, with or without a user or `.git`, or a local path.
+fn same_remote(a: &str, b: &str) -> bool {
+    fn plain(url: &str) -> String {
+        let url = url.trim().trim_end_matches('/').to_ascii_lowercase();
+        let url = url.strip_suffix(".git").unwrap_or(&url);
+        let url = url.split_once("://").map_or(url, |(_, rest)| rest);
+        let url = url.rsplit_once('@').map_or(url, |(_, rest)| rest);
+        url.trim_end_matches('/').replacen(':', "/", 1)
+    }
+    let (a, b) = (plain(a), plain(b));
+    !a.is_empty() && a == b
+}
+
+/// A repository's root commits (none where git can't say).
+fn root_commits(repo: &Path) -> Vec<String> {
+    git_in(repo, &["rev-list", "--max-parents=0", "HEAD"]).map(|out| out.lines().map(str::to_owned).collect()).unwrap_or_default()
 }
 
 /// Packs git began and never finished (`.git/objects/pack/tmp_pack_*`, from
@@ -2427,7 +2549,7 @@ mod tests {
         aged(&dir("acme", "frontend"), 2);
         // acme has T-2 open; beta has T-1 open and T-2 not; `gone` isn't known: left alone.
         let open = vec![("acme".to_owned(), vec![2]), ("beta".to_owned(), vec![1])];
-        let done = tidy_lane_tmp(&tree.home, &open, &[]);
+        let done = tidy_lane_tmp_with(&tree.home, &open, &[], DESK_TMP_IDLE);
         assert_eq!(done.iter().filter(|l| l.starts_with("removed ")).count(), 4, "{done:?}");
         for (squad, name, kept) in [
             ("acme", "t1", false),
@@ -2441,7 +2563,7 @@ mod tests {
         ] {
             assert_eq!(dir(squad, name).exists(), kept, "{squad}/{name}");
         }
-        assert!(tidy_lane_tmp(&tree.home, &open, &[]).is_empty());
+        assert!(tidy_lane_tmp_with(&tree.home, &open, &[], DESK_TMP_IDLE).is_empty());
     }
 
     #[test]
@@ -2455,10 +2577,70 @@ mod tests {
         aged(&desk.join("web-deploy-old"), 30);
         let old_log = std::fs::File::open(desk.join("old.log")).unwrap();
         old_log.set_modified(std::time::SystemTime::now() - Duration::from_secs(30 * 3600)).unwrap();
-        let done = tidy_lane_tmp(&tree.home, &[("acme".to_owned(), Vec::new())], &[]);
+        let done = tidy_lane_tmp_with(&tree.home, &[("acme".to_owned(), Vec::new())], &[], DESK_TMP_IDLE);
         assert_eq!(done.iter().filter(|l| l.starts_with("removed ")).count(), 2, "{done:?}");
         assert!(!desk.join("web-deploy-old").exists() && !desk.join("old.log").exists(), "a day untouched: given back");
         assert!(desk.join("web-deploy-new").join("blob").exists(), "in use: kept, and the desk with it");
+    }
+
+    #[test]
+    fn while_the_disk_is_low_a_desk_gives_back_what_it_left_untouched_for_an_hour() {
+        let tree = Tree::new();
+        let desk = tree.home.join("tmp").join("acme").join("pm");
+        for name in ["two-hours", "half-an-hour"] {
+            fill(&desk.join(name), 100);
+        }
+        aged(&desk.join("two-hours"), 2);
+        let at = std::time::SystemTime::now() - Duration::from_secs(30 * 60);
+        std::fs::File::open(desk.join("half-an-hour").join("blob")).unwrap().set_modified(at).unwrap();
+        std::fs::File::open(desk.join("half-an-hour")).unwrap().set_modified(at).unwrap();
+        let open = [("acme".to_owned(), Vec::new())];
+        assert!(tidy_lane_tmp_with(&tree.home, &open, &[], DESK_TMP_IDLE).is_empty(), "a day's rule: both stay");
+        let done = tidy_lane_tmp_with(&tree.home, &open, &[], DESK_TMP_IDLE_LOW);
+        assert_eq!(done.iter().filter(|l| l.starts_with("removed ")).count(), 1, "{done:?}");
+        assert!(!desk.join("two-hours").exists() && desk.join("half-an-hour").join("blob").exists(), "low: an hour untouched goes, the rest stays");
+    }
+
+    #[test]
+    fn a_desks_full_copy_of_a_project_is_named_once_and_a_worktree_or_another_repo_is_not() {
+        let tree = Tree::new();
+        git(&tree.repo, &["remote", "add", "origin", "https://github.com/acme/site.git"]);
+        let desk = tree.home.join("tmp").join("acme").join("pm");
+        std::fs::create_dir_all(desk.join("deploy-1")).unwrap();
+        let clone = |to: &Path| git(&tree.home, &["clone", "-q", "--no-hardlinks", &tree.repo.to_string_lossy(), &to.to_string_lossy()]);
+        // A clone from the network, by another spelling of the same remote.
+        clone(&desk.join("net"));
+        git(&desk.join("net"), &["remote", "set-url", "origin", "git@github.com:Acme/site"]);
+        // A local clone: its origin is the project's path.
+        clone(&desk.join("deploy-1").join("site"));
+        // A copy whose origin is gone: the same root commit.
+        clone(&desk.join("bare-copy"));
+        git(&desk.join("bare-copy"), &["remote", "remove", "origin"]);
+        // Not copies: another repository, a worktree, a ticket's own folder.
+        std::fs::create_dir_all(desk.join("other")).unwrap();
+        git(&desk.join("other"), &["init", "-q"]);
+        git(&desk.join("other"), &["remote", "add", "origin", "https://github.com/acme/other.git"]);
+        git(&tree.repo, &["worktree", "add", "-q", "--detach", &desk.join("wt").to_string_lossy(), "main"]);
+        clone(&tree.home.join("tmp").join("acme").join("t5").join("site"));
+        let projects = vec![("acme".to_owned(), vec![tree.repo.clone()])];
+        let mut seen = std::collections::BTreeSet::new();
+        let done = desk_clones(&tree.home, &projects, &mut seen);
+        let named = |name: &str| done.iter().filter(|l| l.contains(&format!("{} is a full copy", desk.join(name).display()))).count();
+        assert_eq!(done.len(), 3, "{done:?}");
+        for name in ["net", "deploy-1/site", "bare-copy"] {
+            assert_eq!(named(name), 1, "{name}: {done:?}");
+        }
+        assert!(done.iter().all(|l| l.starts_with("warning: ") && l.contains("worktree add --detach")), "{done:?}");
+        assert!(desk_clones(&tree.home, &projects, &mut seen).is_empty(), "named the first time only");
+        assert!(desk.join("net").join(".git").is_dir(), "nothing removed");
+    }
+
+    #[test]
+    fn remotes_compare_however_written() {
+        assert!(same_remote("https://github.com/acme/web.git", "git@github.com:acme/web"));
+        assert!(same_remote("https://x-access-token:abc@github.com/Acme/web/", "ssh://git@github.com/acme/web.git"));
+        assert!(!same_remote("https://github.com/acme/web", "https://github.com/acme/web-old"));
+        assert!(!same_remote("", ""));
     }
 
     #[test]

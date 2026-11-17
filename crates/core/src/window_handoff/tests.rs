@@ -485,3 +485,32 @@ fn the_persons_window_keeps_the_sessions_sign_ins_as_the_automated_browser_does(
     assert_eq!(std::fs::read_to_string(&prefs).unwrap(), "not json", "a file that isn't Chrome's is left as it was");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_check_that_refuses_automated_browsers_goes_to_the_persons_window_twice_at_most() {
+    use equipe_protocol::HumanCheck;
+    // Only a check answered by clicking needs a browser nothing drives; a sign-in or a code doesn't.
+    assert!(needs_real_browser(HumanCheck::Challenge) && needs_real_browser(HumanCheck::Captcha));
+    assert!(!needs_real_browser(HumanCheck::SignIn) && !needs_real_browser(HumanCheck::TwoFactor));
+
+    let t0 = Instant::now();
+    let mut r = CheckRounds::default();
+    // First: the card, and the person's hand opens the window.
+    assert_eq!(r.step(t0, "claude.ai"), CheckRound::Ask);
+    r.began(t0, "claude.ai");
+    // Back right after the automated browser came back to it: the window once more, by itself.
+    let back = t0 + Duration::from_secs(40);
+    assert_eq!(r.step(back, "claude.ai"), CheckRound::Again);
+    assert_eq!(r.step(back, "example.com"), CheckRound::Ask, "another site is another matter");
+    r.began(back, "claude.ai");
+    // Back again: no loop — the member does without the site, told once per lane.
+    let again = back + Duration::from_secs(40);
+    assert_eq!(r.step(again, "claude.ai"), CheckRound::GiveUp);
+    assert!(r.tell("acme/designer", "claude.ai"));
+    assert!(!r.tell("acme/designer", "claude.ai"), "told once");
+    assert!(r.tell("acme/qa", "claude.ai"), "each member is told for itself");
+    // Long after, the site gets a fresh start, and its members may be told again.
+    let later = again + CHECK_ROUNDS_FOR;
+    assert_eq!(r.step(later, "claude.ai"), CheckRound::Ask);
+    assert!(r.tell("acme/designer", "claude.ai"));
+}

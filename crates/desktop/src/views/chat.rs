@@ -1340,7 +1340,8 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
                     .child(div().h(px(BODY_LINE)).flex().items_center().flex_none().child(icon(Icon::Alert, ICON_SM, rows.tones.danger)))
                     .child(div().min_w_0().font_weight(FontWeight::SEMIBOLD).child(SelectableText::new(("error", key), message.clone()))),
             )
-            .children(next.clone().map(|next| {
+            // A lost sign-in's hint is a command for an older screen: equipe signs in itself.
+            .children(next.clone().filter(|n| equipe_core::engine_auth::lost_by(Some(n)).is_none()).map(|next| {
                 h_flex().gap_2().pl(px(22.)).text_size(px(SMALL)).child(div().text_color(p.muted).child("→")).child(div().font_family(MONO).font_weight(FontWeight::SEMIBOLD).child(SelectableText::new(("error-next", key), next)))
             }))
             .into_any_element(),

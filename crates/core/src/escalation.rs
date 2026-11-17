@@ -65,6 +65,7 @@ pub fn level(s: &NotifySettings, impact: &Impact, waited: u64) -> u8 {
 }
 
 /// The offset of the machine's own time zone from UTC at `now`, in seconds.
+#[cfg(unix)]
 pub fn local_utc_offset(now: u64) -> i32 {
     let at = now as libc::time_t;
     // SAFETY: `tm` is plain data that `localtime_r` fills in; both pointers are valid for the call.
@@ -72,6 +73,33 @@ pub fn local_utc_offset(now: u64) -> i32 {
         let mut tm: libc::tm = std::mem::zeroed();
         if libc::localtime_r(&at, &mut tm).is_null() { 0 } else { tm.tm_gmtoff as i32 }
     }
+}
+
+/// The offset of the machine's own time zone from UTC, in seconds. Windows
+/// tells it for the moment it is asked (standard or daylight time as it is
+/// now), not for any `now`.
+#[cfg(windows)]
+pub fn local_utc_offset(_now: u64) -> i32 {
+    use windows_sys::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
+    const STANDARD: u32 = 1; // TIME_ZONE_ID_STANDARD
+    const DAYLIGHT: u32 = 2; // TIME_ZONE_ID_DAYLIGHT
+    let mut info = TIME_ZONE_INFORMATION::default();
+    // SAFETY: `info` is plain data that `GetTimeZoneInformation` fills in.
+    let id = unsafe { GetTimeZoneInformation(&mut info) };
+    // UTC = local time + bias, in minutes.
+    let bias = match id {
+        STANDARD => info.Bias + info.StandardBias,
+        DAYLIGHT => info.Bias + info.DaylightBias,
+        u32::MAX => return 0, // TIME_ZONE_ID_INVALID
+        _ => info.Bias,
+    };
+    -bias * 60
+}
+
+/// No time zone to read elsewhere: UTC.
+#[cfg(not(any(unix, windows)))]
+pub fn local_utc_offset(_now: u64) -> i32 {
+    0
 }
 
 /// The minute of the day (0–1439) at `now` for someone `offset` seconds from UTC.

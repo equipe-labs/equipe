@@ -322,6 +322,31 @@ pub async fn codex_login(binary: &str, device: bool, tell: impl Fn(SignInStep)) 
     }
 }
 
+/// Sign Codex in with its own sign-in over its app-server, as its IDE
+/// extension does ([`codex_app::login`]): no browser opens by itself —
+/// `page` gets the page, for equipe to open in its own browser on this
+/// machine, where the login server Codex started catches its last step
+/// (`device`: a page and a code for a browser anywhere, told to the screens).
+/// An older Codex without it signs in with its command line ([`codex_login`]).
+pub async fn codex_sign_in(binary: &str, device: bool, tell: impl Fn(SignInStep), page: impl FnOnce(String)) -> SignInStep {
+    use equipe_providers::codex_app::{self, LoginEnd, LoginPage};
+    let cwd = std::env::temp_dir();
+    let shown = |p: LoginPage| match p {
+        LoginPage::Browser { url } => {
+            tell(SignInStep::Browser { url: Some(url.clone()) });
+            page(url);
+        }
+        LoginPage::DeviceCode { url, code } => tell(SignInStep::DeviceCode { url, code }),
+    };
+    match codex_app::login(binary, &cwd, device, SIGN_IN_WAIT, shown).await {
+        LoginEnd::SignedIn => SignInStep::Done,
+        LoginEnd::Expired => SignInStep::Failed { why: SignInFailure::Expired, detail: String::new() },
+        LoginEnd::Failed(detail) if detail.contains("not installed") => SignInStep::Failed { why: SignInFailure::NotInstalled, detail: String::new() },
+        LoginEnd::Failed(detail) => SignInStep::Failed { why: SignInFailure::Failed, detail: short(&detail) },
+        LoginEnd::Unsupported => codex_login(binary, device, tell).await,
+    }
+}
+
 /// `codex logout`: the tool forgets its own login.
 pub async fn codex_logout(binary: &str) -> Result<(), String> {
     let run = Command::new(equipe_providers::tools_path::resolved(binary)).arg("logout").stdin(Stdio::null()).kill_on_drop(true).output();
@@ -474,6 +499,25 @@ mod tests {
         store.save(&cred).unwrap();
         let out = codex(&script(&dir, "codex", "echo 'Not logged in' >&2; exit 1"), &store).await;
         assert_eq!((out.state, out.legacy), (EngineState::SignedOut, true));
+    }
+
+    #[tokio::test]
+    async fn codex_signs_in_over_its_app_server_and_hands_the_page_to_equipe_not_a_browser() {
+        // The stand-in Codex the providers' tests speak to: its own sign-in completes at once.
+        let fake = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../providers/tests/fake-codex/codex");
+        let told = std::sync::Mutex::new(Vec::new());
+        let page = std::sync::Mutex::new(None);
+        let end = codex_sign_in(fake.to_str().unwrap(), false, |step| told.lock().unwrap().push(step), |url| *page.lock().unwrap() = Some(url)).await;
+        assert_eq!(end, SignInStep::Done);
+        let url = page.into_inner().unwrap().expect("the page goes to equipe's browser");
+        assert!(url.starts_with("https://auth.openai.com/oauth/authorize"), "{url}");
+        assert_eq!(*told.lock().unwrap(), vec![SignInStep::Browser { url: Some(url) }], "the screens see the page too");
+        // From another Mac: a code for the screens, no page for equipe's browser.
+        let page = std::sync::Mutex::new(None::<String>);
+        let told = std::sync::Mutex::new(Vec::new());
+        assert_eq!(codex_sign_in(fake.to_str().unwrap(), true, |step| told.lock().unwrap().push(step), |url| *page.lock().unwrap() = Some(url)).await, SignInStep::Done);
+        assert!(page.into_inner().unwrap().is_none());
+        assert!(matches!(&told.lock().unwrap()[..], [SignInStep::DeviceCode { code, .. }] if code == "ABCD-EFGH2"));
     }
 
     #[tokio::test]
