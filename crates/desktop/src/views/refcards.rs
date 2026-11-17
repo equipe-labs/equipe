@@ -398,9 +398,11 @@ mod tests {
     #[test]
     fn cards_fill_a_wide_column_and_the_next_peeks_in_a_narrow_one() {
         assert_eq!(tile_width(760.), TILE);
-        let narrow = tile_width(360.);
+        let narrow = tile_width(300.);
         assert!((TILE_NARROW..TILE).contains(&narrow), "{narrow}");
-        assert!(narrow < 360. - INSET, "the next card peeks in");
+        for column in [300., 360., 420.] {
+            assert!(tile_width(column) < column - INSET - 40., "{column}: the next card peeks in");
+        }
         assert_eq!(tile_width(120.), TILE_NARROW, "never narrower than this");
     }
 }
