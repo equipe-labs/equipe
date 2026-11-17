@@ -663,6 +663,7 @@
   "words.countdown": "{what} en {seconds} s — di cancela para pararlo.",
   "words.done": "Hecho según tus palabras («{said}»): {what}",
   "words.undone": "Deshecho — no pasó nada: {what}",
+  "words.taken_as_answer": "«{said}» se tomó como tu respuesta a la decisión que esperaba de palabra, así que no se pasó al miembro.",
   "words.cancelled": "Cancelado — no pasó nada: {what}",
   "words.held": "Dejado como estaba: {what} espera en su tarjeta.",
   "words.lapsed": "Sin respuesta a tiempo: {what} espera en su tarjeta.",

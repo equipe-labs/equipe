@@ -76,7 +76,7 @@ impl Shell {
         let blocks = &self.chat.blocks;
         let ix = blocks.iter().rposition(|b| matches!(b, Block::Reply { .. }))?;
         let Block::Reply { text, live: false, .. } = &blocks[ix] else { return None };
-        if blocks[ix + 1..].iter().any(|b| matches!(b, Block::User(_) | Block::Pending { .. } | Block::Thinking(_))) {
+        if blocks[ix + 1..].iter().any(|b| matches!(b, Block::User(_) | Block::Pending { .. } | Block::Outgoing { .. } | Block::Thinking(_))) {
             return None;
         }
         let hash = render::hash_of(text);
@@ -158,9 +158,7 @@ impl Shell {
             cx.notify();
             return;
         }
-        for command in plan.commands {
-            self.send_command(command);
-        }
+        self.send_said(plan.commands, cx);
         self.asklist.sent = Some(answered);
         self.asklist.form = None;
         self.composer.focus(window, cx);

@@ -663,6 +663,7 @@
   "words.countdown": "{what} in {seconds} s — sag abbrechen, um es zu stoppen.",
   "words.done": "In deinen Worten erledigt („{said}“): {what}",
   "words.undone": "Rückgängig — nichts ist passiert: {what}",
+  "words.taken_as_answer": "„{said}“ wurde als deine Antwort auf die wartende Entscheidung in Worten genommen und ging deshalb nicht an das Mitglied.",
   "words.cancelled": "Abgebrochen — nichts ist passiert: {what}",
   "words.held": "So gelassen: {what} wartet auf seiner Karte.",
   "words.lapsed": "Keine Antwort rechtzeitig: {what} wartet auf seiner Karte.",

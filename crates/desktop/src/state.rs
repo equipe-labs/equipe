@@ -13,7 +13,7 @@ use equipe_core::protocol::engines::HandOver;
 use equipe_core::protocol::importance::WaitKind;
 use equipe_core::protocol::rpc::{Hello, SquadEntry};
 use equipe_core::protocol::{
-    DesktopState, Engine, Entry, Estimate, Event, HumanCheck, Mode, OffMain, PauseWhy, PlanUsage, RunPause, RunView, SessionId, SessionState, Ticket, TicketEntry, TicketId, TicketKind,
+    Command, DesktopState, Engine, Entry, Estimate, Event, HumanCheck, Mode, OffMain, PauseWhy, PlanUsage, RunPause, RunView, SessionId, SessionState, Ticket, TicketEntry, TicketId, TicketKind,
     TicketStatus, TurnOutcome, stall_reason,
 };
 
@@ -492,6 +492,11 @@ pub struct Model {
     /// (`None`: the whole squad): it is made with its first message, so none
     /// is left empty.
     pub draft_talk: Option<(SessionId, Option<String>)>,
+    /// The person's messages on their way, until the daemon says it has them
+    /// (`crate::outbox`): shown as theirs meanwhile, never dropped silently.
+    pub outbox: crate::outbox::Outbox,
+    /// What the outbox has to send now (after a hello), for the window to send.
+    to_send: Vec<Command>,
     /// The ticket open on screen: its work in place of a conversation.
     pub opened: Option<TicketId>,
     /// The project in focus, by name; `None`: the whole squad.
@@ -680,6 +685,8 @@ impl Model {
             selected: None,
             talk: None,
             draft_talk: None,
+            outbox: crate::outbox::Outbox::default(),
+            to_send: Vec::new(),
             focus: None,
             opened: None,
             revision: 0,
@@ -990,6 +997,20 @@ impl Model {
     /// The conversation in view as it shows (see [`Convo::sliced`]): with a
     /// project in focus, its thread and the squad's — never another project's.
     pub fn conversation(&self, follow: bool) -> crate::convo::Sliced {
+        let mut out = self.conversation_said(follow);
+        // Last, what the person said that the daemon hasn't taken in yet.
+        if let Some(session) = self.viewed() {
+            for item in self.outbox.in_session(session) {
+                out.blocks.push(crate::convo::Block::Outgoing { id: item.id, text: item.text.clone(), shown: item.shown, why: item.why.clone() });
+                out.about.push(None);
+                out.at.push(None);
+            }
+        }
+        out
+    }
+
+    /// The conversation in view as the daemon has it.
+    fn conversation_said(&self, follow: bool) -> crate::convo::Sliced {
         let Some(convo) = self.convo() else { return Default::default() };
         let slice = self.chat_slice(follow);
         let now = shown_of(convo, slice.as_ref().map(Option::as_deref));
@@ -999,6 +1020,44 @@ impl Model {
             Some(session) => self.stitched(session, slice.as_ref().map(Option::as_deref), now),
             None => now,
         }
+    }
+
+    /// The person's message among `commands`, kept until the daemon has it
+    /// (`crate::outbox`): what goes now — nothing while not attached.
+    pub fn send_said(&mut self, commands: Vec<Command>, now: Instant) -> Vec<Command> {
+        let attached = self.attached();
+        let out = self.outbox.push(commands, attached, now);
+        self.revision += 1;
+        out
+    }
+
+    /// The person's retry on message `id`: what goes now.
+    pub fn retry_said(&mut self, id: u64, now: Instant) -> Vec<Command> {
+        let attached = self.attached();
+        let out = self.outbox.retry(id, attached, now);
+        self.revision += 1;
+        out
+    }
+
+    /// Message `id` taken back: its words, for the box.
+    pub fn take_back_said(&mut self, id: u64) -> Option<String> {
+        let text = self.outbox.take_back(id);
+        self.revision += 1;
+        text
+    }
+
+    /// Time passed: a message unanswered too long shows as not sent. Whether it changed.
+    pub fn tick_said(&mut self, now: Instant) -> bool {
+        let changed = self.outbox.tick(now, self.attached());
+        if changed {
+            self.revision += 1;
+        }
+        changed
+    }
+
+    /// What the outbox has to send now, taken.
+    pub fn take_to_send(&mut self) -> Vec<Command> {
+        std::mem::take(&mut self.to_send)
     }
 
     /// The moves member session `session` carries on from, oldest first.
@@ -1170,11 +1229,20 @@ impl Model {
     pub fn apply(&mut self, update: Update, now: Clock) -> bool {
         match update {
             Update::Attached(hello) => {
+                // What the person said meanwhile goes now, in order: what
+                // arrived before the line went is taken in.
+                let flush = self.outbox.attached(&hello.snapshot, Instant::now());
+                self.to_send.extend(flush);
                 self.load(hello);
                 self.conn = Conn::Connected { last_event: None };
                 true
             }
             Update::Down(reason) => {
+                // What was handed to the line waits for the next hello.
+                let said = self.outbox.down();
+                if said {
+                    self.revision += 1;
+                }
                 // Answers sent into a dead link never came back as resolved.
                 self.approvals.forget_answers();
                 self.asked.forget_sent();
@@ -1193,7 +1261,7 @@ impl Model {
                 // say why; without one, the whole body is the reason's guide.
                 let changed = !matches!((&self.conn, &next), (Conn::Down { since: a, had_snapshot: x, reason: r }, Conn::Down { since: b, had_snapshot: y, reason: q }) if a == b && x == y && (*x || r == q));
                 self.conn = next;
-                changed
+                changed || said
             }
             // The shell reads the bridge's greeting itself; the squad list is kept for
             // `/home` (where the folder is) and `/squad` (what to switch to).
@@ -1209,6 +1277,10 @@ impl Model {
                 let words = matches!(event, Event::WordsLive { .. } | Event::WordsClosed { .. } | Event::WordsLog { .. } | Event::WordsAllChanged { .. });
                 // So is a side chat, beside the conversation.
                 let words = words || matches!(event, Event::SideChatOpened { .. } | Event::SideChat { .. } | Event::SideChatClosed { .. });
+                // A message on its way heard back: its bubble gives way to the conversation's own line.
+                if self.outbox.on_event(&event) {
+                    self.revision += 1;
+                }
                 self.on_event(event, now);
                 let mut changed = words || before != (self.members.clone(), self.lanes.clone(), self.ticket_hint(), self.subagents_hint(), self.revision, self.card_hint(), self.settings_hint(), self.compact_hint());
                 // The footer's "last event" moves when the minute does.
@@ -1389,6 +1461,11 @@ impl Model {
                 (s.session, convo)
             })
             .collect();
+        // The new conversation this window started, made while the line was
+        // down (its word lost with it): made, and open.
+        if self.draft_talk.as_ref().is_some_and(|(draft, _)| self.lanes.iter().any(|l| l.session == *draft)) {
+            self.draft_talk = None;
+        }
         self.keep_selection();
         self.revision += 1;
     }

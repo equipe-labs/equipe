@@ -83,12 +83,13 @@ fn tier_color(shell: &Shell, tier: Tier) -> Rgba {
     }
 }
 
-/// The card over the composer, in any conversation of the squad on screen.
+/// The card over the composer: a read-back in the conversation it waits
+/// in, one counting down in any of the squad on screen.
 pub fn docked(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     if shell.screen != Screen::Chat || shell.model.opened.is_some() {
         return None;
     }
-    let live = shell.model.words.front()?.clone();
+    let live = shell.model.words.front_in(shell.model.viewed())?.clone();
     let p = shell.palette;
     let now = now_ms();
     let color = tier_color(shell, live.tier);

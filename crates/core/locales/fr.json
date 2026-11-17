@@ -663,6 +663,7 @@
   "words.countdown": "{what} dans {seconds} s — dis annule pour l'arrêter.",
   "words.done": "Fait selon tes mots (« {said} ») : {what}",
   "words.undone": "Annulé — rien ne s'est passé : {what}",
+  "words.taken_as_answer": "« {said} » a été pris comme ta réponse à la décision en attente par la parole ; il n'a donc pas été transmis au membre.",
   "words.cancelled": "Annulé — rien ne s'est passé : {what}",
   "words.held": "Laissé tel quel : {what} attend sur sa carte.",
   "words.lapsed": "Pas de réponse à temps : {what} attend sur sa carte.",

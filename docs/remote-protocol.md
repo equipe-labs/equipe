@@ -242,11 +242,17 @@ a proposal carries the event with `summary` and `note` cut to 800 characters, ca
 
 A screen that has the person's own message sends `say` instead of `submit` — when the snapshot
 carries `words` (a list, maybe empty; absent from a daemon that predates it, which takes `submit`):
-`{ "squad", "session", "text", "via": "typed" | "dictated" | "voice", "later"?, "pasted"?, "about"? }`.
+`{ "squad", "session", "text", "via": "typed" | "dictated" | "voice", "later"?, "pasted"?, "about"?, "nonce"? }`.
 The daemon reads it for a decision in words — in the person's languages only: the screen's, the one
 the text is written in when it shows, and English; never every language at once — then sends it on to
 the member as `submit` (or, `later`, as a memo), unless it was only an answer to a decision waiting in
-words, which goes no further. `pasted: true` (some of the text was pasted) and anything quoted
+words, which goes no further; then a `notice` in that conversation quotes it and says so. Only a
+message said in the conversation a decision waits in can answer it, and a question (with more in it
+than a bare yes) never does. `nonce` is the screen's own key for the message, the same each time it
+sends it again (after a reconnect, or the person's retry): a key the daemon has taken already goes no
+further. A screen keeps the person's message on screen until its echo (`user_message`,
+`steer_queued`, `message_queued`, or that `notice`) comes, and sends it again after the next hello
+when the snapshot doesn't show it arrived. `pasted: true` (some of the text was pasted) and anything quoted
 (`> …` lines, a reply's passage, a fenced block) never decide. A screen knows a paste only as far as
 it sees one (on the Mac: ⌘V into the box); text dragged in, a Services menu, an autocompletion or an
 input method's suggestion reach the daemon as typed. From a phone the daemon sets `device` to the

@@ -663,6 +663,7 @@
   "words.countdown": "{what} in {seconds} s — say cancel to stop it.",
   "words.done": "Done in your words (“{said}”): {what}",
   "words.undone": "Undone — nothing happened: {what}",
+  "words.taken_as_answer": "“{said}” was taken as your answer to the decision waiting in words, so it didn't go on to the member.",
   "words.cancelled": "Cancelled — nothing happened: {what}",
   "words.held": "Left as it was: {what} waits on its card.",
   "words.lapsed": "No answer in time: {what} waits on its card.",

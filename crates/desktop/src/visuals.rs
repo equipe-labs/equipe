@@ -64,6 +64,14 @@ pub const INLINE_GUESS: f32 = 480.;
 pub const FOLDER_TILE: f32 = 88.;
 /// The key the conversation's column width is kept under.
 pub const COLUMN_KEY: u64 = u64::MAX;
+/// A picture that couldn't be had for a reason that may pass (the line
+/// down or dropping, a daemon too busy to answer, out of file handles) is
+/// asked for again by itself this many times, after these waits; then it
+/// shows as not loaded, with a way to ask again.
+pub const RETRY_AFTER: [Duration; 3] = [Duration::from_secs(2), Duration::from_secs(6), Duration::from_secs(20)];
+/// A picture asked for and not heard of in this long counts as failed: a
+/// request lost on the way never leaves a tile waiting for good.
+pub const LOAD_WAIT: Duration = Duration::from_secs(90);
 
 /// How big a picture is asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -162,6 +170,12 @@ pub struct Visuals {
     released: Vec<Arc<Image>>,
     /// A later [`Self::trim`] is on its way.
     pub trimming: bool,
+    /// How many times each picture failed for a reason that may pass, since it last came.
+    tries: HashMap<(String, Size), usize>,
+    /// When each picture now loading was asked of the daemon.
+    asked: HashMap<(String, Size), Instant>,
+    /// A look for what is overdue ([`Self::overdue`]) is on its way.
+    pub watching: bool,
 }
 
 impl Visuals {
@@ -249,10 +263,60 @@ impl Visuals {
         !self.wanted.is_empty() || !self.wanted_folders.is_empty()
     }
 
-    /// What is to be loaded, taken.
+    /// What is to be loaded, taken — each noted as asked for now.
     pub fn take_wanted(&mut self) -> Vec<(String, Size)> {
         self.scheduled = false;
-        std::mem::take(&mut self.wanted)
+        let wanted = std::mem::take(&mut self.wanted);
+        let now = Instant::now();
+        for key in &wanted {
+            self.asked.insert(key.clone(), now);
+        }
+        wanted
+    }
+
+    /// `path` at `size` couldn't be had: `why`, and whether it may pass. One
+    /// that may is asked for again by itself — the wait before that is
+    /// returned, it shows as loading meanwhile — up to [`RETRY_AFTER`]'s
+    /// count; past it, or one that won't pass, it shows as not there.
+    pub fn failed(&mut self, path: &str, size: Size, why: ImageWhy, passing: bool) -> Option<Duration> {
+        let key = (path.to_owned(), size);
+        self.asked.remove(&key);
+        let tries = self.tries.entry(key).or_default();
+        let wait = passing.then(|| RETRY_AFTER.get(*tries).copied()).flatten();
+        *tries += 1;
+        match wait {
+            Some(wait) => {
+                self.shown.insert((path.to_owned(), size), Look::Loading);
+                Some(wait)
+            }
+            None => {
+                self.put(path, size, Look::Gone(why));
+                None
+            }
+        }
+    }
+
+    /// The wait for `path` at `size` is over: asked for again the next time it is drawn.
+    pub fn again(&mut self, path: &str, size: Size) {
+        let key = (path.to_owned(), size);
+        if matches!(self.shown.get(&key), Some(Look::Loading)) && !self.asked.contains_key(&key) {
+            self.shown.remove(&key);
+        }
+    }
+
+    /// Whether anything asked of the daemon is still to be heard of.
+    pub fn loading_any(&self) -> bool {
+        !self.asked.is_empty()
+    }
+
+    /// What was asked for longer ago than [`LOAD_WAIT`] and never heard of:
+    /// taken as failed (for a reason that may pass), and returned.
+    pub fn overdue(&mut self, now: Instant) -> Vec<(String, Size)> {
+        let late: Vec<(String, Size)> = self.asked.iter().filter(|(_, at)| now.duration_since(**at) >= LOAD_WAIT).map(|(k, _)| k.clone()).collect();
+        for key in &late {
+            self.asked.remove(key);
+        }
+        late
     }
 
     /// The folders to be listed, taken.
@@ -281,6 +345,10 @@ impl Visuals {
     /// budget are let go, oldest first (asked again when opened again).
     pub fn put(&mut self, path: &str, size: Size, mut look: Look) {
         let key = (path.to_owned(), size);
+        self.asked.remove(&key);
+        if matches!(look, Look::Ready(_)) {
+            self.tries.remove(&key);
+        }
         let tiny = (path.to_owned(), Size::Tiny);
         match (&mut look, size) {
             // A tiny preview after its thumbnail: no longer wanted.
@@ -377,12 +445,15 @@ impl Visuals {
     /// Back on the line: what couldn't be had is asked for again.
     pub fn retry_gone(&mut self) {
         self.shown.retain(|_, look| !matches!(look, Look::Gone(_)));
+        self.tries.clear();
         self.folders.retain(|_, listing| *listing != Listing::Gone);
     }
 
-    /// The person asked again for `paths`: they are asked for once more.
+    /// The person asked again for `paths`: they are asked for once more,
+    /// with their own retries afresh.
     pub fn retry(&mut self, paths: &[String]) {
         self.shown.retain(|(path, _), look| !(matches!(look, Look::Gone(_)) && paths.contains(path)));
+        self.tries.retain(|(path, _), _| !paths.contains(path));
     }
 
     /// Another machine or squad: nothing known holds.
@@ -922,6 +993,54 @@ impl Viewer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_picture_that_couldnt_be_had_for_a_passing_reason_is_asked_again_then_shows_with_a_way_to_retry() {
+        let mut v = Visuals::default();
+        let path = "/w/design/render/round-1-1440-light.png";
+        assert!(matches!(v.look(path, Size::Inline), Look::Loading));
+        assert_eq!(v.take_wanted(), vec![(path.to_owned(), Size::Inline)]);
+        // The line dropped under it (or the daemon was too busy to answer): asked
+        // again by itself after a wait, shown loading meanwhile.
+        for wait in RETRY_AFTER {
+            assert_eq!(v.failed(path, Size::Inline, ImageWhy::Unreadable, true), Some(wait));
+            assert!(matches!(v.look(path, Size::Inline), Look::Loading));
+            assert!(!v.has_wanted(), "not before the wait is over");
+            v.again(path, Size::Inline);
+            assert!(matches!(v.look(path, Size::Inline), Look::Loading));
+            assert_eq!(v.take_wanted().len(), 1, "asked again");
+        }
+        // Still nothing: shown as not loaded — never a placeholder for good.
+        assert_eq!(v.failed(path, Size::Inline, ImageWhy::Unreadable, true), None);
+        assert!(matches!(v.look(path, Size::Inline), Look::Gone(ImageWhy::Unreadable)));
+        // The person's retry: asked again, its own retries afresh.
+        v.retry(&[path.to_owned()]);
+        assert!(matches!(v.look(path, Size::Inline), Look::Loading));
+        v.take_wanted();
+        assert_eq!(v.failed(path, Size::Inline, ImageWhy::Unreadable, true), Some(RETRY_AFTER[0]));
+        // A file that isn't there won't come by asking again.
+        let missing = "/w/missing.png";
+        v.look(missing, Size::Thumb);
+        v.take_wanted();
+        assert_eq!(v.failed(missing, Size::Thumb, ImageWhy::Missing, false), None);
+        assert!(matches!(v.look(missing, Size::Thumb), Look::Gone(ImageWhy::Missing)));
+    }
+
+    #[test]
+    fn a_picture_asked_for_and_never_heard_of_comes_due_rather_than_loading_for_good() {
+        let mut v = Visuals::default();
+        v.look("/w/a.png", Size::Inline);
+        v.take_wanted();
+        let t = Instant::now();
+        assert!(v.overdue(t).is_empty());
+        assert_eq!(v.overdue(t + LOAD_WAIT), vec![("/w/a.png".to_owned(), Size::Inline)]);
+        assert!(v.overdue(t + LOAD_WAIT * 2).is_empty(), "once");
+        // One that came meanwhile is not due.
+        v.look("/w/b.png", Size::Inline);
+        v.take_wanted();
+        v.put("/w/b.png", Size::Inline, Look::Gone(ImageWhy::Missing));
+        assert!(v.overdue(Instant::now() + LOAD_WAIT).is_empty());
+    }
 
     #[test]
     fn the_big_view_of_a_board_goes_through_the_tiles_on_show_and_says_where_each_is_from() {

@@ -659,6 +659,7 @@
   "words.countdown": "{seconds}초 뒤 {what} — 멈추려면 ‘취소’라고 해 주세요.",
   "words.done": "말씀(“{said}”)대로 했어요: {what}",
   "words.undone": "되돌렸어요 — 아무 일도 없었어요: {what}",
+  "words.taken_as_answer": "“{said}”는 말로 기다리던 결정에 대한 답으로 받아서, 멤버에게는 보내지 않았어요.",
   "words.cancelled": "취소했어요 — 아무 일도 없었어요: {what}",
   "words.held": "그대로 뒀어요: {what}는 카드에서 기다려요.",
   "words.lapsed": "답이 없어서 그대로 뒀어요: {what}는 카드에서 기다려요.",

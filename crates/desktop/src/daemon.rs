@@ -220,7 +220,9 @@ impl Uploader {
 
 impl Link {
     /// Send a command to the daemon. Dropped while not attached: what a screen
-    /// asks for only makes sense against the snapshot it is looking at.
+    /// asks for only makes sense against the snapshot it is looking at. The
+    /// person's messages don't rely on it: `crate::outbox` keeps each until
+    /// the daemon has it, and sends it again after the next hello.
     pub fn send(&self, command: Command) {
         let _ = self.commands.send(command);
     }
@@ -368,10 +370,12 @@ async fn run(
                 {
                     return;
                 }
+                // The door for requests first: a screen drawn from this hello
+                // asks for its pictures at once, and must find it open.
+                *asking.lock().unwrap() = Some(conn.wire.commands.clone());
                 if updates.send(Update::Squads(conn.greeting.squads.clone())).is_err() || updates.send(Update::Attached(conn.greeting.hello.clone())).is_err() {
                     return;
                 }
-                *asking.lock().unwrap() = Some(conn.wire.commands.clone());
                 let followed = follow(
                     &mut conn,
                     &mut commands,
@@ -731,6 +735,23 @@ mod tests {
             other => panic!("expected Attached, got {other:?}"),
         }
         assert_eq!(next(&mut spawned.updates).await, Update::Event(event));
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    #[tokio::test]
+    async fn the_request_door_is_open_by_the_time_the_hello_reaches_the_window() {
+        // A screen drawn from the hello asks for its pictures at once: what it
+        // asks the moment the hello comes must reach the daemon, not be
+        // answered "not connected" (and kept as a picture that isn't there).
+        let socket = socket();
+        let _fake = Fake::start(&socket, "daemon-1", vec![]);
+        let mut spawned = spawn(target(&socket), FAST);
+        attached_version(next_main(&mut spawned.updates).await);
+        let door = spawned.link.asking.lock().unwrap().is_some();
+        assert!(door, "open before the hello was told");
+        let uploader = spawned.link.uploader();
+        let read = tokio::task::spawn_blocking(move || uploader.read("/up/aGk=", true)).await.unwrap();
+        assert_eq!(read.map(|r| r.size), Ok(2));
         let _ = std::fs::remove_file(&socket);
     }
 

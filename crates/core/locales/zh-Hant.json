@@ -659,6 +659,7 @@
   "words.countdown": "{seconds} 秒後{what}——說「取消」即可停止。",
   "words.done": "已照你的話（「{said}」）完成：{what}",
   "words.undone": "已撤銷——什麼都沒發生：{what}",
+  "words.taken_as_answer": "「{said}」已作為你對等待中的口頭決定的回答，所以沒有轉給成員。",
   "words.cancelled": "已取消——什麼都沒發生：{what}",
   "words.held": "保持原樣：{what} 在卡片上等待。",
   "words.lapsed": "沒有及時回答：{what} 在卡片上等待。",

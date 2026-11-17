@@ -659,6 +659,7 @@
   "words.countdown": "{seconds} 秒後に{what} — 止めるなら「キャンセル」と言ってください。",
   "words.done": "おことば（「{said}」）どおりにしました: {what}",
   "words.undone": "元に戻しました — 何も起きていません: {what}",
+  "words.taken_as_answer": "「{said}」は言葉で待っていた決定への答えとして受け取ったので、メンバーには送っていません。",
   "words.cancelled": "キャンセルしました — 何も起きていません: {what}",
   "words.held": "そのままにしました: {what} はカードで待っています。",
   "words.lapsed": "返事がなかったのでそのままです: {what} はカードで待っています。",

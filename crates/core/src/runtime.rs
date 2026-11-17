@@ -2994,7 +2994,7 @@ impl Runtime {
             Command::ProposeAccept { squad, session, verdict, tickets, note } => self.propose_accept_from_words(&squad, session, verdict, &tickets, &note),
             Command::ConfirmAccept { squad, id, tickets, said } => self.confirm_accept(&squad, id, tickets, said).await,
             Command::DeclineAccept { squad, id } => self.decline_accept(&squad, id),
-            Command::Say { squad, session, text, via, all, later, pasted, about, device } => self.say(squad, session, text, via, all, later, pasted, about, device).await,
+            Command::Say { squad, session, text, via, all, later, pasted, about, device, nonce } => self.say(squad, session, text, via, all, later, pasted, about, device, nonce).await,
             Command::UndoWords { squad, id } => self.undo_words(&squad, id),
             Command::WordsLog { squad } => self.words_log(squad),
             Command::ClearWordsLog { squad } => self.clear_words_log(squad),
@@ -4993,6 +4993,11 @@ for one project goes to it as tickets for its owners, with that project — and 
     /// The person opens a conversation of their own with the squad's PM,
     /// about `project` (`None`: the whole squad): a fresh one, kept.
     fn new_conversation(&mut self, squad: &str, id: SessionId, project: Option<String>) {
+        // Sent again by a screen that didn't hear it was made (a reconnect
+        // between the two): it is made already, and that is all.
+        if self.sessions.get(&id).is_some_and(|s| s.kept && s.squad.as_deref() == Some(squad)) {
+            return;
+        }
         if self.sessions.contains_key(&id) {
             return self.error(None, say!(self, "error.already_open", id = id), None);
         }
