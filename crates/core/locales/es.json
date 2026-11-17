@@ -799,6 +799,7 @@
   "notice.missed_title": "Lo has pasado por alto {n} veces: {what}",
   "notice.missed_body": "{impact}. Ábrelo para resolverlo.",
   "notice.squad_secret_saved": "{member} guardó la clave «{name}» de {service} en el almacén de secretos de este equipo. A partir de ahora equipe la oculta.",
+  "notice.mcp_card_up": "{member} necesita que hagas algo antes de usar {server}: la tarjeta está en «Tu turno».",
   "secrets.no_project": "ningún proyecto (la carpeta del escuadrón)",
   "secrets.grant.header": "Clave",
   "secrets.grant.question": "¿Puede {member} usar la clave «{name}» ({service}) en {project}?",

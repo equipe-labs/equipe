@@ -131,16 +131,26 @@ jobs:
           echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
           security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           rm "$RUNNER_TEMP/certificate.p12"
-          # Signing must never block a release: on any failure below, the
-          # command line ships ad hoc as before, with a warning.
-          unsigned() { echo "::warning::Couldn't sign the command line ($1): it ships ad hoc this time"; security delete-keychain "$keychain" 2>/dev/null || true; exit 0; }
+          # With the certificate here, a release never ships ad hoc: one ad-hoc
+          # build is a new identity to macOS, and every Mac that installs it
+          # asks for the Keychain again — an unattended one can't answer, and
+          # its outside MCP servers, kept keys and sign-ins stop working.
+          unsigned() { echo "::error::Couldn't sign the command line ($1): not shipping an ad-hoc build"; security delete-keychain "$keychain" 2>/dev/null || true; exit 1; }
           security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null || unsigned "no signing key in the certificate"
           # shellcheck disable=SC2046 # one keychain path per word
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)"
           [ -n "$identity" ] || unsigned "no Developer ID Application identity"
           bin="target/$TARGET/release/equipe"
-          codesign --force --timestamp --options runtime --keychain "$keychain" --sign "$identity" --identifier equipe "$bin" || unsigned "codesign failed"
+          # Apple's timestamp server fails now and then ("A timestamp was
+          # expected but was not found"): tried again, a little later each time.
+          signed=""
+          for wait in 0 15 30 60 120; do
+            sleep "$wait"
+            if codesign --force --timestamp --options runtime --keychain "$keychain" --sign "$identity" --identifier equipe "$bin"; then signed=1; break; fi
+            echo "::warning::codesign failed; trying again"
+          done
+          [ -n "$signed" ] || unsigned "codesign failed five times"
           codesign --verify --strict --verbose=2 "$bin" || unsigned "the signature didn't verify"
           codesign -d -r- "$bin"
           security delete-keychain "$keychain"

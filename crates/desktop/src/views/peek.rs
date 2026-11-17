@@ -41,6 +41,7 @@ pub fn panel(shell: &Shell, need: Need, cx: &mut Context<Shell>) -> AnyElement {
         Need::Browser(page) => super::browser::need_peek(shell, page, cx),
         Need::Secret(id) => super::secrets::peek(shell, id, cx),
         Need::LoginOffer(id) => super::login_offers::peek(shell, id, cx),
+        Need::SignIn(id) => super::cli_signin::peek(shell, id, cx),
         Need::Design(id) => super::design_news::peek(shell, id, cx),
         Need::Ticket(id) => {
             let Some(t) = shell.model.tickets.iter().find(|t| t.id == id).cloned() else { return div().into_any_element() };

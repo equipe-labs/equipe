@@ -8,8 +8,16 @@
 //! ([`Runtime::mcp_upstream`]) and whose calls say where it stands
 //! ([`Runtime::mcp_seen`]). One card per server, opened when a member who
 //! gets the server finds it needs a sign-in (or its key), or when the person
-//! asks. A card put off ("Not now") isn't opened again for that server until
-//! the person asks for it.
+//! asks. A card put off ("Not now", or left to run out after a day) is
+//! offered once more when a member needs that server again — saying so — and
+//! after that only when the person asks for it.
+//!
+//! Staying connected: every [`HEALTH_EVERY`] the daemon looks at each server
+//! itself — renewing an OAuth token well before it runs out
+//! ([`mcp_oauth::access_ahead`]) — so a member's call never meets a stale
+//! token. Only when that fails for good (the refresh token refused, the key
+//! refused) does one card go to the person, saying what to do; members are
+//! told the server is unavailable and why ([`unavailable_note`]).
 //!
 //! The engine-signed fallback ([`McpAuth::Engine`]) is looked at through each
 //! engine's own tool, and signed in with that tool, one card per engine.
@@ -37,15 +45,51 @@ pub(super) struct McpBook {
     /// Sign-ins the person put off, or whose card already ended unanswered
     /// or refused, by squad, server name and engine (a server equipe signs in
     /// to itself: under Claude Code's). Kept on disk ([`put_off_file`]): a
-    /// member's turn never puts that card up again, after a restart either —
-    /// Connections shows it needs a sign-in until the person asks.
-    put_off: HashSet<(String, String, Engine)>,
+    /// member's turn offers that card once more (saying why), then never
+    /// again until the person asks, after a restart either — Connections
+    /// shows it needs a sign-in meanwhile.
+    put_off: HashMap<(String, String, Engine), PutOff>,
     /// Squads whose put-off sign-ins were read from disk.
     put_off_read: HashSet<String>,
     /// Keyed servers whose key card a member's turn has already put up, by
     /// squad and server name: asked once, then only when the person asks.
     key_asked: HashSet<(String, String)>,
+    /// When the daemon last looked at every server itself ([`HEALTH_EVERY`]).
+    health_at: u64,
 }
+
+/// A sign-in put off: since when, and whether a member's need has offered it once more since.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(super) struct PutOff {
+    pub at: u64,
+    pub reoffered: bool,
+}
+
+/// One put-off sign-in as kept on disk.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct KeptPutOff {
+    server: String,
+    engine: Engine,
+    #[serde(default)]
+    at: u64,
+    #[serde(default)]
+    reoffered: bool,
+}
+
+/// A squad's put-off sign-ins from the file's text: this equipe's records,
+/// or an earlier one's `[server, engine]` pairs (not offered again yet).
+pub(super) fn parse_put_off(text: &str) -> Vec<(String, Engine, PutOff)> {
+    if let Ok(kept) = serde_json::from_str::<Vec<KeptPutOff>>(text) {
+        return kept.into_iter().map(|k| (k.server, k.engine, PutOff { at: k.at, reoffered: k.reoffered })).collect();
+    }
+    serde_json::from_str::<Vec<(String, Engine)>>(text).unwrap_or_default().into_iter().map(|(server, engine)| (server, engine, PutOff { at: 0, reoffered: false })).collect()
+}
+
+/// The servers a member gets this turn, with how; and those it doesn't, with why.
+pub(super) type ForMember = (Vec<(McpServer, Credential)>, Vec<(McpServer, String)>);
+
+/// How often the daemon looks at every server itself (and renews tokens ahead).
+pub(super) const HEALTH_EVERY: u64 = 10 * 60;
 
 /// Where a squad's put-off sign-ins are kept.
 fn put_off_file(home: &Path, squad: &str) -> PathBuf {
@@ -131,9 +175,34 @@ impl Runtime {
         }
     }
 
-    /// Where equipe keeps a server's sign-in: the squad's secret store.
+    /// Where equipe keeps a server's sign-in: its own MCP credentials file,
+    /// read with nobody at the Mac ([`crate::mcp_keys`]).
     pub(super) fn mcp_store(&self) -> Arc<dyn mcp_oauth::Store> {
-        Arc::new(mcp_oauth::VaultStore(self.vault.clone()))
+        Arc::new(mcp_oauth::KeptStore { home: self.config.home.clone(), vault: self.vault.clone() })
+    }
+
+    /// The daemon's own look at every squad's servers, every [`HEALTH_EVERY`]:
+    /// tokens renewed ahead, keys moved out of the Keychain, statuses fresh —
+    /// before a member meets a failure. One that stops working puts one card
+    /// up for the person ([`Self::mcp_checked`]).
+    pub(super) fn mcp_health_due(&mut self, now: u64) {
+        if now.saturating_sub(self.mcp.health_at) >= HEALTH_EVERY {
+            self.mcp.health_at = now;
+            self.mcp_health();
+        }
+    }
+
+    pub(super) fn mcp_health(&mut self) {
+        let squads: Vec<String> = crate::squads::list(&self.config.home).into_iter().map(|s| s.name).collect();
+        for squad in squads {
+            if self.journal(&squad).is_none() {
+                continue;
+            }
+            let names: Vec<String> = self.mcp_servers_of(&squad).into_iter().filter(|s| s.enabled && s.auth.proxied()).map(|s| s.name).collect();
+            for name in names {
+                self.check_mcp_servers(&squad, Some(&name), None);
+            }
+        }
     }
 
     fn keep_mcp(&mut self, squad: &str, servers: &[McpServer]) -> bool {
@@ -258,7 +327,7 @@ impl Runtime {
         };
         match server.auth {
             McpAuth::Engine => self.check_mcp_servers(squad, Some(name), Some(None)),
-            _ => self.open_mcp_card(squad, &server, OWN, None),
+            _ => self.open_mcp_card(squad, &server, OWN, None, None),
         }
     }
 
@@ -294,6 +363,12 @@ impl Runtime {
                     }
                     let value = match self.key_value(squad, &secret) {
                         Ok(value) => value,
+                        // Behind a Keychain dialog nobody answered: one thing for the person to do.
+                        Err(why) if crate::mcp_keys::keychain_blocked(&why) => {
+                            let statuses = self.mcp_each(squad, &server, McpState::NeedsKey, Some(crate::mcp_keys::blocked_detail(&super::window::this_mac(), true)));
+                            self.mcp_checked(Checked { squad: squad.to_owned(), server, statuses });
+                            continue;
+                        }
                         Err(why) => {
                             let statuses = self.mcp_each(squad, &server, McpState::Failing, Some(why));
                             self.mcp_checked(Checked { squad: squad.to_owned(), server, statuses });
@@ -309,21 +384,26 @@ impl Runtime {
                 // equipe's own sign-in: its token (renewed when it runs out), then a look with it.
                 McpAuth::Oauth => {
                     let store = self.mcp_store();
+                    let mac = super::window::this_mac();
                     tokio::spawn(async move {
                         let http = crate::mcp_gateway::client();
-                        let (state, detail) = match mcp_oauth::access(&http, store.clone(), &squad_s, &server.name, None, now_secs()).await {
+                        // Renewed ahead: the look every few minutes keeps the token far from running out.
+                        let (state, detail) = match mcp_oauth::access_ahead(&http, store.clone(), &squad_s, &server.name, now_secs()).await {
                             Ok(token) => match sm::probe(&http, &server, Some(("authorization", &format!("Bearer {token}"))), false).await {
                                 // Refused before its time: renewed once, and looked at again.
                                 (McpState::NeedsSignIn, _) => match mcp_oauth::access(&http, store, &squad_s, &server.name, Some(&token), now_secs()).await {
                                     Ok(fresh) => sm::probe(&http, &server, Some(("authorization", &format!("Bearer {fresh}"))), false).await,
                                     Err(NoToken::Failing(why)) => (McpState::Failing, Some(why)),
-                                    Err(_) => (McpState::NeedsSignIn, Some("the sign-in ran out".to_owned())),
+                                    Err(NoToken::Blocked(_)) => (McpState::NeedsSignIn, Some(crate::mcp_keys::blocked_detail(&mac, false))),
+                                    Err(NoToken::SignIn(why)) => (McpState::NeedsSignIn, Some(format!("the sign-in ran out and couldn't be renewed ({why})"))),
+                                    Err(NoToken::Never) => (McpState::NeedsSignIn, Some("the sign-in ran out".to_owned())),
                                 },
                                 seen => seen,
                             },
                             // Never signed in: a server that asks for none is connected as it is.
                             Err(NoToken::Never) => sm::probe(&http, &server, None, false).await,
-                            Err(NoToken::SignIn(_)) => (McpState::NeedsSignIn, Some("the sign-in ran out".to_owned())),
+                            Err(NoToken::SignIn(why)) => (McpState::NeedsSignIn, Some(format!("the sign-in ran out and couldn't be renewed ({why})"))),
+                            Err(NoToken::Blocked(_)) => (McpState::NeedsSignIn, Some(crate::mcp_keys::blocked_detail(&mac, false))),
                             Err(NoToken::Failing(why)) => (McpState::Failing, Some(why)),
                         };
                         let statuses = engines.into_iter().map(|engine| McpEngineStatus { engine, state, detail: detail.clone(), checked_at: now_secs() }).collect();
@@ -360,7 +440,7 @@ impl Runtime {
             }
         }
         // Signed in after all (elsewhere, or by the person): nothing put off any more.
-        if statuses.iter().any(|s| s.state == McpState::Connected) && self.mcp.put_off.iter().any(|(q, n, _)| q == squad && *n == server.name) {
+        if statuses.iter().any(|s| s.state == McpState::Connected) && self.mcp.put_off.keys().any(|(q, n, _)| q == squad && *n == server.name) {
             self.clear_put_off(squad, &server.name);
         }
         self.mcp.status.entry(squad.to_owned()).or_default().insert(server.name.clone(), statuses);
@@ -376,17 +456,32 @@ impl Runtime {
         if !self.mcp_servers_of(&squad).iter().any(|s| s.name == server.name && s.url == server.url && s.enabled) {
             return;
         }
+        let was_connected = self.mcp.status.get(&squad).and_then(|k| k.get(&server.name)).is_some_and(|all| all.iter().any(|s| s.state == McpState::Connected));
         self.set_mcp_status(&squad, &server, statuses.clone());
+        // Working until now, and equipe couldn't heal it itself (the renewal
+        // refused, the key refused): one card for the person, saying what
+        // happened — unless they put it off.
+        let lost = statuses.iter().find(|s| matches!(s.state, McpState::NeedsSignIn | McpState::NeedsKey));
+        if card_for.is_none() && was_connected && server.auth.proxied()
+            && let Some(lost) = lost
+        {
+            self.read_put_off(&squad);
+            if !self.mcp.put_off.contains_key(&(squad.clone(), server.name.clone(), OWN)) {
+                let why = format!("{} stopped working for the squad: {}.", sm::label(&server), lost.detail.clone().unwrap_or_else(|| "it asks for a new sign-in".to_owned()));
+                self.open_mcp_card(&squad, &server, OWN, None, Some(why));
+            }
+            return;
+        }
         let Some(by) = card_for else { return };
         let wanting: Vec<Engine> = statuses.iter().filter(|s| matches!(s.state, McpState::NeedsSignIn | McpState::NeedsKey) || (by.is_none() && s.state == McpState::Failing)).map(|s| s.engine).collect();
         if server.auth.proxied() {
             // One card for all engines: equipe's own sign-in, or the key.
             if !wanting.is_empty() {
-                self.open_mcp_card(&squad, &server, OWN, by);
+                self.open_mcp_card(&squad, &server, OWN, by, None);
             }
         } else {
             for engine in wanting {
-                self.open_mcp_card(&squad, &server, engine, by.clone());
+                self.open_mcp_card(&squad, &server, engine, by.clone(), None);
             }
         }
     }
@@ -397,9 +492,10 @@ impl Runtime {
     pub(super) fn mcp_put_off(&mut self, squad: &str, server: &str, kind: Kind) {
         let engine = if kind == Kind::CodexMcp { Engine::Codex } else { OWN };
         self.read_put_off(squad);
-        if self.mcp.put_off.insert((squad.to_owned(), server.to_owned(), engine)) {
-            self.keep_put_off(squad);
-        }
+        // Put off again after it was offered once more: it stays offered once.
+        let entry = self.mcp.put_off.entry((squad.to_owned(), server.to_owned(), engine)).or_insert(PutOff { at: 0, reoffered: false });
+        entry.at = now_secs();
+        self.keep_put_off(squad);
     }
 
     /// A squad's put-off sign-ins from disk, once.
@@ -407,16 +503,16 @@ impl Runtime {
         if !self.mcp.put_off_read.insert(squad.to_owned()) {
             return;
         }
-        let kept: Vec<(String, Engine)> = std::fs::read_to_string(put_off_file(&self.config.home, squad)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-        for (server, engine) in kept {
-            self.mcp.put_off.insert((squad.to_owned(), server, engine));
+        let kept = std::fs::read_to_string(put_off_file(&self.config.home, squad)).map(|t| parse_put_off(&t)).unwrap_or_default();
+        for (server, engine, put_off) in kept {
+            self.mcp.put_off.insert((squad.to_owned(), server, engine), put_off);
         }
     }
 
     /// A squad's put-off sign-ins, written as they are now.
     fn keep_put_off(&self, squad: &str) {
-        let mut kept: Vec<(&str, Engine)> = self.mcp.put_off.iter().filter(|(q, _, _)| q == squad).map(|(_, n, e)| (n.as_str(), *e)).collect();
-        kept.sort_by(|a, b| a.0.cmp(b.0).then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1))));
+        let mut kept: Vec<KeptPutOff> = self.mcp.put_off.iter().filter(|((q, _, _), _)| q == squad).map(|((_, n, e), p)| KeptPutOff { server: n.clone(), engine: *e, at: p.at, reoffered: p.reoffered }).collect();
+        kept.sort_by(|a, b| a.server.cmp(&b.server).then_with(|| format!("{:?}", a.engine).cmp(&format!("{:?}", b.engine))));
         let file = put_off_file(&self.config.home, squad);
         if kept.is_empty() {
             let _ = std::fs::remove_file(file);
@@ -431,15 +527,17 @@ impl Runtime {
     fn clear_put_off(&mut self, squad: &str, name: &str) {
         self.read_put_off(squad);
         let before = self.mcp.put_off.len();
-        self.mcp.put_off.retain(|(s, n, _)| !(s == squad && n == name));
+        self.mcp.put_off.retain(|(s, n, _), _| !(s == squad && n == name));
         if before != self.mcp.put_off.len() {
             self.keep_put_off(squad);
         }
     }
 
     /// One sign-in card for `server` (on `engine`, for the fallback) — unless
-    /// one is up, or the person put it off and didn't ask (`by` a member).
-    fn open_mcp_card(&mut self, squad: &str, server: &McpServer, engine: Engine, by: CardFor) {
+    /// one is up, or the person put it off and it was already offered once
+    /// more (`by` a member). The person asking (`by` none) always gets a fresh
+    /// one. `why`: what the card says instead of the server's own reason.
+    fn open_mcp_card(&mut self, squad: &str, server: &McpServer, engine: Engine, by: CardFor, why: Option<String>) {
         // A keyed server: the catalog's key card (steps and the page to create
         // the key), once for a member's turns; again whenever the person asks.
         if let McpAuth::Key { secret, .. } = &server.auth {
@@ -451,29 +549,50 @@ impl Runtime {
             if let Some(service) = sm::service_of(server).filter(|s| s.takes_key()) {
                 self.mcp.key_asked.insert(asked);
                 self.request_service_key(squad, service.id);
+                self.tell_member_of_card(squad, server, by.as_ref());
             }
             return;
         }
         let kind = if server.auth.is_engine() { kind_of(engine) } else { Kind::EquipeMcp };
         if self.mcp_card_up(squad, &server.name, kind) {
-            // Asked again by the person: the card already up comes back in
-            // front of them (a fresh link if its last one ran out).
-            if by.is_none() {
-                self.reshow_mcp_card(squad, &server.name, kind);
+            match by {
+                // A member's turn while one is up: that one stands.
+                Some(_) => return,
+                // The person asks: a fresh sign-in, whatever the one up came to.
+                None => self.close_mcp_cards_of(squad, &server.name, kind),
             }
-            return;
         }
         let engine = if server.auth.is_engine() { engine } else { OWN };
         self.read_put_off(squad);
-        if by.is_some() && self.mcp.put_off.contains(&(squad.to_owned(), server.name.clone(), engine)) {
-            return;
+        let mut why = why.unwrap_or_else(|| sm::signin_why(server));
+        let key = (squad.to_owned(), server.name.clone(), engine);
+        if let (Some((_, member, ticket)), Some(put_off)) = (by.as_ref(), self.mcp.put_off.get(&key).copied()) {
+            // Offered once more, saying why; after that only the person brings it back.
+            if put_off.reoffered {
+                return;
+            }
+            self.mcp.put_off.insert(key, PutOff { reoffered: true, ..put_off });
+            self.keep_put_off(squad);
+            let on = ticket.map(|t| format!(" for T-{t}")).unwrap_or_default();
+            let seen = self.mcp.status.get(squad).and_then(|k| k.get(&server.name)).and_then(|all| all.iter().find_map(|s| s.detail.clone())).map(|d| format!(" Where it stands: {d}.")).unwrap_or_default();
+            why = format!("{member} needs {} again{on}. Its sign-in was put off earlier; sign in so members can use it — or Not now, and it isn't offered again until you ask from Connections.{seen}", sm::label(server));
         }
         let (plan, name) = if server.auth.is_engine() {
             (sm::signin_plan(engine, &self.binary_of(engine), &sm::signin_dir(&self.config.home, squad), server), format!("{} ({})", sm::label(server), kind.name()))
         } else {
             (crate::cli_signin::Plan { program: String::new(), args: Vec::new(), env: Vec::new(), whoami: (String::new(), Vec::new()), cwd: None }, sm::label(server))
         };
-        self.start_mcp_card(squad, kind, plan, &server.name, name, sm::signin_why(server), by);
+        self.start_mcp_card(squad, kind, plan, &server.name, name, why, by.clone());
+        self.tell_member_of_card(squad, server, by.as_ref());
+    }
+
+    /// The member a card came up for hears, in its conversation, that the
+    /// server waits on the person — the remote person sees it there too.
+    fn tell_member_of_card(&mut self, squad: &str, server: &McpServer, by: Option<&(SessionId, String, Option<TicketId>)>) {
+        let Some((session, member, _)) = by else { return };
+        let text = say!(self, "notice.mcp_card_up", server = sm::label(server), member = member);
+        let _ = squad;
+        self.publish(Event::Notice { undo: None, session: *session, text });
     }
 
     /// The address of squad `squad`'s server `name`, for its sign-in card.
@@ -485,11 +604,12 @@ impl Runtime {
     /// One it gets that needs a sign-in (or its key) puts one card in front
     /// of the person (once) and isn't given; one not looked at yet is given
     /// and looked at, the card following if it needs one.
-    pub(super) fn mcp_for_member(&mut self, squad: &str, id: SessionId) -> Vec<(McpServer, Credential)> {
-        let Some(session) = self.sessions.get(&id) else { return Vec::new() };
-        let Some(member) = session.member.as_ref().map(|m| (m.name.clone(), m.role.clone())) else { return Vec::new() };
+    /// Those it doesn't get this turn come back too, each with why, for its charter ([`unavailable_note`]).
+    pub(super) fn mcp_for_member(&mut self, squad: &str, id: SessionId) -> ForMember {
+        let Some(session) = self.sessions.get(&id) else { return Default::default() };
+        let Some(member) = session.member.as_ref().map(|m| (m.name.clone(), m.role.clone())) else { return Default::default() };
         let engine = match session.engine {
-            Engine::Codex if session.codex.is_some() => return Vec::new(),
+            Engine::Codex if session.codex.is_some() => return Default::default(),
             e => e,
         };
         let ticket = session.work.as_ref().map(|w| w.ticket);
@@ -512,14 +632,14 @@ impl Runtime {
                 if stale {
                     self.check_mcp_servers(squad, Some(&server.name), Some(by));
                 } else if !kept {
-                    self.open_mcp_card(squad, server, engine, by);
+                    self.open_mcp_card(squad, server, engine, by, None);
                 }
                 continue;
             }
             match known {
                 // Signed in elsewhere meanwhile? Looked at again after a while.
                 Some((McpState::NeedsSignIn, at)) if now.saturating_sub(at) > RECHECK_SIGN_IN => self.check_mcp_servers(squad, Some(&server.name), Some(by)),
-                Some((McpState::NeedsSignIn, _)) => self.open_mcp_card(squad, server, engine, by),
+                Some((McpState::NeedsSignIn, _)) => self.open_mcp_card(squad, server, engine, by, None),
                 // Not looked at yet, or not lately (a sign-in can run out):
                 // looked at now, a card following if needed.
                 None | Some((McpState::Unchecked, _)) => self.check_mcp_servers(squad, Some(&server.name), Some(by)),
@@ -528,17 +648,24 @@ impl Runtime {
             }
         }
         // How each is given: equipe's proxy (no credential in it), or the
-        // fallback's address; one that needs a sign-in or its key isn't.
-        mine.into_iter()
-            .filter_map(|server| {
-                let kept = matches!(&server.auth, McpAuth::Key { secret, .. } if self.key_kept(squad, secret));
-                let state = known_of(self, &server).map(|(s, _)| s);
-                match sm::credential(&server, kept, state) {
-                    credential @ (Credential::Engine | Credential::Proxy) => Some((server, credential)),
-                    Credential::MissingKey { .. } | Credential::NeedsSignIn => None,
+        // fallback's address; one that needs a sign-in or its key isn't — and
+        // the member is told why, and what the person has been asked.
+        self.read_put_off(squad);
+        let (mut given, mut unavailable) = (Vec::new(), Vec::new());
+        for server in mine {
+            let kept = matches!(&server.auth, McpAuth::Key { secret, .. } if self.key_kept(squad, secret));
+            let known = self.mcp.status.get(squad).and_then(|k| k.get(&server.name)).and_then(|all| all.iter().find(|s| s.engine == engine || server.auth.proxied())).cloned();
+            match sm::credential(&server, kept, known.as_ref().map(|s| s.state)) {
+                credential @ (Credential::Engine | Credential::Proxy) => given.push((server, credential)),
+                missing => {
+                    let card_up = self.mcp_card_up(squad, &server.name, if server.auth.is_engine() { kind_of(engine) } else { Kind::EquipeMcp });
+                    let put_off = self.mcp.put_off.get(&(squad.to_owned(), server.name.clone(), if server.auth.is_engine() { engine } else { OWN })).is_some_and(|p| p.reoffered);
+                    let why = unavailable_reason(&missing, known.and_then(|s| s.detail).as_deref(), card_up, put_off);
+                    unavailable.push((server, why));
                 }
-            })
-            .collect()
+            }
+        }
+        (given, unavailable)
     }
 
     /// A proxy asks for its server's address and credential, for member
@@ -577,12 +704,12 @@ impl Runtime {
                     let why = if kept { "the saved key was refused" } else { "it needs its API key" };
                     let statuses = self.mcp_each(&squad, &server, McpState::NeedsKey, kept.then(|| why.to_owned()));
                     self.set_mcp_status(&squad, &server, statuses);
-                    self.open_mcp_card(&squad, &server, OWN, by);
+                    self.open_mcp_card(&squad, &server, OWN, by, None);
                     let _ = reply.send(Err(format!("{name}: {why} — the person was asked for it")));
                 }
             },
             McpAuth::Oauth => {
-                let (store, internal) = (self.mcp_store(), self.internal.clone());
+                let (store, internal, mac) = (self.mcp_store(), self.internal.clone(), super::window::this_mac());
                 let rejected = rejected.map(|r| r.strip_prefix("Bearer ").unwrap_or(&r).to_owned());
                 tokio::spawn(async move {
                     let http = crate::mcp_gateway::client();
@@ -595,9 +722,14 @@ impl Runtime {
                             let _ = internal.send(Internal::McpSeen(open, Seen::NeedsSignIn(why.clone())));
                             Err(why)
                         }
+                        Err(NoToken::Blocked(_)) => {
+                            let why = format!("{name} is unavailable: {}", crate::mcp_keys::blocked_detail(&mac, false));
+                            let _ = internal.send(Internal::McpSeen(open, Seen::NeedsSignIn(why.clone())));
+                            Err(why)
+                        }
                         Err(NoToken::Failing(why)) => {
                             let _ = internal.send(Internal::McpSeen(open, Seen::Failing(why.clone())));
-                            Err(why)
+                            Err(format!("{name} is failing for now ({why}); equipe looks again on its own"))
                         }
                     };
                     let _ = reply.send(answer);
@@ -625,7 +757,7 @@ impl Runtime {
         if matches!(state, McpState::NeedsSignIn | McpState::NeedsKey) {
             let by = self.sessions.iter().find(|(_, s)| s.squad.as_deref() == Some(open.squad.as_str()) && s.is_member_itself() && s.name() == Some(open.member.as_str())).map(|(id, s)| (*id, open.member.clone(), s.work.as_ref().map(|w| w.ticket)));
             if by.is_some() {
-                self.open_mcp_card(&open.squad, &server, OWN, by);
+                self.open_mcp_card(&open.squad, &server, OWN, by, None);
             }
         }
     }
@@ -654,5 +786,68 @@ impl Runtime {
     /// Whether the squad keeps a key called `name` (its facts; no value read).
     fn key_kept(&self, squad: &str, name: &str) -> bool {
         self.journals.get(squad).map(crate::squad_secrets::read).unwrap_or_default().iter().any(|k| k.name == name)
+    }
+}
+
+/// Why a member doesn't get a server this turn, in a line: what is missing,
+/// what equipe saw, and what the person has (or hasn't) been asked.
+pub(super) fn unavailable_reason(missing: &Credential, detail: Option<&str>, card_up: bool, put_off: bool) -> String {
+    let what = match missing {
+        Credential::MissingKey { .. } => "its API key isn't available to equipe",
+        _ => "equipe isn't signed in to it",
+    };
+    let seen = detail.map(|d| format!(" ({d})")).unwrap_or_default();
+    let asked = if card_up {
+        "the person has a card for it in Needs you"
+    } else if put_off {
+        "the person put its sign-in off; only they can turn it back on, from Connections"
+    } else {
+        "the person is asked on a card"
+    };
+    format!("{what}{seen}; {asked}")
+}
+
+/// What a member is told of the servers it would have but doesn't this
+/// turn; `None` when it has them all.
+pub(super) fn unavailable_note(unavailable: &[(McpServer, String)]) -> Option<String> {
+    if unavailable.is_empty() {
+        return None;
+    }
+    let each: Vec<String> = unavailable.iter().map(|(s, why)| format!("`{}` ({}): {why}", s.name, sm::label(s))).collect();
+    Some(format!(
+        "Not available this turn: {}. Don't look for another way in or guess at the cause: if your work needs it, say in a line \
+that it is unavailable and why (as above), then carry on with what you can do without it.",
+        each.join("; ")
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn put_off_sign_ins_from_an_earlier_equipe_are_offered_once_more() {
+        // What 0.103 wrote: pairs, never offered again.
+        let old = parse_put_off(r#"[["mobbin","claude"],["figma","claude"]]"#);
+        assert_eq!(old.len(), 2);
+        assert!(old.iter().all(|(_, e, p)| *e == Engine::Claude && !p.reoffered), "{old:?}");
+        // What this one writes: when, and whether it was offered once more.
+        let kept = vec![KeptPutOff { server: "mobbin".into(), engine: Engine::Claude, at: 7, reoffered: true }];
+        let back = parse_put_off(&serde_json::to_string(&kept).unwrap());
+        assert_eq!(back, vec![("mobbin".to_owned(), Engine::Claude, PutOff { at: 7, reoffered: true })]);
+        assert!(parse_put_off("not json").is_empty());
+    }
+
+    #[test]
+    fn a_member_is_told_why_a_server_is_missing_and_what_the_person_was_asked() {
+        let key = unavailable_reason(&Credential::MissingKey { secret: "21st-api-key".into() }, Some("its saved credential is behind a Keychain dialog on mini"), false, false);
+        assert!(key.starts_with("its API key isn't available to equipe (its saved credential is behind a Keychain dialog on mini)"), "{key}");
+        assert!(unavailable_reason(&Credential::NeedsSignIn, None, true, false).ends_with("the person has a card for it in Needs you"));
+        assert!(unavailable_reason(&Credential::NeedsSignIn, None, false, true).contains("only they can turn it back on, from Connections"));
+        let mobbin = sm::server("mobbin", None, None, None).unwrap();
+        let note = unavailable_note(&[(mobbin, "equipe isn't signed in to it; the person is asked on a card".into())]).unwrap();
+        assert!(note.starts_with("Not available this turn: `mobbin` (Mobbin): equipe isn't signed in to it"), "{note}");
+        assert!(note.contains("Don't look for another way in or guess"));
+        assert_eq!(unavailable_note(&[]), None);
     }
 }

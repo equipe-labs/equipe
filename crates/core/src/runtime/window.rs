@@ -95,8 +95,14 @@ fn tabs_profile(lane: &str) -> String {
     profile_of(Path::new(""), lane).0
 }
 
-/// This Mac's name, for telling the person where the window is.
-fn this_mac() -> String {
+/// This Mac's name, for telling the person where the window is (or the
+/// dialog that waits): asked once per process.
+pub(super) fn this_mac() -> String {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(ask_this_mac).clone()
+}
+
+fn ask_this_mac() -> String {
     std::process::Command::new("hostname")
         .arg("-s")
         .output()

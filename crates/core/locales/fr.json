@@ -799,6 +799,7 @@
   "notice.missed_title": "Vous l’avez manqué {n} fois : {what}",
   "notice.missed_body": "{impact}. Ouvrez-le pour le régler.",
   "notice.squad_secret_saved": "{member} a gardé la clé « {name} » pour {service} dans le coffre de secrets de cette machine. equipe la masque désormais.",
+  "notice.mcp_card_up": "{member} ne peut pas utiliser {server} sans vous : la carte est dans « À vous ».",
   "secrets.no_project": "aucun projet (le dossier de l'équipe)",
   "secrets.grant.header": "Clé",
   "secrets.grant.question": "{member} peut-il utiliser la clé « {name} » ({service}) sur {project} ?",

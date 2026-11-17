@@ -36,6 +36,9 @@ use crate::verify::pct;
 pub const SIGN_IN_WAIT: Duration = Duration::from_secs(15 * 60);
 /// A token this close to running out is refreshed before it is used.
 const EARLY: u64 = 60;
+/// …and this close, by the daemon's own look every few minutes
+/// ([`access_ahead`]): renewed well before a member's call could meet it run out.
+pub const RENEW_AHEAD: u64 = 20 * 60;
 /// What equipe calls itself when it registers.
 const CLIENT_NAME: &str = "equipe";
 
@@ -372,25 +375,51 @@ pub async fn refresh(http: &reqwest::Client, tokens: &Tokens, now: u64) -> Resul
 
 // ── keeping them ──
 
-/// Where a server's tokens are read and kept: the squad's secret store.
+/// Where a server's tokens are read and kept.
 pub trait Store: Send + Sync {
-    fn load(&self, squad: &str, name: &str) -> Option<String>;
+    /// The kept value; `Ok(None)`: never kept. `Err`: it couldn't be read
+    /// now (a Keychain dialog waits on the Mac), which is no sign-out.
+    fn load(&self, squad: &str, name: &str) -> Result<Option<String>, String>;
     fn keep(&self, squad: &str, name: &str, value: &str) -> Result<(), String>;
     fn forget(&self, squad: &str, name: &str);
 }
 
-/// The daemon's secret store ([`crate::vault::Vault`]).
-pub struct VaultStore(pub Arc<Mutex<crate::vault::Vault>>);
+/// The daemon's own: equipe's MCP credentials file ([`crate::mcp_keys`]),
+/// readable with nobody at the Mac — and, for tokens an earlier equipe kept
+/// in the secret store ([`crate::vault::Vault`]), that store, once: what is
+/// read there moves into the file.
+pub struct KeptStore {
+    pub home: std::path::PathBuf,
+    pub vault: Arc<Mutex<crate::vault::Vault>>,
+}
 
-impl Store for VaultStore {
-    fn load(&self, squad: &str, name: &str) -> Option<String> {
-        self.0.lock().ok()?.squad_secret(squad, name, false).ok()
+impl Store for KeptStore {
+    fn load(&self, squad: &str, name: &str) -> Result<Option<String>, String> {
+        if let Some(value) = crate::mcp_keys::get(&self.home, squad, name)? {
+            return Ok(Some(value));
+        }
+        let older = self.vault.lock().map_err(|_| "the secret store is unreadable".to_owned())?.squad_secret(squad, name, false);
+        match older {
+            Ok(value) => {
+                // Moved: from now on read without the Keychain.
+                if crate::mcp_keys::set(&self.home, squad, name, &value).is_ok() {
+                    crate::daemon_log!("equipe: {squad}'s {name} moved out of the Keychain into equipe's MCP credentials file");
+                }
+                Ok(Some(value))
+            }
+            Err(why) if crate::mcp_keys::keychain_blocked(&why) => Err(why),
+            Err(_) => Ok(None),
+        }
     }
     fn keep(&self, squad: &str, name: &str, value: &str) -> Result<(), String> {
-        self.0.lock().map_err(|_| "the secret store is unreadable".to_owned())?.set_squad_secret(squad, name, value)
+        crate::mcp_keys::set(&self.home, squad, name, value)
     }
     fn forget(&self, squad: &str, name: &str) {
-        if let Ok(mut vault) = self.0.lock() {
+        let _ = crate::mcp_keys::delete(&self.home, squad, name);
+        // An earlier equipe's copy too, where the store lets it go without asking.
+        if let Ok(mut vault) = self.vault.lock()
+            && vault.squad_secret(squad, name, false).is_ok()
+        {
             let _ = vault.delete_squad_secret(squad, name);
         }
     }
@@ -411,18 +440,27 @@ fn watch(squad: &str, tokens: &Tokens) {
     }
 }
 
-/// The tokens kept for `server`, if it was signed in.
-pub fn load(store: &dyn Store, squad: &str, server: &str) -> Option<Tokens> {
+/// The tokens kept for `server`: `Ok(None)` if it was never signed in;
+/// `Err` when they are kept but can't be read now.
+pub fn load(store: &dyn Store, squad: &str, server: &str) -> Result<Option<Tokens>, String> {
     let key = (squad.to_owned(), server.to_owned());
     if let Some(known) = KNOWN.lock().ok().and_then(|k| k.get(&key).cloned()) {
-        return Some(known);
+        return Ok(Some(known));
     }
-    let tokens: Tokens = serde_json::from_str(&store.load(squad, &secret_name(server))?).ok()?;
+    let Some(text) = store.load(squad, &secret_name(server))? else { return Ok(None) };
+    let Ok(tokens) = serde_json::from_str::<Tokens>(&text) else { return Ok(None) };
     watch(squad, &tokens);
     if let Ok(mut known) = KNOWN.lock() {
         known.insert(key, tokens.clone());
     }
-    Some(tokens)
+    Ok(Some(tokens))
+}
+
+/// Forget what was read in this process: a daemon starting reads anew.
+pub fn forget_known() {
+    if let Ok(mut known) = KNOWN.lock() {
+        known.clear();
+    }
 }
 
 /// Keep `tokens` for `server`.
@@ -451,13 +489,26 @@ pub enum NoToken {
     Never,
     /// The sign-in can't be renewed: the person signs in again.
     SignIn(String),
-    /// The renewal didn't go through for now (the network): tried again later.
+    /// The renewal didn't go through for now (the network, a busy server): tried again later.
     Failing(String),
+    /// Kept, but not readable now: a Keychain dialog waits on the Mac (an earlier equipe's copy).
+    Blocked(String),
 }
 
 /// The access token to use for `server` now: the kept one, refreshed first
 /// when it runs out soon — or, `rejected` (the server just refused it), whatever its time.
 pub async fn access(http: &reqwest::Client, store: Arc<dyn Store>, squad: &str, server: &str, rejected: Option<&str>, now: u64) -> Result<String, NoToken> {
+    access_within(http, store, squad, server, rejected, now, EARLY).await
+}
+
+/// [`access`], renewing a token that runs out within [`RENEW_AHEAD`]: the
+/// daemon's periodic look, so the token a member's call uses is never the
+/// one about to run out.
+pub async fn access_ahead(http: &reqwest::Client, store: Arc<dyn Store>, squad: &str, server: &str, now: u64) -> Result<String, NoToken> {
+    access_within(http, store, squad, server, None, now, RENEW_AHEAD).await
+}
+
+async fn access_within(http: &reqwest::Client, store: Arc<dyn Store>, squad: &str, server: &str, rejected: Option<&str>, now: u64, early: u64) -> Result<String, NoToken> {
     let lock = {
         let mut all = RENEWING.lock().map_err(|_| NoToken::Failing("busy".into()))?;
         all.entry((squad.to_owned(), server.to_owned())).or_default().clone()
@@ -465,12 +516,13 @@ pub async fn access(http: &reqwest::Client, store: Arc<dyn Store>, squad: &str, 
     let _held = lock.lock().await;
     let loaded = {
         let (store, squad, server) = (store.clone(), squad.to_owned(), server.to_owned());
-        tokio::task::spawn_blocking(move || load(store.as_ref(), &squad, &server)).await.ok().flatten()
+        tokio::task::spawn_blocking(move || load(store.as_ref(), &squad, &server)).await.unwrap_or_else(|_| Err("the secret store failed".into()))
     };
-    let tokens = loaded.ok_or(NoToken::Never)?;
+    let tokens = loaded.map_err(NoToken::Blocked)?.ok_or(NoToken::Never)?;
     // Another call renewed it while this one waited: the new one is used.
     let refused = rejected.is_some_and(|r| r == tokens.access_token);
-    if !refused && !tokens.stale(now) {
+    let stale = tokens.expires_at.is_some_and(|at| at <= now + early);
+    if !refused && !stale {
         return Ok(tokens.access_token);
     }
     match refresh(http, &tokens, now).await {
@@ -479,9 +531,16 @@ pub async fn access(http: &reqwest::Client, store: Arc<dyn Store>, squad: &str, 
             let _ = tokio::task::spawn_blocking(move || keep(store.as_ref(), &squad_s, &server_s, &kept)).await;
             Ok(fresh.access_token)
         }
-        Err(why) if why.starts_with("it answered 4") || tokens.refresh_token.is_none() => Err(NoToken::SignIn(why)),
+        Err(why) if refused_for_good(&why) || tokens.refresh_token.is_none() => Err(NoToken::SignIn(why)),
         Err(why) => Err(NoToken::Failing(why)),
     }
+}
+
+/// Whether a renewal's refusal means the sign-in is over (the server said
+/// the refresh token is no good: 400, 401, 403), rather than "not now" — a
+/// 429 or a 5xx is tried again later, and the person isn't asked.
+pub fn refused_for_good(why: &str) -> bool {
+    ["it answered 400", "it answered 401", "it answered 403"].iter().any(|p| why.starts_with(p))
 }
 
 // ── the sign-in itself ──
@@ -654,6 +713,62 @@ mod tests {
         assert_eq!(code_from(" http://localhost:5000/callback?state=st8&code=a%2Fb ", "st8").as_deref(), Ok("a/b"));
         assert!(code_from("http://localhost:5000/callback?code=abc&state=other", "st8").is_err());
         assert!(code_from("http://localhost:5000/callback?error=access_denied&state=st8", "st8").unwrap_err().contains("wasn't allowed"));
+    }
+
+    /// A secret store whose every read waits on a Keychain dialog nobody answers.
+    struct Unanswered;
+    impl crate::vault::Secrets for Unanswered {
+        fn set_named(&mut self, _: &str, _: &str) -> Result<(), String> {
+            Err(crate::keychain::UNANSWERED.into())
+        }
+        fn get_named(&self, _: &str) -> Result<String, String> {
+            Err(crate::keychain::UNANSWERED.into())
+        }
+        fn delete_named(&mut self, _: &str) -> Result<(), String> {
+            Err(crate::keychain::UNANSWERED.into())
+        }
+    }
+
+    fn scratch_home(name: &str) -> std::path::PathBuf {
+        let home = std::env::temp_dir().join(format!("equipe-mcp-oauth-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        home
+    }
+
+    #[test]
+    fn a_sign_in_kept_by_an_earlier_equipe_moves_out_of_the_keychain_once_and_is_read_without_it_after() {
+        let home = scratch_home("migrate");
+        let mut older = crate::vault::InMemory::default();
+        crate::vault::Secrets::set_in(&mut older, crate::squad_secrets::SERVICE, "acme/mcp-oauth-mobbin", "{\"kept\":1}").unwrap();
+        let open = KeptStore { home: home.clone(), vault: Arc::new(Mutex::new(crate::vault::Vault::open(&home, Box::new(older)))) };
+        // The Keychain open this once (the person approved, or saved anything): moved.
+        assert_eq!(open.load("acme", "mcp-oauth-mobbin").unwrap().as_deref(), Some("{\"kept\":1}"));
+        // An update later, the Keychain asks again and nobody answers: read from equipe's own file all the same.
+        let blocked = KeptStore { home: home.clone(), vault: Arc::new(Mutex::new(crate::vault::Vault::open(&home, Box::new(Unanswered)))) };
+        assert_eq!(blocked.load("acme", "mcp-oauth-mobbin").unwrap().as_deref(), Some("{\"kept\":1}"));
+        // A new sign-in is kept without the Keychain at all.
+        blocked.keep("acme", "mcp-oauth-figma", "{\"new\":1}").unwrap();
+        assert_eq!(blocked.load("acme", "mcp-oauth-figma").unwrap().as_deref(), Some("{\"new\":1}"));
+    }
+
+    #[test]
+    fn a_sign_in_behind_an_unanswered_keychain_dialog_is_not_taken_for_a_sign_out() {
+        let home = scratch_home("blocked");
+        let blocked = KeptStore { home: home.clone(), vault: Arc::new(Mutex::new(crate::vault::Vault::open(&home, Box::new(Unanswered)))) };
+        let read = blocked.load("acme", "mcp-oauth-mobbin");
+        assert_eq!(read, Err(crate::keychain::UNANSWERED.to_owned()), "kept but unreadable — never 'never signed in'");
+        let none = KeptStore { home: home.clone(), vault: Arc::new(Mutex::new(crate::vault::Vault::open(&home, Box::new(crate::vault::InMemory::default())))) };
+        assert_eq!(none.load("acme", "mcp-oauth-mobbin"), Ok(None));
+    }
+
+    #[test]
+    fn only_a_refused_refresh_token_ends_a_sign_in_a_busy_server_does_not() {
+        assert!(refused_for_good("it answered 400: invalid_grant"));
+        assert!(refused_for_good("it answered 401: refused"));
+        assert!(!refused_for_good("it answered 429: slow down"), "Mobbin's 429s are a wait, not a sign-out");
+        assert!(!refused_for_good("it answered 503: refused"));
+        assert!(!refused_for_good("it couldn't be reached"));
     }
 
     #[test]
