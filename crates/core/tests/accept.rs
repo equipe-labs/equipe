@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use equipe_core::protocol::accept::{AcceptProposal, Confirmed, FROM_WORDS, Land, Verdict};
 use equipe_core::protocol::rpc::{RunKey, ToolCall, ToolResult};
-use equipe_core::protocol::{Access, Command, Event, SessionSpec, TicketStatus};
+use equipe_core::protocol::{Access, Command, Event, SessionSpec, SessionState, TicketStatus};
 use equipe_core::runtime::{self, Config, Handle};
 use equipe_core::squads;
 use equipe_providers::CredentialStore;
@@ -168,6 +168,18 @@ async fn tool_on(handle: &Handle, member: &str, ticket: u32, name: &str, argumen
     handle.tool(ToolCall { run, squad: "acme".into(), member: member.into(), name: name.into(), arguments }).await
 }
 
+/// Wait until the run of `ticket` has no turn going.
+async fn run_idle(handle: &Handle, ticket: u32) {
+    for _ in 0..600 {
+        let snapshot = handle.snapshot("acme").await;
+        if snapshot.sessions.iter().any(|s| s.run.is_some_and(|r| r.ticket == ticket) && s.state == SessionState::Ready) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("T-{ticket}'s run never ended its turn");
+}
+
 fn proposed(events: &[Event]) -> AcceptProposal {
     events.iter().find_map(|e| if let Event::AcceptProposed { proposal, .. } = e { Some(proposal.clone()) } else { None }).expect("proposed")
 }
@@ -273,6 +285,10 @@ async fn the_pm_accepts_its_teams_work_itself_unless_the_person_keeps_that_for_t
     // The person keeps acceptance for themselves: the PM only puts it on a card.
     handle.send(Command::SetPmAccepts { squad: "acme".into(), on: false });
     until(&mut events, |e| matches!(e, Event::PmAcceptsChanged { on: false, .. })).await;
+    // T-2's turn is over by now (its engine only takes a moment): a hand-in that
+    // lands after its run's turn ended is settled at once, not at a turn end
+    // that never comes.
+    run_idle(&handle, 2).await;
     // Its own proposal runs beside T-2 now: the hand-in says which run it is.
     let handed = tool_on(&handle, "frontend", 2, "submit_for_review", json!({ "summary": "Pricing done.", "changes_screens": false })).await;
     assert!(!handed.is_error, "{handed:?}");

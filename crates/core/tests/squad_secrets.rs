@@ -339,22 +339,29 @@ async fn the_person_sees_a_value_once_and_a_phone_never_does() {
     w.handle.shutdown().await;
 }
 
+/// The key the replacement test saves over. A name of its own: a kept value
+/// is read back from the masking list first ([`equipe_core::squad_secrets::watched`]),
+/// which is one list for the whole process and keyed by squad and name, so
+/// every test here saving `VALUE` under `posthog-project-key` would put the
+/// old value back under this test while it waits for the new one.
+const REPLACED: &str = "posthog-replaced-key";
+
 async fn write_key(w: &World) {
-    let wrote = w.call("backend", "secret_write", json!({ "name": "posthog-project-key", "path": ".env.local", "key": "K" })).await;
+    let wrote = w.call("backend", "secret_write", json!({ "name": REPLACED, "path": ".env.local", "key": "K" })).await;
     assert!(!wrote.is_error && wrote.text.contains("Wrote"), "{wrote:?}");
 }
 
 async fn save_new(w: &World, value: &str) -> equipe_core::protocol::rpc::ToolResult {
-    w.call("backend", "secret_save", json!({ "name": "posthog-project-key", "service": "posthog", "kind": "api_key", "value": value })).await
+    w.call("backend", "secret_save", json!({ "name": REPLACED, "service": "posthog", "kind": "api_key", "value": value })).await
 }
 
 #[tokio::test]
 async fn saving_over_a_kept_key_waits_for_the_person_and_equipes_own_names_are_refused() {
     const NEW: &str = "phc_Nw4xR8tY2uIo6pAs0dFg3hJk7lZx9cVb";
     let mut w = world().await;
-    w.save("posthog-project-key", json!([])).await;
-    w.handle.send(Command::SetSquadSecretProjects { squad: "acme".into(), name: "posthog-project-key".into(), projects: Vec::new(), any_project: true });
-    until(&mut w.events, |e| matches!(e, Event::SquadSecrets { secrets } if secrets.iter().any(|s| s.any_project))).await;
+    w.save(REPLACED, json!([])).await;
+    w.handle.send(Command::SetSquadSecretProjects { squad: "acme".into(), name: REPLACED.into(), projects: Vec::new(), any_project: true });
+    until(&mut w.events, |e| matches!(e, Event::SquadSecrets { secrets } if secrets.iter().any(|s| s.name == REPLACED && s.any_project))).await;
     let written = |w: &World| std::fs::read_to_string(w.desk.join(".env.local")).unwrap_or_default();
     // Saved again: the person is asked, and the old value stays meanwhile.
     for (picked, kept) in [(1, VALUE), (0, NEW)] {
@@ -366,7 +373,7 @@ async fn saving_over_a_kept_key_waits_for_the_person_and_equipes_own_names_are_r
         }
         let Some(Event::QuestionsAsked { questions, .. }) = seen.last().cloned() else { panic!() };
         assert_eq!(questions.questions[0].options.len(), 2);
-        assert!(questions.questions[0].question.contains("posthog-project-key"), "{questions:?}");
+        assert!(questions.questions[0].question.contains(REPLACED), "{questions:?}");
         let again = save_new(&w, NEW).await;
         assert!(again.text.contains("already asked"), "one card at a time: {again:?}");
         write_key(&w).await;

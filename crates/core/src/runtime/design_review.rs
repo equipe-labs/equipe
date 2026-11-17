@@ -429,6 +429,9 @@ what it should be) and `polish` (S3/S4). Then end your turn.",
                 {
                     let _ = journal.ticket_event(fid, &designer, "created", &format!("design fix of T-{} from T-{on}", item.ticket));
                     fixes += 1;
+                    if let Ok(about) = TicketId::try_from(item.ticket) {
+                        self.keep_review_follow_up(squad, fid, about, rules::follow_up::Kind::Fix, rules::follow_up::Severity::S2);
+                    }
                     if let Some(made) = self.journal(squad).and_then(|j| j.ticket(fid).ok().flatten()) {
                         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: made });
                     }
@@ -461,6 +464,7 @@ what it should be) and `polish` (S3/S4). Then end your turn.",
                 && let Ok(pid) = journal.create_ticket(&polish)
             {
                 let _ = journal.ticket_event(pid, &designer, "created", &format!("design polish from T-{on}"));
+                self.keep_review_follow_up(squad, pid, on, rules::follow_up::Kind::Polish, rules::follow_up::Severity::S3);
                 if let Some(made) = self.journal(squad).and_then(|j| j.ticket(pid).ok().flatten()) {
                     self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: made });
                 }

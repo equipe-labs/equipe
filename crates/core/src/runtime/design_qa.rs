@@ -24,6 +24,11 @@
 //! change goes on without a designer turn into the daily review
 //! (`super::design_review`); only a high-risk one gets a designer turn of
 //! its own, in a light session when the report shows enough.
+//!
+//! Design QA stays one level deep: a designer's polish follow-up, or any
+//! follow-up of a follow-up (`super::follow_ups`), goes into the daily
+//! review instead of a designer turn of its own; its precheck still refuses
+//! a new S1/S2.
 
 use std::time::Duration;
 
@@ -216,7 +221,9 @@ your worktree, name them in images, and hand in again."
                 ];
                 let checked = board::arg_strs(args, "screen_checks");
                 let missing = ALL.iter().filter(|(key, _)| !checked.iter().any(|got| got == key)).map(|(_, label)| *label).collect::<Vec<_>>();
-                if !missing.is_empty() {
+                // A polish follow-up is shown where its findings are; the precheck renders the rest.
+                let light = self.follow_up_of(squad, ticket).is_some_and(|f| f.light_check());
+                if !missing.is_empty() && !light {
                     return Err(format!(
                         "Screens changed: the hand-in screenshots must cover the same range as design QA. Add every \
 screen_checks value; missing: {}. Then hand in again.",
@@ -272,7 +279,23 @@ screen_checks value; missing: {}. Then hand in again.",
         }
         let mode = journal.design_qa_settings().mode;
         let _ = journal.set_design_qa_mode_of(qa_id, mode.code(), waived);
-        // In risk_batch without a precheck nothing is known of the change: a designer's full look.
+        // A polish follow-up, or a follow-up of a follow-up, gets no designer turn of its own.
+        let quiet = journal.follow_up(ticket.id).is_some_and(|f| f.quiet_qa());
+        // In risk_batch without a precheck nothing is known of the change: a designer's full look —
+        // unless it is a quiet follow-up, which the daily review sees with main's precheck.
+        if mode == Mode::RiskBatch && !runs && quiet {
+            let _ = journal.set_design_qa_route(qa_id, Route::Batch.code(), "", false);
+            let note = "A follow-up's polish: no designer turn of its own; it goes into the daily design review.".to_owned();
+            let mut closed = made;
+            closed.status = TicketStatus::Done;
+            closed.note = Some(note.clone());
+            let _ = journal.save_ticket(&closed);
+            let _ = journal.ticket_event(qa_id, PRECHECK_BY, "design QA passed", &note);
+            let _ = journal.set_design_qa_verdict(qa_id, "batched", PRECHECK_BY);
+            ticket.design_qa = None;
+            self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: closed });
+            return None;
+        }
         if mode == Mode::RiskBatch && !runs {
             let _ = journal.set_design_qa_route(qa_id, Route::PerTicket.code(), crate::design_qa::Risk::Unverified.code(), false);
         }
@@ -332,7 +355,8 @@ screen_checks value; missing: {}. Then hand in again.",
         let routed: Option<RouteCall> = match (risk_batch, &checked) {
             (true, Some(c)) => {
                 let spec = self.spec_of(c);
-                Some(crate::design_qa::route(&crate::design_qa::RouteAsk { report: report.as_ref(), waived: run.waived.is_some(), spec, recheck, tight }))
+                let follow_up = self.follow_up_of(squad, c.id).is_some_and(|f| f.quiet_qa());
+                Some(crate::design_qa::route(&crate::design_qa::RouteAsk { report: report.as_ref(), waived: run.waived.is_some(), spec, recheck, tight, follow_up }))
             }
             _ => None,
         };

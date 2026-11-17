@@ -203,6 +203,11 @@ pub struct RouteAsk<'a> {
     pub recheck: bool,
     /// The routing is tightened.
     pub tight: bool,
+    /// The change is a polish follow-up, or a follow-up of a follow-up
+    /// (`follow_up::FollowUp::quiet_qa`): no designer turn of its own — the
+    /// self-check still refuses a new S1/S2 and a designer judges a waiver;
+    /// the rest goes into the daily review.
+    pub follow_up: bool,
 }
 
 /// Where a hand-in goes, why, and whether a designer can judge it from the
@@ -225,10 +230,16 @@ impl RouteCall {
 /// Where a hand-in with changed screens goes in `risk_batch`.
 pub fn route(ask: &RouteAsk<'_>) -> RouteCall {
     let call = |route, risks: Vec<Risk>, lite| RouteCall { route, risks, lite };
-    let Some(r) = ask.report else { return call(Route::PerTicket, vec![Risk::Unverified], false) };
+    let Some(r) = ask.report else {
+        return if ask.follow_up { call(Route::Batch, Vec::new(), false) } else { call(Route::PerTicket, vec![Risk::Unverified], false) };
+    };
     let blockers = r.new_blockers();
     if !blockers.is_empty() && !ask.waived {
         return call(Route::Refused, Vec::new(), false);
+    }
+    // Design QA stays one level deep: a follow-up's polish is the daily review's.
+    if ask.follow_up && blockers.is_empty() {
+        return call(Route::Batch, Vec::new(), false);
     }
     let taken = r.taken();
     if taken == 0 {
@@ -522,6 +533,17 @@ mod tests {
         // A finding that was there before never refuses.
         let old = Finding::bare("text-clipped", Severity::Blocker, "settings/main/default", "390.light.text-200", false);
         assert_eq!(routed(&report(vec![shot("settings/main/default", true, true)], vec![old]), |_| {}).route, Route::Batch);
+    }
+
+    #[test]
+    fn a_follow_ups_build_gets_no_designer_turn_of_its_own_but_still_meets_the_self_check() {
+        let new = report(vec![shot("settings/main/default", true, true), shot("billing/plans/default", true, false)], vec![]);
+        assert_eq!(routed(&new, |a| a.follow_up = true), RouteCall { route: Route::Batch, risks: vec![], lite: false }, "into the daily review");
+        assert_eq!(route(&RouteAsk { follow_up: true, ..RouteAsk::default() }).route, Route::Batch, "nothing seen: still no full designer session");
+        let blocker = Finding::bare("text-clipped", Severity::Blocker, "settings/main/default", "390.light.text-200", true);
+        let broken = report(vec![shot("settings/main/default", true, true)], vec![blocker]);
+        assert_eq!(routed(&broken, |a| a.follow_up = true).route, Route::Refused, "a new S1/S2 is refused back to its engineer");
+        assert_eq!(routed(&broken, |a| { a.follow_up = true; a.waived = true }).risks, [Risk::Waived], "a designer still judges a waiver");
     }
 
     #[test]
