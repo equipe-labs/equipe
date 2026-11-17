@@ -185,7 +185,7 @@ Get main fixed first (put it on the board), then accept T-{ticket} again."
             let result = worktree::land(&repo, &merge).map(|main| (main, push.then(|| worktree::push_main(&repo).map(|_| ()))));
             // What landing kept out of git, from when the merge was worked out.
             let kept = crate::design::captures::take_report(&repo, &branch);
-            let _ = internal.send(Internal::Merged { squad, ticket, result, kept });
+            let _ = internal.send(Internal::Merged { squad, ticket, result, kept, push });
         });
     }
 }

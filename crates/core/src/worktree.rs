@@ -332,6 +332,29 @@ pub(crate) fn admin_dir(path: &Path) -> Option<PathBuf> {
     Some(if dir.is_relative() { path.join(dir) } else { dir })
 }
 
+/// The checkout `path` is in and its repository's common git folder — read
+/// from git's files, no git run; `path` need not be there yet. `None` when
+/// it is in no repository.
+pub fn git_dirs(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    let mut at = Some(path);
+    while let Some(dir) = at {
+        let dot = dir.join(".git");
+        if dot.is_dir() {
+            return Some((dir.to_owned(), dot));
+        }
+        if dot.is_file() {
+            let admin = admin_dir(dir)?;
+            let common = match std::fs::read_to_string(admin.join("commondir")) {
+                Ok(rel) => admin.join(rel.trim()),
+                Err(_) => admin,
+            };
+            return Some((dir.to_owned(), std::fs::canonicalize(&common).unwrap_or(common)));
+        }
+        at = dir.parent();
+    }
+    None
+}
+
 /// Whether worktree `path` checks out only part of its repository, as a
 /// squad home's ticket worktree does. Reads a file; runs no git.
 pub fn is_sparse(path: &Path) -> bool {
@@ -345,6 +368,8 @@ pub fn is_sparse(path: &Path) -> bool {
 /// is left behind and the error names them. With `only` (patterns, see
 /// [`home_patterns`]) a squad home's worktree checks out just what they leave in.
 pub fn create_after(repo: &Path, home: &Path, id: &str, label: &str, after: &[(String, String)], only: &[String]) -> Result<Sandbox> {
+    // A member's `git merge main` there merges the design registries as JSON.
+    crate::design::registry::ensure(repo);
     let mut sandbox = create_sparse(repo, home, id, label, only)?;
     for (what, branch) in after {
         if git(repo, &["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}")]).is_err()
@@ -736,6 +761,7 @@ impl MergedCache {
 pub fn merge_conflicts(repo: &Path, branch: &str) -> Result<Vec<String>> {
     off_the_loop("merge_conflicts");
     let main = main_branch(repo)?;
+    crate::design::registry::ensure(repo);
     let mut command = git_command(repo);
     command.args(["merge-tree", "--write-tree", "--name-only", "--no-messages", &format!("refs/heads/{main}"), branch]);
     let out = output_within(command, GIT_TIMEOUT)?;
@@ -748,7 +774,9 @@ pub fn merge_conflicts(repo: &Path, branch: &str) -> Result<Vec<String>> {
                 return Err(format!("git merge-tree found a conflict between {branch} and {main} but named no file"));
             }
             // Design captures and their manifest: settled when it merges (`prepare_merge`).
-            Ok(files.into_iter().filter(|f| !crate::design::captures::settles_itself(repo, f)).collect())
+            let files: Vec<String> = files.into_iter().filter(|f| !crate::design::captures::settles_itself(repo, f)).collect();
+            // Design registries merged as JSON: a conflict only where one is left.
+            Ok(crate::design::registry::real_conflicts(repo, &format!("refs/heads/{main}"), branch, files))
         }
         _ => Err(format!("git merge-tree failed: {}", String::from_utf8_lossy(&out.stderr).trim())),
     }
@@ -761,9 +789,21 @@ pub fn merge_conflicts(repo: &Path, branch: &str) -> Result<Vec<String>> {
 /// nothing changes. Returns the main branch's name; `Ok` with nothing done when
 /// `branch` is in it already, or would change nothing in it.
 pub fn merge_into_main(repo: &Path, branch: &str, message: &str) -> Result<String> {
+    commit_own_writes(repo);
     match prepare_merge(repo, branch, message)? {
         Prepared::Nothing { main } => Ok(main),
         Prepared::Merge(merge) => land(repo, &merge),
+    }
+}
+
+/// Before main moves: what equipe itself wrote in the checkout main is
+/// checked out in and left uncommitted, committed on main first — else the
+/// fast-forward there would refuse to touch it (`design::own`).
+pub fn commit_own_writes(repo: &Path) {
+    match crate::design::own::commit_pending(repo) {
+        Ok(files) if !files.is_empty() => crate::daemon_log!("equipe: committed on main what equipe wrote in {}: {}", repo.display(), files.join(", ")),
+        Ok(_) => {}
+        Err(err) => crate::daemon_log!("equipe: what equipe wrote in {} stays uncommitted: {err}", repo.display()),
     }
 }
 
@@ -798,6 +838,7 @@ pub fn prepare_merge(repo: &Path, branch: &str, message: &str) -> Result<Prepare
     // Design captures never reach main's history: the branch's own commits
     // that added any are rewritten without them first.
     crate::design::captures::guard(repo, branch)?;
+    crate::design::registry::ensure(repo);
     let main = main_branch(repo)?;
     if is_ancestor(repo, branch, &main) || adds_nothing(repo, branch, &main) {
         return Ok(Prepared::Nothing { main });
@@ -814,10 +855,10 @@ pub fn prepare_merge(repo: &Path, branch: &str, message: &str) -> Result<Prepare
         Some(0) => {}
         Some(1) => {
             let files: Vec<&str> = lines.take_while(|l| !l.is_empty()).collect();
-            match crate::design::captures::settle_tree(repo, &tree, &tip, &head, &files) {
-                Some(settled) => tree = settled,
-                None => return Err(format!("{branch} conflicts with {main} in {} — nothing was merged", files.join(", "))),
-            }
+            let conflict = || format!("{branch} conflicts with {main} in {} — nothing was merged", files.join(", "));
+            // Design registries merged as JSON first, then captures and their manifest.
+            let (registries_merged, rest) = crate::design::registry::settle_tree(repo, &tree, &tip, &head, &files).ok_or_else(conflict)?;
+            tree = if rest.is_empty() { registries_merged } else { crate::design::captures::settle_tree(repo, &registries_merged, &tip, &head, &rest).ok_or_else(conflict)? };
         }
         _ => return Err(format!("git merge-tree failed: {}", String::from_utf8_lossy(&out.stderr).trim())),
     }
@@ -929,6 +970,98 @@ pub fn commit_file_on_main(repo: &Path, rel: &str, bytes: &[u8], message: &str) 
     let commit = commit_tree(repo, &[&tree, "-p", &tip, "-m", message])?;
     move_main(repo, &main, &tip, &commit, "committed")?;
     Ok(main)
+}
+
+/// Commit files equipe wrote in the checkout `checkout` — the one main is
+/// checked out in — as they are on disk there, onto main, and nothing else:
+/// `rels` from the top of the repository. Worked out on a scratch index, then
+/// the checkout follows by a fast-forward; each file committed is staged
+/// there first as it is on disk, so the fast-forward finds nothing of its own
+/// to keep — and should it refuse anyway, the checkout's index is put back
+/// and main stays. A file the person staged otherwise, or one gone, isn't
+/// committed. The files committed; none when main holds them already.
+pub fn commit_checkout_files_on_main(repo: &Path, checkout: &Path, rels: &[String], message: &str) -> Result<Vec<String>> {
+    off_the_loop("commit_checkout_files_on_main");
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let main = main_branch(repo)?;
+    let tip = git(repo, &["rev-parse", &format!("refs/heads/{main}")])?;
+    let mut blobs: Vec<(String, String, String)> = Vec::new();
+    for rel in rels {
+        if rel.is_empty() || rel.starts_with('/') || rel.split('/').any(|p| p.is_empty() || p == "." || p == ".." || p == ".git") {
+            continue;
+        }
+        let file = checkout.join(rel);
+        let Ok(meta) = std::fs::symlink_metadata(&file) else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let committed = git(repo, &["rev-parse", "-q", "--verify", &format!("{tip}:{rel}")]).ok();
+        // What the checkout's index holds there: main's, or nothing yet — never the person's own staging.
+        let staged = git(checkout, &["ls-files", "-s", "--", rel]).unwrap_or_default();
+        let staged = staged.lines().next().and_then(|l| l.split_whitespace().nth(1)).map(str::to_owned);
+        if staged.is_some() && staged != committed {
+            continue;
+        }
+        let blob = git(repo, &["hash-object", "-w", "--", &file.to_string_lossy()])?;
+        if committed.as_deref() == Some(blob.as_str()) {
+            continue;
+        }
+        #[cfg(unix)]
+        let mode = {
+            use std::os::unix::fs::PermissionsExt as _;
+            if meta.permissions().mode() & 0o111 != 0 { "100755" } else { "100644" }
+        };
+        #[cfg(not(unix))]
+        let mode = "100644";
+        blobs.push((rel.clone(), blob, mode.to_owned()));
+    }
+    if blobs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
+    let index = std::env::temp_dir().join(format!("equipe-own-{}-{stamp}.index", std::process::id()));
+    let tree = (|| {
+        git_bytes(repo, &["read-tree", &tip], Some(&index), None)?;
+        for (rel, blob, mode) in &blobs {
+            git_bytes(repo, &["update-index", "--add", "--cacheinfo", &format!("{mode},{blob},{rel}")], Some(&index), None)?;
+        }
+        let out = git_bytes(repo, &["write-tree"], Some(&index), None)?;
+        Ok::<_, String>(String::from_utf8_lossy(&out).trim().to_owned())
+    })();
+    let _ = std::fs::remove_file(&index);
+    let tree = tree?;
+    let commit = commit_tree(repo, &[&tree, "-p", &tip, "-m", message])?;
+    if checked_out_at(repo, &main).is_none_or(|at| !same_dir(&at, checkout)) {
+        return Err(format!("{main} isn't checked out in {}: nothing was committed", checkout.display()));
+    }
+    let paths: Vec<&str> = blobs.iter().map(|(rel, ..)| rel.as_str()).collect();
+    for (rel, blob, mode) in &blobs {
+        if let Err(err) = git(checkout, &["update-index", "--add", "--cacheinfo", &format!("{mode},{blob},{rel}")]) {
+            unstage(checkout, &paths);
+            return Err(err);
+        }
+    }
+    if let Err(err) = move_main(repo, &main, &tip, &commit, "committed") {
+        unstage(checkout, &paths);
+        return Err(err);
+    }
+    Ok(blobs.into_iter().map(|(rel, ..)| rel).collect())
+}
+
+/// The checkout's index for `paths` back to what its `HEAD` has.
+fn unstage(checkout: &Path, paths: &[&str]) {
+    let mut args = vec!["reset", "-q", "--"];
+    args.extend(paths);
+    let _ = git(checkout, &args);
+}
+
+/// Whether two paths are the same folder.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
 }
 
 /// The names of the files right in folder `dir` (from the top of `repo`) on

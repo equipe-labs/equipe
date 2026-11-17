@@ -226,6 +226,6 @@ async fn reactions_in_a_session_are_kept_in_the_projects_style_profile() {
     assert!(profile.leans.iter().any(|l| l.lean < 0), "\"too dense\" leans airy: {profile:?}");
     let file = std::fs::read_to_string(project.join("design/taste.md")).unwrap();
     assert!(file.contains("## Style profile") && file.contains("- Liked: more like Round 2 hero"), "{file}");
-    assert!(project.join("design/tuner/signals.jsonl").is_file());
+    assert!(equipe_core::taste::tuner::signals_file(&project.join("design")).is_file());
     handle.shutdown().await;
 }

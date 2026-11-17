@@ -158,6 +158,24 @@ const SERVER_WAIT: Duration = Duration::from_secs(30);
 /// How often the sweep looks for done work that reached main outside equipe.
 const SETTLE_EVERY: Duration = Duration::from_secs(10 * 60);
 
+/// How long after a merge failed (not for a conflict) equipe tries it again,
+/// and how many times before the PM is told to see to it.
+const MERGE_RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
+const MERGE_TRIES: u32 = 6;
+/// A done ticket whose merge failed this lately is tried again after a restart.
+const MERGE_RETRY_WITHIN: u64 = 3 * 86_400;
+
+/// A failed merge tried again: whether to push after, how many times it
+/// failed, and when it is tried next.
+#[derive(Debug, Clone)]
+struct MergeRetry {
+    push: bool,
+    failed: u32,
+    next: std::time::Instant,
+    /// Tried again now, by equipe: its failure isn't said to the person again.
+    running: bool,
+}
+
 
 /// How long a member waits for the person to answer a request for permission
 /// before it is declined.
@@ -699,6 +717,10 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         Runtime::recover_windows(&config_home);
     }
     let mac = std::mem::replace(&mut config.mac, Box::new(desktop::ThisMac));
+    // Git's merge driver for the design registries runs this program.
+    if let Some(binary) = &config.equipe_binary {
+        crate::design::registry::use_binary(binary);
+    }
     if config.persist && config.nemotron.is_none() {
         crate::daemon_log!("equipe: no Nebius key yet (Settings › AI platforms, or `equipe login nebius`): handed-in work isn't reviewed by Nemotron");
     }
@@ -818,6 +840,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         settle_again: false,
         settled_at: None,
         merging: std::collections::HashSet::new(),
+        merge_retries: HashMap::new(),
+        merge_retries_seeded: false,
         accepting: std::collections::HashSet::new(),
         closing: HashMap::new(),
         gates: HashMap::new(),
@@ -1187,7 +1211,7 @@ enum Internal {
     Settled { merged: Vec<(String, TicketId)>, cache: worktree::MergedCache },
     /// A merge the person asked for, worked out off the loop: main's name and,
     /// when a push was asked for, how it went — or why nothing was merged.
-    Merged { squad: String, ticket: TicketId, result: MergeResult, kept: Option<crate::design::captures::Report> },
+    Merged { squad: String, ticket: TicketId, result: MergeResult, kept: Option<crate::design::captures::Report>, push: bool },
     /// A project's checks ran on accepted work merged with main, off the loop.
     Checked(Box<gate::Gate>, crate::checks::Outcome),
     /// The git side of the PM's `accept_work`, worked out off the loop.
@@ -1516,6 +1540,11 @@ struct Runtime {
     settled_at: Option<std::time::Instant>,
     /// Merges under way off the loop, by squad and ticket.
     merging: std::collections::HashSet<(String, TicketId)>,
+    /// Accepted work whose merge failed for another reason than a conflict,
+    /// by squad and ticket: tried again on its own ([`Runtime::retry_merges`]).
+    merge_retries: HashMap<(String, TicketId), MergeRetry>,
+    /// Whether failed merges a run before this one left were looked for.
+    merge_retries_seeded: bool,
     /// Tickets the PM's `accept_work` is working out off the loop, by squad
     /// and ticket: asked again meanwhile, they are said to be under way.
     accepting: std::collections::HashSet<(String, TicketId)>,
@@ -1999,7 +2028,7 @@ impl Runtime {
                     }
                 }
                 Internal::Settled { merged, cache } => self.on_settled(merged, cache),
-                Internal::Merged { squad, ticket, result, kept } => self.on_merged(&squad, ticket, result, kept),
+                Internal::Merged { squad, ticket, result, kept, push } => self.on_merged(&squad, ticket, result, kept, push),
                 Internal::Checked(gate, outcome) => Box::pin(self.on_checked(*gate, outcome)).await,
                 Internal::Accepting(worked) => Box::pin(self.accept_worked(*worked)).await,
                 Internal::Disk(status, asked) => self.on_disk(status, asked),
@@ -2167,6 +2196,8 @@ impl Runtime {
         if self.settled_at.is_none_or(|at| at.elapsed() >= SETTLE_EVERY) {
             self.settle_all_merged();
         }
+        // Accepted work a merge failed on (main's checkout busy, say) lands once it can.
+        self.retry_merges();
         // Short of room, a copy of a project left in a temporary folder goes sooner.
         let every = if self.disk.status.level.is_warning() { LANE_TMP_TIDY_EVERY_SHORT } else { LANE_TMP_TIDY_EVERY };
         if self.config.persist && self.lane_tmp_tidied.elapsed() >= every {
@@ -7886,13 +7917,14 @@ with what else waits.]"
             let result = worktree::merge_into_main(&repo, &branch, &message)
                 .map(|main| (main, push.then(|| worktree::push_main(&repo).map(|_| ()))));
             let kept = crate::design::captures::take_report(&repo, &branch);
-            let _ = internal.send(Internal::Merged { squad, ticket, result, kept });
+            let _ = internal.send(Internal::Merged { squad, ticket, result, kept, push });
         });
     }
 
     /// A merge the person asked for is through, or merged nothing.
-    fn on_merged(&mut self, squad: &str, ticket: TicketId, result: MergeResult, kept: Option<crate::design::captures::Report>) {
+    fn on_merged(&mut self, squad: &str, ticket: TicketId, result: MergeResult, kept: Option<crate::design::captures::Report>, push: bool) {
         self.merging.remove(&(squad.to_owned(), ticket));
+        let retried = self.merge_retries.remove(&(squad.to_owned(), ticket));
         let Some(mut found) = self.find_ticket(squad, ticket) else {
             return;
         };
@@ -7913,6 +7945,17 @@ with what else waits.]"
                     let _ = journal.ticket_event(ticket, "equipe", "not merged", &err);
                 }
                 self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: found.clone() });
+                // Anything but a conflict may pass (main's checkout busy, main
+                // moved on meanwhile): accepted isn't merged, the PM hears it,
+                // and equipe tries again on its own a few times.
+                if !err.contains(" conflicts with ") {
+                    let again = retried.as_ref().is_some_and(|r| r.running);
+                    self.merge_failed(squad, &found, &err, push, retried);
+                    // Said once, when it first failed: a try again failing says nothing more.
+                    if again {
+                        return;
+                    }
+                }
                 // A conflict is work: its owner merges main in and resolves it,
                 // and the person merges again from the board.
                 let owner = found.owner.clone().or_else(|| found.assignee.clone()).filter(|_| err.contains(" conflicts with "));
@@ -7972,6 +8015,77 @@ with what else waits.]"
         // Work it was built on came along with it.
         self.settle_all_merged();
         self.brief_pm(squad, format!("{line}."), Some(shown));
+    }
+
+    /// A merge failed for another reason than a conflict: the ticket is
+    /// accepted but not on main. Tried again in a while, up to
+    /// [`MERGE_TRIES`] times; the PM hears it the first time and when equipe
+    /// stops trying, so nobody takes it for merged.
+    fn merge_failed(&mut self, squad: &str, t: &Ticket, err: &str, push: bool, before: Option<MergeRetry>) {
+        let failed = before.map_or(1, |b| b.failed + 1);
+        let ticket = t.id;
+        if failed > MERGE_TRIES {
+            crate::daemon_log!("equipe: {squad}: T-{ticket} still isn't merged after {MERGE_TRIES} tries: {err}");
+            self.brief_pm(
+                squad,
+                format!(
+                    "T-{ticket} · {} is accepted but still not on main: equipe tried to merge it {MERGE_TRIES} times and stopped ({err}). It stays \
+\"accepted, not on main\" on the board. Find out what is in the way — usually uncommitted changes in the project's main checkout — and \
+tell the person; once it is cleared, the person merges it from the board.",
+                    t.title
+                ),
+                None,
+            );
+            return;
+        }
+        if failed == 1 {
+            self.brief_pm(
+                squad,
+                format!(
+                    "T-{ticket} · {} was accepted but NOT merged into main: {err}. It shows \"accepted, not on main\" on the board, not merged. \
+equipe tries the merge again on its own every few minutes; you hear if it still can't.",
+                    t.title
+                ),
+                None,
+            );
+        }
+        let next = std::time::Instant::now() + MERGE_RETRY_AFTER;
+        self.merge_retries.insert((squad.to_owned(), ticket), MergeRetry { push, failed, next, running: false });
+    }
+
+    /// Failed merges whose time has come are tried again — and, after a
+    /// restart, done tickets a recent merge failed on are put back on that
+    /// list. A ticket merged meanwhile, kept on its branch, or moved, isn't.
+    fn retry_merges(&mut self) {
+        let now = std::time::Instant::now();
+        // What a run before this one left failed lately: tried again from here.
+        if !self.merge_retries_seeded {
+            self.merge_retries_seeded = true;
+            let squads: Vec<String> = self.journals.keys().cloned().collect();
+            for squad in squads {
+                for t in self.tickets(&squad) {
+                    if t.not_on_main() && matches!(t.off_main, Some(OffMain::Failed { .. })) && t.updated_at.is_some_and(|at| now_secs().saturating_sub(at) < MERGE_RETRY_WITHIN) {
+                        self.merge_retries.entry((squad.clone(), t.id)).or_insert(MergeRetry { push: false, failed: 1, next: now, running: false });
+                    }
+                }
+            }
+        }
+        let due: Vec<((String, TicketId), bool)> =
+            self.merge_retries.iter().filter(|(key, r)| r.next <= now && !self.merging.contains(*key)).map(|(key, r)| (key.clone(), r.push)).collect();
+        for ((squad, ticket), push) in due {
+            let still = self.find_ticket(&squad, ticket).is_some_and(|t| t.not_on_main() && matches!(t.off_main, Some(OffMain::Failed { .. })));
+            if !still {
+                self.merge_retries.remove(&(squad, ticket));
+                continue;
+            }
+            // Its next try waits while this one runs; how it went sets the one after.
+            if let Some(r) = self.merge_retries.get_mut(&(squad.clone(), ticket)) {
+                r.next = now + MERGE_RETRY_AFTER;
+                r.running = true;
+            }
+            crate::daemon_log!("equipe: {squad}: trying T-{ticket}'s merge again");
+            self.merge(&squad, ticket, push);
+        }
     }
 
     /// Done tickets said not to be on main whose branch has nothing left to
