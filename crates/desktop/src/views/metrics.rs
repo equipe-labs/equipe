@@ -265,15 +265,8 @@ fn empty_card(shell: &Shell, sources: &Sources, cx: &mut Context<Shell>) -> AnyE
 fn banner_row(shell: &Shell, b: &Banner, sources: &Sources, now: u64, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let name = service(b.kind, sources.kinds.iter().find(|k| k.kind == b.kind));
-    let code = code_word(b.error.code);
     let color = tone(p, b.error.code);
-    let when = metrics::moment(b.at, now);
-    let last = b.last_ok.map(|t| metrics::moment(t, now)).unwrap_or_default();
-    let body = match (b.error.code, b.error.retry_at) {
-        (ErrorCode::RateLimited, Some(at)) => fill("metrics.err.rate_limited.body".into(), &[("retry", metrics::moment(at, now)), ("last", last)]),
-        (ErrorCode::RateLimited, None) => fill("metrics.err.rate_limited.body_soon".into(), &[("last", last)]),
-        _ => fill(format!("metrics.err.{code}.body"), &[("when", when), ("last", last)]),
-    };
+    let (title, body) = metrics::banner_words(b, &name, now);
     let id = b.connection.clone();
     let kind = b.kind;
     let key = metrics::needs_key(b.error.code);
@@ -294,7 +287,7 @@ fn banner_row(shell: &Shell, b: &Banner, sources: &Sources, now: u64, cx: &mut C
         .border_color(Rgba { a: 0.45, ..color })
         .bg(Rgba { a: 0.10, ..color })
         .child(icon(if b.error.code == ErrorCode::RateLimited { Icon::Clock } else { Icon::Warning }, 18., color))
-        .child(v_flex().flex_1().min_w_0().gap(px(2.)).child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(fill(format!("metrics.err.{code}.title"), &[("service", name)]))).child(div().text_size(px(13.)).line_height(px(19.)).text_color(p.text2).child(body)))
+        .child(v_flex().flex_1().min_w_0().gap(px(2.)).child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title)).child(div().text_size(px(13.)).line_height(px(19.)).text_color(p.text2).child(body)))
         .child(action)
         .into_any_element()
 }
@@ -309,7 +302,7 @@ fn metric_card(shell: &Shell, n: usize, c: &Card, sources: &Sources, now: u64) -
     let dot = c.error.map_or_else(|| ok(p), |e| tone(p, e));
     let at = c.fetched.unwrap_or(now);
     let source = match (c.error, c.fetched) {
-        (Some(e), _) => t!("metrics.source_error", service = name, what = lookup(format!("metrics.err.{}.short", code_word(e)))),
+        (Some(e), _) => t!("metrics.source_error", service = name, what = lookup(format!("metrics.err.{}.short", if c.busy { "busy" } else { code_word(e) }))),
         (None, Some(_)) => source_line(&name, at, now, c.as_of.as_deref(), false),
         (None, None) => name.clone(),
     };
@@ -447,7 +440,7 @@ fn north_card(shell: &Shell, state: &NorthStar, sources: &Sources, now: u64, cx:
             let stale = c.error.is_some();
             let dot = c.error.map_or_else(|| ok(p), |e| tone(p, e));
             let source = match (c.error, c.fetched) {
-                (Some(e), _) => t!("metrics.source_error", service = name, what = lookup(format!("metrics.err.{}.short", code_word(e)))),
+                (Some(e), _) => t!("metrics.source_error", service = name, what = lookup(format!("metrics.err.{}.short", if c.busy { "busy" } else { code_word(e) }))),
                 (None, Some(at)) => source_line(&name, at, now, c.as_of.as_deref(), narrow),
                 (None, None) => name.clone(),
             };
@@ -475,7 +468,7 @@ fn north_card(shell: &Shell, state: &NorthStar, sources: &Sources, now: u64, cx:
             };
             let foot = match c.error {
                 Some(e) => {
-                    let why = fill(format!("metrics.err.{}.title", code_word(e)), &[("service", name.clone())]);
+                    let why = fill(format!("metrics.err.{}.title", if c.busy { "busy" } else { code_word(e) }), &[("service", name.clone())]);
                     let fix = if metrics::needs_key(e) { format!(" {}", lookup("metrics.ns.err_key".into())) } else { String::new() };
                     div().text_size(px(13.)).line_height(px(20.)).text_color(p.red).child(format!("✕ {why}.{fix}")).into_any_element()
                 }
