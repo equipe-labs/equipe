@@ -496,7 +496,7 @@ fn read_kept(path: &Path, kept: &Kept, max: Option<u32>) -> Result<ImageRead, St
     let main = worktree::main_branch(&kept.repo).ok();
     let revs: Vec<&String> = if kept.merged { main.iter().chain(kept.branch.iter()).collect() } else { kept.branch.iter().chain(main.iter()).collect() };
     let mut failed = None;
-    for rev in revs {
+    for rev in &revs {
         match worktree::read_blob(&kept.repo, rev, &kept.rel, FILE_MAX) {
             Ok(bytes) => return picture(path, path, bytes).and_then(|(bytes, mime)| sized(path, bytes, mime, max)),
             Err(Blob::Missing) => {}

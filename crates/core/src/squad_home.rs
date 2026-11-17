@@ -482,7 +482,7 @@ mod tests {
         assert_eq!(git(&dir, &["config", "maintenance.auto"]).unwrap().trim(), "false");
         // Hand-in pictures stay out of its history from the start.
         let ignore = std::fs::read_to_string(dir.join("outputs/.gitignore")).unwrap();
-        assert!(ignore.contains("*.[pP][nN][gG]") && ignore.contains("*.[mM][pP]4"), "{ignore}");
+        assert!(ignore.contains("*.[pP][nN][gG]") && ignore.contains("*.[mM][pP][44]"), "{ignore}");
         assert!(git(&dir, &["ls-files", "outputs/.gitignore"]).unwrap().contains("outputs/.gitignore"));
         assert_eq!(squad_of(&home, &dir.join("notes")).as_deref(), Some("acme"));
         assert_eq!(squad_of(&home, &home.join("squads/acme/members")), None);
