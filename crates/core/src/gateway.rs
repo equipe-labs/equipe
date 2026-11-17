@@ -437,6 +437,12 @@ async fn serve_client(
                     let _ = out_tx.send(Message::failure(id, -32602, "mcp_proxy needs { squad, server, member }"));
                     continue;
                 };
+                // Only as the member whose session it comes from: never another's servers.
+                if let Err(why) = may_act_as(origin, bound_member(&core, origin, peer).await.as_ref(), &open.squad, &open.member) {
+                    crate::daemon_log!("equipe: refused a proxy to {}/{}'s {}: {why}", open.squad, open.member, open.server);
+                    let _ = out_tx.send(Message::failure(id, -32000, why));
+                    continue;
+                }
                 // Checked first: a server this member doesn't get is refused here.
                 let read_only = match core.mcp_upstream(&open, None).await {
                     Ok(up) => up.read_only,
@@ -708,7 +714,14 @@ async fn serve_client(
                 let core = core.clone();
                 let out = out_tx.clone();
                 tokio::spawn(async move {
-                    let result = core.phone(call).await;
+                    // Only as the member whose session it comes from: never another's phone.
+                    let result = match may_act_as(origin, bound_member(&core, origin, peer).await.as_ref(), &call.squad, &call.member) {
+                        Ok(()) => core.phone(call).await,
+                        Err(why) => {
+                            crate::daemon_log!("equipe: refused {}/{}'s phone tool {}: {why}", call.squad, call.member, call.name);
+                            ToolResult::error(why)
+                        }
+                    };
                     let _ = out.send(Message::response(id, result));
                 });
             }
@@ -842,6 +855,50 @@ async fn serve_client(
 /// A browser panel's stream (`equipe_protocol::stream`): frames of the page it
 /// watches, as fast as it draws them and no faster than it asks; its input,
 /// straight to the page.
+/// How long a connection from under an engine waits for that engine's start
+/// to reach the runtime, and how often it looks: the engine starts its MCP
+/// servers moments after it is spawned, and its pid is told meanwhile.
+const ENGINE_KNOWN_WAIT: Duration = Duration::from_secs(3);
+const ENGINE_KNOWN_EVERY: Duration = Duration::from_millis(100);
+
+/// The member session a connection from `peer` is bound to: for a member's
+/// process (a daemon descendant), the session whose turn runs as the engine
+/// it is under ([`crate::origin::engine`]); `None` for anything else, or an
+/// engine no member's turn runs as.
+async fn bound_member(core: &Handle, origin: crate::origin::Origin, peer: Option<u32>) -> Option<equipe_protocol::MemberRef> {
+    if origin != crate::origin::Origin::Member {
+        return None;
+    }
+    let engine = crate::origin::engine(peer)?;
+    let until = tokio::time::Instant::now() + ENGINE_KNOWN_WAIT;
+    loop {
+        if let Some(member) = core.engine_member(engine).await {
+            return Some(member);
+        }
+        if tokio::time::Instant::now() >= until {
+            return None;
+        }
+        tokio::time::sleep(ENGINE_KNOWN_EVERY).await;
+    }
+}
+
+/// Whether a connection from `origin`, bound to the member session `bound`,
+/// may act as `member` of `squad` — use that member's outside MCP servers or
+/// phone tools. The name in the request is only a claim: a member's process
+/// acts only as the member whose engine it runs under. The person's own
+/// clients and the daemon's self-connections aren't a member's session and
+/// act as they say; a peer that couldn't be told apart is refused (fail closed).
+fn may_act_as(origin: crate::origin::Origin, bound: Option<&equipe_protocol::MemberRef>, squad: &str, member: &str) -> Result<(), String> {
+    use crate::origin::Origin;
+    match (origin, bound) {
+        (Origin::Daemon | Origin::Person, _) => Ok(()),
+        (Origin::Member, Some(b)) if b.squad == squad && b.member == member => Ok(()),
+        (Origin::Member, Some(b)) => Err(format!("this connection comes from {}/{}'s session; it can't act as {squad}/{member}", b.squad, b.member)),
+        (Origin::Member, None) => Err(format!("this connection doesn't come from a turn equipe runs for {squad}/{member}")),
+        (Origin::Unknown, _) => Err("equipe couldn't tell which session this connection comes from".to_owned()),
+    }
+}
+
 async fn serve_stream<R>(mut reader: R, mut writer: OwnedWriteHalf, hub: std::sync::Arc<crate::browser::Hub>, quality: u8)
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -1408,6 +1465,43 @@ fn peer_pid(stream: &UnixStream) -> Option<u32> {
 #[cfg(windows)]
 fn peer_pid(_stream: &UnixStream) -> Option<u32> {
     None
+}
+
+#[cfg(test)]
+mod binding_tests {
+    use super::*;
+    use crate::origin::Origin;
+    use equipe_protocol::MemberRef;
+
+    fn dana() -> MemberRef {
+        MemberRef { squad: "acme".into(), member: "dana".into() }
+    }
+
+    #[test]
+    fn a_member_session_acts_as_its_own_member() {
+        assert_eq!(may_act_as(Origin::Member, Some(&dana()), "acme", "dana"), Ok(()));
+    }
+
+    #[test]
+    fn a_member_session_claiming_another_member_is_refused() {
+        let refused = may_act_as(Origin::Member, Some(&dana()), "acme", "lee").unwrap_err();
+        assert!(refused.contains("acme/dana") && refused.contains("acme/lee"), "{refused}");
+        // The same name in another squad is another member.
+        assert!(may_act_as(Origin::Member, Some(&dana()), "other", "dana").is_err());
+    }
+
+    #[test]
+    fn a_members_process_under_no_known_turn_is_refused() {
+        assert!(may_act_as(Origin::Member, None, "acme", "dana").is_err());
+        assert!(may_act_as(Origin::Unknown, None, "acme", "dana").is_err());
+        assert!(may_act_as(Origin::Unknown, Some(&dana()), "acme", "dana").is_err());
+    }
+
+    #[test]
+    fn the_persons_clients_and_the_daemon_itself_act_as_they_say() {
+        assert_eq!(may_act_as(Origin::Person, None, "acme", "lee"), Ok(()));
+        assert_eq!(may_act_as(Origin::Daemon, None, "acme", "lee"), Ok(()));
+    }
 }
 
 #[cfg(test)]

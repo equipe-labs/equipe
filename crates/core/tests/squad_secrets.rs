@@ -338,3 +338,49 @@ async fn the_person_sees_a_value_once_and_a_phone_never_does() {
     }
     w.handle.shutdown().await;
 }
+
+async fn write_key(w: &World) {
+    let wrote = w.call("backend", "secret_write", json!({ "name": "posthog-project-key", "path": ".env.local", "key": "K" })).await;
+    assert!(!wrote.is_error && wrote.text.contains("Wrote"), "{wrote:?}");
+}
+
+async fn save_new(w: &World, value: &str) -> equipe_core::protocol::rpc::ToolResult {
+    w.call("backend", "secret_save", json!({ "name": "posthog-project-key", "service": "posthog", "kind": "api_key", "value": value })).await
+}
+
+#[tokio::test]
+async fn saving_over_a_kept_key_waits_for_the_person_and_equipes_own_names_are_refused() {
+    const NEW: &str = "phc_Nw4xR8tY2uIo6pAs0dFg3hJk7lZx9cVb";
+    let mut w = world().await;
+    w.save("posthog-project-key", json!([])).await;
+    w.handle.send(Command::SetSquadSecretProjects { squad: "acme".into(), name: "posthog-project-key".into(), projects: Vec::new(), any_project: true });
+    until(&mut w.events, |e| matches!(e, Event::SquadSecrets { secrets } if secrets.iter().any(|s| s.any_project))).await;
+    let written = |w: &World| std::fs::read_to_string(w.desk.join(".env.local")).unwrap_or_default();
+    // Saved again: the person is asked, and the old value stays meanwhile.
+    for (picked, kept) in [(1, VALUE), (0, NEW)] {
+        let asked = save_new(&w, NEW).await;
+        assert!(!asked.is_error && asked.text.contains("already kept") && !asked.text.contains(NEW), "{asked:?}");
+        let seen = until(&mut w.events, |e| matches!(e, Event::QuestionsAsked { .. })).await;
+        for e in &seen {
+            assert!(!serde_json::to_string(e).unwrap().contains(NEW), "the waiting value is on no event: {e:?}");
+        }
+        let Some(Event::QuestionsAsked { questions, .. }) = seen.last().cloned() else { panic!() };
+        assert_eq!(questions.questions[0].options.len(), 2);
+        assert!(questions.questions[0].question.contains("posthog-project-key"), "{questions:?}");
+        let again = save_new(&w, NEW).await;
+        assert!(again.text.contains("already asked"), "one card at a time: {again:?}");
+        write_key(&w).await;
+        assert_eq!(written(&w), format!("K=\"{VALUE}\"\n"), "nothing replaced before the answer");
+        w.handle.send(Command::AnswerQuestions { squad: "acme".into(), id: questions.id, answers: vec![equipe_core::protocol::decide::Answer { picked: vec![picked], ..Default::default() }], about: None });
+        until(&mut w.events, |e| matches!(e, Event::QuestionsClosed { answers: Some(_), .. })).await;
+        write_key(&w).await;
+        assert_eq!(written(&w), format!("K=\"{kept}\"\n"), "picked {picked}");
+    }
+
+    // An MCP server's sign-in is equipe's to keep: neither saved nor asked for under its name.
+    let refused = w.call("backend", "secret_save", json!({ "name": "mcp-oauth-linear", "service": "linear", "kind": "token", "value": NEW })).await;
+    assert!(refused.is_error && refused.text.contains("equipe's own"), "{refused:?}");
+    let refused = w.call("backend", "request_secret", json!({ "name": "MCP-OAUTH-x", "service": "x", "kind": "token", "why": "w", "steps": ["a"], "url": "https://x.example/keys" })).await;
+    assert!(refused.is_error && refused.text.contains("equipe's own"), "{refused:?}");
+    w.handle.shutdown().await;
+}

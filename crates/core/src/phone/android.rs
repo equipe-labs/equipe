@@ -166,6 +166,16 @@ pub fn input_text(text: &str) -> Result<String, String> {
     Ok(format!("'{}'", text.replace(' ', "%s").replace('\'', "'\\''")))
 }
 
+/// An Android package name, checked before it reaches the device's shell
+/// (`adb shell` joins its words into one command line there): letters,
+/// digits, `.` and `_` only, as Android's own names are.
+pub fn package_name(package: &str) -> Result<&str, String> {
+    if package.is_empty() || package.len() > 255 || !package.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_')) {
+        return Err(format!("`{package}` isn't an Android package name: letters, digits, `.` and `_` only (com.example.app)."));
+    }
+    Ok(package)
+}
+
 /// One booted emulator, driven.
 pub struct Android<'a> {
     pub exec: &'a dyn Exec,
@@ -249,6 +259,7 @@ impl Device for Android<'_> {
     }
 
     fn launch(&self, package: &str) -> Result<(), String> {
+        let package = package_name(package)?;
         self.shell(&["am", "force-stop", package])?;
         let said = self.shell(&["monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1"])?;
         if said.contains("No activities found") { Err(format!("{package} has no screen to launch (is it installed?).")) } else { Ok(()) }
@@ -294,7 +305,7 @@ pub fn package_of(exec: &dyn Exec, apk: &Path) -> Option<String> {
     let out = exec.run(&aapt.to_string_lossy(), &["dump".into(), "badging".into(), apk.to_string_lossy().into_owned()], None, Duration::from_secs(30));
     let text = out.text();
     let at = text.find("package: name='")? + "package: name='".len();
-    Some(text[at..].split('\'').next()?.to_owned())
+    package_name(text[at..].split('\'').next()?).ok().map(str::to_owned)
 }
 
 #[cfg(test)]
@@ -330,6 +341,29 @@ mod tests {
         phone.key(Key::Back).unwrap();
         assert!(fake.called("adb -s emulator-5560 shell input tap 263 525"), "{:?}", fake.calls());
         assert!(fake.called("adb -s emulator-5560 shell input keyevent KEYCODE_BACK"));
+    }
+
+    #[test]
+    fn only_plain_package_names_reach_the_devices_shell() {
+        for ok in ["com.example.app", "com.Acme_2.app", "a", "org.x.y_z.debug"] {
+            assert_eq!(package_name(ok), Ok(ok));
+        }
+        for bad in ["", "com.x; rm -rf /", "com.x rm", "com.x$(id)", "com.$HOME", "com.x'", "com.x\"", "com.x`id`", "com.x|sh", "com.x&", "com.x\nid", "com-x", "com/x", "패키지"] {
+            assert!(package_name(bad).is_err(), "{bad:?}");
+        }
+        assert!(package_name(&"a".repeat(256)).is_err());
+    }
+
+    #[test]
+    fn a_launch_with_a_bad_package_never_reaches_adb() {
+        let fake = Fake::default();
+        let phone = Android { exec: &fake, adb: "adb".into(), serial: "emulator-5560".into() };
+        assert!(phone.launch("com.x; rm -rf /").is_err());
+        assert!(fake.calls().is_empty(), "{:?}", fake.calls());
+        fake.on("monkey", "Events injected: 1\n");
+        phone.launch("com.example.app").unwrap();
+        assert!(fake.called("adb -s emulator-5560 shell am force-stop com.example.app"), "{:?}", fake.calls());
+        assert!(fake.called("adb -s emulator-5560 shell monkey -p com.example.app"), "{:?}", fake.calls());
     }
 
     #[test]

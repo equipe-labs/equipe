@@ -312,6 +312,8 @@ enum Request {
     McpUpstream(equipe_protocol::rpc::McpProxyOpen, Option<String>, oneshot::Sender<Result<crate::mcp_gateway::Upstream, String>>),
     /// What a proxy's message showed of its server.
     McpSeen(equipe_protocol::rpc::McpProxyOpen, crate::mcp_gateway::Seen),
+    /// The member session whose turn runs as this engine process, if any.
+    EngineMember(u32, oneshot::Sender<Option<equipe_protocol::MemberRef>>),
     /// An engine's plan, read outside a turn.
     Usage(Engine, equipe_protocol::PlanUsage),
     /// The lease check, as if at this unix time (tests).
@@ -353,6 +355,14 @@ impl Handle {
         let (tx, rx) = oneshot::channel();
         let _ = self.requests.send(Request::McpUpstream(open.clone(), rejected, tx));
         rx.await.unwrap_or_else(|_| Err("equipe is shutting down".to_owned()))
+    }
+
+    /// The member session whose turn's engine is process `pid`: what a
+    /// connection from under that engine is bound to ([`crate::gateway`]).
+    pub async fn engine_member(&self, pid: u32) -> Option<equipe_protocol::MemberRef> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.requests.send(Request::EngineMember(pid, tx));
+        rx.await.ok().flatten()
     }
 
     /// What a proxy's message showed of its server: the squad's status follows.
@@ -732,6 +742,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         mcp: squad_mcp::McpBook::default(),
         verify: Default::default(),
         secret_env: HashMap::new(),
+        key_replacements: HashMap::new(),
         secret_nudge: Default::default(),
         delta_tail: HashMap::new(),
         calls: HashMap::new(),
@@ -1604,6 +1615,10 @@ struct Runtime {
     /// variables (`secret_use`), by session: `(variable, key name)`. The value
     /// is looked up — and the right to it checked again — when a turn starts.
     secret_env: HashMap<SessionId, Vec<(String, String)>>,
+    /// `secret_save` calls naming a key already kept, held until the
+    /// person's card answers whether the new value replaces it — by the
+    /// card's id. In memory only, like the value itself.
+    key_replacements: HashMap<u64, squad_keys::Replacement>,
     /// Sessions whose command printed something that looks like a key that
     /// wasn't saved: told to `secret_save` it with their next tool's answer.
     secret_nudge: std::collections::HashSet<SessionId>,
@@ -1656,6 +1671,7 @@ impl Wake {
             Wake::Request(Some(Request::Phone(_))) => Borrowed("phone tool"),
             Wake::Request(Some(Request::McpUpstream(..))) => Borrowed("an outside MCP server's proxy"),
             Wake::Request(Some(Request::McpSeen(..))) => Borrowed("an outside MCP server's call"),
+            Wake::Request(Some(Request::EngineMember(..))) => Borrowed("whose engine a connection runs under"),
             Wake::Request(Some(Request::Usage(..))) => Borrowed("an engine's plan usage"),
             Wake::Request(Some(Request::CheckLeases(..))) => Borrowed("lease check"),
             Wake::Request(Some(Request::LookAtTurns(..))) => Borrowed("turns looked at"),
@@ -1874,6 +1890,9 @@ impl Runtime {
                 Some(Request::Phone(request)) => self.on_phone(request),
                 Some(Request::McpUpstream(open, rejected, reply)) => self.mcp_upstream(open, rejected, reply),
                 Some(Request::McpSeen(open, seen)) => self.mcp_seen(open, seen),
+                Some(Request::EngineMember(pid, reply)) => {
+                    let _ = reply.send(self.engine_member(pid));
+                }
                 Some(Request::Disk(reply)) => self.disk_report(Some(reply), false),
                 Some(Request::Status(ask, reply)) => self.squad_status(ask, reply),
                 Some(Request::DiskClean(ids, reply)) => self.disk_clean(ids, Some(reply)),

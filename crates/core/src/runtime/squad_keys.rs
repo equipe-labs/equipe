@@ -14,6 +14,22 @@ use super::*;
 use crate::protocol::secrets::{NO_PROJECT, SecretValue, SquadSecret};
 use crate::squad_secrets as ks;
 
+/// A `secret_save` over a key already kept, waiting for the person's word.
+pub(super) struct Replacement {
+    squad: String,
+    member: String,
+    session: SessionId,
+    draft: ks::Draft,
+    projects: Vec<String>,
+}
+
+impl Replacement {
+    /// What the new value is masked under while it waits: `[secret]`.
+    fn watch_key(set: u64, squad: &str, name: &str) -> String {
+        format!("pending:{set}:{squad}/{name}")
+    }
+}
+
 /// What a gate decided about a use.
 enum Gate {
     Go(Box<SquadSecret>),
@@ -113,8 +129,65 @@ impl Runtime {
         let draft = ks::check_save(args)?;
         let existing = self.journal(squad).map(ks::read).unwrap_or_default().into_iter().find(|s| s.name == draft.name);
         let projects = self.key_projects(squad, id, &draft.projects, existing.as_ref())?;
+        if let Some(kept) = existing {
+            return Ok(self.ask_replace(squad, member, id, &kept, draft, projects));
+        }
         let (secret, replaced) = self.keep_secret(squad, member, id, draft, projects)?;
         Ok(ks::saved_text(&secret, replaced))
+    }
+
+    /// A member saving a name already kept: the person is asked on a card
+    /// before the new value takes the old one's place — a deploy key or a
+    /// token swapped quietly is how a member would steer the squad's work.
+    fn ask_replace(&mut self, squad: &str, member: &str, id: SessionId, kept: &SquadSecret, draft: ks::Draft, projects: Vec<String>) -> String {
+        let waiting: Vec<u64> = self.question_sets(squad).iter().map(|s| s.id).collect();
+        if self.key_replacements.iter().any(|(set, r)| r.squad == squad && r.draft.name == kept.name && waiting.contains(set)) {
+            return format!("The person was already asked whether {} may be replaced; their answer comes to you as your next message. Don't ask again until then.", kept.name);
+        }
+        let (ticket, _, _) = self.key_context(squad, id);
+        let choice = |label: String, description: String| Choice { label, description, ..Choice::default() };
+        let question = Question {
+            question: say!(self, "secrets.replace.question", member = member, name = kept.name, service = draft.service, by = kept.created_by),
+            header: say!(self, "secrets.grant.header"),
+            options: vec![
+                choice(say!(self, "secrets.replace.yes"), say!(self, "secrets.replace.yes_desc")),
+                choice(say!(self, "secrets.replace.no"), say!(self, "secrets.replace.no_desc")),
+            ],
+            ..Question::default()
+        };
+        let set = QuestionSet { id: equipe_protocol::new_session_id(), session: id, member: member.to_owned(), ticket, questions: vec![question], asked_at: now_secs(), review: false, retro: None };
+        let _ = decide::add(self.question_sets(squad), set);
+        let set = self.question_sets(squad).last().cloned().expect("just added");
+        self.save_questions(squad);
+        // Masked from now on, as a kept value is, though not kept yet.
+        ks::watch(&Replacement::watch_key(set.id, squad, &kept.name), &draft.value);
+        self.key_replacements.insert(set.id, Replacement { squad: squad.to_owned(), member: member.to_owned(), session: id, draft, projects });
+        if let (Some(ticket), Some(journal)) = (ticket, self.journal(squad)) {
+            let _ = journal.ticket_event(ticket, member, "secret_replace_asked", &kept.name);
+        }
+        self.publish(Event::QuestionsAsked { squad: squad.to_owned(), questions: set });
+        format!(
+            "{} is already kept, so the person is asked on a card whether your value replaces it; until they say yes the old one \
+stays. Their answer comes to you as your next message. Don't wait for it in this turn: carry on with what doesn't need it, or \
+end the turn with a short line. To keep both, save yours under another name instead.",
+            kept.name
+        )
+    }
+
+    /// A replacement card was answered, or closed: the new value kept on a
+    /// yes, dropped otherwise. Whether `set` was one.
+    fn replace_card_settled(&mut self, squad: &str, set: &QuestionSet, answers: Option<&[decide::Answer]>) -> bool {
+        let Some(waiting) = self.key_replacements.remove(&set.id) else { return false };
+        ks::unwatch(&Replacement::watch_key(set.id, squad, &waiting.draft.name));
+        let yes = answers.and_then(<[_]>::first).is_some_and(|a| a.picked.first() == Some(&0));
+        let name = waiting.draft.name.clone();
+        if yes && let Err(why) = self.keep_secret(&waiting.squad, &waiting.member, waiting.session, waiting.draft, waiting.projects) {
+            crate::daemon_log!("equipe: {}'s new value for {name} wasn't kept: {why}", waiting.member);
+        }
+        if let (Some(ticket), Some(journal)) = (set.ticket, self.journal(squad)) {
+            let _ = journal.ticket_event(ticket, "you", "secret_answered", &format!("{name}: {}", if yes { "replaced" } else { "old value kept" }));
+        }
+        true
     }
 
     /// Put a value in the secret store and its facts in the journal — what
@@ -281,6 +354,9 @@ commit it, print it or copy it elsewhere; to hand it to a service, run the CLI y
 
     /// A first-use card was answered, or closed: the person's word applied.
     pub(super) fn secret_card_settled(&mut self, squad: &str, set: &QuestionSet, answers: Option<&[decide::Answer]>) {
+        if self.replace_card_settled(squad, set, answers) {
+            return;
+        }
         let Some(journal) = self.journal(squad) else { return };
         let all = ks::grants(journal);
         let Some(grant) = all.iter().find(|g| g.set == set.id).cloned() else { return };

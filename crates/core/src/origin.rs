@@ -82,6 +82,24 @@ pub fn classify(peer: Option<u32>, daemon: u32, parent_of: impl Fn(u32) -> Paren
     Origin::Unknown
 }
 
+/// The engine a daemon descendant `peer` runs under: the ancestor whose
+/// parent is the `daemon` — every member engine is the daemon's own child,
+/// started for one member session, so it says which session the peer is
+/// part of. `None` for the daemon itself, a process outside its tree, or a
+/// chain that couldn't be read. Pure, walked with `parent_of`.
+pub fn engine_of(peer: Option<u32>, daemon: u32, parent_of: impl Fn(u32) -> Parent) -> Option<u32> {
+    let mut cur = peer.filter(|p| *p != daemon)?;
+    for _ in 0..MAX_DEPTH {
+        match parent_of(cur) {
+            Parent::Pid(p) if p == daemon => return Some(cur),
+            Parent::Pid(p) if p == 0 || p == 1 || p == cur => return None,
+            Parent::Pid(p) => cur = p,
+            Parent::Top | Parent::Unknown => return None,
+        }
+    }
+    None
+}
+
 /// The parent of `pid` on this machine.
 #[cfg(target_os = "macos")]
 pub fn parent_of(pid: u32) -> Parent {
@@ -135,6 +153,12 @@ pub fn parent_of(_pid: u32) -> Parent {
 /// The origin of a socket peer with id `peer`, as this daemon sees it.
 pub fn of(peer: Option<u32>) -> Origin {
     classify(peer, std::process::id(), parent_of)
+}
+
+/// The engine process a socket peer with id `peer` runs under ([`engine_of`]),
+/// as this daemon sees it.
+pub fn engine(peer: Option<u32>) -> Option<u32> {
+    engine_of(peer, std::process::id(), parent_of)
 }
 
 #[cfg(test)]
@@ -223,6 +247,22 @@ mod tests {
         let me = std::process::id();
         let other = u32::MAX - 1;
         assert_eq!(of_with(Some(me), other), Origin::Person);
+    }
+
+    #[test]
+    fn a_members_process_is_bound_to_the_engine_it_runs_under() {
+        // daemon(1000) → engine(2000) → `equipe mcp proxy`(3000) on the socket;
+        // another member's engine(2100) → its shell(3100) → a script(4100).
+        let t = tree(&[(3000, Parent::Pid(2000)), (2000, Parent::Pid(DAEMON)), (4100, Parent::Pid(3100)), (3100, Parent::Pid(2100)), (2100, Parent::Pid(DAEMON))]);
+        assert_eq!(engine_of(Some(3000), DAEMON, &t), Some(2000));
+        assert_eq!(engine_of(Some(2000), DAEMON, &t), Some(2000), "the engine itself");
+        assert_eq!(engine_of(Some(4100), DAEMON, &t), Some(2100), "the other member's script is under its own engine");
+        // Not a daemon descendant: no engine to bind to.
+        assert_eq!(engine_of(Some(DAEMON), DAEMON, &t), None);
+        assert_eq!(engine_of(Some(5000), DAEMON, tree(&[(5000, Parent::Top)])), None);
+        assert_eq!(engine_of(Some(9000), DAEMON, tree(&[(9000, Parent::Unknown)])), None);
+        assert_eq!(engine_of(None, DAEMON, &t), None);
+        assert_eq!(engine_of(Some(50), DAEMON, tree(&[(50, Parent::Pid(60)), (60, Parent::Pid(50))])), None);
     }
 
     fn of_with(peer: Option<u32>, daemon: u32) -> Origin {

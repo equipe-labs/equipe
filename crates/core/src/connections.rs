@@ -391,6 +391,9 @@ pub fn check_request(args: &Value) -> Result<Request, String> {
     if !ks::valid_name(&name) {
         return Err(format!("{name:?}: a name is letters, digits, `.`, `_` and `-`, up to 64 (`anthropic-admin-key`)."));
     }
+    if ks::reserved(&name) {
+        return Err(format!("{name}: names starting with `{}` are equipe's own (an MCP server's sign-in); choose another name.", ks::RESERVED_PREFIX));
+    }
     let service = text("service");
     if service.is_empty() || service.len() > 120 {
         return Err("Say in `service` which service or site it is for (`anthropic`).".into());
