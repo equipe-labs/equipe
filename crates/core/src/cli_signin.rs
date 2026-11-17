@@ -149,10 +149,49 @@ fn word_safe(w: &str) -> bool {
     !w.is_empty() && w.len() <= 80 && w.chars().all(|c| c.is_ascii_alphanumeric() || "-_=./:@".contains(c))
 }
 
-/// Arguments that would make equipe handle a secret or change the mode.
-fn refused_arg(a: &str) -> bool {
-    let l = a.to_ascii_lowercase();
-    ["token", "password", "secret", "key", "cred", "stdin", "profile", "remote", "browser", "device-code", "web", "output"].iter().any(|bad| l.contains(bad))
+/// The extra flags a member may add for `kind`, each with whether it takes a
+/// value: only what an ordinary interactive sign-in needs. Everything else —
+/// a token, a scope, another host, a storage or mode switch — is refused.
+/// `gh` takes none: its host is always github.com, its scopes gh's own.
+fn allowed_flags(kind: Kind) -> &'static [(&'static str, bool)] {
+    match kind {
+        Kind::Aws => &[("--region", true)],
+        Kind::AwsSso => &[("--region", true), ("--sso-session", true)],
+        Kind::Gcloud => &[("--project", true), ("--update-adc", false), ("--force", false)],
+        Kind::Az => &[("--tenant", true), ("--allow-no-subscriptions", false)],
+        Kind::Gh | Kind::ClaudeMcp | Kind::CodexMcp | Kind::EquipeMcp => &[],
+    }
+}
+
+/// `extra`, checked against [`allowed_flags`]: each a flag of the list, its
+/// value (when it takes one) the next item or after `=`, a plain word.
+fn check_extra(kind: Kind, extra: &[String]) -> Result<(), String> {
+    let allowed = allowed_flags(kind);
+    let list = if allowed.is_empty() { "none".to_owned() } else { allowed.iter().map(|(f, v)| if *v { format!("`{f} <value>`") } else { format!("`{f}`") }).collect::<Vec<_>>().join(", ") };
+    let refused = |a: &str| format!("`{a}` isn't allowed for {}: equipe runs only the tool's own cross-device sign-in, and never handles tokens, passwords or keys. Extra flags allowed: {list}.", kind.program());
+    let value_ok = |v: &str| word_safe(v) && !v.starts_with('-');
+    let mut items = extra.iter();
+    while let Some(a) = items.next() {
+        if !word_safe(a) {
+            return Err(format!("`{a}` isn't a plain flag or value."));
+        }
+        let (flag, inline) = match a.split_once('=') {
+            Some((f, v)) => (f, Some(v)),
+            None => (a.as_str(), None),
+        };
+        let Some(&(_, takes_value)) = allowed.iter().find(|(f, _)| *f == flag) else { return Err(refused(a)) };
+        match (takes_value, inline) {
+            (false, None) => {}
+            (false, Some(_)) => return Err(format!("`{flag}` takes no value.")),
+            (true, Some(v)) if value_ok(v) => {}
+            (true, Some(_)) => return Err(format!("`{a}`: `{flag}` takes a plain value.")),
+            (true, None) => match items.next() {
+                Some(v) if value_ok(v) => {}
+                _ => return Err(format!("`{flag}` needs a plain value after it.")),
+            },
+        }
+    }
+    Ok(())
 }
 
 /// The commands for `kind`, for `profile` (AWS profile, or a gcloud configuration) and `extra` flags.
@@ -165,13 +204,8 @@ pub fn plan(kind: Kind, profile: Option<&str>, extra: &[String]) -> Result<Plan,
     if profile.is_some() && matches!(kind, Kind::Gh | Kind::Az) {
         return Err(format!("{} has no profiles: leave `profile` out.", kind.name()));
     }
-    for a in extra {
-        if !word_safe(a) {
-            return Err(format!("`{a}` isn't a plain flag or value."));
-        }
-        if refused_arg(a) {
-            return Err(format!("`{a}` isn't allowed here: equipe runs only the tool's cross-device sign-in, and never handles tokens, passwords or keys."));
-        }
+    if !kind.is_mcp() {
+        check_extra(kind, extra)?;
     }
     let s = |v: &[&str]| v.iter().map(|x| (*x).to_owned()).collect::<Vec<_>>();
     let mut args = Vec::new();
@@ -210,9 +244,9 @@ pub fn plan(kind: Kind, profile: Option<&str>, extra: &[String]) -> Result<Plan,
         args.extend(["--profile".to_owned(), p.to_owned()]);
         whoami_args.extend(["--profile".to_owned(), p.to_owned()]);
     }
-    // GitHub's host, when it isn't github.com, is an ordinary flag.
     args.extend(extra.iter().cloned());
-    if kind == Kind::Gh && !extra.iter().any(|a| a == "--hostname" || a == "-h") {
+    // Always github.com: another host isn't a member's to pick.
+    if kind == Kind::Gh {
         args.extend(s(&["--hostname", "github.com"]));
     }
     Ok(Plan { program: kind.program().to_owned(), args, env, whoami: (kind.program().to_owned(), whoami_args), cwd: None })
@@ -261,7 +295,7 @@ a password in chat. tool: aws (`aws login --remote`, the console sign-in; needs 
                 "tool": { "type": "string", "enum": ["aws", "aws_sso", "gh", "gcloud", "az"], "description": "Which tool to sign in." },
                 "why": { "type": "string", "description": "What it is for, in a line in the person's language: \"deploy the staging stack\"." },
                 "profile": { "type": "string", "description": "The AWS profile to sign in (`atinum`), or the gcloud configuration. Leave out for the default, and for gh and az." },
-                "args": { "type": "array", "items": { "type": "string" }, "description": "Rare extra flags, one per item (`--region`, `us-east-1`; `--hostname`, `github.example.com`). Never tokens, passwords or keys." },
+                "args": { "type": "array", "items": { "type": "string" }, "description": "Rare extra flags, one per item. Only these: aws `--region`; aws_sso `--region`, `--sso-session`; gcloud `--project`, `--update-adc`, `--force`; az `--tenant`, `--allow-no-subscriptions`; gh none. A flag's value is the next item (`--region`, `us-east-1`). Never tokens, passwords or keys." },
             },
             "required": ["tool", "why"],
         },
@@ -814,6 +848,37 @@ mod tests {
         }
         assert!(plan(Kind::Aws, Some("a b"), &[]).is_err());
         assert!(plan(Kind::Aws, None, &["$(x)".into()]).is_err());
+    }
+
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(|x| (*x).to_owned()).collect()
+    }
+
+    #[test]
+    fn gh_refuses_scopes_insecure_storage_another_host_and_a_token() {
+        for bad in [&["--scopes", "admin:org"][..], &["--scopes=repo"], &["--insecure-storage"], &["--hostname", "evil.example.com"], &["--hostname=evil.example.com"], &["-h", "evil.example.com"], &["--with-token"], &["--git-protocol", "ssh"], &["github.com"]] {
+            let err = plan(Kind::Gh, None, &v(bad)).unwrap_err();
+            assert!(err.contains("isn't allowed for gh") && err.contains("allowed: none"), "{bad:?}: {err}");
+        }
+        assert!(check(&json!({ "tool": "gh", "why": "push", "args": ["--insecure-storage"] })).is_err());
+        // With nothing extra: github.com, the web flow, as always.
+        assert_eq!(plan(Kind::Gh, None, &[]).unwrap().args.join(" "), "auth login --web --git-protocol https --skip-ssh-key --hostname github.com");
+    }
+
+    #[test]
+    fn each_tools_own_allowed_flags_still_pass() {
+        assert_eq!(plan(Kind::Aws, Some("atinum"), &v(&["--region", "us-east-1"])).unwrap().args.join(" "), "login --remote --profile atinum --region us-east-1");
+        assert!(plan(Kind::AwsSso, None, &v(&["--sso-session", "corp", "--region=eu-west-1"])).is_ok());
+        assert!(plan(Kind::Gcloud, Some("work"), &v(&["--project", "my-proj-123", "--update-adc", "--force"])).is_ok());
+        assert_eq!(plan(Kind::Az, None, &v(&["--tenant", "contoso.onmicrosoft.com", "--allow-no-subscriptions"])).unwrap().args.join(" "), "login --use-device-code --tenant contoso.onmicrosoft.com --allow-no-subscriptions");
+        assert!(check(&json!({ "tool": "az", "why": "deploy", "args": ["--tenant", "0000-1111"] })).is_ok());
+        // Another tool's flag, a missing or flag-shaped value, a value on a switch: refused.
+        assert!(plan(Kind::Aws, None, &v(&["--tenant", "x"])).is_err());
+        assert!(plan(Kind::Aws, None, &v(&["--region"])).is_err());
+        assert!(plan(Kind::Aws, None, &v(&["--region", "--profile"])).is_err());
+        assert!(plan(Kind::Gcloud, None, &v(&["--force=yes"])).is_err());
+        assert!(plan(Kind::Gcloud, None, &v(&["--enable-gdrive-access"])).is_err());
+        assert!(plan(Kind::Az, None, &v(&["--service-principal"])).is_err());
     }
 
     // Recorded from Claude Code 2.1.308 (`claude mcp login mobbin --no-browser`, in a terminal);

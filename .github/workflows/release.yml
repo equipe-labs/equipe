@@ -240,12 +240,11 @@ jobs:
             dmg: equipe.dmg
             lipo: x86_64 arm64
     runs-on: macos-15
+    # Only whether signing and notarizing are set up: the secrets themselves
+    # go to the one step that uses each, not to every step of the job.
     env:
-      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      HAS_MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE != '' }}
+      HAS_APPLE_API_KEY: ${{ secrets.APPLE_API_KEY != '' }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -277,8 +276,22 @@ jobs:
             tar -xzf "prebuilt-cli/equipe-$arch-apple-darwin/equipe-$arch-apple-darwin.tar.gz" -C prebuilt-cli
           done
 
+      # The disk images of this build's last few versions, for update deltas
+      # (a few MB instead of the whole app). Missing ones only mean full
+      # downloads: the script warns and goes on.
+      # Ahead of the signing keychain: none of it is around for this step.
+      - name: Earlier versions
+        if: matrix.flavor != 'universal'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FLAVOR: ${{ matrix.flavor }}
+        run: scripts/desktop-previous.sh "$FLAVOR" previous 5
+
       - name: Developer ID certificate
-        if: env.MACOS_CERTIFICATE != ''
+        if: env.HAS_MACOS_CERTIFICATE == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         run: |
           keychain="$RUNNER_TEMP/signing.keychain-db"
           password="$(uuidgen)"
@@ -292,31 +305,23 @@ jobs:
           # shellcheck disable=SC2046 # one keychain path per word
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
 
-      - name: Notary key
-        if: env.APPLE_API_KEY != ''
-        run: |
-          echo "$APPLE_API_KEY" > "$RUNNER_TEMP/notary.p8"
-          {
-            echo "EQUIPE_NOTARY_KEY=$RUNNER_TEMP/notary.p8"
-            echo "EQUIPE_NOTARY_KEY_ID=$APPLE_API_KEY_ID"
-            echo "EQUIPE_NOTARY_ISSUER=$APPLE_API_ISSUER"
-          } >> "$GITHUB_ENV"
-
-      # The disk images of this build's last few versions, for update deltas
-      # (a few MB instead of the whole app). Missing ones only mean full
-      # downloads: the script warns and goes on.
-      - name: Earlier versions
-        if: matrix.flavor != 'universal'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          FLAVOR: ${{ matrix.flavor }}
-        run: scripts/desktop-previous.sh "$FLAVOR" previous 5
-
       - name: Build ${{ matrix.dmg }}
+        # The notary key only here, as a file for the length of this step
+        # (not in $GITHUB_ENV, where every later step would have it).
         env:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           EQUIPE_DMG_ARCHS: ${{ matrix.archs }}
         run: |
+          if [ -n "$APPLE_API_KEY" ]; then
+            EQUIPE_NOTARY_KEY="$RUNNER_TEMP/notary.p8"
+            trap 'rm -f "$EQUIPE_NOTARY_KEY"' EXIT
+            (umask 077 && echo "$APPLE_API_KEY" > "$EQUIPE_NOTARY_KEY")
+            export EQUIPE_NOTARY_KEY EQUIPE_NOTARY_KEY_ID="$APPLE_API_KEY_ID" EQUIPE_NOTARY_ISSUER="$APPLE_API_ISSUER"
+          fi
+          unset APPLE_API_KEY APPLE_API_KEY_ID APPLE_API_ISSUER
           chmod +x prebuilt/*/equipe-desktop prebuilt-cli/*/equipe
           EQUIPE_DMG_PREBUILT="" EQUIPE_DMG_PREBUILT_CLI=""
           for arch in $EQUIPE_DMG_ARCHS; do
@@ -345,7 +350,7 @@ jobs:
             echo "::notice::No Rosetta on this runner: the Intel build's equipe wasn't started"
           fi
           codesign --verify --deep --strict "$mount/equipe.app"
-          if [ -n "$APPLE_API_KEY" ] && [ -n "$MACOS_CERTIFICATE" ]; then
+          if [ "$HAS_APPLE_API_KEY" = true ] && [ "$HAS_MACOS_CERTIFICATE" = true ]; then
             # Apple's ticket service drops a connection now and then: a few tries.
             for try in 1 2 3 4 5; do xcrun stapler validate "$mount/equipe.app" && break; [ "$try" = 5 ] && exit 1; sleep $((try * 15)); done
             spctl -a -vv -t exec "$mount/equipe.app"

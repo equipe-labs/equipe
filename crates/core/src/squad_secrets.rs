@@ -61,6 +61,16 @@ pub fn valid_name(name: &str) -> bool {
     (1..=64).contains(&name.len()) && name.starts_with(|c: char| c.is_ascii_alphanumeric()) && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
 }
 
+/// Names equipe keeps for itself: an MCP server's sign-in tokens
+/// ([`crate::mcp_oauth::secret_name`]). A member saving one could plant a
+/// token whose refresh goes to a host of its choosing.
+pub const RESERVED_PREFIX: &str = "mcp-oauth-";
+
+/// Whether `name` is one only equipe may keep.
+pub fn reserved(name: &str) -> bool {
+    name.to_ascii_lowercase().starts_with(RESERVED_PREFIX)
+}
+
 // ───────────────────────── the tools ─────────────────────────
 
 /// The four tools, as MCP tool definitions.
@@ -73,7 +83,7 @@ pub fn tools() -> Vec<Value> {
 dashboard, a token a CLI printed, a database password — so you or a teammate can use it on a later ticket. equipe stores it in \
 this machine's secret store; this tool never repeats the value, and from now on equipe masks it in transcripts, tickets, \
 memory and hand-ins. Name it for what it is (`posthog-project-key`). Never paste a key into code, a ticket, a comment, memory or \
-chat — save it here. Saving a name again replaces its value.",
+chat — save it here. Saving a name already kept asks the person on a card before its value is replaced.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -307,6 +317,9 @@ pub fn check_save(args: &Value) -> Result<Draft, String> {
     let name = text("name");
     if !valid_name(&name) {
         return Err(format!("{name:?}: a name is letters, digits, `.`, `_` and `-`, up to 64 (`posthog-project-key`)."));
+    }
+    if reserved(&name) {
+        return Err(format!("{name}: names starting with `{RESERVED_PREFIX}` are equipe's own (an MCP server's sign-in); choose another name."));
     }
     let service = text("service");
     if service.is_empty() || service.len() > 120 {
@@ -734,14 +747,7 @@ fn write_private(path: &Path, text: &str) -> Result<(), String> {
     }
     let draft = path.with_extension("equipe-draft");
     {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&draft).map_err(|e| e.to_string())?;
+        let mut file = crate::secrets::open_draft(&draft).map_err(|e| e.to_string())?;
         file.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
     }
     #[cfg(unix)]
@@ -844,6 +850,11 @@ mod tests {
         }
         assert!(check_save(&json!({ "name": "ph", "service": "s", "kind": "token", "value": "x".repeat(MOST_BYTES + 1) })).is_err());
         assert_eq!(check_save(&json!({ "name": "ph", "service": "s", "kind": "token", "value": "v" })).unwrap().projects, None);
+        // An MCP server's sign-in tokens are equipe's own name.
+        for name in [crate::mcp_oauth::secret_name("linear"), "MCP-OAUTH-x".to_owned()] {
+            assert!(check_save(&json!({ "name": name, "service": "s", "kind": "token", "value": "v" })).err().is_some_and(|e| e.contains("equipe's own")), "{name}");
+        }
+        assert!(check_save(&json!({ "name": "mcp-other", "service": "s", "kind": "token", "value": "v" })).is_ok());
     }
 
     #[test]
@@ -1001,6 +1012,18 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiJ9abcdef123456 and \"api_key\": \"AbCd12
         let raw = place(&dir, "secrets/token.txt").unwrap();
         write_into(&raw, Format::Raw, "", "tok").unwrap();
         assert_eq!(std::fs::read_to_string(&raw).unwrap(), "tok");
+        // A link planted where the draft goes isn't followed out of the worktree.
+        let outside = std::env::temp_dir().join(format!("equipe-squad-secrets-outside-{}-{}", std::process::id(), unique()));
+        std::fs::write(&outside, "theirs").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("secrets/token.equipe-draft")).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join(".env.equipe-draft")).unwrap();
+        write_into(&raw, Format::Raw, "", "tok2").unwrap();
+        write_into(&env, Format::Env, "POSTHOG_KEY", "v2").unwrap();
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "theirs", "the link's target is untouched");
+        assert_eq!(std::fs::read_to_string(&raw).unwrap(), "tok2");
+        assert!(std::fs::read_to_string(&env).unwrap().contains("POSTHOG_KEY=\"v2\""));
+        assert!(!std::fs::symlink_metadata(&raw).unwrap().file_type().is_symlink());
+        std::fs::remove_file(&outside).unwrap();
         assert_eq!(default_key("posthog-project.key", Format::Env), "POSTHOG_PROJECT_KEY");
         assert_eq!(default_key("9lives", Format::Env), "LIVES");
         assert_eq!(Format::parse(None).unwrap(), Format::Env);
