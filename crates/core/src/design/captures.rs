@@ -236,11 +236,26 @@ const STORE: &str = "equipe/captures";
 /// In a worktree's admin folder: the captures it was given when made, one
 /// path a line — what it lacks later, its member removed.
 const SEED: &str = "equipe-captures-seed";
+/// How long the checkout main is checked out in has to follow the upgrade's
+/// commit: a squad's folder that tracked 130,000 handed-in files took more
+/// than git's usual minute on a busy machine, failed, and tried again on
+/// every sweep. It runs off the daemon's loop.
+const MIGRATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 const DEPTH_MAX: usize = 8;
 const FILES_MAX: usize = 200_000;
 /// Objects no branch's manifest names are kept this long (seconds): work
 /// not committed yet may name them soon.
 const UNNAMED_KEPT: u64 = 7 * 86_400;
+
+/// An object's time is when it came into the store, which [`gc`] counts
+/// from: a copy keeps its file's time, and an upgrade that failed half-way
+/// saw every file it had kept — months old — go again at once, to be copied
+/// and hashed anew on the next sweep (7 GB each time, in one squad's folder).
+fn stored_now(object: &Path) {
+    if let Ok(file) = std::fs::File::options().write(true).open(object) {
+        let _ = file.set_modified(SystemTime::now());
+    }
+}
 
 /// Whether `rel` — a path from the top of a repository, `/`-separated — is
 /// a capture: `design/<one of DIRS>/…/<name>.<one of EXTS>`.
@@ -561,7 +576,10 @@ impl Store {
         let staging = Self::staging(&to);
         let done = std::fs::copy(from, &staging).map_err(|e| format!("{}: {e}", from.display())).and_then(|_| {
             match blob_id(&staging, self.kind) {
-                Ok((id, _)) if id == hash => std::fs::rename(&staging, &to).map_err(|e| format!("{}: {e}", to.display())),
+                Ok((id, _)) if id == hash => {
+                    stored_now(&staging);
+                    std::fs::rename(&staging, &to).map_err(|e| format!("{}: {e}", to.display()))
+                }
                 Ok(_) => Err(format!("{} changed while it was kept", from.display())),
                 Err(e) => Err(format!("{}: {e}", staging.display())),
             }
@@ -585,7 +603,10 @@ impl Store {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         let staging = Self::staging(&to);
         let done = worktree::git_to_file(repo, &["cat-file", "blob", hash], &staging).and_then(|()| match blob_id(&staging, self.kind) {
-            Ok((id, _)) if id == hash => std::fs::rename(&staging, &to).map_err(|e| format!("{}: {e}", to.display())),
+            Ok((id, _)) if id == hash => {
+                stored_now(&staging);
+                std::fs::rename(&staging, &to).map_err(|e| format!("{}: {e}", to.display()))
+            }
             _ => Err(format!("git's blob {hash} didn't read back as itself")),
         });
         if done.is_err() {
@@ -1168,7 +1189,7 @@ pub fn migrate_in(scope: &Scope, repo: &Path) -> Result<Option<Migrated>> {
     // A fast-forward deletes the files main stops tracking: each is held by
     // a second link meanwhile and put back.
     let held = checkout.as_ref().map(|c| hold(&store, c, &paths)).unwrap_or_default();
-    let moved = worktree::move_main(repo, &main, &tip, &commit, "untracked");
+    let moved = worktree::move_main_within(repo, &main, &tip, &commit, "untracked", MIGRATE_TIMEOUT);
     for (path, at) in held {
         if std::fs::symlink_metadata(&path).is_err() {
             if let Some(parent) = path.parent() {

@@ -24,6 +24,8 @@ pub type Result<T> = std::result::Result<T, String>;
 pub const GIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// A push talks to a server, which may be slow.
 const PUSH_TIMEOUT: Duration = Duration::from_secs(180);
+/// How long a command past its time has to stop once asked before it is killed.
+const STOP_GRACE: Duration = Duration::from_secs(3);
 
 static GIT: OnceLock<PathBuf> = OnceLock::new();
 
@@ -68,7 +70,14 @@ fn output_with_input(mut command: Command, timeout: Duration, input: Option<std:
     match rx.recv_timeout(timeout) {
         Ok(out) => out.map_err(|err| format!("couldn't run {program}: {err}")),
         Err(_) => {
-            crate::group::end(pid, crate::group::Signal::Kill);
+            // Asked to stop first: git removes the lock files it holds
+            // (`index.lock`) when it is terminated, never when it is killed —
+            // a killed `status` left one behind in a squad's folder, and every
+            // save after it failed. Killed only if it is still there after a moment.
+            crate::group::end(pid, crate::group::Signal::Terminate);
+            if rx.recv_timeout(STOP_GRACE).is_err() {
+                crate::group::end(pid, crate::group::Signal::Kill);
+            }
             let args: Vec<String> = command.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
             Err(format!("{program} {} took more than {}s and was stopped", args.join(" "), timeout.as_secs()))
         }
@@ -909,9 +918,16 @@ pub fn add_detached(repo: &Path, path: &Path, commit: &str) -> Result<()> {
 /// checkout has it checked out, by a fast-forward there that keeps its
 /// uncommitted changes (or refuses, and nothing moves) — else the ref alone.
 pub(crate) fn move_main(repo: &Path, main: &str, tip: &str, commit: &str, done: &str) -> Result<()> {
+    move_main_within(repo, main, tip, commit, done, GIT_TIMEOUT)
+}
+
+/// [`move_main`], the checkout given up to `timeout` to follow: a commit that
+/// stops tracking a hundred thousand files takes minutes to fast-forward on
+/// a busy machine.
+pub(crate) fn move_main_within(repo: &Path, main: &str, tip: &str, commit: &str, done: &str, timeout: Duration) -> Result<()> {
     let checked_out = checked_out_at(repo, main);
     match checked_out {
-        Some(path) => git(&path, &["merge", "-q", "--ff-only", commit]).map_err(|err| {
+        Some(path) => git_within(&path, &["merge", "-q", "--ff-only", commit], timeout).map_err(|err| {
             format!("{main} is checked out in {} and couldn't move without touching its changes — nothing was {done} ({err})", path.display())
         })?,
         None => git(repo, &["update-ref", &format!("refs/heads/{main}"), commit, tip])?,
@@ -2019,6 +2035,19 @@ mod tests {
         let mut quick = Command::new("echo");
         quick.arg("hi");
         assert_eq!(String::from_utf8_lossy(&output_within(quick, Duration::from_secs(10)).unwrap().stdout), "hi\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_past_its_time_is_asked_to_stop_before_it_is_killed() {
+        // git removes its lock files when terminated, never when killed.
+        let dir = scratch("terminated");
+        let said = dir.join("cleaned-up");
+        let mut command = Command::new("sh");
+        command.args(["-c", &format!("trap 'echo yes > \"{}\"; exit 1' TERM; sleep 30 & wait", said.display())]);
+        let err = output_within(command, Duration::from_millis(300)).unwrap_err();
+        assert!(err.contains("took more than"), "{err}");
+        assert_eq!(std::fs::read_to_string(&said).unwrap_or_default().trim(), "yes", "it cleaned up after itself");
     }
 
     #[test]
