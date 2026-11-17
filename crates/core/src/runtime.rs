@@ -9485,8 +9485,6 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
         matches!(self.tabs.get(lane), Some(Event::BrowserTabs { pages, .. }) if pages.iter().any(|p| p.id == page && p.check.is_some()))
     }
 
-    /// A lane's squad and the conversation it is the browser of: `squad/key`;
-    /// `""` is the person's own.
     /// A member's lane couldn't open in the browser host: its port is
     /// forgotten, so its next turn asks for the lane again rather than
     /// handing its engine a browser no server answers for — an engine
@@ -9507,6 +9505,8 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
         crate::daemon_log!("equipe: {lane}'s browser couldn't open; it opens again on its next turn");
     }
 
+    /// A lane's squad and the conversation it is the browser of: `squad/key`;
+    /// `""` is the person's own.
     fn lane_session(&self, lane: &str) -> (Option<String>, Option<SessionId>) {
         let Some((squad, key)) = lane.split_once('/') else {
             return (None, None);
