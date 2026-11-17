@@ -836,7 +836,8 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // Not `super::*`: GPUI's prelude brings a `test` macro of its own.
+    use super::{DEVICE_MARGIN, LEAST, TALK_KEEPS, Width, docked_width, place};
 
     #[test]
     fn a_width_that_fits_sits_in_the_middle_and_a_wider_one_is_drawn_smaller() {
