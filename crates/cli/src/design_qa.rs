@@ -386,14 +386,16 @@ pub(crate) async fn run(r: &Run) -> Result<precheck::Report, String> {
         let mut parts = t.key.splitn(3, '/');
         let (Some(flow), Some(screen), Some(state)) = (parts.next(), parts.next(), parts.next()) else { continue };
         let rel = format!("{flows_rel}/{flow}/{screen}/{}", flows::picture_name(state, &c.scheme, c.width));
-        if let Some(bytes) = base.as_deref().and_then(|b| git_file(&root, b, &rel)) {
+        // Committed then, or — kept out of git since (docs/DESIGN-CAPTURES.md) — named by that commit's manifest.
+        let then = |b: &str| git_file(&root, b, &rel).or_else(|| equipe_core::design::captures::file_at(&root, b, &rel).and_then(|p| std::fs::read(p).ok()));
+        if let Some(bytes) = base.as_deref().and_then(then) {
             let at = out.join("base").join(flow).join(screen).join(flows::picture_name(state, &c.scheme, c.width));
             if at.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::write(&at, bytes).is_ok() {
                 input.baselines.insert((t.key.clone(), t.condition.clone()), at);
             }
         }
-        let committed = root.join(&rel);
-        if committed.is_file() {
+        // A ticket's worktree holds only the pictures it made; the rest are the main checkout's.
+        if let Some(committed) = equipe_core::design::captures::lent(&root, &rel) {
             input.committed.insert((t.key.clone(), t.condition.clone()), committed);
         }
     }

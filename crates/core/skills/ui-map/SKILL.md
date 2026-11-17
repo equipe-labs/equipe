@@ -31,5 +31,10 @@ A screen whose code changed after its pictures is stale, and a stale picture is 
 its states and pictures, and its flow's `walk` and video, change in the same hand-in, and you hand in only when
 `equipe design flows check` finds nothing missing or stale.
 
+The map's pictures and walkthroughs are never committed: leave them on disk where `shoot` and `record` put them and
+never `git add` them, not with `-f` either. When equipe commits your work it lists them in `design/captures.json` and
+keeps their bytes in its store, so the person, the next ticket and design QA see them; `design/.gitignore` keeps them
+out of git.
+
 When the person talks about one screen ("Onboarding › Sign in › Error", its picture attached), answer about that
 screen and state, and propose the change as a picture beside the one it replaces.

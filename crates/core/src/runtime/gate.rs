@@ -162,7 +162,7 @@ Get main fixed first (put it on the board), then accept T-{ticket} again."
         Box::pin(self.accept(squad, ticket, crate::telemetry::Accepter::Pm)).await;
         let checked_merge = merge.is_some();
         match merge {
-            Some(merge) => self.land_checked(squad, ticket, gate.repo.clone(), merge, gate.push),
+            Some(merge) => self.land_checked(squad, ticket, gate.repo.clone(), gate.branch.clone(), merge, gate.push),
             None => self.merge(squad, ticket, gate.push),
         }
         let ids = format!("T-{ticket}");
@@ -176,14 +176,16 @@ Get main fixed first (put it on the board), then accept T-{ticket} again."
 
     /// Land `merge` on main off the loop — only while main is where it was
     /// worked out — and push when asked; [`Runtime::on_merged`] takes it from there.
-    fn land_checked(&mut self, squad: &str, ticket: TicketId, repo: PathBuf, merge: worktree::MergeCommit, push: bool) {
+    fn land_checked(&mut self, squad: &str, ticket: TicketId, repo: PathBuf, branch: String, merge: worktree::MergeCommit, push: bool) {
         if !self.merging.insert((squad.to_owned(), ticket)) {
             return;
         }
         let (internal, squad) = (self.internal.clone(), squad.to_owned());
         tokio::task::spawn_blocking(move || {
             let result = worktree::land(&repo, &merge).map(|main| (main, push.then(|| worktree::push_main(&repo).map(|_| ()))));
-            let _ = internal.send(Internal::Merged { squad, ticket, result });
+            // What landing kept out of git, from when the merge was worked out.
+            let kept = crate::design::captures::take_report(&repo, &branch);
+            let _ = internal.send(Internal::Merged { squad, ticket, result, kept });
         });
     }
 }

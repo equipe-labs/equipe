@@ -146,3 +146,11 @@ person's language): they answer in one click. On a mix (one option with an aspec
 and ask again with it beside the two it came from; on another round, bring a genuinely different round that takes
 their why into account.
 {{/if}}
+
+## Pictures stay out of git
+
+Every picture and video you render under `design/` — the map's, mockups, directions, checks, QA, references,
+critiques, sessions — stays out of git: leave it on disk, never `git add` it (not with `-f`), and never copy one
+elsewhere in the repository to get it committed. When equipe commits your work it lists them in
+`design/captures.json` and keeps their bytes in its store; landing takes any committed one back out of your commits
+and tells you.

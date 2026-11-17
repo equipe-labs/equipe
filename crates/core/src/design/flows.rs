@@ -673,6 +673,16 @@ fn find(root: &Path, listed: &[Listed]) -> Found {
         let Some(taken) = Taken::of(&path, &real, root, mode, width, false) else { continue };
         found.pictures.entry([parts[0].clone(), parts[1].clone(), state]).or_default().push(taken);
     }
+    // A ticket's worktree holds only the pictures its work made: the rest,
+    // unchanged from main, are the main checkout's (`captures::borrowed`).
+    for (rel, path, lender) in super::captures::borrowed(root) {
+        let [dir, flow, screen, file] = rel.split('/').collect::<Vec<_>>()[..] else { continue };
+        let Some((state, mode, width)) = parse_picture_name(file).filter(|(state, ..)| dir == DIR && states.contains(&[flow, screen, state.as_str()])) else { continue };
+        let Ok(real) = visuals::check(&path, std::slice::from_ref(&lender)) else { continue };
+        if let Some(taken) = Taken::of(&path, &real, &lender, mode, width, false) {
+            found.pictures.entry([flow.to_owned(), screen.to_owned(), state]).or_default().push(taken);
+        }
+    }
     found
 }
 
