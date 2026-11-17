@@ -810,6 +810,10 @@ pub enum Block {
     /// step, the work carrying on) or a memo (read when its turn ends); when
     /// it was said, in unix seconds (0: not known).
     Pending { text: String, steer: bool, at: u64 },
+    /// The person's message on its way to the daemon (`crate::outbox`):
+    /// sending, waiting for the line, or not sent — and the daemon's words
+    /// when it refused it. Its key `id` retries it or takes it back.
+    Outgoing { id: u64, text: String, shown: crate::outbox::Shown, why: Option<String> },
     /// A member handed the person its browser, asking `why`: a row to open
     /// it from, and give it back; `live` on the member's latest (an earlier
     /// one is past).
@@ -834,7 +838,7 @@ impl Block {
     pub fn searchable(&self) -> Option<String> {
         match self {
             // Your words as shown: without the attachments' tags.
-            Block::User(t) | Block::Pending { text: t, .. } => Some(crate::sent::parts(t).text),
+            Block::User(t) | Block::Pending { text: t, .. } | Block::Outgoing { text: t, .. } => Some(crate::sent::parts(t).text),
             Block::Reply { text: t, .. } | Block::Note(t) | Block::Background { summary: t, .. } => Some(t.clone()),
             Block::News(lines) => Some(lines.iter().map(|n| n.text.clone()).collect::<Vec<_>>().join("\n")),
             Block::YourTurn { news, .. } => Some(news.clone()),

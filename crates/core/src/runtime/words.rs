@@ -36,7 +36,14 @@ pub(super) struct Talk {
 pub(super) struct Words {
     talks: HashMap<u64, Talk>,
     running: bool,
+    /// The keys of the person's messages taken lately ([`Command::Say`]'s
+    /// `nonce`), oldest first: one sent again goes no further.
+    taken: std::collections::VecDeque<u64>,
 }
+
+/// How many messages' keys are remembered: far more than a screen ever has
+/// waiting to be sent again.
+const TAKEN_KEPT: usize = 512;
 
 /// What waits on the person, owned for a moment to read the words against.
 struct Owned {
@@ -139,14 +146,30 @@ impl Runtime {
     /// The person's own message: an answer to what waits on them in words,
     /// or a new request in words — and, unless it was only an answer, on to
     /// the member as they said it. What the screen says of "all by words" is
-    /// not asked: the squad's own setting is.
+    /// not asked: the squad's own setting is. One sent again under a key
+    /// already taken (`nonce`: a screen that lost the line and sent it once
+    /// more) goes no further. An answer stays in the conversation as a line
+    /// saying what it was taken as, so the person never wonders where it went.
     #[allow(clippy::too_many_arguments)]
-    pub(super) async fn say(&mut self, squad: String, session: SessionId, text: String, via: Via, _all: bool, later: bool, pasted: bool, about: Option<Option<String>>, device: Option<String>) {
+    pub(super) async fn say(&mut self, squad: String, session: SessionId, text: String, via: Via, _all: bool, later: bool, pasted: bool, about: Option<Option<String>>, device: Option<String>, nonce: Option<u64>) {
+        if let Some(nonce) = nonce {
+            if self.words.taken.contains(&nonce) {
+                crate::daemon_log!("equipe: {squad}: a message sent again was taken already; not again");
+                return;
+            }
+            self.words.taken.push_back(nonce);
+            if self.words.taken.len() > TAKEN_KEPT {
+                self.words.taken.pop_front();
+            }
+        }
         let ours = self.sessions.get(&session).is_some_and(|s| s.squad.as_deref() == Some(squad.as_str()));
         let passes = if ours && !pasted { self.words_heard(&squad, session, &text, via, device.as_deref()).await } else { true };
         if passes {
             let command = if later { Command::SubmitLater { session, text, about } } else { Command::Submit { session, text, about } };
             Box::pin(self.handle(command)).await;
+        } else {
+            let text = say!(self, "words.taken_as_answer", said = text.trim());
+            self.publish(Event::Notice { undo: None, session, text });
         }
     }
 
@@ -154,8 +177,10 @@ impl Runtime {
     async fn words_heard(&mut self, squad: &str, session: SessionId, text: &str, via: Via, device: Option<&str>) -> bool {
         let tongues = self.tongues(text);
         let all = self.journal(squad).is_some_and(|j| j.words_all());
-        // An answer to what was read back, or put to them to choose: theirs, from the same screen.
-        let mine = |t: &Talk| t.squad == squad && t.live.device.as_deref() == device;
+        // An answer to what was read back, or put to them to choose: theirs,
+        // from the same screen, in the conversation it waits in — what is said
+        // in another is a message there, whatever words it has.
+        let mine = |t: &Talk| t.squad == squad && t.live.device.as_deref() == device && t.live.session == session;
         if let Some(id) = self.words.talks.values().filter(|t| mine(t) && matches!(t.live.stage, Stage::ReadBack | Stage::Which)).map(|t| t.live.id).max() {
             return self.words_answered(id, text, via, &tongues).await;
         }

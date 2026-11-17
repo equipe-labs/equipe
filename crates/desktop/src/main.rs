@@ -50,6 +50,7 @@ mod files;
 mod media;
 mod mem;
 mod notify;
+mod outbox;
 mod pair;
 mod pane;
 mod queue;
@@ -1432,6 +1433,14 @@ impl Shell {
                             _ => None,
                         };
                         changed |= this.model.apply(update, now);
+                        // What the person said while the line was down goes now, in order.
+                        let said = this.model.take_to_send();
+                        if !said.is_empty() {
+                            for command in said {
+                                this.send_command(command);
+                            }
+                            this.watch_said(cx);
+                        }
                         // A name sent: kept, or refused (or the line gone) — the old one back, the card again.
                         this.rename_heard(renamed, window, cx);
                         // A conversation taken up again from its project's page: opened.

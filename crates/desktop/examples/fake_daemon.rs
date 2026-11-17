@@ -2053,6 +2053,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         let command = match command {
                             Command::Say { text, later, pasted, session, about, .. } => {
                                 if !words::on_say(&text, pasted, &events) {
+                                    // Taken as an answer: a line where it was said, as the daemon's.
+                                    let _ = events.send(Event::Notice { session, undo: None, text: format!("“{}” was taken as your answer to the decision waiting in words.", text.trim()) });
                                     continue;
                                 }
                                 if later { Command::SubmitLater { session, text, about } } else { Command::Submit { session, text, about } }

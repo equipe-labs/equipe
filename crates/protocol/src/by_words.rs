@@ -631,6 +631,11 @@ pub fn reply(t: &Tongues, text: &str, strict: bool) -> Reply {
     }
     let plain = tokens.iter().all(|w| yes.contains(&w.as_str()) || with.contains(&w.as_str()));
     let asked = words.contains(['?', '？']);
+    // A question with more in it than a yes ("ok, and what's left for me to
+    // accept?") is a question to the member, not an answer to equipe.
+    if asked && !plain {
+        return Reply::Other;
+    }
     let short = tokens.len() <= SPOKEN_YES_WORDS && !words.contains('\n') && !t.any(&words.to_lowercase(), "match.no");
     if plain && !asked && (!strict || short) { Reply::Yes } else { Reply::Unclear }
 }
@@ -782,6 +787,10 @@ mod tests {
         assert_eq!(reply(&zh, "没问题", true), Reply::Unclear);
         assert_eq!(reply(&ko, "응\n해", true), Reply::Unclear, "on one line");
         assert_eq!(reply(&ko, "아니", true), Reply::No);
+        // A question that has a yes word in it asks; it doesn't answer.
+        assert_eq!(reply(&Tongues::of(&["en"]), "ok so what do I still have to approve?", false), Reply::Other);
+        assert_eq!(reply(&ko, "어 그럼 지금 내가 확인할 거 뭐 있어?", false), Reply::Other);
+        assert_eq!(reply(&Tongues::of(&["en"]), "ok?", false), Reply::Unclear, "a bare yes asked back: asked again");
     }
 
     #[test]

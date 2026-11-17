@@ -1358,6 +1358,7 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
             .child(v_flex().pl(px(21.)).font_family(MONO).text_size(px(12.5)).line_height(px(20.)).text_color(p.muted).children(stat.lines().map(|l| div().child(l.trim().to_owned()))))
             .into_any_element(),
         Block::Pending { text, steer, at } => pending_row(rows, key, text, *steer, *at, rows.project_of(ix), cx),
+        Block::Outgoing { id, text, shown, why } => outgoing_row(rows, key, *id, text, *shown, why.as_deref(), cx),
         Block::HandOver { name, why, live } => handed_row(rows, key, name, why, *live),
         Block::Plan { steps, stale, working } => plan_row(rows, key, steps, *stale, *working, window, cx),
         Block::DesignCheck(summary) => check_row(rows, key, summary, superseded(&rows.blocks, ix), window, cx),
@@ -2501,6 +2502,75 @@ fn pending_row(rows: &Rows, key: u64, raw: &str, steer: bool, at: u64, project: 
         return row.with_animation(("pending-out", key), Animation::new(motion::BASE).with_easing(motion::ease_out), |el, t| el.opacity(1. - t)).into_any_element();
     }
     row.into_any_element()
+}
+
+/// The person's message on its way (`crate::outbox`): their bubble, dashed
+/// until the daemon has it, and under it where it stands — sending, waiting
+/// for the line, or not sent with the daemon's reason — with Retry and Edit
+/// (back into the box) once it isn't simply on its way.
+fn outgoing_row(rows: &Rows, key: u64, id: u64, raw: &str, shown: crate::outbox::Shown, why: Option<&str>, cx: &mut App) -> AnyElement {
+    use crate::outbox::Shown;
+    let p = rows.p;
+    let parts = crate::sent::parts(raw);
+    let files = attached::attachments(&rows.attached, key, &parts.tags, parts.more, true, cx);
+    let failed = shown == Shown::Failed;
+    let tone = if failed { rows.tones.danger } else { p.muted };
+    let (cards, rest) = crate::quote::read(&crate::design_talk::split(&parts.text).1);
+    let quoted = (!cards.is_empty()).then(|| {
+        v_flex().gap(px(10.)).children(cards.iter().enumerate().map(|(n, card)| super::quote::in_bubble(p, key ^ ((n as u64 + 1) << 40), usize::MAX, card, rows.handle.clone())))
+    });
+    let words = if cards.is_empty() { parts.text.clone() } else { rest };
+    let bubble = (!parts.text.is_empty()).then(|| {
+        v_flex()
+            .gap(px(10.))
+            .max_w(gpui_kit::relative(BUBBLE_SHARE))
+            .px(px(BUBBLE_X))
+            .py(px(BUBBLE_Y))
+            .rounded(px(crate::theme::R_LG))
+            .border_1()
+            .border_dashed()
+            .border_color(if failed { rows.tones.danger } else { p.hair })
+            .text_size(px(BODY))
+            .line_height(px(BODY_LINE))
+            .text_color(p.text2)
+            .children(quoted)
+            .when(!words.is_empty(), |b| b.child(SelectableText::new(("outgoing", key), words)))
+    });
+    let state = match shown {
+        Shown::Sending => t!("chat.outgoing_sending").to_owned(),
+        Shown::Waiting => t!("chat.outgoing_waiting").to_owned(),
+        Shown::Failed => match why {
+            Some(why) => t!("chat.outgoing_failed_why", why = why),
+            None => t!("chat.outgoing_failed").to_owned(),
+        },
+    };
+    let label = h_flex()
+        .gap(px(5.))
+        .items_center()
+        .min_w_0()
+        .child(if failed { icon(Icon::Alert, 12., tone).into_any_element() } else { div().size(px(6.)).rounded_full().bg(tone).into_any_element() })
+        .child(div().min_w_0().text_color(tone).child(state));
+    let handle = rows.handle.clone();
+    let retry = (shown != Shown::Sending).then(|| {
+        keyed_button(p, ("outgoing-retry", key), Icon::Retry, t!("chat.outgoing_retry"), None, move |_, cx| {
+            handle.update(cx, |shell, cx| shell.retry_said(id, cx)).ok();
+        })
+    });
+    let handle = rows.handle.clone();
+    let edit = (shown != Shown::Sending).then(|| {
+        keyed_button(p, ("outgoing-edit", key), Icon::Withdraw, t!("chat.outgoing_take_back"), None, move |window, cx| {
+            handle.update(cx, |shell, cx| shell.take_back_said(id, window, cx)).ok();
+        })
+    });
+    v_flex()
+        .w_full()
+        .mt_4()
+        .gap_1p5()
+        .items_end()
+        .children(files)
+        .children(bubble)
+        .child(h_flex().min_h(px(24.)).gap(px(6.)).items_center().text_size(px(META)).children(retry).children(edit).child(label))
+        .into_any_element()
 }
 
 /// An icon button under a waiting bubble, named — and its key said — in its tooltip.

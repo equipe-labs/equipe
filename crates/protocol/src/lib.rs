@@ -1074,7 +1074,11 @@ pub enum Command {
     /// setting ([`Command::SetWordsAll`]); kept on the wire for screens that
     /// send it. `pasted`: some of the text was pasted, so none of it decides.
     /// `device`: the paired phone it came from — set by the daemon's phone
-    /// link, never by the phone.
+    /// link, never by the phone. `nonce`: the screen's own key for this
+    /// message, the same each time it is sent again (after a reconnect, or
+    /// the person's retry): one the daemon has taken already goes no further,
+    /// so a message is acted on once however often it is sent. An older
+    /// screen sends none.
     Say {
         squad: SquadName,
         session: SessionId,
@@ -1091,6 +1095,8 @@ pub enum Command {
         about: Option<Option<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         device: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nonce: Option<u64>,
     },
     /// The undo (or, counting down, the cancel) on a words request: nothing
     /// of it happens. Answered by [`Event::WordsClosed`].
@@ -1119,7 +1125,8 @@ pub enum Command {
     /// The person opens a new conversation with the squad's PM — its own,
     /// beside the PM's others — about `project` (`None`: the whole squad).
     /// `session` names it, as for [`Command::Start`]. Answered with
-    /// [`Event::LaneOpened`], `kept`.
+    /// [`Event::LaneOpened`], `kept`. Sent again for one made already (a
+    /// screen that lost the line before it heard back): nothing more.
     NewConversation { squad: SquadName, session: SessionId, project: Option<String> },
     /// A conversation with the PM moves to another project (`None`: the
     /// whole squad): what is said there from now on is about it.
@@ -4737,10 +4744,14 @@ mod tests {
         assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), confirmed);
         // A message said: only what it has.
         let say: Command = serde_json::from_value(json!({ "type": "say", "squad": "acme", "session": 3, "text": "merge T-12" })).unwrap();
-        assert_eq!(say, Command::Say { squad: "acme".into(), session: 3, text: "merge T-12".into(), via: Via::Typed, all: false, later: false, pasted: false, about: None, device: None });
-        let all = Command::Say { squad: "acme".into(), session: 3, text: "ㄱㄱ".into(), via: Via::Dictated, all: true, later: false, pasted: false, about: Some(None), device: None };
+        assert_eq!(say, Command::Say { squad: "acme".into(), session: 3, text: "merge T-12".into(), via: Via::Typed, all: false, later: false, pasted: false, about: None, device: None, nonce: None });
+        let all = Command::Say { squad: "acme".into(), session: 3, text: "ㄱㄱ".into(), via: Via::Dictated, all: true, later: false, pasted: false, about: Some(None), device: None, nonce: None };
         assert_eq!(serde_json::to_value(&all).unwrap(), json!({ "type": "say", "squad": "acme", "session": 3, "text": "ㄱㄱ", "via": "dictated", "all": true, "about": null }));
         assert_eq!(serde_json::from_value::<Command>(serde_json::to_value(&all).unwrap()).unwrap(), all);
+        // Its key, for a message sent again: on the wire only when there is one.
+        let keyed = Command::Say { squad: "acme".into(), session: 3, text: "ㄱㄱ".into(), via: Via::Dictated, all: true, later: false, pasted: false, about: Some(None), device: None, nonce: Some(42) };
+        assert_eq!(serde_json::to_value(&keyed).unwrap()["nonce"], json!(42));
+        assert_eq!(serde_json::from_value::<Command>(serde_json::to_value(&keyed).unwrap()).unwrap(), keyed);
         // A daemon from before has no words in its snapshot: the screen sends `submit`.
         let before: Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[]}"#).unwrap();
         assert_eq!(before.words, None);
