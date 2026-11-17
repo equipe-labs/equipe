@@ -107,6 +107,7 @@ pub mod tool_cap;
 pub mod obsolete;
 pub mod vault;
 pub mod visuals;
+pub mod worth_asking;
 pub mod watchdog;
 pub mod worktree;
 

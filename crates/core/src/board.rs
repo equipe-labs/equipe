@@ -670,6 +670,8 @@ pub fn tools_for(role: &str) -> Vec<Value> {
     let mut tools = tools(role == crate::roles::PM);
     if role != DESIGNER_ROLE {
         tools.retain(|t| t["name"] != DESIGN_QA);
+    } else if let Some(props) = tools.iter_mut().find(|t| t["name"] == CREATE_TICKET).and_then(|t| t["inputSchema"]["properties"].as_object_mut()) {
+        props.insert("severity".into(), json!({ "type": "string", "enum": ["S1", "S2", "S3", "S4"], "description": FINDING_SEVERITY }));
     }
     if !builds_from_system(role) {
         tools.retain(|t| t["name"] != SYSTEM_TOOLS);
@@ -682,6 +684,13 @@ pub fn tools_for(role: &str) -> Vec<Value> {
 
 /// The role design QA tickets go to.
 const DESIGNER_ROLE: &str = "designer";
+
+/// A designer's `create_ticket`: the severity of the finding it files.
+const FINDING_SEVERITY: &str = "For a follow-up of a design finding — design QA, a review, the critic, a second look, something you \
+couldn't confirm: its severity (required when filed from design QA, a review or a follow-up). S1/S2 — function or data broken, \
+layout broken at a major width, a WCAG A/AA failure, a clear difference from the spec — is a ticket now. S3/S4 is polish: \
+findings about the same work go into one ticket, and polish found while working a follow-up goes to the design backlog for \
+the person, not a ticket of its own.";
 
 pub fn tools(is_pm: bool) -> Vec<Value> {
     let create_doc = if is_pm {
@@ -926,7 +935,9 @@ wrote and answers yes or no; wait for the answer and do only what they said yes 
         "description": "Put questions to the person, 1 to 4 at once, each answered in its own place — never write \
 them as a numbered list in your reply instead. A decision: a question with 2 to 4 options to pick from, for a real \
 choice between distinct options that is theirs to make (an approach, a scope, a provider, a trade-off), not one you \
-can settle yourself — the one you recommend first, with `recommended` set: equipe marks it for the person in their \
+can settle yourself: only what they can judge and what matters to the product — what users see, how it behaves, scope, \
+cost, risk. Wording or punctuation in internal docs, developer notes, test or QA records, and anything they can't \
+perceive in the product is yours: decide it, note your choice on the ticket, and don't ask. Put the one you recommend first, with `recommended` set: equipe marks it for the person in their \
 language, so never write \"Recommended\" into a label; they can also pick several where multi_select is set, or write their own answer. A plain question: leave `options` \
 out, and they answer in their own words — for what only they know (a phone number, an email, a name, a date). They \
 may skip any. It doesn't wait, and needs no ticket: the person answers when they can, and their answers come to you \
@@ -1956,6 +1967,10 @@ mod tests {
         assert!(names(tools_for("designer")).contains(&DESIGN_QA.to_owned()), "the designer's own");
         assert!(!names(tools_for("frontend")).contains(&DESIGN_QA.to_owned()), "an engineer's screens are passed by the designer, not by itself");
         assert!(!names(tools_for("designer")).contains(&DESIGN_TOOLS.to_owned()), "offered on a brand ticket only");
+        // Only a designer files design findings with their severity.
+        let severity = |role: &str| tools_for(role).into_iter().find(|t| t["name"] == CREATE_TICKET).unwrap()["inputSchema"]["properties"].get("severity").cloned();
+        assert!(severity("designer").is_some_and(|s| s["enum"].as_array().is_some_and(|e| e.len() == 4)));
+        assert!(severity("frontend").is_none() && severity("pm").is_none());
         assert_eq!(design_tools_tool()["name"], DESIGN_TOOLS);
         assert!(names(tools_for("designer")).contains(&SYSTEM_TOOLS.to_owned()) && names(tools_for("frontend")).contains(&SYSTEM_TOOLS.to_owned()), "who builds the system and from it");
         assert!(!names(tools_for("backend")).contains(&SYSTEM_TOOLS.to_owned()) && !names(tools(true)).contains(&SYSTEM_TOOLS.to_owned()));
@@ -2028,6 +2043,8 @@ mod tests {
             "a question with 2 to 4 options",
             "the one you recommend first, with `recommended` set",
             "never write \"Recommended\" into a label",
+            "only what they can judge and what matters to the product",
+            "Wording or punctuation in internal docs, developer notes, test or QA records",
             "It doesn't wait",
             "their answers come to you as their next message",
             "Then end your turn, or carry on with work that doesn't depend on it",

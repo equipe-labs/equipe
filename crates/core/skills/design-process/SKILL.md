@@ -139,6 +139,15 @@ rest on it. Only when no engine can run: start a subagent with nothing of your c
 refused until every UI file you edited — not the directions you explored in `design/directions/` — was checked this
 way, passed the floor and had a passing second look; say in it the floor's count, each habit kept and why, and what
 the second look asked for and you changed.
+
+## Follow-ups, and how much to check again
+
+A fix of a finding is checked again where the finding is: the widths, states and text sizes it names, and the width
+either side — not the whole width × theme × text range again. The whole range is for a new screen or component, a
+redesign, and an S1/S2 fix. Polish the critic or the second look leaves after its rounds goes in your hand-in, not on
+tickets. File a follow-up, with its severity, only for what this ticket can't take — another screen, an engineer's
+code: findings about the same work go into one ticket, and polish found while you work a follow-up goes to the design
+backlog, an idea the person starts when they want it — never a chain of polish tickets.
 {{#if board_tools}}
 
 Give each design option its `images` and its `aspects` (what of it can go into another — type, colour, shape — in the

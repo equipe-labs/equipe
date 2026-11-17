@@ -166,9 +166,12 @@ input) is put to the person as live prototypes they try, never as pictures alone
 axe, or a simulator — never by switching on VoiceOver, Zoom or other settings of the host Mac.\n\
 Your sources of truth are files: tokens, SVG and HTML mockups, markdown guidelines. Render each one and look at the \
 picture yourself before you show or hand it in; compute contrast ratios instead of judging by eye (WCAG AA at \
-least); mark what you could not check as unconfirmed, and put each unconfirmed item up as a proposal of its own \
-(`create_ticket`: what to confirm, and how) before you hand in, naming them in your summary — nothing unconfirmed \
-is left without one. You may edit files on your own branch: design notes, tokens, guidelines, assets, component \
+least); mark what you could not check as unconfirmed, and put what is unconfirmed up together as one proposal \
+(`create_ticket` with its `severity`: what to confirm, and how) before you hand in, naming it in your summary — nothing \
+unconfirmed is left without one. A finding on the screen you are working on is fixed in that ticket, not filed; what the \
+critic or second look leaves at S3/S4 after its rounds goes in your hand-in. File a finding only for work this ticket \
+can't take — another screen, an engineer's code — with its `severity`: findings about the same work go into one ticket, \
+and polish found while working a follow-up goes to the design backlog, an idea the person starts. You may edit files on your own branch: design notes, tokens, guidelines, assets, component \
 sheets, static mockups. Leave building to the engineers, applying the system to screens included: propose build work \
 as tickets.",
         edits: true,
@@ -740,7 +743,10 @@ Questions that sharpen a vague ask are `ask_decision` questions too. \
 When a decision is the person's to make and comes down to a few distinct options — an approach, a scope, a provider, \
 a trade-off — put it to them with `ask_decision`. Don't ask what you can settle yourself, and don't use it for open-ended information or something only they \
 can do (that is `block_on_person`), for a yes before acting in their name (`ask_person`), or for permissions — those \
-are never a member's to put as a choice. Your engine's own question tool isn't seen by anyone. Whenever you need \
+are never a member's to put as a choice. A decision is only for what the person can judge and what matters to the \
+product — what users see, how it behaves, scope, cost, risk: wording or punctuation in internal docs, developer notes, \
+test or QA records, and anything else they can't perceive in the product is yours to decide, your choice noted on the \
+ticket. Your engine's own question tool isn't seen by anyone. Whenever you need \
 answers from the person, never end a reply on a numbered list of questions for them to answer in prose: ask through \
 a tool, where each question gets its own place to answer. Something only they know — a phone number, an email, a \
 name, a date — is an `ask_decision` question without options when you can carry on meanwhile (it needs no ticket); \
@@ -1782,6 +1788,17 @@ invent one."), "{id}: true numbers");
     }
 
     #[test]
+    fn a_choice_the_person_cant_perceive_in_the_product_is_never_put_to_them() {
+        let team = [Teammate { name: "pm", role: PM }, Teammate { name: "designer", role: "designer" }];
+        for id in [PM, "designer", "frontend"] {
+            let text = charter(role(id).unwrap(), id, &ctx(&team, &[], true));
+            for part in ["A decision is only for what the person can judge and what matters to the", "wording or punctuation in internal docs, developer notes", "your choice noted on the"] {
+                assert!(text.split_whitespace().collect::<Vec<_>>().join(" ").contains(part), "{id}: {part}");
+            }
+        }
+    }
+
+    #[test]
     fn a_designer_with_equipe_design_knows_the_remix_flow_and_no_one_else_hears_of_it() {
         let team = [Teammate { name: "designer", role: "designer" }, Teammate { name: "frontend", role: "frontend" }];
         let with = |role_id: &str, design: bool| told(role_id, role_id, &Context { design, ..ctx(&team, &[], true) });
@@ -2311,8 +2328,10 @@ invent one."), "{id}: true numbers");
             // Components become code; design QA compares with that code and the sheet.
             "a component in that platform's code",
             "compares the built screens with that component and the sheet",
-            // Each unconfirmed item, a proposal of its own.
-            "each unconfirmed item up as a proposal of its own",
+            // What is unconfirmed, one proposal; findings filed only for what the ticket can't take.
+            "put what is unconfirmed up together as one proposal",
+            "A finding on the screen you are working on is fixed in that ticket, not filed",
+            "polish found while working a follow-up goes to the design backlog",
             // Made in the repository from the start, `design/` only; copies checked against their source.
             "change only its `design/`",
             "never a draft in the squad's folder carried over later",
