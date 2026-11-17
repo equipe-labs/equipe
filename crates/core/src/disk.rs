@@ -3139,11 +3139,6 @@ mod tests {
         assert!(!same_remote("", ""));
     }
 
-    /// A file's modification time put `ago` back.
-    fn age(path: &Path, ago: Duration) {
-        std::fs::File::open(path).unwrap().set_modified(std::time::SystemTime::now() - ago).unwrap();
-    }
-
     #[test]
     fn packs_git_left_unfinished_go_after_half_an_hour_and_real_packs_stay() {
         let tree = Tree::new();
