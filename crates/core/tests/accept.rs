@@ -272,6 +272,30 @@ async fn the_pm_accepts_its_teams_work_itself_unless_the_person_keeps_that_for_t
     assert_eq!((footer.status == TicketStatus::Proposed, footer.owner.as_deref()), (false, Some("frontend")));
     // The person keeps acceptance for themselves: the PM only puts it on a card.
     handle.send(Command::SetPmAccepts { squad: "acme".into(), on: false });
+    // TEMP diagnostics for the Windows hang: what the loop is on, and whether the runtime's thread runs.
+    {
+        use std::io::Write as _;
+        let watched = handle.clone();
+        let t0 = std::time::Instant::now();
+        std::thread::spawn(move || {
+            for _ in 0..25 {
+                std::thread::sleep(Duration::from_secs(3));
+                let _ = writeln!(std::io::stderr(), "DIAG {:.1}s loop step: {:?}", t0.elapsed().as_secs_f64(), watched.stall());
+            }
+        });
+        tokio::spawn(async move {
+            for _ in 0..25 {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let _ = writeln!(std::io::stderr(), "DIAG {:.1}s tokio thread alive", t0.elapsed().as_secs_f64());
+            }
+        });
+        let probe = handle.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            let answer = tokio::time::timeout(Duration::from_secs(10), probe.snapshot("acme")).await;
+            let _ = writeln!(std::io::stderr(), "DIAG {:.1}s snapshot: {:?}", t0.elapsed().as_secs_f64(), answer.map(|s| s.pm_accepts));
+        });
+    }
     until(&mut events, |e| matches!(e, Event::PmAcceptsChanged { on: false, .. })).await;
     // Its own proposal runs beside T-2 now: the hand-in says which run it is.
     let handed = tool_on(&handle, "frontend", 2, "submit_for_review", json!({ "summary": "Pricing done.", "changes_screens": false })).await;
