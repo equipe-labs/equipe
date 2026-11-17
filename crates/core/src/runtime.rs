@@ -818,6 +818,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         settle_again: false,
         settled_at: None,
         merging: std::collections::HashSet::new(),
+        accepting: std::collections::HashSet::new(),
+        closing: HashMap::new(),
         gates: HashMap::new(),
         prechecks: HashMap::new(),
         disk: Default::default(),
@@ -1188,6 +1190,8 @@ enum Internal {
     Merged { squad: String, ticket: TicketId, result: MergeResult, kept: Option<crate::design::captures::Report> },
     /// A project's checks ran on accepted work merged with main, off the loop.
     Checked(Box<gate::Gate>, crate::checks::Outcome),
+    /// The git side of the PM's `accept_work`, worked out off the loop.
+    Accepting(Box<accept::AcceptWorked>),
     /// The free space on equipe's disk, as a look begun then found it.
     Disk(Option<crate::disk::DiskStatus>, std::time::Instant),
     /// A pass over the engines' transcripts ended: the burns going on now.
@@ -1512,6 +1516,12 @@ struct Runtime {
     settled_at: Option<std::time::Instant>,
     /// Merges under way off the loop, by squad and ticket.
     merging: std::collections::HashSet<(String, TicketId)>,
+    /// Tickets the PM's `accept_work` is working out off the loop, by squad
+    /// and ticket: asked again meanwhile, they are said to be under way.
+    accepting: std::collections::HashSet<(String, TicketId)>,
+    /// A ticket's closing git work, done off the loop already, by squad and
+    /// ticket: [`Runtime::close_ticket`] takes it instead of doing it again.
+    closing: HashMap<(String, TicketId), Closed>,
     /// Accepted work whose project's checks run on its merge before it lands,
     /// by repository: the first of each runs off the loop, the rest wait
     /// their turn (`gate.rs`).
@@ -1711,6 +1721,7 @@ impl Wake {
             Wake::Internal(Internal::Settled { .. }) => Borrowed("settling merged work"),
             Wake::Internal(Internal::Merged { .. }) => Borrowed("a merge's end"),
             Wake::Internal(Internal::Checked(..)) => Borrowed("a project's checks ending"),
+            Wake::Internal(Internal::Accepting(..)) => Borrowed("the PM's acceptance, worked out"),
             Wake::Internal(Internal::Disk(..)) => Borrowed("the disk's free space"),
             Wake::Internal(Internal::DiskReport(..)) => Borrowed("what uses the disk"),
             Wake::Internal(Internal::PlanUsePassed(..)) => Borrowed("where the plans went"),
@@ -1990,6 +2001,7 @@ impl Runtime {
                 Internal::Settled { merged, cache } => self.on_settled(merged, cache),
                 Internal::Merged { squad, ticket, result, kept } => self.on_merged(&squad, ticket, result, kept),
                 Internal::Checked(gate, outcome) => Box::pin(self.on_checked(*gate, outcome)).await,
+                Internal::Accepting(worked) => Box::pin(self.accept_worked(*worked)).await,
                 Internal::Disk(status, asked) => self.on_disk(status, asked),
                 Internal::DiskReport(report, asked) => self.on_disk_report(*report, asked),
                 Internal::PlanUsePassed(burns, loads) => self.on_plan_use_passed(burns, loads),
@@ -7658,32 +7670,51 @@ with what else waits.]"
     /// question, no git words — and its worktree and branch go. A conflict merges
     /// nothing and keeps both.
     fn land_in_home(&mut self, squad: &str, ticket: &mut Ticket, sandbox: &Sandbox) -> Result<(), String> {
-        // What changed there while no member was writing at its desk is the person's.
-        let desk_busy = self.sessions.values().any(|s| s.squad.as_deref() == Some(squad) && s.work.is_none() && s.is_working());
-        watchdog::mark("landing in the squad's folder: the person's changes saved");
-        if !desk_busy {
-            let _ = squad_home::save_persons(&sandbox.repo);
-        }
-        watchdog::mark("landing in the squad's folder: merge");
-        let message = format!("{}: T-{} {}", ticket.assignee.as_deref().unwrap_or("equipe"), ticket.id, ticket.title);
-        // The worktree goes once merged: its pictures are shown from the folder they landed in.
-        let from = sandbox.path.canonicalize().unwrap_or_else(|_| sandbox.path.clone());
-        if let Err(err) = worktree::merge_into_main(&sandbox.repo, &sandbox.branch, &message) {
-            if let Some(journal) = self.journal(squad) {
-                let _ = journal.ticket_event(ticket.id, "equipe", "not merged", &err);
+        let landed = land_home(sandbox, &home_merge_message(ticket), !self.desk_busy(squad));
+        self.home_landed(squad, ticket, landed)
+    }
+
+    /// Whether a member of `squad` writes at its desk (in the squad's folder,
+    /// on no ticket) right now: what changed there otherwise is the person's.
+    fn desk_busy(&self, squad: &str) -> bool {
+        self.sessions.values().any(|s| s.squad.as_deref() == Some(squad) && s.work.is_none() && s.is_working())
+    }
+
+    /// The git side of [`Runtime::land_in_home`] is through, wherever it ran:
+    /// what it kept out of git said, the ticket's pictures shown from the
+    /// folder they landed in — or why nothing merged, on its record.
+    fn home_landed(&mut self, squad: &str, ticket: &mut Ticket, landed: HomeLanded) -> Result<(), String> {
+        let kept = match landed.result {
+            Ok(kept) => kept,
+            Err(err) => {
+                if let Some(journal) = self.journal(squad) {
+                    let _ = journal.ticket_event(ticket.id, "equipe", "not merged", &err);
+                }
+                return Err(err);
             }
-            return Err(err);
-        }
-        if let Some(kept) = crate::design::captures::take_report(&sandbox.repo, &sandbox.branch) {
+        };
+        if let Some(kept) = kept {
             self.captures_kept_out(squad, ticket, &kept);
         }
         let folder = squad_home::path(&self.config.home, squad);
-        ticket.images = crate::visuals::moved(&ticket.images, &from, &folder.canonicalize().unwrap_or(folder));
-        watchdog::mark("landing in the squad's folder: worktree removed");
-        let _ = sandbox.discard();
+        ticket.images = crate::visuals::moved(&ticket.images, &landed.from, &folder.canonicalize().unwrap_or(folder));
         ticket.branch = None;
         ticket.worktree = None;
         Ok(())
+    }
+
+    /// The git work closing `ticket` as `status` takes — its worktree
+    /// released, or a task's work landed in the squad's folder — read from
+    /// what is cheap to read here; [`CloseGit::run`] does it, on the loop or off it.
+    pub(super) fn close_git(&self, squad: &str, ticket: &Ticket, saved: &TicketWork, status: TicketStatus) -> Option<CloseGit> {
+        let workplace = if ticket.kind.in_home() { Some(squad_home::path(&self.config.home, squad)) } else { ticket.project.clone() };
+        let (path, branch, base, workplace) = (saved.worktree.clone()?, ticket.branch.clone()?, saved.base.clone()?, workplace?);
+        let home = (status == TicketStatus::Done && ticket.kind.in_home()).then(|| HomeClose {
+            commit: format!("equipe: T-{} {}", ticket.id, ticket.title),
+            merge: home_merge_message(ticket),
+            save_persons: !self.desk_busy(squad),
+        });
+        Some(CloseGit { workplace, path, branch, base, home })
     }
 
     /// What a task or action hands in for review: the member's summary, the files
@@ -7736,15 +7767,19 @@ with what else waits.]"
     /// Close a ticket no member holds right now (in review, or not started).
     fn close_ticket(&mut self, squad: &str, mut ticket: Ticket, status: TicketStatus) {
         let saved = self.journal(squad).and_then(|j| j.ticket_work(ticket.id).ok()).unwrap_or_default();
-        let workplace = if ticket.kind.in_home() { Some(squad_home::path(&self.config.home, squad)) } else { ticket.project.clone() };
-        if let (Some(path), Some(branch), Some(base), Some(workplace)) =
-            (&saved.worktree, &ticket.branch, &saved.base, &workplace)
-            && let Ok(repo) = worktree::repo_root(workplace)
-        {
-            let sandbox = Sandbox { repo, path: path.clone(), branch: branch.clone(), base: base.clone() };
-            if status == TicketStatus::Done && ticket.kind.in_home() {
-                let _ = sandbox.commit_all(&format!("equipe: T-{} {}", ticket.id, ticket.title));
-                if self.land_in_home(squad, &mut ticket, &sandbox).is_err() {
+        // Its git work, done off the loop already (the PM's `accept_work`), or now.
+        let closed = match self.closing.remove(&(squad.to_owned(), ticket.id)) {
+            Some(closed) => Some(closed),
+            None => {
+                watchdog::mark("closing a ticket: its worktree");
+                let closed = self.close_git(squad, &ticket, &saved, status).and_then(CloseGit::run);
+                watchdog::mark("closing a ticket: saved");
+                closed
+            }
+        };
+        match closed {
+            Some(Closed::Home(landed)) => {
+                if self.home_landed(squad, &mut ticket, landed).is_err() {
                     let name = ticket.assignee.clone().or(ticket.owner.clone()).unwrap_or_default();
                     sent_back_to_update(&mut ticket, &name);
                     let note = ticket.note.clone().unwrap_or_default();
@@ -7758,9 +7793,9 @@ with what else waits.]"
                     self.brief_pm(squad, line, Some(shown));
                     return;
                 }
-            } else {
-                ticket.branch = release(&sandbox);
             }
+            Some(Closed::Released(branch)) => ticket.branch = branch,
+            None => {}
         }
         ticket.status = status;
         ticket.worktree = None;
@@ -8357,17 +8392,16 @@ there, end your turn, and carry on when they say they're done."
             return self.cut_from_plan(call, reply);
         }
         let squad = call.squad.clone();
-        // The PM accepting its team's work: it waits for the acceptance itself.
+        // The PM accepting its team's work: it waits for the acceptance itself,
+        // and the loop doesn't — the git side runs off it (`accept.rs`).
         if call.name == crate::accept::ACCEPT_WORK {
-            let result = match self.caller_id(&call) {
-                Some(id) => self.accept_work(&squad, &call.member, id, &call.arguments).await,
-                None => Err("You're not on the squad.".into()),
-            };
-            self.dispatch(&squad).await;
-            let _ = reply.send(match result {
-                Ok(text) => ToolResult { text, is_error: false, image: None },
-                Err(text) => ToolResult { text, is_error: true, image: None },
-            });
+            match self.caller_id(&call) {
+                Some(id) => self.accept_work(&squad, &call.member, id, &call.arguments, reply).await,
+                None => {
+                    self.dispatch(&squad).await;
+                    let _ = reply.send(ToolResult { text: "You're not on the squad.".into(), is_error: true, image: None });
+                }
+            }
             return;
         }
         // A design session proposed, or started at once: it may send the designer its kickoff.
@@ -11424,6 +11458,80 @@ fn work_before(tickets: &[Ticket], ticket: &Ticket) -> Vec<(String, String)> {
         .filter_map(|id| tickets.iter().find(|t| t.id == *id && t.status == TicketStatus::Done && t.kind.in_home() == ticket.kind.in_home()))
         .filter_map(|t| Some((format!("T-{}", t.id), t.branch.clone()?)))
         .collect()
+}
+
+/// The message a task's or action's work lands in the squad's folder with.
+fn home_merge_message(ticket: &Ticket) -> String {
+    format!("{}: T-{} {}", ticket.assignee.as_deref().unwrap_or("equipe"), ticket.id, ticket.title)
+}
+
+/// How a task's or action's work landed in the squad home's main: the
+/// worktree it came from (its pictures are shown from the folder they landed
+/// in), and what landing kept out of git — or why nothing merged.
+pub(super) struct HomeLanded {
+    from: PathBuf,
+    result: Result<Option<crate::design::captures::Report>, String>,
+}
+
+/// The git side of landing a task's work in the squad home's main: the
+/// person's own changes there saved first (`save_persons`), then the branch
+/// merges and its worktree and branch go. A conflict merges nothing and keeps
+/// both. Blocking: it runs wherever its caller does.
+fn land_home(sandbox: &Sandbox, message: &str, save_persons: bool) -> HomeLanded {
+    watchdog::mark("landing in the squad's folder: the person's changes saved");
+    if save_persons {
+        let _ = squad_home::save_persons(&sandbox.repo);
+    }
+    watchdog::mark("landing in the squad's folder: merge");
+    // The worktree goes once merged: read where it is first.
+    let from = sandbox.path.canonicalize().unwrap_or_else(|_| sandbox.path.clone());
+    if let Err(err) = worktree::merge_into_main(&sandbox.repo, &sandbox.branch, message) {
+        return HomeLanded { from, result: Err(err) };
+    }
+    let kept = crate::design::captures::take_report(&sandbox.repo, &sandbox.branch);
+    watchdog::mark("landing in the squad's folder: worktree removed");
+    let _ = sandbox.discard();
+    HomeLanded { from, result: Ok(kept) }
+}
+
+/// A ticket's closing git work ([`Runtime::close_git`]).
+pub(super) struct CloseGit {
+    workplace: PathBuf,
+    path: PathBuf,
+    branch: String,
+    base: String,
+    /// A task's or action's work accepted: committed and landed in the squad's folder.
+    home: Option<HomeClose>,
+}
+
+struct HomeClose {
+    commit: String,
+    merge: String,
+    save_persons: bool,
+}
+
+/// How a ticket's closing git work went.
+pub(super) enum Closed {
+    /// Its worktree went; its branch stays when it has commits of its own.
+    Released(Option<String>),
+    /// A task's or action's work landed in the squad's folder, or didn't.
+    Home(HomeLanded),
+}
+
+impl CloseGit {
+    /// Do it: blocking, and fine off the loop. `None` when its workplace is
+    /// no git repository any more.
+    pub(super) fn run(self) -> Option<Closed> {
+        let repo = worktree::repo_root(&self.workplace).ok()?;
+        let sandbox = Sandbox { repo, path: self.path, branch: self.branch, base: self.base };
+        Some(match self.home {
+            Some(home) => {
+                let _ = sandbox.commit_all(&home.commit);
+                Closed::Home(land_home(&sandbox, &home.merge, home.save_persons))
+            }
+            None => Closed::Released(release(&sandbox)),
+        })
+    }
 }
 
 fn release(sandbox: &Sandbox) -> Option<String> {

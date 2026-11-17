@@ -62,7 +62,53 @@ them, and note what they said on the ticket with `comment`, for the PM."
     /// `accept_work`: the PM accepts handed-in work itself — and merges it into
     /// main — while the person lets it (`SetPmAccepts`); what it checked is
     /// kept on each ticket, and the person sees it done in the PM's conversation.
-    pub(super) async fn accept_work(&mut self, squad: &str, member: &str, id: SessionId, args: &Value) -> Result<String, String> {
+    ///
+    /// What the board says is checked here, on the loop; the git side — a
+    /// look for conflicts with main, the project's checks file, a worktree
+    /// released or a task's work landed in the squad's folder — runs off it,
+    /// as it can take a minute on a large repository, and
+    /// [`Runtime::accept_worked`] takes it from there, in the order the tickets
+    /// were named. The PM's call is answered then, with what really happened.
+    pub(super) async fn accept_work(&mut self, squad: &str, member: &str, id: SessionId, args: &Value, reply: oneshot::Sender<ToolResult>) {
+        let (checked, push, plan) = match self.accept_plan(squad, member, id, args) {
+            Ok(planned) => planned,
+            Err(text) => {
+                self.dispatch(squad).await;
+                let _ = reply.send(ToolResult { text, is_error: true, image: None });
+                return;
+            }
+        };
+        let mut worked = AcceptWorked { squad: squad.to_owned(), member: member.to_owned(), session: id, checked, push, named: Vec::new(), reply };
+        // Nothing for git to do: answered at once.
+        if !plan.iter().any(|p| matches!(p, Plan::Look(_))) {
+            worked.named = plan.into_iter().map(|p| match p {
+                Plan::Left(why) => Named::Left(why),
+                Plan::Look(look) => Named::Worked { ticket: look.ticket, code: look.code, found: Found::Failed },
+            }).collect();
+            return Box::pin(self.accept_worked(worked)).await;
+        }
+        // Should the look die, each ticket it was on is said to be left as it was.
+        let fallback: Vec<Named> = plan
+            .iter()
+            .map(|p| match p {
+                Plan::Left(why) => Named::Left(why.clone()),
+                Plan::Look(look) => Named::Worked { ticket: look.ticket.clone(), code: look.code, found: Found::Failed },
+            })
+            .collect();
+        let (home, internal) = (self.config.home.clone(), self.internal.clone());
+        let (squad, member) = (squad.to_owned(), member.to_owned());
+        tokio::spawn(async move {
+            let looked = tokio::task::spawn_blocking(move || look_off_loop(&home, &squad, &member, plan)).await;
+            worked.named = looked.unwrap_or(fallback);
+            let _ = internal.send(Internal::Accepting(Box::new(worked)));
+        });
+    }
+
+    /// What `accept_work` asks, checked against the board: what the PM said
+    /// it checked, whether main is pushed, and each ticket named, in order —
+    /// left out and why, or to be looked at off the loop. The tickets to look
+    /// at are under way from here on (`accepting`).
+    fn accept_plan(&mut self, squad: &str, member: &str, id: SessionId, args: &Value) -> Result<(String, bool, Vec<Plan>), String> {
         if !self.sessions.get(&id).is_some_and(Session::is_pm) {
             return Err("Only the PM accepts the team's work. Hand yours in with submit_for_review.".into());
         }
@@ -75,56 +121,84 @@ them, and note what they said on the ticket with `comment`, for the PM."
         }
         let push = args.get("push").and_then(Value::as_bool).unwrap_or(false);
         let mut named: Vec<TicketId> = args.get("tickets").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64()).map(|v| v as TicketId).collect()).unwrap_or_default();
-        named.dedup();
+        let mut seen = HashSet::new();
+        named.retain(|t| seen.insert(*t));
         if named.is_empty() {
             return Err("Name the handed-in tickets you accept in `tickets`.".into());
         }
+        watchdog::mark("accept_work: the board looked at");
+        let mut plan = Vec::new();
+        for ticket in named {
+            // Asked again while the first is worked out: that one answers.
+            if self.accepting.contains(&(squad.to_owned(), ticket)) {
+                plan.push(Plan::Left(format!("T-{ticket} is already being accepted: you hear how it went")));
+                continue;
+            }
+            let Some(t) = self.find_ticket(squad, ticket) else {
+                plan.push(Plan::Left(format!("there is no T-{ticket}")));
+                continue;
+            };
+            if let Some(why) = rules::unfit(&t, Verdict::Accept) {
+                plan.push(Plan::Left(why));
+                continue;
+            }
+            // Its own code goes to the person: nobody accepts their own work.
+            if let Some(why) = rules::own_code(&t, member) {
+                plan.push(Plan::Left(why));
+                continue;
+            }
+            if !t.ready_for_review() {
+                plan.push(Plan::Left(format!("T-{ticket} waits for its design QA")));
+                continue;
+            }
+            if self.gating(squad, ticket) {
+                plan.push(Plan::Left(format!("T-{ticket}'s checks are running already: you hear how they went")));
+                continue;
+            }
+            let code = !t.kind.in_home() && t.branch.is_some();
+            // What closing it does in git, read now and done off the loop once
+            // it is fit to accept; a member on it closes it its own way.
+            let close = if self.worker_on(squad, ticket).is_none() {
+                let saved = self.journal(squad).and_then(|j| j.ticket_work(ticket).ok()).unwrap_or_default();
+                self.close_git(squad, &t, &saved, TicketStatus::Done)
+            } else {
+                None
+            };
+            self.accepting.insert((squad.to_owned(), ticket));
+            plan.push(Plan::Look(Look { ticket: Box::new(t), code, close }));
+        }
+        Ok((checked, push, plan))
+    }
+
+    /// The git side of `accept_work` is through: each ticket, in the order
+    /// named, is sent back for a conflict, put to its project's checks, or
+    /// accepted and merged — then the PM hears what happened.
+    pub(super) async fn accept_worked(&mut self, worked: AcceptWorked) {
+        let AcceptWorked { squad, member, session: id, checked, push, named, reply } = worked;
+        let (squad, member) = (squad.as_str(), member.as_str());
         let (mut accepted, mut left) = (Vec::new(), Vec::new());
         // What a designer made, to put in front of the person with the acceptance.
         let mut made: Vec<String> = Vec::new();
         // Code merged with no checks run (the project declares none), and code
         // whose checks run first.
         let (mut unchecked, mut checking) = (Vec::new(), Vec::new());
-        for ticket in named {
-            let Some(t) = self.find_ticket(squad, ticket) else {
-                left.push(format!("there is no T-{ticket}"));
-                continue;
+        for named in named {
+            let (t, code, found) = match named {
+                Named::Left(why) => {
+                    left.push(why);
+                    continue;
+                }
+                Named::Worked { ticket, code, found } => (ticket, code, found),
             };
-            if let Some(why) = rules::unfit(&t, Verdict::Accept) {
-                left.push(why);
-                continue;
-            }
-            // Its own code goes to the person: nobody accepts their own work.
-            if let Some(why) = rules::own_code(&t, member) {
-                left.push(why);
-                continue;
-            }
-            if !t.ready_for_review() {
-                left.push(format!("T-{ticket} waits for its design QA"));
-                continue;
-            }
-            if self.gating(squad, ticket) {
-                left.push(format!("T-{ticket}'s checks are running already: you hear how they went"));
-                continue;
-            }
-            // A branch only behind main merges with a merge commit: no reason to
-            // send it back. A real conflict goes back to its member now, before
-            // anything is accepted; one that can't be told is left to the merge.
-            // And what the project declares as its checks, on main as it stands.
-            let code = !t.kind.in_home() && t.branch.is_some();
-            if code && let (Some(branch), Some(project)) = (t.branch.clone(), t.project.clone()) {
-                let looked = tokio::task::spawn_blocking(move || {
-                    let repo = worktree::repo_root(&project).ok();
-                    let conflicts = repo.as_deref().map(|repo| worktree::merge_conflicts(repo, &branch));
-                    let declared = repo.as_deref().map(crate::checks::declared_on_main);
-                    (repo, conflicts, declared)
-                })
-                .await
-                .unwrap_or((None, None, None));
-                let (repo, conflicts, declared) = looked;
-                if let Some(Ok(files)) = conflicts
-                    && !files.is_empty()
-                {
+            let ticket = t.id;
+            self.accepting.remove(&(squad.to_owned(), ticket));
+            match found {
+                Found::Failed => left.push(format!("T-{ticket} wasn't accepted: equipe couldn't look at its branch. Accept it again")),
+                // A branch only behind main merges with a merge commit: no reason to
+                // send it back. A real conflict goes back to its member now, before
+                // anything is accepted; one that can't be told is left to the merge.
+                Found::Conflicts(files) => {
+                    watchdog::mark("accept_work: sent back");
                     let files = files.join(", ");
                     let reason = format!(
                         "Its branch conflicts with main in {files}. Merge main into your branch in your worktree (git merge \
@@ -134,38 +208,51 @@ main; no rebase needed), resolve each conflict keeping what both sides meant, ru
                         Ok(who) => left.push(format!("T-{ticket} conflicts with main in {files}: sent back to {who} to merge main in")),
                         Err(why) => left.push(why),
                     }
-                    continue;
                 }
-                match (declared, repo, t.branch.clone()) {
-                    // Checked on its merge first, off the loop: accepted and landed only if they pass.
-                    (Some(Ok(Some(_))), Some(repo), Some(branch)) => {
-                        let title = t.title.clone();
-                        self.queue_gate(gate::Gate { squad: squad.to_owned(), ticket, title, by: member.to_owned(), session: id, checked: checked.clone(), push, repo, branch, tries: 0 });
-                        checking.push(ticket);
+                // Checked on its merge first, off the loop: accepted and landed only if they pass.
+                Found::Checks { repo, branch } => {
+                    if self.gating(squad, ticket) {
+                        left.push(format!("T-{ticket}'s checks are running already: you hear how they went"));
                         continue;
                     }
-                    // A checks file that can't be read holds the merge back: never guessed past.
-                    (Some(Err(err)), ..) => {
-                        left.push(format!("T-{ticket} wasn't accepted: {err}. Get that file fixed on main, then accept it again"));
+                    let title = t.title.clone();
+                    self.queue_gate(gate::Gate { squad: squad.to_owned(), ticket, title, by: member.to_owned(), session: id, checked: checked.clone(), push, repo, branch, tries: 0 });
+                    checking.push(ticket);
+                }
+                // A checks file that can't be read holds the merge back: never guessed past.
+                Found::Unreadable(err) => left.push(format!("T-{ticket} wasn't accepted: {err}. Get that file fixed on main, then accept it again")),
+                Found::Accept { made: work, unchecked: no_checks, closed } => {
+                    // Moved meanwhile (the person accepted or cancelled it on the board): nothing more.
+                    let status = self.journal(squad).and_then(|j| j.ticket(ticket).ok().flatten()).map(|t| t.status);
+                    if status != Some(TicketStatus::Review) {
+                        let now = status.map_or("gone", TicketStatus::label);
+                        crate::daemon_log!("equipe: {squad}: T-{ticket} changed while the PM's acceptance was worked out (it is {now} now): not accepted");
+                        left.push(format!("T-{ticket} changed while it was being accepted (it is {now} now): equipe did nothing more with it"));
                         continue;
                     }
-                    _ => unchecked.push(ticket),
+                    made.extend(work);
+                    if no_checks {
+                        unchecked.push(ticket);
+                    }
+                    if let Some(journal) = self.journal(squad) {
+                        let _ = journal.ticket_event(ticket, member, "accepted by the PM", &checked);
+                    }
+                    if let Some(closed) = closed {
+                        self.closing.insert((squad.to_owned(), ticket), closed);
+                    }
+                    watchdog::mark("accept_work: accepted");
+                    Box::pin(self.accept(squad, ticket, crate::telemetry::Accepter::Pm)).await;
+                    // Closed another way (a member was on it): nothing kept for later.
+                    self.closing.remove(&(squad.to_owned(), ticket));
+                    // Code lands on main at once: nothing left for the person to merge.
+                    if code {
+                        self.merge(squad, ticket, push);
+                    }
+                    accepted.push(ticket);
                 }
             }
-            // Read before it lands: the worktree is still there to say what it made.
-            if let Some(work) = crate::design::results::for_ticket(&self.config.home, squad, ticket).filter(|w| w.hero.is_some()) {
-                made.push(crate::design::results::embed(&work));
-            }
-            if let Some(journal) = self.journal(squad) {
-                let _ = journal.ticket_event(ticket, member, "accepted by the PM", &checked);
-            }
-            Box::pin(self.accept(squad, ticket, crate::telemetry::Accepter::Pm)).await;
-            // Code lands on main at once: nothing left for the person to merge.
-            if code {
-                self.merge(squad, ticket, push);
-            }
-            accepted.push(ticket);
         }
+        watchdog::mark("accept_work: answered");
         let list = |ids: &[TicketId]| ids.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
         // What the person reads: work merged with no checks run says so.
         let (unchecked_now, rest): (Vec<TicketId>, Vec<TicketId>) = accepted.iter().partition(|t| unchecked.contains(t));
@@ -178,7 +265,7 @@ main; no rebase needed), resolve each conflict keeping what both sides meant, ru
             self.publish(Event::Notice { undo: None, session: id, text });
         }
         let ids = list(&accepted);
-        let mut reply = if accepted.is_empty() && checking.is_empty() {
+        let mut text = if accepted.is_empty() && checking.is_empty() {
             "Nothing accepted.".to_owned()
         } else if accepted.is_empty() {
             String::new()
@@ -188,24 +275,25 @@ main; no rebase needed), resolve each conflict keeping what both sides meant, ru
             format!("Accepted {ids}; code is merging into main.")
         };
         if !unchecked_now.is_empty() {
-            reply.push_str(&format!(" No project checks ran for {}: the project declares none in {}.", list(&unchecked_now), crate::checks::FILE));
+            text.push_str(&format!(" No project checks ran for {}: the project declares none in {}.", list(&unchecked_now), crate::checks::FILE));
         }
         if !checking.is_empty() {
-            reply.push_str(&format!(
+            text.push_str(&format!(
                 " Checking {} first: equipe runs the project's checks on it merged with main, off to the side, and accepts and merges \
 it only if they pass; if they fail it goes back to its member with the output, and main stays as it is. You hear how it went; \
 carry on meanwhile.",
                 list(&checking)
             ));
         }
-        let mut reply = reply.trim_start().to_owned();
+        let mut text = text.trim_start().to_owned();
         if !left.is_empty() {
-            reply.push_str(&format!(" Left: {}.", left.join("; ")));
+            text.push_str(&format!(" Left: {}.", left.join("; ")));
         }
         if !made.is_empty() {
-            reply.push_str(&format!("\n\nThe person has not seen what the designer made. Put these pictures in your message to them as they are, one to a line, before you describe anything:\n{}", made.join("\n")));
+            text.push_str(&format!("\n\nThe person has not seen what the designer made. Put these pictures in your message to them as they are, one to a line, before you describe anything:\n{}", made.join("\n")));
         }
-        Ok(reply)
+        self.dispatch(squad).await;
+        let _ = reply.send(ToolResult { text, is_error: false, image: None });
     }
 
     /// A screen read the person's own words as plainly accepting: the card
@@ -417,4 +505,117 @@ carry on meanwhile.",
             self.publish(Event::AcceptClosed { squad: squad.to_owned(), id: p.id, confirmed: false, tickets: Vec::new() });
         }
     }
+}
+
+/// The PM's `accept_work`, its git side worked out off the loop: who asked,
+/// what for, and each ticket named, in order — left out on the loop, or
+/// looked at off it. The PM's call waits on `reply`; the loop doesn't.
+pub(super) struct AcceptWorked {
+    squad: String,
+    member: String,
+    session: SessionId,
+    checked: String,
+    push: bool,
+    named: Vec<Named>,
+    reply: oneshot::Sender<ToolResult>,
+}
+
+/// A ticket `accept_work` named, as the loop planned it.
+enum Plan {
+    /// Left out, and why.
+    Left(String),
+    /// To be looked at off the loop.
+    Look(Look),
+}
+
+struct Look {
+    ticket: Box<Ticket>,
+    /// Code on a branch: looked at for conflicts and checks, merged once accepted.
+    code: bool,
+    /// What closing it does in git, done off the loop once it is fit to accept.
+    close: Option<CloseGit>,
+}
+
+/// A ticket `accept_work` named, once looked at.
+enum Named {
+    Left(String),
+    Worked { ticket: Box<Ticket>, code: bool, found: Found },
+}
+
+/// What the look off the loop found for a ticket.
+enum Found {
+    /// Its branch conflicts with main in these files: back to its member.
+    Conflicts(Vec<String>),
+    /// Its project declares checks: they run on its merge before it is accepted.
+    Checks { repo: PathBuf, branch: String },
+    /// Its project's checks file can't be read: nothing merges.
+    Unreadable(String),
+    /// Fit to accept: what a designer made, to show; whether its code merges
+    /// with no checks run; and its closing git work, done.
+    Accept { made: Option<String>, unchecked: bool, closed: Option<Closed> },
+    /// The look itself died: nothing was done.
+    Failed,
+}
+
+/// The git side of `accept_work`, for each ticket in turn: blocking, and run
+/// off the loop. How long each part took is logged when it all took long,
+/// as the loop's own slow steps are.
+fn look_off_loop(home: &Path, squad: &str, member: &str, plan: Vec<Plan>) -> Vec<Named> {
+    let began = std::time::Instant::now();
+    let mut at = began;
+    let mut parts: Vec<(String, std::time::Duration)> = Vec::new();
+    let mut lap = |what: String| {
+        let now = std::time::Instant::now();
+        parts.push((what, now.saturating_duration_since(at)));
+        at = now;
+    };
+    let mut out = Vec::new();
+    for item in plan {
+        let look = match item {
+            Plan::Left(why) => {
+                out.push(Named::Left(why));
+                continue;
+            }
+            Plan::Look(look) => look,
+        };
+        let Look { ticket, code, close } = look;
+        let id = ticket.id;
+        let mut unchecked = false;
+        let found = 'found: {
+            // A real conflict goes back before anything is accepted; and what
+            // the project declares as its checks, on main as it stands.
+            if code && let (Some(branch), Some(project)) = (ticket.branch.clone(), ticket.project.clone()) {
+                let repo = worktree::repo_root(&project).ok();
+                let conflicts = repo.as_deref().map(|repo| worktree::merge_conflicts(repo, &branch));
+                lap(format!("T-{id} conflicts with main looked for"));
+                let declared = repo.as_deref().map(crate::checks::declared_on_main);
+                lap(format!("T-{id} checks file read"));
+                if let Some(Ok(files)) = conflicts
+                    && !files.is_empty()
+                {
+                    break 'found Found::Conflicts(files);
+                }
+                match (declared, repo) {
+                    (Some(Ok(Some(_))), Some(repo)) => break 'found Found::Checks { repo, branch },
+                    (Some(Err(err)), _) => break 'found Found::Unreadable(err),
+                    _ => unchecked = true,
+                }
+            }
+            // Read before it is closed: the worktree is still there to say what it made.
+            let made = crate::design::results::for_ticket(home, squad, id).filter(|w| w.hero.is_some()).map(|w| crate::design::results::embed(&w));
+            lap(format!("T-{id} design work read"));
+            let in_home = ticket.kind.in_home();
+            let closed = close.and_then(CloseGit::run);
+            lap(format!("T-{id} {}", if in_home { "landed in the squad's folder" } else { "worktree released" }));
+            Found::Accept { made, unchecked, closed }
+        };
+        out.push(Named::Worked { ticket, code, found });
+    }
+    let took = began.elapsed();
+    if took >= watchdog::SLOW_LOGGED {
+        parts.sort_by_key(|p| std::cmp::Reverse(p.1));
+        let slowest: Vec<String> = parts.iter().filter(|(_, d)| d.as_millis() >= 50).take(4).map(|(what, d)| format!("{what} {:.1}s", d.as_secs_f64())).collect();
+        crate::daemon_log!("equipe: accept_work for {squad}/{member} worked out off the loop in {:.1}s ({})", took.as_secs_f64(), slowest.join(", "));
+    }
+    out
 }
