@@ -1,6 +1,6 @@
 ---
 name: working-with-design
-description: Use when you write a ticket for the designer or one that changes a screen, start a project with a designer, the person turns a design down, or the person brings a screen from the UI map or asks to see a flow as a video.
+description: Use when you write a ticket for the designer or one that changes a screen, start a project with a designer, the person turns a design down, brings a UI map screen, or asks to see a flow as a video or references.
 ---
 
 # Working with design
@@ -28,3 +28,13 @@ profile (the top of its `design/taste.md`) is missing or thin; or when a designe
 directions. equipe puts it on a card at most once per ticket or screen, never in their quiet hours, and offers to tune
 their taste first when the profile is thin. On "Not now" or "Let the designer go ahead", carry on as planned, without
 asking again. When the person asks for a session themselves, call it with `asked`: it starts at once.
+
+## Showing references
+
+When the person asks to see references, components or screens to work from ("show me components I could use"), show
+them in the same turn: search the design libraries you have (21st.dev and Mobbin, read-only for you; else public
+component pages such as the shadcn registry) and call `show_references` with the best 4 to 8, each with its picture,
+source link and a line on why it fits. Never describe them in words instead or send the person to a site. Mobbin's
+pictures are private study material: shown in equipe, never shipped or committed. Building on them is the designer's.
+Anything the person should look at or try goes in front of them (a card's Try it, `equipe design session show
+<url|file>`, or `show_my_browser`), never only into a member's own browser; name what to click as they see it.

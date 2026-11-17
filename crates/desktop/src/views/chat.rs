@@ -225,7 +225,7 @@ pub struct Chat {
     pub expanded: bool,
     shown_expanded: bool,
     /// Tells one conversation's rows from another's.
-    serial: u64,
+    pub serial: u64,
     /// Text views by what they show, kept across scrolling.
     views: Rc<RefCell<Views>>,
     /// What the person opened (or closed, of what opens by itself) in the
@@ -922,6 +922,8 @@ struct Rows {
     waiting: usize,
     /// The row of a turn that lost its engine's sign-in, and its card.
     sign_in: Option<(usize, Rc<super::signin::Card>)>,
+    /// What the person did to the reference cards (`crate::refcards`).
+    refcards: Rc<crate::refcards::Reactions>,
 }
 
 impl Rows {
@@ -1134,6 +1136,7 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
             .sign_in
             .map(|(ix, engine, went_on)| (ix, Rc::new(super::signin::Card::of(shell, &shell.chat.blocks, ix, engine, went_on)))),
         turns: derived.turns.iter().filter_map(|&id| yourturn::Card::of(shell, id, cx).map(|card| (id, card))).collect(),
+        refcards: shell.refcards.clone(),
     });
     // While a reply streams: a small pulse over the composer, where the jump
     // button would be (which has the place while you read back).
@@ -1365,6 +1368,10 @@ fn row_body(rows: &Rows, ix: usize, window: &mut Window, cx: &mut App) -> AnyEle
         Block::DesignCheck(summary) => check_row(rows, key, summary, superseded(&rows.blocks, ix), window, cx),
         Block::SecondLook { screen, verdict } => look_row(rows, key, screen, verdict, superseded(&rows.blocks, ix), window, cx),
         Block::QaReport(report) => qa_row(rows, key, report, cx),
+        Block::References(gallery) => {
+            let draw = super::refcards::Draw { p, tones: rows.tones, shots: &rows.shots, handle: rows.handle.clone(), reactions: &rows.refcards, key, project: rows.about.get(ix).cloned().flatten() };
+            super::refcards::row(draw, gallery, cx)
+        }
     }
 }
 
@@ -1796,7 +1803,7 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
     };
     let group: SharedString = format!("reply-{key}").into();
     // After a group of calls or the news, a little air before the words.
-    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::HandOver { .. } | Block::Thought { .. } | Block::Background { .. } | Block::Worked(_) | Block::Summarized | Block::Moved { .. } | Block::DesignCheck(_) | Block::SecondLook { .. } | Block::QaReport(_) | Block::Plan { .. });
+    let after_activity = ix > 0 && matches!(rows.blocks[ix - 1], Block::Steps(_) | Block::News(_) | Block::YourTurn { .. } | Block::HandOver { .. } | Block::Thought { .. } | Block::Background { .. } | Block::Worked(_) | Block::Summarized | Block::Moved { .. } | Block::DesignCheck(_) | Block::SecondLook { .. } | Block::QaReport(_) | Block::References(_) | Block::Plan { .. });
     let actions = (!live && rows.turn_ends.contains(&ix)).then(|| {
         let raw = text.to_owned();
         let mut items: Vec<AnyElement> = vec![action_button(p, ("reply-copy", key), Icon::Copy, t!("chat.copy_reply"), move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))).into_any_element()];

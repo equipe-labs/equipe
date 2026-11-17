@@ -258,6 +258,8 @@ pub fn reads(command: &Command) -> bool {
         | C::RestoreDesign { .. }
         | C::Taste { .. }
         | C::TasteSignals { .. }
+        | C::KeepReference { .. }
+        | C::TryReference { .. }
         | C::StartDesignSession { .. } => false,
     }
 }
@@ -726,6 +728,8 @@ mod tests {
             Command::RestoreDesign { squad: s(), project: None, commit: "c".into() },
             Command::Taste { squad: s(), project: None, change: TasteChange::Add { text: "t".into() } },
             Command::TasteSignals { squad: s(), project: None, signals: vec![] },
+            Command::KeepReference { squad: s(), session: None, project: None, card: equipe_core::protocol::references::RefCard::default() },
+            Command::TryReference { squad: s(), project: None, card: equipe_core::protocol::references::RefCard::default() },
             Command::StartDesignSession { squad: s(), project: None, page: "Home".into(), from: equipe_core::protocol::design_session::SessionFrom::DesignScreen },
         ]
     }

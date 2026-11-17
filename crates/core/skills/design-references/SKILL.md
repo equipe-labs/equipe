@@ -1,6 +1,6 @@
 ---
 name: design-references
-description: Use before you design, redesign or judge a screen or component — the reference research for each pattern it uses, the squad's sources, the quality bar and its taste checklist, and when to propose a new foundation.
+description: Use before you design, redesign or judge a screen or component, or to show references asked for — research per pattern, the squad's sources, the quality bar and its taste checklist, and when to propose a new foundation.
 ---
 
 # References and the quality bar
@@ -99,6 +99,17 @@ Where the project deploys previews (a Vercel or Netlify preview deployment for e
 its own preview branch and give its address in the option's `preview_url`: the person clicks through the real page,
 not a picture of it. Its screenshots still go on the card — full-size 1440 and 390 renders, cropped to the content, no
 transparent padding — with its change note: each point's `why` names the reference or the `ui-*` rule it follows.
+
+## When the person asks to see references
+
+When the person asks to see references, components, screens or examples, show them in the same turn: search the
+libraries the squad connected (21st.dev, Mobbin) and the shadcn registry, and call `show_references` with the best 4 to
+8 — each with its picture, title, source link, kind and a line on why it fits and what to take and leave — instead of
+describing them. It is a look, not a decision; when you need their pick, put a taste board. Mobbin's pictures are
+private study material: shown in equipe, never shipped, committed or copied into the project. A card the person keeps
+becomes its link and lines in the pattern's `notes.md`. Anything the person should look at or try — a board, a prototype,
+a page — goes in front of them (a card's Try it, `equipe design session show <url|file>`, or `show_my_browser`), never
+only into your own browser; tell them what to click by the names they see, not by internal numbers.
 
 ## A taste board, when the person's taste is what you need
 

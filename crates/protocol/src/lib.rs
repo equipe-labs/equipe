@@ -33,6 +33,7 @@ pub mod look;
 pub mod routines;
 pub mod cli_signin;
 pub mod mcp_servers;
+pub mod references;
 pub mod secrets;
 pub mod side_chat;
 pub mod signals;
@@ -1761,6 +1762,29 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
         signals: Vec<design::TasteSignal>,
+    },
+    /// The person keeps a reference card a member showed (`show_references`)
+    /// among `project`'s references (`None`: the squad's own): an entry in
+    /// `design/references/<pattern>/notes.md` — its link and lines, never its
+    /// picture, which is another product's. Said back in `session` as a note.
+    KeepReference {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        card: references::RefCard,
+    },
+    /// The person tries a reference card live (`show_references`): a
+    /// registry component's sandboxed playground the daemon serves on its
+    /// machine, opened as a tab of theirs in the shared browser — or, for one
+    /// it can't run (a study screen), its source page, to look at. The
+    /// project's design tokens theme it when `project` has some.
+    TryReference {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        card: references::RefCard,
     },
     /// The person starts a design session with the squad's designer on
     /// `page` (a page or screen of `project`, `None`: the squad's own): its
@@ -4366,6 +4390,13 @@ mod tests {
                     TasteSignal::React { picture: None, label: "Round 1".into(), reaction: QuickReaction::Up, reasons: vec![] },
                 ],
             },
+            Command::KeepReference {
+                squad: "acme".into(),
+                session: Some(3),
+                project: Some("web".into()),
+                card: references::RefCard { picture: "/h/visuals/refs/0123456789abcdef.png".into(), title: "Command menu".into(), site: "21st.dev".into(), link: "https://21st.dev/r/cmdk".into(), kind: references::RefKind::Component, why: "Fast".into(), take: "Grouped rows".into(), leave: "Neon".into(), pattern: "command-menu".into() },
+            },
+            Command::TryReference { squad: "acme".into(), project: None, card: references::RefCard { title: "Button".into(), link: "https://ui.shadcn.com/docs/components/button".into(), ..Default::default() } },
         ];
         for command in commands {
             let json = serde_json::to_string(&command).unwrap();

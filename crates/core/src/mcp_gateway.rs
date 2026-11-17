@@ -28,11 +28,14 @@ pub struct Upstream {
     pub url: String,
     pub transport: McpTransport,
     pub header: Option<(String, String)>,
+    /// Given only for its tools that read ([`ReadOnly`]): the PM's design
+    /// library search, to show references with.
+    pub read_only: bool,
 }
 
 impl std::fmt::Debug for Upstream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Upstream").field("url", &self.url).field("transport", &self.transport).field("header", &self.header.as_ref().map(|(n, _)| format!("{n}: •••"))).finish()
+        f.debug_struct("Upstream").field("url", &self.url).field("transport", &self.transport).field("header", &self.header.as_ref().map(|(n, _)| format!("{n}: •••"))).field("read_only", &self.read_only).finish()
     }
 }
 
@@ -64,6 +67,70 @@ pub fn error_reply(message: &Value, why: &str) -> Option<Value> {
     let id = message.get("id").filter(|id| !id.is_null())?;
     message.get("method")?;
     Some(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32000, "message": why } }))
+}
+
+/// What a read-only proxy lets through of a server's tools: those its server
+/// marks as only reading (`annotations.readOnlyHint`), else those whose name
+/// says they look something up — search, find, list, get, browse, fetch,
+/// read, view, inspiration — and never one whose name says it makes,
+/// changes or removes anything. A tool it keeps back is left out of
+/// `tools/list` and refused if called.
+#[derive(Debug, Default)]
+pub struct ReadOnly {
+    /// The ids of the `tools/list` requests on their way.
+    listing: std::collections::HashSet<String>,
+    /// The tools a listing said read.
+    reads: std::collections::HashSet<String>,
+}
+
+/// Words in a tool's name that say it reads, and that it writes.
+const READ_WORDS: [&str; 11] = ["search", "find", "list", "get", "browse", "fetch", "read", "view", "inspiration", "lookup", "query"];
+const WRITE_WORDS: [&str; 16] = ["create", "update", "delete", "remove", "write", "edit", "build", "generate", "refine", "make", "save", "upload", "set", "add", "publish", "send"];
+
+impl ReadOnly {
+    /// Whether a tool, as `tools/list` describes it, only reads.
+    pub fn reads(tool: &Value) -> bool {
+        let name = tool["name"].as_str().unwrap_or_default().to_ascii_lowercase();
+        if tool["annotations"]["destructiveHint"] == true {
+            return false;
+        }
+        if tool["annotations"]["readOnlyHint"] == true {
+            return true;
+        }
+        let words: Vec<&str> = name.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).collect();
+        !words.iter().any(|w| WRITE_WORDS.contains(w)) && words.iter().any(|w| READ_WORDS.iter().any(|r| w.starts_with(r)))
+    }
+
+    /// A message from the member's engine: passed on (`Ok`), or answered here (`Err`).
+    pub fn outgoing(&mut self, message: Value) -> Result<Value, Value> {
+        match message["method"].as_str() {
+            Some("tools/list") => {
+                if let Some(id) = message.get("id").filter(|id| !id.is_null()) {
+                    self.listing.insert(id.to_string());
+                }
+                Ok(message)
+            }
+            Some("tools/call") => {
+                let name = message["params"]["name"].as_str().unwrap_or_default();
+                if self.reads.contains(name) {
+                    return Ok(message);
+                }
+                let why = format!("{name} isn't open to you: you may only search this library, to show the person references with `show_references`.");
+                Err(error_reply(&message, &why).unwrap_or(Value::Null))
+            }
+            _ => Ok(message),
+        }
+    }
+
+    /// A message from the server: a listing of tools has those that don't read taken out.
+    pub fn incoming(&mut self, mut message: Value) -> Value {
+        let listed = message.get("id").is_some_and(|id| self.listing.remove(&id.to_string()));
+        if listed && let Some(tools) = message["result"]["tools"].as_array_mut() {
+            tools.retain(Self::reads);
+            self.reads.extend(tools.iter().filter_map(|t| t["name"].as_str().map(str::to_owned)));
+        }
+        message
+    }
 }
 
 /// Server-sent events, read as they arrive: each event's name and data.
@@ -399,7 +466,36 @@ mod tests {
 
     #[test]
     fn an_upstream_never_shows_its_credential() {
-        let up = Upstream { url: "https://x.example.com/mcp".into(), transport: McpTransport::Http, header: Some(("authorization".into(), "Bearer at-secret".into())) };
+        let up = Upstream { url: "https://x.example.com/mcp".into(), transport: McpTransport::Http, header: Some(("authorization".into(), "Bearer at-secret".into())), read_only: false };
         assert!(!format!("{up:?}").contains("at-secret"));
+    }
+
+    #[test]
+    fn a_read_only_proxy_lists_and_lets_through_only_the_tools_that_read() {
+        let mut filter = ReadOnly::default();
+        let list = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
+        assert_eq!(filter.outgoing(list.clone()), Ok(list));
+        let listing = json!({ "jsonrpc": "2.0", "id": 2, "result": { "tools": [
+            { "name": "search_screens" },
+            { "name": "get_flow" },
+            { "name": "21st_magic_component_inspiration" },
+            { "name": "21st_magic_component_builder" },
+            { "name": "logo_search", "annotations": { "destructiveHint": true } },
+            { "name": "save_to_collection" },
+            { "name": "summarize", "annotations": { "readOnlyHint": true } },
+            { "name": "create_or_get" },
+        ] } });
+        let shown = filter.incoming(listing);
+        let names: Vec<&str> = shown["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["search_screens", "get_flow", "21st_magic_component_inspiration", "summarize"]);
+        let call = |name: &str| json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": { "name": name, "arguments": {} } });
+        assert!(filter.outgoing(call("search_screens")).is_ok());
+        let refused = filter.outgoing(call("21st_magic_component_builder")).unwrap_err();
+        assert_eq!(refused["id"], 9);
+        assert!(refused["error"]["message"].as_str().unwrap().contains("show_references"));
+        assert!(filter.outgoing(call("unlisted")).is_err(), "a tool no listing said reads is refused");
+        // Another message of the server's, with an id no listing had, passes as it is.
+        let other = json!({ "jsonrpc": "2.0", "id": 3, "result": { "tools": [{ "name": "create_x" }] } });
+        assert_eq!(filter.incoming(other.clone()), other);
     }
 }

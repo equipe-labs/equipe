@@ -240,6 +240,64 @@ A screen showing a reply with a Mermaid block:
 A daemon older than this sends no `visuals_rendered` and no `visuals`: phones show the source,
 as before. A screen older than this ignores the event (unknown `type`) and the field.
 
+## Reference cards
+
+When the person asks to see references — "show me components I could use" — the PM, a designer or
+frontend calls `show_references` with 1 to 12 items, each a picture (an https address a design
+library's MCP result gave, or a path where the member works), a title, where it is from (`site`,
+`link`), its kind (`component`, `screen`, `pattern`) and optional one-liners: why it fits, what to
+take, what to leave, and the pattern folder it belongs in (`crates/core/src/references.rs`).
+
+- **The pictures.** The daemon fetches each itself: https only, no credentials, port or IP in the
+  address, only hosts that resolve to public addresses (the address pinned for the request, each
+  of at most 3 redirects checked again), at most 8 MB, a PNG, JPEG, WebP or GIF by its bytes (never
+  an SVG), at most 16384 pixels on a side; a path is copied under the same checks. Each is kept
+  by the hash of its bytes in the squad's picture store, `~/.equipe/squads/<squad>/visuals/refs/`
+  — outside every repository — at most 1000 files and 256 MiB, the pictures used longest ago going
+  first, never one an open conversation still shows. `read_image` gives a stored picture by its
+  path alone, to any screen following the squad, local or attached from another machine.
+- **The card** is one note of the conversation (`notice`), so it is journaled, replayed in a
+  snapshot's `recent` and folded like any line. Its first line is `notice.references` in the
+  squad's language (`◫ PM is showing you 6 references`); then, per card, Markdown that a screen
+  knowing nothing of cards still reads:
+
+  ```
+  ![Three-tier pricing](/…/visuals/refs/4f1c…e2.png)
+  **Three-tier pricing** · component · [21st.dev](https://21st.dev/…) · `pricing-table`
+  > Same three plans as yours, with the middle one lifted.
+  - ✓ Raised recommended plan, one accent
+  - ✗ Gradient borders
+  ```
+
+  The desktop finds the head in any language and draws the card instead: a row of thumbnails that
+  scrolls sideways, each opening big, its source as a chip that opens the page, why / take / leave,
+  and a heart, "not this" with its one-tap reasons, and "add to references". A picture that can't
+  be had says so with a retry. The gallery's key is the note's, as `visuals::diagram::key` makes it.
+- **Taste.** A heart is `taste_signals` `react` `up` with the picture, "not this" `react` `down`,
+  each reason a `rejected` with it — kept with the squad's taste like the design session's.
+- **Keeping one.** `keep_reference` (the person's only) adds an entry to
+  `design/references/<pattern>/notes.md` of the project in view (the squad's own without one), in
+  the form the references gallery reads: its link and lines, never its picture.
+- **Try it.** `try_reference` (the person's only) opens the card live in the browser panel, as a
+  tab of theirs in the shared browser on the daemon's machine — so a screen attached from
+  elsewhere sees it too. For a 21st.dev or shadcn registry component the daemon reads its registry
+  item (and the registry components it uses) under the same fetch rules and serves one page on
+  `127.0.0.1`, at a path with a random token (`crates/core/src/playground.rs`): the code transpiled
+  in the page, React and each declared dependency from esm.sh at a pinned version (one with no
+  pinned version isn't loaded, and the page says so), Tailwind's browser build pinned, the
+  project's `design/tokens.json` as the theme's CSS variables when it has some, and a bar to switch
+  the component's exports (its variants), light and dark, and a narrow width. Its CSP lets scripts
+  come only from the page, `blob:` and those three CDNs, and nothing is fetched (`connect-src
+  'none'`), framed or posted; nothing is written to the project. A card it can't run — a study
+  screen, a page with no registry item — opens its source page instead, to look at.
+- **Study material.** A card from `mobbin.com` is marked "study only": its picture is shown in
+  equipe and never shipped, committed or copied into a project.
+
+The PM may search the catalog's design libraries (Mobbin, 21st.dev) connected for other roles,
+read-only, to do this: equipe's proxy lists and lets through only their tools that read
+(`readOnlyHint`, or a name that searches, lists or gets) and refuses the rest
+(`crates/core/src/mcp_gateway.rs`, `ReadOnly`).
+
 ## What members are told
 
 Every role's charter (`crates/core/src/roles.rs`, `VISUALS`) has the same paragraph, with no

@@ -594,6 +594,11 @@ pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[Pat
         cache::touch(Path::new(&ask.path));
         return read_cached(home, Path::new(&ask.path), &[diagram::dir(home, &ask.squad)], max);
     }
+    // A reference picture equipe fetched and keeps for the squad (`show_references`).
+    if crate::references::is_stored(home, &ask.squad, Path::new(&ask.path)) {
+        cache::touch(Path::new(&ask.path));
+        return read_cached(home, Path::new(&ask.path), &[crate::references::store_dir(home, &ask.squad)], max);
+    }
     let (shown, fresh) = shown_lately(home, &ask.squad, |shown| allows(home, shown, ask));
     match serve_from(home, &shown, ask, max, scratch) {
         // Found a moment ago, and the board may have moved since (a worktree

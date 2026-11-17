@@ -1445,7 +1445,8 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
         .when(item.before, |r| {
             r.child(div().flex_none().h(px(20.)).px(px(7.)).flex().items_center().rounded(px(5.)).bg(rgba(0xFFFFFF26)).text_size(px(11.5)).font_weight(FontWeight::MEDIUM).text_color(rgb(0xFFFFFF)).child(t!("decide.before")))
         })
-        .when(on_board && !item.note.is_empty(), |r| {
+        // A board's tile, a reference card: where it is from and what to take.
+        .when(!item.note.is_empty(), |r| {
             r.child(
                 div()
                     .min_w_0()

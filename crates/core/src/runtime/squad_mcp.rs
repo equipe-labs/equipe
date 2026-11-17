@@ -556,13 +556,15 @@ impl Runtime {
             let _ = reply.send(Err(format!("{member} isn't one of {squad}'s members")));
             return;
         };
-        if !server.serves(&role) {
+        // The PM's design-library search: its tools that read, and no others.
+        let read_only = !server.serves(&role);
+        if read_only && !sm::for_references(&server, &role) {
             let _ = reply.send(Err(format!("{name} isn't connected for {role}s")));
             return;
         }
         let by = Some((sid, member.clone(), ticket));
         let (url, transport) = (server.url.clone(), server.transport);
-        let up = move |header| Upstream { url: url.clone(), transport, header };
+        let up = move |header| Upstream { url: url.clone(), transport, header, read_only };
         match server.auth.clone() {
             McpAuth::Engine => {
                 let _ = reply.send(Err(format!("{name} is signed in by each engine itself")));

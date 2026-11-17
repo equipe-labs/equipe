@@ -380,6 +380,17 @@ pub fn qa_report_of(text: &str) -> Option<QaReport> {
     Some(report)
 }
 
+/// A transcript line that is a gallery of references a member showed
+/// (`show_references`), in any language: who showed it, its key and its cards.
+pub fn references_of(text: &str) -> Option<crate::refcards::Gallery> {
+    let (head, body) = text.trim().split_once('\n')?;
+    let wordings = Lang::ALL.into_iter().flat_map(|lang| ["notice.references.one", "notice.references.other"].map(|key| core(lang).get(key)));
+    let args = wordings.into_iter().find_map(|wording| match_template(wording, head.trim()))?;
+    let name = args.iter().find(|(k, _)| k == "name").map(|(_, v)| v.trim().to_owned())?;
+    let cards = equipe_core::references::parse_body(body);
+    (!cards.is_empty()).then(|| crate::refcards::Gallery { name, key: equipe_core::references::key(text), cards })
+}
+
 /// A message equipe sent a member as the person's (before 0.48): its browser
 /// handed back to it.
 pub fn handed_back_line(text: &str) -> bool {
