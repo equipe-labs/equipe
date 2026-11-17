@@ -376,12 +376,31 @@ pub fn card(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> Option<AnyElemen
     )
 }
 
+/// The Inbox's row for a card: what to sign in to, and who it is for.
+pub fn row_text(shell: &Shell, id: u64) -> Option<(String, String)> {
+    let c = shell.model.cli_sign_ins.iter().find(|c| c.id == id)?;
+    let who = if c.member.is_empty() { "equipe".to_owned() } else { c.member.clone() };
+    Some((title(c), who))
+}
+
+/// The Inbox's mark for a sign-in card.
+pub fn mark(p: crate::theme::Palette, title: &str) -> AnyElement {
+    crate::tips::tip(div().id("sign-in-mark").size(px(14.)).flex_none().flex().items_center().justify_center().child(crate::icons::icon(Icon::Lock, 13., p.accent)), p, title.to_owned(), None).into_any_element()
+}
+
+/// The card on its own, in the Inbox's peek: the same card the conversation shows.
+pub fn peek(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> AnyElement {
+    v_flex().id("peek").size_full().overflow_y_scroll().p_4().gap_3().children(card(shell, id, cx)).into_any_element()
+}
+
 /// The first sign-in card, over the composer, in the conversation.
 pub fn docked(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     if shell.screen != Screen::Chat {
         return None;
     }
-    let id = shell.model.cli_sign_ins.first()?.id;
+    // The conversation's own member's card first: the one this conversation waits on.
+    let here = shell.model.selected_member().map(|m| m.session);
+    let id = shell.model.cli_sign_ins.iter().find(|c| Some(c.session) == here).or_else(|| shell.model.cli_sign_ins.first())?.id;
     let p = shell.palette;
     let body = card(shell, id, cx)?;
     Some(motion::rise(div().w_full().mb_3().p_3().rounded(px(R_LG)).bg(p.raised).border_1().border_color(p.hair).shadow_sm().child(body), ("cli-signin-in", id)).into_any_element())

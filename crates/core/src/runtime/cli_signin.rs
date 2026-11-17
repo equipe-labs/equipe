@@ -17,6 +17,12 @@ use super::*;
 
 /// How long a signed-in card stays, to be seen ticked.
 const TICKED_FOR: Duration = Duration::from_secs(20);
+/// How long equipe's own sign-in to an outside MCP server waits for the
+/// person: a day. Its page stays good that long (equipe holds the redirect's
+/// port and the PKCE secret, nothing at the server runs out), and the person
+/// may be away from the squad's Mac for hours — a card that ran out in
+/// fifteen minutes was gone before a remote person saw it.
+pub(super) const MCP_CARD_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// A sign-in running (or waiting to be run again) for a card.
 pub(super) struct Live {
@@ -161,15 +167,12 @@ or end your turn saying in a line what you're waiting for.",
         card_id
     }
 
-    /// The person asked again for outside server `server`'s sign-in on
-    /// `kind`'s engine while its card is up: the card is sent again (a screen
-    /// puts it back in front of them), started over where it had ended.
-    pub(super) fn reshow_mcp_card(&mut self, squad: &str, server: &str, kind: Kind) {
-        let Some((id, phase)) = self.cli_signins(squad).iter().find(|l| l.kind == kind && l.server.as_deref() == Some(server)).map(|l| (l.card.id, l.card.phase)) else { return };
-        if matches!(phase, Phase::Expired | Phase::Failed) {
-            self.restart_cli_sign_in(squad, id);
-        } else {
-            self.publish_card(squad, id);
+    /// The sign-in cards for outside server `server` on `kind`, taken away:
+    /// the person asked for a fresh one.
+    pub(super) fn close_mcp_cards_of(&mut self, squad: &str, server: &str, kind: Kind) {
+        let ids: Vec<u64> = self.cli_signins(squad).iter().filter(|l| l.kind == kind && l.server.as_deref() == Some(server)).map(|l| l.card.id).collect();
+        for id in ids {
+            self.close_card(squad, id);
         }
     }
 
@@ -207,7 +210,7 @@ or end your turn saying in a line what you're waiting for.",
                         let _ = internal.send(Internal::CliSignIn(Note::Seen { squad: squad.clone(), id, run, url: Some(page.to_owned()), code: None }));
                     }
                 };
-                let outcome = match crate::mcp_oauth::sign_in(&http, store, &squad_s, &server, &url, sse, cs::WAIT, rx, seen).await {
+                let outcome = match crate::mcp_oauth::sign_in(&http, store, &squad_s, &server, &url, sse, MCP_CARD_WAIT, rx, seen).await {
                     crate::mcp_oauth::Ended::Done => Outcome::Done,
                     crate::mcp_oauth::Ended::Expired => Outcome::Expired,
                     crate::mcp_oauth::Ended::Failed(why) => Outcome::Failed(why),

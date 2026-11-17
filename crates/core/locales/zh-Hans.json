@@ -799,6 +799,7 @@
   "notice.missed_title": "这件事你已错过 {n} 次：{what}",
   "notice.missed_body": "{impact}。打开处理一下。",
   "notice.squad_secret_saved": "{member} 已把 {service} 的密钥“{name}”存入本机的密钥库。从现在起 equipe 会将其遮蔽。",
+  "notice.mcp_card_up": "{member} 要使用 {server}，需要你处理一下：卡片在“轮到你”里。",
   "secrets.no_project": "无项目(小队文件夹)",
   "secrets.grant.header": "密钥",
   "secrets.grant.question": "允许 {member} 在 {project} 上使用密钥“{name}”({service})吗?",

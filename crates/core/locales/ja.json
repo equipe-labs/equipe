@@ -799,6 +799,7 @@
   "notice.missed_title": "これを{n}回見逃しています: {what}",
   "notice.missed_body": "{impact}。開いて対応してください。",
   "notice.squad_secret_saved": "{member}が{service}用のキー「{name}」をこのマシンのシークレットストアに保管しました。以降は equipe が伏せ字にします。",
+  "notice.mcp_card_up": "{member} が {server} を使うには、あなたの対応が必要です。「あなたの番」にカードがあります。",
   "secrets.no_project": "プロジェクトなし(スクワッドのフォルダ)",
   "secrets.grant.header": "キー",
   "secrets.grant.question": "{member}が{project}でキー「{name}」({service})を使ってもよいですか?",

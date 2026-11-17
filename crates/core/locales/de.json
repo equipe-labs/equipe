@@ -804,6 +804,7 @@
   "notice.missed_title": "Du hast das {n}-mal verpasst: {what}",
   "notice.missed_body": "{impact}. Öffne es, um es zu erledigen.",
   "notice.squad_secret_saved": "{member} hat den Schlüssel „{name}“ für {service} im Geheimnisspeicher dieses Geräts abgelegt. equipe maskiert ihn ab jetzt.",
+  "notice.mcp_card_up": "{member} kann {server} erst nutzen, wenn du etwas erledigst: Die Karte liegt unter „Du bist dran“.",
   "secrets.no_project": "kein Projekt (Ordner des Squads)",
   "secrets.grant.header": "Schlüssel",
   "secrets.grant.question": "Darf {member} den Schlüssel „{name}“ ({service}) in {project} verwenden?",

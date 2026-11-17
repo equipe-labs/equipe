@@ -72,13 +72,29 @@ impl Runtime {
     }
 
     /// A kept value: the masking list first (read once, at start), else the secret store.
+    /// An outside MCP server's key is read from equipe's own MCP credentials
+    /// file, with nobody at the Mac ([`crate::mcp_keys`]); one an earlier
+    /// equipe kept in the secret store moves there the first time it is read.
     pub(super) fn key_value(&self, squad: &str, name: &str) -> Result<String, String> {
-        if let Some(value) = ks::watched(&ks::watch_key(squad, name)) {
+        let mcp = self.is_mcp_key(squad, name);
+        if mcp && let Ok(Some(value)) = crate::mcp_keys::get(&self.config.home, squad, name) {
+            ks::watch(&ks::watch_key(squad, name), &value);
             return Ok(value);
         }
-        let value = self.vault.lock().map_err(|_| "The secret store is unreadable.".to_owned())?.squad_secret(squad, name, false)?;
+        let value = match ks::watched(&ks::watch_key(squad, name)) {
+            Some(value) => value,
+            None => self.vault.lock().map_err(|_| "The secret store is unreadable.".to_owned())?.squad_secret(squad, name, false)?,
+        };
         ks::watch(&ks::watch_key(squad, name), &value);
+        if mcp && crate::mcp_keys::set(&self.config.home, squad, name, &value).is_ok() {
+            crate::daemon_log!("equipe: {squad}'s {name} moved out of the Keychain into equipe's MCP credentials file");
+        }
         Ok(value)
+    }
+
+    /// Whether `name` is the key one of `squad`'s outside MCP servers runs on.
+    pub(super) fn is_mcp_key(&self, squad: &str, name: &str) -> bool {
+        self.mcp_servers_of(squad).iter().any(|s| matches!(&s.auth, crate::squad_mcp::McpAuth::Key { secret, .. } if secret == name))
     }
 
     /// At start: every kept value into the masking list, off the loop (the
@@ -89,10 +105,15 @@ impl Runtime {
         if wanted.is_empty() {
             return;
         }
-        let vault = self.vault.clone();
+        let (vault, home) = (self.vault.clone(), self.config.home.clone());
         tokio::task::spawn_blocking(move || {
             let Ok(vault) = vault.lock() else { return };
             for (squad, name) in wanted {
+                // An outside MCP server's key, kept in equipe's own file: masked too.
+                if let Ok(Some(value)) = crate::mcp_keys::get(&home, &squad, &name) {
+                    ks::watch(&ks::watch_key(&squad, &name), &value);
+                    continue;
+                }
                 if let Ok(value) = vault.squad_secret(&squad, &name, false) {
                     ks::watch(&ks::watch_key(&squad, &name), &value);
                 }
@@ -197,11 +218,16 @@ end the turn with a short line. To keep both, save yours under another name inst
     pub(super) fn keep_secret(&mut self, squad: &str, member: &str, id: SessionId, draft: ks::Draft, projects: Vec<String>) -> Result<(SquadSecret, bool), String> {
         let (ticket, _, _) = self.key_context(squad, id);
         let existing = self.journal(squad).map(ks::read).unwrap_or_default().into_iter().find(|s| s.name == draft.name);
-        self.vault
-            .lock()
-            .map_err(|_| "The secret store is unreadable.".to_owned())?
-            .set_squad_secret(squad, &draft.name, &draft.value)
-            .map_err(|why| format!("The secret store refused it ({why}); nothing was kept."))?;
+        if self.is_mcp_key(squad, &draft.name) {
+            // An outside MCP server's key: where the daemon reads it with nobody at the Mac, never behind a Keychain dialog.
+            crate::mcp_keys::set(&self.config.home, squad, &draft.name, &draft.value).map_err(|why| format!("equipe couldn't keep it ({why}); nothing was kept."))?;
+        } else {
+            self.vault
+                .lock()
+                .map_err(|_| "The secret store is unreadable.".to_owned())?
+                .set_squad_secret(squad, &draft.name, &draft.value)
+                .map_err(|why| format!("The secret store refused it ({why}); nothing was kept."))?;
+        }
         ks::watch(&ks::watch_key(squad, &draft.name), &draft.value);
         let replaced = existing.is_some();
         let secret = SquadSecret {
@@ -404,10 +430,14 @@ commit it, print it or copy it elsewhere; to hand it to a service, run the CLI y
                 }
             }
             Command::DeleteSquadSecret { squad, name } => {
+                let mcp = self.is_mcp_key(&squad, &name);
+                let _ = crate::mcp_keys::delete(&self.config.home, &squad, &name);
                 let gone = match self.vault.lock() {
                     Ok(mut vault) => vault.delete_squad_secret(&squad, &name),
                     Err(_) => Err("the secret store is unreadable".to_owned()),
                 };
+                // An outside MCP server's key lives in equipe's own file: gone from there is gone.
+                let gone = if mcp { Ok(()) } else { gone };
                 match gone {
                     Ok(()) => {
                         ks::unwatch(&ks::watch_key(&squad, &name));

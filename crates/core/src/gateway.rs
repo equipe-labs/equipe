@@ -869,7 +869,7 @@ async fn serve_client(
 /// How long a connection from under an engine waits for that engine's start
 /// to reach the runtime, and how often it looks: the engine starts its MCP
 /// servers moments after it is spawned, and its pid is told meanwhile.
-const ENGINE_KNOWN_WAIT: Duration = Duration::from_secs(3);
+const ENGINE_KNOWN_WAIT: Duration = Duration::from_secs(10);
 const ENGINE_KNOWN_EVERY: Duration = Duration::from_millis(100);
 
 /// The member session a connection from `peer` is bound to: for a member's
@@ -882,14 +882,31 @@ async fn bound_member(core: &Handle, origin: crate::origin::Origin, peer: Option
     }
     let engine = crate::origin::engine(peer)?;
     let until = tokio::time::Instant::now() + ENGINE_KNOWN_WAIT;
+    // The loop is asked once at a time; the turn's own note is looked at
+    // meanwhile — it doesn't wait on the loop, which may be busy with a long
+    // step (a merge) just as a fresh conversation's engine starts.
+    let mut asked = Box::pin(core.engine_member(engine));
     loop {
-        if let Some(member) = core.engine_member(engine).await {
+        if let Some(member) = crate::engine_bind::member_of(engine) {
             return Some(member);
         }
-        if tokio::time::Instant::now() >= until {
-            return None;
+        tokio::select! {
+            answer = &mut asked => {
+                if let Some(member) = answer.or_else(|| crate::engine_bind::member_of(engine)) {
+                    return Some(member);
+                }
+                if tokio::time::Instant::now() >= until {
+                    return None;
+                }
+                tokio::time::sleep(ENGINE_KNOWN_EVERY).await;
+                asked = Box::pin(core.engine_member(engine));
+            }
+            _ = tokio::time::sleep(ENGINE_KNOWN_EVERY) => {
+                if tokio::time::Instant::now() >= until {
+                    return crate::engine_bind::member_of(engine);
+                }
+            }
         }
-        tokio::time::sleep(ENGINE_KNOWN_EVERY).await;
     }
 }
 
