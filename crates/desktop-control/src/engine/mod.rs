@@ -92,6 +92,23 @@ struct RefInfo {
     secure: bool,
 }
 
+/// A ref as [`Engine::describe`] tells it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RefView {
+    /// `@s8f3k2p9:e12`.
+    pub qualified: String,
+    pub role: String,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub secure: bool,
+    /// The app its snapshot was of.
+    pub app: Option<String>,
+    /// That window's title.
+    pub window: Option<String>,
+    /// That window's id (`w-4521`).
+    pub window_id: Option<String>,
+}
+
 /// What a snapshot was of.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct Snap {
@@ -313,7 +330,7 @@ impl Engine {
             cli.push(kv("--timeout-ms", t.to_string()));
         }
         let data = self.run(member, cli, None, Duration::from_millis(timeout.unwrap_or(3000) + 20_000))?;
-        self.remember(member, &data, text(args, "app"), root.as_deref());
+        self.remember(member, &data, text(args, "app"), root.as_deref(), text(args, "window"));
         Ok(compact::snapshot(&data))
     }
 
@@ -346,13 +363,14 @@ impl Engine {
         }
         cli.push(kv("--limit", number(args, "limit").unwrap_or(10).clamp(1, 50).to_string()));
         let data = self.run(member, cli, None, Duration::from_secs(30))?;
-        self.remember(member, &data, text(args, "app"), root.as_deref());
+        self.remember(member, &data, text(args, "app"), root.as_deref(), text(args, "window"));
         Ok(compact::matches(&data))
     }
 
     /// Keep what `data` (a snapshot or a find) shows: each ref's role and
-    /// name, and which app and window its snapshot was of.
-    fn remember(&self, member: &str, data: &Value, app: Option<&str>, root: Option<&str>) {
+    /// name, and which app and window its snapshot was of (`window`: the one
+    /// asked for, when the answer doesn't say).
+    fn remember(&self, member: &str, data: &Value, app: Option<&str>, root: Option<&str>, window: Option<&str>) {
         let Some(sid) = data.get("snapshot_id").and_then(Value::as_str).map(str::to_owned) else { return };
         let mut members = self.members();
         let state = members.entry(member.to_owned()).or_default();
@@ -365,6 +383,9 @@ impl Engine {
         if let Some(window) = data.get("window") {
             snap.window = window.get("title").and_then(Value::as_str).map(str::to_owned).or(snap.window);
             snap.window_id = window.get("id").and_then(Value::as_str).map(str::to_owned).or(snap.window_id);
+        }
+        if snap.window_id.is_none() {
+            snap.window_id = window.map(str::to_owned);
         }
         let mut nodes = Vec::new();
         if let Some(tree) = data.get("tree") {
@@ -399,6 +420,38 @@ impl Engine {
         state.order.push_back(sid.clone());
         state.last = Some(sid);
         state.forget_old();
+    }
+
+    /// What a ref of `member`'s was when its snapshot showed it, and which
+    /// app and window that snapshot was of — for tools built on the engine
+    /// (the person's own Chrome, [`crate::chrome`]) that check a ref before acting.
+    pub fn describe(&self, member: &str, raw: &str) -> Result<RefView, String> {
+        let members = self.members();
+        let state = members.get(member);
+        let qualified = qualify(raw, state.and_then(|m| m.last.as_deref()))?;
+        let found = state.and_then(|m| {
+            let sid = qualified.trim_start_matches('@').split_once(':')?.0;
+            Some((m.refs.get(&qualified)?.clone(), m.snaps.get(sid)?.clone()))
+        });
+        let Some((info, snap)) = found else {
+            return Err(format!("{} isn't in any snapshot you took here: take a snapshot and use its refs.", compact::short_ref(&qualified, None)));
+        };
+        Ok(RefView {
+            qualified,
+            role: info.role,
+            name: info.name,
+            description: info.description,
+            secure: info.secure,
+            app: snap.app,
+            window: snap.window,
+            window_id: snap.window_id,
+        })
+    }
+
+    /// Run agent-desktop in `member`'s session and get its `data` as JSON,
+    /// uncompacted: for tools built on the engine. Nothing is remembered.
+    pub fn raw(&self, member: &str, args: Vec<String>, timeout: Duration) -> Result<Value, String> {
+        self.run(member, args, None, timeout)
     }
 
     /// The ref a call means, with what it was and what its snapshot was of.

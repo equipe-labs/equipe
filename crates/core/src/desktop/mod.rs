@@ -151,6 +151,13 @@ impl Use {
         match tool.rsplit("__").next().unwrap_or(tool) {
             "screenshot" | "list_windows" | "elements" => Use::Look,
             "snapshot" | "find" | "wait" => Use::Read,
+            // The person's own Chrome (docs/REAL-CHROME.md): reading a
+            // member's own window, and picturing it, move nothing on screen;
+            // ref actions and closing it are headless; opening a window
+            // brings Chrome forward, so it waits for the person's hands.
+            "chrome_profiles" | "chrome_snapshot" | "chrome_read" | "chrome_capture" => Use::Read,
+            "chrome_act" | "chrome_close" => Use::Headless,
+            "chrome_open" => Use::Input,
             // A double click is physical; a context menu opens on screen and
             // holds the pointer until it closes: both wait for the screen.
             "act" if headed || matches!(text("action"), "double_click" | "right_click") => Use::Input,
@@ -612,11 +619,19 @@ mod tests {
         assert_eq!(of("clipboard", json!({})), Use::Read);
         assert_eq!(of("clipboard", json!({ "action": "set", "text": "x" })), Use::Input);
         assert_eq!(of("something_new", json!({})), Use::Input);
+        // The person's own Chrome: a member's window read, acted on and
+        // closed headless; opening one brings Chrome forward.
+        assert_eq!(of("mcp__desktop__chrome_snapshot", json!({})), Use::Read);
+        assert_eq!(of("chrome_read", json!({})), Use::Read);
+        assert_eq!(of("chrome_capture", json!({})), Use::Read);
+        assert_eq!(of("chrome_act", json!({ "ref": "e1", "headed": true })), Use::Headless, "chrome_act is never physical");
+        assert_eq!(of("chrome_close", json!({})), Use::Headless);
+        assert_eq!(of("chrome_open", json!({ "url": "https://example.com" })), Use::Input);
         // Every tool a member is offered is one this knows.
-        for tool in equipe_desktop_control::tools::tools() {
+        for tool in equipe_desktop_control::tools::tools_for(true) {
             let name = tool["name"].as_str().unwrap();
             let known = ["screenshot", "list_windows", "elements", "click", "double_click", "drag", "scroll", "type_text", "key", "open_app", "focus_window"];
-            assert!(known.contains(&name) || equipe_desktop_control::engine::handles(name), "{name}");
+            assert!(known.contains(&name) || equipe_desktop_control::engine::handles(name) || equipe_desktop_control::chrome::handles(name), "{name}");
         }
     }
 

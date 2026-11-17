@@ -778,6 +778,44 @@ pub fn trusted() -> bool {
     unsafe { AXIsProcessTrusted() }
 }
 
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    /// The window number of an AX window (HIServices; what every window
+    /// manager uses to tie an AX window to the window server's).
+    fn _AXUIElementGetWindow(element: Ref, window: *mut u32) -> i32;
+}
+
+/// Close one window of the app `bundle`, by its window number, through its
+/// close button (AXPress): no pointer, no keys, nothing else of the app's
+/// touched. For the person's own Chrome ([`crate::chrome`]).
+pub(crate) fn close_window(bundle: &str, window: u32) -> Result<(), String> {
+    let workspace = NSWorkspace::sharedWorkspace();
+    let pids: Vec<i32> = workspace
+        .runningApplications()
+        .iter()
+        .filter(|app| app.bundleIdentifier().is_some_and(|b| b.to_string() == bundle))
+        .map(|app| app.processIdentifier())
+        .collect();
+    for pid in pids {
+        let app = application(pid);
+        for ax in children(app.0, "AXWindows") {
+            let mut number = 0u32;
+            // SAFETY: ax is an AXUIElement window.
+            if unsafe { _AXUIElementGetWindow(ax.0, &mut number) } != 0 || number != window {
+                continue;
+            }
+            let Some(button) = attr(ax.0, "AXCloseButton") else {
+                return Err("That window has no close button equipe can press.".into());
+            };
+            return match perform(ptr(&button), "AXPress") {
+                0 => Ok(()),
+                err => Err(format!("Chrome didn't close the window (accessibility error {err}).")),
+            };
+        }
+    }
+    Err(format!("No Chrome window w-{window} is open any more."))
+}
+
 pub fn serve(home: &Path) -> std::io::Result<()> {
     let home = home.to_owned();
     std::thread::spawn(move || {

@@ -483,6 +483,13 @@ enum DesktopAction {
         /// on or off (prints the current setting when left out)
         state: Option<String>,
     },
+    /// Whether members may work in your own Google Chrome (your profiles and sign-ins), each in a window of its own — experimental
+    Chrome {
+        /// on or off (prints the current setting when left out)
+        state: Option<String>,
+        #[arg(long)]
+        squad: Option<String>,
+    },
     /// Stop the helper and remove it
     Remove,
     /// Run the helper (what its LaunchAgent starts)
@@ -827,6 +834,7 @@ async fn run(cli: Cli) -> ExitCode {
             DesktopAction::On { member, everyone, experimental: _, squad } => desktop::Action::On { member, everyone, squad },
             DesktopAction::Off { member, everyone, squad } => desktop::Action::Off { member, everyone, squad },
             DesktopAction::Locked { state } => desktop::Action::Locked { state },
+            DesktopAction::Chrome { state, squad } => desktop::Action::Chrome { state, squad },
             DesktopAction::Remove => desktop::Action::Remove,
             DesktopAction::Serve { home } => desktop::Action::Serve { home },
         }))
@@ -932,7 +940,7 @@ async fn serve_mcp(server: &str, squad: String, member: String, role: String, ho
     let desktop = server == equipe_core::runtime::DESKTOP_SERVER;
     let phone = server == equipe_core::phone::SERVER;
     let (info, tools) = if desktop {
-        (mcp::DESKTOP, equipe_desktop_control::tools::tools())
+        (mcp::DESKTOP, equipe_desktop_control::tools::tools_for(equipe_desktop_control::chrome::enabled(&home, &squad)))
     } else if phone {
         (mcp::PHONE, equipe_core::phone::tools())
     } else if qa_lite {
