@@ -363,6 +363,7 @@
   "news.captures_kept_out": "T-{id}：已将 {count} 张设计图片（{size}）移出 git。文件仍保留在磁盘和 equipe 的存储中。",
   "news.captures_heavy": "T-{id}：提交 {commit} 向 git 添加了 {size} 的图片。大图片应放在仓库之外。",
   "news.handed_in_kept_out": "T-{id}：已将交付的 {count} 个图片、视频或文件（{size}）移出小队文件夹的历史记录。文件仍保留在文件夹和 equipe 的存储中。",
+  "news.handed_in_raw": "T-{id}：已将 {count} 个机器输出文件（{size}）——探测转储、日志、生成的脚本——移出小队文件夹的历史记录。文件会在文件夹中保留 {days} 天。",
   "news.merged_pushed": "你把 T-{id} · {title} 合并进了 {branch} 并已推送。",
   "news.person_created": "你把 T-{id} 放上看板，交给了 {name} · {title}。",
   "news.person_created_unowned": "你把 T-{id} 放上了看板，由 PM 决定谁来做 · {title}。",

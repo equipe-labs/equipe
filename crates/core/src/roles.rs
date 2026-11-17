@@ -837,6 +837,11 @@ stops something the work needs and no other way does it, never drop that part qu
 why it mattered, and ask the person (`ask_decision`, or `block_on_person` for what only they can do). Work with several steps, work for a teammate, or a result the person should review before it counts \
 goes on a ticket instead. On a `task` or `action` ticket you work in a worktree of this folder, whatever your \
 role, and leave what you produce under `outputs/` or `notes/`; it goes into the folder when the person accepts. \
+A hand-in folder (`outputs/T-12 title/`) holds what people read: a `README.md` that says what you found and names \
+its evidence, plus a few small key files — git keeps at most 20 files and 1 MB of one. Bulk machine output (probe \
+and DOM dumps, logs, generated scripts, per-width or per-theme matrices) goes under its `raw/` folder: it stays on \
+disk for 30 days and never goes into the folder's history, so the README names what is there; pictures and \
+documents are kept apart by equipe. \
 Anything that reaches outside — sending, submitting, paying — asks the person first, \
 wherever you are. Other squads' folders are private. The squad's briefs and plans are kept here too, under \
 `docs/` — a project's in `docs/<project>/briefs/` and `docs/<project>/plans/` — never in a project's repository: a \
@@ -2024,8 +2029,14 @@ invent one."), "{id}: true numbers");
     fn a_charter_says_what_the_squads_folder_is_for_and_what_needs_a_ticket() {
         let team = [Teammate { name: "pm", role: "pm" }];
         let text = charter(role("backend").unwrap(), "backend", &Context { home: Some("/h/squads/acme/home"), ..ctx(&team, &[], true) });
-        for part in ["The squad's folder is /h/squads/acme/home", "`notes/`", "`outputs/`", "write there directly", "for reading only", "is reading it: copy it out to where it goes", "never drop that part quietly", "goes on a ticket", "asks the person first", "Other squads' folders are private"] {
+        for part in ["The squad's folder is /h/squads/acme/home", "`notes/`", "`outputs/`", "write there directly", "for reading only", "is reading it: copy it out to where it goes", "never drop that part quietly", "goes on a ticket", "asks the person first", "Other squads' folders are private", "`README.md`", "`raw/`"] {
             assert!(text.contains(part), "{part}: {text}");
+        }
+        // What it says a hand-in keeps is what equipe keeps.
+        use crate::design::captures::raw;
+        assert_eq!(raw::BYTES_KEPT, 1_000_000, "the charter says 1 MB");
+        for said in [format!("at most {} files and 1 MB of one", raw::FILES_KEPT), format!("on disk for {} days", raw::RAW_KEPT_DAYS)] {
+            assert!(text.contains(&said), "{said}: {text}");
         }
         assert!(!charter(role("backend").unwrap(), "backend", &ctx(&team, &[], true)).contains("squad's folder"));
         // `cp` from such a folder isn't refused any more: no workaround to tell.

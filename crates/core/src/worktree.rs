@@ -893,6 +893,11 @@ pub fn land(repo: &Path, merge: &MergeCommit) -> Result<String> {
         Ok(_) => {}
         Err(err) => crate::daemon_log!("equipe: the design captures merged into {} weren't put in place: {err}", repo.display()),
     }
+    // In a squad's folder, the machine output its worktree holds on disk only, before the worktree goes.
+    let (files, bytes) = crate::design::captures::raw::carry(repo, &merge.head);
+    if files > 0 {
+        crate::daemon_log!("equipe: carried {files} files of machine output ({}) into {}", crate::design::captures::size_words(bytes), repo.display());
+    }
     Ok(merge.main.clone())
 }
 
@@ -1933,7 +1938,8 @@ mod tests {
         std::fs::write(sandbox.path.join("outputs/T-123 other/note.md"), "n\n").unwrap();
         sandbox.commit_all("work").unwrap().unwrap();
         let changed = git(&home_repo, &["diff", "--name-status", &format!("{}..{}", sandbox.base, sandbox.branch)]).unwrap();
-        assert_eq!(changed, "A\toutputs/T-12 site/b.md\nA\toutputs/T-123 other/note.md", "no deletions of what was left out");
+        // equipe's block for machine output joins `outputs/.gitignore` (`design::captures::raw`).
+        assert_eq!(changed, "M\toutputs/.gitignore\nA\toutputs/T-12 site/b.md\nA\toutputs/T-123 other/note.md", "no deletions of what was left out");
 
         // The home's own checkout and config are whole.
         assert_eq!(files(&home_repo), all);

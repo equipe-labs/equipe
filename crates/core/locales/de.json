@@ -366,6 +366,7 @@
   "news.captures_kept_out": "T-{id}: {count} Designbilder ({size}) wurden aus git herausgehalten. Sie bleiben auf der Festplatte und in equipes Speicher.",
   "news.captures_heavy": "T-{id}: Commit {commit} fügt git {size} an Bildern hinzu. Große Bilder gehören nicht ins Repository.",
   "news.handed_in_kept_out": "T-{id}: {count} übergebene Bilder, Videos oder Dateien ({size}) wurden aus dem Verlauf des Squad-Ordners herausgehalten. Sie bleiben im Ordner und in equipes Speicher.",
+  "news.handed_in_raw": "T-{id}: {count} Dateien mit Maschinenausgabe ({size}) — Prüf-Dumps, Logs, erzeugte Skripte — wurden aus dem Verlauf des Squad-Ordners herausgehalten. Sie bleiben {days} Tage im Ordner.",
   "news.merged_pushed": "Du hast T-{id} · {title} in {branch} gemergt und gepusht.",
   "news.person_created": "Du hast T-{id} für {name} aufs Board gesetzt · {title}.",
   "news.person_created_unowned": "Du hast T-{id} aufs Board gesetzt – der PM entscheidet, wer es macht · {title}.",

@@ -59,9 +59,12 @@ pub const DIRS: [&str; 12] = ["flows", "qa", "checks", "mockups", "directions", 
 /// What a capture is, by its extension (any case).
 pub const EXTS: [&str; 8] = ["png", "jpg", "jpeg", "webp", "gif", "mp4", "webm", "mov"];
 /// What a squad's folder keeps out of git under `outputs/`, by extension:
-/// pictures, videos, sound, and the archives and documents tools generate.
-pub const OUTPUT_EXTS: [&str; 26] = [
-    "png", "jpg", "jpeg", "webp", "gif", "heic", "avif", "tif", "tiff", "bmp", "psd", "mp4", "webm", "mov", "m4v", "mkv", "avi", "mp3", "wav", "m4a", "aac", "flac", "zip", "tgz", "7z", "pdf",
+/// pictures, videos, sound, and the archives and documents tools generate —
+/// office files and SVG drawings too: people open them, but git diffs none of
+/// them, and a hand-in's few files in git are what people read ([`raw`]).
+pub const OUTPUT_EXTS: [&str; 42] = [
+    "png", "jpg", "jpeg", "webp", "gif", "heic", "avif", "tif", "tiff", "bmp", "psd", "svg", "mp4", "webm", "mov", "m4v", "mkv", "avi", "mp3", "wav", "m4a", "aac", "flac", "zip",
+    "tgz", "7z", "pdf", "doc", "docx", "xls", "xlsx", "xlsm", "ppt", "pptx", "odt", "ods", "odp", "rtf", "key", "numbers", "pages", "epub",
 ];
 /// The manifest's name in the design folder, and its path in a repository.
 pub const MANIFEST: &str = "captures.json";
@@ -166,25 +169,7 @@ impl Scope {
     /// `existing` (an ignore file's text) with equipe's block in it, as it
     /// is now: replaced where it was, else added at the end. The rest is kept.
     pub fn with_block(&self, existing: &str) -> String {
-        let block = self.ignore_block();
-        if let Some(start) = existing.find(self.block_start)
-            && let Some(len) = existing[start..].find(self.block_end)
-        {
-            let mut end = start + len + self.block_end.len();
-            if existing[end..].starts_with('\n') {
-                end += 1;
-            }
-            return format!("{}{block}{}", &existing[..start], &existing[end..]);
-        }
-        let mut out = existing.to_owned();
-        if !out.is_empty() {
-            if !out.ends_with('\n') {
-                out.push('\n');
-            }
-            out.push('\n');
-        }
-        out.push_str(&block);
-        out
+        put_block(existing, self.block_start, self.block_end, &self.ignore_block())
     }
 
     /// Whether this place is one equipe keeps in `checkout`.
@@ -215,6 +200,38 @@ impl Scope {
     fn inside<'a>(&self, rel: &'a str) -> Option<&'a str> {
         rel.strip_prefix(self.dir)?.strip_prefix('/')
     }
+}
+
+/// `existing` (a file's text) with `block` — which starts with the line
+/// `start` and ends with `end` — in place of the one it has, else added at
+/// the end after a blank line. An empty `block` takes the one it has away.
+/// The rest is kept.
+fn put_block(existing: &str, start: &str, end: &str, block: &str) -> String {
+    if let Some(at) = existing.find(start)
+        && let Some(len) = existing[at..].find(end)
+    {
+        let mut to = at + len + end.len();
+        if existing[to..].starts_with('\n') {
+            to += 1;
+        }
+        let mut before = existing[..at].to_owned();
+        if block.is_empty() && before.ends_with("\n\n") {
+            before.pop();
+        }
+        return format!("{before}{block}{}", &existing[to..]);
+    }
+    if block.is_empty() {
+        return existing.to_owned();
+    }
+    let mut out = existing.to_owned();
+    if !out.is_empty() {
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    out.push_str(block);
+    out
 }
 
 /// Whether `dir` is a squad's folder (`…/squads/<squad>/home`) or a worktree of one.
@@ -785,6 +802,10 @@ pub fn prepare_commit(worktree: &Path, branch: &str) -> Result<()> {
             failed.push(format!("{}: {err}", scope.what));
         }
     }
+    // And of what is left there, only what people read (`raw`).
+    if let Err(err) = raw::prepare(worktree) {
+        failed.push(format!("{}: {err}", raw::WHAT));
+    }
     if failed.is_empty() { Ok(()) } else { Err(failed.join("; ")) }
 }
 
@@ -1185,11 +1206,21 @@ pub fn migrate_in(scope: &Scope, repo: &Path) -> Result<Option<Migrated>> {
         scope.dir,
         scope.manifest_path
     );
-    let commit = worktree::with_identity(repo, &["commit-tree", &new_tree, "-p", &tip, "-m", &message])?;
+    let commit = untrack_on_main(repo, &main, &tip, &new_tree, &message, &paths)?;
+    Ok(Some(Migrated { commit, untracked: tracked.len(), bytes }))
+}
+
+/// Commit `tree` — `tip`'s, with `paths` no longer tracked — on `main` with
+/// `message`, made apart from any checkout, and move main there. The checkout
+/// main is checked out in keeps every one of `paths` on disk. The commit.
+fn untrack_on_main(repo: &Path, main: &str, tip: &str, tree: &str, message: &str, paths: &[String]) -> Result<String> {
+    let store = Store::of(repo).ok_or("not in a git repository")?;
+    let checkout = worktree::checked_out_at(repo, main);
+    let commit = worktree::with_identity(repo, &["commit-tree", tree, "-p", tip, "-m", message])?;
     // A fast-forward deletes the files main stops tracking: each is held by
     // a second link meanwhile and put back.
-    let held = checkout.as_ref().map(|c| hold(&store, c, &paths)).unwrap_or_default();
-    let moved = worktree::move_main_within(repo, &main, &tip, &commit, "untracked", MIGRATE_TIMEOUT);
+    let held = checkout.as_ref().map(|c| hold(&store, c, paths)).unwrap_or_default();
+    let moved = worktree::move_main_within(repo, main, tip, &commit, "untracked", MIGRATE_TIMEOUT);
     for (path, at) in held {
         if std::fs::symlink_metadata(&path).is_err() {
             if let Some(parent) = path.parent() {
@@ -1202,7 +1233,7 @@ pub fn migrate_in(scope: &Scope, repo: &Path) -> Result<Option<Migrated>> {
         let _ = std::fs::remove_file(&at);
     }
     moved?;
-    Ok(Some(Migrated { commit, untracked: tracked.len(), bytes }))
+    Ok(commit)
 }
 
 /// A second link (else a copy) of each of `paths` in `checkout`, in the
@@ -1250,11 +1281,18 @@ pub struct Report {
     pub handed_in_kept_out: usize,
     #[serde(default)]
     pub handed_in_bytes: u64,
+    /// Machine output its commits added under a squad folder's `outputs/` —
+    /// or more than a hand-in keeps in git ([`raw`]) — taken out of them; the
+    /// files stay in the folder.
+    #[serde(default)]
+    pub raw_kept_out: usize,
+    #[serde(default)]
+    pub raw_bytes: u64,
 }
 
 impl Report {
     pub fn is_empty(&self) -> bool {
-        self.kept_out == 0 && self.handed_in_kept_out == 0 && self.heavy.is_empty()
+        self.kept_out == 0 && self.handed_in_kept_out == 0 && self.raw_kept_out == 0 && self.heavy.is_empty()
     }
 
     /// What its member is told, in English.
@@ -1274,6 +1312,9 @@ impl Report {
                 size_words(self.handed_in_bytes),
                 OUTPUTS.manifest_path
             ));
+        }
+        if self.raw_kept_out > 0 {
+            out.push(raw::told(ticket, self.raw_kept_out, self.raw_bytes));
         }
         for heavy in &self.heavy {
             out.push(format!(
@@ -1328,6 +1369,15 @@ pub fn guard(repo: &Path, branch: &str) -> Result<Report> {
         } else {
             (report.handed_in_kept_out, report.handed_in_bytes) = (count, bytes);
         }
+    }
+    // A squad's folder: of its hand-ins, git keeps what people read.
+    if in_squad_folder(repo) {
+        if !crate::runtime::on_core_loop()
+            && let Err(err) = raw::migrate(repo)
+        {
+            crate::daemon_log!("equipe: {} still tracks {}: {err}", repo.display(), raw::WHAT);
+        }
+        (report.raw_kept_out, report.raw_bytes) = raw::guard_in(repo, branch, &main)?;
     }
     let tip = worktree::git(repo, &["rev-parse", &format!("refs/heads/{main}")])?;
     let new_head = worktree::git(repo, &["rev-parse", &local]).unwrap_or(first_head);
@@ -1402,6 +1452,17 @@ pub fn take_report(repo: &Path, branch: &str) -> Option<Report> {
 /// times and messages as they were (a signature can't stay). Commits that
 /// lose nothing, and whose parents didn't change, stay as they are. The new head.
 fn rewrite(scope: &Scope, repo: &Path, tip: &str, head: &str, strip: &BTreeSet<String>, manifest: &Manifest) -> Result<String> {
+    rewrite_commits(repo, tip, head, strip, &|index, commit| {
+        let ignore = worktree::git_bytes(repo, &["show", &format!("{commit}:{}", scope.ignore_path)], None, None).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+        set_in_index(repo, index, scope.ignore_path, scope.with_block(&ignore).as_bytes())?;
+        set_in_index(repo, index, scope.manifest_path, manifest.render().as_bytes())
+    })
+}
+
+/// The commits of `tip..head` again, without `strip`'s paths, the last one
+/// changed by `last` too (given its scratch index and the commit it was); as
+/// [`rewrite`] says. The new head.
+fn rewrite_commits(repo: &Path, tip: &str, head: &str, strip: &BTreeSet<String>, last: &dyn Fn(&Path, &str) -> Result<()>) -> Result<String> {
     let listed = worktree::git(repo, &["rev-list", "--reverse", "--topo-order", "--parents", &format!("{tip}..{head}")])?;
     let mut map: HashMap<String, String> = HashMap::new();
     for line in listed.lines().filter(|l| !l.is_empty()) {
@@ -1410,16 +1471,14 @@ fn rewrite(scope: &Scope, repo: &Path, tip: &str, head: &str, strip: &BTreeSet<S
         let parents: Vec<String> = ids.map(str::to_owned).collect();
         let new_parents: Vec<String> = parents.iter().map(|p| map.get(p).cloned().unwrap_or_else(|| p.clone())).collect();
         let tree = worktree::git(repo, &["rev-parse", &format!("{commit}^{{tree}}")])?;
-        let last = commit == head;
+        let is_last = commit == head;
         let new_tree = edit_tree(repo, &tree, |index| {
             let gone: Vec<String> = ls_files(repo, Some(index))?.into_iter().filter(|p| strip.contains(p)).collect();
             if !gone.is_empty() {
                 untrack(repo, &gone, Some(index))?;
             }
-            if last {
-                let ignore = worktree::git_bytes(repo, &["show", &format!("{commit}:{}", scope.ignore_path)], None, None).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
-                set_in_index(repo, index, scope.ignore_path, scope.with_block(&ignore).as_bytes())?;
-                set_in_index(repo, index, scope.manifest_path, manifest.render().as_bytes())?;
+            if is_last {
+                last(index, commit)?;
             }
             Ok(())
         })?;
@@ -1589,6 +1648,8 @@ pub fn gc(repo: &Path) -> Vec<String> {
     }
     if gone.0 == 0 { Vec::new() } else { vec![format!("{} captures no manifest names any more ({}) left {}'s store", gone.0, size_words(gone.1), repo.display())] }
 }
+
+pub mod raw;
 
 #[cfg(test)]
 mod tests;

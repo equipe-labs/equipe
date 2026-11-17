@@ -363,6 +363,7 @@
   "news.captures_kept_out": "T-{id}: デザイン画像 {count} 件（{size}）を git から外しました。ファイルはディスクと equipe のストアに残っています。",
   "news.captures_heavy": "T-{id}: コミット {commit} が git に {size} の画像を追加しています。大きな画像はリポジトリの外に置いてください。",
   "news.handed_in_kept_out": "T-{id}: 引き渡された画像・動画・ファイル {count} 件（{size}）をスクワッドフォルダの履歴から外しました。ファイルはフォルダと equipe のストアにそのまま残っています。",
+  "news.handed_in_raw": "T-{id}: 機械出力のファイル {count} 件（{size}）— 検査ダンプ・ログ・生成スクリプト — をスクワッドフォルダの履歴から外しました。ファイルは {days} 日間フォルダに残ります。",
   "news.merged_pushed": "T-{id} · {title} を {branch} にマージしてプッシュしました。",
   "news.person_created": "T-{id} をボードに追加し、{name} に任せました · {title}。",
   "news.person_created_unowned": "T-{id} をボードに追加しました。担当は PM が決めます · {title}。",

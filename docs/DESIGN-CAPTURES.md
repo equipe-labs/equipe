@@ -183,7 +183,41 @@ lists each file (path inside `outputs/`, hash, size, time, ticket), and the byte
 store under the folder's `.git/equipe/captures`. A ticket's sparse worktree gives back only what it
 holds; files left out of it stay as main has them. The guard takes them out of a task's commits
 before it lands, the migration untracks what an older folder tracked (one commit, every file kept),
-and the landing puts them in the folder. A project's own `outputs/` is never touched.
+and the landing puts them in the folder. A project's own `outputs/` is never touched. SVG drawings
+and office documents (`docx`, `xlsx`, `pptx`, …) are kept this way too.
+
+### What git keeps of a hand-in
+
+A hand-in folder (`outputs/T-12 title/`) is for the person and the reviewer, so git keeps only what
+people read (`crates/core/src/design/captures/raw.rs`). After pictures left git, one squad's folder
+still tracked 35,700 files under `outputs/` — QA probe and DOM dumps, logs, generated scripts,
+per-width and per-theme matrices, 5,325 of them in one ticket. Now:
+
+- **Machine output stays on disk only.** Anything under a hand-in's `raw/` (or a `node_modules/`),
+  and files of a machine kind anywhere under `outputs/` (`json`, `jsonl`, `log`, `html`, `css`,
+  `js`/`mjs`/`ts`, `py`, `sh`, `yml`, `xml`, `diff`, … — `MACHINE_EXTS`), are ignored by equipe's
+  block in `outputs/.gitignore`. When a task lands, what its worktree holds of them is carried into
+  the squad's folder at the same paths before the worktree goes; the hourly sweep removes those
+  older than 30 days — by the file's time, or by when the folder was upgraded if that is later. Only
+  machine output in a hand-in goes; nothing git tracks, nothing in the captures' store.
+- **Git keeps at most 20 files and 1 MB of a hand-in, none over 256 KB.** A summary (`README`,
+  `SUMMARY`, `REPORT`, `index`, `handoff`, `results`, `findings`, any extension, at the hand-in's top)
+  is kept first, then the files nearest its top, Markdown before the rest, smaller before bigger.
+  What is past that stays where it is, listed in the hand-in's own `.gitignore` (in equipe's block),
+  and is never swept.
+- **Every commit equipe makes in a task's worktree** writes those ignore files and untracks the rest
+  first. **Landing guards it**: a branch whose own commits add machine output anyway (`git add -f`)
+  — or more of a hand-in than git keeps — has those commits rewritten without it; the files stay in
+  the worktree and are carried into the folder, and the member and the PM are told. A file main
+  already tracks is never taken out of a branch: landing would delete it from the folder.
+- **Upgrading** is one commit on main, in the hourly sweep or before a task lands, that untracks
+  what an older folder tracked and writes the ignore files; every file stays on disk. Measured on a
+  production squad's folder (36,636 tracked files): `outputs/` goes from 35,695 tracked files
+  (1.07 GB) to 4,440 (64 MB) — 29,938 files of machine output and 538 past their hand-in's limit
+  (in 32 hand-ins) leave git, 811 SVG and office files go to the store; the biggest hand-in goes
+  from 5,325 tracked files to 17.
+- **Members are told** in their charter and each task's brief: a `README.md` that says what was
+  found and names its evidence, a few small key files, and bulk output under `raw/`.
 
 A squad's folder also never runs git's own automatic gc or maintenance (`gc.auto=0`,
 `maintenance.auto=false` in its config, and on every git command equipe runs there): a commit
