@@ -457,8 +457,27 @@ fn modal(p: Palette, id: &'static str, card: impl IntoElement) -> AnyElement {
     modal_w(p, id, 480., card)
 }
 
-/// [`modal`], `width` wide.
+thread_local! {
+    /// The open box's scroll, and which box it was last drawn for: one box is open at a time.
+    static MODAL_SCROLL: (ScrollHandle, std::cell::Cell<&'static str>) = (ScrollHandle::new(), std::cell::Cell::new(""));
+}
+
+/// The scroll of the box over the window: its keys (`Shell::scroll_modal`) and its focus (`Shell::follow_modal_focus`) move it.
+pub fn modal_scroll() -> ScrollHandle {
+    MODAL_SCROLL.with(|(scroll, _)| scroll.clone())
+}
+
+/// [`modal`], `width` wide. When the window is too short for it — a small
+/// window, large text — the box stays inside the window and what it holds
+/// scrolls, so nothing is cut off or drawn on the window around it.
 pub fn modal_w(p: Palette, id: &'static str, width: f32, card: impl IntoElement) -> AnyElement {
+    let scroll = MODAL_SCROLL.with(|(scroll, drawn)| {
+        // Another box: it opens at its top.
+        if drawn.replace(id) != id {
+            scroll.set_offset(point(px(0.), px(0.)));
+        }
+        scroll.clone()
+    });
     motion::fade(
         div()
             .absolute()
@@ -477,14 +496,17 @@ pub fn modal_w(p: Palette, id: &'static str, width: f32, card: impl IntoElement)
                     .w(px(width))
                     .max_w(relative(0.94))
                     .max_h(relative(0.92))
-                    .p(px(S6))
-                    .gap_3()
+                    .overflow_hidden()
                     .rounded(px(R_XL))
                     .bg(p.popover())
                     .border_1()
                     .border_color(p.hair)
                     .text_color(p.text)
-                    .child(card),
+                    .child(
+                        // The padding scrolls with the words, so a focus ring at either end is never cut.
+                        // A card whose own list scrolls (`min_h_0`) shrinks to fit first; the rest scroll here.
+                        v_flex().id((id, 2usize)).track_scroll(&scroll).min_h_0().overflow_y_scroll().p(px(S6)).child(card),
+                    ),
                 (id, 1usize),
             )),
         (id, 0usize),
