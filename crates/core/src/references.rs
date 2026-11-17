@@ -74,7 +74,9 @@ describe them in words instead, and never ask them to open a folder or a site. G
 library's result gave, or a path in your worktree), its title, where it is from (`site`, `link`) and its `kind`; add a line on \
 why it fits and what to take and leave. equipe fetches and keeps the pictures itself, outside every repository. Mobbin's \
 pictures are private study material: shown here, never shipped, committed or copied into a project. Then say in a line or two \
-what to look at; the card shows the rest.",
+what to look at; the card shows the rest. Whatever the person should look at or try goes in front of them — this card (its \
+Try it), `equipe design session show <url|file>`, or `show_my_browser` — never only opened in your own browser, which they \
+can't see; and say what to click by the names they see on screen, never by internal numbers.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -672,7 +674,7 @@ mod tests {
         assert!(!offered("backend") && !offered("qa"));
         let tool = tool();
         let doc = tool["description"].as_str().unwrap();
-        for part in ["same turn", "Mobbin's pictures are private study material", "never shipped, committed"] {
+        for part in ["same turn", "Mobbin's pictures are private study material", "never shipped, committed", "never only opened in your own browser", "never by internal numbers"] {
             assert!(doc.contains(part), "{part}");
         }
         assert_eq!(tool["inputSchema"]["properties"]["items"]["maxItems"], MOST);

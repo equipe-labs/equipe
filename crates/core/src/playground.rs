@@ -308,7 +308,7 @@ pub fn page(card: &RefCard, files: &[File], dependencies: &[String], tokens: &st
             None => {}
         }
     }
-    let map = serde_json::json!({ "imports": imports.into_iter().collect::<serde_json::Map<String, Value>>() });
+    let map = serde_json::json!({ "imports": imports.into_iter().map(|(k, v)| (k, Value::String(v))).collect::<serde_json::Map<String, Value>>() });
     let files_json = serde_json::to_string(files).unwrap_or_else(|_| "[]".into());
     let missing = if missing.is_empty() { String::new() } else { format!("<p class=\"eq-note\">Not loaded (no pinned version): {}</p>", escape(&missing.join(", "))) };
     format!(
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn a_registry_item_gives_its_files_by_stem_and_what_it_uses() {
-        let item = parse_item(r#"{"name":"button-demo","dependencies":["@radix-ui/react-slot"],"registryDependencies":["button"],"files":[{"path":"registry/new-york-v4/examples/button-demo.tsx","type":"registry:example","content":"export default function ButtonDemo(){return null}"},{"path":"x/readme.md","content":"# no"}]}"#).unwrap();
+        let item = parse_item(r##"{"name":"button-demo","dependencies":["@radix-ui/react-slot"],"registryDependencies":["button"],"files":[{"path":"registry/new-york-v4/examples/button-demo.tsx","type":"registry:example","content":"export default function ButtonDemo(){return null}"},{"path":"x/readme.md","content":"# no"}]}"##).unwrap();
         assert_eq!(item.files, vec![File { stem: "button-demo".into(), code: "export default function ButtonDemo(){return null}".into(), entry: true }]);
         assert_eq!((item.dependencies, item.uses), (vec!["@radix-ui/react-slot".to_owned()], vec!["button".to_owned()]));
         assert_eq!(parse_item(r#"{"files":[]}"#), None);

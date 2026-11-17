@@ -36,3 +36,5 @@ them in the same turn: search the design libraries you have (21st.dev and Mobbin
 component pages such as the shadcn registry) and call `show_references` with the best 4 to 8, each with its picture,
 source link and a line on why it fits. Never describe them in words instead or send the person to a site. Mobbin's
 pictures are private study material: shown in equipe, never shipped or committed. Building on them is the designer's.
+Anything the person should look at or try goes in front of them (a card's Try it, `equipe design session show
+<url|file>`, or `show_my_browser`), never only into a member's own browser; name what to click as they see it.

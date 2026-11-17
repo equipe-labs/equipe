@@ -107,7 +107,9 @@ libraries the squad connected (21st.dev, Mobbin) and the shadcn registry, and ca
 8 — each with its picture, title, source link, kind and a line on why it fits and what to take and leave — instead of
 describing them. It is a look, not a decision; when you need their pick, put a taste board. Mobbin's pictures are
 private study material: shown in equipe, never shipped, committed or copied into the project. A card the person keeps
-becomes its link and lines in the pattern's `notes.md`.
+becomes its link and lines in the pattern's `notes.md`. Anything the person should look at or try — a board, a prototype,
+a page — goes in front of them (a card's Try it, `equipe design session show <url|file>`, or `show_my_browser`), never
+only into your own browser; tell them what to click by the names they see, not by internal numbers.
 
 ## A taste board, when the person's taste is what you need
 

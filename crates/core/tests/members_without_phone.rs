@@ -107,7 +107,8 @@ fn a_squad_without_a_mobile_project_tells_its_members_exactly_what_it_did() {
     }
     let pinned = std::fs::read_to_string(&path).expect("the pinned hashes");
     let changed: Vec<&str> = now.lines().zip(pinned.lines()).filter(|(a, b)| a != b).map(|(a, _)| a.split('\t').next().unwrap_or(a)).collect();
-    assert!(changed.is_empty(), "members without a mobile project are told something new: {changed:?}");
+    // The new pins are said too, so a machine that can't build (a CI log) is enough to read them from.
+    assert!(changed.is_empty(), "members without a mobile project are told something new: {changed:?}\n(EQUIPE_BLESS_PINNED=1 writes them; now:)\n{now}");
     assert_eq!(now.lines().count(), pinned.lines().count(), "the same members, told the same things");
 }
 
