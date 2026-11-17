@@ -19,10 +19,13 @@
 //!   objects/<2 hex>/<rest>` ([`Store`]). Outside the working tree, never
 //!   committed or pushed, shared by the main checkout and every worktree of
 //!   the repository.
-//! - **Checkouts hold them on disk where they always were**, so every screen
-//!   and tool finds them at the same paths: a new worktree is filled from the
-//!   store ([`after_checkout`]); a merge onto main puts what it changed into
-//!   the main checkout ([`publish`]).
+//! - **The main checkout holds them on disk where they always were**, so
+//!   every screen and tool finds them at the same paths: a merge onto main
+//!   puts what it changed there ([`publish`]). **A ticket's worktree holds
+//!   only its own**: what its work made, and what the work it builds on made
+//!   ([`after_checkout`]); the rest — unchanged from main — is shown from the
+//!   main checkout ([`borrowed`], [`lent`]), so a worktree costs nothing for a
+//!   big map.
 //! - **Landing guards it** ([`guard`]): a branch whose commits add captures
 //!   anyway (`git add -f`, an older equipe) has its own unmerged commits
 //!   rewritten without them before it merges — history stays small — and the
@@ -614,7 +617,16 @@ pub fn prepare_commit(worktree: &Path, branch: &str) -> Result<()> {
         untrack(worktree, &tracked, None)?;
     }
     let previous = manifest_on_disk(worktree).or_else(|| unmerged(worktree)).unwrap_or_else(|| manifest_at(worktree, "HEAD"));
-    let manifest = from_disk(worktree, &store, &previous, &read_seed(worktree), ticket_of_branch(branch));
+    let mut manifest = from_disk(worktree, &store, &previous, &read_seed(worktree), ticket_of_branch(branch));
+    // A UI map picture of a state the map no longer lists goes with it (a
+    // state renamed or removed): its file was never in this worktree to delete.
+    let listed: BTreeSet<(String, String, String)> = super::flows::shots(&worktree.join(super::DIR)).into_iter().map(|s| (s.flow, s.screen, s.state)).collect();
+    if !listed.is_empty() {
+        manifest.entries.retain(|_, e| match (&e.flow, &e.screen, &e.state) {
+            (Some(f), Some(sc), Some(st)) => listed.contains(&(f.clone(), sc.clone(), st.clone())),
+            _ => true,
+        });
+    }
     let file = worktree.join(MANIFEST_PATH);
     if manifest.is_empty() && !file.exists() {
         return Ok(());
@@ -660,8 +672,10 @@ pub fn settle_merge(worktree: &Path) -> Result<bool> {
 }
 
 /// Once a worktree of `repo` is checked out at `worktree`: the captures its
-/// manifest names put in place, from the store or the main checkout, and
-/// what it was given remembered.
+/// manifest names that the main checkout doesn't hold as they are — the
+/// work of this ticket or of those it builds on — put in place from the
+/// store; the rest stay in the main checkout, shown from there
+/// ([`borrowed`]). What it was given is remembered.
 pub fn after_checkout(repo: &Path, worktree: &Path) {
     if !applies(worktree) {
         return;
@@ -669,7 +683,9 @@ pub fn after_checkout(repo: &Path, worktree: &Path) {
     let Some(store) = Store::of(worktree) else { return };
     let Some(manifest) = manifest_on_disk(worktree) else { return };
     let main = worktree::main_branch(repo).ok().and_then(|m| worktree::checked_out_at(repo, &m)).unwrap_or_else(|| repo.to_owned());
-    let placed = materialize(worktree, &manifest, &store, Some(&main), &|_| false);
+    let accepted = manifest_on_disk(&main).unwrap_or_default();
+    let own = Manifest { entries: manifest.entries.into_iter().filter(|(rel, e)| accepted.hash_of(rel) != Some(e.hash.as_str())).collect() };
+    let placed = materialize(worktree, &own, &store, Some(&main), &|_| false);
     if placed.missing > 0 {
         crate::daemon_log!("equipe: {} captures named in {} aren't on this machine", placed.missing, worktree.join(MANIFEST_PATH).display());
     }
@@ -681,6 +697,87 @@ pub fn after_checkout(repo: &Path, worktree: &Path) {
 pub fn changed(worktree: &Path, base: &str) -> Vec<String> {
     let (before, after) = (manifest_at(worktree, base), manifest_at(worktree, "HEAD"));
     after.entries.values().filter(|e| before.hash_of(&e.path) != Some(e.hash.as_str())).map(|e| format!("{}/{}", super::DIR, e.path)).collect()
+}
+
+/// The main checkout of the repository whose linked worktree `checkout` is —
+/// read from git's files, no git run. `None` for a main checkout itself.
+pub fn main_checkout_of(checkout: &Path) -> Option<PathBuf> {
+    let admin = worktree::admin_dir(checkout)?;
+    let common = std::fs::read_to_string(admin.join("commondir")).ok()?;
+    let common = std::fs::canonicalize(admin.join(common.trim())).ok()?;
+    if common.file_name()? != ".git" {
+        return None;
+    }
+    common.parent().map(Path::to_path_buf)
+}
+
+/// Kept parsed while a manifest file's length and time stay the same: a
+/// draft's map is read often.
+fn manifest_cached(design: &Path) -> Option<Manifest> {
+    use std::sync::Mutex;
+    type Kept = HashMap<PathBuf, (u64, Option<SystemTime>, Manifest)>;
+    static KEPT: Mutex<Option<Kept>> = Mutex::new(None);
+    let file = design.join(MANIFEST);
+    let meta = std::fs::metadata(&file).ok()?;
+    let (len, modified) = (meta.len(), meta.modified().ok());
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    let kept = kept.get_or_insert_with(HashMap::new);
+    if let Some((_, _, m)) = kept.get(&file).filter(|(l, t, _)| *l == len && *t == modified) {
+        return Some(m.clone());
+    }
+    let manifest = Manifest::parse(&std::fs::read_to_string(&file).ok()?)?;
+    if kept.len() > 64 {
+        kept.clear();
+    }
+    kept.insert(file, (len, modified, manifest.clone()));
+    Some(manifest)
+}
+
+/// The captures a worktree's design folder `design` lists but doesn't hold
+/// because they are unchanged from main: each one's path in the design
+/// folder, where the main checkout holds it, and that checkout's design
+/// folder (what it must stay inside). Nothing for a main checkout, or a
+/// folder equipe doesn't keep.
+pub fn borrowed(design: &Path) -> Vec<(String, PathBuf, PathBuf)> {
+    let Some(checkout) = design.parent() else { return Vec::new() };
+    let Some(main) = main_checkout_of(checkout) else { return Vec::new() };
+    let Some(name) = design.file_name() else { return Vec::new() };
+    let lender = main.join(name);
+    let (Some(mine), Some(theirs)) = (manifest_cached(design), manifest_cached(&lender)) else { return Vec::new() };
+    let lender = std::fs::canonicalize(&lender).unwrap_or(lender);
+    mine.entries
+        .values()
+        .filter(|e| theirs.hash_of(&e.path) == Some(e.hash.as_str()))
+        .filter(|e| std::fs::symlink_metadata(design.join(&e.path)).is_err())
+        .map(|e| (e.path.clone(), lender.join(&e.path)))
+        .filter(|(_, path)| path.is_file())
+        .map(|(rel, path)| (rel, path, lender.clone()))
+        .collect()
+}
+
+/// Where the capture at `rel` (from the top of the repository) of
+/// `checkout` is to be read: there, else — unchanged from main and so not
+/// copied into a ticket's worktree — the main checkout's.
+pub fn lent(checkout: &Path, rel: &str) -> Option<PathBuf> {
+    let here = checkout.join(rel);
+    if here.is_file() {
+        return Some(here);
+    }
+    let inside = rel.strip_prefix("design/")?;
+    borrowed(&checkout.join(super::DIR)).into_iter().find(|(r, ..)| r == inside).map(|(_, path, _)| path)
+}
+
+/// A capture as `rev`'s manifest names it (`rel` from the top of the
+/// repository `dir` is in): the store's copy, else the main checkout's when
+/// it holds those bytes. For what used to be read from git (`git show`).
+pub fn file_at(dir: &Path, rev: &str, rel: &str) -> Option<PathBuf> {
+    let entry = manifest_at(dir, rev).entries.remove(rel.strip_prefix("design/")?)?;
+    let store = Store::of(dir)?;
+    if store.has(&entry.hash) {
+        return Some(store.object(&entry.hash));
+    }
+    let main = main_checkout_of(dir).unwrap_or_else(|| dir.to_owned()).join(rel);
+    cached_id(&main, store.kind).filter(|(id, _)| *id == entry.hash).map(|_| main)
 }
 
 // ── main ──

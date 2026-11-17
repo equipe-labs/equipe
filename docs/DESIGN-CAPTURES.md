@@ -7,8 +7,11 @@ project's `.git` grew to 13.7 GB — 13.6 GB of it PNG, 11.4 GB from `design/flo
 versions of pictures over 1,604 commits — and GitHub refused its push.
 
 Since then **captures never go into git**. Git holds what they are (a small manifest); equipe's
-store holds their bytes; every checkout holds them on disk at the same paths as before, so the
-desktop, the phone apps and the members' tools find them where they always did.
+store holds their bytes; the main checkout holds them on disk at the same paths as before, so the
+desktop, the phone apps and the members' tools find them where they always did. A ticket's
+worktree holds only the captures its own work made (and the work it builds on): the rest,
+unchanged from main, are read from the main checkout — a worktree of a project with a big map
+costs nothing for it.
 
 Code: `crates/core/src/design/captures.rs` (all of it), hooked into
 `crates/core/src/worktree.rs` (commit, checkout, merge, land) and the daemon's hourly sweep
@@ -80,16 +83,24 @@ starts from other tickets' work).
 
 ### On disk: where they always were
 
-Each checkout's design folder has its captures at their paths, git-ignored by a block equipe
-keeps in `design/.gitignore` (`# >>> equipe: design captures stay out of git` … `# <<<`).
-equipe rewrites that block; anything outside it is the project's.
+The main checkout's design folder has every capture at its path; a ticket's worktree has the ones
+its manifest names with other bytes than main's. Both are git-ignored by a block equipe keeps in
+`design/.gitignore` (`# >>> equipe: design captures stay out of git` … `# <<<`). equipe rewrites
+that block; anything outside it is the project's.
+
+Where a worktree's design folder is read, a capture it lacks that its manifest names with the same
+hash as the main checkout's manifest is read from the main checkout (`captures::borrowed`,
+`captures::lent`): the UI map of a draft shows main's unchanged pictures beside its own, so
+Compare marks only what the ticket changed, and design QA's precheck finds the map's pictures. A
+picture at a past commit — what used to be `git show <rev>:<path>` — is read through that commit's
+manifest from the store (`captures::file_at`).
 
 ## When what happens
 
 | when | what equipe does |
 |---|---|
-| a ticket's worktree is made (or made again for a reopened ticket) | every capture its manifest names is put in place from the store (or from the main checkout, when the store lacks it); the list of what it was given is kept in the worktree's git admin folder |
-| equipe commits a worktree's work | `design/.gitignore` gets the block; any tracked capture is untracked (the file stays); `design/captures.json` is rewritten from what is on disk, each capture kept in the store. A capture its member removed — one the worktree was given — leaves the manifest; one it was never given stays. A re-render is a manifest change, so capture-only work still makes a commit and lands. |
+| a ticket's worktree is made (or made again for a reopened ticket) | only the captures its manifest names with other bytes than the main checkout's — its own work, or the work it starts from — are put in place from the store; main's unchanged ones are not copied (read from the main checkout). What it was given is kept in the worktree's git admin folder |
+| equipe commits a worktree's work | `design/.gitignore` gets the block; any tracked capture is untracked (the file stays); `design/captures.json` is rewritten from what is on disk, each capture kept in the store. A capture its member removed — one the worktree was given — leaves the manifest; one it was never given stays, unless it is a UI map picture of a state the map no longer lists. A re-render is a manifest change, so capture-only work still makes a commit and lands. |
 | equipe merges a branch into main (the PM's accept with checks, the person's merge, a task into the squad's folder) | **the guard**: main is migrated first if it isn't; the branch's own commits (those main lacks) that add captures — `git add -f`, an older equipe — are rewritten without them, keeping authors, dates and messages (a signature can't stay); their bytes go to the store and the manifest. None reaches main's history. A conflict only in the manifest or in captures is settled, not reported. A commit that adds more than 10 MB of other pictures or videos is noted. Then the merge lands, and the captures its manifest changed are put in the main checkout; those it removed are taken away if nobody changed them since. |
 | after that merge | the member who made the work is told what was kept out and why (in English, in its conversation), the PM is briefed, and the person sees one line (`news.captures_kept_out`, `news.captures_heavy`) |
 | equipe upgrades (the daemon's hourly sweep, and before any merge) | **the migration**: one normal commit on main, made apart from any checkout — untracks every capture main holds, adds the ignore block and the manifest (each capture kept in the store first). The checkout main is checked out in fast-forwards and keeps every file (each is held by a second link while git removes it, then put back). History is not rewritten. Nothing happens to a project without an equipe design folder. |

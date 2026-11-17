@@ -135,6 +135,10 @@ fn an_upgrade_untracks_main_s_captures_in_one_commit_keeping_every_file() {
     assert_eq!(git(&repo, &["rev-list", "--count", "main"]).unwrap(), "2");
     assert!(tracked(&repo, "main~1").iter().any(|f| is_capture(f)));
     assert_eq!(migrate(&repo).unwrap(), None, "once");
+    // What used to be read from git at a commit is read from the store now.
+    let kept = file_at(&repo, "main", "design/qa/t1/after.png").unwrap();
+    assert_eq!(std::fs::read(kept).unwrap(), b"qa after");
+    assert_eq!(file_at(&repo, "main", "design/qa/t1/report.md"), None);
 }
 
 #[test]
@@ -155,17 +159,19 @@ fn a_ticket_s_pictures_go_from_its_worktree_to_the_main_checkout_through_the_sto
     migrate(&repo).unwrap();
     let home = scratch("home");
     let s = worktree::create(&repo, &home, "t5-abc-1", "designer").unwrap();
-    // Its worktree has the map's pictures, though git never checked them out.
+    // Its worktree holds none of main's pictures: they are read from the main checkout.
     let light = "design/flows/login/form/default.light.390.png";
-    assert_eq!(std::fs::read(s.path.join(light)).unwrap(), b"light 390");
-    // Re-shot one, shot a new state, removed another.
+    assert!(on_disk(&s.path).is_empty(), "a new worktree costs nothing for the map");
+    assert_eq!(lent(&s.path, light), Some(repo.join(light)));
+    assert_eq!(borrowed(&s.path.join("design")).len(), 3);
+    // Re-shot one and shot a new state.
     write(&s.path.join(light), b"light 390, again");
     write(&s.path.join("design/flows/login/form/error.light.390.png"), b"error 390");
-    std::fs::remove_file(s.path.join("design/qa/t1/after.png")).unwrap();
+    assert_eq!(lent(&s.path, light), Some(s.path.join(light)), "its own, once it has one");
     let commit = s.commit_all("map refreshed").unwrap().expect("its manifest changed");
     assert!(tracked(&s.path, &commit).iter().all(|f| !is_capture(f)));
     let manifest = manifest_at(&s.path, &commit);
-    assert_eq!(manifest.entries.keys().collect::<Vec<_>>(), ["flows/login/form/default.dark.390.png", "flows/login/form/default.light.390.png", "flows/login/form/error.light.390.png"]);
+    assert_eq!(manifest.entries.keys().collect::<Vec<_>>(), ["flows/login/form/default.dark.390.png", "flows/login/form/default.light.390.png", "flows/login/form/error.light.390.png", "qa/t1/after.png"], "what it never had stays listed");
     assert_eq!(manifest.entries["flows/login/form/error.light.390.png"].ticket, Some(5));
     // What its hand-in shows.
     let mut shown = changed(&s.path, &s.base);
@@ -174,7 +180,7 @@ fn a_ticket_s_pictures_go_from_its_worktree_to_the_main_checkout_through_the_sto
     worktree::merge_into_main(&repo, &s.branch, "merge").unwrap();
     assert_eq!(std::fs::read(repo.join(light)).unwrap(), b"light 390, again");
     assert_eq!(std::fs::read(repo.join("design/flows/login/form/error.light.390.png")).unwrap(), b"error 390");
-    assert!(!repo.join("design/qa/t1/after.png").exists(), "what it removed went");
+    assert_eq!(std::fs::read(repo.join("design/qa/t1/after.png")).unwrap(), b"qa after");
     assert_eq!(git(&repo, &["status", "--porcelain"]).unwrap(), "");
     assert_eq!(take_report(&repo, &s.branch), None, "nothing to tell its member");
 }
@@ -252,16 +258,40 @@ fn two_branches_re_rendering_the_map_both_land_their_manifests_merged() {
 }
 
 #[test]
-fn a_new_worktree_of_a_main_that_moved_on_gets_its_pictures_from_the_main_checkout() {
+fn a_reopened_ticket_s_worktree_gets_back_its_own_pictures_and_only_those() {
     let repo = project();
     migrate(&repo).unwrap();
-    // The store lost its objects (another machine, a cleaned folder): the main checkout still has the bytes.
-    let store = Store::of(&repo).unwrap();
-    std::fs::remove_dir_all(store.root().join("objects")).unwrap();
     let home = scratch("home");
     let s = worktree::create(&repo, &home, "t3-x-1", "designer").unwrap();
-    assert_eq!(std::fs::read(s.path.join("design/qa/t1/after.png")).unwrap(), b"qa after");
-    assert!(store.has(&manifest_at(&repo, "main").entries["qa/t1/after.png"].hash));
+    write(&s.path.join("design/flows/login/form/error.dark.390.png"), b"its own");
+    s.commit_all("error state").unwrap().unwrap();
+    s.remove_worktree().unwrap();
+    let again = worktree::resume(&repo, &home, "t3-x-2", &s.branch, &s.base, &[]).unwrap();
+    assert_eq!(std::fs::read(again.path.join("design/flows/login/form/error.dark.390.png")).unwrap(), b"its own");
+    assert_eq!(on_disk(&again.path).len(), 1, "main's, unchanged, stay in the main checkout");
+    assert_eq!(lent(&again.path, "design/qa/t1/after.png"), Some(repo.join("design/qa/t1/after.png")));
+}
+
+#[test]
+fn a_worktree_s_ui_map_shows_main_s_unchanged_pictures_and_its_own() {
+    let repo = project();
+    write(&repo.join("design/flows/flows.json"), br#"{ "flows": [ { "id": "login", "title": "Log in", "screens": [ { "id": "form", "title": "Form", "states": [ { "id": "default" }, { "id": "error" } ] } ] } ] }"#);
+    commit_all(&repo, "the map", &[]);
+    migrate(&repo).unwrap();
+    let home = scratch("home");
+    let s = worktree::create(&repo, &home, "t4-x-1", "designer").unwrap();
+    write(&s.path.join("design/flows/login/form/error.light.390.png"), b"new state");
+    let map = crate::design::flows::read(&s.path.join("design"), Some(&s.path), crate::i18n::Lang::En).unwrap();
+    let states = &map.flows[0].screens[0].states;
+    let paths = |i: usize| states[i].pictures.iter().map(|p| p.path.clone()).collect::<Vec<_>>();
+    let main_design = repo.join("design").canonicalize().unwrap();
+    assert_eq!(paths(0).len(), 2);
+    assert!(paths(0).iter().all(|p| p.starts_with(main_design.to_str().unwrap())), "{:?}", paths(0));
+    assert_eq!(paths(1), [s.path.join("design/flows/login/form/error.light.390.png").to_string_lossy().into_owned()]);
+    // A state renamed away takes its pictures out of the manifest.
+    write(&s.path.join("design/flows/flows.json"), br#"{ "flows": [ { "id": "login", "title": "Log in", "screens": [ { "id": "form", "title": "Form", "states": [ { "id": "error" } ] } ] } ] }"#);
+    let commit = s.commit_all("default goes").unwrap().unwrap();
+    assert_eq!(manifest_at(&s.path, &commit).entries.keys().filter(|k| k.starts_with("flows/")).collect::<Vec<_>>(), ["flows/login/form/error.light.390.png"]);
 }
 
 #[test]
