@@ -16,7 +16,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::icons::{Icon, icon};
-use crate::metrics::{self, Banner, Body, Card, Change, Draft, Flow, NorthCard, NorthStar};
+use crate::metrics::{self, Banner, Body, Card, Change, Draft, Flow, NorthCard, NorthStar, Setup};
 use crate::state::now_unix;
 use crate::theme::{CONTROL, MONO, Palette, R_LG, R_MD, SMALL};
 use crate::tips::TipExt as _;
@@ -29,6 +29,12 @@ const CARD_MIN: f32 = 260.;
 /// How long a refresh may take: each service's fetch waits up to 90 s.
 const REFRESH_WAIT: Duration = Duration::from_secs(100);
 const ASK_WAIT: Duration = Duration::from_secs(20);
+/// PostHog's "Set it up for me": one ask of equipe's browser (a tab on each
+/// region, or the key's making and the first look at its events), a look
+/// while the person signs in, and for how long.
+const SETUP_ASK_WAIT: Duration = Duration::from_secs(100);
+const SETUP_POLL: Duration = Duration::from_secs(4);
+const SETUP_WAIT: Duration = Duration::from_secs(30 * 60);
 
 /// The boxes of the open form: one per field of the service, by its key.
 #[derive(Default)]
@@ -37,6 +43,10 @@ pub struct Inputs {
     subscriptions: Vec<Subscription>,
     /// The connection whose "Disconnect" was pressed once.
     disconnecting: Option<String>,
+    /// PostHog's "Set it up for me" looks while the person signs in until then.
+    setup_until: Option<std::time::Instant>,
+    /// Its sign-in was opened in equipe's browser already.
+    setup_signin_opened: bool,
 }
 
 impl Inputs {
@@ -206,22 +216,71 @@ fn dash_page(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
             None => note(p, t!("metrics.loading")).into_any_element(),
         };
     };
+    let suggestion = metrics::posthog_suggestion(&shell.model.squad, &shell.model.squad_secrets, &sources.connections, &m.dismissed).map(|s| suggestion_row(shell, s, cx));
     if sources.connections.is_empty() {
-        return v_flex().gap_4().w_full().child(title(shell, query.as_ref().map(metrics::range_words))).child(empty_card(shell, sources, cx)).into_any_element();
+        return v_flex().gap_4().w_full().child(title(shell, query.as_ref().map(metrics::range_words))).children(suggestion).child(empty_card(shell, sources, cx)).into_any_element();
     }
-    let mut page = v_flex().gap_4().w_full().child(title(shell, query.as_ref().map(metrics::range_words)));
+    let mut page = v_flex().gap_4().w_full().child(title(shell, query.as_ref().map(metrics::range_words))).children(suggestion);
     for banner in metrics::banners(sources) {
         page = page.child(banner_row(shell, &banner, sources, now, cx));
     }
     if let Some(why) = &m.failed {
         page = page.child(unreachable_card(p, why, cx));
     }
-    let cards = query.as_ref().map(|q| metrics::cards(q, sources)).unwrap_or_default();
-    if cards.is_empty() && m.failed.is_none() {
+    let mut cards = query.as_ref().map(|q| metrics::cards(q, sources)).unwrap_or_default();
+    // A project that sends no page views: one card says so, not four empty ones.
+    let quiet = query.as_ref().map(|q| metrics::without_page_views(q, sources)).unwrap_or_default();
+    cards.retain(|c| !(quiet.contains(&c.connection) && metrics::PAGE_VIEW_METRICS.contains(&c.metric.as_str())));
+    if cards.is_empty() && quiet.is_empty() && m.failed.is_none() {
         page = page.child(note(p, if m.loading { t!("metrics.loading") } else { t!("metrics.no_cards") }));
     }
     let north = metrics::north_star(query.as_ref(), sources, m.loading).map(|state| north_card(shell, &state, sources, now, cx));
-    page.child(h_flex().w_full().flex_wrap().gap_4().items_stretch().children(north).children(cards.iter().enumerate().map(|(n, c)| metric_card(shell, n, c, sources, now))))
+    let no_views = (!quiet.is_empty()).then(|| no_page_views_card(p));
+    page.child(h_flex().w_full().flex_wrap().gap_4().items_stretch().children(north).children(cards.iter().enumerate().map(|(n, c)| metric_card(shell, n, c, sources, now))).children(no_views))
+        .into_any_element()
+}
+
+/// PostHog connected, its project sends no page views: what the visit cards
+/// would have shown, and why they don't — not a failure.
+fn no_page_views_card(p: Palette) -> AnyElement {
+    card_frame(p, p.hair)
+        .id("metrics-no-page-views")
+        .child(title_line(p, lookup("metrics.no_page_views.title".into()), p.muted, lookup("metrics.kind_short.posthog".into())))
+        .child(note(p, lookup("metrics.no_page_views.body".into())).text_color(p.text2))
+        .into_any_element()
+}
+
+/// "Show these numbers in Metrics?": a member saved a PostHog key.
+fn suggestion_row(shell: &Shell, secret: &equipe_core::protocol::secrets::SquadSecret, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let body = match secret.created_ticket {
+        Some(ticket) => t!("metrics.suggest.body_ticket", member = secret.created_by, id = ticket),
+        None => t!("metrics.suggest.body", member = secret.created_by),
+    };
+    let name = secret.name.clone();
+    h_flex()
+        .id("metrics-suggest-posthog")
+        .w_full()
+        .gap_3()
+        .items_center()
+        .flex_wrap()
+        .px_4()
+        .py_3()
+        .rounded(px(R_LG))
+        .border_1()
+        .border_color(Rgba { a: 0.45, ..p.accent })
+        .bg(Rgba { a: 0.08, ..p.accent })
+        .child(icon(Icon::Sparkles, 18., p.accent))
+        .child(v_flex().flex_1().min_w(px(220.)).gap(px(2.)).child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("metrics.suggest.title"))).child(note(p, body).text_color(p.text2)))
+        .child(
+            h_flex()
+                .gap_2()
+                .child(ui::button(p, "metrics-suggest-yes", Kind::Primary, t!("metrics.setup.start")).on_click(cx.listener(|this, _, window, cx| this.metrics_setup_open(window, cx))))
+                .child(ui::button(p, "metrics-suggest-no", Kind::Ghost, t!("metrics.suggest.not_now")).on_click(cx.listener(move |this, _, _, cx| {
+                    this.metrics.dismissed.push(name.clone());
+                    cx.notify();
+                }))),
+        )
         .into_any_element()
 }
 
@@ -406,7 +465,17 @@ fn north_card(shell: &Shell, state: &NorthStar, sources: &Sources, now: u64, cx:
     let spec = sources.kinds.iter().find(|k| k.kind == SourceKind::Posthog);
     let name = card_service(SourceKind::Posthog, spec);
     let connection = sources.connections.iter().find(|c| c.kind == SourceKind::Posthog).map(|c| c.id.clone());
-    let title = if narrow { lookup("metrics.ns.title_short".into()) } else { lookup("metrics.ns.title".into()) };
+    let people = metrics::north_people_event(sources);
+    let title = match (&people, narrow) {
+        (_, true) => lookup("metrics.ns.title_short".into()),
+        (Some(event), false) => t!("metrics.ns.title_event", event = event),
+        (None, false) => lookup("metrics.ns.title".into()),
+    };
+    let def = match &people {
+        Some(event) => t!("metrics.ns.def_event", event = event),
+        None => lookup("metrics.ns.def".into()),
+    };
+    let unit_word = if people.is_some() { lookup("metrics.ns.unit_people".into()) } else { lookup("metrics.ns.unit".into()) };
     let edit = {
         let connection = connection.clone();
         div()
@@ -424,7 +493,7 @@ fn north_card(shell: &Shell, state: &NorthStar, sources: &Sources, now: u64, cx:
         NorthStar::Loading => {
             let numbers = v_flex().gap_2().flex_none().child(placeholder(p).w(px(96.)).h(px(40.))).child(placeholder(p).w(px(140.)).h(px(20.)));
             let body = if narrow { v_flex().gap_3().child(numbers).child(placeholder(p).w_full().h(px(56.))) } else { h_flex().gap_8().items_end().child(numbers).child(div().flex_1().child(placeholder(p).w_full().h(px(NORTH_BARS_H)))) };
-            north_frame(p, p.hair, room).child(title_line(p, title, wait(p), t!("metrics.source", service = name, time = lookup("metrics.ns.loading".into())))).child(body).child(about(lookup("metrics.ns.def".into()), None)).into_any_element()
+            north_frame(p, p.hair, room).child(title_line(p, title, wait(p), t!("metrics.source", service = name, time = lookup("metrics.ns.loading".into())))).child(body).child(about(def, None)).into_any_element()
         }
         NorthStar::Undefined => {
             let set = ui::button(p, "metrics-north-set", Kind::Primary, t!("metrics.ns.set")).on_click(cx.listener(move |this, _, window, cx| this.metrics_open_north(connection.clone(), window, cx)));
@@ -446,7 +515,7 @@ fn north_card(shell: &Shell, state: &NorthStar, sources: &Sources, now: u64, cx:
             };
             let faint = if stale { 0.55 } else { 1. };
             let big = div().text_size(px(36.)).line_height(px(40.)).font_weight(FontWeight::BOLD).text_color(Rgba { a: faint, ..p.text }).child(c.value.clone().unwrap_or_else(|| "—".into()));
-            let unit = div().text_size(px(13.)).text_color(p.muted).child(lookup("metrics.ns.unit".into()));
+            let unit = div().text_size(px(13.)).text_color(p.muted).child(unit_word);
             let below = if let (Some(at), true) = (c.last_ok, stale) {
                 note(p, t!("metrics.ns.last_value", date = metrics::day_words(&metrics::local_day_time(at).0))).text_size(px(13.)).into_any_element()
             } else if let Some(ch) = &c.change {
@@ -473,7 +542,7 @@ fn north_card(shell: &Shell, state: &NorthStar, sources: &Sources, now: u64, cx:
                     div().text_size(px(13.)).line_height(px(20.)).text_color(p.red).child(format!("✕ {why}.{fix}")).into_any_element()
                 }
                 None if c.short() => about(t!("metrics.ns.short_note", n = c.known()), Some(edit)).into_any_element(),
-                None => about(lookup("metrics.ns.def".into()), Some(edit)).into_any_element(),
+                None => about(def, Some(edit)).into_any_element(),
             };
             north_frame(p, c.error.map_or(p.hair, |e| tone(p, e)), room).child(title_line(p, title, dot, source)).child(body).child(foot).into_any_element()
         }
@@ -579,7 +648,17 @@ fn connect_page(shell: &Shell, draft: &Draft, cx: &mut Context<Shell>) -> AnyEle
         row = row.child(pick_card(shell, sources, draft, cx));
     }
     if let Some(kind) = draft.kind {
-        row = row.child(key_card(shell, sources, kind, draft, cx));
+        // PostHog: "Set it up for me" first; the boxes when the person picks
+        // "Paste a key", or when equipe couldn't make one.
+        let manual = matches!(draft.setup, Some(Setup::Manual { .. } | Setup::NoBrowser));
+        if kind == SourceKind::Posthog && !draft.north && !draft.paste && !manual {
+            row = row.child(setup_card(shell, draft, cx));
+        } else {
+            if manual {
+                row = row.child(setup_card(shell, draft, cx));
+            }
+            row = row.child(key_card(shell, sources, kind, draft, cx));
+        }
     }
     if let Some(kind) = draft.done {
         row = row.child(done_card(shell, sources, kind, cx));
@@ -660,6 +739,8 @@ fn key_card(shell: &Shell, sources: &Sources, kind: SourceKind, draft: &Draft, c
         (false, false) => t!("metrics.confirm"),
     };
     let go = ui::button(p, "metrics-confirm", Kind::Primary, go_text).disabled(draft.sending).on_click(cx.listener(|this, _, window, cx| this.metrics_submit(window, cx)));
+    // PostHog by hand: its key page, in equipe's browser.
+    let keys_page = (kind == SourceKind::Posthog && !draft.north).then(|| ui::button(p, "metrics-open-keys", Kind::Secondary, t!("metrics.setup.open_keys")).icon(Icon::Globe).on_click(cx.listener(|this, _, _, cx| this.metrics_setup_sign_in(metrics::POSTHOG_KEYS, cx))));
     let north = draft.north;
     let back = ui::button(p, "metrics-back", Kind::Ghost, t!("metrics.back")).on_click(cx.listener(move |this, _, window, cx| if north { this.metrics_show_dash(cx) } else { this.metrics_pick_kind(None, None, window, cx) }));
     let title = if draft.north { format!("{} · {name}", lookup("metrics.ns.set".into())) } else { t!("metrics.step2", service = name).to_string() };
@@ -669,9 +750,113 @@ fn key_card(shell: &Shell, sources: &Sources, kind: SourceKind, draft: &Draft, c
         .child(v_flex().gap_3().children(boxes))
         .children(draft.missing.then(|| div().text_size(px(13.)).text_color(p.red).child(t!("metrics.fill_required"))))
         .children(draft.failed.as_ref().map(|why| div().text_size(px(13.)).line_height(px(19.)).text_color(p.red).child(t!("metrics.connect_failed", why = why))))
-        .child(h_flex().gap_2().items_center().child(go).child(back))
+        .child(h_flex().gap_2().items_center().flex_wrap().child(go).children(keys_page).child(back))
         .children((!draft.north).then(|| h_flex().gap_1p5().items_start().child(div().flex_none().pt(px(3.)).child(icon(Icon::Lock, 12., p.muted))).child(note(p, t!("metrics.key_where")).flex_1().min_w_0().text_size(px(12.5)))))
         .into_any_element()
+}
+
+/// PostHog's "Set it up for me": each step as the person sees it. The key
+/// is never on screen; the only yes asked is the person's, on the card that
+/// says what is made.
+fn setup_card(shell: &Shell, draft: &Draft, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let head = |text: String| div().text_size(px(16.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(text);
+    let paste = || ui::button(p, "metrics-setup-paste", Kind::Ghost, t!("metrics.setup.paste")).on_click(cx.listener(|this, _, window, cx| this.metrics_setup_paste(window, cx)));
+    let back = || ui::button(p, "metrics-setup-back", Kind::Ghost, t!("metrics.back")).on_click(cx.listener(|this, _, window, cx| this.metrics_pick_kind(None, None, window, cx)));
+    let frame = card_frame(p, p.hair).id("metrics-setup").child(step(p, t!("metrics.step2", service = service(SourceKind::Posthog, None)).to_string()));
+    let frame = match &draft.setup {
+        None => frame
+            .child(head(t!("metrics.setup.title").into()))
+            .child(note(p, t!("metrics.setup.body")).text_color(p.text2))
+            .child(h_flex().gap_2().flex_wrap().child(ui::button(p, "metrics-setup-start", Kind::Primary, t!("metrics.setup.start")).icon(Icon::Sparkles).on_click(cx.listener(|this, _, _, cx| this.metrics_setup_look(true, cx)))).child(ui::button(p, "metrics-setup-paste", Kind::Secondary, t!("metrics.setup.paste")).on_click(cx.listener(|this, _, window, cx| this.metrics_setup_paste(window, cx))))),
+        Some(Setup::Looking) => frame.child(head(t!("metrics.setup.looking").into())).child(note(p, t!("metrics.setup.looking_body"))),
+        Some(Setup::SignIn) => frame
+            .child(head(t!("metrics.setup.sign_in").into()))
+            .child(note(p, t!("metrics.setup.sign_in_body")).text_color(p.text2))
+            .child(h_flex().gap_2().flex_wrap().child(ui::button(p, "metrics-setup-open", Kind::Secondary, t!("metrics.setup.open_sign_in")).icon(Icon::Globe).on_click(cx.listener(|this, _, _, cx| this.metrics_setup_sign_in(metrics::POSTHOG_SIGN_IN, cx)))).child(paste())),
+        Some(Setup::Choose(look)) => {
+            let look: &wire::PosthogLook = look;
+            let rows = look.projects().enumerate().map(|(n, (account, project))| {
+                let (account, project) = (account.clone(), project.clone());
+                let label = format!("{} · {}", project.name, account.organization);
+                let region = t!("metrics.setup.region", region = account.region.to_uppercase());
+                h_flex()
+                    .id(("metrics-setup-project", n))
+                    .gap_3()
+                    .items_center()
+                    .px_3()
+                    .py_2()
+                    .rounded(px(R_MD))
+                    .border_1()
+                    .border_color(p.hair)
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(p.wash))
+                    .child(v_flex().flex_1().min_w_0().child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(label)).child(div().text_size(px(12.)).text_color(p.muted).child(format!("{region} · #{}", project.id))))
+                    .child(icon(Icon::ChevronRight, 14., p.muted))
+                    .on_click(cx.listener(move |this, _, _, cx| this.metrics_setup_pick(account.clone(), project.clone(), cx)))
+            });
+            frame.child(head(t!("metrics.setup.choose").into())).child(note(p, t!("metrics.setup.choose_body"))).child(v_flex().gap_2().children(rows)).child(h_flex().gap_2().child(back()))
+        }
+        Some(Setup::Confirm(picked) | Setup::Creating(picked)) => {
+            let (account, project) = (&picked.account, &picked.project);
+            let creating = matches!(draft.setup, Some(Setup::Creating(_)));
+            let line = |label: String, value: String| h_flex().gap_3().items_start().child(div().w(px(96.)).flex_none().text_size(px(13.)).text_color(p.muted).child(label)).child(div().flex_1().min_w_0().text_size(px(13.)).text_color(p.text).child(value));
+            let what = v_flex()
+                .gap_2()
+                .p_3()
+                .rounded(px(R_MD))
+                .bg(p.wash)
+                .child(line(t!("metrics.setup.what_name").into(), equipe_core::metrics::setup::KEY_LABEL.to_owned()))
+                .child(line(t!("metrics.setup.what_scopes").into(), t!("metrics.setup.scopes_read").into()))
+                .child(line(t!("metrics.setup.what_project").into(), format!("{} · {} ({})", project.name, account.organization, t!("metrics.setup.region", region = account.region.to_uppercase()))));
+            let go = ui::button(p, "metrics-setup-create", Kind::Primary, if creating { t!("metrics.setup.creating") } else { t!("metrics.setup.create") }).disabled(creating).on_click(cx.listener(|this, _, _, cx| this.metrics_setup_create(cx)));
+            frame
+                .child(head(t!("metrics.setup.confirm").into()))
+                .child(what)
+                .child(h_flex().gap_1p5().items_start().child(div().flex_none().pt(px(3.)).child(icon(Icon::Lock, 12., p.muted))).child(note(p, t!("metrics.setup.confirm_note")).flex_1().min_w_0().text_size(px(12.5))))
+                .child(h_flex().gap_2().child(go).children((!creating).then(back)))
+        }
+        Some(Setup::Done { setup, project }) => {
+            let keys_url = setup.keys_url.clone();
+            let mut lines = v_flex().gap_1p5();
+            if !setup.page_views {
+                lines = lines.child(note(p, t!("metrics.setup.no_page_views")).text_color(p.text2));
+            }
+            if let Some(event) = &setup.north_star_event {
+                let id = setup.connection.as_ref().map(|c| c.id.clone());
+                lines = lines.child(
+                    h_flex()
+                        .gap_1()
+                        .flex_wrap()
+                        .child(note(p, t!("metrics.setup.north_picked", event = event)).text_color(p.text2))
+                        .child(div().id("metrics-setup-north").cursor_pointer().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(p.accent).hover(|s| s.underline()).child(lookup("metrics.ns.edit".into())).on_click(cx.listener(move |this, _, window, cx| this.metrics_open_north(id.clone(), window, cx)))),
+                );
+            }
+            frame
+                .child(h_flex().gap_2().items_center().child(icon(Icon::Check, 16., ok(p))).child(head(t!("metrics.setup.done", project = project))))
+                .child(note(p, t!("metrics.done_body")))
+                .child(lines)
+                .child(h_flex().gap_2().flex_wrap().child(ui::button(p, "metrics-see-dash", Kind::Primary, t!("metrics.see_dash")).on_click(cx.listener(|this, _, _, cx| this.metrics_show_dash(cx)))))
+                .child(h_flex().gap_1().flex_wrap().child(note(p, t!("metrics.setup.revoke", label = setup.key_label.clone())).text_size(px(12.5))).child(div().id("metrics-setup-keys").cursor_pointer().text_size(px(12.5)).text_color(p.accent).hover(|s| s.underline()).child(t!("metrics.setup.open_keys")).on_click(cx.listener(move |this, _, _, cx| this.metrics_setup_sign_in(&keys_url, cx)))))
+        }
+        Some(Setup::SignInAgain { host }) => {
+            let host = host.clone();
+            frame
+                .child(head(t!("metrics.setup.again").into()))
+                .child(note(p, t!("metrics.setup.again_body")).text_color(p.text2))
+                .child(h_flex().gap_2().flex_wrap().child(ui::button(p, "metrics-setup-again", Kind::Primary, t!("metrics.setup.again_button")).on_click(cx.listener(move |this, _, _, cx| this.metrics_setup_sign_in_again(&host, cx)))).child(paste()))
+        }
+        Some(Setup::Manual { keys_url, why }) => {
+            let url = keys_url.clone();
+            frame
+                .child(head(t!("metrics.setup.manual").into()))
+                .children(why.as_ref().map(|why| note(p, t!("metrics.setup.manual_why", why = why)).text_color(p.red)))
+                .child(v_flex().gap_1().children(lookup("metrics.setup.manual_steps".into()).lines().enumerate().map(|(n, l)| note(p, format!("{}. {l}", n + 1)).text_color(p.text2))))
+                .child(h_flex().gap_2().child(ui::button(p, "metrics-setup-keys-page", Kind::Secondary, t!("metrics.setup.open_keys")).icon(Icon::Globe).on_click(cx.listener(move |this, _, _, cx| this.metrics_setup_sign_in(&url, cx)))))
+        }
+        Some(Setup::NoBrowser) => frame.child(head(t!("metrics.setup.no_browser").into())).child(note(p, t!("metrics.setup.no_browser_body")).text_color(p.text2)),
+    };
+    frame.into_any_element()
 }
 
 /// Step 3: connected; the first numbers follow in a few seconds.
@@ -912,6 +1097,157 @@ impl Shell {
         });
     }
 
+    // ---- PostHog: "Set it up for me" ----
+
+    /// The PostHog step, set up for the person from the start (the
+    /// suggestion's "Set it up", Connections' "Show in Metrics").
+    pub fn metrics_setup_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let kept = self.metrics.connection_of(SourceKind::Posthog).map(|c| c.id.clone());
+        self.metrics_open_connect(Some(SourceKind::Posthog), kept, window, cx);
+        self.metrics_setup_look(true, cx);
+    }
+
+    fn metrics_setup(&mut self) -> Option<&mut Draft> {
+        match &mut self.metrics.flow {
+            Flow::Connect(d) if d.kind == Some(SourceKind::Posthog) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// "Paste a key": PostHog's boxes instead.
+    pub fn metrics_setup_paste(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(d) = self.metrics_setup() {
+            d.paste = true;
+            d.setup = None;
+        }
+        if let Some((_, first)) = self.metrics_ui.boxes.first() {
+            first.update(cx, |s, cx| s.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    /// Ask equipe's browser who is signed in to PostHog. `start`: the
+    /// person's "Set it up for me" — signed out, the sign-in opens for them.
+    /// Otherwise a look while they sign in, every few seconds, for half an hour.
+    pub fn metrics_setup_look(&mut self, start: bool, cx: &mut Context<Self>) {
+        if start {
+            self.metrics_ui.setup_until = Some(std::time::Instant::now() + SETUP_WAIT);
+            self.metrics_ui.setup_signin_opened = false;
+            if let Some(d) = self.metrics_setup() {
+                d.setup = Some(Setup::Looking);
+                d.paste = false;
+            }
+            cx.notify();
+        }
+        if self.metrics.demo {
+            return;
+        }
+        let params = wire::PosthogLookParams { squad: self.model.squad.clone() };
+        self.metrics_ask::<wire::PosthogLook>(wire::POSTHOG_LOOK, params, SETUP_ASK_WAIT, cx, move |this, answer, cx| {
+            let opened = this.metrics_ui.setup_signin_opened;
+            let Some(d) = this.metrics_setup() else { return };
+            // Gone on meanwhile (picked, pasting, cancelled): nothing to do.
+            if !matches!(d.setup, Some(Setup::Looking | Setup::SignIn)) {
+                return;
+            }
+            let next = match answer {
+                Ok(look) => metrics::after_look(&look),
+                Err(why) => Setup::Manual { keys_url: metrics::POSTHOG_KEYS.into(), why: Some(why) },
+            };
+            let signing_in = next == Setup::SignIn;
+            d.setup = Some(next);
+            if signing_in {
+                if start && !opened {
+                    this.metrics_setup_sign_in(metrics::POSTHOG_SIGN_IN, cx);
+                }
+                this.metrics_setup_poll(cx);
+            }
+            cx.notify();
+        });
+    }
+
+    /// Look again in a few seconds while the person signs in.
+    fn metrics_setup_poll(&mut self, cx: &mut Context<Self>) {
+        if self.metrics_ui.setup_until.is_none_or(|until| std::time::Instant::now() > until) {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SETUP_POLL).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.metrics_setup().is_some_and(|d| d.setup == Some(Setup::SignIn)) {
+                    this.metrics_setup_look(false, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// PostHog's page in equipe's own browser — the sign-in the person makes
+    /// themselves (their password or code typed by them), or its key page.
+    pub fn metrics_setup_sign_in(&mut self, url: &str, cx: &mut Context<Self>) {
+        self.metrics_ui.setup_signin_opened = true;
+        self.send_command(equipe_core::protocol::Command::BrowserSignIn { url: url.to_owned(), window: false });
+        cx.notify();
+    }
+
+    /// PostHog wants a fresh sign-in before it makes a key: out, and in again
+    /// in equipe's browser — then the same card asks the person's yes again.
+    pub fn metrics_setup_sign_in_again(&mut self, host: &str, cx: &mut Context<Self>) {
+        self.metrics_setup_sign_in(&format!("{}/logout", host.trim_end_matches('/')), cx);
+        self.metrics_ui.setup_until = Some(std::time::Instant::now() + SETUP_WAIT);
+        if let Some(d) = self.metrics_setup() {
+            d.setup = Some(Setup::SignIn);
+        }
+        self.metrics_setup_poll(cx);
+        cx.notify();
+    }
+
+    /// The project picked on the choice card: the card that asks the yes.
+    pub fn metrics_setup_pick(&mut self, account: wire::PosthogAccount, project: wire::PosthogProject, cx: &mut Context<Self>) {
+        if let Some(d) = self.metrics_setup() {
+            d.setup = Some(Setup::Confirm(Box::new(metrics::Picked { account, project })));
+        }
+        cx.notify();
+    }
+
+    /// The person's "Create the key": the only thing that makes one.
+    pub fn metrics_setup_create(&mut self, cx: &mut Context<Self>) {
+        let (squad, project) = (self.model.squad.clone(), self.model.focus.clone());
+        let Some(d) = self.metrics_setup() else { return };
+        let Some(Setup::Confirm(chosen)) = d.setup.clone() else { return };
+        let metrics::Picked { account, project: picked } = (*chosen).clone();
+        d.setup = Some(Setup::Creating(chosen));
+        let id = d.replacing.clone();
+        cx.notify();
+        if self.metrics.demo {
+            return;
+        }
+        let params = wire::PosthogSetupParams { squad, project, host: account.host.clone(), project_id: picked.id, id };
+        self.metrics_ask::<wire::PosthogSetup>(wire::POSTHOG_SETUP, params, SETUP_ASK_WAIT, cx, move |this, answer, cx| {
+            let next = match answer {
+                Ok(done) => metrics::after_setup(done, &account, &picked),
+                Err(why) => Setup::Manual { keys_url: format!("{}/settings/user-api-keys", account.host), why: Some(why) },
+            };
+            let connected = match &next {
+                Setup::Done { setup, .. } => setup.connection.as_ref().map(|c| c.id.clone()),
+                _ => None,
+            };
+            if next == Setup::SignIn {
+                this.metrics_ui.setup_until = Some(std::time::Instant::now() + SETUP_WAIT);
+                this.metrics_setup_sign_in(metrics::POSTHOG_SIGN_IN, cx);
+                this.metrics_setup_poll(cx);
+            }
+            if let Some(d) = this.metrics_setup() {
+                d.setup = Some(next);
+            }
+            // The first fetch follows on its own: the numbers are asked after it.
+            if let Some(id) = connected {
+                this.metrics_refresh(Some(id), cx);
+            }
+            cx.notify();
+        });
+    }
+
     /// "Disconnect": asked twice — the key leaves the Keychain.
     pub fn metrics_disconnect(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.metrics_ui.disconnecting.as_deref() != Some(id) {
@@ -934,7 +1270,8 @@ impl Shell {
     }
 
     /// The screen on a sample of the daemon's answers, no daemon asked
-    /// (`--features snapshot`): `dash`, `error`, `empty`, `connect`, `connected`, `key`, `keyed`, `done`.
+    /// (`--features snapshot`): `dash`, `error`, `empty`, `connect`, `connected`, `key`, `keyed`, `done`,
+    /// `setup`, `setup-confirm`, `setup-done`.
     #[cfg(feature = "snapshot")]
     pub fn metrics_demo(&mut self, which: &str, window: &mut Window, cx: &mut Context<Self>) {
         use metrics::demo;
@@ -973,6 +1310,27 @@ impl Shell {
                 (s, q)
             }
             "empty" => (demo::nothing(), demo::healthy().1),
+            // PostHog's "Set it up for me": its first card, the yes it asks, and done.
+            "setup" | "setup-confirm" | "setup-done" => {
+                self.metrics.sources = Some(demo::nothing());
+                self.metrics.query = None;
+                self.metrics_pick_kind(Some(SourceKind::Posthog), None, window, cx);
+                let account = wire::PosthogAccount { host: "https://us.posthog.com".into(), region: "us".into(), organization: "Atinum".into(), projects: vec![], current: None };
+                let project = wire::PosthogProject { id: 735144, name: "Atinum MCP".into() };
+                let setup = match which {
+                    "setup-confirm" => Some(Setup::Confirm(Box::new(metrics::Picked { account, project }))),
+                    "setup-done" => Some(Setup::Done {
+                        setup: Box::new(wire::PosthogSetup { outcome: wire::SetupOutcome::Connected, key_label: equipe_core::metrics::setup::KEY_LABEL.into(), page_views: false, north_star_event: Some("mcp_tool_called".into()), keys_url: "https://us.posthog.com/settings/user-api-keys".into(), ..wire::PosthogSetup::default() }),
+                        project: project.name,
+                    }),
+                    _ => None,
+                };
+                if let Flow::Connect(d) = &mut self.metrics.flow {
+                    d.setup = setup;
+                }
+                cx.notify();
+                return;
+            }
             "done" => {
                 let (s, q) = demo::healthy();
                 self.metrics.sources = Some(s);

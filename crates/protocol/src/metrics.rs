@@ -18,6 +18,12 @@ pub const DISCONNECT: &str = "metrics.disconnect";
 pub const QUERY: &str = "metrics.query";
 pub const REFRESH: &str = "metrics.refresh";
 pub const SUMMARY: &str = "metrics.summary";
+/// PostHog's "Set it up for me" (docs/METRICS.md): who is signed in to
+/// PostHog in equipe's browser, and to which projects…
+pub const POSTHOG_LOOK: &str = "metrics.posthog_look";
+/// …then, on the person's yes, equipe makes a read-only key there and
+/// connects the project with it.
+pub const POSTHOG_SETUP: &str = "metrics.posthog_setup";
 
 /// What snapshots on disk are written as; read back from this one down.
 pub const SCHEMA: u32 = 1;
@@ -412,4 +418,125 @@ mod tests {
         }
         assert_eq!(serde_json::to_string(&ErrorCode::RateLimited).unwrap(), "\"rate_limited\"");
     }
+}
+
+// ---- PostHog: "Set it up for me" ----
+
+/// `metrics.posthog_look`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PosthogLookParams {
+    pub squad: String,
+}
+
+/// What equipe's browser shows of PostHog Cloud.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PosthogLook {
+    /// equipe's shared browser could be asked (members share one Chrome).
+    pub browser: bool,
+    /// Signed in on US or EU Cloud, each with its organization's projects.
+    #[serde(default)]
+    pub accounts: Vec<PosthogAccount>,
+}
+
+impl PosthogLook {
+    pub fn signed_in(&self) -> bool {
+        !self.accounts.is_empty()
+    }
+
+    /// Every project, with the account it is in.
+    pub fn projects(&self) -> impl Iterator<Item = (&PosthogAccount, &PosthogProject)> {
+        self.accounts.iter().flat_map(|a| a.projects.iter().map(move |p| (a, p)))
+    }
+
+    /// The one project to connect when there is no choice to make: the only
+    /// one there is.
+    pub fn only_project(&self) -> Option<(&PosthogAccount, &PosthogProject)> {
+        let mut all = self.projects();
+        let first = all.next()?;
+        all.next().is_none().then_some(first)
+    }
+}
+
+/// A PostHog Cloud the person is signed in to in equipe's browser.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PosthogAccount {
+    /// `https://us.posthog.com` or `https://eu.posthog.com`: the region, from
+    /// the address the browser is signed in at.
+    pub host: String,
+    /// `us` or `eu`.
+    pub region: String,
+    pub organization: String,
+    pub projects: Vec<PosthogProject>,
+    /// The project the person last had open there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PosthogProject {
+    pub id: u64,
+    pub name: String,
+}
+
+/// `metrics.posthog_setup`: sent only by the person's own "Create the key"
+/// on the card that says what is made — never by a member.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PosthogSetupParams {
+    pub squad: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// The account's `host`, as `metrics.posthog_look` gave it.
+    pub host: String,
+    pub project_id: u64,
+    /// The PostHog connection whose key this replaces, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+/// How "Set it up for me" ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupOutcome {
+    /// The key was made, kept and the project connected.
+    Connected,
+    /// Signed out meanwhile: sign in again, then try again.
+    SignIn,
+    /// PostHog wants a fresh sign-in before it makes a key (it asks for one
+    /// within two hours of signing in): sign in again there, then try again.
+    SignInAgain,
+    /// It couldn't be done for the person: the key page, the steps and the
+    /// paste box instead.
+    #[default]
+    Manual,
+}
+
+/// What `metrics.posthog_setup` did. Never holds the key.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PosthogSetup {
+    pub outcome: SetupOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<Connection>,
+    /// The key's name in PostHog, and its scopes.
+    pub key_label: String,
+    pub scopes: Vec<String>,
+    /// Where the person sees and deletes the key: PostHog's personal API keys page.
+    pub keys_url: String,
+    /// The project's events of the last 30 days, the most sent first.
+    #[serde(default)]
+    pub events: Vec<EventCount>,
+    /// The project sends page views (`$pageview`): the visit cards fill.
+    #[serde(default)]
+    pub page_views: bool,
+    /// The event the North Star was set to count, when equipe picked one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub north_star_event: Option<String>,
+    /// Why it couldn't be done, in PostHog's words when it said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventCount {
+    pub event: String,
+    pub count: u64,
 }

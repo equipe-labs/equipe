@@ -27,6 +27,7 @@ use crate::protocol::metrics::{
 use crate::routines::Clock;
 
 pub mod adapters;
+pub mod setup;
 pub mod tool;
 
 /// The Keychain service the keys are kept under.
