@@ -812,7 +812,7 @@ pub fn merge_into_main(repo: &Path, branch: &str, message: &str) -> Result<Strin
                 Prepared::Merge(merge) => land(repo, &merge),
             };
             match landed {
-                Err(err) if err.starts_with(MAIN_MOVED) && moved < MOVED_TRIES => moved += 1,
+                Err(err) if main_moved(&err) && moved < MOVED_TRIES => moved += 1,
                 landed => return landed,
             }
         }
@@ -822,7 +822,13 @@ pub fn merge_into_main(repo: &Path, branch: &str, message: &str) -> Result<Strin
 /// Whether a landing's error is one that passes on its own: another git
 /// holding the main checkout's lock a while, or main moving on under it.
 pub fn passing(err: &str) -> bool {
-    err.contains(MAIN_MOVED) || lock_held(err).is_some()
+    main_moved(err) || lock_held(err).is_some()
+}
+
+/// Whether a landing failed because main moved on under it: before it was
+/// put on main, or between that check and the checkout's fast-forward.
+fn main_moved(err: &str) -> bool {
+    err.starts_with(MAIN_MOVED) || err.contains("can't be fast-forwarded") || err.contains("Not possible to fast-forward")
 }
 
 /// How many times a landing is worked out again because main moved on
@@ -862,7 +868,7 @@ fn main_top(repo: &Path) -> PathBuf {
 /// a real conflict there merges nothing.
 pub fn land_checked(repo: &Path, branch: &str, merge: &MergeCommit) -> Result<String> {
     one_landing_at_a_time(repo, || match land(repo, merge) {
-        Err(err) if err.starts_with(MAIN_MOVED) && branch_is_at(repo, branch, merge) => {
+        Err(err) if main_moved(&err) && branch_is_at(repo, branch, merge) => {
             let message = git(repo, &["show", "-s", "--format=%B", &merge.commit])?;
             crate::daemon_log!("equipe: main of {} moved on since {branch}'s merge was checked; merged again on the new main", repo.display());
             merge_into_main(repo, branch, &message)
@@ -2635,6 +2641,7 @@ error: Unable to create '/p/site/.git/index.lock': File exists.\n\nAnother git p
         assert_eq!(lock_held(err), Some(PathBuf::from("/p/site/.git/index.lock")));
         assert!(passing(err));
         assert!(passing("main moved on since the merge was worked out — nothing was merged"));
+        assert!(passing("main is checked out in /p/site and couldn't move without touching its changes — nothing was merged (git merge -q --ff-only 1a2b failed: hint: Diverging branches can't be fast-forwarded, you need to either:)"));
         assert!(!passing("error: Your local changes to the following files would be overwritten by merge: app/styles/portfolio.css"));
         assert!(!passing("equipe/t1 conflicts with main in README.md — nothing was merged"));
     }
