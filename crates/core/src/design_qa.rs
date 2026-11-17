@@ -22,6 +22,7 @@ use serde_json::Value;
 
 use crate::design::precheck::{Report, Severity};
 
+pub mod follow_up;
 mod risk;
 pub use risk::*;
 

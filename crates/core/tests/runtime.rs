@@ -7260,3 +7260,108 @@ fn old_ticket(title: &str) -> Ticket {
         rank: 0,
     }
 }
+
+// ── design follow-ups (`equipe_core::design_qa::follow_up`) ──
+
+#[tokio::test]
+async fn a_designers_findings_keep_their_lineage_go_together_and_stop_at_the_backlog() {
+    use equipe_core::design_qa::follow_up::{FollowUp, Kind, Severity};
+    let site = repo();
+    let (claude, recorded) = recording_claude(&screenshot_turn());
+    let home = squad_home(&[&site]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    screens_in_design_qa(&recorded, &handle, &mut events, &site).await;
+    let journal = Journal::for_squad(&home, "acme").unwrap();
+
+    // On design QA T-2 of T-1: what the designer files is a finding, with its severity.
+    let unsaid = tool(&handle, "designer", "create_ticket", serde_json::json!({ "title": "Gap rhythm", "body": "24 → 32 between sections.", "owner": "frontend" })).await;
+    assert!(unsaid.is_error && unsaid.text.contains("`severity`") && unsaid.text.contains("design QA of T-1"), "{unsaid:?}");
+    let polish = tool(&handle, "designer", "create_ticket", serde_json::json!({ "title": "Gap rhythm", "body": "24 → 32 between sections.", "owner": "frontend", "severity": "S3" })).await;
+    assert!(!polish.is_error && polish.text.contains("T-3"), "{polish:?}");
+    assert_eq!(journal.follow_up(3), Some(FollowUp { ticket: 3, parent: 1, root: 1, generation: 1, kind: Kind::Polish, severity: Some(Severity::S3) }));
+    let made = journal.ticket(3).unwrap().unwrap();
+    assert_eq!(made.priority, Priority::Low);
+    assert!(made.body.starts_with("Polish follow-up of T-1 (S3): re-check only the widths and states named here"), "{}", made.body);
+
+    // A second polish point about the same work goes into its open follow-up.
+    let more = tool(&handle, "designer", "create_ticket", serde_json::json!({ "title": "Label wraps", "body": "At 390, text 200%.", "owner": "frontend", "severity": "s4" })).await;
+    assert!(!more.is_error && more.text.contains("Added to T-3"), "{more:?}");
+    assert!(journal.ticket(4).unwrap().is_none(), "no new ticket");
+    assert!(journal.ticket(3).unwrap().unwrap().body.ends_with("### Label wraps (S4, T-1)\nAt 390, text 200%."));
+
+    // A blocker is a fix ticket of its own, first in line.
+    let fix = tool(&handle, "designer", "create_ticket", serde_json::json!({ "title": "Save button cut off", "body": "At 320px.", "owner": "frontend", "severity": "S2" })).await;
+    assert!(!fix.is_error && fix.text.contains("T-4"), "{fix:?}");
+    assert_eq!(journal.follow_up(4).map(|f| (f.kind, f.generation)), Some((Kind::Fix, 1)));
+    assert_eq!(journal.ticket(4).unwrap().unwrap().priority, Priority::High);
+
+    // T-1 itself a follow-up of T-7: its polish goes to T-7's design backlog, an idea nothing starts.
+    journal.keep_follow_up(&FollowUp { ticket: 1, parent: 7, root: 7, generation: 1, kind: Kind::Fix, severity: Some(Severity::S2) }).unwrap();
+    let deep = tool(&handle, "designer", "create_ticket", serde_json::json!({ "title": "Icon optical size", "body": "18 → 20.", "owner": "frontend", "severity": "S3" })).await;
+    assert!(!deep.is_error && deep.text.contains("design backlog of T-7"), "{deep:?}");
+    let backlog = journal.ticket(5).unwrap().unwrap();
+    assert_eq!((backlog.status, backlog.title.as_str()), (TicketStatus::Idea, "Design backlog of T-7"));
+    assert!(backlog.body.contains("### Icon optical size (S3, T-1)"), "{}", backlog.body);
+    assert_eq!(journal.follow_up(5).map(|f| (f.kind, f.root, f.generation)), Some((Kind::Backlog, 7, 2)));
+    let again = tool(&handle, "designer", "create_ticket", serde_json::json!({ "title": "Divider weight", "body": "1px.", "severity": "S4" })).await;
+    assert!(!again.is_error && again.text.contains("Added to T-5"), "{again:?}");
+    // A blocker still goes on a ticket at any depth — here the open fix of the same work.
+    let blocker = tool(&handle, "designer", "create_ticket", serde_json::json!({ "title": "Contrast 3.1:1", "body": "Body text on tint.", "severity": "S1" })).await;
+    assert!(!blocker.is_error && blocker.text.contains("Added to T-4"), "{blocker:?}");
+    assert!(journal.ticket(6).unwrap().is_none());
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_polish_follow_up_is_shown_where_its_findings_are_and_gets_no_designer_turn_of_its_own() {
+    use equipe_core::design_qa::follow_up::{FollowUp, Kind, Severity};
+    let site = repo();
+    let (claude, _recorded) = recording_claude(&screenshot_turn());
+    let home = squad_home(&[&site]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "frontend")).await;
+    add(&handle, &mut events, 3, member(&site, "designer")).await;
+    // T-1 is a polish follow-up the designer filed from design QA of an earlier ticket.
+    let journal = Journal::for_squad(&home, "acme").unwrap();
+    journal.keep_follow_up(&FollowUp { ticket: 1, parent: 9, root: 9, generation: 1, kind: Kind::Polish, severity: Some(Severity::S3) }).unwrap();
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Settings gap", "body": "24 → 32 at 390.", "owner": "frontend" })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    exists(&ws.path.join("shot.png")).await;
+    // Its screenshots of where the finding is are enough: no full range asked.
+    let handed = tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Gap fixed.", "changes_screens": true, "images": ["shot.png"], "screen_checks": ["widths"] })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    // No designer turn: its design QA goes straight into the daily review, and it is the person's to review.
+    let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Review)).await;
+    let held = ticket_changed(&seen).into_iter().rev().find(|t| t.id == 1).unwrap();
+    assert_eq!(held.design_qa, None, "not held for a designer");
+    let qa = journal.ticket(2).unwrap().unwrap();
+    assert_eq!(qa.status, TicketStatus::Done, "{qa:?}");
+    let run = journal.design_qa_run(2).unwrap();
+    assert_eq!((run.route.as_deref(), run.verdict.as_deref()), (Some("batch"), Some("batched")));
+    assert!(within(&mut events, 1_500).await.iter().all(|e| !matches!(e, Event::WorkStarted { ticket: 2, .. })), "the designer never takes it");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_decision_the_person_cant_perceive_is_turned_back_to_the_member() {
+    let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
+    let claude = fake_claude(true, &answering("ok"));
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&cwd, "designer")).await;
+    let dots = tool(&handle, "designer", "ask_decision", serde_json::json!({ "questions": [{
+        "question": "Which wording for the processing rule?",
+        "options": [{ "label": "aria-disabled·aria-busy together" }, { "label": "aria-disabled, aria-busy together" }],
+    }] })).await;
+    assert!(dots.is_error && dots.text.contains("isn't the person's to decide") && dots.text.contains("punctuation"), "{dots:?}");
+    let notes = tool(&handle, "designer", "ask_decision", serde_json::json!({ "questions": [{
+        "question": "Which heading for docs/gallery.md?",
+        "options": ["Usage rules", "How to use"],
+    }] })).await;
+    assert!(notes.is_error && notes.text.contains("docs/gallery.md"), "{notes:?}");
+    let real = tool(&handle, "designer", "ask_decision", serde_json::json!({ "questions": [{ "question": "Which direction?", "options": ["Calm", "Bold"] }] })).await;
+    assert!(!real.is_error, "{real:?}");
+    handle.shutdown().await;
+}
