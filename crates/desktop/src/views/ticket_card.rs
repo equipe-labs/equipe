@@ -492,6 +492,9 @@ pub struct TicketCard {
     looked: HashMap<TicketId, Instant>,
     /// Whose card was last drawn (a number, and whether it is the ticket's or the small one): its size is that card's.
     shape: Option<(TicketId, bool)>,
+    /// Where the small card went for the card opened at this epoch on this number: what it turns into
+    /// ("Couldn't check", the ticket's card) opens there too.
+    small: Option<(u64, TicketId, Rect, Side)>,
     /// The card drawn was cut to its room, so its height says nothing of how tall it is.
     capped: bool,
     /// Tickets acted on from a card: their undo shows off the work screens.
@@ -516,7 +519,7 @@ pub fn layer(cx: &mut Context<Shell>) -> AnyView {
     let card = cx.new(|cx| {
         // The daemon's answer to a lookup changes the shell, not the card: redraw with it.
         cx.observe(&owner, |_, _, cx| cx.notify()).detach();
-        TicketCard { shell, hover: Hover::default(), timer: None, drawn: Rc::new(Cell::new(None)), result: None, asked: HashMap::new(), looked: HashMap::new(), shape: None, capped: false, acted: HashSet::new(), said: (0, ScrollHandle::new(), ScrollHandle::new()) }
+        TicketCard { shell, hover: Hover::default(), timer: None, drawn: Rc::new(Cell::new(None)), result: None, asked: HashMap::new(), looked: HashMap::new(), shape: None, small: None, capped: false, acted: HashSet::new(), said: (0, ScrollHandle::new(), ScrollHandle::new()) }
     });
     cx.set_global(Layer(card.clone()));
     gpui_kit::base::text::on_link_hover(cx, |url, bounds, _, cx| {
@@ -530,6 +533,38 @@ pub fn layer(cx: &mut Context<Shell>) -> AnyView {
 fn with_card<R>(cx: &mut App, f: impl FnOnce(&mut TicketCard, &mut Context<TicketCard>) -> R) -> Option<R> {
     let card = cx.try_global::<Layer>()?.0.clone();
     Some(card.update(cx, f))
+}
+
+/// What the small card keeps off besides the window's selectable text: a reply's time and its buttons,
+/// the header, the composer's words. Each lasts while the element that drew it is in the window —
+/// replayed from a cached pane too, as its state is — and goes with it.
+#[derive(Default)]
+struct KeepClear(HashMap<EntityId, (WindowId, Rect, WeakEntity<Drawn>)>);
+
+impl Global for KeepClear {}
+
+/// Held by the element that keeps a place clear: dropped with it.
+struct Drawn;
+
+/// `el` keeps the small card off it: all of it, less `top` points of its top (padding with no words in it).
+/// `key` tells it from others drawn under the same parent.
+pub fn keep_clear<E: ParentElement>(el: E, key: &'static str, top: f32) -> E {
+    el.on_prepaint(move |b, window, cx| {
+        let marker = window.use_keyed_state(ElementId::Name(format!("keep-clear-{key}").into()), cx, |_, _| Drawn);
+        let mut r = Rect::of(b);
+        r.y += top.min(r.h);
+        r.h = (r.h - top).max(0.);
+        let at = window.window_handle().window_id();
+        let all = &mut cx.default_global::<KeepClear>().0;
+        all.retain(|_, (.., drawn)| drawn.upgrade().is_some());
+        all.insert(marker.entity_id(), (at, r, marker.downgrade()));
+    })
+}
+
+/// Where the elements in `window` that keep the small card off them were last drawn.
+fn kept_clear(window: &Window, cx: &App) -> Vec<Rect> {
+    let at = window.window_handle().window_id();
+    cx.try_global::<KeepClear>().map_or_else(Vec::new, |k| k.0.values().filter(|(w, r, drawn)| *w == at && r.h > 0. && drawn.upgrade().is_some()).map(|(_, r, _)| *r).collect())
 }
 
 /// Something opened over the window (a picture shown big): the card goes.
@@ -797,9 +832,26 @@ impl Render for TicketCard {
         let natural = match self.drawn.get() {
             Some(r) => (r.w, if self.capped { tallest(window_size.1) } else { r.h }),
             None if found => GUESS,
-            None => (200., 36.),
+            None => (200., MISSING_H),
         };
-        let ((x, y, side), room) = fit_for(target.anchor, natural, window_size, target.prefer, found);
+        // Kept while the link stays where it was: a window made narrower picks again.
+        let kept = self.small.filter(|&(epoch, id, at, _)| epoch == self.hover.epoch && id == target.id && at == target.anchor).map(|(.., side)| side);
+        let ((x, y, side), room) = if found {
+            match kept {
+                // The look went above or below: the ticket's card grows there, as tall as that side lets it.
+                Some(side @ (Side::Above | Side::Below)) => fit_on(target.anchor, natural, window_size, side),
+                _ => fit(target.anchor, natural, window_size, target.prefer),
+            }
+        } else {
+            // Clear of the text around it, at the size of its widest words, so turning into another keeps its place.
+            let size = (natural.0.max(missing_width(window, target.id)), self.drawn.get().map_or(MISSING_H, |r| r.h));
+            let mut rows: Vec<Rect> = gpui_kit::base::TextSelection::text_rows(window, cx).into_iter().map(Rect::of).collect();
+            rows.extend(kept_clear(window, cx));
+            let (_, _, vertical) = place(target.anchor, GUESS, window_size, target.prefer);
+            let at = place_small(target.anchor, size, window_size, vertical, &rows, kept);
+            self.small = Some((self.hover.epoch, target.id, target.anchor, at.2));
+            (at, room_on(target.anchor, window_size.1, at.2).max(size.1))
+        };
         // Cut to the room it was given, it stays "cut" next time: the side is picked by what it would be uncut.
         self.capped = self.drawn.get().is_some_and(|r| r.h >= room - 0.5);
         let drawn = self.drawn.clone();
@@ -843,14 +895,128 @@ fn fit(anchor: Rect, natural: (f32, f32), window: (f32, f32), prefer: Side) -> (
     (place(anchor, (natural.0, natural.1.min(room)), window, prefer), room)
 }
 
-/// [`fit`] for the card of a ticket, or (`found` false) for the small one standing in for it: it takes the
-/// side the ticket's card would, so the answer grows in the place the look was, and never lands on the next line.
-fn fit_for(anchor: Rect, natural: (f32, f32), window: (f32, f32), prefer: Side, found: bool) -> ((f32, f32, Side), f32) {
-    if found {
-        return fit(anchor, natural, window, prefer);
+/// [`fit`] held to `side`, the side the small card took: cut to its room there rather than turned over.
+fn fit_on(anchor: Rect, natural: (f32, f32), window: (f32, f32), side: Side) -> ((f32, f32, Side), f32) {
+    let room = room_on(anchor, window.1, side);
+    (place(anchor, (natural.0, natural.1.min(room)), window, side), room)
+}
+
+/// Between the small card and the end of the text it sits beside.
+const BESIDE_GAP: f32 = 10.;
+
+/// Whether `r` covers none of the rows of text `rows` (touching is not covering).
+fn clear_of(r: Rect, rows: &[Rect]) -> bool {
+    rows.iter().all(|t| r.x >= t.right() - 0.5 || r.right() <= t.x + 0.5 || r.y >= t.bottom() - 0.5 || r.bottom() <= t.y + 0.5)
+}
+
+/// How much of the words in `rows` `r` covers: each row less its leading, the air above and below its
+/// letters, so that a card over the gap between two lines counts for less than one over a line.
+fn covered(r: Rect, rows: &[Rect]) -> f32 {
+    rows.iter()
+        .map(|t| {
+            let (top, bottom) = (t.y + t.h * LEADING, t.bottom() - t.h * LEADING);
+            (r.right().min(t.right()) - r.x.max(t.x)).max(0.) * (r.bottom().min(bottom) - r.y.max(top)).max(0.)
+        })
+        .sum()
+}
+
+/// The share of a row's height, top and foot, that is air around its letters.
+const LEADING: f32 = 0.2;
+
+/// Where the small card ("Looking…", "Not found") goes for a link at `anchor`, with what it must keep off
+/// in `rows` (the window's text, a reply's time and buttons, the header, the composer's words): beside the
+/// link's row past its text, when the row has room there and nothing above or below reaches into it; else
+/// the nearest place above or below with nothing in it — next to the link, or past the lines of text on
+/// that side, at the link's left edge or slid right to where the text in its band ends (no further than a
+/// card's width) — `prefer`'s side where both are as near; else where it covers the fewest letters.
+/// `keep`: the side it took before, which it stays on.
+pub fn place_small(anchor: Rect, card: (f32, f32), window: (f32, f32), prefer: Side, rows: &[Rect], keep: Option<Side>) -> (f32, f32, Side) {
+    let (w, h) = card;
+    let (ww, wh) = window;
+    let inside = |r: Rect| r.x >= MARGIN - 0.5 && r.right() <= ww - MARGIN + 0.5 && r.y >= MARGIN - 0.5 && r.bottom() <= wh - MARGIN + 0.5;
+    let fits = |r: Rect| inside(r) && clear_of(r, rows);
+    let beside = || {
+        // The row's text: what shares the link's line (most of its height), the link included.
+        let end = rows.iter().filter(|t| t.y.max(anchor.y) - t.bottom().min(anchor.bottom()) < -anchor.h / 2.).fold(anchor.right(), |end, t| end.max(t.right()));
+        let x = end + BESIDE_GAP;
+        // Centred on the row, or its top or foot on the row's, whichever no line above or below reaches.
+        let spots = [anchor.y + (anchor.h - h) / 2., anchor.y, anchor.bottom() - h].map(|y| Rect::new(x, y, w, h));
+        spots.into_iter().find(|&r| fits(r))
+    };
+    // The places on `side`, inside the window: a gap from the link, or from each line of text past it on
+    // that side — and, `loose`, across each such line's edge, over the air between it and the next; at the
+    // link's left edge, as the ticket's card goes, or where the text in that band leaves off. Only right,
+    // and not far: to the left is the gutter and what is beside the conversation.
+    let spots = |side: Side, loose: bool| -> Vec<Rect> {
+        let (home, _, _) = place(anchor, card, window, side);
+        let past: Vec<Rect> = rows.iter().copied().filter(|t| if side == Side::Below { t.bottom() > anchor.bottom() + 0.5 } else { t.y < anchor.y - 0.5 }).collect();
+        let mut ys: Vec<f32> = if side == Side::Below {
+            std::iter::once(anchor.bottom() + GAP).chain(past.iter().map(|t| t.bottom() + GAP)).collect()
+        } else {
+            std::iter::once(anchor.y - GAP - h).chain(past.iter().map(|t| t.y - GAP - h)).collect()
+        };
+        if loose {
+            ys.extend(past.iter().flat_map(|t| [t.y - h / 2., t.bottom() - h / 2.]).filter(|&y| if side == Side::Below { y >= anchor.bottom() + GAP } else { y + h <= anchor.y - GAP }));
+        }
+        ys.into_iter()
+            .flat_map(|y| {
+                let band = rows.iter().filter(move |t| t.y < y + h - 0.5 && t.bottom() > y + 0.5);
+                std::iter::once(home).chain(band.map(|t| t.right() + BESIDE_GAP)).filter(move |&x| x >= home && x <= anchor.x + WIDTH).map(move |x| Rect::new(x, y, w, h))
+            })
+            .filter(|&r| inside(r))
+            .collect()
+    };
+    // How far a place is from the link: up or down first, then along.
+    let far = |r: Rect| ((r.y - anchor.bottom()).max(anchor.y - r.bottom()).max(0.), r.x);
+    let nearest = |sides: &[Side]| {
+        sides.iter().enumerate().flat_map(|(n, &side)| spots(side, false).into_iter().filter(|&r| fits(r)).map(move |r| (far(r), n, r, side))).min_by(|a, b| a.0.0.total_cmp(&b.0.0).then(a.1.cmp(&b.1)).then(a.0.1.total_cmp(&b.0.1)))
+    };
+    let least = |sides: &[Side]| {
+        sides.iter().enumerate().flat_map(|(n, &side)| spots(side, true).into_iter().map(move |r| (covered(r, rows), far(r).0, n, r, side))).min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)))
+    };
+    let at = |r: Rect, side: Side| (r.x, r.y, side);
+    match keep {
+        Some(Side::Right) => {
+            if let Some(r) = beside() {
+                return at(r, Side::Right);
+            }
+        }
+        Some(side) => {
+            if let Some((.., r, side)) = nearest(&[side]) {
+                return at(r, side);
+            }
+            return least(&[side]).map_or_else(|| place(anchor, card, window, side), |(.., r, side)| at(r, side));
+        }
+        None => {}
     }
-    let (_, _, side) = place(anchor, GUESS, window, prefer);
-    fit(anchor, natural, window, side)
+    if let Some(r) = beside() {
+        return at(r, Side::Right);
+    }
+    let other = if prefer == Side::Above { Side::Below } else { Side::Above };
+    if let Some((.., r, side)) = nearest(&[prefer, other]) {
+        return at(r, side);
+    }
+    // Nowhere clear (a narrow window, big text): where it covers the fewest letters, the gaps between lines first.
+    least(&[prefer, other]).map_or_else(|| place(anchor, card, window, prefer), |(.., r, side)| at(r, side))
+}
+
+/// The small card's height as drawn: its row and border.
+const MISSING_H: f32 = 36.;
+
+/// How wide the small card for `id` is with the widest of its words, so that it fits where it goes whichever
+/// it says next: its number, a dot, a mark and the words, with its padding, gaps and border.
+fn missing_width(window: &Window, id: TicketId) -> f32 {
+    let system = window.text_system().clone();
+    let style = window.text_style();
+    let width = |text: String, font: Font, size: f32| {
+        let run = TextRun { len: text.len(), font, color: Hsla::default(), background_color: None, underline: None, strikethrough: None };
+        f32::from(system.shape_line(text.into(), px(size), &[run], None).width)
+    };
+    let words = [t!("card.loading"), t!("card.not_found"), t!("card.unanswered")].into_iter().map(|w| width(w.to_string(), style.font(), SMALL)).fold(0., f32::max);
+    let number = width(format!("T-{id}"), font(MONO), 12.);
+    let dot = width("·".into(), style.font(), SMALL);
+    // Padding 12 each side, three gaps of 8, a 12 pt mark, a 1 pt border each side; a little over for the fonts.
+    (2. * 12. + 3. * 8. + 12. + 2. + number + dot + words + 4.).max(MISSING_MIN)
 }
 
 /// The room between the window's margin and the link, on `side` of it.
@@ -1290,7 +1456,7 @@ mod tests {
 
     use equipe_core::protocol::{TicketId, TicketStatus};
 
-    use super::{Act, CLOSE_AFTER, Hover, OPEN_AFTER, Phase, RESULT_FOR, Rect, SCROLL_QUIET, Side, Target, act_for_key, acts, done_words, fit, fit_for, place, tallest};
+    use super::{Act, CLOSE_AFTER, Hover, OPEN_AFTER, Phase, RESULT_FOR, Rect, SCROLL_QUIET, Side, Target, act_for_key, acts, done_words, fit, fit_on, place, place_small, tallest};
     use crate::board::MergeWay;
 
     const WIN: (f32, f32) = (1200., 800.);
@@ -1367,17 +1533,131 @@ mod tests {
         assert_eq!(sunk, Side::Below);
     }
 
+    /// A paragraph's rows, 20 tall from `top`, each `widths[i]` wide from x 80.
+    fn rows(top: f32, widths: &[f32]) -> Vec<Rect> {
+        widths.iter().enumerate().map(|(i, &w)| Rect::new(80., top + 20. * i as f32, w, 20.)).collect()
+    }
+
+    fn covers(at: (f32, f32, Side), card: (f32, f32), rows: &[Rect]) -> bool {
+        let r = Rect::new(at.0, at.1, card.0, card.1);
+        rows.iter().any(|t| r.x < t.x + t.w - 0.5 && t.x + 0.5 < r.x + r.w && r.y < t.y + t.h - 0.5 && t.y + 0.5 < r.y + r.h)
+    }
+
     #[test]
-    fn looking_and_not_found_take_the_side_the_ticket_card_will_take() {
-        // 760×600: 300 above the link, 270 below; the ticket card (about 300) goes above.
-        let (anchor, win) = (link(100., 300.), (760., 600.));
-        let ticket = fit_for(anchor, (380., 400.), win, Side::Below, true).0;
-        let looking = fit_for(anchor, (200., 36.), win, Side::Below, false).0;
-        assert_eq!((ticket.2, looking.2), (Side::Above, Side::Above));
-        // Its foot a gap over the link, as the ticket's card's is: the answer grows upward from the same edge.
-        assert!((looking.1 + 36. - (300. - 6.)).abs() < 0.01, "{looking:?}");
-        // Where the ticket's card fits below (a link high up), the small one goes below too.
-        assert_eq!(fit_for(link(100., 40.), (200., 36.), win, Side::Below, false).0.2, Side::Below);
+    fn the_small_card_sits_beside_its_link_when_its_row_has_room() {
+        // A heading over the link's row and a line under it, as in T-42's reply; the row ends at 480.
+        let text = rows(280., &[220., 400., 420.]);
+        let anchor = Rect::new(80., 300., 40., 20.);
+        let card = (190., 36.);
+        let at = place_small(anchor, card, WIN, Side::Above, &text, None);
+        assert_eq!(at.2, Side::Right);
+        assert!(at.0 >= 480., "{at:?}");
+        assert!(!covers(at, card, &text), "{at:?}");
+    }
+
+    #[test]
+    fn a_full_row_sends_the_small_card_to_the_side_with_no_text() {
+        // Rows to the window's edge: nothing beside. Text above the link, none below.
+        let text = rows(260., &[1100., 1100., 1100.]);
+        let anchor = Rect::new(300., 300., 40., 20.);
+        let card = (190., 36.);
+        let at = place_small(anchor, card, WIN, Side::Above, &text, None);
+        assert_eq!(at.2, Side::Below);
+        assert!(!covers(at, card, &text));
+        // Text on both sides: the side asked for, as before.
+        let crowded = rows(260., &[1100., 1100., 1100., 1100., 1100.]);
+        assert_eq!(place_small(anchor, card, WIN, Side::Above, &crowded, None).2, Side::Above);
+        // The other side has no room for it: the side asked for.
+        let low = Rect::new(300., 740., 40., 20.);
+        let text = rows(700., &[1100., 1100., 1100.]);
+        assert_eq!(place_small(low, card, WIN, Side::Above, &text, None).2, Side::Above);
+    }
+
+    #[test]
+    fn the_small_card_slides_along_the_line_above_to_where_its_text_ends() {
+        // A full row with the link (nothing beside), a short heading over it, a full row under it.
+        let text = vec![Rect::new(80., 260., 240., 30.), Rect::new(80., 300., 1100., 30.), Rect::new(80., 330., 1100., 30.)];
+        let anchor = Rect::new(80., 300., 60., 30.);
+        let card = (300., 36.);
+        let at = place_small(anchor, card, WIN, Side::Above, &text, None);
+        assert_eq!(at.2, Side::Above);
+        assert!((at.0 - 330.).abs() < 0.01, "{at:?}");
+        assert!(!covers(at, card, &text));
+        // Text everywhere near it: past the rows, on the nearer side — below, one row away, not two above.
+        let full = vec![Rect::new(80., 260., 1100., 30.), Rect::new(80., 300., 1100., 30.), Rect::new(80., 330., 1100., 30.)];
+        let at = place_small(anchor, card, WIN, Side::Above, &full, None);
+        assert_eq!(at.2, Side::Below);
+        assert!(!covers(at, card, &full), "{at:?}");
+    }
+
+    /// A reply in a narrow window with big text (760×600 at 150%, in its points): a header, a heading,
+    /// two list items to the column's edge, the reply's time and buttons, and the composer's words.
+    fn narrow_reply() -> Vec<Rect> {
+        vec![
+            Rect::new(260., 0., 240., 44.),
+            Rect::new(300., 60., 165., 20.),
+            Rect::new(310., 88., 180., 25.),
+            Rect::new(310., 113., 180., 25.),
+            Rect::new(310., 138., 120., 25.),
+            Rect::new(310., 172., 180., 25.),
+            Rect::new(310., 197., 180., 25.),
+            Rect::new(310., 222., 60., 25.),
+            Rect::new(295., 252., 130., 20.),
+            Rect::new(285., 318., 205., 26.),
+        ]
+    }
+
+    #[test]
+    fn with_no_room_near_its_link_the_small_card_goes_past_the_text_to_where_none_is() {
+        let (win, card, text) = ((507., 400.), (165., 36.), narrow_reply());
+        // T-42 under the heading, the header over that: down past the list and the reply's time.
+        let t42 = Rect::new(310., 88., 34., 25.);
+        let at = place_small(t42, card, win, Side::Below, &text, None);
+        assert_eq!(at.2, Side::Below);
+        assert!((at.1 - 278.).abs() < 0.01, "{at:?}");
+        assert!(!covers(at, card, &text), "{at:?}");
+        // T-999 on the list's next to last row: the same place, not over the time under the last.
+        let t999 = Rect::new(390., 197., 50., 25.);
+        let at = place_small(t999, card, win, Side::Above, &text, None);
+        assert_eq!(at.2, Side::Below);
+        assert!(!covers(at, card, &text), "{at:?}");
+        // "Couldn't check" after "Looking…", kept below: the same place.
+        assert_eq!(place_small(t42, card, win, Side::Below, &text, Some(Side::Below)), place_small(t42, card, win, Side::Below, &text, None));
+    }
+
+    #[test]
+    fn nowhere_clear_the_small_card_covers_the_air_between_lines_before_a_line() {
+        // Letters in each row's middle 18: a card 36 tall can't miss them all.
+        // Rows 30 tall, 10 apart, the window full of them.
+        let text: Vec<Rect> = (0..10).map(|i| Rect::new(10., 10. + 40. * i as f32, 480., 30.)).collect();
+        let anchor = Rect::new(10., 170., 40., 30.);
+        let at = place_small(anchor, (200., 36.), (500., 400.), Side::Below, &text, None);
+        let r = Rect::new(at.0, at.1, 200., 36.);
+        // What it hides is never most of a line's letters.
+        for t in &text {
+            let (top, bottom) = (t.y + 6., t.y + t.h - 6.);
+            let hidden = (r.y + r.h).min(bottom) - r.y.max(top);
+            assert!(hidden < 18., "{at:?} hides {hidden} of {t:?}");
+        }
+    }
+
+    #[test]
+    fn what_the_small_card_turns_into_keeps_its_side() {
+        let text = rows(280., &[220., 400., 420.]);
+        let anchor = Rect::new(80., 300., 40., 20.);
+        let card = (190., 36.);
+        let first = place_small(anchor, card, WIN, Side::Above, &text, None);
+        // "Couldn't check" on the next frame: the same place, even with wider words.
+        assert_eq!(place_small(anchor, (230., 36.), WIN, Side::Above, &text, Some(first.2)).2, first.2);
+        // Kept beside where it no longer fits (wider words than were measured): it picks again, inside the window.
+        let wide = place_small(anchor, (1000., 36.), WIN, Side::Above, &text, Some(Side::Right));
+        assert_ne!(wide.2, Side::Right);
+        // Kept below, it stays below even where it could now go beside.
+        assert_eq!(place_small(anchor, card, WIN, Side::Above, &text, Some(Side::Below)).2, Side::Below);
+        // The ticket's card, held to the side the look took, is cut to that side's room rather than turned over.
+        let ((_, y, side), room) = fit_on(Rect::new(100., 300., 40., 20.), (380., 400.), (760., 600.), Side::Below);
+        assert_eq!(side, Side::Below);
+        assert!((y - 326.).abs() < 0.01 && (room - 266.).abs() < 0.01, "{y} {room}");
     }
 
     #[test]

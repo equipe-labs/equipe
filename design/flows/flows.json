@@ -570,6 +570,18 @@
               "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0; script `chat;wait:800;zoom:150;wait:600`"
             },
             {
+              "id": "ticket-card-zoomed-looking",
+              "label": "Zoomed to 150%: Looking… on T-42, slid along the heading's line",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42 FAKE_NO_LOOKUP=1; script `chat;wait:800;zoom:150;wait:600`"
+            },
+            {
+              "id": "ticket-card-zoomed-looking-narrow",
+              "label": "The same, at the narrowest width: no room near the link, so it goes past the text, under the reply's time",
+              "kind": "default",
+              "note": "shot by design/flows/shoot-desktop.py: FAKE_CARDS=1 FAKE_ASKS=0 FAKE_STALE=42 FAKE_NO_LOOKUP=1; script `chat;wait:800;zoom:150;wait:600`"
+            },
+            {
               "id": "ticket-card-looking",
               "label": "A ticket card the list missed, while the daemon is still asked",
               "kind": "default",
