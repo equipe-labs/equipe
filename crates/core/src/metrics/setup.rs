@@ -157,6 +157,10 @@ impl Metrics {
             return Err(refuse(BAD_PARAMS, "name a squad"));
         }
         let Some(browser) = browser else { return Ok(PosthogLook::default()) };
+        if let Some(host) = p.sign_out.as_deref().and_then(known_host) {
+            let bare = host.split("://").nth(1).unwrap_or(&host).to_owned();
+            browser.ask(json!({ "op": "posthog", "step": "logout", "host": bare })).await;
+        }
         let answer = browser.ask(json!({ "op": "posthog", "step": "look" })).await;
         Ok(PosthogLook { browser: answer.is_some(), accounts: answer.as_ref().map(accounts).unwrap_or_default() })
     }
@@ -371,10 +375,17 @@ mod tests {
     #[tokio::test]
     async fn looking_without_a_shared_browser_says_so() {
         let metrics = Metrics::new(&scratch("look"), Box::new(InMemory::default()));
-        let look = metrics.posthog_look(None, &PosthogLookParams { squad: "atinum".into() }).await.unwrap();
+        let look = metrics.posthog_look(None, &PosthogLookParams { squad: "atinum".into(), sign_out: None }).await.unwrap();
         assert!(!look.browser && !look.signed_in());
         let browser = Stand { look: signed_in(json!([{ "id": 1, "name": "A" }])), key: None, asked: Default::default() };
-        let look = metrics.posthog_look(Some(&browser), &PosthogLookParams { squad: "atinum".into() }).await.unwrap();
+        let look = metrics.posthog_look(Some(&browser), &PosthogLookParams { squad: "atinum".into(), sign_out: None }).await.unwrap();
         assert!(look.browser && look.signed_in());
+        assert_eq!(browser.asked.lock().unwrap().len(), 1, "a look asks nothing else");
+        // "Sign in again": PostHog's sign-out on that host first — never another host's.
+        metrics.posthog_look(Some(&browser), &PosthogLookParams { squad: "atinum".into(), sign_out: Some("https://eu.posthog.com".into()) }).await.unwrap();
+        metrics.posthog_look(Some(&browser), &PosthogLookParams { squad: "atinum".into(), sign_out: Some("https://evil.example".into()) }).await.unwrap();
+        let asked = browser.asked.lock().unwrap();
+        assert_eq!((asked[1]["step"].as_str(), asked[1]["host"].as_str()), (Some("logout"), Some("eu.posthog.com")));
+        assert_eq!(asked.iter().filter(|a| a["step"] == "logout").count(), 1);
     }
 }

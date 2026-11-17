@@ -47,6 +47,8 @@ pub struct Inputs {
     setup_until: Option<std::time::Instant>,
     /// Its sign-in was opened in equipe's browser already.
     setup_signin_opened: bool,
+    /// The PostHog host to sign out of before the next look ("Sign in again").
+    setup_sign_out: Option<String>,
 }
 
 impl Inputs {
@@ -1142,7 +1144,8 @@ impl Shell {
         if self.metrics.demo {
             return;
         }
-        let params = wire::PosthogLookParams { squad: self.model.squad.clone() };
+        let signed_out_of = self.metrics_ui.setup_sign_out.take();
+        let params = wire::PosthogLookParams { squad: self.model.squad.clone(), sign_out: signed_out_of.clone() };
         self.metrics_ask::<wire::PosthogLook>(wire::POSTHOG_LOOK, params, SETUP_ASK_WAIT, cx, move |this, answer, cx| {
             let opened = this.metrics_ui.setup_signin_opened;
             let Some(d) = this.metrics_setup() else { return };
@@ -1158,7 +1161,8 @@ impl Shell {
             d.setup = Some(next);
             if signing_in {
                 if start && !opened {
-                    this.metrics_setup_sign_in(metrics::POSTHOG_SIGN_IN, cx);
+                    let page = signed_out_of.map_or_else(|| metrics::POSTHOG_SIGN_IN.to_owned(), |h| format!("{}/login", h.trim_end_matches('/')));
+                    this.metrics_setup_sign_in(&page, cx);
                 }
                 this.metrics_setup_poll(cx);
             }
@@ -1190,16 +1194,12 @@ impl Shell {
         cx.notify();
     }
 
-    /// PostHog wants a fresh sign-in before it makes a key: out, and in again
-    /// in equipe's browser — then the same card asks the person's yes again.
+    /// PostHog wants a fresh sign-in before it makes a key: equipe signs out
+    /// of PostHog in its browser (PostHog's own sign-out), the sign-in opens
+    /// there for the person — then the same card asks their yes again.
     pub fn metrics_setup_sign_in_again(&mut self, host: &str, cx: &mut Context<Self>) {
-        self.metrics_setup_sign_in(&format!("{}/logout", host.trim_end_matches('/')), cx);
-        self.metrics_ui.setup_until = Some(std::time::Instant::now() + SETUP_WAIT);
-        if let Some(d) = self.metrics_setup() {
-            d.setup = Some(Setup::SignIn);
-        }
-        self.metrics_setup_poll(cx);
-        cx.notify();
+        self.metrics_ui.setup_sign_out = Some(host.to_owned());
+        self.metrics_setup_look(true, cx);
     }
 
     /// The project picked on the choice card: the card that asks the yes.

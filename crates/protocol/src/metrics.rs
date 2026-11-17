@@ -426,6 +426,11 @@ mod tests {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PosthogLookParams {
     pub squad: String,
+    /// The person's "Sign in again" (PostHog makes keys only for a sign-in
+    /// of the last two hours): sign out of this account's host first —
+    /// `https://us.posthog.com` or `https://eu.posthog.com`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign_out: Option<String>,
 }
 
 /// What equipe's browser shows of PostHog Cloud.

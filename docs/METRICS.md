@@ -172,8 +172,9 @@ key and links PostHog's key page to delete it.
 
 **When it can't be done for the person.** PostHog makes a key only for a
 sign-in from the last two hours (`403 sensitive_action_required_reauth`): the
-card says so and **Sign in again** opens `/logout` → sign-in in equipe's
-browser, then the same yes card. Signed out meanwhile: back to signing in.
+card says so, and **Sign in again** signs out of PostHog in equipe's browser
+(PostHog's own `POST /logout`, from equipe's tab) and opens the sign-in there
+for the person; once they are in, the same yes card comes back. Signed out meanwhile: back to signing in.
 Anything else (a limit on keys, no answer, members using a Chrome each, a
 self-hosted PostHog): the key page opens in equipe's browser with the steps,
 beside the paste boxes. What stays manual: a self-hosted PostHog (only US and
@@ -332,7 +333,7 @@ or `metrics.refresh` shows when it has.
 
 ### `metrics.posthog_look`, `metrics.posthog_setup`
 
-`{ "squad" }` → `PosthogLook { browser, accounts: [{ host, region, organization, projects: [{ id, name }], current? }] }`.
+`{ "squad", "sign_out"?: "https://us.posthog.com" }` → `PosthogLook { browser, accounts: [{ host, region, organization, projects: [{ id, name }], current? }] }` (`sign_out`: the person's "Sign in again" — PostHog's own sign-out on that host first).
 
 `{ "squad", "project"?, "host", "project_id", "id"? }` → `PosthogSetup { outcome: connected | sign_in | sign_in_again | manual, connection?, key_label, scopes, keys_url, events, page_views, north_star_event?, why? }`
 — the person's yes only; never carries the key. See "PostHog: Set it up for me".

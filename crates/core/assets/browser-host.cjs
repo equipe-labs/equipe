@@ -65,11 +65,12 @@
 //     code; `snap` answers it, PNG in base64, to the daemon alone)
 //   {"op":"posthog","step":"look","token":12}
 //   {"op":"posthog","step":"key","host":"us.posthog.com","label":"…","scopes":["query:read"],"teams":[735144],"token":13}
-//   {"op":"posthog","step":"done","token":14}
+//   {"op":"posthog","step":"logout","host":"us.posthog.com","token":14}  {"op":"posthog","step":"done","token":15}
 //     (equipe's own tab on PostHog Cloud, on the person's session: who is
 //     signed in and to which projects, or one personal API key made through
 //     PostHog's API; `answer` carries it — the key's value too — to the
-//     daemon alone; `done` closes the tabs)
+//     daemon alone; `logout` is PostHog's own sign-out, for the person's
+//     "Sign in again"; `done` closes the tabs)
 // Page ids start at $EQUIPE_FIRST_PAGE. A member's tab is told with what the
 // daemon reads to tell whether it waits for a person (`signals`), and its icon.
 // Its standard output is binary: messages of `u32be length | u8 kind | payload`
@@ -1223,6 +1224,14 @@ const startProfile = async (name, profile, STATE) => {
     if (!r.ok) return { status: r.status, code: (body && body.code) || null, detail: body && typeof body.detail === 'string' ? body.detail.slice(0, 300) : null };
     return { status: r.status, id: (body && body.id) || null, value: (body && body.value) || null };
   };
+  // The person's "Sign in again" (PostHog makes keys only for a sign-in of the last two hours):
+  // PostHog's own sign-out — a POST, with the page's CSRF token — so the next sign-in is fresh.
+  const posthogLogout = async () => {
+    const cookie = document.cookie.split('; ').find((c) => c.startsWith('posthog_csrftoken=')) || '';
+    const csrf = decodeURIComponent(cookie.slice('posthog_csrftoken='.length));
+    const r = await fetch('/logout', { method: 'POST', credentials: 'same-origin', redirect: 'manual', headers: { 'X-CSRFToken': csrf } });
+    return { status: r.status || 302 };
+  };
   const posthog = async ({ step, host, label, scopes, teams, token }) => {
     const answer = (rest) => emit({ type: 'answer', token, ...rest });
     if (step === 'look') {
@@ -1238,6 +1247,11 @@ const startProfile = async (name, profile, STATE) => {
       const page = await posthogTab(host).catch(() => null);
       const made = page ? await page.evaluate(posthogMint, { label, scopes, teams }).catch(() => null) : null;
       return answer(made || { status: 0 });
+    }
+    if (step === 'logout' && POSTHOG_HOSTS.includes(host)) {
+      const page = await posthogTab(host).catch(() => null);
+      const out = page ? await page.evaluate(posthogLogout).catch(() => null) : null;
+      return answer(out || { status: 0 });
     }
     if (step === 'done') {
       for (const t of posthogTabs.values()) await t.close().catch(() => {});
