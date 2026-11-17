@@ -355,6 +355,8 @@
   "news.merge_conflict_owner": "T-{id} kollidiert mit main: main hereinholen und den Konflikt lösen.",
   "news.merged": "Du hast T-{id} · {title} in {branch} gemergt.",
   "news.merged_local": "T-{id} · {title} in {branch} gemergt. Dieses Projekt hat kein Remote, also gab es nichts zu pushen.",
+  "news.captures_kept_out": "T-{id}: {count} Designbilder ({size}) wurden aus git herausgehalten. Sie bleiben auf der Festplatte und in equipes Speicher.",
+  "news.captures_heavy": "T-{id}: Commit {commit} fügt git {size} an Bildern hinzu. Große Bilder gehören nicht ins Repository.",
   "news.merged_pushed": "Du hast T-{id} · {title} in {branch} gemergt und gepusht.",
   "news.person_created": "Du hast T-{id} für {name} aufs Board gesetzt · {title}.",
   "news.person_created_unowned": "Du hast T-{id} aufs Board gesetzt – der PM entscheidet, wer es macht · {title}.",

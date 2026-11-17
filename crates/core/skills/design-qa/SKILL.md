@@ -75,3 +75,7 @@ them, with main's own precheck since the last review. Look at them together and 
 per change: an S1/S2 in `blockers` becomes a fix ticket for its engineer; S3/S4 in `polish` go into one polish ticket.
 An **audit** ticket holds a random sample of those changes, on the top tier: audit each as its own design QA would —
 every S1/S2 you find there is counted as a miss of the routing, and enough misses send more changes to you one by one.
+
+Renders and screenshots you make under `design/` (`qa/`, `checks/` and the rest) are never committed: leave them on
+disk and never `git add` them — equipe keeps them out of git and lists them in `design/captures.json`. Commit the
+report itself.

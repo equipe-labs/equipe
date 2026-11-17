@@ -1184,7 +1184,7 @@ enum Internal {
     Settled { merged: Vec<(String, TicketId)>, cache: worktree::MergedCache },
     /// A merge the person asked for, worked out off the loop: main's name and,
     /// when a push was asked for, how it went — or why nothing was merged.
-    Merged { squad: String, ticket: TicketId, result: MergeResult },
+    Merged { squad: String, ticket: TicketId, result: MergeResult, kept: Option<crate::design::captures::Report> },
     /// A project's checks ran on accepted work merged with main, off the loop.
     Checked(Box<gate::Gate>, crate::checks::Outcome),
     /// The free space on equipe's disk, as a look begun then found it.
@@ -1983,7 +1983,7 @@ impl Runtime {
                     }
                 }
                 Internal::Settled { merged, cache } => self.on_settled(merged, cache),
-                Internal::Merged { squad, ticket, result } => self.on_merged(&squad, ticket, result),
+                Internal::Merged { squad, ticket, result, kept } => self.on_merged(&squad, ticket, result, kept),
                 Internal::Checked(gate, outcome) => Box::pin(self.on_checked(*gate, outcome)).await,
                 Internal::Disk(status, asked) => self.on_disk(status, asked),
                 Internal::DiskReport(report, asked) => self.on_disk_report(*report, asked),
@@ -4119,6 +4119,29 @@ runbooks and reports live there, and work across the projects or on running them
 
     /// Tell `squad`'s PM `line` with its next message; with `shown`, its
     /// conversation also shows what happened, so a screen on the PM sees it.
+    /// Landing `ticket` kept design captures out of git, or found a commit
+    /// heavy with images: its member hears what to do instead, the PM and
+    /// the person what happened.
+    fn captures_kept_out(&mut self, squad: &str, ticket: &Ticket, kept: &crate::design::captures::Report) {
+        let line = kept.line(ticket.id.into());
+        let size = crate::design::captures::size_words;
+        let mut shown = Vec::new();
+        if kept.kept_out > 0 {
+            shown.push(say!(self, "news.captures_kept_out", id = ticket.id, count = kept.kept_out, size = size(kept.bytes)));
+        }
+        for heavy in &kept.heavy {
+            shown.push(say!(self, "news.captures_heavy", id = ticket.id, size = size(heavy.bytes), commit = &heavy.commit[..heavy.commit.len().min(10)]));
+        }
+        let shown = shown.join("\n");
+        if let Some(journal) = self.journal(squad) {
+            let _ = journal.ticket_event(ticket.id, "equipe", "design captures kept out of git", &line);
+        }
+        if let Some(member) = ticket.owner.clone().or_else(|| ticket.assignee.clone()) {
+            self.brief_member(squad, &member, &line, &shown);
+        }
+        self.brief_pm(squad, line, Some(shown));
+    }
+
     fn brief_pm(&mut self, squad: &str, line: String, shown: Option<String>) {
         let Some(pm) = self.pm_of(squad) else {
             return;
@@ -7303,7 +7326,10 @@ todo); or drop it if it's no longer wanted.]"
                 let roots = [squad_home::path(&self.config.home, &squad), sandbox.path.clone()];
                 {
                     watchdog::mark("work's end: hand-in pictures");
-                    crate::visuals::hand_in(&work.shown, &sandbox.changed_files().unwrap_or_default(), &sandbox.path, &roots)
+                    // The design captures it made are on disk, never committed: its manifest names them.
+                    let mut changed = sandbox.changed_files().unwrap_or_default();
+                    changed.extend(crate::design::captures::changed(&sandbox.path, &sandbox.base));
+                    crate::visuals::hand_in(&work.shown, &changed, &sandbox.path, &roots)
                 }
             }
             _ => work.shown.clone(),
@@ -7597,6 +7623,9 @@ with what else waits.]"
             }
             return Err(err);
         }
+        if let Some(kept) = crate::design::captures::take_report(&sandbox.repo, &sandbox.branch) {
+            self.captures_kept_out(squad, ticket, &kept);
+        }
         let folder = squad_home::path(&self.config.home, squad);
         ticket.images = crate::visuals::moved(&ticket.images, &from, &folder.canonicalize().unwrap_or(folder));
         watchdog::mark("landing in the squad's folder: worktree removed");
@@ -7770,16 +7799,20 @@ with what else waits.]"
         tokio::task::spawn_blocking(move || {
             let result = worktree::merge_into_main(&repo, &branch, &message)
                 .map(|main| (main, push.then(|| worktree::push_main(&repo).map(|_| ()))));
-            let _ = internal.send(Internal::Merged { squad, ticket, result });
+            let kept = crate::design::captures::take_report(&repo, &branch);
+            let _ = internal.send(Internal::Merged { squad, ticket, result, kept });
         });
     }
 
     /// A merge the person asked for is through, or merged nothing.
-    fn on_merged(&mut self, squad: &str, ticket: TicketId, result: MergeResult) {
+    fn on_merged(&mut self, squad: &str, ticket: TicketId, result: MergeResult, kept: Option<crate::design::captures::Report>) {
         self.merging.remove(&(squad.to_owned(), ticket));
         let Some(mut found) = self.find_ticket(squad, ticket) else {
             return;
         };
+        if let Some(kept) = kept {
+            self.captures_kept_out(squad, &found, &kept);
+        }
         let (main, pushed) = match result {
             Ok(merged) => merged,
             Err(err) => {
@@ -10611,6 +10644,7 @@ check what is already done in your worktree first."
         let mut repos: Vec<PathBuf> = looked.iter().flat_map(|s| s.projects.iter().cloned()).collect();
         repos.sort();
         repos.dedup();
+        let homes: Vec<PathBuf> = squads.iter().map(|s| squad_home::path(&home, s)).filter(|p| p.join(".git").exists()).collect();
         let internal = self.internal.clone();
         std::thread::spawn(move || {
             for line in crate::disk::tidy_lane_tmp(&home, &open, &keep) {
@@ -10626,6 +10660,17 @@ check what is already done in your worktree first."
             let _ = internal.send(Internal::LaneTmpLooked(Box::new(look)));
             for line in crate::disk::clear_git_garbage(&repos) {
                 crate::daemon_log!("equipe: {line}");
+            }
+            // Design captures out of git (an upgrade's one commit on main), and the store kept small.
+            for repo in repos.iter().chain(&homes) {
+                match crate::design::captures::migrate(repo) {
+                    Ok(Some(m)) => crate::daemon_log!("equipe: {} stopped tracking {} design captures ({}) in {}", repo.display(), m.untracked, crate::design::captures::size_words(m.bytes), m.commit),
+                    Ok(None) => {}
+                    Err(err) => crate::daemon_log!("equipe: {} still tracks design captures: {err}", repo.display()),
+                }
+                for line in crate::design::captures::gc(repo) {
+                    crate::daemon_log!("equipe: {line}");
+                }
             }
         });
     }

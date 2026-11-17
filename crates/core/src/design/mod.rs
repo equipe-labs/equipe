@@ -51,10 +51,14 @@
 //!   rendered at each condition, measured, compared with the map's pictures —
 //!   before any designer turn (docs/DESIGN-QA.md).
 //! - `qa_stats`: what design QA costs and decides, read from a squad's journal.
+//! - `captures`: the pictures and videos the design tools make, kept out of
+//!   git — listed in `captures.json`, their bytes in equipe's store, on disk
+//!   where they always were (docs/DESIGN-CAPTURES.md).
 //! - `session`: design sessions — the kickoff, the person's pins, the lines
 //!   `equipe design session` prints, and the PM's proposals, once per ticket.
 
 pub mod brand;
+pub mod captures;
 pub mod check;
 pub mod component;
 pub mod fonts;

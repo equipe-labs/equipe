@@ -352,6 +352,8 @@
   "news.merge_conflict_owner": "T-{id} が main と衝突したため、main を取り込んで衝突を解くよう頼みました。",
   "news.merged": "T-{id} · {title} を {branch} にマージしました。",
   "news.merged_local": "T-{id} · {title} を {branch} にマージしました。このプロジェクトにはリモートがないため、プッシュは省きました。",
+  "news.captures_kept_out": "T-{id}: デザイン画像 {count} 件（{size}）を git から外しました。ファイルはディスクと equipe のストアに残っています。",
+  "news.captures_heavy": "T-{id}: コミット {commit} が git に {size} の画像を追加しています。大きな画像はリポジトリの外に置いてください。",
   "news.merged_pushed": "T-{id} · {title} を {branch} にマージしてプッシュしました。",
   "news.person_created": "T-{id} をボードに追加し、{name} に任せました · {title}。",
   "news.person_created_unowned": "T-{id} をボードに追加しました。担当は PM が決めます · {title}。",
