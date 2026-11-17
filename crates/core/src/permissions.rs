@@ -570,6 +570,55 @@ fn host(url: &str) -> Option<&str> {
 /// run — `$TMPDIR` spelled out, the project's hooks off — or `None` for
 /// anything else, which goes on as before.
 pub fn project_checkout(command: &str, projects: &[std::path::PathBuf], tmp: &std::path::Path) -> Option<String> {
+    checkout(command, projects, tmp).map(|(command, _, _)| command)
+}
+
+/// The same checkout asked by a Codex member, whose engine runs its own
+/// command once allowed — `$TMPDIR` its own, the lane's, as equipe gives
+/// it — and can't be handed one with the project's hooks off: allowed
+/// without asking only where no hook can run on it. `worktree remove` and
+/// `prune` run none; `worktree add` runs `post-checkout` and
+/// `reference-transaction`, so it passes only when the project has neither
+/// and no git config it reads could point its hooks elsewhere
+/// ([`hooks_quiet`]). `configs` are the git config files besides the
+/// project's own ([`git_configs`]).
+pub fn codex_project_checkout(command: &str, projects: &[std::path::PathBuf], tmp: &std::path::Path, configs: &[std::path::PathBuf]) -> bool {
+    checkout(command, projects, tmp).is_some_and(|(_, project, adds)| !adds || hooks_quiet(&project, configs))
+}
+
+/// The git config files git reads besides a repository's own: the system's
+/// (as Apple's, Homebrew's or a Linux git installs it) and the person's
+/// (`user_home`).
+pub fn git_configs(user_home: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
+    let mut configs: Vec<std::path::PathBuf> = ["/etc/gitconfig", "/opt/homebrew/etc/gitconfig", "/usr/local/etc/gitconfig"].iter().map(std::path::PathBuf::from).collect();
+    if let Some(home) = user_home {
+        configs.extend([home.join(".gitconfig"), home.join(".config").join("git").join("config")]);
+    }
+    configs
+}
+
+/// No hook can run on a checkout of `project`: none of the two `worktree add`
+/// runs in its `.git/hooks`, and no git config it reads — its own and
+/// `configs` — sets `core.hooksPath` or includes another file that might
+/// (read as text: an include is not followed, it just asks).
+fn hooks_quiet(project: &std::path::Path, configs: &[std::path::PathBuf]) -> bool {
+    let git = project.join(".git");
+    if !git.is_dir() || ["post-checkout", "reference-transaction"].iter().any(|hook| std::fs::symlink_metadata(git.join("hooks").join(hook)).is_ok()) {
+        return false;
+    }
+    let own = git.join("config");
+    std::iter::once(&own).chain(configs).all(|config| match std::fs::read_to_string(config) {
+        Ok(text) => {
+            let text = text.to_ascii_lowercase();
+            !text.contains("hookspath") && !text.contains("[include")
+        }
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    })
+}
+
+/// [`project_checkout`]'s command, the project it checks out, and whether it
+/// adds a checkout (`worktree add`).
+fn checkout(command: &str, projects: &[std::path::PathBuf], tmp: &std::path::Path) -> Option<(String, std::path::PathBuf, bool)> {
     let tmp = tmp.canonicalize().ok()?;
     let words = checkout_words(command, &tmp.to_string_lossy())?;
     let [git, c, project, worktree, verb, rest @ ..] = words.as_slice() else { return None };
@@ -598,15 +647,15 @@ pub fn project_checkout(command: &str, projects: &[std::path::PathBuf], tmp: &st
                 None => String::new(),
             };
             let force = if rest.iter().any(|w| w == "-f" || w == "--force") { " --force" } else { "" };
-            Some(format!("{git} add --detach{force} {}{reference}", quoted(&path.to_string_lossy())?))
+            Some((format!("{git} add --detach{force} {}{reference}", quoted(&path.to_string_lossy())?), project.clone(), true))
         }
         "remove" if flags(&["-f", "--force"]) => {
             let [path] = paths.as_slice() else { return None };
             let path = inside_tmp(path, &tmp)?;
             let force = if rest.is_empty() || paths.len() == rest.len() { "" } else { " --force" };
-            Some(format!("{git} remove{force} {}", quoted(&path.to_string_lossy())?))
+            Some((format!("{git} remove{force} {}", quoted(&path.to_string_lossy())?), project.clone(), false))
         }
-        "prune" if rest.is_empty() => Some(format!("{git} prune")),
+        "prune" if rest.is_empty() => Some((format!("{git} prune"), project.clone(), false)),
         _ => None,
     }
 }
@@ -737,6 +786,76 @@ mod tests {
             assert_eq!(at(&refused), None, "{refused}");
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_codex_member_checks_a_project_out_the_same_way_where_no_hook_can_run_on_it() {
+        use equipe_providers::claude_code::Access;
+        use equipe_providers::codex_app::{self, TurnCollector};
+        let root = std::env::temp_dir().join(format!("equipe-codex-checkout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (tmp, project, user) = (root.join("tmp/acme/t7"), root.join("web"), root.join("user"));
+        for dir in [&tmp, &project.join(".git/hooks"), &user] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(project.join(".git/config"), "[core]\n\tbare = false\n").unwrap();
+        let projects = [project.clone()];
+        let web = project.display().to_string();
+        // What Codex asks, escalating out of its sandbox, as equipe hears it.
+        let asked = |command: &str| {
+            let params = serde_json::json!({ "itemId": "c1", "command": format!("/bin/zsh -lc '{command}'"), "reason": "writes the project's .git/worktrees" });
+            let (tool, input) = codex_app::ask_of("item/commandExecution/requestApproval", &params, &TurnCollector::new(), Access::EditFiles).unwrap();
+            assert_eq!(tool, "Bash");
+            input["command"].as_str().unwrap().to_owned()
+        };
+        let add = asked(&format!("git -C {web} worktree add --detach \"$TMPDIR/preview\" main"));
+        let remove = asked(&format!("git -C {web} worktree remove --force \"$TMPDIR/preview\""));
+        let prune = asked(&format!("git -C {web} worktree prune"));
+        let configs = [user.join(".gitconfig")];
+        let at = |command: &str| codex_project_checkout(command, &projects, &tmp, &configs);
+        assert!(at(&add) && at(&remove) && at(&prune), "{add} · {remove} · {prune}");
+        // The same command shapes as Claude Code's, nothing more.
+        for refused in [
+            format!("git -C {web} worktree add $TMPDIR/preview main"),
+            format!("git -C {web} worktree add --detach {}/preview main", root.display()),
+            format!("git -C {web} worktree add --detach $TMPDIR/preview main && rm -rf ~"),
+            format!("cp -R {web} $TMPDIR/preview"),
+            format!("git clone {web} $TMPDIR/preview"),
+        ] {
+            assert!(!at(&refused), "{refused}");
+        }
+        // Where a hook could run on a checkout, adding one asks; removing never runs one.
+        std::fs::write(project.join(".git/hooks/post-checkout"), "#!/bin/sh\n").unwrap();
+        assert!(!at(&add) && at(&remove) && at(&prune));
+        std::fs::remove_file(project.join(".git/hooks/post-checkout")).unwrap();
+        std::fs::write(project.join(".git/config"), "[core]\n\thooksPath = .husky/_\n").unwrap();
+        assert!(!at(&add), "hooks the checked-out tree brings would run outside the fence");
+        std::fs::write(project.join(".git/config"), "[core]\n\tbare = false\n").unwrap();
+        std::fs::write(user.join(".gitconfig"), "[includeIf \"gitdir:~/work/\"]\n\tpath = ~/.work\n").unwrap();
+        assert!(!at(&add), "an include might set hooksPath: asked");
+        std::fs::write(user.join(".gitconfig"), "[user]\n\tname = x\n").unwrap();
+        assert!(at(&add));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_codex_member_in_auto_writes_only_its_worktree_build_cache_and_tmp_and_asks_to_leave_the_sandbox() {
+        use equipe_providers::claude_code::Access;
+        use equipe_providers::codex_app;
+        // What equipe gives a Codex member's turn in auto: its build cache and
+        // its own temporary folder writable, nothing of a project's repository,
+        // so a checkout beside one leaves the sandbox — through an approval
+        // equipe answers ([`codex_project_checkout`]).
+        let writable = [std::path::PathBuf::from("/h/builds/web"), std::path::PathBuf::from("/h/tmp/acme/t7")];
+        let request = codex_app::TurnRequest { prompt: "go", access: Access::EditFiles, writable: &writable, ..Default::default() };
+        let turn = codex_app::turn_params(&request, std::path::Path::new("/h/worktrees/web/t7"), "thread");
+        assert_eq!(turn["approvalPolicy"], "on-request");
+        assert_eq!(turn["sandboxPolicy"]["type"], "workspaceWrite");
+        assert_eq!(turn["sandboxPolicy"]["writableRoots"], serde_json::json!(["/h/builds/web", "/h/tmp/acme/t7"]));
+        assert_eq!(turn["sandboxPolicy"]["networkAccess"], false);
+        let start = codex_app::start_params(&request, std::path::Path::new("/h/worktrees/web/t7"), None);
+        assert_eq!((start["sandbox"].as_str(), start["approvalPolicy"].as_str()), (Some("workspace-write"), Some("on-request")));
     }
 
     #[test]
