@@ -74,6 +74,10 @@ pub enum Activity {
     Thinking(String),
     /// The model the engine is running, reported at startup.
     Model(String),
+    /// The account refused `model` for the turn (Codex's `model_not_found`:
+    /// not offered on this account, or not right now), so the turn was asked
+    /// again, once, on `instead`.
+    ModelRefused { model: String, instead: String },
     /// The engine's process started, with this id: what runs under it is the
     /// turn's — its commands among them.
     Engine { pid: u32 },

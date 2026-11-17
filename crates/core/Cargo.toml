@@ -39,9 +39,10 @@ whatlang = "0.18.0"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.190"
 
-# Logins' passwords on Windows, in Credential Manager only (`vault`).
+# Logins' passwords on Windows, in Credential Manager only (`vault`); the
+# time zone for quiet hours (`escalation`).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Credentials"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Credentials", "Win32_System_Time"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Logins' passwords, in the Keychain only (`vault`).

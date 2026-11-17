@@ -195,7 +195,7 @@ async fn with_another_engine_signed_in_a_signed_out_codex_still_says_how_to_sign
     let spec = SessionSpec { engine: Some(Engine::Codex), ..plain(&scratch("cwd"), Access::ReadOnly) };
     let failed = add(&handle, &mut events, 1, spec).await;
     let Some(Event::Error { message, .. }) = failed.last() else { panic!("{failed:#?}") };
-    assert!(message.contains("Codex CLI isn't signed in"), "the person picks per member with /model: {message}");
+    assert!(message.contains("Codex's sign-in"), "the person picks per member with /model: {message}");
     // Picked by model: on Nemotron, Claude signed in or not.
     let spec = SessionSpec { engine: Some(Engine::Codex), model: Some(MODEL.into()), ..plain(&scratch("cwd"), Access::ReadOnly) };
     let started = add(&handle, &mut events, 2, spec).await;
@@ -213,7 +213,7 @@ async fn without_a_key_nothing_signed_in_says_so_and_how() {
     let spec = SessionSpec { engine: Some(Engine::Codex), ..plain(&scratch("cwd"), Access::ReadOnly) };
     let failed = add(&handle, &mut events, 2, spec).await;
     let Some(Event::Error { message, .. }) = failed.last() else { panic!("{failed:#?}") };
-    assert!(message.contains("Codex CLI isn't signed in"), "{message}");
+    assert!(message.contains("Codex's sign-in"), "{message}");
 }
 
 #[tokio::test]

@@ -434,7 +434,10 @@ impl Runtime {
             self.start_turn(id, prompt);
             return true;
         }
-        let Some(work) = s.work.as_ref().filter(|w| !w.preparing) else { return false };
+        let Some(work) = s.work.as_ref().filter(|w| !w.preparing) else {
+            self.model_refused_turns.remove(&id);
+            return false;
+        };
         let (Some(squad), Some(name)) = (s.squad.clone(), s.name().map(str::to_owned)) else { return false };
         // Stopped by the person, it is left as it was; stopped by equipe for
         // going silent, it has no end to its work, and is carried on below.
@@ -448,8 +451,11 @@ impl Runtime {
         // An engine out of its limit fails every turn: that is the limit, not a
         // failure to retry — unless the failure is its sign-in.
         let signed_out = failed && ending.error.as_ref().is_some_and(|(_, next)| crate::engine_auth::lost_by(next.as_deref()).is_some());
+        // A model the account refused isn't the engine's limit either: another
+        // model does the turn when it goes on.
+        let refused = self.model_refused_turns.remove(&id) && failed;
         let out = self.engine_out(&squad, engine).is_some();
-        if limit_ending(ending.limit, signed_out, out) {
+        if limit_ending(ending.limit && !refused, signed_out || refused, out) {
             self.park_for_limit(id, &squad, &name, ticket, engine, &ending);
             return true;
         }
@@ -790,6 +796,13 @@ kept; it goes on by itself — on the other engine if {name} moves there, or onc
         self.brief_pm(squad, line, shown);
         // The rules weigh it now: a member may move to the other engine, its
         // ticket handed over; the plan is read again for when it resets.
+        self.read_engine_usage(engine);
+        self.consider_engines(squad);
+        self.show_pause(id);
+    }
+
+    /// `engine`'s plan read again (no more often than each reader allows).
+    fn read_engine_usage(&mut self, engine: Engine) {
         match engine {
             Engine::Claude => {
                 self.read_claude_usage();
@@ -798,8 +811,6 @@ kept; it goes on by itself — on the other engine if {name} moves there, or onc
                 self.read_codex_usage(true);
             }
         }
-        self.consider_engines(squad);
-        self.show_pause(id);
     }
 
     /// Pause run `id` as `park` says, its card saying why.
@@ -971,6 +982,12 @@ kept; it goes on by itself — on the other engine if {name} moves there, or onc
         let (Some(squad), true) = (s.squad.clone(), s.member.is_some()) else { return false };
         let engine = s.engine;
         let Some(resets) = self.engine_out(&squad, engine) else { return false };
+        // Held on a reading: Codex's plan (read without a turn) is read again,
+        // so the hold lasts no longer than it is true.
+        if engine == Engine::Codex {
+            self.read_codex_usage(true);
+        }
+        let Some(s) = self.sessions.get(&id) else { return false };
         let now = now_secs();
         let due = (resets.max(0) as u64).max(now + 1);
         if s.work.is_some() {
@@ -1149,6 +1166,9 @@ mod tests {
         assert!(limit_ending(true, false, false), "it said so");
         assert!(!limit_ending(false, false, false), "failed with room: a failure to retry");
         assert!(!limit_ending(false, true, true), "its sign-in lost: carried on by the sign-in");
+        // As `unfinished_turn` asks it of a model the account refused: never the limit.
+        let refused = true;
+        assert!(!limit_ending(false && !refused, refused, true), "a refused model on an engine read as out: another model, not a wait");
     }
 
     #[test]

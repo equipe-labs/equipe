@@ -163,7 +163,7 @@ impl Detected {
 
 /// The tokens a file holds, whatever its shape.
 pub fn read_tokens(path: &Path) -> Vec<Token> {
-    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    let Some(text) = token_text(path) else { return Vec::new() };
     if path.extension().is_some_and(|e| e == "json") { tokens::parse(&text).tokens } else { css::tokens(&css::read(&text)) }
 }
 
@@ -191,10 +191,23 @@ fn walk(root: &Path, each: &mut dyn FnMut(&Path)) {
     }
 }
 
+/// A tokens file's text: a brand-linked design folder's `tokens.json` is its
+/// resolved system (`inherit`), there or not; any other file as it is.
+fn token_text(path: &Path) -> Option<String> {
+    match crate::design::inherit::linked_tokens_file(path) {
+        Some(design) => crate::design::inherit::tokens_text(design),
+        None => std::fs::read_to_string(path).ok(),
+    }
+}
+
 fn token_file(path: &Path) -> Option<TokenFile> {
     let name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
     let ext = path.extension()?.to_string_lossy().to_ascii_lowercase();
-    let text = std::fs::read_to_string(path).ok()?;
+    // A brand-linked project's overrides are part of its resolved tokens.json, not a system of their own.
+    if crate::design::inherit::is_override_file(path) {
+        return None;
+    }
+    let text = token_text(path)?;
     let (shapes, tokens) = match ext.as_str() {
         "json" if (name == "tokens.json" || name.ends_with(".tokens.json") || path.components().any(|c| c.as_os_str() == "tokens")) && text.contains("\"$value\"") => {
             (vec![Shape::Dtcg], tokens::parse(&text).tokens)

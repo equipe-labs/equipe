@@ -161,22 +161,40 @@ switch that predates this work hides `navigator.webdriver`, so the lab reads
 equipe hides none of the rest and adds nothing to hide it. A check that
 refuses any DevTools-driven browser will still refuse this one.
 
-For that case the banner now has a way out. On a check the person answers by
-clicking (Challenge or Captcha), it offers **"Open the Chrome window on this Mac"**
-alongside Take over, and again in the "on it" line once the person is on it.
-It brings the member's own Chrome window up on the daemon's Mac, un-minimized,
-in front and focused, with that member's tab. The person then clicks the check
-there with their own mouse: real OS input and a real window. It is the same
-browser with the same sign-ins, and nothing is copied between browsers. When
-the panel is attached to a daemon on another Mac (SSH), the button says
-"Bring up Chrome on {host}", and the banner says plainly that the browser runs
-on that Mac. Use it at that Mac or over screen sharing, because the window
-comes up there, not here. Its place is then left to Chrome: this window's
-position means nothing on the other Mac.
+For that case the panel doesn't take such a check at all. On a check the person
+answers by clicking (Challenge or Captcha), the banner explains why the panel
+can't do it and offers **"Open in Chrome on this Mac"** ("Open in Chrome on
+{host}" when the panel is attached to a daemon on another Mac) in place of Take
+over. That button, Take over from an older screen, the "Bring up Chrome" button
+of an older screen, and a press on the page's picture all ask the daemon for the
+person's own window (`Runtime::check_to_window`): the same hand-off as a
+member's sign-in below. The profile's automated browser closes, the same
+profile opens in a plain Chrome window at the check's page with nothing attached,
+and Done (or closing that window) brings the automated browser back to the page
+and gives it back to its member, which carries on. The window card says why the
+panel can't take the check and, when the window is on another Mac, offers
+**Screen Sharing** to that Mac (`vnc://`, the person's own Screen Sharing; the
+address is the one `ssh` resolves, as for unlocking a locked Mac).
+
+Bringing up the automated Chrome's own window, as the banner offered before,
+didn't help: it is the same browser with DevTools attached, so the check refused
+the person's real mouse there too.
+
+A site that shows the check again right after the automated browser comes back
+gets the person's window once more, by itself. If it shows it again after that
+(within 15 minutes, `window_handoff::CheckRounds`), there are no more rounds: the
+member gets its browser back, is told to do without that site for its task and
+to say so in its hand-in, and the person is told why. Where no window can be
+had (no Chrome, `equipe browser handoff panel`, not a Mac), the panel takes the
+check as before.
 
 Not done, on purpose: no fingerprint or flag changes, no removal of
 Playwright's bindings from third-party frames, no automatic solving or
-retrying, and no moving cookies to another browser. For an OAuth step like
+retrying, and no moving cookies to another browser. A sign-in view
+(below) never carries a bot check's clearance cookie (`cf_clearance`,
+`__cf_bm` and the like, `handoff_view::is_clearance`), and a hand-off asked
+for on a page that shows a human check skips the view: what passes a check
+belongs to the browser that passed it. For an OAuth step like
 `wrangler login`, whose callback goes to `localhost` on the daemon's Mac, the
 person can also open the printed URL in their own browser on that Mac and sign
 in there themselves. Nothing of the member's browser is needed for that.
