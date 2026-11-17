@@ -24,6 +24,11 @@
 //!   ticket goes to the PM with the member's last words as the reason.
 //!
 //! A turn the person stopped is left as it was: the lease stays the last net.
+//! A turn that ended while a card it raised waits for the person (an
+//! `ask_person`, a sign-in) holds its ticket until they answer; their answer
+//! goes to the member as a turn of its own when the turn that asked is over
+//! (Codex gives a call up after its timeout). And a run whose lease ran out
+//! with nothing holding it comes back once by itself when its member is free.
 //! Each of these endings is counted in the squad's journal
 //! ([`turn_ending`]), so a change that brings them back shows.
 
@@ -162,6 +167,9 @@ pub(super) struct RunEnd {
     pub(super) parked: Option<Park>,
     /// Resumed once already with the ways to finish.
     pub(super) nudged: bool,
+    /// Its last turn the person stopped: left as it was, never brought back
+    /// by equipe on its own when its lease runs out.
+    pub(super) stopped: bool,
     /// Set by `hand_back` (or by equipe): the ticket goes back when the turn ends.
     pub(super) handed_back: Option<HandBack>,
     /// Its browser is in the person's hands, or a sign-in was asked of them,
@@ -442,6 +450,9 @@ impl Runtime {
         // Stopped by the person, it is left as it was; stopped by equipe for
         // going silent, it has no end to its work, and is carried on below.
         if ending.outcome == TurnOutcome::Interrupted && !ending.silent {
+            if let Some(work) = self.sessions.get_mut(&id).and_then(|s| s.work.as_mut()) {
+                work.end.stopped = true;
+            }
             // A test turn stopped tells nothing: the next one comes later.
             self.probe_over(&squad, id);
             return false;
