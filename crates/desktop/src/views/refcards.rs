@@ -392,7 +392,7 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{INSET, TILE, TILE_NARROW, tile_width};
 
     #[test]
     fn cards_fill_a_wide_column_and_the_next_peeks_in_a_narrow_one() {
