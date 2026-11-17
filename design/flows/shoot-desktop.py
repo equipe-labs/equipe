@@ -111,9 +111,9 @@ state("conversation/chat/ticket-card-waiting", "chat;wait:800", {"FAKE_CARDS": "
 Z = "chat;wait:800;zoom:150;wait:600"
 state("conversation/chat/ticket-card-zoomed", Z, {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42"}, sizes=[(760, 600)], at={760: "hover:512,151;wait:1500"}, label="Zoomed to 150%, narrowest width: the card keeps its gap over the link")
 state("conversation/chat/ticket-card-zoomed-missing", Z, {"FAKE_CARDS": "1", "FAKE_ASKS": "0"}, at={1200: "hover:828,505;wait:1500", 760: "hover:639,308;wait:1500"}, label="Zoomed to 150%: Not found, with its mark")
-# T-777: at 150% the small card finds a place clear of the reply's text, or covers the least of it.
+# T-777: at 150% the small card finds a place clear of the reply's text, its time and buttons — past the text when nothing near is.
 state("conversation/chat/ticket-card-zoomed-looking", Z, {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42", "FAKE_NO_LOOKUP": "1"}, sizes=[(1200, 760)], at={1200: "hover:511,459;wait:700"}, wait=0, label="Zoomed to 150%: Looking… on T-42, slid along the heading's line")
-state("conversation/chat/ticket-card-zoomed-looking-narrow", Z, {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42", "FAKE_NO_LOOKUP": "1"}, sizes=[(760, 600)], at={760: "hover:511,151;wait:700"}, wait=0, label="The same, at the narrowest width: no room clear of text near the link, so it covers the least")
+state("conversation/chat/ticket-card-zoomed-looking-narrow", Z, {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42", "FAKE_NO_LOOKUP": "1"}, sizes=[(760, 600)], at={760: "hover:511,151;wait:700"}, wait=0, label="The same, at the narrowest width: no room near the link, so it goes past the text, under the reply's time")
 # One width each: the lookup runs out in a few seconds, and a resize takes longer than that.
 state("conversation/chat/ticket-card-looking", "chat;wait:800;hover:438,468;wait:700", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42", "FAKE_NO_LOOKUP": "1"}, sizes=[(1200, 760)], wait=0, label="A ticket card the list missed, while the daemon is still asked")
 state("conversation/chat/ticket-card-looking-narrow", "chat;wait:800", {"FAKE_CARDS": "1", "FAKE_ASKS": "0", "FAKE_STALE": "42", "FAKE_NO_LOOKUP": "1"}, sizes=[(760, 600)], at={760: "hover:341,397;wait:700"}, wait=0, label="The same, at the narrowest width")

@@ -665,6 +665,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
             )
             .child(div().text_size(px(META)).line_height(px(META_LINE)).text_color(p.muted).child(hint))
     });
+    let banner = banner.map(|b| super::ticket_card::keep_clear(b, "chat-banner", 0.));
     let main = v_flex()
         .flex_1()
         .min_w_0()
@@ -682,7 +683,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
                 .min_h_0()
                 .max_w(px(COLUMN))
                 .px_4()
-                .child(v_flex().min_h_0().children(approvals::for_you(shell, cx)).children(dock(shell, cx)).children(super::asklist::hint(shell, cx)))
+                .child(super::ticket_card::keep_clear(v_flex().min_h_0().children(approvals::for_you(shell, cx)).children(dock(shell, cx)).children(super::asklist::hint(shell, cx)), "chat-dock", 0.))
                 .children(super::compact::band(shell, cx))
                 .child(div().flex_none().child(composer::render(shell, cx))),
         )
@@ -1823,7 +1824,9 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
             (None, None) => None,
         };
         let latest = rows.latest_reply == Some(ix);
-        h_flex()
+        // As wide as its buttons and time: a ticket's small card keeps off them, not off the air beside them.
+        let row = h_flex()
+            .self_start()
             .mt(px(6.))
             .ml(px(-5.))
             .gap(px(2.))
@@ -1832,7 +1835,8 @@ fn reply_row(rows: &Rows, ix: usize, key: u64, text: &str, first: bool, live: bo
             .text_color(p.muted)
             .when(!latest, |r| r.invisible().group_hover(group.clone(), |s| s.visible()))
             .children(items)
-            .children(when)
+            .children(when);
+        super::ticket_card::keep_clear(row, "reply-meta", 0.)
     });
     v_flex()
         .id(("reply", key))

@@ -1903,7 +1903,8 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                 "composer-text",
                 // The text box pads its text itself (GPUI Kit's medium input
                 // padding): take that off, so the text starts at INSET too.
-                div()
+                // A ticket's small card keeps off its words, not off the card's top edge above them.
+                super::ticket_card::keep_clear(div(), "composer-text", INSET)
                     .px(px(INSET) - gpui_kit::component::Size::Medium.input_px())
                     .pt(px(INSET) - gpui_kit::component::Size::Medium.input_py())
                     .child(
@@ -1939,7 +1940,7 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                 .child(div().size(px(8.)).flex_none().rounded_full().bg(p.danger()).with_animation("listening", Animation::new(Duration::from_millis(1200)).repeat().with_easing(pulsating_between(0.35, 1.)).with_max_fps(20.), |d, t| d.opacity(t)))
                 .child(div().min_w_0().text_color(p.muted).italic().child(if heard.is_empty() { t!("composer.dictation_listening").to_owned() } else { heard }))
         }))
-        .child(bar(shell, cx))
+        .child(super::ticket_card::keep_clear(div(), "composer-bar", 0.).child(bar(shell, cx)))
 }
 
 /// The list `/` and `@` open above the card: rows grouped, letters that
