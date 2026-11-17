@@ -149,6 +149,19 @@ pub enum DesignAction {
         #[command(subcommand)]
         action: crate::design_session::TunerAction,
     },
+    /// Brands on this Mac a project inherits its system from: new, release, link, unlink, show (inherited vs overridden)
+    Brand {
+        #[command(subcommand)]
+        action: crate::design_brand::BrandAction,
+    },
+    /// The design folder's tokens.json as equipe reads it: a brand-linked project's brand tokens with its overrides laid over, else the file as it is
+    Emit {
+        /// The design folder (default: ./design)
+        dir: Option<PathBuf>,
+        /// Write it here (e.g. design/tokens.json for other tools) instead of printing it
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// The UI map: every flow, its screens in order, each in every state, pictured light and dark at each width
     Flows {
         #[command(subcommand)]
@@ -278,8 +291,12 @@ pub async fn command(action: DesignAction) -> Result<(), String> {
         }
         DesignAction::Specimen { dir, tokens: file, title, out, png } => {
             let dir = dir_or_default(dir);
+            let text = match &file {
+                Some(file) => std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?,
+                // A brand-linked folder's system is the resolved one.
+                None => equipe_core::design::inherit::tokens_text(&dir).ok_or_else(|| format!("{}: no {}", dir.display(), equipe_core::design::folder::TOKENS))?,
+            };
             let file = file.unwrap_or_else(|| dir.join(equipe_core::design::folder::TOKENS));
-            let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
             let parsed = tokens::parse(&text);
             for p in &parsed.problems {
                 eprintln!("! {p:?}");
@@ -341,6 +358,8 @@ pub async fn command(action: DesignAction) -> Result<(), String> {
         DesignAction::Palette(args) => crate::design_taste::palette_command(args).await,
         DesignAction::Type(args) => crate::design_taste::type_command(args).await,
         DesignAction::Component(args) => crate::design_taste::component_command(args).await,
+        DesignAction::Brand { action } => crate::design_brand::brand_command(action),
+        DesignAction::Emit { dir, out } => crate::design_brand::emit_command(dir, out),
         DesignAction::System(args) => crate::design_system::system_command(args),
         DesignAction::Matrix(args) => crate::design_system::matrix_command(args).await,
         DesignAction::Registry(args) => crate::design_system::registry_command(args).await,
