@@ -16,6 +16,10 @@ What a turn does depends on its prompt:
 - "findings": reads a file, then answers in a few lines of Markdown;
 - "refuse": on gpt-6.1-sol, fails as an account that doesn't offer it does
   (`model_not_found`, the raw body as the message); on any other model, answers;
+- "misaligned": refused by OpenAI's safety check as possibly unintended
+  activity (`misalignmentPolicyViolation`) before it does anything — on the
+  first thread this app-server opened; on a fresh one started after, answers
+  with what developer messages it was given ("misaligned always": refused there too);
 - "slowly": the recorded turn below, two seconds in — long enough for a test
   to call the board while it runs;
 - anything else: the recorded turn — a read, a new file written for real, an
@@ -26,6 +30,7 @@ FAKE_CODEX_LOG: a file each message received is appended to, one JSON a line.
 FAKE_CODEX_SIGNED_OUT: set, it is signed out.
 FAKE_CODEX_LOGIN: `fail` (its sign-in fails), `old` (it has no `account/login/start`);
   else `account/login/start` hands back a page and the sign-in completes at once.
+FAKE_CODEX_NO_INJECT: set, it has no `thread/inject_items` (an older Codex).
 FAKE_CODEX_ARGS: a file each run's command line is appended to, one JSON a
 line, with whether NEBIUS_API_KEY was in its environment, and the names of
 the `*_API_KEY` variables there (never their values).
@@ -65,7 +70,7 @@ if sys.argv[1:2] != ["app-server"]:
     print("fake codex: only `login status` and `app-server`", file=sys.stderr)
     sys.exit(2)
 
-state = {"cwd": os.getcwd(), "thread": THREAD, "model": "gpt-6.1-sol"}
+state = {"cwd": os.getcwd(), "thread": THREAD, "model": "gpt-6.1-sol", "starts": 0, "opened": False, "developer": {}}
 
 
 def send(message):
@@ -297,7 +302,10 @@ def handle(message):
                 return
             state["thread"] = params["threadId"]
         else:
-            state["thread"] = THREAD
+            # A thread started after this app-server opened one is a fresh one of its own.
+            state["starts"] += 1
+            state["thread"] = "thr-fresh-%d" % state["starts"] if state["opened"] else THREAD
+        state["opened"] = True
         send({"id": request_id, "result": {"thread": thread(state["thread"]), "model": state["model"], "modelProvider": "openai", "cwd": state["cwd"], "approvalPolicy": params.get("approvalPolicy"), "sandbox": {"type": "readOnly"}, "reasoningEffort": None}})
         notify("thread/started", {"thread": thread(state["thread"])})
     elif method == "turn/start":
@@ -331,6 +339,12 @@ def handle(message):
             else:
                 say("a1", "Answered on " + model + ". DONE")
                 turn_completed()
+        elif "misaligned" in prompt and (not state["thread"].startswith("thr-fresh") or "misaligned always" in prompt):
+            turn_completed("failed", {"message": "This request was blocked by our safety systems. Reason: Potentially unintended activity.", "codexErrorInfo": "misalignmentPolicyViolation", "additionalDetails": None, "misalignment": None})
+        elif "misaligned" in prompt:
+            given = state["developer"].get(state["thread"], [])
+            say("a1", "Answered afresh in " + state["thread"] + " with " + str(len(given)) + " developer note(s). DONE")
+            turn_completed()
         elif "slowly" in prompt:
             time.sleep(2)
             recorded_turn(prompt)
@@ -338,6 +352,12 @@ def handle(message):
             recorded_turn(prompt)
     elif method == "turn/interrupt":
         send({"id": request_id, "result": {}})
+    elif method == "thread/inject_items" and not os.environ.get("FAKE_CODEX_NO_INJECT"):
+        texts = [c.get("text", "") for item in params.get("items", []) if item.get("role") == "developer" for c in item.get("content", [])]
+        state["developer"].setdefault(params.get("threadId"), []).extend(texts)
+        send({"id": request_id, "result": {}})
+    elif method == "thread/rollback":
+        send({"id": request_id, "result": {"thread": thread(params.get("threadId"))}})
     else:
         send({"id": request_id, "error": {"code": -32601, "message": "fake codex has no " + str(method)}})
 

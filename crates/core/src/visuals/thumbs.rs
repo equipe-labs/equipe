@@ -169,6 +169,40 @@ impl Drop for Decoding {
     }
 }
 
+/// How many pictures are decoded and scaled at once, at most: one a core,
+/// within reason.
+fn decodes_max() -> usize {
+    std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get).clamp(2, 8)
+}
+
+/// Decodes under way, and the word when one ends.
+static DECODES: Mutex<usize> = Mutex::new(0);
+static DECODE_ENDED: Condvar = Condvar::new();
+
+/// Held while a picture is decoded and scaled ([`decode_slot`]).
+pub struct DecodeSlot(());
+
+/// A turn to decode a picture: waits while [`decodes_max`] others decode,
+/// so a grid's thumbnails come one after another, the first ones at once,
+/// rather than all together at the end.
+pub fn decode_slot() -> DecodeSlot {
+    let most = decodes_max();
+    let mut now = DECODES.lock().unwrap_or_else(|e| e.into_inner());
+    while *now >= most {
+        now = DECODE_ENDED.wait(now).unwrap_or_else(|e| e.into_inner());
+    }
+    *now += 1;
+    DecodeSlot(())
+}
+
+impl Drop for DecodeSlot {
+    fn drop(&mut self) {
+        let mut now = DECODES.lock().unwrap_or_else(|e| e.into_inner());
+        *now = now.saturating_sub(1);
+        DECODE_ENDED.notify_one();
+    }
+}
+
 /// Pictures being warmed now, so a burst of the same names warms each once.
 static WARMING: Mutex<Vec<String>> = Mutex::new(Vec::new());
 

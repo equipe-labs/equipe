@@ -412,3 +412,64 @@ async fn a_codex_turn_that_ends_without_a_hand_in_is_held_for_the_persons_answer
     assert_ne!(back.execution.map(|e| e.state), Some(ExecutionState::Stalled));
     handle.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_design_session_on_codex_sends_equipes_framing_as_a_developer_message_and_the_persons_words_as_theirs() {
+    let (codex, log) = fake_codex("");
+    let cwd = scratch("site");
+    let home = scratch("home");
+    squads::create(&home, "acme", &cwd).unwrap();
+    let (handle, mut events) = runtime::start(config(&codex, &home));
+    add(&handle, &mut events, 1, on_codex(&cwd, "designer")).await;
+    handle.send(Command::StartDesignSession { squad: "acme".into(), project: None, page: "Pricing".into(), from: equipe_core::protocol::design_session::SessionFrom::DesignScreen });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let asked = params_of(&log, "turn/start")[0]["input"][0]["text"].as_str().unwrap_or_default().to_owned();
+    assert!(!asked.contains("<design-session>") && !asked.contains("design-session` skill"), "the person's words only: {asked}");
+    assert!(asked.contains("Pricing"), "{asked}");
+    let framing = params_of(&log, "thread/inject_items")[0]["items"][0].clone();
+    assert_eq!(framing["role"], "developer");
+    let note = framing["content"][0]["text"].as_str().unwrap_or_default();
+    assert!(note.contains("page: Pricing") && note.contains("`design-session` skill") && note.contains("not the person's words"), "{note}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_turn_openai_refuses_as_unintended_is_asked_again_afresh_said_plainly_and_the_fresh_thread_goes_on() {
+    let (codex, log) = fake_codex("");
+    let cwd = scratch("site");
+    let home = scratch("home");
+    squads::create(&home, "acme", &cwd).unwrap();
+    let (handle, mut events) = runtime::start(config(&codex, &home));
+    add(&handle, &mut events, 1, on_codex(&cwd, "qa")).await;
+    handle.send(Command::Submit { session: 1, text: "misaligned: look at it".into(), about: None });
+    let turn = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(turn.iter().any(|e| matches!(e, Event::Notice { text, .. } if text.starts_with("OpenAI refused this turn as possibly unintended activity"))), "{turn:#?}");
+    assert!(matches!(turn.last(), Some(Event::TurnEnded { outcome: TurnOutcome::Completed, .. })), "{turn:#?}");
+    assert!(text_of(&turn).contains("Answered afresh in thr-fresh-"), "{turn:#?}");
+    assert!(!turn.iter().any(|e| matches!(e, Event::Error { .. })), "{turn:#?}");
+    let note = params_of(&log, "thread/inject_items").last().map(|p| p["items"][0]["content"][0]["text"].as_str().unwrap_or_default().to_owned()).unwrap_or_default();
+    assert!(note.starts_with("This is a fresh conversation: OpenAI's safety check refused"), "{note}");
+    // The conversation carries on in the fresh thread, never the refused one.
+    handle.send(Command::Submit { session: 1, text: "go on".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let resumed = params_of(&log, "thread/resume");
+    assert!(resumed.last().is_some_and(|p| p["threadId"].as_str().is_some_and(|t| t.starts_with("thr-fresh-"))), "{resumed:?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn refused_again_the_person_is_told_in_their_words_with_no_offer_when_claude_cant_take_it() {
+    let (codex, log) = fake_codex("");
+    let cwd = scratch("site");
+    let home = scratch("home");
+    squads::create(&home, "acme", &cwd).unwrap();
+    let (handle, mut events) = runtime::start(config(&codex, &home));
+    add(&handle, &mut events, 1, on_codex(&cwd, "qa")).await;
+    handle.send(Command::Submit { session: 1, text: "misaligned always".into(), about: None });
+    let turn = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let error = turn.iter().find_map(|e| if let Event::Error { message, next, .. } = e { Some((message.clone(), next.clone())) } else { None }).expect("said");
+    assert_eq!(error, ("OpenAI refused this turn again as possibly unintended activity, in a fresh conversation too. Nothing was done in it.".to_owned(), None));
+    assert!(matches!(turn.last(), Some(Event::TurnEnded { outcome: TurnOutcome::Failed, .. })));
+    assert_eq!(params_of(&log, "turn/start").len(), 2, "asked again once, not more");
+    handle.shutdown().await;
+}

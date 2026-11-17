@@ -208,6 +208,7 @@ pub fn request<'a>(
         fresh_prompt: None,
         web_search: false,
         instructions: Some(instructions),
+        framing: None,
         mcp_servers: Some(&NO_SERVERS),
         writable: &[],
         env,

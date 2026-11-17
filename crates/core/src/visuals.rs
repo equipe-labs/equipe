@@ -210,6 +210,10 @@ pub fn read_cached(home: &Path, path: &Path, roots: &[PathBuf], max: Option<u32>
     {
         return Ok(kept);
     }
+    // And only so many pictures decoded at once, whichever: a screen asks
+    // for a grid's worth together, and decoding all at once had each wait
+    // for all — the first thumbnail as late as the last.
+    let _slot = side.map(|_| thumbs::decode_slot());
     let (bytes, mime) = picture(path, &real, read_bytes(path, &real)?)?;
     let companion = match side {
         Some(thumbs::TINY_SIDE) => Some(thumbs::THUMB_SIDE),
@@ -417,8 +421,9 @@ pub fn shown(home: &Path, squad: &str) -> Shown {
         out.paths.extend(set.images().map(str::to_owned));
     }
     let tickets = journal.tickets().unwrap_or_default();
-    // What a ticket still at work keeps in its design folder: the designer studio's pictures.
-    out.paths.extend(crate::design::studio::shown(&tickets));
+    // What a ticket still at work keeps in its design folder: the designer
+    // studio's pictures, any inside it — by folder, not each listed.
+    out.references.extend(crate::design::studio::folders(&tickets));
     let homes = homes(home);
     for ticket in tickets {
         out.paths.extend(ticket.images.iter().cloned());
@@ -554,27 +559,28 @@ fn shown_slots() -> &'static ShownSlots {
     SLOTS.get_or_init(Default::default)
 }
 
-/// What `squad` shows, as found within [`SHOWN_FOR`] when that names what
-/// `enough` looks for, else found afresh; and whether it was found afresh.
-fn shown_lately(home: &Path, squad: &str, enough: impl Fn(&Shown) -> bool) -> (Arc<Shown>, bool) {
+/// What `squad` shows, for an ask made at `asked`: as found within
+/// [`SHOWN_FOR`] when that names what `enough` looks for, else found afresh
+/// — or as a look that began after the ask found it, which is as fresh; and
+/// whether it was found afresh.
+fn shown_lately(home: &Path, squad: &str, asked: Instant, enough: impl Fn(&Shown) -> bool) -> (Arc<Shown>, bool) {
     let slot = shown_slots().lock().unwrap_or_else(|e| e.into_inner()).entry((home.to_owned(), squad.to_owned())).or_default().clone();
     let mut held = slot.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((at, shown)) = held.as_ref()
-        && at.elapsed() < SHOWN_FOR
-        && enough(shown)
-    {
-        return (shown.clone(), false);
+    if let Some((at, shown)) = held.as_ref() {
+        // Found afresh while this ask waited for it: as fresh as this ask's
+        // own look would be — a burst of asks makes one look, not one each.
+        if *at >= asked {
+            return (shown.clone(), true);
+        }
+        if at.elapsed() < SHOWN_FOR && enough(shown) {
+            return (shown.clone(), false);
+        }
     }
+    // Stamped when the look began: what an ask that came later may take as its own.
+    let began = Instant::now();
     let fresh = Arc::new(shown(home, squad));
-    *held = Some((Instant::now(), fresh.clone()));
+    *held = Some((began, fresh.clone()));
     (fresh, true)
-}
-
-/// Forget what `squad` was found to show: the next ask looks afresh.
-fn forget_shown(home: &Path, squad: &str) {
-    if let Some(slot) = shown_slots().lock().unwrap_or_else(|e| e.into_inner()).get(&(home.to_owned(), squad.to_owned())) {
-        *slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
 }
 
 /// [`serve`], with `scratch` as the scratch folders: a picture a line embeds
@@ -599,13 +605,15 @@ pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[Pat
         cache::touch(Path::new(&ask.path));
         return read_cached(home, Path::new(&ask.path), &[crate::references::store_dir(home, &ask.squad)], max);
     }
-    let (shown, fresh) = shown_lately(home, &ask.squad, |shown| allows(home, shown, ask));
+    let asked = Instant::now();
+    let (shown, fresh) = shown_lately(home, &ask.squad, asked, |shown| allows(home, shown, ask));
     match serve_from(home, &shown, ask, max, scratch) {
         // Found a moment ago, and the board may have moved since (a worktree
         // gone with its acceptance): once more, from what it shows now.
         Err(_) if !fresh => {
-            forget_shown(home, &ask.squad);
-            let (shown, _) = shown_lately(home, &ask.squad, |_| true);
+            // Afresh, unless another ask's look began since this one came: a
+            // few pictures gone at once make one look, not one each.
+            let (shown, _) = shown_lately(home, &ask.squad, asked, |_| false);
             serve_from(home, &shown, ask, max, scratch)
         }
         read => read,
@@ -723,7 +731,7 @@ fn by_name(roots: &[PathBuf], asked: &Path) -> Option<PathBuf> {
 pub fn list(home: &Path, ask: &ListImages) -> Result<ImageList, String> {
     let folder = markdown::lexical(&ask.folder, Path::new("/")).filter(|_| Path::new(ask.folder.trim()).is_absolute()).ok_or_else(|| format!("{}: give the folder's full path, without `..`", ask.folder))?;
     let key = folder.to_string_lossy().into_owned();
-    let (shown, _) = shown_lately(home, &ask.squad, |shown| shown.folders.contains(&key));
+    let (shown, _) = shown_lately(home, &ask.squad, Instant::now(), |shown| shown.folders.contains(&key));
     if !shown.folders.contains(&key) {
         return Err(format!("{key} isn't a folder {} shows", ask.squad));
     }
@@ -1097,6 +1105,30 @@ mod tests {
 
     fn reply(text: &str) -> Entry {
         Entry::Reply { text: text.into() }
+    }
+
+    #[test]
+    fn a_ticket_at_works_design_folder_shows_by_folder_without_listing_its_pictures() {
+        let home = dir("studio-folders");
+        let journal = crate::journal::Journal::for_squad(&home, "acme").unwrap();
+        // Its design folder a level down, in the project's own folder, as `design_of` finds it.
+        let worktree = home.join("worktrees/acme.home/t1");
+        let design = worktree.join("app/design");
+        std::fs::create_dir_all(design.join("checks/home")).unwrap();
+        for n in 0..50 {
+            png(&design.join(format!("checks/home/{n}.png")), 8, 6, false);
+        }
+        png(&worktree.join("elsewhere.png"), 8, 6, false);
+        let ticket: Ticket = serde_json::from_value(serde_json::json!({ "id": 0, "title": "Home", "body": "", "status": "review", "kind": "task", "depends_on": [], "owner": "designer", "created_by": "pm" })).unwrap();
+        let id = journal.create_ticket(&ticket).unwrap();
+        journal.set_ticket_work(id, &crate::journal::TicketWork { worktree: Some(worktree.clone()), ..Default::default() }).unwrap();
+        let shown = shown(&home, "acme");
+        assert!(shown.references.contains(&design), "{:?}", shown.references);
+        assert!(!shown.paths.iter().any(|p| p.contains("checks/home")), "no picture of it listed one by one");
+        let ask = |path: &Path| ReadImage { squad: "acme".into(), path: path.to_string_lossy().into_owned(), max: Some(64) };
+        assert_eq!(serve(&home, &ask(&design.join("checks/home/7.png")), None).unwrap().width, Some(8));
+        assert!(serve(&home, &ask(&worktree.join("elsewhere.png")), None).is_err(), "only inside its design folder");
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

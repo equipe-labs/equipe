@@ -121,6 +121,11 @@ pub enum Activity {
     /// left running in the background, say) — so the turn was ended here, as
     /// completed and resumable: why, in a line for the log.
     Settled(String),
+    /// OpenAI's safety check refused the turn as possibly unintended activity
+    /// (Codex's `misalignmentPolicyViolation`) before it acted, so it was
+    /// asked again, once, in a fresh thread: the refused one stays as it was
+    /// before the turn.
+    RefusedRetried,
 }
 
 /// How a tool use ended, as the engine answered it.
