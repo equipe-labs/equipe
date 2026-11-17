@@ -932,6 +932,13 @@ impl BrowserPanel {
     fn mouse_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
         let Some((x, y)) = self.to_page(e.position) else { return };
+        // A check that refuses automated browsers, not reached for yet: a press on it
+        // asks for the person's own window instead of clicking through the panel,
+        // where the check would refuse it (`real_window_button`).
+        if matches!(self.mode(), Some(Mode::Waiting { check: HumanCheck::Challenge | HumanCheck::Captcha, touched: false })) {
+            self.take(window, cx);
+            return;
+        }
         self.hold();
         self.last_click = Some(e.position);
         self.move_before_press((x, y), keys::modifier_bits(&e.modifiers));
@@ -1213,42 +1220,57 @@ impl BrowserPanel {
         self.command(Command::BrowserPopOut { page, bounds: Some(bounds) }, cx);
     }
 
-    /// A "verify you are human" check that keeps coming back in the panel: the
-    /// member's real Chrome window, on the daemon's Mac — brought up and in
-    /// front, for the person at that Mac to do it there with their own mouse
-    /// (docs/BROWSER-CHECKS.md). The same browser and sign-ins: nothing moves
-    /// between browsers.
-    fn open_chrome_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.endpoint.as_ref().is_some_and(Endpoint::is_remote) {
-            // This window's place means nothing on the other Mac: Chrome keeps its own.
-            let Some((_, page)) = self.selected.clone() else { return };
-            self.command(Command::BrowserPopOut { page, bounds: None }, cx);
-        } else {
-            self.pop_out(window, cx);
-        }
-    }
-
     /// The Mac the member's Chrome runs on, when it isn't this one.
     fn chrome_elsewhere(&self) -> Option<String> {
         self.endpoint.as_ref().filter(|e| e.is_remote()).map(Endpoint::label)
     }
 
-    /// The banner's way out to the real Chrome window, for a check a person
-    /// answers by clicking (not a sign-in or a code, which the panel takes as well).
-    fn chrome_window_button(&self, check: HumanCheck, id: &'static str, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// The way through a check a person answers by clicking (Cloudflare,
+    /// Turnstile, reCAPTCHA, hCaptcha): such a check refuses a browser that
+    /// automation drives, and the panel is one — it shows the member's
+    /// automated Chrome and hands it the person's clicks over DevTools — so
+    /// even their own click here can fail, over and over. Taking it asks the
+    /// daemon, which opens the page in a normal Chrome window on its Mac with
+    /// nothing attached, the automated browser stepping aside meanwhile
+    /// (docs/BROWSER-CHECKS.md); where it can't, the panel takes it as before.
+    fn real_window_button(&self, check: HumanCheck, id: &'static str, kind: Kind, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !matches!(check, HumanCheck::Challenge | HumanCheck::Captcha) {
             return None;
         }
         let p = self.palette;
         let (label, tip) = match self.chrome_elsewhere() {
-            Some(host) => (t!("browser.check_window_remote", host = host), t!("browser.check_window_remote_tip", host = host)),
-            None => (t!("browser.check_window").to_owned(), t!("browser.check_window_tip").to_owned()),
+            Some(host) => (t!("browser.check_real_window_remote", host = host), t!("browser.check_real_window_remote_tip", host = host)),
+            None => (t!("browser.check_real_window").to_owned(), t!("browser.check_real_window_tip").to_owned()),
         };
         Some(
-            ui::button(p, id, Kind::Ghost, label).field()
+            ui::button(p, id, kind, label).field()
                 .icon(Icon::External)
                 .tip(tip, None)
-                .on_click(cx.listener(|this, _, window, cx| this.open_chrome_window(window, cx)))
+                .on_click(cx.listener(|this, _, window, cx| this.take(window, cx)))
+                .into_any_element(),
+        )
+    }
+
+    /// Screen Sharing to the daemon's Mac, for a window that opened there: the
+    /// person's own Screen Sharing, where they sign in to that Mac themselves
+    /// (`crate::unlock`). Nothing of either screen is captured.
+    fn screen_sharing_button(&self, id: &'static str, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let Some(Endpoint::Ssh(host)) = self.endpoint.clone() else { return None };
+        let p = self.palette;
+        let label = host.spec();
+        Some(
+            ui::button(p, id, Kind::Ghost, t!("browser.screen_sharing"))
+                .icon(Icon::External)
+                .tip(t!("browser.screen_sharing_tip", host = label), None)
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    let host = host.clone();
+                    // Where ssh connects for it (an alias names an address): looked up off the UI thread.
+                    cx.spawn(async move |_, cx| {
+                        let address = cx.background_executor().spawn(async move { crate::unlock::address(&host) }).await;
+                        let _ = cx.update(|cx| cx.open_url(&crate::unlock::vnc_url(&address)));
+                    })
+                    .detach();
+                }))
                 .into_any_element(),
         )
     }
@@ -1366,9 +1388,13 @@ impl BrowserPanel {
         let hue = self.lane_color(&lane);
         let asked = self.hands.get(&lane).and_then(|h| h.asked.clone()).unwrap_or_default();
         let elsewhere = self.chrome_elsewhere();
-        let note = match &elsewhere {
-            Some(host) => t!("browser.window_note_remote", host = host),
-            None => t!("browser.window_note_local").to_owned(),
+        // A human check its page stopped at, not a sign-in its member asked for: said why it is here.
+        let check = self.hands.get(&lane).and_then(|h| h.check).filter(|c| matches!(c, HumanCheck::Challenge | HumanCheck::Captcha));
+        let note = match (&elsewhere, check.is_some()) {
+            (Some(host), true) => t!("browser.window_check_note_remote", host = host),
+            (None, true) => t!("browser.window_check_note_local").to_owned(),
+            (Some(host), false) => t!("browser.window_note_remote", host = host),
+            (None, false) => t!("browser.window_note_local").to_owned(),
         };
         let bring = match &elsewhere {
             Some(host) => t!("browser.open_on_host", host = host),
@@ -1449,20 +1475,26 @@ impl BrowserPanel {
                         .child(div().size(px(8.)).flex_none().rounded_full().bg(hue))
                         .child(div().text_size(px(UI)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("browser.window_title", name = name))),
                 )
-                .when(!asked.is_empty(), |c| c.child(div().max_w(px(380.)).text_size(px(13.)).line_height(px(19.)).text_color(p.text).text_center().child(asked.clone())))
+                // (A check's own words come in the note: the daemon's are for screens that don't know checks.)
+                .when(!asked.is_empty() && check.is_none(), |c| c.child(div().max_w(px(380.)).text_size(px(13.)).line_height(px(19.)).text_color(p.text).text_center().child(asked.clone())))
                 .child(div().max_w(px(380.)).text_size(px(SMALL)).line_height(px(20.)).text_color(p.text2).text_center().child(note))
+                .when(check.is_some(), |c| c.child(div().max_w(px(380.)).text_size(px(12.)).line_height(px(18.)).text_color(p.muted).text_center().child(t!("browser.window_check_why"))))
                 .child(div().max_w(px(380.)).text_size(px(12.)).line_height(px(18.)).text_color(p.muted).text_center().child(t!("browser.window_hidden")))
-                .child(h_flex().pt_2().gap_2().child(done).child(raise))
+                .child(h_flex().pt_2().gap_2().flex_wrap().justify_center().child(done).child(raise).when_some(self.screen_sharing_button("browser-window-share", cx), |row, b| row.child(b)))
                 .into_any_element(),
         )
     }
 
-    /// Said under a check when the member's Chrome is on another Mac.
-    fn chrome_window_note(&self, check: HumanCheck) -> Option<String> {
+    /// Said under a check a person answers by clicking: why the panel isn't
+    /// the place for it, and where it opens instead.
+    fn real_window_note(&self, check: HumanCheck) -> Option<String> {
         if !matches!(check, HumanCheck::Challenge | HumanCheck::Captcha) {
             return None;
         }
-        self.chrome_elsewhere().map(|host| t!("browser.check_window_remote_note", host = host))
+        Some(match self.chrome_elsewhere() {
+            Some(host) => t!("browser.check_real_window_note_remote", host = host),
+            None => t!("browser.check_real_window_note").to_owned(),
+        })
     }
 
     /// A member's browser handed to the person: the panel opens beside the
@@ -2239,7 +2271,7 @@ impl BrowserPanel {
                                     .gap(px(2.))
                                     .child(div().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("browser.check_title")))
                                     .child(div().text_size(px(12.)).text_color(p.muted).child(detail))
-                                    .when_some(self.chrome_window_note(*check), |c, note| c.child(div().text_size(px(12.)).text_color(p.muted).child(note))),
+                                    .when_some(self.real_window_note(*check), |c, note| c.child(div().text_size(px(12.)).text_color(p.muted).child(note))),
                             )
                             .child(
                                 h_flex()
@@ -2247,8 +2279,11 @@ impl BrowserPanel {
                                     .ml_auto()
                                     .gap_2()
                                     .child(ui::button(p, "browser-check-close", Kind::Ghost, t!("browser.close_tab")).field().tip(t!("browser.close_check_tip", name = name), Some("⌘W")).on_click(cx.listener(|this, _, _, cx| this.close_selected(cx))))
-                                    .when_some(self.chrome_window_button(*check, "browser-check-window", cx), |row, b| row.child(b))
-                                    .child(ui::button(p, "browser-check-take", Kind::Primary, t!("browser.take")).icon(Icon::Hand).field().on_click(cx.listener(|this, _, window, cx| this.take(window, cx)))),
+                                    // A check the panel can't take: its one way is the person's own window.
+                                    .child(match self.real_window_button(*check, "browser-check-window", Kind::Primary, cx) {
+                                        Some(open) => open,
+                                        None => ui::button(p, "browser-check-take", Kind::Primary, t!("browser.take")).icon(Icon::Hand).field().on_click(cx.listener(|this, _, window, cx| this.take(window, cx))).into_any_element(),
+                                    }),
                             ),
                         "browser-check-rise",
                     )
@@ -2277,7 +2312,7 @@ impl BrowserPanel {
                             .text_color(p.text2)
                             .child(div().size(px(6.)).rounded_full().bg(p.amber))
                             .child(t!("browser.check_on_it", name = name))
-                            .when_some(page.and_then(|pg| pg.check).and_then(|c| self.chrome_window_button(c, "browser-check-window-on-it", cx)), |row, b| row.child(b)),
+                            .when_some(page.and_then(|pg| pg.check).and_then(|c| self.real_window_button(c, "browser-check-window-on-it", Kind::Ghost, cx)), |row, b| row.child(b)),
                     )
                     .into_any_element(),
             ),
@@ -2596,6 +2631,15 @@ impl BrowserPanel {
         let Some((rect, _)) = *self.placed.borrow() else { return };
         let e = ScrollWheelEvent { position: rect.center(), delta: ScrollDelta::Pixels(point(px(0.), px(-40.))), ..Default::default() };
         self.scroll(&e, cx);
+    }
+
+    /// What the panel says of where the member's Chrome is, as if the daemon
+    /// were on `host` (another Mac). Only the words: nothing is reached there.
+    pub fn seem_remote(&mut self, host: &str, cx: &mut Context<Self>) {
+        if let Ok(endpoint) = Endpoint::parse(host) {
+            self.endpoint = Some(endpoint);
+            cx.notify();
+        }
     }
 
     /// Take over, or Give back, as the bar's button.

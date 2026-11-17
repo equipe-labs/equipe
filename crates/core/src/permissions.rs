@@ -558,9 +558,186 @@ fn host(url: &str) -> Option<&str> {
     rest.split(['/', ':', '?', '#']).next().filter(|h| !h.is_empty())
 }
 
+/// A squad project checked out beside its repository, the way members are
+/// told to build, test or deploy one outside their ticket's worktree: exactly
+/// `git -C <project> worktree add [--detach|-f|--force|-q|--quiet]… <path> [<ref>]`
+/// (`--detach` required, so no branch is made), `git -C <project> worktree
+/// remove [-f|--force]… <path>` or `git -C <project> worktree prune`, one
+/// command alone, `<project>` one of `projects`, `<path>` inside `tmp` (the
+/// member's own `$TMPDIR`, by what it really is, links followed). Such a
+/// command writes only `<project>/.git/worktrees/` and `<path>`, so equipe
+/// runs it outside the fence without asking: it gives back the command to
+/// run — `$TMPDIR` spelled out, the project's hooks off — or `None` for
+/// anything else, which goes on as before.
+pub fn project_checkout(command: &str, projects: &[std::path::PathBuf], tmp: &std::path::Path) -> Option<String> {
+    let tmp = tmp.canonicalize().ok()?;
+    let words = checkout_words(command, &tmp.to_string_lossy())?;
+    let [git, c, project, worktree, verb, rest @ ..] = words.as_slice() else { return None };
+    if git != "git" || c != "-C" || worktree != "worktree" {
+        return None;
+    }
+    let project = projects.iter().find(|p| {
+        let named = std::path::Path::new(project.trim_end_matches('/'));
+        named == p.as_path() || named.canonicalize().ok().zip(p.canonicalize().ok()).is_some_and(|(a, b)| a == b)
+    })?;
+    let flags = |allowed: &[&str]| rest.iter().filter(|w| w.starts_with('-')).all(|w| allowed.contains(&w.as_str()));
+    let paths: Vec<&String> = rest.iter().filter(|w| !w.starts_with('-')).collect();
+    let quoted = |w: &str| (!w.contains('\'')).then(|| format!("'{w}'"));
+    let git = format!("git -c core.hooksPath=/dev/null -C {} worktree", quoted(&project.to_string_lossy())?);
+    match verb.as_str() {
+        "add" if flags(&["--detach", "-f", "--force", "-q", "--quiet"]) && rest.iter().any(|w| w == "--detach") => {
+            let (path, reference) = match paths.as_slice() {
+                [path] => (path, None),
+                [path, reference] => (path, Some(reference)),
+                _ => return None,
+            };
+            let path = inside_tmp(path, &tmp)?;
+            let reference = match reference {
+                Some(r) if r.chars().all(|c| c.is_ascii_alphanumeric() || "._/-~^@".contains(c)) => format!(" {}", quoted(r)?),
+                Some(_) => return None,
+                None => String::new(),
+            };
+            let force = if rest.iter().any(|w| w == "-f" || w == "--force") { " --force" } else { "" };
+            Some(format!("{git} add --detach{force} {}{reference}", quoted(&path.to_string_lossy())?))
+        }
+        "remove" if flags(&["-f", "--force"]) => {
+            let [path] = paths.as_slice() else { return None };
+            let path = inside_tmp(path, &tmp)?;
+            let force = if rest.is_empty() || paths.len() == rest.len() { "" } else { " --force" };
+            Some(format!("{git} remove{force} {}", quoted(&path.to_string_lossy())?))
+        }
+        "prune" if rest.is_empty() => Some(format!("{git} prune")),
+        _ => None,
+    }
+}
+
+/// A command's words as the shell would split them, `$TMPDIR` (or
+/// `${TMPDIR}`) put in as `tmp`: `None` where the shell would do anything
+/// more — chain, redirect, glob, expand another variable or run a command.
+fn checkout_words(command: &str, tmp: &str) -> Option<Vec<String>> {
+    let plain = command.replace("${TMPDIR}", "");
+    if plain.contains(|c: char| ";&|<>`\\*?[]{}#!\n\r".contains(c)) || plain.contains("$(") {
+        return None;
+    }
+    let mut words = Vec::new();
+    let (mut word, mut in_word, mut quote) = (String::new(), false, None::<char>);
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (None, c) if c.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            (None, '\'' | '"') => (quote, in_word) = (Some(c), true),
+            (Some(q), c) if c == q => quote = None,
+            (Some('\''), '$') => return None,
+            (_, '$') => {
+                let rest: String = chars.clone().collect();
+                let skip = if rest.starts_with("{TMPDIR}") {
+                    8
+                } else if rest.strip_prefix("TMPDIR").is_some_and(|r| !r.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')) {
+                    6
+                } else {
+                    return None;
+                };
+                for _ in 0..skip {
+                    chars.next();
+                }
+                word.push_str(tmp);
+                in_word = true;
+            }
+            (_, c) => {
+                word.push(c);
+                in_word = true;
+            }
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    if in_word {
+        words.push(word);
+    }
+    Some(words)
+}
+
+/// `path` when it is strictly inside `tmp` (already canonical): absolute,
+/// without `..`, and its nearest existing folder really there, not reached
+/// through a link to elsewhere.
+fn inside_tmp(path: &str, tmp: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::path::Component;
+    let path = std::path::Path::new(path);
+    if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return None;
+    }
+    let mut existing = path;
+    let mut tail = Vec::new();
+    while std::fs::symlink_metadata(existing).is_err() {
+        tail.push(existing.file_name()?);
+        existing = existing.parent()?;
+    }
+    let mut real = existing.canonicalize().ok()?;
+    real.extend(tail.iter().rev());
+    (real.starts_with(tmp) && real != tmp).then_some(real)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_project_is_checked_out_beside_its_repository_into_the_members_own_tmp_and_nothing_else_passes() {
+        let root = std::env::temp_dir().join(format!("equipe-checkout-{}", std::process::id()));
+        let (tmp, project, other) = (root.join("tmp/acme/pm"), root.join("web"), root.join("elsewhere"));
+        for dir in [&tmp, &project, &other] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::os::unix::fs::symlink(&other, tmp.join("out")).unwrap();
+        let (tmp_real, web) = (tmp.canonicalize().unwrap(), project.display().to_string());
+        let projects = [project.clone()];
+        let at = |command: &str| project_checkout(command, &projects, &tmp);
+        let hooks_off = format!("git -c core.hooksPath=/dev/null -C '{web}' worktree");
+        let deploy = tmp_real.join("deploy").display().to_string();
+        assert_eq!(at(&format!("git -C {web} worktree add --detach \"$TMPDIR/deploy\" main")), Some(format!("{hooks_off} add --detach '{deploy}' 'main'")));
+        assert_eq!(at(&format!("git -C '{web}/' worktree add --detach ${{TMPDIR}}/deploy origin/main~1")), Some(format!("{hooks_off} add --detach '{deploy}' 'origin/main~1'")));
+        assert_eq!(at(&format!("git -C {web} worktree add -f {deploy} --detach")), Some(format!("{hooks_off} add --detach --force '{deploy}'")));
+        assert_eq!(at(&format!("git -C {web} worktree remove --force $TMPDIR/deploy")), Some(format!("{hooks_off} remove --force '{deploy}'")));
+        assert_eq!(at(&format!("git -C {web} worktree remove $TMPDIR/deploy")), Some(format!("{hooks_off} remove '{deploy}'")));
+        assert_eq!(at(&format!("git -C {web} worktree prune")), Some(format!("{hooks_off} prune")));
+        let other = other.display();
+        for refused in [
+            // A branch made, or no `--detach`.
+            format!("git -C {web} worktree add -b fix $TMPDIR/deploy main"),
+            format!("git -C {web} worktree add $TMPDIR/deploy main"),
+            // Outside the member's own tmp: elsewhere, the tmp itself, up and out, through a link.
+            format!("git -C {web} worktree add --detach {other}/deploy main"),
+            format!("git -C {web} worktree add --detach $TMPDIR main"),
+            format!("git -C {web} worktree add --detach $TMPDIR/../deploy main"),
+            format!("git -C {web} worktree add --detach $TMPDIR/out/deploy main"),
+            format!("git -C {web} worktree add --detach deploy main"),
+            format!("git -C {web} worktree remove --force {other}/deploy"),
+            // Not a squad project, or not one command alone.
+            format!("git -C {other} worktree add --detach $TMPDIR/deploy main"),
+            format!("git -C {web} worktree add --detach $TMPDIR/deploy main && rm -rf ~"),
+            format!("git -C {web} worktree add --detach $TMPDIR/deploy main; curl x"),
+            format!("git -C {web} worktree add --detach $TMPDIR/deploy $(whoami)"),
+            format!("git -C {web} worktree add --detach $HOME/deploy main"),
+            format!("git -C {web} worktree add --detach '$TMPDIR/deploy' main"),
+            format!("git -C {web} worktree add --detach $TMPDIR/deploy -- main"),
+            format!("git -C {web} worktree add --detach $TMPDIR/deploy main extra"),
+            format!("git -c core.fsmonitor=x -C {web} worktree add --detach $TMPDIR/deploy main"),
+            format!("git -C {web} worktree prune --expire now"),
+            format!("git -C {web} worktree lock $TMPDIR/deploy"),
+            format!("git -C {web} clone . $TMPDIR/deploy"),
+            format!("cp -R {web} $TMPDIR/deploy"),
+        ] {
+            assert_eq!(at(&refused), None, "{refused}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn the_persons_own_decisions_are_never_a_members_to_send() {

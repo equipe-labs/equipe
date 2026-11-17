@@ -1,8 +1,8 @@
 //! A member's turn that fails because Claude Code's sign-in no longer works
-//! here: equipe looks at why, every screen hears it, the person signs in
-//! again from a screen with a link and a pasted code — no terminal — and the
-//! stopped turn carries on by itself, the member told why and what it was
-//! asked. Without a network, a real login or the person's own Claude Code.
+//! here: equipe looks at why, every screen hears it, equipe starts the
+//! engine's own sign-in itself, the person finishes it from a screen with a
+//! link and a pasted code — no terminal — and the stopped turn carries on by
+//! itself, the member told why and what it was asked. Without a network, a real login or the person's own Claude Code.
 
 #![cfg(unix)]
 
@@ -129,8 +129,8 @@ async fn a_lost_claude_sign_in_is_found_signed_in_again_from_a_screen_and_the_wo
     let (state, stopped) = verdict(&mut events).await;
     assert_eq!((state, stopped), (AuthState::SignedOut, vec![7]), "inside, unlocked, signed out: a sign-in is what's missing");
 
-    // From a screen on another Mac: the page to open, and the code pasted back.
-    core.send(Command::SignIn { engine: Engine::Claude, device: true });
+    // equipe starts Claude Code's own sign-in itself — nobody is told to run a
+    // command — and every screen gets the page to open and a box for its code.
     let url = loop {
         let Event::SignIn { step, .. } = next(&mut events, |e| matches!(e, Event::SignIn { engine: Engine::Claude, .. })).await else { unreachable!() };
         if let SignInStep::Paste { url } = step {

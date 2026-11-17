@@ -5,7 +5,10 @@
 //! `browser_stream` connection gets drawn pictures of the tab watched: at the
 //! panel's size (`fit`), as the daemon lays out any page a panel watches —
 //! or, with `FAKE_FIT=driving` (how 0.47 did it), only when the person drives
-//! it, a member's own at its 1280×800. A press on the wall passes it, as a person's click would.
+//! it, a member's own at its 1280×800. Taking the wall (Take over, or a press on
+//! it) opens it in "a normal Chrome window" as the daemon does on a Mac: the
+//! lane's tabs go, the panel shows the window's card, and Done brings the
+//! browser back past the wall.
 //! `FAKE_BROWSER=empty`: no tabs at all. `FAKE_BROWSER=handover`: besides,
 //! the PM has handed the person its browser at Apple's sign-in, asking them
 //! to sign in to App Store Connect (`show_my_browser`, as a daemon on another
@@ -49,6 +52,8 @@ struct Lane {
 
 struct State {
     lanes: Vec<Lane>,
+    /// Lanes whose wall is in the person's own Chrome window, with their tabs meanwhile.
+    windows: HashMap<String, Vec<BrowserPage>>,
     /// Lanes in the person's hands.
     held: HashSet<String>,
     next: u64,
@@ -103,7 +108,7 @@ fn state() -> &'static Mutex<State> {
             );
             held.insert(PM.to_owned());
         }
-        Mutex::new(State { lanes, held, next: FIRST + 10, seq: HashMap::new() })
+        Mutex::new(State { lanes, windows: HashMap::new(), held, next: FIRST + 10, seq: HashMap::new() })
     })
 }
 
@@ -150,6 +155,34 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
     }
     let mut s = state().lock().unwrap();
     match command {
+        // A wall that refuses automated browsers: a normal Chrome window, as the daemon opens on a Mac.
+        Command::BrowserControl { lane, take: true } if s.lanes.iter().any(|l| l.id == lane && l.pages.iter().any(|p| matches!(p.check, Some(HumanCheck::Challenge | HumanCheck::Captcha)))) => {
+            let Some(l) = s.lanes.iter_mut().find(|l| l.id == lane) else { return true };
+            let pages = std::mem::take(&mut l.pages);
+            let check = pages.iter().find_map(|p| p.check);
+            let _ = events.send(tabs(l));
+            s.windows.insert(lane.clone(), pages);
+            s.held.insert(lane.clone());
+            let _ = events.send(Event::BrowserWindow { squad: Some(SQUAD.into()), lane: lane.clone(), open: true, view: None, challenged: false });
+            let why = "Pass dash.cloudflare.com's \"verify you are human\" check in the normal Chrome window on this Mac, then press Done.";
+            let _ = events.send(Event::BrowserControl { squad: Some(SQUAD.into()), lane: lane.clone(), by: Some("person".into()), why: Some(why.into()), check });
+        }
+        // Done in the window: the browser back, past the wall.
+        Command::BrowserControl { lane, take: false } if s.windows.contains_key(lane) => {
+            let mut pages = s.windows.remove(lane).unwrap_or_default();
+            for p in pages.iter_mut().filter(|p| p.check.is_some()) {
+                p.check = None;
+                p.title = "Overview | Cloudflare".into();
+                p.url = "https://dash.cloudflare.com/8f2c/home/domains".into();
+            }
+            s.held.remove(lane);
+            let _ = events.send(Event::BrowserWindow { squad: Some(SQUAD.into()), lane: lane.clone(), open: false, view: None, challenged: false });
+            if let Some(l) = s.lanes.iter_mut().find(|l| l.id == lane) {
+                l.pages = pages;
+                let _ = events.send(tabs(l));
+            }
+            let _ = events.send(Event::BrowserControl { squad: Some(SQUAD.into()), lane: lane.clone(), by: None, why: None, check: None });
+        }
         Command::BrowserControl { lane, take } => {
             if *take {
                 s.held.insert(lane.clone());

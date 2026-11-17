@@ -87,17 +87,28 @@ pub struct Scoped {
     pub dropped: usize,
 }
 
+/// Whether a cookie is a bot check's clearance — proof that the browser it
+/// was given to passed a "verify you are human" check (Cloudflare's
+/// `cf_clearance` and `__cf_bm`, DataDome's, PerimeterX's, Akamai Bot
+/// Manager's). It belongs to that browser: carrying it into the members'
+/// automated Chrome would be getting past the check for it, so it never is.
+pub fn is_clearance(name: &str) -> bool {
+    let n = name.trim().to_ascii_lowercase();
+    ["cf_clearance", "__cf_bm", "datadome", "_abck", "bm_sz", "ak_bmsc"].contains(&n.as_str())
+        || ["cf_chl_", "__cf_chl", "_px"].iter().any(|p| n.starts_with(p))
+}
+
 /// Keep the cookies of `site` (the page the member asked for) and of the hosts
 /// the view visited meanwhile — the sign-in's own redirects (`auth.openai.com`
 /// for `chatgpt.com`; `accounts.google.com` only if the view went there) —
-/// and nothing else.
+/// and nothing else: never a bot check's clearance ([`is_clearance`]).
 pub fn scope_cookies(cookies: Vec<HandoffCookie>, site: &str, visited: &[String]) -> Scoped {
     let mut hosts: Vec<String> = visited.iter().filter_map(|h| host_of(h)).take(MAX_HOSTS).collect();
     hosts.extend(host_of(site));
     let total = cookies.len();
     let kept: Vec<HandoffCookie> = cookies
         .into_iter()
-        .filter(|c| !c.name.is_empty() && c.value.len() <= MAX_VALUE && domain_is_ours(&c.domain, &hosts))
+        .filter(|c| !c.name.is_empty() && !is_clearance(&c.name) && c.value.len() <= MAX_VALUE && domain_is_ours(&c.domain, &hosts))
         .take(MAX_COOKIES)
         .map(normalize)
         .collect();

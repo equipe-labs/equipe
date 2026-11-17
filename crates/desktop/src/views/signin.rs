@@ -51,11 +51,12 @@ pub const INSTALL_SERVICE: &str = "equipe daemon install";
 /// The row of the conversation's live card: the latest error saying an
 /// engine's sign-in was lost, with nothing the person said after it.
 pub fn live(blocks: &[Block]) -> Option<(usize, Engine)> {
+    // Another error after it (the work carried on, then failed otherwise)
+    // doesn't hide it: the card says the sign-in came back.
     let (ix, engine) = blocks.iter().enumerate().rev().find_map(|(ix, b)| match b {
-        Block::Error { next, .. } => Some((ix, equipe_core::engine_auth::lost_by(next.as_deref()))),
+        Block::Error { next, .. } => equipe_core::engine_auth::lost_by(next.as_deref()).map(|engine| (ix, engine)),
         _ => None,
     })?;
-    let engine = engine?;
     (!blocks[ix + 1..].iter().any(|b| matches!(b, Block::User(_)))).then_some((ix, engine))
 }
 
@@ -163,7 +164,13 @@ pub fn words(card: &Card) -> Words {
         SignInCard::Starting { .. } | SignInCard::Elsewhere => {
             return w(Tone::Working, t!("signin.signing_in", engine = engine), t!("signin.starting", place = place), None, vec![Offer::Cancel]);
         }
-        SignInCard::Browser { .. } => {
+        // The engine's own page, open in equipe's browser where the person is
+        // usually signed in already: approving there is theirs, one button
+        // brings the page back in front.
+        SignInCard::Browser { url: Some(_) } => {
+            return w(Tone::Working, t!("signin.signing_in", engine = engine), t!("signin.browser_equipe", place = place), Some(Offer::OpenPage), vec![Offer::Cancel]);
+        }
+        SignInCard::Browser { url: None } => {
             return w(Tone::Working, t!("signin.signing_in", engine = engine), t!("signin.browser_body", place = place), None, vec![Offer::Cancel]);
         }
         SignInCard::Paste { .. } => {
@@ -345,15 +352,13 @@ impl Shell {
             Offer::SignIn => self.signin_start(engine, window, cx),
             Offer::Cancel => self.engine_cancel(engine, cx),
             Offer::Install => self.engine_install(engine, cx),
-            Offer::OpenPage => {
-                let url = match self.engines.card(engine) {
-                    SignInCard::Paste { url } | SignInCard::Code { url, .. } => Some(url.clone()),
-                    _ => None,
-                };
-                if let Some(url) = url {
-                    cx.open_url(&url);
-                }
-            }
+            Offer::OpenPage => match self.engines.card(engine).clone() {
+                SignInCard::Paste { url } | SignInCard::Code { url, .. } => cx.open_url(&url),
+                // In equipe's own browser on the daemon's machine, where the
+                // page's last step comes back: the panel shows it.
+                SignInCard::Browser { url: Some(url) } => self.send_command(Command::BrowserSignIn { url, window: false }),
+                _ => {}
+            },
             Offer::CarryOn => self.resume_stopped(window, cx),
         }
         cx.notify();
@@ -435,6 +440,19 @@ mod tests {
         assert_eq!(live(&other), None, "another error is the error as it was");
         let codex = vec![error(equipe_core::engine_auth::CODEX_HINT)];
         assert_eq!(live(&codex), Some((0, Engine::Codex)));
+        // Signed in again, carried on, then failed otherwise: the card still says the sign-in came back.
+        let after = vec![error(equipe_core::engine_auth::CODEX_HINT), Block::Note("carried on".into()), Block::Error { message: "refused".into(), next: None }];
+        assert_eq!(live(&after), Some((0, Engine::Codex)));
+    }
+
+    #[test]
+    fn a_sign_in_equipe_opened_in_its_browser_has_one_button_to_bring_it_back() {
+        let open = Card { sign_in: SignInCard::Browser { url: Some("https://auth.openai.com/oauth/authorize?state=s".into()) }, engine: Engine::Codex, ..card(Some(AuthState::SignedOut)) };
+        let said = words(&open);
+        assert_eq!((said.tone, said.primary, said.others.as_slice()), (Tone::Working, Some(Offer::OpenPage), &[Offer::Cancel][..]));
+        assert!(said.command.is_none(), "no command to run: {said:?}");
+        let tool_opened = Card { sign_in: SignInCard::Browser { url: None }, ..open };
+        assert_eq!(words(&tool_opened).primary, None);
     }
 
     #[test]
