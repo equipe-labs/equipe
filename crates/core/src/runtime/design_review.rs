@@ -66,7 +66,7 @@ fn equipe_ticket(title: String, body: String, kind: TicketKind, owner: Option<St
         created_by: by.to_owned(),
         note: None,
         asks: Vec::new(),
-        remaining: Vec::new(),
+        label: None, remaining: Vec::new(),
         images: Vec::new(),
         updated_at: None,
         priority,

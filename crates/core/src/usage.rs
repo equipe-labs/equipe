@@ -196,6 +196,9 @@ pub struct TicketRow {
     pub status: String,
     pub turns: u64,
     pub tokens: u64,
+    /// Of `tokens`, spent on the premium family ([`crate::tiers::PREMIUM_FAMILY`]).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub premium_tokens: u64,
 }
 
 /// What kind of measure a [`Signal`] is.
@@ -261,6 +264,10 @@ pub struct Report {
     /// By [`kind`], in that order.
     pub by_kind: Vec<Row>,
     pub context: Vec<Bucket>,
+    /// Tokens spent on the premium family, whatever ticket they were for.
+    pub premium_tokens: u64,
+    /// The tickets that spent on it, the most first (`premium_tokens` of each).
+    pub premium_tickets: Vec<TicketRow>,
     pub top_tickets: Vec<TicketRow>,
     /// Tokens on tickets now cancelled, and the biggest of them.
     pub cancelled_tokens: u64,
@@ -386,6 +393,12 @@ fn bucket_label(context: Option<u64>) -> &'static str {
 struct PerTicket {
     turns: u64,
     tokens: u64,
+    premium: u64,
+}
+
+/// Whether a turn ran on the premium family.
+fn premium(t: &TurnRow) -> bool {
+    t.engine.as_deref().is_none_or(|e| e == "claude") && t.model.as_deref().is_some_and(|m| crate::tiers::is_premium(crate::protocol::Engine::Claude, m))
 }
 
 /// Every measure over `input`'s rows, for the window `since`..`until`.
@@ -431,10 +444,13 @@ pub fn summarize(input: &Input, since: u64, until: u64) -> Report {
             heavy.0 += 1;
             heavy.1 += t.tokens;
         }
+        let spent = if premium(t) { t.tokens } else { 0 };
+        r.premium_tokens += spent;
         if let Some(id) = t.ticket {
             let p = tickets.entry(id).or_default();
             p.turns += 1;
             p.tokens += t.tokens;
+            p.premium += spent;
         }
     }
 
@@ -462,10 +478,13 @@ pub fn summarize(input: &Input, since: u64, until: u64) -> Report {
         .iter()
         .map(|(id, p)| {
             let info = input.tickets.get(id);
-            TicketRow { id: *id, title: info.map(|i| i.title.clone()).unwrap_or_default(), status: info.map(|i| i.status.clone()).unwrap_or_default(), turns: p.turns, tokens: p.tokens }
+            TicketRow { id: *id, title: info.map(|i| i.title.clone()).unwrap_or_default(), status: info.map(|i| i.status.clone()).unwrap_or_default(), turns: p.turns, tokens: p.tokens, premium_tokens: p.premium }
         })
         .collect();
     all.sort_by(by_tokens);
+    let mut spent: Vec<TicketRow> = all.iter().filter(|t| t.premium_tokens > 0).cloned().collect();
+    spent.sort_by(|a, b| b.premium_tokens.cmp(&a.premium_tokens).then(a.id.cmp(&b.id)));
+    r.premium_tickets = spent.into_iter().take(TOP_TICKETS).collect();
     r.top_tickets = all.iter().take(TOP_TICKETS).cloned().collect();
     let cancelled: Vec<TicketRow> = all.iter().filter(|t| t.status == "cancelled").cloned().collect();
     r.cancelled_tokens = cancelled.iter().map(|t| t.tokens).sum();
@@ -821,6 +840,17 @@ mod tests {
     }
 
     #[test]
+    fn premium_tokens_are_counted_per_ticket() {
+        let on = |ticket: u64, model: &str, read: u64| TurnRow { model: Some(model.into()), ..row("backend", "backend", Some(ticket), T0, read, 1) };
+        let turns = vec![on(7, "claude-fable-5-1", 900), on(7, "opus", 400), on(8, "opus", 500), TurnRow { engine: Some("codex".into()), ..on(9, "fable", 100) }];
+        let r = summarize(&Input { turns, tickets: [ticket(7, "Hard one", "in progress")].into(), ..Input::default() }, T0 - 10, T0 + 10);
+        assert_eq!(r.premium_tokens, 1_000, "the fable turn alone: 900 read + 100 out; Codex's own fable-named model is not Claude's");
+        assert_eq!(r.premium_tickets.len(), 1);
+        assert_eq!((r.premium_tickets[0].id, r.premium_tickets[0].premium_tokens, r.premium_tickets[0].tokens), (7, 1_000, 1_500));
+        assert!(r.top_tickets.iter().all(|t| t.id != 8 || t.premium_tokens == 0));
+    }
+
+    #[test]
     fn context_per_call_is_what_one_request_carried_in() {
         let t = TurnRow { input: 1_000, ..row("pm", "pm", None, T0, 999_000, 1) };
         assert_eq!(t.context_per_call(), Some(1_000_000));
@@ -918,7 +948,7 @@ mod tests {
             created_by: "equipe".into(),
             note: None,
             asks: vec![],
-            remaining: vec![],
+            label: None, remaining: vec![],
             images: vec![],
             updated_at: None,
             priority: Default::default(),

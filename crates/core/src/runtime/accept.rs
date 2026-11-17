@@ -80,6 +80,8 @@ them, and note what they said on the ticket with `comment`, for the PM."
             return Err("Name the handed-in tickets you accept in `tickets`.".into());
         }
         let (mut accepted, mut left) = (Vec::new(), Vec::new());
+        // What a designer made, to put in front of the person with the acceptance.
+        let mut made: Vec<String> = Vec::new();
         // Code merged with no checks run (the project declares none), and code
         // whose checks run first.
         let (mut unchecked, mut checking) = (Vec::new(), Vec::new());
@@ -150,6 +152,10 @@ main; no rebase needed), resolve each conflict keeping what both sides meant, ru
                     _ => unchecked.push(ticket),
                 }
             }
+            // Read before it lands: the worktree is still there to say what it made.
+            if let Some(work) = crate::design::results::for_ticket(&self.config.home, squad, ticket).filter(|w| w.hero.is_some()) {
+                made.push(crate::design::results::embed(&work));
+            }
             if let Some(journal) = self.journal(squad) {
                 let _ = journal.ticket_event(ticket, member, "accepted by the PM", &checked);
             }
@@ -195,6 +201,9 @@ carry on meanwhile.",
         let mut reply = reply.trim_start().to_owned();
         if !left.is_empty() {
             reply.push_str(&format!(" Left: {}.", left.join("; ")));
+        }
+        if !made.is_empty() {
+            reply.push_str(&format!("\n\nThe person has not seen what the designer made. Put these pictures in your message to them as they are, one to a line, before you describe anything:\n{}", made.join("\n")));
         }
         Ok(reply)
     }

@@ -1,0 +1,6 @@
+Browser will not be automatically opened.
+Please visit the following URL:
+
+https://us-east-1.signin.aws.amazon.com/v1/authorize?response_type=code&client_id=arn%3Aaws%3Asignin%3A%3A%3Adevtools%2Fcross-device&state=746e4e62-c014-42ff-91fc-9dccd0e5373c&code_challenge_method=SHA-256&scope=openid&redirect_uri=https%3A%2F%2Fus-east-1.signin.aws.amazon.com%2Fv1%2Fsessions%2Fconfirmation&code_challenge=EbZKFlZPn-a-ooE-24dGNNyG_zB2QgLQE_-MlaX8g3w
+
+Enter the authorization code displayed in your browser: 

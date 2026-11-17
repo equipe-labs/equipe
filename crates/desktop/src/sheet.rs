@@ -42,6 +42,8 @@ pub enum Then {
     Send(Vec<Command>),
     /// Run a side command on the daemon's machine, and do `After` with its answer.
     Job(Job, After),
+    /// Open a window on a machine and squad, at a place a link named.
+    OpenWindow { endpoint: crate::target::Endpoint, squad: String, goal: crate::views::elsewhere::Goal },
 }
 
 /// What to do with a side command's answer.

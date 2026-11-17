@@ -387,6 +387,7 @@ fn the_setting_is_panel_or_window_and_the_default_stands_until_it_is_set() {
 fn the_window_is_a_plain_launch_with_nothing_of_automation_in_it() {
     let args = chrome_args(Path::new("/h/browser/chrome"), "https://auth.openai.com/log-in");
     assert_eq!(args[0], "--user-data-dir=/h/browser/chrome");
+    assert_eq!(args[1], "--profile-directory=Default", "the members' profile, never whichever Chrome used last");
     assert_eq!(args.last().map(String::as_str), Some("https://auth.openai.com/log-in"));
     for arg in &args {
         for automated in ["remote-debugging", "enable-automation", "disable-blink-features", "headless", "test-type", "user-agent", "no-sandbox"] {
@@ -455,4 +456,61 @@ fn bringing_the_window_forward_hands_chrome_no_page() {
     s.run(raise);
     assert_eq!(s.m.opened.len(), opened + 1);
     assert_eq!(s.m.opened.last(), Some(&("".to_owned(), String::new())));
+}
+
+#[test]
+fn the_persons_window_keeps_the_sessions_sign_ins_as_the_automated_browser_does() {
+    let dir = std::env::temp_dir().join(format!("equipe-window-keep-sessions-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(keep_sessions(&dir), Kept::Nothing, "a profile Chrome never ran: nothing to mark");
+    std::fs::create_dir_all(dir.join("Default")).unwrap();
+    let prefs = dir.join("Default").join("Preferences");
+    // The automated browser stepped aside with a clean exit.
+    std::fs::write(&prefs, r#"{"profile":{"exit_type":"Normal","name":"Person 1"},"session":{"restore_on_startup":5}}"#).unwrap();
+    assert_eq!(keep_sessions(&dir), Kept::Marked);
+    let kept: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&prefs).unwrap()).unwrap();
+    assert_eq!(kept["profile"]["exit_type"], "Crashed");
+    assert_eq!(kept["profile"]["name"], "Person 1", "nothing else changes");
+    assert_eq!(kept["session"]["restore_on_startup"], 5, "no old tab comes back with it");
+    assert_eq!(keep_sessions(&dir), Kept::Already);
+    std::fs::write(&prefs, "not json").unwrap();
+    assert_eq!(keep_sessions(&dir), Kept::Untouched);
+    // The folder pinned to another profile: that one's last exit is marked.
+    let other = dir.join("Profile 2").join("Preferences");
+    std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+    std::fs::write(&other, r#"{"profile":{"exit_type":"Normal"}}"#).unwrap();
+    std::fs::write(dir.join(crate::browser::PINNED_PROFILE), "Profile 2").unwrap();
+    assert_eq!(keep_sessions(&dir), Kept::Marked);
+    assert!(chrome_args(&dir, "").contains(&"--profile-directory=Profile 2".to_owned()), "the person's window opens it too");
+    assert_eq!(std::fs::read_to_string(&prefs).unwrap(), "not json", "a file that isn't Chrome's is left as it was");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_check_that_refuses_automated_browsers_goes_to_the_persons_window_twice_at_most() {
+    use equipe_protocol::HumanCheck;
+    // Only a check answered by clicking needs a browser nothing drives; a sign-in or a code doesn't.
+    assert!(needs_real_browser(HumanCheck::Challenge) && needs_real_browser(HumanCheck::Captcha));
+    assert!(!needs_real_browser(HumanCheck::SignIn) && !needs_real_browser(HumanCheck::TwoFactor));
+
+    let t0 = Instant::now();
+    let mut r = CheckRounds::default();
+    // First: the card, and the person's hand opens the window.
+    assert_eq!(r.step(t0, "claude.ai"), CheckRound::Ask);
+    r.began(t0, "claude.ai");
+    // Back right after the automated browser came back to it: the window once more, by itself.
+    let back = t0 + Duration::from_secs(40);
+    assert_eq!(r.step(back, "claude.ai"), CheckRound::Again);
+    assert_eq!(r.step(back, "example.com"), CheckRound::Ask, "another site is another matter");
+    r.began(back, "claude.ai");
+    // Back again: no loop — the member does without the site, told once per lane.
+    let again = back + Duration::from_secs(40);
+    assert_eq!(r.step(again, "claude.ai"), CheckRound::GiveUp);
+    assert!(r.tell("acme/designer", "claude.ai"));
+    assert!(!r.tell("acme/designer", "claude.ai"), "told once");
+    assert!(r.tell("acme/qa", "claude.ai"), "each member is told for itself");
+    // Long after, the site gets a fresh start, and its members may be told again.
+    let later = again + CHECK_ROUNDS_FOR;
+    assert_eq!(r.step(later, "claude.ai"), CheckRound::Ask);
+    assert!(r.tell("acme/designer", "claude.ai"));
 }

@@ -17,6 +17,8 @@
 //!   brief and the system, whose verdict a hand-in waits on.
 //! - `directions`: the directions proposed and chosen, so the next differs.
 //! - `brand`: which tickets are brand work, and what a designer starting one is told.
+//! - `inherit`: machine-level brands a project inherits its system from,
+//!   with the project's overrides laid over them (`docs/BRANDS.md`).
 //! - `refs`: a brief's reference board — pages from the galleries a designer
 //!   studies, each with what to learn from it, never another's brand.
 //! - `palette`: candidate palettes on a real layout, light and dark, with
@@ -35,6 +37,10 @@
 //!   `components/` and each matrix — and the ticket at work on each.
 //! - `studio`: a ticket's design work as it is on disk, for a screen that
 //!   watches it (checks, directions, critiques, references, pictures).
+//! - `results`: what a design ticket made — its renders paired with the
+//!   screen as it was, its change notes, preview links and decision record —
+//!   one card each, for the Designs tab, the Needs-you item and the PM's
+//!   acceptance message.
 //! - `system`: a project's design system as code — its tokens, its
 //!   component registry and docs pages, found wherever they are kept; each
 //!   component's matrix of variants, states and themes checked in a browser;
@@ -45,14 +51,19 @@
 //!   rendered at each condition, measured, compared with the map's pictures —
 //!   before any designer turn (docs/DESIGN-QA.md).
 //! - `qa_stats`: what design QA costs and decides, read from a squad's journal.
+//! - `session`: design sessions — the kickoff, the person's pins, the lines
+//!   `equipe design session` prints, and the PM's proposals, once per ticket.
 
 pub mod brand;
 pub mod check;
 pub mod component;
 pub mod fonts;
+pub mod inherit;
 pub mod palette;
 pub mod precheck;
 pub mod qa_stats;
+pub mod refgallery;
+pub mod results;
 pub mod refs;
 pub mod kit;
 pub mod lint;
@@ -67,6 +78,7 @@ pub mod kept;
 pub mod review;
 pub mod reviewer;
 pub mod second_look;
+pub mod session;
 pub mod studio;
 pub mod system;
 pub mod tokens;
@@ -74,3 +86,31 @@ pub mod values;
 pub mod versions;
 
 pub use folder::{DIR, catalog, places, stamp};
+
+/// `f` of each of `items`, in their order, worked out on up to `at_once`
+/// threads: the folders read and the git asked for a squad's design systems
+/// are many, each mostly a wait on the disk or on a process.
+pub(crate) fn each_at_once<T: Sync, R: Send>(items: &[T], at_once: usize, f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    if items.len() < 2 || at_once < 2 {
+        return items.iter().map(f).collect();
+    }
+    let next = AtomicUsize::new(0);
+    let done: Mutex<Vec<(usize, R)>> = Mutex::new(Vec::with_capacity(items.len()));
+    std::thread::scope(|scope| {
+        for _ in 0..items.len().min(at_once) {
+            scope.spawn(|| {
+                loop {
+                    let at = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(item) = items.get(at) else { break };
+                    let out = f(item);
+                    done.lock().unwrap_or_else(|e| e.into_inner()).push((at, out));
+                }
+            });
+        }
+    });
+    let mut done = done.into_inner().unwrap_or_else(|e| e.into_inner());
+    done.sort_by_key(|(at, _)| *at);
+    done.into_iter().map(|(_, out)| out).collect()
+}

@@ -2057,6 +2057,23 @@ fn member_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             );
         }
     }
+    // Its link, to share in a chat.
+    {
+        use crate::deeplink::CopyAs;
+        use equipe_core::protocol::deeplink::Target;
+        rows.push(div().my_1().h(px(1.)).bg(p.hair).into_any_element());
+        for (id, label, how) in [("mm-copy-link", t!("link.copy"), CopyAs::Link), ("mm-copy-text", t!("link.copy_text"), CopyAs::Text)] {
+            let who = name.clone();
+            rows.push(
+                item(id, IconName::Copy, label.to_owned(), None)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.board.member_menu = None;
+                        this.copy_link_to("member-link", Target::Member(who.clone()), how, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+    }
     Some(
         deferred(
             anchored().position(at).snap_to_window().child(
@@ -2751,6 +2768,11 @@ impl Shell {
             Screen::Logins => self.open_logins(cx),
             Screen::Orchestration => self.open_orchestra(cx),
             Screen::Docs => self.open_docs(cx),
+            // A board belongs to the question it was opened from: back to where that is.
+            Screen::Taste => self.open_side(Side::Pm, window, cx),
+            // A session ended or not: back to it while it runs, else the design screen.
+            Screen::DesignSession if self.session.on.is_some() => self.show(Screen::DesignSession, cx),
+            Screen::DesignSession => self.open_design(cx),
             Screen::Studio => match place.ticket.or(self.studio.ticket) {
                 Some(id) => self.open_studio(id, window, cx),
                 None => self.open_side(Side::Pm, window, cx),

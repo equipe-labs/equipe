@@ -57,6 +57,9 @@ pub struct Verdict {
     /// a subagent's answer, or a verdict kept before it was said.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reviewer: Option<equipe_protocol::engines::Reviewed>,
+    /// Against the references it was given: `same`, `below` or `no references`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub tier: String,
 }
 
 /// A fact the second look found missing.

@@ -94,6 +94,10 @@ impl Spot {
             Screen::Settings => Spot::Pm,
             // A ticket's work watched: that ticket, when the window opens again.
             Screen::Studio => place.ticket.map_or(Spot::Pm, Spot::Ticket),
+            // A board is a visit to a question, not a place to come back to.
+            Screen::Taste => Spot::Pm,
+            // A session is live work, not a place: the design screen, when the window opens again.
+            Screen::DesignSession => Spot::Screen(Screen::Design),
         }
     }
 

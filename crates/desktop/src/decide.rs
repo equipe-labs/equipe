@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use equipe_core::protocol::SessionId;
-use equipe_core::protocol::decide::{self, Answer, Question, QuestionSet, Reaction};
+use equipe_core::protocol::decide::{self, Answer, Like, Question, QuestionSet, Reaction};
 use equipe_core::t;
 
 // ── the sets waiting ──
@@ -221,6 +221,8 @@ pub struct Draft {
     pub collapsed: bool,
     /// A design choice reacted to beyond a pick — a mix, another round — by question.
     pub reactions: BTreeMap<usize, Reaction>,
+    /// A taste board's tiles liked, by question, in the order they were.
+    pub likes: BTreeMap<usize, Vec<Like>>,
 }
 
 /// A key the card takes while it has them.
@@ -312,10 +314,51 @@ impl Draft {
         true
     }
 
-    /// Whether the question on show has an answer: a pick, or words of
-    /// their own (`others`, by question).
+    /// Option `n` picked, or — when it already is — taken back: the board's
+    /// "Pick this family". False when there is no such option.
+    pub fn toggle(&mut self, set: &QuestionSet, n: usize) -> bool {
+        if self.picked(n) {
+            if let Some(picks) = self.picks.get_mut(self.step) {
+                picks.remove(&n);
+            }
+            return true;
+        }
+        self.pick(set, n)
+    }
+
+    /// Tile `tile` of option `option` of the question on show liked, or —
+    /// when it was — not any more. False when there is no such tile.
+    pub fn like(&mut self, set: &QuestionSet, option: usize, tile: usize) -> bool {
+        let Some(q) = self.question(set) else { return false };
+        if q.options.get(option).is_none_or(|c| tile >= c.board_tiles().len()) {
+            return false;
+        }
+        let likes = self.likes.entry(self.step).or_default();
+        let like = Like { option, tile };
+        match likes.iter().position(|l| *l == like) {
+            Some(at) => {
+                likes.remove(at);
+            }
+            None => likes.push(like),
+        }
+        self.skipped.remove(&self.step);
+        true
+    }
+
+    /// Whether that tile of the question on show is liked.
+    pub fn liked(&self, option: usize, tile: usize) -> bool {
+        self.likes.get(&self.step).is_some_and(|l| l.contains(&Like { option, tile }))
+    }
+
+    /// How many tiles of the question on show are liked.
+    pub fn liked_count(&self) -> usize {
+        self.likes.get(&self.step).map_or(0, Vec::len)
+    }
+
+    /// Whether the question on show has an answer: a pick, tiles liked, or
+    /// words of their own (`others`, by question).
     pub fn answered(&self, others: &[String]) -> bool {
-        self.reactions.contains_key(&self.step) || self.picks.get(self.step).is_some_and(|p| !p.is_empty()) || others.get(self.step).is_some_and(|o| !o.trim().is_empty())
+        self.likes.get(&self.step).is_some_and(|l| !l.is_empty()) || self.reactions.contains_key(&self.step) || self.picks.get(self.step).is_some_and(|p| !p.is_empty()) || others.get(self.step).is_some_and(|o| !o.trim().is_empty())
     }
 
     /// "This one": option `n` of a design choice, and on at once — the
@@ -405,7 +448,7 @@ impl Draft {
                 match self.reactions.get(&n) {
                     Some(Reaction::Mix { base, from, aspect }) => Answer { other, ..Answer::mix(*base, *from, aspect.clone()) },
                     Some(Reaction::Again) => Answer::again(other),
-                    None => Answer { picked, other, reaction: None },
+                    None => Answer { picked, other, reaction: None, liked: self.likes.get(&n).cloned().unwrap_or_default() },
                 }
             })
             .collect()
@@ -524,6 +567,22 @@ pub fn key_of(key: &str, cmd: bool, shift: bool) -> Option<Key> {
 /// by looking (its options pictures), one pick of several.
 pub fn reacts(q: &Question) -> bool {
     q.is_visual() && !q.multi_select && q.options.len() > 1
+}
+
+/// Whether a question's options are drawn one under another, each with its
+/// picture big at its own shape: a choice in pictures that isn't a board's
+/// families (those stay a grid of covers, and open the board).
+pub fn shows_heroes(q: &Question) -> bool {
+    q.is_visual() && !q.board && q.options.iter().all(|o| o.tiles.is_empty())
+}
+
+/// An option's live preview as the card opens it: an https page of a real
+/// site's, as the daemon checked it — checked again here, so a card never
+/// opens anything else on the person's screen.
+pub fn preview_of(option: &equipe_core::protocol::decide::Choice) -> Option<(String, String)> {
+    let url = equipe_core::connections::clean_url(&option.preview_url).ok()?;
+    let host = equipe_core::connections::host_of(&url);
+    Some((url, host))
 }
 
 /// One line of an option's mix menu: what goes into it, from which option.
@@ -1002,5 +1061,69 @@ mod tests {
         assert!(read[1].skipped);
         assert_eq!(decided(&decide::dismissed_message(&s)), Some(Decided::Closed));
         assert_eq!(decided("고마워요"), None);
+    }
+
+    /// A taste board: two families of three tiles each, then a plain question after it.
+    fn board() -> QuestionSet {
+        use equipe_core::protocol::decide::Tile;
+        let family = |label: &str, tiles: &[&str]| Choice {
+            label: label.into(),
+            description: format!("{label}, in a line"),
+            tiles: tiles.iter().map(|t| Tile { image: format!("/w/{t}.png"), source: format!("https://{t}.example/x"), take: format!("take {t}"), reference: String::new() }).collect(),
+            ..Choice::default()
+        };
+        let mut s = set();
+        s.questions = vec![
+            Question { question: "Which direction?".into(), board: true, options: vec![family("Dense", &["a", "b", "c"]), family("Calm", &["d", "e", "f"])], ..Question::default() },
+            Question { question: "Anything else?".into(), ..Question::default() },
+        ];
+        s
+    }
+
+    #[test]
+    fn a_board_answer_is_the_family_picked_the_tiles_liked_and_the_note() {
+        let s = board();
+        let mut d = Draft::new(&s);
+        let none = others(2);
+        assert!(!d.answered(&none));
+        // Liking is toggling, in the order it was done; a tile that isn't there can't be liked.
+        assert!(d.like(&s, 1, 2) && d.like(&s, 0, 0) && d.like(&s, 1, 0));
+        assert!(!d.like(&s, 2, 0) && !d.like(&s, 0, 3));
+        assert!(d.liked(0, 0) && d.liked(1, 2) && !d.liked(0, 1));
+        assert_eq!(d.liked_count(), 3);
+        assert!(d.like(&s, 1, 2), "again: not liked any more");
+        assert_eq!((d.liked(1, 2), d.liked_count()), (false, 2));
+        // Only likes is an answer.
+        assert!(d.answered(&none));
+        // Picking a family is a toggle too.
+        assert!(d.toggle(&s, 1) && d.picked(1));
+        assert!(d.toggle(&s, 0) && d.picked(0) && !d.picked(1), "one family: the other lets go");
+        assert!(d.toggle(&s, 0) && !d.picked(0), "again: taken back");
+        assert!(!d.toggle(&s, 9));
+        d.toggle(&s, 0);
+        // On to the second question, then the whole set goes with the note.
+        let note = vec!["denser, please".to_owned(), String::new()];
+        assert_eq!(d.next(&s, &note), None);
+        assert_eq!(d.step, 1);
+        let words = vec![String::new(), "that's all".to_owned()];
+        let Some(answers) = d.next(&s, &words) else { panic!("sent") };
+        assert_eq!(answers[0].picked, [0]);
+        assert_eq!(answers[0].liked, [Like { option: 0, tile: 0 }, Like { option: 1, tile: 0 }]);
+        assert_eq!(answers[1], Answer { other: Some("that's all".into()), ..Answer::default() }, "the plain question has no likes");
+        // What the member reads.
+        let said = decide::answer_message(&s, &[Answer { other: Some("denser, please".into()), ..answers[0].clone() }, answers[1].clone()]);
+        assert!(said.contains("1) Which direction? → Dense (+ note: denser, please)\n   liked «Dense»: /w/a.png (a.example — take a)\n   liked «Calm»: /w/d.png (d.example — take d)"), "{said}");
+        assert!(said.contains("2) Anything else? → their own answer: that's all"), "{said}");
+        assert!(said.contains("record the pick and the likes in design/decisions/"), "{said}");
+    }
+
+    #[test]
+    fn a_skipped_board_question_carries_no_likes() {
+        let s = board();
+        let mut d = Draft::new(&s);
+        d.like(&s, 0, 1);
+        d.skip(&s, &others(2));
+        let answers = d.answers(&s, &others(2));
+        assert!(answers[0].is_skipped(), "skipped: nothing goes, whatever was liked: {:?}", answers[0]);
     }
 }

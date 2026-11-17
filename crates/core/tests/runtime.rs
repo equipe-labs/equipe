@@ -1412,7 +1412,7 @@ async fn work_not_on_main_says_why_can_be_kept_on_its_branch_and_settles_when_no
                     created_by: "pm".into(),
                     note: None,
                     asks: vec![],
-                    remaining: Vec::new(), images: Vec::new(),
+                    label: None, remaining: Vec::new(), images: Vec::new(),
                     updated_at: None,
                     priority: Default::default(), rank: 0,
                 })
@@ -1500,7 +1500,7 @@ async fn dependencies_that_conflict_hold_the_ticket_and_say_why() {
                     created_by: "pm".into(),
                     note: None,
                     asks: vec![],
-                    remaining: Vec::new(), images: Vec::new(),
+                    label: None, remaining: Vec::new(), images: Vec::new(),
                     updated_at: None,
                     priority: Default::default(), rank: 0,
                 })
@@ -1680,19 +1680,27 @@ async fn a_member_waiting_on_the_person_takes_its_next_ticket_and_comes_back_to_
     // The next ticket runs beside it, in a worktree of its own.
     until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 2, .. })).await;
     // Said from the member's own conversation, with two runs: neither is picked.
-    let which = tool(&handle, "backend", "block_on_person", serde_json::json!({ "needs": ["GitHub token"] })).await;
+    let which = tool(&handle, "backend", "block_on_person", serde_json::json!({ "ask": "Do the one thing", "effort_minutes": 1, "needs": ["GitHub token"] })).await;
     assert!(which.is_error && which.text.contains("not on a ticket"), "{which:?}");
     // It can't go on without the person: the ticket waits, with their checklist.
     let empty = tool_on(&handle, "backend", 1, "block_on_person", serde_json::json!({ "needs": [] })).await;
     assert!(empty.is_error, "{empty:?}");
+    // What the person must do, in one line with how long it takes, is required.
+    let headless = tool_on(&handle, "backend", 1, "block_on_person", serde_json::json!({ "needs": ["GitHub token"] })).await;
+    assert!(headless.is_error && headless.text.contains("`ask`"), "{headless:?}");
+    let no_effort = tool_on(&handle, "backend", 1, "block_on_person", serde_json::json!({ "ask": "Issue two tokens", "needs": ["GitHub token"] })).await;
+    assert!(no_effort.is_error && no_effort.text.contains("effort_minutes"), "{no_effort:?}");
+    let coded = tool_on(&handle, "backend", 1, "block_on_person", serde_json::json!({ "ask": "Do T-1 TP-3 → done", "effort_minutes": 1, "needs": ["GitHub token"] })).await;
+    assert!(coded.is_error && coded.text.contains("T-1"), "{coded:?}");
     let blocked = tool_on(&handle, "backend", 1, "block_on_person", serde_json::json!({
-        "needs": ["GitHub token", "PostHog secrets"], "why": "to deploy",
+        "ask": "Issue the GitHub and PostHog keys", "effort_minutes": 5, "needs": ["GitHub token", "PostHog secrets"], "why": "to deploy",
     }))
     .await;
     assert!(!blocked.is_error, "{blocked:?}");
     let waiting = until(&mut events, |e| is_waiting(e, 1)).await;
     let ticket = ticket_changed(&waiting).pop().unwrap();
-    assert_eq!(ticket.note.as_deref(), Some("Waiting on you:\n- [ ] GitHub token\n- [ ] PostHog secrets\n(to deploy)"));
+    assert_eq!(ticket.note.as_deref(), Some("Waiting on you:\n> Issue the GitHub and PostHog keys · 5 min\n- [ ] GitHub token\n- [ ] PostHog secrets\n(to deploy)"));
+    assert_eq!(ticket.ask_headline().as_deref(), Some("Issue the GitHub and PostHog keys · 5 min"), "what a list reads in place of the title");
     assert_eq!(ticket.asks, ["GitHub token", "PostHog secrets"], "the asks travel as a list");
     assert_eq!(ticket.assignee.as_deref(), Some("backend"));
     assert!(first.path.exists(), "the worktree stays while the ticket waits");
@@ -1730,7 +1738,7 @@ async fn what_the_person_leaves_open_stays_on_the_ticket_and_is_asked_again_next
     tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "App Store", "body": "-", "owner": "backend" })).await;
     until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
     let needs = ["App Review 연락처를 알려 주세요.", "EU DSA 상태를 trader로 바꿔 주세요.", "가격을 정해 주세요."];
-    tool(&handle, "backend", "block_on_person", serde_json::json!({ "needs": needs })).await;
+    tool(&handle, "backend", "block_on_person", serde_json::json!({ "ask": "Do the one thing", "effort_minutes": 1, "needs": needs })).await;
     until(&mut events, |e| is_waiting(e, 1)).await;
 
     // Answered in part: one in words, one put off, one handed back.
@@ -1747,7 +1755,7 @@ async fn what_the_person_leaves_open_stays_on_the_ticket_and_is_asked_again_next
     assert!(prompt.contains(equipe_core::roles::ANSWERS_GUIDE), "what each answer means: {prompt}");
 
     // Put down again: what was left is asked again, after the new asks.
-    let blocked = tool(&handle, "backend", "block_on_person", serde_json::json!({ "needs": ["빌드 번호를 알려 주세요."] })).await;
+    let blocked = tool(&handle, "backend", "block_on_person", serde_json::json!({ "ask": "Do the one thing", "effort_minutes": 1, "needs": ["빌드 번호를 알려 주세요."] })).await;
     assert!(blocked.text.contains("left 1 thing(s) open last time"), "{blocked:?}");
     handle.send(Command::Submit { session: 2, text: "end your turn".into(), about: None });
     let waiting = until(&mut events, |e| is_waiting(e, 1)).await;
@@ -1768,7 +1776,7 @@ async fn a_waiting_ticket_stays_put_through_a_restart_until_the_pm_resumes_it() 
         add(&handle, &mut events, 2, member(&repo, "backend")).await;
         tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Deploy", "body": "-", "owner": "backend" })).await;
         until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
-        tool(&handle, "backend", "block_on_person", serde_json::json!({ "needs": "a Vercel token" })).await;
+        tool(&handle, "backend", "block_on_person", serde_json::json!({ "ask": "Do the one thing", "effort_minutes": 1, "needs": "a Vercel token" })).await;
         // The turn may already be over: a new message makes sure one ends after the tool call.
         handle.send(Command::Submit { session: 2, text: "end your turn".into(), about: None });
         until(&mut events, |e| is_waiting(e, 1)).await;
@@ -3126,14 +3134,59 @@ async fn a_designer_hands_a_screen_in_only_once_it_was_checked_and_seen_fresh() 
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    let refused = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    // A screen changed: first, what changed and why it is better — and what stayed.
+    let unsaid = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    assert!(unsaid.is_error && unsaid.text.contains("changes a screen") && unsaid.text.contains("`changes`") && unsaid.text.contains("`unchanged`"), "{unsaid:?}");
+    let refused = tool(&handle, "designer", "submit_for_review", home_done()).await;
     assert!(refused.is_error && refused.text.contains("design/mockups/home.html was edited and not checked") && refused.text.contains("equipe design second-look"), "{refused:?}");
 
     // Checked and seen: nothing is left in its ledger, and it hands in.
     std::fs::remove_file(&ledger).unwrap();
-    let handed = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    let handed = tool(&handle, "designer", "submit_for_review", home_done()).await;
     assert!(!handed.is_error, "{handed:?}");
     handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_designers_screen_change_is_handed_in_with_what_changed_why_it_is_better_and_what_stayed() {
+    let site = named("site");
+    let turn = format!("case \"$*\" in *\"You're on T-\"*) mkdir -p shots; echo 'pretend png' > shots/home.png; sleep 3;; esac\n{}", answering("working on it"));
+    let (claude, _recorded) = recording_claude(&turn);
+    let home = squad_home(&[&site]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "designer")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Home polish", "body": "Polish the home screen.", "owner": "designer", "kind": "task" })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    exists(&ws.path.join("shots/home.png")).await;
+
+    // It says it changes a screen: without its change note, refused with what to add.
+    let bare = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done.", "images": "shots/home.png", "changes_screens": true })).await;
+    assert!(bare.is_error && bare.text.contains("`changes`") && bare.text.contains("`unchanged`") && bare.text.contains("features, content and data"), "{bare:?}");
+    let no_why = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done.", "changes_screens": true, "changes": [{ "area": "layout", "after": "two columns" }], "unchanged": "copy" })).await;
+    assert!(no_why.is_error && no_why.text.contains("`why`"), "{no_why:?}");
+    // With it: handed in, the note under its summary for the person.
+    let mut noted = home_done();
+    noted["images"] = serde_json::json!("shots/home.png");
+    noted["changes_screens"] = serde_json::json!(true);
+    let handed = tool(&handle, "designer", "submit_for_review", noted).await;
+    assert!(!handed.is_error, "{handed:?}");
+    let review = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Review)).await;
+    let note = ticket_changed(&review).pop().and_then(|t| t.note).unwrap_or_default();
+    assert!(note.starts_with("Home done."), "{note}");
+    assert!(note.contains("What changed and why it is better:\n- layout: one long column \u{2192} hero over two columns \u{2014} the references keep the primary action in the first screenful"), "{note}");
+    assert!(note.contains("- Not changed: features, content and copy"), "{note}");
+    handle.shutdown().await;
+}
+
+/// A designer's hand-in of the home screen, with its change note.
+fn home_done() -> serde_json::Value {
+    serde_json::json!({
+        "summary": "Home done.",
+        "changes": [{ "area": "layout", "before": "one long column", "after": "hero over two columns", "why": "the references keep the primary action in the first screenful" }],
+        "unchanged": "features, content and copy",
+    })
 }
 
 #[tokio::test]
@@ -3156,11 +3209,11 @@ async fn the_same_refusal_twice_hands_the_work_in_with_the_gap_marked_and_the_pm
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    let first = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    let first = tool(&handle, "designer", "submit_for_review", home_done()).await;
     assert!(first.is_error && first.text.contains("design/mockups/home.html was edited and not checked") && first.text.contains("again the same way"), "it says what a second time does: {first:?}");
     // Nothing changed: the second refusal would be the first's again. It
     // goes in, with what wasn't cleared marked for the person, and the PM hears.
-    let second = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    let second = tool(&handle, "designer", "submit_for_review", home_done()).await;
     assert!(!second.is_error && second.text.contains("Handed in T-1") && second.text.contains("marked"), "{second:?}");
     let told = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("T-1") && text.contains("not cleared"))).await;
     assert!(!told.is_empty());
@@ -3192,7 +3245,7 @@ async fn after_three_looks_in_a_row_asking_for_fixes_the_hand_in_goes_with_them_
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     // Not refused first: the looks already went round three times.
-    let handed = tool(&handle, "designer", "submit_for_review", serde_json::json!({ "summary": "Home done." })).await;
+    let handed = tool(&handle, "designer", "submit_for_review", home_done()).await;
     assert!(!handed.is_error && handed.text.contains("Handed in T-1") && handed.text.contains("marked"), "{handed:?}");
     let told = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("T-1") && text.contains("not cleared"))).await;
     assert!(!told.is_empty());
@@ -4296,7 +4349,7 @@ def say(m):
     sys.stdout.buffer.flush()
 def tabs(lane):
     pid, url = pages[lane]
-    say({{"type": "tabs", "lane": lane, "member": lane.split("/")[1], "pages": [{{"id": pid, "url": url, "title": ""}}], "agent": pid}})
+    say({{"type": "tabs", "lane": lane, "member": lane.split("/")[1], "pages": [{{"id": pid, "url": url, "title": "", "signals": {{"password": "still-asks" in url}}}}], "agent": pid}})
 say({{"type": "ready"}})
 for line in sys.stdin:
     with open({ops:?}, "a") as f:
@@ -4317,6 +4370,9 @@ for line in sys.stdin:
         # The sign-in's cookies went in and the page loaded again.
         pages[op["lane"]][1] = op.get("url") or pages[op["lane"]][1]
         tabs(op["lane"])
+    elif op.get("op") == "exit":
+        # The host and its Chrome went away (a test says so); the next browser starts it again.
+        sys.exit(0)
     elif op.get("op") == "suspend":
         # The profile's Chrome closed: its tabs are gone, and the daemon is told.
         pages.clear()
@@ -4384,6 +4440,10 @@ async fn a_member_hands_its_browser_to_the_panel_of_a_screen_on_another_mac_and_
 
     // That screen gone and none other attached: the window on this Mac, as before.
     handle.browser_hub().await.unwrap().screen(false);
+    // Its page on the site shows no sign-in: it is told to look first, once…
+    let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": "https://appstoreconnect.apple.com/", "why": why })).await;
+    assert!(said.text.contains("shows no sign-in") && said.text.contains("Don't ask the person yet"), "{said:?}");
+    // …and asking again, the person is asked.
     let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": "https://appstoreconnect.apple.com/", "why": why })).await;
     assert!(said.text.contains("comes up on the person's screen"), "{said:?}");
     assert!(Journal::for_squad(&home, "acme").unwrap().browser_shown("pm"));
@@ -4461,6 +4521,51 @@ async fn a_sign_in_hand_off_goes_to_a_plain_chrome_window_and_the_automated_brow
     assert_eq!(all.len(), before + 1, "one turn, without the person typing a word");
     let prompt = arg(all.last().unwrap(), "-p").unwrap();
     assert!(prompt.contains("pressed Done") && prompt.contains(why) && prompt.contains(url), "{prompt}");
+}
+
+#[tokio::test]
+async fn a_sign_in_the_person_finishes_in_their_own_chrome_window_is_recorded_kept_and_offered_to_save() {
+    // The real path on a Mac: the shared host Chrome, the person's own window on its profile.
+    unsafe { std::env::set_var("EQUIPE_VAULT_IN_MEMORY", "1") };
+    let repo = repo();
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    let launches = fake_plain_chrome(&home);
+    let (npx, ops) = fake_host_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), browser_host: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "backend")).await;
+    handle.browser_hub().await.unwrap().screen(true);
+    handle.send(Command::BrowserNewTab { url: None, profile: None });
+    for _ in 0..400 {
+        if std::fs::read_to_string(&ops).unwrap_or_default().contains("\"op\":\"newtab\"") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let url = "https://erp.example/home";
+    let said = tool(&handle, "backend", "show_my_browser", serde_json::json!({ "url": url, "why": "Sign in to the ERP" })).await;
+    assert!(said.text.contains("normal Chrome window"), "{said:?}");
+    for _ in 0..400 {
+        if !std::fs::read_to_string(&launches).unwrap_or_default().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(std::fs::read_to_string(&launches).unwrap_or_default().contains("--profile-directory="), "the members' own profile");
+    // The person signs in there and presses Done: the browser comes back on the ERP, past its sign-in.
+    handle.send(Command::BrowserControl { lane: "acme/backend".into(), take: false });
+    let seen = until(&mut events, |e| matches!(e, Event::LoginOffered { .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::LoginOffered { offer } if offer.site == "erp.example")), "saving the login is offered once: {seen:?}");
+    let db = equipe_core::journal::squad_dir(&home, "acme").join("squad.db");
+    let rows = equipe_core::logins::read(&db, 0).unwrap();
+    assert!(
+        rows.iter().any(|r| r.kind == equipe_core::logins::Kind::SignedIn && r.site == "erp.example" && r.member == "backend" && r.by.as_deref() == Some("person")),
+        "{rows:?}"
+    );
+    assert_eq!(equipe_core::logins::summarize(&rows).signed_in, 1, "`equipe logins stats` counts it");
+    // Its cookies are asked of the profile's Chrome, to keep for every squad.
+    let line = host_line(&ops, |l| l.contains("\"op\":\"collect\"")).await;
+    assert!(line.contains("erp.example"), "{line}");
 }
 
 #[tokio::test]
@@ -4545,6 +4650,145 @@ async fn a_sign_in_view_on_a_remote_screen_hands_its_scoped_cookies_to_the_membe
     let prompt = arg(all.last().unwrap(), "-p").unwrap();
     assert!(prompt.contains("pressed Done") && prompt.contains(why) && prompt.contains(url), "{prompt}");
     assert!(!prompt.contains("v-secret"), "a cookie's value never reaches a member");
+}
+
+#[tokio::test]
+async fn a_sign_in_the_person_made_where_no_member_could_watch_is_seen_through_when_the_browser_comes_back() {
+    unsafe { std::env::set_var("EQUIPE_VAULT_IN_MEMORY", "1") };
+    let repo = repo();
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    let _ = fake_plain_chrome(&home);
+    let (npx, _ops) = fake_host_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), browser_host: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    let hub = handle.browser_hub().await.unwrap();
+    hub.screen(true);
+    hub.web_view(true);
+    // The person signs in in a sign-in view — no member's tab sees it — and presses Done.
+    let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": "https://erp.example/home", "why": "Sign in to the ERP" })).await;
+    assert!(said.text.contains("sign-in view"), "{said:?}");
+    let _ = until(&mut events, |e| matches!(e, Event::BrowserWindow { open: true, .. })).await;
+    handle.send(Command::BrowserCookies { lane: "acme/pm".into(), hosts: vec!["erp.example".into()], cookies: vec![cookie("erp_session", "erp.example")], failed: false });
+    handle.send(Command::BrowserControl { lane: "acme/pm".into(), take: false });
+    // pm's page is back on the ERP, past its sign-in: a sign-in finished, on the record as the person's.
+    let db = equipe_core::journal::squad_dir(&home, "acme").join("squad.db");
+    let mut finished = false;
+    for _ in 0..200 {
+        let rows = equipe_core::logins::read(&db, 0).unwrap_or_default();
+        if rows.iter().any(|r| r.kind == equipe_core::logins::Kind::SignedIn && r.site == "erp.example" && r.member == "pm" && r.by.as_deref() == Some("person")) {
+            finished = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(finished, "{:?}", equipe_core::logins::read(&db, 0));
+}
+
+#[tokio::test]
+async fn a_sign_in_from_a_view_the_site_doesnt_take_goes_on_in_the_members_own_browser_and_that_site_skips_the_view_after() {
+    let repo = repo();
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    let _ = fake_plain_chrome(&home);
+    let (npx, ops) = fake_host_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), browser_host: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "backend")).await;
+    let hub = handle.browser_hub().await.unwrap();
+    hub.screen(true);
+    hub.web_view(true);
+    // A site that ties its session to the browser that made it: still asking once the view's cookies went in.
+    let url = "https://chat.example/login?still-asks";
+    let said = tool(&handle, "backend", "show_my_browser", serde_json::json!({ "url": url, "why": "Sign in to the chat" })).await;
+    assert!(said.text.contains("sign-in view"), "{said:?}");
+    let _ = until(&mut events, |e| matches!(e, Event::BrowserWindow { open: true, .. })).await;
+    handle.send(Command::BrowserCookies { lane: "acme/backend".into(), hosts: vec!["chat.example".into()], cookies: vec![cookie("chat_d", "chat.example")], failed: false });
+    handle.send(Command::BrowserControl { lane: "acme/backend".into(), take: false });
+    // Not handed back to the member: its own browser goes into the person's hands, said plainly.
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("didn't hold"))).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::TurnEnded { .. })), "the member isn't told to carry on yet: {seen:?}");
+    let line = host_line(&ops, |l| l.contains("\"op\":\"control\"") && l.contains("\"by\":\"person\"")).await;
+    assert!(line.contains("acme/backend"), "{line}");
+    assert!(std::fs::read_to_string(home.join("browser").join("view-no-carry")).unwrap_or_default().contains("chat.example"));
+}
+
+/// The line of the host's requests that matches, waited for.
+async fn host_line(ops: &Path, wanted: impl Fn(&str) -> bool) -> String {
+    for _ in 0..200 {
+        if let Some(line) = std::fs::read_to_string(ops).unwrap_or_default().lines().rev().find(|l| wanted(l)) {
+            return line.to_owned();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("no such request to the host: {}", std::fs::read_to_string(ops).unwrap_or_default());
+}
+
+#[tokio::test]
+async fn a_sign_in_made_once_is_kept_for_the_squad_put_back_into_every_browser_and_asked_again_only_when_the_site_ends_it() {
+    // The kept sign-ins' key goes to a secret store in memory: never the Keychain.
+    unsafe { std::env::set_var("EQUIPE_VAULT_IN_MEMORY", "1") };
+    let repo = repo();
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    let _ = fake_plain_chrome(&home);
+    let (npx, ops) = fake_host_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), browser_host: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "qa")).await;
+    add(&handle, &mut events, 3, member(&repo, "backend")).await;
+    let hub = handle.browser_hub().await.unwrap();
+    hub.screen(true);
+    hub.web_view(true);
+    let sent = || std::fs::read_to_string(&ops).unwrap_or_default();
+    // Kept in the store every squad on the machine shares.
+    let kept = equipe_core::signin_store::path(&home, equipe_core::signin_store::SHARED);
+
+    // pm hands its browser over; the person signs in to the app through Google in the view, and Done.
+    let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": "https://app.example/login", "why": "Sign in to the app" })).await;
+    assert!(said.text.contains("sign-in view"), "{said:?}");
+    let _ = until(&mut events, |e| matches!(e, Event::BrowserWindow { open: true, .. })).await;
+    handle.send(Command::BrowserCookies {
+        lane: "acme/pm".into(),
+        hosts: vec!["accounts.google.com".into(), "app.example".into()],
+        // A session cookie (no expiry), and Google's `__Host-` one with the dot the web view gives every domain.
+        cookies: vec![cookie("app_session", ".app.example"), cookie("__Host-GAPS", ".accounts.google.com"), cookie("SID", ".google.com")],
+        failed: false,
+    });
+    handle.send(Command::BrowserControl { lane: "acme/pm".into(), take: false });
+    let line = host_line(&ops, |l| l.contains("\"op\":\"cookies\"") && l.contains("acme/pm")).await;
+    assert!(line.contains("\"domain\":\"accounts.google.com\"") && !line.contains("\".accounts.google.com\""), "a `__Host-` cookie goes in host-only, or Chrome refuses the lot: {line}");
+    for _ in 0..200 {
+        if kept.is_file() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let sealed = String::from_utf8_lossy(&std::fs::read(&kept).expect("kept for the squad")).into_owned();
+    assert!(!sealed.contains("v-secret") && !sealed.contains("app_session") && !sealed.contains("app.example"), "sealed: no value, no name, no site");
+
+    // qa needs the app too: the kept sign-in goes into its browser and its page loads again — the person isn't asked.
+    let said = tool(&handle, "qa", "show_my_browser", serde_json::json!({ "url": "https://app.example/dashboard", "why": "Sign in to the app" })).await;
+    assert!(!said.is_error && said.text.contains("equipe keeps that sign-in") && !said.text.contains("sign-in view"), "{said:?}");
+    assert!(!said.text.contains("v-secret"), "a value never reaches a member");
+    let line = host_line(&ops, |l| l.contains("\"op\":\"cookies\"") && l.contains("acme/qa")).await;
+    assert!(line.contains("app_session") && line.contains("__Host-GAPS") && line.contains("https://app.example/dashboard"), "{line}");
+    assert!(line.contains("\"missing\":true"), "only what its Chrome lacks, never over a fresher cookie: {line}");
+
+    // The host's Chrome goes away; the next browser starts it again, and the kept sign-ins go back in —
+    // the session's own too, which a clean exit of Chrome drops.
+    assert_eq!(sent().matches("\"op\":\"restore\"").count(), 0, "the Chrome that took the sign-in holds it: nothing to put back");
+    assert!(hub.op(&serde_json::json!({ "op": "exit" })));
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let said = tool(&handle, "backend", "show_my_browser", serde_json::json!({ "url": "https://other.example/", "why": "Sign in to the other site" })).await;
+    assert!(said.text.contains("sign-in view"), "nothing kept for that site: the person is asked: {said:?}");
+    let line = host_line(&ops, |l| l.contains("\"op\":\"restore\"")).await;
+    assert!(line.contains("app_session") && line.contains("\"expires\":null") && line.contains("__Host-GAPS"), "{line}");
+
+    // qa's page still asks: the site ended that sign-in. Now — once — the person is asked, and it is kept no more.
+    let said = tool(&handle, "qa", "show_my_browser", serde_json::json!({ "url": "https://app.example/dashboard", "why": "The saved sign-in no longer works" })).await;
+    assert!(said.text.contains("sign-in view"), "{said:?}");
+    let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": "https://app.example/", "why": "Sign in to the app" })).await;
+    assert!(!said.text.contains("equipe keeps that sign-in"), "the ended sign-in isn't tried again: {said:?}");
 }
 
 #[tokio::test]
@@ -4951,6 +5195,36 @@ async fn a_screen_asking_for_the_design_system_gets_it_and_then_what_the_designe
     let seen = until(&mut screen, |e| matches!(e, Event::Error { .. })).await;
     let Some(Event::Error { message, .. }) = seen.last() else { unreachable!() };
     assert!(!message.is_empty() && !message.contains("taste."), "{message}");
+}
+
+#[tokio::test]
+async fn a_screen_asking_for_references_gets_a_page_of_patterns_and_may_read_their_pictures_only() {
+    let project = repo();
+    let home = squad_home(&[&project]);
+    let (handle, _all) = runtime::start(config(&fake_claude(true, &answering("hi")), &home, true));
+    let refs = squad_home::path(&home, "acme").join("design/references");
+    std::fs::create_dir_all(refs.join("kpi-tile")).unwrap();
+    std::fs::create_dir_all(refs.join("data-table")).unwrap();
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>"#;
+    std::fs::write(refs.join("kpi-tile/a.svg"), svg).unwrap();
+    std::fs::write(refs.join("kpi-tile/notes.md"), "## Acme — Orders\n- Source: https://example.com/a (Gallery), 2026-10-02, `a.svg`\n- Take: one number\n").unwrap();
+    std::fs::write(squad_home::path(&home, "acme").join("secret.svg"), svg).unwrap();
+    let (_, mut screen) = handle.subscribe("acme").await.unwrap();
+    handle.send(Command::DesignRefs { squad: "acme".into(), project: None, ticket: None, query: String::new(), offset: 0 });
+    let seen = until(&mut screen, |e| matches!(e, Event::DesignRefs { .. })).await;
+    let Some(Event::DesignRefs { total, patterns, query, offset, .. }) = seen.last() else { unreachable!() };
+    assert_eq!((*total, patterns.len(), query.as_str(), *offset), (2, 2, "", 0));
+    assert_eq!(patterns[1].name, "kpi-tile");
+    assert_eq!(patterns[1].notes[0].host.as_deref(), Some("example.com"));
+    let picture = patterns[1].pictures[0].path.clone();
+    let ask = |path: &str| equipe_core::protocol::rpc::ReadImage { squad: "acme".into(), path: path.into(), max: None };
+    assert_eq!(equipe_core::visuals::serve(&home, &ask(&picture), None).unwrap().mime, "image/svg+xml");
+    let secret = squad_home::path(&home, "acme").join("secret.svg");
+    assert!(equipe_core::visuals::serve(&home, &ask(&secret.to_string_lossy()), None).is_err(), "the rest of the squad's folder stays shut");
+    handle.send(Command::DesignRefs { squad: "acme".into(), project: None, ticket: None, query: "number".into(), offset: 0 });
+    let seen = until(&mut screen, |e| matches!(e, Event::DesignRefs { query, .. } if query == "number")).await;
+    let Some(Event::DesignRefs { total, patterns, .. }) = seen.last() else { unreachable!() };
+    assert_eq!((*total, patterns[0].name.as_str()), (1, "kpi-tile"));
 }
 
 #[tokio::test]
@@ -5771,7 +6045,7 @@ fn ticket_in(home: &Path, squad: &str, project: &Path, worktree: &Path) {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
-            remaining: Vec::new(),
+            label: None, remaining: Vec::new(),
             images: Vec::new(),
             updated_at: None,
             priority: Default::default(),
@@ -6481,13 +6755,16 @@ async fn a_long_board_comes_in_pages_each_within_the_cap() {
     let repo = repo();
     let home = squad_home(&[&repo]);
     let (claude, _recorded) = recording_claude(&answering("ok"));
+    // Ideas wait on nothing: a board of 400 tickets with long titles, written before the title rule.
+    {
+        let journal = Journal::for_squad(&home, "acme").unwrap();
+        for n in 0..400 {
+            let long = Ticket { status: TicketStatus::Idea, ..old_ticket(&format!("Idea number {n} for the roadmap: {}", "a long title ".repeat(10))) };
+            journal.create_ticket(&long).unwrap();
+        }
+    }
     let (handle, mut events) = runtime::start(with_tools(&claude, &home));
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
-    // Ideas wait on nothing: a board of 400 tickets, each with a long body in its note.
-    for n in 0..400 {
-        let made = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": format!("Idea number {n} for the roadmap: {}", "a long title ".repeat(10)), "body": "-", "idea": true })).await;
-        assert!(!made.is_error, "{made:?}");
-    }
     let page = tool(&handle, "pm", "board", serde_json::json!({})).await;
     assert!(!page.is_error);
     assert!(page.text.contains("more open ticket(s) not shown") && page.text.contains("call `board` with `after: "), "{}", page.text);
@@ -6769,4 +7046,124 @@ async fn a_conversation_whose_first_turn_failed_is_named_after_the_persons_first
     let (handle, mut events) = runtime::start(config(&claude, &home, true));
     until(&mut events, |e| matches!(e, Event::ConversationTitle { session: 50, title, named: false } if title == "Fix the checkout total")).await;
     handle.shutdown().await;
+}
+
+
+#[tokio::test]
+async fn a_title_is_a_short_outcome_in_the_squads_language_and_a_rename_keeps_the_old_one() {
+    let repo = repo();
+    let claude = fake_claude(true, &answering("ok"));
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&repo]), false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    // The person writes in English: that is the language a title is held to.
+    handle.send(Command::Submit { session: 1, text: "Let's build the website for the launch next week".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    for (title, said) in [
+        ("[T-1326 continue] Save the six forms", "bracketed prefix"),
+        ("Check the exit-plan sheets (T-896)", "T-896"),
+        ("Save, edit, then submit → withdraw", "arrow"),
+        ("Verify all four exit-plan sheets after deployment and publish the fund-map report", "characters"),
+        ("Publish the fund-map re…", "ellipsis"),
+        ("구글시트를 서비스 계정에 공유", "English"),
+    ] {
+        let refused = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": title, "body": "-", "owner": "backend" })).await;
+        assert!(refused.is_error && refused.text.contains(said), "{title}: {refused:?}");
+    }
+    assert!(handle.snapshot("acme").await.tickets.is_empty(), "nothing was written");
+    // A good one goes in, with its label.
+    let made = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Share the 3 sheets with the account", "body": "-", "owner": "backend", "label": "check" })).await;
+    assert!(!made.is_error, "{made:?}");
+    let bad_label = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Share the sheets", "body": "-", "label": "qa" })).await;
+    assert!(bad_label.is_error && bad_label.text.contains("feature, fix, check"), "{bad_label:?}");
+    let ticket = handle.snapshot("acme").await.tickets.into_iter().find(|t| t.id == 1).unwrap();
+    assert_eq!(ticket.label, Some(equipe_core::protocol::title::TicketLabel::Check));
+    // A rename is held to the rule too; the old title stays in the history.
+    let coded = tool(&handle, "pm", "update_ticket", serde_json::json!({ "id": 1, "title": "TP-1~24 sheets" })).await;
+    assert!(coded.is_error && coded.text.contains("TP-1"), "{coded:?}");
+    let renamed = tool(&handle, "pm", "update_ticket", serde_json::json!({ "id": 1, "title": "Share the sheets with the account", "label": "chore" })).await;
+    assert!(!renamed.is_error, "{renamed:?}");
+    let ticket = handle.snapshot("acme").await.tickets.into_iter().find(|t| t.id == 1).unwrap();
+    assert_eq!((ticket.title.as_str(), ticket.label), ("Share the sheets with the account", Some(equipe_core::protocol::title::TicketLabel::Chore)));
+    handle.send(Command::TicketHistory { squad: "acme".into(), ticket: 1 });
+    let history = until(&mut events, |e| matches!(e, Event::TicketHistory { .. })).await;
+    let Some(Event::TicketHistory { entries, .. }) = history.last() else { panic!("{history:#?}") };
+    assert!(entries.iter().any(|e| e.kind == "retitled" && e.text == "Share the 3 sheets with the account"), "{entries:?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_pm_retitles_open_tickets_that_break_the_rule_and_equipe_applies_only_what_the_pm_writes() {
+    let repo = repo();
+    let claude = fake_claude(true, &answering("ok"));
+    let home = squad_home(&[&repo]);
+    // Written before the rule: put straight into the board's file.
+    {
+        let journal = Journal::for_squad(&home, "acme").unwrap();
+        for title in ["[T-1326 continue] ERP drafts: save → edit → submit", "Share the sheets with the account", "Verify all four exit-plan sheets after deployment and publish fund-map re…"] {
+            journal.create_ticket(&old_ticket(title)).unwrap();
+        }
+        journal.create_ticket(&Ticket { status: TicketStatus::Done, ..old_ticket("Done and dusted (T-9)") }).unwrap();
+    }
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    let listed = tool(&handle, "pm", "retitle_open_tickets", serde_json::json!({})).await;
+    assert!(!listed.is_error, "{listed:?}");
+    assert!(listed.text.contains("T-1 ") && listed.text.contains("T-3 ") && !listed.text.contains("T-2 ") && !listed.text.contains("T-4 "), "{}", listed.text);
+    assert!(listed.text.contains("Nothing has changed yet"), "{}", listed.text);
+    let unchanged = handle.snapshot("acme").await.tickets.into_iter().find(|t| t.id == 1).unwrap();
+    assert!(unchanged.title.starts_with("[T-1326"), "listing changes nothing");
+    // Only the PM's call applies; each title is held to the rule.
+    let member = tool(&handle, "backend", "retitle_open_tickets", serde_json::json!({})).await;
+    assert!(member.is_error, "{member:?}");
+    let applied = tool(&handle, "pm", "retitle_open_tickets", serde_json::json!({ "titles": [
+        { "id": 1, "title": "Check the six ERP drafts end to end", "label": "check" },
+        { "id": 3, "title": "Still T-3 → broken" },
+        { "id": 4, "title": "Done ticket" },
+    ] })).await;
+    assert!(!applied.is_error && applied.text.contains("Retitled 1: T-1"), "{applied:?}");
+    assert!(applied.text.contains("T-3") && applied.text.contains("T-4: not an open ticket"), "{}", applied.text);
+    let tickets = handle.snapshot("acme").await.tickets;
+    let title = |id| tickets.iter().find(|t| t.id == id).unwrap().title.clone();
+    assert_eq!(title(1), "Check the six ERP drafts end to end");
+    assert!(title(3).ends_with('…'), "a refused title leaves the ticket as it was");
+    assert_eq!(title(4), "Done and dusted (T-9)");
+    handle.send(Command::TicketHistory { squad: "acme".into(), ticket: 1 });
+    let history = until(&mut events, |e| matches!(e, Event::TicketHistory { .. })).await;
+    let Some(Event::TicketHistory { entries, .. }) = history.last() else { panic!("{history:#?}") };
+    assert!(entries.iter().any(|e| e.kind == "retitled" && e.text.starts_with("[T-1326")), "the old title is kept: {entries:?}");
+    let again = tool(&handle, "pm", "retitle_open_tickets", serde_json::json!({})).await;
+    assert!(again.text.contains("T-3 ") && !again.text.contains("T-1 "), "{}", again.text);
+    handle.shutdown().await;
+}
+
+/// A ticket as the board had it before the title rule: written straight into the journal.
+fn old_ticket(title: &str) -> Ticket {
+    Ticket {
+        id: 0,
+        title: title.into(),
+        body: "-".into(),
+        status: TicketStatus::Todo,
+        owner: Some("backend".into()),
+        assignee: None,
+        project: None,
+        depends_on: Vec::new(),
+        branch: None,
+        worktree: None,
+        execution: None,
+        merged: None,
+        off_main: None,
+        design_qa: None,
+        plan: None,
+        model: None,
+        kind: equipe_core::protocol::TicketKind::Task,
+        created_by: "pm".into(),
+        note: None,
+        asks: vec![],
+        label: None,
+        remaining: Vec::new(),
+        images: Vec::new(),
+        updated_at: None,
+        priority: Default::default(),
+        rank: 0,
+    }
 }

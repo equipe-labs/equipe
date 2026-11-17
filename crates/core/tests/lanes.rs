@@ -368,7 +368,7 @@ async fn a_call_from_a_run_that_no_longer_holds_its_ticket_changes_nothing() {
     // Generation 1 speaks after generation 2 began: every state-changing call is refused.
     for (name, args) in [
         ("estimate", json!({ "done_in_minutes": 5 })),
-        ("block_on_person", json!({ "needs": ["a token"] })),
+        ("block_on_person", json!({ "ask": "Do the one thing", "effort_minutes": 1, "needs": ["a token"] })),
         ("submit_for_review", json!({ "summary": "done", "changes_screens": false })),
         ("comment", json!({ "id": 1, "text": "late" })),
         ("ask_decision", json!({ "questions": [{ "question": "Which?", "options": [{ "label": "A" }, { "label": "B" }] }] })),
@@ -397,6 +397,88 @@ async fn a_call_from_a_run_that_no_longer_holds_its_ticket_changes_nothing() {
 }
 
 #[tokio::test]
+async fn a_run_whose_turn_ended_waiting_on_the_persons_sign_in_keeps_its_ticket() {
+    let engine = Engine0::new(false);
+    let (home, repo) = squad();
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    ticket_for(&handle, "frontend", "Hero").await;
+    started(&mut events, 1).await;
+    let run = key(&handle.snapshot("acme").await, 1);
+    for _ in 0..100 {
+        if handle.snapshot("acme").await.sessions.iter().any(|s| s.session == run.session && s.state == SessionState::Ready) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Its turn put a sign-in in the person's hands, then ended: the person takes
+    // longer than the lease to sign in, and the run is still on its ticket.
+    let _ = tool(&handle, "frontend", Some(run), "sign_in", json!({ "site": "example.com", "why": "Open the settings page" })).await;
+    handle.check_leases_at(now() + 1_000).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let ticket = handle.snapshot("acme").await.tickets.into_iter().find(|t| t.id == 1).unwrap();
+    assert_eq!(ticket.execution.as_ref().map(|e| e.state), Some(ExecutionState::Active), "waiting on the person is not stalled: {ticket:?}");
+    handle.shutdown().await;
+}
+
+/// A run whose turn ended on a sign-in handed to the person, and frontend's
+/// ticket ready: past the grace for the person to come back.
+async fn waiting_on_sign_in() -> (Handle, UnboundedReceiver<Event>, RunKey, Engine0) {
+    let engine = Engine0::new(false);
+    let (home, repo) = squad();
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    ticket_for(&handle, "frontend", "Hero").await;
+    started(&mut events, 1).await;
+    let run = key(&handle.snapshot("acme").await, 1);
+    for _ in 0..100 {
+        if handle.snapshot("acme").await.sessions.iter().any(|s| s.session == run.session && s.state == SessionState::Ready) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let _ = tool(&handle, "frontend", Some(run), "sign_in", json!({ "site": "example.com", "why": "Open the settings page" })).await;
+    (handle, events, run, engine)
+}
+
+#[tokio::test]
+async fn a_run_waiting_on_the_person_past_its_grace_stalls_saying_what_it_waited_for() {
+    let (handle, _events, _run, _engine) = waiting_on_sign_in().await;
+    // Nobody came back for half an hour: no longer held, the run stalls — as
+    // waiting on the person, with what for — instead of sitting active forever.
+    handle.check_leases_at(now() + 31 * 60).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let ticket = handle.snapshot("acme").await.tickets.into_iter().find(|t| t.id == 1).unwrap();
+    let run = ticket.execution.as_deref().unwrap();
+    assert_eq!((run.state, run.reason.as_deref()), (ExecutionState::Stalled, Some(equipe_core::protocol::stall_reason::WAITED_ON_PERSON)), "{ticket:?}");
+    let what = run.waited_for.as_deref().unwrap_or_default();
+    assert!(what.contains("Open the settings page") && what.contains("example.com"), "{what}");
+    // Stalled in progress: the person's to do and resume, in their Needs-you.
+    assert_eq!(ticket.status, TicketStatus::InProgress);
+    assert_eq!(ticket.run_view(now(), None), Some(equipe_core::protocol::RunView::Stalled));
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_person_coming_back_within_the_grace_resumes_the_run_as_it_was() {
+    let (handle, mut events, run, _engine) = waiting_on_sign_in().await;
+    handle.check_leases_at(now() + 10 * 60).await;
+    // They signed in and said so: the same run goes on, its ticket never let go.
+    handle.send(Command::Submit { session: run.session, text: "Done, I signed in.".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == run.session)).await;
+    // Its wait is over: half an hour later it is held as any run is, not stalled as waiting on the person.
+    handle.check_leases_at(now() + 31 * 60).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let ticket = handle.snapshot("acme").await.tickets.into_iter().find(|t| t.id == 1).unwrap();
+    let execution = ticket.execution.as_deref().unwrap();
+    assert_eq!(execution.generation, run.generation, "the same run");
+    assert_ne!(execution.reason.as_deref(), Some(equipe_core::protocol::stall_reason::WAITED_ON_PERSON), "{ticket:?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn one_run_waiting_or_stopped_leaves_its_siblings_as_they_were() {
     let engine = Engine0::new(true);
     let (home, repo) = squad();
@@ -411,7 +493,7 @@ async fn one_run_waiting_or_stopped_leaves_its_siblings_as_they_were() {
     let (a, b, c) = (key(&snapshot, 1), key(&snapshot, 2), key(&snapshot, 3));
 
     // A can't go on without the person; its turn is stopped, so the wait lands now.
-    let blocked = tool(&handle, "frontend", Some(a), "block_on_person", json!({ "needs": ["a token"] })).await;
+    let blocked = tool(&handle, "frontend", Some(a), "block_on_person", json!({ "ask": "Do the one thing", "effort_minutes": 1, "needs": ["a token"] })).await;
     assert!(!blocked.is_error, "{blocked:?}");
     handle.send(Command::Interrupt { session: a.session });
     until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Waiting)).await;

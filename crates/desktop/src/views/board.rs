@@ -22,7 +22,6 @@ use crate::board::{self, DoneWindow, Filter, GroupBy, Menu, MergeWay, Row, Saved
 use crate::diffs::{self, Fetched, Source, Stat};
 use crate::state::{Conn, Model, Need, Presence, Verb, local_hm, short_span, status_word};
 use crate::theme::{MONO, Palette, SMALL, key_face, look};
-use crate::tips::TipExt as _;
 use crate::{Screen, Shell};
 
 /// A row of the list.
@@ -75,6 +74,8 @@ pub enum Popover {
     Order,
     /// The design screen's systems, when more than two: a list, not segments.
     DesignSource,
+    /// "Copy link" (`linkshare.rs`): the link's forms, under the button that opened it.
+    Link,
 }
 
 type Seen = (Option<String>, String, Option<bool>);
@@ -95,6 +96,11 @@ pub struct BoardUi {
     pub adding_project: bool,
     pub flow: Option<Flow>,
     pub popover: Option<Popover>,
+    /// What "Copy link" is open for, and which control copied last (it shows a check a moment).
+    pub link: Option<super::linkshare::LinkMenu>,
+    /// A right-click's "Copy link", and where it opened.
+    pub link_at: Option<(super::linkshare::LinkMenu, Point<Pixels>)>,
+    pub link_copied: Option<(&'static str, std::time::Instant)>,
     /// The popover a press outside just closed, and when: the same press on
     /// its own control mustn't open it again.
     pub popover_closed: Option<(Popover, std::time::Instant)>,
@@ -202,6 +208,9 @@ impl BoardUi {
             adding_project: false,
             flow: None,
             popover: None,
+            link: None,
+            link_at: None,
+            link_copied: None,
             popover_closed: None,
             list_scroll: ScrollHandle::new(),
             peek_scroll: ScrollHandle::new(),
@@ -586,6 +595,8 @@ impl Shell {
             }
             // A page waiting for the person: the panel, on it, in their hands.
             Need::Browser(page) => self.reveal_browser(page, cx),
+            // A design to look at: its card on the design screen.
+            Need::Design(id) => self.designs_show(id, cx),
             // Typed into its card, in the peek.
             Need::Secret(_) | Need::LoginOffer(_) => {
                 self.board.view.peek = true;
@@ -610,7 +621,7 @@ impl Shell {
                     self.board_yes(cx);
                 }
             }
-            Some(Need::Questions(_) | Need::Team(_) | Need::Routine(_) | Need::Accept(_) | Need::Browser(_) | Need::Secret(_) | Need::LoginOffer(_)) | None => {}
+            Some(Need::Questions(_) | Need::Team(_) | Need::Routine(_) | Need::Accept(_) | Need::Browser(_) | Need::Secret(_) | Need::LoginOffer(_) | Need::Design(_)) | None => {}
         }
     }
 
@@ -837,7 +848,7 @@ impl Shell {
                 self.advance_from(&before, Need::Accept(id), cx);
             }
             // Closed on its card (✕), where what it closes is in sight.
-            Some(Need::Questions(_) | Need::Browser(_)) | None => {}
+            Some(Need::Questions(_) | Need::Browser(_) | Need::Design(_)) | None => {}
             Some(Need::Secret(id)) => self.dismiss_secret_card(id, cx),
             Some(Need::LoginOffer(id)) => self.dismiss_login_offer(id, false, cx),
         }
@@ -1486,6 +1497,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .children(super::tickets::views_menu(shell, cx))
         .children(super::tickets::sheet(shell, cx))
         .children(super::tickets::confirm_card(shell, cx))
+        .children(super::linkshare::context(shell, cx))
         .children(shell.board.keys_open.then(|| keys_sheet(p, cx)))
         .into_any_element()
 }
@@ -1665,7 +1677,7 @@ fn popover(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
             .child(label)
     };
     let body: Vec<AnyElement> = match which {
-        Popover::Projects | Popover::Members | Popover::Talk | Popover::DesignSource => return None,
+        Popover::Projects | Popover::Members | Popover::Talk | Popover::DesignSource | Popover::Link => return None,
         Popover::Order => [(false, t!("board.order_importance")), (true, t!("board.order_kind"))]
             .into_iter()
             .map(|(by_kind, label)| {
@@ -1927,19 +1939,27 @@ fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, impacts: Op
                 .into_any_element()
         }
         Row::Item { need, depth } => {
+            let impact = impacts.and_then(|m| m.get(need)).filter(|i| i.is_blocking());
             let row = item_row(shell, *need, *depth, pick == Some(*need), cx);
             // What it holds up, in a slot of its own at the right: only the rows that hold something up have one.
-            match impacts.and_then(|m| m.get(need)).filter(|i| i.is_blocking()) {
+            match impact {
                 Some(impact) => {
                     let color = if impact.is_pressing() { p.red } else { p.amber };
+                    let picked = pick == Some(*need);
+                    // The badge's slot is part of the row: its hover and its pick fill the whole width.
                     h_flex()
+                        .id(SharedString::from(format!("impact-row-{need:?}")))
                         .items_center()
-                        .child(div().flex_1().min_w_0().child(row))
+                        .rounded(px(6.))
+                        .when(picked, |r| r.bg(p.wash))
+                        .when(!picked, |r| r.hover(move |s| s.bg(p.wash)))
+                        .child(div().flex_1().min_w_0().overflow_hidden().child(row))
                         .child(
                             div()
                                 .id(SharedString::from(format!("impact-{need:?}")))
                                 .flex_none()
                                 .w(px(IMPACT_W))
+                                .pl_2()
                                 .flex()
                                 .justify_end()
                                 .child(div().px(px(6.)).h(px(18.)).flex().items_center().rounded(px(4.)).bg(p.wash).text_size(px(11.)).font_weight(FontWeight::MEDIUM).text_color(color).whitespace_nowrap().child(board::impact_words(impact))),
@@ -1953,12 +1973,13 @@ fn list_row(shell: &Shell, ix: usize, row: &Row, pick: Option<Need>, impacts: Op
 }
 
 /// The slot of the badge that says what a row holds up (`blocks 5 · urgent`).
+/// The list's width already leaves it out.
 const IMPACT_W: f32 = 168.;
 
 /// What a row says at its right, column by column.
 struct Meta {
     /// Each chip: its words, its color, and what it means on the pointer.
-    flags: Vec<(String, Rgba, Option<String>)>,
+    flags: Vec<crate::chips::Flag>,
     activity: Option<(String, Rgba)>,
     eta: Option<(String, Rgba)>,
     time: Option<String>,
@@ -1998,7 +2019,8 @@ pub fn live_activity(model: &Model, t: &Ticket) -> Option<String> {
 
 /// A row's chips: what it waits on, what it holds up, where its work is,
 /// quiet, failed — each its words, colour and what it means on the pointer.
-pub fn row_flags(shell: &Shell, t: &Ticket) -> Vec<(String, Rgba, Option<String>)> {
+pub fn row_flags(shell: &Shell, t: &Ticket) -> Vec<crate::chips::Flag> {
+    use crate::chips::{Flag, NOTE, QUIET, UNBLOCKS, URGENT};
     let p = shell.palette;
     let model = &shell.model;
     let mut flags = Vec::new();
@@ -2011,32 +2033,33 @@ pub fn row_flags(shell: &Shell, t: &Ticket) -> Vec<(String, Rgba, Option<String>
             equipe_core::protocol::RunView::Paused => p.amber,
             _ => p.accent,
         };
-        flags.push((word.to_owned(), tone, model.run_reason(t)));
+        let rank = if view == equipe_core::protocol::RunView::Stalled || view == equipe_core::protocol::RunView::Paused { URGENT } else { NOTE };
+        flags.push(Flag::new(word, tone, model.run_reason(t), rank));
     }
     if let Some(dep) = model.blocked_by(t).filter(|_| matches!(t.status, TicketStatus::Todo | TicketStatus::Proposed)) {
-        flags.push((format!("⛔ T-{dep}"), p.orange, Some(t!("tickets.tip_blocked", id = dep))));
+        flags.push(Flag::new(format!("⛔ T-{dep}"), p.orange, Some(t!("tickets.tip_blocked", id = dep)), URGENT));
     }
     let unblocks = model.unblocks(t.id).len();
     if unblocks > 0 && !t.status.is_closed() {
-        flags.push((format!("→{unblocks}"), p.muted, None));
+        flags.push(Flag::new(format!("→{unblocks}"), p.muted, None, UNBLOCKS));
     }
     if t.not_on_main() {
         let branch = t.branch.clone().unwrap_or_default();
         flags.push(if t.waits_to_merge() {
-            (t!("state.chip_not_on_main").to_owned(), p.accent, Some(t!("state.chip_not_on_main_tip", branch = branch)))
+            Flag::new(t!("state.chip_not_on_main"), p.accent, Some(t!("state.chip_not_on_main_tip", branch = branch)), NOTE)
         } else {
-            (t!("state.chip_kept").to_owned(), p.muted, Some(t!("state.chip_kept_tip", branch = branch)))
+            Flag::new(t!("state.chip_kept"), p.muted, Some(t!("state.chip_kept_tip", branch = branch)), NOTE)
         });
     }
     if let Some(quiet) = model.quiet_for(t) {
-        flags.push((format!("{} {}", t!("board.flag_quiet"), short_span(quiet)), p.amber, None));
+        flags.push(Flag::new(format!("{} {}", t!("board.flag_quiet"), short_span(quiet)), p.amber, None, QUIET));
     }
     // Waiting on the person for days: worth asking whether it is still needed.
     if let Some(note) = board::wait_note(model, t).filter(|n| n.stale) {
-        flags.push((t!("board.flag_stale").to_owned(), p.amber, Some(t!("board.flag_stale_tip", span = short_span(note.waited.unwrap_or_default())))));
+        flags.push(Flag::new(t!("board.flag_stale"), p.amber, Some(t!("board.flag_stale_tip", span = short_span(note.waited.unwrap_or_default()))), QUIET));
     }
     if model.failed(t) {
-        flags.push((t!("board.flag_error").to_owned(), p.red, None));
+        flags.push(Flag::new(t!("board.flag_error"), p.red, None, URGENT));
     }
     flags
 }
@@ -2048,7 +2071,7 @@ fn meta(shell: &Shell, t: &Ticket) -> Meta {
     let run = model.run_view(t).filter(|v| matches!(v, equipe_core::protocol::RunView::Stalled | equipe_core::protocol::RunView::Paused));
     // Said where the step would be (shown at every width), not again as a chip.
     let word = run.and_then(crate::state::run_word);
-    let flags: Vec<_> = flags.into_iter().filter(|(text, _, _)| Some(text.as_str()) != word).collect();
+    let flags: Vec<_> = flags.into_iter().filter(|f| Some(f.text.as_str()) != word).collect();
     let activity = match t.status {
         // A run that stopped, or that nothing runs now: said where the step would be.
         TicketStatus::InProgress if run.is_some() => run.and_then(crate::state::run_word).map(|w| (w.to_owned(), if run == Some(equipe_core::protocol::RunView::Stalled) { p.red } else { p.amber })),
@@ -2076,6 +2099,48 @@ fn meta(shell: &Shell, t: &Ticket) -> Meta {
     Meta { flags, activity, eta, time }
 }
 
+/// A ticket's chip: the sort of work, small and quiet.
+pub fn label_chip(p: Palette, ticket: &Ticket) -> Option<Div> {
+    let word = crate::glance::chip(ticket, crate::i18n::lang())?;
+    Some(div().flex_none().px(px(5.)).h(px(16.)).flex().items_center().rounded(px(4.)).bg(p.wash).text_size(px(10.5)).text_color(p.muted).child(word))
+}
+
+/// A ticket's name in a row, where the row's title goes: its chip, then what
+/// to read first — the ask when it waits on the person, else the title cut
+/// cleanly — with the title smaller below an ask. The number is its own
+/// column, in muted mono, never part of this.
+pub fn title_cell(shell: &Shell, t: &Ticket, depth: usize, min_w: f32, strong: bool) -> Div {
+    let p = shell.palette;
+    let heading = crate::glance::heading(t);
+    let closed = t.status.is_closed();
+    let main = if depth > 0 { format!("↳ {}", heading.main) } else { heading.main.clone() };
+    let two = heading.below.is_some();
+    h_flex()
+        .flex_1()
+        .min_w(px(min_w))
+        .gap(px(6.))
+        .items_center()
+        .overflow_hidden()
+        .pl(px(depth as f32 * 18.))
+        .children(label_chip(p, t))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .justify_center()
+                .when(two, |c| c.gap(px(2.)))
+                .child(
+                    div()
+                        .truncate()
+                        .when(two, |d| d.line_height(px(17.)))
+                        .text_color(if closed { p.muted } else { p.text })
+                        .when(strong || two, |d| d.font_weight(FontWeight::MEDIUM))
+                        .child(main),
+                )
+                .children(heading.below.map(|below| div().truncate().text_size(px(11.)).line_height(px(14.)).text_color(p.muted).child(below))),
+        )
+}
+
 fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Context<Shell>) -> AnyElement {
     if let (true, Need::Ticket(id)) = (shell.tickets_on(), need) {
         return super::tickets::row(shell, id, depth, picked, cx);
@@ -2085,14 +2150,16 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
     let group = SharedString::from(format!("row-{need:?}"));
     // `said`: the row as a screen reader reads it.
     let base = |id: SharedString, said: String, cx: &mut Context<Shell>| {
-        h_flex()
+        let row = h_flex()
             .id(id)
             .role(Role::ListItem)
             .aria_label(said)
             .aria_selected(picked)
             .group(group.clone())
             .relative()
-            .h(px(ROW))
+            // One line is 32 tall; a two-line title (what to do, then the ticket) gets room to breathe.
+            .min_h(px(ROW))
+            .py(px(5.))
             .flex_none()
             .pr_3()
             .gap_2()
@@ -2102,21 +2169,43 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
             .cursor_pointer()
             .when(picked, |r| r.bg(p.wash))
             .when(!picked, |r| r.hover(move |s| s.bg(p.wash)))
-            .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                 if e.click_count() >= 2 {
                     this.board.view.page = Some(Tab::Overview);
                 }
+                // A design to look at: its card, at once.
+                if let Need::Design(id) = need {
+                    this.designs_show(id, cx);
+                    return;
+                }
                 this.board_pick(need, cx);
-            }))
+                // A taste choice: a second click opens its board.
+                if e.click_count() >= 2
+                    && let Need::Questions(id) = need
+                    && this.model.asked.get(id).is_some_and(|s| s.questions.iter().any(|q| q.wants_board()))
+                {
+                    this.open_taste(id, window, cx);
+                }
+            }));
+        // Right-click: its link, to share.
+        match need {
+            Need::Ticket(id) => super::linkshare::on_right_click(row, "row-link", equipe_core::protocol::deeplink::Target::Ticket(id), cx),
+            Need::Questions(id) => super::linkshare::on_right_click(row, "row-link", equipe_core::protocol::deeplink::Target::Decision(id), cx),
+            _ => row,
+        }
     };
     // One grid for every row of every section: check · mark · T-n · project ·
     // title · flags · detail · when · time.
-    let compact = shell.board.list_width < 720.;
+    let width = shell.board.list_width;
+    let compact = width < 720.;
     let show_project = model.focus.is_none() && model.projects.len() > 1;
     // Narrower still (a ticket panel dragged wide beside it): the flags and
     // the estimate go, so what is left is never cut at the edge.
-    let narrow = shell.board.list_width < 560.;
-    let (flags_w, detail_w, eta_w) = if narrow { (0., 96., 0.) } else if compact { (72., 120., 44.) } else { (120., 176., 56.) };
+    let narrow = width < 560.;
+    // Narrowest (Needs you beside an open ticket, its badge slot taken): who it's with goes too,
+    // so the title keeps room and nothing runs under the badge.
+    let tiny = width < 440.;
+    let (flags_w, detail_w, eta_w) = if tiny { (0., 0., 0.) } else if narrow { (0., 96., 0.) } else if compact { (72., 120., 44.) } else { (120., 176., 56.) };
     let project_col = |t: Option<&Ticket>| {
         let name = t.map(|t| model.ticket_project_name(t).unwrap_or_else(|| t!("board.squad_folder").into()));
         h_flex()
@@ -2150,7 +2239,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                         .child(div().flex_1().min_w_0().truncate().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(card.lines.first().cloned().unwrap_or_default())),
                 )
                 .child(div().w(px(flags_w)).flex_none())
-                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(p.member(hue)).child(crate::theme::member_mark(p, model, &a.member, 14.)).child(div().min_w_0().truncate().child(a.member.clone())))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(p.member(hue)).child(crate::theme::member_mark(p, model, &a.member, 14.)).child(div().min_w_0().truncate().child(a.member.clone())))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
@@ -2165,7 +2254,23 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(TITLE_MIN)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
+                .child(cell(eta_w))
+                .child(cell(34.))
+                .into_any_element()
+        }
+        // What a designer handed in or the PM accepted: a light line to look at, its card one click away.
+        Need::Design(id) => {
+            let Some((title, said)) = super::design_news::row_text(shell, id) else { return div().into_any_element() };
+            base(SharedString::from(format!("design-news-{id}")), format!("{title}, {said}"), cx)
+                .pl_2()
+                .child(div().w(px(14.)).flex_none())
+                .child(super::design_news::mark(p))
+                .child(div().w(px(ID_W)).flex_none().whitespace_nowrap().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
+                .when(show_project, |r| r.child(project_col(model.tickets.iter().find(|t| t.id == id))))
+                .child(div().flex_1().min_w(px(TITLE_MIN)).truncate().text_color(p.text).child(title))
+                .child(div().w(px(flags_w)).flex_none())
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(p.muted).child(div().min_w_0().truncate().child(said)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
@@ -2180,7 +2285,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(TITLE_MIN)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(p.muted).child(div().min_w_0().truncate().child(name)))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(p.muted).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
@@ -2195,7 +2300,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(TITLE_MIN)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
@@ -2210,7 +2315,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(TITLE_MIN)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
@@ -2225,7 +2330,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(TITLE_MIN)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
@@ -2240,7 +2345,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(None)))
                 .child(div().flex_1().min_w(px(TITLE_MIN)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
@@ -2256,7 +2361,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 .when(show_project, |r| r.child(project_col(ticket)))
                 .child(div().flex_1().min_w(px(TITLE_MIN)).truncate().text_color(p.text).child(title))
                 .child(div().w(px(flags_w)).flex_none())
-                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
+                .child(h_flex().w(px(detail_w)).flex_none().min_w_0().overflow_hidden().justify_end().items_center().gap(px(5.)).text_size(px(12.)).text_color(color).child(crate::theme::member_mark(p, model, &name, 14.)).child(div().min_w_0().truncate().child(name)))
                 .child(cell(eta_w))
                 .child(cell(34.))
                 .into_any_element()
@@ -2265,7 +2370,6 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
             let Some(t) = model.tickets.iter().find(|t| t.id == id) else { return div().into_any_element() };
             let m = meta(shell, t);
             let chosen = shell.board.view.chosen.contains(&id);
-            let closed = t.status.is_closed();
             let live = model.is_live(t);
             let can = shell.can_act();
             let quick = |id: &'static str, label: &'static str, cx: &mut Context<Shell>, act: fn(&mut Shell, &mut Window, &mut Context<Shell>)| {
@@ -2328,32 +2432,9 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 }))
                 .child(div().w(px(ID_W)).flex_none().whitespace_nowrap().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
                 .when(show_project, |r| r.child(project_col(Some(t))))
+                .child(title_cell(shell, t, depth, TITLE_MIN, false))
                 .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(TITLE_MIN))
-                        .truncate()
-                        .pl(px(depth as f32 * 18.))
-                        .text_color(if closed { p.muted } else { p.text })
-                        .child(if depth > 0 { format!("↳ {}", t.title) } else { t.title.clone() }),
-                )
-                .child(
-                    h_flex()
-                        .w(px(flags_w))
-                        .flex_none()
-                        .gap_1()
-                        .justify_end()
-                        .overflow_hidden()
-                        .children(m.flags.into_iter().enumerate().map(|(i, (text, color, tip))| {
-                            // What it waits on: that ticket's card, not a tooltip.
-                            let dep = text.strip_prefix("⛔ T-").and_then(|n| n.parse().ok());
-                            let chip = div().id(("flag", i)).flex_none().px(px(6.)).h(px(18.)).flex().items_center().rounded(px(4.)).bg(p.wash).text_size(px(11.)).text_color(color).child(text);
-                            match (dep, tip) {
-                                (Some(dep), _) => super::ticket_card::hover_link(chip, dep, super::ticket_card::Side::Below).into_any_element(),
-                                (None, Some(tip)) => chip.tip(p, tip, None).into_any_element(),
-                                (None, None) => chip.into_any_element(),
-                            }
-                        })),
+                    crate::chips::row(p, &m.flags, flags_w, SharedString::from(format!("flag-{id}")), true).w(px(flags_w)),
                 )
                 .child(
                     h_flex()

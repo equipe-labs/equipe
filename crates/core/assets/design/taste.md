@@ -8,4 +8,16 @@ A note is `- <note> _(<where it came from>, YYYY-MM-DD)_` — from `the person`,
 name the other tickets it was seen on (`seen on T-9 T-11`) and end in
 `confirmed` once the person says so on the design screen.
 Decisions, each with why, go in `decisions/`, a file each.
+The style profile below is read first: its worded lines are the designer's,
+kept after each round of a design session; `Leans` is equipe's, from the taste
+tuner's picks and what the person liked and turned down.
 
+## Style profile
+
+- Density:
+- Tone:
+- Type:
+- Color use:
+- Liked:
+- Disliked:
+<!-- /style profile -->

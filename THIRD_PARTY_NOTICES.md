@@ -27,3 +27,57 @@ crates.io; the patched GPUI crates under `vendor/` keep their own license files.
 - The test fixtures under `crates/desktop-control/src/engine/fixtures/` are
   written by hand in the JSON shape agent-desktop documents; they contain no
   agent-desktop code.
+
+## UI design skills — adapted guidance
+
+The `ui-*` skills under `crates/core/skills/` are equipe's own writing. They
+adapt rules and structure, rewritten in our own words, from two MIT-licensed
+projects; the full list of sources they draw on is in
+`crates/core/skills/ui-review/references/sources.md`.
+
+- **Web Interface Guidelines** — <https://github.com/vercel-labs/web-interface-guidelines>
+  (Vercel Labs). License: MIT, Copyright (c) 2025 Vercel Labs — full text in
+  [licenses/web-interface-guidelines-MIT.txt](./licenses/web-interface-guidelines-MIT.txt).
+  Its interaction, form, motion, layout and content guidance informs
+  `ui-polish`, `ui-forms`, `ui-motion`, `ui-accessibility`, `ui-foundations`
+  and `ui-writing`.
+- **Mobbin skills** — <https://github.com/mobbin/skills> (Mobbin). License:
+  MIT, Copyright (c) 2026 Mobbin — full text in
+  [licenses/mobbin-skills-MIT.txt](./licenses/mobbin-skills-MIT.txt). The
+  `redesign-screen` skill's job walk, its cap on changes per pass and its
+  rules for placing a new part are adapted in `ui-review` and
+  `ui-layout-and-states`.
+
+## Simple Icons — service logos
+
+- **What:** the single-path SVG logos under `crates/desktop/assets/brand/`
+  (Gmail, Anthropic, OpenAI, GitHub, Vercel, PostHog, Figma, Framer, and the
+  Claude and OpenAI marks the engine pickers use), drawn in the Logins ›
+  Connections list and the engine pickers as one-colour masks. The brand
+  colours equipe tints them with are the `hex` values in the same package.
+- **Project:** <https://github.com/simple-icons/simple-icons> (npm package
+  `simple-icons`)
+- **Version:** 16.37.0 for Gmail, Anthropic, GitHub, Vercel, PostHog, Figma,
+  Framer and Claude; the OpenAI file is an earlier copy of the same project's
+  icon (the package no longer ships it).
+- **License:** CC0 1.0 Universal (public domain dedication); no attribution is
+  required, and the files are used unmodified.
+- **Trademarks:** the logos are trademarks of their owners. They appear only to
+  identify the service a row is about; their presence does not imply any
+  endorsement of, or affiliation with, equipe. Services Simple Icons does not
+  carry (AWS, Mobbin, 21st.dev) and servers added by address get a monogram
+  (initials on a colour tile) first.
+
+## Site icons fetched at run time
+
+- **What:** for those services, the icon the service's own site publishes
+  (its `apple-touch-icon` or favicon, for a server added by address from its
+  registrable domain), fetched by the desktop app on the person's Mac over
+  https (one icon, at most 256 KB, PNG or ICO, no cookies or credentials) and
+  kept in the app's cache folder (`<equipe home>/cache/site-icons/`) for 30
+  days. If none can be fetched, the monogram stays.
+- **Not redistributed:** no such icon is part of this repository, the
+  releases or the installed app; they are the services' own marks, fetched
+  from their own sites and shown only to identify the service a row is about.
+  Their presence does not imply any endorsement of, or affiliation with,
+  equipe.

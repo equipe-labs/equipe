@@ -90,15 +90,42 @@ impl Ask {
     }
 }
 
-/// The rubric: the whole first, then the details, each finding on a region.
-const RUBRIC: &str = "You are a sceptical senior product designer critiquing another designer's work. Find faults; do not \
+/// Where a screen falls short of its references' tier, said concretely: what
+/// every judgment of a screen names (the critic, the second look, the
+/// `design-references` skill, which says it word for word).
+pub const TIER_GAPS: &str = "density, type scale, spacing rhythm, how many borders and surfaces, information said twice, \
+how clear the primary action is, alignment";
+
+/// The taste checklist every judgment of a screen holds it to (the
+/// `design-references` skill says it word for word).
+pub const TASTE_CHECKLIST: &str = "one primary action per view; no card inside a card; at most two levels of borders or \
+surfaces; no information said twice; two or three type sizes per block; one spacing scale, kept; tabular figures \
+wherever numbers line up; the content using the width sensibly — no thin column lost in a wide window, no line of text \
+across all of it";
+
+/// The bar of the screen's product kind — landing, web product, mobile app —
+/// that every judgment of a screen holds it to as well (the `ui-review` skill
+/// says it word for word; `ui-product-kinds` has each kind in full).
+pub const KIND_CHECKLIST: &str = "First name the product kind from the brief and the pictures — a landing page, a web \
+product or a mobile app — and hold the screen to that kind's bar. Every kind: the first thing the eye lands on is what \
+matters most; every state shown is designed, with real copy and a next step; focus is visible; text contrast is at \
+least 4.5:1 and meaningful UI parts 3:1; nothing is told by colour alone; targets are at least 24px, and 44pt or 48dp \
+on touch. A landing page: the first screenful says what it is, for whom and what to do next, with one call to action \
+and real evidence of the product; each section makes one point; motion never holds up reading. A web product: density \
+fit for daily use, numbers right-aligned in tabular figures, filters and their results in view together, no marketing \
+devices (display type, gradient panels, illustrations) inside the tool. A mobile app: the platform's navigation and \
+controls, the primary action within thumb reach, safe areas and the keyboard respected, the platform's text sizes.";
+
+/// The rubric: the whole first, then the quality tier against the
+/// references, then the details, each finding on a region.
+const RUBRIC_WHOLE: &str = "You are a sceptical senior product designer critiquing another designer's work. Find faults; do not \
 praise, and do not soften. You did not make this, and you are not grading effort.\n\
 \n\
 First the whole. At a three-second glance, and again squinting: where does the eye go first, second, third — and is \
 that the right order? Does it breathe — whitespace, rhythm, a clear grid — or is it cramped or scattered? Next to the \
-reference, does it look finished and expensive, or like a template? Hide the logo: could this be another company?\n\
-\n\
-Then the details: hierarchy and density; alignment and spacing on one scale; type (scale, line length, set for \
+reference, does it look finished and expensive, or like a template? Hide the logo: could this be another company?";
+
+const RUBRIC_DETAILS: &str = "Then the details: hierarchy and density; alignment and spacing on one scale; type (scale, line length, set for \
 the product's language — a family with its script, its line breaking, right to left where it reads so, no orphans — \
 numbers in tabular figures); colour roles and contrast (text under WCAG AA \
 is a blocker); brand fidelity against the brief; states and real copy (placeholder text, missing empty or error \
@@ -110,6 +137,8 @@ it fixed — say so plainly.\n\
 Answer in this shape, in the language of the brief:\n\
 ## Whole\n\
 Two or three sentences on the impression, against the reference.\n\
+## Tier\n\
+`same` or `below` the references' tier, and the differences that decide it — or `no references` when none was given.\n\
 ## Findings\n\
 One line each, worst first: `[blocker|polish] <picture> · <region> — what is wrong — what to do`. A blocker must \
 be fixed before the person sees it; polish should be. Name the region (top bar, hero headline, second card, \
@@ -117,9 +146,27 @@ footer…), never just \"the page\".\n\
 ## Verdict\n\
 `revise` or `show` — show only when no blocker is left — and the one change that would help most.";
 
+/// The quality tier: the work beside its references at the same size, and
+/// the taste checklist.
+fn tier() -> String {
+    format!(
+        "Then the quality tier. Beside the references — the best products' screens for the patterns this uses, drawn at the \
+same size — is it in the same quality tier? Where it isn't, name each concrete difference: {TIER_GAPS}. Below their tier \
+is a blocker. With no reference given, judge it against the best products you know of its kind. Hold it to this \
+checklist too, each failure a finding: {TASTE_CHECKLIST}.\n\
+\n\
+Then the product kind. {KIND_CHECKLIST} Each failure is a finding: a blocker where it costs the person the task or \
+fails WCAG AA, else polish.\n\
+\n\
+When the pictures are options for one choice, compare them first: each should grow from a different reference family \
+and differ in concept — layout model, density, hierarchy. A set where two options share all three and differ only in \
+small tweaks is a blocker: name the near-duplicates; two strong options beat three similar ones."
+    )
+}
+
 /// The prompt for the critic: the rubric, the brief, and what each picture is.
 pub fn prompt(ask: &Ask) -> String {
-    let mut out = String::from(RUBRIC);
+    let mut out = format!("{RUBRIC_WHOLE}\n\n{}\n\n{RUBRIC_DETAILS}", tier());
     let list = |title: &str, paths: &[PathBuf], out: &mut String| {
         if paths.is_empty() {
             return;
@@ -228,6 +275,14 @@ mod tests {
         for part in ["squinting", "breathe", "expensive", "Hide the logo", "loses the whole", "[blocker|polish]", "region", "`revise` or `show`"] {
             assert!(p.contains(part), "{part}");
         }
+        let tier = p.find("Then the quality tier").expect("the tier against the references");
+        assert!(tier > whole && p.find("Then the details").unwrap() > tier);
+        for part in ["same quality tier", TIER_GAPS, "Below their tier is a blocker", TASTE_CHECKLIST, "## Tier", "`no references`", "options for one choice", "is a blocker: name the near-duplicates"] {
+            assert!(p.contains(part), "{part}");
+        }
+        // The product kind's bar, after the tier and before the details.
+        let kind = p.find(KIND_CHECKLIST).expect("the kind checklist");
+        assert!(kind > tier && p.find("Then the details").unwrap() > kind);
         for path in ["shots/home-1280.png", "design/references/linear/home.png", "shots/round1/home-1280.png"] {
             assert!(p.contains(path), "{path} named");
         }

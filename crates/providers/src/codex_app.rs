@@ -32,7 +32,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::claude_code::{Access, cap_diff, tool_target};
 use crate::error::{Error, Result};
-use crate::turn::{Activity, LimitWindow, Limits, ToolDone, TurnResult, TurnUsage};
+use crate::turn::{Activity, LimitWindow, Limits, PlanStep, StepState, ToolDone, TurnResult, TurnUsage};
 
 /// The executable equipe runs unless told otherwise.
 pub const DEFAULT_BINARY: &str = "codex";
@@ -101,6 +101,64 @@ pub async fn login_status(binary: &str) -> Result<Option<SignIn>> {
     // It says so on stderr in some versions, stdout in others.
     let said = format!("{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
     Ok(Some(parse_login_status(output.status.success(), &said)))
+}
+
+// ── what a provider says when it refuses ──
+
+/// A provider's error as words for a person: the message inside the raw JSON
+/// body some errors come as (`{"type":"error","error":{"message":…}}`), with
+/// whatever came before it; anything else as it is. Raw JSON is never the
+/// message.
+pub fn plain_message(raw: &str) -> String {
+    let Some(at) = raw.find('{') else { return raw.to_owned() };
+    let Ok(body) = serde_json::from_str::<Value>(raw[at..].trim_end()) else { return raw.to_owned() };
+    let inner = body
+        .get("error")
+        .and_then(|e| e.get("message").or(Some(e)))
+        .and_then(Value::as_str)
+        .or_else(|| body.get("message").and_then(Value::as_str))
+        .or_else(|| body.get("detail").and_then(Value::as_str));
+    match inner.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(inner) => format!("{}{inner}", &raw[..at]),
+        None => raw.to_owned(),
+    }
+}
+
+/// The error code inside a raw JSON body, if there is one (`model_not_found`).
+fn body_code(raw: &str) -> Option<String> {
+    let at = raw.find('{')?;
+    let body = serde_json::from_str::<Value>(raw[at..].trim_end()).ok()?;
+    body.get("error").and_then(|e| e.get("code")).or_else(|| body.get("code")).and_then(Value::as_str).map(str::to_owned)
+}
+
+/// Whether an error says the account refused the model asked for — OpenAI's
+/// `model_not_found` ("The 'x' model is not supported when using Codex with a
+/// ChatGPT account.", "The model `x` does not exist or you do not have access
+/// to it.") — and the model it names (empty when it names none). Not a usage
+/// limit, not a sign-in: another model the account lists does the turn.
+pub fn refused_model(raw: &str, code: Option<&str>) -> Option<String> {
+    let words = plain_message(raw);
+    let lower = words.to_lowercase();
+    let coded = code == Some("model_not_found") || body_code(raw).as_deref() == Some("model_not_found") || lower.contains("model_not_found");
+    let said = lower.contains("model is not supported")
+        || lower.contains("model isn't supported")
+        || lower.contains("unsupported model")
+        || (lower.contains("model") && lower.contains("does not exist"));
+    if !(coded || said) {
+        return None;
+    }
+    let named = ['\'', '`', '"'].iter().find_map(|q| {
+        let start = words.find(*q)? + 1;
+        let len = words[start..].find(*q)?;
+        let name = &words[start..start + len];
+        (!name.is_empty() && name.len() <= 80 && !name.contains(char::is_whitespace)).then(|| name.to_owned())
+    });
+    Some(named.unwrap_or_default())
+}
+
+/// The model a refusal named, else the one the turn asked for.
+fn refused_or(named: &str, asked: Option<&str>) -> String {
+    if named.is_empty() { asked.unwrap_or_default().to_owned() } else { named.to_owned() }
 }
 
 // ── what a turn may do ──
@@ -583,6 +641,9 @@ pub struct TurnCollector {
     /// An error the app-server reported on the way.
     error: Option<String>,
     result: Option<Result<TurnResult>>,
+    /// The latest item was the member's final answer (an `agentMessage` of
+    /// phase `final_answer`), with nothing started since.
+    final_answer: bool,
 }
 
 impl TurnCollector {
@@ -639,6 +700,20 @@ impl TurnCollector {
     /// Whether the turn has ended.
     pub fn done(&self) -> bool {
         self.result.is_some()
+    }
+
+    /// The model the account refused for this turn, when that is how it
+    /// failed ([`refused_model`]; empty when it didn't name it).
+    pub fn refused_model(&self) -> Option<String> {
+        match &self.result {
+            Some(Err(Error::Backend { message, code })) => refused_model(message, code.as_deref()),
+            _ => None,
+        }
+    }
+
+    /// Whether the turn said or did anything: answer text, a tool, output tokens.
+    pub fn did_anything(&self) -> bool {
+        !self.streamed.is_empty() || !self.last_message.is_empty() || !self.pending.is_empty() || !self.changes.is_empty() || self.output > 0
     }
 
     /// Apply one notification. Returns what it shows.
@@ -737,6 +812,7 @@ impl TurnCollector {
 
     fn item_started(&mut self, item: &Value) -> Vec<Activity> {
         let Some(id) = item.get("id").and_then(Value::as_str) else { return Vec::new() };
+        self.final_answer = false;
         let uses: Vec<(String, Option<String>)> = match item.get("type").and_then(Value::as_str).unwrap_or("") {
             "commandExecution" => vec![command_tool(item)],
             "fileChange" => {
@@ -771,6 +847,7 @@ impl TurnCollector {
                     self.last_message = text.to_owned();
                     self.after_message = true;
                 }
+                self.final_answer = item.get("phase").and_then(Value::as_str) == Some("final_answer");
                 out
             }
             "contextCompaction" => vec![Activity::Compacted],
@@ -905,12 +982,31 @@ impl TurnCollector {
             Some(step) => format!("{finished}/{} · {}", steps.len(), step.lines().next().unwrap_or("").chars().take(100).collect::<String>()),
             None => format!("{finished}/{}", steps.len()),
         };
-        if self.plan.as_deref() == Some(line.as_str()) {
+        // Every step, not just the line: a step's words or state may change
+        // while the line reads the same.
+        let all: Vec<PlanStep> = steps
+            .iter()
+            .filter(|(step, _)| !step.trim().is_empty())
+            .map(|(step, status)| PlanStep {
+                text: step.trim().to_owned(),
+                state: match *status {
+                    "completed" => StepState::Done,
+                    "inProgress" => StepState::Active,
+                    _ => StepState::Pending,
+                },
+            })
+            .collect();
+        let key = format!("{line}\n{all:?}");
+        if self.plan.as_deref() == Some(key.as_str()) {
             return Vec::new();
         }
-        self.plan = Some(line.clone());
+        self.plan = Some(key);
         let pending = Pending { name: "TodoWrite".into(), target: Some(line.clone()), since: Instant::now() };
-        vec![Activity::Tool { name: "TodoWrite".into(), target: Some(line), label: None, background: false }, Activity::ToolDone(done(pending, true, None, Some(0), String::new(), None))]
+        let mut out = vec![Activity::Tool { name: "TodoWrite".into(), target: Some(line), label: None, background: false }, Activity::ToolDone(done(pending, true, None, Some(0), String::new(), None))];
+        if !all.is_empty() {
+            out.push(Activity::PlanSteps(all));
+        }
+        out
     }
 
     fn usage(&self) -> Option<TurnUsage> {
@@ -951,6 +1047,20 @@ impl TurnCollector {
                 status: if status == "interrupted" { "interrupted".into() } else { "completed".into() },
                 usage: self.usage(),
             }),
+        }
+    }
+
+    /// Whether the turn gave its final answer, with no tool use under way,
+    /// but hasn't completed.
+    pub fn settled(&self) -> bool {
+        self.result.is_none() && self.final_answer && self.pending.is_empty()
+    }
+
+    /// The turn ended here, settled ([`Self::settled`]): its final answer is
+    /// its outcome, and it completed.
+    pub fn settle(&mut self) {
+        if self.result.is_none() {
+            self.result = Some(Ok(TurnResult { text: self.answer(), status: "completed".into(), usage: self.usage() }));
         }
     }
 
@@ -1141,7 +1251,18 @@ pub async fn read_limits(binary: &str, cwd: &Path) -> Result<Limits> {
     let mut server = Server::start(binary, cwd, &[], &[]).await?;
     let read = server.call("account/rateLimits/read", json!({}), ANSWER_WAIT).await?;
     server.close().await;
-    read.get("rateLimits").and_then(parse_limits).ok_or_else(|| Error::Protocol("codex reported no usage limits".into()))
+    limits_of_read(&read).ok_or_else(|| Error::Protocol("codex reported no usage limits".into()))
+}
+
+/// The plan's own bucket from `account/rateLimits/read`: the `codex` entry of
+/// its buckets by id when it lists them, else its single-bucket view — which
+/// may be a model's own bucket instead, left out ([`parse_limits`]).
+pub fn limits_of_read(read: &Value) -> Option<Limits> {
+    read.get("rateLimitsByLimitId")
+        .and_then(|by| by.get("codex"))
+        .filter(|s| !s.is_null())
+        .and_then(parse_limits)
+        .or_else(|| read.get("rateLimits").and_then(parse_limits))
 }
 
 /// Who the person's Codex is signed in as: the ChatGPT account's email and
@@ -1165,6 +1286,117 @@ fn account_of(read: &Value) -> Option<Account> {
     let account = read.get("account").filter(|a| !a.is_null())?;
     let text = |k: &str| account.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
     Some(Account { email: text("email"), plan: text("planType"), api_key: text("type").as_deref() == Some("apiKey") })
+}
+
+/// What Codex's own sign-in gives to show the person ([`login`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoginPage {
+    /// Open `url` in a browser on this machine: the page sends its last step
+    /// back to the login server Codex runs here, on `localhost`.
+    Browser { url: String },
+    /// Open `url` in any browser and enter `code` there.
+    DeviceCode { url: String, code: String },
+}
+
+/// How Codex's own sign-in ended ([`login`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoginEnd {
+    SignedIn,
+    /// Not finished in time.
+    Expired,
+    Failed(String),
+    /// This Codex has no sign-in over the app-server (an older one): its
+    /// command line (`codex login`) is the way.
+    Unsupported,
+}
+
+/// Sign the person's Codex in with its own ChatGPT sign-in, as Codex's IDE
+/// extension and desktop app do (`account/login/start`): Codex starts its
+/// login server here and hands back the page — it opens no browser itself —
+/// or, `device`, a page and a one-time code for a browser anywhere. `page`
+/// hears it; the end comes with `account/login/completed`. Codex keeps the
+/// login in its own files: equipe never sees a token, and the approval on the
+/// page is the person's. Dropped, the app-server (and its login server) goes.
+pub async fn login(binary: &str, cwd: &Path, device: bool, wait: Duration, page: impl FnOnce(LoginPage)) -> LoginEnd {
+    let mut server = match Server::start(binary, cwd, &[], &[]).await {
+        Ok(server) => server,
+        Err(err @ Error::Login(_)) => return LoginEnd::Failed(err.to_string()),
+        // No app-server to speak to: its command line, as before.
+        Err(_) => return LoginEnd::Unsupported,
+    };
+    let params = if device { json!({ "type": "chatgptDeviceCode" }) } else { json!({ "type": "chatgpt" }) };
+    let started = match server.call("account/login/start", params, ANSWER_WAIT).await {
+        Ok(started) => started,
+        Err(err) => {
+            let said = err.to_string();
+            server.close().await;
+            let lower = said.to_lowercase();
+            return if lower.contains("method not found") || lower.contains("unknown variant") || lower.contains("unknown method") || lower.contains("invalid request") {
+                LoginEnd::Unsupported
+            } else {
+                LoginEnd::Failed(plain_message(&said))
+            };
+        }
+    };
+    let text = |k: &str| started.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned);
+    let id = text("loginId");
+    let shown = match (text("authUrl"), text("verificationUrl"), text("userCode")) {
+        (Some(url), _, _) => LoginPage::Browser { url },
+        (None, Some(url), Some(code)) => LoginPage::DeviceCode { url, code },
+        _ => {
+            server.close().await;
+            return LoginEnd::Unsupported;
+        }
+    };
+    page(shown);
+    let early = std::mem::take(&mut server.early);
+    let ended = async {
+        if let Some(end) = early.iter().find_map(|(m, p)| login_completed(m, p, id.as_deref())) {
+            return end;
+        }
+        loop {
+            match server.next().await {
+                Ok(Some(Incoming::Notification { method, params })) => {
+                    if let Some(end) = login_completed(&method, &params, id.as_deref()) {
+                        return end;
+                    }
+                }
+                Ok(Some(Incoming::Request { id, method, params })) => {
+                    let _ = server.answer(id, reply(&method, &params, false)).await;
+                }
+                Ok(Some(Incoming::Answer { .. })) => {}
+                Ok(None) => return LoginEnd::Failed(format!("codex app-server ended before the sign-in did{}", server.diagnostics())),
+                Err(err) => return LoginEnd::Failed(err.to_string()),
+            }
+        }
+    };
+    let end = match tokio::time::timeout(wait, ended).await {
+        Ok(end) => end,
+        Err(_) => {
+            if let Some(id) = &id {
+                let _ = server.call("account/login/cancel", json!({ "loginId": id }), Duration::from_secs(5)).await;
+            }
+            LoginEnd::Expired
+        }
+    };
+    server.close().await;
+    end
+}
+
+/// `account/login/completed` for sign-in `id`: how it ended.
+fn login_completed(method: &str, params: &Value, id: Option<&str>) -> Option<LoginEnd> {
+    if method != "account/login/completed" {
+        return None;
+    }
+    let theirs = params.get("loginId").and_then(Value::as_str);
+    if theirs.is_some() && id.is_some() && theirs != id {
+        return None;
+    }
+    if params.get("success").and_then(Value::as_bool) == Some(true) {
+        return Some(LoginEnd::SignedIn);
+    }
+    let why = params.get("error").and_then(Value::as_str).map(plain_message).unwrap_or_default();
+    Some(if why.to_lowercase().contains("timed out") || why.to_lowercase().contains("expired") { LoginEnd::Expired } else { LoginEnd::Failed(why) })
 }
 
 /// The models the person's Codex offers, its default first.
@@ -1370,7 +1602,7 @@ pub async fn run_turn(
     stop: Option<oneshot::Receiver<()>>,
     on_activity: impl FnMut(Activity),
 ) -> Result<Turn> {
-    run_turn_with(binary, cwd, request, Controls { steering, asks, stop, stop_subagent: None }, on_activity).await
+    run_turn_with(binary, cwd, request, Controls { steering, asks, stop, ..Controls::default() }, on_activity).await
 }
 
 /// What the caller has a say in while a turn runs ([`run_turn_with`]).
@@ -1385,11 +1617,29 @@ pub struct Controls {
     /// A subagent of the turn's to stop, by its thread: its own turn is
     /// interrupted, once it was heard starting; the member's goes on.
     pub stop_subagent: Option<mpsc::UnboundedReceiver<String>>,
+    /// [`crate::claude_code::SETTLE_AFTER`], unless set (tests).
+    pub settle_after: Option<Duration>,
+    /// Where the turn goes, once, when the account refuses its model before
+    /// it did anything ([`refused_model`]): another model the account lists.
+    pub fallback: Option<Fallback>,
+}
+
+/// The model (and effort) a turn is asked again on when its own is refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fallback {
+    pub model: String,
+    pub effort: Option<String>,
 }
 
 /// [`run_turn`], with [`Controls`] beyond it.
+///
+/// A turn that gave its final answer but never completed — the app-server
+/// quiet past [`crate::claude_code::SETTLE_AFTER`], no tool use under way —
+/// is ended here as completed: interrupted in the app-server, its thread
+/// kept to resume.
 pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, controls: Controls, mut on_activity: impl FnMut(Activity)) -> Result<Turn> {
-    let Controls { mut steering, asks, stop, mut stop_subagent } = controls;
+    let Controls { mut steering, asks, stop, mut stop_subagent, settle_after, mut fallback } = controls;
+    let settle_after = settle_after.unwrap_or(crate::claude_code::SETTLE_AFTER);
     // On another provider, through a relay on the loopback that keeps its tools plain.
     let relay = match request.provider {
         Some(provider) => Some(crate::relay::start(&provider.base_url, provider.wire).await?),
@@ -1442,7 +1692,7 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
     }
     let mut collector = TurnCollector::new();
     collector.set_thread(&thread);
-    let turn_request = server.request("turn/start", turn_params(&request, cwd, &thread)).await?;
+    let mut turn_request = server.request("turn/start", turn_params(&request, cwd, &thread)).await?;
     for (method, params) in std::mem::take(&mut server.early) {
         collector.on_notification(&method, &params).into_iter().for_each(&mut on_activity);
     }
@@ -1453,8 +1703,18 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
     let mut stop = stop;
     let mut stopping: Option<tokio::time::Instant> = None;
     let mut interrupt_sent = false;
+    // When the app-server last said anything; set once a settled turn was ended here.
+    let mut heard = tokio::time::Instant::now();
+    let mut settled = false;
     let looped: Result<()> = async {
         loop {
+            let settle_at = (collector.settled() && stopping.is_none()).then(|| heard + settle_after);
+            let quiet = async {
+                match settle_at {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            };
             let steer = async {
                 match &mut steering {
                     Some(rx) => rx.recv().await,
@@ -1484,6 +1744,7 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
             tokio::select! {
                 message = server.next() => {
                     let Some(message) = message? else { break };
+                    heard = tokio::time::Instant::now();
                     match message {
                         Incoming::Answer { id, result } if id == turn_request => match result {
                             Ok(started) => {
@@ -1492,6 +1753,15 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
                                 }
                             }
                             Err(message) => {
+                                // Its model refused on the spot: asked again, once, on another.
+                                if let Some(refused) = refused_model(&message, None)
+                                    && let Some(next) = fallback.take().filter(|f| Some(f.model.as_str()) != request.model)
+                                {
+                                    on_activity(Activity::ModelRefused { model: refused_or(&refused, request.model), instead: next.model.clone() });
+                                    let again = TurnRequest { model: Some(&next.model), effort: next.effort.as_deref(), ..request };
+                                    turn_request = server.request("turn/start", turn_params(&again, cwd, &thread)).await?;
+                                    continue;
+                                }
                                 return Err(Error::Backend { message: format!("codex couldn't start the turn: {message}"), code: None });
                             }
                         },
@@ -1499,6 +1769,19 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
                         Incoming::Notification { method, params } => {
                             collector.on_notification(&method, &params).into_iter().for_each(&mut on_activity);
                             if collector.done() {
+                                // The account refused its model before it did anything: asked again,
+                                // once, on another model it lists — the same words, the same thread.
+                                if let Some(refused) = collector.refused_model().filter(|_| !collector.did_anything())
+                                    && stopping.is_none()
+                                    && let Some(next) = fallback.take().filter(|f| Some(f.model.as_str()) != request.model)
+                                {
+                                    on_activity(Activity::ModelRefused { model: refused_or(&refused, request.model), instead: next.model.clone() });
+                                    collector = TurnCollector::new();
+                                    collector.set_thread(&thread);
+                                    let again = TurnRequest { model: Some(&next.model), effort: next.effort.as_deref(), ..request };
+                                    turn_request = server.request("turn/start", turn_params(&again, cwd, &thread)).await?;
+                                    continue;
+                                }
                                 break;
                             }
                         }
@@ -1527,6 +1810,16 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
                     stopping = Some(tokio::time::Instant::now() + INTERRUPT_WAIT);
                 }
                 () = deadline => break,
+                () = quiet => {
+                    // Its answer is in and it went quiet without completing:
+                    // interrupted there, so its thread is left whole, and done.
+                    if let Some(turn) = collector.turn().map(str::to_owned) {
+                        let _ = server.request("turn/interrupt", json!({ "threadId": thread, "turnId": turn })).await;
+                    }
+                    collector.settle();
+                    settled = true;
+                    break;
+                }
                 sub = stop_sub => match sub {
                     Some(sub) => {
                         if let Some(turn) = collector.subagent_turn(&sub).map(str::to_owned) {
@@ -1553,6 +1846,9 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
     .await;
     let diagnostics = server.close().await;
     let requests = relay.as_ref().map(crate::relay::Relay::exchanges).unwrap_or_default();
+    if settled {
+        on_activity(Activity::Settled(format!("its final answer came, but the turn didn't complete in {}s", settle_after.as_secs())));
+    }
     // Stopped: however it wound down, it ended because it was told to.
     if stopping.is_some() {
         return Ok(Turn { result: collector.interrupted(), thread_id: Some(thread), provider_requests: requests });
@@ -1564,6 +1860,47 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_providers_raw_json_error_becomes_its_words() {
+        let raw = r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.","code":"model_not_found"}}"#;
+        assert_eq!(plain_message(raw), "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.");
+        assert_eq!(plain_message(&format!("codex couldn't start the turn: {raw}")), "codex couldn't start the turn: The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.");
+        assert_eq!(plain_message(r#"{"detail":"Bad gateway"}"#), "Bad gateway");
+        assert_eq!(plain_message("plain words {not json"), "plain words {not json");
+        assert_eq!(plain_message(r#"{"other":1}"#), r#"{"other":1}"#, "nothing to say instead: as it was");
+    }
+
+    #[test]
+    fn a_refused_model_is_told_apart_from_a_limit_and_named() {
+        let raw = r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.","code":"model_not_found"}}"#;
+        assert_eq!(refused_model(raw, None).as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(refused_model("The model `gpt-9` does not exist or you do not have access to it.", None).as_deref(), Some("gpt-9"));
+        assert_eq!(refused_model("refused", Some("model_not_found")).as_deref(), Some(""), "coded, unnamed");
+        assert_eq!(refused_model("You've hit your usage limit. Try again at 5:00 PM.", Some("usageLimitExceeded")), None);
+        assert_eq!(refused_model("stream disconnected before completion", None), None);
+        assert_eq!(refused_or("", Some("gpt-6.1-sol")), "gpt-6.1-sol");
+    }
+
+    #[test]
+    fn the_plans_own_bucket_is_read_even_when_the_single_view_is_a_models() {
+        let plan = json!({ "limitId": "codex", "primary": { "usedPercent": 12.0, "windowDurationMins": 300, "resetsAt": 1 } });
+        let model = json!({ "limitId": "codex_sol", "primary": { "usedPercent": 100.0, "windowDurationMins": 300, "resetsAt": 1 } });
+        let read = json!({ "rateLimits": model, "rateLimitsByLimitId": { "codex": plan, "codex_sol": model } });
+        assert_eq!(limits_of_read(&read).map(|l| l.windows[0].used_percent), Some(12.0));
+        assert!(limits_of_read(&json!({ "rateLimits": model })).is_none(), "a model's own bucket is not the plan's");
+        assert!(limits_of_read(&json!({ "rateLimits": plan, "rateLimitsByLimitId": null })).is_some());
+    }
+
+    #[test]
+    fn a_sign_in_ends_as_codex_says() {
+        let done = |p: Value| login_completed("account/login/completed", &p, Some("l1"));
+        assert_eq!(done(json!({ "loginId": "l1", "success": true })), Some(LoginEnd::SignedIn));
+        assert_eq!(done(json!({ "loginId": "l2", "success": true })), None, "another sign-in's");
+        assert_eq!(done(json!({ "loginId": "l1", "success": false, "error": "login timed out" })), Some(LoginEnd::Expired));
+        assert_eq!(done(json!({ "loginId": "l1", "success": false, "error": "denied" })), Some(LoginEnd::Failed("denied".into())));
+        assert_eq!(login_completed("account/updated", &json!({}), Some("l1")), None);
+    }
 
     fn note(method: &str, params: Value) -> (String, Value) {
         (method.to_owned(), params)
@@ -1663,6 +2000,24 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_that_gave_its_final_answer_but_never_completed_settles_as_completed() {
+        let mut c = TurnCollector::new();
+        c.set_thread("t");
+        feed(&mut c, &[note("item/completed", item("agentMessage", json!({ "id": "a1", "text": "Looking.", "phase": "commentary" })))]);
+        assert!(!c.settled(), "commentary is not its answer");
+        feed(&mut c, &[note("item/started", item("commandExecution", json!({ "id": "c1", "command": "npm run dev", "commandActions": [{ "type": "unknown" }] })))]);
+        feed(&mut c, &[note("item/completed", item("agentMessage", json!({ "id": "a2", "text": "Handed in.", "phase": "final_answer" })))]);
+        assert!(!c.settled(), "a command still under way");
+        feed(&mut c, &[note("item/completed", item("commandExecution", json!({ "id": "c1", "command": "npm run dev", "commandActions": [{ "type": "unknown" }], "status": "completed", "exitCode": 0 })))]);
+        feed(&mut c, &[note("item/completed", item("agentMessage", json!({ "id": "a3", "text": "Handed in.", "phase": "final_answer" })))]);
+        assert!(c.settled());
+        c.settle();
+        assert!(!c.settled(), "settled once");
+        let result = c.finish("").unwrap();
+        assert_eq!((result.text.as_str(), result.status.as_str()), ("Handed in.", "completed"));
+    }
+
+    #[test]
     fn a_command_shows_as_what_it_does() {
         let cmd = |command: &str, actions: Value| command_tool(&json!({ "command": command, "commandActions": actions }));
         assert_eq!(cmd("/bin/zsh -lc 'cat a.rs'", json!([{ "type": "read", "command": "cat a.rs", "name": "a.rs", "path": "/w/a.rs" }])), ("Read".into(), Some("/w/a.rs".into())));
@@ -1746,7 +2101,14 @@ mod tests {
         assert_eq!(search[0], Activity::Tool { name: "WebSearch".into(), target: Some("codex app-server".into()), label: None, background: false });
         let plan = json!({ "threadId": "t", "plan": [{ "step": "Read the code", "status": "completed" }, { "step": "Write the test", "status": "inProgress" }, { "step": "Fix", "status": "pending" }] });
         assert_eq!(c.on_notification("turn/plan/updated", &plan)[0], Activity::Tool { name: "TodoWrite".into(), target: Some("1/3 · Write the test".into()), label: None, background: false });
-        assert!(c.on_notification("turn/plan/updated", &plan).is_empty(), "the same plan again shows nothing new");
+        let again = c.on_notification("turn/plan/updated", &plan);
+        assert!(again.is_empty(), "the same plan again shows nothing new");
+        let moved = json!({ "threadId": "t", "plan": [{ "step": "Read the code", "status": "completed" }, { "step": "Write the test", "status": "completed" }, { "step": "Fix", "status": "inProgress" }] });
+        assert_eq!(c.on_notification("turn/plan/updated", &moved).last(), Some(&Activity::PlanSteps(vec![
+            PlanStep { text: "Read the code".into(), state: StepState::Done },
+            PlanStep { text: "Write the test".into(), state: StepState::Done },
+            PlanStep { text: "Fix".into(), state: StepState::Active },
+        ])));
     }
 
     #[test]

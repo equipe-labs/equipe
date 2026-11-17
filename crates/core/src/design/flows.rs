@@ -697,15 +697,28 @@ fn source_in(repo: &Path, source: &str) -> Result<Option<PathBuf>, ()> {
 struct Clock {
     /// The repository's top folder, its real path.
     top: PathBuf,
+    /// The commit checked out: what a file's last commit is worked out at.
+    head: String,
     /// The files tracked and as committed, their paths in `top`.
     clean: HashSet<PathBuf>,
 }
 
+/// How many `git log` run at once when a map's screens are dated.
+const LOGS_AT_ONCE: usize = 8;
+/// How many answers of `git log` are kept before the list starts again.
+const LOGS_KEPT: usize = 20_000;
+
+/// A look in git's history: the repository's top, the commit, the files
+/// (from the top). What it finds never changes, so it is kept.
+type LogAsk = (PathBuf, String, Vec<String>);
+
 impl Clock {
     /// The clock of the repository `repo` is in; `None` when git can't say.
     fn of(repo: &Path) -> Option<Self> {
-        let top = git_out(repo, &["rev-parse", "--show-toplevel"])?;
-        let top = std::fs::canonicalize(String::from_utf8(top).ok()?.trim_end_matches('\n')).ok()?;
+        let said = String::from_utf8(git_out(repo, &["rev-parse", "--show-toplevel", "HEAD"])?).ok()?;
+        let mut lines = said.lines();
+        let top = std::fs::canonicalize(lines.next()?).ok()?;
+        let head = lines.next()?.trim().to_owned();
         let mut clean: HashSet<PathBuf> = git_out(&top, &["ls-files", "-z"])?.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| top.join(String::from_utf8_lossy(p).as_ref())).collect();
         // `XY path`, each ended by a NUL: staged, edited or deleted since the last commit.
         for entry in git_out(&top, &["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=no"])?.split(|b| *b == 0) {
@@ -713,28 +726,96 @@ impl Clock {
                 clean.remove(&top.join(String::from_utf8_lossy(path).as_ref()));
             }
         }
-        Some(Self { top, clean })
+        Some(Self { top, head, clean })
     }
 
-    /// When the newest of `files` (real paths) was changed; `None` for none.
-    fn newest(clock: Option<&Self>, files: &[PathBuf]) -> Option<SystemTime> {
+    /// What dating each of `sets` of files (real paths) takes: the newest
+    /// time on disk of the files git hasn't as committed, and for the rest
+    /// one look in git's history a set — the newest commit that touched any.
+    fn plan(clock: Option<&Self>, sets: &[&[PathBuf]]) -> Plan {
         let on_disk = |file: &PathBuf| std::fs::metadata(file).and_then(|m| m.modified()).ok();
-        let Some(clock) = clock else { return files.iter().filter_map(on_disk).max() };
-        let (committed, others): (Vec<&PathBuf>, Vec<&PathBuf>) = files.iter().partition(|f| clock.clean.contains(*f));
-        let mut newest = others.into_iter().filter_map(on_disk).max();
-        if !committed.is_empty() {
-            // One look for them all: the newest commit that touched any.
-            let mut args = vec!["--literal-pathspecs".to_owned(), "log".to_owned(), "-1".to_owned(), "--format=%ct".to_owned(), "--".to_owned()];
-            args.extend(committed.iter().filter_map(|f| f.strip_prefix(&clock.top).ok()).map(|rel| rel.to_string_lossy().into_owned()));
-            let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            let at = git_out(&clock.top, &args).and_then(|out| String::from_utf8(out).ok()?.trim().parse::<u64>().ok());
-            newest = newest.max(match at {
+        let mut plan = Plan::default();
+        for files in sets {
+            let Some(clock) = clock else {
+                plan.newest.push(files.iter().filter_map(on_disk).max());
+                plan.asks.push(None);
+                continue;
+            };
+            let (committed, others): (Vec<&PathBuf>, Vec<&PathBuf>) = files.iter().partition(|f| clock.clean.contains(*f));
+            plan.newest.push(others.into_iter().filter_map(on_disk).max());
+            let rel: Vec<String> = committed.iter().filter_map(|f| f.strip_prefix(&clock.top).ok()).map(|rel| rel.to_string_lossy().into_owned()).collect();
+            plan.asks.push((!committed.is_empty()).then(|| (clock.top.clone(), clock.head.clone(), rel)));
+        }
+        plan
+    }
+}
+
+/// [`Clock::plan`]'s answer: each set's newest time so far, and what git is
+/// still to be asked for it.
+#[derive(Default)]
+struct Plan {
+    newest: Vec<Option<SystemTime>>,
+    asks: Vec<Option<LogAsk>>,
+}
+
+impl Plan {
+    /// When the newest of each set was changed, git's `answers` in; `None`
+    /// for an empty set. A file git couldn't date is dated by its disk.
+    fn finish(self, clock: Option<&Clock>, sets: &[&[PathBuf]], answers: &HashMap<LogAsk, Option<u64>>) -> Vec<Option<SystemTime>> {
+        let on_disk = |file: &PathBuf| std::fs::metadata(file).and_then(|m| m.modified()).ok();
+        let mut newest = self.newest;
+        for ((at, files), ask) in newest.iter_mut().zip(sets).zip(&self.asks) {
+            let (Some(ask), Some(clock)) = (ask, clock) else { continue };
+            *at = (*at).max(match answers.get(ask).copied().flatten() {
                 Some(secs) => Some(UNIX_EPOCH + std::time::Duration::from_secs(secs)),
-                None => committed.into_iter().filter_map(on_disk).max(),
+                None => files.iter().filter(|f| clock.clean.contains(*f)).filter_map(on_disk).max(),
             });
         }
         newest
     }
+}
+
+/// Each of `asks` answered: the time of the newest commit that touched any
+/// of its files, `None` when git couldn't say. Kept answers first; the rest
+/// asked of git [`LOGS_AT_ONCE`] at a time — each is a process of its own,
+/// and a map has a look or two for every screen.
+fn logs(asks: Vec<&LogAsk>) -> HashMap<LogAsk, Option<u64>> {
+    use std::sync::Mutex;
+    static KEPT: Mutex<Option<HashMap<LogAsk, u64>>> = Mutex::new(None);
+    let mut out: HashMap<LogAsk, Option<u64>> = HashMap::new();
+    let mut wanted: Vec<&LogAsk> = Vec::new();
+    let mut seen: HashSet<&LogAsk> = HashSet::new();
+    {
+        let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+        let kept = kept.get_or_insert_with(HashMap::new);
+        for ask in asks {
+            match kept.get(ask) {
+                Some(at) => {
+                    out.insert(ask.clone(), Some(*at));
+                }
+                None if seen.insert(ask) => wanted.push(ask),
+                None => {}
+            }
+        }
+    }
+    let look = |(top, head, files): &LogAsk| {
+        let mut args = vec!["--literal-pathspecs", "log", "-1", "--format=%ct", head.as_str(), "--"];
+        args.extend(files.iter().map(String::as_str));
+        git_out(top, &args).and_then(|out| String::from_utf8(out).ok()?.trim().parse::<u64>().ok())
+    };
+    let found: Vec<(LogAsk, Option<u64>)> = super::each_at_once(&wanted, LOGS_AT_ONCE, |ask| ((*ask).clone(), look(ask)));
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    let kept = kept.get_or_insert_with(HashMap::new);
+    if kept.len() + found.len() > LOGS_KEPT {
+        kept.clear();
+    }
+    for (ask, at) in found {
+        if let Some(at) = at {
+            kept.insert(ask.clone(), at);
+        }
+        out.insert(ask, at);
+    }
+    out
 }
 
 /// What git printed in `dir` for `args`, when it ran and succeeded.
@@ -773,6 +854,93 @@ pub fn read(design: &Path, repo: Option<&Path>, lang: Lang) -> Option<FlowMap> {
 /// [`live_dir`]) — none when that folder is inside a repository, which is
 /// said — and `installed` telling the version of an app installed now.
 pub fn read_with(design: &Path, repo: Option<&Path>, live: Option<&Path>, lang: Lang, installed: &dyn Fn(&str) -> Option<String>) -> Option<FlowMap> {
+    let (mut map, owed) = read_owed(design, repo, live, lang, installed)?;
+    owed.settle().apply(&mut map);
+    Some(map)
+}
+
+/// What a map read by [`read_owed`] still owes: which of its screens'
+/// code changed after their pictures, which asks git (`Clock`). Kept apart
+/// so a copy that turns out to be the same as another (a ticket's worktree
+/// that left the map as it was) never asks.
+#[derive(Debug, Clone, Default)]
+pub struct Owed {
+    repo: Option<PathBuf>,
+    screens: Vec<OwedScreen>,
+}
+
+/// A screen whose code and pictures are to be dated: where it is in the map.
+#[derive(Debug, Clone)]
+struct OwedScreen {
+    flow: usize,
+    screen: usize,
+    /// Its code, the repository's pictures of it, and the newest of the person's.
+    sources: Vec<PathBuf>,
+    pictured: Vec<PathBuf>,
+    newest_live: Option<SystemTime>,
+}
+
+/// Which screens' code changed after their pictures: by flow and screen,
+/// stale and stale against the person's real data.
+#[derive(Debug, Clone, Default)]
+pub struct Settled(Vec<(usize, usize, bool, bool)>);
+
+impl Owed {
+    /// Whether nothing is owed.
+    pub fn is_empty(&self) -> bool {
+        self.screens.is_empty()
+    }
+
+    /// Worked out: git asked once for the repository, then a look a set of
+    /// files, a few at once.
+    pub fn settle(&self) -> Settled {
+        settle_all(&[self]).pop().unwrap_or_default()
+    }
+}
+
+/// Each of `owed` worked out ([`Owed::settle`]), all their looks in git's
+/// history asked together, a few at once (`logs`): a squad's systems may be
+/// many, each a look or two a screen.
+pub fn settle_all(owed: &[&Owed]) -> Vec<Settled> {
+    let clocks: Vec<Option<Clock>> = super::each_at_once(owed, LOGS_AT_ONCE, |o| o.repo.as_deref().filter(|_| !o.screens.is_empty()).and_then(Clock::of));
+    let sets: Vec<Vec<&[PathBuf]>> = owed.iter().map(|o| o.screens.iter().flat_map(|s| [s.sources.as_slice(), s.pictured.as_slice()]).collect()).collect();
+    let plans: Vec<Plan> = owed.iter().zip(&clocks).zip(&sets).map(|((o, clock), sets)| if o.screens.is_empty() || o.repo.is_none() { Plan::default() } else { Clock::plan(clock.as_ref(), sets) }).collect();
+    let answers = logs(plans.iter().flat_map(|p| p.asks.iter().flatten()).collect());
+    let mut out = Vec::with_capacity(owed.len());
+    for (((o, clock), sets), plan) in owed.iter().zip(&clocks).zip(&sets).zip(plans) {
+        if o.screens.is_empty() || o.repo.is_none() {
+            out.push(Settled::default());
+            continue;
+        }
+        let dated = plan.finish(clock.as_ref(), sets, &answers);
+        let mut settled = Vec::new();
+        for (screen, at) in o.screens.iter().zip(dated.chunks(2)) {
+            let [Some(changed), pictured] = at else { continue };
+            let stale = pictured.is_some_and(|newest| *changed > newest);
+            let live_stale = screen.newest_live.is_some_and(|newest| *changed > newest);
+            settled.push((screen.flow, screen.screen, stale, live_stale));
+        }
+        out.push(Settled(settled));
+    }
+    out
+}
+
+impl Settled {
+    /// Said on `map`, the one it was worked out for.
+    pub fn apply(&self, map: &mut FlowMap) {
+        for &(flow, screen, stale, live_stale) in &self.0 {
+            if let Some(screen) = map.flows.get_mut(flow).and_then(|f| f.screens.get_mut(screen)) {
+                screen.stale |= stale;
+                screen.live_stale |= live_stale;
+            }
+        }
+    }
+}
+
+/// [`read_with`], all but which screens' code changed after their pictures:
+/// that is owed. A screen is already stale here when a picture of it is of
+/// another version of its app.
+pub fn read_owed(design: &Path, repo: Option<&Path>, live: Option<&Path>, lang: Lang, installed: &dyn Fn(&str) -> Option<String>) -> Option<(FlowMap, Owed)> {
     let words = crate::i18n::core(lang);
     let mut map = FlowMap::default();
     let listed = parse(design, words, &mut map.problems)?;
@@ -788,8 +956,7 @@ pub fn read_with(design: &Path, repo: Option<&Path>, live: Option<&Path>, lang: 
         None => HashMap::new(),
     };
     let mut versions: HashMap<String, Option<String>> = HashMap::new();
-    // Asked of git once, and only when some screen has code to compare.
-    let mut clock: Option<Option<Clock>> = None;
+    let mut owed = Owed { repo: repo.map(Path::to_path_buf), screens: Vec::new() };
     for Listed { file: flow, .. } in listed {
         let mut screens = Vec::new();
         for screen in flow.screens {
@@ -837,7 +1004,6 @@ pub fn read_with(design: &Path, repo: Option<&Path>, live: Option<&Path>, lang: 
                     missing.push(state.id.clone());
                 }
             }
-            let (mut stale, mut live_stale) = (old, old_live);
             if let Some(repo) = repo {
                 let mut sources: Vec<PathBuf> = Vec::new();
                 for source in &screen.source {
@@ -847,14 +1013,12 @@ pub fn read_with(design: &Path, repo: Option<&Path>, live: Option<&Path>, lang: 
                         Ok(None) => {}
                     }
                 }
+                // Only when some screen has code to compare is git asked at all.
                 if !sources.is_empty() && (!pictured.is_empty() || newest_live.is_some()) {
-                    let clock = clock.get_or_insert_with(|| Clock::of(repo)).as_ref();
-                    if let Some(changed) = Clock::newest(clock, &sources) {
-                        stale |= Clock::newest(clock, &pictured).is_some_and(|newest| changed > newest);
-                        live_stale |= newest_live.is_some_and(|newest| changed > newest);
-                    }
+                    owed.screens.push(OwedScreen { flow: map.flows.len(), screen: screens.len(), sources, pictured, newest_live });
                 }
             }
+            let (stale, live_stale) = (old, old_live);
             let title = screen.title.unwrap_or_else(|| screen.id.clone());
             let check = check_of(design, &flow.id, &screen.id);
             screens.push(Screen { id: screen.id, title, note: screen.note, url: screen.url, source: screen.source, ticket: screen.ticket, states, missing, stale, live_stale, check });
@@ -865,7 +1029,7 @@ pub fn read_with(design: &Path, repo: Option<&Path>, live: Option<&Path>, lang: 
         map.flows.push(Flow { id: flow.id, title, summary: flow.summary, screens, videos: videos.into_iter().map(|(v, _)| v).collect() });
     }
     map.unlisted = found.unlisted;
-    Some(map)
+    Some((map, owed))
 }
 
 /// How far the designer's first setup has come in `design`: every step of

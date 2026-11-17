@@ -407,3 +407,68 @@ async fn the_pm_reads_and_sets_model_choice_with_a_card_only_to_turn_it_on() {
     assert!(asking.await.unwrap().text.starts_with("The person said yes"));
     handle.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_premium_pick_on_one_ticket_runs_its_lanes_only_and_ends_when_it_closes() {
+    let (handle, mut events, home, bin) = started("Add a settings page", "Run `npm test` to check.").await;
+    let first = nth_prompt(&bin, 1).await;
+    assert_ne!(arg_after(&first, "--model"), Some("fable"), "never by itself: {first}");
+    // The person picks Fable for T-1 alone: kept with who and when, shown at once.
+    handle.send(Command::SetTicketModel { squad: "acme".into(), ticket: 1, model: Some("fable".into()) });
+    let told = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.model.as_ref().is_some_and(|m| m.pick.is_some()))).await;
+    let Some(Event::TicketChanged { ticket: shown, .. }) = told.last() else { unreachable!() };
+    let m = shown.model.clone().unwrap();
+    let pick = m.pick.clone().unwrap();
+    assert_eq!((pick.model.as_str(), pick.by.as_str(), m.model.as_deref(), m.pinned), ("fable", "you", Some("fable"), true));
+    assert!(pick.at > 0, "when");
+    // Its next lane — a send-back, its tier unchanged by the pin — runs on Fable.
+    round(&handle, &mut events, "The form loses its values on save.", "correctness").await;
+    let second = nth_prompt(&bin, 2).await;
+    assert_eq!(arg_after(&second, "--model"), Some("fable"), "{second}");
+    // Closing T-1 lets the pick go; the next ticket runs on its own tier.
+    handle.send(Command::MoveTicket { squad: "acme".into(), ticket: 1, status: Some(TicketStatus::Cancelled), before: None });
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Cancelled)).await;
+    assert_eq!(ticket(&handle).await.model.and_then(|m| m.pick), None, "cleared when it closes");
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().ticket(1).unwrap().unwrap().model.and_then(|m| m.pick), None, "and kept so");
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Add a profile page", "body": "Run `npm test` to check.", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
+    let other = nth_prompt(&bin, 3).await;
+    assert_ne!(arg_after(&other, "--model"), Some("fable"), "not carried to another ticket: {other}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn unpinning_lets_a_ticket_pick_go_and_a_member_cannot_set_one() {
+    let (handle, mut events, _home, bin) = started("Add a settings page", "Run `npm test` to check.").await;
+    handle.send(Command::SetTicketModel { squad: "acme".into(), ticket: 1, model: Some("fable".into()) });
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.model.as_ref().is_some_and(|m| m.pick.is_some()))).await;
+    // Unpin (the page's Pin toggled off) lets the pick go with the pin.
+    handle.send(Command::SetTicketTier { squad: "acme".into(), ticket: 1, tier: Some(ModelTier::Strong), pinned: false });
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.model.as_ref().is_some_and(|m| m.pick.is_none() && !m.pinned))).await;
+    round(&handle, &mut events, "Still wrong.", "style").await;
+    let second = nth_prompt(&bin, 2).await;
+    assert_ne!(arg_after(&second, "--model"), Some("fable"), "{second}");
+    assert!(equipe_core::permissions::person_only(&Command::SetTicketModel { squad: "acme".into(), ticket: 1, model: Some("fable".into()) }));
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_pm_sets_a_ticket_model_in_words_only_with_the_persons_yes() {
+    let (handle, mut events, home, _bin) = started("Add a settings page", "Run `npm test` to check.").await;
+    let handle2 = handle.clone();
+    let asking = tokio::spawn(async move { tool(&handle2, "pm", "change_setting", json!({ "setting": "ticket_model", "ticket": 1, "value": "fable", "why": "use Fable for T-1" })).await });
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    assert!(approval.action.contains("T-1") && approval.action.contains("Fable"), "{}", approval.action);
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().ticket(1).unwrap().unwrap().model.and_then(|m| m.pick), None, "not before the tap");
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: equipe_core::protocol::Decision::Allow, words: None, said: None });
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.model.as_ref().and_then(|m| m.pick.as_ref()).is_some_and(|p| p.model == "fable"))).await;
+    assert!(asking.await.unwrap().text.starts_with("The person said yes"));
+    // A member's own call to it is refused: only the PM changes settings.
+    let theirs = tool(&handle, "frontend", "change_setting", json!({ "setting": "ticket_model", "ticket": 1, "value": "fable" })).await;
+    assert!(theirs.is_error, "{theirs:?}");
+    // Letting it go only narrows: at once.
+    let off = tool(&handle, "pm", "change_setting", json!({ "setting": "ticket_model", "ticket": 1, "value": "default" })).await;
+    assert!(!off.is_error && off.text.starts_with("Done:"), "{off:?}");
+    handle.shutdown().await;
+}

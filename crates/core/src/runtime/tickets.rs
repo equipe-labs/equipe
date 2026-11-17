@@ -177,7 +177,7 @@ impl Runtime {
             created_by: "you".into(),
             note: None,
             asks: Vec::new(),
-            remaining: Vec::new(), images: Vec::new(),
+            label: None, remaining: Vec::new(), images: Vec::new(),
             priority: draft.priority,
             rank,
             updated_at: None,

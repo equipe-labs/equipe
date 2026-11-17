@@ -122,10 +122,13 @@ pub fn chrome_path(home: &Path) -> Option<PathBuf> {
 /// Nothing that makes the browser automated or hides that it is — a normal
 /// launch. `--hide-crash-restore-bubble`: the folder's last exit is marked as
 /// a crash to keep session sign-ins (`assets/keep-sessions.js`); no "Restore
-/// pages?" bubble for that.
+/// pages?" bubble for that. `--profile-directory`: the profile the members'
+/// browser opens in that folder ([`crate::browser::pinned_profile`]) — not the
+/// one Chrome last used — so the person signs in where the members are.
 pub fn chrome_args(dir: &Path, url: &str) -> Vec<String> {
     let mut args = vec![
         format!("--user-data-dir={}", dir.display()),
+        format!("--profile-directory={}", crate::browser::pinned_profile(dir)),
         "--no-first-run".to_owned(),
         "--no-default-browser-check".to_owned(),
         "--hide-crash-restore-bubble".to_owned(),
@@ -134,6 +137,46 @@ pub fn chrome_args(dir: &Path, url: &str) -> Vec<String> {
         args.push(url.to_owned());
     }
     args
+}
+
+/// What [`keep_sessions`] did to a profile folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kept {
+    /// Its last exit is marked as a crash now.
+    Marked,
+    /// It was already.
+    Already,
+    /// No `Preferences` yet: a profile Chrome never ran.
+    Nothing,
+    /// Not Chrome's JSON, or it couldn't be written: left as it was.
+    Untouched,
+}
+
+/// Before a plain Chrome starts on `dir`, its last exit is marked the way
+/// Chrome marks a crash, as the browser host does before its own Chrome
+/// starts (`assets/keep-sessions.js`): Chrome then keeps the old session's
+/// cookies — sign-ins "for the session" — and nothing else of it. The
+/// automated browser stepped aside with a clean exit, so without this the
+/// person's window started by dropping every such sign-in of the members'.
+pub fn keep_sessions(dir: &Path) -> Kept {
+    let file = dir.join(crate::browser::pinned_profile(dir)).join("Preferences");
+    let Ok(text) = std::fs::read_to_string(&file) else { return Kept::Nothing };
+    let Ok(serde_json::Value::Object(mut prefs)) = serde_json::from_str::<serde_json::Value>(&text) else { return Kept::Untouched };
+    let profile = prefs.entry("profile").or_insert_with(|| serde_json::json!({}));
+    if !profile.is_object() {
+        *profile = serde_json::json!({});
+    }
+    if profile["exit_type"] == "Crashed" {
+        return Kept::Already;
+    }
+    profile["exit_type"] = serde_json::json!("Crashed");
+    let tmp = file.with_extension("equipe-tmp");
+    let written = serde_json::to_vec(&prefs).ok().is_some_and(|bytes| std::fs::write(&tmp, bytes).is_ok() && std::fs::rename(&tmp, &file).is_ok());
+    if !written {
+        let _ = std::fs::remove_file(&tmp);
+        return Kept::Untouched;
+    }
+    Kept::Marked
 }
 
 /// Whether a Chrome has `dir` in use: its `SingletonLock` names a process
@@ -200,6 +243,8 @@ impl Machine for System {
     fn open(&mut self, profile: &str, dir: &Path, url: &str) -> std::io::Result<()> {
         let chrome = self.chrome().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Chrome is not installed"))?;
         std::fs::create_dir_all(dir)?;
+        // The members' profile, decided now: the window opens in it.
+        crate::browser::chrome_profile(dir);
         let mut command = std::process::Command::new(chrome);
         command.args(chrome_args(dir, url)).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
         // One window per profile: another page goes to it as a tab (that
@@ -212,6 +257,9 @@ impl Machine for System {
         {
             use std::os::unix::process::CommandExt as _;
             command.process_group(0);
+        }
+        if keep_sessions(dir) == Kept::Untouched {
+            crate::daemon_log!("equipe: the session sign-ins of {} may not survive the window (its Preferences couldn't be marked)", dir.display());
         }
         self.windows.insert(profile.to_owned(), command.spawn()?);
         Ok(())
@@ -589,6 +637,80 @@ pub fn perform(machine: &mut dyn Machine, handoffs: &mut Handoffs, now: Instant,
         }
         Action::CloseWindow { profile, force } => machine.close(profile, *force),
         _ => {}
+    }
+}
+
+// ── human checks ──
+
+/// How long a site's rounds in the person's own window count: a check that
+/// comes back within this after one is the same trouble, not a new one.
+pub const CHECK_ROUNDS_FOR: Duration = Duration::from_secs(15 * 60);
+
+/// Whether a check is one the person answers by clicking — a Cloudflare or
+/// Turnstile wall, reCAPTCHA, hCaptcha. Such a check is built to refuse a
+/// browser that automation drives, and the browser panel is one: it shows
+/// the member's automated Chrome and delivers the person's clicks to it over
+/// DevTools, so even their own click there can fail, again and again. These
+/// go to the person's own window instead, where nothing is attached.
+pub fn needs_real_browser(check: equipe_protocol::HumanCheck) -> bool {
+    matches!(check, equipe_protocol::HumanCheck::Challenge | equipe_protocol::HumanCheck::Captcha)
+}
+
+/// What to do about a site's check that stopped a member's browser, from
+/// how often the person already passed it in their own window lately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckRound {
+    /// Not lately: the card says what it is, and the person's hand on it
+    /// (Take over, the Chrome button) opens their own window.
+    Ask,
+    /// It came back right after the person passed it in their window (the
+    /// automated browser came back to it): their window once more, at once.
+    Again,
+    /// It came back after that too: no more rounds — the member gets its
+    /// browser back and is told to do without that site for its task.
+    GiveUp,
+}
+
+/// The rounds of human checks the person did in their own window, by site.
+#[derive(Debug, Default)]
+pub struct CheckRounds {
+    rounds: BTreeMap<String, Vec<Instant>>,
+    /// The lanes told to do without a site, `(lane, site)`: told once.
+    told: BTreeSet<(String, String)>,
+}
+
+impl CheckRounds {
+    /// How many rounds `site` had lately; older ones are forgotten.
+    fn recent(&mut self, now: Instant, site: &str) -> usize {
+        let Some(at) = self.rounds.get_mut(site) else { return 0 };
+        at.retain(|t| now.saturating_duration_since(*t) < CHECK_ROUNDS_FOR);
+        let n = at.len();
+        if n == 0 {
+            self.rounds.remove(site);
+            self.told.retain(|(_, s)| s != site);
+        }
+        n
+    }
+
+    /// What to do about `site`'s check now.
+    pub fn step(&mut self, now: Instant, site: &str) -> CheckRound {
+        match self.recent(now, site) {
+            0 => CheckRound::Ask,
+            1 => CheckRound::Again,
+            _ => CheckRound::GiveUp,
+        }
+    }
+
+    /// The person's window opened for `site`'s check.
+    pub fn began(&mut self, now: Instant, site: &str) {
+        self.recent(now, site);
+        self.rounds.entry(site.to_owned()).or_default().push(now);
+    }
+
+    /// Whether `lane`'s member is still to be told to do without `site`:
+    /// `true` once, while the site's rounds count.
+    pub fn tell(&mut self, lane: &str, site: &str) -> bool {
+        self.told.insert((lane.to_owned(), site.to_owned()))
     }
 }
 

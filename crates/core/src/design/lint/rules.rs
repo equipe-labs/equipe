@@ -286,6 +286,20 @@ pub const RULES: &[Rule] = &[
         checks: "Controls smaller than a finger at phone widths.",
         fix: "44×44 at least, with the hit area grown if the drawing stays small.",
     },
+    Rule {
+        id: "type-sizes",
+        tier: Tier::Finish,
+        how: How::Render,
+        checks: "More type sizes on one screen than a clear hierarchy needs (more than six).",
+        fix: "Two or three sizes per block, a handful per screen, all from the type scale; tell levels apart by weight and colour first.",
+    },
+    Rule {
+        id: "border-levels",
+        tier: Tier::Finish,
+        how: How::Render,
+        checks: "Boxes framed inside framed boxes, more than two levels deep (borders or shadows).",
+        fix: "Two levels at most: group inside a surface with space, a divider or a heading instead of another frame.",
+    },
 ];
 
 /// The rule called `id`.

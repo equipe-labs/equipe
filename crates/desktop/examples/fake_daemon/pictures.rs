@@ -10,6 +10,16 @@
 //! drawn on the product's home screen (calm, bold, warm), every option with
 //! the aspects the person can mix — type, colour, shape.
 //!
+//! `FAKE_DECIDE=board`: the designer's taste board instead — three families
+//! of generated reference pictures (`taste.rs`), each tile with its source and
+//! what to take from it.
+//!
+//! `FAKE_DECIDE=directions`: the designer's three directions for the home
+//! screen as a redesign is put — each a transparent PNG with padding round the
+//! screen (as a mockup is often exported), the screen as it is now as its
+//! `before`, its change note (before → after, why, what stayed) and its own
+//! preview deployment's address.
+//!
 //! `FAKE_DECIDE_CASE=<case>[,<case>…]` puts other logo questions to the
 //! person instead, one a step, for the grid's edge cases: `four` (the Gallery
 //! Y question — a picture of its own over four options, as a member once
@@ -20,14 +30,24 @@
 
 use std::path::{Path, PathBuf};
 
-use equipe_core::protocol::decide::{Choice, Question, QuestionSet};
+use equipe_core::protocol::decide::{Change, Choice, Question, QuestionSet};
 use equipe_core::protocol::rpc::{ImageRead, ReadImage};
 use equipe_core::protocol::Ticket;
 use image::{Rgba, RgbaImage};
 
 /// Whether the logo decision (or the brand directions) and the brand hand-in are on.
 pub fn on() -> bool {
-    std::env::var("FAKE_DECIDE").is_ok_and(|v| v == "logo" || v == "brand")
+    std::env::var("FAKE_DECIDE").is_ok_and(|v| v == "logo" || v == "brand" || v == "board" || v == "directions")
+}
+
+/// Whether the redesign's three directions are asked.
+fn directions() -> bool {
+    std::env::var("FAKE_DECIDE").is_ok_and(|v| v == "directions")
+}
+
+/// Whether the taste board is asked.
+fn board() -> bool {
+    std::env::var("FAKE_DECIDE").is_ok_and(|v| v == "board")
 }
 
 /// Whether the brand directions are asked, rather than the logo.
@@ -255,7 +275,7 @@ fn home(t: &Tokens) -> impl Fn(f32, f32) -> Option<[u8; 4]> + '_ {
 
 /// The three directions' home screens, drawn once.
 fn make_brand(dir: &Path) {
-    if dir.join("brand-warm.png").exists() {
+    if dir.join("brand-warm.png").exists() && dir.join("dir-warm.png").exists() {
         return;
     }
     let calm = Tokens {
@@ -288,6 +308,32 @@ fn make_brand(dir: &Path) {
         radius: 0.05,
         weight: 0.042,
     };
+    // The same three as a redesign's directions, and the screen as it is now:
+    // each screen inside transparent padding, as a mockup is often exported.
+    let now = Tokens {
+        bg: [0xFF, 0xFF, 0xFF, 0xFF],
+        surface: [0xF1, 0xF2, 0xF4, 0xFF],
+        ink: [0x33, 0x36, 0x3C, 0xFF],
+        muted: [0xB4, 0xB8, 0xBE, 0xFF],
+        accent: [0x8A, 0x90, 0x99, 0xFF],
+        on_accent: [0xFF, 0xFF, 0xFF, 0xFF],
+        radius: 0.008,
+        weight: 0.03,
+    };
+    let padded = |t: &Tokens, name: &str| {
+        let screen = home(t);
+        // 1400 × 1100 pixels, the 4:3 screen 1200 × 900 in its middle.
+        let (pu, pv) = (100. / 1400., 100. / 1100.);
+        let _ = draw(1400, 1100, None, |u, v| {
+            let (x, y) = ((u - pu) / (1. - 2. * pu), (v - pv) / (1. - 2. * pv));
+            ((0. ..=1.).contains(&x) && (0. ..=1.).contains(&y)).then(|| screen(x, y)).flatten()
+        })
+        .save(dir.join(name));
+    };
+    padded(&now, "dir-now.png");
+    padded(&calm, "dir-calm.png");
+    padded(&bold, "dir-bold.png");
+    padded(&warm, "dir-warm.png");
     for (name, tokens) in [("brand-calm.png", calm), ("brand-bold.png", bold), ("brand-warm.png", warm)] {
         let _ = draw(800, 600, None, home(&tokens)).save(dir.join(name));
     }
@@ -299,6 +345,7 @@ pub fn make() {
     let _ = std::fs::create_dir_all(&dir);
     make_cases(&dir);
     make_brand(&dir);
+    crate::taste::make(&dir);
     if dir.join("palette.png").exists() {
         return;
     }
@@ -410,8 +457,23 @@ fn case(name: &str) -> Option<Question> {
 pub fn question_set(now: u64) -> QuestionSet {
     let option = |label: &str, description: &str, image: &str| Choice { label: label.into(), description: description.into(), images: vec![at(image)], ..Choice::default() };
     let aspects = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+    if board() {
+        return QuestionSet {
+            id: 9003,
+            session: 4,
+            member: "designer".into(),
+            ticket: Some(150),
+            questions: vec![crate::taste::question(at)],
+            asked_at: now.saturating_sub(180),
+            review: false,
+            retro: None,
+        };
+    }
+    if directions() {
+        return directions_set(now);
+    }
     if brand() {
-        let direction = |label: &str, description: &str, image: &str| Choice { aspects: aspects(&["Type", "Colour", "Shape"]), ..option(label, description, image) };
+        let direction =|label: &str, description: &str, image: &str| Choice { aspects: aspects(&["Type", "Colour", "Shape"]), ..option(label, description, image) };
         return QuestionSet {
             id: 9003,
             session: 4,
@@ -462,6 +524,75 @@ pub fn question_set(now: u64) -> QuestionSet {
             },
         ],
         asked_at: now.saturating_sub(300),
+        review: false,
+        retro: None,
+    }
+}
+
+/// `FAKE_DECIDE=directions`: three directions for the home screen's redesign,
+/// each in a transparent PNG with padding, the screen as it is now as its
+/// before, its change note and its own preview deployment.
+fn directions_set(now: u64) -> QuestionSet {
+    let change = |area: &str, before: &str, after: &str, why: &str| Change { area: area.into(), before: before.into(), after: after.into(), why: why.into() };
+    let direction = |label: &str, description: &str, images: &[&str], preview: &str, changes: Vec<Change>, unchanged: &str| Choice {
+        label: label.into(),
+        description: description.into(),
+        images: images.iter().map(|i| at(i)).collect(),
+        aspects: ["Type", "Colour", "Shape"].map(str::to_owned).to_vec(),
+        before: at("dir-now.png"),
+        preview_url: preview.into(),
+        changes,
+        unchanged: unchanged.into(),
+        ..Choice::default()
+    };
+    QuestionSet {
+        id: 9003,
+        session: 4,
+        member: "designer".into(),
+        ticket: Some(150),
+        questions: vec![Question {
+            question: "Which direction for the home screen? Each one is on its own preview branch".into(),
+            header: "Home".into(),
+            options: vec![
+                direction(
+                    "Calm (Recommended)",
+                    "Light type, generous space and a single blue — easy on the eyes for hours",
+                    &["dir-calm.png", "brand-calm.png"],
+                    "https://home-git-direction-calm-acme.vercel.app/",
+                    vec![
+                        change("Layout", "Headline, then six cards in one long column", "Headline beside one picture, three cards under it", "The references put the main action and its proof in the first screenful"),
+                        change("Hierarchy", "Three buttons of the same weight", "One primary button and one quiet one", "One primary action per view (ui-review)"),
+                        change("Type", "Five sizes on the first screen", "Three sizes, a lighter headline", "Two or three type sizes per block, as the taste checklist says"),
+                    ],
+                    "Every section, link, figure and line of copy is still there",
+                ),
+                direction(
+                    "Bold",
+                    "Heavy type on a dark background, square corners — remembered at first sight",
+                    &["dir-bold.png"],
+                    "https://home-git-direction-bold-acme.vercel.app/",
+                    vec![
+                        change("Colour", "White page, grey buttons", "Dark page, one orange accent", "Remembered at first sight, as the bold references are"),
+                        change("Type", "Regular 32px headline", "Heavy 56px headline", "The headline carries the page on its own"),
+                        change("Components", "Rounded cards", "Square cards", "Matches the heavy type"),
+                    ],
+                    "Content, links and data as they are",
+                ),
+                direction(
+                    "Warm",
+                    "Round corners and green — feels approachable",
+                    &["dir-warm.png"],
+                    "https://deploy-preview-42--acme-home.netlify.app/",
+                    vec![
+                        change("Colour", "Grey accent", "Green accent on a warm white", "Approachable, as the calm-finance references are"),
+                        change("Components", "Square corners, hard shadows", "Round corners, one soft shadow", "One radius and one shadow, kept (ui-foundations)"),
+                    ],
+                    "Features, content and copy unchanged",
+                ),
+            ],
+            ..Question::default()
+        }],
+        asked_at: now.saturating_sub(120),
         review: false,
         retro: None,
     }

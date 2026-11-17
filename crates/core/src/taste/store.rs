@@ -18,9 +18,9 @@
 
 use std::path::{Path, PathBuf};
 
-use equipe_protocol::design::{Decision, Taste, TasteChange};
+use equipe_protocol::design::{Decision, PickReason, StyleProfile, Taste, TasteChange, TasteSignal};
 
-use super::{decisions, evidence, notes};
+use super::{decisions, evidence, notes, profile, tuner};
 use crate::design::folder::{self, Place};
 use crate::squad_memory;
 
@@ -130,15 +130,115 @@ pub fn of(home: &Path, squad: &str, places: &[Place]) -> Vec<Taste> {
     let squad_decisions = decisions::merge(vec![decisions_in(&own), decisions::from_history(&history)]);
     let mut squad_notes = fact_body(&folder, NOTES_NAME).map(|b| notes::parse(&b)).unwrap_or_default();
     evidence::link(&mut squad_notes, &squad_decisions, &sent_back);
-    let mut out = vec![Taste { project: None, notes_at: memory_file(&folder, NOTES_NAME).to_string_lossy().into_owned(), notes: squad_notes, decisions: squad_decisions }];
+    let mut out = vec![Taste { project: None, notes_at: memory_file(&folder, NOTES_NAME).to_string_lossy().into_owned(), notes: squad_notes, decisions: squad_decisions, ..Taste::default() }];
+    tuned_in(&mut out[0], &own);
     for place in places.iter().filter(|p| p.draft.is_none() && p.project.is_some() && folder::is_design_dir(&p.dir)) {
         let decisions = decisions_in(&place.dir);
         let mut notes = text_in(&place.dir, NOTES_FILE).map(|t| notes::parse(&t)).unwrap_or_default();
         let known: Vec<_> = decisions.iter().chain(&out[0].decisions).cloned().collect();
         evidence::link(&mut notes, &known, &sent_back);
-        out.push(Taste { project: place.project.clone(), notes_at: place.dir.join(NOTES_FILE).to_string_lossy().into_owned(), notes, decisions });
+        let mut taste = Taste { project: place.project.clone(), notes_at: place.dir.join(NOTES_FILE).to_string_lossy().into_owned(), notes, decisions, ..Taste::default() };
+        tuned_in(&mut taste, &place.dir);
+        out.push(taste);
     }
     out
+}
+
+/// What the design folder `dir` holds for the taste tuner and the style
+/// profile: the profile at the top of its `taste.md`, the tuner's set, and
+/// the pairs already picked.
+fn tuned_in(taste: &mut Taste, dir: &Path) {
+    taste.profile = text_in(dir, NOTES_FILE).and_then(|t| profile::parse(&t)).filter(|p| !p.is_empty());
+    taste.tuner = tuner::read_set(dir);
+    taste.tuned = tuner::tuned(&tuner::read_signals(dir));
+}
+
+/// The signals the person's taste comes from, as `signals.jsonl` keeps them
+/// (`today` their date), and what they add to the profile's examples: a
+/// reaction's or a rejection's label, liked or disliked, its reasons with it.
+pub fn records_of(signals: &[TasteSignal], today: &str) -> (Vec<tuner::Record>, Vec<(String, bool)>) {
+    let reasons_words = |reasons: &[PickReason]| reasons.iter().map(|r| r.words()).collect::<Vec<_>>().join(", ");
+    let with_reasons = |label: &str, reasons: &[PickReason]| if reasons.is_empty() { label.trim().to_owned() } else { format!("{} ({})", label.trim(), reasons_words(reasons)) };
+    let mut records = Vec::new();
+    let mut examples = Vec::new();
+    for signal in signals {
+        match signal {
+            TasteSignal::Pick { a, b, chose, reasons } => records.push(tuner::Record::Pick { a: a.clone(), b: b.clone(), chose: *chose, reasons: reasons.clone(), date: today.to_owned() }),
+            TasteSignal::React { picture, label, reaction, reasons } => {
+                if let Some(picture) = picture {
+                    records.push(tuner::Record::Like { picture: picture.clone(), liked: reaction.liked(), weight: tuner::REACTED, date: today.to_owned() });
+                }
+                if !reasons.is_empty() {
+                    records.push(tuner::Record::Reasons { what: label.clone(), reasons: reasons.clone(), words: String::new(), date: today.to_owned() });
+                }
+                let label = match reaction {
+                    equipe_protocol::design::QuickReaction::MoreLikeThis => format!("more like {}", label.trim()),
+                    equipe_protocol::design::QuickReaction::LessLikeThis => format!("less like {}", label.trim()),
+                    _ => label.trim().to_owned(),
+                };
+                examples.push((with_reasons(&label, reasons), reaction.liked()));
+            }
+            TasteSignal::Rejected { what, picture, reasons } => {
+                if let Some(picture) = picture {
+                    records.push(tuner::Record::Like { picture: picture.clone(), liked: false, weight: tuner::REACTED, date: today.to_owned() });
+                }
+                records.push(tuner::Record::Reasons { what: what.clone(), reasons: reasons.clone(), words: String::new(), date: today.to_owned() });
+                examples.push((with_reasons(what, reasons), false));
+            }
+        }
+    }
+    examples.retain(|(e, _)| !e.is_empty());
+    (records, examples)
+}
+
+/// What the person did that tells their taste, kept: its records added to the
+/// design folder's `tuner/signals.jsonl` (the squad's own with `project`
+/// none), and the profile at the top of its `taste.md` worked out again —
+/// its leans from every signal, its examples from the reactions — the rest
+/// of the file as it was.
+pub fn signals(home: &Path, squad: &str, project: Option<&str>, signals: &[TasteSignal], today: &str) -> Result<(), Refused> {
+    let (records, examples) = records_of(signals, today);
+    learn(home, squad, project, &records, &examples, today)
+}
+
+/// [`signals`] from records already made: what equipe saw the person do (a
+/// chosen option, a hearted tile, work sent back) as well as what they sent.
+pub fn learn(home: &Path, squad: &str, project: Option<&str>, records: &[tuner::Record], examples: &[(String, bool)], today: &str) -> Result<(), Refused> {
+    if records.is_empty() && examples.is_empty() {
+        return Ok(());
+    }
+    let dir = design_dir(home, squad, project).ok_or(Refused::NoProject)?;
+    if project.is_some() && !folder::is_design_dir(&dir) {
+        return Err(Refused::NoProject);
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| Refused::Failed(e.to_string()))?;
+    tuner::append(&dir, records).map_err(Refused::Failed)?;
+    let path = dir.join(NOTES_FILE);
+    writable(&path)?;
+    let before = if path.exists() { text_in(&dir, NOTES_FILE).ok_or_else(|| Refused::Failed(format!("{} couldn't be read", path.display())))? } else { TEMPLATE.to_owned() };
+    let mut p = profile::parse(&before).unwrap_or_default();
+    let was = p.clone();
+    for (example, liked) in examples {
+        profile::add_example(&mut p, example, *liked);
+    }
+    tuner::refresh(&mut p, &tuner::read_set(&dir), &tuner::read_signals(&dir));
+    if p == was {
+        return Ok(());
+    }
+    p.updated = Some(today.to_owned());
+    std::fs::write(&path, profile::write(&before, &p)).map_err(|e| Refused::Failed(e.to_string()))?;
+    if project.is_none() {
+        let folder = crate::squad_home::path(home, squad);
+        let rel = folder::DIR.to_owned();
+        let _ = crate::squad_home::save_in(&folder, crate::squad_home::PERSON, "the person's style profile, worked out again", &[&rel]);
+    }
+    Ok(())
+}
+
+/// The style profile of `project` (the squad's with none), when it has one.
+pub fn profile_of(home: &Path, squad: &str, project: Option<&str>) -> Option<StyleProfile> {
+    let dir = design_dir(home, squad, project)?;
+    text_in(&dir, NOTES_FILE).and_then(|t| profile::parse(&t))
 }
 
 /// A number that changes when the squad's notes or learned taste do (its

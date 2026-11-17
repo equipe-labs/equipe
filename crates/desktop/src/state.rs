@@ -238,6 +238,9 @@ pub enum Need {
     Browser(u64),
     /// equipe's offer to keep a login the person just signed in with, by its id.
     LoginOffer(u64),
+    /// What a designer handed in or the PM accepted, to look at on the design
+    /// screen's Designs tab (`crate::designs`), by its ticket.
+    Design(TicketId),
 }
 
 /// A thing waiting for the person with what it holds up
@@ -429,6 +432,13 @@ pub struct Model {
     pub auto_put_away: bool,
     /// Secrets members asked the person to type, oldest first.
     pub secret_asks: Vec<equipe_core::protocol::secrets::SecretAsk>,
+    /// Command-line sign-ins a member asked the person to finish on a card (`cli_sign_in`).
+    pub cli_sign_ins: Vec<equipe_core::protocol::cli_signin::CliSignIn>,
+    /// The outside MCP servers the squad connected, and where each stands (Logins › Connections).
+    pub mcp_servers: Vec<equipe_core::protocol::mcp_servers::McpServer>,
+    pub mcp_status: Vec<equipe_core::protocol::mcp_servers::McpServerStatus>,
+    /// Verification cards: a code a site emailed while a member's page waits on it (never the code).
+    pub verifications: Vec<equipe_core::protocol::verify::Verification>,
     /// equipe's offers to keep a login the person just signed in with by hand.
     pub login_offers: Vec<equipe_core::protocol::vault::LoginOffer>,
     /// The browser profiles besides the main one (other people's accounts).
@@ -501,6 +511,11 @@ pub struct Model {
     /// Tickets the person just acted on, as they looked then: out of what
     /// waits for them until the daemon says they changed.
     pub acted: HashMap<TicketId, Look>,
+    /// Designs handed in or accepted that the person may not have looked at
+    /// (`crate::designs::news`), as the daemon last said.
+    pub design_news: Vec<crate::designs::News>,
+    /// The tickets whose design the person looked at.
+    pub design_seen: std::collections::HashSet<TicketId>,
     /// Tickets that moved since the person last looked at them: news.
     pub news: std::collections::HashSet<TicketId>,
     /// The daemon's own version, as it said when the window attached.
@@ -637,6 +652,10 @@ impl Model {
             put_away: Vec::new(),
             auto_put_away: true,
             secret_asks: Vec::new(),
+            cli_sign_ins: Vec::new(),
+            mcp_servers: Vec::new(),
+            mcp_status: Vec::new(),
+            verifications: Vec::new(),
             login_offers: Vec::new(),
             browser_profiles: Vec::new(),
             mode: Mode::default(),
@@ -669,6 +688,8 @@ impl Model {
             since: HashMap::new(),
             said_at: HashMap::new(),
             acted: HashMap::new(),
+            design_news: Vec::new(),
+            design_seen: Default::default(),
             news: Default::default(),
             daemon_version: String::new(),
             member_modes: HashMap::new(),
@@ -1263,6 +1284,10 @@ impl Model {
         self.put_away = snapshot.put_away.clone();
         self.auto_put_away = !snapshot.auto_put_away_off;
         self.secret_asks = snapshot.secret_asks.clone();
+        self.cli_sign_ins = snapshot.cli_sign_ins.clone();
+        self.mcp_servers = snapshot.mcp_servers.clone();
+        self.mcp_status = snapshot.mcp_status.clone();
+        self.verifications = snapshot.verifications.clone();
         self.login_offers = snapshot.login_offers.clone();
         self.routines = snapshot.routines.clone();
         self.reviews = snapshot.reviews.iter().map(|r| (r.ticket, r.clone())).collect();
@@ -1408,6 +1433,33 @@ impl Model {
             }
             Event::SecretClosed { squad, id, .. } if *squad == self.squad => {
                 self.secret_asks.retain(|a| a.id != *id);
+                self.revision += 1;
+            }
+            Event::CliSignInChanged { squad, card } if *squad == self.squad => {
+                match self.cli_sign_ins.iter_mut().find(|c| c.id == card.id) {
+                    Some(old) => *old = card.clone(),
+                    None => self.cli_sign_ins.push(card.clone()),
+                }
+                self.revision += 1;
+            }
+            Event::CliSignInClosed { squad, id } if *squad == self.squad => {
+                self.cli_sign_ins.retain(|c| c.id != *id);
+                self.revision += 1;
+            }
+            Event::McpServers { squad, servers, status } if *squad == self.squad => {
+                self.mcp_servers = servers.clone();
+                self.mcp_status = status.clone();
+                self.revision += 1;
+            }
+            Event::VerificationChanged { squad, card } if *squad == self.squad => {
+                match self.verifications.iter_mut().find(|c| c.id == card.id) {
+                    Some(old) => *old = card.clone(),
+                    None => self.verifications.push(card.clone()),
+                }
+                self.revision += 1;
+            }
+            Event::VerificationClosed { squad, id } if *squad == self.squad => {
+                self.verifications.retain(|c| c.id != *id);
                 self.revision += 1;
             }
             Event::LoginOffered { offer } => {
@@ -2181,7 +2233,20 @@ impl Model {
             }
             out.extend(tickets.into_iter().map(|t| (*section, Need::Ticket(t.id))));
         }
+        // A design handed in or accepted, to look at: light, under the review it may belong to.
+        out.extend(self.new_designs().map(|d| (Section::Review, Need::Design(d.ticket))));
         out
+    }
+
+    /// The designs to look at: handed in or accepted lately, not looked at,
+    /// and of a ticket the board still has.
+    pub fn new_designs(&self) -> impl Iterator<Item = &crate::designs::News> {
+        self.design_news.iter().filter(|d| !self.design_seen.contains(&d.ticket) && self.in_focus_ticket(d.ticket))
+    }
+
+    /// Whether the project in focus is the one ticket `id` is in (all, with none in focus).
+    fn in_focus_ticket(&self, id: TicketId) -> bool {
+        self.focus.is_none() || self.tickets.iter().find(|t| t.id == id).is_none_or(|t| self.in_focus(t))
     }
 
     /// What `need` waits on, for [`equipe_core::importance`] to score: the
@@ -2242,6 +2307,10 @@ impl Model {
                 }
             }
             Need::LoginOffer(_) => {}
+            // Nothing waits on a design to be looked at: it ranks by how long it has been there.
+            Need::Design(id) => {
+                w.since = self.design_news.iter().find(|d| d.ticket == id).map_or(0, |d| d.at);
+            }
             Need::Ticket(id) => {
                 w.kind = match section {
                     Section::Stalled => WaitKind::Stalled,
@@ -2316,7 +2385,7 @@ impl Model {
             Need::Questions(id) => self.asked.open().find(|s| s.id == id).and_then(|s| by(s.ticket, s.session)),
             Need::Accept(id) => self.accepts.open().find(|c| c.id == id).and_then(|c| c.tickets.first().copied()).and_then(ticket),
             Need::Secret(id) => self.secret_asks.iter().find(|a| a.id == id).and_then(|a| by(a.ticket, a.session)),
-            Need::Ticket(id) => ticket(id),
+            Need::Ticket(id) | Need::Design(id) => ticket(id),
             _ => None,
         }
     }
@@ -2414,7 +2483,11 @@ impl Model {
     /// every screen shares): whether its assignee has a turn running on it
     /// is what this screen knows of its members.
     pub fn run_view(&self, t: &Ticket) -> Option<RunView> {
-        let working = t.assignee.as_ref().map(|_| self.member_on(t.id).is_some_and(|m| m.presence == Presence::Working));
+        // A ticket run in a lane of its own: that lane's presence, not its member's own session (idle while the lane works).
+        let working = t.assignee.as_ref().map(|_| match self.run_on(t.id) {
+            Some(run) => run.presence == Presence::Working,
+            None => self.member_on(t.id).is_some_and(|m| m.presence == Presence::Working),
+        });
         t.run_view(self.unix, working)
     }
 
@@ -2431,6 +2504,10 @@ impl Model {
         let who = t.assignee.clone().or_else(|| t.owner.clone()).unwrap_or_default();
         Some(match self.run_view(t)? {
             RunView::Active => return None,
+            // It waited on the person (a sign-in, say) past its grace: what for, to do and resume.
+            RunView::Stalled if let Some(e) = t.execution.as_ref().filter(|e| e.reason.as_deref() == Some(stall_reason::WAITED_ON_PERSON)) => {
+                t!("run.reason_waited_on_person", what = e.waited_for.as_deref().unwrap_or("…"))
+            }
             RunView::Stalled => stall_reason_words(t.execution.as_ref().and_then(|e| e.reason.as_deref())).to_owned(),
             // Paused by equipe: why, and when it goes on by itself.
             RunView::Paused if let Some(pause) = t.execution.as_ref().and_then(|e| e.pause.as_ref()) => pause_words(pause, self.unix as i64),
@@ -2449,6 +2526,10 @@ impl Model {
     /// — once past [`QUIET_AFTER`].
     pub fn quiet_for(&self, t: &Ticket) -> Option<u64> {
         if t.status != TicketStatus::InProgress {
+            return None;
+        }
+        // Its lane at work is not quiet, however long its member's own session has been.
+        if self.run_on(t.id).is_some_and(|r| r.presence == Presence::Working) {
             return None;
         }
         let member = self.member_on(t.id)?;
@@ -2805,6 +2886,24 @@ mod tests {
         model.on_browser(&Event::BrowserTabs { squad: Some("acme".into()), lane: "acme/qa-2".into(), session: None, member: None, color: None, pages: vec![BrowserPage { id: 1, url: "https://github.com/".into(), ..Default::default() }], agent_page: Some(1) });
         let rows: Vec<Need> = model.needs_you().into_iter().map(|(_, n)| n).filter(|n| matches!(n, Need::Browser(_))).collect();
         assert_eq!(rows, [Need::Browser(2), Need::Browser(3)]);
+    }
+
+    #[test]
+    fn a_design_handed_in_or_accepted_is_a_light_line_in_review_until_looked_at() {
+        use crate::designs::News;
+        let mut model = Model::new("acme");
+        model.design_news = vec![News { ticket: 7, title: "Dashboard".into(), accepted: true, at: 5, hero: Some("/p/d.png".into()) }, News { ticket: 8, title: "Settings".into(), accepted: false, at: 9, hero: None }];
+        let designs = |model: &Model| model.needs_you().into_iter().filter(|(_, n)| matches!(n, Need::Design(_))).collect::<Vec<_>>();
+        assert_eq!(designs(&model), [(Section::Review, Need::Design(7)), (Section::Review, Need::Design(8))]);
+        assert_eq!(model.needs_you_count(), 2, "they count with what waits");
+        // It ranks by how long it has been there, holding nothing up.
+        let ranked: Vec<Need> = model.needs_ranked().into_iter().map(|r| r.need).collect();
+        assert_eq!(ranked.len(), 2);
+        assert!(model.needs_ranked().iter().all(|r| !r.impact.is_pressing()));
+        // Looked at: gone, and the sidebar's count with it.
+        model.design_seen.insert(7);
+        assert_eq!(designs(&model), [(Section::Review, Need::Design(8))]);
+        assert_eq!(model.needs_you_count(), 1);
     }
 
     #[test]
@@ -3446,6 +3545,23 @@ mod tests {
             for key in ["run.paused", "run.stalled", "run.queued", "state.section_stalled", "recover.resume", "recover.requeue", "recover.reassign", "recover.kept", "run.reason_lease_expired", "run.pause_limit", "run.pause_limit_at", "run.pause_limit_moves", "run.pause_retry", "run.pause_squad", "run.pause_sign_in"] {
                 assert!(crate::i18n::of(lang).own(key).is_some_and(|w| !w.trim().is_empty()), "{lang:?} {key}");
             }
+        }
+    }
+
+    #[test]
+    fn a_run_that_waited_on_the_person_past_its_grace_is_in_needs_you_with_what_it_waited_for() {
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), session(2, "backend", "backend", SessionState::Ready)]), T0);
+        model.unix = 1_000;
+        let mut waited = with_run(ticket(3, "in_progress", None), "stalled", 0, Some(stall_reason::WAITED_ON_PERSON));
+        if let Some(run) = waited.execution.as_mut() {
+            run.waited_for = Some("Open the settings page (example.com)".into());
+        }
+        model.tickets = vec![waited.clone()];
+        assert_eq!(model.needs_you(), vec![(Section::Stalled, Need::Ticket(3))]);
+        assert!(model.run_reason(&waited).is_some_and(|r| r.contains("Open the settings page (example.com)")), "{:?}", model.run_reason(&waited));
+        for lang in equipe_core::i18n::Lang::ALL {
+            assert!(crate::i18n::of(lang).own("run.reason_waited_on_person").is_some_and(|w| w.contains("{what}")), "{lang:?}");
         }
     }
 

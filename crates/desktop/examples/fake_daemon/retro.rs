@@ -60,7 +60,7 @@ fn ticket(id: u32, title: &str, status: TicketStatus, who: &str, project: &str) 
         plan: None,
         model: None,
         asks: vec![],
-        remaining: vec![],
+        label: None, remaining: vec![],
         images: Vec::new(),
         updated_at: None,
         priority: Default::default(),

@@ -3,7 +3,9 @@
 //! while any screen follows the squad, their folders are looked at every
 //! [`LOOK_EVERY`] — metadata only — and sent again when one changed, so the
 //! screen follows what the designer saves. Nothing is read for a squad no
-//! screen asked about. The person's taste notes and the decisions made ride
+//! screen asked about. A folder whose stamp hasn't moved is not read again
+//! (`crate::design::folder`): a board's worktrees each hold a copy of a
+//! system, and they change one at a time. The person's taste notes and the decisions made ride
 //! along (`crate::taste`); the person changes a note with `Command::Taste`.
 //!
 //! A system's accepted versions (`Command::DesignVersions`) are read from
@@ -41,7 +43,7 @@ impl Runtime {
 
     /// Look at `squad`'s folders off the loop; read them when they changed
     /// (or `always`).
-    fn look_at_design(&mut self, squad: &str, always: bool) {
+    pub(super) fn look_at_design(&mut self, squad: &str, always: bool) {
         if !self.design_busy.insert(squad.to_owned()) {
             // Asked while a look is under way: an ask always gets an answer,
             // so it is owed once that look ends.
@@ -97,6 +99,33 @@ impl Runtime {
         tokio::task::spawn_blocking(move || {
             let versions = ds::folder::accepted_dir(&home, &squad, project.as_deref()).map(|dir| ds::versions::read(&dir)).unwrap_or_default();
             let _ = internal.send(Internal::DesignVersions { squad, project, versions });
+        });
+    }
+
+    /// A screen asked for the references of a design folder: read off the
+    /// loop, one page, and sent. Read only (`crate::design::refgallery`).
+    pub(super) fn design_refs_asked(&mut self, squad: String, project: Option<String>, ticket: Option<u64>, query: String, offset: u32) {
+        if !crate::squads::valid_name(&squad) {
+            return;
+        }
+        let (home, internal) = (self.config.home.clone(), self.internal.clone());
+        tokio::task::spawn_blocking(move || {
+            let found = ds::refgallery::read(&home, &squad, project.as_deref(), ticket, &query, offset as usize);
+            let event = Event::DesignRefs { squad, project, ticket, at: found.at, places: found.places, query, offset, total: found.total as u32, patterns: found.patterns, sources: found.sources, folder: found.folder };
+            let _ = internal.send(Internal::DesignRefs(Box::new(event)));
+        });
+    }
+
+    /// A screen asked what the squad's design tickets made: read off the
+    /// loop (`crate::design::results`), one answer, sent. Read only.
+    pub(super) fn design_results_asked(&mut self, squad: String) {
+        if !crate::squads::valid_name(&squad) {
+            return;
+        }
+        let (home, internal) = (self.config.home.clone(), self.internal.clone());
+        tokio::task::spawn_blocking(move || {
+            let designs = ds::results::read(&home, &squad);
+            let _ = internal.send(Internal::DesignRefs(Box::new(Event::DesignResults { squad, designs })));
         });
     }
 

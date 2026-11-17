@@ -629,6 +629,19 @@ pub mod label {
         })
     }
 
+    /// The chip a ticket's label shows: `Fix`, `Check`…
+    pub fn ticket_label(lang: Lang, label: equipe_protocol::title::TicketLabel) -> &'static str {
+        use equipe_protocol::title::TicketLabel;
+        core(lang).get(match label {
+            TicketLabel::Feature => "label.ticket.feature",
+            TicketLabel::Fix => "label.ticket.fix",
+            TicketLabel::Check => "label.ticket.check",
+            TicketLabel::Deploy => "label.ticket.deploy",
+            TicketLabel::Design => "label.ticket.design",
+            TicketLabel::Chore => "label.ticket.chore",
+        })
+    }
+
     /// `code`, `task`, `action`.
     pub fn kind(lang: Lang, kind: TicketKind) -> &'static str {
         core(lang).get(match kind {

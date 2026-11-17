@@ -228,6 +228,7 @@ pub fn stall_reason_words(code: Option<&str>) -> &'static str {
         Some(stall_reason::LEASE_EXPIRED) => t!("app.run_reason_lease_expired"),
         Some(stall_reason::NOT_RESUMED) => t!("app.run_reason_not_resumed"),
         Some(stall_reason::MIGRATED) => t!("app.run_reason_migrated"),
+        Some(stall_reason::WAITED_ON_PERSON) => t!("app.run_reason_waited_on_person"),
         _ => t!("app.run_reason_unknown"),
     }
 }
@@ -3749,6 +3750,8 @@ pub fn transcript_markdown(agent: &Agent, squad: &str) -> String {
                 out.push_str(&format!("> ✗ {message}{}\n\n", next.as_ref().map(|n| format!(" → `{n}`")).unwrap_or_default()))
             }
             Entry::Landed { branch, stat } => out.push_str(&format!("{}\n\n```\n{stat}\n```\n\n", t!("app.md_landed", branch = branch))),
+            // The plan's one line is already in the export, as its tool step.
+            Entry::Plan { .. } => {}
         }
     }
     out
@@ -4079,7 +4082,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
-            remaining: Vec::new(), images: Vec::new(),
+            label: None, remaining: Vec::new(), images: Vec::new(),
             updated_at: None,
             priority: Default::default(), rank: 0,
         }

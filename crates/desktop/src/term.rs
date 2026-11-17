@@ -171,7 +171,7 @@ impl Terminal {
 
     /// `line` typed at the prompt, not run: as soon as the shell is ready.
     pub fn suggest(&mut self, line: &str) {
-        let line = line.trim().replace('\n', " ");
+        let line = prefill(line);
         if self.drew {
             self.write(line);
         } else {
@@ -758,6 +758,61 @@ pub fn key_bytes(key: &str, ch: Option<&str>, ctrl: bool, alt: bool, cmd: bool, 
     Some(bytes)
 }
 
+/// What is typed at the prompt for a suggested command: one line, with no
+/// control character in it — no Enter, no escape — so that nothing a member
+/// wrote can run before the person presses Enter themselves.
+pub fn prefill(line: &str) -> String {
+    line.trim().chars().map(|c| if c == '\n' || c == '\r' || c == '\t' { ' ' } else { c }).filter(|c| !c.is_control()).collect()
+}
+
+/// Programs whose command a member's step may ask the person to run on the
+/// daemon's Mac.
+const PROGRAMS: &[&str] = &[
+    "sudo", "aws", "gh", "gcloud", "az", "brew", "npm", "pnpm", "yarn", "npx", "docker", "git", "ssh", "ssh-keygen", "ssh-add", "launchctl", "pmset", "defaults", "security",
+    "xcode-select", "xcodebuild", "codesign", "xcrun", "vercel", "netlify", "firebase", "supabase", "fly", "flyctl", "heroku", "wrangler", "eas", "expo", "op", "cargo", "rustup",
+    "pip", "pip3", "python3", "node", "curl", "chmod", "chown", "mkdir", "open", "softwareupdate", "systemsetup", "caffeinate", "tailscale", "equipe", "claude", "codex", "kubectl",
+    "terraform", "gpg", "tccutil", "spctl", "kill", "pkill", "killall", "diskutil",
+];
+
+/// The shell commands in a member's step (a thing it asks the person to do):
+/// shell code blocks, and `inline code` that is a command — a known program
+/// and its arguments, one line. In order, each once, with the prompt marks
+/// people paste with taken off.
+pub fn commands_in(text: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    let mut add = |c: String| {
+        let c = c.trim().to_owned();
+        if !c.is_empty() && !found.contains(&c) {
+            found.push(c);
+        }
+    };
+    for block in shell_blocks(text) {
+        add(command_of(&block));
+    }
+    // Inline spans outside fenced blocks.
+    let mut in_fence = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        for (n, span) in line.split('`').enumerate() {
+            if n % 2 == 1 {
+                let span = span.trim().strip_prefix("$ ").unwrap_or(span.trim());
+                let mut words = span.split_whitespace();
+                let first = words.next().unwrap_or_default();
+                if words.next().is_some() && PROGRAMS.contains(&first) {
+                    add(span.to_owned());
+                }
+            }
+        }
+    }
+    found
+}
+
 /// A shell code block's command, for the terminal: its lines joined, the
 /// prompt marks people paste with taken off.
 pub fn command_of(code: &str) -> String {
@@ -823,6 +878,23 @@ mod tests {
         assert_eq!(key_bytes("up", None, false, false, false, false, true), Some(b"\x1bOA".to_vec()), "a full-screen program's arrows");
         assert_eq!(k("b", Some("b"), false, true), Some(b"\x1bb".to_vec()));
         assert_eq!(key_bytes("v", Some("v"), false, false, true, false, false), None, "⌘V is the window's");
+    }
+
+    #[test]
+    fn a_suggested_command_is_typed_never_run() {
+        assert_eq!(prefill("  aws login --profile atinum\n"), "aws login --profile atinum");
+        // Whatever a member wrote, no Enter, no escape: the person presses Enter.
+        let sly = prefill("echo hi\r\nrm -rf ~\x1b[2J\x03\n");
+        assert!(!sly.contains(['\r', '\n', '\x1b', '\x03']), "{sly:?}");
+        assert_eq!(sly, "echo hi  rm -rf ~[2J");
+    }
+
+    #[test]
+    fn a_steps_commands_are_found_in_code_blocks_and_inline_code() {
+        let step = "In this Mac's terminal run `aws login --profile atinum`; a browser opens. Then `ls` and `the profile` are words.\n\n```sh\n$ sudo pmset -a sleep 0\n```";
+        assert_eq!(commands_in(step), vec!["sudo pmset -a sleep 0".to_owned(), "aws login --profile atinum".to_owned()]);
+        assert!(commands_in("Open `Settings › Accounts` and tick it.").is_empty());
+        assert_eq!(commands_in("Run `$ gh auth login` then `gh auth login`"), vec!["gh auth login".to_owned()], "each once, prompt mark off");
     }
 
     #[test]

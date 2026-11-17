@@ -27,15 +27,49 @@ pub(super) struct Windows {
     reopen: HashMap<String, Vec<(String, String, bool)>>,
     /// What is on disk about the hand-offs, to write only what changed.
     kept: Vec<handoff::Saved>,
+    /// Sites whose sign-in made in a sign-in view didn't hold in the members'
+    /// Chrome (the site still asked): signed in to in the members' own browser
+    /// from then on ([`no_carry_file`]).
+    no_carry: std::collections::BTreeSet<String>,
+    /// How often the person passed each site's human check in their own window lately.
+    rounds: handoff::CheckRounds,
+    /// The lanes in the person's window for a human check their page stopped
+    /// at (not one their member asked for): handed back as from a check.
+    checks: std::collections::BTreeSet<String>,
+}
+
+/// What follows a member's page stopping at a human check, once its tabs are told.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum CheckFollow {
+    /// Back right after the person passed it in their own window: that window again.
+    Window(String),
+    /// Back after that too: the member does without the site (`lane`, `site`).
+    GiveUp(String, String),
+}
+
+/// Where the sites a sign-in view's sign-in doesn't carry over for are kept.
+fn no_carry_file(home: &Path) -> PathBuf {
+    home.join("browser").join("view-no-carry")
 }
 
 impl Windows {
     pub(super) fn new(home: &Path) -> Self {
-        Self::with(Box::new(handoff::System::new(home)))
+        let mut windows = Self::with(Box::new(handoff::System::new(home)));
+        windows.no_carry = std::fs::read_to_string(no_carry_file(home)).unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
+        windows
     }
 
     pub(super) fn with(machine: Box<dyn handoff::Machine>) -> Self {
-        Self { handoffs: handoff::Handoffs::default(), views: handoff_view::Views::default(), machine, reopen: HashMap::new(), kept: Vec::new() }
+        Self {
+            handoffs: handoff::Handoffs::default(),
+            views: handoff_view::Views::default(),
+            machine,
+            reopen: HashMap::new(),
+            kept: Vec::new(),
+            no_carry: Default::default(),
+            rounds: Default::default(),
+            checks: Default::default(),
+        }
     }
 }
 
@@ -94,18 +128,23 @@ impl Runtime {
         let id = self.member_id(&call.squad, &call.member).ok_or(PanelWhy::NoWindow)?;
         let (squad, key) = self.browser_key(id).ok_or(PanelWhy::NoWindow)?;
         let lane = format!("{squad}/{key}");
-        // A screen that can take the sign-in in a view of its own, wherever it is: there.
-        if self.hub.has_web_view() {
-            self.begin_view_handoff(&squad, &key, url, why).await;
-            return Ok(true);
-        }
-        let (profile, dir) = profile_of(&self.config.home, &lane);
         // Where to open it, and to come back to: the address it names, else where its member is.
         let at = url
             .map(str::to_owned)
             .or_else(|| self.lane_page(&lane).map(|p| p.url).filter(|u| u.starts_with("http")))
             .or_else(|| self.last_url.get(&(squad.clone(), key.clone())).cloned())
             .unwrap_or_default();
+        // A screen that can take the sign-in in a view of its own, wherever it is: there —
+        // unless the site's sign-in holds only in the browser that made it (Google's), or
+        // the page is a human check: what passes one belongs to the browser that passed it,
+        // so that has to be the members' own profile, in the person's window.
+        let walled = self.lane_page(&lane).and_then(|p| p.check).is_some_and(handoff::needs_real_browser);
+        let carries = !walled && !handoff_view::binds_to_browser(&at) && !self.windows.no_carry.iter().any(|s| vault::serves(s, &at));
+        if self.hub.has_web_view() && carries {
+            self.begin_view_handoff(&squad, &key, url, why).await;
+            return Ok(true);
+        }
+        let (profile, dir) = profile_of(&self.config.home, &lane);
         let chrome = self.windows.machine.chrome().is_some();
         let actions = self.windows.handoffs.begin(std::time::Instant::now(), &profile, &dir, &lane, &at, chrome);
         if let Some(why) = actions.iter().find_map(|a| if let Action::Panel { why, .. } = a { Some(*why) } else { None }) {
@@ -119,6 +158,98 @@ impl Runtime {
         let (squad, _) = self.lane_session(&lane);
         self.publish(Event::BrowserControl { squad, lane, by: Some("person".into()), why: Some(why.to_owned()), check: None });
         Ok(false)
+    }
+
+    /// A member's page stopped at a human check the person answers by clicking
+    /// (Cloudflare, Turnstile, reCAPTCHA, hCaptcha) and the person reaches for
+    /// it — Take over, the Chrome button — or it came back right after a round:
+    /// the person gets a normal Chrome window on the members' profile at that
+    /// page, the automated browser stepping aside for it, instead of the panel.
+    /// The panel shows the automated browser and hands it their clicks over
+    /// DevTools, which such a check is built to refuse, however human the
+    /// click. Done (or the window closed) brings the automated browser back
+    /// to the page and gives it back to its member. `false`: not such a check
+    /// in that lane, or no window to be had — the panel then, as before.
+    pub(super) async fn check_to_window(&mut self, lane: &str) -> bool {
+        let Some((_, url, check)) = self.checking.get(lane).cloned() else { return false };
+        if !handoff::needs_real_browser(check) || !self.window_mode() || self.windows.handoffs.busy_lane(lane) {
+            return false;
+        }
+        let now = std::time::Instant::now();
+        let (profile, dir) = profile_of(&self.config.home, lane);
+        let chrome = self.windows.machine.chrome().is_some();
+        let actions = self.windows.handoffs.begin(now, &profile, &dir, lane, &url, chrome);
+        if let Some(why) = actions.iter().find_map(|a| if let Action::Panel { why, .. } = a { Some(*why) } else { None }) {
+            crate::daemon_log!("equipe: {lane}'s human check stays in the browser panel: no normal Chrome window for it ({why:?})");
+            // No Chrome to open one in: said plainly, since the panel may not get anyone through.
+            if why == PanelWhy::NoChrome
+                && let (_, Some(session)) = self.lane_session(lane)
+            {
+                let member = lane.split_once('/').map(|(_, key)| browser::member_of(key).to_owned()).unwrap_or_default();
+                let text = self.window_fallback_note(&member, "", why);
+                self.publish(Event::Notice { undo: None, session, text });
+            }
+            return false;
+        }
+        let site = vault::site_of(&url);
+        self.windows.rounds.began(now, &site);
+        self.windows.checks.insert(lane.to_owned());
+        let host = this_mac();
+        let why = say!(self, "notice.browser_check_window_why", site = site, host = host);
+        self.held.insert(lane.to_owned(), Some(why.clone()));
+        self.run_window_actions(actions).await;
+        let (squad, session) = self.lane_session(lane);
+        self.publish(Event::BrowserControl { squad, lane: lane.to_owned(), by: Some("person".into()), why: Some(why), check: Some(check) });
+        if let Some(session) = session {
+            let text = say!(self, "notice.browser_check_window", site = site, host = host);
+            self.publish(Event::Notice { undo: None, session, text });
+        }
+        crate::daemon_log!("equipe: {lane}'s human check on {site} went to a normal Chrome window on this Mac (nothing automated attached)");
+        true
+    }
+
+    /// Whether a page that just stopped at a human check goes on as usual (the
+    /// card), straight to the person's window (it came back right after they
+    /// passed it there), or not to the person at all (it came back after that
+    /// too): from the site's rounds lately.
+    pub(super) fn check_round(&mut self, url: &str, check: equipe_protocol::HumanCheck) -> handoff::CheckRound {
+        if !handoff::needs_real_browser(check) {
+            return handoff::CheckRound::Ask;
+        }
+        self.windows.rounds.step(std::time::Instant::now(), &vault::site_of(url))
+    }
+
+    /// The page a lane's automated browser came back to from the person's
+    /// window, if it shows a check that refuses automated browsers again.
+    fn walled_again(&self, lane: &str) -> Option<(u64, String, equipe_protocol::HumanCheck)> {
+        let Some(Event::BrowserTabs { pages, agent_page, .. }) = self.tabs.get(lane) else { return None };
+        let page = agent_page.and_then(|a| pages.iter().find(|p| p.id == a)).or(pages.first())?;
+        page.check.filter(|c| handoff::needs_real_browser(*c)).map(|c| (page.id, page.url.clone(), c))
+    }
+
+    /// Carry out what follows a page stopping at a check, once its tabs are told.
+    pub(super) async fn check_follow(&mut self, follow: CheckFollow) {
+        match follow {
+            CheckFollow::Window(lane) => {
+                self.check_to_window(&lane).await;
+            }
+            CheckFollow::GiveUp(lane, site) => {
+                if !self.windows.rounds.tell(&lane, &site) {
+                    return;
+                }
+                crate::daemon_log!("equipe: {site} kept showing {lane}'s browser a human check after the person passed it twice; its member does without it");
+                let (_, Some(session)) = self.lane_session(&lane) else { return };
+                let member = lane.split_once('/').map(|(_, key)| browser::member_of(key).to_owned()).unwrap_or_default();
+                let text = say!(self, "notice.browser_check_gave_up", site = site, name = member);
+                let prompt = format!(
+                    "[equipe: {site} keeps showing your browser a \"verify you are human\" check, even right after the person passed it \
+twice in a normal Chrome window. The site refuses automated browsers like yours, and equipe won't hand it to the person again. Stop using \
+{site} for this task: carry on without it, and say plainly in your hand-in what you couldn't do or check there because of it. Don't \
+try to get past the check, and don't ask the person to do it again.]"
+                );
+                self.carry_on(session, text, prompt).await;
+            }
+        }
     }
 
     /// The page a hand-off is for: the address asked for, else where the member is.
@@ -155,13 +286,15 @@ impl Runtime {
             handoff_view::Taken::Ignored => {}
             handoff_view::Taken::Failed => self.view_fallback(&lane).await,
             handoff_view::Taken::Apply { url, scoped } => {
-                crate::daemon_log!("equipe: {} sign-in cookies go to {lane}'s browser ({} of other sites left out)", scoped.cookies.len(), scoped.dropped);
-                let cookies: Vec<serde_json::Value> = scoped
-                    .cookies
-                    .iter()
-                    .map(|c| json!({ "name": c.name, "value": c.value, "domain": c.domain, "path": c.path, "expires": c.expires, "secure": c.secure, "httpOnly": c.http_only, "sameSite": c.same_site }))
-                    .collect();
+                // What went in is the host's to say (`HostEvent::Cookies`): Chrome may refuse some.
+                crate::daemon_log!("equipe: {} sign-in cookies are for {lane}'s browser ({} of other sites left out)", scoped.cookies.len(), scoped.dropped);
+                let cookies: Vec<serde_json::Value> = scoped.cookies.iter().map(super::sign_ins::host_cookie).collect();
                 self.hub.op(&json!({ "op": "cookies", "lane": lane, "cookies": cookies, "url": url }));
+                // Kept for the squad: no member of it is asked for this site again while the site takes it.
+                if let Some((squad, key)) = lane.split_once('/') {
+                    let profile = browser::split_profile(key).1.unwrap_or_default().to_owned();
+                    self.keep_sign_in(vec![squad.to_owned()], &profile, &url, scoped.cookies);
+                }
             }
         }
     }
@@ -175,6 +308,32 @@ impl Runtime {
         let chrome = self.windows.machine.chrome().is_some();
         let actions = self.windows.handoffs.begin(std::time::Instant::now(), &profile, &dir, lane, &url, chrome);
         self.run_window_actions(actions).await;
+    }
+
+    /// A view's sign-in that the site didn't take in the member's Chrome: the
+    /// member's own browser into the person's hands in the panel, at `url`.
+    /// Whether it went there.
+    fn view_to_panel(&mut self, lane: &str, url: &str) -> bool {
+        let Some((squad, key)) = lane.split_once('/') else { return false };
+        let (squad, member) = (squad.to_owned(), browser::member_of(key).to_owned());
+        let site = vault::site_of(url);
+        if !site.is_empty() && self.windows.no_carry.insert(site.clone()) {
+            let all: Vec<&str> = self.windows.no_carry.iter().map(String::as_str).collect();
+            let _ = std::fs::write(no_carry_file(&self.config.home), all.join("\n") + "\n");
+        }
+        // What the view handed over is no sign-in there: not kept to be put back later.
+        self.forget_sign_in(&squad, browser::split_profile(key).1.unwrap_or_default(), &site, 0);
+        let why = self.asked_in.get(lane).cloned().unwrap_or_default();
+        if !self.ask_in_panel(&squad, &member, Some(url), &why) {
+            return false;
+        }
+        crate::daemon_log!("equipe: the sign-in to {site} from the view didn't hold in {lane}'s browser; it is in the person's hands in the panel");
+        let (_, session) = self.lane_session(lane);
+        if let Some(session) = session {
+            let text = say!(self, "notice.view_didnt_carry", name = member, site = site);
+            self.publish(Event::Notice { undo: None, session, text });
+        }
+        true
     }
 
     /// A view is over: its screens drop it.
@@ -194,8 +353,19 @@ impl Runtime {
         let now = std::time::Instant::now();
         let loaded: std::collections::HashSet<String> = self.windows.views.lanes().into_iter().filter(|l| self.lane_loaded(l)).collect();
         for (lane, _stale) in self.windows.views.ready(now, |l| loaded.contains(l)) {
-            let challenged = self.lane_page(&lane).is_some_and(|p| p.check.is_some());
+            let page = self.lane_page(&lane);
+            let challenged = page.as_ref().is_some_and(|p| p.check.is_some());
             self.finish_view(&lane, challenged);
+            // The view's sign-in didn't hold in the member's Chrome (the site still asks
+            // for it): the browser itself goes into the person's hands, in the panel, at
+            // once — the same hand-off, not a new question — and that site goes there
+            // directly from now on.
+            let still = page.filter(|p| matches!(p.check, Some(equipe_protocol::HumanCheck::SignIn | equipe_protocol::HumanCheck::TwoFactor)));
+            if let Some(page) = still
+                && self.view_to_panel(&lane, &page.url)
+            {
+                continue;
+            }
             Box::pin(self.on_host(HostEvent::Control { lane, by: None, refused: false })).await;
         }
         // The screen that took them went: each goes where a person can still sign in.
@@ -290,8 +460,33 @@ impl Runtime {
                 Action::HandBack { lanes } => {
                     for lane in lanes {
                         // The same as the person pressing Done in the panel: the
-                        // member is told, with where its page is now.
-                        Box::pin(self.on_host(HostEvent::Control { lane, by: None, refused: false })).await;
+                        // member is told, with where its page is now — and once
+                        // that page shows the site past its sign-in, the sign-in
+                        // is on the record, kept, and offered to save
+                        // (`Runtime::verify_back`). Back from a check its page
+                        // stopped at: its tools were turned away meanwhile, so
+                        // it carries on.
+                        let from_check = self.windows.checks.remove(&lane);
+                        // The automated browser came back to the check: once more in the
+                        // person's window, by itself, while the member still waits.
+                        let again = if from_check { self.walled_again(&lane) } else { None };
+                        if let Some((page, url, check)) = again.clone()
+                            && self.check_round(&url, check) == handoff::CheckRound::Again
+                        {
+                            self.checking.insert(lane.clone(), (page, url, check));
+                            if Box::pin(self.check_to_window(&lane)).await {
+                                continue;
+                            }
+                        }
+                        Box::pin(self.on_host(HostEvent::Control { lane: lane.clone(), by: None, refused: from_check })).await;
+                        // …and after that, no more rounds: the member does without the site.
+                        if let Some((page, url, check)) = again
+                            && self.check_round(&url, check) == handoff::CheckRound::GiveUp
+                        {
+                            let site = vault::site_of(&url);
+                            self.let_go.insert((lane.clone(), page, url));
+                            Box::pin(self.check_follow(CheckFollow::GiveUp(lane, site))).await;
+                        }
                     }
                 }
                 Action::Panel { lane, url, why } => self.window_to_panel(&lane, &url, why),
@@ -326,6 +521,7 @@ impl Runtime {
         }
         self.windows.reopen.entry(profile.to_owned()).or_default().extend(reopen);
         // Its tabs went with it.
+        self.host_pages.retain(|lane, _| tabs_profile(lane) != profile);
         let gone: Vec<String> = self.tabs.keys().filter(|lane| tabs_profile(lane) == profile).cloned().collect();
         for lane in gone {
             if let Some(Event::BrowserTabs { squad, session, member, color, .. }) = self.tabs.remove(&lane) {
@@ -341,7 +537,13 @@ impl Runtime {
     /// Open a profile's automated browser again, on the folder the sign-in
     /// went into, and take each lane back to where it was.
     fn resume_profile(&mut self, profile: &str, lanes: &[(String, String)]) {
+        // The profile its Chrome opens again: where the person was, should their sign-in have moved to another.
+        let dir = if profile.is_empty() { browser::host_profile(&self.config.home) } else { browser::profile_dir(&self.config.home, profile) };
+        browser::chrome_profile(&dir);
+        self.tell_profile_separation();
         self.hub.op(&json!({ "op": "resume", "profile": profile }));
+        // Its Chrome starts again: the kept sign-ins go in again as its lanes open.
+        self.sign_ins_restart(Some(profile));
         let mut again = self.windows.reopen.remove(profile).unwrap_or_default();
         for (lane, _) in lanes {
             if let Some((squad, key)) = lane.split_once('/')
@@ -400,6 +602,34 @@ impl Runtime {
     /// What the daemon says in the member's conversation when the window opened.
     pub(super) fn window_notice(&self, member: &str, why: &str) -> String {
         say!(self, "notice.browser_window", name = member, host = this_mac(), why = why)
+    }
+
+    /// The person's Google Workspace keeps each work account in a Chrome
+    /// profile of its own (enterprise profile separation): told once, plainly,
+    /// which account members work as, how to choose another, and the setting
+    /// their Workspace admin can change so Chrome stops making a profile per
+    /// account — optional: equipe works either way.
+    pub(super) fn tell_profile_separation(&mut self) {
+        let home = self.config.home.clone();
+        let dir = browser::host_profile(&home);
+        let told = home.join("browser").join("told-profile-separation");
+        if told.exists() || !browser::separated(&dir) {
+            return;
+        }
+        let _ = std::fs::write(&told, "");
+        let pinned = browser::pinned_profile(&dir);
+        let account = browser::chrome_profiles(&dir).into_iter().find(|p| p.dir == pinned).and_then(|p| p.account).unwrap_or_else(|| pinned.clone());
+        crate::daemon_log!("equipe: Chrome keeps each work account in a profile of its own in {}; members use {pinned:?}", dir.display());
+        let text = say!(self, "notice.profile_separation", account = account);
+        let line = format!(
+            "equipe: the person's Google Workspace requires a separate Chrome profile for each work account, so equipe's browser has one per \
+account signed in to; members work as {account}. The person was told how to choose another account and what their admin can change. \
+Nothing for you to do; if a page needs another Google account, say so — don't ask the person to sign in again."
+        );
+        let squads: Vec<String> = self.journals.keys().cloned().collect();
+        for squad in squads {
+            self.brief_pm(&squad, line.clone(), Some(text.clone()));
+        }
     }
 
     /// Paused profiles told to a host that started again: it knows nothing of them.

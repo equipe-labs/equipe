@@ -31,6 +31,21 @@ pub struct TurnResult {
     pub usage: Option<TurnUsage>,
 }
 
+/// Where one step of an agent's plan stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepState {
+    Pending,
+    Active,
+    Done,
+}
+
+/// One step of an agent's plan (Claude Code's to-do list, Codex's plan).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanStep {
+    pub text: String,
+    pub state: StepState,
+}
+
 /// Something worth showing while a turn runs.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Activity {
@@ -50,11 +65,19 @@ pub enum Activity {
     },
     /// A tool use came back (the `Tool` with this `name` and `target`).
     ToolDone(ToolDone),
+    /// The agent's plan as it stands now, every step: it replaces the one
+    /// before. Comes beside the plan's one-line `Tool` (`TodoWrite`), which
+    /// stays for the screens that show only lines.
+    PlanSteps(Vec<PlanStep>),
     /// A fragment of the model's reasoning, as the engine shows it — not
     /// part of the answer.
     Thinking(String),
     /// The model the engine is running, reported at startup.
     Model(String),
+    /// The account refused `model` for the turn (Codex's `model_not_found`:
+    /// not offered on this account, or not right now), so the turn was asked
+    /// again, once, on `instead`.
+    ModelRefused { model: String, instead: String },
     /// The engine's process started, with this id: what runs under it is the
     /// turn's — its commands among them.
     Engine { pid: u32 },
@@ -93,6 +116,11 @@ pub enum Activity {
     Compacted,
     /// The compaction failed: why, as the engine said it.
     CompactFailed(String),
+    /// The turn's answer was in, but the engine's process didn't end the
+    /// turn — it waited on, quiet, on something nobody needed (a dev server
+    /// left running in the background, say) — so the turn was ended here, as
+    /// completed and resumable: why, in a line for the log.
+    Settled(String),
 }
 
 /// How a tool use ended, as the engine answered it.

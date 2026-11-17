@@ -18,6 +18,7 @@ pub mod briefs;
 pub mod by_words;
 pub mod call;
 pub mod decide;
+pub mod deeplink;
 pub mod disk;
 pub mod metrics;
 pub mod plan_use;
@@ -27,12 +28,16 @@ pub mod links;
 pub mod tiers;
 pub mod harness;
 pub mod design;
+pub mod design_session;
 pub mod look;
 pub mod routines;
+pub mod cli_signin;
+pub mod mcp_servers;
 pub mod secrets;
 pub mod side_chat;
 pub mod signals;
 pub mod status;
+pub mod title;
 pub mod importance;
 
 /// How many subagents Claude Code runs at once on its own
@@ -80,6 +85,7 @@ pub mod telemetry;
 pub mod team;
 pub mod transcript;
 pub mod vault;
+pub mod verify;
 pub mod review;
 pub mod watch;
 pub mod words;
@@ -374,6 +380,10 @@ pub struct Ticket {
     /// Where its work happens and what accepting it does.
     #[serde(default)]
     pub kind: TicketKind,
+    /// What sort of work it is, in a word, for the chip a list shows
+    /// (`None`: not said, as for a ticket written before labels).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<title::TicketLabel>,
     /// Who it is for: a role (`frontend`) or a member (`frontend-2`).
     pub owner: Option<String>,
     /// The member working on it, once it has been picked up.
@@ -476,6 +486,11 @@ pub struct TicketExecution {
     /// stalled, kept as they are by every recovery. Left out when unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dirty: Option<u32>,
+    /// What the run waited on the person for when it stalled
+    /// ([`stall_reason::WAITED_ON_PERSON`]): the hand-off's why and site, in
+    /// the member's words. Left out otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waited_for: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -563,6 +578,10 @@ pub mod stall_reason {
     pub const NOT_RESUMED: &str = "not_resumed";
     /// From before equipe kept runs, and nothing could carry it on.
     pub const MIGRATED: &str = "migrated";
+    /// Its turn ended with something in the person's hands — its browser for
+    /// a sign-in — and they didn't come back to it in time
+    /// ([`super::TicketExecution::waited_for`] says what it was).
+    pub const WAITED_ON_PERSON: &str = "waited_on_person";
 }
 
 /// How the person recovers a stalled ticket ([`Command::Requeue`]). Each keeps
@@ -1261,6 +1280,56 @@ pub enum Command {
     SaveSecret { squad: SquadName, id: u64, values: Vec<secrets::SecretValue> },
     /// The person won't give it (now): the member is told.
     DismissSecret { squad: SquadName, id: u64 },
+    /// The person pasted the code a CLI sign-in card waits for
+    /// (`cli_sign_in`): written to the waiting process, never kept.
+    SubmitCliSignInCode { squad: SquadName, id: u64, code: cli_signin::PastedCode },
+    /// "Get a new link": the sign-in runs again, from the start.
+    RestartCliSignIn { squad: SquadName, id: u64 },
+    /// The person won't sign in (now): the process stops and the member is told.
+    CancelCliSignIn { squad: SquadName, id: u64 },
+    /// "Fill code from email" on a verification card ([`Event::VerificationChanged`]):
+    /// the daemon reads the matching mail from the connected mailbox and types
+    /// the code into the member's page. Only ever the person's click; the code
+    /// goes nowhere but that page.
+    FillVerificationCode { squad: SquadName, id: u64 },
+    /// "I'll type it": the card closes and the page's code field takes the
+    /// person's typing in the hand-off view.
+    TypeVerificationCode { squad: SquadName, id: u64 },
+    /// The person connects Gmail as the mailbox verification codes are read
+    /// from (read-only access, `gmail.readonly`): the daemon opens Google's
+    /// consent page in the person's own browser ([`Event::MailboxConnect`]).
+    /// `client`: an OAuth client of their own, where this build has none.
+    ConnectGmail {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client: Option<vault::GmailClient>,
+    },
+    /// The person disconnects Gmail: the kept grant is dropped from the
+    /// secret store (revoke it in their Google Account too).
+    DisconnectGmail,
+    /// The person starts a key card themselves, from Logins › Connections: the
+    /// daemon puts the catalog service `service`'s card (`SecretAsk::store`)
+    /// on every screen — answered by [`Event::SecretAsked`]. No member waits
+    /// on it. Saving goes through [`Command::SaveSecret`].
+    RequestServiceKey { squad: SquadName, service: String },
+    /// The person connects an outside MCP server to the squad (or changes one
+    /// of the same name), from Logins › Connections, `equipe mcp add`, or the
+    /// PM's approval card: kept in the squad's settings and given to the
+    /// members of its roles from their next turn. `sign_in`: once its status
+    /// is known, the engines where it needs a sign-in get the sign-in card.
+    /// Answered by [`Event::McpServers`].
+    AddMcpServer { squad: SquadName, server: mcp_servers::McpServer, #[serde(default)] sign_in: bool },
+    /// The person takes an outside MCP server off the squad: members stop
+    /// getting it, and the engines' own sign-in for it is cleared where no
+    /// other squad uses the same server.
+    RemoveMcpServer { squad: SquadName, name: String },
+    /// The person turns an outside MCP server off (kept, given to no one) or on again.
+    SetMcpServerEnabled { squad: SquadName, name: String, on: bool },
+    /// The person signs in to an outside MCP server: the engines' own sign-in
+    /// runs on the daemon's machine, on a sign-in card ([`Event::CliSignInChanged`]).
+    SignInMcpServer { squad: SquadName, name: String },
+    /// Look again at where the squad's outside MCP servers stand, through each
+    /// engine's own tool: answered by [`Event::McpServers`].
+    CheckMcpServers { squad: SquadName },
     /// Every squad's keys, tokens and passwords members kept (`secret_save`):
     /// answered by [`Event::SquadSecrets`]. Names and facts only, never a value.
     SquadSecrets,
@@ -1537,6 +1606,12 @@ pub enum Command {
     /// with `pinned` false gives it back to equipe. Answered by
     /// [`Event::TicketChanged`].
     SetTicketTier { squad: SquadName, ticket: TicketId, tier: Option<tiers::ModelTier>, pinned: bool },
+    /// The person picks the model of one ticket alone — any Claude family,
+    /// the premium one included (`fable`: several times Opus's cost): every
+    /// lane and run of that ticket uses it, no other ticket and not its
+    /// member. `None` lets the pick go. Cleared when the ticket closes.
+    /// Answered by [`Event::TicketChanged`].
+    SetTicketModel { squad: SquadName, ticket: TicketId, model: Option<String> },
     /// Which engine reviews the designer's work ([`engines::Reviewer`]).
     /// Answered by [`Event::DesignReviewerChanged`].
     SetDesignReviewer { squad: SquadName, reviewer: engines::Reviewer },
@@ -1632,6 +1707,31 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
     },
+    /// The references a design system's designers keep
+    /// (`design/references/<pattern>/`, `design/references/sources.md`): the
+    /// project's (`project` none: the squad's own), with the squad's own for
+    /// the patterns the project has none of. `query` keeps the patterns whose
+    /// name or notes hold it (any case); `offset` pages the patterns, in name
+    /// order. Answered by [`Event::DesignRefs`]. Only reads; the pictures
+    /// come through `read_image`. `ticket` picks the place read: none, the
+    /// one with the latest references work; `0`, the project's own folder;
+    /// a ticket's id, that ticket's worktree.
+    DesignRefs {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ticket: Option<u64>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        query: String,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        offset: u32,
+    },
+    /// What the squad's design tickets made — renders, change notes, preview
+    /// links, the decision record — one card each, newest first: answered by
+    /// [`Event::DesignResults`]. Only reads (`design/` of the project and of
+    /// each ticket's worktree); the pictures come through `read_image`.
+    DesignResults { squad: SquadName },
     /// The person asks for a design system's folder back as it was at one of
     /// its versions (`commit`, one [`Event::DesignVersions`] listed): a
     /// ticket for the designer, which restores it in its worktree and hands
@@ -1651,6 +1751,28 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
         change: design::TasteChange,
+    },
+    /// What the person did that tells their design taste (taste tuner
+    /// picks, quick reactions in a design session) for the squad
+    /// (`project` none) or a project: kept with its taste, its style profile
+    /// worked out again. Answered by [`Event::Design`].
+    TasteSignals {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        signals: Vec<design::TasteSignal>,
+    },
+    /// The person starts a design session with the squad's designer on
+    /// `page` (a page or screen of `project`, `None`: the squad's own): its
+    /// kickoff goes to the designer as the person's message, and every screen
+    /// is told with [`Event::DesignSessionStarted`] — or an error when the
+    /// squad has no designer or the page has no name.
+    StartDesignSession {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        page: String,
+        from: design_session::SessionFrom,
     },
 }
 
@@ -2653,6 +2775,10 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "is_false")]
         background: bool,
     },
+    /// The agent's plan as it stands now — every step, with where it is. It
+    /// replaces the plan before it: a screen keeps one live plan card per
+    /// turn. Comes beside the plan's one-line [`Event::ToolUse`] (`TodoWrite`).
+    Plan { session: SessionId, steps: Vec<PlanStep> },
     /// A tool use came back: the latest [`Event::ToolUse`] with the same
     /// `tool` and `target` still open ended so. A screen that doesn't know
     /// this event shows the step as before.
@@ -3041,6 +3167,27 @@ pub enum Event {
     SecretAsked { squad: SquadName, ask: secrets::SecretAsk },
     /// It was saved (`saved`) or turned down: the card closes everywhere.
     SecretClosed { squad: SquadName, id: u64, saved: bool },
+    /// A member asks the person to finish a command-line sign-in on a card,
+    /// or one stands differently now (its page, its phase): the whole card.
+    CliSignInChanged { squad: SquadName, card: cli_signin::CliSignIn },
+    /// The sign-in's card closes everywhere.
+    CliSignInClosed { squad: SquadName, id: u64 },
+    /// The squad's outside MCP servers and where each stands, whole, whenever either changes.
+    McpServers { squad: SquadName, servers: Vec<mcp_servers::McpServer>, status: Vec<mcp_servers::McpServerStatus> },
+    /// A verification card is up, or stands differently now: the whole card
+    /// ([`verify::Verification`]); it never carries the code.
+    VerificationChanged { squad: SquadName, card: verify::Verification },
+    /// The card closes everywhere.
+    VerificationClosed { squad: SquadName, id: u64 },
+    /// Connecting Gmail ([`Command::ConnectGmail`]): Google's consent page to
+    /// open in the person's own browser, or why it couldn't go on. Once
+    /// connected, [`Event::Autopilot`] says as whom.
+    MailboxConnect {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// Every squad's kept keys, as facts ([`Command::SquadSecrets`]): for every screen.
     SquadSecrets { secrets: Vec<secrets::SquadSecret> },
     /// A kept key the person asked to see ([`Command::RevealSquadSecret`]): to be shown
@@ -3125,6 +3272,24 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         taste: Vec<design::Taste>,
     },
+    /// A design session started ([`Command::StartDesignSession`], or the
+    /// person took the PM's proposal): the designer's conversation `designer`
+    /// is now about `page`, live beside it on a screen.
+    DesignSessionStarted {
+        squad: SquadName,
+        designer: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        page: String,
+        from: design_session::SessionFrom,
+    },
+    /// The person chose to tune their taste first (on the PM's proposal of
+    /// a design session): screens open the taste tuner for `project`.
+    OpenTasteTuner {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
     /// The squad's briefs and plans as they are now ([`Command::ProjectDocs`]):
     /// every project's, then its own folder's, newest first in each. Its own
     /// event rather than a field of [`Event::ProjectsChanged`]: they are read
@@ -3178,6 +3343,43 @@ pub enum Event {
         #[serde(default)]
         versions: Vec<design::DesignVersion>,
     },
+    /// What the squad's design tickets made ([`Command::DesignResults`]), newest first.
+    DesignResults {
+        squad: SquadName,
+        #[serde(default)]
+        designs: Vec<design::DesignWork>,
+    },
+    /// The references [`Command::DesignRefs`] asked for. `query` and `offset`
+    /// are the ask's, so a screen can tell an old answer from the latest.
+    DesignRefs {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        /// The ask's `ticket`, as asked.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ticket: Option<u64>,
+        /// The place read: `0` the project's own folder, else a ticket's id.
+        #[serde(default, skip_serializing_if = "is_zero_u64")]
+        at: u64,
+        /// Every place that has references, the one read among them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        places: Vec<design::RefPlace>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        query: String,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        offset: u32,
+        /// How many patterns match, of which `patterns` are the page at `offset`.
+        #[serde(default)]
+        total: u32,
+        #[serde(default)]
+        patterns: Vec<design::RefPattern>,
+        /// The squad's sources (`sources.md`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        sources: Vec<design::RefSource>,
+        /// Where the references are kept, for the person to put some in.
+        #[serde(default)]
+        folder: String,
+    },
 }
 
 impl Event {
@@ -3211,6 +3413,11 @@ impl Event {
             | Event::RoleModelsChanged { squad, .. }
             | Event::SecretAsked { squad, .. }
             | Event::SecretClosed { squad, .. }
+            | Event::CliSignInChanged { squad, .. }
+            | Event::CliSignInClosed { squad, .. }
+            | Event::McpServers { squad, .. }
+            | Event::VerificationChanged { squad, .. }
+            | Event::VerificationClosed { squad, .. }
             | Event::ProjectsChanged { squad, .. }
             | Event::RoutinesChanged { squad, .. }
             | Event::RoutineProposed { squad, .. }
@@ -3228,6 +3435,8 @@ impl Event {
             | Event::SignalsChanged { squad, .. }
             | Event::PutAwayChanged { squad, .. }
             | Event::Design { squad, .. }
+            | Event::DesignSessionStarted { squad, .. }
+            | Event::OpenTasteTuner { squad, .. }
             | Event::ProjectDocs { squad, .. }
             | Event::DocsFound { squad, .. }
             | Event::CallStarted { squad, .. }
@@ -3235,7 +3444,9 @@ impl Event {
             | Event::CallRoute { squad, .. }
             | Event::CallSummary { squad, .. }
             | Event::DocCopyKept { squad, .. }
-            | Event::DesignVersions { squad, .. } => Some(squad),
+            | Event::DesignVersions { squad, .. }
+            | Event::DesignResults { squad, .. }
+            | Event::DesignRefs { squad, .. } => Some(squad),
             Event::BrowserTabs { squad, .. } | Event::BrowserControl { squad, .. } | Event::BrowserWindow { squad, .. } | Event::BrowserDialog { squad, .. } | Event::BrowserWants { squad, .. } => squad.as_deref(),
             Event::SideChatOpened { squad, .. } | Event::SideChat { squad, .. } | Event::SideChatClosed { squad, .. } => squad.as_deref(),
             _ => None,
@@ -3254,6 +3465,7 @@ impl Event {
             | Event::TextDelta { session, .. }
             | Event::ToolUse { session, .. }
             | Event::ToolResult { session, .. }
+            | Event::Plan { session, .. }
             | Event::Thinking { session, .. }
             | Event::ModelKnown { session, .. }
             | Event::Thread { session, .. }
@@ -3314,6 +3526,11 @@ impl Event {
             | Event::RoleModelsChanged { .. }
             | Event::SecretAsked { .. }
             | Event::SecretClosed { .. }
+            | Event::CliSignInChanged { .. }
+            | Event::CliSignInClosed { .. }
+            | Event::McpServers { .. }
+            | Event::VerificationChanged { .. }
+            | Event::VerificationClosed { .. }
             | Event::SquadSecrets { .. }
             | Event::SquadSecretRevealed { .. }
             | Event::ProjectsChanged { .. }
@@ -3336,12 +3553,15 @@ impl Event {
             | Event::SignalsChanged { .. }
             | Event::Logins { .. }
             | Event::Autopilot { .. }
+            | Event::MailboxConnect { .. }
             | Event::LoginInsights { .. }
             | Event::LoginOffered { .. }
             | Event::LoginOfferClosed { .. }
             | Event::BrowserSignIn { .. }
             | Event::BrowserProfiles { .. }
             | Event::Design { .. }
+            | Event::DesignSessionStarted { .. }
+            | Event::OpenTasteTuner { .. }
             | Event::ProjectDocs { .. }
             | Event::DocsFound { .. }
             | Event::CallStarted { .. }
@@ -3349,6 +3569,8 @@ impl Event {
             | Event::CallRoute { .. }
             | Event::CallSummary { .. }
             | Event::DocCopyKept { .. }
+            | Event::DesignRefs { .. }
+            | Event::DesignResults { .. }
             | Event::DesignVersions { .. }
             | Event::PlanUsage { .. }
             | Event::Desktop { .. }
@@ -3411,6 +3633,7 @@ impl Event {
                 | Event::SquadSecrets { .. }
                 | Event::SquadSecretRevealed { .. }
                 | Event::Autopilot { .. }
+                | Event::MailboxConnect { .. }
                 | Event::LoginInsights { .. }
                 | Event::LoginOffered { .. }
                 | Event::LoginOfferClosed { .. }
@@ -3425,6 +3648,23 @@ impl Event {
                 | Event::BrowserDialog { squad: None, .. }
         )
     }
+}
+
+/// Where one step of an agent's plan stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanState {
+    Pending,
+    /// The step being worked on now.
+    Active,
+    Done,
+}
+
+/// One step of an agent's plan, in the agent's words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanStep {
+    pub text: String,
+    pub state: PlanState,
 }
 
 /// How a tool use ended: whether it worked, a command's exit code, how long it
@@ -3525,6 +3765,9 @@ pub enum Entry {
     },
     Error { message: String, next: Option<String> },
     Landed { branch: String, stat: String },
+    /// The agent's plan, as a checklist ([`Event::Plan`]). A turn keeps one:
+    /// a newer plan takes the place of the one before in the same turn.
+    Plan { steps: Vec<PlanStep> },
     /// What follows is about `project` — or, with `None`, about the whole
     /// squad (see [`transcript::scope`]). Never shown itself; a screen shows
     /// one project's slice of the conversation.
@@ -3777,6 +4020,19 @@ pub struct Snapshot {
     /// Secrets members asked for that wait for the person.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secret_asks: Vec<secrets::SecretAsk>,
+    /// Command-line sign-ins members asked the person to finish on a card.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cli_sign_ins: Vec<cli_signin::CliSignIn>,
+    /// The outside MCP servers the squad connected for its members.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<mcp_servers::McpServer>,
+    /// Where each of them stands, as the engines' own tools last said.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_status: Vec<mcp_servers::McpServerStatus>,
+    /// Verification cards waiting on the person: a code a site emailed while
+    /// a member's browser waits on it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verifications: Vec<verify::Verification>,
     /// equipe's offers to keep a login the person just signed in with by
     /// hand, waiting for an answer (every squad's: logins are the machine's).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -3886,7 +4142,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
-            remaining: Vec::new(),
+            label: None, remaining: Vec::new(),
             images: Vec::new(),
             updated_at: None,
             priority: Default::default(), rank: 0,
@@ -4096,6 +4352,42 @@ mod tests {
     }
 
     #[test]
+    fn design_session_and_taste_commands_and_events_round_trip() {
+        use design::{PickReason, PickSide, QuickReaction, TasteSignal};
+        use design_session::SessionFrom;
+        let commands = [
+            Command::StartDesignSession { squad: "acme".into(), project: Some("web".into()), page: "Pricing".into(), from: SessionFrom::Ticket { ticket: 9 } },
+            Command::StartDesignSession { squad: "acme".into(), project: None, page: "Home".into(), from: SessionFrom::DesignScreen },
+            Command::TasteSignals {
+                squad: "acme".into(),
+                project: Some("web".into()),
+                signals: vec![
+                    TasteSignal::Pick { a: "/a.png".into(), b: "/b.png".into(), chose: Some(PickSide::A), reasons: vec![PickReason::Colors] },
+                    TasteSignal::React { picture: None, label: "Round 1".into(), reaction: QuickReaction::Up, reasons: vec![] },
+                ],
+            },
+        ];
+        for command in commands {
+            let json = serde_json::to_string(&command).unwrap();
+            assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), command, "{json}");
+        }
+        assert_eq!(
+            serde_json::to_value(Command::StartDesignSession { squad: "a".into(), project: None, page: "Home".into(), from: SessionFrom::Member }).unwrap(),
+            json!({ "type": "start_design_session", "squad": "a", "page": "Home", "from": { "kind": "member" } })
+        );
+        let events = [
+            Event::DesignSessionStarted { squad: "acme".into(), designer: 4, project: Some("web".into()), page: "Pricing".into(), from: SessionFrom::Pm { ticket: Some(9) } },
+            Event::OpenTasteTuner { squad: "acme".into(), project: None },
+        ];
+        for event in events {
+            let json = serde_json::to_string(&event).unwrap();
+            assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event, "{json}");
+            assert_eq!(event.squad(), Some("acme"));
+            assert_eq!(event.session(), None, "a screen's, never a conversation's");
+        }
+    }
+
+    #[test]
     fn events_round_trip_through_json() {
         // The contract must survive a socket, not just a channel.
         let events = [
@@ -4114,6 +4406,7 @@ mod tests {
             Event::Notice { undo: None, session: 2, text: "↪ You → frontend: hi".into() },
             Event::TextDelta { session: 1, text: "안녕".into() },
             Event::ToolUse { session: 1, tool: "Edit".into(), target: Some("a.rs".into()), label: None, background: false },
+            Event::Plan { session: 1, steps: vec![PlanStep { text: "Write the test".into(), state: PlanState::Active }, PlanStep { text: "Fix it".into(), state: PlanState::Pending }] },
             Event::TurnEnded {
                 session: 1,
                 outcome: TurnOutcome::Interrupted,
@@ -4175,6 +4468,7 @@ mod tests {
             pause: None,
             head: Some("1a2b3c4".into()),
             dirty: Some(2),
+            waited_for: None,
         };
         assert_eq!(serde_json::from_value::<TicketExecution>(serde_json::to_value(&execution).unwrap()).unwrap(), execution);
         // A paused run says why and when it goes on; a run that isn't says nothing of it.
@@ -4207,6 +4501,7 @@ mod tests {
                 pause: None,
                 head: None,
                 dirty: None,
+                waited_for: None,
             }))
         };
         let mut t = ticket(1);
@@ -4320,6 +4615,10 @@ mod tests {
             pm_accepts: true,
             role_models: vec![RoleModel { role: "qa".into(), engine: Engine::Codex, model: Some("gpt-6.1-sol".into()), effort: Some("high".into()) }],
             secret_asks: Vec::new(),
+            cli_sign_ins: Vec::new(),
+            mcp_servers: Vec::new(),
+            mcp_status: Vec::new(),
+            verifications: Vec::new(),
             login_offers: Vec::new(),
             engine_proposals: Vec::new(),
             desktop: DesktopState::default(),
@@ -4860,6 +5159,22 @@ mod tests {
         assert_eq!(serde_json::from_value::<Snapshot>(wire).unwrap(), rested);
         let older: Snapshot = serde_json::from_value(json!({ "squad": "acme", "sessions": [] })).unwrap();
         assert!(older.resting.is_empty());
+    }
+
+    #[test]
+    fn what_design_tickets_made_is_asked_and_told_as_json_and_belongs_to_its_squad() {
+        let ask = Command::DesignResults { squad: "acme".into() };
+        assert_eq!(serde_json::to_value(&ask).unwrap(), json!({ "type": "design_results", "squad": "acme" }));
+        assert_eq!(serde_json::from_value::<Command>(serde_json::to_value(&ask).unwrap()).unwrap(), ask);
+        let work = design::DesignWork { ticket: 2562, title: "Dashboard".into(), state: design::DesignState::Accepted, hero: Some("/p/design/directions/t2562-x/mock-b-1440.png".into()), ..Default::default() };
+        let told = Event::DesignResults { squad: "acme".into(), designs: vec![work] };
+        let wire = serde_json::to_value(&told).unwrap();
+        assert_eq!(wire["type"], "design_results");
+        assert_eq!(serde_json::from_value::<Event>(wire).unwrap(), told);
+        assert_eq!(told.squad(), Some("acme"));
+        // An older daemon's answer, with nothing in it, is no designs.
+        let bare: Event = serde_json::from_value(json!({ "type": "design_results", "squad": "acme" })).unwrap();
+        assert_eq!(bare, Event::DesignResults { squad: "acme".into(), designs: vec![] });
     }
 
     #[test]

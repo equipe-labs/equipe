@@ -317,6 +317,10 @@ impl Shell {
         if self.screen != Screen::Chat || !self.composer.text(cx).is_empty() || self.model.approvals.first().is_none() {
             return false;
         }
+        // A request behind another card isn't in sight: its letters are the composer's.
+        if self.chat.dock_front.get() != Some(super::chat::DOCK_APPROVAL) {
+            return false;
+        }
         if let Some(decision) = decision_for(key, shift) {
             self.decide(decision, cx);
             return true;

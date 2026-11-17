@@ -67,6 +67,18 @@ impl Runtime {
             q.images = visuals::resolve_all(&q.images, &cwd, &roots, visuals::PER_QUESTION).map_err(|e| format!("Question {}: {e}. {fix}", n + 1))?;
             for (m, option) in q.options.iter_mut().enumerate() {
                 option.images = visuals::resolve_all(&option.images, &cwd, &roots, visuals::PER_OPTION).map_err(|e| format!("Question {}, option {}: {e}. {fix}", n + 1, m + 1))?;
+                if !option.before.is_empty() {
+                    option.before = visuals::resolve(&option.before, &cwd, &roots).map_err(|e| format!("Question {}, option {}, its `before`: {e}. {fix}", n + 1, m + 1))?;
+                }
+                // A board's tiles: each picture found, its source and line kept.
+                let mut tiles: Vec<equipe_protocol::decide::Tile> = Vec::new();
+                for mut tile in std::mem::take(&mut option.tiles) {
+                    tile.image = visuals::resolve(&tile.image, &cwd, &roots).map_err(|e| format!("Question {}, option {}: {e}. {fix}", n + 1, m + 1))?;
+                    if !tiles.iter().any(|t| t.image == tile.image) {
+                        tiles.push(tile);
+                    }
+                }
+                option.tiles = tiles;
             }
         }
         // Their thumbnails made now, off the loop: the card shows them the moment it opens.
@@ -150,6 +162,7 @@ with a short line, or carry on with work that doesn't depend on the answer.";
             needs.extend(set.questions.iter().map(|q| one_line(&q.question)));
         }
         needs.extend(self.secret_asks(squad).iter().filter(|a| a.ticket == Some(ticket)).map(|a| one_line(&a.why)));
+        needs.extend(self.cli_sign_in_waits(squad, ticket));
         needs.retain(|n| !n.is_empty());
         needs
     }
@@ -237,6 +250,9 @@ with a short line, or carry on with work that doesn't depend on the answer.";
             for (decision, picture) in crate::taste::decisions::from_answers(&set, &answers, &crate::squad_memory::date(now_secs())) {
                 self.record_decision(squad, project.as_deref(), &decision, Some(std::path::Path::new(&picture)), crate::squad_home::PERSON);
             }
+            // What was chosen and passed over, and the tiles hearted: the style profile learns it too.
+            let records = crate::taste::tuner::from_answers(&set, &answers, &crate::squad_memory::date(now_secs()));
+            self.learn_signals(squad, project.as_deref(), &records);
         }
         if let (Some(ticket), Some(journal)) = (set.ticket, self.journal(squad)) {
             let _ = journal.ticket_event(ticket, "you", "decided", &message);
@@ -244,7 +260,9 @@ with a short line, or carry on with work that doesn't depend on the answer.";
         self.decision_settled(squad, &set, Some(&answers));
         // A kept key's first use on a project: the person's word is applied.
         self.secret_card_settled(squad, &set, Some(&answers));
-        self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id, answers: Some(answers) });
+        self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id, answers: Some(answers.clone()) });
+        // A design session the PM proposed: started, the tuner opened, or held back.
+        self.design_proposal_settled(squad, &set, Some(&answers)).await;
         // Its ticket waited for this answer: it goes back to its member with the answers.
         if self.resume_asked(squad, &set, &message).await {
             return;
@@ -274,6 +292,7 @@ with a short line, or carry on with work that doesn't depend on the answer.";
         self.decision_settled(squad, &set, None);
         self.secret_card_settled(squad, &set, None);
         self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id, answers: None });
+        self.design_proposal_settled(squad, &set, None).await;
         let message = decide::dismissed_message(&set);
         if self.resume_asked(squad, &set, &message).await {
             return;
@@ -327,7 +346,7 @@ pub(super) fn fit(set: &QuestionSet, answers: Vec<Answer>) -> Vec<Answer> {
     set.questions
         .iter()
         .map(|q| {
-            let Answer { picked, other, reaction } = answers.next().unwrap_or_default();
+            let Answer { picked, other, reaction, liked } = answers.next().unwrap_or_default();
             let mut picked: Vec<usize> = picked.into_iter().filter(|&i| i < q.options.len()).collect();
             if !q.multi_select {
                 picked.truncate(1);
@@ -344,7 +363,15 @@ pub(super) fn fit(set: &QuestionSet, answers: Vec<Answer>) -> Vec<Answer> {
                 Some(Reaction::Again) => picked.clear(),
                 None => {}
             }
-            Answer { picked, other, reaction }
+            // Tiles liked: only ones the question has, each once, as many as a family may show times the families.
+            let mut kept: Vec<equipe_protocol::decide::Like> = Vec::new();
+            for like in liked {
+                let there = q.options.get(like.option).is_some_and(|c| like.tile < c.board_tiles().len());
+                if there && !kept.contains(&like) && kept.len() < equipe_protocol::decide::TILES * equipe_protocol::decide::OPTIONS.end() {
+                    kept.push(like);
+                }
+            }
+            Answer { picked, other, reaction, liked: kept }
         })
         .collect()
 }
@@ -396,7 +423,7 @@ mod tests {
         stray.picked = vec![2];
         let fitted = fit(
             &set,
-            vec![stray, Answer::mix(1, 1, "type"), Answer::mix(0, 2, "type"), Answer::mix(0, 1, "shape"), Answer { picked: vec![1], other: Some(" too cold ".into()), reaction: Some(Reaction::Again) }],
+            vec![stray, Answer::mix(1, 1, "type"), Answer::mix(0, 2, "type"), Answer::mix(0, 1, "shape"), Answer { picked: vec![1], other: Some(" too cold ".into()), reaction: Some(Reaction::Again), liked: Vec::new() }],
         );
         assert_eq!(fitted[0], Answer::mix(0, 1, "type"), "its base is what is picked");
         assert_eq!(fitted[1], Answer::pick(1), "not with itself");

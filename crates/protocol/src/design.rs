@@ -407,7 +407,8 @@ pub struct Picture {
     /// When it was taken (its file's time), in Unix seconds.
     #[serde(default)]
     pub taken: u64,
-    /// What it holds, as a short hex digest of its bytes — worked out while
+    /// What it holds, as a short hex digest of its bytes (the start of git's
+    /// blob name for them, told by git when it has them as checked out) — worked out while
     /// a draft of its system is in review, so a screen can tell the pictures
     /// the draft changed from the copies it only kept. `None`: not worked out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -497,6 +498,256 @@ pub struct Taste {
     /// Newest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub decisions: Vec<Decision>,
+    /// The short style profile at the top of the notes file, when it has one
+    /// (a project's `design/taste.md`): what every design reads first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<StyleProfile>,
+    /// The taste tuner's pictures (`design/tuner/set.json`), when the
+    /// designer prepared a set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tuner: Vec<TunerItem>,
+    /// The tuner pairs already picked or skipped, each as `(a, b)` pictures,
+    /// so the next pairs are new ones.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tuned: Vec<(String, String)>,
+}
+
+/// The person's style in short, at the top of a project's `design/taste.md`
+/// (`## Style profile`): the designer's words for how dense, what tone, what
+/// type and how colour is used, the examples they liked and disliked — and
+/// where they lean on each [`TasteAxis`], worked out by equipe from the taste
+/// tuner's picks and the person's reactions. Read-only on screens; changed by
+/// asking the designer, or by more picks.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StyleProfile {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub density: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tone: String,
+    #[serde(default, rename = "type", skip_serializing_if = "String::is_empty")]
+    pub typography: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub color: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub liked: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disliked: Vec<String>,
+    /// Where the person leans on each axis the picks touched, in axis order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub leans: Vec<Lean>,
+    /// How many tuner picks it is worked out from.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub picks: u32,
+    /// When it was last written, `YYYY-MM-DD`, when the file says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated: Option<String>,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+impl StyleProfile {
+    /// Nothing in it yet: a template's empty lines.
+    pub fn is_empty(&self) -> bool {
+        self.filled() == 0 && self.leans.is_empty()
+    }
+
+    /// How many of its six worded parts say something: under three is thin.
+    pub fn filled(&self) -> usize {
+        [&self.density, &self.tone, &self.typography, &self.color].iter().filter(|f| !f.trim().is_empty()).count() + usize::from(!self.liked.is_empty()) + usize::from(!self.disliked.is_empty())
+    }
+
+    /// Too little to design by: fewer than three parts said and fewer than
+    /// [`TUNER_FIRST`] picks.
+    pub fn is_thin(&self) -> bool {
+        self.filled() < 3 && self.picks < TUNER_FIRST
+    }
+}
+
+/// The picks that give a first profile; more refine it.
+pub const TUNER_FIRST: u32 = 20;
+
+/// An axis of visual style the taste tuner varies, one or two at a time.
+/// Each runs from its low end to its high end (`ends`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TasteAxis {
+    /// Airy to dense.
+    Density,
+    /// Light and soft to dark and high-contrast.
+    Contrast,
+    /// Restrained, neutral to colourful.
+    Color,
+    /// Small, even type to large, dramatic type.
+    TypeScale,
+    /// Sharp and plain to rounded and ornamented.
+    Ornament,
+    /// Strict grid to free, editorial layout.
+    Layout,
+}
+
+impl TasteAxis {
+    pub const ALL: [TasteAxis; 6] = [TasteAxis::Density, TasteAxis::Contrast, TasteAxis::Color, TasteAxis::TypeScale, TasteAxis::Ornament, TasteAxis::Layout];
+
+    /// Its name in files: `density`, `type_scale`.
+    pub fn key(self) -> &'static str {
+        match self {
+            TasteAxis::Density => "density",
+            TasteAxis::Contrast => "contrast",
+            TasteAxis::Color => "color",
+            TasteAxis::TypeScale => "type_scale",
+            TasteAxis::Ornament => "ornament",
+            TasteAxis::Layout => "layout",
+        }
+    }
+
+    pub fn parse(key: &str) -> Option<TasteAxis> {
+        let key = key.trim().to_ascii_lowercase().replace([' ', '-'], "_");
+        TasteAxis::ALL.into_iter().find(|a| a.key() == key || (key == "colour" && *a == TasteAxis::Color) || (key == "type" && *a == TasteAxis::TypeScale))
+    }
+
+    /// Its low and high ends, as files write them.
+    pub fn ends(self) -> (&'static str, &'static str) {
+        match self {
+            TasteAxis::Density => ("airy", "dense"),
+            TasteAxis::Contrast => ("light", "dark"),
+            TasteAxis::Color => ("restrained", "colorful"),
+            TasteAxis::TypeScale => ("small type", "large type"),
+            TasteAxis::Ornament => ("plain", "ornate"),
+            TasteAxis::Layout => ("grid", "freeform"),
+        }
+    }
+}
+
+/// Where the person leans on one axis: `lean` from -100 (its low end) to 100
+/// (its high end), and how sure equipe is of it, 0 to 100.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lean {
+    pub axis: TasteAxis,
+    pub lean: i8,
+    pub confidence: u8,
+}
+
+/// One picture of the taste tuner's set (`design/tuner/set.json`, prepared
+/// by the designer): a real product screen, where it came from, and where it
+/// sits on each axis, -100 to 100 (an axis left out sits at 0).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TunerItem {
+    /// Where it is on the daemon's machine, as `read_image` asks for it.
+    pub picture: String,
+    /// "Product — Pricing".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub axes: Vec<(TasteAxis, i8)>,
+}
+
+impl TunerItem {
+    /// Where it sits on `axis`.
+    pub fn at(&self, axis: TasteAxis) -> i8 {
+        self.axes.iter().find(|(a, _)| *a == axis).map_or(0, |(_, v)| *v)
+    }
+}
+
+/// Which of a pair the person liked more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PickSide {
+    A,
+    B,
+}
+
+/// A one-tap reason given with a pick: what put them off the other one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PickReason {
+    TooDense,
+    TooPlain,
+    Colors,
+    Type,
+    Layout,
+    /// "Doesn't feel like us": off the brand, whatever the part.
+    NotUs,
+}
+
+impl PickReason {
+    pub const ALL: [PickReason; 6] = [PickReason::TooDense, PickReason::TooPlain, PickReason::Colors, PickReason::Type, PickReason::Layout, PickReason::NotUs];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            PickReason::TooDense => "too_dense",
+            PickReason::TooPlain => "too_plain",
+            PickReason::Colors => "colors",
+            PickReason::Type => "type",
+            PickReason::Layout => "layout",
+            PickReason::NotUs => "not_us",
+        }
+    }
+
+    /// Its words in files, the same in every language: what the designer reads.
+    pub fn words(self) -> &'static str {
+        match self {
+            PickReason::TooDense => "too dense",
+            PickReason::TooPlain => "too plain",
+            PickReason::Colors => "the colors",
+            PickReason::Type => "the type",
+            PickReason::Layout => "the layout",
+            PickReason::NotUs => "doesn't feel like us",
+        }
+    }
+}
+
+/// A quick reaction to a render or a reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuickReaction {
+    Up,
+    Down,
+    MoreLikeThis,
+    LessLikeThis,
+}
+
+impl QuickReaction {
+    /// Whether it says the person likes it.
+    pub fn liked(self) -> bool {
+        matches!(self, QuickReaction::Up | QuickReaction::MoreLikeThis)
+    }
+}
+
+/// Something the person did that tells their taste, sent as it happens
+/// ([`crate::Command::TasteSignals`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TasteSignal {
+    /// A taste tuner pick between two of its pictures (`chose` none: skipped).
+    Pick {
+        a: String,
+        b: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chose: Option<PickSide>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        reasons: Vec<PickReason>,
+    },
+    /// A quick reaction in a design session to a render or reference:
+    /// `label` is what it is, as the person saw it ("Round 3 hero").
+    React {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        picture: Option<String>,
+        label: String,
+        reaction: QuickReaction,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        reasons: Vec<PickReason>,
+    },
+    /// The person turned a design down ("another round" on a decision card,
+    /// a designer's work sent back) with one-tap reasons: `what` it was.
+    Rejected {
+        what: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        picture: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        reasons: Vec<PickReason>,
+    },
 }
 
 impl Taste {
@@ -640,6 +891,263 @@ pub enum TasteChange {
     Confirm { text: String },
 }
 
+// ── references ──
+
+/// One reference entry of a pattern's `notes.md` (`## <product> — <screen>`
+/// with its Source / Take / Leave / Fit lines), parsed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefNote {
+    /// The entry's heading, as written.
+    pub title: String,
+    /// The product it is of, and its screen, when the heading has both
+    /// (`Product — Screen`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub product: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub screen: String,
+    /// Where it was seen: an `http(s)` address only, never another scheme.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// The address's host, without `www.`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// Which of the squad's sources it came from (`Source: <URL> (<source>)`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// When it was taken (`YYYY-MM-DD`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    /// The picture the entry names: its file name (a picture in the pattern's
+    /// folder, or one an `Image:` line links).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub take: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub leave: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fit: String,
+}
+
+/// A picture in a pattern's folder. Its `path` is the one `read_image` gives.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefPicture {
+    pub path: String,
+    /// Its file name.
+    pub name: String,
+    pub size: u64,
+    /// Unix seconds.
+    #[serde(default)]
+    pub modified: u64,
+    /// The entry of `notes.md` (its place among `notes`) that links this
+    /// picture with an `Image:` line, when one does: its card shows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<u32>,
+}
+
+/// A place that keeps references: the project's own `design/references/`
+/// (`ticket` none), or a ticket's worktree where they are being made.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefPlace {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<u64>,
+    /// The ticket's title.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    /// The ticket is in review, not at work.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub review: bool,
+    /// How many patterns it holds.
+    #[serde(default)]
+    pub patterns: u32,
+    /// The latest references work in it, Unix seconds.
+    #[serde(default)]
+    pub updated: u64,
+}
+
+/// One pattern (`design/references/<name>/`): its pictures and notes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefPattern {
+    /// The folder's name (`kpi-tile`).
+    pub name: String,
+    /// Read from the squad's folder, because the project has none of this name.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shared: bool,
+    /// The entries of `notes.md`, in its order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<RefNote>,
+    /// What the examples agree on: the closing lines of `notes.md`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub agree: String,
+    /// `notes.md` as it is (cut at its limit).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub raw: String,
+    /// The first pictures, by name; `pictures_total` says how many there are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pictures: Vec<RefPicture>,
+    #[serde(default)]
+    pub pictures_total: u32,
+    /// The latest change among its notes and pictures, Unix seconds.
+    #[serde(default)]
+    pub updated: u64,
+}
+
+/// A line of `design/references/sources.md`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefSource {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub good_for: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fits: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub access: String,
+}
+
+// ── what a design ticket made ──
+
+/// Where a design ticket stands, in the person's words: at work, waiting on
+/// them, handed in, accepted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesignState {
+    #[default]
+    Working,
+    WaitingOnYou,
+    HandedIn,
+    Accepted,
+}
+
+/// One render of a design ticket (`design/directions/<ticket>/…`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignShot {
+    /// Its path on the daemon's machine, as `read_image` is asked for it.
+    pub path: String,
+    /// Its file's name.
+    pub name: String,
+    /// The width it was drawn at, from its name (`mock-a-1440.png`); 0 when unknown.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub width: u32,
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
+}
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
+}
+
+/// One direction a designer drew: its renders, desktop and mobile.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignDirection {
+    /// What its files call it (`a`, `calm-ledger`); empty for a single, unnamed design.
+    pub key: String,
+    /// The decision record names it as the one chosen.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chosen: bool,
+    /// Its renders, the widest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shots: Vec<DesignShot>,
+}
+
+/// What `CHANGES.md` says of one direction: before, after, why — as written.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignChange {
+    /// The direction it is about (its `key`); empty for the notes that are for all.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub direction: String,
+    /// The heading as written.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    /// The section's text (Markdown, cut at a limit).
+    pub text: String,
+}
+
+/// A page to look at live: a preview deployment.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignLink {
+    /// An https address that passed the one check every card's link does.
+    pub url: String,
+    /// The direction it shows (its `key`), when the text said or the path does.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub direction: String,
+    /// Where it was found: `comment`, `hand-in` or `changes`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub from: String,
+}
+
+/// The decision record (`design/decisions/<date>-<question>.md`) about the work.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignDecision {
+    /// The file's name.
+    pub file: String,
+    /// Its first heading, else its name.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    /// What it says was chosen (`Chose:`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub chose: String,
+    /// The record as written (cut at a limit).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+}
+
+/// What a design ticket made, for the Designs tab: one card.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignWork {
+    pub ticket: TicketId,
+    pub title: String,
+    #[serde(default)]
+    pub state: DesignState,
+    /// The project it is in, by name; `None`: the squad's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// When the ticket last changed, Unix seconds.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub updated: u64,
+    /// The picture that stands for the work: the one the hand-in named, else
+    /// the chosen direction's, else the first mock's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hero: Option<String>,
+    /// The screen as it was: one render per width.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub before: Vec<DesignShot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub directions: Vec<DesignDirection>,
+    /// Other pictures the hand-in shows.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pictures: Vec<DesignShot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<DesignChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<DesignLink>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DesignDecision>,
+    /// The hand-in's words, cut.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+}
+
+impl DesignWork {
+    /// The pictures to show the person first, each with its word (`after`,
+    /// `before`): the hero, then the screen as it was at the hero's width.
+    pub fn headline(&self) -> Vec<(&'static str, &str)> {
+        let mut out: Vec<(&'static str, &str)> = Vec::new();
+        if let Some(hero) = &self.hero {
+            out.push(("after", hero));
+        }
+        let width = self.directions.iter().flat_map(|d| &d.shots).find(|s| Some(&s.path) == self.hero.as_ref()).map(|s| s.width);
+        let before = width.and_then(|w| self.before.iter().find(|b| b.width == w)).or_else(|| self.before.first());
+        if let Some(before) = before {
+            out.push(("before", &before.path));
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -734,5 +1242,105 @@ mod tests {
         assert_eq!(serde_json::from_str::<Taste>(&serde_json::to_string(&web).unwrap()).unwrap(), web);
         let change = TasteChange::Edit { was: "a".into(), text: "b".into() };
         assert_eq!(serde_json::to_value(&change).unwrap(), serde_json::json!({ "do": "edit", "was": "a", "text": "b" }));
+    }
+
+    #[test]
+    fn a_reference_pattern_travels_without_what_it_lacks() {
+        let bare: RefPattern = serde_json::from_str(r#"{"name":"kpi-tile"}"#).unwrap();
+        assert_eq!(bare, RefPattern { name: "kpi-tile".into(), ..Default::default() });
+        assert_eq!(serde_json::to_string(&bare).unwrap(), r#"{"name":"kpi-tile","pictures_total":0,"updated":0}"#);
+        let full = RefPattern {
+            name: "데이터 표".into(),
+            shared: true,
+            notes: vec![RefNote {
+                title: "Acme — Orders".into(),
+                product: "Acme".into(),
+                screen: "Orders".into(),
+                url: Some("https://www.example.com/a".into()),
+                host: Some("example.com".into()),
+                source: Some("Gallery".into()),
+                date: Some("2026-11-01".into()),
+                picture: Some("acme-1440.png".into()),
+                take: "36px rows".into(),
+                leave: "the logo".into(),
+                fit: "high".into(),
+            }],
+            agree: "Dense rows.".into(),
+            raw: "## Acme — Orders\n".into(),
+            pictures: vec![RefPicture { path: "/d/references/x/acme-1440.png".into(), name: "acme-1440.png".into(), size: 9, modified: 3, note: Some(0) }],
+            pictures_total: 5,
+            updated: 4,
+        };
+        assert_eq!(serde_json::from_str::<RefPattern>(&serde_json::to_string(&full).unwrap()).unwrap(), full);
+        let source: RefSource = serde_json::from_str(r#"{"name":"Gallery"}"#).unwrap();
+        assert!(source.url.is_none() && source.good_for.is_empty());
+    }
+
+    #[test]
+    fn a_design_card_travels_without_what_it_lacks_and_round_trips_whole() {
+        let bare: DesignWork = serde_json::from_str(r#"{"ticket":7,"title":"Dashboard"}"#).unwrap();
+        assert_eq!(bare, DesignWork { ticket: 7, title: "Dashboard".into(), ..Default::default() });
+        assert_eq!(serde_json::to_string(&bare).unwrap(), r#"{"ticket":7,"title":"Dashboard","state":"working"}"#);
+        let shot = |name: &str, width: u32| DesignShot { path: format!("/w/design/directions/t7-x/{name}"), name: name.into(), width };
+        let full = DesignWork {
+            ticket: 7,
+            title: "Dashboard".into(),
+            state: DesignState::HandedIn,
+            project: Some("web".into()),
+            updated: 1_700_000_000,
+            hero: Some(shot("mock-b-1440.png", 1440).path),
+            before: vec![shot("before-1440.png", 1440), shot("before-390.png", 390)],
+            directions: vec![DesignDirection { key: "b".into(), chosen: true, shots: vec![shot("mock-b-1440.png", 1440)] }],
+            pictures: vec![shot("extra.png", 0)],
+            changes: vec![DesignChange { direction: "b".into(), title: "Direction B".into(), text: "- Rows: 56px -> 40px".into() }],
+            links: vec![DesignLink { url: "https://x-git-b.vercel.app/b".into(), direction: "b".into(), from: "comment".into() }],
+            decision: Some(DesignDecision { file: "2026-11-14-x.md".into(), title: "X".into(), chose: "B".into(), text: "Chose: B".into() }),
+            summary: "Three directions.".into(),
+        };
+        assert_eq!(serde_json::from_str::<DesignWork>(&serde_json::to_string(&full).unwrap()).unwrap(), full);
+        // The pictures to show first: the hero, then the screen as it was at the hero's width.
+        assert_eq!(full.headline(), vec![("after", "/w/design/directions/t7-x/mock-b-1440.png"), ("before", "/w/design/directions/t7-x/before-1440.png")]);
+        assert!(bare.headline().is_empty());
+    }
+
+    #[test]
+    fn a_style_profile_and_the_tuner_travel_and_come_back_as_they_were() {
+        let profile = StyleProfile {
+            density: "airy".into(),
+            tone: "calm".into(),
+            typography: "big serif heads".into(),
+            liked: vec!["Pricing A".into()],
+            leans: vec![Lean { axis: TasteAxis::Density, lean: -60, confidence: 70 }],
+            picks: 24,
+            updated: Some("2026-11-16".into()),
+            ..Default::default()
+        };
+        let wire = serde_json::to_value(&profile).unwrap();
+        assert_eq!(wire["type"], "big serif heads", "type, as files say it");
+        assert_eq!(wire["leans"][0], serde_json::json!({ "axis": "density", "lean": -60, "confidence": 70 }));
+        assert_eq!(serde_json::from_value::<StyleProfile>(wire).unwrap(), profile);
+        assert_eq!(profile.filled(), 4);
+        assert!(!profile.is_thin(), "24 picks");
+        assert!(StyleProfile { picks: 3, ..StyleProfile::default() }.is_thin());
+        assert!(StyleProfile::default().is_empty());
+        let item = TunerItem { picture: "/w/design/references/a.png".into(), source: "A".into(), axes: vec![(TasteAxis::Color, 80)] };
+        assert_eq!(item.at(TasteAxis::Color), 80);
+        assert_eq!(item.at(TasteAxis::Layout), 0);
+        let taste = Taste { project: Some("web".into()), profile: Some(profile), tuner: vec![item], tuned: vec![("a".into(), "b".into())], ..Taste::default() };
+        assert_eq!(serde_json::from_str::<Taste>(&serde_json::to_string(&taste).unwrap()).unwrap(), taste);
+        let old: Taste = serde_json::from_str(r#"{"project":"web"}"#).unwrap();
+        assert!(old.profile.is_none() && old.tuner.is_empty(), "an older daemon's taste reads");
+        for signal in [
+            TasteSignal::Pick { a: "a".into(), b: "b".into(), chose: Some(PickSide::B), reasons: vec![PickReason::TooDense] },
+            TasteSignal::Pick { a: "a".into(), b: "b".into(), chose: None, reasons: vec![] },
+            TasteSignal::React { picture: Some("/r.png".into()), label: "Round 2".into(), reaction: QuickReaction::LessLikeThis, reasons: vec![PickReason::NotUs] },
+            TasteSignal::Rejected { what: "Hero options".into(), picture: None, reasons: vec![PickReason::Type] },
+        ] {
+            assert_eq!(serde_json::from_str::<TasteSignal>(&serde_json::to_string(&signal).unwrap()).unwrap(), signal);
+        }
+        assert_eq!(TasteAxis::parse("Type scale"), Some(TasteAxis::TypeScale));
+        assert_eq!(TasteAxis::parse("colour"), Some(TasteAxis::Color));
+        assert!(TasteAxis::ALL.iter().all(|a| TasteAxis::parse(a.key()) == Some(*a)));
+        assert!(QuickReaction::MoreLikeThis.liked() && !QuickReaction::Down.liked());
     }
 }

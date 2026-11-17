@@ -68,7 +68,9 @@ const MOVE_EVERY: Duration = Duration::from_millis(16);
 /// the hint for a wheel over a page they don't drive.
 const TOAST_FOR: Duration = Duration::from_secs(4);
 /// How tall the card over a sign-in view is, in the panel's points.
+/// The sign-in view's card before it was first measured, and its least height.
 const VIEW_HEADER: f32 = 104.;
+const VIEW_HEADER_MIN: f32 = 56.;
 const HINT_FOR: Duration = Duration::from_millis(1800);
 
 /// The widest the panel may be in a window this wide: the conversation and
@@ -172,6 +174,8 @@ pub struct BrowserPanel {
     view: Option<SignInView>,
     view_lane: Option<String>,
     view_ask: Option<(String, String)>,
+    /// The window drew the panel in its latest frame ([`Self::set_drawn`]).
+    drawn: bool,
     dialogs: Vec<Dialog>,
     selected: Option<(String, u64)>,
     follow: bool,
@@ -205,6 +209,8 @@ pub struct BrowserPanel {
     placed: Placed,
     /// The viewport's box, as drawn.
     viewport: Rc<RefCell<Option<Bounds<Pixels>>>>,
+    /// The sign-in view's card as last drawn, in points: the web view goes below it.
+    view_head: Rc<std::cell::Cell<f32>>,
     /// The page's size asked for, once the box holds still.
     settle: Settle,
     /// When the page on screen was first asked for: its frames late past
@@ -316,6 +322,7 @@ impl BrowserPanel {
             view: None,
             view_lane: None,
             view_ask: None,
+            drawn: false,
             dialogs: Vec::new(),
             selected: None,
             follow: true,
@@ -336,6 +343,7 @@ impl BrowserPanel {
             previous: None,
             placed: Rc::default(),
             viewport: Rc::default(),
+            view_head: Rc::new(std::cell::Cell::new(VIEW_HEADER)),
             settle: Settle::default(),
             asked_at: None,
             _wake: None,
@@ -553,6 +561,12 @@ impl BrowserPanel {
                         self.view = None;
                         self.view_lane = None;
                         self.view_ask = Some((lane.clone(), view.url.clone()));
+                        // Its card is what the panel opens on (the view shows only under it):
+                        // not a page of another lane picked before.
+                        if self.selected.as_ref().is_some_and(|(l, _)| !self.windows.contains(l)) {
+                            self.selected = None;
+                            self.follow = false;
+                        }
                     }
                 } else {
                     self.windows.remove(lane);
@@ -668,6 +682,10 @@ impl BrowserPanel {
             self.drop_pictures(window);
             if self.focus.is_focused(window) {
                 window.blur(cx);
+            }
+            // Shut, the panel isn't drawn again to hide it: the sign-in view goes now.
+            if let Some(view) = self.view.as_mut() {
+                view.set_visible(false);
             }
         }
         self.rewatch(window, cx);
@@ -914,6 +932,13 @@ impl BrowserPanel {
     fn mouse_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
         let Some((x, y)) = self.to_page(e.position) else { return };
+        // A check that refuses automated browsers, not reached for yet: a press on it
+        // asks for the person's own window instead of clicking through the panel,
+        // where the check would refuse it (`real_window_button`).
+        if matches!(self.mode(), Some(Mode::Waiting { check: HumanCheck::Challenge | HumanCheck::Captcha, touched: false })) {
+            self.take(window, cx);
+            return;
+        }
         self.hold();
         self.last_click = Some(e.position);
         self.move_before_press((x, y), keys::modifier_bits(&e.modifiers));
@@ -1195,42 +1220,57 @@ impl BrowserPanel {
         self.command(Command::BrowserPopOut { page, bounds: Some(bounds) }, cx);
     }
 
-    /// A "verify you are human" check that keeps coming back in the panel: the
-    /// member's real Chrome window, on the daemon's Mac — brought up and in
-    /// front, for the person at that Mac to do it there with their own mouse
-    /// (docs/BROWSER-CHECKS.md). The same browser and sign-ins: nothing moves
-    /// between browsers.
-    fn open_chrome_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.endpoint.as_ref().is_some_and(Endpoint::is_remote) {
-            // This window's place means nothing on the other Mac: Chrome keeps its own.
-            let Some((_, page)) = self.selected.clone() else { return };
-            self.command(Command::BrowserPopOut { page, bounds: None }, cx);
-        } else {
-            self.pop_out(window, cx);
-        }
-    }
-
     /// The Mac the member's Chrome runs on, when it isn't this one.
     fn chrome_elsewhere(&self) -> Option<String> {
         self.endpoint.as_ref().filter(|e| e.is_remote()).map(Endpoint::label)
     }
 
-    /// The banner's way out to the real Chrome window, for a check a person
-    /// answers by clicking (not a sign-in or a code, which the panel takes as well).
-    fn chrome_window_button(&self, check: HumanCheck, id: &'static str, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// The way through a check a person answers by clicking (Cloudflare,
+    /// Turnstile, reCAPTCHA, hCaptcha): such a check refuses a browser that
+    /// automation drives, and the panel is one — it shows the member's
+    /// automated Chrome and hands it the person's clicks over DevTools — so
+    /// even their own click here can fail, over and over. Taking it asks the
+    /// daemon, which opens the page in a normal Chrome window on its Mac with
+    /// nothing attached, the automated browser stepping aside meanwhile
+    /// (docs/BROWSER-CHECKS.md); where it can't, the panel takes it as before.
+    fn real_window_button(&self, check: HumanCheck, id: &'static str, kind: Kind, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !matches!(check, HumanCheck::Challenge | HumanCheck::Captcha) {
             return None;
         }
         let p = self.palette;
         let (label, tip) = match self.chrome_elsewhere() {
-            Some(host) => (t!("browser.check_window_remote", host = host), t!("browser.check_window_remote_tip", host = host)),
-            None => (t!("browser.check_window").to_owned(), t!("browser.check_window_tip").to_owned()),
+            Some(host) => (t!("browser.check_real_window_remote", host = host), t!("browser.check_real_window_remote_tip", host = host)),
+            None => (t!("browser.check_real_window").to_owned(), t!("browser.check_real_window_tip").to_owned()),
         };
         Some(
-            ui::button(p, id, Kind::Ghost, label).field()
+            ui::button(p, id, kind, label).field()
                 .icon(Icon::External)
                 .tip(tip, None)
-                .on_click(cx.listener(|this, _, window, cx| this.open_chrome_window(window, cx)))
+                .on_click(cx.listener(|this, _, window, cx| this.take(window, cx)))
+                .into_any_element(),
+        )
+    }
+
+    /// Screen Sharing to the daemon's Mac, for a window that opened there: the
+    /// person's own Screen Sharing, where they sign in to that Mac themselves
+    /// (`crate::unlock`). Nothing of either screen is captured.
+    fn screen_sharing_button(&self, id: &'static str, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let Some(Endpoint::Ssh(host)) = self.endpoint.clone() else { return None };
+        let p = self.palette;
+        let label = host.spec();
+        Some(
+            ui::button(p, id, Kind::Ghost, t!("browser.screen_sharing"))
+                .icon(Icon::External)
+                .tip(t!("browser.screen_sharing_tip", host = label), None)
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    let host = host.clone();
+                    // Where ssh connects for it (an alias names an address): looked up off the UI thread.
+                    cx.spawn(async move |_, cx| {
+                        let address = cx.background_executor().spawn(async move { crate::unlock::address(&host) }).await;
+                        let _ = cx.update(|cx| cx.open_url(&crate::unlock::vnc_url(&address)));
+                    })
+                    .detach();
+                }))
                 .into_any_element(),
         )
     }
@@ -1282,19 +1322,23 @@ impl BrowserPanel {
     fn view_at(&self, window: &Window) -> Option<(f32, f32, f32, f32)> {
         let b = (*self.viewport.borrow())?;
         let zoom = window.content_zoom();
-        let head = VIEW_HEADER * zoom;
+        let head = self.view_head.get().max(VIEW_HEADER_MIN) * zoom;
         let (x, y, w, h) = (f32::from(b.origin.x) * zoom, f32::from(b.origin.y) * zoom, f32::from(b.size.width) * zoom, f32::from(b.size.height) * zoom);
         Some((x, y + head, w, (h - head).max(1.)))
     }
 
     /// Open the asked-for sign-in view once the panel is up and has a box, and
-    /// keep it over the viewport — hidden while the panel is shut.
+    /// keep it over the viewport under its card — hidden whenever it shouldn't
+    /// show ([`browse::view_shown`]): the panel shut, out of sight or not drawn,
+    /// its box not measured where it is now, or another card on screen.
     fn sync_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(at) = self.view_at(window) else { return };
-        if self.open
-            && self.view.is_none()
-            && let Some((lane, url)) = self.view_ask.clone()
-        {
+        let at = self.view_at(window);
+        let card = browse::card_lane(self.selected.as_ref().map(|(l, _)| l.as_str()), &self.windows).map(str::to_owned);
+        let (open, in_sight, drawn, boxed) = (self.open, self.shown, self.drawn, at.is_some());
+        let shows = |view_lane: Option<&str>| browse::view_shown(&browse::ViewPlace { open, in_sight, drawn, boxed, view_lane, card_lane: card.as_deref() });
+        let ask = self.view_ask.clone().filter(|(lane, _)| self.view.is_none() && shows(Some(lane.as_str())));
+        let shown = shows(self.view_lane.as_deref());
+        if let (Some((lane, url)), Some(at)) = (ask, at) {
             self.view_ask = None;
             match SignInView::open(window, &url, at) {
                 Ok(view) => {
@@ -1304,11 +1348,32 @@ impl BrowserPanel {
                 // No view here: the daemon gives the person its own Chrome window instead.
                 Err(_) => self.command(Command::BrowserCookies { lane, hosts: Vec::new(), cookies: Vec::new(), failed: true }, cx),
             }
+            return;
         }
-        let shown = self.open;
         if let Some(view) = self.view.as_mut() {
-            view.set_bounds(at);
+            // Placed first, then shown: never a frame at an old place.
+            if let Some(at) = at.filter(|_| shown) {
+                view.set_bounds(at);
+            }
             view.set_visible(shown);
+        }
+    }
+
+    /// The window drew the panel this frame, or didn't (shut, another screen,
+    /// a document in its place). Undrawn, the sign-in view hides at once —
+    /// nothing of the panel's own drawing would — and the box measured for it
+    /// is forgotten: the next is measured where the panel is drawn again,
+    /// never taken from an earlier layout.
+    pub fn set_drawn(&mut self, drawn: bool) {
+        if self.drawn == drawn {
+            return;
+        }
+        self.drawn = drawn;
+        if !drawn {
+            *self.viewport.borrow_mut() = None;
+            if let Some(view) = self.view.as_mut() {
+                view.set_visible(false);
+            }
         }
     }
 
@@ -1317,20 +1382,19 @@ impl BrowserPanel {
     /// nothing to stream: who, what it asked, where the window is (on this
     /// Mac, or the daemon's — say so plainly), and Done.
     fn window_card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let selected = self.selected.as_ref().map(|(l, _)| l.as_str());
-        let lane = match selected {
-            Some(l) if self.windows.contains(l) => l.to_owned(),
-            Some(_) => return None,
-            None => self.windows.iter().next()?.clone(),
-        };
+        let lane = browse::card_lane(self.selected.as_ref().map(|(l, _)| l.as_str()), &self.windows)?.to_owned();
         let p = self.palette;
         let name = self.member_name(&lane);
         let hue = self.lane_color(&lane);
         let asked = self.hands.get(&lane).and_then(|h| h.asked.clone()).unwrap_or_default();
         let elsewhere = self.chrome_elsewhere();
-        let note = match &elsewhere {
-            Some(host) => t!("browser.window_note_remote", host = host),
-            None => t!("browser.window_note_local").to_owned(),
+        // A human check its page stopped at, not a sign-in its member asked for: said why it is here.
+        let check = self.hands.get(&lane).and_then(|h| h.check).filter(|c| matches!(c, HumanCheck::Challenge | HumanCheck::Captcha));
+        let note = match (&elsewhere, check.is_some()) {
+            (Some(host), true) => t!("browser.window_check_note_remote", host = host),
+            (None, true) => t!("browser.window_check_note_local").to_owned(),
+            (Some(host), false) => t!("browser.window_note_remote", host = host),
+            (None, false) => t!("browser.window_note_local").to_owned(),
         };
         let bring = match &elsewhere {
             Some(host) => t!("browser.open_on_host", host = host),
@@ -1350,7 +1414,6 @@ impl BrowserPanel {
                     .top_0()
                     .left_0()
                     .right_0()
-                    .h(px(VIEW_HEADER))
                     .px_3()
                     .py_2()
                     .gap_1()
@@ -1365,8 +1428,26 @@ impl BrowserPanel {
                             .child(div().flex_1().min_w_0().truncate().text_size(px(UI)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("browser.view_title", name = name)))
                             .child(div().flex_none().child(done)),
                     )
-                    .when(!asked.is_empty(), |c| c.child(div().text_size(px(13.)).line_height(px(18.)).text_color(p.text).line_clamp(2).child(asked.clone())))
-                    .child(div().text_size(px(12.)).line_height(px(16.)).text_color(p.muted).line_clamp(2).child(t!("browser.view_note", name = name)))
+                    // As tall as its words: what was asked whole (up to four lines), then the note.
+                    .when(!asked.is_empty(), |c| c.child(div().text_size(px(13.)).line_height(px(18.)).text_color(p.text).line_clamp(4).child(asked.clone())))
+                    .child(div().text_size(px(12.)).line_height(px(16.)).text_color(p.muted).line_clamp(3).child(t!("browser.view_note", name = name)))
+                    // Its height, measured: the web view below moves to fit it.
+                    .child({
+                        let head = self.view_head.clone();
+                        div().absolute().inset_0().child(
+                            canvas(
+                                |_, _, _| {},
+                                move |bounds, _, window, _| {
+                                    let h = f32::from(bounds.size.height);
+                                    if (head.get() - h).abs() > 0.5 {
+                                        head.set(h);
+                                        window.refresh();
+                                    }
+                                },
+                            )
+                            .size_full(),
+                        )
+                    })
                     .into_any_element(),
             );
         }
@@ -1394,20 +1475,26 @@ impl BrowserPanel {
                         .child(div().size(px(8.)).flex_none().rounded_full().bg(hue))
                         .child(div().text_size(px(UI)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("browser.window_title", name = name))),
                 )
-                .when(!asked.is_empty(), |c| c.child(div().max_w(px(380.)).text_size(px(13.)).line_height(px(19.)).text_color(p.text).text_center().child(asked.clone())))
+                // (A check's own words come in the note: the daemon's are for screens that don't know checks.)
+                .when(!asked.is_empty() && check.is_none(), |c| c.child(div().max_w(px(380.)).text_size(px(13.)).line_height(px(19.)).text_color(p.text).text_center().child(asked.clone())))
                 .child(div().max_w(px(380.)).text_size(px(SMALL)).line_height(px(20.)).text_color(p.text2).text_center().child(note))
+                .when(check.is_some(), |c| c.child(div().max_w(px(380.)).text_size(px(12.)).line_height(px(18.)).text_color(p.muted).text_center().child(t!("browser.window_check_why"))))
                 .child(div().max_w(px(380.)).text_size(px(12.)).line_height(px(18.)).text_color(p.muted).text_center().child(t!("browser.window_hidden")))
-                .child(h_flex().pt_2().gap_2().child(done).child(raise))
+                .child(h_flex().pt_2().gap_2().flex_wrap().justify_center().child(done).child(raise).when_some(self.screen_sharing_button("browser-window-share", cx), |row, b| row.child(b)))
                 .into_any_element(),
         )
     }
 
-    /// Said under a check when the member's Chrome is on another Mac.
-    fn chrome_window_note(&self, check: HumanCheck) -> Option<String> {
+    /// Said under a check a person answers by clicking: why the panel isn't
+    /// the place for it, and where it opens instead.
+    fn real_window_note(&self, check: HumanCheck) -> Option<String> {
         if !matches!(check, HumanCheck::Challenge | HumanCheck::Captcha) {
             return None;
         }
-        self.chrome_elsewhere().map(|host| t!("browser.check_window_remote_note", host = host))
+        Some(match self.chrome_elsewhere() {
+            Some(host) => t!("browser.check_real_window_note_remote", host = host),
+            None => t!("browser.check_real_window_note").to_owned(),
+        })
     }
 
     /// A member's browser handed to the person: the panel opens beside the
@@ -1949,8 +2036,9 @@ impl BrowserPanel {
                 canvas(
                     move |bounds, _, _| bounds,
                     move |bounds, _, window, cx| {
-                        // A new box: drawn again, so the page is asked for at it.
-                        let moved = viewport.borrow().is_none_or(|b| b.size != bounds.size);
+                        // A new box — moved, or sized anew: drawn again, so the page is asked
+                        // for at it and the sign-in view goes where it is now.
+                        let moved = viewport.borrow().is_none_or(|b| b != bounds);
                         *viewport.borrow_mut() = Some(bounds);
                         if moved {
                             window.refresh();
@@ -2183,7 +2271,7 @@ impl BrowserPanel {
                                     .gap(px(2.))
                                     .child(div().text_size(px(SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("browser.check_title")))
                                     .child(div().text_size(px(12.)).text_color(p.muted).child(detail))
-                                    .when_some(self.chrome_window_note(*check), |c, note| c.child(div().text_size(px(12.)).text_color(p.muted).child(note))),
+                                    .when_some(self.real_window_note(*check), |c, note| c.child(div().text_size(px(12.)).text_color(p.muted).child(note))),
                             )
                             .child(
                                 h_flex()
@@ -2191,8 +2279,11 @@ impl BrowserPanel {
                                     .ml_auto()
                                     .gap_2()
                                     .child(ui::button(p, "browser-check-close", Kind::Ghost, t!("browser.close_tab")).field().tip(t!("browser.close_check_tip", name = name), Some("⌘W")).on_click(cx.listener(|this, _, _, cx| this.close_selected(cx))))
-                                    .when_some(self.chrome_window_button(*check, "browser-check-window", cx), |row, b| row.child(b))
-                                    .child(ui::button(p, "browser-check-take", Kind::Primary, t!("browser.take")).icon(Icon::Hand).field().on_click(cx.listener(|this, _, window, cx| this.take(window, cx)))),
+                                    // A check the panel can't take: its one way is the person's own window.
+                                    .child(match self.real_window_button(*check, "browser-check-window", Kind::Primary, cx) {
+                                        Some(open) => open,
+                                        None => ui::button(p, "browser-check-take", Kind::Primary, t!("browser.take")).icon(Icon::Hand).field().on_click(cx.listener(|this, _, window, cx| this.take(window, cx))).into_any_element(),
+                                    }),
                             ),
                         "browser-check-rise",
                     )
@@ -2221,7 +2312,7 @@ impl BrowserPanel {
                             .text_color(p.text2)
                             .child(div().size(px(6.)).rounded_full().bg(p.amber))
                             .child(t!("browser.check_on_it", name = name))
-                            .when_some(page.and_then(|pg| pg.check).and_then(|c| self.chrome_window_button(c, "browser-check-window-on-it", cx)), |row, b| row.child(b)),
+                            .when_some(page.and_then(|pg| pg.check).and_then(|c| self.real_window_button(c, "browser-check-window-on-it", Kind::Ghost, cx)), |row, b| row.child(b)),
                     )
                     .into_any_element(),
             ),
@@ -2254,6 +2345,10 @@ impl BrowserPanel {
         let Some(Mode::Asked(why)) = self.mode() else { return None };
         let p = self.palette;
         let lane = self.lane_of_selected()?.to_owned();
+        // The sign-in view's own card already says who, what for and Done: one card, not two.
+        if self.view_lane.as_deref() == Some(lane.as_str()) || self.view_ask.as_ref().is_some_and(|(l, _)| *l == lane) {
+            return None;
+        }
         let name = self.member_name(&lane);
         let hue = self.lane_color(&lane);
         // Small, so the page keeps the room: who, and the one button, on one
@@ -2536,6 +2631,15 @@ impl BrowserPanel {
         let Some((rect, _)) = *self.placed.borrow() else { return };
         let e = ScrollWheelEvent { position: rect.center(), delta: ScrollDelta::Pixels(point(px(0.), px(-40.))), ..Default::default() };
         self.scroll(&e, cx);
+    }
+
+    /// What the panel says of where the member's Chrome is, as if the daemon
+    /// were on `host` (another Mac). Only the words: nothing is reached there.
+    pub fn seem_remote(&mut self, host: &str, cx: &mut Context<Self>) {
+        if let Ok(endpoint) = Endpoint::parse(host) {
+            self.endpoint = Some(endpoint);
+            cx.notify();
+        }
     }
 
     /// Take over, or Give back, as the bar's button.

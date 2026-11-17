@@ -30,7 +30,9 @@ see the values, and they never pass through the conversation. Once they save it,
 environment variable named by its key (`$NAS_PASSWORD`) from your next turn on — use it from there, and never print, \
 echo or copy a value into chat, tickets, commits or logs. Only for a program equipe doesn't run (a scheduled job) that \
 must read a file, give `save_to`: equipe saves it there too (`KEY=\"value\"` lines, readable only by them). Never ask \
-for one in words, and never have the person run a command to type it. A website sign-in is `sign_in`, not this.",
+for one in words, and never have the person run a command to type it. Every request carries `steps` (numbered on the card) and, \
+for anything from a website or console, the exact page as `url` (one button opens it): a card without them is refused. \
+A website sign-in is `sign_in`, not this.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -48,9 +50,13 @@ for one in words, and never have the person run a command to type it. A website 
                     },
                     "description": "What to ask for, 1 to 6.",
                 },
+                "steps": crate::connections::steps_schema("what the person does to find or create the value"),
+                "url": { "type": "string", "description": "The exact page the value comes from (https, a real site: no credentials, port, IP or localhost). Required for anything from a website or console; left out only with `no_page`, or for a catalog service named in `service` (its key page is used)." },
+                "no_page": crate::connections::no_page_schema(),
+                "service": { "type": "string", "description": "The service or site it comes from, when it does (`anthropic`, `github`, `app.example.com`): for a service in equipe's catalog the key page is filled in when `url` is left out." },
                 "save_to": { "type": "string", "description": "Only for a program equipe doesn't run that must read a file: the file to save it to as well, under the person's home: `~/.config/atinum/nas.env`. Keys already in it are replaced, the rest kept." },
             },
-            "required": ["why", "fields"],
+            "required": ["why", "fields", "steps"],
         },
     })
 }
@@ -64,6 +70,8 @@ pub struct Asked {
     pub path: Option<PathBuf>,
     /// The file as the person reads it: `~/.config/atinum/nas.env`; empty: none.
     pub shown: String,
+    /// What the person does, in order; the page it comes from; the sign-in page.
+    pub guide: crate::connections::Guide,
 }
 
 /// Check an `ask_secret` call against the person's `home` directory.
@@ -89,9 +97,10 @@ pub fn check(args: &Value, home: &Path) -> Result<Asked, String> {
         let label = f.get("label").and_then(Value::as_str).map(str::trim).filter(|l| !l.is_empty()).unwrap_or(&key).to_owned();
         fields.push(SecretField { key, label, secret: f.get("secret").and_then(Value::as_bool).unwrap_or(false) });
     }
+    let guide = crate::connections::check_guide(args, &text("service"), "url")?;
     let save_to = text("save_to");
     let (path, shown) = if save_to.is_empty() { (None, String::new()) } else { place(&save_to, home).map(|(p, s)| (Some(p), s))? };
-    Ok(Asked { why, fields, path, shown })
+    Ok(Asked { why, fields, path, shown, guide })
 }
 
 pub(crate) fn valid_key(key: &str) -> bool {
@@ -189,22 +198,56 @@ mod tests {
     #[test]
     fn a_request_names_its_keys_and_a_file_of_its_own_under_home() {
         let home = home("ask");
-        let args = json!({ "why": "NAS 자동 수집", "save_to": "~/.config/atinum/nas.env", "fields": [
+        let args = json!({ "why": "NAS 자동 수집", "save_to": "~/.config/atinum/nas.env", "no_page": true, "steps": ["Look on the NAS label"], "fields": [
             { "key": "NAS_USER", "label": "NAS 아이디" }, { "key": "NAS_PASSWORD", "label": "비밀번호", "secret": true } ] });
         let asked = check(&args, &home).unwrap();
         assert_eq!(asked.shown, "~/.config/atinum/nas.env");
         assert_eq!(asked.path, Some(home.join(".config/atinum/nas.env")));
         assert_eq!(asked.fields.iter().map(|f| (f.key.as_str(), f.secret)).collect::<Vec<_>>(), [("NAS_USER", false), ("NAS_PASSWORD", true)]);
-        let with = |save_to: &str| check(&json!({ "why": "x", "save_to": save_to, "fields": [{ "key": "K", "label": "k" }] }), &home);
+        let with = |save_to: &str| check(&json!({ "why": "x", "save_to": save_to, "no_page": true, "steps": ["Find it"], "fields": [{ "key": "K", "label": "k" }] }), &home);
         for bad in ["~/.ssh/config", "~/.equipe/vault.json", "/etc/passwd", "~/../x.env", "relative.env", "~/notes.env"] {
             assert!(with(bad).is_err(), "{bad:?}");
         }
         // No file named: the secret store alone.
-        let kept = check(&json!({ "why": "x", "fields": [{ "key": "K", "label": "k" }] }), &home).unwrap();
+        let kept = check(&json!({ "why": "x", "no_page": true, "steps": ["Find it"], "fields": [{ "key": "K", "label": "k" }] }), &home).unwrap();
         assert_eq!((kept.path, kept.shown.as_str()), (None, ""));
         assert!(with("~/.atinum.env").is_ok(), "a dotfile of its own in home");
-        assert!(check(&json!({ "why": "x", "save_to": "~/.config/a.env", "fields": [{ "key": "lower", "label": "k" }] }), &home).is_err());
+        assert!(check(&json!({ "why": "x", "save_to": "~/.config/a.env", "no_page": true, "steps": ["Find it"], "fields": [{ "key": "lower", "label": "k" }] }), &home).is_err());
         assert!(check(&json!({ "why": "", "save_to": "~/.config/a.env", "fields": [{ "key": "K" }] }), &home).is_err());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_card_never_comes_bare_steps_and_a_page_are_required() {
+        let home = home("guide");
+        let fields = json!([{ "key": "ANTHROPIC_ADMIN_KEY", "label": "Admin key", "secret": true }]);
+        let ask = |extra: Value| {
+            let mut args = json!({ "why": "usage reports", "fields": fields });
+            args.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            check(&args, &home)
+        };
+        // No steps: refused, and the error says what to add.
+        let none = ask(json!({ "url": "https://platform.claude.com/settings/admin-keys" })).unwrap_err();
+        assert!(none.contains("`steps`") && none.contains("numbered"), "{none}");
+        assert!(ask(json!({ "steps": [], "url": "https://platform.claude.com/x" })).is_err());
+        assert!(ask(json!({ "steps": ["  "], "url": "https://platform.claude.com/x" })).is_err(), "blank lines are not steps");
+        assert!(ask(json!({ "steps": (0..9).map(|n| format!("step {n}")).collect::<Vec<_>>(), "url": "https://platform.claude.com/x" })).is_err(), "at most 8");
+        // A website's secret without its page: refused, naming `url` and `no_page`.
+        let bare = ask(json!({ "steps": ["Open the console"] })).unwrap_err();
+        assert!(bare.contains("`url`") && bare.contains("no_page"), "{bare}");
+        // The page is checked like request_secret's.
+        for bad in ["http://acme.example.com", "javascript:alert(1)", "file:///etc/passwd", "https://u:p@acme.example.com", "https://acme.example.com:8443/", "https://localhost/", "https://127.0.0.1/"] {
+            assert!(ask(json!({ "steps": ["Open it"], "url": bad })).is_err(), "{bad}");
+        }
+        // The member's page and steps are kept as given.
+        let own = ask(json!({ "steps": ["Open  the   page", "Click Create"], "url": "https://acme.example.com/keys" })).unwrap();
+        assert_eq!((own.guide.steps.as_slice(), own.guide.url.as_deref()), (&["Open the page".to_owned(), "Click Create".to_owned()][..], Some("https://acme.example.com/keys")));
+        // A catalog service with no url: its key page, and its sign-in page as a second link.
+        let filled = ask(json!({ "steps": ["Open Admin keys"], "service": "anthropic" })).unwrap();
+        assert_eq!(filled.guide.url.as_deref(), Some("https://platform.claude.com/settings/admin-keys"));
+        assert_eq!(filled.guide.sign_in_url.as_deref(), Some("https://platform.claude.com/"));
+        // No web page at all: allowed, with steps.
+        assert!(ask(json!({ "steps": ["Read it off the NAS label"], "no_page": true })).unwrap().guide.url.is_none());
         std::fs::remove_dir_all(home).unwrap();
     }
 

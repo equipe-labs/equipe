@@ -216,6 +216,9 @@ impl Shell {
                     }
                 }
                 Then::Job(job, after) => self.run_job(job, after, cx),
+                Then::OpenWindow { endpoint, squad, goal } => {
+                    super::elsewhere::open(crate::windows::Opening { endpoint: Some(endpoint), squad: Some(squad).filter(|s| !s.is_empty()), goal: Some(goal), chooser: false }, cx);
+                }
             }
         }
         self.composer.focus(window, cx);

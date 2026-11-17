@@ -84,6 +84,17 @@ pub struct DecideUi {
     pub fresh: Option<(u64, std::time::Instant)>,
     /// Bumped with each fresh question: its arrival plays again.
     fresh_serial: u64,
+    /// The options whose picture is flipped to before: set, question, option.
+    pub before: std::collections::HashSet<(u64, usize, usize)>,
+    /// A question's options side by side, over the window.
+    pub side: Option<SideOpen>,
+}
+
+/// A question's options put side by side: its set and question, and what scrolls.
+pub struct SideOpen {
+    pub set: u64,
+    pub step: usize,
+    pub scroll: ScrollHandle,
 }
 
 /// How long a question just asked stays lit.
@@ -266,7 +277,7 @@ impl Shell {
     }
 
     /// The words typed in each of a set's boxes, by question.
-    fn decide_others(&self, id: u64, cx: &App) -> Vec<String> {
+    pub(super) fn decide_others(&self, id: u64, cx: &App) -> Vec<String> {
         let count = self.model.asked.get(id).map_or(0, |s| s.questions.len());
         (0..count)
             .map(|n| {
@@ -310,7 +321,7 @@ impl Shell {
                 },
                 _ => return Took::Pass,
             },
-            Screen::Settings | Screen::Design | Screen::Roadmap | Screen::Metrics | Screen::Project | Screen::Progress | Screen::Status | Screen::Orchestration | Screen::Usage | Screen::Logins | Screen::Docs | Screen::Studio => return Took::Pass,
+            Screen::Settings | Screen::Design | Screen::Roadmap | Screen::Metrics | Screen::Project | Screen::Progress | Screen::Status | Screen::Orchestration | Screen::Usage | Screen::Logins | Screen::Docs | Screen::Studio | Screen::Taste | Screen::DesignSession => return Took::Pass,
         };
         // The list of them open: ↑↓ through it, ⏎ to the one picked, Esc away.
         if !peek && let Some(at) = self.decide.listing && self.composer.text(cx).is_empty() {
@@ -471,7 +482,29 @@ impl Shell {
 
     /// "Again": another round, the box's words as why.
     pub fn decide_again(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        // The reasons tapped go with the person's taste: what was turned down, and why.
+        let reasons = self.session.rejections.remove(&id).unwrap_or_default();
+        if !reasons.is_empty()
+            && let Some(set) = self.model.asked.get(id)
+        {
+            let step = self.decide.drafts.get(&id).map_or(0, |d| d.step);
+            let what = set.questions.get(step).map(|q| q.question.clone()).unwrap_or_default();
+            let project = set.ticket.and_then(|t| self.model.tickets.iter().find(|x| x.id == t)).and_then(|t| t.project.as_ref()).map(|p| equipe_core::board::project_name(p));
+            let signals = vec![equipe_core::protocol::design::TasteSignal::Rejected { what, picture: None, reasons }];
+            self.send_command(equipe_core::protocol::Command::TasteSignals { squad: self.model.squad.clone(), project, signals });
+        }
         self.decide_react(id, window, cx, |draft, set, others| draft.again(set, others));
+    }
+
+    /// A reason tapped under a design choice, for "Again".
+    pub fn decide_reason(&mut self, id: u64, reason: equipe_core::protocol::design::PickReason, cx: &mut Context<Self>) {
+        let list = self.session.rejections.entry(id).or_default();
+        if let Some(at) = list.iter().position(|r| *r == reason) {
+            list.remove(at);
+        } else {
+            list.push(reason);
+        }
+        cx.notify();
     }
 
     /// "Mix": option `base`'s mix menu, opened or closed.
@@ -517,6 +550,82 @@ impl Shell {
             }
             ("dagain", ..) => self.decide_again(id, window, cx),
             _ => {}
+        }
+    }
+
+    /// Option `n`'s picture flipped to before (`to`), or back to after.
+    pub fn decide_show_before(&mut self, id: u64, step: usize, n: usize, to: bool, cx: &mut Context<Self>) {
+        let changed = if to { self.decide.before.insert((id, step, n)) } else { self.decide.before.remove(&(id, step, n)) };
+        if changed {
+            cx.notify();
+        }
+    }
+
+    /// Set `id`'s question on show, its options' pictures side by side over the window.
+    pub fn decide_side_open(&mut self, id: u64, cx: &mut Context<Self>) {
+        let step = self.decide.drafts.get(&id).map_or(0, |d| d.step);
+        if !self.model.asked.get(id).and_then(|s| s.questions.get(step)).is_some_and(Question::side_by_side) {
+            return;
+        }
+        self.decide.side = Some(SideOpen { set: id, step, scroll: ScrollHandle::new() });
+        super::ticket_card::put_away(cx);
+        cx.notify();
+    }
+
+    /// Side by side put away.
+    pub fn decide_side_close(&mut self, cx: &mut Context<Self>) {
+        if self.decide.side.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Option `n` picked from side by side: the card has it, and side by side goes.
+    pub fn decide_side_pick(&mut self, id: u64, n: usize, cx: &mut Context<Self>) {
+        if !self.decide.drafts.get(&id).is_some_and(|d| d.picked(n)) {
+            self.decide_pick(id, n, cx);
+        }
+        self.decide_side_close(cx);
+    }
+
+    /// A keystroke while side by side is on show (and no picture big over it):
+    /// Esc puts it away; nothing typed reaches what is under it.
+    pub fn on_side_key(&mut self, key: &str, m: &Modifiers, cx: &mut Context<Self>) -> bool {
+        // Its question answered or closed meanwhile: it is gone with it.
+        if self.decide.side.as_ref().is_some_and(|s| self.model.asked.get(s.set).is_none()) {
+            self.decide.side = None;
+            cx.notify();
+        }
+        if self.decide.side.is_none() || self.viewer.is_some() {
+            return false;
+        }
+        if key == "escape" && !m.platform && !m.control && !m.alt {
+            self.decide_side_close(cx);
+        }
+        // Side by side covers the window: only the window's own shortcuts get past it.
+        !m.platform
+    }
+
+    /// Dev tool (`snapshot.rs`): `dbefore:<n>` flips option n of the card on
+    /// show to before (`dbefore:<n>,off`, back); `dsidebyside[:off]`.
+    #[cfg(feature = "snapshot")]
+    pub fn decide_script_compare(&mut self, verb: &str, arg: &str, cx: &mut Context<Self>) {
+        let id = match self.screen {
+            Screen::Board => match self.picked_need() {
+                Some(Need::Questions(id)) => Some(id),
+                _ => None,
+            },
+            _ => self.decide_shown(),
+        };
+        let Some(id) = id else { return };
+        let step = self.decide.drafts.get(&id).map_or(0, |d| d.step);
+        match verb {
+            "dsidebyside" if arg == "off" => self.decide_side_close(cx),
+            "dsidebyside" => self.decide_side_open(id, cx),
+            _ => {
+                let (n, off) = arg.split_once(',').map_or((arg, false), |(n, rest)| (n, rest.trim() == "off"));
+                let n = n.trim().parse::<usize>().unwrap_or(1).saturating_sub(1);
+                self.decide_show_before(id, step, n, !off, cx);
+            }
         }
     }
 
@@ -874,6 +983,12 @@ fn card(shell: &Shell, id: u64, place: Place, nav: Option<Nav>, cx: &mut Context
             handle.update(cx, |shell, cx| shell.decide_dismiss(id, window, cx)).ok();
         })
     };
+    // Its link, to share in a chat: the question as the words.
+    let link = {
+        let target = equipe_core::protocol::deeplink::Target::Decision(id);
+        let title = shell.link_title(&target);
+        super::linkshare::button(shell, "decide-link", target, title, cx)
+    };
     let head = h_flex()
         .w_full()
         .gap_2()
@@ -889,7 +1004,7 @@ fn card(shell: &Shell, id: u64, place: Place, nav: Option<Nav>, cx: &mut Context
                 .children(crate::decide::review_title(&set).map(|title| div().text_size(px(12.)).line_height(px(17.)).font_weight(FontWeight::SEMIBOLD).text_color(p.accent).child(title)))
                 .child(div().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(words)),
         )
-        .child(h_flex().flex_none().mt(px(-3.)).mr(px(-6.)).gap_0p5().children(fold).child(close));
+        .child(h_flex().flex_none().mt(px(-3.)).mr(px(-6.)).gap_0p5().items_center().child(link).children(fold).child(close));
 
     // The question's own pictures; then the options — a visual question's
     // as a grid of tiles, balanced rows of one size, those without a picture
@@ -913,7 +1028,22 @@ fn card(shell: &Shell, id: u64, place: Place, nav: Option<Nav>, cx: &mut Context
     let layout = visual::grid_within(width, q.options.len(), described, tiles_room);
     let own = (!q.images.is_empty()).then(|| question_pictures(&shots, id, draft.step, &q, width, &layout, cx));
     let tile_h = visual::tile_height(layout.tile, described) + actions_h;
-    let grid = q.is_visual().then(|| {
+    // A choice shown in pictures (not a board's families): each option one
+    // under another, its picture the card's whole width at its own shape on
+    // the theme's surface, its other pictures a strip under it, then what it
+    // is, what changed and why, its live preview.
+    let heroes: Vec<AnyElement> = if rules::shows_heroes(&q) {
+        (0..q.options.len())
+            .map(|n| {
+                let actions = reacts.then(|| Actions { menu: rules::mix_menu(&q, n), open: shell.decide.mixing == Some((id, draft.step, n)), can_act: shell.can_act() });
+                let before = shell.decide.before.contains(&(id, draft.step, n));
+                option_hero(&shots, id, draft.step, n, &q, (draft.picked(n), draft.cursor == n), width, actions, before, &handle, cx)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let grid = (q.is_visual() && heroes.is_empty()).then(|| {
         // Each tile where the layout puts it, in whatever state: nothing reflows.
         let tiles: Vec<AnyElement> = (0..q.options.len())
             .filter_map(|n| {
@@ -979,10 +1109,19 @@ fn card(shell: &Shell, id: u64, place: Place, nav: Option<Nav>, cx: &mut Context
         .children(own)
         .children(multi)
         .children(grid.map(|g| div().w_full().when(visual, |d| d.pt_1().pb_0p5()).child(g)))
+        .when(!heroes.is_empty(), |c| c.gap_3())
+        .children(heroes)
         .when(!rows.is_empty(), |c| c.child(v_flex().w_full().gap_1p5().children(rows)));
     let options = match shell.decide.scrolls.get(&id) {
         Some((scroll, seen)) => {
-            follow(scroll, seen, &draft, visual.then_some((grid_at, &layout, tile_h)));
+            let at = if rules::shows_heroes(&q) {
+                Follow::Items(grid_at)
+            } else if visual {
+                Follow::Grid(grid_at, &layout, tile_h)
+            } else {
+                Follow::None
+            };
+            follow(scroll, seen, &draft, at);
             options.track_scroll(scroll)
         }
         None => options,
@@ -1020,6 +1159,20 @@ fn card(shell: &Shell, id: u64, place: Place, nav: Option<Nav>, cx: &mut Context
             handle.update(cx, |shell, cx| shell.decide_again(id, window, cx)).ok();
         })
     });
+    // A taste choice browsed as a board: the pictures big and many, in the main area.
+    let board = q.wants_board().then(|| {
+        let handle = handle.clone();
+        ui::button(p, ("decide-board", id), if q.board || q.options.iter().any(|o| !o.tiles.is_empty()) { Kind::Primary } else { Kind::Secondary }, t!("taste.open_board")).icon(Icon::Expand).tip(t!("taste.open_board_tip"), None).on_click(move |_, window, cx| {
+            handle.update(cx, |shell, cx| shell.open_taste(id, window, cx)).ok();
+        })
+    });
+    // Two options or more in pictures: their pictures next to each other, at one scale.
+    let side = q.side_by_side().then(|| {
+        let handle = handle.clone();
+        ui::button(p, ("decide-side", id), Kind::Secondary, t!("decide.side_by_side")).icon(Icon::AppWindow).tip(t!("decide.side_by_side_tip"), None).on_click(move |_, _, cx| {
+            handle.update(cx, |shell, cx| shell.decide_side_open(id, cx)).ok();
+        })
+    });
     let back = (draft.step > 0).then(|| {
         let handle = handle.clone();
         ui::button(p, ("decide-back", id), Kind::Ghost, t!("decide.back")).key("⇧←").on_click(move |_, window, cx| {
@@ -1034,6 +1187,9 @@ fn card(shell: &Shell, id: u64, place: Place, nav: Option<Nav>, cx: &mut Context
     said.push(h_flex().gap(px(5.)).items_center().child(crate::theme::member_mark(shell.palette, &shell.model, &name, 15.)).child(t!("decide.asks", name = name)).into_any_element());
     if !q.header.is_empty() && total > 1 {
         said.push(div().child(format!("· {}", q.header)).into_any_element());
+    }
+    if draft.liked_count() > 0 {
+        said.push(div().child(format!("· {}", t!("taste.liked_count", count = draft.liked_count()))).into_any_element());
     }
     if let Some(t) = set.ticket {
         said.push(h_flex().gap(px(5.)).child("·").child(div().font_family(MONO).child(format!("T-{t}"))).into_any_element());
@@ -1083,8 +1239,33 @@ fn card(shell: &Shell, id: u64, place: Place, nav: Option<Nav>, cx: &mut Context
                 .child(h_flex().gap(px(5.)).items_center().flex_wrap().children(said))
                 .child(div().opacity(0.8).overflow_hidden().whitespace_nowrap().text_ellipsis().child(keys)),
         )
-        .child(h_flex().flex_none().ml_auto().gap_2().children(back).children(again).child(skip).child(next));
-    let inner = v_flex().w_full().min_h_0().gap_3().child(body).child(foot.flex_none());
+        .child(h_flex().max_w_full().ml_auto().gap_2().flex_wrap().justify_end().children(back).children(side).children(board).children(again).child(skip).child(next));
+    // A design choice: why none of these, in a tap, before "Again".
+    let why = reacts.then(|| {
+        let on = shell.session.rejections.get(&id).cloned().unwrap_or_default();
+        h_flex().flex_none().w_full().flex_wrap().gap_1p5().items_center().child(div().text_size(px(12.)).text_color(p.muted).child(t!("decide.why_not"))).children(equipe_core::protocol::design::PickReason::ALL.into_iter().map(|reason| {
+            let lit = on.contains(&reason);
+            let handle = handle.clone();
+            div()
+                .id(("decide-reason", render::hash_of((id, reason as usize))))
+                .h(px(22.))
+                .px_2()
+                .flex()
+                .items_center()
+                .rounded(px(11.))
+                .border_1()
+                .border_color(if lit { p.accent } else { p.hair })
+                .when(lit, |d| d.bg(p.accent_bg))
+                .text_size(px(12.))
+                .text_color(if lit { p.accent } else { p.text2 })
+                .cursor_pointer()
+                .child(super::design_session::reason_words(reason))
+                .on_click(move |_, _, cx| {
+                    handle.update(cx, |shell, cx| shell.decide_reason(id, reason, cx)).ok();
+                })
+        }))
+    });
+    let inner = v_flex().w_full().min_h_0().gap_3().child(body).children(why).child(foot.flex_none());
     // Never taller than the window has room for: past it, the options scroll.
     let tallest = card_tallest(shell, place);
     Some(match place {
@@ -1105,10 +1286,20 @@ fn card(shell: &Shell, id: u64, place: Place, nav: Option<Nav>, cx: &mut Context
     })
 }
 
+/// Where the options the keys go through are among what scrolls.
+enum Follow<'a> {
+    /// Rows: nothing to bring into sight.
+    None,
+    /// A grid of tiles, child `.0` of what scrolls, laid out by `.1`, tiles `.2` high.
+    Grid(usize, &'a visual::Grid, f32),
+    /// Each option a child of its own, the first at this one.
+    Items(usize),
+}
+
 /// The options scrolled to what the keys are on: a new question from its
 /// top; a tile the keys moved to, into sight — from where the grid (child
 /// `grid` of what scrolls) was drawn last, the tile where the layout puts it.
-fn follow(scroll: &ScrollHandle, seen: &Cell<Option<(usize, usize)>>, draft: &Draft, grid: Option<(usize, &visual::Grid, f32)>) {
+fn follow(scroll: &ScrollHandle, seen: &Cell<Option<(usize, usize)>>, draft: &Draft, at: Follow) {
     let now = (draft.step, draft.cursor);
     let before = seen.replace(Some(now));
     if before == Some(now) {
@@ -1119,13 +1310,22 @@ fn follow(scroll: &ScrollHandle, seen: &Cell<Option<(usize, usize)>>, draft: &Dr
         scroll.set_offset(point(offset.x, px(0.)));
         return;
     }
-    let Some((at, layout, tile_h)) = grid else { return };
-    let (Some(bounds), Some((_, y, _, h))) = (scroll.bounds_for_item(at), layout.rect(draft.cursor, tile_h, visual::TileState::default())) else { return };
     let view = scroll.bounds();
     let scrolled = -f32::from(offset.y);
-    // The grid's top within what scrolls (a child's bounds are laid out
-    // unscrolled; 4 points of padding over it), then the tile's.
-    let top = f32::from(bounds.top() - view.top()) + 4. + y;
+    // Where the keys' option is within what scrolls (a child's bounds are
+    // laid out unscrolled): a grid's tile where the layout puts it under the
+    // grid's 4 points of padding; an option of its own, its own bounds.
+    let (top, h) = match at {
+        Follow::None => return,
+        Follow::Grid(at, layout, tile_h) => {
+            let (Some(bounds), Some((_, y, _, h))) = (scroll.bounds_for_item(at), layout.rect(draft.cursor, tile_h, visual::TileState::default())) else { return };
+            (f32::from(bounds.top() - view.top()) + 4. + y, h)
+        }
+        Follow::Items(first) => {
+            let Some(bounds) = scroll.bounds_for_item(first + draft.cursor) else { return };
+            (f32::from(bounds.top() - view.top()), f32::from(bounds.size.height).min(f32::from(view.size.height) - 16.))
+        }
+    };
     let (room, margin) = (f32::from(view.size.height), 8.);
     let to = if top - margin < scrolled {
         top - margin
@@ -1138,7 +1338,7 @@ fn follow(scroll: &ScrollHandle, seen: &Cell<Option<(usize, usize)>>, draft: &Dr
 }
 
 /// A number key's badge, or a key's name: filled when its row is picked.
-fn key_badge(p: Palette, key: &str, on: bool) -> impl IntoElement {
+pub(super) fn key_badge(p: Palette, key: &str, on: bool) -> impl IntoElement {
     div()
         .flex_none()
         .min_w(px(20.))
@@ -1247,9 +1447,11 @@ fn option_tile(shots: &Shots, id: u64, step: usize, n: usize, q: &Question, pick
     let key = render::hash_of(("decide-tile", id, step, n));
     let (fw, h) = (w - 2., (w * visual::RATIO).floor());
     let frame = visual::frame(visual::TileState { picked, cursor, hover: 0. });
-    let face: AnyElement = match option.images.first() {
+    // A board's family shows its first tile; a click on it opens the board.
+    let cover = option.images.first().cloned().or_else(|| option.tiles.first().map(|t| t.image.clone()));
+    let face: AnyElement = match cover.as_ref() {
         Some(path) => {
-            let more = option.images.len() - 1;
+            let more = option.images.len().max(option.tiles.len()) - 1;
             let look = shots.ask(path, Size::Thumb, cx);
             let face = super::visuals::picture(shots, key, path, look, fw, h, R_LG - 1., true, 12.)
                 .when(more > 0, |f| f.child(div().absolute().bottom(px(8.)).right(px(8.)).h(px(18.)).px(px(6.)).flex().items_center().rounded(px(9.)).bg(rgba(0x0000008C)).text_size(px(10.5)).text_color(rgb(0xFFFFFF)).child(format!("+{more}"))));
@@ -1259,6 +1461,18 @@ fn option_tile(shots: &Shots, id: u64, step: usize, n: usize, q: &Question, pick
                     cx.stop_propagation();
                     if let Some(viewer) = viewer.clone() {
                         handle.update(cx, |shell, cx| shell.open_viewer(viewer, cx)).ok();
+                    }
+                }
+            };
+            let open = {
+                let handle = handle.clone();
+                let board = option.images.is_empty();
+                move |e: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    if board {
+                        cx.stop_propagation();
+                        handle.update(cx, |shell, cx| shell.open_taste(id, window, cx)).ok();
+                    } else {
+                        open(e, window, cx);
                     }
                 }
             };
@@ -1354,6 +1568,239 @@ fn option_tile(shots: &Shots, id: u64, step: usize, n: usize, q: &Question, pick
             handle.update(cx, |shell, cx| shell.decide_pick(id, n, cx)).ok();
         });
     super::visuals::lift(tile, ("decide-lift", key), p).into_any_element()
+}
+
+/// A choice in pictures' option, one under another on the card: its picture
+/// the card's whole width at its own shape, on the theme's surface (a
+/// transparent one flattened and letterboxed, never on a checkerboard) — a
+/// click opens it big, ←/→ across every option; flipped between Before and
+/// After when it gives the screen as it is now; its other pictures a strip
+/// under it, "+N" past four. Then its label, what it means, its change note
+/// (before → after, why, and what stayed) and its actions: "This one", "Mix",
+/// "Open live preview". Picked: a ring and a check, as a tile is.
+#[allow(clippy::too_many_arguments)]
+fn option_hero(shots: &Shots, id: u64, step: usize, n: usize, q: &Question, (picked, cursor): (bool, bool), width: f32, actions: Option<Actions>, before: bool, handle: &WeakEntity<Shell>, cx: &mut App) -> AnyElement {
+    let p = shots.p;
+    let option = &q.options[n];
+    let (label, recommended) = option.shown();
+    let key = render::hash_of(("decide-hero", id, step, n));
+    let inner = (width - 2.).max(1.);
+    let flipped = before && !option.before.is_empty();
+    let face: AnyElement = match visual::hero_of(option, flipped) {
+        Some(path) => {
+            let (w, h) = visual::hero_box(shots.best_dims(path), inner);
+            let look = shots.ask(path, Size::Inline, cx);
+            let picture = super::visuals::picture_on(shots, render::hash_of((key, path)), path, look, (w, h), R_LG - 1., true, 0., visual::Ground::Surface);
+            let viewer = if flipped { Viewer::of_before(id, step, q, n) } else { Viewer::of_question(id, step, q, path) };
+            let open = {
+                let handle = handle.clone();
+                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                    cx.stop_propagation();
+                    if let Some(viewer) = viewer.clone() {
+                        handle.update(cx, |shell, cx| shell.open_viewer(viewer, cx)).ok();
+                    }
+                }
+            };
+            let toggle = (!option.before.is_empty()).then(|| before_after(id, step, n, key, flipped, handle));
+            div()
+                .relative()
+                .flex_none()
+                .w(px(w))
+                .h(px(h))
+                .child(tip(div().id(("decide-hero-shot", key)).cursor_pointer().child(picture).on_click(open), p, t!("visuals.open"), None))
+                .children(toggle.map(|t| div().absolute().left(px(10.)).bottom(px(10.)).child(t)))
+                .into_any_element()
+        }
+        None => div()
+            .w_full()
+            .h(px(96.))
+            .px_4()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_t(px(R_LG - 1.))
+            .bg(p.wash)
+            .child(div().max_w_full().text_center().text_size(px(14.)).font_weight(FontWeight::MEDIUM).text_color(p.text2).line_clamp(2).text_ellipsis().child(label.clone()))
+            .into_any_element(),
+    };
+    let face = div()
+        .relative()
+        .w_full()
+        .child(face)
+        .when(recommended, |f| f.child(div().absolute().top(px(10.)).left(px(10.)).child(super::visuals::badge(p, false))))
+        .when(picked && !q.multi_select, |f| {
+            f.child(div().absolute().top(px(10.)).right(px(10.)).size(px(24.)).flex().items_center().justify_center().rounded_full().bg(p.accent).shadow_sm().child(icon(Icon::Check, 14., p.on_accent)))
+        });
+    // Its other pictures, small, under it: each opens big.
+    let rest: Vec<&String> = option.images.iter().skip(1).collect();
+    let strip = (!rest.is_empty()).then(|| {
+        let shown = rest.len().min(visual::STRIP_MAX);
+        let (sw, sh) = (visual::STRIP + 16., ((visual::STRIP + 16.) * visual::RATIO).floor());
+        let thumbs = rest.iter().take(shown).map(|path| {
+            let k = render::hash_of((key, "strip", path.as_str()));
+            let viewer = Viewer::of_question(id, step, q, path);
+            let handle = handle.clone();
+            let face = super::visuals::picture_on(shots, k, path, shots.ask(path, Size::Thumb, cx), (sw, sh), R_SM, false, 0., visual::Ground::Surface);
+            tip(
+                div().id(("decide-hero-strip", k)).flex_none().rounded(px(R_SM + 1.)).border_1().border_color(p.hair).overflow_hidden().cursor_pointer().child(face).on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    if let Some(viewer) = viewer.clone() {
+                        handle.update(cx, |shell, cx| shell.open_viewer(viewer, cx)).ok();
+                    }
+                }),
+                p,
+                visual::name_of(path).to_owned(),
+                None,
+            )
+            .into_any_element()
+        });
+        let more = rest.len() - shown;
+        h_flex()
+            .w_full()
+            .px(px(10.))
+            .pt(px(10.))
+            .gap(px(8.))
+            .items_center()
+            .children(thumbs)
+            .when(more > 0, |s| s.child(div().h(px(22.)).px(px(8.)).flex().items_center().rounded(px(11.)).bg(p.wash).text_size(px(11.5)).text_color(p.text2).child(format!("+{more}"))))
+    });
+    let check = q.multi_select.then(|| {
+        div()
+            .flex_none()
+            .size(px(16.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(4.))
+            .border_1()
+            .border_color(if picked { p.accent } else { p.muted })
+            .when(picked, |c| c.bg(p.accent).child(icon(Icon::Check, 11., p.bg)))
+    });
+    let description = option.description.trim();
+    let caption = v_flex()
+        .w_full()
+        .px(px(12.))
+        .pt(px(10.))
+        .gap_1()
+        .child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .children(check)
+                .child(div().flex_1().min_w_0().text_size(px(14.)).line_height(px(20.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(label))
+                .child(key_badge(p, &(n + 1).to_string(), picked)),
+        )
+        .when(!description.is_empty(), |c| c.child(div().w_full().text_size(px(12.5)).line_height(px(18.)).text_color(p.text2).child(description.to_owned())));
+    let changes = change_list(p, option);
+    // Its live page: opened on the person's screen.
+    let preview = crate::decide::preview_of(option).map(|(url, host)| {
+        ui::button(p, ("decide-preview", key), Kind::Secondary, t!("decide.live_preview")).icon(Icon::Globe).tip(t!("decide.live_preview_tip", host = host), None).on_click(move |_, _, cx| {
+            cx.stop_propagation();
+            cx.open_url(&url);
+        })
+    });
+    let actions = actions.map(|a| tile_actions(p, id, n, key, width, a, picked || cursor, handle));
+    let foot = (actions.is_some() || preview.is_some()).then(|| h_flex().w_full().pr(px(10.)).items_center().flex_wrap().children(actions).children(preview.map(|b| div().ml_auto().pb(px(10.)).child(b))));
+    let border = if picked {
+        p.accent
+    } else if cursor {
+        Rgba { a: (p.accent.a * 0.5).max(0.35), ..p.accent }
+    } else {
+        p.hair
+    };
+    let frame = visual::frame(visual::TileState { picked, cursor, hover: 0. });
+    let pick = handle.clone();
+    v_flex()
+        .id(("decide-option-hero", key))
+        .flex_none()
+        .relative()
+        .w_full()
+        .rounded(px(R_LG))
+        .border(px(frame.border))
+        .border_color(border)
+        .bg(if picked { p.accent_bg } else { p.raised })
+        .overflow_hidden()
+        .cursor_pointer()
+        .child(face)
+        .children(strip)
+        .child(caption)
+        .children(changes.map(|c| div().w_full().px(px(12.)).pt(px(8.)).child(c)))
+        .child(div().h(px(10.)))
+        .children(foot)
+        .when(frame.ring > 0., |t| t.child(super::visuals::ring(p, R_LG - frame.border, frame.ring)))
+        .on_click(move |_, _, cx| {
+            pick.update(cx, |shell, cx| shell.decide_pick(id, n, cx)).ok();
+        })
+        .into_any_element()
+}
+
+/// Before | After over an option's picture: which one it shows.
+fn before_after(id: u64, step: usize, n: usize, key: u64, before: bool, handle: &WeakEntity<Shell>) -> AnyElement {
+    let side = |which: &'static str, on: bool, words: &'static str, to: bool| {
+        let handle = handle.clone();
+        div()
+            .id((which, key))
+            .h(px(24.))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .rounded(px(12.))
+            .text_size(px(12.))
+            .font_weight(FontWeight::MEDIUM)
+            .cursor_pointer()
+            .when(on, |d| d.bg(rgb(0xFFFFFF)).text_color(rgb(0x16181D)))
+            .when(!on, |d| d.text_color(rgba(0xFFFFFFD9)).hover(|s| s.text_color(rgb(0xFFFFFF))))
+            .child(words)
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                handle.update(cx, |shell, cx| shell.decide_show_before(id, step, n, to, cx)).ok();
+            })
+    };
+    h_flex()
+        .p(px(3.))
+        .gap(px(2.))
+        .rounded(px(15.))
+        .bg(rgba(0x16181DB8))
+        .shadow_sm()
+        .child(side("decide-before", before, t!("decide.before"), true))
+        .child(side("decide-after", !before, t!("decide.after"), false))
+        .into_any_element()
+}
+
+/// An option's change note, compact: a row a point — its area, then before →
+/// after and, quieter, why that is better — and what stayed as it was.
+fn change_list(p: Palette, option: &asked::Choice) -> Option<AnyElement> {
+    if option.changes.is_empty() && option.unchanged.trim().is_empty() {
+        return None;
+    }
+    let row = |area: String, said: AnyElement| h_flex().w_full().gap_2().items_start().child(div().flex_none().w(px(92.)).pt(px(1.)).text_size(px(11.5)).line_height(px(17.)).font_weight(FontWeight::MEDIUM).text_color(p.muted).truncate().child(area)).child(div().flex_1().min_w_0().child(said));
+    let rows = option.changes.iter().map(|c| {
+        let moved = if c.before.is_empty() {
+            div().text_color(p.text).child(c.after.clone())
+        } else {
+            div().text_color(p.text).child(format!("{} \u{2192} {}", c.before, c.after))
+        };
+        let said = v_flex()
+            .text_size(px(12.5))
+            .line_height(px(18.))
+            .child(moved)
+            .when(!c.why.is_empty(), |s| s.child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text2).child(c.why.clone())))
+            .into_any_element();
+        row(c.area.clone(), said)
+    });
+    let stayed = (!option.unchanged.trim().is_empty()).then(|| row(t!("decide.unchanged").to_owned(), div().text_size(px(12.5)).line_height(px(18.)).text_color(p.text2).child(option.unchanged.trim().to_owned()).into_any_element()));
+    Some(
+        v_flex()
+            .w_full()
+            .gap(px(6.))
+            .pt(px(8.))
+            .border_t_1()
+            .border_color(p.hair)
+            .child(div().text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(p.text2).child(t!("decide.what_changed")))
+            .children(rows)
+            .children(stayed)
+            .into_any_element(),
+    )
 }
 
 /// How tall a design choice's tile's actions are, under its caption.
@@ -1624,6 +2071,114 @@ pub fn row_text(shell: &Shell, id: u64) -> Option<(String, Option<u32>, String, 
 /// The mark the Inbox shows a decision with.
 pub fn mark(p: Palette) -> AnyElement {
     tip(div().id("decide-mark").size(px(14.)).flex_none().flex().items_center().justify_center().child(icon(Icon::Message, 13., p.accent)), p, t!("state.section_decide"), None).into_any_element()
+}
+
+/// A question's options side by side, over the window: the screen as it is
+/// now first (when the options give it), then each option's picture, all at
+/// one scale across the window's whole width — the same thing the same size
+/// in each — on the theme's surface; the page scrolls down a tall one. Over
+/// each its label (and "Recommended"), under it what changed and why, its
+/// live preview and "This one", which picks it on the card. A click on a
+/// picture opens it big; Esc puts side by side away.
+pub fn side_by_side(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let open = shell.decide.side.as_ref()?;
+    let set = shell.model.asked.get(open.set)?;
+    let q = set.questions.get(open.step).filter(|q| q.side_by_side())?;
+    let (id, step) = (open.set, open.step);
+    let p = shell.palette;
+    let handle = cx.entity().downgrade();
+    let shots = Shots::of(shell, handle.clone(), cx);
+    let draft = shell.decide.drafts.get(&id);
+    let columns = visual::columns_of(q);
+    let key = render::hash_of(("decide-side-width", id, step));
+    let guess = f32::from(window.viewport_size().width) - 64.;
+    let width = shots.width(key, guess);
+    let dims: Vec<Option<(u32, u32)>> = columns.iter().map(|c| shots.best_dims(&c.path)).collect();
+    let boxes = visual::side_boxes(width, &dims);
+    let (words, _) = q.shown();
+    let close = {
+        let handle = handle.clone();
+        ui::button(p, "decide-side-close", Kind::Ghost, t!("decide.side_close")).icon(Icon::X).key("Esc").on_click(move |_, _, cx| {
+            handle.update(cx, |shell, cx| shell.decide_side_close(cx)).ok();
+        })
+    };
+    let header = ui::title_bar(h_flex())
+        .flex_none()
+        .w_full()
+        .h(px(super::header::HEIGHT))
+        .pr(px(16.))
+        // Over the whole window: clear of the title bar's buttons by the traffic lights.
+        .pl(px((super::sidebar::buttons_end(crate::zoom::factor(shell.remembered.zoom.0)) + 12.).max(24.)))
+        .gap_3()
+        .items_center()
+        .border_b_1()
+        .border_color(p.hair)
+        .child(div().flex_none().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t!("decide.side_title")))
+        .child(div().flex_1().min_w_0().truncate().text_size(px(SMALL)).text_color(p.muted).child(words))
+        .child(close);
+    let cells = columns.iter().zip(boxes).map(|(column, (w, h))| {
+        let option = column.choice.and_then(|n| q.options.get(n));
+        let (label, recommended) = option.map_or_else(|| (t!("decide.before").to_owned(), false), |o| o.shown());
+        let k = render::hash_of(("decide-side", id, step, column.path.as_str(), column.choice));
+        let viewer = match column.choice {
+            Some(n) if column.before => Viewer::of_before(id, step, q, n),
+            _ => Viewer::of_question(id, step, q, &column.path).or_else(|| q.options.iter().position(|o| o.before == column.path).and_then(|n| Viewer::of_before(id, step, q, n))),
+        };
+        let look = shots.ask(&column.path, Size::Inline, cx);
+        let picture = super::visuals::picture_on(&shots, k, &column.path, look, (w, h), R_MD, false, 0., visual::Ground::Surface);
+        let open_big = {
+            let handle = handle.clone();
+            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                if let Some(viewer) = viewer.clone() {
+                    handle.update(cx, |shell, cx| shell.open_viewer(viewer, cx)).ok();
+                }
+            }
+        };
+        let picked = column.choice.is_some_and(|n| draft.is_some_and(|d| d.picked(n)));
+        let title = h_flex()
+            .w(px(w))
+            .min_h(px(24.))
+            .gap_2()
+            .items_center()
+            .when_some(column.choice, |t, n| t.child(key_badge(p, &(n + 1).to_string(), picked)))
+            .when(column.before, |t| t.child(div().flex_none().h(px(20.)).px(px(7.)).flex().items_center().rounded(px(5.)).bg(p.wash).text_size(px(11.5)).font_weight(FontWeight::MEDIUM).text_color(p.text2).child(t!("decide.before"))))
+            .when(!column.before, |t| t.child(div().flex_1().min_w_0().truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(label)))
+            .when(recommended, |t| t.child(super::visuals::badge(p, false)));
+        let foot = option.filter(|_| !column.before).map(|option| {
+            let n = column.choice.unwrap_or(0);
+            let take = {
+                let handle = handle.clone();
+                ui::button(p, ("decide-side-take", k), if picked { Kind::Primary } else { Kind::Secondary }, t!("decide.design_take")).disabled(!shell.can_act()).on_click(move |_, _, cx| {
+                    handle.update(cx, |shell, cx| shell.decide_side_pick(id, n, cx)).ok();
+                })
+            };
+            let preview = crate::decide::preview_of(option).map(|(url, host)| {
+                ui::button(p, ("decide-side-preview", k), Kind::Ghost, t!("decide.live_preview")).icon(Icon::Globe).tip(t!("decide.live_preview_tip", host = host), None).on_click(move |_, _, cx| cx.open_url(&url))
+            });
+            v_flex().w(px(w)).gap_2().child(h_flex().gap_2().flex_wrap().child(take).children(preview)).children(change_list(p, option))
+        });
+        v_flex()
+            .flex_none()
+            .w(px(w))
+            .gap_2()
+            .child(title)
+            .child(tip(div().id(("decide-side-shot", k)).flex_none().rounded(px(R_MD + 1.)).border_1().border_color(if picked { p.accent } else { p.hair }).overflow_hidden().cursor_pointer().child(picture).on_click(open_big), p, t!("visuals.open"), None))
+            .children(foot)
+            .into_any_element()
+    });
+    let row = h_flex().w_full().gap(px(visual::SIDE_GAP)).items_start().children(cells);
+    let body = v_flex().id(("decide-side-scroll", id)).flex_1().min_h_0().w_full().overflow_y_scroll().track_scroll(&open.scroll).px(px(24.)).py(px(20.)).child(shots.measured(div().w_full().child(row), key));
+    Some(
+        v_flex()
+            .id("decide-side")
+            .absolute()
+            .inset_0()
+            .bg(p.bg)
+            .occlude()
+            .child(header)
+            .child(body)
+            .into_any_element(),
+    )
 }
 
 #[cfg(test)]

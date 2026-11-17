@@ -14,8 +14,10 @@ mod clip;
 mod context;
 mod daemon;
 mod design;
+mod design_brand;
 mod design_lint;
 mod design_qa;
+mod design_session;
 mod design_taste;
 mod design_system;
 mod desktop;
@@ -27,7 +29,9 @@ mod launchd;
 mod logins;
 mod notify;
 mod usage;
+mod mcp_servers;
 mod onboard;
+mod open;
 mod remote;
 mod review;
 mod secrets;
@@ -215,42 +219,49 @@ enum Command {
         #[arg(long)]
         images: Option<std::path::PathBuf>,
     },
-    /// Serve a member's board tools over MCP (equipe starts this for its engines)
-    #[command(hide = true)]
+    /// Connect outside MCP servers to the squad's members: `add`, `list`,
+    /// `remove`, `login` (without one, equipe serves a member's board tools
+    /// over MCP: it starts that for its engines)
+    #[command(subcommand_negates_reqs = true, args_conflicts_with_subcommands = true)]
     Mcp {
+        #[command(subcommand)]
+        action: Option<McpAction>,
         /// `equipe` (the board), `desktop` or `phone`
-        #[arg(long, default_value = "equipe")]
+        #[arg(long, default_value = "equipe", hide = true)]
         server: String,
-        #[arg(long)]
-        squad: String,
-        #[arg(long)]
-        member: String,
-        #[arg(long)]
-        role: String,
-        #[arg(long)]
-        home: std::path::PathBuf,
+        #[arg(long, hide = true, required = true)]
+        squad: Option<String>,
+        #[arg(long, hide = true, required = true)]
+        member: Option<String>,
+        #[arg(long, hide = true, required = true)]
+        role: Option<String>,
+        #[arg(long, hide = true, required = true)]
+        home: Option<std::path::PathBuf>,
         /// The member's engine has no subagents of its own: equipe's helpers too
-        #[arg(long)]
+        #[arg(long, hide = true)]
         helpers: bool,
         /// A designer on brand work: its reference tools (`design_tools`) too
-        #[arg(long)]
+        #[arg(long, hide = true)]
         branding: bool,
         /// A light design QA session: only its few tools (`design_qa`, `design_review`, `qa_pictures`, `comment`)
-        #[arg(long)]
+        #[arg(long, hide = true)]
         qa_lite: bool,
         /// The ticket run this server serves (`session:ticket:generation`):
         /// every call says it, and the daemon takes a call that changes the
         /// ticket only from the run that holds it now
-        #[arg(long)]
+        #[arg(long, hide = true)]
         run: Option<String>,
     },
     /// Sign in to sites in a browser, for the squad to work in as you
     Browser {
         /// Where to start (default: a page of sites squads often need) — or
         /// `handoff panel|window`: where a member's sign-in opens (the
-        /// automated browser in the app's panel, or a normal Chrome window)
+        /// automated browser in the app's panel, or a normal Chrome window) —
+        /// or `profile [<Chrome profile>]`: which of equipe's Chrome profiles
+        /// (which Google account) members work in
         url: Option<String>,
-        /// With `handoff`: `panel` or `window` (no value: show it)
+        /// With `handoff`: `panel` or `window`; with `profile`: the profile
+        /// (no value: show it)
         value: Option<String>,
         /// Forget every sign-in: members have no browser until you sign in again
         #[arg(long)]
@@ -275,6 +286,14 @@ enum Command {
         /// Give ⌃⇧V back to iTerm2
         #[arg(long)]
         remove: bool,
+    },
+    /// Open a shared link (`equipe://open/…` or `https://equipe.im/o/#…`) in the desktop app
+    Open {
+        /// The link, as copied from equipe or a chat
+        link: String,
+        /// Only print the link in its `equipe://` form
+        #[arg(long)]
+        print: bool,
     },
     /// Pair a phone running the equipe app with this machine
     Pair,
@@ -627,6 +646,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Disk { words, squad, yes } => disk::command(&words, squad, yes).await.map_err(Failure::new),
         Command::ContextConfig(args) => context::command(args).map_err(Failure::new),
         Command::Update => update().await,
+        Command::Open { link, print } => open::command(&link, print).map_err(Failure::new),
         Command::Lang { lang } => match lang::command(&equipe_providers::credentials::equipe_home(), lang.as_deref()) {
             Ok(lines) => {
                 for line in lines {
@@ -728,6 +748,7 @@ async fn run(cli: Cli) -> ExitCode {
             return ExitCode::FAILURE;
         }
         Command::Browser { url: Some(word), value, .. } if word == "handoff" => browser_handoff(value.as_deref()),
+        Command::Browser { url: Some(word), value, .. } if word == "profile" => browser_profile(value.as_deref()),
         Command::Browser { max: Some(n), .. } => match settings::browser_max(&equipe_providers::credentials::equipe_home(), n.as_deref()) {
             Ok(line) => {
                 println!("  {line}");
@@ -792,10 +813,12 @@ async fn run(cli: Cli) -> ExitCode {
                 },
             }
         }
-        Command::Mcp { server, squad, member, role, home, helpers, branding, qa_lite, run } => {
+        Command::Mcp { action: Some(action), .. } => mcp_action(action).await,
+        Command::Mcp { action: None, server, squad: Some(squad), member: Some(member), role: Some(role), home: Some(home), helpers, branding, qa_lite, run } => {
             let run = run.as_deref().and_then(protocol::rpc::RunKey::parse);
             serve_mcp(&server, squad, member, role, home, helpers, branding, qa_lite, run).await
         }
+        Command::Mcp { .. } => Err(Failure::new(t!("mcp.usage"))),
         // Answered in `main`, before anything starts.
         Command::Hook { .. } => Ok(()),
         Command::Desktop { action } => desktop::run(action.map(|a| match a {
@@ -1004,6 +1027,33 @@ fn browser_handoff(value: Option<&str>) -> CmdResult {
         }
     };
     println!("  {line}");
+    Ok(())
+}
+
+/// `equipe browser profile [<name>]`: the Chrome profiles of equipe's
+/// browser, the Google account signed in to each (masked) and the one members
+/// work in; with a name, members work in that one from the browser's next start.
+fn browser_profile(value: Option<&str>) -> CmdResult {
+    use equipe_core::browser;
+    let home = equipe_providers::credentials::equipe_home();
+    let dir = browser::host_profile(&home);
+    if let Some(name) = value {
+        browser::choose_chrome_profile(&dir, name).map_err(Failure::new)?;
+        println!("  {}", t!("main.browser_profile_set", profile = name));
+        return Ok(());
+    }
+    let profiles = browser::chrome_profiles(&dir);
+    if profiles.is_empty() {
+        println!("  {}", t!("main.browser_profile_none"));
+        return Ok(());
+    }
+    let pinned = browser::pinned_profile(&dir);
+    for p in profiles {
+        let mark = if p.dir == pinned { "▸" } else { " " };
+        let account = p.account.unwrap_or_else(|| t!("main.browser_profile_no_account").to_owned());
+        let managed = if p.managed { format!(" · {}", t!("main.browser_profile_managed")) } else { String::new() };
+        println!("  {mark} {} — {account}{managed}", p.dir);
+    }
     Ok(())
 }
 
@@ -1328,6 +1378,100 @@ fn show_whereabouts(p: &ui::Painter, w: &daemon::Whereabouts) {
 }
 
 /// What went wrong, and the command that fixes it when there is one.
+/// `equipe mcp …`: the squad's outside MCP servers.
+#[derive(Subcommand)]
+enum McpAction {
+    /// Connect a server: a catalog name (`mobbin`), or a name and its https address
+    Add {
+        /// Its name (`mobbin`, or one of your own: letters, digits, `-`, `_`)
+        name: String,
+        /// Its https address (left out for a catalog service)
+        url: Option<String>,
+        /// The roles whose members get it, comma-separated (default: the catalog's, else every member)
+        #[arg(long, value_delimiter = ',')]
+        roles: Vec<String>,
+        /// It speaks server-sent events rather than streamable HTTP
+        #[arg(long)]
+        sse: bool,
+        /// Let each engine sign in itself (`claude mcp login`, `codex mcp login`)
+        /// instead of equipe: only for a server that won't let other apps sign in
+        #[arg(long)]
+        engine_signin: bool,
+        /// The squad (default: the one this folder belongs to, else your first)
+        #[arg(long)]
+        squad: Option<String>,
+    },
+    /// The squad's servers, and where each stands on each engine here
+    List {
+        /// Don't ask the engines where each stands
+        #[arg(long)]
+        no_check: bool,
+        /// The squad (default: the one this folder belongs to, else your first)
+        #[arg(long)]
+        squad: Option<String>,
+    },
+    /// Take a server off the squad
+    Remove {
+        name: String,
+        /// The squad (default: the one this folder belongs to, else your first)
+        #[arg(long)]
+        squad: Option<String>,
+    },
+    /// equipe's proxy for one server, as a member's engine runs it (stdio MCP;
+    /// the daemon adds the credential)
+    #[command(hide = true)]
+    Proxy {
+        #[arg(long)]
+        squad: String,
+        #[arg(long)]
+        server: String,
+        #[arg(long)]
+        member: String,
+        #[arg(long)]
+        home: std::path::PathBuf,
+    },
+    /// Sign in to a server: equipe's own sign-in (the page opens here), or —
+    /// for one connected with --engine-signin — the engine's own
+    Login {
+        name: String,
+        /// `claude` or `codex` (default: Claude Code when it is installed)
+        #[arg(long)]
+        engine: Option<String>,
+        /// The squad (default: the one this folder belongs to, else your first)
+        #[arg(long)]
+        squad: Option<String>,
+    },
+}
+
+async fn mcp_action(action: McpAction) -> Result<(), Failure> {
+    // The proxy speaks MCP on its standard streams: nothing else is printed.
+    if let McpAction::Proxy { squad, server, member, home } = &action {
+        return mcp_servers::proxy(home, squad, server, member).await.map_err(Failure::new);
+    }
+    let home = equipe_providers::credentials::equipe_home();
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let named = match &action {
+        McpAction::Add { squad, .. } | McpAction::List { squad, .. } | McpAction::Remove { squad, .. } | McpAction::Login { squad, .. } => squad.clone(),
+        McpAction::Proxy { .. } => None,
+    };
+    let Some(squad) = home::squad_for(&home, &cwd, named) else {
+        return Err(Failure::new(t!("main.no_squad")));
+    };
+    let socket = daemon::socket();
+    let lines = match action {
+        McpAction::Add { name, url, roles, sse, engine_signin, .. } => mcp_servers::add(&home, &socket, &squad, &name, url.as_deref(), &roles, sse, engine_signin).await,
+        McpAction::List { no_check, .. } => mcp_servers::list(&home, &socket, &squad, !no_check).await,
+        McpAction::Proxy { .. } => Ok(Vec::new()),
+        McpAction::Remove { name, .. } => mcp_servers::remove(&home, &socket, &squad, &name).await.map(|l| vec![l]),
+        McpAction::Login { name, engine, .. } => mcp_servers::login(&home, &socket, &squad, &name, engine.as_deref()).await.map(|l| vec![l]),
+    }
+    .map_err(Failure::new)?;
+    for line in lines {
+        println!("  {line}");
+    }
+    Ok(())
+}
+
 struct Failure {
     message: String,
     next: Option<String>,
@@ -1778,7 +1922,7 @@ impl App {
                 Event::SubagentEnded { .. } => eprintln!("{}", e.dim(&format!("  ↳ {}", t!("main.handed_back")))),
                 Event::SubagentStep { .. } | Event::SubagentEntry { .. } | Event::SubagentStuck { .. } | Event::BrowserFrame { .. } | Event::Suggestion { .. } | Event::SteerQueued { .. } | Event::Steered { .. } | Event::LaneOpened { .. } | Event::RunOpened { .. } | Event::LaneMoved { .. } | Event::ConversationBack { .. } | Event::ConversationTitle { .. } | Event::ConversationRenameRefused { .. } | Event::ConversationPinned { .. } | Event::AutoPutAwayChanged { .. } | Event::PutAwayChanged { .. } | Event::Estimated { .. } | Event::MemoWithdrawn { .. } | Event::QueueSent { .. } | Event::VisualsRendered { .. } => {}
                 Event::Compacting { .. } | Event::Compacted { .. } | Event::CompactFailed { .. } => {}
-                Event::ToolResult { .. } | Event::Thinking { .. } | Event::CommandWatch { .. } => {}
+                Event::ToolResult { .. } | Event::Plan { .. } | Event::Thinking { .. } | Event::CommandWatch { .. } => {}
                 Event::BrowserTabs { .. } | Event::BrowserControl { .. } | Event::BrowserDialog { .. } | Event::BrowserDialogClosed { .. }
                 | Event::BrowserWants { .. } | Event::BrowserWindow { .. }
                 | Event::PairOffer { .. } | Event::PairAsked { .. } | Event::Paired { .. } | Event::PairEnded { .. } | Event::Devices { .. }
@@ -1861,8 +2005,16 @@ impl App {
                 | Event::Models { .. }
                 | Event::SecretAsked { .. }
                 | Event::SecretClosed { .. }
+                | Event::CliSignInChanged { .. }
+                | Event::CliSignInClosed { .. }
+                | Event::McpServers { .. }
+                | Event::VerificationChanged { .. }
+                | Event::VerificationClosed { .. }
+                | Event::MailboxConnect { .. }
                 | Event::Allowed { .. }
                 | Event::Design { .. }
+                | Event::DesignSessionStarted { .. }
+                | Event::OpenTasteTuner { .. }
                 | Event::ProjectDocs { .. }
                 | Event::DocsFound { .. }
                 | Event::CallStarted { .. }
@@ -1870,6 +2022,8 @@ impl App {
                 | Event::CallRoute { .. }
                 | Event::CallSummary { .. }
                 | Event::DocCopyKept { .. }
+                | Event::DesignRefs { .. }
+                | Event::DesignResults { .. }
                 | Event::DesignVersions { .. } => {}
                 Event::Error { message, next, .. } => {
                     failure.get_or_insert(Failure { message, next });

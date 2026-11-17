@@ -6,11 +6,12 @@ a third screen beside the terminal console and the phone — not a second engine
 
 ```bash
 cargo run --release -p equipe-desktop
-scripts/desktop-dmg.sh          # the app people download: dist/equipe.dmg
+scripts/desktop-dmg.sh          # the universal app: dist/equipe.dmg
+EQUIPE_DMG_ARCHS=aarch64 scripts/desktop-dmg.sh   # Apple silicon's: dist/equipe-arm64.dmg
 ```
 
-People get it from **https://github.com/equipe-labs/equipe/releases/latest/download/equipe.dmg**
-(see [Shipping the app](#shipping-the-app)).
+People get it from **https://github.com/equipe-labs/equipe/releases/latest/download/equipe-arm64.dmg**
+(Apple silicon) or **…/equipe-x86_64.dmg** (Intel); see [Shipping the app](#shipping-the-app).
 
 Why a Rust core and GPUI: [research/desktop-stack](./research/desktop-stack/README.md).
 Screen design: the squad's `outputs/T-54 desktop screen design/spec.md`.
@@ -649,6 +650,47 @@ It says what macOS allows, asks if it never was, posts three notices (two in
 the PM's thread, and the update's), puts 3 on the Dock and waits two minutes for
 a click, each step in the log.
 
+## Shareable links
+
+Two people on the same squad (its daemon on one Mac; one app attached locally,
+the other over SSH or Tailscale) share "look at this ticket / this conversation /
+this decision" as a link:
+
+```
+equipe://open/<squad>/<kind>/<id>?host=<machine>
+https://equipe.im/o/#<squad>/<kind>/<id>?host=<machine>
+```
+
+Kinds: `ticket` (`T-2391`), `conversation` (a kept conversation's session id),
+`member` (a name), `decision` (a question set's id), `design` (what a design ticket made, `T-2562`: its card on the design screen's Designs tab), `needs-you`, `status` (the
+last two have no id). Squad, name and host are percent-encoded. `host` is the
+daemon machine's stable name: its Tailscale (MagicDNS) name, else its host name;
+for a window connected over SSH, the name that window connects by. The
+receiving app compares only the first label (`mini` = `mini.tail1234.ts.net`).
+The https form exists because chat apps often don't make a custom scheme
+clickable; the fragment never reaches a server, and `docs/site-open-page/index.html`
+is the static page for `equipe.im/o/` that hands it back to `equipe://`.
+
+Grammar and tolerance (trailing punctuation, `<…>`, Markdown, quotes) are in
+`crates/protocol/src/deeplink.rs`; what the app does is in
+`crates/desktop/src/deeplink.rs`:
+
+- The app registers the `equipe` scheme (`CFBundleURLTypes`, written by
+  `scripts/desktop-dmg.sh`) and handles the open-URL event; a link on its
+  command line, `equipe open <link>` (the CLI hands it to the system) and a
+  link clicked in a chat all arrive the same way.
+- A link for the daemon and squad a window shows goes to that window (the place
+  is pushed on its back/forward history). Another squad of an attached daemon
+  opens in a window of its own. A machine connected to before is offered ("Open
+  on mini?", in a new window). Otherwise a sheet says which Mac and squad the
+  link is for, and how to connect.
+- "Copy link" is in a ticket's header (and ⌘⇧C, and a right-click on a ticket row
+  or card), the conversation's ⋯ menu, a member's row menu, a decision card, Needs
+  you's rows (right-click) and Status. Each copies the link, or "Copy as text"
+  (`T-2391 title · equipe://…`), or the https form.
+- Pasting a link (alone, or with its title) into the composer makes a chip with the
+  ticket's or conversation's title; what is sent starts with "title · link" for each chip.
+
 ## Windows
 
 Each window is its own machine and squad, live side by side: the Mac mini's
@@ -709,29 +751,69 @@ needs the sandbox; see the squad's `mac-app-store-sandbox` note).
 
 ### Fixed URLs
 
-| What | URL |
-|---|---|
-| Download (what the website links to) | `https://github.com/equipe-labs/equipe/releases/latest/download/equipe.dmg` |
-| Update feed (in the app's Info.plist) | `https://github.com/equipe-labs/equipe/releases/latest/download/appcast.xml` |
-| Checksum | `…/latest/download/equipe.dmg.sha256` |
+Each release has three builds of the app: one for Apple silicon, one for
+Intel, and a universal one with both. Each build has its own disk image and
+update feed, all under `https://github.com/equipe-labs/equipe/releases/latest/download/`:
+
+| Build | Download | Update feed | Checksum |
+|---|---|---|---|
+| Apple silicon | `equipe-arm64.dmg` | `appcast-arm64.xml` | `equipe-arm64.dmg.sha256` |
+| Intel | `equipe-x86_64.dmg` | `appcast-x86_64.xml` | `equipe-x86_64.dmg.sha256` |
+| Universal | `equipe.dmg` | `appcast.xml` | `equipe.dmg.sha256` |
+
+The website and the README link to the Apple silicon and Intel builds. The
+universal build is for older links to `equipe.dmg`, and it is the update for
+copies installed before the per-architecture builds, whose Info.plist names
+`appcast.xml`. Each release also has the update deltas for the two
+per-architecture builds: `equipe-<arch>-<version>-<from>.delta`.
 
 `latest` is GitHub's newest release that is not a draft or a prerelease, so a
 `v1.2.3-rc.1` tag never reaches downloads or updates. Asset names carry no
 version, so the links never change. Releases before the desktop app (≤ v0.24.1)
-have no `equipe.dmg`: the link 404s until the first release that has one.
+have no `equipe.dmg`, and releases before the per-architecture builds have no
+`equipe-<arch>.dmg`.
+
+### Which feed a copy of the app reads
+
+Info.plist's `SUFeedURL` names the build's own feed. The app also gives
+Sparkle its feed at run time (the `feedURLStringForUpdater:` delegate method
+in `src/update.rs`, from `relaunch::feed_for`). It replaces `appcast.xml` or
+`appcast-<arch>.xml` with the feed for the Mac it runs on:
+
+- An arm64 binary runs only on Apple silicon, so it reads `appcast-arm64.xml`.
+- An x86_64 binary reads `appcast-x86_64.xml` on an Intel Mac. Under Rosetta
+  on Apple silicon (`sysctl.proc_translated` is 1, which only Apple silicon
+  reports), it reads `appcast-arm64.xml` and moves to the native build.
+- A universal copy runs its Mac's own slice, so it follows the same rules and
+  moves to its Mac's build with its next update.
+
+An Intel Mac therefore never reads the Apple silicon feed. As a second guard,
+that feed's items carry `<sparkle:hardwareRequirements>arm64`, which
+`generate_appcast` adds for an arm64-only bundle and Sparkle (2.9 and later)
+checks against the hardware. The legacy `appcast.xml` only ever offers the
+universal build, so copies from before this change, which have no delegate,
+get a build that runs on any Mac. That build has the delegate and moves on.
+`relaunch::look_at_feed` reads the same feed. `updates.log` names the feed at
+startup.
 
 ### What `scripts/desktop-dmg.sh` makes
 
 One command on a Mac, from the repo root; ~5 min cold (two architectures).
+`EQUIPE_DMG_ARCHS` picks the build: `aarch64` (`equipe-arm64.dmg`,
+`appcast-arm64.xml`), `x86_64` (`equipe-x86_64.dmg`, `appcast-x86_64.xml`) or
+both, the default (`equipe.dmg`, `appcast.xml`).
 
-- **`equipe.app`**: `Contents/MacOS/equipe-desktop` is one universal binary
-  (`aarch64` + `x86_64` built with `MACOSX_DEPLOYMENT_TARGET=12.0`, joined with
-  `lipo`); `Info.plist` with bundle ID `im.equipe.desktop`, version = the
+- **`equipe.app`**: `Contents/MacOS/equipe-desktop` and `Contents/Helpers/equipe`
+  each hold exactly the build's architectures (`aarch64` and/or `x86_64`, built
+  with `MACOSX_DEPLOYMENT_TARGET=12.0`, joined with `lipo`). The script checks
+  this and stops if the binaries it was given don't match; `Info.plist` with bundle ID `im.equipe.desktop`, version = the
   workspace version (both `CFBundleShortVersionString` and `CFBundleVersion`,
   which is what Sparkle compares), minimum macOS 12.0 (Sparkle 2.10's floor),
   icon `crates/desktop/macos/AppIcon.icns` (T-88, light variant).
-- **`equipe.dmg`**: the app and an `Applications` link to drag it onto. Plus
-  `equipe.dmg.sha256`.
+- **The disk image** (`equipe-arm64.dmg`, `equipe-x86_64.dmg` or `equipe.dmg`):
+  the app and an `Applications` link to drag it onto, LZMA-compressed (`ULMO`,
+  which macOS 10.15 and later open; `EQUIPE_DMG_FORMAT=UDZO` for zlib, about a
+  third larger). Plus its `.sha256`.
 - **Signing**, inside out (Sparkle's helpers, the framework, the app, the DMG):
   with a `Developer ID Application` identity (`EQUIPE_SIGN_IDENTITY`, else the
   first in the keychain) — Hardened Runtime, secure timestamp, no entitlements.
@@ -758,8 +840,23 @@ One command on a Mac, from the repo root; ~5 min cold (two architectures).
   `src/update.rs`): a click installs it and relaunches; quitting installs it anyway.
   The public key is committed (`crates/desktop/macos/sparkle-public-ed-key`). With the private
   half (`SPARKLE_ED_PRIVATE_KEY` = contents of the `generate_keys -x` file, or
-  `SPARKLE_ED_KEY_FILE`) it writes `appcast.xml` for this DMG — EdDSA-signed
-  enclosure, and the feed itself signed (`sign_update appcast.xml`).
+  `SPARKLE_ED_KEY_FILE`) it writes the build's appcast with Sparkle's
+  `generate_appcast`: one item, the EdDSA-signed enclosure, and the feed itself
+  signed. The private key goes to `generate_appcast` and `sign_update` only as a
+  file in the build folder (mode 600), which is deleted when the script exits.
+- **Deltas**: given earlier versions of the same build (`EQUIPE_DMG_PREVIOUS`, a
+  folder of `<version>.dmg`, which `scripts/desktop-previous.sh <arch> <dir>`
+  fetches from the newest releases' appcasts), `generate_appcast` also makes a
+  binary delta from each, up to `EQUIPE_DMG_DELTAS` (5). Each is EdDSA-signed and
+  listed in the item's `sparkle:deltas`. They are renamed
+  `equipe-<arch>-<version>-<from>.delta` so both builds' deltas fit in one
+  release. A delta is about 5 MB for a typical release, against about 30 MB for
+  the whole image. Sparkle uses one when the installed copy is exactly the
+  version and build it was made from (it checks the tree's hash), and downloads
+  the full image otherwise, for example for a universal copy or a version more
+  than five releases old. Only older versions are used. The script then checks
+  the feed: one item, this version, this image, and the arm64 requirement
+  exactly when the build is Apple silicon's.
   No public key: no Sparkle, `updates: OFF`, and the menu item is greyed out.
 
 Secrets are read only from the environment or the keychain; nothing secret is in
@@ -800,8 +897,10 @@ false) it is left to finish. The menu also has Hide equipe (⌘H), Hide Others
 (⌥⌘H), Show All and Quit equipe (⌘Q).
 
 Knobs for testing: `EQUIPE_DMG_ARCHS=aarch64` (one arch, quicker),
-`EQUIPE_DMG_OUT`, `EQUIPE_APPCAST_URL` / `EQUIPE_DMG_URL` (point the app and the
-appcast at a local server).
+`EQUIPE_DMG_OUT`, `EQUIPE_APPCAST_URL` / `EQUIPE_DOWNLOAD_PREFIX` (point the app
+and the appcast at a local server; the app keeps a feed whose file name isn't
+`appcast.xml` or `appcast-<arch>.xml` as it is), `EQUIPE_SIGN_IDENTITY=-` (ad
+hoc even with a Developer ID in the keychain).
 
 ### How to release
 
@@ -809,12 +908,15 @@ The desktop app ships with the CLI, same version, same tag:
 
 1. Bump `version` in the workspace `Cargo.toml`, merge to `main`.
 2. `git tag vX.Y.Z && git push origin vX.Y.Z`.
-3. `.github/workflows/release.yml` runs: the `desktop` job (macos-14) runs
-   `scripts/desktop-dmg.sh` with the secrets below, checks the DMG (universal,
-   signature valid, `Applications` link) and hands `equipe.dmg`,
-   `equipe.dmg.sha256` and `appcast.xml` to `publish`, which puts them on the
-   release beside the CLI archives. Installed apps see the new `appcast.xml`
-   through the `latest` link within a day, or at once with Check for Updates….
+3. `.github/workflows/release.yml` runs: the `desktop` job builds the three
+   builds at once, each on its own machine (macos-15). For Apple silicon and
+   Intel it first fetches the build's last five versions
+   (`scripts/desktop-previous.sh`). Each runs `scripts/desktop-dmg.sh` with the
+   secrets below and checks its DMG (exactly its architectures, signature
+   valid, `Applications` link). `publish` puts the images, their checksums,
+   appcasts and deltas on the release beside the CLI archives. Installed apps
+   see their new appcast through the `latest` link within the hour, or at once
+   with Check for Updates….
 
 Run the workflow by hand (Actions ▸ Release ▸ Run workflow) to build the DMG
 as an artifact without publishing.

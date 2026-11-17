@@ -340,10 +340,24 @@ pub const PREMIUM_FAMILY: &str = "fable";
 /// step-ups, role defaults on a new member) goes through here, so a premium
 /// model the person once chose never carries over silently. Other engines
 /// and models pass as they are.
+///
+/// A ticket the person pinned a model on ([`TicketModel::pick`]) is the one
+/// place a lane's premium model counts as explicit: see [`choose`].
 pub fn cap_premium(engine: Engine, model: Option<&str>, explicit: bool) -> Option<String> {
     let model = model?;
-    let premium = engine == Engine::Claude && !model.trim_start().starts_with('@') && crate::models::family(model).is_some_and(|f| f.alias == PREMIUM_FAMILY);
-    Some(if premium && !explicit { "opus".to_owned() } else { model.to_owned() })
+    Some(if is_premium(engine, model) && !explicit { "opus".to_owned() } else { model.to_owned() })
+}
+
+/// Whether `model` is on `engine`'s premium family ([`PREMIUM_FAMILY`]).
+pub fn is_premium(engine: Engine, model: &str) -> bool {
+    engine == Engine::Claude && !model.trim_start().starts_with('@') && crate::models::family(model).is_some_and(|f| f.alias == PREMIUM_FAMILY)
+}
+
+/// A model as the person picks it for one ticket: the Claude family's alias
+/// (`claude-fable-5-1[1m]` becomes `fable`); `None` for anything else.
+pub fn pick_alias(model: &str) -> Option<&'static str> {
+    let model = model.trim();
+    if model.starts_with('@') { None } else { crate::models::family(model).map(|f| f.alias) }
 }
 
 /// How strong a model family is on its engine; `None` for one equipe can't
@@ -509,6 +523,8 @@ pub fn choose(prev: Option<&TicketModel>, rule: Option<&Rule>, m: &Member<'_>, c
     let own = (m.model.map(str::to_owned), m.effort.map(str::to_owned));
     let base = TicketModel {
         pinned: prev.pinned,
+        pick: prev.pick.clone(),
+        premium_tokens: prev.premium_tokens,
         escalations: prev.escalations,
         risk: rule.map(|r| r.risk.clone()).unwrap_or_default(),
         engine: Some(m.engine),
@@ -543,8 +559,15 @@ pub fn choose(prev: Option<&TicketModel>, rule: Option<&Rule>, m: &Member<'_>, c
             }
         },
     };
-    // A lane never starts on the premium family by itself, whatever its member runs.
-    let model = cap_premium(m.engine, model.as_deref(), false);
+    // The person's pick for this ticket alone, on Claude: theirs, the premium
+    // family included. Only here is a premium model explicit without a
+    // member-level word, and only for lanes of this ticket.
+    let picked = prev.pick.as_ref().filter(|_| m.engine == Engine::Claude).and_then(|p| pick_alias(&p.model));
+    let (model, ticket) = match picked {
+        Some(alias) => (cap_premium(m.engine, Some(alias), true), TicketModel { reason: TierReason::Person, ..ticket }),
+        // A lane never starts on the premium family by itself, whatever its member runs.
+        None => (cap_premium(m.engine, model.as_deref(), false), ticket),
+    };
     let fresh = prev.fresh;
     Choice { ticket: TicketModel { model: model.clone(), effort: effort.clone(), ..ticket }, model, effort, fresh }
 }
@@ -589,6 +612,8 @@ pub fn step_up(t: &TicketModel) -> Option<TicketModel> {
 /// escalation; no tier and not pinned gives it back to the rules.
 pub fn set_by_person(t: Option<&TicketModel>, tier: Option<ModelTier>, pinned: bool) -> TicketModel {
     let t = t.cloned().unwrap_or_default();
+    // Letting a pin go (or giving the ticket back to equipe) lets a model pick go with it.
+    let t = if pinned { t } else { TicketModel { fresh: t.fresh || t.pick.is_some(), pick: None, ..t } };
     match tier {
         Some(tier) => TicketModel { tier: Some(tier), by: TierBy::Person, reason: TierReason::Person, pinned, fresh: t.fresh || t.tier != Some(tier), ..t },
         None if pinned => TicketModel { pinned: true, ..t },
@@ -596,6 +621,27 @@ pub fn set_by_person(t: Option<&TicketModel>, tier: Option<ModelTier>, pinned: b
     }
 }
 
+/// `t` with the model the person picks for this ticket alone: `model` (a
+/// Claude family or one of its ids), pinned so escalation leaves it be,
+/// by `by` at `at`. `None` lets the pick go, and its pin with it. `Err`
+/// for a model that isn't Claude's: a pick is a Claude family.
+pub fn set_pick(t: Option<&TicketModel>, model: Option<&str>, by: &str, at: i64) -> Result<TicketModel, String> {
+    let t = t.cloned().unwrap_or_default();
+    Ok(match model {
+        Some(model) => {
+            let alias = pick_alias(model).ok_or_else(|| format!("{model:?} isn't a Claude model family: pick haiku, sonnet, opus or {PREMIUM_FAMILY}."))?;
+            let same = t.pick.as_ref().is_some_and(|p| p.model == alias);
+            TicketModel { pick: Some(equipe_protocol::tiers::ModelPick { model: alias.to_owned(), by: by.to_owned(), at }), pinned: true, fresh: t.fresh || !same, ..t }
+        }
+        None => TicketModel { pinned: t.pinned && t.pick.is_none(), fresh: t.fresh || t.pick.is_some(), pick: None, ..t },
+    })
+}
+
+/// `t` once its ticket closed: a pick belongs to the ticket's work, and that
+/// is over. What was spent on the premium family stays.
+pub fn close(t: &TicketModel) -> TicketModel {
+    TicketModel { pinned: t.pinned && t.pick.is_none(), pick: None, ..t.clone() }
+}
 
 #[cfg(test)]
 mod tests {
@@ -771,6 +817,48 @@ mod tests {
         }
         let up = step_up(&TicketModel { tier: Some(ModelTier::Deep), ..TicketModel::default() }).unwrap();
         assert_ne!(choose(Some(&up), Some(&rule), &fable, ModelChoice::QualityFirst).model.as_deref(), Some("fable"));
+    }
+
+    #[test]
+    fn a_ticket_pick_makes_premium_explicit_for_that_ticket_alone() {
+        let member = Member { engine: Engine::Claude, model: Some("sonnet"), effort: None, catalog: &[], person: false };
+        let rule = Rule { tier: ModelTier::Strong, reason: TierReason::Code, never_lower: false, below_floor: false, risk: Vec::new() };
+        let picked = set_pick(None, Some("claude-fable-5-1[1m]"), "you", 7).unwrap();
+        let pick = picked.pick.clone().unwrap();
+        assert_eq!((pick.model.as_str(), pick.by.as_str(), pick.at, picked.pinned), ("fable", "you", 7, true));
+        // Every lane of the picked ticket runs on it, the lane's tier alone aside.
+        let a = choose(Some(&picked), Some(&rule), &member, ModelChoice::QualityFirst);
+        assert_eq!((a.model.as_deref(), a.ticket.pick.is_some()), (Some("fable"), true));
+        let kept = choose(Some(&a.ticket), Some(&rule), &member, ModelChoice::Off);
+        assert_eq!(kept.model.as_deref(), Some("fable"), "again, whatever the squad's choice");
+        // Another ticket, a follow-up (no model of its own), and the member: capped as before.
+        for prev in [None, Some(&TicketModel::default())] {
+            assert_eq!(choose(prev, Some(&rule), &member, ModelChoice::QualityFirst).model.as_deref(), Some("opus"));
+        }
+        let on_fable = Member { model: Some("fable"), person: true, ..member };
+        assert_eq!(choose(None, Some(&rule), &on_fable, ModelChoice::QualityFirst).model.as_deref(), Some("opus"), "the member's own fable still gives opus here");
+        // An automatic step-up on a picked ticket neither drops nor widens it; on an unpicked one it stays capped.
+        let mut up = step_up(&TicketModel { tier: Some(ModelTier::Deep), pinned: false, ..picked.clone() }).unwrap();
+        assert!(up.pick.is_some());
+        up.pinned = false;
+        assert_eq!(choose(Some(&up), Some(&rule), &member, ModelChoice::QualityFirst).model.as_deref(), Some("fable"));
+        let plain = step_up(&TicketModel { tier: Some(ModelTier::Deep), ..TicketModel::default() }).unwrap();
+        assert_eq!(choose(Some(&plain), Some(&rule), &member, ModelChoice::QualityFirst).model.as_deref(), Some("opus"));
+        // Codex lanes ignore a Claude pick.
+        let codex = Member { engine: Engine::Codex, model: Some("sol"), ..member };
+        assert_ne!(choose(Some(&picked), Some(&rule), &codex, ModelChoice::QualityFirst).model.as_deref(), Some("fable"));
+        // Unpin and closing let it go; the spend stays.
+        let unpinned = set_by_person(Some(&picked), Some(ModelTier::Strong), false);
+        assert!(unpinned.pick.is_none() && !unpinned.pinned);
+        assert!(set_by_person(Some(&picked), Some(ModelTier::Strong), true).pick.is_some(), "raising a pinned one keeps it");
+        assert!(set_by_person(Some(&picked), None, false).pick.is_none(), "given back to equipe");
+        let spent = TicketModel { premium_tokens: 9, ..picked.clone() };
+        let closed = close(&spent);
+        assert!(closed.pick.is_none() && !closed.pinned);
+        assert_eq!(closed.premium_tokens, 9);
+        let gone = set_pick(Some(&picked), None, "you", 8).unwrap();
+        assert!(gone.pick.is_none() && !gone.pinned);
+        assert!(set_pick(None, Some("gpt-6.1-sol"), "you", 1).is_err());
     }
 
     #[test]

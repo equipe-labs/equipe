@@ -441,7 +441,7 @@ async fn qa_waiting_with_a_question(handle: &Handle, events: &mut UnboundedRecei
         name: name.into(),
         arguments,
     };
-    let asked = handle.tool(call("block_on_person", json!({ "needs": ["Say which release this is"] }))).await;
+    let asked = handle.tool(call("block_on_person", json!({ "ask": "Do the one thing", "effort_minutes": 1, "needs": ["Say which release this is"] }))).await;
     assert!(!asked.is_error, "{}", asked.text);
     let asked = handle.tool(call("ask_decision", json!({ "questions": [{ "question": "Which release is this?", "options": ["1.0", "2.0"] }] }))).await;
     assert!(!asked.is_error, "{}", asked.text);

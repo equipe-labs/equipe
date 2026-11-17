@@ -71,17 +71,22 @@ macro_rules! say {
 }
 
 mod decide;
+mod glance;
 mod room;
 mod engines;
 mod design;
+mod design_session;
 mod briefs;
 mod plans;
 mod accept;
 mod gate;
 pub(crate) use gate::checks_scratch;
 mod secrets;
+mod cli_signin;
+mod squad_mcp;
 mod squad_keys;
 mod logins;
+mod sign_ins;
 mod window;
 mod autopilot;
 mod design_qa;
@@ -111,6 +116,7 @@ mod turn_end;
 mod status;
 pub use hygiene::{NATIVE_DESK_TOKENS, NATIVE_TICKET_TOKENS, ROTATE_DESK_TOKENS, ROTATE_TICKET_TOKENS, wants_large_window};
 mod pace;
+mod verify;
 pub use turn_end::turn_ending;
 use turn_end::{RunEnd, TurnEnds, TurnWatch};
 
@@ -161,6 +167,9 @@ const STOP_GRACE: Duration = Duration::from_secs(8);
 /// How often the Codex plan's usage is read while a squad has Codex members,
 /// and at most when a screen attaches.
 const CODEX_USAGE_EVERY: Duration = Duration::from_secs(5 * 60);
+/// How long (seconds) a model the Codex account refused is skipped before it
+/// is tried again: a refusal may be passing, so it is never for good.
+const REFUSED_FOR: u64 = 10 * 60;
 /// How long the Codex CLI's model list is kept.
 const CODEX_MODELS_KEPT: Duration = Duration::from_secs(10 * 60);
 
@@ -281,10 +290,17 @@ enum Request {
     Desktop(DesktopRequest),
     /// A member's phone tools ([`crate::phone`]).
     Phone(phone::PhoneRequest),
+    /// An outside MCP server's proxy asks where to reach it, with its
+    /// credential; `Some(value)`: the server just refused that one.
+    McpUpstream(equipe_protocol::rpc::McpProxyOpen, Option<String>, oneshot::Sender<Result<crate::mcp_gateway::Upstream, String>>),
+    /// What a proxy's message showed of its server.
+    McpSeen(equipe_protocol::rpc::McpProxyOpen, crate::mcp_gateway::Seen),
     /// An engine's plan, read outside a turn.
     Usage(Engine, equipe_protocol::PlanUsage),
     /// The lease check, as if at this unix time (tests).
     CheckLeases(u64, oneshot::Sender<()>),
+    /// The minute's look at turns running, as if this much later (tests).
+    LookAtTurns(Duration, oneshot::Sender<()>),
     /// The minute tick, now (a measurement's).
     Minute(oneshot::Sender<()>),
     /// Paused runs looked at, as if at this unix time (tests).
@@ -312,6 +328,19 @@ impl Handle {
     /// `squad` is the command's, when it named one.
     pub fn refused_person_only(&self, squad: Option<String>) {
         let _ = self.requests.send(Request::MemberRefused(squad));
+    }
+
+    /// Where an outside MCP server's proxy reaches its server, and the
+    /// credential it adds — for a member who gets it ([`crate::mcp_gateway`]).
+    pub async fn mcp_upstream(&self, open: &equipe_protocol::rpc::McpProxyOpen, rejected: Option<String>) -> Result<crate::mcp_gateway::Upstream, String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.requests.send(Request::McpUpstream(open.clone(), rejected, tx));
+        rx.await.unwrap_or_else(|_| Err("equipe is shutting down".to_owned()))
+    }
+
+    /// What a proxy's message showed of its server: the squad's status follows.
+    pub fn mcp_seen(&self, open: &equipe_protocol::rpc::McpProxyOpen, seen: crate::mcp_gateway::Seen) {
+        let _ = self.requests.send(Request::McpSeen(open.clone(), seen));
     }
 
     /// Everything `squad` has going, for a screen that attaches now.
@@ -570,6 +599,16 @@ impl Handle {
         }
     }
 
+    /// The minute's look at turns running — what went silent — as if `later`
+    /// from now, and answered once done: for tests, without waiting.
+    #[doc(hidden)]
+    pub async fn look_at_turns_after(&self, later: Duration) {
+        let (tx, rx) = oneshot::channel();
+        if self.requests.send(Request::LookAtTurns(later, tx)).is_ok() {
+            let _ = rx.await;
+        }
+    }
+
     /// The minute tick, run now and answered once done: for measuring what
     /// it holds the loop for, without waiting for it.
     #[doc(hidden)]
@@ -636,7 +675,11 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         crate::daemon_log!("equipe: no Nebius key yet (Settings › AI platforms, or `equipe login nebius`): handed-in work isn't reviewed by Nemotron");
     }
     // The logins: their passwords in the system's secret store (in memory for tests).
-    let secrets: Box<dyn vault::Secrets> = if std::env::var_os("EQUIPE_VAULT_IN_MEMORY").is_some() { Box::new(vault::InMemory::default()) } else { vault::system_store() };
+    let in_memory = std::env::var_os("EQUIPE_VAULT_IN_MEMORY").is_some();
+    let secrets: Box<dyn vault::Secrets> = if in_memory { Box::new(vault::InMemory::default()) } else { vault::system_store() };
+    // Kept sign-ins need the secret store for their key: equipe's own home's, or a test's in memory —
+    // a scratch home never reaches the person's Keychain for them.
+    let kept_sign_ins = sign_ins::Kept::new(in_memory || config.home == equipe_home());
     let vault = vault::Vault::open(&config.home, secrets);
     let logins = vault.logins.clone();
     let (never_offer, can_keep_logins) = (vault.never_offer.clone(), vault.can_keep());
@@ -655,13 +698,22 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         person_sign_in: Default::default(),
         relogins: HashMap::new(),
         relogin_tries: HashMap::new(),
+        kept_sign_ins,
         sign_in_joined: HashMap::new(),
         login_waiters: HashMap::new(),
         asked_site: HashMap::new(),
+        verify_back: HashMap::new(),
+        finished_in_hands: HashSet::new(),
+        host_pages: HashMap::new(),
+        looked_first: HashMap::new(),
+        asking_cause: None,
         fill_waits: Default::default(),
         next_fill: 0,
         autopilot: Default::default(),
         secret_asks: HashMap::new(),
+        cli_signins: HashMap::new(),
+        mcp: squad_mcp::McpBook::default(),
+        verify: Default::default(),
         secret_env: HashMap::new(),
         secret_nudge: Default::default(),
         delta_tail: HashMap::new(),
@@ -709,6 +761,10 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         codex_read: None,
         codex_reading: false,
         codex_models: None,
+        codex_kind: None,
+        codex_refused: HashMap::new(),
+        model_refused_turns: HashSet::new(),
+        engine_pages: HashMap::new(),
         tool_repeats: HashMap::new(),
         codex_listing: false,
         providers: HashMap::new(),
@@ -915,6 +971,13 @@ struct Session {
     /// Stops one subagent of the turn running now, by its thread, through
     /// its engine (Codex's `turn/interrupt` on the subagent's own turn).
     stop_subagent: Option<mpsc::UnboundedSender<String>>,
+    /// Told to the turn running now (Claude Code's) once its ticket's work is
+    /// over — handed in, waiting, handed back: a turn whose answer is in then
+    /// isn't kept for commands it left running in the background.
+    work_over: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Ends the turn running now (Claude Code's) as far as it went, through
+    /// its provider, its conversation kept: for a turn that went silent.
+    wind_down: Option<oneshot::Sender<()>>,
     /// For each of those, the project the person was looking at (`None`: the whole squad).
     steer_threads: Vec<Option<String>>,
     /// Steers taken back after they went into the turn: not shown when the
@@ -1063,6 +1126,9 @@ enum Internal {
     DeskSaved { session: SessionId, name: String, saved: Result<Option<squad_home::Change>, String> },
     /// A turn's engine started, as this process.
     EngineStarted { session: SessionId, pid: u32 },
+    /// A turn whose answer was in but whose engine didn't end it was ended
+    /// by its provider, as completed: why ([`Activity::Settled`]).
+    TurnSettled { session: SessionId, why: String },
     /// Every process, as a look at members' commands found them (`None`: `ps` couldn't say).
     Processes(Option<Vec<crate::command_watch::Proc>>),
     Done(TurnDone),
@@ -1110,8 +1176,21 @@ enum Internal {
     Relogin { lane: String, outcome: Result<vault::Filled, String> },
     /// Login autopilot's work off the loop came back ([`autopilot::Note`]).
     Autopilot(autopilot::Note),
+    /// A command-line sign-in's process, off the loop, has news ([`cli_signin::Note`]).
+    CliSignIn(cli_signin::Note),
+    /// Where a squad's outside MCP server stands, as looked at off the loop ([`squad_mcp::Checked`]).
+    McpChecked(squad_mcp::Checked),
+    /// What a proxy's credential, renewed off the loop, showed of its server.
+    McpSeen(equipe_protocol::rpc::McpProxyOpen, crate::mcp_gateway::Seen),
+    /// A verification card's fill, or connecting Gmail, came back ([`verify::Note`]).
+    Verify(verify::Note),
     /// A row of the sign-in record, from work done off the loop.
     LoginRecord { squad: String, entry: crate::logins::Entry },
+    /// A squad's kept sign-ins as read or just kept off the loop
+    /// (`crate::signin_store`); `None`: they couldn't be read.
+    /// `turn`: the order the read or change was begun in (a later one wins).
+    /// `squad`: the store's name (`signin_store::store_of`: `""` the shared one).
+    SignIns { squad: String, record: Option<Box<crate::signin_store::Record>>, turn: u64 },
     /// Something waits for a conversation to act on — work handed in for the
     /// PM to accept: it is woken with `prompt` (read at its next step, at work).
     Wake { session: SessionId, prompt: String },
@@ -1134,6 +1213,12 @@ enum Internal {
     Engines(Vec<equipe_protocol::EngineStatus>),
     /// A sign-in (the one numbered so) ended.
     SignInEnded(Engine, u64),
+    /// An engine's own sign-in handed back its page, to open in equipe's
+    /// own browser on this machine (where its last step comes back).
+    EnginePage(Engine, String),
+    /// The Codex account refused `model` for a turn of `session`'s: asked
+    /// again on `instead`, or — none — the turn failed.
+    CodexModelRefused { session: SessionId, model: String, instead: Option<String> },
     /// Installing an engine's tool ended.
     InstallEnded(Engine),
     /// The Codex CLI's models, as just listed off the loop for the screens;
@@ -1164,6 +1249,8 @@ enum Internal {
     PlanListed(String, Option<String>),
     /// A design system's accepted versions, read off the loop.
     DesignVersions { squad: String, project: Option<String>, versions: Vec<equipe_protocol::design::DesignVersion> },
+    /// A design folder's references read off the loop: the event to send.
+    DesignRefs(Box<Event>),
     /// The version the person asked to go back to, looked up off the loop (`None`: not one).
     DesignRestore { squad: String, project: Option<String>, commit: String, version: Option<equipe_protocol::design::DesignVersion> },
     /// A design QA precheck ended off the loop: its report is in the
@@ -1311,6 +1398,18 @@ struct Runtime {
     codex_reading: bool,
     /// The models the Codex CLI offers, as last listed.
     codex_models: Option<(std::time::Instant, Vec<codex_app::ModelInfo>)>,
+    /// How the Codex CLI is signed in, as last asked: a refused model is the
+    /// account kind's (a ChatGPT plan's, an API key's).
+    codex_kind: Option<codex_app::SignIn>,
+    /// Models the Codex account refused lately (`model_not_found`), with when
+    /// and on which kind of account: skipped for [`REFUSED_FOR`], then tried
+    /// again — a refusal may pass.
+    codex_refused: HashMap<String, (u64, Option<codex_app::SignIn>)>,
+    /// Runs whose last turn failed on a refused model, with nothing to fall
+    /// back on: never an engine's limit.
+    model_refused_turns: HashSet<SessionId>,
+    /// Each engine's sign-in page under way, as its tool handed it back.
+    engine_pages: HashMap<Engine, String>,
     /// For each run, its latest tool call and how many times in a row it
     /// came: a loop raises its ticket's next lane (`runtime::tiers`).
     tool_repeats: HashMap<SessionId, (String, u32)>,
@@ -1432,6 +1531,8 @@ struct Runtime {
     relogins: HashMap<String, logins::Relogin>,
     /// When equipe last tried signing in with each login by itself.
     relogin_tries: HashMap<u32, Vec<std::time::Instant>>,
+    /// Each squad's kept sign-ins, once read ([`crate::signin_store`]).
+    kept_sign_ins: sign_ins::Kept,
     /// Members that asked to sign in with a login a card already asks the
     /// person about: they wait on that card (by its id), not one of their own.
     sign_in_joined: HashMap<u64, Vec<Pending>>,
@@ -1440,6 +1541,20 @@ struct Runtime {
     login_waiters: HashMap<String, Vec<(SessionId, String)>>,
     /// The site a browser was handed to the person to sign in to, by lane.
     asked_site: HashMap<String, String>,
+    /// Sign-ins back from the person's hands — a window, a sign-in view, the
+    /// panel — whose finish isn't seen yet: the lane's page is looked at as
+    /// it comes back (`logins::verify_back`). By lane: the site, and since when.
+    verify_back: HashMap<String, (String, std::time::Instant)>,
+    /// Lanes whose sign-in was seen finished while in the person's hands.
+    finished_in_hands: HashSet<String>,
+    /// Each lane's pages as the host last told them, with what was read off
+    /// them, and its member's tab: for a hand-back whose page is loaded already.
+    host_pages: HashMap<String, (Vec<browser::HostPage>, Option<u64>)>,
+    /// `(lane, site)` a member was told to look at its own page before handing
+    /// it over for a sign-in it may already have: when.
+    looked_first: HashMap<(String, String), u64>,
+    /// The cause of the hand-off being asked for now, for what the person is told.
+    asking_cause: Option<crate::logins::Cause>,
     /// equipe's fills of a kept login waiting for the browser host's answer, by token.
     fill_waits: logins::FillWaits,
     next_fill: u64,
@@ -1453,6 +1568,13 @@ struct Runtime {
     /// Secrets members asked the person for (`ask_secret`), by squad — read
     /// from its journal when first wanted.
     secret_asks: HashMap<String, Vec<crate::protocol::secrets::SecretAsk>>,
+    /// Command-line sign-ins the person is finishing on cards (`cli_sign_in`), by squad.
+    cli_signins: HashMap<String, Vec<cli_signin::Live>>,
+    /// The squads' outside MCP servers: where each stands, checks under way,
+    /// and the sign-ins the person put off ([`squad_mcp`]).
+    mcp: squad_mcp::McpBook,
+    /// Verification cards: codes sites emailed while members' pages wait on them ([`verify`]).
+    verify: verify::State,
     /// Kept keys members asked their commands to get as environment
     /// variables (`secret_use`), by session: `(variable, key name)`. The value
     /// is looked up — and the right to it checked again — when a turn starts.
@@ -1507,14 +1629,18 @@ impl Wake {
             Wake::Request(Some(Request::BrowserHub(_))) => Borrowed("browser panel"),
             Wake::Request(Some(Request::Desktop(_))) => Borrowed("desktop lease"),
             Wake::Request(Some(Request::Phone(_))) => Borrowed("phone tool"),
+            Wake::Request(Some(Request::McpUpstream(..))) => Borrowed("an outside MCP server's proxy"),
+            Wake::Request(Some(Request::McpSeen(..))) => Borrowed("an outside MCP server's call"),
             Wake::Request(Some(Request::Usage(..))) => Borrowed("an engine's plan usage"),
             Wake::Request(Some(Request::CheckLeases(..))) => Borrowed("lease check"),
+            Wake::Request(Some(Request::LookAtTurns(..))) => Borrowed("turns looked at"),
             Wake::Request(Some(Request::Minute(_))) => Borrowed("minute tick"),
             Wake::Request(Some(Request::TurnEndsDue(..))) => Borrowed("paused runs' time"),
             Wake::Request(Some(Request::Shutdown(_))) | Wake::Request(None) => Borrowed("shutdown"),
             Wake::Request(Some(Request::DesktopAuto)) => Borrowed("desktop setup"),
             Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
             Wake::Internal(Internal::EngineStarted { .. }) => Borrowed("an engine's start"),
+            Wake::Internal(Internal::TurnSettled { .. }) => Borrowed("a settled turn ended"),
             Wake::Internal(Internal::Processes(_)) => Borrowed("what members' commands run"),
             Wake::Internal(Internal::Done(_)) => Borrowed("a turn's end"),
             Wake::Internal(Internal::ConversationTitle(_)) => Borrowed("a conversation's title"),
@@ -1537,7 +1663,12 @@ impl Wake {
             Wake::Internal(Internal::LoginInsights(_)) => Borrowed("the sign-in record read"),
             Wake::Internal(Internal::Relogin { .. }) => Borrowed("equipe's own sign-in ending"),
             Wake::Internal(Internal::Autopilot(_)) => Borrowed("login autopilot"),
+            Wake::Internal(Internal::CliSignIn(_)) => Borrowed("a command-line sign-in"),
+            Wake::Internal(Internal::McpChecked(_)) => Borrowed("an outside MCP server checked"),
+            Wake::Internal(Internal::McpSeen(..)) => Borrowed("an outside MCP server's sign-in"),
+            Wake::Internal(Internal::Verify(_)) => Borrowed("a verification code card"),
             Wake::Internal(Internal::LoginRecord { .. }) => Borrowed("a sign-in kept on the record"),
+            Wake::Internal(Internal::SignIns { .. }) => Borrowed("a squad's kept sign-ins"),
             Wake::Internal(Internal::DeskSaved { .. }) => Borrowed("a desk turn's changes saved"),
             Wake::Internal(Internal::Wake { .. }) => Borrowed("work waits for a conversation"),
             Wake::Internal(Internal::DiskTrimmed(..)) => Borrowed("a trim of the build caches"),
@@ -1552,6 +1683,8 @@ impl Wake {
             Wake::Request(Some(Request::DiskClean(..))) => Borrowed("a clean of the disk"),
             Wake::Internal(Internal::Engines(_)) => Borrowed("where the engines stand"),
             Wake::Internal(Internal::SignInEnded(..)) => Borrowed("a sign-in's end"),
+            Wake::Internal(Internal::EnginePage(..)) => Borrowed("an engine's sign-in page"),
+            Wake::Internal(Internal::CodexModelRefused { .. }) => Borrowed("a Codex model refused"),
             Wake::Internal(Internal::InstallEnded(..)) => Borrowed("an engine's install's end"),
             Wake::Internal(Internal::CodexModels(_)) => Borrowed("the Codex models listed"),
             Wake::Internal(Internal::ProviderListed { .. }) => Borrowed("a provider's models listed"),
@@ -1565,6 +1698,7 @@ impl Wake {
             Wake::Internal(Internal::PlanCut(..)) => Borrowed("a plan read for a ticket"),
             Wake::Internal(Internal::PlanListed(..)) => Borrowed("a ticket listed in its plan"),
             Wake::Internal(Internal::DesignVersions { .. }) => Borrowed("a design system's versions"),
+            Wake::Internal(Internal::DesignRefs(..)) => Borrowed("a design system's references"),
             Wake::Internal(Internal::DesignRestore { .. }) => Borrowed("a design version to go back to"),
             Wake::Internal(Internal::Reviewed { .. }) => Borrowed("a Nemotron review"),
             Wake::Internal(Internal::Prechecked { .. }) => Borrowed("a design QA precheck"),
@@ -1712,6 +1846,8 @@ impl Runtime {
                 }
                 Some(Request::Desktop(request)) => self.on_desktop(request),
                 Some(Request::Phone(request)) => self.on_phone(request),
+                Some(Request::McpUpstream(open, rejected, reply)) => self.mcp_upstream(open, rejected, reply),
+                Some(Request::McpSeen(open, seen)) => self.mcp_seen(open, seen),
                 Some(Request::Disk(reply)) => self.disk_report(Some(reply), false),
                 Some(Request::Status(ask, reply)) => self.squad_status(ask, reply),
                 Some(Request::DiskClean(ids, reply)) => self.disk_clean(ids, Some(reply)),
@@ -1728,6 +1864,10 @@ impl Runtime {
                 Some(Request::CheckLeases(at, reply)) => {
                     self.renew_execution_leases();
                     self.recover_execution_leases(at).await;
+                    let _ = reply.send(());
+                }
+                Some(Request::LookAtTurns(later, reply)) => {
+                    self.look_at_turns(std::time::Instant::now() + later).await;
                     let _ = reply.send(());
                 }
                 Some(Request::TurnEndsDue(at, reply)) => {
@@ -1767,6 +1907,7 @@ impl Runtime {
                 }
                 Internal::DeskSaved { session, name, saved } => self.desk_saved(session, &name, saved),
                 Internal::EngineStarted { session, pid } => self.engine_started(session, pid),
+                Internal::TurnSettled { session, why } => self.turn_settled(session, &why),
                 Internal::Processes(procs) => self.on_processes(procs),
                 Internal::Done(done) => self.on_turn_done(done).await,
                 Internal::ConversationTitle(done) => self.on_conversation_title(done),
@@ -1796,7 +1937,12 @@ impl Runtime {
                 Internal::LoginInsights(insights) => self.publish(Event::LoginInsights { insights: *insights }),
                 Internal::Relogin { lane, outcome } => self.relogin_done(lane, outcome).await,
                 Internal::Autopilot(note) => self.autopilot_note(note).await,
+                Internal::CliSignIn(note) => self.cli_sign_in_note(note).await,
+                Internal::McpChecked(checked) => self.mcp_checked(checked),
+                Internal::McpSeen(open, seen) => self.mcp_seen(open, seen),
+                Internal::Verify(note) => self.verify_note(note).await,
                 Internal::LoginRecord { squad, entry } => self.login_record(&squad, entry),
+                Internal::SignIns { squad, record, turn } => self.sign_ins_read(&squad, record.map(|r| *r), turn),
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
                 Internal::DiskTrimmed(freed, lines) => self.on_disk_trimmed(freed, lines),
@@ -1830,10 +1976,16 @@ impl Runtime {
                     self.publish_nebius();
                     self.publish_providers();
                 }
+                Internal::EnginePage(engine, url) => {
+                    self.engine_pages.insert(engine, url.clone());
+                    self.open_engine_page(&url);
+                }
+                Internal::CodexModelRefused { session, model, instead } => self.codex_model_refused(session, model, instead),
                 Internal::SignInEnded(engine, id) => {
                     if self.sign_ins.get(&engine).is_some_and(|(at, _)| *at == id) {
                         self.sign_ins.remove(&engine);
                         self.sign_in_codes.remove(&engine);
+                        self.engine_pages.remove(&engine);
                     }
                     // Signed in (or not): looked at again, and what it stopped carried on.
                     if let Some(fix) = self.auth.get_mut(&engine) {
@@ -1854,11 +2006,15 @@ impl Runtime {
                 Internal::PlanCut(cut) => self.plan_cut(*cut).await,
                 Internal::PlanListed(squad, error) => self.plan_listed(&squad, error),
                 Internal::DesignVersions { squad, project, versions } => self.on_design_versions(squad, project, versions),
+                Internal::DesignRefs(event) => self.publish(*event),
                 Internal::DesignRestore { squad, project, commit, version } => self.on_design_restore(squad, project, commit, version).await,
                 Internal::Reviewed { squad, ticket, member, result } => self.on_reviewed(&squad, ticket, member, result),
                 Internal::Prechecked { squad, qa, result, secs } => Box::pin(self.on_prechecked(&squad, qa, result, secs)).await,
                 Internal::ReviewPrechecked { squad, review, heads, secs } => Box::pin(self.on_review_prechecked(&squad, review, heads, secs)).await,
-                Internal::SubagentHeard { session, id } => self.subagent_heard(session, &id),
+                Internal::SubagentHeard { session, id } => {
+                    self.engine_heard(session);
+                    self.subagent_heard(session, &id);
+                }
                 Internal::Helper { session, id, activity } => self.helper_did(session, &id, activity),
                 Internal::HelperEnded { session, id, outcome } => self.helper_ended(session, &id, outcome),
                 Internal::HelperTimeUp { session, id } => self.stop_helper(session, &id, crate::helpers::Ended::TimeLimit),
@@ -1898,6 +2054,8 @@ impl Runtime {
         self.recover_execution_leases(now_secs()).await;
         pulse.step("minute tick: paused runs");
         self.turn_ends_due(now_secs());
+        pulse.step("minute tick: quiet turns");
+        self.look_at_turns(std::time::Instant::now()).await;
         self.plan_use_pass();
         pulse.step("minute tick: idle lanes");
         self.fold_idle_lanes();
@@ -1954,11 +2112,25 @@ impl Runtime {
         }
         // A ticket closing, however it closed (the person's word, the PM's, a
         // designer's verdict, a member leaving): its lane's temporary folder goes.
-        if let Event::TicketChanged { squad, ticket } = &event {
+        let mut event = event;
+        if let Event::TicketChanged { squad, ticket } = &mut event {
             if !ticket.status.is_closed() {
                 self.closed_seen.remove(&(squad.clone(), ticket.id));
-            } else if self.closed_seen.insert((squad.clone(), ticket.id)) {
-                self.clear_lane_tmp_of(squad, ticket.id);
+            } else {
+                let first = self.closed_seen.insert((squad.clone(), ticket.id));
+                if first {
+                    self.clear_lane_tmp_of(squad, ticket.id);
+                }
+                // A model the person picked for this ticket alone ends with it, wherever it closed.
+                if first || ticket.model.as_ref().is_some_and(|m| m.pick.is_some()) {
+                    if let Some(m) = ticket.model.as_ref().filter(|m| m.pick.is_some()) {
+                        ticket.model = Some(crate::tiers::close(m));
+                    }
+                    let (squad, id) = (squad.clone(), ticket.id);
+                    if let Some(journal) = self.journal(&squad) {
+                        let _ = journal.clear_ticket_pick(id);
+                    }
+                }
             }
         }
         self.publish_in(None, event);
@@ -2034,6 +2206,8 @@ impl Runtime {
         let mut squad = squad.map(str::to_owned);
         let mut no_room = false;
         let mut to_draw = None;
+        // A ticket whose premium-family spend just grew: told to the screens after.
+        let mut premium_spent = None;
         if let Some(id) = event.session()
             && let Some(session) = self.sessions.get_mut(&id)
         {
@@ -2140,11 +2314,23 @@ impl Runtime {
                 }
                 if let Some(turn) = &turn {
                     let _ = journal.record_turn_use(turn, turn_use.as_ref());
+                    // Tokens spent on the premium family stay on the ticket, for the person to see.
+                    if let (Some(ticket), Some(used)) = (turn.ticket, &turn_use)
+                        && used.model.as_deref().is_some_and(|m| crate::tiers::is_premium(used.engine, m))
+                        && journal.add_premium_tokens(ticket, turn.tokens).unwrap_or(false)
+                    {
+                        premium_spent = Some((name.clone(), ticket));
+                    }
                 }
             }
         }
         if let Some((id, name, finished)) = to_draw {
             self.draw_visuals(id, &name, &finished);
+        }
+        if let Some((squad, ticket)) = premium_spent
+            && let Some(t) = self.find_ticket(&squad, ticket)
+        {
+            self.publish(Event::TicketChanged { squad, ticket: t });
         }
         if let Some(name) = event.squad() {
             squad = Some(name.to_owned());
@@ -2235,7 +2421,7 @@ impl Runtime {
         if let Some((at, models)) = &self.codex_models
             && at.elapsed() < CODEX_MODELS_KEPT
         {
-            return Ok(models.iter().map(|m| m.id.clone()).collect());
+            return Ok(models.iter().filter(|m| !self.codex_refuses(&m.id)).map(|m| m.id.clone()).collect());
         }
         let cwd = if self.config.home.is_dir() { self.config.home.clone() } else { std::env::temp_dir() };
         let listed = tokio::time::timeout(SERVER_WAIT, codex_app::list_model_infos(&self.config.codex_binary, &cwd)).await;
@@ -2244,7 +2430,7 @@ impl Runtime {
             Ok(Err(err)) => return Err(err.to_string()),
             Err(_) => return Err(format!("Codex didn't answer in {}s", SERVER_WAIT.as_secs())),
         };
-        let ids = models.iter().map(|m| m.id.clone()).collect();
+        let ids = models.iter().filter(|m| !self.codex_refuses(&m.id)).map(|m| m.id.clone()).collect();
         self.codex_models = Some((std::time::Instant::now(), models));
         Ok(ids)
     }
@@ -2526,10 +2712,19 @@ impl Runtime {
                 if self.window_done(&lane, take).await {
                     return;
                 }
+                // A check that refuses automated browsers: taken in a normal Chrome window, not the panel.
+                if take && self.check_to_window(&lane).await {
+                    return;
+                }
                 self.hub.op(&json!({ "op": "control", "lane": lane, "by": take.then_some("person") }));
             }
             Command::BrowserDialog { page, accept, text } => {
                 self.hub.op(&json!({ "op": "dialog", "page": page, "accept": accept, "text": text }));
+            }
+            // An engine's sign-in page, opened again from its card: as it was,
+            // no login to keep at its end — it is the engine's own.
+            Command::BrowserSignIn { url, .. } if self.engine_pages.values().any(|page| *page == url) => {
+                self.open_engine_page(&url);
             }
             Command::BrowserSignIn { url, window } => {
                 self.start_sign_in(&url, window);
@@ -2539,6 +2734,14 @@ impl Runtime {
                 if page == 0 {
                     let raise = self.windows.handoffs.raise();
                     self.run_window_actions(raise).await;
+                    return;
+                }
+                // A page stopped at a check that refuses automated browsers: bringing up the
+                // automated Chrome's own window wouldn't help — a normal one opens instead.
+                if let Some(lane) = self.lane_of_page(page)
+                    && self.checking.get(&lane).is_some_and(|c| c.0 == page)
+                    && self.check_to_window(&lane).await
+                {
                     return;
                 }
                 self.hub.op(&json!({ "op": "popout", "page": page, "bounds": bounds }));
@@ -2690,6 +2893,19 @@ impl Runtime {
             Command::BrowserProfiles => self.publish_browser_profiles(),
             Command::SaveSecret { squad, id, values } => self.save_secret(&squad, id, values).await,
             Command::DismissSecret { squad, id } => self.dismiss_secret(&squad, id).await,
+            Command::SubmitCliSignInCode { squad, id, code } => self.submit_cli_sign_in_code(&squad, id, code),
+            Command::RestartCliSignIn { squad, id } => self.restart_cli_sign_in(&squad, id),
+            Command::CancelCliSignIn { squad, id } => self.cancel_cli_sign_in(&squad, id).await,
+            Command::FillVerificationCode { squad, id } => self.fill_verification(&squad, id),
+            Command::TypeVerificationCode { squad, id } => self.type_verification(&squad, id),
+            Command::ConnectGmail { client } => self.connect_gmail(client),
+            Command::DisconnectGmail => self.disconnect_gmail(),
+            Command::RequestServiceKey { squad, service } => self.request_service_key(&squad, &service),
+            Command::AddMcpServer { squad, server, sign_in } => self.add_mcp_server(&squad, server, sign_in),
+            Command::RemoveMcpServer { squad, name } => self.remove_mcp_server(&squad, &name),
+            Command::SetMcpServerEnabled { squad, name, on } => self.set_mcp_server_enabled(&squad, &name, on),
+            Command::SignInMcpServer { squad, name } => self.sign_in_mcp_server(&squad, &name),
+            Command::CheckMcpServers { squad } => self.check_mcp_servers(&squad, None, None),
             command @ (Command::SquadSecrets
             | Command::SetSquadSecretProjects { .. }
             | Command::DeleteSquadSecret { .. }
@@ -2801,6 +3017,7 @@ impl Runtime {
             Command::SetParallel { squad, parallel } => self.set_parallel(&squad, parallel).await,
             Command::SetModelChoice { squad, choice } => self.set_model_choice(&squad, choice),
             Command::SetTicketTier { squad, ticket, tier, pinned } => self.set_ticket_tier(&squad, ticket, tier, pinned),
+            Command::SetTicketModel { squad, ticket, model } => self.set_ticket_pick(&squad, ticket, model),
             Command::SetPmAccepts { squad, on } => {
                 if let Some(journal) = self.journal(&squad) {
                     let _ = journal.set_pm_accepts(on);
@@ -2834,8 +3051,12 @@ impl Runtime {
             Command::SearchDocs { squad, query } => self.docs_searched(squad, query),
             Command::KeepDocCopy { squad, session, keep } => self.keep_doc_copy(squad, session, keep),
             Command::DesignVersions { squad, project } => self.design_versions_asked(squad, project),
+            Command::DesignRefs { squad, project, ticket, query, offset } => self.design_refs_asked(squad, project, ticket, query, offset),
+            Command::DesignResults { squad } => self.design_results_asked(squad),
             Command::RestoreDesign { squad, project, commit } => self.restore_design_asked(squad, project, commit),
             Command::Taste { squad, project, change } => self.taste_changed(squad, project, change),
+            Command::TasteSignals { squad, project, signals } => self.taste_signals(squad, project, signals),
+            Command::StartDesignSession { squad, project, page, from } => self.start_design_session(squad, project, page, from).await,
         }
     }
 
@@ -2931,7 +3152,7 @@ impl Runtime {
         let task = tokio::spawn(async move {
             let tell = |step| drop(internal.send(Internal::Event(Box::new(Event::SignIn { engine, step }))));
             let end = match codes {
-                None => crate::engines::codex_login(&codex, device, tell).await,
+                None => crate::engines::codex_sign_in(&codex, device, tell, |url| drop(internal.send(Internal::EnginePage(engine, url)))).await,
                 Some(_) if crate::engine_auth::in_login_session() == Some(false) => {
                     let _ = internal.send(Internal::AuthRecheck(engine));
                     SignInStep::Failed { why: SignInFailure::Unsupported, detail: String::new() }
@@ -3049,6 +3270,7 @@ impl Runtime {
             let stopped = std::mem::take(&mut fix.stopped);
             fix.carried_on_at = (!stopped.is_empty()).then_some(now);
             fix.since = None;
+            fix.auto_started = false;
             let mut resumed = 0;
             for stopped in stopped {
                 if self.carry_on_signed_in(&stopped).await {
@@ -3065,11 +3287,23 @@ impl Runtime {
             return;
         }
         (fix.state, fix.detail) = (state, detail);
+        // Signed out with work stopped on it: equipe starts the engine's own
+        // sign-in itself — once for this sign-out, whoever it stopped — rather
+        // than telling the person to run a command. Its page opens in
+        // equipe's own browser; approving there stays the person's.
+        let start = state == AuthState::SignedOut && !fix.stopped.is_empty() && !fix.auto_started && !self.sign_ins.contains_key(&engine);
+        if start {
+            fix.auto_started = true;
+        }
         let event = fix.event(engine);
         let again = !fix.stopped.is_empty()
             && matches!(state, AuthState::KeychainLocked | AuthState::SignedOut | AuthState::Unknown)
             && fix.since.is_some_and(|since| now.saturating_sub(since) < AUTH_WATCH.as_secs());
         self.publish(event);
+        if start {
+            crate::daemon_log!("equipe: {} is signed out here and stopped work: equipe starts its own sign-in, once, for every member it stopped", engine_name(engine));
+            self.sign_in(engine, false);
+        }
         if again {
             let internal = self.internal.clone();
             tokio::spawn(async move {
@@ -3162,6 +3396,90 @@ impl Runtime {
         }
         let event = fix.event(Engine::Claude);
         self.publish(event);
+    }
+
+    /// An engine's own sign-in page, in equipe's own browser on this
+    /// machine — the browser panel of an attached screen, else its Chrome
+    /// window — where the person's web sign-ins usually are already, and
+    /// where the page's last step comes back to the tool's login server. No
+    /// login is kept for the members at its end: it is the engine's.
+    fn open_engine_page(&mut self, url: &str) -> bool {
+        use equipe_protocol::BrowserSignInState as State;
+        let window = !self.hub.has_panel();
+        let host = self.config.npx.clone().and_then(|npx| self.browser_host(&npx));
+        let opened = host.is_some_and(|host| {
+            host.lock()
+                .map(|mut h| {
+                    if window {
+                        h.person(url);
+                    } else {
+                        h.op(&json!({ "op": "newtab", "url": url }));
+                    }
+                })
+                .is_ok()
+        });
+        if opened {
+            self.publish(Event::BrowserSignIn { site: vault::site_of(url), state: State::Opened, window });
+        } else {
+            crate::daemon_log!("equipe: an engine's sign-in page couldn't open in equipe's browser here; its card offers it");
+        }
+        opened
+    }
+
+    // ── a model the Codex account refuses ──
+
+    /// Whether the Codex account refused `model` lately, on the kind of
+    /// account it is signed in with now.
+    fn codex_refuses(&self, model: &str) -> bool {
+        self.codex_refused.get(model).is_some_and(|(at, kind)| now_secs().saturating_sub(*at) < REFUSED_FOR && (kind.is_none() || self.codex_kind.is_none() || *kind == self.codex_kind))
+    }
+
+    /// The model a Codex turn on `model` goes to when the account refuses it:
+    /// never a dearer one — the strongest cheaper family it lists (Sol goes to
+    /// Luna, never up to Astra), else another version of the same family;
+    /// for a model of no known family, the account's default unless that is
+    /// the dearest. None refused lately; `effort` when that model takes it,
+    /// else its own default effort.
+    fn codex_fallback(&self, model: &str, effort: Option<&str>) -> Option<codex_app::Fallback> {
+        let (_, infos) = self.codex_models.as_ref()?;
+        let usable: Vec<&codex_app::ModelInfo> = infos.iter().filter(|m| m.id != model && !self.codex_refuses(&m.id)).collect();
+        let pick = codex_fallback_of(model, &usable)?;
+        let effort = match effort {
+            Some(e) if pick.efforts.is_empty() || pick.efforts.iter().any(|x| x == e) => Some(e.to_owned()),
+            _ => pick.default_effort.clone(),
+        };
+        Some(codex_app::Fallback { model: pick.id.clone(), effort })
+    }
+
+    /// The Codex account refused `model` for a turn of `id`'s: skipped for a
+    /// while (never for good), logged, and — asked again on `instead` — the
+    /// person told in a line; with nothing to fall back on, the run's failure
+    /// is never taken for the engine's limit.
+    fn codex_model_refused(&mut self, id: SessionId, model: String, instead: Option<String>) {
+        let kind = self.codex_kind;
+        if !model.is_empty() {
+            self.codex_refused.insert(model.clone(), (now_secs(), kind));
+        }
+        let who = self.sessions.get(&id).and_then(|s| s.name().map(str::to_owned)).unwrap_or_else(|| "a conversation".to_owned());
+        let account = match kind {
+            Some(codex_app::SignIn::ChatGpt) => "a ChatGPT plan",
+            Some(codex_app::SignIn::ApiKey) => "an API key",
+            _ => "this account",
+        };
+        match instead {
+            Some(instead) => {
+                crate::daemon_log!("equipe: Codex refused {model} for {who}'s turn (model_not_found, on {account}): asked again on {instead}; {model} is skipped for {} min", REFUSED_FOR / 60);
+                let text = say!(self, "news.codex_model_fallback", model = model, instead = instead);
+                self.publish(Event::Notice { undo: None, session: id, text });
+            }
+            None => {
+                crate::daemon_log!("equipe: Codex refused {model} for {who}'s turn (model_not_found, on {account}), with no other model listed to ask; {model} is skipped for {} min", REFUSED_FOR / 60);
+                self.model_refused_turns.insert(id);
+            }
+        }
+        if self.codex_models.is_none() {
+            self.models_asked(Engine::Codex);
+        }
     }
 
     // ── squads ──
@@ -3901,7 +4219,7 @@ runbooks and reports live there, and work across the projects or on running them
             Engine::Codex if codex_cli => {
                 if !on_nebius {
                     match codex_app::login_status(&self.config.codex_binary).await {
-                        Ok(Some(sign_in)) if sign_in.signed_in() => {}
+                        Ok(Some(sign_in)) if sign_in.signed_in() => self.codex_kind = Some(sign_in),
                         // Signed out, nothing else signed in, and a Token Factory key: Nemotron instead of failing.
                         Ok(_) if self.config.nemotron.is_some() && self.nothing_signed_in().await => on_nebius = true,
                         Ok(_) => return fail(self, say!(self, "error.codex_cli_signed_out"), Some("equipe login codex")),
@@ -4092,6 +4410,8 @@ runbooks and reports live there, and work across the projects or on running them
                 steer_threads: Vec::new(),
                 stop: None,
                 stop_subagent: None,
+                work_over: None,
+                wind_down: None,
                 taken_back: Vec::new(),
                 send_now_prompt: None,
                 subagents: Vec::new(),
@@ -4824,7 +5144,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             session.watch.begin(&prompt);
             if let Some(work) = session.work.as_mut() {
                 work.end.nudged = false;
-                work.end.with_person = false;
+                work.end.with_person = None;
             }
         }
         // A run equipe paused goes on with this turn, however it was asked.
@@ -4921,6 +5241,12 @@ for one project goes to it as tickets for its owners, with that project — and 
             (Some(on), Some(sq)) => self.tickets(&sq).into_iter().find(|t| t.id == on).is_some_and(|t| crate::design::brand::is_branding(&t.title, &t.body)),
             _ => false,
         };
+        // The outside MCP servers the squad connected for this member's role,
+        // on its engine — a card for one that needs a sign-in, once (`squad_mcp`).
+        let outside: Vec<(crate::squad_mcp::McpServer, crate::squad_mcp::Credential)> = match &squad {
+            Some(sq) if board_tools && !lite => self.mcp_for_member(sq, id),
+            _ => Vec::new(),
+        };
         let Some(session) = self.sessions.get(&id) else {
             return;
         };
@@ -4984,6 +5310,14 @@ for one project goes to it as tickets for its owners, with that project — and 
                         args.extend([json!("--run"), json!(run)]);
                     }
                 }
+                // The squad's outside servers: equipe's proxy, which holds no
+                // credential (the daemon adds it); the engine-signed fallback by address.
+                let proxy = crate::squad_mcp::ProxyCommand { binary: binary.clone(), squad: squad.clone(), member: m.name.clone(), home: self.config.home.clone() };
+                for (server, credential) in &outside {
+                    servers[server.name.as_str()] = crate::squad_mcp::claude_entry(server, credential, &proxy);
+                }
+                // A key no longer goes in a config file: one an earlier equipe wrote goes.
+                let _ = std::fs::remove_file(crate::squad_mcp::private_config_path(&self.config.home, id));
                 Some(json!({ "mcpServers": servers }).to_string())
             }
             _ => None,
@@ -5055,6 +5389,11 @@ for one project goes to it as tickets for its owners, with that project — and 
             let charter = roles::charter(role, &m.name, &roles::Context { skills: delivery, ..ctx });
             skill_plugin = Some((dir, offered));
             charter
+        });
+        // Told of its outside servers only when it has some: nobody else's charter changes.
+        let charter = charter.map(|text| match crate::squad_mcp::charter_note(&outside.iter().map(|(server, _)| server).collect::<Vec<_>>()) {
+            Some(note) => format!("{text}\n\n{note}"),
+            None => text,
         });
         watchdog::mark("turn start: engine");
         let (cwd, access, resume, history, ticket, add_dirs) = match &session.work {
@@ -5189,6 +5528,8 @@ for one project goes to it as tickets for its owners, with that project — and 
         let mut steer = None;
         let mut stop = None;
         let mut stop_subagent = None;
+        let mut work_over = None;
+        let mut wind_down = None;
         let turn = match session.engine {
             // The person's own Codex CLI: an agent with tools, in the worktree.
             Engine::Codex if session.codex.is_none() => {
@@ -5200,7 +5541,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 let nebius = session.model.as_deref().is_some_and(crate::nemotron::is_agent_model);
                 let open = if nebius { self.open_config(session.model.as_deref()) } else { Ok(None) };
                 // The provider is asked for the model by its own id.
-                let model = session.model.as_deref().map(|m| crate::model_providers::bare_model(m).to_owned());
+                let mut model = session.model.as_deref().map(|m| crate::model_providers::bare_model(m).to_owned());
                 let provider = match (open, nebius) {
                     (Ok(Some(cfg)), true) => {
                         env.push(cfg.codex_env());
@@ -5212,6 +5553,18 @@ for one project goes to it as tickets for its owners, with that project — and 
                     (_, false) => None,
                 };
                 let provider_name = provider.as_ref().filter(|p| p.id != crate::nemotron::CODEX_PROVIDER).map(|p| p.name.clone());
+                // On the person's own Codex: a model its account refused lately
+                // isn't asked for again yet, and one refused now has another to go to.
+                let mut fallback = None;
+                if provider.is_none() {
+                    if let Some(refused) = model.clone().filter(|m| self.codex_refuses(m))
+                        && let Some(instead) = self.codex_fallback(&refused, effort.as_deref())
+                    {
+                        crate::daemon_log!("equipe: {} asks Codex for {} instead of {refused}, which this account refused lately", session.name().unwrap_or("a conversation"), instead.model);
+                        (model, effort) = (Some(instead.model), instead.effort);
+                    }
+                    fallback = model.as_deref().and_then(|m| self.codex_fallback(m, effort.as_deref()));
+                }
                 // equipe's servers only, as Claude Code gets them: the board's tools
                 // never ask; the browser's and the desktop's ask unless the mode lets them.
                 let servers = match (&squad, &session.member, &self.config.equipe_binary) {
@@ -5254,6 +5607,11 @@ for one project goes to it as tickets for its owners, with that project — and 
                             let mut server = codex_app::mcp_server(binary, &args(Some(crate::phone::SERVER)), true);
                             server["tool_timeout_sec"] = json!(600);
                             servers[crate::phone::SERVER] = server;
+                        }
+                        // The squad's outside servers: equipe's proxy (the fallback: by address, Codex finding its own sign-in).
+                        let proxy = crate::squad_mcp::ProxyCommand { binary: binary.clone(), squad: squad.clone(), member: m.name.clone(), home: self.config.home.clone() };
+                        for (server, credential) in &outside {
+                            servers[server.name.as_str()] = crate::squad_mcp::codex_entry(server, matches!(mode, Mode::Auto | Mode::Full), credential, &proxy);
                         }
                         Some(servers)
                     }
@@ -5317,7 +5675,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                     if let Some(port) = browser {
                         browser::ready(port, Duration::from_secs(90)).await;
                     }
-                    let controls = codex_app::Controls { steering: Some(steer_rx), asks: Some(ask_tx), stop: Some(stop_rx), stop_subagent: Some(stop_sub_rx) };
+                    let controls = codex_app::Controls { steering: Some(steer_rx), asks: Some(ask_tx), stop: Some(stop_rx), stop_subagent: Some(stop_sub_rx), fallback, ..Default::default() };
                     let outcome = codex_app::run_turn_with(&binary, &cwd, request, controls, |activity| {
                         if matches!(activity, Activity::Text(_)) {
                             streamed = true;
@@ -5334,6 +5692,12 @@ for one project goes to it as tickets for its owners, with that project — and 
                             Activity::SubagentHeard { id: sub } => {
                                 let _ = internal.send(Internal::SubagentHeard { session: id, id: sub });
                             }
+                            Activity::Settled(why) => {
+                                let _ = internal.send(Internal::TurnSettled { session: id, why });
+                            }
+                            Activity::ModelRefused { model, instead } => {
+                                let _ = internal.send(Internal::CodexModelRefused { session: id, model, instead: Some(instead) });
+                            }
                             activity => {
                                 if let Some(event) = activity_event(id, activity) {
                                     emit(event);
@@ -5342,6 +5706,15 @@ for one project goes to it as tickets for its owners, with that project — and 
                         }
                     })
                     .await;
+                    // Refused with nothing to fall back on: said before the turn's end, so its
+                    // failure is never taken for the engine's limit.
+                    if let Err(equipe_providers::Error::Backend { message, code }) = &outcome
+                        && let Some(refused) = codex_app::refused_model(message, code.as_deref())
+                        && !nebius
+                    {
+                        let refused = if refused.is_empty() { model.clone().unwrap_or_default() } else { refused };
+                        let _ = internal.send(Internal::CodexModelRefused { session: id, model: refused, instead: None });
+                    }
                     // On Token Factory: what was asked of it, for the log — never the key or the text.
                     if let (true, Ok(turn)) = (nebius, &outcome) {
                         crate::daemon_log!("{}", nebius_log(model.as_deref().unwrap_or_default(), turn));
@@ -5408,6 +5781,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                 if design.is_some() && matches!(mode, Mode::Auto | Mode::Full) {
                     allowed.push(format!("mcp__{DESIGN_SERVER}"));
                 }
+                // An outside server's tools ask in Ask, as the desktop's do; in Auto and Full they run.
+                if mcp_config.is_some() && matches!(mode, Mode::Auto | Mode::Full) {
+                    allowed.extend(outside.iter().map(|(server, _)| crate::squad_mcp::allowed_rule(server)));
+                }
                 // The ticket's own simulator or emulator, nothing else: no asking.
                 if phone {
                     allowed.push(format!("mcp__{}", crate::phone::SERVER));
@@ -5439,6 +5816,10 @@ for one project goes to it as tickets for its owners, with that project — and 
                 // Nor other squads' homes.
                 let (steer_tx, steer_rx) = mpsc::unbounded_channel::<String>();
                 steer = Some(steer_tx);
+                let over = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                work_over = Some(over.clone());
+                let (wind_tx, wind_rx) = oneshot::channel();
+                wind_down = Some(wind_tx);
                 // The desktop helper's token and signing key too.
                 let private: Vec<String> =
                     [self.config.home.join("browser"), self.config.home.join("credentials"), equipe_desktop_control::helper::dir(&self.config.home)]
@@ -5491,12 +5872,17 @@ for one project goes to it as tickets for its owners, with that project — and 
                         browser::ready(port, Duration::from_secs(90)).await;
                     }
                     let mut plan = engines::ToldPlan::default();
-                    let outcome = claude_code::run_turn(&binary, &cwd, request, Some(steer_rx), |activity| {
+                    let controls = claude_code::Controls { steering: Some(steer_rx), work_over: Some(over), wind_down: Some(wind_rx), ..Default::default() };
+                    let outcome = claude_code::run_turn_with(&binary, &cwd, request, controls, |activity| {
                         if matches!(activity, Activity::Text(_)) {
                             streamed = true;
                         }
                         if let Activity::Engine { pid } = activity {
                             let _ = internal.send(Internal::EngineStarted { session: id, pid });
+                            return;
+                        }
+                        if let Activity::Settled(why) = activity {
+                            let _ = internal.send(Internal::TurnSettled { session: id, why });
                             return;
                         }
                         if let Some(event) = plan.heard(&activity, std::time::Instant::now()).and_then(|again| activity_event(id, again)) {
@@ -5524,6 +5910,8 @@ for one project goes to it as tickets for its owners, with that project — and 
             session.steer = steer;
             session.stop = stop;
             session.stop_subagent = stop_subagent;
+            session.work_over = work_over;
+            session.wind_down = wind_down;
         }
     }
 
@@ -5857,6 +6245,10 @@ for one project goes to it as tickets for its owners, with that project — and 
     /// After a turn, finished or stopped: hand in work that was submitted,
     /// deliver memos, and let the rules hand out what is ready.
     async fn after_turn(&mut self, id: SessionId) {
+        // A turn that put something in the person's hands waits on them from now.
+        if let Some(waits) = self.sessions.get_mut(&id).and_then(|s| s.work.as_mut()).and_then(|w| w.end.with_person.as_mut()) {
+            waits.since = now_secs();
+        }
         // How long a turn at the desk took, for guessing the next ones'.
         if let Some(s) = self.sessions.get_mut(&id)
             && let (Some(began), None, Some(squad), Some(name)) = (s.turn_began.take(), &s.work, s.squad.clone(), s.name())
@@ -6484,8 +6876,14 @@ for one project goes to it as tickets for its owners, with that project — and 
         }
         // Brand work, and only it, takes the designer's full reference pass.
         let designer = self.sessions.get(&id).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role == design_qa::DESIGNER);
-        if designer && crate::design::brand::is_branding(&ticket.title, &ticket.body) {
+        let branding = crate::design::brand::is_branding(&ticket.title, &ticket.body);
+        if designer && branding {
             prompt.push_str(&crate::design::brand::note(board_tools));
+        }
+        // A project that inherits a brand: its system is the brand's, changed only on a brand ticket.
+        let member = self.sessions.get(&id).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role != crate::roles::PM);
+        if member && let Some(note) = crate::design::inherit::prompt_note(&self.config.home.join(crate::design::inherit::DIR), &sandbox.as_ref().map_or_else(|| project.clone(), |s| within(s, &project)).join(crate::design::DIR), branding) {
+            prompt.push_str(&note);
         }
         if let Some(plan) = &ticket.plan {
             let repo = ticket.project.as_deref().filter(|_| !Path::new(plan).is_absolute());
@@ -6504,14 +6902,26 @@ for one project goes to it as tickets for its owners, with that project — and 
         self.start_turn(id, prompt);
     }
 
+    /// Run `id`'s turn ended with something in the person's hands — its
+    /// browser for a sign-in, an approval it asked for: as of unix time `at`
+    /// it is still on its ticket, waiting for them to come back, not stalled.
+    /// A hand-off holds it for [`turn_end::WITH_PERSON_GRACE`]; an approval,
+    /// on its card in front of them, for as long as it is open.
+    fn run_waits_on_person(&self, id: SessionId, session: &Session, at: u64) -> bool {
+        session.work.as_ref().and_then(|w| w.end.with_person.as_ref()).is_some_and(|w| at.saturating_sub(w.since) < turn_end::WITH_PERSON_GRACE)
+            || self.pending.values().any(|p| p.approval.session == id)
+    }
+
     /// Renew leases only for turns that this runtime can still observe. Late
     /// heartbeats are fenced by the stored generation and session id.
     fn renew_execution_leases(&mut self) {
+        let now = now_secs();
         let active: Vec<(String, SessionId, TicketId, u64)> = self
             .sessions
             .iter()
-            // A run equipe paused holds its lease while it waits to go on.
-            .filter(|(_, session)| session.is_working() || session.is_preparing() || Runtime::is_parked(session))
+            // A run equipe paused holds its lease while it waits to go on, and
+            // so does one waiting on the person (its browser in their hands).
+            .filter(|(id, session)| session.is_working() || session.is_preparing() || Runtime::is_parked(session) || self.run_waits_on_person(**id, session, now))
             .filter_map(|(_, session)| {
                 let work = session.work.as_ref()?;
                 Some((session.squad.clone()?, work.execution_session, work.ticket, work.execution_generation))
@@ -6534,8 +6944,12 @@ for one project goes to it as tickets for its owners, with that project — and 
         for squad in squads {
             let live: Vec<SessionId> = self
                 .sessions
-                .values()
-                .filter(|session| session.squad.as_deref() == Some(squad.as_str()) && (session.is_working() || session.is_preparing() || Runtime::is_parked(session)))
+                .iter()
+                .filter(|(id, session)| {
+                    session.squad.as_deref() == Some(squad.as_str())
+                        && (session.is_working() || session.is_preparing() || Runtime::is_parked(session) || self.run_waits_on_person(**id, session, at))
+                })
+                .map(|(_, session)| session)
                 .filter_map(|session| session.work.as_ref().map(|work| work.execution_session))
                 .collect();
             let stalled = self.journal(&squad).and_then(|j| j.recover_executions(&live, at).ok()).unwrap_or_default();
@@ -6543,6 +6957,19 @@ for one project goes to it as tickets for its owners, with that project — and 
                 continue;
             }
             for ticket in stalled {
+                // One that waited on the person past its grace says what for.
+                let waited = self
+                    .sessions
+                    .values()
+                    .filter(|s| s.squad.as_deref() == Some(squad.as_str()))
+                    .filter_map(|s| s.work.as_ref())
+                    .find(|w| w.ticket == ticket)
+                    .and_then(|w| w.end.with_person.as_ref().map(|p| p.what.clone()));
+                if let Some(what) = waited
+                    && let Some(journal) = self.journal(&squad)
+                {
+                    let _ = journal.set_waited_on_person(ticket, &what);
+                }
                 self.stalled(&squad, ticket, true);
             }
             Box::pin(self.dispatch(&squad)).await;
@@ -6585,14 +7012,28 @@ for one project goes to it as tickets for its owners, with that project — and 
         let _ = journal.ticket_event(ticket_id, "equipe", "stalled", &reason);
         let Some(ticket) = journal.ticket(ticket_id).ok().flatten() else { return };
         let (title, who) = (ticket.title.clone(), ticket.assignee.clone().unwrap_or_default());
+        let waited = ticket.execution.as_ref().and_then(|e| e.waited_for.clone());
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
         if tell {
-            let line = format!(
-                "T-{ticket_id}'s run stopped: {who}'s turn ended without a hand-in or a wait, and nothing ran it since. It stays in \
-progress with its branch and worktree as they are. The person resumes, requeues or reassigns it on its card — you can't, and \
-don't open a new ticket for it."
-            );
-            let shown = say!(self, "news.stalled", id = ticket_id, name = who, title = title);
+            let (line, shown) = match waited {
+                Some(what) => (
+                    format!(
+                        "T-{ticket_id}'s run stopped: {who} waited on the person for {} minutes ({what}) and they haven't come \
+back to it. It stays in progress with its branch and worktree as they are, in the person's Needs-you with what it waited \
+for: they do it and resume it on its card — you can't, and don't open a new ticket for it.",
+                        turn_end::WITH_PERSON_GRACE / 60
+                    ),
+                    say!(self, "news.stalled_on_person", id = ticket_id, name = who, what = what, title = title),
+                ),
+                None => (
+                    format!(
+                        "T-{ticket_id}'s run stopped: {who}'s turn ended without a hand-in or a wait, and nothing ran it since. It \
+stays in progress with its branch and worktree as they are. The person resumes, requeues or reassigns it on its card — you \
+can't, and don't open a new ticket for it."
+                    ),
+                    say!(self, "news.stalled", id = ticket_id, name = who, title = title),
+                ),
+            };
             self.brief_pm(squad, line, Some(shown));
         }
     }
@@ -7568,12 +8009,30 @@ It starts when {owner} is free."
             self.with_person(&call);
             let url = call.arguments["url"].as_str().map(str::to_owned);
             let why = call.arguments["why"].as_str().unwrap_or_default().to_owned();
+            // Its own page on that site shows no sign-in: it looks before anyone is asked.
+            if let Some(text) = self.look_first(&call, url.as_deref(), &why) {
+                let _ = reply.send(ToolResult { text, is_error: false, image: None });
+                return;
+            }
+            // First what equipe can do by itself: the login autopilot, or the
+            // sign-in the person made before put back. Only then the person.
+            if let Some(text) = self.try_kept_sign_in(&call, url.as_deref(), &why) {
+                let _ = reply.send(ToolResult { text, is_error: false, image: None });
+                return;
+            }
             // Kept with its cause — or, the person signing in to the same site
             // in another member's browser now, this one waits on that.
+            self.asking_cause = None;
             if let Some(text) = self.handoff_asked(&call, url.as_deref(), &why) {
                 let _ = reply.send(ToolResult { text, is_error: false, image: None });
                 return;
             }
+            // A site's own second step (a code, "verify it's you" before a sensitive page):
+            // the person is told it is the site's, once, and how to make it rarer.
+            let why = match self.asking_cause.take() {
+                Some(crate::logins::Cause::TwoFactor) => format!("{why} {}", say!(self, "notice.browser_reauth_hint")),
+                _ => why,
+            };
             // A sign-in the person does in a normal Chrome window of their own, the
             // automated browser stepping aside — a site's human check lets a person
             // through there. Not possible (no Chrome): the panel, with the reason.
@@ -7665,7 +8124,24 @@ there, end your turn, and carry on when they say they're done."
             });
             return;
         }
+        // A design session proposed, or started at once: it may send the designer its kickoff.
+        if call.name == crate::design::session::PROPOSE {
+            let result = match self.caller_id(&call) {
+                Some(id) => self.propose_design_session(&squad, &call.member, id, &call.arguments).await,
+                None => Err("You're not on the squad.".into()),
+            };
+            let _ = reply.send(match result {
+                Ok(text) => ToolResult { text, is_error: false, image: None },
+                Err(text) => ToolResult { text, is_error: true, image: None },
+            });
+            return;
+        }
+        let caller = self.caller_id(&call);
         let result = self.run_tool(call);
+        // A hand-in, a wait, a hand-back: the turn only winds down now.
+        if let Some(id) = caller {
+            self.tell_work_over(id);
+        }
         // Whatever changed, the rules look again.
         self.dispatch(&squad).await;
         let _ = reply.send(match result {
@@ -7677,8 +8153,14 @@ there, end your turn, and carry on when they say they're done."
     /// The member that made `call` put something in the person's hands —
     /// its browser, a sign-in: its turn may end waiting on them.
     fn with_person(&mut self, call: &ToolCall) {
+        let said = |key: &str| call.arguments.get(key).and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned);
+        let what = match (said("why"), said("site").or_else(|| said("url"))) {
+            (Some(why), Some(site)) => format!("{why} ({site})"),
+            (Some(what), None) | (None, Some(what)) => what,
+            (None, None) => call.name.clone(),
+        };
         if let Some(work) = self.caller_id(call).and_then(|id| self.sessions.get_mut(&id)).and_then(|s| s.work.as_mut()) {
-            work.end.with_person = true;
+            work.end.with_person = Some(turn_end::WithPerson { since: now_secs(), what: crate::signals::one_line(&what) });
         }
     }
 
@@ -7726,6 +8208,18 @@ there, end your turn, and carry on when they say they're done."
         // anywhere — its own screenshots in the temp folder, another project —
         // without asking. Credentials still ask.
         let auto = self.sessions.get(&id).is_some_and(|s| s.mode.unwrap_or(squad_mode) == Mode::Auto);
+        // A squad project checked out beside its repository into the member's own
+        // temporary folder: it writes only the project's `.git/worktrees/` and that
+        // folder, which the fence can't open without opening the project, so it runs
+        // outside it, exactly as given back (hooks off), without asking.
+        if auto && tool == "Bash" && let Some(command) = self.project_checkout(id, &call.squad, &input) {
+            let mut input = input.clone();
+            input["command"] = json!(command);
+            input["dangerouslyDisableSandbox"] = json!(true);
+            self.audit(&call.squad, ticket, "equipe", "allowed", &command);
+            let _ = reply.send(verdict(Decision::Allow, &input, ""));
+            return;
+        }
         if auto && permissions::only_reads(&tool, &action, &input) {
             let _ = reply.send(verdict(Decision::Allow, &input, ""));
             return;
@@ -7747,6 +8241,16 @@ there, end your turn, and carry on when they say they're done."
             tokio::time::sleep(APPROVAL_WAIT).await;
             let _ = internal.send(Internal::ApprovalTimedOut(approval_id));
         });
+    }
+
+    /// The command to run for a member's shell call that checks out one of
+    /// its squad's projects beside the repository into its own temporary
+    /// folder ([`permissions::project_checkout`]); `None` for anything else.
+    fn project_checkout(&self, id: SessionId, squad: &str, input: &Value) -> Option<String> {
+        let session = self.sessions.get(&id)?;
+        let command = input.get("command").and_then(Value::as_str)?;
+        let tmp = journal::lane_tmp_dir(&self.config.home, squad, session.work.as_ref().map(|w| w.ticket), session.name()?);
+        permissions::project_checkout(command, &self.projects_cached(squad), &tmp)
     }
 
     /// What equipe refuses a member whatever its mode or the person's rules:
@@ -8032,7 +8536,9 @@ there, end your turn, and carry on when they say they're done."
             ([], _) => {
                 self.login_record(&call.squad, crate::logins::Entry::new(now_secs(), &site, &call.member, crate::logins::Kind::NoLogin, Some(crate::logins::Cause::NoLoginKept), None));
                 let _ = reply.send(ToolResult::error(format!(
-                    "The person keeps no login for {}. Ask them to add one in equipe (Settings › Accounts), or hand them your browser with `show_my_browser` to sign in themselves.",
+                    "The person keeps no login for {}. First look whether you are signed in already: every member shares one browser and the \
+person's sign-ins — open the page you need and take a snapshot. Only if it asks you to sign in, hand them your browser with \
+`show_my_browser` to sign in themselves (or ask them to add a login in equipe, Settings › Accounts).",
                     vault::site_of(&site)
                 )));
                 return;
@@ -8294,7 +8800,12 @@ there, end your turn, and carry on when they say they're done."
                     browser::navigate(&client, port, &page).await;
                 }
             });
+            let lane = running.is_lane();
             self.browsers.insert(key.clone(), running);
+            // The squad's kept sign-ins: whatever its profile's Chrome lacks of them goes in.
+            if lane {
+                self.restore_sign_ins(squad, name);
+            }
         }
         self.browsers.get_mut(&key).map(|b| {
             b.last_used = std::time::Instant::now();
@@ -8314,6 +8825,9 @@ there, end your turn, and carry on when they say they're done."
             self.browsers.retain(|_, b| !b.is_lane());
             self.host = browser::Host::start(npx, &self.config.home, &self.hub, self.host_events.clone()).ok();
             self.hub.set_host(self.host.clone());
+            self.tell_profile_separation();
+            // A new Chrome: the kept sign-ins go in again as lanes open.
+            self.sign_ins_restart(None);
             self.suspend_again();
         }
         self.host.clone()
@@ -8435,20 +8949,29 @@ there, end your turn, and carry on when they say they're done."
                 let (squad, session) = self.lane_session(&lane);
                 // What login autopilot reads off the pages; a sign-in that ran out, signed back in.
                 self.see_pages(&lane, &pages);
+                // A page waiting on a code the site emailed: the person's card.
+                self.see_verification_pages(&lane, &pages);
                 // A sign-in page that turned into its site: a sign-in finished.
                 self.follow_sign_ins(&lane, &pages, touched).await;
+                // Back from the person: whether the sign-in they were handed it for went through.
+                self.verify_back(&lane, &pages, agent).await;
+                if !lane.is_empty() {
+                    self.host_pages.insert(lane.clone(), (pages.clone(), agent));
+                }
                 // The person's own tabs, in the panel or the Chrome window: a sign-in they started, or any.
                 if lane.is_empty() {
                     self.follow_person_tabs(&pages);
                 }
                 let pages: Vec<equipe_protocol::BrowserPage> = pages.into_iter().map(browser::HostPage::page).collect();
                 // The person's window, or the browser coming back from it: no check to ask about.
-                if !self.windows.handoffs.busy_lane(&lane) && !self.windows.views.holds(&lane) {
-                    self.watch_checks(&lane, session, &pages, agent);
-                }
+                let follow = if !self.windows.handoffs.busy_lane(&lane) && !self.windows.views.holds(&lane) { self.watch_checks(&lane, session, &pages, agent) } else { None };
                 let event = Event::BrowserTabs { squad, lane: lane.clone(), session, member, color, pages, agent_page: agent };
                 self.tabs.insert(lane, event.clone());
                 self.publish(event);
+                // After its tabs are told: a window that follows closes the browser they show.
+                if let Some(follow) = follow {
+                    self.check_follow(follow).await;
+                }
             }
             HostEvent::Control { lane, by, refused } => {
                 let (squad, session) = self.lane_session(&lane);
@@ -8465,8 +8988,23 @@ there, end your turn, and carry on when they say they're done."
                 // again — its pages on that site reloaded, its members told.
                 if by.is_none() {
                     let site = checked.as_ref().map(|(_, url, _)| vault::site_of(url)).or_else(|| self.asked_site.get(&lane).cloned());
-                    if let Some(site) = site {
-                        self.reload_waiting(&site, &lane);
+                    if let Some(site) = &site {
+                        self.reload_waiting(site, &lane);
+                    }
+                    // Its finish not seen in their hands (their own window, a sign-in view, a page
+                    // reloaded after): its page is looked at as it comes back.
+                    // Only for a sign-in or the step after it: a CAPTCHA passed is no sign-in.
+                    let seen = self.finished_in_hands.remove(&lane);
+                    let signing_in = match &checked {
+                        Some((_, _, check)) => matches!(check, equipe_protocol::HumanCheck::SignIn | equipe_protocol::HumanCheck::TwoFactor),
+                        None => asked.is_some() && self.asked_site.contains_key(&lane),
+                    };
+                    if let Some(site) = site.filter(|s| !s.is_empty() && !seen && signing_in) {
+                        self.verify_back.insert(lane.clone(), (site, std::time::Instant::now()));
+                        // Loaded already (a sign-in view's page waits for that): looked at now.
+                        if let Some((pages, agent)) = self.host_pages.get(&lane).cloned() {
+                            self.verify_back(&lane, &pages, agent).await;
+                        }
                     }
                     self.release_login_waiters(&lane).await;
                 }
@@ -8495,6 +9033,10 @@ there, end your turn, and carry on when they say they're done."
                 // Its tools were turned away at a page that waited for the person,
                 // and its turn ended: it carries on now.
                 if checked.is_some() && asked.is_none() {
+                    // equipe filled its emailed code on the person's click: "they confirmed access".
+                    if self.verification_handed_back(&lane).await {
+                        return;
+                    }
                     if refused && !working {
                         let text = say!(self, "notice.browser_given_back");
                         let prompt = handed_back("a human check or a sign-in on the page", false, back_at.as_ref());
@@ -8537,6 +9079,8 @@ there, end your turn, and carry on when they say they're done."
             HostEvent::Visited { token, page } => self.on_visited(token, page),
             HostEvent::Passkey { token, credential } => self.on_passkey(token, credential),
             HostEvent::Snap { token, png } => self.on_snap(token, png),
+            HostEvent::Cookies { lane, profile, added, failed, restore } => self.cookies_went_in(lane.as_deref(), &profile, added, failed, restore),
+            HostEvent::Collected { token, cookies } => self.on_collected(token, cookies.0),
             HostEvent::Wants { lane, page, action } => {
                 let (squad, _) = self.lane_session(&lane);
                 self.publish(Event::BrowserWants { squad, lane, page, action });
@@ -8560,6 +9104,9 @@ there, end your turn, and carry on when they say they're done."
                     self.release_login_waiters(&lane).await;
                 }
                 self.asked_site.clear();
+                self.verify_back.clear();
+                self.finished_in_hands.clear();
+                self.host_pages.clear();
             }
         }
     }
@@ -8568,20 +9115,33 @@ there, end your turn, and carry on when they say they're done."
     /// sign-in, a code from their phone: its browser goes into the person's
     /// hands (its tools wait, and say why), and the person is told. Passed
     /// before they put a hand on it, it goes back to its member by itself.
-    fn watch_checks(&mut self, lane: &str, session: Option<SessionId>, pages: &[equipe_protocol::BrowserPage], agent: Option<u64>) {
+    ///
+    /// A check the person answers by clicking goes to a normal Chrome window
+    /// once they reach for it (`window::check_to_window`); what follows here:
+    /// that window again at once when it came back right after they passed it
+    /// there, and no more rounds after that.
+    fn watch_checks(&mut self, lane: &str, session: Option<SessionId>, pages: &[equipe_protocol::BrowserPage], agent: Option<u64>) -> Option<window::CheckFollow> {
         if lane.is_empty() {
-            return;
+            return None;
         }
         // equipe is signing it in by itself: what its pages say waits for that.
         if self.relogins.contains_key(lane) {
-            return;
+            return None;
         }
         let let_go = |page: u64, url: &str| self.let_go.contains(&(lane.to_owned(), page, url.to_owned()));
         match browser::check_step(pages, agent, self.checking.contains_key(lane), self.held.contains_key(lane), let_go) {
             browser::CheckStep::Pause { page, url, check } => {
                 // A sign-in, a code or a passkey the person lets equipe do by itself: no one is asked.
                 if self.try_autopilot(lane, page, &url, check) {
-                    return;
+                    return None;
+                }
+                let round = self.check_round(&url, check);
+                // Passed twice in the person's window and back again: the site refuses this
+                // browser. Not the person's again — its member does without the site.
+                if round == crate::window_handoff::CheckRound::GiveUp {
+                    let site = vault::site_of(&url);
+                    self.let_go.insert((lane.to_owned(), page, url));
+                    return Some(window::CheckFollow::GiveUp(lane.to_owned(), site));
                 }
                 self.hub.op(&json!({ "op": "control", "lane": lane, "by": "person", "why": "check", "page": page }));
                 // Kept with its cause — or, the person on the same sign-in for
@@ -8593,12 +9153,22 @@ there, end your turn, and carry on when they say they're done."
                     self.publish(Event::Notice { undo: None, session, text });
                 }
                 self.checking.insert(lane.to_owned(), (page, url, check));
+                (round == crate::window_handoff::CheckRound::Again).then(|| window::CheckFollow::Window(lane.to_owned()))
             }
             browser::CheckStep::Release => {
                 self.hub.op(&json!({ "op": "control", "lane": lane, "by": null, "ifUntouched": true }));
+                None
             }
-            browser::CheckStep::Nothing => {}
+            browser::CheckStep::Nothing => None,
         }
+    }
+
+    /// The member lane a tab of the shared Chrome is in, as last told.
+    fn lane_of_page(&self, page: u64) -> Option<String> {
+        self.tabs.iter().find_map(|(lane, tabs)| match tabs {
+            Event::BrowserTabs { pages, .. } if !lane.is_empty() && pages.iter().any(|p| p.id == page) => Some(lane.clone()),
+            _ => None,
+        })
     }
 
     /// The person closed a tab of a member's browser: its member is told —
@@ -8748,7 +9318,10 @@ there, end your turn, and carry on when they say they're done."
                 Ok(text)
             }
             board::CREATE_TICKET => {
-                let title = board::arg_str(&args, "title").ok_or("A ticket needs a title.")?;
+                let title = board::arg_str(&args, "title").ok_or("A ticket needs a title.")?.trim();
+                let written = self.squad_language(&squad);
+                glance::check_title(written, title)?;
+                let label = glance::label_arg(&args)?;
                 let body = board::arg_str(&args, "body").unwrap_or_default();
                 let kind = kind_arg(&args)?;
                 let named = match board::arg_str(&args, "project") {
@@ -8805,7 +9378,7 @@ there, end your turn, and carry on when they say they're done."
                     created_by: member.clone(),
                     note: None,
                     asks: vec![],
-                    remaining: Vec::new(), images: Vec::new(),
+                    label, remaining: Vec::new(), images: Vec::new(),
                     updated_at: None,
                     priority: Default::default(), rank: 0,
                 };
@@ -8818,6 +9391,9 @@ there, end your turn, and carry on when they say they're done."
                 let mut reply = format!("Created T-{new_id}.");
                 if kind.in_home() {
                     reply = format!("Created T-{new_id} ({}).", kind.label());
+                }
+                if equipe_protocol::title::is_long(title) {
+                    reply.push_str(&format!(" The title is longer than reads at a glance: {} characters or {} words is the most — shorten it with update_ticket if you can.", equipe_protocol::title::GOOD_CHARS, equipe_protocol::title::GOOD_WORDS));
                 }
                 if idea {
                     reply = format!("Kept T-{new_id} as an idea — nothing starts it. Tell the person in one line it's kept; when the board is light you'll be asked to look at the ideas again.");
@@ -8853,6 +9429,7 @@ there, end your turn, and carry on when they say they're done."
                     return Err("Only the PM changes tickets; propose a new one, or comment.".into());
                 }
                 let ticket_id = board::arg_id(&args, "id").ok_or("Which ticket? Give its id.")?;
+                let lang = self.squad_language(&squad);
                 let present: Vec<String> = self
                     .sessions
                     .values()
@@ -8865,8 +9442,14 @@ there, end your turn, and carry on when they say they're done."
                     let status = ticket.status.label();
                     return Err(format!("T-{ticket_id} is {status} — from here it's the person's to change."));
                 }
-                if let Some(title) = board::arg_str(&args, "title") {
+                if let Some(title) = board::arg_str(&args, "title").map(str::trim).filter(|t| *t != ticket.title) {
+                    glance::check_title(lang, title)?;
+                    // The old one stays in its history.
+                    let _ = journal.ticket_event(ticket_id, &member, glance::RETITLED, &ticket.title);
                     ticket.title = title.to_owned();
+                }
+                if let Some(label) = glance::label_arg(&args)? {
+                    ticket.label = Some(label);
                 }
                 if let Some(body) = board::arg_str(&args, "body") {
                     ticket.body = body.to_owned();
@@ -8954,6 +9537,11 @@ there, end your turn, and carry on when they say they're done."
                 // Their thumbnails made now, off the loop: the hand-in's card shows them at once.
                 crate::visuals::thumbs::warm(&self.config.home, shown.clone());
                 let screens = self.screens_handed_in(&squad, id, &args, shown.len())?;
+                // A designer's screen change says what changed and why it is better, under its summary.
+                let summary = match self.designer_change_note(id, &args)? {
+                    Some(note) => format!("{summary}\n\nWhat changed and why it is better:\n{note}"),
+                    None => summary,
+                };
                 let gap = self.designer_hand_in(id)?;
                 let session = self.sessions.get_mut(&id).ok_or("You're not on the squad.")?;
                 let work = session.work.as_mut().ok_or("You're not on a ticket — there is nothing to hand in.")?;
@@ -8992,6 +9580,10 @@ End your turn now with a short summary.",
                 })
             }
             board::BLOCK_ON_PERSON => {
+                // A code the site emailed: the person's card fills it from their mailbox on their click.
+                if let Some(verification) = args.get("verification").filter(|v| v.is_object()) {
+                    return self.verification_asked(&squad, id, verification);
+                }
                 let asked = board::arg_strs(&args, "needs");
                 let permissions: Vec<crate::protocol::asks::Permission> =
                     board::arg_strs(&args, "permission").iter().filter_map(|p| crate::protocol::asks::Permission::parse(p)).collect();
@@ -9003,12 +9595,19 @@ End your turn now with a short summary.",
                 let ready = self.desktop_auto.as_ref().and_then(desktop::auto::Auto::latest);
                 let judged = crate::permission_chore::judge(&asked, &permissions, ready.as_ref())?;
                 let (asked, chore_told) = (judged.asks, judged.told);
+                // A permission card is its own headline (one button, no `ask`/`effort_minutes`); every
+                // other waiting ticket needs the one-line ask the person reads in their list.
+                let headline = if asked.iter().any(|a| crate::protocol::asks::permission_kinds(a).is_some()) {
+                    None
+                } else {
+                    Some(self.ask_headline(&squad, &args)?)
+                };
                 // What the person left open last time (not yet, later) is asked again with these.
                 let on = self.sessions.get(&id).and_then(|s| s.work.as_ref()).map(|w| w.ticket);
                 let open = on.and_then(|t| self.journal(&squad).and_then(|j| j.ticket(t).ok().flatten())).map(|t| t.remaining).unwrap_or_default();
                 let needs = crate::protocol::asks::with_open(&asked, &open);
                 let again = needs.len() - asked.len();
-                let note = board::waiting_note(&needs, board::arg_str(&args, "why"));
+                let note = equipe_protocol::asks::waiting_note_headed(&needs, board::arg_str(&args, "why"), headline.as_deref());
                 let session = self.sessions.get_mut(&id).ok_or("You're not on the squad.")?;
                 let work = session.work.as_mut().ok_or("You're not on a ticket — there is nothing to put down.")?;
                 if work.handed_in.is_some() {
@@ -9029,6 +9628,8 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
             }
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
             crate::secrets::ASK_SECRET => self.ask_secret(&squad, &member, id, &args),
+            crate::cli_signin::CLI_SIGN_IN => self.cli_sign_in(&squad, &member, id, &args),
+            crate::connections::REQUEST => self.request_secret(&squad, &member, id, &args),
             crate::squad_secrets::SAVE => self.secret_save(&squad, &member, id, &args),
             crate::squad_secrets::LIST => self.secret_list(&squad),
             crate::squad_secrets::USE => self.secret_use(&squad, &member, id, &args),
@@ -9048,6 +9649,12 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
             board::DESIGN_TOOLS => Err("design_tools is run by your board server; this equipe's server is older than its daemon — restart your conversation.".into()),
             crate::team::PROPOSE_TEAM_CHANGE => self.propose_team_change(&squad, &member, id, &args),
             crate::heartbeat::PROPOSE_ROUTINE => self.propose_routine(&squad, &member, id, &args),
+            board::RETITLE_OPEN_TICKETS => {
+                if !is_pm {
+                    return Err("Only the PM retitles tickets.".into());
+                }
+                self.retitle_open_tickets(&squad, &member, &args)
+            }
             board::ADD_PROJECT => {
                 if !is_pm {
                     return Err("Only the PM adds projects; tell the PM which folder the person wants added.".into());
@@ -9310,6 +9917,10 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
             resting: self.journals.get(squad).map(Journal::resting).unwrap_or_default(),
             role_models: self.journals.get(squad).map(Journal::role_models).unwrap_or_default(),
             secret_asks: self.secret_asks(squad).clone(),
+            cli_sign_ins: self.cli_sign_in_cards(squad),
+            mcp_servers: self.mcp_servers_of(squad),
+            mcp_status: self.mcp_status_of(squad),
+            verifications: self.verification_cards(squad),
             login_offers: self.login_offers_now(),
             engine_proposals: self.engines.proposals(squad),
             hand_overs,
@@ -9518,6 +10129,8 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
                         steer_threads: Vec::new(),
                         stop: None,
                         stop_subagent: None,
+                        work_over: None,
+                        wind_down: None,
                         taken_back: Vec::new(),
                         send_now_prompt: None,
                         subagents: Vec::new(),
@@ -9764,8 +10377,21 @@ check what is already done in your worktree first."
             .filter_map(|(squad, j)| Some((squad.clone(), j.tickets().ok()?.into_iter().filter(|t| !t.status.is_closed()).map(|t| t.id).collect())))
             .collect();
         let keep: Vec<u32> = self.commands.engine_pids();
+        let squads: Vec<String> = self.journals.keys().cloned().collect();
+        let by_squad: Vec<(String, Vec<PathBuf>)> = squads.iter().map(|s| (s.clone(), self.projects(s))).collect();
+        let mut repos: Vec<PathBuf> = by_squad.iter().flat_map(|(_, p)| p.iter().cloned()).collect();
+        repos.sort();
+        repos.dedup();
         std::thread::spawn(move || {
             for line in crate::disk::tidy_lane_tmp(&home, &open, &keep) {
+                crate::daemon_log!("equipe: {line}");
+            }
+            // A desk's full copy of a project (a deploy's `cp -R` or clone):
+            // named once, so it shows why a worktree would have done.
+            for line in crate::disk::warn_desk_clones(&home, &by_squad) {
+                crate::daemon_log!("equipe: {line}");
+            }
+            for line in crate::disk::clear_git_garbage(&repos) {
                 crate::daemon_log!("equipe: {line}");
             }
         });
@@ -10414,6 +11040,8 @@ fn lane_of(main: SessionId, m: &Session, project: Option<String>, thread: DeskTh
         steer_threads: Vec::new(),
         stop: None,
         stop_subagent: None,
+        work_over: None,
+        wind_down: None,
         taken_back: Vec::new(),
         send_now_prompt: None,
         subagents: Vec::new(),
@@ -10609,6 +11237,17 @@ fn tail_chars(text: &str, most: usize) -> String {
     if n <= most { text.to_owned() } else { text.chars().skip(n - most).collect() }
 }
 
+/// One step of an engine's plan, as the protocol has it.
+fn plan_step(step: equipe_providers::turn::PlanStep) -> equipe_protocol::PlanStep {
+    use equipe_providers::turn::StepState;
+    let state = match step.state {
+        StepState::Pending => equipe_protocol::PlanState::Pending,
+        StepState::Active => equipe_protocol::PlanState::Active,
+        StepState::Done => equipe_protocol::PlanState::Done,
+    };
+    equipe_protocol::PlanStep { text: step.text, state }
+}
+
 /// What an engine's activity shows on the screens, as an event of session `id`.
 /// Codex's plan limits are not one of its own: [`Internal::CodexLimits`].
 fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
@@ -10620,6 +11259,7 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
             let outcome = equipe_protocol::ToolOutcome { ok: done.ok, exit: done.exit, ms: Some(done.ms), output, skipped, diff: done.diff };
             Event::ToolResult { session: id, tool: done.name, target: done.target, outcome }
         }
+        Activity::PlanSteps(steps) => Event::Plan { session: id, steps: steps.into_iter().map(plan_step).collect() },
         Activity::Thinking(text) => Event::Thinking { session: id, text },
         Activity::Model(model) => Event::ModelKnown { session: id, model, asked: None },
         Activity::Output(tokens) => Event::Output { session: id, tokens },
@@ -10644,7 +11284,7 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
         Activity::Plan { five_hour, seven_day } => Event::PlanUsage { usage: claude_plan(five_hour, seven_day), engine: Engine::Claude },
         Activity::Limits(_) => return None,
         // The loop's to know, never a screen's: sent apart by the turn.
-        Activity::Engine { .. } | Activity::Spent(_) | Activity::SubagentHeard { .. } => return None,
+        Activity::Engine { .. } | Activity::Spent(_) | Activity::SubagentHeard { .. } | Activity::Settled(_) | Activity::ModelRefused { .. } => return None,
     })
 }
 
@@ -10674,8 +11314,13 @@ fn codex_plan(limits: &equipe_providers::turn::Limits) -> equipe_protocol::PlanU
 fn codex_cli_failure(err: equipe_providers::Error, lang: crate::i18n::Lang) -> (String, Option<&'static str>) {
     match &err {
         equipe_providers::Error::CodexSignedOut => (crate::i18n::core(lang).get("error.codex_cli_signed_out").to_owned(), Some(crate::engine_auth::CODEX_HINT)),
-        equipe_providers::Error::Login(_) => (err.to_string(), Some("equipe status")),
-        _ => (err.to_string(), None),
+        equipe_providers::Error::Login(_) => (codex_app::plain_message(&err.to_string()), Some("equipe status")),
+        // A model the account refused: a line in the person's words, never the provider's JSON.
+        equipe_providers::Error::Backend { message, code } if codex_app::refused_model(message, code.as_deref()).is_some() => {
+            let model = codex_app::refused_model(message, code.as_deref()).filter(|m| !m.is_empty()).unwrap_or_else(|| "?".to_owned());
+            (crate::i18n::core(lang).fill("error.codex_model_refused", &[("model", model)]), None)
+        }
+        _ => (codex_app::plain_message(&err.to_string()), None),
     }
 }
 
@@ -10715,6 +11360,24 @@ fn nebius_failure(err: equipe_providers::Error, provider: Option<&str>, lang: cr
     codex_cli_failure(err, lang)
 }
 
+/// Of the models `usable`, the one a turn refused on `model` goes to — never
+/// a dearer one ([`Runtime::codex_fallback`]).
+fn codex_fallback_of<'a>(model: &str, usable: &[&'a codex_app::ModelInfo]) -> Option<&'a codex_app::ModelInfo> {
+    const FAMILIES: [&str; 3] = ["luna", "sol", "astra"];
+    let ids = |keep: &dyn Fn(Option<u8>) -> bool| -> Vec<String> { usable.iter().filter(|m| keep(crate::tiers::model_rank(Engine::Codex, &m.id))).map(|m| m.id.clone()).collect() };
+    let find = |id: Option<String>| id.and_then(|id| usable.iter().find(|m| m.id == id).copied());
+    match crate::tiers::model_rank(Engine::Codex, model) {
+        Some(rank) => {
+            let cheaper: Vec<&str> = FAMILIES[..usize::from(rank)].iter().rev().copied().collect();
+            find(roles::codex_family(&ids(&|r| r.is_some_and(|r| r < rank)), &cheaper)).or_else(|| find(roles::codex_family(&ids(&|r| r == Some(rank)), &[FAMILIES[usize::from(rank)]])))
+        }
+        None => {
+            let top = FAMILIES.len() as u8 - 1;
+            usable.iter().copied().filter(|m| crate::tiers::model_rank(Engine::Codex, &m.id) != Some(top)).find(|m| m.default).or_else(|| usable.iter().copied().find(|m| crate::tiers::model_rank(Engine::Codex, &m.id).is_some_and(|r| r < top)))
+        }
+    }
+}
+
 /// An engine whose lost sign-in stopped turns here, and its fix.
 #[derive(Debug)]
 struct AuthFix {
@@ -10730,11 +11393,15 @@ struct AuthFix {
     carried_on_at: Option<u64>,
     /// Since when turns have waited (unix seconds): looked at again for [`AUTH_WATCH`].
     since: Option<u64>,
+    /// equipe started the engine's own sign-in itself for this sign-out:
+    /// once, for every member and lane it stopped; again only when the
+    /// person asks, or after it signed in and was lost again.
+    auto_started: bool,
 }
 
 impl Default for AuthFix {
     fn default() -> Self {
-        Self { state: AuthState::Checking, detail: String::new(), stopped: Vec::new(), checking: false, carried_on_at: None, since: None }
+        Self { state: AuthState::Checking, detail: String::new(), stopped: Vec::new(), checking: false, carried_on_at: None, since: None, auto_started: false }
     }
 }
 
@@ -10917,6 +11584,21 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_codex_model_falls_back_to_a_cheaper_one_never_a_dearer_one() {
+        let info = |id: &str, default: bool| codex_app::ModelInfo { id: id.into(), default, ..Default::default() };
+        let listed = [info("gpt-6.1-sol", true), info("gpt-6-astra", false), info("gpt-6.1-terra", false), info("gpt-6-sol", false), info("gpt-6-luna", false), info("gpt-5.6-luna", false)];
+        let usable = |refused: &str| -> Vec<&codex_app::ModelInfo> { listed.iter().filter(|m| m.id != refused).collect() };
+        let pick = |refused: &str| codex_fallback_of(refused, &usable(refused)).map(|m| m.id.clone());
+        assert_eq!(pick("gpt-6.1-sol").as_deref(), Some("gpt-6-luna"), "Sol refused: the newest Luna, never Astra");
+        assert_eq!(pick("gpt-6-astra").as_deref(), Some("gpt-6.1-sol"), "Astra refused: the strongest cheaper family");
+        let no_luna: Vec<&codex_app::ModelInfo> = listed.iter().filter(|m| !m.id.contains("luna") && m.id != "gpt-6.1-sol").collect();
+        assert_eq!(codex_fallback_of("gpt-6.1-sol", &no_luna).map(|m| m.id.as_str()), Some("gpt-6-sol"), "no cheaper one: the same family's other version");
+        let only_astra = [&listed[1]];
+        assert!(codex_fallback_of("gpt-6.1-sol", &only_astra).is_none(), "never up to a dearer model");
+        assert_eq!(pick("gpt-6.1-terra").as_deref(), Some("gpt-6.1-sol"), "no known family: the account's default, unless it is the dearest");
+    }
 
     #[test]
     fn a_browser_handed_back_says_the_person_finished_where_the_page_is_and_to_look_itself() {

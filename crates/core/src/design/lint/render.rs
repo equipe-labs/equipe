@@ -2,7 +2,8 @@
 //! it in Chrome at each width and measures — what runs off the side, text
 //! cut off, each text's colour and what it sits on, whether focus shows,
 //! where the primary action is, how much is centred, the blocks' radius and
-//! shadow, line lengths, target sizes — and writes them as JSON. The
+//! shadow, line lengths, target sizes, how deep framed boxes sit in framed
+//! boxes — and writes them as JSON. The
 //! judging is here, so it is the same rules and tested like the rest.
 
 use serde::{Deserialize, Serialize};
@@ -36,6 +37,9 @@ pub struct AtWidth {
     pub blocks: Vec<Block>,
     pub lines: Vec<Line>,
     pub targets: Vec<Target>,
+    /// Framed boxes (a border on three sides or more, or a shadow) inside
+    /// more than one other framed box.
+    pub frames: Vec<Frame>,
     /// The picture drawn at this width.
     pub picture: Option<String>,
 }
@@ -117,6 +121,19 @@ pub struct Target {
     pub h: f64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Frame {
+    pub selector: String,
+    /// How many framed boxes deep it is, itself counted.
+    pub depth: u32,
+}
+
+/// More type sizes than this on one screen is a finishing note.
+pub const MOST_TYPE_SIZES: usize = 6;
+/// Framed boxes deeper than this is a finishing note.
+pub const MOST_FRAME_LEVELS: u32 = 2;
+
 /// Large text: 24px, or 18.66px bold (WCAG's 18pt and 14pt bold).
 fn large(size: f64, weight: u32) -> bool {
     size >= 24. || (size >= 18.66 && weight >= 700)
@@ -181,6 +198,15 @@ pub fn judge(m: &Measured, report: &mut Report) {
             for t in at.targets.iter().filter(|t| t.w < 44. || t.h < 44.) {
                 push("touch-target", format!("{} is {:.0}×{:.0}", t.selector, t.w, t.h));
             }
+        }
+        let mut sizes: Vec<i64> = at.texts.iter().filter(|t| t.size > 0.).map(|t| t.size.round() as i64).collect();
+        sizes.sort_unstable();
+        sizes.dedup();
+        if sizes.len() > MOST_TYPE_SIZES {
+            push("type-sizes", format!("{} type sizes on one screen ({}px)", sizes.len(), sizes.iter().map(i64::to_string).collect::<Vec<_>>().join(", ")));
+        }
+        if let Some(deepest) = at.frames.iter().filter(|f| f.depth > MOST_FRAME_LEVELS).max_by_key(|f| f.depth) {
+            push("border-levels", format!("{} sits {} framed boxes deep", deepest.selector, deepest.depth));
         }
     }
     report.findings.extend(collapse(found));
@@ -299,6 +325,23 @@ mod tests {
         assert!(found.contains(&("uniform-blocks", Some(1440), Tier::Habit)));
         assert!(found.contains(&("line-length", Some(1440), Tier::Finish)));
         assert!(found.contains(&("touch-target", Some(390), Tier::Finish)) && !found.contains(&("touch-target", Some(1440), Tier::Finish)));
+    }
+
+    #[test]
+    fn too_many_type_sizes_and_frames_three_deep_are_finishing_notes() {
+        let text = |size: f64| Text { selector: "p".into(), text: "x".into(), fg: "rgb(0, 0, 0)".into(), bg: Some("rgb(255, 255, 255)".into()), size, weight: 400 };
+        let mut calm = at(1280);
+        calm.texts = [12., 13., 13.2, 14., 16., 20.].into_iter().map(text).collect();
+        calm.frames = vec![Frame { selector: "div.card".into(), depth: 2 }];
+        assert!(page(vec![calm.clone()]).findings.is_empty(), "five sizes (13.2 is 13) and two levels are fine");
+        let mut busy = calm;
+        busy.texts.extend([11., 28.].map(text));
+        busy.frames = vec![Frame { selector: "div.stat".into(), depth: 3 }, Frame { selector: "div.badge".into(), depth: 4 }];
+        let r = page(vec![busy]);
+        let found: Vec<(&str, Tier, &str)> = r.findings.iter().map(|f| (f.rule.as_str(), f.tier, f.evidence.as_str())).collect();
+        assert!(found.contains(&("type-sizes", Tier::Finish, "7 type sizes on one screen (11, 12, 13, 14, 16, 20, 28px)")), "{found:?}");
+        assert!(found.contains(&("border-levels", Tier::Finish, "div.badge sits 4 framed boxes deep")), "the deepest, once: {found:?}");
+        assert!(r.checked.contains(&"type-sizes".to_owned()) && r.checked.contains(&"border-levels".to_owned()));
     }
 
     #[test]

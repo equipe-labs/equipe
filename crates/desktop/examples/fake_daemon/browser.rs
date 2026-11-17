@@ -5,7 +5,10 @@
 //! `browser_stream` connection gets drawn pictures of the tab watched: at the
 //! panel's size (`fit`), as the daemon lays out any page a panel watches —
 //! or, with `FAKE_FIT=driving` (how 0.47 did it), only when the person drives
-//! it, a member's own at its 1280×800. A press on the wall passes it, as a person's click would.
+//! it, a member's own at its 1280×800. Taking the wall (Take over, or a press on
+//! it) opens it in "a normal Chrome window" as the daemon does on a Mac: the
+//! lane's tabs go, the panel shows the window's card, and Done brings the
+//! browser back past the wall.
 //! `FAKE_BROWSER=empty`: no tabs at all. `FAKE_BROWSER=handover`: besides,
 //! the PM has handed the person its browser at Apple's sign-in, asking them
 //! to sign in to App Store Connect (`show_my_browser`, as a daemon on another
@@ -49,6 +52,8 @@ struct Lane {
 
 struct State {
     lanes: Vec<Lane>,
+    /// Lanes whose wall is in the person's own Chrome window, with their tabs meanwhile.
+    windows: HashMap<String, Vec<BrowserPage>>,
     /// Lanes in the person's hands.
     held: HashSet<String>,
     next: u64,
@@ -103,7 +108,7 @@ fn state() -> &'static Mutex<State> {
             );
             held.insert(PM.to_owned());
         }
-        Mutex::new(State { lanes, held, next: FIRST + 10, seq: HashMap::new() })
+        Mutex::new(State { lanes, windows: HashMap::new(), held, next: FIRST + 10, seq: HashMap::new() })
     })
 }
 
@@ -150,6 +155,34 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
     }
     let mut s = state().lock().unwrap();
     match command {
+        // A wall that refuses automated browsers: a normal Chrome window, as the daemon opens on a Mac.
+        Command::BrowserControl { lane, take: true } if s.lanes.iter().any(|l| l.id == lane && l.pages.iter().any(|p| matches!(p.check, Some(HumanCheck::Challenge | HumanCheck::Captcha)))) => {
+            let Some(l) = s.lanes.iter_mut().find(|l| l.id == lane) else { return true };
+            let pages = std::mem::take(&mut l.pages);
+            let check = pages.iter().find_map(|p| p.check);
+            let _ = events.send(tabs(l));
+            s.windows.insert(lane.clone(), pages);
+            s.held.insert(lane.clone());
+            let _ = events.send(Event::BrowserWindow { squad: Some(SQUAD.into()), lane: lane.clone(), open: true, view: None, challenged: false });
+            let why = "Pass dash.cloudflare.com's \"verify you are human\" check in the normal Chrome window on this Mac, then press Done.";
+            let _ = events.send(Event::BrowserControl { squad: Some(SQUAD.into()), lane: lane.clone(), by: Some("person".into()), why: Some(why.into()), check });
+        }
+        // Done in the window: the browser back, past the wall.
+        Command::BrowserControl { lane, take: false } if s.windows.contains_key(lane) => {
+            let mut pages = s.windows.remove(lane).unwrap_or_default();
+            for p in pages.iter_mut().filter(|p| p.check.is_some()) {
+                p.check = None;
+                p.title = "Overview | Cloudflare".into();
+                p.url = "https://dash.cloudflare.com/8f2c/home/domains".into();
+            }
+            s.held.remove(lane);
+            let _ = events.send(Event::BrowserWindow { squad: Some(SQUAD.into()), lane: lane.clone(), open: false, view: None, challenged: false });
+            if let Some(l) = s.lanes.iter_mut().find(|l| l.id == lane) {
+                l.pages = pages;
+                let _ = events.send(tabs(l));
+            }
+            let _ = events.send(Event::BrowserControl { squad: Some(SQUAD.into()), lane: lane.clone(), by: None, why: None, check: None });
+        }
         Command::BrowserControl { lane, take } => {
             if *take {
                 s.held.insert(lane.clone());
@@ -311,6 +344,43 @@ fn draw(page: u64, w: u32, h: u32) -> Option<Vec<u8>> {
         rect(0.45, 0.395, 0.1, 0.04, [243, 128, 32]);
         rect(0.08, 0.86, 0.84, 0.002, [220, 220, 220]);
         rect(0.35, 0.89, 0.3, 0.02, [170, 170, 170]);
+    } else if url.contains("localhost:5173") {
+        // The design session's sample page: a calm pricing page, stacked on a phone.
+        let phone = w < h;
+        rect(0., 0., 1., 0.07, [250, 248, 244]);
+        rect(0.05, 0.022, 0.12, 0.026, [36, 36, 40]);
+        if !phone {
+            for i in 0..3 {
+                rect(0.62 + i as f32 * 0.09, 0.028, 0.06, 0.014, [120, 118, 112]);
+            }
+        }
+        rect(0., 0.07, 1., 0.001, [226, 222, 214]);
+        let (hx, hw) = if phone { (0.08, 0.84) } else { (0.22, 0.56) };
+        rect(hx, 0.14, hw, if phone { 0.035 } else { 0.06 }, [30, 30, 34]);
+        rect(hx + hw * 0.15, if phone { 0.195 } else { 0.23 }, hw * 0.7, 0.018, [130, 128, 122]);
+        if phone {
+            for i in 0..3 {
+                let y = 0.26 + i as f32 * 0.22;
+                rect(0.08, y, 0.84, 0.19, [255, 255, 255]);
+                rect(0.08, y, 0.84, 0.002, [226, 222, 214]);
+                rect(0.13, y + 0.03, 0.3, 0.02, [36, 36, 40]);
+                rect(0.13, y + 0.07, 0.2, 0.035, [30, 30, 34]);
+                rect(0.13, y + 0.135, 0.74, 0.03, if i == 1 { [33, 96, 171] } else { [236, 233, 226] });
+            }
+        } else {
+            for i in 0..3 {
+                let x = 0.14 + i as f32 * 0.25;
+                rect(x, 0.34, 0.22, 0.46, [255, 255, 255]);
+                rect(x, 0.34, 0.22, 0.003, if i == 1 { [33, 96, 171] } else { [226, 222, 214] });
+                rect(x + 0.025, 0.38, 0.09, 0.022, [36, 36, 40]);
+                rect(x + 0.025, 0.43, 0.07, 0.05, [30, 30, 34]);
+                for k in 0..4 {
+                    rect(x + 0.025, 0.53 + k as f32 * 0.04, 0.15, 0.012, [150, 148, 142]);
+                }
+                rect(x + 0.025, 0.72, 0.17, 0.045, if i == 1 { [33, 96, 171] } else { [236, 233, 226] });
+            }
+            rect(0.3, 0.88, 0.4, 0.016, [150, 148, 142]);
+        }
     } else if url.contains("idmsa.apple.com") {
         // Apple's sign-in: the mark, a heading, two fields, a button.
         rect(0., 0., 1., 0.06, [245, 245, 247]);

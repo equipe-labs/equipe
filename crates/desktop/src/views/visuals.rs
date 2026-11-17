@@ -25,7 +25,7 @@ use crate::icons::{Icon, icon};
 use crate::motion;
 use crate::theme::{CONTROL, ICON, MEASURE, MONO, Palette, R_LG, R_MD, R_SM};
 use crate::tips::tip;
-use crate::visuals::{self as rules, Listing, Look, Owner, Shot, Size, Viewer, Visuals};
+use crate::visuals::{self as rules, Ground, Listing, Look, Owner, Shot, Size, Viewer, Visuals};
 
 /// How long a picture that just came fades in.
 const FADE: Duration = Duration::from_millis(240);
@@ -241,6 +241,23 @@ pub fn picture(
     top_only: bool,
     pad: f32,
 ) -> Div {
+    picture_on(shots, id, path, look, (w, h), radius, top_only, pad, Ground::Checker)
+}
+
+/// [`picture`], on `ground`: on the theme's surface a transparent picture is
+/// flattened on it and letterboxed — no checkerboard.
+#[allow(clippy::too_many_arguments)]
+pub fn picture_on(
+    shots: &Shots,
+    id: u64,
+    path: &str,
+    look: Look,
+    (w, h): (f32, f32),
+    radius: f32,
+    top_only: bool,
+    pad: f32,
+    ground: Ground,
+) -> Div {
     let p = shots.p;
     let corners = |el: Div| {
         if top_only {
@@ -249,7 +266,7 @@ pub fn picture(
             el.rounded(px(radius))
         }
     };
-    let board = checker(p, w, h).map(|board| {
+    let board = (ground == Ground::Checker).then(|| checker(p, w, h)).flatten().map(|board| {
         let board = img(board)
             .absolute()
             .top_0()
@@ -301,7 +318,7 @@ pub fn picture(
             .w(px(w))
             .h(px(h))
             .overflow_hidden()
-            .bg(p.wash),
+            .bg(if ground == Ground::Surface { p.bg } else { p.wash }),
     )
     .children(board)
     .child(face)
@@ -1250,7 +1267,9 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
             // The board made once at the picture's whole size and stretched
             // with it: one made at every scale a pinch passes through would be
             // a new (and, far in, a huge) picture each frame.
-            let board = checker(p, size.0, size.1);
+            // A decision's or a board's picture: on the theme's surface instead.
+            let surface = rules::ground(&viewer.owner) == Ground::Surface;
+            let board = (!surface).then(|| checker(p, size.0, size.1)).flatten();
             let size = zoomed;
             let board = board.map(|b| {
                 img(b)
@@ -1268,6 +1287,7 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
                 .h(px(size.1))
                 .rounded(px(10.))
                 .overflow_hidden()
+                .when(surface, |d| d.bg(p.bg))
                 .children(board)
                 .child(
                     img(shot.image.clone())
@@ -1353,7 +1373,33 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
                         .is_some_and(|o| rules::recommended(&o.label).1),
                 )
             }),
+        // A taste board's tile: its family stands for the option.
+        (Owner::Board { set, step }, Some(choice)) => shell
+            .model
+            .asked
+            .get(*set)
+            .and_then(|s| s.questions.get(*step))
+            .map(|q| {
+                (
+                    *set,
+                    *step,
+                    choice,
+                    false,
+                    q.options
+                        .get(choice)
+                        .is_some_and(|o| rules::recommended(&o.label).1),
+                )
+            }),
         _ => None,
+    };
+    let on_board = matches!(viewer.owner, Owner::Board { .. });
+    let liked = match (&viewer.owner, item.choice, item.tile) {
+        (Owner::Board { set, step }, Some(option), Some(tile)) => shell
+            .decide
+            .drafts
+            .get(set)
+            .is_some_and(|d| d.step == *step && d.liked(option, tile)),
+        _ => false,
     };
     let picked = decision.is_some_and(|(set, step, choice, ..)| {
         shell
@@ -1395,6 +1441,23 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
                 .text_color(rgb(0xFFFFFF))
                 .child(item.label.clone()),
         )
+        // The screen as it is now, before that option.
+        .when(item.before, |r| {
+            r.child(div().flex_none().h(px(20.)).px(px(7.)).flex().items_center().rounded(px(5.)).bg(rgba(0xFFFFFF26)).text_size(px(11.5)).font_weight(FontWeight::MEDIUM).text_color(rgb(0xFFFFFF)).child(t!("decide.before")))
+        })
+        .when(on_board && !item.note.is_empty(), |r| {
+            r.child(
+                div()
+                    .min_w_0()
+                    .max_w(px(420.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(px(12.5))
+                    .text_color(rgba(0xFFFFFFB3))
+                    .child(item.note.clone()),
+            )
+        })
         .when(decision.is_some_and(|d| d.4), |r| r.child(badge(p, true)))
         .when(n > 1, |r| {
             r.child(
@@ -1406,10 +1469,11 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
             )
         });
     let pick = decision.map(|(set, _, choice, multi, _)| {
-        let label = if picked {
-            t!("visuals.picked")
-        } else {
-            t!("visuals.pick")
+        let label = match (on_board, picked) {
+            (true, true) => t!("taste.family_picked"),
+            (true, false) => t!("taste.pick_family"),
+            (false, true) => t!("visuals.picked"),
+            (false, false) => t!("visuals.pick"),
         };
         div()
             .id("viewer-pick")
@@ -1444,7 +1508,53 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
             )
             .on_click(cx.listener(move |this, _, window, cx| {
                 cx.stop_propagation();
-                this.viewer_pick(set, choice, multi, window, cx);
+                if on_board {
+                    this.viewer_pick_family(cx);
+                } else {
+                    this.viewer_pick(set, choice, multi, window, cx);
+                }
+            }))
+    });
+    // A board's tile: like it (Space), or take the like back.
+    let like = on_board.then(|| {
+        div()
+            .id("viewer-like")
+            .flex_none()
+            .h(px(CONTROL))
+            .px_3()
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .rounded_full()
+            .cursor_pointer()
+            .text_size(px(12.5))
+            .font_weight(FontWeight::MEDIUM)
+            .map(|b| {
+                if liked {
+                    b.bg(p.accent).text_color(p.on_accent)
+                } else {
+                    b.bg(rgba(0xFFFFFF1F))
+                        .text_color(rgb(0xFFFFFF))
+                        .hover(|s| s.bg(rgba(0xFFFFFF33)))
+                }
+            })
+            .child(icon(
+                Icon::Heart,
+                13.,
+                if liked { p.on_accent } else { rgb(0xFFFFFF).into() },
+            ))
+            .child(if liked { t!("taste.liked") } else { t!("taste.like") })
+            .child(
+                div()
+                    .font_family(MONO)
+                    .font_features(crate::theme::key_face())
+                    .text_size(px(11.))
+                    .opacity(0.6)
+                    .child("Space"),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                this.viewer_like(cx);
             }))
     });
     // Zoom: −, how far (a click: whole again), +. Drawn as icons like the
@@ -1529,6 +1639,7 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
         })
         .child(label)
         .children(zoom)
+        .children(like)
         .children(pick)
         .when(n > 1, |b| {
             let next = div()
@@ -2062,6 +2173,14 @@ impl Shell {
     pub fn step_viewer(&mut self, forward: bool, cx: &mut Context<Self>) {
         if let Some(viewer) = self.viewer.as_mut() {
             viewer.step(forward);
+            // A board's tile: the keys on the board follow, so closing leaves them there.
+            let item = viewer.item();
+            if let (Owner::Board { .. }, Some(option), Some(tile)) = (&viewer.owner, item.choice, item.tile) {
+                let at = crate::taste::TileRef { option, tile };
+                if let Some(board) = self.taste.board.as_mut() {
+                    board.cursor = Some(at);
+                }
+            }
             cx.notify();
         }
     }
@@ -2120,7 +2239,7 @@ impl Shell {
                 .and_then(|s| s.questions.get(step))
                 .filter(|q| n < q.options.len())
                 .map(|q| (set, n, q.multi_select)),
-            Owner::Ticket(_) | Owner::Reply(_) => None,
+            Owner::Ticket(_) | Owner::Reply(_) | Owner::Board { .. } => None,
         };
         let path = viewer.item().path.clone();
         match key {
@@ -2143,6 +2262,9 @@ impl Shell {
                 self.viewer_zoom.set(&path, 1., (0., 0.));
                 cx.notify();
             }
+            // A taste board's tile: Space likes it, ⏎ picks its family.
+            "space" if matches!(viewer.owner, Owner::Board { .. }) => self.viewer_like(cx),
+            "enter" if matches!(viewer.owner, Owner::Board { .. }) => self.viewer_pick_family(cx),
             "escape" | "space" => self.close_viewer(cx),
             "enter" => {
                 if let Some((set, n, multi)) = viewer.item().choice.and_then(pick) {

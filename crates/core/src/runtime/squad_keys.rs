@@ -51,10 +51,12 @@ impl Runtime {
     pub(super) fn publish_squad_secrets(&mut self) {
         let secrets = self.all_squad_secrets();
         self.publish(Event::SquadSecrets { secrets });
+        // A keyed outside server stands on its key: shown anew with it.
+        self.mcp_keys_changed();
     }
 
     /// A kept value: the masking list first (read once, at start), else the secret store.
-    fn key_value(&self, squad: &str, name: &str) -> Result<String, String> {
+    pub(super) fn key_value(&self, squad: &str, name: &str) -> Result<String, String> {
         if let Some(value) = ks::watched(&ks::watch_key(squad, name)) {
             return Ok(value);
         }
@@ -82,14 +84,13 @@ impl Runtime {
         });
     }
 
-    /// `secret_save`: keep what a member obtained.
-    pub(super) fn secret_save(&mut self, squad: &str, member: &str, id: SessionId, args: &Value) -> Result<String, String> {
-        let draft = ks::check_save(args)?;
-        let (ticket, current, _) = self.key_context(squad, id);
+    /// The projects a key may be used on, from what was asked (names) — else
+    /// what the key already has, else the project this conversation works on.
+    pub(super) fn key_projects(&mut self, squad: &str, id: SessionId, asked: &Option<Vec<String>>, existing: Option<&SquadSecret>) -> Result<Vec<String>, String> {
+        let (_, current, _) = self.key_context(squad, id);
         let squad_projects = self.projects(squad);
         let names: Vec<String> = squad_projects.iter().map(|p| board::project_name(p)).collect();
-        let existing = self.journal(squad).map(ks::read).unwrap_or_default().into_iter().find(|s| s.name == draft.name);
-        let projects = match (&draft.projects, &existing) {
+        Ok(match (asked, existing) {
             (Some(asked), _) => {
                 let mut out: Vec<String> = Vec::new();
                 for arg in asked {
@@ -104,7 +105,25 @@ impl Runtime {
             (None, Some(kept)) => kept.projects.clone(),
             (None, None) if !current.is_empty() => vec![current],
             (None, None) => Vec::new(),
-        };
+        })
+    }
+
+    /// `secret_save`: keep what a member obtained.
+    pub(super) fn secret_save(&mut self, squad: &str, member: &str, id: SessionId, args: &Value) -> Result<String, String> {
+        let draft = ks::check_save(args)?;
+        let existing = self.journal(squad).map(ks::read).unwrap_or_default().into_iter().find(|s| s.name == draft.name);
+        let projects = self.key_projects(squad, id, &draft.projects, existing.as_ref())?;
+        let (secret, replaced) = self.keep_secret(squad, member, id, draft, projects)?;
+        Ok(ks::saved_text(&secret, replaced))
+    }
+
+    /// Put a value in the secret store and its facts in the journal — what
+    /// `secret_save` and a `request_secret` card both end in. The value is
+    /// cut from every later event as soon as it is kept. Whether it replaced
+    /// one of the name.
+    pub(super) fn keep_secret(&mut self, squad: &str, member: &str, id: SessionId, draft: ks::Draft, projects: Vec<String>) -> Result<(SquadSecret, bool), String> {
+        let (ticket, _, _) = self.key_context(squad, id);
+        let existing = self.journal(squad).map(ks::read).unwrap_or_default().into_iter().find(|s| s.name == draft.name);
         self.vault
             .lock()
             .map_err(|_| "The secret store is unreadable.".to_owned())?
@@ -133,7 +152,7 @@ impl Runtime {
         let text = say!(self, "notice.squad_secret_saved", member = member, name = secret.name, service = secret.service);
         self.publish(Event::Notice { undo: None, session: id, text });
         self.publish_squad_secrets();
-        Ok(ks::saved_text(&secret, replaced))
+        Ok((secret, replaced))
     }
 
     /// `secret_list`: facts only.
@@ -383,6 +402,7 @@ commit it, print it or copy it elsewhere; to hand it to a service, run the CLI y
                 *text = joined;
             }
             Event::Thinking { text, .. } | Event::UserMessage { text, .. } | Event::MessageQueued { text, .. } | Event::Steered { text, .. } | Event::Notice { text, .. } => mask(text),
+            Event::Plan { steps, .. } => steps.iter_mut().for_each(|step| mask(&mut step.text)),
             Event::ToolUse { tool, target, label, .. } => {
                 // `secret_save`'s arguments are the value itself.
                 if ks::carries_value(tool) {

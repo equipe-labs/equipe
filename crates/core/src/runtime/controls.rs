@@ -4,7 +4,7 @@
 //! (never the member's words), done by the daemon on the person's yes.
 
 use super::*;
-use crate::controls::{self, Change, ModelFit, Mover, engine_name};
+use crate::controls::{self, Change, McpAction, ModelFit, Mover, engine_name};
 
 impl Runtime {
     /// The squad's parallel work, kept and told; more room on max starts
@@ -105,6 +105,21 @@ impl Runtime {
             out.push(format!("- signal {} in {}: {}.", s.name, s.project, on(s.on)));
         }
         out.push(format!("\"Always allow\" rules: {}.", if allowed.is_empty() { "none".to_owned() } else { allowed.join(", ") }));
+        let outside = self.mcp_servers_of(squad);
+        let status = self.mcp_status_of(squad);
+        if outside.is_empty() {
+            out.push("Outside MCP servers (mcp_server): none.".into());
+        }
+        for server in &outside {
+            let roles = if server.roles.is_empty() { "every member".to_owned() } else { server.roles.join(", ") };
+            let stands = match status.iter().find(|s| s.name == server.name).map(|s| s.overall()) {
+                Some(crate::squad_mcp::McpState::Connected) => "connected",
+                Some(crate::squad_mcp::McpState::NeedsSignIn) => "needs the person's sign-in",
+                Some(crate::squad_mcp::McpState::Failing) => "failing",
+                _ => "not checked yet",
+            };
+            out.push(format!("- outside MCP server {} ({}) for {roles}: {}, {stands}.", server.name, server.url, on(server.enabled)));
+        }
         out.join("\n")
     }
 
@@ -226,6 +241,7 @@ impl Runtime {
             Change::EngineSwitching(mode) => Command::SetEngineSwitching { squad: squad_name, mode },
             Change::Parallel { .. } => Command::SetParallel { squad: squad_name, parallel: self.parallel_for(squad, change) },
             Change::ModelChoice(choice) => Command::SetModelChoice { squad: squad_name, choice },
+            Change::TicketModel { ticket, model } => Command::SetTicketModel { squad: squad_name, ticket, model },
             Change::DesignReviewer(reviewer) => Command::SetDesignReviewer { squad: squad_name, reviewer },
             Change::RemoveProject(name) => Command::RemoveProject { squad: squad_name, path: project(&name)? },
             Change::Hq(name) => Command::SetHq { squad: squad_name, path: name.as_deref().map(project).transpose()? },
@@ -251,6 +267,20 @@ impl Runtime {
                     return Err("You can't rest yourself: the PM stays on duty.".to_owned());
                 }
                 Command::SetResting { squad: squad_name, member, resting, stop: false }
+            }
+            Change::McpServer { action: McpAction::Add, name, url, roles, transport } => {
+                let server = crate::squad_mcp::server(&name, url.as_deref(), roles.as_deref(), transport.as_deref())?;
+                Command::AddMcpServer { squad: squad_name, server, sign_in: true }
+            }
+            Change::McpServer { action, name, .. } => {
+                let name = name.trim().to_ascii_lowercase();
+                if !self.mcp_servers_of(squad).iter().any(|s| s.name == name) {
+                    return Err(format!("The squad has no outside MCP server {name}; `settings` lists them."));
+                }
+                match action {
+                    McpAction::Remove => Command::RemoveMcpServer { squad: squad_name, name },
+                    _ => Command::SetMcpServerEnabled { squad: squad_name, name, on: action == McpAction::On },
+                }
             }
         })
     }
@@ -300,6 +330,11 @@ impl Runtime {
                     ModelFit::Unknown => Err(format!("{member} runs on {}, which has no model {model:?}. {} Nothing changed.", engine_name(engine), models_line(engine, codex.as_ref()))),
                 }
             }
+            Change::TicketModel { ticket, .. } => match self.journal(squad).and_then(|j| j.ticket(*ticket).ok().flatten()) {
+                None => Err(format!("There is no T-{ticket} on the board.")),
+                Some(t) if t.status.is_closed() => Err(format!("T-{ticket} is closed: a model is picked for a ticket that is still being worked on.")),
+                Some(_) => Ok(()),
+            },
             Change::Effort { member, effort: Some(effort) } => {
                 let engine = self.engine_of(squad, member)?;
                 let model = self.member_id(squad, member).and_then(|id| self.sessions.get(&id)).and_then(|s| s.model.clone());
@@ -428,6 +463,9 @@ impl Runtime {
             Change::EngineSwitching(m) => say!(self, "control.engine_switching", mode = format!("{m:?}").to_lowercase()),
             Change::ModelChoice(crate::protocol::tiers::ModelChoice::QualityFirst) => say!(self, "control.model_choice_quality"),
             Change::ModelChoice(crate::protocol::tiers::ModelChoice::Off) => say!(self, "control.model_choice_off"),
+            Change::TicketModel { ticket, model: None } => say!(self, "control.ticket_model_off", ticket = ticket),
+            Change::TicketModel { ticket, model: Some(model) } if crate::tiers::is_premium(Engine::Claude, model) => say!(self, "control.ticket_model_premium", ticket = ticket, model = self.model_label(model)),
+            Change::TicketModel { ticket, model: Some(model) } => say!(self, "control.ticket_model", ticket = ticket, model = self.model_label(model)),
             Change::Parallel { .. } => {
                 let parallel = self.parallel_for(squad, change);
                 if parallel.is_max() {
@@ -457,6 +495,24 @@ impl Runtime {
             }
             Change::Resting { member, resting: true } => say!(self, "control.resting_on", member = member),
             Change::Resting { member, resting: false } => say!(self, "control.resting_off", member = member),
+            Change::McpServer { action, name, url, roles, transport } => {
+                let kept = self.mcp_servers_of(squad).into_iter().find(|s| s.name == name.trim().to_ascii_lowercase());
+                let server = match action {
+                    McpAction::Add => crate::squad_mcp::server(name, url.as_deref(), roles.as_deref(), transport.as_deref()).ok(),
+                    _ => kept,
+                };
+                let name = server.as_ref().map_or_else(|| name.clone(), crate::squad_mcp::label);
+                let roles = match server.as_ref().map(|s| s.roles.clone()) {
+                    Some(r) if !r.is_empty() => r.join(", "),
+                    _ => say!(self, "control.mcp_everyone"),
+                };
+                match action {
+                    McpAction::Add => say!(self, "control.mcp_add", name = name, url = server.map(|s| s.url).unwrap_or_default(), roles = roles),
+                    McpAction::Remove => say!(self, "control.mcp_remove", name = name),
+                    McpAction::On => say!(self, "control.mcp_on", name = name, roles = roles),
+                    McpAction::Off => say!(self, "control.mcp_off", name = name),
+                }
+            }
         }
     }
 }

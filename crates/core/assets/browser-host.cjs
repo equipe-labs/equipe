@@ -34,8 +34,9 @@
 //   {"op":"unfit","page":3}  (no panel watches it: its own size again)
 //   {"op":"newtab","url":"…"}  {"op":"closetab","page":3}
 //   {"op":"control","lane":"squad/name","by":"person"|null,"why":"check"?,"ifUntouched":true?}
-//   {"op":"cookies","lane":"squad/name","cookies":[{name,value,domain,path,expires,secure,httpOnly,sameSite}],"url":"…"}
-//     (a sign-in the person made in a view of their screen: added to the lane's profile, the page loaded again)
+//   {"op":"cookies","lane":"squad/name","cookies":[{name,value,domain,path,expires,secure,httpOnly,sameSite}],"url":"…","missing":true?}
+//     (a sign-in the person made in a view of their screen: added to the lane's profile, the page loaded again;
+//     `missing`: a kept sign-in put back — only the cookies the profile lacks)
 //   {"op":"goto","lane":"squad/name","url":"…"}  {"op":"dialog","page":3,"accept":true,"text":"…"}
 //   {"op":"popout","page":3,"bounds":{"left":0,"top":0,"width":900,"height":800}}
 //   {"op":"fill","lane":"squad/name","page":3,"script":"() => …","token":7}
@@ -189,7 +190,9 @@ const startProfile = async (name, profile, STATE) => {
     // --hide-crash-restore-bubble: the last exit is marked as a crash to keep
     // session sign-ins (above); no "Restore pages?" bubble for that.
     ignoreDefaultArgs: ['--enable-automation'],
-    args: ['--disable-blink-features=AutomationControlled', '--test-type', '--disable-notifications', '--hide-crash-restore-bubble'],
+    // --profile-directory: the profile the daemon pinned (`browser::chrome_profile`),
+    // the same one the person's own window opens — never whichever Chrome used last.
+    args: ['--disable-blink-features=AutomationControlled', '--test-type', '--disable-notifications', '--hide-crash-restore-bubble', `--profile-directory=${pinnedProfile(profile, fs, path)}`],
   });
 
   const owner = new Map(); // page -> lane id ("" for the person's own)
@@ -1129,21 +1132,68 @@ const startProfile = async (name, profile, STATE) => {
   // A sign-in the person made in a view of their screen: its cookies (already
   // scoped to the sign-in's sites by the daemon) go into this profile, and the
   // member's page loads again. A cookie's value is never printed.
-  const cookies = async ({ lane: laneId, cookies: list = [], url }) => {
+  // Playwright's `addCookies` takes a list whole or not at all: one cookie
+  // Chrome refuses (a `__Host-` one naming a domain, say) and none went in.
+  // So: the list at once, else one by one — a refused one with a domain tried
+  // once more as the host's own — and what went in is told, never a value.
+  const sameSiteOf = (c) => (['Strict', 'Lax', 'None'].includes(c.sameSite) ? c.sameSite : 'Lax');
+  const asCookie = (c) => ({
+    name: String(c.name), value: String(c.value ?? ''), domain: String(c.domain), path: String(c.path || '/'),
+    expires: typeof c.expires === 'number' && c.expires > 0 ? c.expires : -1,
+    httpOnly: !!c.httpOnly, sameSite: sameSiteOf(c), secure: !!c.secure || sameSiteOf(c) === 'None',
+  });
+  const addAll = async (list) => {
+    const ok = list.filter((c) => c && c.name && c.domain).map(asCookie);
+    if (!ok.length) return { added: 0, failed: 0 };
+    try { await context.addCookies(ok); return { added: ok.length, failed: 0 }; } catch {}
+    let added = 0;
+    for (const c of ok) {
+      try { await context.addCookies([c]); added++; continue; } catch {}
+      if (!c.domain.startsWith('.')) continue;
+      try { await context.addCookies([{ ...c, domain: c.domain.slice(1) }]); added++; } catch {}
+    }
+    return { added, failed: ok.length - added };
+  };
+  // `missing`: only what this profile lacks — a kept sign-in put back before
+  // the person is asked must never write over a cookie the site rotated since
+  // (Google ends a session it sees an older copy of come back).
+  const lacking = async (list) => {
+    const key = (c) => `${c.name}\u0000${String(c.domain).replace(/^\./, '')}\u0000${c.path || '/'}`;
+    const have = new Set((await context.cookies().catch(() => [])).map(key));
+    return list.filter((c) => c && c.name && c.domain && !have.has(key(c)));
+  };
+  const cookies = async ({ lane: laneId, cookies: list = [], url, missing }) => {
     const lane = lanes.get(laneId);
     if (!lane) return;
-    const sameSite = (c) => (['Strict', 'Lax', 'None'].includes(c.sameSite) ? c.sameSite : 'Lax');
-    const ok = list
-      .filter((c) => c && c.name && c.domain)
-      .map((c) => ({
-        name: String(c.name), value: String(c.value ?? ''), domain: String(c.domain), path: String(c.path || '/'),
-        expires: typeof c.expires === 'number' && c.expires > 0 ? c.expires : -1,
-        httpOnly: !!c.httpOnly, sameSite: sameSite(c), secure: !!c.secure || sameSite(c) === 'None',
-      }));
-    try { await context.addCookies(ok); } catch { console.error(`equipe browser host: ${ok.length} sign-in cookies were not added`); }
+    const { added, failed } = await addAll(missing ? await lacking(list) : list);
+    if (failed) console.error(`equipe browser host: ${failed} of ${added + failed} sign-in cookies were not added`);
+    emit({ type: 'cookies', lane: laneId, profile: name || '', added, failed, restore: false });
     const page = pages.get(lane.agent) || tabsOf(laneId).at(-1) || (await openTab(laneId));
     if (url) await page.goto(address(url)).catch(() => {});
     else await page.reload().catch(() => {});
+  };
+  // The squad's kept sign-ins (`signin_store.rs`), back in this profile: only
+  // what it lacks — a cookie it holds may be fresher than the kept copy.
+  const restore = async ({ cookies: list = [] }) => {
+    const { added, failed } = await addAll(await lacking(list));
+    emit({ type: 'cookies', lane: null, profile: name || '', added, failed, restore: true });
+  };
+  // A sign-in the person finished in this profile (a member's browser in
+  // their hands, their own window on this folder, "Sign in to a site"): its
+  // site's cookies, for the squad's kept sign-ins. Straight to the daemon.
+  const collect = async ({ hosts = [], token }) => {
+    const want = (hosts || []).map((h) => String(h).toLowerCase().replace(/^\./, '')).filter(Boolean);
+    const ours = (domain) => {
+      const d = String(domain).toLowerCase().replace(/^\./, '');
+      return d.includes('.') && want.some((h) => h === d || h.endsWith(`.${d}`) || d.endsWith(`.${h}`));
+    };
+    const all = await context.cookies().catch(() => []);
+    const found = all.filter((c) => ours(c.domain)).map((c) => ({
+      name: c.name, value: c.value, domain: c.domain, path: c.path || '/',
+      expires: typeof c.expires === 'number' && c.expires > 0 ? Math.floor(c.expires) : null,
+      secure: !!c.secure, http_only: !!c.httpOnly, same_site: c.sameSite || null,
+    }));
+    emit({ type: 'collected', token, cookies: found });
   };
 
   const popout = async ({ page: pid, bounds }) => {
@@ -1193,7 +1243,7 @@ const startProfile = async (name, profile, STATE) => {
 
   await ensureParking();
 
-  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, unfit, input, nav, goto, newtab, closetab, control, dialog, popout, cookies, fill, visit, look, passkey_add: passkeyAdd, passkey_use: passkeyUse, snap };
+  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, unfit, input, nav, goto, newtab, closetab, control, dialog, popout, cookies, restore, collect, fill, visit, look, passkey_add: passkeyAdd, passkey_use: passkeyUse, snap };
   // Its Chrome closed (the person quit it): the host goes, and the daemon starts it again —
   // unless the daemon closed it itself, to give the profile to the person's own window.
   let suspending = false;
@@ -1228,7 +1278,7 @@ const byLane = async (id) => (await started()).find((i) => i.hasLane(id)) || nul
 /// The Chrome a request is for: a lane's by its profile, a tab's by who has it.
 const target = async (request) => {
   switch (request.op) {
-    case 'lane': case 'person': case 'newtab': return profileOf(request);
+    case 'lane': case 'person': case 'newtab': case 'restore': case 'collect': return profileOf(request);
     // equipe's own tabs, passkeys and pictures: the person's main Chrome only.
     case 'visit': case 'passkey_add': case 'snap': return profileOf({});
     case 'show': case 'close': return byLane(request.id);

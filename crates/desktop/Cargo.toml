@@ -49,7 +49,10 @@ tokio = { version = "1.53.2", features = ["rt", "macros", "sync", "time", "net",
 alacritty_terminal = "0.26"
 
 # Attached screenshots: decoded, shrunk and thumbnailed off the UI thread.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff", "ico"] }
+# Reads an icon's bytes off a response body (src/siteicon.rs); the version GPUI's HTTP client already uses.
+anyhow = "1"
+futures = { version = "0.3", default-features = false, features = ["std"] }
 base64 = "0.23.1"
 # Pairing a phone: the code, drawn as a QR code (the one `equipe pair` prints).
 qrcode = { version = "0.14.1", default-features = false }

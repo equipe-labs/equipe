@@ -1,32 +1,68 @@
 ---
 name: design-process
-description: Use for design work that brings options to the person — a new flow or screen, a direction, a revision — the steps, the references, the critic, the person's taste and recording decisions.
+description: Use for any design work — a small change, a new flow or screen, a direction, a revision — its size and steps, the references, the critic, the person's taste and recording decisions.
 ---
 
 # How design work goes
 
-Work in this order and say which step you are on: define the problem and how success shows; collect references — from
-the squad's reference library first, then new ones, each with its link and what you take from it; for a new flow or
-screen, its information architecture and the flow step by step, then low-fidelity wireframes, before any visual;
-explore at least three genuinely different options (colour alone doesn't make another) and put them side by side in
-one comparison sheet with your recommendation and why; take the person's critique; refine only the chosen option, at
-full fidelity — every state it can have (the UI map's kinds, in the `ui-map` skill), light and dark, the widths it supports, real
-copy; where it moves or flows across screens, a clickable HTML prototype, recorded step by step; hand off a spec an
-engineer can build without guessing (token names, states, responsive rules, motion, accessibility, copy, asset paths);
-after the engineer builds it, check the result in design QA.
+First size the work. A small change — a tweak to a screen or component that exists, inside its system (a state, a
+spacing, a label, a control, a column) — is one version: render it on the real screen, put it beside the references of
+the patterns it touches (reused where the `design-references` skill finds them) and iterate yourself until it stands
+in their tier and passes the `ui-review` checklists of the parts it touches; then the checks below and the second
+look, which is its critic. It needs no directions, comparison sheet or brief, no decision card unless it holds a taste call (brand, colours, typefaces, which of two), and no design
+QA ticket of its own: equipe sends a one-screen build into the daily design review, and keeps a separate design QA for
+new screens and changes that reach many screens. Everything else — a new flow or screen, a redesign, a direction — takes the whole
+process below.
+
+Before anything else, name the product kind — landing page, web product or mobile app — as the `ui-product-kinds`
+skill says: it sets the references, the rules and the bar. Work in this order and say which step you are on: define
+the problem and how success shows; research references for each pattern it uses, as the `design-references` skill
+says, before any drawing; for a new flow or screen, its information architecture and the flow step by step, then low-fidelity wireframes, before any visual;
+explore two or three options that differ in concept, each from a named reference family and built as a real page, as
+the `design-references` skill says (colour alone doesn't make another; two strong beat three similar), and put them
+side by side in one comparison sheet with your recommendation and why; take the person's critique; refine only the
+chosen option, at full fidelity — every state it can have (the UI map's kinds, in the `ui-map` skill), light and
+dark, the widths it supports, real copy; where it moves or flows across screens, a clickable HTML prototype, recorded
+step by step; hand off a spec an engineer can build without guessing (token names, states, responsive rules, motion, accessibility, copy, asset paths);
+after the engineer builds it, equipe opens its design QA — never open one yourself. Build the chosen option to the
+`ui-*` skill of each part it has.
 
 Show design options as they would live: each applied to the product's real screens — the UI map's pictures
 (`design/flows/`) shot again or mocked up with that option's tokens, or `equipe design specimen --tokens <file> --png`
-when no screen exists yet — never as swatches alone.
+when no screen exists yet — never as swatches alone. When the project deploys previews (a Vercel or Netlify preview
+deployment for each branch, say), put each direction on its own preview branch or page and give its address in the
+option's `preview_url`: the person clicks through a real page instead of judging a picture. The pictures still go on
+the card: full-size renders at 1440 and 390, cropped to the content, on an opaque background with no transparent
+padding — and the screen as it is now in the option's `before`, so the person can flip between before and after.
 
-Keep the squad's reference library in its folder, `design/references/`: a folder for each reference worth keeping —
-its pages shot with `shoot`, its link, what to take from it and what to leave — read it before you search anew, and
-add to it whatever you find; with the `design` tools, the design library (`design_library_search`) is part of it.
+Every design option you put to the person and every hand-in that changes a screen carries a short change note:
+`changes` on the option or on `submit_for_review`, a point for each area that moved — layout, hierarchy, density,
+type, colour, components, interaction — with before → after and why the after is better, tied to a reference or to a
+rule of the `ui-*` skills ("36px rows, as in the references' lists" — never "cleaner" or "more modern"); and
+`unchanged`, what did not change: features, content, data, and copy unless the ticket asked. equipe refuses an option
+in pictures, or a screen hand-in, without one.
+
+A hand-in of visual work is found again on the design screen's Designs tab, where the person goes to see what you made:
+name the pictures so it picks the right ones. Say your hero render and your before render by path, one to a line of the
+hand-in text — `Hero: design/directions/t<n>-<name>/boards/mock-b-1440.png` and `Before: design/directions/t<n>-<name>/boards/before-1440.png`
+— the hero being the direction you recommend (or the chosen one), the before being the screen as it was, at the same
+width. Name every render the same way, in a folder of `design/directions/` that starts with the ticket's number
+(`t<n>-…`): `before-1440.png`, `mock-a-1440.png`, `mock-a-390.png`, `direction-calm-ledger-1440.png` — a kind, a key,
+a width — so each direction pairs with the before at its own width. Keep the change notes in a `CHANGES.md` in that
+folder, one `## Direction A` section each (before → after → why, then what is unchanged), and give each live preview's
+https address in the hand-in or a comment, with the direction it shows named on the same line.
+
+Keep the squad's reference library in its folder, `design/references/`: a folder for each pattern with its pictures
+and `notes.md`, as the `design-references` skill says — read it before you search anew, and add to it whatever you
+find; with the `design` tools, the design library (`design_library_search`) is part of it.
 Before any option, write a short binding brief in `brand.md`: one specific reference (a named product, site or print
 piece, and what to take from it — adjectives describe a region, a reference a point), what is locked and what is free,
-and a one-line visual thesis.
+and a one-line visual thesis. A system the person accepted is locked and you build inside it; only a baseline below
+the references' tier is reset, once, with the person's decision, as `design-references` says.
 
-Directions differ in structure — layout, type, imagery, density — not in colour alone. Never grade your own work, and
+Directions differ in structure — layout, type, imagery, density — not in colour alone. Each takes a different approach
+from the references, named. Before any critic sees a picture, run the `ui-review` skill on it yourself and fix what it
+finds — a pre-check, never a verdict. Never grade your own work, and
 never show the person a picture the critic hasn't seen: every direction, refined screen and revision goes first to a
 fresh critic — the other engine when it's available: `equipe design critique <pictures…> --reference <the reference's
 shot> [--before <the round before>] [--goal "…"]` sends them, with `brand.md`, to a reviewer that saw none of the work
@@ -37,9 +73,12 @@ template? Then the details: hierarchy and density, alignment and spacing on the 
 product's script, numbers), colour roles and contrast, brand fidelity ("hide the logo: could this be another company?"), states and real
 copy, and the stock looks — each finding tied to a region of the picture. Revise on its findings, at most three
 rounds, each revision beside the one before (a fix that loses the whole is worse than the flaw it fixed), and keep the
-best round, not the last; say in your hand-in what the critic found and what you changed.
+best round, not the last; say in your hand-in what the critic found and what you changed. Give the critic the
+references of the screen's patterns too (`--reference`, drawn at the same width): it holds the work to the quality bar
+and its taste checklist, and below the references' tier is a revise.
 
-The person's taste is a list
+A project's `design/taste.md` opens with its style profile — density, tone, type, colour, the examples the person
+liked and disliked, and where they lean on each axis: read it first, before any design. The person's taste is a list
 of notes, a line each — the squad's in its memory, `design taste notes`; a project's in its `design/taste.md`. Read
 them before any proposal and follow them; where a proposal departs from one, say which and why. A note ending in
 `confirmed` or written by the person outranks one still waiting for their yes; where they disagree, follow the
@@ -51,6 +90,12 @@ they confirm it, correct it or remove it on the design screen. After each decisi
 `design/decisions/<date>-<question>.md` — the question, `Chose:`, `Picture:` (the chosen option's path), `Passed
 over:`, `Why:` in the person's words, `Ticket:`.
 
+When what you need is the person's taste itself (a direction, a family to be near), put it to them as a taste board
+rather than in words: one `ask_decision` question with `board: true`, two or three clearly different reference
+families as options, 6 to 12 `tiles` each, every tile with its source and a `take` line (`design-references` says
+how). Record their pick and their liked tiles in `design/decisions/` too, and use the liked tiles as the strongest
+references afterwards.
+
 Among your options, always one bolder than your recommendation, said
 as such: a choice only teaches when there is one.
 
@@ -60,7 +105,9 @@ a direction that repeats one of the last three the person chose in every dimensi
 differs from its fellow options only in colour; change it until it is taken, never reword it to pass. When the person
 chooses, `equipe design direction choose <name> --ticket T-<n>`.
 
-Before you redesign a screen that exists, write down what it offers: `equipe design kept record <its source or URL>
+A redesign or polish keeps the product as it is: its functions, content, data and information architecture stay
+unless the ticket says otherwise, and only presentation and interaction change. Its change note confirms it in
+`unchanged`. Before you redesign a screen that exists, write down what it offers: `equipe design kept record <its source or URL>
 --screen <flow/screen>`; after, `equipe design kept check <the new source or URL> --screen <flow/screen>` must find
 nothing gone. A link, field, action or heading goes only where the brief or a decision says so, as `Remove <kind>:
 <item>`.
@@ -82,8 +129,9 @@ The last critique before you hand in is a second look by fresh eyes: `equipe des
 --criteria "<the ticket's acceptance criteria>"` gives a reviewer that saw none of your work only the pictures lint
 drew at each width, the brief, the criteria and the design system, and keeps its verdict on the screen's record. Fix
 every fix it lists, check again and ask again until it passes, or until three looks in a row have asked for fixes:
-then hand in, and what is left goes to the person marked, the PM told. Never argue it into a pass, and never write
-its verdict yourself. What it needs that the brief, the project's files and the design system don't give comes back as
+then hand in, and what is left goes to the person marked, the PM told. Give it the references of the screen's
+patterns with `--reference <picture>` (as many as it needs, at the width you drew): it then judges the tier too.
+Never argue it into a pass, and never write its verdict yourself. What it needs that the brief, the project's files and the design system don't give comes back as
 open questions, not fixes: use the neutral wording it suggests, or ask the person with `ask_decision` while you carry
 on — never stop the ticket on `block_on_person` for them. For a new screen, its first screenful is looked at alone first (`--first`), before you build the
 rest on it. Only when no engine can run: start a subagent with nothing of your conversation, give it only what

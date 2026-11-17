@@ -178,15 +178,8 @@ decide — split it into smaller tickets, rewrite what it asks and how it is che
     /// comes to on its member's engine.
     pub(super) fn set_ticket_tier(&mut self, squad: &str, ticket: TicketId, tier: Option<ModelTier>, pinned: bool) {
         let Some(t) = self.find_ticket(squad, ticket) else { return };
-        let mut set = rules::set_by_person(t.model.as_ref(), tier, pinned);
-        // What it comes to on the member that has it, or would take it.
-        let holder = t.assignee.clone().or_else(|| t.owner.clone());
-        let member = holder.and_then(|name| {
-            self.sessions.iter().find(|(_, s)| s.squad.as_deref() == Some(squad) && s.is_member_itself() && s.member.as_ref().is_some_and(|m| m.name == name || m.role == name)).map(|(&id, _)| id)
-        });
-        if let Some(chosen) = member.and_then(|id| self.choose_model(squad, id, &Ticket { model: Some(set.clone()), ..t.clone() })) {
-            set = TicketModel { model: chosen.model, effort: chosen.effort, engine: chosen.ticket.engine, tier: set.tier.or(chosen.ticket.tier), reason: chosen.ticket.reason, ..set };
-        }
+        let set = rules::set_by_person(t.model.as_ref(), tier, pinned);
+        let set = self.shown_model(squad, &t, set);
         let Some(journal) = self.journal(squad) else { return };
         if let Err(err) = journal.set_ticket_model(ticket, Some(&set)) {
             return self.squad_error(squad, format!("{err:#}"));
@@ -200,6 +193,50 @@ decide — split it into smaller tickets, rewrite what it asks and how it is che
         };
         let _ = journal.ticket_event(ticket, "you", "model", &what);
         crate::daemon_log!("equipe: {squad}: T-{ticket}'s tier: {what}");
+        self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: Ticket { model: Some(set), ..t } });
+    }
+
+    /// `set`, a ticket's model as the person just set it, with the model and
+    /// effort it comes to on the member that has the ticket, or would take it.
+    fn shown_model(&mut self, squad: &str, t: &Ticket, set: TicketModel) -> TicketModel {
+        let holder = t.assignee.clone().or_else(|| t.owner.clone());
+        let member = holder.and_then(|name| {
+            self.sessions.iter().find(|(_, s)| s.squad.as_deref() == Some(squad) && s.is_member_itself() && s.member.as_ref().is_some_and(|m| m.name == name || m.role == name)).map(|(&id, _)| id)
+        });
+        match member.and_then(|id| self.choose_model(squad, id, &Ticket { model: Some(set.clone()), ..t.clone() })) {
+            Some(chosen) => TicketModel { model: chosen.model, effort: chosen.effort, engine: chosen.ticket.engine, tier: set.tier.or(chosen.ticket.tier), reason: chosen.ticket.reason, ..set },
+            // Nobody holds it yet: what the person picked is what it will run on.
+            None => TicketModel { model: set.pick.as_ref().map(|p| p.model.clone()).or(set.model.clone()), ..set },
+        }
+    }
+
+    /// The person picks the model of `ticket` alone (or lets the pick go):
+    /// every lane and run of this ticket from its next one uses it — the
+    /// premium family included — and nothing else does. It starts a fresh
+    /// conversation, a model change mid-session would throw its cache away.
+    pub(super) fn set_ticket_pick(&mut self, squad: &str, ticket: TicketId, model: Option<String>) {
+        let Some(t) = self.find_ticket(squad, ticket) else { return };
+        if t.status.is_closed() {
+            let message = say!(self, "error.ticket_closed", id = ticket);
+            return self.squad_error(squad, message);
+        }
+        let set = match rules::set_pick(t.model.as_ref(), model.as_deref(), "you", now_secs() as i64) {
+            Ok(set) => set,
+            Err(why) => return self.squad_error(squad, why),
+        };
+        let set = self.shown_model(squad, &t, set);
+        let Some(journal) = self.journal(squad) else { return };
+        if let Err(err) = journal.set_ticket_model(ticket, Some(&set)) {
+            return self.squad_error(squad, format!("{err:#}"));
+        }
+        let _ = journal.record_model_choice(ticket, "person", None, &set);
+        let what = match set.pick.as_ref() {
+            Some(p) if rules::is_premium(Engine::Claude, &p.model) => format!("Model set to {} (premium: several times Opus's cost) for this ticket alone by you; its next lanes use it.", p.model),
+            Some(p) => format!("Model set to {} for this ticket alone by you; its next lanes use it.", p.model),
+            None => "Model pick for this ticket let go by you; its tier decides again.".to_owned(),
+        };
+        let _ = journal.ticket_event(ticket, "you", "model", &what);
+        crate::daemon_log!("equipe: {squad}: T-{ticket}'s model: {what}");
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: Ticket { model: Some(set), ..t } });
     }
 

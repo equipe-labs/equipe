@@ -42,7 +42,7 @@ pub fn mode() -> Option<String> {
 }
 
 /// Under the fake daemon's own home, so two of them never share it.
-fn base() -> PathBuf {
+pub fn base() -> PathBuf {
     equipe_providers::credentials::equipe_home().join("design-system")
 }
 
@@ -149,6 +149,8 @@ pub fn seed() {
         super::components::seed(&base().join("t412"), Some("source-chip"));
         write_decisions(&squad, &base().join("web/design"));
     }
+    // The designers' references, for the References tab.
+    super::refgallery::seed(&base());
 }
 
 /// The squad's notes, kept for the run as its memory would keep them.
@@ -209,6 +211,56 @@ fn write_decisions(squad: &Path, web: &Path) {
     std::fs::write(web.join(store::NOTES_FILE), format!("{}
 - Dots and lines over photos _(the person, 2026-10-15)_
 ", store::TEMPLATE)).unwrap();
+    // A style profile from earlier sessions (`FAKE_PROFILE=empty`: none yet), and the tuner's set.
+    if std::env::var("FAKE_PROFILE").as_deref() != Ok("empty") {
+        use equipe_core::protocol::design::{Lean, StyleProfile, TasteAxis};
+        let profile = StyleProfile {
+            density: "airy, one idea per screen".into(),
+            tone: "calm and editorial, never salesy".into(),
+            typography: "large serif headings over a quiet sans".into(),
+            color: "one deep accent on warm neutrals".into(),
+            liked: vec!["Product A pricing: two calm cards".into(), "more like Pricing · round 2".into()],
+            disliked: vec!["busy dashboards with many colours".into(), "Pricing · round 1 (too dense)".into()],
+            leans: vec![
+                Lean { axis: TasteAxis::Density, lean: -62, confidence: 74 },
+                Lean { axis: TasteAxis::Contrast, lean: -30, confidence: 52 },
+                Lean { axis: TasteAxis::Color, lean: -45, confidence: 61 },
+                Lean { axis: TasteAxis::TypeScale, lean: 55, confidence: 58 },
+                Lean { axis: TasteAxis::Ornament, lean: -20, confidence: 33 },
+            ],
+            picks: 24,
+            updated: Some("2026-11-15".into()),
+        };
+        let path = web.join(store::NOTES_FILE);
+        let before = std::fs::read_to_string(&path).unwrap_or_default();
+        std::fs::write(&path, equipe_core::taste::profile::write(&before, &profile)).unwrap();
+    }
+    super::session::seed_tuner(web);
+}
+
+/// What the person did that tells their taste, kept as the daemon keeps it:
+/// the web project's signals and profile (the squad's are left as they are).
+fn taste_signals(signals: &[equipe_core::protocol::design::TasteSignal]) -> Result<(), String> {
+    use equipe_core::taste::{profile, tuner};
+    let dir = base().join("web/design");
+    let today = equipe_core::squad_memory::date(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()));
+    let (records, examples) = store::records_of(signals, &today);
+    tuner::append(&dir, &records)?;
+    let path = dir.join(store::NOTES_FILE);
+    let before = std::fs::read_to_string(&path).unwrap_or_else(|_| store::TEMPLATE.into());
+    let mut p = profile::parse(&before).unwrap_or_default();
+    for (example, liked) in &examples {
+        profile::add_example(&mut p, example, *liked);
+    }
+    let mut fresh = p.clone();
+    tuner::refresh(&mut fresh, &tuner::read_set(&dir), &tuner::read_signals(&dir));
+    // The seeded leans stand until picks say something of their own.
+    if fresh.picks > 0 || p.leans.is_empty() {
+        p.leans = fresh.leans;
+        p.picks = p.picks.max(fresh.picks);
+    }
+    p.updated = Some(today);
+    std::fs::write(&path, profile::write(&before, &p)).map_err(|e| e.to_string())
 }
 
 /// The taste as the daemon would send it now.
@@ -225,12 +277,15 @@ fn taste() -> Vec<Taste> {
     let mut linked = notes.clone();
     equipe_core::taste::evidence::link(&mut linked, &decisions, &sent_backs());
     vec![
-        Taste { project: None, notes_at: "~/.equipe/squads/demo/home/memory/design-taste-notes.md".into(), notes: linked, decisions },
+        Taste { project: None, notes_at: "~/.equipe/squads/demo/home/memory/design-taste-notes.md".into(), notes: linked, decisions, ..Taste::default() },
         Taste {
             project: Some("web".into()),
             notes_at: web.join(store::NOTES_FILE).to_string_lossy().into_owned(),
             notes: std::fs::read_to_string(web.join(store::NOTES_FILE)).map(|t| notes::parse(&t)).unwrap_or_default(),
             decisions: store::decisions_in(&web),
+            profile: std::fs::read_to_string(web.join(store::NOTES_FILE)).ok().and_then(|t| equipe_core::taste::profile::parse(&t)).filter(|p| !p.is_empty()),
+            tuner: equipe_core::taste::tuner::read_set(&web),
+            tuned: equipe_core::taste::tuner::tuned(&equipe_core::taste::tuner::read_signals(&web)),
         },
     ]
 }
@@ -496,6 +551,17 @@ fn event() -> Event {
 
 /// `design`: answered at once, and the folders watched from then on.
 pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool {
+    if let Command::TasteSignals { signals, .. } = command {
+        match taste_signals(signals) {
+            Ok(()) => {
+                let _ = events.send(event());
+            }
+            Err(message) => {
+                let _ = events.send(Event::Error { session: None, message, next: None });
+            }
+        }
+        return true;
+    }
     if let Command::Taste { project, change, .. } = command {
         match change_taste(project.as_deref(), change) {
             Ok(()) => {
@@ -594,6 +660,19 @@ fn versions(project: Option<&str>) -> Vec<DesignVersion> {
 /// `read_image` for a design system's picture, as the daemon checks it:
 /// only one an asset names, inside its folder.
 pub fn read_image(ask: &ReadImage) -> Result<ImageRead, String> {
+    // A picture of the references: read against its own folder.
+    if let Ok(read) = super::refgallery::read_image(ask) {
+        return Ok(read);
+    }
+    // A render a design ticket made (`FAKE_DESIGN_RESULTS=1`).
+    if let Ok(read) = super::design_results::read_image(ask) {
+        return Ok(read);
+    }
+    // The taste tuner's pictures, in the web project's references.
+    let tuner = base().join("web/design/references");
+    if Path::new(&ask.path).starts_with(&tuner) {
+        return equipe_core::visuals::read(Path::new(&ask.path), &[tuner], ask.max);
+    }
     let places = places();
     let (mut systems, _) = folder::catalog_of(&places, Lang::En);
     super::flows::dress(&mut systems);

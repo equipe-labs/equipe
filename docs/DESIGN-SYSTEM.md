@@ -227,8 +227,77 @@ shown only on dark, `…-light` only on light, any other on both.
 - With none yet: what a design system is, and a button that asks the
   designer (or the PM, to bring one in) for one through the composer.
 
+## Design sessions and the person's taste
+
+A **design session** is the person and the designer on one page, in rounds of
+minutes, so the designer learns the style the person wants before a long build.
+
+- **Start**: "Start a design session" on the design screen, "Design session" on a
+  designer's ticket or in the designer's conversation, or the PM — which proposes
+  one (`propose_design_session`) at most once per ticket or screen, never in quiet
+  hours, with "Start a 20–30 min session", "Not now", "Let the designer go ahead"
+  (and "Tune my taste first" when the style profile is thin). The proposals are
+  kept in the squad's data folder (`design-session-proposals.json`).
+  `Command::StartDesignSession` sends the designer a `<design-session>` kickoff as
+  the person's message and tells every screen (`Event::DesignSessionStarted`).
+- **Live page**: the designer runs `equipe design session show <page.html | URL |
+  render.png>`; the screen reads the `design-session:` line from its conversation
+  and shows the page beside it through the daemon's shared browser (so a
+  `localhost` or `file://` page on the daemon's machine shows on any screen), at
+  1440 or 390 wide, reloading each time something new is shown.
+- **Pins**: a click on the page drops a numbered pin with a note and one-tap
+  reasons; the next message carries a `<design-pins>` block (page coordinates,
+  width, the crop attached as a picture). `equipe design session done <n> "…"`
+  ticks the pin with what changed.
+- **Model**: rounds run on a fast model (`SetModel`), "Polish" goes back to the
+  designer's own; the header shows the tokens the session used.
+- **Style profile**: the top of a project's `design/taste.md` (`## Style profile`
+  … `<!-- /style profile -->`): the designer's words (`equipe design session
+  profile`), liked and disliked examples, and `Leans` — equipe's, worked out
+  (`crate::taste::tuner`) from the **taste tuner** (pairs of real screens from
+  `design/tuner/set.json`, one or two axes varied at a time, one pair in six a
+  contrast probe), thumbs and "more / less like this", reasons given when a
+  design is turned down, options chosen and passed over, and hearted board tiles
+  (`design/tuner/signals.jsonl`). The design screen shows it read-only under
+  Taste & decisions; it changes by asking the designer or by more picks.
+
+## The Designs tab — what a design ticket made
+
+Next to the UI map, the design system and the references: one card for each
+design ticket (newest first; `crates/core/src/design/results.rs`), so finished
+work is where the person looks for it. A card shows its hero picture — the one
+the hand-in named (`Hero: <path>`), else the direction a decision record names
+(`design/decisions/*.md` that mention the ticket, `Chose:` / `Picture:`), else
+the first mock — its title, where it stands (in progress, waiting on you,
+handed in, accepted), when, and badges: directions, preview links, change notes.
+Opened, it shows the screen as it was beside each direction at one scale (the
+decision card's side-by-side; a click shows a picture big), the change notes
+of `CHANGES.md` per direction, a button for each live preview (https only,
+checked as every link on a card is), the decision record and a way to the
+ticket. Nothing is asked of the designer beyond its naming:
+
+- renders under `design/directions/t<n>-<name>/` (any folder there that starts
+  with the ticket's number), named by kind, key and width — `before-1440.png`,
+  `mock-a-1440.png`, `mock-a-390.png`, `direction-calm-ledger-1440.png`; a
+  direction pairs with the before at its own width;
+- `CHANGES.md` beside them, a `## Direction A` section each;
+- the hand-in names its hero and before renders (`Hero:` and `Before:` lines,
+  by path); a picture it embeds counts too;
+- preview links are taken from the hand-in, the ticket's comments, the comments
+  of tickets that wait on it, and `CHANGES.md`.
+
+Read only, from `design/` of the project and of the ticket's worktree (a
+picture must be a real file inside it: no `..`, no link out), every walk and
+list bounded. A design handed in or accepted lately, not yet looked at, is a
+"New design: <title>" line in Needs you (Review) and a card on the Status
+screen, a dot on the tab, and — when the PM accepts — its hero and before
+pictures come back in the `accept_work` reply for the PM to embed in its
+message to the person. `equipe://open/<squad>/design/T-<n>` opens the card.
+
 ## How it travels
 
+- `command` `{ "type": "design_results", "squad" }` → `event` `{ "type":
+  "design_results", "squad", "designs": [DesignWork…] }`: the cards above.
 - `command` `{ "type": "design", "squad" }` → `event`
   `{ "type": "design", "squad", "systems": [DesignSystem…], "folder" }`
   (`crates/protocol/src/design.rs`): each system with its `project`
@@ -300,7 +369,7 @@ say when (`crates/core/skills/design-tools/` and the rest).
 | `check [dir] [--json]` | What to fix before handing in: tokens the screen can't read, no semantic layer, no component tokens, no dark values, text under AA (a component's text against its own fill), no family for the script the product is written in (read from the language of `brand.md` and `guidelines.md` — Korean, Japanese, Chinese, Arabic, Hebrew, Thai, Devanagari; right to left said where it applies), body line height, no `brand.md` or voice, no logo or dark logo, no component previews, the stock looks of AI-made screens. Exits non-zero on errors. |
 
 | `lint <files\|folder\|url> [--render] [--url …] [--widths …] [--tier floor\|all] [--screen flow/screen] [--json]` | Holds a screen to its design system in code (below). Exits 1 when the floor fails, 2 when habits are left, 0 when clean. `--waive <id> --why "…"` keeps a habit; `--rules` lists every rule. |
-| `second-look <flow/screen> [--first] [--criteria …]` | A fresh, read-only reviewer judges the checked pictures, given only them, the brief and criteria, and the system's guidelines and tokens; its verdict is kept on the screen's record. `--prompt` / `--answer <file>` for a fresh subagent when no engine can run. |
+| `second-look <flow/screen> [--first] [--criteria …] [--reference <picture>…]` | A fresh, read-only reviewer judges the checked pictures, given only them, the brief and criteria, the system's guidelines and tokens, and the references of the screen's patterns when given — then it also answers whether the screen is in their quality tier (`tier`: `same`, `below`, `no references`; `below` is never a pass); its verdict is kept on the screen's record. `--prompt` / `--answer <file>` for a fresh subagent when no engine can run. |
 | `direction propose\|choose\|list` | The directions proposed and chosen (`design/directions/log.json`) by layout, type, palette, density and motion; a proposal that repeats a recent chosen one in every dimension the brand leaves free, or differs from its fellow options only in colour, is refused. |
 | `kept record\|check <files\|url> --screen …` | A screen's links, fields, actions and headings, recorded before a redesign (`design/kept/`) and checked after; a removal only where the brief or a decision says `Remove <kind>: <item>`. |
 | `refs sources\|search\|shoot\|add\|board\|list` | A brief's reference board, below. |
@@ -308,12 +377,127 @@ say when (`crates/core/skills/design-tools/` and the rest).
 | `type <Heading/Body>… [--locales en,ko,…\|all]` | One to four Google Fonts pairs set as a specimen — headline at 56, 36 and 24, lede, body, UI labels, figures — and each other language's headline and body; what each family lacks of each language (from the `unicode-range`s Google Fonts serves), its licence (from its folder in Google Fonts' repository) and what the specimen loaded of it. `design/type/specimen.{html,png}`. |
 | `component <page \| registry item \| npx shadcn add line>` | A public component's source into `design/vendor/<name>/` with a `SOURCE.md`: where it came from, when, its licence and dependencies, and every colour, palette class, family and remote picture to restyle to the tokens. A registry its site closes to tools (robots.txt) or that wants a key is not fetched: its page and licence are recorded, and that is said. |
 
+### Reference research and the quality bar — every screen
+
+A designer's screens are held to the level of the best products, not to the
+level of the screen it was handed (the `design-references` skill,
+`crates/core/skills/design-references/`; the role text says it in one line).
+
+- **Research before designing.** For a screen or component, the designer lists
+  the patterns it uses (data table, KPI tile, filter bar, side navigation,
+  chart, empty state, toast, sheet…) and, for each, keeps three to six
+  best-in-class examples from real products in the project's
+  `design/references/<pattern>/` — their pictures, and a `notes.md` with each
+  one's source and date, what to take (density, spacing, hierarchy,
+  interaction), what to leave, and its fit for this product. Notes are reused
+  on later tickets and refreshed when stale (older than six months) or thin.
+  References are internal study material: patterns, structure and proportion,
+  never another product's brand, assets or words. A paid library only through
+  its official MCP server or API when the squad has connected one; a site
+  behind a sign-in is never scraped.
+- **Sources are per project and squad**: `design/references/sources.md` in the
+  project, else in the squad's shared `design/`, a line per source with what it
+  is good for, the kinds of product it fits and how it is reached. Fit is
+  respected, by the product kinds of the `ui-product-kinds` skill — landing,
+  web product, mobile app: marketing-site galleries are for landing pages,
+  never for a dense dashboard, and a website is never the reference for a
+  mobile app. The suggested starting list
+  (`crates/core/skills/design-references/references/sources.md`) — public,
+  generic, nothing paid:
+
+- Carbon Design System — https://carbondesignsystem.com — good for: data tables, filters, dashboards, forms, notifications — fits: web product — access: public
+- Polaris — https://polaris-react.shopify.com — good for: admin layouts, index tables, filters, empty states, settings — fits: web product — access: public
+- Primer — https://primer.style — good for: navigation, lists, tables, forms, status — fits: web product (developer tools) — access: public
+- Geist (Vercel) — https://vercel.com/geist — good for: dashboards, tables, navigation, empty states, type and spacing scales — fits: web product (developer tools) — access: public
+- Atlassian Design System — https://atlassian.design — good for: navigation, tables, forms, messages — fits: web product — access: public
+- shadcn/ui blocks — https://ui.shadcn.com/blocks — good for: dashboards, sidebars, KPI cards, charts, sign-in — fits: web product — access: public
+- shadcn/ui registry — https://ui.shadcn.com/docs/components — good for: proven components to build a real page on (React, Tailwind) — fits: web product, landing — access: public — kind: component registry
+- 21st.dev — https://21st.dev — good for: community components and blocks for React, Tailwind and shadcn/ui — fits: web product, landing — access: public, or mcp:<its official server> (the free tier limits copies a day) — kind: component registry
+- Material Design 3 — https://m3.material.io — good for: components, navigation, states, motion — fits: mobile app (Android), web product — access: public
+- Apple Human Interface Guidelines — https://developer.apple.com/design/human-interface-guidelines — good for: platform patterns, navigation, sheets, settings — fits: mobile app (iOS), native desktop apps — access: public
+- Mobbin — https://mobbin.com — good for: real apps' flows and screens — onboarding, settings, paywalls, checkout — fits: mobile app, web product — access: mcp:<its official server>, or browser with the person's own sign-in and plan
+- GOV.UK Design System — https://design-system.service.gov.uk — good for: forms, one question per page, error messages, plain content — fits: web product (forms, public services), any (content) — access: public
+- Web Interface Guidelines (Vercel) — https://github.com/vercel-labs/web-interface-guidelines — good for: interaction, forms, motion, content and performance details — fits: web product, landing (writing, not pictures) — access: public
+- Nielsen Norman Group articles — https://www.nngroup.com/articles — good for: why a pattern works, interaction details, states — fits: any (writing, not pictures) — access: public
+- Awwwards — https://www.awwwards.com — good for: landing pages, art direction, motion — fits: landing only — access: browser
+- Lapa Ninja — https://www.lapa.ninja — good for: landing pages, hero sections, pricing — fits: landing only — access: browser
+- Land-book — https://land-book.com — good for: landing pages, page sections — fits: landing only — access: browser
+
+- **The quality bar.** Every judgment of a screen — the designer's own, the
+  critic's (`equipe design critique … --reference`), the second look's
+  (`--reference`) and design QA's — puts it beside its patterns' references at
+  the same size and answers: same quality tier? Where not, it names concrete
+  differences (density, type scale, spacing rhythm, borders and surfaces,
+  information said twice, primary-action clarity, alignment). The taste
+  checklist: one primary action per view; no card inside a card; at most two
+  levels of borders or surfaces; no information said twice; two or three type
+  sizes per block; one spacing scale; tabular figures; the width used
+  sensibly. Countable parts are counted — design QA's precheck reports
+  `nested-cards`, `border-levels`, `type-sizes` (per block), `duplicate-text`
+  and `primary-actions` as polish, and `lint --render` notes `type-sizes` (per
+  screen) and `border-levels`; the rest is judged. Below the bar, the critic
+  says `revise`, the second look `fix`; in design QA a gap the build opened
+  against its spec is a blocker, and one the spec itself has is polish plus one
+  design ticket to raise it.
+- **Options worth a choice.** Options put to the person grow from named
+  reference families and differ in concept (layout model, density, hierarchy);
+  two strong beat three similar, and the critic rejects a near-duplicate set.
+  Each is built as a real page on the project's own component library (or a
+  proven open one for its stack) under `design/directions/<name>/`, starting
+  from a proven component in a component registry where the stack has one
+  (through the registry's official MCP server or API when the squad connected
+  it), restyled to the project's tokens, its source and licence noted; never a
+  premium component the squad hasn't licensed.
+- **Locked, and reset once.** A system the person accepted is locked and
+  day-to-day tickets build inside it. A foundation that keeps screens below
+  their references (type scale, spacing, surfaces, colour, density) can be
+  reset once: the designer proposes it as the person's decision, with the
+  references as evidence; once chosen it is a design system ticket of its own,
+  and the new system is locked again.
+- **Small changes stay small.** A tweak to an existing screen is one version,
+  compared with its references and iterated by the designer, then lint and the
+  second look (its critic); no directions, comparison sheet, brief or decision
+  card unless it holds a taste call. In `risk_batch` design QA a spec'd change
+  of one screen with nothing new goes to the daily review; new screens and
+  wide changes keep their own design QA.
+
+### The UI craft library — the `ui-*` skills
+
+The designer's craft rules live in skills it opens on demand
+(`crates/core/skills/ui-*/`), each with concrete numbers, do and don't, and a
+review checklist; the role text names them in one clause and the skill index
+lists each in a line. They are equipe's own writing, drawing on public sources
+cited in `crates/core/skills/ui-review/references/sources.md` (MIT-licensed
+material adapted with attribution, see `THIRD_PARTY_NOTICES.md`).
+
+| Skill | What it holds | Offered to |
+|---|---|---|
+| `ui-product-kinds` | Classify the work — landing, web product, mobile app — and take that kind's references, rules, widths and bar | designer |
+| `ui-foundations` | Spacing scale, grid and width, density, type scale and setting, colour roles, contrast, dark mode, surfaces | designer |
+| `ui-layout-and-states` | Hierarchy, one primary action, adding a part, progressive disclosure, web navigation, overlays, every state | designer |
+| `ui-data-display` | Tables, KPI tiles, charts, filter bars, dashboards | designer |
+| `ui-forms` | Structure, labels, the right control, validation and errors, submit, destructive actions | designer, frontend, mobile |
+| `ui-mobile` | Platform conventions, navigation, touch and thumb reach, safe areas, onboarding, permissions, settings | designer, mobile |
+| `ui-motion` | When to animate, durations, easing, press and hover, reduced motion | designer, frontend, mobile |
+| `ui-accessibility` | WCAG 2.2 AA as concrete rules, semantics, how to check | designer, frontend, mobile |
+| `ui-writing` | Labels, buttons, errors, empty states, confirmations, headings, writing for every language | designer |
+| `ui-polish` | Focus and keyboard, loading and perceived speed, layout stability, edge-case content, details | designer, frontend, mobile |
+| `ui-review` | Running the checklists against a rendered screen: kind, job walk, findings, fixes | designer |
+| `ui-vocabulary` | A glossary of UI terms, one line each, to describe what you want | designer |
+
+The kind checklist in `ui-review` is also said, word for word, to the critic
+(`equipe design critique`), the second look and the light design QA session
+(`design::critique::KIND_CHECKLIST`), so every judgment of a screen holds it
+to its product kind's bar. An engine that can't open a file isn't sent the
+library inline. To describe what you want, the vocabulary
+(`crates/core/skills/ui-vocabulary/SKILL.md`) names the parts, styles and
+behaviours the designer will use back.
+
 ### References and taste — `equipe design refs`
 
 These are for brand work — a brand, a rebrand, a new visual direction — and
-only brand work changes what a designer is told: every other ticket's charter,
-skills and board tools are exactly as before (`members_without_phone` pins
-them). A ticket is brand work when its body has a line `Design: brand` (or
+only brand work gets this full pass and its `design_tools` board tool; every
+other ticket's board tools are as before (`members_without_phone` pins them). A ticket is brand work when its body has a line `Design: brand` (or
 `Design: rebrand`, `Design: new direction`), the PM's explicit flag, or when
 its title or body asks for one in so many words — a rebrand, a brand or visual
 identity, a new visual direction (`design::brand::is_branding`). On such a
@@ -376,7 +560,8 @@ id, a tier, what it checks and how to fix it (`equipe design lint --rules`).
   exception is a `Waive` line scoped to its file or screen. The registry's own
   components and the theme's stylesheet aren't held to it.
 - **Finish** — said, never blocking: name the token, tabular figures, heading
-  order, image size, line length, touch targets.
+  order, image size, line length, touch targets, more than six type sizes on a
+  screen, boxes framed more than two deep.
 
 The source is read loosely (CSS, HTML, JSX, Vue, Svelte). `--render` draws
 the page in the Mac's Chrome at 360, 390, 768, 1024, 1280, 1440 and 1920:

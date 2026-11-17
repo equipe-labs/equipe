@@ -418,6 +418,12 @@ fn status_str(status: TicketStatus) -> &'static str {
     }
 }
 
+/// What a stalled run waited on the person for — only while that is why it
+/// stalled: a later run of the ticket leaves an old one behind.
+fn waited_for(reason: Option<&str>, what: Option<String>) -> Option<String> {
+    what.filter(|_| reason == Some(equipe_protocol::stall_reason::WAITED_ON_PERSON))
+}
+
 fn status_from(s: &str) -> TicketStatus {
     match s {
         "proposed" => TicketStatus::Proposed,
@@ -605,8 +611,9 @@ impl Journal {
         for column in ["role TEXT", "name TEXT", "joined INTEGER", "mode TEXT"] {
             let _ = conn.execute(&format!("ALTER TABLE sessions ADD COLUMN {column}"), []);
         }
-        // Why an active run is paused, while it is (JSON, `RunPause`).
-        for column in ["head TEXT", "dirty INTEGER", "pause TEXT"] {
+        // Why an active run is paused, while it is (JSON, `RunPause`); what a
+        // run stalled waiting on the person waited for.
+        for column in ["head TEXT", "dirty INTEGER", "pause TEXT", "waited_for TEXT"] {
             let _ = conn.execute(&format!("ALTER TABLE ticket_executions ADD COLUMN {column}"), []);
         }
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN merged INTEGER", []);
@@ -645,6 +652,8 @@ impl Journal {
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN plan TEXT", []);
         // The model and effort its lanes run on, and why (JSON, `tiers::TicketModel`).
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN model TEXT", []);
+        // What sort of work it is, in a word (`protocol::title::TicketLabel`).
+        let _ = conn.execute("ALTER TABLE tickets ADD COLUMN label TEXT", []);
         // The effort a member's turn ran at; `NULL`: the engine's own, or a turn from before.
         let _ = conn.execute("ALTER TABLE turns ADD COLUMN effort TEXT", []);
         // How turns on tickets ended when they didn't end as they should: no
@@ -928,6 +937,16 @@ impl Journal {
         Ok(pinned)
     }
 
+    /// The outside MCP servers the squad connected for its members
+    /// (`crate::squad_mcp`), in the order they were added.
+    pub fn mcp_servers(&self) -> Vec<equipe_protocol::mcp_servers::McpServer> {
+        self.meta("mcp_servers").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    pub fn set_mcp_servers(&self, servers: &[equipe_protocol::mcp_servers::McpServer]) -> Result<()> {
+        self.set_meta("mcp_servers", &serde_json::to_string(servers).unwrap_or_default())
+    }
+
     /// When the PM was last asked about the person's stale waits (unix seconds).
     pub fn stale_waits_asked_at(&self) -> Option<u64> {
         self.meta("stale_waits_asked_at").and_then(|at| at.parse().ok())
@@ -1198,7 +1217,7 @@ impl Journal {
     pub fn execution(&self, ticket: TicketId) -> Result<Option<TicketExecution>> {
         self.conn
             .query_row(
-                "SELECT state, session, operation, generation, heartbeat_at, lease_expires_at, reason, head, dirty, pause
+                "SELECT state, session, operation, generation, heartbeat_at, lease_expires_at, reason, head, dirty, pause, waited_for
                  FROM ticket_executions WHERE ticket = ?1",
                 [ticket],
                 |r| {
@@ -1213,6 +1232,7 @@ impl Journal {
                         pause: r.get::<_, Option<String>>(9)?.and_then(|p| serde_json::from_str(&p).ok()),
                         head: r.get(7)?,
                         dirty: r.get::<_, Option<i64>>(8)?.map(|n| n.clamp(0, i64::from(u32::MAX)) as u32),
+                        waited_for: waited_for(r.get::<_, Option<String>>(6)?.as_deref(), r.get(10)?),
                     })
                 },
             )
@@ -1389,6 +1409,16 @@ impl Journal {
             params![at as i64, equipe_protocol::stall_reason::MIGRATED],
         )?;
         tx.commit()
+    }
+
+    /// `ticket`'s run, just stalled, waited on the person for `what` (a
+    /// sign-in, say) past its grace: said so, with what it was. Whether it
+    /// was stalled.
+    pub fn set_waited_on_person(&self, ticket: TicketId, what: &str) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE ticket_executions SET reason = ?1, waited_for = ?2 WHERE ticket = ?3 AND state = 'stalled'",
+            params![equipe_protocol::stall_reason::WAITED_ON_PERSON, what, ticket],
+        )? == 1)
     }
 
     /// `ticket`'s run, still active although nothing runs it any more — its
@@ -1648,6 +1678,15 @@ impl Journal {
         self.set_meta("notify", &serde_json::to_string(settings).unwrap_or_default())
     }
 
+    /// The brands this squad uses (`design::inherit`), by slug, in the order linked.
+    pub fn brands(&self) -> Vec<String> {
+        self.meta("brands").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+    }
+
+    pub fn set_brands(&self, brands: &[String]) -> Result<()> {
+        self.set_meta("brands", &serde_json::to_string(brands).unwrap_or_default())
+    }
+
     /// When the person last did something in the squad — made it, wrote to a
     /// member — in unix seconds; the board's own times count besides.
     /// `None`: not since this was kept.
@@ -1718,8 +1757,8 @@ impl Journal {
         let at = now();
         self.conn.execute(
             "INSERT INTO tickets (id, title, body, status, owner, assignee, project, depends_on, branch, created_by,
-                                  note, created_at, updated_at, kind, priority, rank, plan)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14, ?15, ?16)",
+                                  note, created_at, updated_at, kind, priority, rank, plan, label)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 id,
                 t.title,
@@ -1737,6 +1776,7 @@ impl Journal {
                 t.priority.label(),
                 t.rank,
                 t.plan,
+                t.label.map(|l| l.key()),
             ],
         )?;
         Ok(id as TicketId)
@@ -1747,7 +1787,7 @@ impl Journal {
         self.conn.execute(
             "UPDATE tickets SET title = ?1, body = ?2, status = ?3, owner = ?4, assignee = ?5, project = ?6,
                                 depends_on = ?7, branch = ?8, note = ?9, updated_at = ?10, merged = ?12, kind = ?13,
-                                off_main = ?14, priority = ?15, rank = ?16, remaining = ?17, images = ?18, design_qa = ?19, plan = ?20
+                                off_main = ?14, priority = ?15, rank = ?16, remaining = ?17, images = ?18, design_qa = ?19, plan = ?20, label = ?21
              WHERE id = ?11",
             params![
                 t.title,
@@ -1770,6 +1810,7 @@ impl Journal {
                 remaining_str(&t.images),
                 t.design_qa,
                 t.plan,
+                t.label.map(|l| l.key()),
             ],
         )?;
         Ok(())
@@ -1781,6 +1822,31 @@ impl Journal {
     pub fn set_ticket_model(&self, id: TicketId, model: Option<&equipe_protocol::tiers::TicketModel>) -> Result<()> {
         let text = model.and_then(|m| serde_json::to_string(m).ok());
         self.conn.execute("UPDATE tickets SET model = ?1 WHERE id = ?2", params![text, id])?;
+        Ok(())
+    }
+
+    /// A ticket's model as kept; `None` for a ticket with none, or one that isn't there.
+    fn ticket_model(&self, id: TicketId) -> Option<equipe_protocol::tiers::TicketModel> {
+        let text: Option<String> = self.conn.query_row("SELECT model FROM tickets WHERE id = ?1", [id], |r| r.get(0)).optional().ok().flatten().flatten();
+        text.and_then(|m| serde_json::from_str(&m).ok())
+    }
+
+    /// Add `tokens` spent on the premium family to `ticket`'s count
+    /// ([`equipe_protocol::tiers::TicketModel::premium_tokens`]). `true`
+    /// when it was kept: a ticket with no model kept has nothing to add to.
+    pub fn add_premium_tokens(&self, id: TicketId, tokens: u64) -> Result<bool> {
+        let Some(mut m) = self.ticket_model(id) else { return Ok(false) };
+        m.premium_tokens = m.premium_tokens.saturating_add(tokens);
+        self.set_ticket_model(id, Some(&m))?;
+        Ok(true)
+    }
+
+    /// Let go of the model the person picked for `ticket` alone, as it
+    /// closes: its pick and the pin that came with it.
+    pub fn clear_ticket_pick(&self, id: TicketId) -> Result<()> {
+        if let Some(m) = self.ticket_model(id).filter(|m| m.pick.is_some()) {
+            self.set_ticket_model(id, Some(&crate::tiers::close(&m)))?;
+        }
         Ok(())
     }
 
@@ -2258,7 +2324,8 @@ impl Journal {
         let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT t.id, t.title, t.body, t.status, t.owner, t.assignee, t.project, t.depends_on, t.branch, t.created_by, t.note, t.worktree, t.merged, t.kind, t.off_main, t.updated_at,
                     t.priority, t.rank, t.remaining, t.images, t.design_qa, t.plan, t.model,
-                    e.state, e.session, e.operation, e.generation, e.heartbeat_at, e.lease_expires_at, e.reason, e.head, e.dirty, e.pause
+                    e.state, e.session, e.operation, e.generation, e.heartbeat_at, e.lease_expires_at, e.reason, e.head, e.dirty, e.pause, t.label,
+                    e.waited_for
              FROM tickets t LEFT JOIN ticket_executions e ON e.ticket = t.id {filter} ORDER BY t.id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -2278,6 +2345,7 @@ impl Journal {
                 execution: None,
                 merged: r.get(12)?,
                 kind: TicketKind::parse(&r.get::<_, String>(13)?).unwrap_or_default(),
+                label: r.get::<_, Option<String>>(33)?.and_then(|l| equipe_protocol::title::TicketLabel::parse(&l)),
                 asks: Vec::new(),
                 remaining: r.get::<_, Option<String>>(18)?.and_then(|r| serde_json::from_str(&r).ok()).unwrap_or_default(),
                 images: r.get::<_, Option<String>>(19)?.and_then(|i| serde_json::from_str(&i).ok()).unwrap_or_default(),
@@ -2304,6 +2372,7 @@ impl Journal {
                     pause: r.get::<_, Option<String>>(32)?.and_then(|p| serde_json::from_str(&p).ok()),
                     head: r.get(30)?,
                     dirty: r.get::<_, Option<i64>>(31)?.map(|n| n.clamp(0, i64::from(u32::MAX)) as u32),
+                    waited_for: waited_for(r.get::<_, Option<String>>(29)?.as_deref(), r.get(34)?),
                 })),
                 None => None,
             };
@@ -3361,7 +3430,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
-            remaining: Vec::new(), images: Vec::new(),
+            label: None, remaining: Vec::new(), images: Vec::new(),
             updated_at: None,
             priority: Default::default(), rank: 0,
             kind: TicketKind::Code,

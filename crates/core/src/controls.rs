@@ -53,6 +53,10 @@ pub enum Change {
     Parallel { mode: ParallelMode, per_member: Option<u32>, per_engine: Option<u32> },
     /// Whether equipe picks each ticket's model and effort (`crate::tiers`).
     ModelChoice(crate::protocol::tiers::ModelChoice),
+    /// The model of one ticket alone, as the person says it ("use Fable for
+    /// T-2562"): a Claude family, the premium one included, or none to let
+    /// the pick go. Never the member's, never another ticket's.
+    TicketModel { ticket: u32, model: Option<String> },
     /// Which engine reviews the designer's work.
     DesignReviewer(Reviewer),
     /// Take a project off the squad (its folder stays).
@@ -74,6 +78,18 @@ pub enum Change {
     /// How the squad escalates what stays a bottleneck, one key of it
     /// ([`crate::escalation::apply`]): quiet hours, levels, which things, the hourly cap.
     Notify { key: String, value: String },
+    /// An outside MCP server for the squad's members (`crate::squad_mcp`):
+    /// connected (`url` left out for a catalog service), removed, or turned on or off.
+    McpServer { action: McpAction, name: String, url: Option<String>, roles: Option<Vec<String>>, transport: Option<String> },
+}
+
+/// What `change_setting`'s `mcp_server` does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpAction {
+    Add,
+    Remove,
+    On,
+    Off,
 }
 
 /// How far a mode lets members go, for telling a wider one from a narrower.
@@ -98,6 +114,9 @@ impl Change {
             Change::Parallel { mode, .. } => *mode == ParallelMode::Max,
             // Stronger models spend the plan faster: the person's. Off only narrows.
             Change::ModelChoice(choice) => *choice == crate::protocol::tiers::ModelChoice::QualityFirst,
+            // A model picked for a ticket spends the plan as the person decided, the premium one several times over:
+            // theirs, on a card. Letting a pick go only narrows.
+            Change::TicketModel { model, .. } => model.is_some(),
             // Always the other engine draws on its plan however low it runs:
             // the person's. Auto and the member's own only narrow it.
             Change::DesignReviewer(reviewer) => *reviewer == Reviewer::Other,
@@ -106,6 +125,8 @@ impl Change {
             Change::Merge { .. } | Change::Engine { .. } => true,
             // Who works is the person's choice, both ways: the PM never rests or wakes one on its own.
             Change::Resting { .. } => true,
+            // An outside service reaching members: the person's. Removing or turning one off only narrows.
+            Change::McpServer { action, .. } => matches!(action, McpAction::Add | McpAction::On),
             _ => false,
         }
     }
@@ -202,6 +223,14 @@ impl Change {
             "model_choice" => Change::ModelChoice(
                 crate::protocol::tiers::ModelChoice::parse(&value()?).ok_or("Model choice is quality (each ticket on the cheapest model that does it well, up a step when its work comes back wrong, never below a model the person chose) or off (members' own models).")?,
             ),
+            "ticket_model" => {
+                let text = value()?;
+                let model = match text.to_ascii_lowercase().as_str() {
+                    "default" | "auto" | "none" | "off" => None,
+                    _ => Some(crate::tiers::pick_alias(&text).ok_or("A ticket's model is a Claude family — haiku, sonnet, opus or fable (the premium one, several times Opus's cost) — or default to let the pick go.")?.to_owned()),
+                };
+                Change::TicketModel { ticket: ticket()?, model }
+            }
             "design_reviewer" => Change::DesignReviewer(Reviewer::parse(&value()?).ok_or("The design reviewer is auto, same (the member's own engine, in a fresh session) or other (always the other engine).")?),
             "remove_project" => Change::RemoveProject(s("project").ok_or("Which project? Give `project`.")?),
             "hq" => Change::Hq(s("project").filter(|p| p != "none")),
@@ -218,6 +247,27 @@ impl Change {
                 // Read it as it will be applied, so a bad value is said now.
                 crate::escalation::apply(&mut Default::default(), &key, &value, crate::i18n::core(Lang::En))?;
                 Change::Notify { key, value }
+            }
+            "mcp_server" => {
+                let action = match value()?.as_str() {
+                    "add" | "connect" => McpAction::Add,
+                    "remove" | "disconnect" => McpAction::Remove,
+                    "on" => McpAction::On,
+                    "off" => McpAction::Off,
+                    v => return Err(format!("`value` is add, remove, on or off, not {v:?}.")),
+                };
+                let name = s("name").ok_or("Which server? Give its `name` (`mobbin` for the catalog's).")?;
+                let roles = match args.get("roles") {
+                    Some(Value::Array(items)) => Some(items.iter().filter_map(Value::as_str).map(str::to_owned).collect()),
+                    Some(Value::String(text)) => Some(vec![text.clone()]),
+                    _ => None,
+                };
+                let change = Change::McpServer { action, name, url: s("url"), roles, transport: s("transport") };
+                // Said as it will be kept, so a bad name or address is said now.
+                if let Change::McpServer { action: McpAction::Add, name, url, roles, transport } = &change {
+                    crate::squad_mcp::server(name, url.as_deref(), roles.as_deref(), transport.as_deref())?;
+                }
+                change
             }
             other => return Err(format!("There is no setting {other:?}; `settings` lists what can change.")),
         })
@@ -320,7 +370,7 @@ pub fn tools() -> Vec<Value> {
 how much members may do on their own (the squad's mode and each member's), each member's engine, model and effort, \
 whether you accept the team's work yourself, how long an empty board waits before you are woken, how many subagents \
 members run at once, engine switching, how many tickets run at once (parallel), whether equipe picks each ticket's model (model_choice), \
-who reviews the designer's work, routines, signals, the \"always allow\" rules, and which members rest. Read it before you change one, and to answer what is set.",
+who reviews the designer's work, routines, signals, the \"always allow\" rules, which members rest, and the outside MCP servers the squad connected. Read it before you change one, and to answer what is set.",
             "inputSchema": { "type": "object", "properties": {} },
         }),
         json!({
@@ -340,17 +390,20 @@ engine_switching (off | suggest | auto), parallel — the person's \"speed\" (va
 full, or max: fixed caps whatever the usage, optionally per_member 1 through 12 and per_engine 1 through 32; a cap named alone is a cap on full speed). \
 Use it for \"go full speed\", \"slow down to save Claude\", \"max 4 per member\". When they ask why work isn't faster, read `settings` and the board: it is usually tickets waiting on \
 dependencies or on them, not the speed. model_choice (quality — each ticket on the cheapest model and \
-effort that does it well, up a step when its work comes back wrong — | off — members' own models), design_reviewer (who reviews the designer's work: auto — the other engine when \
+effort that does it well, up a step when its work comes back wrong — | off — members' own models), \
+ticket_model (ticket, value haiku | sonnet | opus | fable, or default to let the pick go: the model one ticket alone runs on, every lane of it and no other ticket; \
+fable is the premium family and costs several times Opus, so use it only when the person names it for that ticket — \
+\"use Fable for T-2562\" — and always say so on the card; it is put to the person, and it ends when the ticket closes), design_reviewer (who reviews the designer's work: auto — the other engine when \
 it is signed in with room, else the member's own in a fresh session — | same | other), remove_project (project), \
 hq (project, or none), run_routine (id), delete_routine (id), signal (project, name, value on | off), disallow (value: \
 the rule as `settings` lists it), merge (ticket, push), keep_on_branch (ticket), resting (member, value on | off: a resting \
-member takes no new work — the board hands it nothing — and finishes what it holds; woken, it takes work again), notify (key and value: how the squad's notifications escalate what stays a bottleneck without waking the person — on | off; only blocking | urgent; quiet on | off; quiet_from and quiet_to as HH:MM in the person's own time (default 23:00–08:00); levels as three waits like 2h,8h,24h; max_per_hour 1 through 60; phone on | off for paired phones and Telegram; remind_deploy as a wait like 2h, or off, to tell again about what holds a deploy up — narrowing or widening, it happens at once; confirm it in one line). Never set another engine's model \
+member takes no new work — the board hands it nothing — and finishes what it holds; woken, it takes work again), notify (key and value: how the squad's notifications escalate what stays a bottleneck without waking the person — on | off; only blocking | urgent; quiet on | off; quiet_from and quiet_to as HH:MM in the person's own time (default 23:00–08:00); levels as three waits like 2h,8h,24h; max_per_hour 1 through 60; phone on | off for paired phones and Telegram; remind_deploy as a wait like 2h, or off, to tell again about what holds a deploy up — narrowing or widening, it happens at once; confirm it in one line), mcp_server (value add | remove | on | off, name, and for add url — left out for a catalog service such as mobbin — and roles, left out for the catalog's or everyone: an outside MCP server for the squad's members; add and on wait for the person's card, and they sign in to it once on that card). Never set another engine's model \
 through `model`: moving a member to it is `engine`. Adding a project is `add_project`; adding a routine, \
 `propose_routine`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "subagents_at_once", "model", "effort", "engine", "engine_switching", "parallel", "speed", "model_choice", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch", "resting", "notify"] },
+                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "subagents_at_once", "model", "effort", "engine", "engine_switching", "parallel", "speed", "model_choice", "ticket_model", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch", "resting", "notify", "mcp_server"] },
                     "value": { "type": "string", "description": "The new value, as the setting takes it." },
                     "member": { "type": "string", "description": "The member, for mode (left out: the squad's), model, effort, engine and resting." },
                     "members": { "type": "array", "items": { "type": "string" }, "description": "engine: the members to move, on one card." },
@@ -358,10 +411,12 @@ through `model`: moving a member to it is `engine`. Adding a project is `add_pro
                     "effort": { "type": "string", "description": "engine: the effort there (left out: its default)." },
                     "when": { "type": "string", "enum": ["next_ticket", "now"], "description": "engine: next_ticket (the default), or now — mid-ticket, at the end of each one's turn, its ticket handed over. Use now when the person asks for it now." },
                     "project": { "type": "string", "description": "The project's name, for remove_project, hq and signal." },
-                    "name": { "type": "string", "description": "The signal's name." },
+                    "name": { "type": "string", "description": "The signal's name, or the outside MCP server's (mcp_server)." },
+                    "url": { "type": "string", "description": "mcp_server add: the server's https address (left out for a catalog service)." },
+                    "roles": { "type": "array", "items": { "type": "string" }, "description": "mcp_server add: the roles whose members get it (left out: the catalog's, else everyone)." },
                     "key": { "type": "string", "description": "notify: which notification setting (on, only, quiet, quiet_from, quiet_to, levels, max_per_hour, phone, remind_deploy)." },
                     "id": { "type": "integer", "description": "The routine's id." },
-                    "ticket": { "type": "integer", "description": "The ticket's number, for merge and keep_on_branch." },
+                    "ticket": { "type": "integer", "description": "The ticket's number, for merge, keep_on_branch and ticket_model." },
                     "push": { "type": "boolean", "description": "merge: push main to origin too (default true)." },
                     "per_member": { "type": "integer", "description": "parallel max: tickets each member runs at once (left out: as set)." },
                     "per_engine": { "type": "integer", "description": "parallel max: tickets each engine runs at once across the squad (left out: as set)." },
@@ -438,6 +493,25 @@ mod tests {
         let tool = &tools()[1];
         assert!(tool["inputSchema"]["properties"]["setting"]["enum"].as_array().unwrap().iter().any(|s| s == "notify"));
         assert!(tool["inputSchema"]["properties"]["key"].is_object());
+    }
+
+    #[test]
+    fn an_outside_mcp_server_is_connected_only_on_the_persons_tap_and_removed_at_once() {
+        let add = change(json!({ "setting": "mcp_server", "value": "add", "name": "mobbin" }));
+        assert_eq!(add, Change::McpServer { action: McpAction::Add, name: "mobbin".into(), url: None, roles: None, transport: None });
+        let on = change(json!({ "setting": "mcp_server", "value": "on", "name": "mobbin" }));
+        for mode in [Mode::ReadOnly, Mode::Ask, Mode::Auto, Mode::Full] {
+            assert!(add.needs_yes(mode) && on.needs_yes(mode), "never the PM's alone");
+        }
+        assert!(!change(json!({ "setting": "mcp_server", "value": "remove", "name": "mobbin" })).needs_yes(Mode::Auto));
+        assert!(!change(json!({ "setting": "mcp_server", "value": "off", "name": "mobbin" })).needs_yes(Mode::Auto));
+        let own = change(json!({ "setting": "mcp_server", "value": "add", "name": "docs", "url": "https://docs.example.com/mcp", "roles": ["qa"] }));
+        assert!(matches!(own, Change::McpServer { roles: Some(ref r), .. } if r == &["qa".to_owned()]));
+        // Checked as it will be kept.
+        assert!(Change::parse(&json!({ "setting": "mcp_server", "value": "add", "name": "docs" })).unwrap_err().contains("address"));
+        assert!(Change::parse(&json!({ "setting": "mcp_server", "value": "add", "name": "docs", "url": "http://docs.example.com/mcp" })).is_err());
+        assert!(Change::parse(&json!({ "setting": "mcp_server", "value": "add", "name": "equipe", "url": "https://docs.example.com/mcp" })).is_err());
+        assert!(Change::parse(&json!({ "setting": "mcp_server", "value": "maybe", "name": "x" })).unwrap_err().contains("add, remove"));
     }
 
     #[test]

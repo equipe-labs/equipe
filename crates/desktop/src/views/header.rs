@@ -219,6 +219,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .children(context)
         // The buttons stay whole; the words before them give way.
         .children(studio_button(shell, cx))
+        .children(session_button(shell, cx))
         .child(div().flex_none().child(terminal_button(shell, cx)))
         .child(div().flex_none().child(browser_button(shell, cx)))
 }
@@ -246,6 +247,32 @@ fn studio_button(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElem
                 .icon(crate::icons::Icon::Eye)
                 .tip(t!("studio.open_tip"), None)
                 .on_click(cx.listener(move |this, _, window, cx| this.open_studio(ticket, window, cx))),
+        ),
+    )
+}
+
+/// "Design session", where the conversation or ticket in view is the
+/// designer's: a designer's ticket starts one on its own page; the
+/// designer's own conversation asks which page.
+fn session_button(shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
+    let p = shell.palette;
+    let selected = shell.model.selected_member().map(|m| (m.role.as_str(), m.ticket));
+    let opened = shell.model.opened.and_then(|id| shell.model.tickets.iter().find(|t| t.id == id)).map(|t| {
+        let owner = t.assignee.as_deref().or(t.owner.as_deref());
+        let role = owner.and_then(|n| shell.model.members.iter().find(|m| m.name == n)).map(|m| m.role.clone()).or_else(|| owner.map(str::to_owned));
+        (t.id, role)
+    });
+    let start = crate::design_session::start_for(selected, opened.as_ref().map(|(id, role)| (*id, role.as_deref())))?;
+    let focus = shell.model.focus.clone();
+    Some(
+        div().flex_none().child(
+            crate::ui::button(p, "header-session", crate::ui::Kind::Ghost, t!("session.title"))
+                .icon(crate::icons::Icon::Sparkles)
+                .tip(t!("session.start_tip"), None)
+                .on_click(cx.listener(move |this, _, window, cx| match start {
+                    crate::design_session::Start::Ticket(id) => this.design_session_for_ticket(id, cx),
+                    crate::design_session::Start::Ask => this.design_session_setup(focus.clone(), equipe_core::protocol::design_session::SessionFrom::Member, window, cx),
+                })),
         ),
     )
 }
@@ -495,6 +522,20 @@ fn talk_menu(shell: &Shell, current: Option<String>, cx: &mut Context<Shell>) ->
                 .on_click(cx.listener(move |this, _, window, cx| this.open_rename(session, None, window, cx)))
                 .into_any_element(),
         );
+        // Its link, to share in a chat (a conversation of the person's, not a draft).
+        if model.conversations().iter().any(|l| l.session == session) {
+            use crate::deeplink::CopyAs;
+            for (id, label, how) in [("talk-copy-link", t!("link.copy"), CopyAs::Link), ("talk-copy-text", t!("link.copy_text"), CopyAs::Text), ("talk-copy-web", t!("link.copy_web"), CopyAs::Web)] {
+                rows.push(
+                    item(id.into(), crate::icons::icon(crate::icons::Icon::Link, 12., p.text2).into_any_element(), label.into(), false)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.board.popover = None;
+                            this.copy_link_to("talk-link", equipe_core::protocol::deeplink::Target::Conversation(session), how, cx);
+                        }))
+                        .into_any_element(),
+                );
+            }
+        }
         rows.push(div().my_1().h(px(1.)).bg(p.hair).into_any_element());
     }
     rows.push(div().px_2().pt_1().pb(px(2.)).text_size(px(11.)).text_color(p.muted).child(t!("header.move_to")).into_any_element());

@@ -11,7 +11,7 @@ use gpui_kit::*;
 gpui_kit::assets::icon_assets!(
     Chosen,
     [
-        ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CornerDownRight, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, Eye, FileText, Flag, Folder, Globe, Hand, Inbox, Info, Keyboard, Laptop, Lightbulb, Locate, Lock, Maximize2, MessageSquare, Mic, Reply, Minimize2, Minus, Paperclip, Pencil, Pin, Play, Plug, Plus, RotateCcw, RotateCw, Search, Server, Settings, Compass, AppWindow, PenTool, Bug, ChartNoAxesColumn, Megaphone, ShieldCheck, Smartphone, Sparkles, SquareSlash, SquareTerminal, Ticket, Trash, TriangleAlert, Undo2, Users, X
+        ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bot, Brain, Camera, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, CornerDownRight, CircleCheck, CircleX, Clock, Copy, Eraser, ExternalLink, Eye, FileText, Flag, Folder, Globe, Hand, Heart, Inbox, Info, Keyboard, Laptop, Lightbulb, Link, Locate, Lock, Maximize2, MessageSquare, Mic, Reply, Minimize2, Minus, Paperclip, Pencil, Pin, Play, Plug, Plus, RotateCcw, RotateCw, Search, Server, Settings, Compass, AppWindow, PenTool, Bug, ChartNoAxesColumn, Megaphone, ShieldCheck, Smartphone, Sparkles, SquareSlash, SquareTerminal, Ticket, Trash, TriangleAlert, Undo2, Users, X
     ]
 );
 
@@ -124,11 +124,15 @@ pub enum Icon {
     Eye,
     /// Deleting a squad.
     Trash,
+    /// A link to share.
+    Link,
+    /// A tile liked on a taste board.
+    Heart,
 }
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 70] = [
+    pub const ALL: [Icon; 72] = [
         Icon::ArrowDown,
         Icon::ArrowLeft,
         Icon::ArrowRight,
@@ -199,6 +203,8 @@ impl Icon {
         Icon::Megaphone,
         Icon::Eye,
         Icon::Trash,
+        Icon::Link,
+        Icon::Heart,
     ];
 
     pub fn path(self) -> &'static str {
@@ -243,6 +249,8 @@ impl Icon {
             Icon::Megaphone => "icons/megaphone.svg",
             Icon::Eye => "icons/eye.svg",
             Icon::Trash => "icons/trash.svg",
+            Icon::Link => "icons/link.svg",
+            Icon::Heart => "icons/heart.svg",
             Icon::Settings => "icons/settings.svg",
             Icon::Shield => "icons/shield-check.svg",
             Icon::Users => "icons/users.svg",
@@ -282,6 +290,12 @@ pub fn icon(name: Icon, size: f32, color: impl Into<Hsla>) -> Svg {
     svg().path(name.path()).size(px(size)).flex_none().text_color(color)
 }
 
+/// A brand logo (`crate::brands`) at `size` points in `color`: the mark's
+/// own asset, drawn as a one-colour mask like the icons.
+pub fn icon_from_asset(asset: &'static str, size: f32, color: impl Into<Hsla>) -> Svg {
+    svg().path(asset).size(px(size)).flex_none().text_color(color)
+}
+
 const BRAND_CLAUDE: &str = "brand/claude.svg";
 const BRAND_OPENAI: &str = "brand/openai.svg";
 
@@ -294,6 +308,9 @@ impl AssetSource for AppAssets {
             BRAND_CLAUDE => return Ok(Some(Cow::Borrowed(include_bytes!("../assets/brand/claude.svg")))),
             BRAND_OPENAI => return Ok(Some(Cow::Borrowed(include_bytes!("../assets/brand/openai.svg")))),
             _ => {}
+        }
+        if let Some(bytes) = crate::brands::asset(path) {
+            return Ok(Some(Cow::Borrowed(bytes)));
         }
         if let Some(bytes) = Chosen.load(path)? {
             return Ok(Some(bytes));

@@ -139,6 +139,33 @@ impl Runtime {
         Ok((!gap.is_empty()).then_some(gap))
     }
 
+    /// What a designer's hand-in that changes a screen carries beyond its
+    /// summary: its change note — before → after a point, why each is better,
+    /// and what stayed as it was. It changes a screen when it says so
+    /// (`changes_screens`), when it edited or checked a UI file since the
+    /// hand-in before, or when its branch touches one outside `design/`.
+    /// Refused with what to add; `Ok(Some(note))`, the note to put under the
+    /// summary (given unasked, it is kept too).
+    pub(super) fn designer_change_note(&self, id: SessionId, args: &Value) -> Result<Option<String>, String> {
+        let Some(session) = self.sessions.get(&id) else { return Ok(None) };
+        if session.member.as_ref().is_none_or(|m| m.role != DESIGNER) {
+            return Ok(None);
+        }
+        let Some(work) = session.work.as_ref() else { return Ok(None) };
+        let changes = board::changes_arg(args);
+        let unchanged = board::arg_str(args, "unchanged").unwrap_or_default();
+        let said = args.get("changes_screens").and_then(Value::as_bool) == Some(true);
+        let ledger = crate::design::lint::record::read_pending(&work.cwd.join(crate::design::DIR));
+        let touched = || work.sandbox.as_ref().and_then(|s| s.touched_files().ok()).unwrap_or_default();
+        let screens = said || !ledger.edited.is_empty() || !ledger.checked.is_empty() || touched().iter().any(|f| !f.starts_with(&format!("{DESIGN_DIR}/")) && precheck::ui_file(f));
+        if screens && let Some(gap) = board::change_note_gap(&changes, unchanged) {
+            return Err(format!(
+                "This hand-in changes a screen, so it says what changed and why it is better: add {gap}. Keep features, content and data as they were unless the ticket asked otherwise, and say so in `unchanged`. Then hand in again."
+            ));
+        }
+        Ok((!changes.is_empty()).then(|| crate::protocol::decide::change_note(&changes, unchanged)))
+    }
+
     /// What `submit_for_review` asks of an engineer's code ticket: whether
     /// users see the change, and if so fresh screenshots across the design QA
     /// range. A squad with a designer sends a complete hand-in to design QA.
@@ -224,7 +251,7 @@ screen_checks value; missing: {}. Then hand in again.",
             created_by: "equipe".to_owned(),
             note: None,
             asks: Vec::new(),
-            remaining: Vec::new(),
+            label: None, remaining: Vec::new(),
             images: Vec::new(),
             updated_at: None,
             priority: ticket.priority,
@@ -695,7 +722,11 @@ the person is told it is ready only once you pass it.",
     let blockers = "Two kinds of finding: blockers (S1/S2) — function or data broken, layout broken at a major width, a WCAG 2.2 A/AA \
 failure such as content or a control lost at 200% text or at 320px reflow, or a clear difference from the spec — which send it back; \
 and polish (S3/S4), what keeps it from looking finished — rhythm, alignment, density, hierarchy — never left out, even when it \
-passes, with where and how to fix, and never a reason to send it back.";
+passes, with where and how to fix, and never a reason to send it back. Then the quality bar (your `design-references` skill): \
+the changed screens beside the references of their patterns in the project's `design/references/`, at the same width, and say in \
+findings whether they stand in their tier — a gap the build opened against its spec is a blocker, one the spec itself has is \
+polish and one design ticket to raise it. Run your `ui-review` skill's checklists on them too: the kind checklist, and \
+the checklist of each part they change (forms, tables and charts, motion, copy).";
     match precheck {
         Some(brief) => out.push_str(&format!(
             "\nequipe's precheck already rendered the screens this change touches — each width, light and dark, at normal size, \
@@ -758,7 +789,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
-            remaining: vec![],
+            label: None, remaining: vec![],
             images: vec![],
             updated_at: None,
             priority: Default::default(),
@@ -771,6 +802,10 @@ mod tests {
         assert!(given.contains("/h/squads/acme/design-qa/T-9") && given.contains("Changed states: pricing/plans/default"), "{given}");
         assert!(given.contains("don't shoot every condition") && given.contains("count as your own"), "{given}");
         assert!(given.contains("never a reason to send it back"), "polish never blocks");
+        for text in [&plain, &given] {
+            assert!(text.contains("`design-references`") && text.contains("stand in their tier") && text.contains("a gap the build opened against its spec is a blocker"), "the quality bar: {text}");
+            assert!(text.contains("`ui-review` skill's checklists"), "the review checklists: {text}");
+        }
     }
 
     #[test]

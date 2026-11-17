@@ -124,6 +124,29 @@ pub struct BrowserSignInOpened {
     /// In the separate Chrome window on the daemon's Mac, not a panel.
     pub window: bool,
 }
+/// An outside MCP server's proxy (`equipe mcp proxy`), on a connection of
+/// its own: params [`McpProxyOpen`], answered `true` (or why not); then each
+/// JSON-RPC message from the member's engine goes as a [`MCP_PROXY_SEND`]
+/// notification and each from the server comes back as [`MCP_PROXY_RECV`],
+/// both [`McpProxyMessage`]. The daemon adds the credential; the proxy holds none.
+pub const MCP_PROXY: &str = "mcp_proxy";
+pub const MCP_PROXY_SEND: &str = "mcp_proxy_send";
+pub const MCP_PROXY_RECV: &str = "mcp_proxy_recv";
+
+/// Which squad's server a proxy is for, and for which member.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpProxyOpen {
+    pub squad: crate::SquadName,
+    pub server: String,
+    pub member: String,
+}
+
+/// One JSON-RPC message through a proxy.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpProxyMessage {
+    pub message: Value,
+}
+
 /// The live browser panel's own connection (params
 /// [`crate::stream::StreamHello`]), answered `true`; after the answer the
 /// connection carries [`crate::stream`]'s binary messages, both ways.

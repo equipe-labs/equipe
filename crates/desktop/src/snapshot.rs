@@ -10,19 +10,23 @@
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket; `ppick:<n>`, peeking) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
 //! (its main button) · `size:<w>x<h>` (the window) · `hover:<x>,<y>` / `click:<x>,<y>` (the pointer, in the screen's points — through the zoom, as the Mac sends it) · `zoom:<pct|in|out|actual>` (the window's size, as ⌘+ ⌘- ⌘0) · `theme:<light|dark>` · `sidebar` (hide/show) · `popup:account` · `popup:subagents:<member>` · `subagent:<member>[,<n>]` (its first — or nth, from 0 — subagent's row, clicked) · `settings[:<category>]` (settings, at general · engines · squad · team · permissions · projects · browser · keys · about) · `words:<on|off|ask>` ("All by words" for the squad, or asked about) · `wlog` (the log of where words went wrong) · `wundo` (Undo, Cancel or Leave on what waits in words) · `eng:<signin|switch|cancel|signout|sure|keep|tab>:<codex|claude>` (an AI platform's card) · `signin:<go|move|check|cancel|carry|far|paste:<code>|type:<code>>` (a lost sign-in's card in the conversation) · `ssearch:<words>` (its search) · `spop:<language|squad|subagents|per_member|per_engine|provider>` (a pop-up) · `padd:<preset>` · `purl:<url>` · `pconnect` (a model provider's form: opened, its address, Connect) · `open:<n>` (a ticket's sidebar row) · `folds` · `elsewhere[:<n>]` (open or close the nth fold of other projects' talk) · `chooser` (the machine chooser) · `connect:<host>` · `pass:<text>` (answer ssh's
-//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `setup:<nogit|gitasked|missing|confirm|installing|signedout|waiting|ready|failed|squad|creating|error>` (the first run's steps) · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
+//! password box) · `trust` / `decline` (answer ssh's yes/no) · `retry` · `setup:<nogit|gitasked|missing|confirm|installing|signedout|waiting|ready|failed|squad|creating|error>` (the first run's steps) · `attach:<file>[,<file>…]` · `ckey:<key>` (a key in the composer) · `ctext[:<label>]` (the composer's words, selection, composition and focus, logged) · `light:<n>` (show attachment n big) · `drag:<path>[,…]` / `undrag` (the drop frame, as if dragged) ·
 //! `sdrag:<x1>,<y1>,<x2>,<y2>` (a selection dragged out) · `peekw:<px>` (the peek held that wide) · `quote:<open|reply|copy|type:<words>|write:<words>|add|cancel|edit:<n>|remove:<n>|peek:<n>|card:<quote>|<words>|send|close|jump>` (asking about — replying to — the words selected; a card's "Reply", ✕, the pointer on it; a card made at once) ·
 //! `sidechat:<start|on:<words>|type:<words>|send|close|bring|jump|reopen>` (a side chat: about the words selected, or about `words` of the conversation as if selected; typed in, sent, closed, its last answer brought to the composer, its passage clicked, opened again from its mark) ·
 //! `turn:<row>[,<call>]` (open or close a group of calls, or one call in it) · `side:<n>` (ticket n beside the conversation) ·
 //! `answer:<ticket>,<n>,<words>` / `aok:<ticket>,<n>` / `atick:<ticket>,<n>` / `apick:<ticket>,<n>,<done|yours|later|call|unknown>` / `anote:<ticket>,<n>,<words>` / `afree:<ticket>,<words>` / `asend:<ticket>` / `asent:<ticket>` (a waiting ticket's card: type in box n, its quick OK, tick thing n off, a pick, a note, the words to the member, send; open what was sent) ·
-//! `dkey:<key>` (a member's questions' card: `1`–`9`, `up`, `down`, `space`, `enter`, `cmd-enter`, `tab`, `left` / `right` (the other cards), `shift-left` (the question before), `escape`) · `dlist[:off]` (the list of every question waiting there) · `dtype:<words>` (in its box for the person's own words) · `decided` (open the latest decided row) · `dpick:<id>` (a set in Needs you, peeking) · `dview:<n>` (option n's picture of the card on show, big) · `dtake:<n>` / `dmix:<n>[,<k>]` / `dagain` (a design choice's one click: option n's "This one", its mix menu opened or its kth line, "Again") · `tview:<ticket>,<n>` (a hand-in's nth picture, big; then `press:right`, `press:enter`) · `rview:<n>` (the nth picture the latest reply showing pictures embeds, big) · `tpick:<id>` (a change to the team in Needs you, peeking) · `tyes` / `tno` (approve or decline the oldest change to the team) · `rpick:<id>` (a routine the PM proposed in Needs you, peeking) · `ryes` / `rno` (turn on or decline the oldest) · `cpick:<id>` (a card to confirm in Needs you, peeking; `cpick` alone: the oldest) · `ctick:<ticket>` (tick or untick a ticket on the oldest card) · `cyes` / `cno` (confirm or decline the oldest card) · `eyes` / `eno` / `eundo` (the engine card: its yes, its no, undo) · `engines:<off|suggest|auto>` (the squad's engine switching) ·
+//! `dkey:<key>` (a member's questions' card: `1`–`9`, `up`, `down`, `space`, `enter`, `cmd-enter`, `tab`, `left` / `right` (the other cards), `shift-left` (the question before), `escape`) · `dlist[:off]` (the list of every question waiting there) · `dtype:<words>` (in its box for the person's own words) · `decided` (open the latest decided row) · `dpick:<id>` (a set in Needs you, peeking) · `dview:<n>` (option n's picture of the card on show, big) · `taste` (the taste board of the card on show, or of the set picked in Needs you) · `tastekey:<key>` (a board key: `left`, `right`, `up`, `down`, `space`, `enter`, `p`, `0`–`9`, `escape`, `cmd-enter`) · `tastelike:<n>` / `tasteview:<n>` (the nth tile on show liked, or big) · `tastepick:<n>` (family n picked) · `dtake:<n>` / `dmix:<n>[,<k>]` / `dagain` (a design choice's one click: option n's "This one", its mix menu opened or its kth line, "Again") · `dbefore:<n>[,off]` (option n's picture flipped to before, or back) · `dsidebyside[:off]` (the card's options side by side, or put away) · `tview:<ticket>,<n>` (a hand-in's nth picture, big; then `press:right`, `press:enter`) · `rview:<n>` (the nth picture the latest reply showing pictures embeds, big) · `tpick:<id>` (a change to the team in Needs you, peeking) · `tyes` / `tno` (approve or decline the oldest change to the team) · `rpick:<id>` (a routine the PM proposed in Needs you, peeking) · `ryes` / `rno` (turn on or decline the oldest) · `cpick:<id>` (a card to confirm in Needs you, peeking; `cpick` alone: the oldest) · `ctick:<ticket>` (tick or untick a ticket on the oldest card) · `cyes` / `cno` (confirm or decline the oldest card) · `eyes` / `eno` / `eundo` (the engine card: its yes, its no, undo) · `engines:<off|suggest|auto>` (the squad's engine switching) ·
 //! `qopen` · `qtype:<n>,<words>` · `qsay:<n>,<words>` · `qsend` · `qesc` · `qenter` (a reply's list of questions as a form: open it, type in box n — past the items, the one for anything to add — tap a quick answer, send, cancel; ⏎ in the composer) ·
-//! `metrics[:<dash|error|empty|connect|key|done>]` (Metrics, on a sample) · `mtype:<n>,<text>` (in its form's box n) ·
+//! `secret` (the first secret a member asked for, opened over the composer) · `metrics[:<dash|error|empty|connect|key|done>]` (Metrics, on a sample) · `mtype:<n>,<text>` (in its form's box n) ·
 //! `design[:<overview|colors|type|spacing|radius|shadow|motion|components|assets|guidelines|taste>]` (Design system, at a section) · `dsource:<squad|project:name>` (another system) · `ddraft` (its draft, or back) · `dwork` (the work under way on it, or back) · `dchanges` (what changed, opened or closed) · `dlight:<n>` / `dlight:off` (asset n big) · `dcomp:<n>[,<k>]` / `dcomp:off` (component n's kth picture big) · `dplay:<token>` (a motion token played, as under the pointer) · `dask` (ask the designer for one) · `dtoc:<n>` (the guidelines' nth heading) ·
-//! `dtab:<map|system>` (UI map or Design system) · `fflow:<id>` (a flow) · `fscreen:<id>` (a screen's card, clicked) · `fstate:<key>` (a state's chip; `+empty` for one missing) · `fmode:<light|dark>` · `fdata:<real|example>` (Real data or Example data) · `fwidth:<px>` · `fzoom` (the state big) · `fvideos` (the older walkthroughs, listed or not) · `fsay` ("Talk" on the open state) · `dsay:<token>` / `dsay:asset:<n>` / `dsay:component:<n>` ("Talk" on a colour or type style by name, asset n or component n) · `dtalk:<open|fold>` (the conversation beside the design screen) · `dunpoint:<n>` (chip n taken off) · `fkey:<left|right|up|down|escape>` ·
+//! `dtab:<map|designs|system|references>` (UI map, Designs, Design system or References) · `dcard:<ticket>` (a design card on the Designs tab, opened) · `dwidth:<desktop|mobile>` (the width its renders are compared at) · `refpattern:<name>` (a reference pattern opened) · `refview:<n>` / `refview:off` (its picture n big, or closed) · `refsearch:<words>` · `refkey:<left|right|escape>` (in References) · `fflow:<id>` (a flow) · `fscreen:<id>` (a screen's card, clicked) · `fstate:<key>` (a state's chip; `+empty` for one missing) · `fmode:<light|dark>` · `fdata:<real|example>` (Real data or Example data) · `fwidth:<px>` · `fzoom` (the state big) · `fvideos` (the older walkthroughs, listed or not) · `fsay` ("Talk" on the open state) · `dsay:<token>` / `dsay:asset:<n>` / `dsay:component:<n>` ("Talk" on a colour or type style by name, asset n or component n) · `dtalk:<open|fold>` (the conversation beside the design screen) · `dunpoint:<n>` (chip n taken off) · `fkey:<left|right|up|down|escape>` ·
 //! `dcompare[:off]` (Compare and review, begun or ended) · `dside:<now|after>` · `dstep[:prev]` (the next or previous changed screen) · `daccept` · `dredo[:<words>]` ("Ask again"'s box, with words) · `dredosend` · `dversions` (Version history, opened or closed) · `drestore:<n>` (row n asked back: its confirmation) · `dtaste:<add|edit:<n>|type:<words>|save|cancel|remove:<n>|confirm:<n>|evidence:<n>>` (a taste note: write a new one, rewrite note n, type in its box, keep it, put the box away, remove note n, say "That's right" to note n, open or close its evidence) ·
-//! `cfocus` (the summary band's retry, focused by keyboard) · `wfocus` (the studio's wait card action, focused by keyboard) · `mark:<label>` (a line in the log, with the process's CPU time and memory) · `a11yon` / `a11y:<json>` (the accessibility tree built, as for a screen reader; then written) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `wheel:<x>,<y>,<n>,<dy>` (the same with the pointer at `x,y`) · `pinch:<x>,<y>,<n>,<delta>` (a trackpad's pinch there, n frames of `delta` each) · `browser` (the browser panel, ⌘⇧B) · `doc:<path>` (a document in the side panel) · `packet` (the hand-over packet the member on screen opened with after its latest move to the other engine) · `docs` (briefs and plans, all in one place) · `docsfind:<words>` · `docsfilter:<project:<name>|squad|kind:<brief|plan>|status:<word>|clear>` · `docsopen:<n>` (its nth row, beside) · `docskeep:<set>,<n>` (keep copy n of a set saved under more than one project) · `dfold[:open]` (fold it to a rail, or open it again) · `dmore` (its "more" menu) · `term[:<line>]` (the terminal, with a line typed at its prompt) · `tkeys:<text>` (typed into it, `~` for Enter) · `tmove` (the terminal to the bottom, or back to the right) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: "Take over", "Give back") · `breveal:<page>` (a page waiting for the person, as Needs you opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:<step>|<step>|…` (an IME's steps composed, then the last committed: `bime:k|か`) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` ("Connect a phone"'s sheet) · `pair:allow|deny|retry|close` (its buttons) · `newsquad[:type:<name>|create|tab[:back]|close|failed|far|farout]` ("New squad…"'s sheet: a name, its Create, Tab, closed, a refusal shown; the window as if on another machine, attached or not) · `delsquad[:far|purge]` ("Delete squad…"'s question for the window's squad; `far`, as if on another machine; `purge`, its "Delete permanently now" switch turned on) · `orchestra[:<member>]` (Orchestration, a member's lane lit) · `studio:<ticket>` (the designer studio on a ticket; `studio:width:<n>` a width picked, `studio:item:<n>` the nth on its timeline opened big, `studio:back`) · `usage[:day|week|claude|codex|outside|cut:<tickets|members|projects>|hour[:<n>]|dismiss]` (the Usage screen: its stretch, its engine, outside equipe opened, a cut, an hour picked — the busiest, or the nth — and the fast burn's notice closed) · `needsorder:<kind|importance>` (Needs you grouped by kind, or by importance) · `unlock[:off|here]` (the card about a locked Mac a member waits on: the daemon on another Mac; Screen Sharing refused there; the daemon on this Mac) · `disk` (the Disk panel) · `disk:fix<n>|all|yes|back|rescan|close` (a fix's sheet, every fix's, its yes, back, look again, close) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `newwindow[:<squad>]` (New Window, ⌘⇧N; a squad's "open in a new window") · `win:<n|first|last>` (the steps after it act on that window) · `titles[:<file>]` (every window's title, as the Window menu lists them) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
+//! `cfocus` (the summary band's retry, focused by keyboard) · `wfocus` (the studio's wait card action, focused by keyboard) · `mark:<label>` (a line in the log, with the process's CPU time and memory) · `a11yon` / `a11y:<json>` (the accessibility tree built, as for a screen reader; then written) · `scroll:<n>,<dy>` (n wheel turns a frame apart) · `wheel:<x>,<y>,<n>,<dy>` (the same with the pointer at `x,y`) · `pinch:<x>,<y>,<n>,<delta>` (a trackpad's pinch there, n frames of `delta` each) · `browser` (the browser panel, ⌘⇧B) · `doc:<path>` (a document in the side panel) · `packet` (the hand-over packet the member on screen opened with after its latest move to the other engine) · `docs` (briefs and plans, all in one place) · `docsfind:<words>` · `docsfilter:<project:<name>|squad|kind:<brief|plan>|status:<word>|clear>` · `docsopen:<n>` (its nth row, beside) · `docskeep:<set>,<n>` (keep copy n of a set saved under more than one project) · `dfold[:open]` (fold it to a rail, or open it again) · `dmore` (its "more" menu) · `term[:<line>]` (the terminal, with a line typed at its prompt) · `tkeys:<text>` (typed into it, `~` for Enter) · `tmove` (the terminal to the bottom, or back to the right) · `bpick:<n>` (its nth tab) · `bclose:<n>` (its ✕) · `bwheel` (a wheel over the page) · `btake` / `bgive` (its control bar: "Take over", "Give back") · `bfar[:<user@host>]` (its words as if the daemon were on another Mac) · `breveal:<page>` (a page waiting for the person, as Needs you opens it) · `bclick:<fx>,<fy>` (a click on the page, at fractions of its picture) · `bkeys:<text>` (typed key by key, `~` for Enter) · `bime:<step>|<step>|…` (an IME's steps composed, then the last committed: `bime:k|か`) · `press:<keystroke>` (one key through the window: `escape`, `cmd-,`) · `bopen:<url>` (a tab of the person's own) · `paste` (⌘V with what the clipboard holds) · `pair` ("Connect a phone"'s sheet) · `pair:allow|deny|retry|close` (its buttons) · `newsquad[:type:<name>|create|tab[:back]|close|failed|far|farout]` ("New squad…"'s sheet: a name, its Create, Tab, closed, a refusal shown; the window as if on another machine, attached or not) · `delsquad[:far|purge]` ("Delete squad…"'s question for the window's squad; `far`, as if on another machine; `purge`, its "Delete permanently now" switch turned on) · `orchestra[:<member>]` (Orchestration, a member's lane lit) · `studio:<ticket>` (the designer studio on a ticket; `studio:width:<n>` a width picked, `studio:item:<n>` the nth on its timeline opened big, `studio:back`) · `usage[:day|week|claude|codex|outside|cut:<tickets|members|projects>|hour[:<n>]|dismiss]` (the Usage screen: its stretch, its engine, outside equipe opened, a cut, an hour picked — the busiest, or the nth — and the fast burn's notice closed) · `needsorder:<kind|importance>` (Needs you grouped by kind, or by importance) · `unlock[:off|here]` (the card about a locked Mac a member waits on: the daemon on another Mac; Screen Sharing refused there; the daemon on this Mac) · `disk` (the Disk panel) · `disk:fix<n>|all|yes|back|rescan|close` (a fix's sheet, every fix's, its yes, back, look again, close) · `bell:<sheet|notasked|denied|allowed>` (the notifications sheet; what macOS allows) · `newwindow[:<squad>]` (New Window, ⌘⇧N; a squad's "open in a new window") · `win:<n|first|last>` (the steps after it act on that window) · `titles[:<file>]` (every window's title, as the Window menu lists them) · `quit`. Without a script, one shot after `EQUIPE_SNAPSHOT_MS`
 //! (default 3000) to `EQUIPE_SNAPSHOT`.
+//!
+//! `dsession:<setup[:<project>]|start:<page>|pin:<fx>,<fy>,<note>|reason:<n>|save|viewport:<phone|desktop>|react:<up|down|more|less>|polish|end>` (a design session: asked for, started on a page, a pin dropped at fractions of the page with its note, a reason tapped, the pin kept, the width, a reaction, the polish step, ended) · `tuner[:<project>]` · `tkey:<left|right|s|escape>` · `treason:<n>` (the taste tuner: opened, a pick by key, a reason tapped).
+//!
+//! `linkmenu:<ticket>` (that ticket's "Copy link" menu, open) · `linkchip:<text>` (what a paste of `text` makes) · `openlink:<link>` (a link opened as the system would).
 //!
 //! `shot:` names its file with `{mode}` and `{width}` put in as the window is
 //! drawn (`default.{mode}.{width}.png`); `lang:<code>` switches the words.
@@ -409,6 +413,13 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                     };
                     shell.open_menu(kind, window, cx);
                 }),
+                // The composer as it stands: its words, selection, a composition, and whether it has the keys.
+                "ctext" => shell.update(cx, |shell, cx| {
+                    let state = shell.composer.state.clone();
+                    let marked = state.update(cx, |s, cx| gpui_kit::EntityInputHandler::marked_text_range(s, window, cx));
+                    let s = state.read(cx);
+                    eprintln!("ctext {arg}: {:?} selected {:?} marked {marked:?} focused {} browser page focused {}", s.value().to_string(), s.selected_range(), shell.composer.is_focused(window, cx), shell.browser.read(cx).focus.is_focused(window));
+                }),
                 "ckey" => shell.update(cx, |shell, cx| {
                     let taken = shell.on_composer_key(&arg, &Modifiers::default(), window, cx);
                     eprintln!("ckey {arg}: taken = {taken}");
@@ -509,6 +520,18 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                 "orchestra" => shell.update(cx, |shell, cx| shell.snapshot_orchestra(&arg, cx)),
                 // The designer studio: `studio:<ticket>`; `studio:width:<n>`, `studio:item:<n>`, `studio:back`.
                 "studio" => shell.update(cx, |shell, cx| shell.snapshot_studio(&arg, window, cx)),
+                // A design session (`views/design_session.rs`): `dsession:<setup|start:<page>|pin:<fx>,<fy>,<note>|reason:<n>|save|viewport:<phone|desktop>|react:<up|down|more|less>|polish|end>`.
+                "dsession" => shell.update(cx, |shell, cx| shell.snapshot_session(&arg, window, cx)),
+                // The taste tuner: `tuner[:<project>]` opens it; `tkey:<left|right|s|escape>`; `treason:<n>`.
+                "tuner" => shell.update(cx, |shell, cx| shell.tuner_open((!arg.is_empty()).then(|| arg.clone()), cx)),
+                "tkey" => shell.update(cx, |shell, cx| {
+                    shell.tuner_key(&arg, cx);
+                }),
+                "treason" => shell.update(cx, |shell, cx| {
+                    if let Some(reason) = arg.parse::<usize>().ok().and_then(|n| equipe_core::protocol::design::PickReason::ALL.get(n).copied()) {
+                        shell.tuner_reason(reason, cx);
+                    }
+                }),
                 // Metrics on a sample, no daemon asked: `metrics:dash|error|empty|connect|key|done`;
                 // `mtype:<n>,<text>` types in the form's box n (a key shows hidden).
                 "metrics" => shell.update(cx, |shell, cx| shell.metrics_demo(&arg, window, cx)),
@@ -516,8 +539,18 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                     let (n, text) = arg.split_once(',').unwrap_or(("0", ""));
                     shell.metrics_type(n.parse().unwrap_or(0), text, window, cx);
                 }),
+                // The first secret a member asked for, opened over the composer (`FAKE_SECRET=store`): `secret`.
+                "secret" => shell.update(cx, |shell, cx| {
+                    if let Some(id) = shell.model.secret_asks.first().map(|a| a.id) {
+                        shell.open_secret_card(id, window, cx);
+                    }
+                }),
                 // The Logins page on a sample, no daemon asked: `lseed` fills it, `logins[:add|open[:id]|password[:id]|month]` opens it.
                 "lseed" => shell.update(cx, |shell, cx| shell.snapshot_logins_seed(cx)),
+                // A verification card over the composer, no daemon asked: `verify[:waiting|fetching|nomail|filled|failed|nomailbox]`;
+                // the Connections row's mailbox: `vmailbox:<none|gmail|imap|form|connecting>`.
+                "verify" => shell.update(cx, |shell, cx| shell.snapshot_verify(&arg, cx)),
+                "vmailbox" => shell.update(cx, |shell, cx| shell.snapshot_mailbox(&arg, window, cx)),
                 "logins" => shell.update(cx, |shell, cx| shell.snapshot_logins(&arg, window, cx)),
                 // The sidebar this wide: `sidew:210`.
                 "sidew" => shell.update(cx, |shell, cx| {
@@ -556,6 +589,24 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                     if let Some(tab) = crate::flows::Tab::parse(&arg) {
                         shell.design_set_tab(tab, cx);
                     }
+                }),
+                // Designs: a card opened (`dcard:<ticket>`), the width compared (`dwidth:<desktop|mobile>`).
+                "dcard" => shell.update(cx, |shell, cx| {
+                    if let Ok(id) = arg.parse() {
+                        shell.designs_show(id, cx);
+                    }
+                }),
+                "dwidth" => shell.update(cx, |shell, cx| shell.designs_pick_viewport(if arg == "mobile" { crate::designs::Viewport::Mobile } else { crate::designs::Viewport::Desktop }, cx)),
+                // References: a pattern opened, a picture big (`refview:off` closes it), the search, a key (←, →, escape).
+                "refpattern" => shell.update(cx, |shell, cx| shell.refs_open_pattern(&arg, cx)),
+                "refview" => shell.update(cx, |shell, cx| shell.refs_view(arg.parse().ok(), cx)),
+                "refsearch" => shell.update(cx, |shell, cx| {
+                    shell.refs_search.update(cx, |s, cx| s.set_value(arg.clone(), window, cx));
+                    shell.design.refs.search(&arg);
+                    cx.notify();
+                }),
+                "refkey" => shell.update(cx, |shell, cx| {
+                    shell.on_design_key(&arg, &Modifiers::default(), window, cx);
                 }),
                 "dcompare" => shell.update(cx, |shell, cx| shell.design_compare(arg != "off", cx)),
                 "dside" => shell.update(cx, |shell, cx| {
@@ -834,9 +885,17 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                 "dtype" => shell.update(cx, |shell, cx| shell.decide_type(&arg, window, cx)),
                 "dlist" => shell.update(cx, |shell, cx| shell.decide_list(arg != "off", cx)),
                 "dtake" | "dmix" | "dagain" => shell.update(cx, |shell, cx| shell.decide_script_react(&verb, &arg, window, cx)),
+                // A choice in pictures: option n flipped to before (`dbefore:<n>[,off]`), its options side by side (`dsidebyside[:off]`).
+                "dbefore" | "dsidebyside" => shell.update(cx, |shell, cx| shell.decide_script_compare(&verb, &arg, cx)),
                 // A member's pictures big: option n's of the card on show, or a hand-in's nth.
                 "dview" => shell.update(cx, |shell, cx| shell.view_script(None, arg.parse().unwrap_or(1), cx)),
                 "rview" => shell.update(cx, |shell, cx| shell.reply_view_script(arg.parse().unwrap_or(1), cx)),
+                // A taste board: opened, a key, a tile liked or big, a family picked.
+                "taste" => shell.update(cx, |shell, cx| shell.taste_script_open(window, cx)),
+                "tastekey" => shell.update(cx, |shell, cx| shell.taste_script_key(&arg, window, cx)),
+                "tastelike" => shell.update(cx, |shell, cx| shell.taste_script_tile(arg.parse().unwrap_or(1), false, cx)),
+                "tasteview" => shell.update(cx, |shell, cx| shell.taste_script_tile(arg.parse().unwrap_or(1), true, cx)),
+                "tastepick" => shell.update(cx, |shell, cx| shell.taste_script_pick(arg.parse().unwrap_or(1), cx)),
                 // The big view zoomed to `vzoom:2` at its centre.
                 "vzoom" => shell.update(cx, |shell, cx| {
                     if let Some(path) = shell.viewer.as_ref().map(|v| v.item().path.clone()) {
@@ -971,6 +1030,15 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                 }),
                 "slide" => shell.update(cx, |shell, cx| shell.present(arg.parse().unwrap_or(0), cx)),
                 "usage" => shell.update(cx, |shell, cx| shell.snapshot_usage(&arg, cx)),
+                // "Copy link" open on a ticket (`linkmenu:<ticket>`); a link pasted into the box
+                // (`linkchip:<text>`); a link opened as the system would (`openlink:<text>`).
+                "linkmenu" => shell.update(cx, |shell, cx| shell.snapshot_link_menu(arg.parse().unwrap_or(0), cx)),
+                "linkchip" => shell.update(cx, |shell, cx| {
+                    if let Some(chip) = shell.link_chip(&arg) {
+                        shell.add_ref(chip, cx);
+                    }
+                }),
+                "openlink" => crate::deeplink::handle(&arg, cx),
                 // The header's member list, open.
                 "members" => shell.update(cx, |shell, cx| shell.toggle_popover(crate::views::board::Popover::Members, cx)),
                 "rail" => shell.update(cx, |shell, cx| {
@@ -1013,6 +1081,12 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                 "btake" | "bgive" => {
                     let panel = shell.read(cx).browser.clone();
                     panel.update(cx, |b, cx| b.hand(verb == "btake", window, cx));
+                }
+                // The browser panel's words as if its daemon were on another Mac (`bfar:<user@host>`).
+                "bfar" => {
+                    let panel = shell.read(cx).browser.clone();
+                    let host = if arg.is_empty() { "me@studio".to_owned() } else { arg.clone() };
+                    panel.update(cx, |b, cx| b.seem_remote(&host, cx));
                 }
                 // A member's page waiting for the person, opened as Needs you or a notification would.
                 // "Open the browser" on a hand-over row: `bhanded:demo/pm`.
@@ -1330,6 +1404,7 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                         "who" => K::Assignee,
                         "project" => K::Project,
                         "kind" => K::Kind,
+                        "model" => K::TicketModel,
                         _ => K::Depends,
                     };
                     let (targets, sheet) = match rest {
@@ -1344,6 +1419,7 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                         K::Project => "project",
                         K::Kind => "kind",
                         K::Depends => "deps",
+                        K::TicketModel => "model",
                     };
                     let key = if sheet { format!("sheet-{code}") } else if rest == "bulk" { format!("bulk-{code}") } else if shell.board.view.page.is_some() { format!("page-{code}-{rest}") } else { format!("{code}-{rest}") };
                     shell.open_edit_menu(kind, targets, key.into(), sheet, window, cx);

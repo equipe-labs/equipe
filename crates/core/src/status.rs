@@ -534,7 +534,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
-            remaining: vec![],
+            label: None, remaining: vec![],
             images: vec![],
             priority: Priority::Normal,
             rank: 0,
@@ -558,6 +558,7 @@ mod tests {
             pause: Some(RunPause { why, engine: Some(engine), resumes_at, moves_to: None, cause: None, attempt: 0 }),
             head: None,
             dirty: None,
+            waited_for: None,
         }));
         t
     }

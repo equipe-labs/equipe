@@ -12,6 +12,7 @@ signs in once and isn't asked again for the same thing. The pieces:
 | Signing in to a site in equipe's own browser (`equipe browser`, the app's "Sign in to a site") | `crates/core/src/signin.rs`, `Runtime::start_sign_in` (`crates/core/src/runtime.rs`), `follow_person_tabs` (`runtime/logins.rs`) |
 | Cards, the Logins page, Settings › Accounts | `crates/desktop/src/views/login_offers.rs`, `views/logins.rs` (logic: `crates/desktop/src/logins.rs`), `views/accounts.rs` |
 | Login autopilot: codes, passkey, keep-alive, command-line sign-ins | `crates/core/src/autopilot/`, `crates/core/src/runtime/autopilot.rs`, `views/autopilot.rs` (on the Logins page) |
+| Verification codes from email, filled on the person's click | `crates/core/src/verify/`, `crates/core/src/runtime/verify.rs`, `views/verify.rs` |
 
 ## Invariants
 
@@ -316,7 +317,8 @@ Fix: before the host starts Chrome, it marks the profile's last exit the way
 Chrome marks a crash (`profile.exit_type: "Crashed"`, `keep-sessions.js`).
 Chrome then restores the old session's cookies and nothing else: no tab or
 window comes back, and `--hide-crash-restore-bubble` keeps the "Restore
-pages?" bubble away. Only that one field of `Default/Preferences` changes; a
+pages?" bubble away. Only that one field of the pinned profile's `Preferences`
+(see "One Chrome profile" below; `Default` unless pinned otherwise) changes; a
 profile Chrome never ran, or a file that isn't Chrome's JSON, is left alone.
 The profile itself is never wiped. Each named profile's Chrome gets the same.
 
@@ -326,6 +328,104 @@ To check on a machine with Node and Chrome:
 cargo test -p equipe-core --test session_cookies_live -- --ignored --nocapture
 cargo test -p equipe-core --test relogin_live -- --ignored --nocapture
 ```
+
+## One Chrome profile, pinned
+
+Finding (an affected Mac, November 2026): equipe's user-data folder
+(`browser/chrome`) held three Chrome profiles — `Default` and two named after a
+Google Workspace domain, made by Chrome when the person signed in to a work
+account (Chrome offers a separate profile for one, and an organization can
+require it). Neither the host's Chrome nor the person's window named a
+profile, so each start opened whichever profile Chrome had used last: members
+worked in all three at different times, each with its own cookies, and each a
+new device to Google. A sign-in made in one was gone at the next restart, every
+other site's sign-in looked gone after a switch, and Google asked for its
+second step again. Session sign-ins were lost on top of that: only
+`Default/Preferences` was marked to keep them.
+
+Fix (`browser::chrome_profile`): before any Chrome starts on the folder — the
+host's, a resumed one, the person's window — the daemon decides its profile
+and pins it in `equipe-profile` in the folder; both are started with
+`--profile-directory=<pinned>`, and `keep-sessions` marks that profile.
+
+Second finding (the same Mac, after that fix): the Workspace enforces
+enterprise profile separation, so every work account signed in to makes a new
+managed profile holding only that account — the squad's account made one, the
+person's own account another. Following Chrome's "last used" profile hopped
+members into each new, empty profile and dropped every other session. So
+equipe never moves to a profile because it is new. The profile is, in order:
+
+1. the one the person chose: `equipe browser profile <name>` (a
+   `equipe-profile.chosen` mark); `equipe browser profile` lists the profiles,
+   the account signed in to each (masked) and the one members use;
+2. the first profile, in Chrome's own order, holding a Google account signed
+   in to Chrome — the squad's working account, the first one signed in;
+3. the pinned one; the first time, the one Chrome last used; else `Default`.
+
+Members can work in one Chrome profile at a time (one Chrome per folder);
+another account's profile stays as it is, for the person to choose. Sites'
+kept sign-ins (below) go into whichever profile members use, as its Chrome
+starts. When managed profiles show up, the person is told once (in the PM's
+conversation) which account members use, how to choose another, and — as an
+optional fix, equipe works either way — the setting their Workspace admin can
+change: Google Admin console › Devices › Chrome › Settings › User & browser
+settings › Sign-in settings › **Enterprise profile separation**: "Suggest
+profile separation" or "Disable profile separation"
+([Google's help](https://support.google.com/chrome/a/answer/11198768)).
+
+## Seeing a hand-off through
+
+A sign-in the person makes in their own Chrome window, or in a sign-in view,
+happens where no member's tab can watch it. When such a browser is handed
+back (and its finish wasn't seen while in the person's hands), the daemon
+watches the member's page as it comes back for two minutes
+(`logins::back_verdict`): on the site it was for — or, handed over on an
+identity provider's page, on the site the provider sent it to — past any
+sign-in, it is a sign-in finished: recorded as the person's, its cookies kept,
+other members' pages waiting on it reloaded, and "Save this login?" offered
+once. Before, these hand-offs never recorded a finish, so every later ask
+counted as a first sign-in (`no_login_kept`) and no save was ever offered.
+
+Before a hand-off, a member whose own page on that site shows no sign-in is
+told to look first (once per site in ten minutes; asked again, the person is
+asked). One person's step on a site — a sign-in, the code or passkey after it —
+serves every member asking for it: a second member waits on the first
+hand-off. A hand-off for a site's own second step tells the person it is the
+site's, and to tick "Don't ask again on this device" where offered.
+
+A sign-in view whose sign-in the site doesn't take in the members' Chrome
+(the member's page still asks for it once the cookies went in) doesn't end
+the hand-off: the member's own browser goes into the person's hands in the
+panel right away, where the sign-in is made in place, and that site skips the
+view from then on (`browser/view-no-carry`).
+
+Google's sign-in is never carried from a sign-in view into the members' Chrome
+(`handoff_view::binds_to_browser`): Google ends a session it sees come back
+from another browser. It is made in the members' own profile (the person's
+window on it), and a kept Google sign-in is never put back by copy. A kept
+sign-in put back before asking only adds the cookies the profile lacks, never
+over a fresher one.
+
+## One store of sign-ins for every squad
+
+The sign-ins equipe keeps (`signin_store`) are one sealed store for every squad
+on the machine (`sign-ins.sealed` in equipe's home, key `sign-ins` in the secret
+store): one sign-in counts everywhere in equipe. A squad working for another
+company can keep its own: `equipe logins share <squad> off` (a
+`sign-ins.own` mark in its folder; `on` shares again). Squads' own files from
+before are moved into the shared store the first time it is read — opened with
+their keys and taken in, newer sign-in per site winning, nothing printed —
+then set aside as `sign-ins.sealed.moved`. A squad that keeps its own still
+shares the Mac's one Chrome; for accounts that must never meet, use another
+browser profile (another person's accounts, above).
+
+## Outside servers' sign-in cards, once
+
+A sign-in card for an outside MCP server that the person put off, that the
+server refused, or that ran out unanswered is not put up again by a member's
+turn — after a restart either (`squads/<squad>/mcp-put-off.json`).
+Connections keeps showing that it needs a sign-in; the person's own "Sign in"
+there, reconnecting the server, or the server answering signed in clears it.
 
 ## Saving a login is the person's leave
 
@@ -353,7 +453,7 @@ names of their own (`vault::account`); `vault.json`, `autopilot.json` and
 | Step | What equipe does | What the person does once | Limits |
 |---|---|---|---|
 | `totp` | On the site's code page, types the code made from the login's authenticator seed (RFC 6238; SHA-1/256/512, 6–8 digits). | Pastes the `otpauth://` address or the secret, or presses "Read QR" with the site's setup page open in their own tab of equipe's browser (the picture is read on this machine, `rqrr`, and dropped). | Time-based codes only; push approvals (Microsoft Authenticator, Google prompts, Apple trusted devices) stay the person's. |
-| `email` | Watches the connected mailbox (IMAP over TLS, read-only `EXAMINE`/`BODY.PEEK`) for up to 3 minutes for mail from the site's own domain (or the domain the person named), takes the code-shaped token, types it. | Connects a mailbox with an app password. | Gmail API OAuth isn't built (IMAP with an app password covers Gmail); magic links aren't followed. |
+| `email` | Watches the connected mailbox (IMAP over TLS, read-only `EXAMINE`/`BODY.PEEK`) for up to 3 minutes for mail from the site's own domain (or the domain the person named) — searched for on the server, so no other mail is fetched — takes the code-shaped token, types it. | Connects a mailbox with an app password. | IMAP only (Gmail's API is used by verification codes, below); magic links aren't followed. |
 | `sms` | Reads the newest text from Messages (`~/Library/Messages/chat.db`, read-only) that is bound to the site's host (WebOTP `@host #code`) or names it, within 3 minutes. | Turns it on, and grants equipe Full Disk Access (System Settings › Privacy & Security › Full Disk Access). Without the grant it refuses and says so. | macOS with Text Message Forwarding only; Windows and Linux refuse. |
 | `passkey` | Gives the page equipe's own passkey for the moment (Chrome's virtual authenticator, CDP `WebAuthn`) and presses its passkey button; the credential's counter is kept up to date. | Presses "Add equipe's passkey", then adds a passkey on the site's security page in equipe's browser within 10 minutes. It is a separate device on the site, revocable there. | The person's own Touch ID passkeys are never used. A site that offers no passkey button, or only a conditional prompt, stays the person's. |
 | `remember` | Ticks "Remember me", "Keep me signed in", "Trust this device" boxes on the forms equipe fills (words of every locale, `match.remember_words`). | Nothing: on by default for a login equipe signs in with; one switch turns it off. | Only boxes on the site's own form. |
@@ -379,6 +479,39 @@ sign-ins), kept in the secret store:
   environment values, `$KEY` in every member turn that starts after; a file is
   written too only when the member names one (`save_to`) for a program equipe
   doesn't run.
+- **Every secret request carries a guide**, `ask_secret` and `request_secret`
+  alike: `steps` (1 to 8 short imperative lines, in the person's language) and
+  the page the secret comes from (`url` / `create_url`, https, a real host: no
+  credentials, port, IP, localhost, `javascript:` or `file:`). A call without
+  steps, or a website's secret without its page, is refused with what to add,
+  so a card never appears bare; only a secret with no web page at all (a local
+  NAS password, `no_page: true`) may leave the page out, and its steps say where
+  to find it. For a catalog service (Connections) a missing page is filled with
+  the catalog's key page, and its sign-in page rides along as a second link. The
+  card shows the purpose, the numbered steps (an address inside a step gets its
+  own button), a primary **Open <host>** button, **Copy link**, then the masked
+  field and Save. The button runs in the desktop app, so it opens on the screen
+  the person is looking at even when the daemon is on another Mac. A card the
+  person starts from Connections has no member's steps: it shows the catalog's
+  own (`connections.svc.<id>.steps` in the locale files).
+
+**`cli_sign_in`** (a member's tool) is the hand-off for a CLI sign-in the
+person has to finish and no machine credential covers. equipe runs the tool's
+own cross-device mode on the daemon's Mac, in a pseudo-terminal (`gh` over pipes:
+in a terminal it first asks about the git credential helper), reads the page and
+the code from its output, and shows one card: "Open sign-in page" (opened on the
+Mac the person is looking at), the device code to confirm, and a box when the
+flow has the person paste a code back (`aws login --remote`, `gcloud auth login
+--no-launch-browser`). The pasted code is written to the process's standard
+input and dropped: not in an event, a journal or a log, and the terminal's echo is
+off. Expired or failed: "Get a new link" runs it again. When it ends signed in the
+member is told as whom, from the tool's own whoami (`aws sts get-caller-identity`,
+`gh api user`, `gcloud config get-value account`, `az account show`) — no secrets.
+Where "Approve device sign-ins" is on for `gh` or `aws sso`, the same approval as
+`device_code` above approves the page by itself. The modes: `aws login --remote`,
+`aws sso login --no-browser --use-device-code`, `gh auth login --web`, `gcloud auth
+login --no-launch-browser`, `az login --use-device-code`; flags that would hand
+equipe a token, password or key are refused.
 
 A member can still print an environment variable its command was given; the
 values reach only commands run for members of that squad, and the guard's deny
@@ -410,6 +543,90 @@ To check on a machine with Node and Chrome (no real accounts):
 
 ```sh
 cargo test -p equipe-core --lib autopilot
+```
+
+## Verification codes from email
+
+Some steps exist to show a person is present — GitHub's "Confirm access"
+(sudo), Google's "Verify it's you", any "enter the code we emailed you".
+When a member's page reaches one, the code is never the member's: it never
+reads, receives or types it, and never asks for it in chat (its charter,
+`browser` skill, `block_on_person` description and the browser gate all say
+so).
+
+| Piece | Code |
+|---|---|
+| Which page is an emailed-code step, which mail is its, the click | `crates/core/src/verify/mod.rs` |
+| Gmail: read-only OAuth (PKCE, loopback), the search, the text | `crates/core/src/verify/gmail.rs` |
+| IMAP: the sender searched for on the server | `Imap::matching` in `crates/core/src/autopilot/mail.rs` |
+| Cards, the click, connecting Gmail, the member told | `crates/core/src/runtime/verify.rs` |
+| The card (`Verification`, never a code), commands, events | `crates/protocol/src/verify.rs` |
+| The card over the composer, Logins › Connections' mailbox row | `crates/desktop/src/views/verify.rs` |
+
+- **One card.** A member's page with a code field that says the code went
+  by email (`verify::email_step`), or a member's `block_on_person` with
+  `verification: {site, channel: "email"}`, raises one card per browser and
+  site: "GitHub sent a verification code to <mailbox>", the steps, **Fill
+  code from email**, **Open email** (the mailbox's own web page searched for
+  the site's mail of the last hour, in the person's own browser) and **I'll
+  type it** (the page in their hands, its code field focused). Without a
+  mailbox the card offers to connect one.
+- **Only on the click.** Raising a card never fetches anything
+  (`verify::Board`); the person-only `FillVerificationCode` is the one way
+  to a fetch. The daemon then looks in the mailbox every 5 seconds for up
+  to a minute, takes the code out of the matching mail, and types it into
+  that page through the browser host's `fill` (the page's own host, https,
+  the member's tools held off the tab), pressing the page's own button as
+  part of the same click. No matching mail in time: the card says so, with
+  how to get a new code.
+- **Only the matching mail** (`verify::pick`): from the site's own sender
+  domain (or the domain the person named on its login), received after the
+  page asked for it (90 seconds' allowance) and within the last 10 minutes,
+  saying it is a verification code; the newest wins; only a strict code
+  (6–8 digits, or a short run of capitals and digits next to a code word)
+  leaves it. Gmail is searched with `from:(<domain>) after:<time>` and only
+  the newest three matches' text is read; IMAP is searched `FROM "<domain>"`
+  on the server, and only matches' headers, then texts, are fetched.
+- **Nowhere but the page.** The card and every event carry no code;
+  `verify::Outcome` has no place for one and `verify::Pick`'s `Debug` hides
+  it; the log says only what happened. For 10 minutes after it is fetched
+  the code is cut out of anything a member writes (`squad_secrets::watch`).
+  The member hears "the person confirmed access on <site>" — after the page
+  is back in its hands — and, if the site didn't take the code, the card
+  says so and the person decides.
+
+### The mailbox
+
+Gmail, over its API with the one scope `gmail.readonly` — the narrowest that
+can read a message's text (`gmail.metadata` can't, and can't search). The
+grant can't send, delete or change anything. It is chosen over reading
+webmail in a signed-in browser profile: that would put the mailbox in the
+squad's shared browser that members drive, and scrape a page that changes.
+Any other mailbox works over IMAP (the one Login autopilot uses, with an app
+password; read-only `EXAMINE`/`BODY.PEEK`).
+
+Connecting is Google's flow for desktop apps: **Connect Gmail** in Logins ›
+Connections opens Google's consent page in the person's own browser; it
+comes back to a one-off listener on `127.0.0.1` with a code, which the
+daemon trades, with its PKCE verifier, for a refresh token. A grant for more
+than read-only mail is refused. The token (and the client it belongs to) goes
+to the secret store under `mailbox.gmail`, never to a member, a screen, an
+event or the log; `autopilot.json` keeps only the address. **Disconnect**
+drops it (revoke it in the Google Account too).
+
+The OAuth client: a build carries one when `EQUIPE_GOOGLE_CLIENT_ID` and
+`EQUIPE_GOOGLE_CLIENT_SECRET` are set at build time or in the daemon's
+environment. Without one, the Connections row asks for the person's own: a
+Google Cloud project with the Gmail API on, its consent screen published
+(a testing one's grants run out after 7 days), and an OAuth client of type
+"Desktop app" — its ID and secret pasted once.
+
+Limits: the listener is on the daemon's machine, so connect Gmail from the
+Mac equipe runs on; a code that arrives only by text message or in an
+authenticator app stays the person's to type; magic links aren't followed.
+
+```sh
+cargo test -p equipe-core --lib verify
 ```
 
 ## Keys members obtain
@@ -464,6 +681,104 @@ What it does not do: the engine's own session files hold what a member typed
 before it saved a key (equipe can't edit those); a key already committed in
 code is not found; and a value a member splits or re-encodes (base64, spaced
 out) isn't recognised.
+
+## Outside MCP servers
+
+A squad can connect an outside MCP server for its members — a design
+library's official server from the Connections catalog (Mobbin: "search real
+product screens and flows for design references", Pro plan or higher;
+21st.dev: "proven React, Tailwind and shadcn/ui components to adapt"), or any
+server by its https address (`crates/core/src/squad_mcp.rs`). The person
+connects it to equipe **once**, and it works for every engine a member runs
+on — Claude Code, Codex, and the model providers that run on Codex's agent.
+
+- **Kept.** In the squad's journal (`mcp_servers`): name, address (https only,
+  checked as strictly as a key card's page), transport (streamable HTTP, or
+  the older HTTP+SSE), the roles that get it (the catalog's by default, else
+  every member), an on/off switch, and who holds its credential (`auth`). The
+  person adds one from Logins › Connections ("Connect" on a catalog row, or
+  "Add an MCP server" at the end), from a terminal (`equipe mcp add mobbin`,
+  `equipe mcp add <name> <url> --roles designer,frontend`, `list`, `remove`,
+  `login`), or through the PM's `change_setting` (`mcp_server`), which adds or
+  turns one on only after the person's tap on an approval card. Members never
+  add one. The app and the CLI send the same commands to the daemon and show
+  the same states; adding one already there changes nothing.
+- **Signed in by equipe.** equipe is the OAuth client (`crates/core/src/mcp_oauth.rs`):
+  the server's 401 names its protected-resource metadata (RFC 9728), which
+  names its authorization server and its metadata (RFC 8414, or OpenID
+  discovery); equipe registers itself for the sign-in (RFC 7591 dynamic client
+  registration), opens the page with PKCE S256 and the server as `resource`
+  (RFC 8707, plus `offline_access` where the server offers it, for a refresh
+  token), and the page's redirect comes back to a one-off listener on the
+  daemon's loopback address. The access token, refresh token, expiry and
+  client registration are one JSON value in the squad's secret store (the
+  Keychain on a Mac) under `mcp-oauth-<server>` — never in a journal, an
+  event, a log, a screen or a member's reach — and on the masking list. A
+  token about to run out, or one the server refuses, is renewed with the
+  refresh token, one renewal at a time per server; a renewal the server
+  refuses means the person signs in again, on one card.
+- **The card.** Connect, Sign in (and "Sign in again" in a connected row's ⋯
+  menu) open the sign-in card as a sheet over the page: "Open sign-in page",
+  its progress, and a box for the address the page ended on. A member who
+  gets a server that needs a sign-in puts the same card up once (in the
+  conversation); "Not now" isn't asked again until the person asks. From the
+  app on another Mac over SSH, "Open sign-in page" forwards the redirect's
+  loopback port to the daemon's Mac for the sign-in's length (over the
+  window's shared SSH connection, else an `ssh -N -L` of its own that never
+  asks anything — `crates/desktop/src/tunnel.rs`), so the page finishes by
+  itself; when the port is taken here or no connection takes the forward,
+  the page opens in the daemon's own browser in the browser panel; the paste
+  box is the last resort (`equipe_core::cli_signin::route`). Gmail's mailbox
+  connect gets the same tunnel. `equipe mcp login <name>` starts the same
+  card on the daemon and opens its page in the terminal's browser.
+- **Given.** From their next turn, each member of those roles gets the
+  server through equipe's proxy: a stdio entry (`equipe mcp proxy --squad …
+  --server … --member … --home …`) in Claude Code's `--mcp-config`
+  (`--strict-mcp-config` kept) and in Codex's thread `mcp_servers` alike, and
+  one line in its charter naming it. The proxy holds nothing: it hands each
+  JSON-RPC message to the daemon over its socket (`mcp_proxy`), where
+  `crates/core/src/mcp_gateway.rs` forwards it — streamable HTTP (JSON or
+  event-stream answers, the session id kept) or HTTP+SSE — with the
+  credential added, and hands back what the server says. The daemon serves a
+  proxy only for a member whose role gets the server. No token, key, header
+  or address is in a member's config, environment, files or process. Tool
+  calls are logged by name only. Its tools run without asking in Auto and
+  Full, and ask in Ask. A server that needs a sign-in (or its key) isn't
+  given until it has one.
+- **Status.** Connected, needs sign-in, needs its key, or not reachable (with
+  why), from equipe's own connection — an `initialize` with the credential,
+  and what the proxies' calls show — the same for every engine. It is looked
+  at when connected, when a member who gets it starts a turn and it isn't
+  known (or was seen long ago), after a sign-in, and when a kept key changes;
+  never on a timer. The daemon logs a server's state only when it changes.
+- **Removed.** Members stop getting it, its cards close, and equipe's tokens
+  for it leave the secret store (a kept key stays, on the Keys list).
+
+### Who holds the credential
+
+Each server's `auth` (`McpAuth`, `crates/protocol/src/mcp_servers.rs`) says
+who holds its credential; `squad_mcp::credential` turns it into what a
+member's engine is given at launch.
+
+- **`oauth`** (the default, and what a record from before reads as; Mobbin):
+  equipe's own connection, as above. A server that asks for no sign-in is
+  simply connected.
+- **`key`** (21st.dev, `https://21st.dev/api/mcp`, header `x-api-key`): the
+  person pastes the API key on the usual key card (steps, and one click to
+  `https://21st.dev/mcp`, where the key is created) into the squad's secret
+  store. It needs its key — never a sign-in — and stands connected once the
+  key is kept and the server takes it; a key it refuses shows as needing its
+  key again. The proxy adds the header in the daemon, as for a token.
+- **`engine`** (a fallback, `equipe mcp add … --engine-signin`): for a server
+  that won't let other apps register. Each engine's own CLI signs in and
+  keeps the token — `claude mcp login`, with the server added in local scope
+  to the squad's own folder (`squads/<squad>/mcp-signin`, under a lock, an
+  entry already there reused, so adding never fails with "already exists"),
+  or `codex mcp login` with a config override — and members get the
+  server's address. Its status comes from those tools (`claude mcp get`,
+  `codex mcp list --json`); one card per engine. Removed: the engines' own
+  entry and sign-in are cleared unless another squad uses the same server
+  that way.
 
 ## Left to the person
 

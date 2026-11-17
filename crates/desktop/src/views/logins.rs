@@ -79,6 +79,8 @@ pub struct LoginsUi {
     pub autopilot: super::autopilot::AutopilotUi,
     /// "Keys & secrets": what members kept, and a value shown once (`views::keys`).
     pub keys: super::keys::KeysUi,
+    /// "Connections": the service whose Disconnect waits for its second click.
+    pub connections: super::connections::ConnectionsUi,
     stops: RefCell<HashMap<String, FocusHandle>>,
 }
 
@@ -107,6 +109,7 @@ impl LoginsUi {
             scroll: ScrollHandle::new(),
             autopilot: super::autopilot::AutopilotUi::new(window, cx),
             keys: super::keys::KeysUi::new(window, cx),
+            connections: super::connections::ConnectionsUi::new(window, cx),
             stops: RefCell::new(HashMap::new()),
         }
     }
@@ -297,7 +300,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     for offer in offers_section(shell, cx) {
         column = column.child(offer);
     }
-    column = column.child(waiting_section(shell, cx)).child(saved_section(shell, cx)).child(super::keys::section(shell, cx)).child(autopilot_section(shell, cx)).child(asked_section(shell, cx)).child(never_section(shell, cx));
+    column = column.child(waiting_section(shell, cx)).child(saved_section(shell, cx)).child(super::connections::section(shell, cx)).child(super::keys::section(shell, cx)).child(autopilot_section(shell, cx)).child(asked_section(shell, cx)).child(never_section(shell, cx));
     column = column.child(div().w_full().px_1().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(t!("loginspage.foot", machine = shell.endpoint.label())));
 
     let body = div().id("logins-body").flex_1().min_h_0().overflow_y_scroll().track_scroll(&ui.scroll).child(div().w_full().px_5().py_5().flex().justify_center().child(column));
@@ -1170,9 +1173,159 @@ impl Shell {
                 self.logins_ui.days = 30;
                 self.snapshot_logins_seed(cx);
             }
+            // The Connections section on a sample: keys kept, a sign-in or two, and — `connections:card` — a Connect card up.
+            ("connections", card) => {
+                self.snapshot_logins_seed(cx);
+                self.snapshot_connections_seed(card == "card");
+                if card.starts_with("mcp") {
+                    self.snapshot_mcp_seed(card);
+                }
+                self.secrets_sync(window, cx);
+                self.cli_signin_sync(window, cx);
+                self.logins_ui.scroll.set_offset(point(px(0.), px(0.)));
+            }
             _ => {}
         }
         cx.notify();
+    }
+
+    /// Sample kept keys for Connections, with no daemon asked: an Anthropic admin key used lately,
+    /// a GitHub token never used, and (`card`) a Vercel token's card waiting on the person.
+    #[cfg(feature = "snapshot")]
+    pub fn snapshot_connections_seed(&mut self, card: bool) {
+        use equipe_core::protocol::secrets::{SecretAsk, SecretField, SecretKind, SecretStore, SecretUse, SquadSecret};
+        let now = now_secs();
+        let squad = self.model.squad.clone();
+        let key = |name: &str, service: &str, kind: SecretKind, used: Option<u64>| SquadSecret {
+            squad: squad.clone(),
+            name: name.into(),
+            kind,
+            service: service.into(),
+            projects: Vec::new(),
+            any_project: true,
+            created_by: "backend".into(),
+            created_ticket: None,
+            created_at: now - 86_400 * 3,
+            note: String::new(),
+            last_used: used.map(|ago| SecretUse { at: now - ago, member: "backend".into(), ticket: None, project: String::new(), how: "env".into() }),
+        };
+        self.model.squad_secrets = vec![key("anthropic-admin-key", "anthropic", SecretKind::ApiKey, Some(2 * 3_600)), key("github-token", "github", SecretKind::Token, None), key("acme-deploy-token", "deploy.acme.example", SecretKind::Token, Some(86_400))];
+        if card {
+            self.model.secret_asks = vec![SecretAsk {
+                id: 77,
+                session: 0,
+                member: String::new(),
+                ticket: None,
+                why: String::new(),
+                fields: vec![SecretField { key: "vercel-token".into(), label: "Vercel token".into(), secret: true }],
+                save_to: String::new(),
+                at: now,
+                steps: Vec::new(),
+                url: Some("https://vercel.com/account/tokens".into()),
+                sign_in_url: None,
+                store: Some(SecretStore {
+                    name: "vercel-token".into(),
+                    service: "vercel".into(),
+                    kind: SecretKind::Token,
+                    projects: Vec::new(),
+                    create_url: Some("https://vercel.com/account/tokens".into()),
+                    scopes_hint: None,
+                }),
+            }];
+        }
+    }
+
+    /// Sample outside MCP servers for Connections, with no daemon asked, in
+    /// each state a row can be in: `mcp-fresh` (nothing connected yet), `mcp`
+    /// (Mobbin needing a sign-in, 21st.dev its key, a server of the squad's own
+    /// connected, another not reachable), `mcp-menu` (the connected row's ⋯
+    /// menu open), `mcp-signin` / `mcp-signin-far` (Mobbin's sign-in as the
+    /// sheet, the daemon here or on another Mac, its page through the tunnel),
+    /// `mcp-key` (21st.dev's key card as the sheet), `mcp-lit` (Mobbin just
+    /// connected, its row lit).
+    #[cfg(feature = "snapshot")]
+    pub fn snapshot_mcp_seed(&mut self, what: &str) {
+        use super::connections::{Asked, Sheet};
+        use equipe_core::protocol::Engine;
+        use equipe_core::protocol::cli_signin::{CliSignIn, Phase};
+        use equipe_core::protocol::mcp_servers::{McpEngineStatus, McpServerStatus, McpState};
+        use equipe_core::protocol::secrets::{SecretAsk, SecretField, SecretKind, SecretStore};
+        let now = now_secs();
+        if what == "mcp-fresh" {
+            self.model.mcp_servers = Vec::new();
+            self.model.mcp_status = Vec::new();
+            return;
+        }
+        let mobbin = equipe_core::squad_mcp::server("mobbin", None, None, None).expect("the catalog's");
+        let ui = equipe_core::squad_mcp::server("21st", None, None, None).expect("the catalog's");
+        let docs = equipe_core::squad_mcp::server("acme-docs", Some("https://docs.acme.example/mcp"), Some(&["backend".to_owned()]), None).expect("a plain server");
+        // Figma added by its address under a name of the squad's own, and Framer from the catalog: both on their catalog rows.
+        let figma = equipe_core::squad_mcp::server("design-files", Some("https://mcp.figma.com/mcp"), Some(&["designer".to_owned()]), None).expect("a plain server");
+        let framer = equipe_core::squad_mcp::server("framer", None, None, None).expect("the catalog's");
+        let wiki = equipe_core::squad_mcp::server("wiki", Some("https://wiki.acme.example/mcp"), None, None).expect("a plain server");
+        let status = |name: &str, state: McpState, detail: Option<&str>| McpServerStatus { name: name.to_owned(), engines: [Engine::Claude, Engine::Codex].map(|engine| McpEngineStatus { engine, state, detail: detail.map(str::to_owned), checked_at: now }).to_vec() };
+        let mobbin_state = if what == "mcp-lit" { McpState::Connected } else { McpState::NeedsSignIn };
+        self.model.mcp_status = vec![
+            status("mobbin", mobbin_state, None),
+            status("21st", McpState::NeedsKey, None),
+            status("acme-docs", McpState::Connected, None),
+            status("wiki", McpState::Failing, Some("it answered 503")),
+            status("design-files", McpState::Connected, None),
+            status("framer", McpState::NeedsSignIn, None),
+        ];
+        self.model.mcp_servers = vec![mobbin, ui, docs, wiki, figma, framer];
+        let ui_state = &mut self.logins_ui.connections;
+        match what {
+            "mcp-menu" => ui_state.menu = Some("mcp:acme-docs".into()),
+            "mcp-lit" => ui_state.lit = Some(("mobbin".into(), Instant::now() + std::time::Duration::from_secs(3600))),
+            "mcp-signin" | "mcp-signin-far" => {
+                if what == "mcp-signin-far"
+                    && let Ok(endpoint) = crate::target::Endpoint::parse("abel@studio")
+                {
+                    self.endpoint = endpoint;
+                }
+                self.model.cli_sign_ins = vec![CliSignIn {
+                    id: 91,
+                    session: 0,
+                    member: String::new(),
+                    ticket: None,
+                    tool: "equipe_mcp".into(),
+                    name: "Mobbin".into(),
+                    profile: None,
+                    why: "mobbin".into(),
+                    url: Some("https://ujasntkfphywizsdaapi.supabase.co/auth/v1/oauth/authorize?response_type=code&client_id=c&redirect_uri=http%3A%2F%2Flocalhost%3A55531%2Fcallback&state=s".into()),
+                    user_code: None,
+                    wants_code: true,
+                    phase: Phase::Waiting,
+                    who: None,
+                    detail: None,
+                    at: now,
+                    server: Some("mobbin".into()),
+                }];
+                if what == "mcp-signin-far" {
+                    self.cli_signin.routes.insert(91, equipe_core::cli_signin::Route::Forward(55531));
+                }
+                self.logins_ui.connections.sheet = Some(Sheet { row: "mobbin".into(), what: Asked::SignIn { server: "mobbin".into() }, at: Instant::now(), seen: true, was_connected: false });
+            }
+            "mcp-key" => {
+                self.model.secret_asks = vec![SecretAsk {
+                    id: 78,
+                    session: 0,
+                    member: String::new(),
+                    ticket: None,
+                    why: String::new(),
+                    fields: vec![SecretField { key: "21st-api-key".into(), label: "21st.dev API key".into(), secret: true }],
+                    save_to: String::new(),
+                    at: now,
+                    steps: Vec::new(),
+                    url: Some("https://21st.dev/mcp".into()),
+                    sign_in_url: None,
+                    store: Some(SecretStore { name: "21st-api-key".into(), service: "21st".into(), kind: SecretKind::ApiKey, projects: Vec::new(), create_url: Some("https://21st.dev/mcp".into()), scopes_hint: None }),
+                }];
+                self.logins_ui.connections.sheet = Some(Sheet { row: "21st".into(), what: Asked::Key { secret: "21st-api-key".into() }, at: Instant::now(), seen: true, was_connected: false });
+            }
+            _ => {}
+        }
     }
 
     /// Sample logins, a record, waits and nevers for the page, with no daemon asked.
@@ -1234,5 +1387,6 @@ impl Shell {
         ui.note.update(cx, |s, cx| s.set_placeholder(t!("accounts.note_placeholder"), window, cx));
         ui.password.update(cx, |s, cx| s.set_placeholder(t!("accounts.password_placeholder"), window, cx));
         ui.signin.update(cx, |s, cx| s.set_placeholder(t!("loginspage.signin_placeholder"), window, cx));
+        ui.connections.relocalize(window, cx);
     }
 }

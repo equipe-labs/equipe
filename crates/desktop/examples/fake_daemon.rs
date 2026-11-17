@@ -139,6 +139,10 @@
 //! draft; `working`: T-378 still making the squad's UI map, the designer at
 //! it; `empty`: none yet (`fake_daemon/design.rs`). Pictures come through
 //! `read_image`, as from the daemon. `FAKE_NO_DESIGNER=1`: a team with no designer.
+//! With `FAKE_DESIGN_RESULTS=1` too: three design tickets' work — a dashboard
+//! in three directions accepted by the PM (T-2562), a settings page handed in
+//! (T-2563), one at work (T-2565) — for the Designs tab, the Needs-you item
+//! and the Status line (`fake_daemon/design_results.rs`).
 //!
 //! Pairing a phone: a code at once, and two phones paired already.
 //! `FAKE_PAIR=ask` has a phone ask 1.5 s after the code shows (`allow` pairs
@@ -421,6 +425,18 @@ fn seed_repos() {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// `t` with the chip of its sort of work (`fix`, `check`…).
+fn labelled(mut t: Ticket, label: &str) -> Ticket {
+    t.label = serde_json::from_value(label.into()).ok();
+    t
+}
+
+/// A ticket put down for the person, with the one-line ask a list leads with.
+fn waits(id: u32, project: &str, who: &str, title: &str, headline: &str, asks: &[&str]) -> Ticket {
+    let asks: Vec<String> = asks.iter().map(|a| (*a).to_owned()).collect();
+    ticket(id, "waiting", project, who, title, "", &[], None, Some(&equipe_core::protocol::asks::waiting_note_headed(&asks, None, Some(headline))))
+}
+
 fn ticket(id: u32, status: &str, project: &str, who: &str, title: &str, body: &str, deps: &[u32], branch: Option<&str>, note: Option<&str>) -> Ticket {
     serde_json::from_value(serde_json::json!({"id": id, "title": title, "body": body, "status": status, "owner": who, "assignee": who, "project": repo(project), "depends_on": deps, "branch": branch, "created_by": "pm", "note": note})).unwrap()
 }
@@ -490,8 +506,29 @@ fn board() -> Vec<Ticket> {
         out.extend([
             ticket(42, "review", "web", "frontend", "Checkout page payment method choice", "- [ ] Both card and bank transfer can be chosen\n- [ ] The choice survives a refresh\n- [ ] Nothing breaks at mobile width", &[], Some("equipe/t-42-checkout"), Some(&checkout_note())),
             ticket(71, "review", "api", "backend", "Rate-limit middleware", "- [ ] 429 past 60 a minute\n- [ ] The remaining count in a header", &[], Some("equipe/t-71-rate-limit"), Some("Added a 60-a-minute limit with a token bucket. 6 tests added.")),
-            ticket(55, "waiting", "web", "frontend", "Connect the payment test key", "Run a payment all the way through in Stripe's test mode.", &[], None, Some("Waiting on you:\n- [ ] Make a test key in the Stripe dashboard\n- [ ] Put STRIPE_KEY in `.env.local`\n- [ ] Add the same key to the Vercel project")),
-            ticket(73, "waiting", "api", "backend", "Read-only production DB account", "", &[], None, Some("Waiting on you:\n- [ ] Share the production DB's read-only password")),
+            labelled(
+                ticket(
+                    55,
+                    "waiting",
+                    "web",
+                    "frontend",
+                    "Connect the payment test key",
+                    "Run a payment all the way through in Stripe's test mode.",
+                    &[],
+                    None,
+                    Some(&equipe_core::protocol::asks::waiting_note_headed(
+                        &["Make a test key in the Stripe dashboard".to_owned(), "Put STRIPE_KEY in `.env.local`".to_owned(), "Add the same key to the Vercel project".to_owned()],
+                        None,
+                        Some("Make a Stripe test key and add it in 2 places · 5 min"),
+                    )),
+                ),
+                "feature",
+            ),
+            labelled(waits(73, "api", "backend", "Read-only production DB account", "Share the read-only database password · 1 min", &["Share the production DB's read-only password"]), "chore"),
+            labelled(
+                waits(74, "api", "backend", "Nightly business-plan sync workflow failing two nights running (ECS task failed)", "Restart the nightly sync task in AWS · 2 min", &["Restart the ECS task `nightly-sync` in the AWS console"]),
+                "fix",
+            ),
             ticket(52, "proposed", "web", "frontend", "Dark mode toggle", "Dark mode in the user settings would likely lengthen night-time use.\n\n- [ ] Follows the system setting\n- [ ] Can be picked by hand", &[], None, None),
             ticket(64, "proposed", "app", "designer", "Empty-state illustration set", "", &[], None, None),
             // The person's ideas, kept for later — and one the PM brought back.
@@ -503,6 +540,7 @@ fn board() -> Vec<Ticket> {
         task.kind = equipe_core::protocol::TicketKind::Task;
         out.push(task);
         out.extend(design::ticket());
+        out.extend(design_results::tickets());
         let mut done = ticket(51, "done", "web", "frontend", "Tidy the footer links", "", &[], Some("equipe/t-51-footer"), Some("Tidied the links."));
         done.merged = Some(false);
         out.push(done);
@@ -548,7 +586,7 @@ fn board() -> Vec<Ticket> {
     if busy() {
         out.extend(BUSY.iter().map(|(id, _, who, title)| ticket(*id, "in_progress", "web", who, title, "", &[], None, None)));
         out.extend([
-            ticket(84, "waiting", "web", "frontend", "Check the domain's DNS records", "", &[], None, Some("Waiting on you:\n- [ ] Add a CNAME to the DNS")),
+            labelled(waits(84, "web", "frontend", "Check the domain's DNS records", "Add one CNAME record to the domain's DNS · 3 min", &["Add a CNAME to the DNS"]), "deploy"),
             ticket(85, "todo", "web", "frontend", "Cart quantity button accessibility", "", &[], None, None),
             ticket(86, "todo", "web", "qa", "Checkout regression test list", "", &[], None, None),
             ticket(87, "done", "web", "qa", "Sign-in error message copy", "", &[], None, None),
@@ -1095,6 +1133,17 @@ fn on_board_command(command: &Command) -> Option<Vec<Event>> {
             t.model = Some(set);
             Some(vec![changed(t)])
         }
+        // One ticket's own model, as the daemon keeps it.
+        Command::SetTicketModel { ticket, model, .. } => {
+            let t = all.iter_mut().find(|t| t.id == *ticket)?;
+            let mut set = equipe_core::tiers::set_pick(t.model.as_ref(), model.as_deref(), "you", 1_794_000_000).ok()?;
+            if let Some(p) = &set.pick {
+                set.model = Some(p.model.clone());
+                set.premium_tokens = if p.model == "fable" { 1_240_000 } else { 0 };
+            }
+            t.model = Some(set);
+            Some(vec![changed(t)])
+        }
         Command::EditTicket { ticket, changes, .. } => {
             if let Some(deps) = &changes.depends_on
                 && let Some(path) = equipe_core::board::dependency_loop(&all, *ticket, deps)
@@ -1296,6 +1345,8 @@ mod visuals;
 
 #[path = "fake_daemon/pictures.rs"]
 mod pictures;
+#[path = "fake_daemon/taste.rs"]
+mod taste;
 #[path = "fake_daemon/team.rs"]
 mod team;
 #[path = "fake_daemon/routine.rs"]
@@ -1330,6 +1381,12 @@ mod switching;
 
 #[path = "fake_daemon/design.rs"]
 mod design;
+#[path = "fake_daemon/session.rs"]
+mod session;
+#[path = "fake_daemon/design_results.rs"]
+mod design_results;
+#[path = "fake_daemon/refgallery.rs"]
+mod refgallery;
 #[path = "fake_daemon/components.rs"]
 mod components;
 
@@ -1411,6 +1468,7 @@ async fn main() {
     let listener = UnixListener::bind(&socket).expect("bind the fake daemon's socket");
     seed_repos();
     design::seed();
+    design_results::seed();
     studio::seed();
     briefs::seed();
     if pictures::on() || review::on() {
@@ -1749,7 +1807,35 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             pm_accepts: true,
                             role_models: switching::role_models(),
                             // `FAKE_SECRET=1`: backend waits for the NAS login, typed into a card.
-                            secret_asks: if std::env::var_os("FAKE_SECRET").is_some() {
+                            secret_asks: if std::env::var("FAKE_SECRET").is_ok_and(|v| v == "store") {
+                                // A member's `request_secret`: the key kept in the squad's secret store.
+                                vec![equipe_core::protocol::secrets::SecretAsk {
+                                    id: 42,
+                                    session: 3,
+                                    member: "backend".into(),
+                                    ticket: Some(117),
+                                    why: "Read API-key metadata, usage and cost reports".into(),
+                                    fields: vec![equipe_core::protocol::secrets::SecretField { key: "anthropic-admin-key".into(), label: "Anthropic admin key".into(), secret: true }],
+                                    save_to: String::new(),
+                                    at: 0,
+                                    steps: vec![
+                                        "Sign in to the Anthropic Console with an organization admin account.".into(),
+                                        "Open Settings > Admin keys.".into(),
+                                        "Click Create Admin Key, name it, and confirm.".into(),
+                                        "Copy the key now: it is shown only once.".into(),
+                                    ],
+                                    url: Some("https://platform.claude.com/settings/admin-keys".into()),
+                                    sign_in_url: Some("https://platform.claude.com/".into()),
+                                    store: Some(equipe_core::protocol::secrets::SecretStore {
+                                        name: "anthropic-admin-key".into(),
+                                        service: "anthropic".into(),
+                                        kind: equipe_core::protocol::secrets::SecretKind::ApiKey,
+                                        projects: Vec::new(),
+                                        create_url: Some("https://platform.claude.com/settings/admin-keys".into()),
+                                        scopes_hint: Some("Read-only is enough: the key only reads metadata, usage and cost.".into()),
+                                    }),
+                                }]
+                            } else if std::env::var_os("FAKE_SECRET").is_some() {
                                 vec![equipe_core::protocol::secrets::SecretAsk {
                                     id: 41,
                                     session: 3,
@@ -1762,10 +1848,45 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     ],
                                     save_to: "~/.config/atinum/nas.env".into(),
                                     at: 0,
+                                    steps: vec!["Open the NAS admin page at https://nas.example.com/admin".into(), "Under Users, open the account the import uses.".into(), "Read the user name and set or reveal the password.".into()],
+                                    url: Some("https://nas.example.com/admin".into()),
+                                    sign_in_url: None,
+                                    store: None,
                                 }]
                             } else {
                                 Vec::new()
                             },
+                            // `FAKE_CLI_SIGNIN=aws|gh|expired|done`: devops waits on a command-line sign-in, on a card.
+                            cli_sign_ins: match std::env::var("FAKE_CLI_SIGNIN").ok().as_deref() {
+                                Some(kind @ ("aws" | "gh" | "expired" | "done")) => {
+                                    use equipe_core::protocol::cli_signin::{CliSignIn, Phase};
+                                    let aws = kind != "gh";
+                                    vec![CliSignIn {
+                                        id: 77,
+                                        session: 3,
+                                        member: "backend".into(),
+                                        ticket: Some(117),
+                                        tool: if aws { "aws" } else { "gh" }.into(),
+                                        name: if aws { "AWS" } else { "GitHub" }.into(),
+                                        profile: aws.then(|| "atinum".to_owned()),
+                                        why: "Deploy the staging stack".into(),
+                                        url: (kind != "expired").then(|| "https://us-east-1.signin.aws.amazon.com/v1/authorize?response_type=code&client_id=arn%3Aaws%3Asignin%3A%3A%3Adevtools%2Fcross-device".into()),
+                                        user_code: (kind == "gh").then(|| "2D53-6413".to_owned()),
+                                        wants_code: aws,
+                                        phase: match kind {
+                                            "expired" => Phase::Expired,
+                                            "done" => Phase::SignedIn,
+                                            _ => Phase::Waiting,
+                                        },
+                                        who: (kind == "done").then(|| "arn:aws:iam::123456789012:user/atinum-admin".to_owned()),
+                                        detail: None,
+                                        at: 0,
+                                        server: None,
+                                    }]
+                                }
+                                _ => Vec::new(),
+                            },
+                            verifications: Vec::new(),
                             engine_proposals: switching::proposals(),
                             hand_overs: moved::hand_overs(),
                             squad: params.squad,
@@ -1959,6 +2080,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             other => other,
                         };
                         match command {
+                            // A message with pins to the designer in a design session: answered as the designer would.
+                            Command::Submit { .. } if session::on_command(&command, &events) => {}
                             Command::Submit { session, text, about } => {
                                 let working = |id: SessionId| {
                                     let turns = turns.clone();
@@ -2198,7 +2321,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                                     }
                                     continue;
                                 }
-                                if signin::on_command(&other, &events) || browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || signals::on_command(&other, &events) || disk::on_command(&other, &events) || plan_use::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) || briefs::on_command(&other, &events) || moved::on_command(&other, &events) {
+                                if signin::on_command(&other, &events) || browser::on_command(&other, &events) || team::on_command(&other, &events) || routine::on_command(&other, &events) || signals::on_command(&other, &events) || disk::on_command(&other, &events) || plan_use::on_command(&other, &events) || engines::on_command(&other, &events) || switching::on_command(&other, &events) || design::on_command(&other, &events) || session::on_command(&other, &events) || refgallery::on_command(&other, &events) || design_results::on_command(&other, &events) || briefs::on_command(&other, &events) || moved::on_command(&other, &events) {
                                     continue;
                                 }
                                 if let Some(said) = on_board_command(&other) {
@@ -2262,6 +2385,26 @@ async fn turn(session: SessionId, events: broadcast::Sender<Event>, seconds: f32
     }
     if let Some(mode) = command::mode() {
         return command::run(session, &events, &mode).await;
+    }
+    // `FAKE_PLAN_CARD=1`: a plan that moves along; `long`: one of eleven steps.
+    if let Ok(mode) = std::env::var("FAKE_PLAN_CARD") {
+        use equipe_core::protocol::{PlanState, PlanStep};
+        let words: &[&str] = if mode == "long" {
+            &["Read the existing gallery code", "Sketch the thumbnail strip", "Add swipe handling", "Add pinch to zoom", "Wire the strip to the main image", "Handle images that fail to load", "Write the swipe tests", "Write the zoom tests", "Check it at phone width", "Check it in light and dark", "Hand it in with the screenshots"]
+        } else {
+            &["Read the gallery code", "Add swipe handling, then check that a long caption which wraps onto a second line still lines up", "Write the tests", "Check it at phone width", "Hand it in"]
+        };
+        let plan = |done: usize| Event::Plan {
+            session,
+            steps: words.iter().enumerate().map(|(n, text)| PlanStep { text: (*text).into(), state: if n < done { PlanState::Done } else if n == done { PlanState::Active } else { PlanState::Pending } }).collect(),
+        };
+        for done in 0..(words.len() / 2).max(2) {
+            let _ = events.send(plan(done));
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+        // The turn stays open on its plan, so a picture shows it moving.
+        tokio::time::sleep(Duration::from_secs(600)).await;
+        return;
     }
     let long = std::env::var("FAKE_LONG_REPLY").is_ok_and(|v| v == "1").then(history::long_reply);
     let chars: Vec<char> = long.as_deref().unwrap_or(REPLY).chars().collect();

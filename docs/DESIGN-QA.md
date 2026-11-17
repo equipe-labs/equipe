@@ -27,7 +27,7 @@ A squad runs design QA in one of two modes (`equipe design qa-config --mode risk
 | Route | When |
 |---|---|
 | **refused** | the report has new S1/S2 findings (content lost, AA failures, sideways scroll, text over text) and the engineer didn't waive them. The hand-in goes straight back with the findings, no designer turn and no model escalation; the engineer fixes them, or hands in again with `waive_findings` and a reason. |
-| **per ticket** | high risk: findings the engineer **waived**; **new screens or states** (rendered states the map had no picture of at the base); **6 or more changed screens**; a designer's **spec attached** (its plan is a design file, or its body names a mockup under `design/` or a written spec in a `specs/`, `mockups/`, `screens/` or `redesign/` folder there — not the map, design QA's reports, the checks or the system's own `guidelines.md` / `tokens.json`, which every ticket names; who wrote the ticket says nothing by itself); a **re-check** after a designer's send-back; or the precheck **couldn't see it** (no report, nothing or half the pictures rendered); or 10+ unmapped UI files. |
+| **per ticket** | high risk: findings the engineer **waived**; **new screens or states** (rendered states the map had no picture of at the base); **6 or more changed screens**; a designer's **spec attached** to a change of more than one screen — a spec'd tweak of one screen with nothing new is a small change and goes to the batch — (its plan is a design file, or its body names a mockup under `design/` or a written spec in a `specs/`, `mockups/`, `screens/` or `redesign/` folder there — not the map, design QA's reports, the checks or the system's own `guidelines.md` / `tokens.json`, which every ticket names; who wrote the ticket says nothing by itself); a **re-check** after a designer's send-back; or the precheck **couldn't see it** (no report, nothing or half the pictures rendered); or 10+ unmapped UI files. |
 | **batch** | everything else: on to the person's (or PM's) review now, and into the next daily design review. |
 
 The engineer can run the self-check itself before handing in: `equipe design precheck --worktree .`.
@@ -87,7 +87,10 @@ board meanwhile):
    dark and the map's extra `modes`.
 3. Measures each rendered page: whether it scrolls sideways and what reaches past the window; text cut off at the left
    edge; text its box cuts off, with what it is (a control's label, a heading, a number, its whole text in a `title`
-   or `aria-label`, decoration); text drawn over text; and axe-core's WCAG 2.x A/AA rules.
+   or `aria-label`, decoration); text drawn over text; axe-core's WCAG 2.x A/AA rules; and the countable part of the
+   designer's taste checklist (the `design-references` skill) — framed boxes inside framed boxes, the type sizes in
+   each innermost framed block, a label or heading said two or three times, and the buttons that look primary (a solid
+   fill at 3:1 against what it sits on) in the first screenful.
 4. Compares each normal picture, pixel by pixel, with the map's picture committed at the base, and cuts crops of what
    changed (base beside new) and of each finding.
 
@@ -100,6 +103,7 @@ Findings are classed by `crates/core/src/design/precheck.rs`:
 | `text-clipped` | content is lost: a control's label, a heading, a number, or any text cut hard without an ellipsis — and its whole text isn't in a `title`/`aria-label` | cosmetic: secondary text cut with an ellipsis or a line clamp |
 | `text-overlap` / `overlap` | two texts overlap by 30% of the smaller | cosmetic |
 | `axe/<rule>` | impact serious or critical and tagged WCAG A/AA | polish |
+| `nested-cards`, `border-levels`, `type-sizes`, `duplicate-text`, `primary-actions` — a rounded card in a rounded card; boxes framed three deep; more than three type sizes in one block; a label or heading said twice; two or more buttons that look primary in the first screenful | never: counted, not judged, at normal size only | polish, for the designer to confirm by eye |
 
 A finding is **new** — this change's — when the picture it is on (at normal size, the same width and scheme) changed
 against the base and, at normal size, it lies in the part that changed. On an unchanged screen it was there before

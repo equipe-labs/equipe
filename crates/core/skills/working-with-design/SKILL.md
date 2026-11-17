@@ -1,6 +1,6 @@
 ---
 name: working-with-design
-description: Use when you write a ticket for the designer or one that changes a screen, start a project with a designer, or the person brings a screen from the UI map or asks to see a flow as a video.
+description: Use when you write a ticket for the designer or one that changes a screen, start a project with a designer, the person turns a design down, or the person brings a screen from the UI map or asks to see a flow as a video.
 ---
 
 # Working with design
@@ -18,3 +18,13 @@ component and a docs page each), then frontend's screens built only from it; the
 That setup brief is the design's — `design/brand.md`, in the project's repository with its system, which may be
 public: the product's look and voice only. The person's own plans, the people they name and their numbers stay in
 your brief and plan, in the squad's folder.
+
+## A design session first
+
+Designs that arrive late, all at once, mostly disappoint. Propose a short design session (`propose_design_session`,
+one line on why) rather than a long solo build when a new screen, a redesign or a visual direction is about to go to
+the designer; when the person turned a design down, sent it back or asked for changes twice; when the project's style
+profile (the top of its `design/taste.md`) is missing or thin; or when a designer ticket is about to explore several
+directions. equipe puts it on a card at most once per ticket or screen, never in their quiet hours, and offers to tune
+their taste first when the profile is thin. On "Not now" or "Let the designer go ahead", carry on as planned, without
+asking again. When the person asks for a session themselves, call it with `asked`: it starts at once.

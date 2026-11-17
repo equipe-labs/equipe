@@ -18,10 +18,20 @@
 // Only that one field changes. A profile Chrome never ran, or a file that
 // isn't Chrome's JSON, is left as it is.
 //
+// The Chrome profile equipe's Chrome opens in a user-data-dir: the one the
+// daemon pinned in `equipe-profile` (`browser::chrome_profile`), else
+// `Default`. Its folder is the one whose last exit is marked.
+function pinnedProfile(profile, fs, path) {
+  let name = '';
+  try { name = fs.readFileSync(path.join(profile, 'equipe-profile'), 'utf8').trim(); } catch {}
+  const ok = name && name.length <= 64 && !name.startsWith('.') && !/[\/\\\0]/.test(name) && name !== 'System Profile' && name !== 'Guest Profile';
+  return ok ? name : 'Default';
+}
+
 // `profile`: the user-data-dir. Answers what it did: `marked`, `kept` (marked
 // already), `none` (no Preferences yet), `unreadable`, `unwritable`.
 function keepSessions(profile, fs, path) {
-  const file = path.join(profile, 'Default', 'Preferences');
+  const file = path.join(profile, pinnedProfile(profile, fs, path), 'Preferences');
   let text;
   try { text = fs.readFileSync(file, 'utf8'); } catch { return 'none'; }
   let prefs;

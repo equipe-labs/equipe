@@ -125,20 +125,31 @@ enum Kind {
 
 /// Each line of `text` and whether it is a note: a bullet outside code and
 /// outside a dated section (`## 2026-11-03 · …`, a decision the old
-/// template kept here, or its `## YYYY-MM-DD` example).
+/// template kept here, or its `## YYYY-MM-DD` example) and outside the
+/// style profile (from its heading to its end mark, `super::profile`).
 fn kinds(text: &str) -> Vec<(&str, Kind)> {
     let mut out = Vec::new();
     let mut fence = false;
     let mut dated = false;
+    let mut profile = false;
     for line in text.lines() {
         let trimmed = line.trim_start();
-        let kind = if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+        let kind = if profile {
+            profile = !super::profile::is_end(trimmed) && !trimmed.starts_with('#');
+            if !profile && trimmed.starts_with('#') {
+                let heading = trimmed.trim_start_matches('#').trim();
+                dated = heading.get(..10).is_some_and(is_date) || heading.starts_with("YYYY");
+            }
+            Kind::Other
+        } else if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             fence = !fence;
             Kind::Other
         } else if fence {
             Kind::Other
         } else if trimmed.starts_with('#') {
             let heading = trimmed.trim_start_matches('#').trim();
+            // The style profile's lines are its own (`super::profile`), never notes.
+            profile = super::profile::is_heading(heading);
             dated = heading.get(..10).is_some_and(is_date) || heading.starts_with("YYYY");
             Kind::Other
         } else if !dated && (trimmed.starts_with("- ") || trimmed.starts_with("* ")) && !trimmed[2..].trim().is_empty() {

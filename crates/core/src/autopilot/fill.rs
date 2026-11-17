@@ -153,6 +153,26 @@ pub fn code_script(code: &str, guard: &FillGuard) -> String {
     )
 }
 
+/// Put the cursor in the page's code field — the first of a row of
+/// one-character boxes — for the person to type a code into themselves
+/// ("I'll type it" on a verification card). Types nothing. Answers
+/// `step: "focus"`.
+pub fn focus_code_script(guard: &FillGuard) -> String {
+    format!(
+        r#"() => {{
+{guard}
+  const inputs = Array.from(document.querySelectorAll('input')).filter(shown).filter((i) => ['text', 'tel', 'number', ''].includes(i.type));
+  const named = (i) => i.autocomplete === 'one-time-code' || /(^|[^a-z])(otp|totp|mfa|2fa|code|token|pin|verification)([^a-z]|$)/i.test(`${{i.name}} ${{i.id}} ${{i.getAttribute('aria-label') || ''}} ${{i.placeholder || ''}}`);
+  const field = inputs.find((i) => i.maxLength === 1) || inputs.find(named) || inputs.find((i) => (i.maxLength >= 4 && i.maxLength <= 10) || i.inputMode === 'numeric');
+  if (!field) return say({{ filled: [], submitted: false, step: 'focus' }});
+  field.scrollIntoView({{ block: 'center' }});
+  field.focus();
+  return say({{ filled: [], submitted: false, step: 'focus' }});
+}}"#,
+        guard = guard_js(guard),
+    )
+}
+
 /// Press the page's "Sign in with a passkey" / "Use security key" button
 /// (equipe's virtual authenticator, attached for the moment, answers it).
 /// Answers `step: "passkey"`.
@@ -250,7 +270,7 @@ mod tests {
 
     #[test]
     fn every_script_checks_the_host_before_it_touches_anything_and_never_carries_the_mark() {
-        for script in [code_script("123456", &guard()), passkey_script(&guard()), device_script(Some("ABCD-1234"), &guard())] {
+        for script in [code_script("123456", &guard()), passkey_script(&guard()), device_script(Some("ABCD-1234"), &guard()), focus_code_script(&guard())] {
             let host_check = script.find("refused: 'host'").unwrap();
             assert!(host_check < script.find("querySelectorAll").unwrap(), "{script}");
             assert!(!script.contains(crate::vault::ANSWER_MARK), "the mark is put together as it runs");
@@ -265,7 +285,7 @@ mod tests {
     fn every_script_parses() {
         use std::io::Write as _;
         let login = crate::protocol::vault::Login { id: 1, site: "github.com".into(), url: None, username: "a".into(), note: None, allowed: Vec::new(), auto: true, stopped: None, created_at: 0, password_at: None, uses: Vec::new(), autopilot: Default::default() };
-        let scripts = [code_script("123456", &guard()), passkey_script(&guard()), device_script(Some("ABCD-1234"), &guard()), device_script(None, &guard()), crate::vault::fill_script("a", "p", &FillGuard::exact(&login)), remember_js(), crate::vault::fill_script("a", "p", &FillGuard::idp(&google())), code_script("123456", &FillGuard::idp(&google()))];
+        let scripts = [focus_code_script(&guard()), code_script("123456", &guard()), passkey_script(&guard()), device_script(Some("ABCD-1234"), &guard()), device_script(None, &guard()), crate::vault::fill_script("a", "p", &FillGuard::exact(&login)), remember_js(), crate::vault::fill_script("a", "p", &FillGuard::idp(&google())), code_script("123456", &FillGuard::idp(&google()))];
         for script in scripts {
             let Ok(mut node) = std::process::Command::new("node").args(["-e", "new Function('return (' + require('fs').readFileSync(0, 'utf8') + ')')"]).stdin(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn() else { return };
             node.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();

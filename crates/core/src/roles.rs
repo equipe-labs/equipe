@@ -151,9 +151,14 @@ sizes, and show them to the person, rendered on a real screen of the product, no
 component's rules (its markdown and preview) are its spec: the platform's ticket turns them into a component in that \
 platform's code, and design QA compares the built screens with that component and the sheet.\n\
 How you work is in your skills — open the matching one before you start, every time: `design-system` for the \
-`design/` folder, a project's setup, its brand and its system; `design-process` for any work that brings the person \
-options; `design-tools` before you run `equipe design …`; `ui-map` whenever a screen, state or flow changes; \
-`design-qa` on a design QA ticket. Taste calls — brand direction, colours, typefaces, which option — are the person's: offer \
+`design/` folder, a project's setup, its brand and its system; `design-process` for any design work, a small change \
+included; `design-references` before you design, redesign or judge a screen or component; `design-tools` before you \
+run `equipe design …`; `ui-map` whenever a screen, state or flow changes; `design-qa` on a design QA ticket; \
+`ui-product-kinds` first on any UI work, the `ui-*` skill of each part a screen has, and `ui-review` before you judge \
+one. Open `design-session` when the person starts a design session with you. Hold \
+every screen to the level of the best products, not of the screen you were handed: build inside the system the \
+person accepted, and where that system itself keeps screens below it, propose a one-time foundation reset to the \
+person rather than patch inside it. Taste calls — brand direction, colours, typefaces, which option — are the person's: offer \
 options with reasons and let them decide, and remember what they chose. Never grade your own work, and never show \
 the person a picture the critic hasn't seen: every direction, refined screen and revision goes first to a fresh \
 critic — the other engine when it's available — as `design-process` says. Check accessibility in the browser's accessibility tree, \
@@ -723,7 +728,12 @@ accepts it.",
         format!(
             "{tools} When a command or a config needs a password, key or token — a NAS login, an API key — ask for it \
 with `ask_secret`, never in words, and never print one. Keys and passwords you obtain go into equipe with `secret_save`; never paste \
-them into code, tickets, memory or chat. As you start anything that takes more than a couple of minutes \
+them into code, tickets, memory or chat. When the person must sign in to a command-line tool on this machine — AWS, GitHub, Google Cloud, \
+Azure — use a machine credential if one exists (a GitHub App token, an access key already set up); otherwise call `cli_sign_in`, which \
+shows them one card with the sign-in page and code, instead of asking them to open a terminal. For work on Google Cloud, GitHub or \
+AWS, prefer their command-line tools (`gcloud`, `gh`, `aws`) to the web console: their sign-in lasts and renews itself, while a \
+console asks the person again before sensitive pages. Never ask for their password in chat. When you need a key from an outside service (an admin key, a token) call `request_secret` \
+and never ask for one in chat; every secret request (`ask_secret` too) carries numbered `steps` and the exact page `url`; a site's sign-in is `sign_in`. As you start anything that takes more than a couple of minutes \
 — a ticket, research, subagents' work — call `estimate`. \
 Questions that sharpen a vague ask are `ask_decision` questions too. \
 When a decision is the person's to make and comes down to a few distinct options — an approach, a scope, a provider, \
@@ -740,7 +750,7 @@ choosing blind; work like that is handed in with its pictures in `images` too.{}
             if role.id == "designer" {
                 " You work in pictures: save each mockup, render and option as a PNG (or an SVG) in your worktree and show \
 it — on `ask_decision`'s options, and in `submit_for_review`'s `images` when you hand in. Say why in a sentence, but \
-never only describe what something looks like."
+never only describe what something looks like, and give each its change note (`changes`): what changed and why it is better."
             } else {
                 ""
             }
@@ -754,9 +764,15 @@ signed in. Before you work in it, open your `browser` skill: doing the whole job
 handing a step to the person. Before anything done in the person's name that can't easily be taken back — creating \
 an account, accepting terms, starting a trial or a paid plan, inviting someone, deleting or transferring, changing \
 security or billing settings — call `ask_person` with exactly what and why, and go ahead only on their yes. Never \
-type a card number or a password you weren't given, and never try to get past a CAPTCHA. Your windows are yours alone, but sign-ins are shared by \
+type a card number or a password you weren't given, and never try to get past a CAPTCHA. Never ask the person for a verification \
+code in chat, or type one yourself: when a page asks for a code the site emailed, the person gets a card that fills it from their \
+mailbox on their click (if none came up, call `block_on_person` with `verification`) — then wait. Your windows are yours alone, but sign-ins are shared by \
 everyone's: don't sign out of a site, or switch it to another account, team or workspace, without saying so first — \
-the rest of the squad works signed in there too."
+the rest of the squad works signed in there too. A tool or an MCP server is connected in equipe, never in an AI app's own \
+settings on the web (claude.ai or chatgpt.com connectors and the like): those are the person's account, not your work's, and \
+they refuse automated browsers. To have one connected — or to see its sign-in or consent page as a client does — ask the \
+person with `block_on_person` to connect it in equipe (Logins › Connections, or `equipe mcp add <url>` then `equipe mcp login \
+<name>`); its tools come to you once it is."
     } else {
         ""
     };
@@ -937,6 +953,11 @@ prints (\"token not valid\", \"not logged in\"): the login is fine, so never log
 run it outside the fence, which asks the person once; their \"always\" stops it asking. Rust builds go to \
 `$CARGO_TARGET_DIR`, one folder of yours kept from ticket to ticket, so a binary is under it, not under `./target`. Scratch copies, test builds and screenshots go in `$TMPDIR`: it is yours alone, \
 and equipe clears it when the ticket ends, so never make `/tmp/t<ticket number>` folders by hand. \
+To build, test or deploy a squad project outside your ticket's worktree, check it out with `git -C <project> worktree add \
+--detach \"$TMPDIR/<name>\" <ref>`, run outside the fence — it shares the repository, so nothing is copied or downloaded, and \
+equipe lets it through without asking — and remove it with \
+`git -C <project> worktree remove --force <path>` when done; never `cp -R` a project or `git clone` it again, and use the \
+project's own deploy script where it has one. \
 Look at a screenshot once: it stays in your context, so take a new one only after the screen has changed. \
 Run one command at a time where you can: a single command can be allowed for good, a chain only once.{sleep} Your memory \
 outlives every ticket: when the person corrects you, sends work back or tells you how they like things, save the \
@@ -1822,7 +1843,7 @@ invent one."), "{id}: true numbers");
         }
         // What it must hold to whenever it browses stays in its charter, with where the rest is.
         let charter = charter(role(PM).unwrap(), "pm", &browsing);
-        for part in ["Before you work in it, open your `browser` skill", "call `ask_person` with exactly what", "never try to get past a CAPTCHA", "don't sign out of a site"] {
+        for part in ["Before you work in it, open your `browser` skill", "call `ask_person` with exactly what", "never try to get past a CAPTCHA", "don't sign out of a site", "never in an AI app's own settings on the web", "`equipe mcp add <url>`"] {
             assert!(charter.contains(part), "{part}: {charter}");
         }
         // `equipe browser` is refused where it runs, saying why and what instead: no word for it here.
@@ -2098,6 +2119,112 @@ invent one."), "{id}: true numbers");
     }
 
     #[test]
+    fn the_designer_studies_the_best_products_per_pattern_and_holds_every_screen_to_their_tier() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "designer", role: "designer" }];
+        let c = ctx(&team, &[], true);
+        let charter = charter(role("designer").unwrap(), "designer", &c);
+        for part in ["`design-references` before you design, redesign or judge a screen or component", "not of the screen you were handed", "propose a one-time foundation reset to the person"] {
+            assert!(charter.contains(part), "the role text, always on: {part}");
+        }
+        let refs = skill("designer", &c, "design-references");
+        for part in [
+            // Research per pattern, kept and reused.
+            "`design/references/<pattern>/notes.md`",
+            "three to six best-in-class examples",
+            "- Take: density, spacing, hierarchy, interaction",
+            "Reuse it when it holds at least three examples",
+            // Sources per project and squad, with their fit; paid libraries only officially.
+            "the project's `design/references/sources.md`, else `design/references/sources.md` in the squad's folder",
+            "a gallery of marketing sites is for landing pages, never the reference for a dense dashboard",
+            "A paid library only through its official MCP server or API",
+            "never another product's brand, logo, icons, illustrations, pictures or words",
+            // The bar, the options, the lock.
+            "is it in the same quality tier?",
+            "Two strong options beat three similar ones",
+            "on its own component library",
+            "`design/directions/<name>/`",
+            "look for a proven component in a component registry",
+            "Never paste a premium or paid component the squad hasn't licensed",
+            "can be reset once",
+            "the new system is locked again",
+            "The choice is theirs",
+        ] {
+            assert!(refs.contains(part), "{part}: {refs}");
+        }
+        // The critic, the second look and the skill say the bar in the same words.
+        assert!(refs.contains(crate::design::critique::TIER_GAPS) && refs.contains(crate::design::critique::TASTE_CHECKLIST), "{refs}");
+        let process = skill("designer", &c, "design-process");
+        for part in ["First size the work. A small change", "iterate yourself until it stands in their tier", "no design QA ticket of its own", "never open one yourself", "differ in concept"] {
+            assert!(process.contains(part), "{part}");
+        }
+        // Every existing guarantee still reaches the designer.
+        for part in ["Never grade your own work", "never show the person a picture the critic hasn't seen", "are the person's", "A hand-in is refused until every UI file you edited", "on which you change only its `design/`", "Applied is done"] {
+            assert!(told("designer", "designer", &c).contains(part), "{part}");
+        }
+        // The suggested sources in the docs are the skill's, line for line.
+        let docs = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/DESIGN-SYSTEM.md")).unwrap();
+        let suggested = include_str!("../skills/design-references/references/sources.md");
+        for line in suggested.lines().filter(|l| l.starts_with("- ")) {
+            assert!(docs.contains(line), "docs/DESIGN-SYSTEM.md lacks: {line}");
+        }
+    }
+
+    #[test]
+    fn the_designer_classifies_the_product_kind_and_reviews_by_the_ui_craft_checklists_keeping_every_guarantee() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "designer", role: "designer" }, Teammate { name: "frontend", role: "frontend" }];
+        let c = ctx(&team, &[], true);
+        let charter_only = charter(role("designer").unwrap(), "designer", &c);
+        assert!(
+            charter_only.contains("`ui-product-kinds` first on any UI work, the `ui-*` skill of each part a screen has, and `ui-review` before you judge one"),
+            "the role text names the library in one clause: {charter_only}"
+        );
+        // Each part of the craft, with its numbers and a checklist to review by.
+        for name in ["ui-product-kinds", "ui-foundations", "ui-layout-and-states", "ui-data-display", "ui-forms", "ui-mobile", "ui-motion", "ui-accessibility", "ui-writing", "ui-polish", "ui-review"] {
+            assert!(skill("designer", &c, name).contains("## Review checklist"), "{name}");
+        }
+        assert!(skill("designer", &c, "ui-vocabulary").contains("**Command palette** —"));
+        // The kinds switch the references, the rules and the bar.
+        let kinds = skill("designer", &c, "ui-product-kinds");
+        for part in ["`Kind: landing`, `Kind: web product` or `Kind: mobile app`", "Marketing galleries are never a reference for this kind", "galleries of marketing sites fit here and only here", "Apple's Human Interface Guidelines for iOS, Material 3 for Android", "Never a website's layout"] {
+            assert!(kinds.contains(part), "{part}");
+        }
+        let refs = skill("designer", &c, "design-references");
+        assert!(refs.contains("`fits:` names the product kinds of the `ui-product-kinds` skill") && refs.contains("a website is never the reference for a mobile app"), "{refs}");
+        for line in include_str!("../skills/design-references/references/sources.md").lines().filter(|l| l.starts_with("- ")) {
+            let fits = line.split(" — fits: ").nth(1).and_then(|rest| rest.split(" — ").next()).unwrap_or_else(|| panic!("no fit: {line}"));
+            assert!(["landing", "web product", "mobile app", "any"].iter().any(|kind| fits.contains(kind)), "{line}");
+        }
+        // The process starts from the kind; the designer's own review is a pre-check, never the verdict.
+        let process = skill("designer", &c, "design-process");
+        for part in ["name the product kind", "run the `ui-review` skill on it yourself and fix what it finds — a pre-check, never a verdict", "passes the `ui-review` checklists of the parts it touches"] {
+            assert!(process.contains(part), "{part}");
+        }
+        // The critic, the second look, design QA and the skill say the kind's bar in the same words.
+        assert!(skill("designer", &c, "ui-review").contains(crate::design::critique::KIND_CHECKLIST));
+        assert!(skill("designer", &c, "ui-review").contains("never replaces the critic, the second look or design QA"));
+        assert!(skill("designer", &c, "design-qa").contains("run the `ui-review` skill's checklists on each changed screen"));
+        // Every existing guarantee still reaches the designer, every turn where it was every turn.
+        for part in ["on which you change only its `design/`", "Never grade your own work", "never show the person a picture the critic hasn't seen", "are the person's", "Applied is done"] {
+            assert!(charter_only.contains(part), "every turn: {part}");
+        }
+        for delivery in [Delivery::Plugin(SKILLS_AT), Delivery::Files(SKILLS_AT)] {
+            let told_so = told("designer", "designer", &Context { skills: delivery, ..c });
+            for part in ["Never grade your own work", "A hand-in is refused until every UI file you edited", "on which you change only its `design/`", "are the person's", "Applied is done", "The choice is theirs"] {
+                assert!(told_so.contains(part), "{part}");
+            }
+        }
+        // An engine that can't open a file gets what it got before, not the library.
+        let inline = charter(role("designer").unwrap(), "designer", &Context { skills: Delivery::Inline, ..c });
+        assert!(!inline.contains("# Foundations: space, grid, density, type, colour") && inline.contains("Never grade your own work"));
+        // Frontend builds to the parts it builds; the designer's own process stays the designer's.
+        let frontend = told("frontend", "frontend", &c);
+        for name in ["ui-forms", "ui-motion", "ui-accessibility", "ui-polish"] {
+            assert!(skill("frontend", &c, name).contains("## Review checklist"), "{name}");
+        }
+        assert!(frontend.contains("Build to the craft skills you're offered") && !frontend.contains("`Kind: landing`") && !frontend.contains("## The kind checklist"));
+    }
+
+    #[test]
     fn the_designer_keeps_the_design_system_in_its_folder_in_the_tokens_format() {
         let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "designer", role: "designer" }];
         let text = skill("designer", &ctx(&team, &[], true), "design-system");
@@ -2105,6 +2232,46 @@ invent one."), "{id}: true numbers");
             assert!(text.contains(part), "{part}: {text}");
         }
         assert!(!told("frontend", "frontend", &ctx(&team, &[], true)).contains("`design/tokens.json`"), "the designer's to keep");
+    }
+
+    /// A design session is short and live, and keeps every guarantee the
+    /// designer has: only `design/` is changed, the critic sees a take before
+    /// the person, the designer never grades its own work, and taste calls
+    /// stay the person's. The PM proposes one at the right moments, through
+    /// its tool, each ticket once.
+    #[test]
+    fn a_design_session_is_short_and_live_and_keeps_the_designers_guarantees() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "designer", role: "designer" }];
+        let c = ctx(&team, &[], true);
+        let charter_only = charter(role("designer").unwrap(), "designer", &c);
+        assert!(charter_only.contains("Open `design-session` when the person starts a design session with you."), "one line in the skill index");
+        let session = skill("designer", &c, "design-session");
+        for part in [
+            "rounds of minutes",
+            "3–6 references",
+            "one rough take",
+            "something visible and one focused question",
+            "Never go quiet",
+            "`equipe design session show",
+            "only `design/` is yours to change",
+            "goes once to `equipe design critique",
+            "Never grade your own work",
+            "Taste calls are the person's",
+            "`equipe design session done <n>",
+            "`equipe design session profile",
+            "`design/tuner/set.json`",
+            "`equipe design tuner check`",
+        ] {
+            assert!(session.contains(part), "{part}: {session}");
+        }
+        assert!(skill("designer", &c, "design-process").contains("opens with its style profile"), "every design reads the profile first");
+        let pm = skill(PM, &c, "working-with-design");
+        for part in ["`propose_design_session`", "turned a design down", "missing or thin", "explore several", "at most once per ticket or screen", "quiet hours", "Not now", "`asked`"] {
+            assert!(pm.contains(part), "{part}: {pm}");
+        }
+        let tools = crate::board::tools(true);
+        assert!(tools.iter().any(|t| t["name"] == crate::design::session::PROPOSE), "the PM has the tool");
+        assert!(!crate::board::tools(false).iter().any(|t| t["name"] == crate::design::session::PROPOSE), "only the PM");
     }
 
     #[test]
@@ -2121,10 +2288,10 @@ invent one."), "{id}: true numbers");
             "from the system, not from the screen",
             "in its own repository, under its `design/` folder",
             "only principles shared by every project",
-            // The steps, three real options side by side, the person deciding.
+            // The steps, references per pattern, options that differ in concept side by side, the person deciding.
             "define the problem",
-            "collect references",
-            "at least three genuinely different options",
+            "research references for each pattern it uses",
+            "two or three options that differ in concept",
             "one comparison sheet",
             "full fidelity",
             "hand off a spec an engineer can build without guessing",

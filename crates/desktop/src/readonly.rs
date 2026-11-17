@@ -87,6 +87,8 @@ pub fn reads(command: &Command) -> bool {
         | C::ProjectDocs { .. }
         | C::SearchDocs { .. }
         | C::DesignVersions { .. }
+        | C::DesignRefs { .. }
+        | C::DesignResults { .. }
         | C::DiskScan
         // Where the plans went: a look.
         | C::PlanUse { .. }
@@ -181,6 +183,19 @@ pub fn reads(command: &Command) -> bool {
         | C::DeleteBrowserProfile { .. }
         | C::SaveSecret { .. }
         | C::DismissSecret { .. }
+        | C::SubmitCliSignInCode { .. }
+        | C::RestartCliSignIn { .. }
+        | C::CancelCliSignIn { .. }
+        | C::FillVerificationCode { .. }
+        | C::TypeVerificationCode { .. }
+        | C::ConnectGmail { .. }
+        | C::DisconnectGmail
+        | C::RequestServiceKey { .. }
+        | C::AddMcpServer { .. }
+        | C::RemoveMcpServer { .. }
+        | C::SetMcpServerEnabled { .. }
+        | C::SignInMcpServer { .. }
+        | C::CheckMcpServers { .. }
         | C::SetSquadSecretProjects { .. }
         | C::DeleteSquadSecret { .. }
         | C::RevealSquadSecret { .. }
@@ -232,6 +247,7 @@ pub fn reads(command: &Command) -> bool {
         | C::SetParallel { .. }
         | C::SetModelChoice { .. }
         | C::SetTicketTier { .. }
+        | C::SetTicketModel { .. }
         | C::SetDesignReviewer { .. }
         | C::SetRoleModel { .. }
         | C::ApplyEngineProposal { .. }
@@ -240,7 +256,9 @@ pub fn reads(command: &Command) -> bool {
         | C::ShowEngineSetup { .. }
         | C::MoveEngine { .. }
         | C::RestoreDesign { .. }
-        | C::Taste { .. } => false,
+        | C::Taste { .. }
+        | C::TasteSignals { .. }
+        | C::StartDesignSession { .. } => false,
     }
 }
 
@@ -611,6 +629,19 @@ mod tests {
             Command::BrowserProfiles,
             Command::SaveSecret { squad: s(), id: 1, values: vec![secrets::SecretValue("v".into())] },
             Command::DismissSecret { squad: s(), id: 1 },
+            Command::SubmitCliSignInCode { squad: s(), id: 1, code: equipe_core::protocol::cli_signin::PastedCode("c".into()) },
+            Command::RestartCliSignIn { squad: s(), id: 1 },
+            Command::CancelCliSignIn { squad: s(), id: 1 },
+            Command::FillVerificationCode { squad: s(), id: 1 },
+            Command::TypeVerificationCode { squad: s(), id: 1 },
+            Command::ConnectGmail { client: None },
+            Command::DisconnectGmail,
+            Command::RequestServiceKey { squad: s(), service: "anthropic".into() },
+            Command::AddMcpServer { squad: s(), server: equipe_core::squad_mcp::server("mobbin", None, None, None).unwrap(), sign_in: true },
+            Command::RemoveMcpServer { squad: s(), name: "mobbin".into() },
+            Command::SetMcpServerEnabled { squad: s(), name: "mobbin".into(), on: false },
+            Command::SignInMcpServer { squad: s(), name: "mobbin".into() },
+            Command::CheckMcpServers { squad: s() },
             Command::SquadSecrets,
             Command::SetSquadSecretProjects { squad: s(), name: "k".into(), projects: Vec::new(), any_project: false },
             Command::DeleteSquadSecret { squad: s(), name: "k".into() },
@@ -674,6 +705,7 @@ mod tests {
             Command::SetParallel { squad: s(), parallel: equipe_core::protocol::lanes::Parallel::max(6, 16) },
             Command::SetModelChoice { squad: s(), choice: equipe_core::protocol::tiers::ModelChoice::Off },
             Command::SetTicketTier { squad: s(), ticket: 1, tier: Some(equipe_core::protocol::tiers::ModelTier::Max), pinned: true },
+            Command::SetTicketModel { squad: s(), ticket: 1, model: Some("fable".into()) },
             Command::SetDesignReviewer { squad: s(), reviewer: engines::Reviewer::Same },
             Command::Models { engine: Engine::Codex },
             Command::SetRoleModel { squad: s(), default: equipe_core::protocol::RoleModel { role: "qa".into(), engine: Engine::Claude, model: None, effort: None } },
@@ -689,8 +721,12 @@ mod tests {
             Command::SearchDocs { squad: s(), query: "checkout".into() },
             Command::KeepDocCopy { squad: s(), session: 1, keep: "/h/docs/web/plans/2026-11-04-x.md".into() },
             Command::DesignVersions { squad: s(), project: None },
+            Command::DesignRefs { squad: s(), project: None, ticket: None, query: "table".into(), offset: 0 },
+            Command::DesignResults { squad: s() },
             Command::RestoreDesign { squad: s(), project: None, commit: "c".into() },
             Command::Taste { squad: s(), project: None, change: TasteChange::Add { text: "t".into() } },
+            Command::TasteSignals { squad: s(), project: None, signals: vec![] },
+            Command::StartDesignSession { squad: s(), project: None, page: "Home".into(), from: equipe_core::protocol::design_session::SessionFrom::DesignScreen },
         ]
     }
 
@@ -728,7 +764,7 @@ mod tests {
         variants.sort();
         assert_eq!(sampled, variants, "each command once: a new one is sampled here, and placed in `reads`");
         let going: Vec<String> = commands.iter().filter(|c| reads(c)).map(name).collect();
-        assert_eq!(going, ["ticket_history", "hand_over", "logins", "autopilot", "login_insights", "browser_profiles", "squad_secrets", "watch_browser", "devices", "disk_scan", "plan_use", "words_log", "engines", "providers", "models", "design", "project_docs", "search_docs", "design_versions"]);
+        assert_eq!(going, ["ticket_history", "hand_over", "logins", "autopilot", "login_insights", "browser_profiles", "squad_secrets", "watch_browser", "devices", "disk_scan", "plan_use", "words_log", "engines", "providers", "models", "design", "project_docs", "search_docs", "design_versions", "design_refs", "design_results"]);
         // What a screen does as the person works is never among them.
         for kept in ["submit", "say", "undo_words", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "start_side_chat", "side_chat_submit", "taste", "disk_clean", "add_provider", "remove_provider", "test_provider", "keep_doc_copy"] {
             assert!(!going.iter().any(|g| g == kept), "{kept} changes something");

@@ -352,6 +352,13 @@ pub struct Shown {
     pub said: HashSet<String>,
     /// The squad's projects.
     pub projects: Vec<PathBuf>,
+    /// The design folders — the squad's, each project's and each ticket's
+    /// worktree's `design/` — whose pictures the design screen's References
+    /// tab shows (`crate::design::refgallery`): the ones in a pattern's
+    /// folder and the ones its notes link, anywhere in `design/`. Any picture
+    /// inside one, read against that folder alone, so no link in it reaches
+    /// outside it.
+    pub references: Vec<PathBuf>,
 }
 
 /// Where git has a picture of a ticket whose worktree went: in `repo`, at
@@ -404,6 +411,8 @@ pub fn shown(home: &Path, squad: &str) -> Shown {
     }
     let Ok(journal) = crate::journal::Journal::open(&db) else { return Shown::default() };
     let mut out = Shown { roots: vec![crate::squad_home::path(home, squad)], projects: journal.projects().unwrap_or_default(), ..Shown::default() };
+    let design = |base: &Path| base.join(crate::design::folder::DIR);
+    out.references = std::iter::once(design(&crate::squad_home::path(home, squad))).chain(out.projects.iter().map(|p| design(p))).collect();
     for set in journal.questions() {
         out.paths.extend(set.images().map(str::to_owned));
     }
@@ -414,6 +423,7 @@ pub fn shown(home: &Path, squad: &str) -> Shown {
     for ticket in tickets {
         out.paths.extend(ticket.images.iter().cloned());
         out.kept.extend(kept_of(&ticket, home, &homes, squad));
+        out.references.extend(ticket.worktree.as_deref().map(design));
         out.roots.extend(ticket.worktree);
     }
     let (design, folders) = crate::design::folder::shown(home, squad);
@@ -450,9 +460,17 @@ fn said(journal: &crate::journal::Journal, home: &Path, squad: &str, out: &mut S
     let Ok(worktrees) = home.join("worktrees").canonicalize() else { return };
     for cwd in cwds {
         if cwd.canonicalize().is_ok_and(|real| real.starts_with(&worktrees) && real.components().count() >= worktrees.components().count() + 2) && !out.roots.contains(&cwd) {
+            // Its design folder too: what a design session shows from there (a render, a reference).
+            out.references.push(cwd.join(crate::design::folder::DIR));
             out.roots.push(cwd);
         }
     }
+}
+
+/// The design folder `path` is a picture inside, if it is (no `..`: [`check`] says the rest).
+fn in_references<'a>(shown: &'a Shown, path: &str) -> Option<&'a PathBuf> {
+    let asked = Path::new(path);
+    (is_image_name(path) && asked.is_absolute() && !asked.components().any(|c| matches!(c, Component::ParentDir | Component::CurDir))).then(|| shown.references.iter().find(|dir| asked.starts_with(dir) && asked != dir.as_path())).flatten()
 }
 
 /// Whether `path` is a picture right in a folder the squad's conversation points at.
@@ -593,7 +611,7 @@ pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[Pat
 /// one right in a folder its conversation points at, one a line names by its
 /// name alone, or one the designer studio named lately.
 fn allows(home: &Path, shown: &Shown, ask: &ReadImage) -> bool {
-    shown.paths.contains(&ask.path) || in_folder(shown, &ask.path) || said_by_name(shown, &ask.path) || crate::design::studio::given(home, &ask.squad, &ask.path)
+    in_references(shown, &ask.path).is_some() || shown.paths.contains(&ask.path) || in_folder(shown, &ask.path) || said_by_name(shown, &ask.path) || crate::design::studio::given(home, &ask.squad, &ask.path)
 }
 
 /// A line that embeds a picture by its name alone, read against another
@@ -604,6 +622,11 @@ fn said_by_name(shown: &Shown, path: &str) -> bool {
 
 /// Answer `ask` from what the squad shows.
 fn serve_from(home: &Path, shown: &Shown, ask: &ReadImage, max: Option<u32>, scratch: &[PathBuf]) -> Result<ImageRead, String> {
+    // A reference picture: read against its references folder alone, so no
+    // link inside it reaches anything outside it.
+    if let Some(dir) = in_references(shown, &ask.path) {
+        return read_cached(home, Path::new(&ask.path), std::slice::from_ref(dir), max);
+    }
     let mut roots = shown.roots.clone();
     // A picture of a ticket's work the designer studio named lately (`crate::design::studio`).
     let given = crate::design::studio::given(home, &ask.squad, &ask.path);
@@ -1009,7 +1032,33 @@ mod tests {
     }
 
     #[test]
-    fn a_screen_gets_a_design_systems_pictures_and_nothing_else_of_its_folder() {
+    fn a_screen_gets_the_reference_pictures_of_a_squad_and_never_a_way_out_of_them() {
+        let home = dir("refs");
+        crate::journal::Journal::for_squad(&home, "acme").unwrap();
+        let folder = crate::squad_home::path(&home, "acme");
+        let refs = folder.join("design/references");
+        std::fs::create_dir_all(refs.join("kpi-tile")).unwrap();
+        png(&refs.join("kpi-tile/a.png"), 40, 20, false);
+        png(&folder.join("brand-secret.png"), 5, 5, false);
+        png(&folder.join("design/tokens-pic.png"), 5, 5, false);
+        std::fs::write(refs.join("kpi-tile/notes.txt.png"), b"not a picture").unwrap();
+        symlink(folder.join("brand-secret.png"), refs.join("kpi-tile/link.png")).unwrap();
+        let ask = |path: &str| ReadImage { squad: "acme".into(), path: path.into(), max: None };
+        let at = |p: &str| refs.join(p).to_string_lossy().into_owned();
+        assert_eq!(serve(&home, &ask(&at("kpi-tile/a.png")), None).unwrap().width, Some(40));
+        assert!(serve(&home, &ask(&at("kpi-tile/link.png")), None).is_err(), "a link to a picture elsewhere in the squad's folder");
+        assert!(serve(&home, &ask(&at("kpi-tile/notes.txt.png")), None).is_err(), "bytes that are no picture");
+        assert!(serve(&home, &ask(&at("kpi-tile/../../brand-secret.png")), None).is_err(), "no way up");
+        assert_eq!(serve(&home, &ask(&folder.join("design/tokens-pic.png").to_string_lossy()), None).unwrap().width, Some(5), "a picture a note links, elsewhere in design/");
+        assert!(serve(&home, &ask(&folder.join("brand-secret.png").to_string_lossy()), None).is_err(), "nothing beside design/");
+        symlink(folder.join("brand-secret.png"), folder.join("design/out.png")).unwrap();
+        assert!(serve(&home, &ask(&folder.join("design/out.png").to_string_lossy()), None).is_err(), "a link out of design/");
+        assert!(serve(&home, &ReadImage { squad: "zeta".into(), ..ask(&at("kpi-tile/a.png")) }, None).is_err(), "another squad's ask");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_screen_gets_a_design_systems_pictures_and_no_file_but_a_picture_of_its_folder() {
         let home = dir("design");
         crate::journal::Journal::for_squad(&home, "acme").unwrap();
         let design = crate::squad_home::path(&home, "acme").join("design");
@@ -1021,7 +1070,8 @@ mod tests {
         std::os::unix::fs::symlink(home.join("secret.png"), design.join("assets/logo/sneaky.png")).unwrap();
         let ask = |path: &Path| ReadImage { squad: "acme".into(), path: path.canonicalize().map_or_else(|_| path.to_string_lossy().into_owned(), |p| p.to_string_lossy().into_owned()), max: None };
         assert_eq!(serve(&home, &ask(&design.join("assets/logo/mark.png")), None).unwrap().width, Some(20));
-        for refused in [design.join("loose.png"), design.join("tokens.json"), home.join("secret.png"), design.join("assets/logo/sneaky.png"), design.join("assets/logo/../../loose.png")] {
+        assert_eq!(serve(&home, &ask(&design.join("loose.png")), None).unwrap().width, Some(4), "the design folder's own pictures show to the References tab");
+        for refused in [design.join("tokens.json"), home.join("secret.png"), design.join("assets/logo/sneaky.png")] {
             assert!(serve(&home, &ask(&refused), None).is_err(), "{}", refused.display());
         }
         let mut climbing = ask(&design.join("assets/logo/mark.png"));
@@ -1144,7 +1194,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
-            remaining: vec![],
+            label: None, remaining: vec![],
             images: vec![],
             priority: Default::default(),
             rank: 0,
@@ -1283,7 +1333,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
-            remaining: vec![],
+            label: None, remaining: vec![],
             images: vec![],
             priority: Default::default(),
             rank: 0,

@@ -955,11 +955,16 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
         .gap_2()
         .items_center()
         .child(pill)
+        .children(super::board::label_chip(p, t))
         .child(div().flex_none().font_family(MONO).text_size(px(11.5)).text_color(p.muted).child(format!("T-{id}")))
         .children(project)
         .child(div().flex_1())
         .children(who);
-    let title = div().text_size(px(14.)).line_height(px(20.)).font_weight(FontWeight::SEMIBOLD).line_clamp(2).child(t.title.clone());
+    // While it waits on the person: what they must do, over the title smaller.
+    let heading = crate::glance::heading(t);
+    let title = v_flex()
+        .child(div().text_size(px(14.)).line_height(px(20.)).font_weight(FontWeight::SEMIBOLD).line_clamp(2).child(if heading.below.is_some() { heading.main.clone() } else { t.title.clone() }))
+        .children(heading.below.map(|below| div().text_size(px(11.5)).line_height(px(16.)).text_color(p.muted).line_clamp(1).child(below)));
     // What was said of it: the hand-in, what it asks, else what it is.
     let said = t.note.as_deref().filter(|n| !n.trim().is_empty() && !matches!(t.status, TicketStatus::Todo | TicketStatus::InProgress | TicketStatus::Proposed)).unwrap_or(&t.body);
     let (scroll, body) = scrolls;
@@ -1077,6 +1082,18 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
                     }
                 })
             });
+            // A designer's ticket: work on it with the designer, live.
+            let designer = t.assignee.as_deref().or(t.owner.as_deref()).is_some_and(|n| n == "designer" || shell.model.members.iter().any(|m| m.name == n && m.role == "designer"));
+            let session = (designer && !matches!(t.status, TicketStatus::Done | TicketStatus::Cancelled)).then(|| {
+                let handle = handle.clone();
+                btn(p, "card-session", t!("session.title"), None, false, true).h(px(26.)).on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    put_away(cx);
+                    if let Some(shell) = handle.upgrade() {
+                        shell.update(cx, |s, cx| s.design_session_for_ticket(id, cx));
+                    }
+                })
+            });
             h_flex()
                 .flex_wrap()
                 .gap_2()
@@ -1097,6 +1114,7 @@ fn content(shell: &Shell, t: &Ticket, result: Option<SharedString>, handle: &Wea
                     })
                 }))
                 .children(studio)
+                .children(session)
                 .into_any_element()
         }
     };

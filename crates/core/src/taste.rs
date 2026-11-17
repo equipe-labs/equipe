@@ -13,7 +13,9 @@
 pub mod decisions;
 pub mod evidence;
 pub mod notes;
+pub mod profile;
 pub mod store;
+pub mod tuner;
 
 pub use store::{NOTES_NAME, record};
 

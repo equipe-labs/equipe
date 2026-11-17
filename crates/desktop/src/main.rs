@@ -29,6 +29,7 @@ mod accept;
 mod activity;
 mod convo;
 mod decide;
+mod deeplink;
 mod deck;
 mod daemon;
 mod disk;
@@ -37,8 +38,11 @@ mod docs;
 mod compare;
 mod design;
 mod design_talk;
+mod design_session;
+mod tuner;
 mod dictation;
 mod flows;
+mod glance;
 mod failure;
 mod help;
 mod install;
@@ -50,6 +54,9 @@ mod pair;
 mod pane;
 mod queue;
 mod quote;
+mod refs;
+mod designs;
+mod refshelf;
 mod readonly;
 mod screen_look;
 mod setup;
@@ -65,6 +72,7 @@ mod snapshot;
 mod state;
 mod stream;
 mod studio;
+mod taste;
 mod target;
 mod theme;
 mod routine;
@@ -76,11 +84,15 @@ mod talk_days;
 mod team;
 mod term;
 mod tailnet;
+mod tunnel;
 mod tickets;
 mod tips;
 mod transcribe;
 mod ui;
 mod i18n;
+mod brands;
+mod chips;
+mod siteicon;
 mod icons;
 mod motion;
 mod relaunch;
@@ -149,6 +161,8 @@ actions!(equipe, [DismissOverlay, NewSquad]);
 actions!(equipe, [ZoomIn, ZoomOut, ActualSize]);
 // Orchestration (⌘⇧L), from the View menu or anywhere.
 actions!(equipe, [ShowOrchestration]);
+// A ticket's link, copied (⌘⇧C): the ticket open or picked.
+actions!(equipe, [CopyTicketLink]);
 // The Window menu's: one more window (⌘⇧N), and the Mac's own two.
 actions!(equipe, [NewWindow, MinimizeWindow, ZoomWindow]);
 // Back and forward through the places the window has been (⌘[ ⌘], ⌘← ⌘→), as
@@ -242,6 +256,10 @@ pub enum Screen {
     Docs,
     /// The designer studio: a ticket's design work, watched as it happens (`views/studio.rs`).
     Studio,
+    /// A taste board: a decision's families of references, browsed like a pinboard (`views/taste.rs`).
+    Taste,
+    /// A design session: the designer's conversation beside the page it makes, live (`views/design_session.rs`).
+    DesignSession,
 }
 
 pub struct Shell {
@@ -267,6 +285,9 @@ pub struct Shell {
     title_shown: String,
     /// The boxes of members' asks for a secret.
     pub secrets: views::secrets::SecretsUi,
+    pub cli_signin: views::cli_signin::CliSignInUi,
+    /// Verification cards and the Connections row's mailbox.
+    pub verify: views::verify::VerifyUi,
     pub login_offers: views::login_offers::LoginOffersUi,
     /// The boxes the person writes to a member in, on its request for permission.
     pub approval_words: views::approvals::Words,
@@ -300,6 +321,8 @@ pub struct Shell {
     pub shelf: docs::Shelf,
     /// The docs screen's search box.
     pub docs_search: Entity<InputState>,
+    /// The design screen's References tab: its search.
+    pub refs_search: Entity<InputState>,
     pub releases_asked: Option<std::time::Instant>,
     /// Metrics' state: what the daemon said, the form being filled.
     pub metrics: metrics::Metrics,
@@ -308,6 +331,12 @@ pub struct Shell {
     pub status: status::StatusUi,
     /// Taste & decisions' box for a note.
     pub design_taste: views::design_taste::Inputs,
+    /// A design session with the designer, the page live beside it (`views/design_session.rs`).
+    pub session: views::design_session::SessionUi,
+    /// The taste tuner, over the design screen (`views/tuner.rs`).
+    pub tuner: tuner::TunerUi,
+    /// The taste board of a decision, when one is open.
+    pub taste: views::taste::TasteUi,
     /// The shared Chrome, live, beside the conversation (⌘⇧B).
     pub browser: Entity<BrowserPanel>,
     /// The terminal at the right, while one runs.
@@ -509,6 +538,8 @@ impl Shell {
             seat_told: None,
             title_shown: String::new(),
             secrets: Default::default(),
+            cli_signin: Default::default(),
+            verify: Default::default(),
             login_offers: Default::default(),
             approval_words: Default::default(),
             decide: Default::default(),
@@ -527,11 +558,15 @@ impl Shell {
             docs: Vec::new(),
             shelf: docs::Shelf::default(),
             docs_search: cx.new(|cx| InputState::new(window, cx).placeholder(t!("docs.search_placeholder"))),
+            refs_search: cx.new(|cx| InputState::new(window, cx).placeholder(t!("design.refs_search_placeholder"))),
             releases_asked: None,
             metrics: metrics::Metrics::new(),
             metrics_ui: Default::default(),
             status: Default::default(),
             design_taste: Default::default(),
+            session: Default::default(),
+            tuner: Default::default(),
+            taste: Default::default(),
             browser,
             terminal: None,
             term_offered: None,
@@ -716,6 +751,13 @@ impl Shell {
                 this.docs_typed(cx);
             }
         }));
+        // The References tab's search: asked of the daemon once typing rests.
+        let refs_search = shell.refs_search.clone();
+        shell._subscriptions.push(cx.subscribe_in(&refs_search, window, |this, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.refs_typed(cx);
+            }
+        }));
         views::logins::subscribe(&mut shell, window, cx);
         let settings_search = shell.settings.search.clone();
         shell._subscriptions.push(cx.subscribe_in(&settings_search, window, |_, _, event: &InputEvent, _, cx| {
@@ -727,9 +769,10 @@ impl Shell {
         shell._subscriptions.push(cx.subscribe_in(&state, window, |this, _, event: &InputEvent, window, cx| this.on_composer_event(event, window, cx)));
         shell._subscriptions.push(cx.observe_in(&state, window, |this, _, window, cx| this.on_composer_touched(window, cx)));
         // Esc, ↑↓, Tab and Enter get to the composer's completion and history
-        // before the text box's own bindings take them.
+        // before the text box's own bindings take them. Only this window's
+        // keys: another window's state must never take them.
         let this = cx.entity().downgrade();
-        shell._subscriptions.push(cx.intercept_keystrokes(move |event, window, cx| {
+        let intercept = intercept_own_keystrokes(window, cx, move |event, window, cx| {
             screen_look::used();
             let key = event.keystroke.key.as_str();
             let modifiers = event.keystroke.modifiers;
@@ -796,7 +839,7 @@ impl Shell {
             }
             // Typing in a "your turn" card's box or one of the browser panel's: T, N,
             // y, 1… are letters there, not shortcuts. Esc still leaves; Tab and ⌘⏎ are the card's own.
-            if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx) || shell.secrets.typing(window, cx) || shell.login_offers.typing(window, cx) || shell.logins_ui.typing(window, cx) || shell.browser.read(cx).typing(window, cx) || shell.design_taste.typing(window, cx)).unwrap_or(false) {
+            if key != "escape" && this.update(cx, |shell, cx| shell.turn.typing(window, cx) || shell.secrets.typing(window, cx) || shell.cli_signin.typing(window, cx) || shell.verify.typing(window, cx) || shell.login_offers.typing(window, cx) || shell.logins_ui.typing(window, cx) || shell.browser.read(cx).typing(window, cx) || shell.design_taste.typing(window, cx)).unwrap_or(false) {
                 return;
             }
             // Writing to a member on its request: Esc closes the box; every other
@@ -818,6 +861,20 @@ impl Shell {
             if this.update(cx, |shell, cx| shell.on_viewer_key(key, &modifiers, window, cx)).unwrap_or(false) {
                 cx.stop_propagation();
                 return;
+            }
+            // A decision's options side by side: Esc — and nothing typed underneath.
+            if this.update(cx, |shell, cx| shell.on_side_key(key, &modifiers, cx)).unwrap_or(false) {
+                cx.stop_propagation();
+                return;
+            }
+            // A taste board on screen: arrows, Space, ⏎, P, digits, ⌘⏎, Esc — and its note's typing.
+            match this.update(cx, |shell, cx| shell.on_taste_key(key, &modifiers, window, cx)).unwrap_or(views::decide::Took::Pass) {
+                views::decide::Took::Taken => {
+                    cx.stop_propagation();
+                    return;
+                }
+                views::decide::Took::Typing => return,
+                views::decide::Took::Pass => {}
             }
             // Renaming the conversation: ⏎ saves, Esc puts the card away (a composition's first).
             match this.update(cx, |shell, cx| shell.on_rename_key(key, &modifiers, window, cx)).unwrap_or(views::decide::Took::Pass) {
@@ -918,7 +975,8 @@ impl Shell {
             if taken {
                 cx.stop_propagation();
             }
-        }));
+        });
+        shell._subscriptions.push(intercept);
         // Several windows: what is drawn inside text views reaches the shell of
         // the window in front — where the click is.
         shell._subscriptions.push(cx.observe_window_activation(window, |_, window, cx| {
@@ -1000,6 +1058,8 @@ impl Shell {
         self.turn_sync(window, cx);
         self.decide_sync(window, cx);
         self.secrets_sync(window, cx);
+        self.cli_signin_sync(window, cx);
+        self.connections_follow(window, cx);
         self.login_offers_sync(window, cx);
         self.chat_sync(cx);
         self.board_sync(cx);
@@ -1139,6 +1199,14 @@ impl Shell {
                                 changed |= this.design_arrived(squad, systems, folder, taste);
                                 continue;
                             }
+                            daemon::Update::Event(Event::DesignRefs { squad, project, ticket, at, places, query, offset, total, patterns, sources, folder }) => {
+                                changed |= this.refs_arrived(squad, project, ticket, at, places, query, offset, total, patterns, sources, folder);
+                                continue;
+                            }
+                            daemon::Update::Event(Event::DesignResults { squad, designs }) => {
+                                changed |= this.designs_arrived(squad, designs);
+                                continue;
+                            }
                             daemon::Update::Event(Event::DesignVersions { squad, project, versions }) => {
                                 changed |= this.design_versions_arrived(squad, project, versions);
                                 continue;
@@ -1167,9 +1235,35 @@ impl Shell {
                             }
                             other => other,
                         };
+                        // A new verification card: in front of the cards over the composer (it is the last of them) — a code doesn't wait long.
+                        if let daemon::Update::Event(Event::VerificationChanged { card, .. }) = &update
+                            && !this.model.verifications.iter().any(|c| c.id == card.id)
+                        {
+                            this.chat.dock_at.set(usize::MAX);
+                        }
+                        // Connecting Gmail: Google's page, opened here for the screen that pressed Connect, or why not.
+                        if let daemon::Update::Event(Event::MailboxConnect { url, error }) = &update {
+                            this.on_mailbox_connect(url.as_deref(), error.as_deref(), cx);
+                            changed = true;
+                            continue;
+                        }
                         // A sign-in the person asked for in equipe's own browser: the Logins page's line, and the panel.
                         if let daemon::Update::Event(Event::BrowserSignIn { site, state, window: window_asked }) = &update {
                             this.sign_in_event(site, *state, *window_asked, window, cx);
+                            changed = true;
+                            continue;
+                        }
+                        // A design session began: its screen opens here when this screen asked, or the PM brought it.
+                        if let daemon::Update::Event(event @ Event::DesignSessionStarted { .. }) = &update {
+                            this.design_session_started(event, window, cx);
+                            changed = true;
+                            continue;
+                        }
+                        // The person chose to tune their taste first, on the PM's card: the tuner opens.
+                        if let daemon::Update::Event(Event::OpenTasteTuner { squad, project }) = &update {
+                            if *squad == this.model.squad {
+                                this.tuner_open(project.clone(), cx);
+                            }
                             changed = true;
                             continue;
                         }
@@ -1187,6 +1281,8 @@ impl Shell {
                             // Told the squad first: these come right after the snapshot.
                             this.sync_browser(window, cx);
                             this.browser.update(cx, |b, cx| b.on_event(event, window, cx));
+                            // The person's own tabs: where a design session's page is.
+                            this.design_session_tabs(event, window);
                             // A page waiting for the person: Needs you, and a notification.
                             changed |= this.model.on_browser(event);
                             continue;
@@ -1210,6 +1306,9 @@ impl Shell {
                         if let daemon::Update::Event(Event::StatusChanged { squad }) = &update {
                             if *squad == this.model.squad {
                                 this.status_ask(cx);
+                                // Work was handed in or accepted, maybe: a design to look at.
+                                this.design.results.dirty = true;
+                                this.designs_watch();
                             }
                             continue;
                         }
@@ -1553,12 +1652,14 @@ impl Shell {
     }
 
     pub fn overlay_open(&self) -> bool {
-        self.connect.open || !self.ask.queue.is_empty() || self.new_squad.open || self.pairing.open || self.disk.open || self.confirm.is_some() || self.sheet.is_some() || self.bell.sheet
+        self.connect.open || !self.ask.queue.is_empty() || self.new_squad.open || self.pairing.open || self.disk.open || self.confirm.is_some() || self.sheet.is_some() || self.bell.sheet || self.logins_ui.connections.sheet.is_some()
     }
 
     fn escape_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.ask.queue.is_empty() {
             self.answer_prompt(askpass::Answer::Cancel, window, cx);
+        } else if self.logins_ui.connections.sheet.is_some() {
+            self.connections_hide(cx);
         } else if self.new_squad.open {
             self.close_new_squad(window, cx);
         } else if self.pairing.open {
@@ -2140,6 +2241,8 @@ impl Shell {
                     Screen::Orchestration => views::orchestra::render(self, cx),
                     Screen::Docs => views::docs::render(self, cx),
                     Screen::Studio => views::studio::render(self, cx),
+                    Screen::Taste => views::taste::render(self, cx),
+                    Screen::DesignSession => views::design_session::render(self, cx),
                 };
                 v_flex().flex_1().min_w_0().h_full().children(self.banner(conn, cx)).children(views::disk::banner(self, cx)).children(views::desktop_setup::banner(self, cx)).children(views::usage::banner(self, cx)).child(screen).into_any_element()
             }
@@ -2536,6 +2639,7 @@ impl Shell {
         self.ask.input.update(cx, |s, cx| s.set_placeholder(t!("connect.secret_placeholder"), window, cx));
         self.design_redo.update(cx, |s, cx| s.set_placeholder(t!("design.compare_redo_placeholder"), window, cx));
         self.docs_search.update(cx, |s, cx| s.set_placeholder(t!("docs.search_placeholder"), window, cx));
+        self.refs_search.update(cx, |s, cx| s.set_placeholder(t!("design.refs_search_placeholder"), window, cx));
         self.logins_relocalize(window, cx);
         self.browser.update(cx, |b, cx| b.relocalize(window, cx));
     }
@@ -2574,6 +2678,7 @@ impl Render for Shell {
         self.board_prepare(window, cx);
         self.design_prepare(window, cx);
         self.studio_prepare(window, cx);
+        self.design_session_prepare(window, cx);
         // What the person did here (accepted, answered, a project in focus) changes Needs you too.
         self.sync_badge();
         self.sync_window(window);
@@ -2677,6 +2782,7 @@ impl Render for Shell {
                 this.show(next, cx);
             }))
             .on_action(cx.listener(|this, _: &ShowOrchestration, _, cx| this.open_orchestra(cx)))
+            .on_action(cx.listener(|this, _: &CopyTicketLink, _, cx| this.copy_ticket_link(cx)))
             .on_action(cx.listener(|this, _: &ChooseTarget, window, cx| this.open_chooser(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleDocFocus, window, cx| this.toggle_doc_focus(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleBrowser, window, cx| this.toggle_browser(window, cx)))
@@ -2711,6 +2817,8 @@ impl Render for Shell {
         // The sidebar runs to the window's top, the traffic lights over its
         // strip; each screen's header is the title bar on the right.
         if self.screen == Screen::Settings {
+            // No browser panel here: its sign-in view hides with it.
+            self.browser.update(cx, |b, _| b.set_drawn(false));
             // Settings: its own list in the sidebar's place, the page beside it.
             return root
                 .relative()
@@ -2753,6 +2861,10 @@ impl Render for Shell {
         let (below, terminal) = if self.remembered.term_below { (terminal, None) } else { (None, terminal) };
         let doc = doc.or(terminal);
         let browser = (doc.is_none() && self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
+        // Whether the panel is drawn this frame: its sign-in view (a native view
+        // over the window, nothing the panel paints) hides when it isn't.
+        let drawn = browser.is_some();
+        self.browser.update(cx, |b, _| b.set_drawn(drawn));
         // The design screen: the designer's conversation at its right (`views/design_talk.rs`).
         let talk = if away { None } else { views::design_talk::panel(self, window, cx) };
         let body = self.panes.body.clone().cached(StyleRefinement::default().flex_1().min_w_0().min_h_0());
@@ -2776,7 +2888,9 @@ impl Render for Shell {
             .children(views::composer::drop_overlay(self, cx))
             .children(views::composer::lightbox(self, cx))
             .children(views::design::lightbox(self, cx))
+            .children(views::tuner::layer(self, cx))
             .children(views::attached::gallery(self, cx))
+            .children(views::decide::side_by_side(self, window, cx))
             .children(views::visuals::viewer(self, window, cx))
             .children(views::deck::presentation(self, window, cx))
             .children(views::sheet::sheet(self, window, cx))
@@ -2786,11 +2900,28 @@ impl Render for Shell {
             .children(views::pair::sheet(self, cx))
             .children(views::disk::sheet(self, cx))
             .children(views::bell::sheet(self, cx))
+            .children(views::connections::sheet(self, cx))
             .children(views::connect::question(self, cx))
             .children(self.zoom_chip(window, cx))
             .child(views::ticket_card::layer(cx))
             .children(tips::layer(cx))
     }
+}
+
+/// `f` on each keystroke typed in `window`, before anything else sees it.
+///
+/// `App::intercept_keystrokes` hears every window's keys, while a window's
+/// interceptor reads its own shell's state (a picture shown big, a deck, a
+/// request's keys): left unfiltered, a picture open in one window swallowed
+/// every letter typed into another window's composer. So only `window`'s keys
+/// reach `f`.
+fn intercept_own_keystrokes(window: &Window, cx: &mut App, mut f: impl FnMut(&gpui_kit::KeystrokeEvent, &mut Window, &mut App) + 'static) -> gpui_kit::Subscription {
+    let own = window.window_handle().window_id();
+    cx.intercept_keystrokes(move |event, window, cx| {
+        if window.window_handle().window_id() == own {
+            f(event, window, cx);
+        }
+    })
 }
 
 /// The app menu: updates, hiding, quitting.
@@ -2985,6 +3116,7 @@ fn window_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-shift-b", ToggleBrowser, None),
         KeyBinding::new("cmd-shift-f", ToggleDocFocus, None),
         KeyBinding::new("cmd-shift-l", ShowOrchestration, None),
+        KeyBinding::new("cmd-shift-c", CopyTicketLink, None),
         KeyBinding::new("ctrl-`", ToggleTerminal, None),
         KeyBinding::new("cmd-\\", ToggleSidebar, None),
         KeyBinding::new("cmd-n", NewMessage, None),
@@ -3173,8 +3305,18 @@ fn main() {
         }
         cx.activate(true);
     });
+    // A link opened (`equipe://…` clicked in a chat app or passed to the app),
+    // from the system or the command line: handled once the app runs.
+    let (link_tx, link_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    {
+        let tx = link_tx.clone();
+        app.on_open_urls(move |urls| urls.into_iter().for_each(|url| drop(tx.send(url))));
+    }
+    std::env::args().skip(1).filter(|arg| equipe_core::protocol::deeplink::parse(arg).is_some()).for_each(|arg| drop(link_tx.send(arg)));
+    deeplink::warm();
     app.run(|cx| {
         gpui_kit::init(cx);
+        follow_links(link_rx, cx);
         // The notification centre's delegate, before a click can come back;
         // a click goes to the window showing the squad it came from.
         notify::start();
@@ -3217,6 +3359,18 @@ fn follow_notice_clicks(cx: &mut App) {
                 let Some(shell) = shell.upgrade() else { return };
                 let _ = handle.update(cx, |_, window, cx| shell.update(cx, |shell, cx| shell.go(click.go, window, cx)));
             });
+        }
+    })
+    .detach();
+}
+
+/// Open the links that come: from the system's open-URL event and the
+/// command line. Each goes to the window on its machine and squad
+/// (`deeplink.rs`).
+fn follow_links(mut links: tokio::sync::mpsc::UnboundedReceiver<String>, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        while let Some(link) = links.recv().await {
+            cx.update(|cx| deeplink::handle(&link, cx));
         }
     })
     .detach();
@@ -3309,6 +3463,11 @@ mod tests {
         assert_eq!(bound("alt-cmd-n"), ["equipe::AddMembers"], "adding members moved over for it");
         assert_eq!(bound("cmd-m"), ["equipe::MinimizeWindow"]);
         assert_eq!(bound("cmd-n"), ["equipe::NewMessage"], "⌘N stays a new message");
+    }
+
+    #[test]
+    fn a_tickets_link_has_a_key() {
+        assert_eq!(bound("cmd-shift-c"), ["equipe::CopyTicketLink"]);
     }
 
     #[test]
@@ -3439,6 +3598,61 @@ mod tests {
         press(cx, "cmd-]");
         assert_eq!(probe.read_with(cx, |p, _| (p.back, p.forward)), (1, 1));
         assert_eq!(value(cx), "hello world");
+    }
+
+    /// Two windows, the second showing a picture big — its keys (every key
+    /// but ⌘'s) are the picture's. Letters typed into the first window's box
+    /// still land there: a window's key interceptor hears only its own window.
+    #[gpui_kit::test]
+    fn a_window_takes_only_its_own_keys(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext as _;
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.bind_keys(window_bindings());
+        });
+        let open = |cx: &mut gpui_kit::TestAppContext, swallows: bool| {
+            let (probe, vcx) = cx.add_window_view(|window, cx| {
+                let field = cx.new(|cx| gpui_kit::component::input::TextareaState::new(window, cx).auto_grow(1, 6));
+                Probe { field, back: 0, forward: 0 }
+            });
+            let field = probe.read_with(vcx, |p, _| p.field.clone());
+            let handle = vcx.update(|window, cx| {
+                field.update(cx, |s, cx| s.focus(window, cx));
+                if swallows {
+                    // As the shell does while a picture is shown big.
+                    let intercept = super::intercept_own_keystrokes(window, cx, |event, _, cx| {
+                        if !event.keystroke.modifiers.platform {
+                            cx.stop_propagation();
+                        }
+                    });
+                    intercept.detach();
+                }
+                window.draw(cx).clear(cx);
+                window.window_handle()
+            });
+            (handle, field)
+        };
+        let (first, first_field) = open(cx, false);
+        let (second, second_field) = open(cx, true);
+        let typed = |cx: &mut gpui_kit::TestAppContext, window: gpui_kit::AnyWindowHandle, keys: &str| {
+            for key in keys.split(' ') {
+                let stroke = Keystroke::parse(key).unwrap();
+                cx.update_window(window, |_, window, cx| {
+                    window.draw(cx).clear(cx);
+                    window.dispatch_keystroke(stroke, cx);
+                })
+                .unwrap();
+                cx.run_until_parked();
+            }
+        };
+        typed(cx, first, "a s d f");
+        assert_eq!(first_field.read_with(cx, |s, _| s.value().to_string()), "asdf", "the other window's picture took the letters");
+        // ⌘A then a letter replaces the selection, as in any text box.
+        typed(cx, first, "cmd-a x");
+        assert_eq!(first_field.read_with(cx, |s, _| s.value().to_string()), "x");
+        // The window showing the picture still keeps its own keys from its box.
+        typed(cx, second, "q w");
+        assert_eq!(second_field.read_with(cx, |s, _| s.value().to_string()), "");
     }
 }
 

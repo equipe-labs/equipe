@@ -45,6 +45,8 @@ pub enum EditKind {
     Project,
     Kind,
     Depends,
+    /// The model of one ticket alone (its page's "Model…").
+    TicketModel,
 }
 
 /// A small menu open over the screen: what it edits, for which tickets (or
@@ -210,6 +212,8 @@ pub enum Choice {
     Project(Option<PathBuf>),
     Kind(TicketKind),
     Depends(TicketId),
+    /// A model for one ticket alone: a Claude family's alias; none gives it back to its tier.
+    Model(Option<String>),
 }
 
 // ── what a click or a key does ──
@@ -353,18 +357,30 @@ impl Shell {
                         }
                         self.board.tk.dep_search.update(cx, |s, cx| s.set_value(String::new(), window, cx));
                     }
-                    Choice::Status(_) => {}
+                    Choice::Status(_) | Choice::Model(_) => {}
                 }
             }
             cx.notify();
             return;
         }
         let targets = menu.targets.clone();
+        // A model for one ticket alone: the person's, sent as it is.
+        if let Choice::Model(pick) = choice {
+            let squad = self.model.squad.clone();
+            for id in targets {
+                if let Some(command) = self.model.tickets.iter().find(|t| t.id == id).and_then(|t| rules::model_pick_command(&squad, t, pick.as_deref())) {
+                    self.send_command(command);
+                }
+            }
+            cx.notify();
+            return;
+        }
         let edit = match choice {
             Choice::Priority(p) => TicketEdit { priority: Some(p), ..Default::default() },
             Choice::Owner(o) => TicketEdit { assignee: Some(o), ..Default::default() },
             Choice::Project(p) => TicketEdit { project: Some(p), ..Default::default() },
             Choice::Kind(k) => TicketEdit { kind: Some(k), ..Default::default() },
+            Choice::Model(_) => return,
             Choice::Depends(id) => {
                 let Some(t) = targets.first().and_then(|first| self.model.tickets.iter().find(|t| t.id == *first)) else { return };
                 let mut deps = t.depends_on.clone();
@@ -964,6 +980,7 @@ fn kind_code(kind: EditKind) -> &'static str {
         EditKind::Project => "project",
         EditKind::Kind => "kind",
         EditKind::Depends => "deps",
+        EditKind::TicketModel => "model",
     }
 }
 
@@ -1089,7 +1106,6 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
     let need = Need::Ticket(id);
     let group = SharedString::from(format!("trow-{id}"));
     let chosen = shell.board.view.chosen.contains(&id);
-    let closed = t.status.is_closed();
     let compact = shell.board.list_width < 760.;
     let narrow = shell.board.list_width < 600.;
     let anchors = &shell.board.tk.anchors;
@@ -1124,6 +1140,15 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
         )
     };
     let flags = super::board::row_flags(shell, t);
+    // What the row's other columns leave for the chips, the title's least kept: a chip is shown whole or not at all.
+    let chips_room = {
+        let (project, stat) = if narrow { (0., 0.) } else { (if compact { 74. } else { 96. }, 64.) };
+        let assignee = if compact { 26. } else { 210. };
+        // pl 8 + pr 12; check, status, id; the title's least; assignee, priority, when; the gaps between all the columns.
+        let columns = if narrow { 8. } else { 10. };
+        let fixed = 20. + 14. + 24. + 46. + 120. + project + assignee + stat + 24. + 32. + 6. * (columns - 1.);
+        crate::chips::room(shell.board.list_width, fixed, if compact { 120. } else { 220. })
+    };
     let who = rules::who(t).map(str::to_owned);
     let project = model.ticket_project_name(t);
     let changed = tickets::changed_at(model, t);
@@ -1148,14 +1173,14 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
         _ => None,
     };
     let stat = shell.board.stat(t).filter(|s| !s.files.is_empty()).map(|s| (s.added, s.removed));
-    let el = h_flex()
-        .id(SharedString::from(format!("ticket-{id}")))
+    let el = super::linkshare::on_right_click(h_flex().id(SharedString::from(format!("ticket-{id}"))), "row-link", equipe_core::protocol::deeplink::Target::Ticket(id), cx)
         .role(Role::ListItem)
         .aria_label(format!("T-{id} {}", t.title))
         .aria_selected(picked)
         .group(group.clone())
         .relative()
-        .h(px(super::board::ROW + 4.))
+        .min_h(px(super::board::ROW + 4.))
+        .py(px(5.))
         .flex_none()
         .pl_2()
         .pr_3()
@@ -1216,24 +1241,9 @@ pub fn row(shell: &Shell, id: TicketId, depth: usize, picked: bool, cx: &mut Con
             .tip(p, t!("tickets.tip_status", status = shell.model.state_word_of(t)), Some("S")),
         )
         .child(div().w(px(46.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
+        .child(super::board::title_cell(shell, t, depth, 120., yours))
         .child(
-            div()
-                .flex_1()
-                .min_w(px(120.))
-                .truncate()
-                .pl(px(depth as f32 * 18.))
-                .text_color(if closed { p.muted } else { p.text })
-                .when(yours, |d| d.font_weight(FontWeight::MEDIUM))
-                .child(if depth > 0 { format!("↳ {}", t.title) } else { t.title.clone() }),
-        )
-        .child(
-            h_flex().flex_none().max_w(px(if compact { 90. } else { 160. })).gap_1().justify_end().overflow_hidden().children(flags.into_iter().enumerate().map(|(i, (text, color, tip))| {
-                let chip = div().id(("tflag", i)).flex_none().px(px(6.)).h(px(18.)).flex().items_center().rounded(px(4.)).bg(p.wash).text_size(px(11.)).text_color(color).child(text);
-                match tip {
-                    Some(tip) => chip.tip(p, tip, None).into_any_element(),
-                    None => chip.into_any_element(),
-                }
-            })),
+            crate::chips::row(p, &flags, chips_room, SharedString::from(format!("tflag-{id}")), false),
         )
         .when(!narrow, |r| {
             r.child(
@@ -1629,8 +1639,7 @@ fn card(shell: &Shell, id: TicketId, status: TicketStatus, next: Option<TicketId
             this.card_hover(dragged, status, id, next, e.bounds, e.event.position, cx);
         }))
         .child(
-            v_flex()
-                .id(SharedString::from(format!("card-{id}")))
+            super::linkshare::on_right_click(v_flex().id(SharedString::from(format!("card-{id}"))), "row-link", equipe_core::protocol::deeplink::Target::Ticket(id), cx)
                 .role(Role::ListItem)
                 .aria_label(format!("T-{id} {}", t.title))
                 .aria_selected(picked)
@@ -1731,6 +1740,7 @@ fn menu_choices(shell: &Shell, menu: &EditMenu, words: &str) -> Vec<(Choice, boo
         }
         EditKind::Project => model.projects.iter().cloned().map(|p| (Choice::Project(Some(p)), true)).chain([(Choice::Project(None), true)]).collect(),
         EditKind::Kind => [TicketKind::Code, TicketKind::Task, TicketKind::Action].into_iter().map(|k| (Choice::Kind(k), true)).collect(),
+        EditKind::TicketModel => rules::PICKABLE.iter().map(|alias| (Choice::Model(Some((*alias).to_owned())), true)).chain([(Choice::Model(None), true)]).collect(),
         EditKind::Depends => {
             let (except, have) = shell.depends_context_for(menu);
             let mut out: Vec<(Choice, bool)> = have.iter().map(|d| (Choice::Depends(*d), true)).collect();
@@ -1762,7 +1772,7 @@ fn current(shell: &Shell, menu: &EditMenu, choice: &Choice) -> bool {
             Choice::Project(p) => s.project == *p,
             Choice::Kind(k) => s.kind == Some(*k),
             Choice::Depends(id) => s.depends_on.contains(id),
-            Choice::Status(_) => false,
+            Choice::Status(_) | Choice::Model(_) => false,
         };
     }
     let all: Vec<&Ticket> = menu.targets.iter().filter_map(|id| shell.model.tickets.iter().find(|t| t.id == *id)).collect();
@@ -1774,6 +1784,7 @@ fn current(shell: &Shell, menu: &EditMenu, choice: &Choice) -> bool {
             Choice::Kind(k) => t.kind == *k,
             Choice::Depends(id) => t.depends_on.contains(id),
             Choice::Status(s) => t.status == *s,
+            Choice::Model(m) => t.model.as_ref().and_then(|x| x.pick.as_ref()).map(|p| p.model.as_str()) == m.as_deref(),
         })
 }
 
@@ -1812,6 +1823,12 @@ pub fn edit_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                 }
                 Choice::Project(None) => (dot(p.muted, 8.).into_any_element(), t!("board.squad_folder").to_owned(), None),
                 Choice::Kind(k) => (div().w(px(14.)).into_any_element(), equipe_core::i18n::label::kind(crate::i18n::lang(), *k).to_owned(), Some(kind_hint(*k).to_owned())),
+                Choice::Model(Some(alias)) => {
+                    // The premium family stands out: its cost is said where the person picks it.
+                    let lead = if rules::is_premium_alias(alias) { dot(p.orange, 8.).into_any_element() } else { dot(p.muted, 8.).into_any_element() };
+                    (lead, rules::model_name(alias), Some(rules::pick_hint(alias)))
+                }
+                Choice::Model(None) => (div().w(px(14.)).into_any_element(), t!("tier.pick_auto").to_owned(), Some(t!("tier.pick_auto_hint").to_owned())),
                 Choice::Depends(id) => {
                     let t = model.tickets.iter().find(|t| t.id == *id);
                     (t.map_or_else(|| div().into_any_element(), |t| icons::status(p, t.status, 12.).into_any_element()), format!("T-{id}  {}", t.map(|t| t.title.clone()).unwrap_or_default()), None)
@@ -1849,12 +1866,13 @@ pub fn edit_menu(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         EditKind::Project => t!("tickets.prop_project"),
         EditKind::Kind => t!("tickets.prop_kind"),
         EditKind::Depends => t!("tickets.prop_depends"),
+        EditKind::TicketModel => t!("tier.pick_title"),
     };
     let anchor = menu.anchor;
     let many = menu.targets.len() > 1;
     let surface = v_flex()
         .id("edit-menu")
-        .w(px(if menu.kind == EditKind::Depends || menu.kind == EditKind::Status { 300. } else { 240. }))
+        .w(px(if matches!(menu.kind, EditKind::Depends | EditKind::Status | EditKind::TicketModel) { 300. } else { 240. }))
         .max_h(px(420.))
         .overflow_y_scroll()
         .p_1()
@@ -2359,10 +2377,26 @@ pub fn properties(shell: &Shell, t: &Ticket, compact: bool, width: f32, cx: &mut
             act(rules::TierAct::Pin, if pinned { t!("tier.unpin") } else { t!("tier.pin") }, t!("tier.tip_pin"), cx),
         ];
         let auto = (mine || pinned).then(|| act(rules::TierAct::Auto, t!("tier.auto"), t!("tier.tip_auto"), cx));
+        // One ticket's own model, the premium family among them.
+        let picking = can && !t.status.is_closed();
+        let pick_key = SharedString::from(format!("page-{}-{id}", kind_code(EditKind::TicketModel)));
+        let pick = anchored(
+            pill(p, pick_key.clone(), picking)
+                .flex_none()
+                .text_size(px(11.5))
+                .text_color(if picking { p.text2 } else { p.muted })
+                .child(t!("tier.pick"))
+                .tip(p, t!("tier.tip_pick"), None)
+                .when(picking, |d| d.on_click(cx.listener(move |this, _, window, cx| this.open_edit_menu(EditKind::TicketModel, vec![id], SharedString::from(format!("page-{}-{id}", kind_code(EditKind::TicketModel))), false, window, cx)))),
+            anchors,
+            pick_key,
+        );
+        let spent = t.model.as_ref().map(|m| m.premium_tokens).filter(|n| *n > 0).map(|n| div().pl(px(6.)).pb_1().text_size(px(11.5)).text_color(p.orange).child(t!("tier.premium_spent", tokens = equipe_core::usage::amount(n))));
         let value = v_flex()
             .min_w_0()
             .child(div().pl(px(6.)).py_1().text_size(px(12.5)).text_color(p.text2).child(line))
-            .child(h_flex().flex_wrap().gap_1().children(buttons).children(auto));
+            .child(h_flex().flex_wrap().gap_1().children(buttons).child(pick).children(auto))
+            .children(spent);
         rows.push(row(t!("tier.row"), value.into_any_element()));
     }
     let link = |dep: TicketId, removable: bool, cx: &mut Context<Shell>| {
@@ -2514,6 +2548,7 @@ fn entry_words(kind: &str) -> String {
         "not merged" => t!("tickets.ev_not_merged").into(),
         "kept on branch" => t!("tickets.ev_kept").into(),
         "edited" | "updated" => t!("tickets.ev_edited").into(),
+        "retitled" => t!("tickets.ev_retitled").into(),
         "reassigned" => t!("tickets.ev_reassigned").into(),
         "taken on" => t!("tickets.ev_taken_on").into(),
         "back to proposal" => t!("tickets.ev_back_to_proposal").into(),

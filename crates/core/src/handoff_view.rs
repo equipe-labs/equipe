@@ -12,7 +12,10 @@
 //! 3. the daemon keeps only the cookies of that site and the hosts the sign-in
 //!    went through ([`scope_cookies`]), adds them to the member's browser
 //!    profile (the host's `cookies` request: Playwright `addCookies`), loads the
-//!    page again, and hands the browser back.
+//!    page again, and hands the browser back;
+//! 4. the sign-in is kept, sealed, for the member's squad
+//!    (`crate::signin_store`): every member's browser gets it back, and no
+//!    member asks for it again while the site takes it.
 //!
 //! Only the cookies the sign-in made are carried, never anything else of the
 //! screen's browsing, and a cookie's value is never printed. Nothing here
@@ -42,6 +45,16 @@ pub const BACK_WAIT: Duration = Duration::from_secs(12);
 pub const BACK_AT_LEAST: Duration = Duration::from_millis(1500);
 /// A view whose screen never answers (it left, or it hung) is given up after this.
 pub const VIEW_WAIT: Duration = Duration::from_secs(45 * 60);
+
+/// Whether a site's sign-in is tied to the browser that made it, so a copy
+/// carried from a sign-in view into the members' Chrome doesn't hold: Google
+/// ends a session it sees come back from another browser, and asks for the
+/// person's second step again. Such a sign-in is made in the members' own
+/// Chrome profile instead (the person's window on it, or the panel).
+pub fn binds_to_browser(site: &str) -> bool {
+    let host = crate::vault::site_of(site);
+    ["google.com", "youtube.com", "gmail.com"].iter().any(|d| host == *d || host.ends_with(&format!(".{d}")))
+}
 
 /// A host name as a web address has it: lowercase letters, digits, `-`, `.`,
 /// without a port.
@@ -74,27 +87,60 @@ pub struct Scoped {
     pub dropped: usize,
 }
 
+/// Whether a cookie is a bot check's clearance — proof that the browser it
+/// was given to passed a "verify you are human" check (Cloudflare's
+/// `cf_clearance` and `__cf_bm`, DataDome's, PerimeterX's, Akamai Bot
+/// Manager's). It belongs to that browser: carrying it into the members'
+/// automated Chrome would be getting past the check for it, so it never is.
+pub fn is_clearance(name: &str) -> bool {
+    let n = name.trim().to_ascii_lowercase();
+    ["cf_clearance", "__cf_bm", "datadome", "_abck", "bm_sz", "ak_bmsc"].contains(&n.as_str())
+        || ["cf_chl_", "__cf_chl", "_px"].iter().any(|p| n.starts_with(p))
+}
+
 /// Keep the cookies of `site` (the page the member asked for) and of the hosts
 /// the view visited meanwhile — the sign-in's own redirects (`auth.openai.com`
 /// for `chatgpt.com`; `accounts.google.com` only if the view went there) —
-/// and nothing else.
+/// and nothing else: never a bot check's clearance ([`is_clearance`]).
 pub fn scope_cookies(cookies: Vec<HandoffCookie>, site: &str, visited: &[String]) -> Scoped {
     let mut hosts: Vec<String> = visited.iter().filter_map(|h| host_of(h)).take(MAX_HOSTS).collect();
     hosts.extend(host_of(site));
     let total = cookies.len();
     let kept: Vec<HandoffCookie> = cookies
         .into_iter()
-        .filter(|c| !c.name.is_empty() && c.value.len() <= MAX_VALUE && domain_is_ours(&c.domain, &hosts))
+        .filter(|c| !c.name.is_empty() && !is_clearance(&c.name) && c.value.len() <= MAX_VALUE && domain_is_ours(&c.domain, &hosts))
         .take(MAX_COOKIES)
-        .map(|mut c| {
-            if c.path.is_empty() {
-                c.path = "/".to_owned();
-            }
-            c.domain = c.domain.trim().to_ascii_lowercase();
-            c
-        })
+        .map(normalize)
         .collect();
     Scoped { dropped: total - kept.len(), cookies: kept }
+}
+
+/// A cookie as Chrome takes it. The web view's cookie list can't tell a
+/// host-only cookie from a domain one (every domain comes with a leading dot,
+/// `signin_view.rs`), and Chrome refuses a `__Host-` cookie that names a
+/// domain — and with one refused, Playwright's `addCookies` refused the whole
+/// sign-in (every Google and many app sign-ins carry one: nothing went in).
+/// A `__Host-` cookie is host-only by definition: its domain loses the dot,
+/// its path is `/`, it is secure. A `__Secure-` cookie is secure. A cookie
+/// that says `SameSite=None` without being secure is one the web view had no
+/// policy for (`wry` reports none as `None`): Chrome's default, `Lax`.
+pub fn normalize(mut c: HandoffCookie) -> HandoffCookie {
+    if c.path.is_empty() {
+        c.path = "/".to_owned();
+    }
+    c.domain = c.domain.trim().to_ascii_lowercase();
+    let prefixed = |p: &str| c.name.len() >= p.len() && c.name.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes());
+    if prefixed("__Host-") {
+        c.domain = c.domain.trim_start_matches('.').to_owned();
+        c.path = "/".to_owned();
+        c.secure = true;
+    } else if prefixed("__Secure-") {
+        c.secure = true;
+    }
+    if c.same_site.as_deref() == Some("None") && !c.secure {
+        c.same_site = Some("Lax".to_owned());
+    }
+    c
 }
 
 /// One view's progress.

@@ -105,7 +105,7 @@ mod tests {
             created_by: "pm".into(),
             note: None,
             asks: vec![],
-            remaining: vec![],
+            label: None, remaining: vec![],
             priority: Default::default(),
             rank: 0,
             updated_at: None,

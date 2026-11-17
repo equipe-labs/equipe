@@ -1,0 +1,6 @@
+Starting authentication for "mobbin"…
+Visit this URL to authorize:
+  ]8;;https://auth.example.com/auth/v1/oauth/authorize?response_type=code&client_id=00000000-0000-4000-8000-000000000000&code_challenge=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&code_challenge_method=S256&redirect_uri=http%3A%2F%2Flocalhost%3A55531%2Fcallback&state=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB&scope=openid+offline_access&prompt=consent&resource=https%3A%2F%2Fapi.mobbin.com%2Fmcphttps://auth.example.com/auth/v1/oauth/authorize?response_type=code&client_id=00000000-0000-4000-8000-000000000000&code_challenge=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&code_challenge_method=S256&redirect_uri=http%3A%2F%2Flocalhost%3A55531%2Fcallback&state=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB&scope=openid+offline_access&prompt=consent&resource=https%3A%2F%2Fapi.mobbin.com%2Fmcp]8;;
+
+Waiting for authorization… (^C to cancel)
+[1G[0JOr paste the redirect URL here: [33G
