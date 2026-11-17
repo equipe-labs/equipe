@@ -736,6 +736,8 @@ mod tests {
             Command::TryReference { squad: s(), project: None, card: equipe_core::protocol::references::RefCard::default() },
             Command::StartDesignSession { squad: s(), project: None, page: "Home".into(), from: equipe_core::protocol::design_session::SessionFrom::DesignScreen },
             Command::LivePreview { squad: s(), session: Some(1), url: "http://localhost:4899/".into(), open: true },
+            Command::EndDesignSession { squad: s(), designer: 4 },
+            Command::UseDesignVariant { squad: s(), designer: 4, project: None, page: "Home".into(), variant: Some("B".into()), url: Some("http://localhost:5173/b".into()) },
         ]
     }
 
