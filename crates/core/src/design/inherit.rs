@@ -112,7 +112,7 @@ pub fn list(brands: &Path) -> Vec<Brand> {
 pub fn versions(brands: &Path, slug: &str) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(brand_dir(brands, slug).join(VERSIONS)) else { return Vec::new() };
     let mut out: Vec<String> = entries.flatten().filter(|e| e.path().is_dir()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|v| valid_version(v)).collect();
-    out.sort_by(|a, b| version_key(a).cmp(&version_key(b)));
+    out.sort_by_key(|v| version_key(v));
     out
 }
 
