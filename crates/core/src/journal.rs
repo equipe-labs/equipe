@@ -746,6 +746,20 @@ impl Journal {
                polish INTEGER
              );",
         )?;
+        // Where each design follow-up came from (`crate::design_qa::follow_up`).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS design_follow_ups (
+               ticket INTEGER PRIMARY KEY,
+               parent INTEGER NOT NULL,
+               root INTEGER NOT NULL,
+               generation INTEGER NOT NULL,
+               kind TEXT NOT NULL,
+               severity TEXT,
+               created_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS design_follow_ups_parent ON design_follow_ups(parent);
+             CREATE INDEX IF NOT EXISTS design_follow_ups_root ON design_follow_ups(root);",
+        )?;
         // Why the person was asked to sign in, and sign-ins finished (`crate::logins`).
         crate::logins::create_table(&conn)?;
         // Tickets from before kinds: `code` with a project, `task` without — once,
@@ -2138,6 +2152,71 @@ impl Journal {
             .flatten()
     }
 
+    // ── design follow-ups (`crate::design_qa::follow_up`) ──
+
+    /// Keep where design follow-up `f.ticket` came from.
+    pub fn keep_follow_up(&self, f: &crate::design_qa::follow_up::FollowUp) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO design_follow_ups (ticket, parent, root, generation, kind, severity, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![f.ticket, f.parent, f.root, f.generation, f.kind.code(), f.severity.map(|s| s.code()), now()],
+        )?;
+        Ok(())
+    }
+
+    /// Where `ticket` came from, if it is a design follow-up.
+    pub fn follow_up(&self, ticket: TicketId) -> Option<crate::design_qa::follow_up::FollowUp> {
+        use crate::design_qa::follow_up::{FollowUp, Kind, Severity};
+        self.conn
+            .query_row("SELECT ticket, parent, root, generation, kind, severity FROM design_follow_ups WHERE ticket = ?1", [ticket], |r| {
+                Ok(FollowUp {
+                    ticket: r.get(0)?,
+                    parent: r.get(1)?,
+                    root: r.get(2)?,
+                    generation: r.get(3)?,
+                    kind: Kind::parse(&r.get::<_, String>(4)?).unwrap_or(Kind::Plain),
+                    severity: r.get::<_, Option<String>>(5)?.as_deref().and_then(Severity::parse),
+                })
+            })
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    /// The newest follow-up of `kind` about `parent` (or, for the backlog,
+    /// of root `parent`) that nobody has started: open and unassigned, with
+    /// no branch — the one a new finding goes into.
+    pub fn open_follow_up(&self, parent: TicketId, kind: crate::design_qa::follow_up::Kind) -> Option<TicketId> {
+        let by = if kind == crate::design_qa::follow_up::Kind::Backlog { "root" } else { "parent" };
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT f.ticket FROM design_follow_ups f JOIN tickets t ON t.id = f.ticket
+                     WHERE f.{by} = ?1 AND f.kind = ?2 AND t.status IN ('proposed', 'todo', 'idea')
+                       AND t.branch IS NULL AND t.assignee IS NULL
+                     ORDER BY f.ticket DESC LIMIT 1"
+                ),
+                params![parent, kind.code()],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    /// Polish follow-ups open in the squad: proposed, ready or under way —
+    /// not ideas kept in a backlog, not closed.
+    pub fn open_polish(&self) -> usize {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM design_follow_ups f JOIN tickets t ON t.id = f.ticket
+                 WHERE f.kind = 'polish' AND t.status NOT IN ('idea', 'done', 'cancelled')",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n.max(0) as usize)
+            .unwrap_or(0)
+    }
+
     /// The changes daily review or audit `ticket` covers, oldest first.
     pub fn design_qa_batch_items(&self, ticket: TicketId) -> Vec<DesignQaRun> {
         let ids: Vec<TicketId> = self
@@ -3454,6 +3533,34 @@ mod tests {
             priority: Default::default(), rank: 0,
             kind: TicketKind::Code,
         }
+    }
+
+    #[test]
+    fn a_follow_up_takes_more_findings_until_it_starts_and_open_polish_is_counted() {
+        use crate::design_qa::follow_up::{FollowUp, Kind, Severity};
+        let home = temp_home();
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        let parent = j.create_ticket(&ticket("Settings")).unwrap();
+        let polish = j.create_ticket(&ticket("Polish of Settings")).unwrap();
+        let backlog = j.create_ticket(&Ticket { status: TicketStatus::Idea, ..ticket("Backlog of Settings") }).unwrap();
+        j.keep_follow_up(&FollowUp { ticket: polish, parent, root: parent, generation: 1, kind: Kind::Polish, severity: Some(Severity::S3) }).unwrap();
+        j.keep_follow_up(&FollowUp { ticket: backlog, parent: polish, root: parent, generation: 2, kind: Kind::Backlog, severity: Some(Severity::S4) }).unwrap();
+        assert_eq!(j.follow_up(polish).map(|f| (f.kind, f.severity)), Some((Kind::Polish, Some(Severity::S3))));
+        assert_eq!(j.follow_up(parent), None);
+        assert_eq!(j.open_follow_up(parent, Kind::Polish), Some(polish));
+        assert_eq!(j.open_follow_up(parent, Kind::Fix), None);
+        assert_eq!(j.open_follow_up(parent, Kind::Backlog), Some(backlog), "the backlog is found by its root");
+        assert_eq!(j.open_polish(), 1, "a backlog idea isn't open polish");
+        let mut started = j.ticket(polish).unwrap().unwrap();
+        started.assignee = Some("frontend".into());
+        started.status = TicketStatus::InProgress;
+        j.save_ticket(&started).unwrap();
+        assert_eq!(j.open_follow_up(parent, Kind::Polish), None, "started: a new finding is a new ticket");
+        assert_eq!(j.open_polish(), 1);
+        started.status = TicketStatus::Done;
+        j.save_ticket(&started).unwrap();
+        assert_eq!(j.open_polish(), 0);
+        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]

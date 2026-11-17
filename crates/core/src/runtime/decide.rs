@@ -59,6 +59,10 @@ impl Runtime {
     /// told the answers come as the person's next message.
     pub(super) fn ask_decision(&mut self, squad: &str, member: &str, id: SessionId, args: &Value) -> Result<String, String> {
         let mut questions = board::questions_arg(args)?;
+        // A choice the person can't perceive in the product is the member's to make.
+        if let Some((n, why)) = questions.iter().enumerate().find_map(|(n, q)| crate::worth_asking::judge(q).map(|w| (n, w))) {
+            return Err(why.said(n + 1));
+        }
         self.refuse_after_browser_back(squad, member)?;
         // Each picture found where the member works, or the call is refused with why.
         let (cwd, roots) = self.picture_places(squad, id);
