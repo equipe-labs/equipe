@@ -360,6 +360,7 @@
   "news.merged_local": "T-{id} · {title} fusionné dans {branch}. Ce projet n'a pas de dépôt distant : rien à pousser.",
   "news.captures_kept_out": "T-{id} : {count} images de design ({size}) ont été tenues hors de git. Elles restent sur le disque et dans le stockage d'equipe.",
   "news.captures_heavy": "T-{id} : le commit {commit} ajoute {size} d'images à git. Les grandes images n'ont pas leur place dans le dépôt.",
+  "news.handed_in_kept_out": "T-{id} : {count} images, vidéos ou fichiers remis ({size}) ont été tenus hors de l'historique du dossier de l'équipe. Ils restent dans le dossier et dans le stockage d'equipe.",
   "news.merged_pushed": "Vous avez fusionné T-{id} · {title} dans {branch} et l'avez poussé.",
   "news.person_created": "Vous avez mis T-{id} au tableau pour {name} · {title}.",
   "news.person_created_unowned": "Vous avez mis T-{id} au tableau ; le PM choisit qui s'en charge · {title}.",

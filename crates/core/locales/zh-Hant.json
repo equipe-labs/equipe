@@ -357,6 +357,7 @@
   "news.merged_local": "已將 T-{id} · {title} 合併到 {branch}。此專案沒有遠端儲存庫，因此略過了推送。",
   "news.captures_kept_out": "T-{id}：已將 {count} 張設計圖片（{size}）移出 git。檔案仍保留在磁碟和 equipe 的儲存區中。",
   "news.captures_heavy": "T-{id}：提交 {commit} 向 git 加入了 {size} 的圖片。大型圖片應放在儲存庫之外。",
+  "news.handed_in_kept_out": "T-{id}：已將交付的 {count} 個圖片、影片或檔案（{size}）移出小隊資料夾的歷史紀錄。檔案仍保留在資料夾和 equipe 的儲存區中。",
   "news.merged_pushed": "你把 T-{id} · {title} 合併進了 {branch} 並已推送。",
   "news.person_created": "你把 T-{id} 放上看板，交給了 {name} · {title}。",
   "news.person_created_unowned": "你把 T-{id} 放上了看板，由 PM 決定誰來做 · {title}。",

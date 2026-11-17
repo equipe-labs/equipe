@@ -501,13 +501,22 @@ fn read_kept(path: &Path, kept: &Kept, max: Option<u32>) -> Result<ImageRead, St
     let main = worktree::main_branch(&kept.repo).ok();
     let revs: Vec<&String> = if kept.merged { main.iter().chain(kept.branch.iter()).collect() } else { kept.branch.iter().chain(main.iter()).collect() };
     let mut failed = None;
-    for rev in revs {
+    for rev in &revs {
         match worktree::read_blob(&kept.repo, rev, &kept.rel, FILE_MAX) {
             Ok(bytes) => return picture(path, path, bytes).and_then(|(bytes, mime)| sized(path, bytes, mime, max)),
             Err(Blob::Missing) => {}
             Err(Blob::TooBig(_)) => return Err(refused(path, &format!("bigger than {} MB", FILE_MAX >> 20))),
             Err(Blob::Failed(why)) => failed = Some(why),
         }
+    }
+    // Not in git: a picture equipe keeps out of it (a design capture, a
+    // squad folder's hand-in), from its store as that commit's manifest lists it.
+    let rel = kept.rel.to_string_lossy();
+    if let Some(file) = revs.iter().find_map(|rev| crate::design::captures::file_at(&kept.repo, rev, &rel))
+        && std::fs::metadata(&file).is_ok_and(|m| m.len() <= FILE_MAX)
+        && let Ok(bytes) = std::fs::read(&file)
+    {
+        return picture(path, path, bytes).and_then(|(bytes, mime)| sized(path, bytes, mime, max));
     }
     match failed {
         Some(why) => Err(refused(path, &format!("couldn't be read from git: {why}"))),

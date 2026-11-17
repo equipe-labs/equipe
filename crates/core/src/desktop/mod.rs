@@ -208,7 +208,7 @@ impl std::fmt::Display for Refusal {
         match self {
             Refusal::Busy { holder, place } => write!(
                 f,
-                "{} is using the screen; you are number {place} in line and get it when they are done. Do something else meanwhile, or call again later.",
+                "{} is using the screen; you are number {place} in line and get it when they are done. Do something else meanwhile, or call again later. A web page never waits for the screen: open it with your `browser` tools, which work beside whoever has it.",
                 holder.member
             ),
             Refusal::Person { left } => write!(

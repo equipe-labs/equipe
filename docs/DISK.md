@@ -120,6 +120,27 @@ temporary folders. The checks equipe runs before the PM's acceptance lands
 ([USAGE.md](USAGE.md#project-checks)) work in `~/.equipe/checks/`, removed after each run;
 what a run cut short left there goes at the next start.
 
+## Git's own leftovers, and the squads' folders
+
+The daemon's hourly sweep (every ten minutes while the disk is low) also looks at git itself,
+in every project and in every squad's own folder (`~/.equipe/squads/<squad>/home`, a worktree
+counting as its repository):
+
+- **Unfinished packs** (`objects/pack/tmp_pack_*`, what a fetch, gc or repack cut short leaves —
+  often by running out of room) go once untouched for 30 minutes, at once while the disk is low,
+  and never while a git process works in that repository. On 2026-11-17 a squad folder's gc,
+  started by an ordinary commit with 3 GB free, left 22 GB of them.
+- **A squad's folder never gcs by itself**: `gc.auto=0` and `maintenance.auto=false` are in its
+  config and on every git command equipe runs there. equipe repacks it instead — loose objects
+  past 6,700, or packs past 50 — only while the disk is fine and twice what the repack writes is
+  free, and says so in `daemon.log`.
+- **Hand-in pictures stay out of a squad's folder's history**: pictures, videos and other
+  generated files under `outputs/` are kept the way design captures are
+  ([DESIGN-CAPTURES.md](DESIGN-CAPTURES.md#a-squads-folder-what-its-tasks-hand-over)).
+- **Design QA's pictures** (`~/.equipe/squads/<squad>/design-qa`, a precheck's `T-<n>` and a
+  daily batch's `B-<n>`, gigabytes each) go three days after they were last written, once their
+  ticket isn't open; `daemon.log` says how much went and how much stays.
+
 ## Leaner builds (the defaults)
 
 - Each member builds in one folder of its own, whatever the ticket
