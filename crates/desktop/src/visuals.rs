@@ -627,12 +627,30 @@ pub fn frame(state: TileState) -> Frame {
 }
 
 /// A tile's caption: its label on one line, and — when any option of the
-/// question has one — two lines of what it means, room kept for them on
-/// every tile so a grid's tiles are one height.
+/// question has one — a line of what it means (and the way to what changed
+/// and why), room kept for it on every tile so a grid's tiles are one height.
+/// One line, not more: a card of two or three options fits a screen.
 pub fn caption_height(described: bool) -> f32 {
     const PAD: f32 = 8. + 9.;
-    const LINES: f32 = 2. + 2. * 17.;
+    const LINES: f32 = 2. + CAPTION_LINE;
     PAD + CAPTION_TITLE + if described { LINES } else { 0. }
+}
+
+/// A caption's line of what an option means.
+pub const CAPTION_LINE: f32 = 17.;
+
+/// What a decision card takes beside its options' grid, at most, as drawn
+/// compact: its padding, the question (two lines), the box for the person's
+/// own words, the foot with the keys and the actions, and the gaps between.
+pub const CARD_CHROME: f32 = 2. * 14. + 50. + 40. + 66. + 3. * 12.;
+
+#[cfg(test)]
+/// How tall a decision card is with `n` options in pictures in a grid
+/// `width` wide (`actions`: each tile's one-click row under its caption) —
+/// to keep a card of two or three options within one screen.
+pub fn card_height(width: f32, n: usize, described: bool, actions: f32) -> f32 {
+    let layout = grid(width, n);
+    CARD_CHROME + layout.height(tile_height(layout.tile, described) + actions)
 }
 
 /// A decision's tile `tile` wide, all told: its picture's 4:3 box, its
@@ -683,23 +701,10 @@ pub fn ground(owner: &Owner) -> Ground {
     }
 }
 
-/// A decision's option picture is never lower than this, in points…
-pub const HERO_LOW: f32 = 180.;
-/// …nor higher: a tall screen shows its top, whole in the big view.
-pub const HERO_HIGH: f32 = 560.;
 /// A picture whose size isn't known yet is taken to be a desktop screen's shape.
 const HERO_GUESS: (u32, u32) = (1440, 900);
 
-/// A design option's picture on its card: the card's whole `width`, at the
-/// picture's own shape, between [`HERO_LOW`] and [`HERO_HIGH`] high — the
-/// picture whole inside it (contain), the rest the theme's surface.
-pub fn hero_box(dims: Option<(u32, u32)>, width: f32) -> (f32, f32) {
-    let (w, h) = dims.filter(|(w, h)| *w > 0 && *h > 0).unwrap_or(HERO_GUESS);
-    let width = width.max(1.).floor();
-    (width, (width * h as f32 / w as f32).clamp(HERO_LOW, HERO_HIGH).floor())
-}
-
-/// The picture an option shows big on its card: its first, or — flipped to
+/// The picture an option shows on its card: its first, or — flipped to
 /// before — the picture of what is there now.
 pub fn hero_of(option: &equipe_core::protocol::decide::Choice, before: bool) -> Option<&str> {
     if before && !option.before.is_empty() {
@@ -1070,6 +1075,18 @@ mod tests {
         // A tile that isn't on show can't be opened.
         assert!(Viewer::of_board(9, 0, &q, &[(1, 0)], (0, 0)).is_none());
         assert!(Viewer::of_board(9, 0, &q, &[(5, 5)], (5, 5)).is_none());
+    }
+
+    #[test]
+    fn a_card_of_two_or_three_options_in_pictures_fits_one_screen() {
+        // The card above the composer at 1280×800: about 640 points wide.
+        for n in [2, 3] {
+            let h = card_height(640., n, true, 38.);
+            assert!(h <= 700., "{n} options: {h}");
+            assert_eq!(grid(640., n).rows, vec![n], "{n} options side by side, one row");
+        }
+        // Four: two rows of two, still within reach of a scroll.
+        assert_eq!(grid(640., 4).rows, vec![2, 2]);
     }
 
     #[test]
@@ -1523,19 +1540,7 @@ mod tests {
     }
 
     #[test]
-    fn an_options_picture_fills_the_card_at_its_own_shape_within_bounds() {
-        // A desktop screen: the card's width, its shape kept.
-        assert_eq!(hero_box(Some((1440, 900)), 640.), (640., 400.));
-        // A phone screen or a tall page: as high as a card allows; the picture whole inside, the rest surface.
-        assert_eq!(hero_box(Some((390, 844)), 640.), (640., HERO_HIGH));
-        // A wide strip: never a sliver.
-        assert_eq!(hero_box(Some((2400, 240)), 640.), (640., HERO_LOW));
-        // Not known yet: a desktop screen's shape, so nothing jumps when it comes.
-        assert_eq!(hero_box(None, 640.), (640., 400.));
-        assert_eq!(hero_box(Some((0, 0)), 640.), (640., 400.));
-        // Many times the smallest 4:3 tile of old, at this card's width.
-        let (w, h) = hero_box(Some((1440, 900)), 640.);
-        assert!(w * h > 8. * (TILE_MIN * TILE_MIN * RATIO), "{w}x{h}");
+    fn an_options_tile_flips_to_the_screen_as_it_is_now_and_back() {
         // Flipped to before, the screen as it is now; without one, its first picture.
         let q = directions();
         assert_eq!(hero_of(&q.options[0], false), Some("/w/calm-1440.png"));

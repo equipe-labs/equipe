@@ -64,6 +64,7 @@ pub mod phone;
 pub mod plan;
 pub mod plan_use;
 pub mod playground;
+pub mod prototype;
 pub mod quality;
 pub mod references;
 pub mod mock;

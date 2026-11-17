@@ -180,8 +180,20 @@ impl Uploader {
     /// what `squad` shows. Blocks: call it off the UI thread.
     pub fn read_image(&self, squad: &str, path: &str, max: Option<u32>) -> Result<equipe_core::protocol::rpc::ImageRead, String> {
         let door = self.0.lock().unwrap().clone().ok_or(t!("daemon.not_connected"))?;
-        match door.read_image(squad, path, max).recv_timeout(Duration::from_secs(60)) {
+        // Long enough for a busy daemon's first look at what the squad shows:
+        // given up sooner, the picture was asked again behind its own answer.
+        match door.read_image(squad, path, max).recv_timeout(Duration::from_secs(150)) {
             Ok(answer) => answer.and_then(|v| serde_json::from_value(v).map_err(|_| t!("failure.answer_unreadable").into())),
+            Err(_) => Err(t!("daemon.upload_no_answer").into()),
+        }
+    }
+
+    /// Where a decision option's saved prototype is served on the daemon's
+    /// machine: a loopback address for the live preview. Blocks: call it off the UI thread.
+    pub fn prototype_url(&self, squad: &str, path: &str) -> Result<String, String> {
+        let door = self.0.lock().unwrap().clone().ok_or(t!("daemon.not_connected"))?;
+        match door.prototype_url(squad, path).recv_timeout(Duration::from_secs(20)) {
+            Ok(answer) => answer.and_then(|v| serde_json::from_value::<equipe_core::protocol::rpc::PrototypeServed>(v).map(|s| s.url).map_err(|_| t!("failure.answer_unreadable").into())),
             Err(_) => Err(t!("daemon.upload_no_answer").into()),
         }
     }

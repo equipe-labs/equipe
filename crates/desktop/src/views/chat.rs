@@ -783,6 +783,7 @@ fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
     }
     let at = shell.chat.dock_at.get().min(count - 1);
     shell.chat.dock_front.set(cards.get(at).map(|(kind, _)| *kind));
+    let kinds: Vec<usize> = cards.iter().map(|(kind, _)| *kind).collect();
     let cards: Vec<AnyElement> = cards.into_iter().map(|(_, c)| c).collect();
     let card = cards.into_iter().nth(at)?;
     let fold = div()
@@ -804,34 +805,54 @@ fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         let bar = h_flex().justify_end().items_center().pb_1().child(fold);
         return Some(v_flex().min_h_0().child(bar).child(card).into_any_element());
     }
-    let step = |id: &'static str, glyph: Icon, by: isize, cx: &mut Context<Shell>| {
-        div()
-            .id(id)
-            .size(px(22.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(R_SM))
-            .cursor_pointer()
-            .hover(move |s| s.bg(p.wash))
-            .child(icon(glyph, 12., p.text2))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.chat.dock_at.set((this.chat.dock_at.get().min(count - 1) as isize + by).rem_euclid(count as isize) as usize);
-                cx.notify();
-            }))
-    };
-    let bar = h_flex()
-        .justify_end()
-        .gap_1()
-        .items_center()
-        .pb_1()
-        .text_size(px(META))
-        .text_color(p.muted)
-        .child(t!("chat.cards_waiting", at = at + 1, count = count))
-        .child(step("dock-prev", Icon::ArrowLeft, -1, cx))
-        .child(step("dock-next", Icon::ArrowRight, 1, cx))
-        .child(fold);
+    // Several kinds waiting: one labelled chip each — what it is, not "card 2
+    // of 3" — the one in front lit; a member's questions page through
+    // themselves inside their card ("Decision 1 of 7").
+    let chips: Vec<AnyElement> = kinds
+        .iter()
+        .enumerate()
+        .map(|(n, &kind)| {
+            let on = n == at;
+            div()
+                .id(("dock-kind", n))
+                .h(px(22.))
+                .px_2()
+                .flex()
+                .items_center()
+                .rounded(px(11.))
+                .border_1()
+                .border_color(if on { p.accent } else { p.hair })
+                .when(on, |d| d.bg(p.accent_bg))
+                .text_size(px(META))
+                .text_color(if on { p.accent } else { p.text2 })
+                .cursor_pointer()
+                .when(!on, |d| d.hover(move |s| s.bg(p.wash)))
+                .child(dock_kind_words(kind))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.chat.dock_at.set(n);
+                    cx.notify();
+                }))
+                .into_any_element()
+        })
+        .collect();
+    let bar = h_flex().w_full().gap_1p5().items_center().pb_1().flex_wrap().children(chips).child(div().flex_1()).child(fold);
     Some(v_flex().min_h_0().child(bar).child(card).into_any_element())
+}
+
+/// What a kind of card over the composer is, in a word or two: its chip.
+fn dock_kind_words(kind: usize) -> &'static str {
+    match kind {
+        0 => t!("chat.dock_words"),
+        1 => t!("chat.dock_secret"),
+        2 => t!("chat.dock_permission"),
+        3 => t!("chat.dock_decisions"),
+        4 => t!("chat.dock_confirm"),
+        5 => t!("chat.dock_team"),
+        6 => t!("chat.dock_routine"),
+        7 => t!("chat.dock_engine"),
+        8 | 9 => t!("chat.dock_signin"),
+        _ => t!("chat.dock_check"),
+    }
 }
 
 /// What a blank conversation says. The PM's names the thread it is.

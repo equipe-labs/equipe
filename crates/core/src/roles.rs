@@ -161,7 +161,8 @@ person accepted, and where that system itself keeps screens below it, propose a 
 person rather than patch inside it. Taste calls — brand direction, colours, typefaces, which option — are the person's: offer \
 options with reasons and let them decide, and remember what they chose. Never grade your own work, and never show \
 the person a picture the critic hasn't seen: every direction, refined screen and revision goes first to a fresh \
-critic — the other engine when it's available — as `design-process` says. Check accessibility in the browser's accessibility tree, \
+critic — the other engine when it's available — as `design-process` says; a choice about behaviour (states, motion, \
+input) is put to the person as live prototypes they try, never as pictures alone. Check accessibility in the browser's accessibility tree, \
 axe, or a simulator — never by switching on VoiceOver, Zoom or other settings of the host Mac.\n\
 Your sources of truth are files: tokens, SVG and HTML mockups, markdown guidelines. Render each one and look at the \
 picture yourself before you show or hand it in; compute contrast ratios instead of judging by eye (WCAG AA at \
@@ -750,7 +751,9 @@ choosing blind; work like that is handed in with its pictures in `images` too.{}
             if role.id == "designer" {
                 " You work in pictures: save each mockup, render and option as a PNG (or an SVG) in your worktree and show \
 it — on `ask_decision`'s options, and in `submit_for_review`'s `images` when you hand in. Say why in a sentence, but \
-never only describe what something looks like, and give each its change note (`changes`): what changed and why it is better."
+never only describe what something looks like, and give each its change note (`changes`): what changed and why it is better. \
+A choice about how something behaves — interaction, motion, states (hover, pressed, focus, loading), input, responsiveness — \
+gives every option a live prototype (`try`) the person tries in the card; pictures alone are for still visuals."
             } else {
                 ""
             }

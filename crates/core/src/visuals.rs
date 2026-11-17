@@ -414,7 +414,7 @@ pub fn shown(home: &Path, squad: &str) -> Shown {
         return Shown::default();
     }
     let Ok(journal) = crate::journal::Journal::open(&db) else { return Shown::default() };
-    let mut out = Shown { roots: vec![crate::squad_home::path(home, squad)], projects: journal.projects().unwrap_or_default(), ..Shown::default() };
+    let mut out = Shown { roots: vec![crate::squad_home::path(home, squad), design_qa_dir(home, squad)], projects: journal.projects().unwrap_or_default(), ..Shown::default() };
     let design = |base: &Path| base.join(crate::design::folder::DIR);
     out.references = std::iter::once(design(&crate::squad_home::path(home, squad))).chain(out.projects.iter().map(|p| design(p))).collect();
     for set in journal.questions() {
@@ -434,17 +434,17 @@ pub fn shown(home: &Path, squad: &str) -> Shown {
     let (design, folders) = crate::design::folder::shown(home, squad);
     out.paths.extend(design);
     out.roots.extend(folders);
-    said(&journal, home, squad, &mut out);
+    said(journal.said_with_paths(SAID).unwrap_or_default(), home, squad, &mut out);
     out
 }
 
 /// What the squad's latest lines show: each image their Markdown embeds (a
 /// relative one taken from where its member works, or the squad's folder),
 /// each folder they point at, and the member worktrees they were said in.
-fn said(journal: &crate::journal::Journal, home: &Path, squad: &str, out: &mut Shown) {
+fn said(lines: Vec<(PathBuf, Entry)>, home: &Path, squad: &str, out: &mut Shown) {
     let folder = crate::squad_home::path(home, squad);
     let mut cwds: HashSet<PathBuf> = HashSet::new();
-    for (cwd, entry) in journal.said_with_paths(SAID).unwrap_or_default() {
+    for (cwd, entry) in lines {
         let (Entry::User { text, .. } | Entry::Reply { text } | Entry::Note { text, .. }) = &entry else { continue };
         for image in markdown::local_images(text) {
             for base in [&cwd, &folder] {
@@ -557,10 +557,20 @@ fn scratch_folders() -> Vec<PathBuf> {
 /// no longer shown may still be given for this long.
 const SHOWN_FOR: Duration = Duration::from_secs(5);
 
+/// …and at most this long, however slow the look was.
+const SHOWN_AT_MOST: Duration = Duration::from_secs(60);
+
+/// How long a look that took `took` is trusted once found: [`SHOWN_FOR`],
+/// or twice as long as it took when that is longer — a board slow to look at
+/// is never looked at more than half the time — up to [`SHOWN_AT_MOST`].
+fn trusted_for(took: Duration) -> Duration {
+    SHOWN_FOR.max(took * 2).min(SHOWN_AT_MOST)
+}
+
 /// What each squad was last found to show, by home and squad: one look at a
 /// time per squad, the asks meanwhile waiting for it rather than each making
 /// its own.
-type ShownSlot = Arc<Mutex<Option<(Instant, Arc<Shown>)>>>;
+type ShownSlot = Arc<Mutex<Option<(Instant, Instant, Arc<Shown>)>>>;
 type ShownSlots = Mutex<HashMap<(PathBuf, String), ShownSlot>>;
 
 fn shown_slots() -> &'static ShownSlots {
@@ -575,20 +585,23 @@ fn shown_slots() -> &'static ShownSlots {
 fn shown_lately(home: &Path, squad: &str, asked: Instant, enough: impl Fn(&Shown) -> bool) -> (Arc<Shown>, bool) {
     let slot = shown_slots().lock().unwrap_or_else(|e| e.into_inner()).entry((home.to_owned(), squad.to_owned())).or_default().clone();
     let mut held = slot.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((at, shown)) = held.as_ref() {
+    if let Some((began, ended, shown)) = held.as_ref() {
         // Found afresh while this ask waited for it: as fresh as this ask's
         // own look would be — a burst of asks makes one look, not one each.
-        if *at >= asked {
+        if *began >= asked {
             return (shown.clone(), true);
         }
-        if at.elapsed() < SHOWN_FOR && enough(shown) {
+        // Trusted for a while after it was found, not after it began: a look
+        // slower than that would otherwise be trusted by no ask at all, and
+        // every ask of a burst would make its own, one after another.
+        if ended.elapsed() < trusted_for(ended.duration_since(*began)) && enough(shown) {
             return (shown.clone(), false);
         }
     }
     // Stamped when the look began: what an ask that came later may take as its own.
     let began = Instant::now();
     let fresh = Arc::new(shown(home, squad));
-    *held = Some((began, fresh.clone()));
+    *held = Some((began, Instant::now(), fresh.clone()));
     (fresh, true)
 }
 
@@ -614,18 +627,123 @@ pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[Pat
         cache::touch(Path::new(&ask.path));
         return read_cached(home, Path::new(&ask.path), &[crate::references::store_dir(home, &ask.squad)], max);
     }
+    // A waiting decision's or a ticket's picture, or one a reply embeds:
+    // from what names it alone, at once.
+    if let Some(read) = named_picture(home, ask, max) {
+        return read;
+    }
+    if let Some(read) = said_picture(home, ask, max, scratch) {
+        return read;
+    }
     let asked = Instant::now();
     let (shown, fresh) = shown_lately(home, &ask.squad, asked, |shown| allows(home, shown, ask));
     match serve_from(home, &shown, ask, max, scratch) {
         // Found a moment ago, and the board may have moved since (a worktree
-        // gone with its acceptance): once more, from what it shows now.
-        Err(_) if !fresh => {
+        // gone with its acceptance): once more, from what it shows now — only
+        // for what a newer look could change (not shown, not there), never
+        // for a refusal it would only repeat a look later.
+        Err(why) if !fresh && matches!(rpc::ImageWhy::of(&why), rpc::ImageWhy::Missing | rpc::ImageWhy::Unreadable) => {
             // Afresh, unless another ask's look began since this one came: a
             // few pictures gone at once make one look, not one each.
             let (shown, _) = shown_lately(home, &ask.squad, asked, |_| false);
             serve_from(home, &shown, ask, max, scratch)
         }
         read => read,
+    }
+}
+
+/// A picture a waiting decision or a ticket's hand-in names — what a
+/// decision card or a ticket's panel asks for, a dozen at once — given from
+/// what names it alone, never waiting for [`shown`]: that reads the whole
+/// board and walks every design folder, and on a busy board under load it
+/// took a minute and more, so a card's pictures, each waiting for its own
+/// look in turn, never came before the screen gave up on them. Read against
+/// the squad's folder, its design QA folder, its projects and the worktrees,
+/// as [`check`] has it. Gone from disk: a ticket's from git as its hand-in
+/// recorded it ([`kept_of`]); else — its worktree gone with its work landed
+/// — the checkout it was merged into, main in git, or equipe's capture store
+/// by the hash its manifest lists (`crate::design::captures`); else "no such
+/// file", plainly. `None` when nothing so named names it (or it is saved
+/// somewhere else the squad shows): the full look answers then.
+fn named_picture(home: &Path, ask: &ReadImage, max: Option<u32>) -> Option<Result<ImageRead, String>> {
+    let db = crate::journal::squad_dir(home, &ask.squad).join("squad.db");
+    if !crate::squads::valid_name(&ask.squad) || !db.exists() || !is_image_name(&ask.path) {
+        return None;
+    }
+    let naming = crate::journal::naming(&db, &ask.path)?;
+    if !naming.decision && naming.tickets.is_empty() {
+        return None;
+    }
+    let folder = crate::squad_home::path(home, &ask.squad);
+    let homes = homes(home);
+    let mut roots = vec![folder.clone(), design_qa_dir(home, &ask.squad)];
+    roots.extend(naming.projects.iter().cloned());
+    roots.extend(homes.iter().map(|h| h.join("worktrees")));
+    let asked = Path::new(&ask.path);
+    if std::fs::symlink_metadata(asked).is_ok() {
+        return match read_cached(home, asked, &roots, max) {
+            Err(why) if rpc::ImageWhy::of(&why) == rpc::ImageWhy::Outside => None,
+            read => Some(read),
+        };
+    }
+    // A ticket's, its worktree gone: where git has it, as its hand-in recorded it.
+    let journal = (!naming.tickets.is_empty()).then(|| crate::journal::Journal::open(&db).ok()).flatten();
+    for id in &naming.tickets {
+        let Some(ticket) = journal.as_ref().and_then(|j| j.ticket(*id).ok().flatten()) else { continue };
+        if let Some((_, kept)) = kept_of(&ticket, home, &homes, &ask.squad).into_iter().find(|(image, _)| *image == ask.path) {
+            return Some(read_kept(asked, &kept, max));
+        }
+    }
+    Some(moved_picture(&folder, &naming.projects, &homes, asked, max))
+}
+
+/// A picture the squad's latest lines embed, or one right in a folder they
+/// point at: given from those lines alone (a quick read of the journal),
+/// never waiting for [`shown`]. `None` when they don't name it, or it is
+/// saved somewhere only the full look allows.
+fn said_picture(home: &Path, ask: &ReadImage, max: Option<u32>, scratch: &[PathBuf]) -> Option<Result<ImageRead, String>> {
+    let db = crate::journal::squad_dir(home, &ask.squad).join("squad.db");
+    if !crate::squads::valid_name(&ask.squad) || !db.exists() || !is_image_name(&ask.path) {
+        return None;
+    }
+    let lines = crate::journal::said_with_paths_at(&db, SAID)?;
+    let projects = crate::journal::naming(&db, "").map(|n| n.projects).unwrap_or_default();
+    let mut light = Shown { roots: vec![crate::squad_home::path(home, &ask.squad), design_qa_dir(home, &ask.squad)], projects, ..Shown::default() };
+    said(lines, home, &ask.squad, &mut light);
+    if !light.paths.contains(&ask.path) && !in_folder(&light, &ask.path) && !said_by_name(&light, &ask.path) {
+        return None;
+    }
+    match serve_from(home, &light, ask, max, scratch) {
+        Ok(read) => Some(Ok(read)),
+        // Not where these lines alone allow, or gone: the full look knows more places.
+        Err(_) => None,
+    }
+}
+
+/// `<home>/squads/<squad>/design-qa`: design QA's crops and renders, which its tickets show.
+fn design_qa_dir(home: &Path, squad: &str) -> PathBuf {
+    crate::journal::squad_dir(home, squad).join("design-qa")
+}
+
+/// A picture named where it no longer is: one of a ticket's worktree, gone,
+/// read where its work went — the same place in the checkout it was merged
+/// into, main in git, or the capture store — and one of the squad's folder
+/// or a project, from the capture store as main's manifest lists it.
+fn moved_picture(folder: &Path, projects: &[PathBuf], homes: &[PathBuf], asked: &Path, max: Option<u32>) -> Result<ImageRead, String> {
+    let image = asked.to_string_lossy();
+    let repos = std::iter::once(folder.to_path_buf()).chain(projects.iter().cloned());
+    let kept = repos
+        .filter_map(|repo| {
+            let rel = in_worktree(&image, &repo, homes).or_else(|| {
+                let rel = asked.strip_prefix(&repo).ok()?.to_path_buf();
+                rel.components().all(|c| matches!(c, Component::Normal(_))).then_some(rel)
+            })?;
+            Some(Kept { repo, rel, branch: None, merged: true })
+        })
+        .next();
+    match kept {
+        Some(kept) => read_kept(asked, &kept, max).map_err(|why| if rpc::ImageWhy::of(&why) == rpc::ImageWhy::Missing { refused(asked, rpc::IMAGE_MISSING) } else { why }),
+        None => Err(refused(asked, rpc::IMAGE_MISSING)),
     }
 }
 
@@ -1424,6 +1542,130 @@ mod tests {
         std::fs::remove_file(project.join("outputs/T-4-globe.png")).unwrap();
         assert_eq!(serve(&home, &ask(&recorded[0]), None).unwrap().width, Some(60), "main's");
         let missing = serve(&home, &ask(&recorded[3]), None).unwrap_err();
+        assert_eq!(rpc::ImageWhy::of(&missing), rpc::ImageWhy::Missing, "{missing}");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// A waiting decision of `member`'s whose options show `images`, one each.
+    fn decision(images: &[String]) -> crate::protocol::decide::QuestionSet {
+        let options = images.iter().enumerate().map(|(n, image)| Choice { label: format!("{n}"), images: vec![image.clone()], ..Default::default() }).collect();
+        crate::protocol::decide::QuestionSet {
+            id: 7,
+            session: 1,
+            member: "designer".into(),
+            ticket: None,
+            questions: vec![Question { question: "Which layout?".into(), options, ..Default::default() }],
+            asked_at: 0,
+            review: false,
+            retro: None,
+        }
+    }
+
+    #[test]
+    fn a_slow_look_at_what_a_squad_shows_is_trusted_longer_but_not_for_long() {
+        assert_eq!(trusted_for(Duration::from_millis(40)), SHOWN_FOR);
+        assert_eq!(trusted_for(Duration::from_secs(10)), Duration::from_secs(20));
+        assert_eq!(trusted_for(Duration::from_secs(90)), SHOWN_AT_MOST);
+    }
+
+    #[test]
+    fn a_tickets_design_qa_crops_show_without_a_look_at_the_whole_board() {
+        let home = dir("ticket-fast");
+        let crops = home.join("squads/acme/design-qa/T-9/crops");
+        std::fs::create_dir_all(&crops).unwrap();
+        png(&crops.join("change-0.png"), 66, 39, true);
+        let image = crops.join("change-0.png").to_string_lossy().into_owned();
+        let (project, _) = accepted_unmerged(&home);
+        save_ticket(&home, &project, std::slice::from_ref(&image), Some(true), None);
+        let ask = ReadImage { squad: "acme".into(), path: image.clone(), max: Some(64) };
+        let got = named_picture(&home, &ask, Some(64)).expect("a ticket names it").unwrap();
+        assert_eq!(got.width, Some(66));
+        // The full look gives it too: design QA's folder is the squad's.
+        assert_eq!(serve_from(&home, &shown(&home, "acme"), &ask, Some(64), &[]).unwrap().width, Some(66));
+        // A file beside it no ticket names: not by this way.
+        png(&crops.join("change-1.png"), 4, 4, false);
+        let other = ReadImage { path: crops.join("change-1.png").to_string_lossy().into_owned(), ..ask };
+        assert!(named_picture(&home, &other, None).is_none());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_big_squads_card_pictures_answer_at_once() {
+        let home = dir("big-squad");
+        let journal = crate::journal::Journal::for_squad(&home, "acme").unwrap();
+        let folder = crate::squad_home::path(&home, "acme");
+        std::fs::create_dir_all(folder.join("outputs")).unwrap();
+        png(&folder.join("outputs/a.png"), 40, 20, false);
+        std::fs::create_dir_all(home.join("squads/acme/design-qa/T-1/crops")).unwrap();
+        png(&home.join("squads/acme/design-qa/T-1/crops/change-0.png"), 30, 20, false);
+        let a = folder.join("outputs/a.png").to_string_lossy().into_owned();
+        let crop = home.join("squads/acme/design-qa/T-1/crops/change-0.png").to_string_lossy().into_owned();
+        // A board of thousands of tickets, each with pictures of its own, and long notes.
+        {
+            let j = &journal;
+            for n in 0..2000 {
+                let ticket = Ticket { id: 0, title: format!("T {n}"), body: "x".repeat(2000), status: crate::protocol::TicketStatus::Done, kind: crate::protocol::TicketKind::Code, owner: None, assignee: None, project: None, depends_on: vec![], branch: None, worktree: None, execution: None, merged: Some(true), off_main: None, design_qa: None, plan: None, model: None, created_by: "pm".into(), note: Some("y".repeat(4000)), asks: vec![], label: None, remaining: vec![], images: vec![], priority: Default::default(), rank: 0, updated_at: None };
+                let id = j.create_ticket(&ticket).unwrap();
+                let images = if n == 1999 { vec![crop.clone()] } else { vec![format!("/gone/{n}/shot.png")] };
+                j.save_ticket(&Ticket { id, images, ..ticket }).unwrap();
+            }
+        }
+        journal.set_questions(&[decision(std::slice::from_ref(&a))]).unwrap();
+        let ask = |path: &str| ReadImage { squad: "acme".into(), path: path.into(), max: Some(64) };
+        for path in [&a, &crop] {
+            let at = Instant::now();
+            assert!(serve(&home, &ask(path), None).is_ok(), "{path}");
+            assert!(at.elapsed() < Duration::from_secs(1), "{path}: {:?}", at.elapsed());
+        }
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_decisions_picture_comes_from_the_decisions_alone_and_nothing_else_does() {
+        let home = dir("decision-fast");
+        let journal = crate::journal::Journal::for_squad(&home, "acme").unwrap();
+        let folder = crate::squad_home::path(&home, "acme");
+        std::fs::create_dir_all(folder.join("outputs")).unwrap();
+        png(&folder.join("outputs/a.png"), 40, 20, false);
+        png(&folder.join("outputs/b.png"), 4, 4, false);
+        let a = folder.join("outputs/a.png").to_string_lossy().into_owned();
+        let b = folder.join("outputs/b.png").to_string_lossy().into_owned();
+        journal.set_questions(&[decision(std::slice::from_ref(&a))]).unwrap();
+        let ask = |path: &str| ReadImage { squad: "acme".into(), path: path.into(), max: Some(64) };
+        // Given without working out all the squad shows.
+        assert_eq!(named_picture(&home, &ask(&a), Some(64)).unwrap().unwrap().width, Some(40));
+        assert!(named_picture(&home, &ask(&b), Some(64)).is_none(), "no decision names it: the full look decides");
+        assert!(serve(&home, &ask(&b), None).unwrap_err().contains("isn't a picture"));
+        assert!(named_picture(&home, &ReadImage { squad: "../acme".into(), ..ask(&a) }, None).is_none());
+        // Named by a decision, but a link out of every root: refused all the same.
+        let outside = home.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        png(&outside.join("secret.png"), 4, 4, false);
+        symlink(outside.join("secret.png"), folder.join("outputs/link.png")).unwrap();
+        let link = folder.join("outputs/link.png").to_string_lossy().into_owned();
+        journal.set_questions(&[decision(&[a.clone(), link.clone()])]).unwrap();
+        assert!(serve(&home, &ask(&link), None).is_err());
+        // Gone from disk with nothing else holding it: said plainly.
+        std::fs::remove_file(folder.join("outputs/a.png")).unwrap();
+        let gone = named_picture(&home, &ask(&a), None).unwrap().unwrap_err();
+        assert_eq!(rpc::ImageWhy::of(&gone), rpc::ImageWhy::Missing, "{gone}");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_decisions_picture_in_a_worktree_that_went_comes_from_where_its_work_landed() {
+        let home = dir("decision-moved");
+        let (project, images) = accepted_unmerged(&home);
+        git(&project, &["merge", "-q", "--no-ff", "-m", "T-4", "equipe/frontend-t4-6ad33ac5"]);
+        let journal = crate::journal::Journal::for_squad(&home, "acme").unwrap();
+        journal.add_project(&project).unwrap();
+        let named = vec![images[0].clone(), images[0].replace("T-4-globe", "T-4-never")];
+        journal.set_questions(&[decision(&named)]).unwrap();
+        let ask = |path: &str| ReadImage { squad: "acme".into(), path: path.into(), max: None };
+        assert_eq!(serve(&home, &ask(&named[0]), None).unwrap().width, Some(60), "the checkout's copy");
+        std::fs::remove_file(project.join("outputs/T-4-globe.png")).unwrap();
+        assert_eq!(serve(&home, &ask(&named[0]), None).unwrap().width, Some(60), "main's, in git");
+        let missing = serve(&home, &ask(&named[1]), None).unwrap_err();
         assert_eq!(rpc::ImageWhy::of(&missing), rpc::ImageWhy::Missing, "{missing}");
         std::fs::remove_dir_all(home).unwrap();
     }

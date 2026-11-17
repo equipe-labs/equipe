@@ -69,7 +69,8 @@
 //! designer's brand guide (T-144) handed in with its pictures
 //! (`fake_daemon/pictures.rs`); `FAKE_DECIDE=brand` puts the designer's three
 //! brand directions first instead, each on the product's home screen, with
-//! the aspects the person can mix.
+//! the aspects the person can mix. `FAKE_DECIDE=states` puts the designer's
+//! primary-button states first, each option a live prototype (`try`) with a still.
 //!
 //! `FAKE_DECIDE=scope` puts the PM's scope card first: one question, the
 //! plan step's four modes, its recommendation first. `FAKE_PLAN=1` has T-42

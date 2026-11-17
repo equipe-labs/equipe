@@ -659,6 +659,28 @@ async fn serve_client(
                     });
                 });
             }
+            (Some(rpc::PROTOTYPE_URL), Some(id)) => {
+                // A live prototype a waiting decision of the squad this screen follows names.
+                let Some(ask) = message.params_as::<rpc::PrototypeUrl>() else {
+                    let _ = out_tx.send(Message::failure(id, -32602, "prototype_url needs { squad, path }"));
+                    continue;
+                };
+                if followed.as_deref() != Some(ask.squad.as_str()) || !crate::squads::valid_name(&ask.squad) {
+                    let _ = out_tx.send(Message::failure(id, -32002, "say hello to that squad first"));
+                    continue;
+                }
+                let db = crate::journal::squad_dir(&home, &ask.squad).join("squad.db");
+                let out = out_tx.clone();
+                tokio::spawn(async move {
+                    let path = ask.path.clone();
+                    let named = tokio::task::spawn_blocking(move || crate::prototype::named(&db, &path)).await.unwrap_or(false);
+                    let served = if named && !crate::prototype::is_address(&ask.path) { crate::prototype::url_of(Path::new(&ask.path)).await } else { Err(format!("{} isn't a prototype {} shows", ask.path, ask.squad)) };
+                    let _ = out.send(match served {
+                        Ok(url) => Message::response(id, rpc::PrototypeServed { url }),
+                        Err(why) => Message::failure(id, -32000, why),
+                    });
+                });
+            }
             (Some(rpc::LIST_IMAGES), Some(id)) => {
                 // A folder the conversation of the squad this screen follows points at.
                 let Some(ask) = message.params_as::<rpc::ListImages>() else {

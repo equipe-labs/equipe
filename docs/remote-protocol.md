@@ -126,8 +126,13 @@ before any screen asks — so a screen should ask for the tiny `max: 48` first a
 scaled up, until the thumbnail comes. Pictures are read off the daemon's core loop, so a busy
 squad never holds them up. The daemon answers only for a path a waiting question set, one
 of the squad's tickets or one of its design systems (an asset, see below) names now, that is
-still an image file (by name and by its first bytes) inside the squad's folder, a ticket's
-worktree or a design folder once links are resolved — no `..`, at most
+still an image file (by name and by its first bytes) inside the squad's folder, its design QA
+folder (`squads/<squad>/design-qa/`), a ticket's worktree or a design folder once links are
+resolved. A picture a waiting question set or a ticket names, or one a recent line embeds, is
+answered from what names it alone — a quick read of the squad's journal — never after
+working out everything the squad shows, which on a big board under load took minutes; gone
+from disk, a question set's picture is read from where its work landed (the checkout, main
+in git, or equipe's capture store by its hash) — no `..`, at most
 30 MB read, a copy made past 6 MB — and refuses an SVG with a script, an embedded page or a link
 to anything but itself. For a phone the daemon makes the copy at most 720 pixels on a side,
 smaller again until it fits one relay frame. Errors: `-32002` (not following that squad),
@@ -161,6 +166,19 @@ below it), by name, each passing the same checks, at most 12 (`max` fewer), `tot
 (at most 2000 looked at); each path is one `read_image` then gives. Given only for a folder
 such a recorded line names, inside the same roots. Errors as for `read_image`. A daemon older
 than this answers `-32601`; a screen then shows no strip.
+
+**A decision's live prototypes.** An option may carry `"try"`: a live prototype the person
+tries (hovers, presses, types in) rather than only looks at — a loopback address the member
+serves on the daemon's machine (`http://localhost:<port>/…`), or the full path of an HTML page
+the member saved (a file, or a folder's `index.html`), checked when the decision was asked.
+For a path, `prototype_url` `{ "squad", "path" }` (`id` set; a squad the screen follows)
+answers `{ "url" }`: where the daemon serves it, `http://127.0.0.1:<port>/<token>/…` — its
+folder's own files only (HTML, CSS, JS, pictures, fonts; never a hidden file), with a CSP that
+keeps it from fetching anything elsewhere — only for a path a waiting decision of that squad
+names as `try`. A screen shows either address as it shows any live preview: in a web view of
+its own, forwarded over its SSH link when the daemon is on another Mac. A phone has no such
+view and answers nothing for it; a daemon older than this answers `-32601`, and the screen
+shows the option's pictures alone.
 
 ### The project's numbers
 

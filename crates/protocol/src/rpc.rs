@@ -75,6 +75,7 @@ pub const UPLOAD: &str = "upload";
 pub const READ_UPLOAD: &str = "read_upload";
 pub const READ_IMAGE: &str = "read_image";
 pub const LIST_IMAGES: &str = "list_images";
+pub const PROTOTYPE_URL: &str = "prototype_url";
 pub const DESIGN_STUDIO: &str = "design_studio";
 pub const TELEMETRY: &str = "telemetry";
 pub const TELEMETRY_SET: &str = "telemetry_set";
@@ -415,6 +416,23 @@ pub struct ReadImage {
     /// picture whole, unless it is too big to send.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<u32>,
+}
+
+/// Ask where an HTML prototype a waiting decision's option gives (`try`, a
+/// path) is served on the daemon's machine: a loopback address the screen
+/// shows in its live preview — forwarded over its own SSH link when the
+/// daemon is on another Mac. Given only for a path a waiting decision of
+/// that squad names as `try`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrototypeUrl {
+    pub squad: crate::SquadName,
+    pub path: String,
+}
+
+/// Where a prototype is served: `http://127.0.0.1:<port>/…` on the daemon's machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrototypeServed {
+    pub url: String,
 }
 
 /// A picture read back: its type, its size on disk, its pixels across and

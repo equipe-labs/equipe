@@ -81,6 +81,16 @@ pub struct Choice {
     /// checked. Left out when none (and from an older daemon).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub preview_url: String,
+    /// A live prototype of it the person tries on their screen — hovers,
+    /// presses, tabs through, types in — rather than only looks at: a
+    /// loopback page the member serves on the daemon's machine
+    /// (`http://localhost:5173/states`), or the HTML page (`index.html` of a
+    /// folder) saved in the member's worktree or the squad's folder that the
+    /// daemon serves itself, by its full path. Checked when asked: a page
+    /// that answers, a file that is there. Its pictures stay its thumbnail.
+    /// Left out when none (and from an older daemon).
+    #[serde(rename = "try", default, skip_serializing_if = "String::is_empty")]
+    pub try_it: String,
     /// The picture of what is there now, the same screen before it: screens
     /// toggle its first picture between that and this. Left out when none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -230,10 +240,15 @@ impl Question {
             .map(String::as_str)
     }
 
+    /// Whether any of its options can be tried live (`try`).
+    pub fn tryable(&self) -> bool {
+        self.options.iter().any(|c| !c.try_it.is_empty())
+    }
+
     /// Whether its options can be put side by side: a choice that isn't a
-    /// board, two options or more of it showing a picture.
+    /// board, two options or more of it showing a picture or a live prototype.
     pub fn side_by_side(&self) -> bool {
-        !self.board && self.options.iter().all(|c| c.tiles.is_empty()) && self.options.iter().filter(|c| !c.images.is_empty()).count() >= 2
+        !self.board && self.options.iter().all(|c| c.tiles.is_empty()) && self.options.iter().filter(|c| !c.images.is_empty() || !c.try_it.is_empty()).count() >= 2
     }
 }
 
