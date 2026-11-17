@@ -424,6 +424,53 @@ async fn with_no_checks_declared_it_merges_as_before_and_says_none_ran() {
     handle.shutdown().await;
 }
 
+// ── the git side of the PM's acceptance, off the daemon's loop ──
+
+#[tokio::test]
+async fn an_acceptance_under_way_is_not_done_twice() {
+    let (handle, mut events, repo) = handed_in().await;
+    // Asked twice at once: the first is worked out off the loop, and the
+    // second, meanwhile, hears that it is under way — nothing twice.
+    let args = json!({ "tickets": [1], "checked": "Read the diff." });
+    let (first, second) = tokio::join!(tool(&handle, "pm", "accept_work", args.clone()), tool(&handle, "pm", "accept_work", args));
+    assert!(!first.is_error && first.text.starts_with("Accepted T-1"), "{first:?}");
+    assert!(!second.is_error && second.text.starts_with("Nothing accepted.") && second.text.contains("T-1 is already being accepted"), "{second:?}");
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
+    assert!(on_main(&repo, "HERO.md"));
+    assert_eq!(status(&handle, 1).await, TicketStatus::Done);
+    // Asked again once it is through: it is simply done already.
+    let late = tool(&handle, "pm", "accept_work", json!({ "tickets": [1], "checked": "again" })).await;
+    assert!(late.text.starts_with("Nothing accepted.") && !late.text.contains("already being accepted"), "{late:?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_loop_answers_others_while_an_acceptance_is_worked_out() {
+    let (handle, mut events, repo) = handed_in().await;
+    // T-1's worktree holds a web project's dependencies, as real ones do:
+    // releasing it takes a while, and none of that holds the loop.
+    let worktree = handle.snapshot("acme").await.tickets.iter().find(|t| t.id == 1).and_then(|t| t.worktree.clone()).expect("T-1's worktree is kept");
+    for package in 0..300 {
+        let dir = worktree.join("node_modules").join(format!("package-{package}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        for file in 0..10 {
+            std::fs::write(dir.join(format!("file-{file}.js")), "module.exports = 1;\n").unwrap();
+        }
+    }
+    // The acceptance and a screen's look at the board, asked together: the
+    // board answers while the acceptance is still being worked out.
+    let args = json!({ "tickets": [1], "checked": "Read the diff." });
+    let (accepted, board) = tokio::join!(tool(&handle, "pm", "accept_work", args), handle.snapshot("acme"));
+    let then = board.tickets.iter().find(|t| t.id == 1).map(|t| t.status);
+    assert_eq!(then, Some(TicketStatus::Review), "the loop answered before the acceptance was through");
+    // And the PM's call still answers with what really happened.
+    assert!(!accepted.is_error && accepted.text.starts_with("Accepted T-1"), "{accepted:?}");
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
+    assert!(on_main(&repo, "HERO.md"));
+    assert!(!worktree.exists(), "its worktree went");
+    handle.shutdown().await;
+}
+
 /// The guarantee, in the code itself: the daemon accepts a ticket only for
 /// [`Command::Accept`] (or the person's own move to done on the board), merges
 /// only for [`Command::Merge`], sends back only for [`Command::Reopen`] (or
@@ -460,6 +507,8 @@ fn nothing_accepts_or_merges_but_the_persons_commands() {
             // The PM's `accept_work`, only while the person lets the PM accept (`SetPmAccepts`).
             "accept.rs: Box::pin(self.accept(squad, ticket, crate::telemetry::Accepter::Pm)).await;",
             "accept.rs: self.merge(squad, ticket, push);",
+            // Its closing git work (a worktree released), read before it is accepted and done off the loop.
+            "accept.rs: self.close_git(squad, &t, &saved, TicketStatus::Done)",
             // The same, once the project's checks passed on the very merge that lands (`gate.rs`).
             "gate.rs: Box::pin(self.accept(squad, ticket, crate::telemetry::Accepter::Pm)).await;",
             "gate.rs: None => self.merge(squad, ticket, gate.push),",
