@@ -35,6 +35,13 @@ pub const SERVICE: &str = "equipe.metrics";
 pub const DAILY_HOUR: u8 = 7;
 /// A failed fetch is tried again after this long, unless the service said when.
 const RETRY: u64 = 60 * 60;
+/// A busy service (a 503) is tried again after 5 minutes at first, then
+/// twice as long each time it is still busy, up to an hour — never sooner
+/// than it said.
+const BUSY_FIRST: u64 = 5 * 60;
+const BUSY_MOST: u64 = 60 * 60;
+/// The daily loop looks this often, or sooner when a retry is due sooner.
+const LOOK_EVERY: u64 = 10 * 60;
 /// How long one fetch may take.
 const FETCH_WAIT: Duration = Duration::from_secs(90);
 /// How long an ask of the Keychain may take, its turn included. A build of
@@ -513,7 +520,7 @@ impl Metrics {
 
     async fn fetch(&self, id: &str, now: u64, today: i64) {
         let Some(connection) = connections(&self.home).into_iter().find(|c| c.id == id) else { return };
-        let fail = |code, message: &str| FetchError { code, message: message.to_owned(), retry_at: None };
+        let fail = |code, message: &str| FetchError::new(code, message);
         let keys = {
             let (keys, id) = (self.keys.clone(), id.to_owned());
             self.ask_keychain(move || keys.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id)).await.and_then(|got| got)
@@ -537,9 +544,10 @@ impl Metrics {
                         .filter(|p| spec.metrics.iter().any(|m| m.name == p.metric) && day_number(&p.day).is_some_and(|n| n <= today) && p.value.is_finite())
                         .collect::<Vec<_>>()
                 })
-                .map_err(|e| FetchError { message: redact(&e.message, &keys), ..e })
+                .map_err(|e| FetchError { message: redact(&e.message, &keys), said: e.said.as_deref().map(|s| redact(s, &keys)), ..e })
             }
         };
+        let got = got.map_err(|e| backed_off(e, connection.last.as_ref(), now));
         let squad = connection.squad.clone();
         let outcome = self.change(|all| {
             // Disconnected meanwhile: nothing to keep.
@@ -580,7 +588,8 @@ impl Metrics {
             for id in self.due(now, &crate::routines::Local) {
                 self.refresh_one(&id, now, today).await;
             }
-            tokio::time::sleep(Duration::from_secs(10 * 60)).await;
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            tokio::time::sleep(Duration::from_secs(next_look(&connections(&self.home), now))).await;
         }
     }
 }
@@ -595,13 +604,38 @@ pub fn due(c: &Connection, now: u64, clock: &impl Clock) -> bool {
     if c.last.is_none() && c.last_ok.is_none() {
         return true;
     }
+    let failed = c.last.as_ref().and_then(|l| l.error.as_ref().map(|e| (l.at, e)));
+    // A service that said when (busy, over a limit): then, whatever the hour.
+    if let Some((_, FetchError { retry_at: Some(at), .. })) = failed {
+        return now >= *at;
+    }
     if clock.parts(now).hour < DAILY_HOUR {
         return false;
     }
-    match c.last.as_ref().and_then(|l| l.error.as_ref().map(|e| (l.at, e))) {
-        Some((at, e)) => now >= e.retry_at.unwrap_or(at + RETRY),
+    match failed {
+        Some((at, _)) => now >= at + RETRY,
         None => true,
     }
+}
+
+/// A busy service's error, its next try put off by the backoff: 5 minutes
+/// after the first busy answer, twice the last wait after each one in a row,
+/// an hour at most — or later, when the service said so.
+fn backed_off(mut e: FetchError, last: Option<&Fetched>, now: u64) -> FetchError {
+    if !e.busy() {
+        return e;
+    }
+    let waited = last.and_then(|l| Some((l.at, l.error.as_ref()?))).filter(|(_, e)| e.busy()).and_then(|(at, e)| Some(e.retry_at?.saturating_sub(at)));
+    let wait = waited.map_or(BUSY_FIRST, |w| (w * 2).clamp(BUSY_FIRST, BUSY_MOST));
+    e.retry_at = Some(e.retry_at.unwrap_or(0).max(now + wait));
+    e
+}
+
+/// Seconds until the daily loop looks again: [`LOOK_EVERY`], or sooner when
+/// a connection's retry is due before (30 s at least).
+fn next_look(all: &[Connection], now: u64) -> u64 {
+    let soonest = all.iter().filter_map(|c| c.last.as_ref()?.error.as_ref()?.retry_at).map(|at| at.saturating_sub(now)).min();
+    soonest.map_or(LOOK_EVERY, |s| s.clamp(30, LOOK_EVERY))
 }
 
 // ---- Reading ----

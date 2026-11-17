@@ -2,7 +2,7 @@
 //! and `seed`: for tests, and for building screens before a real service is
 //! connected. Like GitHub it remembers only 14 days, so snapshots matter.
 //!
-//! `fail` makes every fetch fail with that code (`auth`, `rate_limited`,
+//! `fail` makes every fetch fail with that code (`auth`, `rate_limited`, `busy`,
 //! `network`) — its message quoting the token, as a careless service might,
 //! for `metrics` to keep out of everything it writes and answers.
 
@@ -43,18 +43,23 @@ impl Adapter for Fake {
         Box::pin(async move {
             let token = fetch.keys.get("token").map(String::as_str).unwrap_or_default();
             if token.is_empty() {
-                return Err(FetchError { code: ErrorCode::Auth, message: "no token".into(), retry_at: None });
+                return Err(FetchError::new(ErrorCode::Auth, "no token"));
             }
             if let Some(fail) = fetch.settings.get("fail").filter(|f| !f.is_empty()) {
+                // `busy`: a 503 that quotes the token, as a service echoing it might.
+                if fail == "busy" {
+                    let said = format!("too busy for {token}, try again later");
+                    return Err(FetchError { status: Some(503), said: Some(said.clone()), retry_at: Some(super::unix_now() + 15), ..FetchError::new(ErrorCode::RateLimited, format!("Fake said 503: {said}")) });
+                }
                 let code = match fail.as_str() {
                     "rate_limited" => ErrorCode::RateLimited,
                     "network" => ErrorCode::Network,
                     _ => ErrorCode::Auth,
                 };
-                return Err(FetchError { code, message: format!("token {token} was refused"), retry_at: None });
+                return Err(FetchError::new(code, format!("token {token} was refused")));
             }
             let seed: u64 = fetch.settings.get("seed").and_then(|s| s.parse().ok()).unwrap_or(1);
-            let today = day_number(fetch.today).ok_or_else(|| FetchError { code: ErrorCode::Other, message: "bad day".into(), retry_at: None })?;
+            let today = day_number(fetch.today).ok_or_else(|| FetchError::new(ErrorCode::Other, "bad day"))?;
             let mut points = Vec::new();
             for back in 0..fetch.days.min(KEEPS) {
                 let n = today - i64::from(back);

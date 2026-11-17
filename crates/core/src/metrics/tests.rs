@@ -242,12 +242,62 @@ fn a_connection_is_fetched_once_a_day_from_seven_and_retried_after_a_failure() {
     c.last = Some(Fetched { at: at(7), error: None });
     assert!(!due(&c, at(20), &Utc), "today's is kept");
     c.last_ok = Some(at(7) - 86_400);
-    c.last = Some(Fetched { at: at(7), error: Some(FetchError { code: ErrorCode::Network, message: String::new(), retry_at: None }) });
+    c.last = Some(Fetched { at: at(7), error: Some(FetchError::new(ErrorCode::Network, "")) });
     assert!(!due(&c, at(7) + 1800, &Utc), "failed half an hour ago");
     assert!(due(&c, at(8), &Utc), "an hour later");
-    c.last = Some(Fetched { at: at(7), error: Some(FetchError { code: ErrorCode::RateLimited, message: String::new(), retry_at: Some(at(10)) }) });
+    c.last = Some(Fetched { at: at(7), error: Some(FetchError { retry_at: Some(at(10)), ..FetchError::new(ErrorCode::RateLimited, "") }) });
     assert!(!due(&c, at(9), &Utc), "the service said when");
     assert!(due(&c, at(10), &Utc));
+}
+
+#[test]
+fn a_busy_service_is_tried_again_after_a_growing_wait_whatever_the_hour() {
+    let at = |h: u64| noon(day("2026-11-02")) - 12 * 3600 + h * 3600;
+    let busy = |retry: u64| FetchError { status: Some(503), retry_at: Some(retry), ..FetchError::new(ErrorCode::RateLimited, "") };
+    // First busy answer: five minutes, though PostHog said 15 seconds.
+    let first = backed_off(busy(at(3) + 15), None, at(3));
+    assert_eq!(first.retry_at, Some(at(3) + 300));
+    // Busy again: twice the last wait each time, an hour at most.
+    let mut last = Fetched { at: at(3), error: Some(first) };
+    let mut waits = Vec::new();
+    for _ in 0..6 {
+        let now = last.error.as_ref().unwrap().retry_at.unwrap();
+        let e = backed_off(busy(now + 15), Some(&last), now);
+        waits.push(e.retry_at.unwrap() - now);
+        last = Fetched { at: now, error: Some(e) };
+    }
+    assert_eq!(waits, [600, 1200, 2400, 3600, 3600, 3600]);
+    // Never sooner than the service said.
+    assert_eq!(backed_off(busy(at(3) + 7200), None, at(3)).retry_at, Some(at(3) + 7200));
+    // Not busy: left as it is.
+    let limit = FetchError { status: Some(429), retry_at: Some(at(3) + 120), ..FetchError::new(ErrorCode::RateLimited, "") };
+    assert_eq!(backed_off(limit.clone(), None, at(3)), limit);
+
+    // A first fetch that came back busy at 3 a.m. is tried again then, not at seven.
+    let mut c = Connection { id: "m1".into(), squad: "acme".into(), project: None, kind: SourceKind::Posthog, settings: BTreeMap::new(), keys: vec![], connected_at: at(3), last: None, last_ok: None };
+    c.last = Some(Fetched { at: at(3), error: Some(busy(at(3) + 300)) });
+    assert!(!due(&c, at(3) + 200, &Utc));
+    assert!(due(&c, at(3) + 300, &Utc), "when it said, before the daily hour");
+    // And the daily loop looks again by then, not ten minutes later.
+    assert_eq!(next_look(std::slice::from_ref(&c), at(3) + 100), 200);
+    assert_eq!(next_look(std::slice::from_ref(&c), at(3) + 299), 30, "30 s at least");
+    assert_eq!(next_look(&[], at(3)), LOOK_EVERY);
+}
+
+#[tokio::test]
+async fn a_busy_fetch_keeps_the_services_words_without_the_key() {
+    let home = scratch("busy");
+    let metrics = metrics(&home);
+    let d = day("2026-11-02");
+    let c = metrics.connect(fake(&[("fail", "busy")]), noon(d)).unwrap();
+    metrics.refresh_one(&c.id, noon(d), d).await;
+    let kept = connections(&home).into_iter().find(|x| x.id == c.id).unwrap();
+    let e = kept.last.unwrap().error.unwrap();
+    assert!(e.busy(), "{e:?}");
+    let said = e.said.unwrap();
+    assert!(said.contains("too busy") && !said.contains(TOKEN), "{said}");
+    assert!(e.retry_at.unwrap() >= noon(d) + 300, "five minutes at least");
+    assert!(!all_text(&home).contains(TOKEN));
 }
 
 #[test]
