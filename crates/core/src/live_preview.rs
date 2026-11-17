@@ -75,7 +75,7 @@ pub fn previewable(url: &str) -> bool {
     loopback(url).is_ok()
 }
 
-fn split_host_port(authority: &str) -> Result<(String, Option<&str>), Refused> {
+fn split_host_port(authority: &str) -> Result<(String, Option<u16>), Refused> {
     let (host, port) = if let Some(inner) = authority.strip_prefix('[') {
         let close = inner.find(']').ok_or(Refused::NotLoopback)?;
         let after = &inner[close + 1..];
@@ -91,11 +91,7 @@ fn split_host_port(authority: &str) -> Result<(String, Option<&str>), Refused> {
             None => (authority, None),
         }
     };
-    if let Some(port) = port
-        && port.parse::<u16>().is_err()
-    {
-        return Err(Refused::BadPort);
-    }
+    let port = port.map(|port| port.parse::<u16>().map_err(|_| Refused::BadPort)).transpose()?;
     Ok((host.trim_end_matches('.').to_ascii_lowercase(), port))
 }
 
