@@ -145,10 +145,38 @@ rounded to 0.1, absent when there is no previous value or it is 0.
 The daemon fetches each connection
 
 - right after `metrics.connect` (asking up to 400 days back on the first fetch;
-  an adapter may ask less — PostHog's `north_star` 91);
+  an adapter may ask less — PostHog 92 days of page loads and clicks, its
+  `north_star` 91);
 - once a day from **07:00 local** (asking the last 14 days);
-- after a failed fetch, again when the service said (`retry_at`) or an hour later;
+- after a failed fetch, again when the service said (`retry_at`, at any hour)
+  or an hour later (from 07:00);
 - on `metrics.refresh`.
+
+### A busy service
+
+A service that answers "not now" is waited for, never reported as the
+internet being down. PostHog answers a query it has no room for with
+`503 clickhouse_at_capacity` ("Queries are a little too busy right now…")
+and a `Retry-After` of 5–20 s; any service may answer 429 (over a limit), or
+502/504 from a gateway.
+
+- Within a fetch, a request answered 429/502/503/504 is asked again up to
+  twice, after `Retry-After` (else 3 s, then 9 s), while the fetch's 40 s of
+  patience for all its requests lasts (`adapters::Patience`).
+- Still busy, the fetch fails `rate_limited` with the `status` and the
+  service's own words (`said`, keys cut out). A 503 (`FetchError::busy`) is
+  tried again 5 minutes later, then twice as long each time it is still
+  busy, an hour at most — never sooner than the service said. The daily loop
+  wakes for it (it looks every 10 minutes, or sooner when a retry is due).
+- PostHog's queries are kept light: one at a time, 1.5 s apart, 92 days at
+  most on a first fetch (not 400 — what tripped PostHog's capacity on a fresh
+  connection), the time range bounded on both sides; a project that sends no
+  page loads isn't asked for their referrers and UTM sources.
+
+The screen says it in the service's words — "PostHog is too busy right now ·
+PostHog said: “Queries are a little too busy right now…” Trying again
+automatically at 10:42." — and "What you see is from …" only when earlier
+numbers are shown.
 
 One fetch per connection at a time; a second ask waits for the first's numbers.
 
@@ -288,13 +316,15 @@ A request that can't be answered is a JSON-RPC error:
 | -32014 | `~/.equipe/metrics/` couldn't be written |
 
 A **fetch** that fails isn't a request error; it is kept on the connection as
-`last.error`, `{ code, message, retry_at? }`:
+`last.error`, `{ code, message, retry_at?, status?, said? }` — `status` the
+HTTP status the service answered (absent when it couldn't be reached),
+`said` its own words, clipped, every key cut out:
 
 | code | the screen says |
 |---|---|
 | `auth` | the key was refused or expired — put in a new one (`metrics.connect` with `id`) |
-| `rate_limited` | the service said not now — tried again at `retry_at` |
-| `network` | the service couldn't be reached, or didn't answer in 90 s |
+| `rate_limited` | the service said not now — over a limit (429), or busy (503: "too busy right now") — tried again at `retry_at` |
+| `network` | the service couldn't be reached, or didn't answer in 90 s — never a status it answered |
 | `bad_response` | the service answered something equipe couldn't read |
 | `keychain` | the key couldn't be read from the Keychain |
 | `other` | anything else |
@@ -326,7 +356,8 @@ days back to ask for, and the daemon's HTTP client. Then, in
 sends its keys to its own service and nowhere else; it returns days it knows
 (not zeros for days it doesn't) and maps the service's refusals to
 `auth` / `rate_limited` (with `retry_at` from `Retry-After`) / `network` /
-`bad_response`. Everything else — keys, snapshots, periods, comparisons,
+`bad_response` (`adapters::refused` does it for an HTTP answer, and
+`adapters::Patience` asks a busy service again). Everything else — keys, snapshots, periods, comparisons,
 redaction, the schedule — is `metrics`' own, so adapters on separate tickets
 don't touch the same files beyond those two lines.
 

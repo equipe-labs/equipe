@@ -179,6 +179,8 @@ pub struct Card {
     pub body: Body,
     /// The service's latest fetch failed: what the card says, dimmed.
     pub error: Option<ErrorCode>,
+    /// That failure is the service saying it is busy (a 503): a wait.
+    pub busy: bool,
     /// The latest day with a value.
     pub as_of: Option<String>,
     /// Days with a value, of those asked.
@@ -222,6 +224,7 @@ pub fn cards(query: &QueryResult, sources: &Sources) -> Vec<Card> {
                 unit: m.unit.clone(),
                 body,
                 error: connection.and_then(|c| c.last.as_ref()?.error.as_ref()).map(|e| e.code),
+                busy: connection.and_then(|c| c.last.as_ref()?.error.as_ref()).is_some_and(FetchError::busy),
                 as_of: m.as_of.clone(),
                 days_known: m.days_known,
                 days: query.days,
@@ -260,6 +263,67 @@ pub fn needs_key(code: ErrorCode) -> bool {
     matches!(code, ErrorCode::Auth | ErrorCode::Keychain)
 }
 
+/// The catalog's word for a failure: `busy` for a service that answered "too
+/// busy" (a 503), else its code's.
+pub fn error_word(e: &FetchError) -> &'static str {
+    if e.busy() {
+        return "busy";
+    }
+    match e.code {
+        ErrorCode::Auth => "auth",
+        ErrorCode::RateLimited => "rate_limited",
+        ErrorCode::Network => "network",
+        ErrorCode::BadResponse => "bad_response",
+        ErrorCode::Keychain => "keychain",
+        ErrorCode::Other => "other",
+    }
+}
+
+/// A banner's title and body, in the person's language: what happened (the
+/// service's own words when it answered), when it is tried again, and how
+/// old the numbers shown are — that last part only when there are some.
+pub fn banner_words(b: &Banner, service: &str, now: u64) -> (String, String) {
+    let catalog = crate::i18n::catalog();
+    let word = error_word(&b.error);
+    let title = catalog.fill(&format!("metrics.err.{word}.title"), &[("service", service.to_owned())]);
+    let mut parts = Vec::new();
+    match (b.error.code, &b.error.said) {
+        // A wait: the service's words say why, the retry when.
+        (ErrorCode::RateLimited, said) => {
+            if let Some(said) = said {
+                parts.push(catalog.fill("metrics.err.said", &[("service", service.to_owned()), ("said", said.clone())]));
+            }
+            parts.push(match b.error.retry_at.filter(|at| *at > now) {
+                Some(at) => catalog.fill("metrics.err.rate_limited.body", &[("retry", moment(at, now))]),
+                None => catalog.get("metrics.err.rate_limited.body_soon").to_owned(),
+            });
+        }
+        (code, said) => {
+            parts.push(catalog.fill(&format!("metrics.err.{word}.body"), &[("when", moment(b.at, now))]));
+            if let (Some(said), false) = (said, needs_key(code)) {
+                parts.push(catalog.fill("metrics.err.said", &[("service", service.to_owned()), ("said", said.clone())]));
+            }
+        }
+    }
+    if let Some(last) = b.last_ok {
+        parts.push(catalog.fill("metrics.err.shown_from", &[("last", moment(last, now))]));
+    }
+    (title, sentences(&parts))
+}
+
+/// Sentences one after the other: a space between them, none after a
+/// sentence that ends in a full-width stop (Japanese, Chinese).
+pub fn sentences(parts: &[String]) -> String {
+    let mut out = String::new();
+    for part in parts.iter().map(|p| p.trim()).filter(|p| !p.is_empty()) {
+        if !out.is_empty() && !out.ends_with(['。', '！', '？']) {
+            out.push(' ');
+        }
+        out.push_str(part);
+    }
+    out
+}
+
 /// The days of a period, as the screen words them: `Oct 27 – Nov 2`.
 pub fn range_words(query: &QueryResult) -> String {
     equipe_core::t!("metrics.range", from = day_words(&query.from), to = day_words(&query.to), previous_from = day_words(&query.previous_from), previous_to = day_words(&query.previous_to))
@@ -291,6 +355,7 @@ pub struct NorthCard {
     /// Twelve windows, the oldest first; `None` is a window not known.
     pub bars: Vec<Option<f64>>,
     pub error: Option<ErrorCode>,
+    pub busy: bool,
     pub fetched: Option<u64>,
     pub last_ok: Option<u64>,
     pub as_of: Option<String>,
@@ -332,6 +397,7 @@ pub fn north_star(query: Option<&QueryResult>, sources: &Sources, loading: bool)
         previous: m.previous.map(number),
         bars,
         error: connection.last.as_ref().and_then(|l| l.error.as_ref()).map(|e| e.code),
+        busy: connection.last.as_ref().and_then(|l| l.error.as_ref()).is_some_and(FetchError::busy),
         fetched: connection.last.as_ref().map(|l| l.at),
         last_ok: connection.last_ok,
         as_of: m.as_of.clone(),
@@ -496,8 +562,8 @@ pub mod demo {
 
     /// The key of one service refused, the other asked too often.
     pub fn failing() -> (Sources, QueryResult) {
-        let auth = FetchError { code: ErrorCode::Auth, message: "key ••• was refused".into(), retry_at: None };
-        let limit = FetchError { code: ErrorCode::RateLimited, message: "slow down".into(), retry_at: Some(1_793_602_800 + 7 * 3600) };
+        let auth = FetchError::new(ErrorCode::Auth, "key ••• was refused");
+        let limit = FetchError { retry_at: Some(1_793_602_800 + 7 * 3600), ..FetchError::new(ErrorCode::RateLimited, "slow down") };
         let connections = vec![connection("m1", SourceKind::Posthog, Some(auth)), connection("m2", SourceKind::Github, Some(limit))];
         let values = vec![north("m1", &north_full()), visits("m1"), languages("m1"), github("m2", "stars", "Stars", "stars", Shape::Total, 25., 19.0)];
         (Sources { kinds: kinds(), connections: connections.clone() }, query(values, connections))
@@ -600,6 +666,39 @@ mod tests {
         assert!(needs_key(ErrorCode::Auth) && needs_key(ErrorCode::Keychain));
         assert!(!needs_key(ErrorCode::RateLimited) && !needs_key(ErrorCode::Network));
         assert!(banners(&demo::healthy().0).is_empty());
+    }
+
+    #[test]
+    fn a_busy_service_is_a_wait_in_its_own_words_never_the_internet() {
+        let at = 1_793_602_800;
+        let said = "Queries are a little too busy right now. We're working to free up resources. Please try again later.";
+        let busy = FetchError { status: Some(503), said: Some(said.into()), retry_at: Some(at + 300), ..FetchError::new(ErrorCode::RateLimited, format!("PostHog said 503: {said}")) };
+        let b = Banner { connection: "m1".into(), kind: SourceKind::Posthog, error: busy.clone(), last_ok: None, at };
+        let (title, body) = banner_words(&b, "PostHog", at);
+        assert_eq!(error_word(&busy), "busy");
+        assert!(title.contains("PostHog") && !title.contains('{'), "{title}");
+        assert!(body.contains(said), "PostHog's own words: {body}");
+        assert!(!body.contains('{') && !body.trim_end().ends_with(" ."), "{body}");
+        let retry = moment(at + 300, at);
+        assert!(body.contains(&retry), "when it tries again: {body}");
+        // A first fetch that failed: nothing earlier is shown, so nothing says where it is from.
+        let shown = crate::i18n::catalog().fill("metrics.err.shown_from", &[("last", String::new())]);
+        assert!(!body.contains(shown.trim()), "{body}");
+        let earlier = Banner { last_ok: Some(at - 86_400), ..b.clone() };
+        assert!(banner_words(&earlier, "PostHog", at).1.len() > body.len(), "with numbers from before, it says how old they are");
+        // Every code with no numbers yet reads whole.
+        for code in [ErrorCode::Network, ErrorCode::BadResponse, ErrorCode::Other, ErrorCode::RateLimited, ErrorCode::Auth, ErrorCode::Keychain] {
+            let b = Banner { error: FetchError::new(code, "x"), ..b.clone() };
+            let (title, body) = banner_words(&b, "PostHog", at);
+            assert!(!title.contains('{') && !body.contains('{') && !body.contains("  "), "{code:?}: {title} / {body}");
+        }
+    }
+
+    #[test]
+    fn sentences_join_with_a_space_except_after_a_full_width_stop() {
+        assert_eq!(sentences(&["A.".into(), "B.".into()]), "A. B.");
+        assert_eq!(sentences(&["あ。".into(), "い。".into()]), "あ。い。");
+        assert_eq!(sentences(&["A.".into(), " ".into(), "B.".into()]), "A. B.");
     }
 
     #[test]

@@ -1,0 +1,1 @@
+{"type": "server_error", "code": "clickhouse_at_capacity", "detail": "Queries are a little too busy right now. We're working to free up resources. Please try again later.", "attr": null}

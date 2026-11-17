@@ -108,7 +108,8 @@ pub struct SourceSpec {
 pub enum ErrorCode {
     /// The key was refused or has expired: the person puts in a new one.
     Auth,
-    /// The service said not now; tried again at `retry_at`.
+    /// The service said not now — over its limit (429) or busy (503); tried
+    /// again at `retry_at`.
     RateLimited,
     /// The service couldn't be reached.
     Network,
@@ -127,6 +128,26 @@ pub struct FetchError {
     /// Unix seconds of the next try, when the service said when.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_at: Option<u64>,
+    /// The HTTP status the service answered with — absent when it couldn't
+    /// be reached at all (a 503 is the service busy, not the internet down).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    /// The service's own words, clipped and with every key cut out: a screen
+    /// shows them as they are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub said: Option<String>,
+}
+
+impl FetchError {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self { code, message: message.into(), retry_at: None, status: None, said: None }
+    }
+
+    /// The service answered "busy, try again" (a 503): retried on its own,
+    /// never a network failure.
+    pub fn busy(&self) -> bool {
+        self.code == ErrorCode::RateLimited && self.status == Some(503)
+    }
 }
 
 /// The latest fetch of a connection.

@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
-use super::{Adapter, Answer, Fetch, Fetching, error, json, refused, send, unix_now};
+use super::{Adapter, Answer, Fetch, Fetching, Patience, error, json, refused, unix_now};
 use crate::metrics::{day_number, day_string};
 use crate::protocol::metrics::{ErrorCode, FetchError, Field, MetricDef, Point, Shape, SourceKind, SourceSpec};
 
@@ -40,6 +40,15 @@ const NORTH_PROPERTY: &str = "squad";
 const NORTH_WHERE: &str = "by=person";
 /// Days of the North Star asked at most: 12 windows of 7 and the one before.
 const NORTH_DAYS: u32 = 91;
+/// Days of page loads and clicks asked at most: the screen's longest period
+/// (30 days) and the one before it, with room. A first fetch of 400 days of
+/// events, three times over, is what tripped PostHog's "Queries are a little
+/// too busy right now" on a fresh connection; older days build up in
+/// equipe's snapshots, one daily fetch at a time.
+const MOST_DAYS: u32 = 92;
+/// The pause between two queries of a fetch, so a fresh connection's
+/// queries don't land on PostHog's query capacity back to back.
+const QUERY_GAP: std::time::Duration = std::time::Duration::from_millis(if cfg!(test) { 1 } else { 1500 });
 
 impl Adapter for Posthog {
     fn spec(&self) -> SourceSpec {
@@ -76,6 +85,9 @@ impl Adapter for Posthog {
         Box::pin(async move {
             let ask = Ask::new(&fetch)?;
             let key = fetch.keys.get("api_key").map(|k| k.trim()).filter(|k| !k.is_empty()).ok_or_else(|| error(ErrorCode::Auth, "no API key"))?;
+            // One query at a time, a pause between them, and one budget of
+            // patience for a busy PostHog across them all.
+            let mut asking = Asking { fetch: &fetch, key, patience: Patience::new(), sent: 0 };
             let mut points = Vec::new();
             let language = format!("toString({})", ask.language);
             let pageviews = [
@@ -84,7 +96,12 @@ impl Adapter for Posthog {
                 ("utm_sources", "toString(properties.utm_source)", "(none)"),
             ];
             for (metric, label, none) in pageviews {
-                let rows = run(&fetch, key, &ask.query("event = '$pageview'", label, none)).await?;
+                let rows = asking.run(&ask.query("event = '$pageview'", label, none)).await?;
+                // A project that sends no page loads (an API, a CLI): its
+                // referrers and UTM sources aren't asked either.
+                if metric == "languages" && rows.is_empty() {
+                    break;
+                }
                 let days = by_day(&rows)?;
                 if metric == "languages" {
                     // Every page load has a language row, so the days' totals are the visits.
@@ -98,10 +115,10 @@ impl Adapter for Posthog {
                     Some(p) => format!("toString({p})"),
                     None => "event".into(),
                 };
-                let rows = run(&fetch, key, &ask.query(&format!("event IN ({events})"), &place, "(unknown)")).await?;
+                let rows = asking.run(&ask.query(&format!("event IN ({events})"), &place, "(unknown)")).await?;
                 points.extend(breakdowns("clicks", by_day(&rows)?));
             }
-            let rows = run(&fetch, key, &ask.north.query(&ask)).await?;
+            let rows = asking.run(&ask.north.query(&ask)).await?;
             points.extend(ask.north.points(&rows, &ask)?);
             Ok(points)
         })
@@ -204,7 +221,8 @@ impl Ask {
         let clicks: Vec<String> = setting("click_events").unwrap_or_default().split(',').map(str::trim).filter(|e| !e.is_empty()).map(str::to_owned).collect();
         let click_place = setting("click_property").map(property).transpose().map_err(bad)?;
         let north = North::new(|k| setting(k).map(str::to_owned), today, fetch.days).map_err(bad)?;
-        Ok(Self { from: day_string(today - i64::from(fetch.days.max(1)) + 1), to: day_string(today), zone, filter, language, clicks, click_place, north })
+        let days = fetch.days.clamp(1, MOST_DAYS);
+        Ok(Self { from: day_string(today - i64::from(days) + 1), to: day_string(today), zone, filter, language, clicks, click_place, north })
     }
 
     /// Per day and label, the count of events matching `which`.
@@ -213,6 +231,7 @@ impl Ask {
         format!(
             "SELECT toString({day}) AS day, coalesce(nullIf({label}, ''), {none}) AS label, count() AS n FROM events \
              WHERE {which}{filter} AND timestamp >= toDateTime('{from} 00:00:00') - INTERVAL 1 DAY \
+             AND timestamp < toDateTime('{to} 00:00:00') + INTERVAL 2 DAY \
              AND {day} >= toDate('{from}') AND {day} <= toDate('{to}') \
              GROUP BY day, label ORDER BY day, n DESC LIMIT {ROWS}",
             filter = self.filter,
@@ -264,8 +283,29 @@ fn filter(text: &str) -> Result<String, String> {
     Ok(out)
 }
 
-/// Send one HogQL query; its rows.
-async fn run(fetch: &Fetch<'_>, key: &str, query: &str) -> Result<Vec<Value>, FetchError> {
+/// A fetch's queries, sent one at a time.
+struct Asking<'a, 'f> {
+    fetch: &'a Fetch<'f>,
+    key: &'a str,
+    patience: Patience,
+    sent: u32,
+}
+
+impl Asking<'_, '_> {
+    /// Send one HogQL query — after a pause, unless it is the first — and
+    /// its rows.
+    async fn run(&mut self, query: &str) -> Result<Vec<Value>, FetchError> {
+        if self.sent > 0 {
+            tokio::time::sleep(QUERY_GAP).await;
+        }
+        self.sent += 1;
+        run(self.fetch, self.key, query, &mut self.patience).await
+    }
+}
+
+/// Send one HogQL query, asked again while PostHog says it is busy and the
+/// fetch's patience lasts; its rows.
+async fn run(fetch: &Fetch<'_>, key: &str, query: &str, patience: &mut Patience) -> Result<Vec<Value>, FetchError> {
     let host = fetch.settings.get("host").map(|h| h.trim().trim_end_matches('/')).filter(|h| !h.is_empty()).unwrap_or(US);
     if !(host.starts_with("https://") || host.starts_with("http://127.0.0.1")) {
         return Err(error(ErrorCode::Other, format!("{host} isn't an https address")));
@@ -274,14 +314,10 @@ async fn run(fetch: &Fetch<'_>, key: &str, query: &str) -> Result<Vec<Value>, Fe
     if project.is_empty() || !project.chars().all(|c| c.is_ascii_digit()) {
         return Err(error(ErrorCode::Other, "the project ID is a number"));
     }
-    let body = json!({ "query": { "kind": "HogQLQuery", "query": query }, "name": "equipe metrics" });
-    let request = fetch
-        .client
-        .post(format!("{host}/api/projects/{project}/query/"))
-        .bearer_auth(key)
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(body.to_string());
-    let answer = send(SERVICE, request).await?;
+    let body = json!({ "query": { "kind": "HogQLQuery", "query": query }, "name": "equipe metrics" }).to_string();
+    let url = format!("{host}/api/projects/{project}/query/");
+    let request = || fetch.client.post(&url).bearer_auth(key).header(reqwest::header::CONTENT_TYPE, "application/json").body(body.clone());
+    let answer = patience.send(SERVICE, request).await?;
     if !(200..300).contains(&answer.status) {
         return Err(refusal(&answer));
     }
@@ -417,10 +453,12 @@ mod tests {
 
     #[tokio::test]
     async fn refusals_are_the_contracts_codes() {
-        let cases: [(u16, Option<&str>, &[u8], ErrorCode); 5] = [
+        let cases: [(u16, Option<&str>, &[u8], ErrorCode); 7] = [
             (401, None, include_bytes!("fixtures/posthog/401.json"), ErrorCode::Auth),
             (403, None, include_bytes!("fixtures/posthog/403_scope.json"), ErrorCode::Auth),
             (429, Some("120"), include_bytes!("fixtures/posthog/429.json"), ErrorCode::RateLimited),
+            (503, Some("120"), include_bytes!("fixtures/posthog/503_busy.json"), ErrorCode::RateLimited),
+            (500, None, b"{\"detail\": \"Server error\"}", ErrorCode::Other),
             (400, None, include_bytes!("fixtures/posthog/400_query.json"), ErrorCode::Other),
             (200, None, b"<html>oops</html>", ErrorCode::BadResponse),
         ];
@@ -437,11 +475,79 @@ mod tests {
             let e = fetch_with(&settings(&url, &[]), 7).await.unwrap_err();
             assert_eq!(e.code, code, "{status}: {}", e.message);
             assert!(!e.message.contains(KEY));
+            assert_ne!(e.code, ErrorCode::Network, "PostHog answered: never the internet");
+            if status != 200 {
+                assert_eq!(e.status, Some(status));
+            }
             if code == ErrorCode::RateLimited {
                 let at = e.retry_at.unwrap();
                 assert!(at >= unix_now() + 110 && at <= unix_now() + 130);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn a_busy_posthog_is_asked_again_and_never_called_unreachable() {
+        const BUSY: &[u8] = include_bytes!("fixtures/posthog/503_busy.json");
+        // Busy once, then the answer: the fetch waits as told and carries on.
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let n = calls.clone();
+        let (url, seen) = serve(move |s| {
+            if n.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 { Reply::status(503, BUSY).header("Retry-After", "7") } else { recorded(&s.body) }
+        })
+        .await;
+        let points = fetch_with(&settings(&url, &[]), 7).await.unwrap();
+        assert!(points.iter().any(|p| p.metric == "referrers"));
+        {
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen.len(), 5, "four queries, one of them asked twice");
+            assert_eq!(seen[1].body, seen[2].body, "the busy query is the one asked again");
+        }
+
+        // Busy every time: the fetch gives up within its patience, as a wait in PostHog's words.
+        let (url, seen) = serve(|_| Reply::status(503, BUSY).header("Retry-After", "15")).await;
+        let e = fetch_with(&settings(&url, &[]), 7).await.unwrap_err();
+        assert_eq!(e.code, ErrorCode::RateLimited, "busy is a wait, not the internet: {}", e.message);
+        assert!(e.busy());
+        assert_eq!(e.status, Some(503));
+        assert_eq!(e.said.as_deref(), Some("Queries are a little too busy right now. We're working to free up resources. Please try again later."));
+        let at = e.retry_at.unwrap();
+        assert!(at >= unix_now() + 14 && at <= unix_now() + 16, "Retry-After is kept");
+        assert_eq!(seen.lock().unwrap().len(), 3, "asked three times at most, then left for later");
+
+        // No Retry-After, and a gateway's 502 in between: still asked again.
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let n = calls.clone();
+        let (url, _) = serve(move |s| match n.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => Reply::status(503, BUSY),
+            1 => Reply::status(502, b"bad gateway".to_vec()),
+            _ => recorded(&s.body),
+        })
+        .await;
+        assert!(fetch_with(&settings(&url, &[]), 7).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_fresh_connection_asks_a_light_range_one_query_at_a_time() {
+        let (url, seen) = serve(|s| recorded(&s.body)).await;
+        // A first fetch asks 400 days; PostHog's page loads are asked for 92.
+        fetch_with(&settings(&url, &[]), 400).await.unwrap();
+        let seen = seen.lock().unwrap();
+        for r in seen.iter().filter(|r| !r.body.contains("ARRAY JOIN")) {
+            assert!(r.body.contains(">= toDate('2026-08-03')"), "92 days up to 2026-11-02: {}", r.body);
+            assert!(r.body.contains("timestamp < toDateTime('2026-11-02 00:00:00') + INTERVAL 2 DAY"), "bounded on both sides: {}", r.body);
+        }
+        assert!(seen.iter().any(|r| r.body.contains("ARRAY JOIN") && r.body.contains(">= toDate('2026-08-04')")), "the North Star keeps its 91 days");
+    }
+
+    #[tokio::test]
+    async fn a_project_without_page_loads_isnt_asked_for_their_referrers() {
+        let (url, seen) = serve(|s| if s.body.contains("$pageview") { Reply::ok(br#"{"results": []}"#.to_vec()) } else { recorded(&s.body) }).await;
+        let points = fetch_with(&settings(&url, &[]), 7).await.unwrap();
+        assert!(!points.iter().any(|p| ["visits", "languages", "referrers", "utm_sources"].contains(&p.metric.as_str())));
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.iter().filter(|r| r.body.contains("$pageview")).count(), 1, "one look at page loads, not three");
+        assert!(seen.iter().any(|r| r.body.contains("ARRAY JOIN")), "the North Star is still asked");
     }
 
     #[tokio::test]

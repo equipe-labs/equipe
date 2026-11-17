@@ -1036,7 +1036,7 @@ fn metrics_summary() -> Summary {
         as_of: Some(as_of.into()),
         error: None,
     };
-    let refused = FetchError { code: ErrorCode::Auth, message: "key ••• was refused".into(), retry_at: None };
+    let refused = FetchError::new(ErrorCode::Auth, "key ••• was refused");
     Summary {
         squad: SQUAD.into(),
         project: Some("site".into()),
