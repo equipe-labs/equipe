@@ -3813,6 +3813,8 @@ mod tests {
              VALUES (7,'recover','', 'in_progress','', 'you',1,1,'code')",
             [],
         ).unwrap();
+        // A run starting puts its ticket in progress again, as the runtime does.
+        let in_progress = || j.conn.execute("UPDATE tickets SET status = 'in_progress' WHERE id = 7", []).unwrap();
         assert!(!j.resumed_by_itself_last(7).unwrap(), "never run");
         assert_eq!(j.acquire_execution(7, 11, "start:one", 100, 30).unwrap(), Some(1));
         assert!(!j.resumed_by_itself_last(7).unwrap());
@@ -3821,12 +3823,14 @@ mod tests {
         assert_eq!(j.reserve_requeue(7, &auto, None, 132).unwrap(), Requeued::Reserved);
         assert!(j.resumed_by_itself_last(7).unwrap());
         assert_eq!(j.acquire_execution(7, 12, &auto, 133, 30).unwrap(), Some(2));
+        in_progress();
         // A daemon restart carrying it on doesn't count as a new run.
         assert_eq!(j.recover_executions(&[], 200).unwrap(), vec![7]);
         assert_eq!(j.reserve_requeue(7, "restart:12", None, 201).unwrap(), Requeued::Reserved);
         assert!(j.resumed_by_itself_last(7).unwrap(), "restarts left aside");
-        // The person's own recovery does.
         assert_eq!(j.acquire_execution(7, 13, "restart:12", 202, 30).unwrap(), Some(3));
+        in_progress();
+        // The person's own recovery does.
         assert_eq!(j.recover_executions(&[], 300).unwrap(), vec![7]);
         assert_eq!(j.reserve_requeue(7, "card:7:a", None, 301).unwrap(), Requeued::Reserved);
         assert!(!j.resumed_by_itself_last(7).unwrap());
