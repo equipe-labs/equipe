@@ -272,7 +272,7 @@ mod tests {
             priority: Priority::Normal,
             rank: 0,
             updated_at: None,
-            design_qa: None,
+            design_qa: None, landing: false,
             plan: None,
             model: None,
         }

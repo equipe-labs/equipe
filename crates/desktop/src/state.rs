@@ -283,6 +283,7 @@ pub fn state_word(t: &Ticket) -> &'static str {
     match t.off_main {
         _ if t.in_design_qa() => t!("state.status_design_qa"),
         _ if !t.not_on_main() => status_word(t.status),
+        _ if t.landing_now() => t!("state.accepted_landing"),
         Some(OffMain::Kept) => t!("state.accepted_kept"),
         _ => t!("state.accepted_not_on_main"),
     }

@@ -436,6 +436,9 @@ async fn with_no_checks_declared_it_merges_as_before_and_says_none_ran() {
     assert!(!ok.is_error && ok.text.starts_with("Accepted T-1") && ok.text.contains("No project checks ran for T-1"), "{ok:?}");
     let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
     assert!(seen.iter().any(|e| matches!(e, Event::Notice { text, .. } if text.contains("No project checks ran") && text.contains(".equipe/checks.json"))), "{seen:#?}");
+    // On its way to main, the board says so — and once there, no longer.
+    assert!(seen.iter().any(|e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.landing_now())), "{seen:#?}");
+    assert!(seen.iter().rev().find_map(|e| if let Event::TicketChanged { ticket, .. } = e { (ticket.id == 1).then_some(!ticket.landing) } else { None }).unwrap());
     assert!(on_main(&repo, "HERO.md"));
     handle.shutdown().await;
 }
@@ -501,7 +504,7 @@ fn nothing_accepts_or_merges_but_the_persons_commands() {
     let mut files = vec![src.join("runtime.rs"), src.join("by_words.rs")];
     files.extend(std::fs::read_dir(src.join("runtime")).unwrap().flatten().map(|e| e.path()));
     files.sort();
-    let watched = ["self.accept(", "self.merge(", "worktree::land(", "self.reopen(", "end_work(id, WorkEnd::Accepted)", "TicketStatus::Done)", "Command::Accept {", "Command::Merge {", "Command::Reopen {", "confirm_accept("];
+    let watched = ["self.accept(", "self.merge(", "worktree::land(", "worktree::land_checked(", "self.reopen(", "end_work(id, WorkEnd::Accepted)", "TicketStatus::Done)", "Command::Accept {", "Command::Merge {", "Command::Reopen {", "confirm_accept("];
     let mut found: Vec<String> = Vec::new();
     for file in &files {
         let text = std::fs::read_to_string(file).unwrap();
@@ -528,7 +531,7 @@ fn nothing_accepts_or_merges_but_the_persons_commands() {
             // The same, once the project's checks passed on the very merge that lands (`gate.rs`).
             "gate.rs: Box::pin(self.accept(squad, ticket, crate::telemetry::Accepter::Pm)).await;",
             "gate.rs: None => self.merge(squad, ticket, gate.push),",
-            "gate.rs: let result = worktree::land(&repo, &merge).map(|main| (main, push.then(|| worktree::push_main(&repo).map(|_| ()))));",
+            "gate.rs: worktree::land_checked(&repo, &branch, &merge).map(|main| (main, push.then(|| worktree::push_main(&repo).map(|_| ()))))",
             "accept.rs: pub(super) async fn confirm_accept(&mut self, squad: &str, id: u64, picked: Vec<Confirmed>, said: Option<equipe_protocol::by_words::Said>) {",
             "accept.rs: Box::pin(self.handle(Command::Reopen { squad, ticket, note: proposal.note.clone() })).await;",
             "accept.rs: Box::pin(self.handle(Command::Accept { squad: squad.clone(), ticket })).await;",

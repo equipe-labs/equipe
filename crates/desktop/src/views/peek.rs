@@ -360,7 +360,7 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
                         .border_color(tone)
                         .text_size(px(13.))
                         .line_height(px(20.))
-                        .child(div().text_color(p.text).child(t!("state.not_on_main_hint")))
+                        .when(!t.landing_now(), |h| h.child(div().text_color(p.text).child(t!("state.not_on_main_hint"))))
                         .child(div().text_color(p.text2).child(why))
                         .into_any_element(),
                 );

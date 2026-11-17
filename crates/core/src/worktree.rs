@@ -797,12 +797,78 @@ pub fn merge_conflicts(repo: &Path, branch: &str) -> Result<Vec<String>> {
 /// (fast-forward), keeping its uncommitted changes — or refuses, and then
 /// nothing changes. Returns the main branch's name; `Ok` with nothing done when
 /// `branch` is in it already, or would change nothing in it.
+///
+/// One landing at a time per repository ([`one_landing_at_a_time`]): should
+/// main still move between working the merge out and landing it (the person
+/// committed meanwhile), it is worked out again on the new main, up to
+/// [`MOVED_TRIES`] times.
 pub fn merge_into_main(repo: &Path, branch: &str, message: &str) -> Result<String> {
-    commit_own_writes(repo);
-    match prepare_merge(repo, branch, message)? {
-        Prepared::Nothing { main } => Ok(main),
-        Prepared::Merge(merge) => land(repo, &merge),
+    one_landing_at_a_time(repo, || {
+        let mut moved = 0;
+        loop {
+            commit_own_writes(repo);
+            let landed = match prepare_merge(repo, branch, message)? {
+                Prepared::Nothing { main } => Ok(main),
+                Prepared::Merge(merge) => land(repo, &merge),
+            };
+            match landed {
+                Err(err) if err.starts_with(MAIN_MOVED) && moved < MOVED_TRIES => moved += 1,
+                landed => return landed,
+            }
+        }
+    })
+}
+
+/// Whether a landing's error is one that passes on its own: another git
+/// holding the main checkout's lock a while, or main moving on under it.
+pub fn passing(err: &str) -> bool {
+    err.contains(MAIN_MOVED) || lock_held(err).is_some()
+}
+
+/// How many times a landing is worked out again because main moved on
+/// between working it out and landing it.
+pub const MOVED_TRIES: u32 = 3;
+
+/// Run `f` as the only one of this process touching `repo`'s main checkout
+/// or moving its main branch — a merge worked out and landed, equipe's own
+/// files committed there first, a push, a commit of a file on main. Each
+/// landing waits for the one before rather than both running git in the same
+/// checkout at once, where one fails on git's index lock, or on main moved by
+/// the other, or on the other's half-staged files. Blocking: off the loop. A
+/// thread already in it for `repo` goes on (a push merging origin's main in).
+pub fn one_landing_at_a_time<T>(repo: &Path, f: impl FnOnce() -> T) -> T {
+    crate::squad_home::one_at_a_time(&main_top(repo), f)
+}
+
+/// The top of `repo`'s main checkout, whichever of its checkouts `repo` is:
+/// what landings in it wait on each other by.
+fn main_top(repo: &Path) -> PathBuf {
+    match git(repo, &["rev-parse", "--path-format=absolute", "--git-common-dir"]) {
+        Ok(common) => {
+            let common = PathBuf::from(common);
+            match common.file_name() {
+                Some(name) if name == ".git" => common.parent().map_or_else(|| common.clone(), Path::to_path_buf),
+                _ => common,
+            }
+        }
+        Err(_) => repo.to_owned(),
     }
+}
+
+/// Land a merge whose checks passed ([`land`]). Should main have moved on
+/// meanwhile — another landing, or equipe's own files committed — while the
+/// branch is still where it was, the merge is worked out again on the new
+/// main and landed at once, as a landing that failed was tried again before;
+/// a real conflict there merges nothing.
+pub fn land_checked(repo: &Path, branch: &str, merge: &MergeCommit) -> Result<String> {
+    one_landing_at_a_time(repo, || match land(repo, merge) {
+        Err(err) if err.starts_with(MAIN_MOVED) && branch_is_at(repo, branch, merge) => {
+            let message = git(repo, &["show", "-s", "--format=%B", &merge.commit])?;
+            crate::daemon_log!("equipe: main of {} moved on since {branch}'s merge was checked; merged again on the new main", repo.display());
+            merge_into_main(repo, branch, &message)
+        }
+        landed => landed,
+    })
 }
 
 /// Before main moves: what equipe itself wrote in the checkout main is
@@ -883,6 +949,10 @@ pub const MAIN_MOVED: &str = "main moved on since the merge was worked out";
 /// still at the tip it was worked out on; else nothing moves and the error
 /// starts with [`MAIN_MOVED`]. Returns the main branch's name.
 pub fn land(repo: &Path, merge: &MergeCommit) -> Result<String> {
+    one_landing_at_a_time(repo, || land_now(repo, merge))
+}
+
+fn land_now(repo: &Path, merge: &MergeCommit) -> Result<String> {
     if !main_is_at(repo, merge) {
         return Err(format!("{MAIN_MOVED} — nothing was merged"));
     }
@@ -927,12 +997,50 @@ pub(crate) fn move_main(repo: &Path, main: &str, tip: &str, commit: &str, done: 
 pub(crate) fn move_main_within(repo: &Path, main: &str, tip: &str, commit: &str, done: &str, timeout: Duration) -> Result<()> {
     let checked_out = checked_out_at(repo, main);
     match checked_out {
-        Some(path) => git_within(&path, &["merge", "-q", "--ff-only", commit], timeout).map_err(|err| {
+        Some(path) => git_in_checkout(&path, &["merge", "-q", "--ff-only", commit], timeout).map_err(|err| {
             format!("{main} is checked out in {} and couldn't move without touching its changes — nothing was {done} ({err})", path.display())
         })?,
         None => git(repo, &["update-ref", &format!("refs/heads/{main}"), commit, tip])?,
     };
     Ok(())
+}
+
+/// How long git in a checkout waits on a lock another git holds there (the
+/// person's, their editor's) before it gives up.
+const INDEX_LOCK_WAIT: Duration = Duration::from_secs(20);
+/// A checkout's git lock older than this, while equipe runs no git there of
+/// its own, is one a git that was killed left: the longest equipe's git takes
+/// there is a fast-forward untracking design captures (15 minutes).
+const STALE_CHECKOUT_LOCK: Duration = Duration::from_secs(20 * 60);
+
+/// [`git_within`] in a checkout, with its index: while another git holds the
+/// checkout's lock (`index.lock`) it is tried again after a moment, for up to
+/// [`INDEX_LOCK_WAIT`]; a lock left long ago by a git that was killed is taken
+/// away ([`STALE_CHECKOUT_LOCK`]). Called inside [`one_landing_at_a_time`],
+/// so no git of equipe's own holds it.
+fn git_in_checkout(dir: &Path, args: &[&str], timeout: Duration) -> Result<String> {
+    let began = std::time::Instant::now();
+    let mut pause = Duration::from_millis(100);
+    loop {
+        match git_within(dir, args, timeout) {
+            Err(err) => match lock_held(&err) {
+                Some(lock) if crate::squad_home::clear_stale_lock_file(&lock, STALE_CHECKOUT_LOCK) => {}
+                Some(_) if began.elapsed() < INDEX_LOCK_WAIT => {
+                    std::thread::sleep(pause);
+                    pause = (pause * 2).min(Duration::from_secs(2));
+                }
+                _ => return Err(err),
+            },
+            done => return done,
+        }
+    }
+}
+
+/// The lock file git said another git holds, from its error.
+pub(crate) fn lock_held(err: &str) -> Option<PathBuf> {
+    let (_, rest) = err.split_once("Unable to create '")?;
+    let (path, rest) = rest.split_once('\'')?;
+    (path.ends_with(".lock") && rest.starts_with(": File exists")).then(|| PathBuf::from(path))
 }
 
 /// The checkout of `repo` that has `branch` checked out, if one does.
@@ -951,6 +1059,10 @@ pub(crate) fn checked_out_at(repo: &Path, branch: &str) -> Option<PathBuf> {
 /// `Ok` with nothing done when main holds those bytes there already.
 pub fn commit_file_on_main(repo: &Path, rel: &str, bytes: &[u8], message: &str) -> Result<String> {
     off_the_loop("commit_file_on_main");
+    one_landing_at_a_time(repo, || commit_file_on_main_now(repo, rel, bytes, message))
+}
+
+fn commit_file_on_main_now(repo: &Path, rel: &str, bytes: &[u8], message: &str) -> Result<String> {
     if rel.is_empty() || rel.starts_with('/') || rel.split('/').any(|p| p.is_empty() || p == "." || p == ".." || p == ".git") {
         return Err(format!("{rel} isn't a path inside the repository"));
     }
@@ -998,8 +1110,10 @@ pub fn commit_file_on_main(repo: &Path, rel: &str, bytes: &[u8], message: &str) 
 /// committed. The files committed; none when main holds them already.
 pub fn commit_checkout_files_on_main(repo: &Path, checkout: &Path, rels: &[String], message: &str) -> Result<Vec<String>> {
     off_the_loop("commit_checkout_files_on_main");
-    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    one_landing_at_a_time(repo, || commit_checkout_files_now(repo, checkout, rels, message))
+}
+
+fn commit_checkout_files_now(repo: &Path, checkout: &Path, rels: &[String], message: &str) -> Result<Vec<String>> {
     let main = main_branch(repo)?;
     let tip = git(repo, &["rev-parse", &format!("refs/heads/{main}")])?;
     let mut blobs: Vec<(String, String, String)> = Vec::new();
@@ -1053,7 +1167,7 @@ pub fn commit_checkout_files_on_main(repo: &Path, checkout: &Path, rels: &[Strin
     }
     let paths: Vec<&str> = blobs.iter().map(|(rel, ..)| rel.as_str()).collect();
     for (rel, blob, mode) in &blobs {
-        if let Err(err) = git(checkout, &["update-index", "--add", "--cacheinfo", &format!("{mode},{blob},{rel}")]) {
+        if let Err(err) = git_in_checkout(checkout, &["update-index", "--add", "--cacheinfo", &format!("{mode},{blob},{rel}")], GIT_TIMEOUT) {
             unstage(checkout, &paths);
             return Err(err);
         }
@@ -1069,7 +1183,7 @@ pub fn commit_checkout_files_on_main(repo: &Path, checkout: &Path, rels: &[Strin
 fn unstage(checkout: &Path, paths: &[&str]) {
     let mut args = vec!["reset", "-q", "--"];
     args.extend(paths);
-    let _ = git(checkout, &args);
+    let _ = git_in_checkout(checkout, &args, GIT_TIMEOUT);
 }
 
 /// Whether two paths are the same folder.
@@ -1096,6 +1210,11 @@ pub fn names_on_main(repo: &Path, dir: &str) -> Result<Vec<String>> {
 /// ([`conflicts_with_origin`]).
 pub fn push_main(repo: &Path) -> Result<String> {
     off_the_loop("push_main");
+    // Two pushes at once would turn one away; a landing meanwhile would move what is pushed.
+    one_landing_at_a_time(repo, || push_main_now(repo))
+}
+
+fn push_main_now(repo: &Path) -> Result<String> {
     if !has_origin(repo) {
         return Err(NO_ORIGIN.into());
     }
@@ -2421,5 +2540,102 @@ mod tests {
         assert!(!err.contains("hint:"), "{err}");
         assert_eq!(git(&repo, &["rev-parse", "main"]).unwrap(), ours, "nothing changes here");
         assert_eq!(git(&remote, &["rev-parse", "main"]).unwrap(), theirs, "nor there");
+    }
+
+    // ── one landing at a time per repository ──
+
+    #[test]
+    fn five_landings_at_once_in_one_repository_all_land() {
+        let repo = repo();
+        let home = scratch("home");
+        let branches: Vec<String> = (1..=5).map(|n| finished(&repo, &home, &format!("t{n}"), &format!("F{n}.md"), &format!("{n}\n"))).collect();
+        // Each with equipe's own file written in the checkout meanwhile and
+        // committed on main as its writers do: all of it in the same checkout at once.
+        let landings: Vec<_> = branches
+            .into_iter()
+            .enumerate()
+            .map(|(n, branch)| {
+                let repo = repo.clone();
+                std::thread::spawn(move || {
+                    let own = format!("own-{n}.md");
+                    std::fs::write(repo.join(&own), "own\n").unwrap();
+                    let committed = commit_checkout_files_on_main(&repo, &repo, &[own], "own");
+                    let merged = merge_into_main(&repo, &branch, &format!("merge {branch}"));
+                    (committed, merged)
+                })
+            })
+            .collect();
+        for landing in landings {
+            let (committed, merged) = landing.join().unwrap();
+            assert_eq!(committed.map(|c| c.len()), Ok(1));
+            assert_eq!(merged.as_deref(), Ok("main"));
+        }
+        for n in 1..=5 {
+            assert_eq!(git(&repo, &["show", &format!("main:F{n}.md")]).unwrap(), n.to_string());
+            assert_eq!(git(&repo, &["show", &format!("main:own-{}.md", n - 1)]).unwrap(), "own");
+            assert!(repo.join(format!("F{n}.md")).exists(), "the checkout followed");
+        }
+        assert_eq!(git(&repo, &["status", "--porcelain"]).unwrap(), "", "nothing left half-staged");
+    }
+
+    #[test]
+    fn a_checked_merge_main_moved_under_is_worked_out_again_unless_it_now_conflicts() {
+        let repo = repo();
+        let home = scratch("home");
+        let one = finished(&repo, &home, "t1", "ONE.md", "one\n");
+        let Prepared::Merge(merge) = prepare_merge(&repo, &one, "equipe: merge T-1").unwrap() else { panic!("a merge") };
+        // Main moves on before it lands: another ticket landed meanwhile.
+        let two = finished(&repo, &home, "t2", "TWO.md", "two\n");
+        merge_into_main(&repo, &two, "merge t2").unwrap();
+        assert!(land(&repo, &merge).unwrap_err().starts_with(MAIN_MOVED));
+        let moved_to = git(&repo, &["rev-parse", "main"]).unwrap();
+        assert_eq!(land_checked(&repo, &one, &merge).unwrap(), "main");
+        assert!(is_merged(&repo, &one).unwrap());
+        assert_eq!(git(&repo, &["rev-parse", "main^1"]).unwrap(), moved_to, "merged on the new main");
+        assert_eq!(git(&repo, &["log", "-1", "--format=%s"]).unwrap(), "equipe: merge T-1", "with its message");
+        // Main now changing what the branch changes: a real conflict merges nothing.
+        let three = finished(&repo, &home, "t3", "README.md", "three\n");
+        let Prepared::Merge(merge) = prepare_merge(&repo, &three, "merge t3").unwrap() else { panic!("a merge") };
+        let four = finished(&repo, &home, "t4", "README.md", "four\n");
+        merge_into_main(&repo, &four, "merge t4").unwrap();
+        let before = git(&repo, &["rev-parse", "main"]).unwrap();
+        assert!(land_checked(&repo, &three, &merge).unwrap_err().contains(" conflicts with "));
+        assert_eq!(git(&repo, &["rev-parse", "main"]).unwrap(), before);
+    }
+
+    #[test]
+    fn a_checkout_lock_held_a_moment_is_waited_for_and_one_left_long_ago_taken_away() {
+        let repo = repo();
+        let home = scratch("home");
+        let lock = repo.join(".git").join("index.lock");
+        // Left by a git that was killed, long ago.
+        let one = finished(&repo, &home, "t1", "ONE.md", "one\n");
+        std::fs::write(&lock, "").unwrap();
+        std::fs::File::open(&lock).unwrap().set_modified(std::time::SystemTime::now() - STALE_CHECKOUT_LOCK - Duration::from_secs(60)).unwrap();
+        merge_into_main(&repo, &one, "merge t1").unwrap();
+        assert!(!lock.exists() && repo.join("ONE.md").exists());
+        // Held by another git (the person's editor) for a moment: waited for.
+        let two = finished(&repo, &home, "t2", "TWO.md", "two\n");
+        std::fs::write(&lock, "").unwrap();
+        let held = lock.clone();
+        let other = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(800));
+            std::fs::remove_file(held).unwrap();
+        });
+        merge_into_main(&repo, &two, "merge t2").unwrap();
+        other.join().unwrap();
+        assert!(repo.join("TWO.md").exists());
+        assert_eq!(git(&repo, &["status", "--porcelain"]).unwrap(), "");
+    }
+
+    #[test]
+    fn a_lock_another_git_holds_is_told_from_its_error_and_passes() {
+        let err = "main is checked out in /p/site and couldn't move without touching its changes — nothing was merged (git merge -q --ff-only 1a2b failed: \
+error: Unable to create '/p/site/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository)";
+        assert_eq!(lock_held(err), Some(PathBuf::from("/p/site/.git/index.lock")));
+        assert!(passing(err));
+        assert!(passing("main moved on since the merge was worked out — nothing was merged"));
+        assert!(!passing("error: Your local changes to the following files would be overwritten by merge: app/styles/portfolio.css"));
+        assert!(!passing("equipe/t1 conflicts with main in README.md — nothing was merged"));
     }
 }
