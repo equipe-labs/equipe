@@ -256,6 +256,13 @@ pub fn saves_done(dir: &Path) {
     let _ = made.recv();
 }
 
+/// Run `f` — a change to `dir` and its saves — as the only one of this process
+/// using `dir`'s git: a save made meanwhile (a desk turn's, off the loop) can't
+/// take what `f` wrote as its own before `f` saves it.
+pub fn exclusively<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
+    one_at_a_time(dir, f)
+}
+
 /// Save whatever changed under `paths` only (all of the home when empty).
 pub fn save_in(dir: &Path, by: &str, why: &str, paths: &[&str]) -> Result<Option<Change>, String> {
     one_at_a_time(dir, || save_in_now(dir, by, why, paths))
