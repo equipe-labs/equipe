@@ -104,6 +104,12 @@ pub enum PanelEvent {
     /// It opened on its own (a member asked the person in): the window shows
     /// the conversation beside it.
     Opened,
+    /// "Live preview": the tab on screen — a loopback page of the daemon's
+    /// machine — in the window's live preview (`views/preview.rs`), with the
+    /// member whose tab it is.
+    Preview { url: String, session: Option<SessionId> },
+    /// Over the whole window, or back beside the conversation.
+    Full,
 }
 
 /// One lane's tabs, as the daemon last told.
@@ -146,6 +152,8 @@ pub struct Who {
 
 pub struct BrowserPanel {
     pub open: bool,
+    /// Over the whole window (⌘⇧F, or its button; Esc back).
+    pub full: bool,
     /// The window shows it: open, beside the conversation.
     shown: bool,
     pub width: f32,
@@ -304,6 +312,7 @@ impl BrowserPanel {
         }));
         Self {
             open: false,
+            full: false,
             shown: false,
             width: width.unwrap_or(WIDTH),
             drag: None,
@@ -671,6 +680,24 @@ impl BrowserPanel {
     }
 
     // ── open, close, size ──
+
+    /// Over the whole window, or back beside the conversation.
+    pub fn set_full(&mut self, full: bool, cx: &mut Context<Self>) {
+        if self.full != full {
+            self.full = full;
+            // Laid out at the new box once it holds still: a sharp picture at the size it is drawn.
+            cx.emit(PanelEvent::Full);
+            cx.notify();
+        }
+    }
+
+    /// The tab on screen, when it is a loopback page of the daemon's machine:
+    /// its address and the member whose tab it is (the person's own: none).
+    fn previewable(&self) -> Option<(String, Option<SessionId>)> {
+        let (lane, _) = self.selected.as_ref()?;
+        let page = self.page()?;
+        equipe_core::live_preview::previewable(&page.url).then(|| (page.url.clone(), self.lanes.get(lane).and_then(|l| l.session)))
+    }
 
     pub fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open = !self.open;
@@ -1756,6 +1783,10 @@ impl BrowserPanel {
     fn tab_strip(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let p = self.palette;
         let mut row = h_flex().id("browser-tabs").w_full().h(px(40.)).gap_1().pl_2().pr_1().items_center().overflow_x_scroll().track_scroll(&self.tabs_scroll);
+        // Over the whole window, the traffic lights sit at the strip's left.
+        if self.full {
+            row = row.pl(px(80.));
+        }
         // Which child the picked tab is, to scroll it into sight once picked.
         let (mut children, mut picked) = (0usize, None);
         for (n, lane) in self.ordered().into_iter().enumerate() {
@@ -1902,7 +1933,8 @@ impl BrowserPanel {
         let typing = self.url.read(cx).focus_handle(cx).is_focused(window);
         let shown = page.as_ref().and_then(|pg| browse::address(&pg.url)).filter(|_| !typing);
         // Room for the words beside the icons: Follow from 420 points, Open in Chrome from 640.
-        let shown_width = fit_width(self.width, f32::from(window.viewport_size().width) / window.content_zoom().max(0.01));
+        let logical = f32::from(window.viewport_size().width) / window.content_zoom().max(0.01);
+        let shown_width = if self.full { logical } else { fit_width(self.width, logical) };
         let (wide, wider) = (shown_width >= 420., shown_width >= 640.);
         h_flex()
             .px_2()
@@ -1979,6 +2011,23 @@ impl BrowserPanel {
                 t!("browser.follow_tip"),
                 None,
             ))
+            // A loopback page there: big, sharp and the person's own, in the live preview.
+            .children(self.previewable().map(|(url, session)| {
+                let open = cx.listener(move |_, _, _, cx| cx.emit(PanelEvent::Preview { url: url.clone(), session }));
+                if wide {
+                    ui::button(p, "browser-live-preview", Kind::Primary, t!("browser.live_preview")).icon(Icon::Expand).tip(t!("browser.live_preview_tip"), None).on_click(open)
+                } else {
+                    ui::icon_button(p, "browser-live-preview", Icon::Expand, t!("browser.live_preview"), None).on_click(open)
+                }
+            }))
+            .child(
+                ui::icon_button(p, "browser-full", Icon::AppWindow, if self.full { t!("browser.exit_full") } else { t!("browser.full") }, Some("⌘⇧F"))
+                    .selected(self.full)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let full = !this.full;
+                        this.set_full(full, cx);
+                    })),
+            )
             .child({
                 // The real window comes up on the daemon's Mac: on another one, say which.
                 let (label, tip_text) = match &self.endpoint {
@@ -2561,12 +2610,13 @@ impl Render for BrowserPanel {
         // A window narrower than the width kept (or dragged wide before it
         // shrank) holds the panel to what it can give: never past the edge.
         let fit = fit_width(self.width, f32::from(window.viewport_size().width) / window.content_zoom().max(0.01));
+        let full = self.full;
         h_flex()
             .h_full()
-            .w(px(fit))
-            .flex_none()
+            .when(!full, |r| r.w(px(fit)).flex_none())
+            .when(full, |r| r.flex_1().min_w_0())
             .sans()
-            .child(
+            .when(!full, |r| r.child(
                 // The divider: drag to resize.
                 div()
                     .id("browser-split")
@@ -2584,7 +2634,7 @@ impl Render for BrowserPanel {
                         }),
                     )
                     .child(div().h_full().w(px(if dragging { 2. } else { 1. })).bg(if dragging { p.accent } else { p.hair })),
-            )
+            ))
             .child(
                 v_flex()
                     .flex_1()

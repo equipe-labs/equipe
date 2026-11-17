@@ -1805,6 +1805,17 @@ pub enum Command {
         page: String,
         from: design_session::SessionFrom,
     },
+    /// The person opened (`open`) or closed a live preview of `url` — a
+    /// loopback page of the daemon's machine, shown in a web view of their
+    /// own screen — that `session`'s member serves: while it is open, that
+    /// member is told to keep the page's server running.
+    LivePreview {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+        url: String,
+        open: bool,
+    },
 }
 
 /// Where the daemon's Nebius Token Factory key comes from.
@@ -4404,6 +4415,7 @@ mod tests {
                 card: references::RefCard { picture: "/h/visuals/refs/0123456789abcdef.png".into(), title: "Command menu".into(), site: "21st.dev".into(), link: "https://21st.dev/r/cmdk".into(), kind: references::RefKind::Component, why: "Fast".into(), take: "Grouped rows".into(), leave: "Neon".into(), pattern: "command-menu".into() },
             },
             Command::TryReference { squad: "acme".into(), project: None, card: references::RefCard { title: "Button".into(), link: "https://ui.shadcn.com/docs/components/button".into(), ..Default::default() } },
+            Command::LivePreview { squad: "acme".into(), session: Some(3), url: "http://localhost:4899/".into(), open: true },
         ];
         for command in commands {
             let json = serde_json::to_string(&command).unwrap();

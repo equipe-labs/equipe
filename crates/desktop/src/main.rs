@@ -19,6 +19,7 @@ mod chapters;
 mod checks;
 mod browse;
 mod signin_view;
+mod preview_view;
 mod commands;
 mod diffs;
 mod engines;
@@ -337,6 +338,8 @@ pub struct Shell {
     pub design_taste: views::design_taste::Inputs,
     /// A design session with the designer, the page live beside it (`views/design_session.rs`).
     pub session: views::design_session::SessionUi,
+    /// A member's page in a web view of this screen's own (`views/preview.rs`).
+    pub preview: views::preview::PreviewUi,
     /// The taste tuner, over the design screen (`views/tuner.rs`).
     pub tuner: tuner::TunerUi,
     /// The taste board of a decision, when one is open.
@@ -572,6 +575,7 @@ impl Shell {
             status: Default::default(),
             design_taste: Default::default(),
             session: Default::default(),
+            preview: Default::default(),
             tuner: Default::default(),
             taste: Default::default(),
             browser,
@@ -743,6 +747,10 @@ impl Shell {
                 this.show(Screen::Chat, cx);
                 this.sync_browser(window, cx);
             }
+            PanelEvent::Preview { url, session } => {
+                this.open_live_preview(url, *session, false, window, cx);
+            }
+            PanelEvent::Full => cx.notify(),
         }));
         // Settings' search filters as it is typed.
         // Compare and review's words: ⏎ sends the draft back with them.
@@ -807,6 +815,11 @@ impl Shell {
                 } else if this.update(cx, |shell, cx| shell.scroll_modal(key, modifiers, cx)).unwrap_or(false) {
                     cx.stop_propagation();
                 }
+                return;
+            }
+            // The live preview (or the browser panel) over the whole window: Esc puts it back beside the conversation.
+            if key == "escape" && !modifiers.platform && !modifiers.control && !modifiers.alt && this.update(cx, |shell, cx| shell.preview_escape(window, cx)).unwrap_or(false) {
+                cx.stop_propagation();
                 return;
             }
             // On the studio's wait card action, Esc goes back to the text box when it is on screen; Shift-Tab walks the usual order back.
@@ -2047,7 +2060,9 @@ impl Shell {
     /// window's own points: what the banner's words are fitted to.
     pub fn measure_main(&self, window: &Window, cx: &App) -> f32 {
         let logical = f32::from(window.viewport_size().width) / window.content_zoom().max(0.01);
-        let side = if self.doc.is_some() || (self.terminal.is_some() && !self.remembered.term_below && self.screen == Screen::Chat) {
+        let side = if self.preview.docked() {
+            views::preview::docked_width(logical - self.sidebar_on_screen(cx))
+        } else if self.doc.is_some() || (self.terminal.is_some() && !self.remembered.term_below && self.screen == Screen::Chat) {
             self.side_width(window)
         } else if self.screen == Screen::Chat && self.browser.read(cx).open {
             self.browser.read(cx).width
@@ -2133,6 +2148,17 @@ impl Shell {
     /// ⇧⌘F, the header's button and its way back: one command. In, the
     /// keyboard goes to the way back; out, to the button that went in.
     pub fn toggle_doc_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A live preview open: it goes over the whole window, or back.
+        if self.preview.open.is_some() {
+            return self.preview_toggle_full(window, cx);
+        }
+        // The browser panel beside the conversation, no document over it: the same.
+        if self.screen == Screen::Chat && self.doc.is_none() && self.browser.read(cx).open {
+            let full = !self.browser.read(cx).full;
+            self.browser.update(cx, |b, cx| b.set_full(full, cx));
+            cx.notify();
+            return;
+        }
         if !matches!(self.screen, Screen::Chat | Screen::Project | Screen::Docs) {
             return;
         }
@@ -2757,6 +2783,8 @@ impl Render for Shell {
         self.design_prepare(window, cx);
         self.studio_prepare(window, cx);
         self.design_session_prepare(window, cx);
+        // The live preview's web view, where the pane was last drawn.
+        self.preview_sync(window, cx);
         // What the person did here (accepted, answered, a project in focus) changes Needs you too.
         self.sync_badge();
         self.sync_window(window);
@@ -2895,8 +2923,9 @@ impl Render for Shell {
         // The sidebar runs to the window's top, the traffic lights over its
         // strip; each screen's header is the title bar on the right.
         if self.screen == Screen::Settings {
-            // No browser panel here: its sign-in view hides with it.
+            // No browser panel here: its sign-in view hides with it; the preview's web view too.
             self.browser.update(cx, |b, _| b.set_drawn(false));
+            self.preview.set_drawn(false);
             // Settings: its own list in the sidebar's place, the page beside it.
             return root
                 .relative()
@@ -2938,22 +2967,32 @@ impl Render for Shell {
         // Under the conversation, or at its right where the document isn't.
         let (below, terminal) = if self.remembered.term_below { (terminal, None) } else { (None, terminal) };
         let doc = doc.or(terminal);
-        let browser = (doc.is_none() && self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
+        // A live preview open takes the right side, before the document and the browser.
+        let preview = views::preview::pane(self, window, cx);
+        self.preview.set_drawn(preview.is_some());
+        let browser = (preview.is_none() && doc.is_none() && self.screen == Screen::Chat && self.browser.read(cx).open && !matches!(self.model.conn, Conn::Down { had_snapshot: false, .. } | Conn::Connecting)).then(|| self.browser.clone());
         // Whether the panel is drawn this frame: its sign-in view (a native view
         // over the window, nothing the panel paints) hides when it isn't.
         let drawn = browser.is_some();
         self.browser.update(cx, |b, _| b.set_drawn(drawn));
+        let browser_full = drawn && self.browser.read(cx).full;
         // The design screen: the designer's conversation at its right (`views/design_talk.rs`).
-        let talk = if away { None } else { views::design_talk::panel(self, window, cx) };
+        let talk = if away || preview.is_some() { None } else { views::design_talk::panel(self, window, cx) };
+        let doc = if preview.is_some() { None } else { doc };
         let body = self.panes.body.clone().cached(StyleRefinement::default().flex_1().min_w_0().min_h_0());
         // What doesn't fit the room beside the panel is cut at its edge, not drawn under it.
         let middle = v_flex().flex_1().min_w_0().h_full().overflow_hidden().child(body).children(below);
-        // Focus view: only the document, across the window's whole content.
-        let focused = self.doc_focused();
-        let row = if focused {
+        // Focus view: only the document, across the window's whole content —
+        // or the preview, or the browser, over the whole window.
+        let focused = self.doc_focused() || self.preview.over_all() || browser_full;
+        let row = if self.preview.over_all() {
+            h_flex().flex_1().min_h_0().children(preview)
+        } else if browser_full {
+            h_flex().flex_1().min_h_0().children(browser)
+        } else if self.doc_focused() {
             h_flex().flex_1().min_h_0().children(doc)
         } else {
-            h_flex().flex_1().min_h_0().children(sidebar).child(middle).children(doc).children(talk).children(browser)
+            h_flex().flex_1().min_h_0().children(sidebar).child(middle).children(preview).children(doc).children(talk).children(browser)
         };
         root.relative()
             .child(row)

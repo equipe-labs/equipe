@@ -299,6 +299,10 @@ pub struct Pending {
     pub reasons: Vec<PickReason>,
     /// The crop, as PNG bytes, once made.
     pub crop: Option<Vec<u8>>,
+    /// Dropped on the live preview (`views/preview.rs`): the page's width
+    /// there, and the element the click was on.
+    pub width: Option<u32>,
+    pub selector: Option<String>,
 }
 
 impl Session {
@@ -331,12 +335,18 @@ impl Session {
 
     /// Drop a pin with its note; `None` when the note is empty.
     pub fn drop_pin(&mut self, x: u32, y: u32, note: &str, reasons: Vec<PickReason>, selector: Option<String>) -> Option<u32> {
+        let width = self.viewport.width();
+        self.drop_pin_wide(x, y, width, note, reasons, selector)
+    }
+
+    /// [`Self::drop_pin`] on a page laid out `width` CSS pixels wide (the live preview's).
+    pub fn drop_pin_wide(&mut self, x: u32, y: u32, width: u32, note: &str, reasons: Vec<PickReason>, selector: Option<String>) -> Option<u32> {
         let note = Pin::tidy(note);
         if note.is_empty() && reasons.is_empty() {
             return None;
         }
         let n = next_number(&self.pins);
-        let pin = Pin { n, x, y, width: self.viewport.width(), note, selector, reasons, crop: None };
+        let pin = Pin { n, x, y, width, note, selector, reasons, crop: None };
         self.pins.push(PinUi { pin, sent: false, done: None });
         Some(n)
     }

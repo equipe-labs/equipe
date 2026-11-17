@@ -6,6 +6,10 @@
 //! window's own shared connection gets the forward (`ssh -O forward`), or,
 //! without one, an `ssh -N -L` of its own, never asking anything. Closed
 //! when the sign-in ends. Plain `ssh`, the person's own SSH setup.
+//!
+//! The live preview (`crate::views::preview`) forwards the same way, to a
+//! page a member serves on the daemon's loopback: at the page's own port
+//! when it is free here, else at one this Mac picks ([`open_to`]).
 
 use std::net::{Ipv4Addr, Ipv6Addr, TcpListener, TcpStream};
 use std::process::{Child, Command, Stdio};
@@ -14,10 +18,12 @@ use std::time::{Duration, Instant};
 use crate::ssh::Launcher;
 use crate::target::SshHost;
 
-/// A forward up for one sign-in.
+/// A forward up for one sign-in (or one live preview).
 pub struct Tunnel {
     host: SshHost,
+    /// The port here, and the one on the far machine's loopback.
     port: u16,
+    remote: u16,
     /// Its own `ssh -N`, when the shared connection didn't take it.
     own: Option<Child>,
 }
@@ -34,7 +40,23 @@ pub fn port_free(port: u16) -> bool {
 
 /// The `-L` that brings `port` here to the same port on the far machine's loopback.
 pub fn forward_spec(port: u16) -> String {
-    format!("localhost:{port}:localhost:{port}")
+    forward_spec_to(port, port)
+}
+
+/// The `-L` that brings `local` here to `remote` on the far machine's loopback.
+pub fn forward_spec_to(local: u16, remote: u16) -> String {
+    format!("localhost:{local}:localhost:{remote}")
+}
+
+/// A port nothing on this Mac listens on now, as the system hands one out.
+pub fn any_free_port() -> Option<u16> {
+    for _ in 0..8 {
+        let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).ok()?.local_addr().ok()?.port();
+        if port_free(port) {
+            return Some(port);
+        }
+    }
+    None
 }
 
 fn control(launcher: &Launcher) -> String {
@@ -49,19 +71,26 @@ fn quietly(command: &mut Command) -> &mut Command {
 /// the window's thread). Why not, when the port is taken here or no
 /// connection would take the forward without asking.
 pub fn open(host: &SshHost, port: u16) -> Result<Tunnel, String> {
+    open_to(host, port, port)
+}
+
+/// Forward `local` here to `remote` on `host`'s loopback, as [`open`] does.
+pub fn open_to(host: &SshHost, local: u16, remote: u16) -> Result<Tunnel, String> {
+    let port = local;
     if !port_free(port) {
         return Err(format!("port {port} is in use on this Mac"));
     }
+    let spec = forward_spec_to(local, remote);
     let launcher = Launcher::system(None);
     // The window's shared connection, when it is up: the forward rides on it.
-    let shared = quietly(Command::new(&launcher.program).args(["-O", "forward", "-L", &forward_spec(port), "-o", &control(&launcher)]).args(&launcher.extra).args(host.args())).status();
+    let shared = quietly(Command::new(&launcher.program).args(["-O", "forward", "-L", &spec, "-o", &control(&launcher)]).args(&launcher.extra).args(host.args())).status();
     if shared.is_ok_and(|s| s.success()) && reachable(port, Duration::from_secs(2)) {
-        return Ok(Tunnel { host: host.clone(), port, own: None });
+        return Ok(Tunnel { host: host.clone(), port, remote, own: None });
     }
     // Else one of its own, never asking (no password box for this).
     let mut own = quietly(
         Command::new(&launcher.program)
-            .args(["-N", "-T", "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-L", &forward_spec(port)])
+            .args(["-N", "-T", "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-L", &spec])
             .args(&launcher.extra)
             .args(crate::sshkey::identity_options(host))
             .args(host.args()),
@@ -74,7 +103,7 @@ pub fn open(host: &SshHost, port: u16) -> Result<Tunnel, String> {
             return Err("ssh couldn't forward the port".to_owned());
         }
         if reachable(port, Duration::from_millis(200)) {
-            return Ok(Tunnel { host: host.clone(), port, own: Some(own) });
+            return Ok(Tunnel { host: host.clone(), port, remote, own: Some(own) });
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -111,7 +140,7 @@ impl Tunnel {
             }
             None => {
                 let launcher = Launcher::system(None);
-                let _ = quietly(Command::new(&launcher.program).args(["-O", "cancel", "-L", &forward_spec(self.port), "-o", &control(&launcher)]).args(&launcher.extra).args(self.host.args())).status();
+                let _ = quietly(Command::new(&launcher.program).args(["-O", "cancel", "-L", &forward_spec_to(self.port, self.remote), "-o", &control(&launcher)]).args(&launcher.extra).args(self.host.args())).status();
             }
         }
     }
@@ -139,5 +168,12 @@ mod tests {
         drop(taken);
         let host = SshHost { user: None, host: "far.example.invalid".into(), port: None };
         assert!(open(&host, port).is_err() || port_free(port), "never a forward over a port that is taken");
+    }
+
+    #[test]
+    fn a_preview_forward_may_land_on_another_port_here() {
+        assert_eq!(forward_spec_to(50123, 4899), "localhost:50123:localhost:4899");
+        let port = any_free_port().expect("a free port");
+        assert!(port_free(port) && port > 0);
     }
 }

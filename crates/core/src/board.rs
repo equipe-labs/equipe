@@ -895,7 +895,8 @@ to do a step only they can (a code, a CAPTCHA). Always use this rather than only
 one browser and the person's sign-ins: before handing it over to sign in, open the page you need and look (a snapshot) — \
 hand it over only if that page really asks. Give the page to open and, as `why`, exactly what to do there. It opens in their hands in equipe's browser panel (or on their \
 screen when this turn ends), with `why` over it; end your turn then. When they hand it back you get a message and \
-carry on by yourself. Never run `equipe browser` yourself.",
+carry on by yourself. A page you serve on your machine (`localhost`) they can open big in equipe's live preview: \
+keep its server running until they are done. Never run `equipe browser` yourself.",
         "inputSchema": {
             "type": "object",
             "properties": {

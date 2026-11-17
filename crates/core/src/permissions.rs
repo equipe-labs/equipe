@@ -241,6 +241,8 @@ pub fn person_only(command: &Command) -> bool {
         | C::DesignResults { .. }
         | C::Taste { .. }
         | C::TasteSignals { .. }
+        // A preview the person's screen opened or closed: what a member is told to keep running.
+        | C::LivePreview { .. }
         // The person's message to the designer, as Submit is.
         | C::StartDesignSession { .. } => false,
     }

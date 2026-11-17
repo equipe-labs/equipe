@@ -85,6 +85,8 @@ pub struct SessionUi {
 pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let body: AnyElement = match (&shell.session.on, &shell.session.setup) {
+        // The page in the live preview beside it: the conversation takes the room.
+        (Some(session), _) if shell.preview.open.as_ref().is_some_and(|o| o.design) => h_flex().flex_1().min_h_0().child(talk(shell, session, cx)).into_any_element(),
         (Some(session), _) => h_flex()
             .flex_1()
             .min_h_0()
@@ -238,9 +240,10 @@ fn talk(shell: &Shell, session: &Session, cx: &mut Context<Shell>) -> impl IntoE
     } else {
         div().flex_1().w_full().flex().items_center().justify_center().px_6().child(div().max_w(px(300.)).text_center().text_size(px(SMALL)).text_color(p.muted).child(t!("session.talk_empty"))).into_any_element()
     };
+    let wide = shell.preview.open.as_ref().is_some_and(|o| o.design);
     v_flex()
-        .w(px(TALK_WIDTH))
-        .flex_none()
+        .when(!wide, |c| c.w(px(TALK_WIDTH)).flex_none())
+        .when(wide, |c| c.flex_1().min_w_0())
         .h_full()
         .min_h_0()
         .border_r_1()
@@ -319,7 +322,17 @@ fn live(shell: &Shell, session: &Session, cx: &mut Context<Shell>) -> impl IntoE
         .child(ui::icon_button(p, "session-reload", Icon::Reload, t!("session.reload"), None).disabled(!matches!(live, Some(Live::Page(_)))).on_click(cx.listener(|this, _, _, cx| this.design_session_reload(cx))))
         .children(outside.map(|url| ui::icon_button(p, "session-outside", Icon::External, t!("session.open_outside"), None).on_click(cx.listener(move |_, _, _, _| {
             let _ = equipe_providers::platform::open(&url);
-        }))));
+        }))))
+        // A page served on the daemon's machine: big, sharp and the person's own, in the live preview.
+        .children(match &live {
+            Some(Live::Page(url)) if equipe_core::live_preview::previewable(url) => {
+                let (url, designer) = (url.clone(), session.designer);
+                Some(ui::button(p, "session-preview", ui::Kind::Primary, t!("preview.open")).icon(Icon::Expand).tip(t!("preview.open_tip"), None).on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_live_preview(&url, Some(designer), true, window, cx);
+                })))
+            }
+            _ => None,
+        });
     let page: AnyElement = match live.as_ref().map(rules::route) {
         None => waiting(shell, session),
         Some(Route::Stream(_)) => page_view(shell, session, cx),
@@ -498,7 +511,8 @@ fn pins_over(shell: &Shell, session: &Session) -> Vec<AnyElement> {
 /// The note for a pin just dropped, beside it: a box, the reasons, Add and Cancel.
 fn pending_card(shell: &Shell, session: &Session, cx: &mut Context<Shell>) -> Option<AnyElement> {
     let p = shell.palette;
-    let pending = session.pending.as_ref()?;
+    // One dropped on the live preview is written in the preview's bar.
+    let pending = session.pending.as_ref().filter(|p| p.width.is_none())?;
     let (input, _) = shell.session.note.as_ref()?;
     let (x, y) = (pending.at.0 as f32, pending.at.1 as f32);
     let focus = input.read(cx).focus_handle(cx);
@@ -532,6 +546,11 @@ fn pending_card(shell: &Shell, session: &Session, cx: &mut Context<Shell>) -> Op
         )
         .into_any_element(),
     )
+}
+
+/// The box a pin's note is being written in, while one waits for it.
+pub fn pin_note(shell: &Shell) -> Option<Entity<InputState>> {
+    shell.session.note.as_ref().map(|(input, _)| input.clone())
 }
 
 /// The one-tap reasons: on a pin, or after a thumbs-down.
@@ -784,7 +803,28 @@ impl Shell {
         input.update(cx, |s, cx| s.focus(window, cx));
         self.session.note = Some((input, enter));
         if let Some(session) = self.session.on.as_mut() {
-            session.pending = Some(Pending { x: spot.0, y: spot.1, at: (area_at.0.max(0.) as u32, area_at.1.max(0.) as u32), reasons: Vec::new(), crop });
+            session.pending = Some(Pending { x: spot.0, y: spot.1, at: (area_at.0.max(0.) as u32, area_at.1.max(0.) as u32), reasons: Vec::new(), crop, width: None, selector: None });
+        }
+        cx.notify();
+    }
+
+    /// A pin dropped on the live preview of the session's page: CSS pixels
+    /// on a page `width` wide, on the element `selector` names. Its note is
+    /// asked for in the preview's bar.
+    pub fn design_session_pin_at(&mut self, x: u32, y: u32, width: u32, selector: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.session.on.is_none() {
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("session.pin_placeholder")));
+        let enter = cx.subscribe_in(&input, window, |shell, _, event: &InputEvent, window, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                shell.design_session_pin_save(window, cx);
+            }
+        });
+        input.update(cx, |s, cx| s.focus(window, cx));
+        self.session.note = Some((input, enter));
+        if let Some(session) = self.session.on.as_mut() {
+            session.pending = Some(Pending { x, y, at: (0, 0), reasons: Vec::new(), crop: None, width: Some(width), selector });
         }
         cx.notify();
     }
@@ -817,7 +857,8 @@ impl Shell {
         let note = self.session.note.take().map(|(input, _)| input.read(cx).value().to_string()).unwrap_or_default();
         let Some(session) = self.session.on.as_mut() else { return };
         let Some(pending) = session.pending.take() else { return };
-        let Some(n) = session.drop_pin(pending.x, pending.y, &note, pending.reasons.clone(), None) else {
+        let width = pending.width.unwrap_or(session.viewport.width());
+        let Some(n) = session.drop_pin_wide(pending.x, pending.y, width, &note, pending.reasons.clone(), pending.selector.clone()) else {
             cx.notify();
             return;
         };
@@ -942,6 +983,17 @@ impl Shell {
                         let _ = url;
                     }
                     _ => {}
+                }
+                // The live preview of the session's page follows what the designer shows.
+                if reload && self.preview.open.as_ref().is_some_and(|o| o.design) {
+                    let designer = self.session.on.as_ref().map(|s| s.designer);
+                    match &shown.live {
+                        Some(Live::Page(_)) if was == shown.live => self.preview_reload(window, cx),
+                        Some(Live::Page(url)) => {
+                            self.open_live_preview(url, designer, true, window, cx);
+                        }
+                        _ => {}
+                    }
                 }
                 cx.notify();
             }

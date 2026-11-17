@@ -38,3 +38,5 @@ source link and a line on why it fits. Never describe them in words instead or s
 pictures are private study material: shown in equipe, never shipped or committed. Building on them is the designer's.
 Anything the person should look at or try goes in front of them (a card's Try it, `equipe design session show
 <url|file>`, or `show_my_browser`), never only into a member's own browser; name what to click as they see it.
+A page you serve on your machine (`localhost`) opens in their live preview, big and fully usable: keep its server
+running until the person is done — equipe tells you while they have it open and when they close it.

@@ -65,9 +65,12 @@ pub fn spawn(endpoint: Endpoint) -> (Link, UnboundedReceiver<Update>) {
     (Link { to: to_tx }, up_rx)
 }
 
-/// JPEG quality to ask for: lower over a network.
+/// JPEG quality to ask for while the page moves: lower over a network. Text
+/// stays legible at both (the old 70 / 50 smeared small type); once the page
+/// holds still the browser host sends one near-lossless picture of it anyway
+/// (`SHARP_QUALITY` in `browser-host.cjs`).
 fn quality(endpoint: &Endpoint) -> u8 {
-    if endpoint.is_remote() { 50 } else { 70 }
+    if endpoint.is_remote() { 65 } else { 80 }
 }
 
 async fn run(endpoint: Endpoint, mut from_panel: UnboundedReceiver<StreamIn>, updates: UnboundedSender<Update>) {
@@ -251,7 +254,7 @@ mod tests {
 
     #[test]
     fn a_far_machine_gets_lighter_pictures() {
-        assert_eq!(quality(&Endpoint::Local { socket: "/x".into() }), 70);
-        assert_eq!(quality(&Endpoint::Ssh(crate::target::SshHost::parse("me@far").unwrap())), 50);
+        assert_eq!(quality(&Endpoint::Local { socket: "/x".into() }), 80);
+        assert_eq!(quality(&Endpoint::Ssh(crate::target::SshHost::parse("me@far").unwrap())), 65);
     }
 }
