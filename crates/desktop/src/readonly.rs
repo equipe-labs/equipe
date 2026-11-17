@@ -262,7 +262,9 @@ pub fn reads(command: &Command) -> bool {
         | C::TryReference { .. }
         // Tells a member to keep a server running: the real view looks, it doesn't preview.
         | C::LivePreview { .. }
-        | C::StartDesignSession { .. } => false,
+        | C::StartDesignSession { .. }
+        | C::EndDesignSession { .. }
+        | C::UseDesignVariant { .. } => false,
     }
 }
 

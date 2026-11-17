@@ -275,6 +275,10 @@
   "news.cannot_start": "✗ {name} 无法开始 T-{id}：{reason}",
   "news.changes_declined": "你没有退回 {tickets} — 仍在待审核",
   "news.commented": "你在 T-{id} 下留言：{text}",
+  "news.card_withdrawn": "{name} 撤回了卡片：{question}",
+  "news.card_withdrawn_on": "{name} 撤回了 T-{id} 的卡片：{question}",
+  "news.member_revised": "{name} 更新了 T-{id} · {title}",
+  "news.member_dropped": "{name} 放弃了 T-{id} · {title}",
   "news.decision.one": "{name} 请你做个决定 · {question}",
   "news.decision.other": "{name} 请你决定 {count} 件事 · {question}",
   "news.desk_saved": "✎ {name} 在小队文件夹中{what} · /home undo 可撤回",
@@ -818,5 +822,8 @@
   "design_session.go_ahead": "让设计师直接做",
   "design_session.kickoff": "我们以短轮次一起做 {page}。",
   "design_session.no_designer": "团队里还没有可以做设计会话的设计师。请让 PM 加一位。",
-  "design_session.no_page": "请写明设计会话要做的页面或界面。"
+  "design_session.no_page": "请写明设计会话要做的页面或界面。",
+  "design_session.use_title": "按选定的原型实现{page}",
+  "design_session.use_title_variant": "按原型 {variant} 实现{page}",
+  "design_session.use_intro": "在设计会话中用“就用这个”选定的原型：请在产品中实现它。"
 }

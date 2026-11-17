@@ -9,32 +9,57 @@ A design session is the person and you on one page or screen, together, in round
 handed in hours later. The point is to learn quickly the style they actually want. The kickoff names the page, the
 project and whether their style profile is thin.
 
+## Prototype mode
+
+The person wants to see the design applied, look at it, touch it, give feedback and iterate — and only then have it
+built in the real code. So a session works on a prototype they can use, not on pictures of one:
+
+- **References first.** Before proposing any direction — at the start, and whenever the person asks for new
+  directions — pull 3–5 references for the page's patterns from the design MCPs you have connected (21st.dev, Mobbin;
+  else the web, as `design-references` says) and put them on screen with `show_references`, each with why, what to
+  take and what to leave. Don't wait to be asked. Keep the pull small — ask each MCP for a handful of results — since
+  every picture a search returns stays in your conversation and fills it fast.
+- **A runnable prototype.** Build the page in the session's folder, `design/sessions/<date>-<page>/` (only `design/` is
+  yours to change, as always): HTML and CSS from the project's tokens, or a route of the dev server you run in your
+  worktree. Show it with `equipe design session show <file.html | http://localhost:port/path>`: it opens live beside
+  the conversation on the person's screen and reloads each time you show it. Keep the server running until the person
+  is done (equipe tells you while they have it open).
+- **Variants side by side.** When there are real alternatives, make two or three — `index-a.html`, `index-b.html`… —
+  and show each with `--variant A`, `--variant B`, `--variant C`: the person sees them next to each other, live, and
+  picks one with "Use this".
+- **A change log.** Keep `CHANGELOG.md` in the session's folder: one line per round — what changed and which feedback
+  or pin it answers. It becomes part of the implementation ticket's spec.
+
 ## Each turn
 
 - **The first turn is quick.** Read the style profile at the top of the project's `design/taste.md` and its notes,
-  then pick 3–6 references for the page's patterns (`design-references`; reuse what `design/references/` has) and make
-  one rough take — rough is right here. Show it live and ask one question. Minutes, not an hour.
-- **Small steps.** Each later turn changes one or two things the person asked for, not the whole page.
+  show the references, then make one rough take — rough is right here. Show it live and ask one question. Minutes, not
+  an hour.
+- **Short replies, fast rounds.** Each later turn applies what the person said to the prototype within a couple of
+  minutes, shows it again, and answers in a few lines. One or two changes per round, not the whole page.
+- **No heavy checks in a round.** No width × theme × text-size matrix, no axe or contrast runs, no screenshot sets, no
+  design QA, no QA tickets, and no new ticket per feedback item: those make every round take ten minutes. A glance at
+  the one width the person looks at is enough.
 - **Say why, with the trade-off.** Every take, option and reference you show carries one plain line on why, one or
-  two pros and one or two cons — in the person's language, short — so they see the reasoning, not only the
-  picture. On a decision card, that is each option's `description` and its `changes`.
+  two pros and one or two cons — in the person's language, short — so they see the reasoning, not only the picture.
 - **Every turn ends with something visible and one focused question** — a single taste call, with your
   recommendation: "Tighter or airier hero?", never a list of questions.
 - **Never go quiet.** A step that would take more than a few minutes is split, and you show where it stands before
-  going on.
-- **Show it live.** Build the page as HTML and CSS from the project's tokens in `design/sessions/<date>-<page>/` (only
-  `design/` is yours to change, as always) and run `equipe design session show <file.html | http://localhost:port/path
-  | render.png>` after each change: the page opens beside the conversation on the person's screen, at 1440 wide with a
-  390 toggle, and reloads each time you show it. A dev server you start in your worktree works too: show its address,
-  and keep it running until the person is done (equipe tells you while they have it open in the live preview).
-- **The critic still comes first.** Before a turn shows a take as a round's result, it goes once to `equipe design
-  critique <render> --goal "…"` (a quick pass, not three rounds); say in a line what it found and what you changed.
-  Never grade your own work and never call a take good — ask the person.
+  going on. The person's messages come first: equipe stops a long command of yours so you read them at once.
 - **Pins.** The person's message may open with `<design-pins>`: each pin is a spot on the page (CSS pixels at the
-  width given, `document.elementFromPoint` finds the element) with their note, its crop attached. Address each, then
-  mark it: `equipe design session done <n> "<what changed, one line>"` — their screen ticks the pin.
-- **Model.** Rounds run on a fast model; when the person asks to polish, the stronger model takes over: then do the
-  full `design-process` pass on what was chosen — every state, light and dark, the widths, the critic's rounds.
+  width given) with their note, the element there (`element:` its selector, `text:` its words, `box:` where it sits)
+  and its crop attached. Address each, then mark it: `equipe design session done <n> "<what changed, one line>"` —
+  their screen ticks the pin.
+- **Never grade your own work** and never call a take good — ask the person.
+- **Model.** Rounds run on a fast model; when the person asks to polish, the stronger model takes over for the chosen
+  take.
+
+## Use this: from prototype to code
+
+When the person picks a variant with "Use this", equipe opens the implementation ticket with the prototype as its spec
+(or updates the one it opened before) and tells you. That ends the session's rounds on the page: make sure the
+prototype and its `CHANGELOG.md` are saved, then the ticket's work runs as usual — the full `design-process` pass,
+every state, light and dark, the widths, larger text, the critic's rounds and design QA.
 
 ## Taste, after every round
 

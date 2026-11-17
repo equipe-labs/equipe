@@ -255,6 +255,8 @@ pub struct Chat {
     pub leaving: Rc<HashSet<String>>,
     /// Tab reaches the summary band's "Try again" and its close.
     pub compact_focus: (FocusHandle, FocusHandle),
+    /// The live line at the conversation's foot is opened to its step's detail.
+    pub status_open: bool,
 }
 
 /// ⌘F: words looked for in the conversation, the rows they are in, and the
@@ -316,6 +318,7 @@ impl Chat {
             about: Rc::default(),
             at: Rc::default(),
             compact_focus: (cx.focus_handle().tab_stop(true), cx.focus_handle().tab_stop(true)),
+            status_open: false,
             follow: true,
             dock_at: std::cell::Cell::new(0),
             dock_bring: std::cell::Cell::new(false),
@@ -1154,7 +1157,18 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
             (None, None) => String::new(),
         }
     };
-    let pulse = (replying && following).then(|| pulse_pill(p, doing));
+    // The live line: what the member is doing now, while it does anything —
+    // a turn, a summary, a sign-in or approval it waits on. Else, while a
+    // reply streams with nothing else to say, the pulse.
+    let live = following.then(|| live_facts(shell, working)).flatten();
+    // Its time counts by the second.
+    if live.is_some() {
+        shell.wake_at(std::time::Instant::now() + std::time::Duration::from_secs(1), cx);
+    }
+    let pulse = match live {
+        Some(line) => Some(status_row(shell, line, cx).into_any_element()),
+        None => (replying && following).then(|| pulse_pill(p, doing).into_any_element()),
+    };
     // Our own pill, not the kit's jump button: the kit's put a tooltip with the
     // same word on it, in its own white, over the conversation.
     let jump = (!following).then(|| jump_pill(p, shell.chat.scroller.clone()));
@@ -2827,6 +2841,129 @@ fn jump_pill(p: Palette, scroller: Entity<MessageScrollerState>) -> impl IntoEle
         .child(t!("chat.jump_to_bottom"))
         .on_click(move |_, _, cx| scroller.update(cx, |state, cx| state.scroll_to_end(cx)));
     div().absolute().bottom(px(12.)).left_0().right_0().flex().justify_center().child(motion::rise(pill, "jump-to-latest-in"))
+}
+
+/// The live line's facts for the conversation on screen, and the line.
+fn live_facts(shell: &Shell, working: bool) -> Option<crate::status_line::Line> {
+    let convo = shell.model.convo()?;
+    let viewed = shell.model.viewed()?;
+    let blocks = shell.chat.blocks.as_slice();
+    let queue = convo.queue.items();
+    let facts = crate::status_line::Facts {
+        working: working || convo.working_for().is_some(),
+        working_for: convo.working_for(),
+        step_for: convo.step_since().map(|since| since.elapsed()),
+        compacting: convo.compacting_for(),
+        blocks,
+        background: shell.chat.derived.background.clone(),
+        sign_in: shell.chat.derived.sign_in.filter(|(_, _, went_on)| !went_on).map(|(_, engine, _)| crate::switching::engine_name(engine).to_owned()),
+        approval: shell.model.approvals.first_for(viewed).is_some(),
+        steers: queue.iter().filter(|i| i.kind == crate::queue::Kind::Steer).count(),
+        memos: queue.iter().filter(|i| i.kind != crate::queue::Kind::Steer).count(),
+        tokens: convo.turn_tokens,
+    };
+    crate::status_line::line(&facts)
+}
+
+/// The live line at the conversation's foot: small dots in the accent, what
+/// the member does in grey with its target in bold, the time and tokens, a
+/// chevron that opens the step's detail — and, while the person's words
+/// wait, when they are read and "Read now".
+fn status_row(shell: &Shell, line: crate::status_line::Line, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
+    use crate::status_line::{Doing, clock, tokens};
+    let p = shell.palette;
+    let name = shell.model.selected_member().map(|m| m.name.clone()).unwrap_or_default();
+    let (words, target): (String, Option<String>) = match &line.doing {
+        Doing::Reading => (t!("status.reading", name = name), None),
+        Doing::Thinking => (t!("status.thinking").to_owned(), None),
+        Doing::Writing => (t!("status.writing").to_owned(), None),
+        Doing::Step { verb, target, .. } => (verb.clone(), Some(target.clone())),
+        Doing::Background { what } => (t!("status.background").to_owned(), Some(what.clone())),
+        Doing::Summarizing => (t!("status.summarizing").to_owned(), None),
+        Doing::SignIn { engine } => (t!("status.sign_in").to_owned(), Some(engine.clone())),
+        Doing::Approval => (t!("status.approval").to_owned(), None),
+    };
+    let mut meta = vec![clock(line.elapsed)];
+    if line.steps > 0 {
+        meta.push(t!("status.steps", count = line.steps));
+    }
+    if let Some(n) = line.tokens {
+        meta.push(t!("status.tokens", count = tokens(n)));
+    }
+    let opens = line.opens();
+    let open = opens && shell.chat.status_open;
+    let detail = match (&line.doing, open) {
+        (Doing::Step { detail: Some(detail), .. }, true) => Some(detail.clone()),
+        _ => None,
+    };
+    let dot = move |n: usize| {
+        div().size(px(5.)).rounded_full().bg(p.accent).with_animation(
+            ("status-dot", n),
+            Animation::new(std::time::Duration::from_millis(1200)).repeat().with_max_fps(20.),
+            move |d, t| {
+                let phase = (t - n as f32 / 3.).rem_euclid(1.);
+                d.opacity(0.3 + 0.7 * (phase * std::f32::consts::TAU).sin().max(0.))
+            },
+        )
+    };
+    let waiting: Option<String> = match (line.steers, line.memos) {
+        (0, 0) => None,
+        (_, 0) => Some(t!("status.read_next_step").to_owned()),
+        _ => Some(t!("status.read_after_turn").to_owned()),
+    };
+    let head = h_flex()
+        .id("status-line")
+        .gap(px(6.))
+        .items_center()
+        .text_size(px(META))
+        .text_color(p.muted)
+        .child(h_flex().flex_none().gap(px(3.)).children((0..3).map(dot)))
+        .child(div().flex_none().text_color(p.text2).child(words))
+        .children(target.map(|t| div().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(t)))
+        .child(div().flex_none().child(meta.join(" · ")))
+        .when(opens, |row| {
+            row.cursor_pointer()
+                .child(icon(if open { Icon::ChevronDown } else { Icon::ChevronRight }, 11., p.muted))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.chat.status_open = !this.chat.status_open;
+                    cx.notify();
+                }))
+        })
+        .tip(p, t!("status.tip"), None);
+    let waits = waiting.map(|words| {
+        h_flex()
+            .gap_2()
+            .items_center()
+            .text_size(px(META))
+            .text_color(p.muted)
+            .child(icon(Icon::Clock, 11., p.muted))
+            .child(words)
+            .child(crate::ui::button(p, "status-read-now", crate::ui::Kind::Ghost, t!("status.read_now")).on_click(cx.listener(|this, _, _, cx| this.send_pending_now(cx))))
+    });
+    div().absolute().bottom(px(10.)).left_0().right_0().flex().justify_center().child(
+        v_flex()
+            .w_full()
+            .max_w(px(COLUMN - 32.))
+            .px(px(16. + TEXT_INSET))
+            .gap_1()
+            .children(detail.map(|d| {
+                div()
+                    .id("status-detail")
+                    .max_h(px(160.))
+                    .overflow_y_scroll()
+                    .p_2()
+                    .rounded(px(8.))
+                    .bg(p.code_bg)
+                    .border_1()
+                    .border_color(p.hair)
+                    .font_family(MONO)
+                    .text_size(px(META))
+                    .text_color(p.text2)
+                    .child(d)
+            }))
+            .child(head)
+            .children(waits),
+    )
 }
 
 fn pulse_pill(p: Palette, words: String) -> impl IntoElement {

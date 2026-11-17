@@ -79,6 +79,10 @@ pub struct SessionUi {
     pub rejections: std::collections::HashMap<u64, Vec<PickReason>>,
     /// Reasons tapped for a design draft sent back ("Ask again").
     pub send_back: Vec<PickReason>,
+    /// The prototype's variant in front, by letter, when the person picked one.
+    pub variant: Option<String>,
+    /// The variants side by side in the live preview.
+    pub side_by_side: bool,
 }
 
 /// The screen.
@@ -314,12 +318,14 @@ fn live(shell: &Shell, session: &Session, cx: &mut Context<Shell>) -> impl IntoE
         .border_b_1()
         .border_color(p.hair)
         .child(h_flex().flex_none().h(px(26.)).p(px(2.)).gap(px(2.)).rounded(px(R_MD)).bg(p.wash).child(width(Viewport::Desktop, "session-1440", "1440", cx)).child(width(Viewport::Phone, "session-390", "390", cx)))
+        .children(variant_chips(shell, cx))
         .child(div().flex_1().min_w_0().truncate().text_size(px(META)).text_color(p.muted).child(address))
         .child(react("session-up", Icon::Check, t!("session.up"), QuickReaction::Up, cx))
         .child(react("session-down", Icon::X, t!("session.down"), QuickReaction::Down, cx))
         .child(react("session-more", Icon::Plus, t!("session.more_like"), QuickReaction::MoreLikeThis, cx))
         .child(react("session-less", Icon::Minus, t!("session.less_like"), QuickReaction::LessLikeThis, cx))
         .child(ui::icon_button(p, "session-reload", Icon::Reload, t!("session.reload"), None).disabled(!matches!(live, Some(Live::Page(_)))).on_click(cx.listener(|this, _, _, cx| this.design_session_reload(cx))))
+        .children(use_this(shell, "session-use", cx))
         .children(outside.map(|url| ui::icon_button(p, "session-outside", Icon::External, t!("session.open_outside"), None).on_click(cx.listener(move |_, _, _, _| {
             let _ = equipe_providers::platform::open(&url);
         }))))
@@ -347,6 +353,74 @@ fn live(shell: &Shell, session: &Session, cx: &mut Context<Shell>) -> impl IntoE
         .children(session.down.as_ref().map(|reasons| reason_strip(p, "session-down-reason", reasons, true, cx)))
         .child(page)
         .children(pin_list(p, session))
+}
+
+/// The prototype's variants, a letter each, the one in front lit; "Side by
+/// side" puts them all in the live preview at once. Nothing with fewer than two.
+pub fn variant_chips(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let variants = &shell.session.shown.variants;
+    if variants.len() < 2 {
+        return None;
+    }
+    let p = shell.palette;
+    let front = shell.session.variant.clone().or_else(|| rules::variant_in_front(variants, shell.session.shown.live.as_ref()));
+    let side = shell.session.side_by_side;
+    let chip = |label: String, cx: &mut Context<Shell>| {
+        let on = !side && front.as_deref() == Some(label.as_str());
+        div()
+            .id(SharedString::from(format!("session-variant-{label}")))
+            .h_full()
+            .px_2()
+            .flex()
+            .items_center()
+            .rounded(px(6.))
+            .text_size(px(SMALL))
+            .font_weight(FontWeight::SEMIBOLD)
+            .cursor_pointer()
+            .when(on, |d| d.bg(p.raised).text_color(p.text).shadow_sm())
+            .when(!on, |d| d.text_color(p.text2).hover(move |s| s.bg(p.wash)))
+            .child(label.clone())
+            .tip(p, t!("session.variant", label = label.clone()), None)
+            .on_click(cx.listener(move |this, _, window, cx| this.design_session_variant(Some(label.clone()), window, cx)))
+    };
+    let chips: Vec<_> = variants.iter().map(|(label, _)| chip(label.clone(), cx)).collect();
+    let both = div()
+        .id("session-side-by-side")
+        .h_full()
+        .px_2()
+        .flex()
+        .items_center()
+        .rounded(px(6.))
+        .text_size(px(SMALL))
+        .cursor_pointer()
+        .when(side, |d| d.bg(p.raised).text_color(p.text).shadow_sm())
+        .when(!side, |d| d.text_color(p.text2).hover(move |s| s.bg(p.wash)))
+        .child(t!("session.side_by_side"))
+        .tip(p, t!("session.side_by_side_tip"), None)
+        .on_click(cx.listener(|this, _, window, cx| this.design_session_variant(None, window, cx)));
+    Some(h_flex().flex_none().h(px(26.)).p(px(2.)).gap(px(2.)).rounded(px(R_MD)).bg(p.wash).children(chips).child(both).into_any_element())
+}
+
+/// "Use this": the variant in front (or the one page shown) becomes the
+/// implementation ticket's spec. Only once a page is live.
+pub fn use_this(shell: &Shell, id: &'static str, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    shell.session.on.as_ref()?;
+    if !matches!(shell.session.shown.live, Some(Live::Page(_))) {
+        return None;
+    }
+    let p = shell.palette;
+    let label = match rules::picked(&shell.session.shown, shell.session.variant.as_deref(), shell.session.side_by_side) {
+        Some((Some(v), _)) => t!("session.use_variant", label = v),
+        _ => t!("session.use_this").to_owned(),
+    };
+    Some(
+        ui::button(p, id, ui::Kind::Primary, label)
+            .icon(Icon::Check)
+            .tip(t!("session.use_this_tip"), None)
+            .disabled(shell.session.side_by_side && shell.session.variant.is_none())
+            .on_click(cx.listener(|this, _, _, cx| this.design_session_use(cx)))
+            .into_any_element(),
+    )
 }
 
 /// Nothing shown yet.
@@ -696,6 +770,8 @@ impl Shell {
         }
         self.session.on = Some(session);
         self.session.shown = rules::Shown::default();
+        self.session.variant = None;
+        self.session.side_by_side = false;
         self.session.scanned = (0, 0);
         self.drop_live(window);
         self.model.select(*designer);
@@ -713,16 +789,70 @@ impl Shell {
 
     /// End the session: the designer's model as it was, the page let go.
     pub fn design_session_end(&mut self, cx: &mut Context<Self>) {
-        if let Some(session) = self.session.on.take()
-            && let Some(model) = session.model_before.filter(|_| !session.polish)
-        {
-            self.send_command(Command::SetModel { session: session.designer, model });
+        if let Some(session) = self.session.on.take() {
+            // The daemon stops framing the designer's turns as prototype rounds.
+            self.send_command(Command::EndDesignSession { squad: session.squad.clone(), designer: session.designer });
+            if let Some(model) = session.model_before.filter(|_| !session.polish) {
+                self.send_command(Command::SetModel { session: session.designer, model });
+            }
         }
         self.session.link = None;
         self.session._pump = None;
         self.session.frame = None;
         self.session.watching = None;
         self.show(Screen::Design, cx);
+    }
+
+    /// A variant of the prototype to the front (`None`: all side by side in
+    /// the live preview), here and in the live preview.
+    pub fn design_session_variant(&mut self, label: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let designer = self.session.on.as_ref().map(|s| s.designer);
+        match label {
+            Some(label) => {
+                let Some(url) = self.session.shown.variants.iter().find(|(l, _)| *l == label).map(|(_, u)| u.clone()) else { return };
+                self.session.side_by_side = false;
+                self.session.variant = Some(label);
+                self.session.shown.live = Some(Live::Page(url.clone()));
+                if self.preview.open.as_ref().is_some_and(|o| o.design) {
+                    self.open_live_preview(&url, designer, true, window, cx);
+                    self.preview_show_variants(false);
+                }
+            }
+            None => {
+                self.session.side_by_side = !self.session.side_by_side;
+                if self.session.side_by_side {
+                    // Side by side needs the live preview: opened at the first variant.
+                    if !self.preview.open.as_ref().is_some_and(|o| o.design)
+                        && let Some((_, url)) = self.session.shown.variants.first().cloned()
+                    {
+                        self.open_live_preview(&url, designer, true, window, cx);
+                    }
+                    self.preview_show_variants(true);
+                } else {
+                    self.preview_show_variants(false);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// "Use this": the variant in front, or the one page shown, goes to the
+    /// daemon as the implementation ticket's spec.
+    pub fn design_session_use(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.session.on.as_ref() else { return };
+        let Some((variant, url)) = rules::picked(&self.session.shown, self.session.variant.as_deref(), self.session.side_by_side) else { return };
+        self.send_command(Command::UseDesignVariant { squad: session.squad.clone(), designer: session.designer, project: session.project.clone(), page: session.page.clone(), variant, url: Some(url) });
+        cx.notify();
+    }
+
+    /// The daemon opened (or updated) the implementation ticket of the pick: said over the composer.
+    pub fn design_variant_used(&mut self, event: &Event, cx: &mut Context<Self>) {
+        let Event::DesignVariantUsed { squad, designer, ticket, updated, .. } = event else { return };
+        if *squad != self.model.squad || self.session.on.as_ref().is_none_or(|s| s.designer != *designer) {
+            return;
+        }
+        self.composer.flash = Some(if *updated { t!("session.used_updated", ticket = *ticket) } else { t!("session.used", ticket = *ticket) });
+        cx.notify();
     }
 
     /// Fast rounds, or the polish step on the stronger model.
@@ -803,7 +933,7 @@ impl Shell {
         input.update(cx, |s, cx| s.focus(window, cx));
         self.session.note = Some((input, enter));
         if let Some(session) = self.session.on.as_mut() {
-            session.pending = Some(Pending { x: spot.0, y: spot.1, at: (area_at.0.max(0.) as u32, area_at.1.max(0.) as u32), reasons: Vec::new(), crop, width: None, selector: None });
+            session.pending = Some(Pending { x: spot.0, y: spot.1, at: (area_at.0.max(0.) as u32, area_at.1.max(0.) as u32), reasons: Vec::new(), crop, width: None, selector: None, text: None, bounds: None });
         }
         cx.notify();
     }
@@ -811,7 +941,7 @@ impl Shell {
     /// A pin dropped on the live preview of the session's page: CSS pixels
     /// on a page `width` wide, on the element `selector` names. Its note is
     /// asked for in the preview's bar.
-    pub fn design_session_pin_at(&mut self, x: u32, y: u32, width: u32, selector: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn design_session_pin_at(&mut self, x: u32, y: u32, width: u32, selector: Option<String>, element: Option<&crate::preview_view::Element>, window: &mut Window, cx: &mut Context<Self>) {
         if self.session.on.is_none() {
             return;
         }
@@ -824,9 +954,19 @@ impl Shell {
         input.update(cx, |s, cx| s.focus(window, cx));
         self.session.note = Some((input, enter));
         if let Some(session) = self.session.on.as_mut() {
-            session.pending = Some(Pending { x, y, at: (0, 0), reasons: Vec::new(), crop: None, width: Some(width), selector });
+            let (text, bounds) = element.map_or((None, None), |e| (e.text.clone(), Some(e.bounds)));
+            session.pending = Some(Pending { x, y, at: (0, 0), reasons: Vec::new(), crop: None, width: Some(width), selector, text, bounds });
         }
         cx.notify();
+    }
+
+    /// The crop of the live preview's page around the pin waiting for its
+    /// note: it goes with the pin once kept.
+    pub fn design_session_pin_crop(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
+        if let Some(pending) = self.session.on.as_mut().and_then(|s| s.pending.as_mut()).filter(|p| p.width.is_some() && p.crop.is_none()) {
+            pending.crop = Some(bytes);
+            cx.notify();
+        }
     }
 
     pub fn design_session_pin_cancel(&mut self, cx: &mut Context<Self>) {
@@ -858,7 +998,7 @@ impl Shell {
         let Some(session) = self.session.on.as_mut() else { return };
         let Some(pending) = session.pending.take() else { return };
         let width = pending.width.unwrap_or(session.viewport.width());
-        let Some(n) = session.drop_pin_wide(pending.x, pending.y, width, &note, pending.reasons.clone(), pending.selector.clone()) else {
+        let Some(n) = session.drop_pin_on(pending.x, pending.y, width, &note, pending.reasons.clone(), pending.selector.clone(), pending.text.clone(), pending.bounds) else {
             cx.notify();
             return;
         };
@@ -968,6 +1108,10 @@ impl Shell {
             let shown = rules::shown(entries, session.since);
             let changed = shown != self.session.shown;
             let was = self.session.shown.live.clone();
+            // Something new shown comes to the front over a variant picked before.
+            if changed && shown.live != was {
+                self.session.variant = None;
+            }
             self.session.shown = shown;
             if changed {
                 let shown = self.session.shown.clone();

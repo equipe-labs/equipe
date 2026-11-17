@@ -275,6 +275,10 @@
   "news.cannot_start": "✗ T-{id} を {name} が開始できませんでした: {reason}",
   "news.changes_declined": "{tickets} は差し戻しませんでした — レビュー待ちのままです",
   "news.commented": "T-{id} にコメントしました: {text}",
+  "news.card_withdrawn": "{name}がカードを取り下げました: {question}",
+  "news.card_withdrawn_on": "{name}が T-{id} のカードを取り下げました: {question}",
+  "news.member_revised": "{name}が T-{id} を更新しました · {title}",
+  "news.member_dropped": "{name}が T-{id} を取りやめました · {title}",
   "news.decision.one": "{name} があなたの決定を求めています · {question}",
   "news.decision.other": "{name} が {count} 件の決定を求めています · {question}",
   "news.desk_saved": "✎ {name} がスクワッドのフォルダで {what} · /home undo で元に戻せます",
@@ -818,5 +822,8 @@
   "design_session.go_ahead": "デザイナーに任せる",
   "design_session.kickoff": "{page} を短いラウンドで一緒に作りましょう。",
   "design_session.no_designer": "デザインセッションをするデザイナーがまだチームにいません。PM に頼んで迎えてもらってください。",
-  "design_session.no_page": "デザインセッションで扱うページか画面の名前を入れてください。"
+  "design_session.no_page": "デザインセッションで扱うページか画面の名前を入れてください。",
+  "design_session.use_title": "選んだプロトタイプで{page}を実装",
+  "design_session.use_title_variant": "プロトタイプ{variant}で{page}を実装",
+  "design_session.use_intro": "デザインセッションで「これにする」で選ばれたプロトタイプです。製品に実装してください。"
 }

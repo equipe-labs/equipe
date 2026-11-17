@@ -33,9 +33,21 @@ pub const NOTE_MAX: usize = 280;
 const PINS_HOW: &str = "Address each pin, then mark it with `equipe design session done <n> \"<what changed, one line>\"`.";
 
 /// What the designer is told when a session starts, inside the kickoff block.
-const HOW: &str = "This is a design session: work as your `design-session` skill says. Small steps of minutes, \
-not hours. In this first turn: 3-6 quick reference picks and one rough take, shown live with `equipe design session \
-show`. End every turn with something visible and one focused question; never go quiet on a long build.";
+const HOW: &str = "This is a design session in prototype mode: work as your `design-session` skill says. Small steps \
+of minutes, not hours. First, before any direction: pull 3-5 references for this page from the design MCPs you have \
+connected (21st.dev, Mobbin; else the web) and put them on screen with `show_references`. Then build a runnable \
+prototype in the session's folder and show it live with `equipe design session show` (variants side by side with \
+`--variant A|B|C`). End every turn with something visible and one focused question; never go quiet on a long build.";
+
+/// What every later turn of a session opens with while it is on (the
+/// runtime adds it): the rules of a prototype round, so a long conversation
+/// never drifts back into ticket-sized work.
+pub const ROUND_RULES: &str = "design session on — a prototype round: reply in a few lines, apply the person's \
+feedback to the prototype within a couple of minutes and show it again (`equipe design session show`), add a line to \
+the session's CHANGELOG.md. No heavy checks in a round: no width x theme x text-size matrix, no axe or contrast runs, \
+no design QA, no new ticket per feedback item. Asked for new directions: references first (design MCPs, \
+`show_references`). The full checks run once the person picks a variant with \"Use this\": equipe opens the \
+implementation ticket then.";
 
 fn from_words(from: &SessionFrom) -> String {
     match from {
@@ -76,6 +88,115 @@ pub fn split_kickoff(text: &str) -> Option<(String, String)> {
 
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+// ── a session the daemon keeps while it is on ──
+
+/// A design session on, as the daemon keeps it: from its start on a screen
+/// until the person ends it, picks a variant, or leaves it idle for
+/// [`IDLE_ENDS_SECS`]. While it is on the designer's turns open with
+/// [`ROUND_RULES`] and the person's words cut in ([`preempt`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Active {
+    pub squad: String,
+    pub project: Option<String>,
+    pub page: String,
+    /// Unix seconds it last heard from the person.
+    pub last: u64,
+    /// The implementation ticket "Use this" opened, updated by the next pick.
+    pub implementation: Option<TicketId>,
+    /// A variant was picked: the rounds are over (no round rules, no cutting
+    /// in) until the person starts again; a later pick updates the ticket.
+    pub picked: bool,
+}
+
+/// A session nobody spoke in for this long is over (seconds).
+pub const IDLE_ENDS_SECS: u64 = 4 * 3600;
+
+impl Active {
+    pub fn new(squad: &str, project: Option<&str>, page: &str, now: u64) -> Self {
+        Self { squad: squad.to_owned(), project: project.map(str::to_owned), page: page.to_owned(), last: now, implementation: None, picked: false }
+    }
+
+    /// Whether it is still on at `now`: not idle too long. (Its rounds may
+    /// be over — [`Self::rounds`].)
+    pub fn on(&self, now: u64) -> bool {
+        now.saturating_sub(self.last) < IDLE_ENDS_SECS
+    }
+
+    /// Whether its turns are prototype rounds at `now`: on, and nothing picked yet.
+    pub fn rounds(&self, now: u64) -> bool {
+        self.on(now) && !self.picked
+    }
+
+    /// The note the designer's next turn opens with.
+    pub fn note(&self) -> String {
+        format!("{ROUND_RULES} (page: {})", one_line(&self.page))
+    }
+}
+
+/// What the person's message does to the designer's turn under way in a
+/// session: the person comes first, not the designer's next step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preempt {
+    /// Taken in as a steer with no command running: read at its next step, soon.
+    Nothing,
+    /// Taken in as a steer while a command runs (a build, a capture run):
+    /// that command is stopped so the step comes at once.
+    StopCommand,
+    /// The engine can't take words mid-turn (left as a memo): the turn is
+    /// stopped, and the memo goes in as the next turn.
+    Interrupt,
+}
+
+/// [`Preempt`] for a message said while the designer's turn runs: whether
+/// the engine took it as a steer, and whether a command runs now.
+pub fn preempt(steered: bool, command_running: bool) -> Preempt {
+    match (steered, command_running) {
+        (false, _) => Preempt::Interrupt,
+        (true, true) => Preempt::StopCommand,
+        (true, false) => Preempt::Nothing,
+    }
+}
+
+/// The variant the person picked with "Use this", as the implementation
+/// ticket takes it for its spec.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Picked {
+    pub page: String,
+    pub project: Option<String>,
+    /// `A`, `B` or `C`; `None`: the one page shown.
+    pub variant: Option<String>,
+    /// The prototype's address as the designer showed it.
+    pub url: Option<String>,
+}
+
+/// The implementation ticket's body: what the person picked and where it
+/// is, the session's change log, and that the full checks run here. `intro`
+/// is its first line, in the squad's language.
+pub fn implementation_body(intro: &str, picked: &Picked) -> String {
+    let mut lines = vec![intro.trim().to_owned(), String::new()];
+    lines.push(format!("- Page: {}", one_line(&picked.page)));
+    lines.extend(picked.project.as_ref().map(|p| format!("- Project: {p}")));
+    lines.extend(picked.variant.as_ref().map(|v| format!("- Variant: {v}")));
+    lines.extend(picked.url.as_ref().map(|u| format!("- Prototype: {u}")));
+    lines.push("- Spec: the prototype as it is now, and the session's CHANGELOG.md beside it (design/sessions/).".into());
+    lines.push(String::new());
+    lines.push("Build it in the product from the project's tokens and components. The full design checks run on this ticket \
+(every width, light and dark, larger text, accessibility, design QA) — none of them ran during the session's rounds."
+        .into());
+    lines.join("\n")
+}
+
+/// What the designer is told once the person picked a variant.
+pub fn picked_line(picked: &Picked, ticket: TicketId, updated: bool) -> String {
+    let which = picked.variant.as_ref().map_or_else(|| "the prototype".to_owned(), |v| format!("variant {v} of the prototype"));
+    let what = if updated { "updated" } else { "opened" };
+    format!(
+        "The person picked {which} for {} with \"Use this\": equipe {what} T-{ticket} to build it, with the prototype as its spec. \
+The session's rounds on this page are over; the full checks run on T-{ticket}. Make sure the prototype and its CHANGELOG.md are saved in design/sessions/.",
+        one_line(&picked.page)
+    )
 }
 
 // ── equipe's framing, apart from the person's words ──
@@ -173,7 +294,17 @@ pub struct Pin {
     /// The crop goes with the message, as its `crop`th picture (1-based).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crop: Option<usize>,
+    /// The element's own words, as the page shows them (trimmed, one line).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// The element's box in the page: x, y, width, height in CSS pixels
+    /// from the page's top left (scrolling included).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounds: Option<[u32; 4]>,
 }
+
+/// The longest an element's words in a pin may be, in characters.
+pub const TEXT_MAX: usize = 120;
 
 impl Pin {
     /// Its note made fit to send: one line, at most [`NOTE_MAX`] characters.
@@ -196,11 +327,20 @@ pub fn pins_block(page: &str, pins: &[Pin]) -> String {
         let reasons = if pin.reasons.is_empty() { String::new() } else { format!(" ({})", pin.reasons.iter().map(|r| r.words()).collect::<Vec<_>>().join(", ")) };
         out.push(format!("- pin {} at {},{}: {}{reasons}", pin.n, pin.x, pin.y, Pin::tidy(&pin.note)));
         out.extend(pin.selector.as_ref().map(|s| format!("  element: {s}")));
+        out.extend(pin.text.as_deref().map(element_words).filter(|t| !t.is_empty()).map(|t| format!("  text: \"{t}\"")));
+        out.extend(pin.bounds.map(|[x, y, w, h]| format!("  box: {x},{y} {w}x{h}")));
         out.extend(pin.crop.map(|c| format!("  crop: attached picture {c}")));
     }
     out.push(PINS_HOW.to_owned());
     out.push(PINS_CLOSE.to_owned());
     out.join("\n")
+}
+
+/// An element's words made fit for a pin: one line, quotes made plain, at
+/// most [`TEXT_MAX`] characters.
+pub fn element_words(text: &str) -> String {
+    let one = one_line(text).replace('"', "'");
+    if one.chars().count() > TEXT_MAX { format!("{}…", one.chars().take(TEXT_MAX).collect::<String>().trim_end()) } else { one }
 }
 
 /// The person's message with its pins before it.
@@ -237,6 +377,9 @@ pub enum Marker {
     /// A page live: an address the shared browser opens (`http(s)://` or a
     /// `file://` page in the worktree).
     Show(String),
+    /// One of the prototype's variants live, by its label (`A`, `B`, `C`):
+    /// the screens put the variants side by side.
+    Variant { label: String, url: String },
     /// A static render: a picture on the daemon's machine.
     Render(String),
     /// Pin `n` addressed, and what changed.
@@ -248,6 +391,7 @@ impl Marker {
     pub fn line(&self) -> String {
         match self {
             Marker::Show(url) => format!("{MARK} show {url}"),
+            Marker::Variant { label, url } => format!("{MARK} variant {label} {url}"),
             Marker::Render(path) => format!("{MARK} render {path}"),
             Marker::Done { n, what } => format!("{MARK} done {n} {}", one_line(what)),
         }
@@ -264,6 +408,11 @@ pub fn markers(output: &str) -> Vec<Marker> {
             let arg = arg.trim();
             match verb {
                 "show" if is_page_address(arg) => Some(Marker::Show(arg.to_owned())),
+                "variant" => {
+                    let (label, url) = arg.split_once(' ')?;
+                    let url = url.trim();
+                    (variant_label(label).is_some() && is_page_address(url)).then(|| Marker::Variant { label: label.to_ascii_uppercase(), url: url.to_owned() })
+                }
                 "render" if crate::visuals::is_image_name(arg) && arg.starts_with('/') => Some(Marker::Render(arg.to_owned())),
                 "done" => {
                     let (n, what) = arg.split_once(' ').unwrap_or((arg, ""));
@@ -273,6 +422,15 @@ pub fn markers(output: &str) -> Vec<Marker> {
             }
         })
         .collect()
+}
+
+/// The most variants shown side by side.
+pub const VARIANTS_MAX: usize = 3;
+
+/// A variant's label as the screens show it: one letter, `A` to `C`.
+pub fn variant_label(raw: &str) -> Option<String> {
+    let label = raw.trim().to_ascii_uppercase();
+    (label.len() == 1 && ('A'..=(b'A' + VARIANTS_MAX as u8 - 1) as char).contains(&label.chars().next()?)).then_some(label)
 }
 
 /// An address the live pane may open: a web page (`http(s)://`) or a page
@@ -503,10 +661,61 @@ mod tests {
     }
 
     #[test]
+    fn a_session_on_tells_each_round_to_stay_quick_and_light() {
+        let active = Active::new("acme", Some("site"), "Pricing\npage", 100);
+        let note = active.note();
+        for rule in ["prototype round", "within a couple of minutes", "no width x theme x text-size matrix", "no axe", "no design QA", "no new ticket per feedback item", "CHANGELOG.md", "show_references", "Use this"] {
+            assert!(note.contains(rule), "{rule}: {note}");
+        }
+        assert!(note.ends_with("(page: Pricing page)"));
+        assert!(active.on(100 + IDLE_ENDS_SECS - 1) && !active.on(100 + IDLE_ENDS_SECS));
+        assert!(active.rounds(100) && !Active { picked: true, ..active.clone() }.rounds(100), "a pick ends the rounds");
+        let kickoff = block("Pricing", None, &SessionFrom::DesignScreen, None);
+        assert!(kickoff.contains("21st.dev, Mobbin") && kickoff.contains("show_references") && kickoff.contains("--variant A|B|C"), "{kickoff}");
+    }
+
+    #[test]
+    fn the_persons_words_cut_into_a_session_turn() {
+        assert_eq!(preempt(true, false), Preempt::Nothing, "read at its next step");
+        assert_eq!(preempt(true, true), Preempt::StopCommand, "the command running is stopped so that step comes now");
+        assert_eq!(preempt(false, false), Preempt::Interrupt, "an engine that can't take a steer stops its turn");
+        assert_eq!(preempt(false, true), Preempt::Interrupt);
+    }
+
+    #[test]
+    fn a_picked_variant_becomes_the_implementation_spec() {
+        let picked = Picked { page: "Pricing".into(), project: Some("site".into()), variant: Some("B".into()), url: Some("http://localhost:5173/proto/b".into()) };
+        let body = implementation_body("Picked in a design session.", &picked);
+        assert!(body.starts_with("Picked in a design session.\n\n- Page: Pricing\n- Project: site\n- Variant: B\n- Prototype: http://localhost:5173/proto/b\n"), "{body}");
+        assert!(body.contains("full design checks run on this ticket"));
+        let told = picked_line(&picked, 12, false);
+        assert!(told.contains("variant B") && told.contains("opened T-12") && told.contains("full checks run on T-12"), "{told}");
+        assert!(picked_line(&Picked { variant: None, ..picked }, 12, true).contains("the prototype for Pricing") );
+    }
+
+    #[test]
+    fn variants_are_shown_by_their_letter() {
+        assert_eq!(variant_label(" b "), Some("B".into()));
+        assert_eq!(variant_label("D"), None);
+        assert_eq!(variant_label("AB"), None);
+        let out = "design-session: variant b http://localhost:5173/a\ndesign-session: variant D http://localhost:5173/d\ndesign-session: variant C file:///tmp/c.html";
+        assert_eq!(markers(out), vec![Marker::Variant { label: "B".into(), url: "http://localhost:5173/a".into() }, Marker::Variant { label: "C".into(), url: "file:///tmp/c.html".into() }]);
+        assert_eq!(Marker::Variant { label: "A".into(), url: "http://x/a".into() }.line(), "design-session: variant A http://x/a");
+    }
+
+    #[test]
+    fn a_pin_carries_the_elements_words_and_box() {
+        let pin = Pin { n: 1, x: 10, y: 20, width: 1440, note: "tighter".into(), selector: Some("main > button".into()), text: Some("  Start \"free\"\n trial ".into()), bounds: Some([4, 12, 120, 40]), crop: Some(1), ..Pin::default() };
+        let block = pins_block("http://localhost:5173/", &[pin]);
+        assert!(block.contains("- pin 1 at 10,20: tighter\n  element: main > button\n  text: \"Start 'free' trial\"\n  box: 4,12 120x40\n  crop: attached picture 1"), "{block}");
+        assert_eq!(element_words(&"x".repeat(200)).chars().count(), TEXT_MAX + 1);
+    }
+
+    #[test]
     fn the_kickoff_names_the_page_and_how_to_work_and_reads_back() {
         let text = kickoff("Pricing\npage", Some("web"), &SessionFrom::Ticket { ticket: 12 }, None, "Let's work on it together.");
         assert!(text.starts_with("<design-session>\npage: Pricing page\nproject: web\nstarted from: ticket T-12\nstyle profile: thin"), "{text}");
-        assert!(text.contains("`design-session` skill") && text.contains("3-6 quick reference picks") && text.contains("one focused question"));
+        assert!(text.contains("`design-session` skill") && text.contains("3-5 references") && text.contains("one focused question"));
         assert_eq!(split_kickoff(&text), Some(("Pricing page".into(), "Let's work on it together.".into())));
         let full = StyleProfile { density: "airy".into(), tone: "calm".into(), typography: "serif".into(), ..Default::default() };
         assert!(block("Home", None, &SessionFrom::Pm { ticket: None }, Some(&full)).contains("style profile: read it first"));
@@ -516,7 +725,7 @@ mod tests {
     #[test]
     fn pins_go_before_the_words_with_where_and_why_and_their_crop() {
         let pins = [
-            Pin { n: 1, x: 812, y: 1340, width: 1440, note: "  Too\nloud ".into(), selector: Some("main > h1".into()), reasons: vec![PickReason::Colors], crop: Some(1) },
+            Pin { n: 1, x: 812, y: 1340, width: 1440, note: "  Too\nloud ".into(), selector: Some("main > h1".into()), reasons: vec![PickReason::Colors], crop: Some(1), ..Pin::default() },
             Pin { n: 2, x: 40, y: 90, width: 1440, note: "logo smaller".into(), ..Pin::default() },
         ];
         let text = with_pins("http://localhost:5173/pricing", &pins, " and the footer? ");
