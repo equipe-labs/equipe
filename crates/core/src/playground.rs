@@ -382,10 +382,10 @@ pub async fn build(card: &RefCard, tokens: &str) -> Result<String, String> {
         deps.extend(item.dependencies);
         queue.extend(item.uses);
     }
-    if !files.iter().any(|f| f.entry) {
-        if let Some(f) = files.first_mut() {
-            f.entry = true;
-        }
+    if !files.iter().any(|f| f.entry)
+        && let Some(f) = files.first_mut()
+    {
+        f.entry = true;
     }
     Ok(page(card, &files, &deps, tokens))
 }
