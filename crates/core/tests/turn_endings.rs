@@ -714,3 +714,83 @@ async fn a_ticket_handed_back_for_the_pm_says_why_and_wakes_the_pm() {
         handle.shutdown().await;
     }
 }
+
+/// Member `member` asks the person's yes to `action`, on the call a running
+/// engine would make — kept waiting, in the background.
+fn ask_in_background(handle: &Handle, member: &str, action: &str) -> tokio::task::JoinHandle<ToolResult> {
+    let (handle, call) = (handle.clone(), ToolCall { run: None, squad: "acme".into(), member: member.into(), name: "ask_person".into(), arguments: json!({ "action": action, "why": "It's in your name" }) });
+    tokio::spawn(async move { handle.tool(call).await })
+}
+
+/// The id of the next request put to the person.
+async fn next_approval(events: &mut UnboundedReceiver<Event>) -> u64 {
+    let seen = until(events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    seen.iter().find_map(|e| if let Event::ApprovalRequested { approval, .. } = e { Some(approval.id) } else { None }).unwrap()
+}
+
+/// A yes asked of the person during a turn, whose call the engine gave up on
+/// (as Codex does after its timeout), holds the run past the turn's end — not
+/// reminded, not stalled — and the answer, when it comes, reaches it as a turn
+/// of its own. A run left with nothing at all holding it, its lease run out,
+/// comes back once by itself, its member being free: a fresh run on the same
+/// ticket, the person and the PM told.
+#[tokio::test]
+async fn an_answer_after_the_turn_carries_the_run_on_and_a_run_nothing_holds_comes_back_once_by_itself() {
+    let engine = Engine0::new(Mode::Slow);
+    let (home, repo) = squad();
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home, true));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    create(&handle, "Hero", "frontend").await;
+    engine.prompt_with("You're on T-1").await;
+    let run = run_of(&handle, 2).await;
+
+    // Mid-turn it asks; its engine gives the call up before the person answers.
+    let asked = ask_in_background(&handle, "frontend", "Publish the hero to the live site");
+    let first = next_approval(&mut events).await;
+    asked.abort();
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == run)).await;
+    within(&mut events, Duration::from_millis(600)).await;
+    assert!(engine.said("ended without ending the work").is_empty(), "held for the person, not reminded");
+    handle.check_leases_at(now() + 1_000).await;
+    within(&mut events, Duration::from_millis(300)).await;
+    assert_eq!(execution(&ticket(&handle, 1).await).state, ExecutionState::Active, "a card open in front of the person holds it");
+
+    // A call the engine made with no turn running — a late one: its answer goes only to it.
+    let second = ask_in_background(&handle, "frontend", "Email the agency");
+    let later = next_approval(&mut events).await;
+
+    // The person says yes to the first: it reaches the run as a turn of its own.
+    handle.send(Command::Decide { squad: "acme".into(), approval: first, decision: equipe_core::protocol::Decision::Allow, words: None, said: None });
+    let late = engine.prompt_with("They have answered now").await;
+    for wanted in ["Publish the hero to the live site", "The person said yes", "submit_for_review"] {
+        assert!(late.contains(wanted), "{wanted} in: {late}");
+    }
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == run)).await;
+    within(&mut events, Duration::from_millis(600)).await;
+    assert!(engine.said("ended without ending the work").is_empty(), "the second card holds it");
+
+    // The second answered: nothing holds the run, and nothing runs it.
+    handle.send(Command::Decide { squad: "acme".into(), approval: later, decision: equipe_core::protocol::Decision::Deny, words: None, said: None });
+    assert!(!second.await.unwrap().is_error);
+    within(&mut events, Duration::from_millis(600)).await;
+    assert_eq!(engine.said("They have answered now").len(), 1, "only the first went to it as a turn: {:#?}", engine.prompts());
+    // Past its lease it stalls — and, its member free, comes back once by itself.
+    engine.set(Mode::Hangs);
+    handle.check_leases_at(now() + 1_000).await;
+    let seen = until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.execution.as_ref().is_some_and(|x| x.state == ExecutionState::Stalled))), "{seen:#?}");
+    let told = |e: &Event| matches!(e, Event::Notice { text, .. } if text.contains("equipe brought it back once by itself"));
+    if !seen.iter().any(told) {
+        until(&mut events, told).await;
+    }
+    let prompt = engine.prompt_with("equipe brought it back once by itself: this is a fresh session").await;
+    assert!(prompt.contains("You're on T-1"), "{prompt}");
+    let back = ticket(&handle, 1).await;
+    let resumed = execution(&back);
+    assert_eq!((back.status, back.assignee.as_deref(), resumed.state, resumed.generation), (TicketStatus::InProgress, Some("frontend"), ExecutionState::Active, 2));
+    let journal = Journal::for_squad(&home, "acme").unwrap();
+    assert!(journal.ticket_history(1).unwrap().iter().any(|(by, kind, text)| by == "equipe" && kind == "resumed" && text.starts_with("by itself, once")));
+    assert!(journal.resumed_by_itself_last(1).unwrap(), "once: stalled again, it waits for the person");
+    handle.shutdown().await;
+}

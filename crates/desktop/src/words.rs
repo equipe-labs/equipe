@@ -57,9 +57,20 @@ impl Words {
 
     /// The one in front: an answer it waits for first (read back, a choice),
     /// else the latest counting down.
+    #[cfg_attr(not(feature = "snapshot"), allow(dead_code))]
     pub fn front(&self) -> Option<&Live> {
         let answering = |l: &&Live| matches!(l.stage, Stage::ReadBack | Stage::Which);
         self.live.iter().filter(answering).max_by_key(|l| l.id).or_else(|| self.live.iter().max_by_key(|l| l.id))
+    }
+
+    /// The one in front over conversation `viewed`'s composer: one waiting
+    /// for an answer only there — the daemon reads an answer only in the
+    /// conversation it waits in, so elsewhere what is typed is a message —
+    /// and one counting down (its button works anywhere) wherever it is.
+    pub fn front_in(&self, viewed: Option<equipe_core::protocol::SessionId>) -> Option<&Live> {
+        let answering = |l: &&Live| matches!(l.stage, Stage::ReadBack | Stage::Which);
+        let here = |l: &&Live| !answering(l) || Some(l.session) == viewed;
+        self.live.iter().filter(here).filter(answering).max_by_key(|l| l.id).or_else(|| self.live.iter().filter(here).max_by_key(|l| l.id))
     }
 
     pub fn got_log(&mut self, entries: Vec<Entry>) {
@@ -87,7 +98,7 @@ pub fn commands(commands: Vec<Command>, squad: &str, read: bool, said: Said) -> 
         return commands;
     }
     let via = if said.dictated { Via::Dictated } else { Via::Typed };
-    let say = |session, text, later, about| Command::Say { squad: squad.to_owned(), session, text, via, all: false, later, pasted: said.pasted, about, device: None };
+    let say = |session, text, later, about| Command::Say { squad: squad.to_owned(), session, text, via, all: false, later, pasted: said.pasted, about, device: None, nonce: None };
     commands
         .into_iter()
         .filter(|c| !matches!(c, Command::ProposeAccept { .. }))
@@ -278,6 +289,14 @@ mod tests {
         assert_eq!(words.front().map(|l| l.id), Some(2), "the read-back waits for the next message");
         words.live(Live { stage: Stage::Countdown, ..live(2, Stage::ReadBack) });
         assert_eq!(words.front().map(|l| l.id), Some(3), "none waits for an answer: the latest");
+        // Over another conversation's composer, a read-back isn't shown: an answer there would be a message.
+        words.live(live(2, Stage::ReadBack));
+        let elsewhere = Live { session: 7, ..live(4, Stage::ReadBack) };
+        words.live(elsewhere);
+        assert_eq!(words.front_in(Some(1)).map(|l| l.id), Some(2), "its own conversation's read-back");
+        assert_eq!(words.front_in(Some(7)).map(|l| l.id), Some(4));
+        assert_eq!(words.front_in(Some(9)).map(|l| l.id), Some(3), "elsewhere only what counts down");
+        words.close(4);
         words.close(3);
         words.close(2);
         words.close(1);
@@ -300,8 +319,8 @@ mod tests {
             commands(vec![new.clone(), raise, submit, memo], "acme", true, said),
             vec![
                 new,
-                Command::Say { squad: "acme".into(), session: 1, text: "T-1 수락".into(), via: Via::Dictated, all: false, later: false, pasted: false, about: Some(None), device: None },
-                Command::Say { squad: "acme".into(), session: 2, text: "ㄱㄱ".into(), via: Via::Dictated, all: false, later: true, pasted: false, about: None, device: None },
+                Command::Say { squad: "acme".into(), session: 1, text: "T-1 수락".into(), via: Via::Dictated, all: false, later: false, pasted: false, about: Some(None), device: None, nonce: None },
+                Command::Say { squad: "acme".into(), session: 2, text: "ㄱㄱ".into(), via: Via::Dictated, all: false, later: true, pasted: false, about: None, device: None, nonce: None },
             ],
             "no card raised here: the daemon does, from the words; all by words is the daemon's to know"
         );

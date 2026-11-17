@@ -198,8 +198,38 @@ pub fn why_words(why: ImageWhy) -> &'static str {
     }
 }
 
-/// Where a picture can't be had: the file's name, and why, quietly.
-fn gone(p: Palette, path: &str, why: ImageWhy, roomy: bool) -> AnyElement {
+/// Where a picture can't be had: the file's name, and why, quietly — and,
+/// with room, a way to ask for it again (`retry`: the window, and the key
+/// its button goes by). One that couldn't be loaded says so, not that the
+/// file is unreadable: the line or the daemon may have been the reason.
+fn gone(p: Palette, path: &str, why: ImageWhy, roomy: bool, retry: Option<(WeakEntity<Shell>, u64)>) -> AnyElement {
+    let words = if why == ImageWhy::Unreadable { t!("visuals.load_failed") } else { why_words(why) };
+    let retry = retry.filter(|_| roomy).map(|(handle, id)| {
+        let path = path.to_owned();
+        div()
+            .id(("shot-retry", id))
+            .mt_1()
+            .h(px(22.))
+            .px_2()
+            .flex()
+            .items_center()
+            .gap_1()
+            .rounded(px(R_SM))
+            .border_1()
+            .border_color(p.hair)
+            .bg(p.bg)
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.wash))
+            .text_size(px(11.5))
+            .text_color(p.text2)
+            .child(icon(Icon::Retry, 11., p.text2))
+            .child(t!("visuals.retry"))
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                let paths = vec![path.clone()];
+                handle.update(cx, |shell, cx| shell.retry_shots(&paths, cx)).ok();
+            })
+    });
     v_flex()
         .absolute()
         .inset_0()
@@ -221,8 +251,9 @@ fn gone(p: Palette, path: &str, why: ImageWhy, roomy: bool) -> AnyElement {
             )
         })
         .when(roomy, |c| {
-            c.child(div().text_size(px(11.)).child(why_words(why)))
+            c.child(div().text_size(px(11.)).child(words))
         })
+        .children(retry)
         .into_any_element()
 }
 
@@ -304,7 +335,7 @@ pub fn picture_on(
                 image.into_any_element()
             }
         }
-        Look::Gone(why) => gone(p, path, *why, w >= 100.),
+        Look::Gone(why) => gone(p, path, *why, w >= 100., Some((shots.handle.clone(), id))),
         Look::Loading => waiting(
             p,
             ElementId::NamedInteger("shot-wait".into(), id),
@@ -1445,7 +1476,8 @@ pub fn viewer(shell: &Shell, window: &Window, cx: &mut Context<Shell>) -> Option
         .when(item.before, |r| {
             r.child(div().flex_none().h(px(20.)).px(px(7.)).flex().items_center().rounded(px(5.)).bg(rgba(0xFFFFFF26)).text_size(px(11.5)).font_weight(FontWeight::MEDIUM).text_color(rgb(0xFFFFFF)).child(t!("decide.before")))
         })
-        .when(on_board && !item.note.is_empty(), |r| {
+        // A board's tile, a reference card: where it is from and what to take.
+        .when(!item.note.is_empty(), |r| {
             r.child(
                 div()
                     .min_w_0()
@@ -1927,16 +1959,17 @@ impl Shell {
         }
         let generation = self.shots.borrow().generation;
         let Some(uploader) = self.link.as_ref().map(|l| l.uploader()) else {
-            // Not on the line: asked again once it is.
-            let mut shots = self.shots.borrow_mut();
+            // Not on the line: asked again in a moment, and once it is.
             for (path, size) in wanted {
-                shots.put(&path, size, Look::Gone(ImageWhy::Unreadable));
+                self.shot_arrived(generation, &path, size, Err((ImageWhy::Unreadable, true)), cx);
             }
+            let mut shots = self.shots.borrow_mut();
             for folder in folders {
                 shots.put_listing(&folder, Listing::Gone);
             }
             return;
         };
+        self.watch_overdue_shots(generation, cx);
         let squad = self.model.squad.clone();
         // On this Mac, a reply's picture the daemon won't give (one outside the
         // squad's folders) is still this Mac's own to show.
@@ -1974,10 +2007,15 @@ impl Shell {
                         }
                     });
                 match read {
-                    Ok(read) => {
-                        rules::shot(&read).map_or(Look::Gone(ImageWhy::Unreadable), Look::Ready)
+                    // Bytes that aren't a picture won't be one when asked again.
+                    Ok(read) => rules::shot(&read).ok_or((ImageWhy::Unreadable, false)),
+                    // No such file, too big, outside: so it stays. Anything else
+                    // (the line down or dropping, no answer in time, a daemon out
+                    // of file handles) may pass: asked again by itself.
+                    Err(why) => {
+                        let why = ImageWhy::of(&why);
+                        Err((why, why == ImageWhy::Unreadable))
                     }
-                    Err(why) => Look::Gone(ImageWhy::of(&why)),
                 }
             });
             cx.spawn(async move |this, cx| {
@@ -1991,19 +2029,46 @@ impl Shell {
         }
     }
 
+    /// What came of asking for `path` at `size`: the picture, or why not and
+    /// whether that may pass — then it is asked for again after a wait.
     fn shot_arrived(
         &mut self,
         generation: u64,
         path: &str,
         size: Size,
-        look: Look,
+        got: Result<Shot, (ImageWhy, bool)>,
         cx: &mut Context<Self>,
     ) {
         let mut shots = self.shots.borrow_mut();
         if shots.generation != generation {
             return;
         }
-        shots.put(path, size, look);
+        match got {
+            Ok(shot) => shots.put(path, size, Look::Ready(shot)),
+            Err((why, passing)) => {
+                if let Some(wait) = shots.failed(path, size, why, passing) {
+                    let path = path.to_owned();
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(wait).await;
+                        this.update(cx, |this, cx| {
+                            let mut shots = this.shots.borrow_mut();
+                            if shots.generation != generation {
+                                return;
+                            }
+                            shots.again(&path, size);
+                            let rows = shots.rows_of(&path);
+                            drop(shots);
+                            for row in rows {
+                                this.chat.remeasure_row(row, cx);
+                            }
+                            cx.notify();
+                        })
+                        .ok();
+                    })
+                    .detach();
+                }
+            }
+        }
         // A reply's picture: its row is measured again, its size known now.
         let rows = if size == Size::Inline {
             shots.rows_of(path)
@@ -2025,6 +2090,40 @@ impl Shell {
             self.chat.remeasure_row(row, cx);
         }
         cx.notify();
+    }
+
+    /// While pictures are being asked for, look now and then for one asked
+    /// so long ago it must have been lost on the way: failed, and asked again.
+    fn watch_overdue_shots(&mut self, generation: u64, cx: &mut Context<Self>) {
+        if std::mem::replace(&mut self.shots.borrow_mut().watching, true) {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(rules::LOAD_WAIT / 3).await;
+                let again = this.update(cx, |this, cx| {
+                    let late = {
+                        let mut shots = this.shots.borrow_mut();
+                        if shots.generation != generation {
+                            shots.watching = false;
+                            return false;
+                        }
+                        shots.overdue(std::time::Instant::now())
+                    };
+                    for (path, size) in late {
+                        this.shot_arrived(generation, &path, size, Err((ImageWhy::Unreadable, true)), cx);
+                    }
+                    let mut shots = this.shots.borrow_mut();
+                    let more = shots.loading_any();
+                    shots.watching = more;
+                    more
+                });
+                if !matches!(again, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     fn trim_shots_later(&mut self, generation: u64, cx: &mut Context<Self>) {

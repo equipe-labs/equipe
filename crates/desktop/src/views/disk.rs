@@ -139,7 +139,7 @@ pub fn sheet(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
                     .on_click(cx.listener(|this, _, _, cx| this.rescan_disk(cx))),
             )
         });
-    Some(crate::views::connect::modal_w(p, "disk", WIDTH, v_flex().gap_4().min_h_0().child(header).child(body).child(foot)))
+    Some(crate::views::connect::modal_w(p, "disk", WIDTH, v_flex().gap_4().child(header).child(body).child(foot)))
 }
 
 /// Free of total, with a bar and the level.
@@ -240,7 +240,6 @@ fn list(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let partial = report.partial.then(|| div().text_size(px(12.)).text_color(p.muted).child(t!("disk.partial")));
     v_flex()
         .gap_4()
-        .min_h_0()
         .children(card)
         .child(v_flex().id("disk-scroll").max_h(px(360.)).overflow_y_scroll().gap_5().child(fixes_block).child(uses).children(partial))
         .into_any_element()

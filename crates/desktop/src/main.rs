@@ -50,10 +50,12 @@ mod files;
 mod media;
 mod mem;
 mod notify;
+mod outbox;
 mod pair;
 mod pane;
 mod queue;
 mod quote;
+mod refcards;
 mod refs;
 mod designs;
 mod refshelf;
@@ -296,6 +298,8 @@ pub struct Shell {
     /// Members' pictures — decisions' options, hand-ins — and the one shown big.
     pub shots: std::rc::Rc<std::cell::RefCell<visuals::Visuals>>,
     pub viewer: Option<visuals::Viewer>,
+    /// What the person did to the reference cards members showed (`refcards`).
+    pub refcards: std::rc::Rc<refcards::Reactions>,
     /// How far the big view is zoomed in, and where.
     pub viewer_zoom: visuals::Zoom,
     /// A reply's list of questions, answered in place.
@@ -390,6 +394,8 @@ pub struct Shell {
     ssh_key_wanted: bool,
     /// "Connect a phone": the sheet's state and the paired phones (`pair.rs`).
     pub pairing: pair::Pairing,
+    /// The control the box over the window last scrolled to (`follow_modal_focus`).
+    modal_revealed: Option<FocusHandle>,
     /// The AI platforms, as settings shows them.
     pub engines: engines::Engines,
     /// The first run's git, engine and squad steps, while no squad exists.
@@ -545,6 +551,7 @@ impl Shell {
             decide: Default::default(),
             shots: Default::default(),
             viewer: None,
+            refcards: Default::default(),
             viewer_zoom: Default::default(),
             asklist: Default::default(),
             quote: Default::default(),
@@ -595,6 +602,7 @@ impl Shell {
             ask,
             ssh_key_wanted: false,
             pairing: pair::Pairing::default(),
+            modal_revealed: None,
             engines: engines::Engines::default(),
             setup: setup::Setup::default(),
             forgetting: None,
@@ -795,6 +803,8 @@ impl Shell {
                     cx.stop_propagation();
                 } else if key == "enter" && this.update(cx, |shell, _| shell.confirm.as_ref().is_some_and(|a| !a.destructive()) && shell.ask.queue.is_empty()).unwrap_or(false) {
                     this.update(cx, |shell, cx| shell.answer_question(true, window, cx)).ok();
+                    cx.stop_propagation();
+                } else if this.update(cx, |shell, cx| shell.scroll_modal(key, modifiers, cx)).unwrap_or(false) {
                     cx.stop_propagation();
                 }
                 return;
@@ -1432,6 +1442,14 @@ impl Shell {
                             _ => None,
                         };
                         changed |= this.model.apply(update, now);
+                        // What the person said while the line was down goes now, in order.
+                        let said = this.model.take_to_send();
+                        if !said.is_empty() {
+                            for command in said {
+                                this.send_command(command);
+                            }
+                            this.watch_said(cx);
+                        }
                         // A name sent: kept, or refused (or the line gone) — the old one back, the card again.
                         this.rename_heard(renamed, window, cx);
                         // A conversation taken up again from its project's page: opened.
@@ -1649,6 +1667,64 @@ impl Shell {
             (None, _) => n - 1,
         };
         window.focus(&stops[to], cx);
+    }
+
+    /// A key that scrolls the box over the window when it's taller than the
+    /// window (large text, a small window): ↑↓ a line, Page keys a screen,
+    /// Home/End the ends. Not while a box with a text field is open — those
+    /// keys move in the text — nor Space, which presses a button.
+    fn scroll_modal(&mut self, key: &str, modifiers: Modifiers, cx: &mut Context<Self>) -> bool {
+        if modifiers.control || modifiers.alt || modifiers.platform || modifiers.function || key == "space" {
+            return false;
+        }
+        if self.connect.open || !self.ask.queue.is_empty() || self.new_squad.open {
+            return false;
+        }
+        let scroll = views::connect::modal_scroll();
+        let seen = f32::from(scroll.bounds().size.height);
+        let (down, most) = (-f32::from(scroll.offset().y), f32::from(scroll.max_offset().y));
+        let Some(to) = doc::scrolled(key, modifiers.shift, down, most, seen) else { return false };
+        scroll.set_offset(point(scroll.offset().x, px(-to)));
+        cx.notify();
+        true
+    }
+
+    /// Scrolls the box over the window so the control focus just moved to
+    /// shows whole, its ring and a margin included — as `follow_focus` does
+    /// for the settings page.
+    fn follow_modal_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        const MARGIN: f32 = 12.;
+        let Some(id) = window.focused(cx) else {
+            self.modal_revealed = None;
+            return;
+        };
+        if self.modal_revealed.as_ref() == Some(&id) {
+            return;
+        }
+        let Some(at) = window.focused_bounds() else {
+            cx.notify();
+            return;
+        };
+        self.modal_revealed = Some(id);
+        let scroll = views::connect::modal_scroll();
+        let view = scroll.bounds();
+        if at.right() <= view.left() || at.left() >= view.right() {
+            return;
+        }
+        let margin = px(MARGIN);
+        let offset = scroll.offset();
+        let by = if at.bottom() + margin > view.bottom() {
+            view.bottom() - margin - at.bottom()
+        } else if at.top() - margin < view.top() {
+            view.top() + margin - at.top()
+        } else {
+            return;
+        };
+        let y = (offset.y + by).clamp(-scroll.max_offset().y, px(0.));
+        if y != offset.y {
+            scroll.set_offset(point(offset.x, y));
+            cx.notify();
+        }
     }
 
     pub fn overlay_open(&self) -> bool {
@@ -2650,7 +2726,9 @@ impl Render for Shell {
         if window.focused(cx).is_none() {
             self.root_focus.focus(window, cx);
         }
-        if self.screen == Screen::Settings {
+        if self.overlay_open() {
+            self.follow_modal_focus(window, cx);
+        } else if self.screen == Screen::Settings {
             self.follow_focus(window, cx);
         }
         // A sheet opened: the keys go into it, once; Esc or Close sends them back to the box.

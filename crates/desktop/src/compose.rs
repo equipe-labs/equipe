@@ -1292,6 +1292,43 @@ mod tests {
     }
 
     #[test]
+    fn a_new_conversations_first_message_said_while_reconnecting_shows_at_once_and_goes_after_the_hello_once() {
+        use crate::convo::Block;
+        use crate::outbox::Shown;
+        let mut model = team();
+        model.draft_conversation(None);
+        let Some((id, _)) = model.draft_talk.clone() else { panic!("a draft") };
+        // The daemon restarting for an update: the line is down.
+        model.apply(Update::Down(crate::failure::Failure::Closed), T0);
+        assert!(!model.attached());
+        let said = "what's waiting for me to accept?";
+        let commands = crate::words::commands(plan(&model, said).commands, "acme", true, crate::words::Said::default());
+        assert!(model.send_said(commands, std::time::Instant::now()).is_empty(), "nothing into a dead line");
+        // On screen at once, as the person's own — not gone with the cleared box.
+        let shown = model.conversation(true).blocks;
+        assert!(matches!(shown.last(), Some(Block::Outgoing { text, shown: Shown::Waiting, .. }) if text == said), "{shown:?}");
+        // Back (a new daemon, which never heard of it): the conversation made, then the message — once.
+        model.apply(Update::Attached(Hello { version: "x".into(), snapshot: Snapshot { squad: "acme".into(), sessions: vec![session(1, "pm", SessionState::Ready)], ..Default::default() } }), T0);
+        let sent = model.take_to_send();
+        assert!(
+            matches!(&sent[..], [Command::NewConversation { session: made, .. }, Command::Say { session: to, text, nonce: Some(_), .. }] if *made == id && *to == id && text == said),
+            "{sent:?}"
+        );
+        assert!(model.take_to_send().is_empty(), "nothing twice");
+        assert_eq!(model.draft_talk.as_ref().map(|(d, _)| *d), Some(id), "still the conversation being started");
+        let shown = model.conversation(true).blocks;
+        assert!(matches!(shown.last(), Some(Block::Outgoing { shown: Shown::Sending, .. })), "{shown:?}");
+        // Made, and its echo: the bubble gives way to the conversation's own line.
+        model.apply(Update::Event(Event::SessionStarted { session: id, project: "/p".into(), engine: Engine::Claude, model: None, workspace: None, member: Some(Who { role: "pm".into(), name: "pm".into() }), squad: Some("acme".into()) }), T0);
+        model.apply(Update::Event(Event::LaneOpened { session: id, of: 1, project: None, kept: true }), T0);
+        model.apply(Update::Event(Event::UserMessage { session: id, text: said.into(), kept: vec![] }), T0);
+        let shown = model.conversation(true).blocks;
+        assert!(!shown.iter().any(|b| matches!(b, Block::Outgoing { .. })), "{shown:?}");
+        assert!(shown.iter().any(|b| matches!(b, Block::User(t) if t == said)), "{shown:?}");
+        assert!(model.outbox.is_empty());
+    }
+
+    #[test]
     fn a_line_goes_to_the_member_on_screen() {
         let model = team();
         assert_eq!(model.selected, Some(1), "the PM is where the window starts");

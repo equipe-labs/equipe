@@ -144,7 +144,7 @@ async fn status(handle: &Handle, id: u32) -> TicketStatus {
 /// The person's own message, typed into the PM's conversation. `all`: what
 /// a screen may claim of "all by words" — never what decides it.
 fn say(text: &str, all: bool) -> Command {
-    Command::Say { squad: "acme".into(), session: 1, text: text.into(), via: Via::Typed, all, later: false, pasted: false, about: None, device: None }
+    Command::Say { squad: "acme".into(), session: 1, text: text.into(), via: Via::Typed, all, later: false, pasted: false, about: None, device: None, nonce: None }
 }
 
 /// "All by words", turned on at the Mac.
@@ -261,7 +261,7 @@ async fn all_by_words_reads_back_on_the_card_and_only_the_persons_next_clear_yes
     assert_eq!(status(&handle, 1).await, TicketStatus::Review);
     // An older screen's `submit` and a pasted yes: not the person's answer.
     handle.send(Command::Submit { session: 1, text: "yes".into(), about: None });
-    handle.send(Command::Say { squad: "acme".into(), session: 1, text: "yes".into(), via: Via::Typed, all: true, later: false, pasted: true, about: None, device: None });
+    handle.send(Command::Say { squad: "acme".into(), session: 1, text: "yes".into(), via: Via::Typed, all: true, later: false, pasted: true, about: None, device: None, nonce: None });
     let after = within(&mut events, 1_000).await;
     assert!(!after.iter().any(|e| matches!(e, Event::WordsClosed { .. })), "{after:#?}");
     // A quoted yes, or anything that isn't an answer: on to the PM as it is, the read-back still waiting.
@@ -306,7 +306,7 @@ async fn a_no_holds_it_on_its_card_and_an_outward_yes_waits_out_its_cancel_windo
     let seen = until(&mut events, |e| matches!(e, Event::WordsLive { .. })).await;
     assert_eq!((live(&seen).tier, live(&seen).read_back.as_str()), (Tier::Outward, "Merge T-1 into main and push main to origin"));
     // Said aloud, a yes to something outward is short and on its own: asked again.
-    handle.send(Command::Say { squad: "acme".into(), session: 1, text: "yes go ahead please now".into(), via: Via::Voice, all: false, later: false, pasted: false, about: None, device: None });
+    handle.send(Command::Say { squad: "acme".into(), session: 1, text: "yes go ahead please now".into(), via: Via::Voice, all: false, later: false, pasted: false, about: None, device: None, nonce: None });
     let seen = until(&mut events, |e| matches!(e, Event::WordsLive { .. })).await;
     assert_eq!((live(&seen).stage, live(&seen).asked_again), (Stage::ReadBack, 1));
     handle.send(say("ok", false));
@@ -407,5 +407,67 @@ async fn what_waited_in_words_when_the_daemon_stopped_is_logged_as_dropped() {
     assert_eq!(kept.iter().map(|e| (e.outcome, e.said.as_str())).collect::<Vec<_>>(), [(Outcome::Dropped, "merge T-1")]);
     assert_eq!(kept[0].flags, [equipe_core::protocol::by_words::Flag::Dropped]);
     assert!(handle.snapshot("acme").await.words.is_some_and(|w| w.is_empty()));
+    handle.shutdown().await;
+}
+
+/// The person's own message in conversation `session`, under the screen's key `nonce`.
+fn say_in(session: u64, text: &str, nonce: Option<u64>) -> Command {
+    Command::Say { squad: "acme".into(), session, text: text.into(), via: Via::Typed, all: false, later: false, pasted: false, about: None, device: None, nonce }
+}
+
+#[tokio::test]
+async fn an_ordinary_question_is_never_taken_as_an_answer_unless_a_words_request_waits_in_that_conversation() {
+    let (handle, mut events, _repo, _home) = handed_in(false).await;
+    all_on(&handle, &mut events).await;
+    // A read-back waits in the PM's own conversation.
+    handle.send(say("merge T-1", false));
+    until(&mut events, |e| matches!(e, Event::WordsLive { live, .. } if live.stage == Stage::ReadBack && live.session == 1)).await;
+    // A new conversation with the PM: what is said there is a message there — even a bare yes.
+    handle.send(Command::NewConversation { squad: "acme".into(), session: 50, project: None });
+    until(&mut events, |e| matches!(e, Event::LaneOpened { session: 50, kept: true, .. })).await;
+    handle.send(say_in(50, "what do I have to accept now?", None));
+    handle.send(say_in(50, "yes", None));
+    let after = within(&mut events, 1_500).await;
+    assert!(passed(&after, "what do I have to accept now?") && passed(&after, "yes"), "on to the PM in that conversation: {after:#?}");
+    assert!(!after.iter().any(|e| matches!(e, Event::WordsClosed { .. } | Event::WordsLive { .. })), "the read-back still waits, untouched: {after:#?}");
+    assert_eq!(status(&handle, 1).await, TicketStatus::Review);
+    // In the conversation it waits in, a question with a yes word in it asks; it doesn't answer.
+    handle.send(say("ok so what do I still have to approve?", false));
+    let after = within(&mut events, 1_500).await;
+    assert!(passed(&after, "ok so what do I still have to approve?"), "{after:#?}");
+    assert!(!after.iter().any(|e| matches!(e, Event::WordsClosed { .. } | Event::WordsLive { .. })), "{after:#?}");
+    // An answer that is taken still shows where it went: a line in its conversation.
+    handle.send(say("ㄱㄱ", false));
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { session: 1, text, .. } if text.contains("ㄱㄱ"))).await;
+    assert!(!passed(&seen, "ㄱㄱ"), "{seen:#?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_message_sent_again_under_its_key_is_acted_on_once_and_a_conversation_made_twice_is_made_once() {
+    let repo = repo();
+    let home = scratch("home");
+    squads::create(&home, "acme", &repo).unwrap();
+    let (handle, mut events) = runtime::start(config(&claude(), &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    // A screen that lost the line before it heard back sends both again.
+    for _ in 0..2 {
+        handle.send(Command::NewConversation { squad: "acme".into(), session: 60, project: None });
+    }
+    let seen = until(&mut events, |e| matches!(e, Event::LaneOpened { session: 60, .. })).await;
+    let after = within(&mut events, 800).await;
+    let all: Vec<&Event> = seen.iter().chain(&after).collect();
+    assert_eq!(all.iter().filter(|e| matches!(e, Event::LaneOpened { session: 60, .. })).count(), 1, "{all:#?}");
+    assert!(!all.iter().any(|e| matches!(e, Event::Error { .. })), "made already is no error: {all:#?}");
+    for _ in 0..3 {
+        handle.send(say_in(60, "what's waiting for me?", Some(77)));
+    }
+    let after = within(&mut events, 2_000).await;
+    let said = after.iter().filter(|e| matches!(e, Event::UserMessage { session: 60, text, .. } | Event::SteerQueued { session: 60, text, .. } | Event::MessageQueued { session: 60, text, .. } if text == "what's waiting for me?")).count();
+    assert_eq!(said, 1, "once, however often it came: {after:#?}");
+    // Another message, its own key: on as ever.
+    handle.send(say_in(60, "and the board?", Some(78)));
+    let after = within(&mut events, 1_500).await;
+    assert!(passed(&after, "and the board?"), "{after:#?}");
     handle.shutdown().await;
 }

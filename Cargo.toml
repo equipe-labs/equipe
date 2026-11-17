@@ -7,7 +7,7 @@ exclude = ["vendor"]
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "0.103.130"
+version = "0.103.131"
 
 [profile.release]
 lto = "thin"
@@ -49,7 +49,9 @@ debug = false
 # - gpui-base: a text view's link underline and the room between list items
 #   are the style's to set (`TextViewStyle`).
 # - gpui-base: where the window's selection ends are drawn, for what floats
-#   over it (`TextSelection::ends`, `is_selecting`; `views/quote.rs`).
+#   over it (`TextSelection::ends`, `is_selecting`; `views/quote.rs`), and
+#   where its text rows are (`TextSelection::text_rows`; the ticket card's
+#   small card keeps off them, `views/ticket_card.rs`).
 # - gpui-base: `ElementExt::on_prepaint` reports the element's own bounds —
 #   its canvas pinned to the top-left, not flowed under the element's
 #   children (`element_ext.rs`; the ticket card's place, `views/ticket_card.rs`).

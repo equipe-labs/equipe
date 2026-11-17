@@ -176,6 +176,11 @@ fn file_for(folder: &Path, name: &str) -> String {
 /// squad's folder, by `by`. Whatever the person changed in the memory since is
 /// saved as theirs first. Returns the saved change and whether it was new.
 pub fn remember(folder: &Path, by: &str, fact: &Remember<'_>, today: &str, language: Option<&str>) -> Result<(Change, bool), String> {
+    // The folder held throughout: a save made meanwhile would take the fact as its own.
+    squad_home::exclusively(folder, || remember_now(folder, by, fact, today, language))
+}
+
+fn remember_now(folder: &Path, by: &str, fact: &Remember<'_>, today: &str, language: Option<&str>) -> Result<(Change, bool), String> {
     let name = fact.name.trim();
     if slug(name).is_empty() {
         return Err("Give the fact a short name, like tax-filing.".into());
@@ -216,6 +221,10 @@ change, ask them, and call again with confirmed: true once they agree."
 
 /// Forget a fact that turned out wrong or stale, and save that, by `by`.
 pub fn forget(folder: &Path, by: &str, name: &str, language: Option<&str>) -> Result<Change, String> {
+    squad_home::exclusively(folder, || forget_now(folder, by, name, language))
+}
+
+fn forget_now(folder: &Path, by: &str, name: &str, language: Option<&str>) -> Result<Change, String> {
     squad_home::save_in(folder, PERSON, "changed the squad's memory", &[DIR])?;
     let file = file_for(folder, name.trim());
     let path = dir(folder).join(&file);

@@ -302,6 +302,8 @@ pub struct Composer {
     /// A PDF's first page drawn big for it, once drawn.
     page: Option<(u64, std::sync::Arc<Image>)>,
     save_task: Option<Task<()>>,
+    /// Looks again at the messages waiting for the daemon's word (`Shell::watch_said`).
+    pub said_watch: Option<Task<()>>,
     /// Writes the draft down as the app quits.
     _quit: Subscription,
     /// Dictation: speech recognition in `listening` — on this Mac, or with
@@ -364,6 +366,7 @@ impl Composer {
             lightbox: None,
             page: None,
             save_task: None,
+            said_watch: None,
             _quit: cx.on_app_quit(|shell: &mut Shell, cx| {
                 shell.composer.stash(cx);
                 shell.composer.drafts.save();
@@ -700,9 +703,9 @@ impl Shell {
             self.composer.dictated = false;
             self.composer.pasted = false;
         }
-        for command in crate::words::commands(plan.commands, &self.model.squad, self.model.words.read, said) {
-            self.send_command(command);
-        }
+        // Kept on screen until the daemon has it, whatever the line does (`crate::outbox`).
+        let commands = crate::words::commands(plan.commands, &self.model.squad, self.model.words.read, said);
+        self.send_said(commands, cx);
         self.composer.flash = plan.flash;
         self.composer.choices.clear();
         self.close_menu(cx);
@@ -715,6 +718,69 @@ impl Shell {
         self.save_drafts_soon(cx);
         // What was just said belongs in view.
         self.chat.follow_tail(cx);
+        cx.notify();
+    }
+
+    /// The commands of one line the person sent: their message among them
+    /// kept until the daemon has it — sent now when attached, else when the
+    /// line is back (`crate::outbox`); anything else sent as it is.
+    pub fn send_said(&mut self, commands: Vec<Command>, cx: &mut Context<Self>) {
+        for command in self.model.send_said(commands, Instant::now()) {
+            self.send_command(command);
+        }
+        self.watch_said(cx);
+        // Its bubble shows at once, whatever the line does.
+        self.chat_sync(cx);
+    }
+
+    /// The person's retry on a message not sent.
+    pub fn retry_said(&mut self, id: u64, cx: &mut Context<Self>) {
+        for command in self.model.retry_said(id, Instant::now()) {
+            self.send_command(command);
+        }
+        self.watch_said(cx);
+        self.refresh_chat(cx);
+    }
+
+    /// A message not sent taken back into the box, to change or send later.
+    pub fn take_back_said(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = self.model.take_back_said(id) else { return };
+        let now = self.composer.text(cx);
+        let text = if now.trim().is_empty() { text } else { format!("{text}\n{now}") };
+        self.composer.set_text(&text, window, cx);
+        self.composer.focus(window, cx);
+        self.refresh_chat(cx);
+    }
+
+    /// While a message waits for the daemon's word, look again when it
+    /// would have waited too long: then it shows as not sent.
+    pub fn watch_said(&mut self, cx: &mut Context<Self>) {
+        if !self.model.outbox.sending() || self.composer.said_watch.is_some() {
+            return;
+        }
+        self.composer.said_watch = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(crate::outbox::ANSWER_WAIT / 3).await;
+                let again = this.update(cx, |this, cx| {
+                    if this.model.tick_said(Instant::now()) {
+                        this.refresh_chat(cx);
+                    }
+                    let again = this.model.outbox.sending();
+                    if !again {
+                        this.composer.said_watch = None;
+                    }
+                    again
+                });
+                if !matches!(again, Ok(true)) {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// The conversation drawn again, its messages on their way with it.
+    fn refresh_chat(&mut self, cx: &mut Context<Self>) {
+        self.chat_sync(cx);
         cx.notify();
     }
 
@@ -1903,7 +1969,8 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                 "composer-text",
                 // The text box pads its text itself (GPUI Kit's medium input
                 // padding): take that off, so the text starts at INSET too.
-                div()
+                // A ticket's small card keeps off its words, not off the card's top edge above them.
+                super::ticket_card::keep_clear(div(), "composer-text", INSET)
                     .px(px(INSET) - gpui_kit::component::Size::Medium.input_px())
                     .pt(px(INSET) - gpui_kit::component::Size::Medium.input_py())
                     .child(
@@ -1939,7 +2006,7 @@ fn card(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
                 .child(div().size(px(8.)).flex_none().rounded_full().bg(p.danger()).with_animation("listening", Animation::new(Duration::from_millis(1200)).repeat().with_easing(pulsating_between(0.35, 1.)).with_max_fps(20.), |d, t| d.opacity(t)))
                 .child(div().min_w_0().text_color(p.muted).italic().child(if heard.is_empty() { t!("composer.dictation_listening").to_owned() } else { heard }))
         }))
-        .child(bar(shell, cx))
+        .child(super::ticket_card::keep_clear(div(), "composer-bar", 0.).child(bar(shell, cx)))
 }
 
 /// The list `/` and `@` open above the card: rows grouped, letters that

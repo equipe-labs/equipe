@@ -196,7 +196,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         Some(_) => (None, None),
         None => (who, Some(slice_control(shell, "chat", cx))),
     };
-    h_flex()
+    let bar_row = h_flex()
         .h(px(HEIGHT))
         .flex_none()
         .pr_3()
@@ -221,7 +221,9 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .children(studio_button(shell, cx))
         .children(session_button(shell, cx))
         .child(div().flex_none().child(terminal_button(shell, cx)))
-        .child(div().flex_none().child(browser_button(shell, cx)))
+        .child(div().flex_none().child(browser_button(shell, cx)));
+    // A ticket's small card keeps off its words and buttons.
+    super::ticket_card::keep_clear(bar_row, "chat-header", 0.)
 }
 
 /// The engine the member runs on now — and, when it moved between engines,

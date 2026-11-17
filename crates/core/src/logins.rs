@@ -366,7 +366,18 @@ pub(crate) fn create_table(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// A page on this machine (a member's own preview, a dev server): handing it
+/// to the person is showing work, not a sign-in, so it isn't counted as one.
+pub(crate) fn is_local_page(site: &str) -> bool {
+    let host = site.trim_start_matches('[').split(']').next().unwrap_or(site);
+    let host = host.rsplit_once(':').filter(|(h, port)| !h.is_empty() && !h.contains(':') && port.chars().all(|c| c.is_ascii_digit())).map_or(host, |(h, _)| h);
+    host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost") || host == "::1" || host.starts_with("127.") || host == "0.0.0.0"
+}
+
 pub(crate) fn insert(conn: &Connection, e: &Entry, keep_from: i64) -> rusqlite::Result<()> {
+    if is_local_page(&e.site) {
+        return Ok(());
+    }
     conn.execute(
         "INSERT INTO login_events (at, site, member, kind, cause, by, step) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![e.at as i64, e.site, e.member, e.kind.code(), e.cause.map(Cause::code), e.by, e.step],
@@ -968,5 +979,15 @@ mod tests {
         // Old rows go.
         insert(&conn, &e(30, "gitlab.com", "qa", Kind::Handoff, Some(Cause::Other), None), 25).unwrap();
         assert_eq!(select(&conn, 0).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_page_on_this_machine_is_not_a_sign_in() {
+        for site in ["localhost", "localhost:4899", "127.0.0.1", "127.0.0.1:3000", "app.localhost", "::1", "[::1]:8080"] {
+            assert!(is_local_page(site), "{site}");
+        }
+        for site in ["github.com", "accounts.google.com", "localhost.example.com", "128.0.0.1"] {
+            assert!(!is_local_page(site), "{site}");
+        }
     }
 }

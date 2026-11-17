@@ -140,6 +140,25 @@ pub fn place(given: &str, home: &Path) -> Result<(PathBuf, String), String> {
 /// Save `values` (one for each of `fields`) to `path`: each `KEY="value"`
 /// line replaced or added, the file's other lines kept; the file readable by
 /// its owner alone, its new folders too.
+/// A fresh draft file beside the one a secret goes into, for the person
+/// alone: whatever lay at `draft` before (a crash's leftover, or a link
+/// planted to steer the write out of the folder) is removed, never followed,
+/// and the file is created new — never opened through a link.
+pub fn open_draft(draft: &Path) -> std::io::Result<std::fs::File> {
+    match std::fs::remove_file(draft) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(draft)
+}
+
 pub fn write(path: &Path, fields: &[SecretField], values: &[SecretValue]) -> Result<(), String> {
     if values.len() != fields.len() {
         return Err(format!("{} values for {} fields", values.len(), fields.len()));
@@ -164,10 +183,7 @@ pub fn write(path: &Path, fields: &[SecretField], values: &[SecretValue]) -> Res
     let draft = path.with_extension("equipe-draft");
     {
         use std::io::Write as _;
-        let mut options = std::fs::OpenOptions::new(); options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        { use std::os::unix::fs::OpenOptionsExt as _; options.mode(0o600); }
-        let mut file = options.open(&draft).map_err(|e| e.to_string())?;
+        let mut file = open_draft(&draft).map_err(|e| e.to_string())?;
         file.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
     }
     #[cfg(unix)]

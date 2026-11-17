@@ -52,6 +52,7 @@ pub mod progress;
 pub mod status;
 pub mod project;
 pub mod quote;
+pub mod refcards;
 pub mod rename;
 pub mod settings;
 pub mod metrics;

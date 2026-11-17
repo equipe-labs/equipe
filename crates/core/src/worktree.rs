@@ -821,7 +821,7 @@ pub fn prepare_merge(repo: &Path, branch: &str, message: &str) -> Result<Prepare
         }
         _ => return Err(format!("git merge-tree failed: {}", String::from_utf8_lossy(&out.stderr).trim())),
     }
-    let commit = with_identity(repo, &["commit-tree", &tree, "-p", &tip, "-p", &head, "-m", message])?;
+    let commit = commit_tree(repo, &[&tree, "-p", &tip, "-p", &head, "-m", message])?;
     Ok(Prepared::Merge(MergeCommit { main, tip, head, commit }))
 }
 
@@ -926,7 +926,7 @@ pub fn commit_file_on_main(repo: &Path, rel: &str, bytes: &[u8], message: &str) 
     if git(repo, &["rev-parse", &format!("{tip}^{{tree}}")]).is_ok_and(|t| t == tree) {
         return Ok(main);
     }
-    let commit = with_identity(repo, &["commit-tree", &tree, "-p", &tip, "-m", message])?;
+    let commit = commit_tree(repo, &[&tree, "-p", &tip, "-m", message])?;
     move_main(repo, &main, &tip, &commit, "committed")?;
     Ok(main)
 }
@@ -1005,6 +1005,40 @@ pub(crate) fn with_identity(dir: &Path, args: &[&str]) -> Result<String> {
         with.extend(args);
         git(dir, &with)
     })
+}
+
+/// `git commit-tree` with `args` (a tree, its parents, a message), signed
+/// when `repo` asks for signed commits (`commit.gpgsign`) — `commit-tree`
+/// ignores that setting on its own. `-S` signs with `user.signingkey` when it
+/// is set. A signature that can't be made is an error, never a commit
+/// without one.
+fn commit_tree(repo: &Path, args: &[&str]) -> Result<String> {
+    let sign = wants_signed(repo)?;
+    let mut with = vec!["commit-tree"];
+    if sign {
+        with.push("-S");
+    }
+    with.extend(args);
+    with_identity(repo, &with).map_err(|err| {
+        if sign {
+            format!("{} asks for signed commits (commit.gpgsign) and the commit couldn't be signed — check user.signingkey and gpg.format there ({err})", repo.display())
+        } else {
+            err
+        }
+    })
+}
+
+/// Whether `repo`'s git config (its own, the user's, the system's) asks for
+/// signed commits. A value git can't read as true or false is an error.
+fn wants_signed(repo: &Path) -> Result<bool> {
+    let mut command = git_command(repo);
+    command.args(["config", "--type=bool", "--get", "commit.gpgsign"]);
+    let out = output_within(command, GIT_TIMEOUT)?;
+    match out.status.code() {
+        Some(0) => Ok(String::from_utf8_lossy(&out.stdout).trim() == "true"),
+        Some(1) => Ok(false),
+        _ => Err(format!("couldn't read commit.gpgsign in {}: {}", repo.display(), String::from_utf8_lossy(&out.stderr).trim())),
+    }
 }
 
 /// Who a commit is attributed to when the user's git identity isn't configured.
@@ -2043,6 +2077,80 @@ mod tests {
         let head = git(&repo, &["rev-parse", "main"]).unwrap();
         merge_into_main(&repo, &one, "again").unwrap();
         assert_eq!(git(&repo, &["rev-parse", "main"]).unwrap(), head);
+    }
+
+    /// Set `repo` up to sign its commits with a fresh ssh key, trusted for
+    /// `git verify-commit`; returns the private key's path.
+    #[cfg(unix)]
+    fn signing(repo: &Path) -> PathBuf {
+        let keys = scratch("keys");
+        let key = keys.join("signing");
+        let made = std::process::Command::new("ssh-keygen").args(["-q", "-t", "ed25519", "-N", "", "-C", "test", "-f"]).arg(&key).status().unwrap();
+        assert!(made.success());
+        let public = std::fs::read_to_string(keys.join("signing.pub")).unwrap();
+        std::fs::write(keys.join("allowed"), format!("test@example.com {public}")).unwrap();
+        for (name, value) in [
+            ("gpg.format", "ssh".to_owned()),
+            ("user.signingkey", key.to_string_lossy().into_owned()),
+            ("gpg.ssh.allowedSignersFile", keys.join("allowed").to_string_lossy().into_owned()),
+            ("commit.gpgsign", "true".to_owned()),
+        ] {
+            git(repo, &["config", name, &value]).unwrap();
+        }
+        key
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_repository_that_asks_for_signed_commits_gets_signed_merges() {
+        let repo = repo();
+        let home = scratch("home");
+        let one = finished(&repo, &home, "t1", "ONE.md", "one\n");
+        signing(&repo);
+        merge_into_main(&repo, &one, "equipe: merge T-1").unwrap();
+        git(&repo, &["verify-commit", "main"]).unwrap();
+        assert_eq!(git(&repo, &["log", "-1", "--format=%P", "main"]).unwrap().split(' ').count(), 2);
+        // A file committed straight onto main is signed too.
+        commit_file_on_main(&repo, "docs/plan.md", b"plan\n", "plan").unwrap();
+        git(&repo, &["verify-commit", "main"]).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_signature_that_cant_be_made_stops_the_merge() {
+        let repo = repo();
+        let home = scratch("home");
+        let one = finished(&repo, &home, "t1", "ONE.md", "one\n");
+        let key = signing(&repo);
+        std::fs::remove_file(&key).unwrap();
+        let head = git(&repo, &["rev-parse", "main"]).unwrap();
+        let err = merge_into_main(&repo, &one, "merge").unwrap_err();
+        assert!(err.contains("commit.gpgsign") && err.contains("couldn't be signed"), "{err}");
+        assert_eq!(git(&repo, &["rev-parse", "main"]).unwrap(), head, "nothing lands unsigned");
+        assert!(commit_file_on_main(&repo, "docs/plan.md", b"plan\n", "plan").unwrap_err().contains("couldn't be signed"));
+        assert_eq!(git(&repo, &["rev-parse", "main"]).unwrap(), head);
+    }
+
+    #[test]
+    fn a_repository_that_doesnt_ask_for_signed_commits_merges_unsigned() {
+        let repo = repo();
+        let home = scratch("home");
+        let one = finished(&repo, &home, "t1", "ONE.md", "one\n");
+        // A key configured but signing not asked for: no signature, as before.
+        git(&repo, &["config", "user.signingkey", "/nonexistent/key"]).unwrap();
+        git(&repo, &["config", "gpg.format", "ssh"]).unwrap();
+        let signs_globally = wants_signed(&repo).unwrap();
+        merge_into_main(&repo, &one, "merge").unwrap();
+        if !signs_globally {
+            assert_eq!(git(&repo, &["log", "-1", "--format=%G?", "main"]).unwrap(), "N");
+        }
+        git(&repo, &["config", "commit.gpgsign", "false"]).unwrap();
+        let two = finished(&repo, &home, "t2", "TWO.md", "two\n");
+        merge_into_main(&repo, &two, "merge").unwrap();
+        assert_eq!(git(&repo, &["log", "-1", "--format=%G?", "main"]).unwrap(), "N");
+        let three = finished(&repo, &home, "t3", "THREE.md", "three\n");
+        git(&repo, &["config", "commit.gpgsign", "maybe"]).unwrap();
+        assert!(merge_into_main(&repo, &three, "merge").unwrap_err().contains("commit.gpgsign"));
     }
 
     #[test]

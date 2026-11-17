@@ -18,9 +18,8 @@ impl Shell {
     /// Do what `line` (`/usage`, `/squad new shop`, …) says, as if typed and sent.
     pub fn run_line(&mut self, line: &str, window: &mut Window, cx: &mut Context<Self>) {
         let plan = compose::plan(&self.model, line, false);
-        for command in plan.commands {
-            self.send_command(command);
-        }
+        // A line that is a message is kept until the daemon has it, as the composer's are.
+        self.send_said(plan.commands, cx);
         if plan.flash.is_some() {
             self.composer.flash = plan.flash;
         }

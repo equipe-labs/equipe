@@ -30,6 +30,11 @@ impl Commands {
     pub(super) fn engine_pids(&self) -> Vec<u32> {
         self.by.values().filter_map(|w| w.pid).collect()
     }
+
+    /// The session whose turn's engine is process `pid`, as reported.
+    fn session_of(&self, pid: u32) -> Option<SessionId> {
+        self.by.iter().find(|(_, w)| w.pid == Some(pid)).map(|(id, _)| *id)
+    }
 }
 
 /// One session's turn, as watched.
@@ -74,6 +79,14 @@ impl Runtime {
         watched.engine = engine;
         watched.pid = Some(pid);
         watched.heard = std::time::Instant::now();
+    }
+
+    /// The member session whose turn runs as engine process `pid`: a member's
+    /// session only, while its turn runs (`None` once it ended).
+    pub(super) fn engine_member(&self, pid: u32) -> Option<MemberRef> {
+        let session = self.sessions.get(&self.commands.session_of(pid)?)?;
+        session.member.as_ref()?;
+        session_member(session)
     }
 
     /// The engine of `id` said something: it isn't silent.

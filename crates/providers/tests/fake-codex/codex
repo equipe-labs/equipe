@@ -16,6 +16,8 @@ What a turn does depends on its prompt:
 - "findings": reads a file, then answers in a few lines of Markdown;
 - "refuse": on gpt-6.1-sol, fails as an account that doesn't offer it does
   (`model_not_found`, the raw body as the message); on any other model, answers;
+- "slowly": the recorded turn below, two seconds in — long enough for a test
+  to call the board while it runs;
 - anything else: the recorded turn — a read, a new file written for real, an
   edit, a failing `cargo test`, a board tool, a web search, a plan, token
   usage and the plan's limits — ending "DONE".
@@ -34,6 +36,7 @@ Factory is), it needs no ChatGPT sign-in, as the real one doesn't.
 import json
 import os
 import sys
+import time
 
 THREAD = "thr-1"
 TURN = "turn-1"
@@ -328,6 +331,9 @@ def handle(message):
             else:
                 say("a1", "Answered on " + model + ". DONE")
                 turn_completed()
+        elif "slowly" in prompt:
+            time.sleep(2)
+            recorded_turn(prompt)
         else:
             recorded_turn(prompt)
     elif method == "turn/interrupt":

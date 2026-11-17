@@ -254,7 +254,7 @@ pub fn stamp(home: &Path, squad: &str) -> u64 {
 }
 
 /// The design folder of `project` (none: the squad's own), there or not yet.
-fn design_dir(home: &Path, squad: &str, project: Option<&str>) -> Option<PathBuf> {
+pub(crate) fn design_dir(home: &Path, squad: &str, project: Option<&str>) -> Option<PathBuf> {
     let Some(name) = project else {
         return Some(crate::squad_home::path(home, squad).join(folder::DIR));
     };

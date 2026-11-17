@@ -258,6 +258,8 @@ pub fn reads(command: &Command) -> bool {
         | C::RestoreDesign { .. }
         | C::Taste { .. }
         | C::TasteSignals { .. }
+        | C::KeepReference { .. }
+        | C::TryReference { .. }
         | C::StartDesignSession { .. } => false,
     }
 }
@@ -676,7 +678,7 @@ mod tests {
             Command::Unpair { device: "d".into() },
             Command::DiskScan,
             Command::PlanUse { engine: Engine::Claude, span: equipe_core::protocol::plan_use::Span::Week },
-            Command::Say { squad: s(), session: 1, text: "x".into(), via: Default::default(), all: false, later: false, pasted: false, about: None, device: None },
+            Command::Say { squad: s(), session: 1, text: "x".into(), via: Default::default(), all: false, later: false, pasted: false, about: None, device: None, nonce: None },
             Command::CallStart { squad: s() },
             Command::CallUtterance { squad: s(), call: "c".into(), text: "x".into(), via: Default::default() },
             Command::CallEnd { squad: s(), call: "c".into() },
@@ -726,6 +728,8 @@ mod tests {
             Command::RestoreDesign { squad: s(), project: None, commit: "c".into() },
             Command::Taste { squad: s(), project: None, change: TasteChange::Add { text: "t".into() } },
             Command::TasteSignals { squad: s(), project: None, signals: vec![] },
+            Command::KeepReference { squad: s(), session: None, project: None, card: equipe_core::protocol::references::RefCard::default() },
+            Command::TryReference { squad: s(), project: None, card: equipe_core::protocol::references::RefCard::default() },
             Command::StartDesignSession { squad: s(), project: None, page: "Home".into(), from: equipe_core::protocol::design_session::SessionFrom::DesignScreen },
         ]
     }

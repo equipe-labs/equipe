@@ -10,6 +10,7 @@
 //! `equipe_core::board`'s rules), each kept in the ticket's record.
 //! `FAKE_EMPTY=1` starts with nothing waiting for the person;
 //! `FAKE_PHONE_QA=<file>` ends the conversation on a phone test's report kept in that file;
+//! `FAKE_REFS=1` ends it on the PM showing six references as a card (`fake_daemon/refcards.rs`);
 //! `FAKE_CROWD=1` has nearly every project wait on the person (`fake_daemon/crowd.rs`);
 //! `FAKE_BUSY=1` adds four members at work in web and more finished today;
 //! `FAKE_TALKS=1` adds 25 conversations of the person over the last weeks (`FAKE_TIDIED=<n>`: n put away today);
@@ -1435,6 +1436,10 @@ mod side_chat;
 #[path = "fake_daemon/phone_qa.rs"]
 mod phone_qa;
 
+// The PM showing references as a card: `FAKE_REFS=1` (`fail`: one picture gone).
+#[path = "fake_daemon/refcards.rs"]
+mod refcards;
+
 type Turns = Arc<Mutex<HashMap<SessionId, tokio::task::JoinHandle<()>>>>;
 
 /// What waits for each member at work: its words and project, in order.
@@ -1570,6 +1575,9 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         }
                         if let Some(text) = phone_qa::note() {
                             history.push(Entry::Note { text, undo: None });
+                        }
+                        if refcards::on() {
+                            history.extend(refcards::history());
                         }
                         if replies::on() {
                             history.extend(replies::history());
@@ -2002,7 +2010,7 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                     // design system's, checked as the daemon checks it.
                     (Some(rpc::READ_IMAGE), Some(id)) => {
                         let ask: rpc::ReadImage = message.params_as().unwrap();
-                        let reply = match phone_qa::read(&ask).or_else(|why| pictures::read(&ask).map_err(|_| why)).or_else(|why| if replies::on() { replies::read(&ask) } else { Err(why) }).or_else(|why| if visuals::on() { visuals::read(&ask) } else { Err(why) }).or_else(|why| if design::mode().is_some() { design::read_image(&ask) } else { Err(why) }).or_else(|why| history::read(&ask).map_err(|_| why)).or_else(|why| studio::read_image(&ask).map_err(|_| why)) {
+                        let reply = match phone_qa::read(&ask).or_else(|why| pictures::read(&ask).map_err(|_| why)).or_else(|why| if replies::on() { replies::read(&ask) } else { Err(why) }).or_else(|why| if visuals::on() { visuals::read(&ask) } else { Err(why) }).or_else(|why| if design::mode().is_some() { design::read_image(&ask) } else { Err(why) }).or_else(|why| history::read(&ask).map_err(|_| why)).or_else(|why| if refcards::on() { refcards::read(&ask).map_err(|_| why) } else { Err(why) }).or_else(|why| studio::read_image(&ask).map_err(|_| why)) {
                             Ok(read) => Message::response(id, read),
                             Err(why) => Message::failure(id, -32000, why),
                         };
@@ -2053,6 +2061,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                         let command = match command {
                             Command::Say { text, later, pasted, session, about, .. } => {
                                 if !words::on_say(&text, pasted, &events) {
+                                    // Taken as an answer: a line where it was said, as the daemon's.
+                                    let _ = events.send(Event::Notice { session, undo: None, text: format!("“{}” was taken as your answer to the decision waiting in words.", text.trim()) });
                                     continue;
                                 }
                                 if later { Command::SubmitLater { session, text, about } } else { Command::Submit { session, text, about } }

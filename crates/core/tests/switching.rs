@@ -470,6 +470,25 @@ async fn an_exhausted_engine_moves_a_member_whose_run_waits_on_the_person_and_ke
 }
 
 #[tokio::test]
+async fn the_persons_move_now_carries_a_run_waiting_on_the_person_to_the_new_engine() {
+    let (bin, _dir) = claude(ANSWERS);
+    let (handle, mut events) = pm_and_codex_qa(&bin).await;
+    let run = qa_waiting_with_a_question(&handle, &mut events).await;
+    // "Move now": it doesn't wait for the person to come back to its run.
+    handle.send(Command::MoveEngine { squad: "acme".into(), members: vec!["qa".into()], engine: Engine::Claude, model: None, effort: None, now: true });
+    let seen = until(&mut events, |e| matches!(e, Event::SessionStarted { member: Some(m), engine: Engine::Claude, .. } if m.name == "qa")).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::SessionClosed { session: 2 })), "moved now although its run waits on the person: {seen:#?}");
+    let snapshot = handle.snapshot("acme").await;
+    let qa = snapshot.sessions.iter().find(|s| s.run.is_none() && s.lane.is_none() && s.member.as_ref().is_some_and(|m| m.name == "qa")).expect("qa is back");
+    // Its run kept its ticket and went along, on the new engine, the question still open.
+    let kept = snapshot.sessions.iter().find(|s| s.session == run).expect("the waiting run is still there");
+    assert_eq!((kept.engine, kept.run.map(|r| r.of), kept.work.as_ref().map(|w| w.ticket)), (Engine::Claude, Some(qa.session), Some(1)));
+    assert_eq!(snapshot.questions.len(), 1, "{:#?}", snapshot.questions);
+    let t = snapshot.tickets.iter().find(|t| t.id == 1).expect("on the board");
+    assert_ne!(t.execution.as_ref().map(|e| e.state), Some(equipe_core::protocol::ExecutionState::Stalled), "{t:#?}");
+}
+
+#[tokio::test]
 async fn a_move_that_is_not_exhausted_still_waits_for_a_run_waiting_on_the_person() {
     let (bin, _dir) = claude(ANSWERS);
     let (handle, mut events) = pm_and_codex_qa(&bin).await;

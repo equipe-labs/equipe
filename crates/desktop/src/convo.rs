@@ -810,6 +810,10 @@ pub enum Block {
     /// step, the work carrying on) or a memo (read when its turn ends); when
     /// it was said, in unix seconds (0: not known).
     Pending { text: String, steer: bool, at: u64 },
+    /// The person's message on its way to the daemon (`crate::outbox`):
+    /// sending, waiting for the line, or not sent — and the daemon's words
+    /// when it refused it. Its key `id` retries it or takes it back.
+    Outgoing { id: u64, text: String, shown: crate::outbox::Shown, why: Option<String> },
     /// A member handed the person its browser, asking `why`: a row to open
     /// it from, and give it back; `live` on the member's latest (an earlier
     /// one is past).
@@ -823,6 +827,9 @@ pub enum Block {
     /// A flow a member tested on the ticket's phone: its steps, verdicts,
     /// key frames and the recording to play (`crate::activity::qa_report_of`).
     QaReport(Box<crate::activity::QaReport>),
+    /// References a member showed (`show_references`): the gallery card
+    /// (`crate::activity::references_of`).
+    References(Box<crate::refcards::Gallery>),
 }
 
 impl Block {
@@ -834,7 +841,7 @@ impl Block {
     pub fn searchable(&self) -> Option<String> {
         match self {
             // Your words as shown: without the attachments' tags.
-            Block::User(t) | Block::Pending { text: t, .. } => Some(crate::sent::parts(t).text),
+            Block::User(t) | Block::Pending { text: t, .. } | Block::Outgoing { text: t, .. } => Some(crate::sent::parts(t).text),
             Block::Reply { text: t, .. } | Block::Note(t) | Block::Background { summary: t, .. } => Some(t.clone()),
             Block::News(lines) => Some(lines.iter().map(|n| n.text.clone()).collect::<Vec<_>>().join("\n")),
             Block::YourTurn { news, .. } => Some(news.clone()),
@@ -842,6 +849,7 @@ impl Block {
             Block::DesignCheck(s) => Some(format!("{}\n{}\n{}", t!("check.title"), s.screen.clone().unwrap_or_default(), crate::checks::details(s).iter().map(|d| format!("{} {}", d.rule, d.said)).collect::<Vec<_>>().join("\n"))),
             Block::SecondLook { screen, verdict } => Some(format!("{}\n{screen}\n{}\n{}", t!("look.name"), verdict.summary, verdict.fixes.iter().map(crate::checks::fix).collect::<Vec<_>>().join("\n"))),
             Block::QaReport(r) => Some(format!("{}\n{}\n{}", r.flow, r.name, r.steps.iter().map(|(_, n, step, seen)| format!("{n}. {step} — {seen}")).collect::<Vec<_>>().join("\n"))),
+            Block::References(g) => Some(g.cards.iter().map(|c| [c.title.as_str(), c.site.as_str(), c.why.as_str(), c.take.as_str(), c.leave.as_str()].join(" ")).collect::<Vec<_>>().join("\n")),
             Block::Worked(_) => None,
             Block::Steps(lines) => Some(lines.iter().map(|l| format!("{} {}", verb_word(&l.verb), l.targets.join(" "))).collect::<Vec<_>>().join("\n")),
             Block::Error { message, .. } => Some(message.clone()),
@@ -1025,6 +1033,9 @@ pub fn build_blocks_at(entries: &[Cow<'_, Entry>], times: &[Option<u64>], base: 
                     Some(Block::Reply { worked: slot, .. }) => *slot = Some(worked),
                     _ => blocks.push(Block::Worked(worked)),
                 },
+                None if crate::activity::references_of(text).is_some() => {
+                    blocks.push(Block::References(Box::new(crate::activity::references_of(text).expect("just read"))));
+                }
                 None if crate::activity::qa_report_of(text).is_some() => {
                     blocks.push(Block::QaReport(Box::new(crate::activity::qa_report_of(text).expect("just read"))));
                 }
@@ -1236,6 +1247,31 @@ mod tests {
         for e in events {
             c.on_event(e, now, T);
         }
+    }
+
+    #[test]
+    fn a_reference_gallery_note_is_a_card_in_any_language_and_its_key_is_the_notes() {
+        use equipe_core::i18n::{Lang, core};
+        use equipe_core::protocol::references::{RefCard, RefKind};
+        let cards = vec![
+            RefCard { picture: "/h/.equipe/squads/demo/visuals/refs/0123456789abcdef.png".into(), title: "Three-tier pricing".into(), site: "21st.dev".into(), link: "https://21st.dev/r/p".into(), kind: RefKind::Component, why: "Same plans".into(), take: "Raised middle".into(), leave: "Glow".into(), pattern: "pricing-table".into() },
+            RefCard { picture: "/h/.equipe/squads/demo/visuals/refs/fedcba9876543210.png".into(), title: "Plan picker".into(), site: "Mobbin".into(), link: "https://mobbin.com/s/1".into(), kind: RefKind::Screen, ..RefCard::default() },
+        ];
+        for lang in [Lang::En, Lang::Ko, Lang::Fr] {
+            let head = core(lang).fill("notice.references", &[("name", "PM".to_owned()), ("count", "2".to_owned())]);
+            let text = format!("{head}\n{}", equipe_core::references::note_body(&cards));
+            let mut c = convo(true);
+            feed(&mut c, &[Event::Notice { session: 1, text: text.clone(), undo: None }]);
+            let blocks = c.blocks();
+            let Some(Block::References(g)) = blocks.last() else { panic!("{lang:?}: {blocks:?}") };
+            assert_eq!((g.name.as_str(), g.cards.as_slice(), g.key.as_str()), ("PM", cards.as_slice(), equipe_core::references::key(&text).as_str()));
+            assert!(g.cards[1].study_only(), "a study screen says so");
+            assert!(blocks.last().unwrap().searchable().unwrap().contains("Raised middle"));
+        }
+        // A note that only looks like one stays a note.
+        let mut c = convo(true);
+        feed(&mut c, &[Event::Notice { session: 1, text: "Something else\n![a](/x.png)".into(), undo: None }]);
+        assert!(!matches!(c.blocks().last(), Some(Block::References(_))));
     }
 
     #[test]

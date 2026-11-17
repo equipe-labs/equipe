@@ -33,6 +33,7 @@ pub mod look;
 pub mod routines;
 pub mod cli_signin;
 pub mod mcp_servers;
+pub mod references;
 pub mod secrets;
 pub mod side_chat;
 pub mod signals;
@@ -1074,7 +1075,11 @@ pub enum Command {
     /// setting ([`Command::SetWordsAll`]); kept on the wire for screens that
     /// send it. `pasted`: some of the text was pasted, so none of it decides.
     /// `device`: the paired phone it came from — set by the daemon's phone
-    /// link, never by the phone.
+    /// link, never by the phone. `nonce`: the screen's own key for this
+    /// message, the same each time it is sent again (after a reconnect, or
+    /// the person's retry): one the daemon has taken already goes no further,
+    /// so a message is acted on once however often it is sent. An older
+    /// screen sends none.
     Say {
         squad: SquadName,
         session: SessionId,
@@ -1091,6 +1096,8 @@ pub enum Command {
         about: Option<Option<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         device: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nonce: Option<u64>,
     },
     /// The undo (or, counting down, the cancel) on a words request: nothing
     /// of it happens. Answered by [`Event::WordsClosed`].
@@ -1119,7 +1126,8 @@ pub enum Command {
     /// The person opens a new conversation with the squad's PM — its own,
     /// beside the PM's others — about `project` (`None`: the whole squad).
     /// `session` names it, as for [`Command::Start`]. Answered with
-    /// [`Event::LaneOpened`], `kept`.
+    /// [`Event::LaneOpened`], `kept`. Sent again for one made already (a
+    /// screen that lost the line before it heard back): nothing more.
     NewConversation { squad: SquadName, session: SessionId, project: Option<String> },
     /// A conversation with the PM moves to another project (`None`: the
     /// whole squad): what is said there from now on is about it.
@@ -1761,6 +1769,29 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
         signals: Vec<design::TasteSignal>,
+    },
+    /// The person keeps a reference card a member showed (`show_references`)
+    /// among `project`'s references (`None`: the squad's own): an entry in
+    /// `design/references/<pattern>/notes.md` — its link and lines, never its
+    /// picture, which is another product's. Said back in `session` as a note.
+    KeepReference {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        card: references::RefCard,
+    },
+    /// The person tries a reference card live (`show_references`): a
+    /// registry component's sandboxed playground the daemon serves on its
+    /// machine, opened as a tab of theirs in the shared browser — or, for one
+    /// it can't run (a study screen), its source page, to look at. The
+    /// project's design tokens theme it when `project` has some.
+    TryReference {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        card: references::RefCard,
     },
     /// The person starts a design session with the squad's designer on
     /// `page` (a page or screen of `project`, `None`: the squad's own): its
@@ -4366,6 +4397,13 @@ mod tests {
                     TasteSignal::React { picture: None, label: "Round 1".into(), reaction: QuickReaction::Up, reasons: vec![] },
                 ],
             },
+            Command::KeepReference {
+                squad: "acme".into(),
+                session: Some(3),
+                project: Some("web".into()),
+                card: references::RefCard { picture: "/h/visuals/refs/0123456789abcdef.png".into(), title: "Command menu".into(), site: "21st.dev".into(), link: "https://21st.dev/r/cmdk".into(), kind: references::RefKind::Component, why: "Fast".into(), take: "Grouped rows".into(), leave: "Neon".into(), pattern: "command-menu".into() },
+            },
+            Command::TryReference { squad: "acme".into(), project: None, card: references::RefCard { title: "Button".into(), link: "https://ui.shadcn.com/docs/components/button".into(), ..Default::default() } },
         ];
         for command in commands {
             let json = serde_json::to_string(&command).unwrap();
@@ -4737,10 +4775,14 @@ mod tests {
         assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), confirmed);
         // A message said: only what it has.
         let say: Command = serde_json::from_value(json!({ "type": "say", "squad": "acme", "session": 3, "text": "merge T-12" })).unwrap();
-        assert_eq!(say, Command::Say { squad: "acme".into(), session: 3, text: "merge T-12".into(), via: Via::Typed, all: false, later: false, pasted: false, about: None, device: None });
-        let all = Command::Say { squad: "acme".into(), session: 3, text: "ㄱㄱ".into(), via: Via::Dictated, all: true, later: false, pasted: false, about: Some(None), device: None };
+        assert_eq!(say, Command::Say { squad: "acme".into(), session: 3, text: "merge T-12".into(), via: Via::Typed, all: false, later: false, pasted: false, about: None, device: None, nonce: None });
+        let all = Command::Say { squad: "acme".into(), session: 3, text: "ㄱㄱ".into(), via: Via::Dictated, all: true, later: false, pasted: false, about: Some(None), device: None, nonce: None };
         assert_eq!(serde_json::to_value(&all).unwrap(), json!({ "type": "say", "squad": "acme", "session": 3, "text": "ㄱㄱ", "via": "dictated", "all": true, "about": null }));
         assert_eq!(serde_json::from_value::<Command>(serde_json::to_value(&all).unwrap()).unwrap(), all);
+        // Its key, for a message sent again: on the wire only when there is one.
+        let keyed = Command::Say { squad: "acme".into(), session: 3, text: "ㄱㄱ".into(), via: Via::Dictated, all: true, later: false, pasted: false, about: Some(None), device: None, nonce: Some(42) };
+        assert_eq!(serde_json::to_value(&keyed).unwrap()["nonce"], json!(42));
+        assert_eq!(serde_json::from_value::<Command>(serde_json::to_value(&keyed).unwrap()).unwrap(), keyed);
         // A daemon from before has no words in its snapshot: the screen sends `submit`.
         let before: Snapshot = serde_json::from_str(r#"{"squad":"acme","sessions":[]}"#).unwrap();
         assert_eq!(before.words, None);

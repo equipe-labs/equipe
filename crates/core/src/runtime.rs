@@ -76,6 +76,7 @@ mod room;
 mod engines;
 mod design;
 mod design_session;
+mod refcards;
 mod briefs;
 mod plans;
 mod accept;
@@ -160,6 +161,22 @@ const SETTLE_EVERY: Duration = Duration::from_secs(10 * 60);
 /// How long a member waits for the person to answer a request for permission
 /// before it is declined.
 const APPROVAL_WAIT: Duration = Duration::from_secs(30 * 60);
+
+/// How long Codex lets a call to one of equipe's own servers run: past the
+/// longest such a call may wait on the person ([`APPROVAL_WAIT`]) — a yes
+/// asked with `ask_person`, a sign-in, a message the desktop would send — so
+/// the turn waits for their answer, as Claude Code's does, instead of giving
+/// up on the call after Codex's default few minutes and ending its turn with
+/// the card still open in front of them.
+pub fn person_call_timeout_secs() -> u64 {
+    APPROVAL_WAIT.as_secs() + 60
+}
+
+/// How long Codex lets a call to equipe's board server run: past any wait on
+/// the person, and past `helper_result`'s longest wait for a member with helpers.
+pub fn board_call_timeout_secs() -> u64 {
+    person_call_timeout_secs().max(crate::helpers::tool_timeout_secs())
+}
 
 /// How long a stopped Codex turn has to wind down before it is cut.
 const STOP_GRACE: Duration = Duration::from_secs(8);
@@ -295,6 +312,8 @@ enum Request {
     McpUpstream(equipe_protocol::rpc::McpProxyOpen, Option<String>, oneshot::Sender<Result<crate::mcp_gateway::Upstream, String>>),
     /// What a proxy's message showed of its server.
     McpSeen(equipe_protocol::rpc::McpProxyOpen, crate::mcp_gateway::Seen),
+    /// The member session whose turn runs as this engine process, if any.
+    EngineMember(u32, oneshot::Sender<Option<equipe_protocol::MemberRef>>),
     /// An engine's plan, read outside a turn.
     Usage(Engine, equipe_protocol::PlanUsage),
     /// The lease check, as if at this unix time (tests).
@@ -336,6 +355,14 @@ impl Handle {
         let (tx, rx) = oneshot::channel();
         let _ = self.requests.send(Request::McpUpstream(open.clone(), rejected, tx));
         rx.await.unwrap_or_else(|_| Err("equipe is shutting down".to_owned()))
+    }
+
+    /// The member session whose turn's engine is process `pid`: what a
+    /// connection from under that engine is bound to ([`crate::gateway`]).
+    pub async fn engine_member(&self, pid: u32) -> Option<equipe_protocol::MemberRef> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.requests.send(Request::EngineMember(pid, tx));
+        rx.await.ok().flatten()
     }
 
     /// What a proxy's message showed of its server: the squad's status follows.
@@ -715,6 +742,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         mcp: squad_mcp::McpBook::default(),
         verify: Default::default(),
         secret_env: HashMap::new(),
+        key_replacements: HashMap::new(),
         secret_nudge: Default::default(),
         delta_tail: HashMap::new(),
         calls: HashMap::new(),
@@ -774,8 +802,11 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         design_reviews: HashMap::new(),
         retros: HashMap::new(),
         approvals_asked: HashMap::new(),
+        approvals_turn: HashMap::new(),
         closed_seen: std::collections::HashSet::new(),
         lane_tmp_tidied: std::time::Instant::now(),
+        tmp_copies_told: HashSet::new(),
+        tmp_budget_told: HashSet::new(),
         tidied_at: None,
         signals_running: std::collections::HashSet::new(),
         accepts: HashMap::new(),
@@ -1164,6 +1195,8 @@ enum Internal {
     DiskCleaned(Box<crate::disk::DiskCleaned>, Option<crate::disk::DiskStatus>, std::time::Instant, Option<oneshot::Sender<crate::disk::DiskCleaned>>),
     /// What a trim of the build caches gave back when the disk ran short, one line each.
     DiskTrimmed(u64, Vec<String>),
+    /// What a look at the lanes' temporary folders found: copies of a project, folders past their budget.
+    LaneTmpLooked(Box<crate::disk::LaneTmpLook>),
     /// A project the person added, or why it wasn't.
     ProjectAdded { squad: String, result: Result<PathBuf, String> },
     /// A squad deleted off the loop, or why it wasn't.
@@ -1196,6 +1229,8 @@ enum Internal {
     Wake { session: SessionId, prompt: String },
     /// Hand ready work out in every squad again (the disk has room once more).
     Dispatch,
+    /// A `show_references` call's pictures, fetched and kept off the loop ([`refcards::Shown`]).
+    References(Box<refcards::Shown>),
     /// A task on a folder's worktrees ended off the loop: a run's workspace
     /// made (or why not), or a worktree made too late removed (`None`).
     Workspace { folder: PathBuf, prepared: Option<Box<workspace::Prepared>> },
@@ -1436,11 +1471,20 @@ struct Runtime {
     /// When each permission waiting for the person was asked, by its id: how
     /// long it waited goes to the retro once answered.
     approvals_asked: HashMap<u64, u64>,
+    /// The turn each request waiting for the person was asked in, by its id:
+    /// the session and when that turn began. An answer that comes after that
+    /// turn ended reaches nobody, and goes to the member as a turn of its own
+    /// ([`Runtime::late_reply`]).
+    approvals_turn: HashMap<u64, (SessionId, u64)>,
     /// Tickets seen closed (done or cancelled) since the daemon started, by
     /// squad: a ticket closing is noticed once, however it closed.
     closed_seen: std::collections::HashSet<(String, TicketId)>,
     /// When lanes' temporary folders were last tidied.
     lane_tmp_tidied: std::time::Instant,
+    /// Copies of a project in lanes' temporary folders already told to their
+    /// members, and tickets whose folder was told past its budget: once each a daemon run.
+    tmp_copies_told: HashSet<PathBuf>,
+    tmp_budget_told: HashSet<(String, TicketId)>,
     /// When conversations were last tidied ([`tidy`]); `None`: not yet.
     tidied_at: Option<std::time::Instant>,
     /// Signals whose command runs now, by squad and key (`signals`).
@@ -1579,6 +1623,10 @@ struct Runtime {
     /// variables (`secret_use`), by session: `(variable, key name)`. The value
     /// is looked up — and the right to it checked again — when a turn starts.
     secret_env: HashMap<SessionId, Vec<(String, String)>>,
+    /// `secret_save` calls naming a key already kept, held until the
+    /// person's card answers whether the new value replaces it — by the
+    /// card's id. In memory only, like the value itself.
+    key_replacements: HashMap<u64, squad_keys::Replacement>,
     /// Sessions whose command printed something that looks like a key that
     /// wasn't saved: told to `secret_save` it with their next tool's answer.
     secret_nudge: std::collections::HashSet<SessionId>,
@@ -1631,6 +1679,7 @@ impl Wake {
             Wake::Request(Some(Request::Phone(_))) => Borrowed("phone tool"),
             Wake::Request(Some(Request::McpUpstream(..))) => Borrowed("an outside MCP server's proxy"),
             Wake::Request(Some(Request::McpSeen(..))) => Borrowed("an outside MCP server's call"),
+            Wake::Request(Some(Request::EngineMember(..))) => Borrowed("whose engine a connection runs under"),
             Wake::Request(Some(Request::Usage(..))) => Borrowed("an engine's plan usage"),
             Wake::Request(Some(Request::CheckLeases(..))) => Borrowed("lease check"),
             Wake::Request(Some(Request::LookAtTurns(..))) => Borrowed("turns looked at"),
@@ -1672,7 +1721,9 @@ impl Wake {
             Wake::Internal(Internal::DeskSaved { .. }) => Borrowed("a desk turn's changes saved"),
             Wake::Internal(Internal::Wake { .. }) => Borrowed("work waits for a conversation"),
             Wake::Internal(Internal::DiskTrimmed(..)) => Borrowed("a trim of the build caches"),
+            Wake::Internal(Internal::LaneTmpLooked(..)) => Borrowed("a look at the lanes' temporary folders"),
             Wake::Internal(Internal::Dispatch) => Borrowed("handing out work again"),
+            Wake::Internal(Internal::References(_)) => Borrowed("reference pictures fetched"),
             Wake::Internal(Internal::Workspace { .. }) => Borrowed("a run's workspace made"),
             Wake::Internal(Internal::SignInLost { .. }) => Borrowed("a turn stopped by a lost sign-in"),
             Wake::Internal(Internal::AuthChecked(..)) => Borrowed("why an engine can't sign in"),
@@ -1848,6 +1899,9 @@ impl Runtime {
                 Some(Request::Phone(request)) => self.on_phone(request),
                 Some(Request::McpUpstream(open, rejected, reply)) => self.mcp_upstream(open, rejected, reply),
                 Some(Request::McpSeen(open, seen)) => self.mcp_seen(open, seen),
+                Some(Request::EngineMember(pid, reply)) => {
+                    let _ = reply.send(self.engine_member(pid));
+                }
                 Some(Request::Disk(reply)) => self.disk_report(Some(reply), false),
                 Some(Request::Status(ask, reply)) => self.squad_status(ask, reply),
                 Some(Request::DiskClean(ids, reply)) => self.disk_clean(ids, Some(reply)),
@@ -1946,7 +2000,9 @@ impl Runtime {
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
                 Internal::DiskTrimmed(freed, lines) => self.on_disk_trimmed(freed, lines),
+                Internal::LaneTmpLooked(look) => self.lane_tmp_looked(*look),
                 Internal::TurnEndsDue => self.turn_ends_due(now_secs()),
+                Internal::References(shown) => self.references_shown(*shown),
                 Internal::Dispatch => {
                     // The disk has room again: a squad held by failing engines tries at once.
                     self.try_breakers_now();
@@ -2090,7 +2146,9 @@ impl Runtime {
         if self.settled_at.is_none_or(|at| at.elapsed() >= SETTLE_EVERY) {
             self.settle_all_merged();
         }
-        if self.config.persist && self.lane_tmp_tidied.elapsed() >= LANE_TMP_TIDY_EVERY {
+        // Short of room, a copy of a project left in a temporary folder goes sooner.
+        let every = if self.disk.status.level.is_warning() { LANE_TMP_TIDY_EVERY_SHORT } else { LANE_TMP_TIDY_EVERY };
+        if self.config.persist && self.lane_tmp_tidied.elapsed() >= every {
             self.tidy_lane_tmp();
         }
         self.look_at_disk();
@@ -2109,6 +2167,10 @@ impl Runtime {
         // A permission put to the person: from now it waits on them.
         if let Event::ApprovalRequested { approval, .. } = &event {
             self.approvals_asked.insert(approval.id, now_secs());
+            // Asked from a turn at work: its answer is that turn's to read.
+            if let Some(began) = self.sessions.get(&approval.session).filter(|s| s.is_working()).and_then(|s| s.turn_began) {
+                self.approvals_turn.insert(approval.id, (approval.session, began));
+            }
         }
         // A ticket closing, however it closed (the person's word, the PM's, a
         // designer's verdict, a member leaving): its lane's temporary folder goes.
@@ -2963,7 +3025,7 @@ impl Runtime {
             Command::ProposeAccept { squad, session, verdict, tickets, note } => self.propose_accept_from_words(&squad, session, verdict, &tickets, &note),
             Command::ConfirmAccept { squad, id, tickets, said } => self.confirm_accept(&squad, id, tickets, said).await,
             Command::DeclineAccept { squad, id } => self.decline_accept(&squad, id),
-            Command::Say { squad, session, text, via, all, later, pasted, about, device } => self.say(squad, session, text, via, all, later, pasted, about, device).await,
+            Command::Say { squad, session, text, via, all, later, pasted, about, device, nonce } => self.say(squad, session, text, via, all, later, pasted, about, device, nonce).await,
             Command::UndoWords { squad, id } => self.undo_words(&squad, id),
             Command::WordsLog { squad } => self.words_log(squad),
             Command::ClearWordsLog { squad } => self.clear_words_log(squad),
@@ -3056,6 +3118,8 @@ impl Runtime {
             Command::RestoreDesign { squad, project, commit } => self.restore_design_asked(squad, project, commit),
             Command::Taste { squad, project, change } => self.taste_changed(squad, project, change),
             Command::TasteSignals { squad, project, signals } => self.taste_signals(squad, project, signals),
+            Command::KeepReference { squad, session, project, card } => self.keep_reference(squad, session, project, card),
+            Command::TryReference { squad, project, card } => self.try_reference(squad, project, card),
             Command::StartDesignSession { squad, project, page, from } => self.start_design_session(squad, project, page, from).await,
         }
     }
@@ -4983,6 +5047,11 @@ for one project goes to it as tickets for its owners, with that project — and 
     /// The person opens a conversation of their own with the squad's PM,
     /// about `project` (`None`: the whole squad): a fresh one, kept.
     fn new_conversation(&mut self, squad: &str, id: SessionId, project: Option<String>) {
+        // Sent again by a screen that didn't hear it was made (a reconnect
+        // between the two): it is made already, and that is all.
+        if self.sessions.get(&id).is_some_and(|s| s.kept && s.squad.as_deref() == Some(squad)) {
+            return;
+        }
         if self.sessions.contains_key(&id) {
             return self.error(None, say!(self, "error.already_open", id = id), None);
         }
@@ -5167,6 +5236,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             session.watch.begin(&prompt);
             if let Some(work) = session.work.as_mut() {
                 work.end.nudged = false;
+                work.end.stopped = false;
                 work.end.with_person = None;
             }
         }
@@ -5418,6 +5488,12 @@ for one project goes to it as tickets for its owners, with that project — and 
             Some(note) => format!("{text}\n\n{note}"),
             None => text,
         });
+        // The PM's design-library search, to show references with: what it is for.
+        let member_role = session.member.as_ref().map(|m| m.role.clone()).unwrap_or_default();
+        let charter = charter.map(|text| match crate::squad_mcp::reference_note(&outside.iter().map(|(server, _)| server).collect::<Vec<_>>(), &member_role) {
+            Some(note) => format!("{text} {note}"),
+            None => text,
+        });
         watchdog::mark("turn start: engine");
         let (cwd, access, resume, history, ticket, add_dirs) = match &session.work {
             Some(work) => {
@@ -5612,6 +5688,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                         if helped {
                             helping::offer(&mut servers[MCP_SERVER]);
                         }
+                        // A call that waits on the person (`ask_person`, `sign_in`)
+                        // holds the turn until they answer, as Claude Code's does.
+                        servers[MCP_SERVER]["tool_timeout_sec"] = json!(board_call_timeout_secs());
                         if let Some(port) = browser {
                             servers[browser::SERVER] = codex_app::mcp_http_server(&format!("http://localhost:{port}/mcp"), browses_freely);
                         }
@@ -5619,16 +5698,20 @@ for one project goes to it as tickets for its owners, with that project — and 
                             servers[browser::server_name(Some(&profile.name))] = codex_app::mcp_http_server(&format!("http://localhost:{port}/mcp"), browses_freely);
                         }
                         if desktop {
-                            servers[DESKTOP_SERVER] = codex_app::mcp_server(binary, &args(Some(DESKTOP_SERVER)), matches!(mode, Mode::Auto | Mode::Full));
+                            let mut server = codex_app::mcp_server(binary, &args(Some(DESKTOP_SERVER)), matches!(mode, Mode::Auto | Mode::Full));
+                            // What may send in the person's name waits for their yes.
+                            server["tool_timeout_sec"] = json!(person_call_timeout_secs());
+                            servers[DESKTOP_SERVER] = server;
                         }
                         if let Some(design) = &design {
                             servers[DESIGN_SERVER] = codex_app::mcp_server(design, &["mcp".to_owned()], matches!(mode, Mode::Auto | Mode::Full));
                         }
                         // Only the ticket's own device: approved in every mode it is offered in.
-                        // Booting one takes a minute or two, past Codex's default wait.
+                        // Booting one takes a minute or two, and installing its tools
+                        // waits for the person's yes: past Codex's default wait.
                         if phone {
                             let mut server = codex_app::mcp_server(binary, &args(Some(crate::phone::SERVER)), true);
-                            server["tool_timeout_sec"] = json!(600);
+                            server["tool_timeout_sec"] = json!(person_call_timeout_secs());
                             servers[crate::phone::SERVER] = server;
                         }
                         // The squad's outside servers: equipe's proxy (the fallback: by address, Codex finding its own sign-in).
@@ -6056,9 +6139,11 @@ for one project goes to it as tickets for its owners, with that project — and 
             turn.abort();
         }
         self.publish(Event::TurnEnded { session: id, outcome: TurnOutcome::Interrupted, usage: None });
-        // Nobody is waiting for those answers any more.
+        // Nobody is waiting for those answers any more — nor is anyone to be
+        // told of them later: the turn that asked was stopped.
         let asked: Vec<u64> = self.pending.iter().filter(|(_, p)| p.approval.session == id).map(|(&a, _)| a).collect();
         for approval in asked {
+            self.approvals_turn.remove(&approval);
             self.answer(approval, Decision::Deny, "The turn was stopped.");
         }
         true
@@ -6961,7 +7046,11 @@ for one project goes to it as tickets for its owners, with that project — and 
     /// without a hand-in or a wait, and that nothing renewed before its lease
     /// ran out, is stalled. A turn still running is never stalled, however
     /// long it takes. The stalled ticket's member lets go of it and is free
-    /// for other work.
+    /// for other work. One a member with the board's tools left that way —
+    /// not stopped by the person, not waiting on them — comes back once by
+    /// itself when its member is free and its engine has room
+    /// ([`Self::may_resume_by_itself`]); stalled so again, it waits for the
+    /// person.
     async fn recover_execution_leases(&mut self, at: u64) {
         let squads: Vec<String> = self.journals.keys().cloned().collect();
         for squad in squads {
@@ -6980,20 +7069,27 @@ for one project goes to it as tickets for its owners, with that project — and 
                 continue;
             }
             for ticket in stalled {
+                let run = self.sessions.values().filter(|s| s.squad.as_deref() == Some(squad.as_str())).find(|s| s.work.as_ref().is_some_and(|w| w.ticket == ticket));
                 // One that waited on the person past its grace says what for.
-                let waited = self
-                    .sessions
-                    .values()
-                    .filter(|s| s.squad.as_deref() == Some(squad.as_str()))
-                    .filter_map(|s| s.work.as_ref())
-                    .find(|w| w.ticket == ticket)
-                    .and_then(|w| w.end.with_person.as_ref().map(|p| p.what.clone()));
+                let waited = run.and_then(|s| s.work.as_ref()).and_then(|w| w.end.with_person.as_ref().map(|p| p.what.clone()));
+                // One whose turn just ended with nothing holding it — not the
+                // person's stop, not a wait on them — may come back once by itself.
+                let again = run
+                    .filter(|s| waited.is_none() && has_tools(s) && self.config.equipe_binary.is_some())
+                    .filter(|s| s.work.as_ref().is_none_or(|w| !w.end.stopped))
+                    .and_then(|s| Some((s.name()?.to_owned(), s.engine)));
                 if let Some(what) = waited
                     && let Some(journal) = self.journal(&squad)
                 {
                     let _ = journal.set_waited_on_person(ticket, &what);
                 }
-                self.stalled(&squad, ticket, true);
+                let again = again.filter(|(name, engine)| self.may_resume_by_itself(&squad, ticket, name, *engine));
+                self.stalled(&squad, ticket, again.is_none());
+                if let Some((name, _)) = again
+                    && !self.resume_by_itself(&squad, ticket, &name)
+                {
+                    self.tell_stalled(&squad, ticket);
+                }
             }
             Box::pin(self.dispatch(&squad)).await;
         }
@@ -7034,31 +7130,84 @@ for one project goes to it as tickets for its owners, with that project — and 
         let reason = ticket.execution.as_ref().and_then(|e| e.reason.clone()).unwrap_or_default();
         let _ = journal.ticket_event(ticket_id, "equipe", "stalled", &reason);
         let Some(ticket) = journal.ticket(ticket_id).ok().flatten() else { return };
-        let (title, who) = (ticket.title.clone(), ticket.assignee.clone().unwrap_or_default());
-        let waited = ticket.execution.as_ref().and_then(|e| e.waited_for.clone());
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
         if tell {
-            let (line, shown) = match waited {
-                Some(what) => (
-                    format!(
-                        "T-{ticket_id}'s run stopped: {who} waited on the person for {} minutes ({what}) and they haven't come \
+            self.tell_stalled(squad, ticket_id);
+        }
+    }
+
+    /// The PM and the person hear that `ticket_id`'s run stalled, and what it
+    /// waits for: the person's resume, requeue or reassign on its card.
+    fn tell_stalled(&mut self, squad: &str, ticket_id: TicketId) {
+        let Some(ticket) = self.journal(squad).and_then(|j| j.ticket(ticket_id).ok().flatten()) else { return };
+        let (title, who) = (ticket.title.clone(), ticket.assignee.clone().unwrap_or_default());
+        let waited = ticket.execution.as_ref().and_then(|e| e.waited_for.clone());
+        let (line, shown) = match waited {
+            Some(what) => (
+                format!(
+                    "T-{ticket_id}'s run stopped: {who} waited on the person for {} minutes ({what}) and they haven't come \
 back to it. It stays in progress with its branch and worktree as they are, in the person's Needs-you with what it waited \
 for: they do it and resume it on its card — you can't, and don't open a new ticket for it.",
-                        turn_end::WITH_PERSON_GRACE / 60
-                    ),
-                    say!(self, "news.stalled_on_person", id = ticket_id, name = who, what = what, title = title),
+                    turn_end::WITH_PERSON_GRACE / 60
                 ),
-                None => (
-                    format!(
-                        "T-{ticket_id}'s run stopped: {who}'s turn ended without a hand-in or a wait, and nothing ran it since. It \
+                say!(self, "news.stalled_on_person", id = ticket_id, name = who, what = what, title = title),
+            ),
+            None => (
+                format!(
+                    "T-{ticket_id}'s run stopped: {who}'s turn ended without a hand-in or a wait, and nothing ran it since. It \
 stays in progress with its branch and worktree as they are. The person resumes, requeues or reassigns it on its card — you \
 can't, and don't open a new ticket for it."
-                    ),
-                    say!(self, "news.stalled", id = ticket_id, name = who, title = title),
                 ),
-            };
-            self.brief_pm(squad, line, Some(shown));
+                say!(self, "news.stalled", id = ticket_id, name = who, title = title),
+            ),
+        };
+        self.brief_pm(squad, line, Some(shown));
+    }
+
+    /// Whether `ticket`'s run, stalled as its lease ran out with nothing
+    /// holding it, comes back once by itself: its member `name` is on the
+    /// squad and free to take work — not resting, not moving engines — its
+    /// `engine` has room and isn't held, the squad's starts aren't paused, and
+    /// equipe hasn't brought this very ticket back already since its last run
+    /// began otherwise.
+    fn may_resume_by_itself(&self, squad: &str, ticket: TicketId, name: &str, engine: Engine) -> bool {
+        let Some(journal) = self.journals.get(squad) else { return false };
+        self.member_id(squad, name).is_some()
+            && !journal.is_resting(name)
+            && !self.engines.moving(squad, name)
+            && !self.engines.held(squad, engine)
+            && self.engine_out(squad, engine).is_none()
+            && !self.turn_ends.paused(squad)
+            && journal.resumed_by_itself_last(ticket).is_ok_and(|again| !again)
+    }
+
+    /// Bring stalled `ticket` back once, on its own, to `name`: a fresh run on
+    /// the same ticket, branch and worktree, as the person's resume does; the
+    /// PM and the person told, and the log. Whether it was.
+    fn resume_by_itself(&mut self, squad: &str, ticket: TicketId, name: &str) -> bool {
+        let (title, changed) = {
+            let Some(journal) = self.journal(squad) else { return false };
+            let Some(found) = journal.ticket(ticket).ok().flatten() else { return false };
+            let generation = found.execution.as_ref().map_or(0, |e| e.generation);
+            let operation = format!("{}{ticket}-{generation}", journal::AUTO_RESUME_OPERATION);
+            if !matches!(journal.reserve_requeue(ticket, &operation, Some(name), now_secs()), Ok(Requeued::Reserved)) {
+                return false;
+            }
+            let _ = journal.ticket_event(ticket, "equipe", "resumed", &format!("by itself, once, to {name}, on the same branch and worktree: its run stopped without a hand-in"));
+            (found.title, journal.ticket(ticket).ok().flatten())
+        };
+        if let Some(changed) = changed {
+            self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: changed });
         }
+        crate::daemon_log!("equipe: {squad}: T-{ticket}'s run stalled (lease expired) with {name} free: brought back once by itself");
+        let line = format!(
+            "T-{ticket}'s run stopped: {name}'s turn ended without a hand-in or a wait, and nothing ran it since. equipe brought it \
+back once by itself — a fresh run for {name} on the same ticket, branch and worktree, nothing reset. If it stops so again, it \
+waits for the person."
+        );
+        let shown = say!(self, "news.stalled_resumed", id = ticket, to = name, title = title);
+        self.brief_pm(squad, line, Some(shown));
+        true
     }
 
     /// A ticket that can't start (its project isn't a repository, say) goes back
@@ -8038,6 +8187,9 @@ It starts when {owner} is free."
         if call.name == crate::helpers::HELPER_RESULT {
             return self.helper_result(call, reply);
         }
+        if call.name == crate::references::TOOL {
+            return self.show_references(call, reply);
+        }
         if call.name == board::SHOW_BROWSER {
             self.with_person(&call);
             let url = call.arguments["url"].as_str().map(str::to_owned);
@@ -8245,7 +8397,16 @@ there, end your turn, and carry on when they say they're done."
         // temporary folder: it writes only the project's `.git/worktrees/` and that
         // folder, which the fence can't open without opening the project, so it runs
         // outside it, exactly as given back (hooks off), without asking.
-        if auto && tool == "Bash" && let Some(command) = self.project_checkout(id, &call.squad, &input) {
+        // A Codex member asks the same through Codex's own approval (its escalation
+        // out of the sandbox): its engine runs its own command once allowed, so
+        // it passes where no hook can run on it ([`permissions::codex_project_checkout`]).
+        let codex = self.sessions.get(&id).is_some_and(|s| s.engine == Engine::Codex);
+        if auto && tool == "Bash" && codex && self.codex_project_checkout(id, &call.squad, &input) {
+            self.audit(&call.squad, ticket, "equipe", "allowed", &action);
+            let _ = reply.send(verdict(Decision::Allow, &input, ""));
+            return;
+        }
+        if auto && tool == "Bash" && !codex && let Some(command) = self.project_checkout(id, &call.squad, &input) {
             let mut input = input.clone();
             input["command"] = json!(command);
             input["dangerouslyDisableSandbox"] = json!(true);
@@ -8284,6 +8445,16 @@ there, end your turn, and carry on when they say they're done."
         let command = input.get("command").and_then(Value::as_str)?;
         let tmp = journal::lane_tmp_dir(&self.config.home, squad, session.work.as_ref().map(|w| w.ticket), session.name()?);
         permissions::project_checkout(command, &self.projects_cached(squad), &tmp)
+    }
+
+    /// Whether a Codex member's shell call is such a checkout, one its engine
+    /// may run as asked ([`permissions::codex_project_checkout`]).
+    fn codex_project_checkout(&self, id: SessionId, squad: &str, input: &Value) -> bool {
+        let Some(session) = self.sessions.get(&id) else { return false };
+        let (Some(command), Some(name)) = (input.get("command").and_then(Value::as_str), session.name()) else { return false };
+        let tmp = journal::lane_tmp_dir(&self.config.home, squad, session.work.as_ref().map(|w| w.ticket), name);
+        let configs = permissions::git_configs(std::env::var_os("HOME").map(PathBuf::from).as_deref());
+        permissions::codex_project_checkout(command, &self.projects_cached(squad), &tmp, &configs)
     }
 
     /// What equipe refuses a member whatever its mode or the person's rules:
@@ -8427,6 +8598,7 @@ there, end your turn, and carry on when they say they're done."
             return;
         };
         let Pending { squad, approval, input, reply } = pending;
+        let reply = self.late_reply(approval_id, &approval, decision, reply);
         // How long it waited on the person, for the week's retro.
         if let Some(asked) = self.approvals_asked.remove(&approval_id) {
             let outcome = match decision {
@@ -8513,6 +8685,41 @@ there, end your turn, and carry on when they say they're done."
         };
         self.audit(&squad, approval.ticket, "you", verb, &approval.action);
         self.publish(Event::ApprovalResolved { squad, approval: approval_id, decision });
+    }
+
+    /// Where the answer to request `id` goes. Asked by `approval.session`
+    /// during a turn that has ended since — its engine stopped waiting for the
+    /// call (Codex gives a call up after its timeout) and the turn went on to
+    /// its end — it would reach nobody, and a run on a ticket would sit with
+    /// nothing to hold it until its lease ran out. So it goes to the member as
+    /// a turn of its own (or after the one running now), with what it asked;
+    /// otherwise to `reply`, the call still waiting for it.
+    fn late_reply(&mut self, id: u64, approval: &Approval, decision: Decision, reply: oneshot::Sender<ToolResult>) -> oneshot::Sender<ToolResult> {
+        let Some((asker, began)) = self.approvals_turn.remove(&id) else { return reply };
+        let Some(s) = self.sessions.get(&asker) else { return reply };
+        if s.member.is_none() || (s.is_working() && s.turn_began == Some(began)) {
+            return reply;
+        }
+        let on_ticket = s.work.is_some();
+        let who = format!("{}{}", s.squad.as_deref().map(|q| format!("{q}: ")).unwrap_or_default(), s.name().unwrap_or("agent"));
+        let at = s.work.as_ref().map(|w| format!(" on T-{}", w.ticket)).unwrap_or_default();
+        crate::daemon_log!("equipe: {who}'s request{at} was answered after the turn that asked had ended: it goes to it as a turn of its own");
+        let action = clip(approval.action.lines().next().unwrap_or_default(), 300);
+        // A question the member put, or a sign-in: its answer is in words already.
+        let in_words = approval.tool == CONFIRM || approval.tool == SIGN_IN_TOOL;
+        let (tx, rx) = oneshot::channel::<ToolResult>();
+        let internal = self.internal.clone();
+        tokio::spawn(async move {
+            let Ok(answer) = rx.await else { return };
+            let said = match decision {
+                _ if in_words && !answer.text.trim().is_empty() => answer.text,
+                Decision::Allow | Decision::Always => "The person allowed it.".to_owned(),
+                Decision::Deny => "The person declined it.".to_owned(),
+            };
+            let prompt = late_answer_prompt(&action, &said, on_ticket);
+            let _ = internal.send(Internal::Wake { session: asker, prompt });
+        });
+        tx
     }
 
     // ── logins (`vault`) ──
@@ -10411,20 +10618,31 @@ check what is already done in your worktree first."
             .collect();
         let keep: Vec<u32> = self.commands.engine_pids();
         let squads: Vec<String> = self.journals.keys().cloned().collect();
-        let by_squad: Vec<(String, Vec<PathBuf>)> = squads.iter().map(|s| (s.clone(), self.projects(s))).collect();
-        let mut repos: Vec<PathBuf> = by_squad.iter().flat_map(|(_, p)| p.iter().cloned()).collect();
+        let looked: Vec<crate::disk::LaneSquad> = squads
+            .iter()
+            .map(|s| crate::disk::LaneSquad {
+                squad: s.clone(),
+                projects: self.projects(s),
+                open: open.iter().find(|(o, _)| o == s).map(|(_, t)| t.clone()).unwrap_or_default(),
+            })
+            .collect();
+        let mut repos: Vec<PathBuf> = looked.iter().flat_map(|s| s.projects.iter().cloned()).collect();
         repos.sort();
         repos.dedup();
         let homes: Vec<PathBuf> = squads.iter().map(|s| squad_home::path(&home, s)).filter(|p| p.join(".git").exists()).collect();
+        let internal = self.internal.clone();
         std::thread::spawn(move || {
             for line in crate::disk::tidy_lane_tmp(&home, &open, &keep) {
                 crate::daemon_log!("equipe: {line}");
             }
-            // A desk's full copy of a project (a deploy's `cp -R` or clone):
-            // named once, so it shows why a worktree would have done.
-            for line in crate::disk::warn_desk_clones(&home, &by_squad) {
+            // A copy of a project in a ticket's or a desk's temporary folder (a
+            // `cp -R`, a clone): its member is told to use a worktree, and while
+            // the disk is low an untouched one goes. A folder past its budget is told.
+            let look = crate::disk::look_at_lane_tmp(&home, &looked, &keep);
+            for line in &look.log {
                 crate::daemon_log!("equipe: {line}");
             }
+            let _ = internal.send(Internal::LaneTmpLooked(Box::new(look)));
             for line in crate::disk::clear_git_garbage(&repos) {
                 crate::daemon_log!("equipe: {line}");
             }
@@ -10440,6 +10658,82 @@ check what is already done in your worktree first."
                 }
             }
         });
+    }
+
+    /// What a look at the lanes' temporary folders found, told: a copy of a
+    /// project to the member whose folder it is in (the ticket's owner, or
+    /// the desk's member), once; a ticket's folder past its budget to its
+    /// owner and the PM, once. Logged.
+    fn lane_tmp_looked(&mut self, look: crate::disk::LaneTmpLook) {
+        use crate::disk::LaneTmp;
+        for copy in look.copies {
+            if !self.tmp_copies_told.insert(copy.path.clone()) && !copy.removed {
+                continue;
+            }
+            let (path, project) = (copy.path.display().to_string(), copy.project.display().to_string());
+            let (line, shown) = if copy.removed {
+                (
+                    format!("equipe removed {path}, a copy of {project} in your temporary folder that stood untouched while the disk was low. A copy is gigabytes; to build, test or deploy the project outside your worktree, check it out with `git -C {project} worktree add --detach \"$TMPDIR/<name>\" <ref>` (run outside the fence), and remove it with `git -C {project} worktree remove --force <path>` when done — never `cp -R` or clone it."),
+                    say!(self, "news.tmp_copy_removed", path = path),
+                )
+            } else {
+                (
+                    format!("{path} in your temporary folder is a copy of {project}: gigabytes the disk can't spare. Switch to a worktree, which shares the repository — `git -C {project} worktree add --detach \"$TMPDIR/<name>\" <ref>` (run outside the fence) — remove the copy, and never `cp -R` or clone a project again. While the disk is low, a copy left untouched for half an hour is removed."),
+                    say!(self, "news.tmp_copy", path = path),
+                )
+            };
+            let removed = if copy.removed { ", removed" } else { "" };
+            crate::daemon_log!("equipe: {path} is a copy of {project} in {}'s temporary folder{removed}", copy.squad);
+            self.brief_lane(&copy.squad, &copy.lane, &line, &shown);
+        }
+        for over in look.over_budget {
+            if !self.tmp_budget_told.insert((over.squad.clone(), over.ticket)) {
+                continue;
+            }
+            let (ticket, size, budget) = (over.ticket, crate::disk::size(over.bytes), crate::disk::size(crate::disk::TICKET_TMP_BUDGET));
+            let dir = journal::lane_tmp_dir(&self.config.home, &over.squad, Some(ticket), "");
+            crate::daemon_log!("equipe: T-{ticket}'s temporary folder in {} holds {size}, past its {budget}", over.squad);
+            let line = format!(
+                "T-{ticket}'s temporary folder ({}) holds {size}, past the {budget} a ticket's should: remove what it no longer needs — checkouts with `git -C <project> worktree remove --force <path>`, builds and installs it can make again — and keep at most one checkout of a project per ticket.",
+                dir.display()
+            );
+            let shown = say!(self, "news.tmp_over_budget", id = ticket, size = size);
+            if !self.brief_lane(&over.squad, &LaneTmp::Ticket(ticket), &line, &shown) {
+                self.brief_pm(&over.squad, line, Some(shown));
+            }
+        }
+    }
+
+    /// Tell whoever a lane's temporary folder is: the member working its
+    /// ticket now, else the ticket's owner; a desk's member. A line in its
+    /// conversation and words with its next message, as [`Self::brief_member`]
+    /// tells. Whether the one told was the PM.
+    fn brief_lane(&mut self, squad: &str, lane: &crate::disk::LaneTmp, line: &str, shown: &str) -> bool {
+        use crate::disk::LaneTmp;
+        let (working, named) = match lane {
+            LaneTmp::Ticket(id) => (self.worker_on(squad, *id), self.tickets(squad).into_iter().find(|t| t.id == *id).and_then(|t| t.owner.or(t.assignee))),
+            LaneTmp::Desk(name) => (None, Some(name.clone())),
+        };
+        match working.or_else(|| named.as_deref().and_then(|name| self.member_id(squad, name))) {
+            Some(id) if self.pm_of(squad) == Some(id) => {
+                self.brief_pm(squad, line.to_owned(), Some(shown.to_owned()));
+                true
+            }
+            Some(id) => {
+                if let Some(session) = self.sessions.get_mut(&id) {
+                    session.briefing.push(line.to_owned());
+                }
+                self.save_waiting(id);
+                self.publish(Event::Notice { undo: None, session: id, text: shown.to_owned() });
+                false
+            }
+            None => {
+                if let Some(name) = named {
+                    self.brief_member(squad, &name, line, shown);
+                }
+                false
+            }
+        }
     }
 
     /// Prune conversations past the retention window in every journal.
@@ -10701,7 +10995,14 @@ lesson in your memory before you start, so the next ticket begins with it.\n"
         }
     }
     if recovered {
-        out.push_str("The last run on this ticket stopped without a hand-in, and the person brought it back: this is a fresh session on the same ticket.");
+        // Brought back by equipe on its own, once, or by the person.
+        let by_itself = ticket.execution.as_ref().is_some_and(|e| e.operation.starts_with(journal::AUTO_RESUME_OPERATION));
+        out.push_str(if by_itself {
+            "The last run on this ticket stopped without a hand-in, and equipe brought it back once by itself: this is a fresh \
+session on the same ticket."
+        } else {
+            "The last run on this ticket stopped without a hand-in, and the person brought it back: this is a fresh session on the same ticket."
+        });
         if sandbox.is_some() {
             out.push_str(
                 " Same branch and worktree, nothing reset, committed or cleaned — the commit and the uncommitted and untracked files \
@@ -10859,6 +11160,8 @@ fn clip(text: &str, max: usize) -> String {
 
 /// How often lanes' temporary folders of tickets that are not open are tidied.
 const LANE_TMP_TIDY_EVERY: Duration = Duration::from_secs(60 * 60);
+/// … and while the disk is short of room.
+const LANE_TMP_TIDY_EVERY_SHORT: Duration = Duration::from_secs(10 * 60);
 
 /// The most a note made of a command's output keeps.
 const OUTPUT_NOTE_MAX: usize = 4096;
@@ -11222,6 +11525,24 @@ fn finish_turn(
             None
         }
     }
+}
+
+/// What a member is told when the person answered what it asked (`action`)
+/// only after the turn that asked had ended: their answer (`said`), and — on a
+/// ticket — to carry on and end the turn in one of the ways to finish.
+fn late_answer_prompt(action: &str, said: &str, on_ticket: bool) -> String {
+    let mut prompt = format!(
+        "[equipe] Your last turn ended before the person answered what you asked them (\u{201c}{action}\u{201d}): the call \
+stopped waiting for them. They have answered now: {said}\n"
+    );
+    prompt.push_str(if on_ticket {
+        "Carry on from where you left off in light of their answer — look at where things stand first, and don't redo what \
+is done. Then end the turn in one of the ways to finish: `submit_for_review` when it's done, `block_on_person` when only \
+the person can do what's left, or `hand_back`."
+    } else {
+        "Carry on from where you left off in light of their answer."
+    });
+    prompt
 }
 
 /// Whether a session's engine runs an agent with tools: Claude Code, or the
