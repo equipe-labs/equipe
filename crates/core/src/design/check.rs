@@ -122,15 +122,39 @@ const ROLES: [&str; 16] = ["text", "fg", "foreground", "bg", "background", "surf
 /// Groups that hold one component's tokens.
 const COMPONENTS: [&str; 10] = ["component", "components", "button", "input", "card", "badge", "chip", "nav", "table", "dialog"];
 
+/// What a brand link says: the brand it inherits, a newer version, an
+/// override of a token the brand doesn't have, or a link that doesn't resolve.
+fn brand(dir: &Path, brands: &Path, out: &mut Vec<Finding>) {
+    match super::inherit::resolve(brands, dir) {
+        None => {}
+        Some(Err(e)) => out.push(Finding::new(Level::Error, "brand", format!("{e} Fix design/brand.json, or `equipe design brand unlink`; its own tokens.json is checked meanwhile."))),
+        Some(Ok(r)) => {
+            out.push(Finding::new(Level::Ok, "brand", format!("Inherits brand `{}` v{}: {} tokens inherited, {} overridden.", r.brand.slug, r.version, r.inherited.len(), r.overridden.len())));
+            if let Some(newer) = &r.newer {
+                out.push(Finding::new(Level::Warn, "brand", format!("Brand `{}` has a newer v{newer}; this project stays on v{} until its pin moves.", r.brand.slug, r.version)));
+            }
+            for name in &r.added {
+                out.push(Finding::new(Level::Warn, "brand", format!("`{name}` is overridden here but the brand has no such token — kept; remove it if the brand dropped it, or keep it if it's this project's own.")));
+            }
+        }
+    }
+}
+
 /// Check the design folder at `dir` (the one holding `tokens.json`).
 pub fn check(dir: &Path) -> Vec<Finding> {
+    check_in(dir, &super::inherit::root())
+}
+
+/// [`check`], a brand the folder links read from `brands`: the resolved
+/// system is what is checked.
+pub fn check_in(dir: &Path, brands: &Path) -> Vec<Finding> {
     let mut out = Vec::new();
-    let file = dir.join(super::folder::TOKENS);
-    let text = match std::fs::read_to_string(&file) {
-        Ok(text) => text,
-        Err(_) => {
+    brand(dir, brands, &mut out);
+    let text = match super::inherit::tokens_text_in(brands, dir) {
+        Some(text) => text,
+        None => {
             out.push(Finding::new(Level::Error, "tokens", format!("No {} in {} — run `equipe design init` and fill it in.", super::folder::TOKENS, dir.display())));
-            files(dir, &mut out);
+            files(dir, brands, &mut out);
             return out;
         }
     };
@@ -155,7 +179,7 @@ pub fn check(dir: &Path) -> Vec<Finding> {
     }
     typefaces(tokens, script_of(dir), &mut out);
     look(tokens, &locked(dir), &mut out);
-    files(dir, &mut out);
+    files(dir, brands, &mut out);
     out.sort_by_key(|f| f.level);
     out
 }
@@ -347,8 +371,10 @@ fn is_indigo(c: Color) -> bool {
 }
 
 /// The files around the tokens: a brand file, guidelines, a logo, component pictures.
-fn files(dir: &Path, out: &mut Vec<Finding>) {
-    let brand = std::fs::read_to_string(dir.join("brand.md")).unwrap_or_default();
+fn files(dir: &Path, brands: &Path, out: &mut Vec<Finding>) {
+    // A brand-linked project's brief is its brand's, unless it keeps one of its own.
+    let inherited = || super::inherit::resolve(brands, dir).and_then(Result::ok).and_then(|r| std::fs::read_to_string(r.dir.join(super::DIR).join("brand.md")).ok());
+    let brand = std::fs::read_to_string(dir.join("brand.md")).ok().filter(|b| !b.trim().is_empty()).or_else(inherited).unwrap_or_default();
     if brand.trim().is_empty() {
         out.push(Finding::new(Level::Warn, "brand", "No brand.md: who it is for, the brand in three to five words (this, not that), and its voice — with sample lines for buttons, errors and empty states."));
     } else {

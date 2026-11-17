@@ -522,13 +522,12 @@ struct ConfigLock(#[allow(dead_code)] std::fs::File);
 
 impl ConfigLock {
     async fn take(dir: &Path) -> Result<Self, String> {
-        use std::os::fd::AsRawFd as _;
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let file = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(dir.join(".equipe-lock")).map_err(|e| format!("{}: {e}", dir.display()))?;
         let deadline = tokio::time::Instant::now() + CHECK_WAIT * 2;
         loop {
-            // SAFETY: a plain `flock` on a descriptor this function owns.
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            // An exclusive lock, not waited for: `flock` on Unix, `LockFileEx` on Windows.
+            if file.try_lock().is_ok() {
                 return Ok(Self(file));
             }
             if tokio::time::Instant::now() >= deadline {

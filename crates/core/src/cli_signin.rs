@@ -17,11 +17,10 @@
 //! --no-browser` or `codex mcp login`. Those are equipe's to start, never a
 //! member's to ask for.
 
-use std::io::{Read as _, Write as _};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::protocol::cli_signin::PastedCode;
 
@@ -498,6 +497,7 @@ pub fn route(url: &str, remote: bool, forward: bool, panel: bool) -> Route {
 // ── the process, in a pseudo-terminal (or pipes) ──
 
 enum Input {
+    #[cfg(unix)]
     Pty(std::fs::File),
     Pipe(tokio::process::ChildStdin),
 }
@@ -506,7 +506,9 @@ impl Input {
     async fn send(&mut self, bytes: &[u8]) {
         use tokio::io::AsyncWriteExt as _;
         match self {
+            #[cfg(unix)]
             Input::Pty(f) => {
+                use std::io::Write as _;
                 let _ = f.write_all(bytes);
                 let _ = f.flush();
             }
@@ -527,7 +529,6 @@ struct Proc {
 /// Start `program` with a terminal of its own (its echo off), or — for a
 /// tool that asks questions only a terminal answers — with plain pipes.
 fn start(tty: bool, program: &str, args: &[String], env: &[(String, String)], cwd: Option<&std::path::Path>) -> std::io::Result<Proc> {
-    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
     use std::process::Stdio;
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args).envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str()))).kill_on_drop(true);
@@ -554,12 +555,23 @@ fn start(tty: bool, program: &str, args: &[String], env: &[(String, String)], cw
         }
         return Ok(Proc { input, chunks, child });
     }
+    in_pty(cmd, program, tx, chunks)
+}
+
+/// Start `cmd` with a pseudo-terminal as its terminal: its own session, the
+/// terminal's echo off.
+#[cfg(unix)]
+fn in_pty(mut cmd: tokio::process::Command, program: &str, tx: UnboundedSender<String>, chunks: UnboundedReceiver<String>) -> std::io::Result<Proc> {
+    use std::io::Read as _;
+    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+    use std::process::Stdio;
     let (mut m, mut s): (libc::c_int, libc::c_int) = (0, 0);
     // Wide, so that a long page address is never broken over lines.
     let mut size = libc::winsize { ws_row: 50, ws_col: 1000, ws_xpixel: 0, ws_ypixel: 0 };
     // SAFETY: plain libc calls on descriptors this function just made and owns.
+    // The size goes as a raw pointer: macOS's `openpty` takes it `*mut`, Linux's `*const`.
     unsafe {
-        if libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null_mut(), &mut size) != 0 {
+        if libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null_mut(), &raw mut size) != 0 {
             return Err(std::io::Error::last_os_error());
         }
     }
@@ -610,6 +622,13 @@ fn start(tty: bool, program: &str, args: &[String], env: &[(String, String)], cw
         }
     });
     Ok(Proc { input: Input::Pty(std::fs::File::from(master)), chunks, child })
+}
+
+/// No pseudo-terminals here: the tools that need one to sign in can't be
+/// driven, and say so.
+#[cfg(not(unix))]
+fn in_pty(_cmd: tokio::process::Command, program: &str, _tx: UnboundedSender<String>, _chunks: UnboundedReceiver<String>) -> std::io::Result<Proc> {
+    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, format!("{program}: signing in from a terminal of its own works on macOS and Linux only")))
 }
 
 /// How a sign-in ended.
@@ -817,25 +836,21 @@ mod tests {
     #[tokio::test]
     async fn a_redirect_pasted_into_claude_code_ends_with_a_carriage_return_in_its_folder() {
         // Claude Code reads raw: the line is taken at a carriage return. And it runs where its server is configured.
-        let script = fake("claude-mcp", r#"stty -icrnl; pwd > where; echo 'Visit this URL to authorize:'; echo '  https://auth.example.com/oauth/authorize?state=x '; printf 'Or paste the redirect URL here: '; url=$(head -c 47); end=$(head -c 1 | od -An -tx1 | tr -d ' '); case "$end $url" in "0d http://localhost:"*code=*) echo 'Authenticated with "mobbin".'; exit 0 ;; esac; echo "bad: $end"; exit 2"#);
+        // `dd bs=1` reads a byte at a time, as Claude Code takes the line: a buffered reader
+        // (macOS's `head -c`) would swallow the carriage return with the address when both are waiting.
+        let script = fake("claude-mcp", r#"stty -icrnl; pwd > where; echo 'Visit this URL to authorize:'; echo '  https://auth.example.com/oauth/authorize?state=x '; printf 'Or paste the redirect URL here: '; url=$(dd bs=1 count=47 2>/dev/null); end=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' '); case "$end $url" in "0d http://localhost:"*code=*) echo 'Authenticated with "mobbin".'; exit 0 ;; esac; echo "bad: $end"; exit 2"#);
         let dir = script.parent().unwrap().to_path_buf();
         let (tx, rx) = unbounded_channel();
-        // Pasted once the page is on the card, as the person would: the tool has set its terminal up by then.
-        let started = dir.join("where");
-        let sent = tokio::spawn(async move {
-            // Once the tool is up (it wrote where it runs, after setting its terminal), not after a guessed wait.
-            for _ in 0..400 {
-                if started.exists() {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(25)).await;
+        // Pasted once the page is on the card, as the person would: the tool printed it after setting its terminal up.
+        let mut tx = Some(tx);
+        let outcome = drive_in(Kind::ClaudeMcp, Some(&dir), "/bin/bash", &[script.to_string_lossy().into_owned()], &[], Duration::from_secs(20), rx, |url, _| {
+            if url.is_some()
+                && let Some(tx) = tx.take()
+            {
+                tx.send(PastedCode("http://localhost:5555/callback?code=abc&state=x".into())).unwrap();
             }
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            tx.send(PastedCode("http://localhost:5555/callback?code=abc&state=x".into())).unwrap();
-            tx
-        });
-        let outcome = drive_in(Kind::ClaudeMcp, Some(&dir), "/bin/bash", &[script.to_string_lossy().into_owned()], &[], Duration::from_secs(20), rx, |_, _| {}).await;
-        let _keep = sent.await.unwrap();
+        })
+        .await;
         assert_eq!(outcome, Outcome::Done);
         let ran_in = std::fs::read_to_string(dir.join("where")).unwrap();
         assert_eq!(std::path::Path::new(ran_in.trim()).canonicalize().unwrap(), dir.canonicalize().unwrap());
