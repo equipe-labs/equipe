@@ -137,9 +137,6 @@ pub fn place(given: &str, home: &Path) -> Result<(PathBuf, String), String> {
     Ok((path, shown))
 }
 
-/// Save `values` (one for each of `fields`) to `path`: each `KEY="value"`
-/// line replaced or added, the file's other lines kept; the file readable by
-/// its owner alone, its new folders too.
 /// A fresh draft file beside the one a secret goes into, for the person
 /// alone: whatever lay at `draft` before (a crash's leftover, or a link
 /// planted to steer the write out of the folder) is removed, never followed,
@@ -159,6 +156,9 @@ pub fn open_draft(draft: &Path) -> std::io::Result<std::fs::File> {
     options.open(draft)
 }
 
+/// Save `values` (one for each of `fields`) to `path`: each `KEY="value"`
+/// line replaced or added, the file's other lines kept; the file readable by
+/// its owner alone, its new folders too.
 pub fn write(path: &Path, fields: &[SecretField], values: &[SecretValue]) -> Result<(), String> {
     if values.len() != fields.len() {
         return Err(format!("{} values for {} fields", values.len(), fields.len()));

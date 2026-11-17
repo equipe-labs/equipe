@@ -249,6 +249,91 @@ async fn a_members_tool_call_reaches_the_board_over_the_socket() {
     gateway::shutdown(&socket).await.unwrap();
 }
 
+/// A member's real board path, from under its engine: the engine starts the
+/// board server its MCP config names, and that server calls the daemon as the
+/// member it was started for. Its own calls go through; a call claiming
+/// another member's name — board or desktop — is refused, whatever it says.
+#[tokio::test]
+async fn a_members_board_server_acts_only_as_its_own_member() {
+    let (home, project) = squad();
+    let bin = scratch("bin");
+    let out = bin.join("calls.json");
+    let exe = std::env::current_exe().unwrap();
+    // The engine: hands its MCP config to the stand-in, then ends its turn.
+    let claude = bin.join("claude");
+    let script = [
+        "#!/bin/sh",
+        r#"if [ "$1" = "auth" ]; then echo '{"loggedIn":true,"authMethod":"claude.ai"}'; exit 0; fi"#,
+        r#"prev=""; for a in "$@"; do if [ "$prev" = "--mcp-config" ]; then cfg="$a"; fi; prev="$a"; done"#,
+        &format!(r#"EQ_STAND_IN=engine EQ_MCP_CONFIG="$cfg" '{}' --exact member_stand_in --nocapture >/dev/null 2>&1"#, exe.display()),
+        "cat <<'EOF'",
+        r#"{"type":"system","subtype":"init","model":"m","session_id":"sess-1"}"#,
+        r#"{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{"input_tokens":1,"output_tokens":1}}"#,
+        "EOF",
+    ]
+    .join("\n");
+    write_script(&claude, &script);
+    // `equipe mcp`, as the engine starts it: the stand-in, with its arguments.
+    let equipe = bin.join("equipe");
+    write_script(&equipe, &format!("#!/bin/sh\nEQ_STAND_IN=board EQ_BOARD_ARGS=\"$*\" EQ_OUT='{}' exec '{}' --exact member_stand_in --nocapture\n", out.display(), exe.display()));
+    let (socket, _daemon) = daemon_with(Config { equipe_binary: Some(equipe.clone()), ..config(&home, &claude) }).await;
+    let (mut screen, _) = Client::connect(&socket, "test", "acme").await.unwrap();
+    screen.send(Command::Start { session: 61, spec: spec(&project) });
+    until(&mut screen, |e| matches!(e, Event::SessionStarted { .. })).await;
+    screen.send(Command::Submit { session: 61, text: "go".into(), about: None });
+    until(&mut screen, |e| matches!(e, Event::TurnEnded { session: 61, .. })).await;
+
+    let calls: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&out).expect("the board server ran")).unwrap();
+    assert_eq!(calls["member"], "designer", "started for the member whose turn it is");
+    let own = &calls["own"];
+    assert!(own["is_error"] == false && own["text"].as_str().unwrap().starts_with("T-1 is on the board"), "{own}");
+    for refused in [&calls["tool_as_pm"], &calls["desktop_as_pm"]] {
+        assert!(refused["is_error"] == true && refused["text"].as_str().unwrap().contains("can't act as acme/pm"), "{refused}");
+    }
+    // Only its own ticket is on the board.
+    let (_again, hello) = Client::connect(&socket, "test", "acme").await.unwrap();
+    assert_eq!(hello.snapshot.tickets.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(), ["From my own board"]);
+    gateway::shutdown(&socket).await.unwrap();
+}
+
+/// The engine and the board server of the test above, when this test binary
+/// is run as one of them (`EQ_STAND_IN`); nothing otherwise.
+#[test]
+fn member_stand_in() {
+    match std::env::var("EQ_STAND_IN").as_deref() {
+        // The engine: starts the board server as its MCP config says.
+        Ok("engine") => {
+            let config: serde_json::Value = serde_json::from_str(&std::env::var("EQ_MCP_CONFIG").unwrap()).unwrap();
+            let board = &config["mcpServers"]["equipe"];
+            let args: Vec<&str> = board["args"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
+            let status = std::process::Command::new(board["command"].as_str().unwrap()).args(args).stdout(std::process::Stdio::null()).status().unwrap();
+            assert!(status.success());
+        }
+        // The board server: its own call, then two as someone else.
+        Ok("board") => {
+            let args: Vec<String> = std::env::var("EQ_BOARD_ARGS").unwrap().split(' ').map(str::to_owned).collect();
+            let arg = |flag: &str| args.iter().position(|a| a == flag).map(|i| args[i + 1].clone());
+            let (squad, member, home) = (arg("--squad").unwrap(), arg("--member").unwrap(), PathBuf::from(arg("--home").unwrap()));
+            let run = arg("--run").and_then(|r| equipe_core::protocol::rpc::RunKey::parse(&r));
+            let socket = gateway::socket_path(&home);
+            let ticket = |member: &str, title: &str| ToolCall { run, squad: squad.clone(), member: member.to_owned(), name: "create_ticket".into(), arguments: serde_json::json!({ "title": title, "body": "-" }) };
+            let calls = tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let own = gateway::call_tool(&socket, &ticket(&member, "From my own board")).await.unwrap();
+                let tool_as_pm = gateway::call_tool(&socket, &ticket("pm", "As the PM")).await.unwrap();
+                let desktop = ToolCall { name: "snapshot".into(), arguments: serde_json::json!({}), ..ticket("pm", "-") };
+                let desktop_as_pm = gateway::call_desktop(&socket, &desktop).await.unwrap();
+                serde_json::json!({ "member": member, "own": own, "tool_as_pm": tool_as_pm, "desktop_as_pm": desktop_as_pm })
+            });
+            // The first turn's only: a later one doesn't write over it.
+            if let Ok(mut file) = std::fs::OpenOptions::new().write(true).create_new(true).open(std::env::var("EQ_OUT").unwrap()) {
+                use std::io::Write as _;
+                file.write_all(calls.to_string().as_bytes()).unwrap();
+            }
+        }
+        _ => {}
+    }
+}
+
 /// A screen that says it has a browser panel — the app, here or on another
 /// Mac — gets a member's browser handed to it rather than a window on the
 /// daemon's screen, for as long as it stays attached.

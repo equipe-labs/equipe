@@ -428,7 +428,14 @@ async fn serve_client(
                 let core = core.clone();
                 let out = out_tx.clone();
                 tokio::spawn(async move {
-                    let result = core.tool(call).await;
+                    // Only as the member whose session it comes from: never another's board.
+                    let result = match may_act_as(origin, bound_member(&core, origin, peer).await.as_ref(), &call.squad, &call.member) {
+                        Ok(()) => core.tool(call).await,
+                        Err(why) => {
+                            crate::daemon_log!("equipe: refused {}/{}'s board tool {}: {why}", call.squad, call.member, call.name);
+                            ToolResult::error(why)
+                        }
+                    };
                     let _ = out.send(Message::response(id, result));
                 });
             }
@@ -702,7 +709,14 @@ async fn serve_client(
                 let core = core.clone();
                 let out = out_tx.clone();
                 tokio::spawn(async move {
-                    let result = core.desktop(call).await;
+                    // Only as the member whose session it comes from: never another's desktop.
+                    let result = match may_act_as(origin, bound_member(&core, origin, peer).await.as_ref(), &call.squad, &call.member) {
+                        Ok(()) => core.desktop(call).await,
+                        Err(why) => {
+                            crate::daemon_log!("equipe: refused {}/{}'s desktop tool {}: {why}", call.squad, call.member, call.name);
+                            ToolResult::error(why)
+                        }
+                    };
                     let _ = out.send(Message::response(id, result));
                 });
             }
@@ -852,9 +866,6 @@ async fn serve_client(
     }
 }
 
-/// A browser panel's stream (`equipe_protocol::stream`): frames of the page it
-/// watches, as fast as it draws them and no faster than it asks; its input,
-/// straight to the page.
 /// How long a connection from under an engine waits for that engine's start
 /// to reach the runtime, and how often it looks: the engine starts its MCP
 /// servers moments after it is spawned, and its pid is told meanwhile.
@@ -883,11 +894,12 @@ async fn bound_member(core: &Handle, origin: crate::origin::Origin, peer: Option
 }
 
 /// Whether a connection from `origin`, bound to the member session `bound`,
-/// may act as `member` of `squad` — use that member's outside MCP servers or
-/// phone tools. The name in the request is only a claim: a member's process
-/// acts only as the member whose engine it runs under. The person's own
-/// clients and the daemon's self-connections aren't a member's session and
-/// act as they say; a peer that couldn't be told apart is refused (fail closed).
+/// may act as `member` of `squad` — use that member's board, desktop, phone
+/// or outside MCP servers. The name in the request is only a claim: a
+/// member's process acts only as the member whose engine it runs under. The
+/// person's own clients and the daemon's self-connections aren't a member's
+/// session and act as they say; a peer that couldn't be told apart is
+/// refused (fail closed).
 fn may_act_as(origin: crate::origin::Origin, bound: Option<&equipe_protocol::MemberRef>, squad: &str, member: &str) -> Result<(), String> {
     use crate::origin::Origin;
     match (origin, bound) {
@@ -899,6 +911,9 @@ fn may_act_as(origin: crate::origin::Origin, bound: Option<&equipe_protocol::Mem
     }
 }
 
+/// A browser panel's stream (`equipe_protocol::stream`): frames of the page it
+/// watches, as fast as it draws them and no faster than it asks; its input,
+/// straight to the page.
 async fn serve_stream<R>(mut reader: R, mut writer: OwnedWriteHalf, hub: std::sync::Arc<crate::browser::Hub>, quality: u8)
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
