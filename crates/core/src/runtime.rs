@@ -76,6 +76,7 @@ mod room;
 mod engines;
 mod design;
 mod design_session;
+mod live_preview;
 mod refcards;
 mod briefs;
 mod plans;
@@ -763,6 +764,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         next_approval: 1,
         focus: HashMap::new(),
         said_about: None,
+        previews: crate::live_preview::Watched::default(),
         on_phone: false,
         builds_trimmed: None,
         compactions: compact::CompactTimes::default(),
@@ -1376,6 +1378,8 @@ struct Runtime {
     /// that sent it shows (`Some(None)`: the whole squad) — it, not the
     /// focus another screen set last, says what the message is about.
     said_about: Option<Option<String>>,
+    /// The pages of members' the person's screens have open in a live preview.
+    previews: crate::live_preview::Watched,
     /// While a command the person sent from their phone is handled ([`Command::OnPhone`]).
     on_phone: bool,
     /// When members' build caches were last looked at.
@@ -3121,6 +3125,7 @@ impl Runtime {
             Command::KeepReference { squad, session, project, card } => self.keep_reference(squad, session, project, card),
             Command::TryReference { squad, project, card } => self.try_reference(squad, project, card),
             Command::StartDesignSession { squad, project, page, from } => self.start_design_session(squad, project, page, from).await,
+            Command::LivePreview { squad, session, url, open } => self.live_preview(squad, session, url, open),
         }
     }
 
@@ -4848,6 +4853,8 @@ runbooks and reports live there, and work across the projects or on running them
             .and_then(|squad| self.squad_overview(&squad));
         // What waits on the person, the most blocking first: the PM reminds them of the right things.
         let waiting = self.sessions.get(&id).filter(|s| s.is_pm() && s.work.is_none()).and_then(|s| s.squad.clone()).and_then(|squad| self.waiting_note(&squad));
+        // Its pages the person has open in a live preview: their servers stay up.
+        let previewing = self.preview_note(id);
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -4864,6 +4871,9 @@ runbooks and reports live there, and work across the projects or on running them
         };
         if let Some(waiting) = waiting {
             prompt = format!("[equipe: {waiting}]\n\n{prompt}");
+        }
+        if let Some(previewing) = previewing {
+            prompt = format!("[equipe: {previewing}]\n\n{prompt}");
         }
         // Read on the phone: the member answers for its screen. Before the
         // project's word, which opens the message as the conversation reads it.
@@ -9423,11 +9433,16 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
         if !self.ensure_codex(id).await {
             return;
         }
+        let previewing = self.preview_note(id);
         let Some(session) = self.sessions.get_mut(&id) else { return };
         // What it missed travels with it, as with the person's own messages.
         let prompt = match std::mem::take(&mut session.briefing) {
             briefing if briefing.is_empty() => prompt,
             briefing => format!("[equipe: since your last turn —\n{}]\n\n{prompt}", briefing.iter().map(|line| format!("- {line}")).collect::<Vec<_>>().join("\n")),
+        };
+        let prompt = match previewing {
+            Some(previewing) => format!("[equipe: {previewing}]\n\n{prompt}"),
+            None => prompt,
         };
         self.save_waiting(id);
         self.start_turn(id, prompt);

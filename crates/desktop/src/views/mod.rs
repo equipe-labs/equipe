@@ -47,6 +47,7 @@ pub mod linkshare;
 pub mod icons;
 pub mod pair;
 pub mod peek;
+pub mod preview;
 pub mod orchestra;
 pub mod progress;
 pub mod status;

@@ -73,6 +73,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const readline = require('node:readline');
 const { EventEmitter } = require('node:events');
+const { createHash } = require('node:crypto');
 const { execFile, execFileSync } = require('node:child_process');
 
 // The binary channel is ours alone.
@@ -723,6 +724,7 @@ const startProfile = async (name, profile, STATE) => {
     if (!w) return;
     watches.delete(pid);
     clearTimeout(w.restTimer);
+    clearTimeout(w.sharpTimer);
     w.cdp.send('Page.stopScreencast').catch(() => {});
     w.cdp.off('Page.screencastFrame', w.onFrame);
   };
@@ -742,13 +744,6 @@ const startProfile = async (name, profile, STATE) => {
       const jpeg = Buffer.from(frame.data, 'base64');
       const { w: width, h: height } = jpegSize(jpeg);
       const m = frame.metadata;
-      const header = Buffer.from(JSON.stringify({
-        page: pid, seq: ++w.seq, w: width, h: height, cssW: m.deviceWidth, cssH: m.deviceHeight,
-        sx: m.scrollOffsetX, sy: m.scrollOffsetY, top: m.offsetTop, ts: m.timestamp,
-      }));
-      const hlen = Buffer.alloc(2);
-      hlen.writeUInt16BE(header.length, 0);
-      const flowing = send(2, Buffer.concat([hlen, header, jpeg]));
       // The next frame only once this one is out and its time has come.
       const ack = () => {
         const wait = Math.max(0, 1000 / Math.max(1, w.fps) - (Date.now() - w.lastAck));
@@ -757,6 +752,25 @@ const startProfile = async (name, profile, STATE) => {
           cdp.send('Page.screencastFrameAck', { sessionId: frame.sessionId }).catch(() => {});
         }, wait);
       };
+      // The same picture again after its sharp one went (`sharpen`): nothing
+      // new to show, and never the softer picture over the sharp one.
+      const sig = createHash('sha1').update(jpeg).digest('base64');
+      const same = sig === w.lastSig;
+      w.lastSig = sig;
+      w.meta = m;
+      if (same && w.sharpDone) {
+        ack();
+        return;
+      }
+      if (!same) w.sharpDone = false;
+      atRest(pid, w);
+      const header = Buffer.from(JSON.stringify({
+        page: pid, seq: ++w.seq, w: width, h: height, cssW: m.deviceWidth, cssH: m.deviceHeight,
+        sx: m.scrollOffsetX, sy: m.scrollOffsetY, top: m.offsetTop, ts: m.timestamp,
+      }));
+      const hlen = Buffer.alloc(2);
+      hlen.writeUInt16BE(header.length, 0);
+      const flowing = send(2, Buffer.concat([hlen, header, jpeg]));
       if (flowing) ack();
       else stdout.once('drain', ack);
     };
@@ -768,6 +782,40 @@ const startProfile = async (name, profile, STATE) => {
   const unwatch = async ({ page }) => {
     stopWatch(page);
     await restage();
+  };
+  // Once a page holds still, one sharp picture of it: moving pictures go at
+  // the quality the screen asked for (lighter over a network, and at half the
+  // size while the wheel turns), but text read at rest is read best near
+  // lossless. So SHARP_AFTER_MS after the last frame, the page laid out at a
+  // panel's box (its size and scale the panel's own) is pictured once more at
+  // SHARP_QUALITY, the same size. A frame of the same picture after it is
+  // dropped (`onFrame`); any change starts over.
+  const SHARP_AFTER_MS = 350;
+  const SHARP_QUALITY = 92;
+  const atRest = (pid, w) => {
+    clearTimeout(w.sharpTimer);
+    if (w.sharpDone || w.quality >= SHARP_QUALITY) return;
+    w.sharpTimer = setTimeout(() => {
+      pictures = pictures.then(() => sharpen(pid, w));
+    }, SHARP_AFTER_MS);
+  };
+  const sharpen = async (pid, w) => {
+    if (watches.get(pid) !== w || w.light || w.sharpDone || !w.meta || !fits.has(pid)) return;
+    const shot = await w.cdp.send('Page.captureScreenshot', { format: 'jpeg', quality: SHARP_QUALITY }).catch(() => null);
+    if (!shot?.data || watches.get(pid) !== w || w.light) return;
+    const jpeg = Buffer.from(shot.data, 'base64');
+    const { w: width, h: height } = jpegSize(jpeg);
+    // Never bigger than the screen asked for: a page not laid out at the box keeps its moving pictures.
+    if (!width || !height || width > w.maxW * 1.05 || height > w.maxH * 1.05) return;
+    w.sharpDone = true;
+    const m = w.meta;
+    const header = Buffer.from(JSON.stringify({
+      page: pid, seq: ++w.seq, w: width, h: height, cssW: m.deviceWidth, cssH: m.deviceHeight,
+      sx: m.scrollOffsetX, sy: m.scrollOffsetY, top: m.offsetTop, ts: m.timestamp,
+    }));
+    const hlen = Buffer.alloc(2);
+    hlen.writeUInt16BE(header.length, 0);
+    send(2, Buffer.concat([hlen, header, jpeg]));
   };
   // While the wheel turns, pictures at half the size: a quarter of the bytes,
   // so more of them get through a slow line (docs/PERF-2026-10.md); the
@@ -792,6 +840,8 @@ const startProfile = async (name, profile, STATE) => {
     }, SCROLL_REST_MS);
     if (!w.light) {
       w.light = true;
+      w.sharpDone = false;
+      clearTimeout(w.sharpTimer);
       pictures = pictures.then(() => recast(pid, w));
     }
   };

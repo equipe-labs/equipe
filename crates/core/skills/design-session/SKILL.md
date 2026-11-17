@@ -25,7 +25,8 @@ project and whether their style profile is thin.
 - **Show it live.** Build the page as HTML and CSS from the project's tokens in `design/sessions/<date>-<page>/` (only
   `design/` is yours to change, as always) and run `equipe design session show <file.html | http://localhost:port/path
   | render.png>` after each change: the page opens beside the conversation on the person's screen, at 1440 wide with a
-  390 toggle, and reloads each time you show it. A dev server you start in your worktree works too: show its address.
+  390 toggle, and reloads each time you show it. A dev server you start in your worktree works too: show its address,
+  and keep it running until the person is done (equipe tells you while they have it open in the live preview).
 - **The critic still comes first.** Before a turn shows a take as a round's result, it goes once to `equipe design
   critique <render> --goal "…"` (a quick pass, not three rounds); say in a line what it found and what you changed.
   Never grade your own work and never call a take good — ask the person.
