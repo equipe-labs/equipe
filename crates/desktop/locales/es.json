@@ -2800,6 +2800,8 @@
   "visuals.why_too_big": "Demasiado grande para mostrarlo",
   "visuals.why_unreadable": "No se pudo leer",
   "visuals.load_failed": "No se pudo cargar",
+  "visuals.not_found": "No se encuentra la imagen: {name}",
+  "visuals.loading_named": "Cargando {name}…",
   "visuals.zoom_fit": "Ajustar",
   "visuals.zoom_in": "Ampliar",
   "visuals.zoom_out": "Reducir",

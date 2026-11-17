@@ -2729,6 +2729,8 @@
   "visuals.why_too_big": "大きすぎて表示できません",
   "visuals.why_unreadable": "読み込めないファイルです",
   "visuals.load_failed": "読み込めませんでした",
+  "visuals.not_found": "画像が見つかりません: {name}",
+  "visuals.loading_named": "{name} を読み込み中…",
   "visuals.zoom_fit": "全体",
   "visuals.zoom_in": "拡大",
   "visuals.zoom_out": "縮小",
