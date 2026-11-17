@@ -670,20 +670,23 @@ pub fn given(home: &Path, squad: &str, path: &str) -> bool {
     store.get(&(home.to_path_buf(), squad.to_owned())).is_some_and(|(at, paths)| at.elapsed() < GIVEN_FOR && paths.contains(path))
 }
 
-/// The pictures a watched ticket's design folder holds, for `read_image` to
-/// give: each image inside the design folder of a ticket still at work, or
-/// in review, in its worktree.
-pub fn shown(tickets: &[equipe_protocol::Ticket]) -> Vec<String> {
+/// The design folders of tickets still at work, or in review, in their
+/// worktrees, as written and with links resolved: any picture inside one is
+/// for `read_image` to give, read against that folder alone. A rule by
+/// folder, never a list of every picture in each — a busy board's worktrees
+/// hold tens of thousands, and listing them made every screen's pictures
+/// wait seconds each time the list was made afresh.
+pub fn folders(tickets: &[equipe_protocol::Ticket]) -> Vec<PathBuf> {
     use equipe_protocol::TicketStatus;
     let mut out = Vec::new();
     for t in tickets.iter().filter(|t| matches!(t.status, TicketStatus::InProgress | TicketStatus::Waiting | TicketStatus::Review)) {
         let Some(design) = t.worktree.as_deref().and_then(design_of) else { continue };
-        let Ok(root) = std::fs::canonicalize(&design) else { continue };
-        for (path, _) in walk(&root, DEPTH_MAX) {
-            if visuals::is_image_name(&path.to_string_lossy()) && let Ok(real) = visuals::check(&path, std::slice::from_ref(&root)) {
-                out.push(real.to_string_lossy().into_owned());
-            }
+        if let Ok(real) = std::fs::canonicalize(&design)
+            && real != design
+        {
+            out.push(real);
         }
+        out.push(design);
     }
     out
 }

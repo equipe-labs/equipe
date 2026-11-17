@@ -366,17 +366,22 @@ async fn codex_signs_in_with_its_own_sign_in_and_hands_back_the_page() {
     assert_eq!(codex_app::login(&wrapped("FAKE_CODEX_LOGIN=old"), &cwd, false, wait, |_| {}).await, LoginEnd::Unsupported, "an older Codex: its command line signs in");
 }
 
-/// A turn with equipe's framing on the fake (`env`, more of its environment),
-/// with `retry` as the note a fresh thread opens with when it's refused as
-/// possibly unintended activity.
-async fn framed(env: &str, prompt: &str, retry: Option<&str>) -> (Vec<Activity>, equipe_providers::Result<codex_app::Turn>, Vec<Value>) {
+/// A turn with equipe's framing on the fake (`no_inject`: a Codex without
+/// `thread/inject_items`), with `retry` as the note a fresh thread opens with
+/// when it's refused as possibly unintended activity. Its environment goes
+/// through the turn's, never a script written for it (written and run at
+/// once, a script can be busy on Linux while another test forks).
+async fn framed(no_inject: bool, prompt: &str, retry: Option<&str>) -> (Vec<Activity>, equipe_providers::Result<codex_app::Turn>, Vec<Value>) {
     let cwd = scratch("cwd");
     let log = scratch("log").join("sent.jsonl");
-    let codex = wrapped(&format!("FAKE_CODEX_LOG='{}' {env}", log.display()));
-    let request = TurnRequest { prompt, framing: Some("FRAME: a design session on Pricing."), access: Access::ReadOnly, ..Default::default() };
+    let mut env = vec![("FAKE_CODEX_LOG".to_owned(), log.to_string_lossy().into_owned())];
+    if no_inject {
+        env.push(("FAKE_CODEX_NO_INJECT".to_owned(), "1".to_owned()));
+    }
+    let request = TurnRequest { prompt, framing: Some("FRAME: a design session on Pricing."), access: Access::ReadOnly, env: &env, ..Default::default() };
     let controls = codex_app::Controls { refused_retry: retry.map(str::to_owned), ..Default::default() };
     let mut activities = Vec::new();
-    let result = tokio::time::timeout(Duration::from_secs(20), codex_app::run_turn_with(&codex, &cwd, request, controls, |a| activities.push(a))).await.expect("the turn ends");
+    let result = tokio::time::timeout(Duration::from_secs(20), codex_app::run_turn_with(&fake(), &cwd, request, controls, |a| activities.push(a))).await.expect("the turn ends");
     (activities, result, sent(&log))
 }
 
@@ -386,7 +391,7 @@ fn turn_texts(log: &[Value]) -> Vec<String> {
 
 #[tokio::test]
 async fn equipes_framing_goes_as_a_developer_message_and_the_persons_words_alone_as_theirs() {
-    let (_, result, log) = framed("", "Let's work on Pricing together.", None).await;
+    let (_, result, log) = framed(false, "Let's work on Pricing together.", None).await;
     result.expect("the turn answers");
     let injected = method(&log, "thread/inject_items").expect("the framing put in the thread");
     let item = &injected["params"]["items"][0];
@@ -398,14 +403,14 @@ async fn equipes_framing_goes_as_a_developer_message_and_the_persons_words_alone
 
 #[tokio::test]
 async fn a_codex_without_inject_items_gets_the_framing_before_the_prompt_as_before() {
-    let (_, result, log) = framed("FAKE_CODEX_NO_INJECT=1", "Let's work on Pricing together.", None).await;
+    let (_, result, log) = framed(true, "Let's work on Pricing together.", None).await;
     result.expect("the turn answers");
     assert_eq!(turn_texts(&log), ["FRAME: a design session on Pricing.\n\nLet's work on Pricing together."]);
 }
 
 #[tokio::test]
 async fn a_turn_refused_as_unintended_is_asked_again_once_in_a_fresh_thread_opened_with_equipes_note() {
-    let (activities, result, log) = framed("", "misaligned: start the session", Some("HANDOFF: where it left off.")).await;
+    let (activities, result, log) = framed(false, "misaligned: start the session", Some("HANDOFF: where it left off.")).await;
     let turn = result.expect("the fresh thread answers");
     assert!(turn.result.text.contains("Answered afresh in thr-fresh-") && turn.result.text.contains("1 developer note(s)"), "{:?}", turn.result);
     assert!(activities.iter().any(|a| matches!(a, Activity::RefusedRetried)), "{activities:?}");
@@ -424,7 +429,7 @@ async fn a_turn_refused_as_unintended_is_asked_again_once_in_a_fresh_thread_open
 
 #[tokio::test]
 async fn refused_again_the_turn_fails_with_codexs_code_and_is_not_asked_a_third_time() {
-    let (_, result, log) = framed("", "misaligned always", Some("HANDOFF")).await;
+    let (_, result, log) = framed(false, "misaligned always", Some("HANDOFF")).await;
     let Err(Error::Backend { message, code }) = result else { panic!("{result:?}") };
     assert!(codex_app::refused_as_unintended(&message, code.as_deref()), "{message} {code:?}");
     assert_eq!(code.as_deref(), Some(codex_app::UNINTENDED));
@@ -433,7 +438,7 @@ async fn refused_again_the_turn_fails_with_codexs_code_and_is_not_asked_a_third_
 
 #[tokio::test]
 async fn with_no_note_to_open_a_fresh_thread_a_refused_turn_fails_at_once() {
-    let (activities, result, log) = framed("", "misaligned", None).await;
+    let (activities, result, log) = framed(false, "misaligned", None).await;
     assert!(matches!(&result, Err(Error::Backend { message, code }) if codex_app::refused_as_unintended(message, code.as_deref())), "{result:?}");
     assert!(!activities.iter().any(|a| matches!(a, Activity::RefusedRetried)));
     assert_eq!(turn_texts(&log).len(), 1);
