@@ -106,8 +106,14 @@ fn a_squad_without_a_mobile_project_tells_its_members_exactly_what_it_did() {
         return;
     }
     let pinned = std::fs::read_to_string(&path).expect("the pinned hashes");
-    let changed: Vec<&str> = now.lines().zip(pinned.lines()).filter(|(a, b)| a != b).map(|(a, _)| a.split('\t').next().unwrap_or(a)).collect();
-    assert!(changed.is_empty(), "members without a mobile project are told something new: {changed:?}");
+    let lines: Vec<&str> = now.lines().zip(pinned.lines()).filter(|(a, b)| a != b).map(|(a, _)| a).collect();
+    let changed: Vec<&str> = lines.iter().map(|a| a.split('\t').next().unwrap_or(a)).collect();
+    // The new lines, so a change reviewed elsewhere (CI) can be pinned without a local build.
+    assert!(
+        changed.is_empty(),
+        "members without a mobile project are told something new: {changed:?}\nIf that is meant, bless with EQUIPE_BLESS_PINNED=1, or put these lines in {PINNED}:\n{}",
+        lines.join("\n")
+    );
     assert_eq!(now.lines().count(), pinned.lines().count(), "the same members, told the same things");
 }
 
