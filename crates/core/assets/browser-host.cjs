@@ -93,6 +93,8 @@ __GATE__
 
 __KEEP_SESSIONS__
 
+__PROFILES__
+
 // Google's sign-in is this browser's own; the sign-ins file never carries it.
 const own = (domain) => /(^|\.)(google\.[a-z]{2,3}(\.[a-z]{2})?|youtube\.com|googleusercontent\.com)$/.test(String(domain).replace(/^\./, ''));
 
@@ -1263,14 +1265,16 @@ const profiles = new Map();
 // Profiles whose Chrome the daemon closed for the person's own window: nothing
 // of ours may start one on that folder until `resume`.
 const suspended = new Set();
+// A Chrome that failed to start is started again by the next request (`profiles.js`).
+const PROFILE_TRIES = 15;
+const PROFILE_WAIT = 2000;
 const profileOf = (request) => {
   const name = request.profile || '';
   if (suspended.has(name)) return null;
-  if (!profiles.has(name)) {
-    if (name && !request.profileDir) return null;
-    profiles.set(name, startProfile(name || null, name ? request.profileDir : profile, name ? request.state : STATE));
-  }
-  return profiles.get(name);
+  if (!profiles.has(name) && name && !request.profileDir) return null;
+  const dir = name ? request.profileDir : profile;
+  const state = name ? request.state : STATE;
+  return startOnce(profiles, name, () => startWhenFree(() => startProfile(name || null, dir, state), PROFILE_TRIES, PROFILE_WAIT));
 };
 const started = async () => (await Promise.all([...profiles.values()].map((p) => p.catch(() => null)))).filter(Boolean);
 const byPage = async (pid) => (await started()).find((i) => i.owns(pid)) || null;
@@ -1315,12 +1319,19 @@ const hold = async ({ op, profile: name = '' }) => {
       hold(request);
       return;
     }
+    // A lane that couldn't open is told: the daemon forgets its port, and the
+    // next turn asks for the lane again, rather than handing its member a
+    // browser no server answers for.
+    const failed = () => { if (request.op === 'lane') emit({ type: 'lane_failed', lane: request.id }); };
     const run = async () => {
       const at = await target(request);
-      if (!at) return undefined;
+      if (!at) return failed();
       return at.ops[request.op]?.(request);
     };
-    const go = () => run().catch((err) => console.error(`equipe browser host: ${request.op}: ${err && err.message}`));
+    const go = () => run().catch((err) => {
+      console.error(`equipe browser host: ${request.op}: ${err && err.message}`);
+      failed();
+    });
     const ev = request.op === 'input' ? request.ev : null;
     if (ev?.t === 'wheel') byPage(request.page).then((at) => at?.scrolling(request.page));
     if (ev?.t === 'wheel' && wheel && wheel.page === request.page && (wheel.ev.modifiers || 0) === (ev.modifiers || 0)) {

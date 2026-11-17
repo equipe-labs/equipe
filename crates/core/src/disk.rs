@@ -1343,8 +1343,9 @@ pub fn clear_ticket_leftovers(id: TicketId, temp: &[PathBuf], worktrees: &[PathB
 const DESK_TMP_IDLE: Duration = Duration::from_secs(24 * 60 * 60);
 /// While the disk is low, a desk's things untouched this long go too.
 const DESK_TMP_IDLE_LOW: Duration = Duration::from_secs(60 * 60);
-/// A `tmp_pack_*` git left behind (a fetch or repack cut short) this old is garbage.
-const GIT_GARBAGE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
+/// A `tmp_pack_*` git left behind (a fetch or repack cut short) untouched
+/// this long is garbage: git writes one without pause while it packs.
+const GIT_TMP_PACK_AFTER: Duration = Duration::from_secs(30 * 60);
 
 /// The environment that points a lane's temporary files at `dir`: `TMPDIR`
 /// (macOS and Linux tools), `TMP` and `TEMP` (those that read the others).
@@ -1779,28 +1780,266 @@ fn root_commits(repo: &Path) -> Vec<String> {
     git_in(repo, &["rev-list", "--max-parents=0", "HEAD"]).map(|out| out.lines().map(str::to_owned).collect()).unwrap_or_default()
 }
 
-/// Packs git began and never finished (`.git/objects/pack/tmp_pack_*`, from
-/// a fetch or repack cut short) in each of `repos`, older than a day: removed.
-/// Gigabytes each, and git itself only prunes them after two weeks. What
-/// went, one line each, for the log.
+/// Packs git began and never finished (`objects/pack/tmp_pack_*`, from a
+/// fetch, a gc or a repack cut short — often by a disk running out of room)
+/// in each of `repos` — a project, a squad's folder, or a worktree of either
+/// (its repository's common git folder is the one looked in): removed once
+/// untouched for [`GIT_TMP_PACK_AFTER`], or at once while the disk is low,
+/// and only while no git process works in that repository. Gigabytes each,
+/// and git itself only prunes them after two weeks. What went, one line
+/// each, for the log.
 pub fn clear_git_garbage(repos: &[PathBuf]) -> Vec<String> {
     off_the_loop("disk::clear_git_garbage");
+    let running = crate::leftovers::running();
     let mut done = Vec::new();
+    let mut seen: Vec<PathBuf> = Vec::new();
     for repo in repos {
-        let pack = repo.join(".git").join("objects").join("pack");
-        if !std::fs::symlink_metadata(repo.join(".git")).is_ok_and(|m| m.is_dir()) {
+        let Some(git_dir) = common_git_dir(repo) else { continue };
+        if seen.contains(&git_dir) {
             continue;
         }
-        for entry in std::fs::read_dir(&pack).into_iter().flatten().flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let Ok(meta) = entry.metadata() else { continue };
-            let old = meta.modified().ok().and_then(|at| at.elapsed().ok()).is_some_and(|ago| ago >= GIT_GARBAGE_AFTER);
-            if name.starts_with("tmp_pack_") && meta.is_file() && old && std::fs::remove_file(entry.path()).is_ok() {
-                done.push(format!("removed {} ({} MB git left unfinished)", entry.path().display(), meta.len() / MB));
+        seen.push(git_dir.clone());
+        let low = volume(&git_dir).is_some_and(|(_, free, total)| level_at(free, total, 100) >= DiskLevel::Low);
+        done.extend(clear_tmp_packs(&git_dir, if low { Duration::ZERO } else { GIT_TMP_PACK_AFTER }, &running));
+    }
+    done
+}
+
+/// The common git folder of the checkout `repo` — its own `.git` folder, or
+/// for a linked worktree the repository's, read from git's files (no git run).
+fn common_git_dir(repo: &Path) -> Option<PathBuf> {
+    let dot = repo.join(".git");
+    let meta = std::fs::symlink_metadata(&dot).ok()?;
+    if meta.is_dir() {
+        return Some(dot);
+    }
+    let link = std::fs::read_to_string(&dot).ok()?;
+    let admin = PathBuf::from(link.trim().strip_prefix("gitdir:")?.trim());
+    let admin = if admin.is_relative() { repo.join(admin) } else { admin };
+    let common = std::fs::read_to_string(admin.join("commondir")).ok()?;
+    let common = PathBuf::from(common.trim());
+    let common = if common.is_relative() { admin.join(common) } else { common };
+    std::fs::canonicalize(&common).ok().filter(|c| c.join("objects").is_dir())
+}
+
+/// The folders git may work in for the repository whose common git folder
+/// is `git_dir`: that folder, its main checkout, and its linked worktrees.
+fn git_work_dirs(git_dir: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![git_dir.to_owned()];
+    if git_dir.file_name().is_some_and(|n| n == ".git")
+        && let Some(main) = git_dir.parent()
+    {
+        dirs.push(main.to_owned());
+    }
+    for entry in std::fs::read_dir(git_dir.join("worktrees")).into_iter().flatten().flatten() {
+        if let Ok(back) = std::fs::read_to_string(entry.path().join("gitdir"))
+            && let Some(checkout) = Path::new(back.trim()).parent()
+        {
+            dirs.push(checkout.to_owned());
+        }
+    }
+    dirs.iter().map(|d| std::fs::canonicalize(d).unwrap_or_else(|_| d.clone())).collect()
+}
+
+/// Whether a git process (`git`, `git-remote-https`, …) of `running` stands
+/// in one of `dirs`: what writes a pack there may be it.
+fn git_works_in(running: &[crate::leftovers::Standing], dirs: &[PathBuf]) -> bool {
+    running.iter().any(|p| {
+        let git = p.exe.as_deref().and_then(Path::file_name).is_some_and(|n| n.to_string_lossy().starts_with("git"));
+        git && p.cwd.as_deref().is_some_and(|cwd| dirs.iter().any(|d| cwd.starts_with(d)))
+    })
+}
+
+/// [`clear_git_garbage`] for one repository's common git folder: its
+/// `tmp_pack_*` untouched for `after` removed, unless git works in it now.
+fn clear_tmp_packs(git_dir: &Path, after: Duration, running: &[crate::leftovers::Standing]) -> Vec<String> {
+    let pack = git_dir.join("objects").join("pack");
+    let stale: Vec<(PathBuf, u64)> = std::fs::read_dir(&pack)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("tmp_pack_"))
+        .filter_map(|e| {
+            let meta = e.metadata().ok().filter(std::fs::Metadata::is_file)?;
+            let old = meta.modified().ok().and_then(|at| at.elapsed().ok()).is_some_and(|ago| ago >= after);
+            old.then(|| (e.path(), meta.len()))
+        })
+        .collect();
+    if stale.is_empty() {
+        return Vec::new();
+    }
+    if git_works_in(running, &git_work_dirs(git_dir)) {
+        return vec![format!("left {} unfinished git packs in {}: git is working there", stale.len(), pack.display())];
+    }
+    stale
+        .into_iter()
+        .filter(|(path, _)| std::fs::remove_file(path).is_ok())
+        .map(|(path, bytes)| format!("removed {} ({} MB git left unfinished)", path.display(), bytes / MB))
+        .collect()
+}
+
+/// What `git count-objects -v` says of a repository, in bytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GitObjects {
+    /// Loose objects, and their size.
+    pub loose: u64,
+    pub loose_bytes: u64,
+    pub packs: u64,
+    pub pack_bytes: u64,
+}
+
+impl GitObjects {
+    /// Read from `git count-objects -v`'s lines (sizes in KiB).
+    pub fn parse(text: &str) -> GitObjects {
+        let mut out = GitObjects::default();
+        for line in text.lines() {
+            let Some((key, value)) = line.split_once(':') else { continue };
+            let value: u64 = value.trim().parse().unwrap_or_default();
+            match key.trim() {
+                "count" => out.loose = value,
+                "size" => out.loose_bytes = value * 1024,
+                "packs" => out.packs = value,
+                "size-pack" => out.pack_bytes = value * 1024,
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
+/// A repack equipe runs itself, now that a squad's folder never runs git's
+/// own automatic gc: git's is started by any commit, whatever room is left,
+/// and a repack that runs out of room leaves gigabytes of unfinished packs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Repack {
+    /// The loose objects into one new pack (`git repack -d`).
+    Loose,
+    /// Every pack into one (`git repack -a -d`).
+    All,
+}
+
+/// Loose objects past this many get packed (git's own `gc.auto`).
+pub const REPACK_LOOSE: u64 = 6700;
+/// Packs past this many get packed into one (git's own `gc.autoPackLimit`).
+pub const REPACK_PACKS: u64 = 50;
+/// How long a repack may take before it is stopped (what it left is swept later).
+const REPACK_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// The repack `objects` calls for, given `free` bytes on its disk at level
+/// `level`: only while the disk is fine, and only with twice what it would
+/// write free — a pack is written whole before the old ones go.
+pub fn repack_plan(objects: GitObjects, free: u64, level: DiskLevel) -> Option<Repack> {
+    repack_plan_past(objects, free, level, REPACK_LOOSE, REPACK_PACKS)
+}
+
+/// [`repack_plan`] with how many loose objects and packs call for one given.
+fn repack_plan_past(objects: GitObjects, free: u64, level: DiskLevel, loose: u64, packs: u64) -> Option<Repack> {
+    if level != DiskLevel::Ok {
+        return None;
+    }
+    if objects.packs > packs && free >= 2 * (objects.pack_bytes + objects.loose_bytes) {
+        return Some(Repack::All);
+    }
+    if objects.loose > loose && free >= 2 * objects.loose_bytes {
+        return Some(Repack::Loose);
+    }
+    None
+}
+
+/// A squad's folder repacked when it calls for it and the disk has room
+/// ([`repack_plan`]), git's own gc kept off meanwhile. What was done, for the log.
+pub fn repack_if_room(repo: &Path) -> Option<String> {
+    off_the_loop("disk::repack_if_room");
+    let git_dir = common_git_dir(repo)?;
+    let (_, free, total) = volume(&git_dir)?;
+    repack_with(repo, free, level_at(free, total, 100), REPACK_LOOSE, REPACK_PACKS)
+}
+
+/// [`repack_if_room`] with the room given, not read off the volume, and
+/// how many loose objects and packs call for a repack.
+fn repack_with(repo: &Path, free: u64, level: DiskLevel, loose: u64, packs: u64) -> Option<String> {
+    let quiet = ["-c", "gc.auto=0", "-c", "maintenance.auto=false"];
+    let mut count = git_command(repo);
+    count.args(quiet).args(["count-objects", "-v"]);
+    let out = output_within(count, GIT_TIMEOUT).ok().filter(|o| o.status.success())?;
+    let objects = GitObjects::parse(&String::from_utf8_lossy(&out.stdout));
+    let plan = repack_plan_past(objects, free, level, loose, packs)?;
+    let mut repack = git_command(repo);
+    repack.args(quiet).args(["repack", "-d", "-q"]);
+    if plan == Repack::All {
+        repack.arg("-a");
+    }
+    let started = Instant::now();
+    let what = match plan {
+        Repack::Loose => format!("{} loose objects ({} MB)", objects.loose, objects.loose_bytes / MB),
+        Repack::All => format!("{} packs ({} MB)", objects.packs, objects.pack_bytes / MB),
+    };
+    Some(match output_within(repack, REPACK_TIMEOUT) {
+        Ok(o) if o.status.success() => format!("repacked {what} in {} in {}s", repo.display(), started.elapsed().as_secs()),
+        Ok(o) => format!("couldn't repack {what} in {}: {}", repo.display(), String::from_utf8_lossy(&o.stderr).trim()),
+        Err(err) => format!("couldn't repack {what} in {}: {err}", repo.display()),
+    })
+}
+
+/// How long design QA's pictures of a ticket that isn't open are kept.
+pub const DESIGN_QA_KEPT: Duration = Duration::from_secs(3 * 24 * 60 * 60);
+
+/// A squad's design QA folder (`<squad>/design-qa`: each precheck's `T-<n>`
+/// and each daily batch's `B-<n>`, gigabytes of screenshots each): those of
+/// a ticket not among `open` untouched for `kept` removed. What went and
+/// what stays, with their sizes, for the log.
+pub fn sweep_design_qa(dir: &Path, open: &[TicketId], kept: Duration) -> Vec<String> {
+    off_the_loop("disk::sweep_design_qa");
+    let mut gone = (0usize, 0u64);
+    let mut stays = (0usize, 0u64);
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(id) = name.strip_prefix("T-").or_else(|| name.strip_prefix("B-")).and_then(|n| n.parse::<TicketId>().ok()) else { continue };
+        let path = entry.path();
+        if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
+        let bytes = du(&path);
+        if !open.contains(&id) && last_touched(&path).and_then(|t| t.elapsed().ok()).is_some_and(|ago| ago >= kept) && std::fs::remove_dir_all(&path).is_ok() {
+            gone = (gone.0 + 1, gone.1 + bytes);
+        } else {
+            stays = (stays.0 + 1, stays.1 + bytes);
+        }
+    }
+    if gone.0 == 0 {
+        return Vec::new();
+    }
+    vec![format!(
+        "removed {} design QA folders of tickets done with in {} ({} MB); {} stay ({} MB)",
+        gone.0,
+        dir.display(),
+        gone.1 / MB,
+        stays.0,
+        stays.1 / MB
+    )]
+}
+
+/// When a folder or what is right in it last changed.
+fn last_touched(dir: &Path) -> Option<std::time::SystemTime> {
+    let own = std::fs::metadata(dir).and_then(|m| m.modified()).ok();
+    std::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| e.metadata().and_then(|m| m.modified()).ok()).chain(own).max()
+}
+
+/// The bytes of the files under `dir`, links not followed.
+fn du(dir: &Path) -> u64 {
+    let mut total = 0;
+    let mut stack = vec![dir.to_owned()];
+    while let Some(at) = stack.pop() {
+        for entry in std::fs::read_dir(&at).into_iter().flatten().flatten() {
+            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else { continue };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total += meta.len();
             }
         }
     }
-    done
+    total
 }
 
 /// Build output in a worktree whose ticket is done with — merged or
@@ -2900,24 +3139,124 @@ mod tests {
         assert!(!same_remote("", ""));
     }
 
+    /// A file's modification time put `ago` back.
+    fn age(path: &Path, ago: Duration) {
+        std::fs::File::open(path).unwrap().set_modified(std::time::SystemTime::now() - ago).unwrap();
+    }
+
     #[test]
-    fn packs_git_left_unfinished_go_after_a_day_and_real_packs_stay() {
+    fn packs_git_left_unfinished_go_after_half_an_hour_and_real_packs_stay() {
         let tree = Tree::new();
-        let repo = tree.home.join("proj");
-        let pack = repo.join(".git").join("objects").join("pack");
+        let git_dir = tree.repo.join(".git");
+        let pack = git_dir.join("objects").join("pack");
         std::fs::create_dir_all(&pack).unwrap();
         for name in ["tmp_pack_old", "tmp_pack_new", "pack-abc.pack"] {
             std::fs::write(pack.join(name), vec![1u8; 10]).unwrap();
         }
-        let day_ago = std::time::SystemTime::now() - Duration::from_secs(30 * 3600);
         for name in ["tmp_pack_old", "pack-abc.pack"] {
-            std::fs::File::options().write(true).open(pack.join(name)).unwrap().set_modified(day_ago).unwrap();
+            age(&pack.join(name), Duration::from_secs(40 * 60));
         }
-        let done = clear_git_garbage(std::slice::from_ref(&repo));
+        let done = clear_tmp_packs(&git_dir, GIT_TMP_PACK_AFTER, &[]);
         assert_eq!(done.len(), 1, "{done:?}");
-        assert!(!pack.join("tmp_pack_old").exists(), "a day old: garbage");
+        assert!(!pack.join("tmp_pack_old").exists(), "untouched for 40 minutes: garbage");
         assert!(pack.join("tmp_pack_new").exists(), "maybe a fetch going on");
         assert!(pack.join("pack-abc.pack").exists(), "a real pack is never touched");
+    }
+
+    #[test]
+    fn while_the_disk_is_low_every_unfinished_pack_goes_unless_git_works_in_that_repository() {
+        let tree = Tree::new();
+        let git_dir = tree.repo.join(".git");
+        let pack = git_dir.join("objects").join("pack");
+        std::fs::create_dir_all(&pack).unwrap();
+        std::fs::write(pack.join("tmp_pack_now"), vec![1u8; 10]).unwrap();
+        let sandbox = tree.worktree(4, 0);
+        let git = |cwd: &Path| crate::leftovers::Standing { pid: 1, cwd: Some(cwd.to_owned()), exe: Some(PathBuf::from("/usr/bin/git")) };
+        // A git running in one of its worktrees: what it writes may be that pack.
+        let held = clear_tmp_packs(&git_dir, Duration::ZERO, &[git(&sandbox)]);
+        assert!(held.len() == 1 && held[0].contains("git is working there"), "{held:?}");
+        assert!(pack.join("tmp_pack_now").exists());
+        // Another program there, or git in another repository, holds nothing back.
+        let editor = crate::leftovers::Standing { pid: 2, cwd: Some(sandbox.clone()), exe: Some(PathBuf::from("/usr/bin/vim")) };
+        let done = clear_tmp_packs(&git_dir, Duration::ZERO, &[editor, git(&tree.outside)]);
+        assert_eq!(done.len(), 1, "{done:?}");
+        assert!(!pack.join("tmp_pack_now").exists(), "the disk is low: no waiting");
+    }
+
+    #[test]
+    fn a_worktree_is_swept_through_its_repositorys_common_git_folder() {
+        let tree = Tree::new();
+        let sandbox = tree.worktree(5, 0);
+        let common = common_git_dir(&sandbox).expect("a worktree's repository");
+        assert_eq!(common, tree.repo.join(".git").canonicalize().unwrap());
+        assert_eq!(common_git_dir(&tree.repo), Some(tree.repo.join(".git")));
+        assert_eq!(common_git_dir(&tree.outside), None, "no repository");
+        let dirs = git_work_dirs(&common);
+        assert!(dirs.contains(&tree.repo.canonicalize().unwrap()) && dirs.contains(&sandbox.canonicalize().unwrap()), "{dirs:?}");
+        // A squad's folder and a worktree of it count once.
+        std::fs::create_dir_all(common.join("objects/pack")).unwrap();
+        std::fs::write(common.join("objects/pack/tmp_pack_x"), b"x").unwrap();
+        age(&common.join("objects/pack/tmp_pack_x"), Duration::from_secs(3600));
+        let done = clear_git_garbage(&[tree.repo.clone(), sandbox]);
+        assert!(done.len() <= 1, "{done:?}");
+    }
+
+    #[test]
+    fn a_repack_runs_only_while_the_disk_is_fine_with_twice_its_size_free() {
+        let objects = GitObjects::parse("count: 7000\nsize: 2048\nin-pack: 10\npacks: 3\nsize-pack: 10240\nprune-packable: 0\ngarbage: 0\nsize-garbage: 0\n");
+        assert_eq!(objects, GitObjects { loose: 7000, loose_bytes: 2048 * 1024, packs: 3, pack_bytes: 10240 * 1024 });
+        assert_eq!(repack_plan(objects, 100 * GB, DiskLevel::Ok), Some(Repack::Loose));
+        assert_eq!(repack_plan(objects, 4 * 1024 * 1024 - 1, DiskLevel::Ok), None, "less than twice the loose objects free");
+        assert_eq!(repack_plan(objects, 100 * GB, DiskLevel::Low), None, "never while the disk is low");
+        let many = GitObjects { packs: 60, ..objects };
+        assert_eq!(repack_plan(many, 100 * GB, DiskLevel::Ok), Some(Repack::All));
+        assert_eq!(repack_plan(many, 20 * 1024 * 1024, DiskLevel::Ok), Some(Repack::Loose), "room for the loose objects only");
+        assert_eq!(repack_plan(GitObjects { loose: 10, ..objects }, 100 * GB, DiskLevel::Ok), None, "nothing to do");
+    }
+
+    #[test]
+    fn a_repack_packs_a_folders_loose_objects_and_leaves_them_when_there_is_no_room() {
+        let tree = Tree::new();
+        for n in 0..3 {
+            std::fs::write(tree.repo.join(format!("note-{n}.md")), format!("{n}\n")).unwrap();
+            git(&tree.repo, &["add", "-A"]);
+            git(&tree.repo, &["commit", "-q", "-m", "note"]);
+        }
+        let loose = || {
+            let out = std::process::Command::new("git").arg("-C").arg(&tree.repo).args(["count-objects", "-v"]).output().unwrap();
+            GitObjects::parse(&String::from_utf8_lossy(&out.stdout))
+        };
+        let before = loose();
+        assert!(before.loose > 2, "{before:?}");
+        assert_eq!(repack_with(&tree.repo, 0, DiskLevel::Ok, 2, REPACK_PACKS), None, "no room: left as it is");
+        assert_eq!(repack_with(&tree.repo, 100 * GB, DiskLevel::Critical, 2, REPACK_PACKS), None);
+        assert_eq!(loose().loose, before.loose);
+        let done = repack_with(&tree.repo, 100 * GB, DiskLevel::Ok, 2, REPACK_PACKS).expect("repacked");
+        assert!(done.starts_with("repacked"), "{done}");
+        let after = loose();
+        assert!(after.loose < before.loose && after.packs >= 1, "{after:?}");
+    }
+
+    #[test]
+    fn design_qa_folders_of_tickets_done_with_go_after_three_days() {
+        let dir = scratch("design-qa");
+        for name in ["T-1", "B-2", "T-3", "B-4", "notes"] {
+            fill(&dir.join(name).join("shots"), 1000);
+            std::fs::write(dir.join(name).join("report.json"), "{}").unwrap();
+        }
+        let old = Duration::from_secs(4 * 24 * 3600);
+        for name in ["T-1", "T-3", "B-4", "notes"] {
+            for entry in ["shots", "report.json", ""] {
+                age(&dir.join(name).join(entry), old);
+            }
+        }
+        // T-3 is open still; B-2 was looked at lately.
+        let done = sweep_design_qa(&dir, &[3], DESIGN_QA_KEPT);
+        assert_eq!(done.len(), 1, "{done:?}");
+        assert!(done[0].contains("removed 2 design QA folders") && done[0].contains("2 stay"), "{done:?}");
+        assert!(!dir.join("T-1").exists() && !dir.join("B-4").exists());
+        assert!(dir.join("B-2").exists() && dir.join("T-3").exists() && dir.join("notes").exists());
+        assert!(sweep_design_qa(&dir, &[3], DESIGN_QA_KEPT).is_empty(), "nothing more");
     }
 
     #[test]

@@ -272,7 +272,7 @@ pub const WORKTREE_ADD_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Whether `repo` is a squad home (`…/squads/<squad>/home`): the one kind of
 /// repository whose tickets' worktrees are sparse.
-fn is_squad_home(repo: &Path) -> bool {
+pub(crate) fn is_squad_home(repo: &Path) -> bool {
     repo.file_name().is_some_and(|n| n == "home") && folder_name(repo) != "home"
 }
 
@@ -748,7 +748,7 @@ pub fn merge_conflicts(repo: &Path, branch: &str) -> Result<Vec<String>> {
                 return Err(format!("git merge-tree found a conflict between {branch} and {main} but named no file"));
             }
             // Design captures and their manifest: settled when it merges (`prepare_merge`).
-            Ok(files.into_iter().filter(|f| !crate::design::captures::settles_itself(f)).collect())
+            Ok(files.into_iter().filter(|f| !crate::design::captures::settles_itself(repo, f)).collect())
         }
         _ => Err(format!("git merge-tree failed: {}", String::from_utf8_lossy(&out.stderr).trim())),
     }
@@ -1735,7 +1735,9 @@ mod tests {
             std::fs::create_dir_all(dir.join(folder)).unwrap();
             std::fs::write(dir.join(folder).join("a.md"), "a\n").unwrap();
         }
-        std::fs::write(dir.join("outputs/T-5.png"), "png").unwrap();
+        std::fs::write(dir.join("outputs/T-5.md"), "md").unwrap();
+        // As a squad's folder is made: what tasks hand over as pictures stays out of git.
+        std::fs::write(dir.join(crate::design::captures::OUTPUTS.ignore_path), crate::design::captures::OUTPUTS.with_block("")).unwrap();
         std::fs::write(dir.join("README.md"), "home\n").unwrap();
         git(&dir, &["add", "-A"]).unwrap();
         git(&dir, &["commit", "-q", "-m", "init"]).unwrap();
@@ -1772,7 +1774,7 @@ mod tests {
         assert!(is_sparse(&sandbox.path));
         assert_eq!(
             files(&sandbox.path),
-            ["README.md", "notes/a.md", "outputs/T-1 brief/a.md", "outputs/T-12 site/a.md", "outputs/T-12/a.md", "outputs/T-5.png", "outputs/shared/a.md"]
+            ["README.md", "notes/a.md", "outputs/.gitignore", "outputs/T-1 brief/a.md", "outputs/T-12 site/a.md", "outputs/T-12/a.md", "outputs/T-5.md", "outputs/shared/a.md"]
         );
         assert_eq!(git(&sandbox.path, &["status", "--porcelain"]).unwrap(), "", "nothing left out reads as deleted");
 

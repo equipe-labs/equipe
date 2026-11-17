@@ -4600,6 +4600,39 @@ async fn a_sign_in_the_person_finishes_in_their_own_chrome_window_is_recorded_ke
     assert!(line.contains("erp.example"), "{line}");
 }
 
+/// A ticket's run hands its member's browser to the person for a sign-in
+/// (every lane shares the member's sign-ins). When they press Done, the run
+/// that asked carries on — never the member's own conversation, which knows
+/// nothing of the ticket: one such turn once handed a ticket back with
+/// nothing to go on.
+#[tokio::test]
+async fn a_run_that_handed_the_browser_over_carries_on_when_the_person_is_done() {
+    let repo = repo();
+    // The run's first turn takes a moment: it hands the browser over meanwhile.
+    let turn = format!("case \"$2\" in *\"You're on T-1\"*) sleep 2;; esac\n{}", answering("ok"));
+    let (claude, recorded) = recording_claude(&turn);
+    let home = squad_home(&[&repo]);
+    let (npx, _ops) = fake_host_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), browser_host: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "backend")).await;
+    handle.browser_hub().await.unwrap().screen(true);
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Check the ERP's events", "body": "-", "owner": "backend" })).await;
+    let run = run_in(&until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await, 2);
+    let said = tool_on(&handle, "backend", 1, "show_my_browser", serde_json::json!({ "url": "https://erp.example/login", "why": "Sign in to the ERP" })).await;
+    assert!(!said.is_error && said.text.contains("browser panel"), "{said:?}");
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == run)).await;
+    let before = calls(&recorded).len();
+    handle.send(Command::BrowserControl { lane: "acme/backend".into(), take: false });
+    let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let ended: Vec<u64> = seen.iter().filter_map(|e| if let Event::TurnEnded { session, .. } = e { Some(*session) } else { None }).collect();
+    assert_eq!(ended, [run], "the run carried on, not the member's own conversation: {seen:#?}");
+    let all = calls(&recorded);
+    assert!(all.len() > before, "a turn of the run's");
+    let prompt = arg(&all[before], "-p").unwrap();
+    assert!(prompt.contains("pressed Done") && prompt.contains("Sign in to the ERP"), "{prompt}");
+}
+
 #[tokio::test]
 async fn a_sign_in_hand_off_without_chrome_goes_to_the_panel_and_says_why() {
     let repo = repo();

@@ -772,6 +772,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         host_events: host_tx,
         tabs: HashMap::new(),
         asked_in: HashMap::new(),
+        asked_by: HashMap::new(),
         browser_back: HashMap::new(),
         held: HashMap::new(),
         checking: HashMap::new(),
@@ -1394,6 +1395,10 @@ struct Runtime {
     /// Lanes whose member asked the person in (`show_my_browser` with a browser
     /// panel attached): handing back tells the member the person is done.
     asked_in: HashMap<String, String>,
+    /// Which conversation handed each lane to the person (`show_my_browser`):
+    /// a ticket's run hands its member's browser, and it is the run that
+    /// carries on when the person is done.
+    asked_by: HashMap<String, SessionId>,
     /// When the person last handed a member's browser back (squad and member
     /// to unix seconds), until its member's first decision asked after: the
     /// member looks at the page itself rather than asking what they saw
@@ -4123,6 +4128,9 @@ runbooks and reports live there, and work across the projects or on running them
         let mut shown = Vec::new();
         if kept.kept_out > 0 {
             shown.push(say!(self, "news.captures_kept_out", id = ticket.id, count = kept.kept_out, size = size(kept.bytes)));
+        }
+        if kept.handed_in_kept_out > 0 {
+            shown.push(say!(self, "news.handed_in_kept_out", id = ticket.id, count = kept.handed_in_kept_out, size = size(kept.handed_in_bytes)));
         }
         for heavy in &kept.heavy {
             shown.push(say!(self, "news.captures_heavy", id = ticket.id, size = size(heavy.bytes), commit = &heavy.commit[..heavy.commit.len().min(10)]));
@@ -9216,6 +9224,11 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
             HostEvent::Control { lane, by, refused } => {
                 let (squad, session) = self.lane_session(&lane);
                 let asked = if by.is_none() { self.asked_in.remove(&lane) } else { None };
+                // Handed back: the conversation that asked hears it — a ticket's run,
+                // whose browser shares the member's sign-ins — not the member's own
+                // conversation, whose browser it was and which knows nothing of it.
+                let asker = if by.is_none() { self.asked_by.remove(&lane).filter(|id| self.sessions.contains_key(id)) } else { None };
+                let session = if asked.is_some() { asker.or(session) } else { session };
                 // Handed back from a page that waited for them: passed — or, still
                 // waiting, left to the member, and not taken from it again.
                 let checked = if by.is_none() { self.checking.remove(&lane) } else { None };
@@ -9315,6 +9328,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
             }
             HostEvent::DialogClosed { page } => self.publish(Event::BrowserDialogClosed { page }),
             HostEvent::Suspended { profile } => self.window_suspended(&profile),
+            HostEvent::LaneFailed { lane } => self.lane_failed(&lane),
             HostEvent::Filled { token, answer, .. } => self.filled(token, answer),
             HostEvent::Visited { token, page } => self.on_visited(token, page),
             HostEvent::Passkey { token, credential } => self.on_passkey(token, credential),
@@ -9473,6 +9487,26 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
 
     /// A lane's squad and the conversation it is the browser of: `squad/key`;
     /// `""` is the person's own.
+    /// A member's lane couldn't open in the browser host: its port is
+    /// forgotten, so its next turn asks for the lane again rather than
+    /// handing its engine a browser no server answers for — an engine
+    /// that gives up on a server that doesn't come up (Codex) would start
+    /// with no browser tools at all.
+    fn lane_failed(&mut self, lane: &str) {
+        let Some((squad, key)) = lane.split_once('/') else { return };
+        let key = (squad.to_owned(), key.to_owned());
+        if !self.browsers.get(&key).is_some_and(|b| b.is_lane()) {
+            return;
+        }
+        self.browsers.remove(&key);
+        if let Some(host) = &self.host
+            && let Ok(mut host) = host.lock()
+        {
+            host.forget_lane(lane);
+        }
+        crate::daemon_log!("equipe: {lane}'s browser couldn't open; it opens again on its next turn");
+    }
+
     fn lane_session(&self, lane: &str) -> (Option<String>, Option<SessionId>) {
         let Some((squad, key)) = lane.split_once('/') else {
             return (None, None);
@@ -10630,6 +10664,9 @@ check what is already done in your worktree first."
         repos.sort();
         repos.dedup();
         let homes: Vec<PathBuf> = squads.iter().map(|s| squad_home::path(&home, s)).filter(|p| p.join(".git").exists()).collect();
+        // Each squad's design QA pictures (`<squad>/design-qa`), with the tickets they may still serve.
+        let design_qa: Vec<(PathBuf, Vec<TicketId>)> =
+            open.iter().map(|(squad, tickets)| (crate::journal::squad_dir(&home, squad).join("design-qa"), tickets.clone())).collect();
         let internal = self.internal.clone();
         std::thread::spawn(move || {
             for line in crate::disk::tidy_lane_tmp(&home, &open, &keep) {
@@ -10643,17 +10680,40 @@ check what is already done in your worktree first."
                 crate::daemon_log!("equipe: {line}");
             }
             let _ = internal.send(Internal::LaneTmpLooked(Box::new(look)));
-            for line in crate::disk::clear_git_garbage(&repos) {
+            // Packs git left unfinished, in the projects and in the squads' own folders.
+            let all: Vec<PathBuf> = repos.iter().chain(&homes).cloned().collect();
+            for line in crate::disk::clear_git_garbage(&all) {
                 crate::daemon_log!("equipe: {line}");
             }
-            // Design captures out of git (an upgrade's one commit on main), and the store kept small.
-            for repo in repos.iter().chain(&homes) {
-                match crate::design::captures::migrate(repo) {
-                    Ok(Some(m)) => crate::daemon_log!("equipe: {} stopped tracking {} design captures ({}) in {}", repo.display(), m.untracked, crate::design::captures::size_words(m.bytes), m.commit),
-                    Ok(None) => {}
-                    Err(err) => crate::daemon_log!("equipe: {} still tracks design captures: {err}", repo.display()),
+            // Design captures — and in a squad's folder, what its tasks hand over — out
+            // of git (an upgrade's one commit on main), and the store kept small.
+            for repo in &all {
+                for scope in crate::design::captures::SCOPES {
+                    match crate::design::captures::migrate_in(scope, repo) {
+                        Ok(Some(m)) => crate::daemon_log!(
+                            "equipe: {} stopped tracking {} {} ({}) in {}",
+                            repo.display(),
+                            m.untracked,
+                            scope.what,
+                            crate::design::captures::size_words(m.bytes),
+                            m.commit
+                        ),
+                        Ok(None) => {}
+                        Err(err) => crate::daemon_log!("equipe: {} still tracks {}: {err}", repo.display(), scope.what),
+                    }
                 }
                 for line in crate::design::captures::gc(repo) {
+                    crate::daemon_log!("equipe: {line}");
+                }
+            }
+            // A squad's folder never runs git's own gc: repacked here, only while there is room.
+            for home in &homes {
+                if let Some(line) = crate::disk::repack_if_room(home) {
+                    crate::daemon_log!("equipe: {line}");
+                }
+            }
+            for (dir, open) in &design_qa {
+                for line in crate::disk::sweep_design_qa(dir, open, crate::disk::DESIGN_QA_KEPT) {
                     crate::daemon_log!("equipe: {line}");
                 }
             }

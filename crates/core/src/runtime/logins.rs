@@ -123,6 +123,8 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
             ));
         }
         self.login_record(&squad, Entry::new(now_secs(), &site, &call.member, Kind::Handoff, Some(cause), None));
+        // Whoever asked carries on when the person is done: a run, though the lane is its member's.
+        self.asked_by.insert(lane.clone(), id);
         if cause.is_shared_step() && !site.is_empty() {
             self.asked_site.insert(lane, site);
         }

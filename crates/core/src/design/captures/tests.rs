@@ -311,3 +311,97 @@ fn the_store_forgets_what_no_manifest_names_once_old() {
     assert_eq!(gc(&repo).len(), 1);
     assert!(!store.has(&hash) && store.has(&named), "what main names stays");
 }
+
+// ── a squad's folder: what its tasks hand over ──
+
+/// A squad's own folder (`…/squads/acme/home`) the way an older equipe kept
+/// it: a task's hand-in pictures and video committed beside its notes.
+fn squad_folder() -> PathBuf {
+    let dir = scratch("equipe").join("squads/acme/home");
+    std::fs::create_dir_all(&dir).unwrap();
+    git(&dir, &["init", "-q", "-b", "main"]).unwrap();
+    git(&dir, &["config", "user.name", "equipe"]).unwrap();
+    git(&dir, &["config", "user.email", "equipe@localhost"]).unwrap();
+    write(&dir.join("notes/research.md"), b"# Research");
+    write(&dir.join("outputs/T-1 brief/board.png"), b"board one");
+    write(&dir.join("outputs/T-1 brief/walkthrough.MP4"), b"a video");
+    write(&dir.join("outputs/T-1 brief/notes.md"), b"# Brief");
+    commit_all(&dir, "the squad's folder", &[]);
+    dir
+}
+
+#[test]
+fn a_squad_folders_hand_ins_are_its_outputs_pictures_videos_and_generated_files() {
+    for yes in ["outputs/T-1 brief/board.png", "outputs/T-12/shots/a.JPG", "outputs/report.pdf", "outputs/T-3/clip.mov", "outputs/T-3/deck.zip"] {
+        assert!(OUTPUTS.keeps(yes), "{yes}");
+    }
+    for no in ["outputs/T-1 brief/notes.md", "outputs/.captures.json", "outputs/.gitignore", "notes/a.png", "outputs.png", "outputs/../x.png", "src/outputs/a.png"] {
+        assert!(!OUTPUTS.keeps(no), "{no}");
+    }
+    let block = OUTPUTS.ignore_block();
+    assert!(block.contains("\n*.[pP][nN][gG]\n") && block.contains("\n*.[pP][dD][fF]\n") && !block.contains("/flows/"), "{block}");
+    assert_eq!(OUTPUTS.with_block(&OUTPUTS.with_block("mine\n")), OUTPUTS.with_block("mine\n"), "once");
+    // The design folder's captures are what they were.
+    assert!(is_capture("design/qa/t1/after.png") && !is_capture("outputs/T-1/a.png"));
+    assert_eq!(ignore_block(), DESIGN.ignore_block());
+}
+
+#[test]
+fn a_squad_folder_stops_tracking_its_hand_in_pictures_in_one_commit_keeping_every_file() {
+    let home = squad_folder();
+    let migrated = migrate_in(&OUTPUTS, &home).unwrap().expect("hand-ins were tracked");
+    assert_eq!(migrated.untracked, 2);
+    let files = tracked(&home, "main");
+    assert!(files.iter().all(|f| !OUTPUTS.keeps(f)), "{files:?}");
+    for rel in ["outputs/T-1 brief/notes.md", "notes/research.md", OUTPUTS.ignore_path, OUTPUTS.manifest_path] {
+        assert!(files.contains(&rel.to_owned()), "{rel} in {files:?}");
+    }
+    for rel in ["outputs/T-1 brief/board.png", "outputs/T-1 brief/walkthrough.MP4"] {
+        assert!(home.join(rel).is_file(), "{rel} stays in the folder");
+    }
+    assert_eq!(git(&home, &["status", "--porcelain"]).unwrap(), "");
+    let manifest = manifest_at_in(&OUTPUTS, &home, "main");
+    assert_eq!(manifest.entries.keys().collect::<Vec<_>>(), ["T-1 brief/board.png", "T-1 brief/walkthrough.MP4"]);
+    let store = Store::of(&home).unwrap();
+    assert!(manifest.entries.values().all(|e| store.has(&e.hash)), "each kept in the store");
+    assert_eq!(migrate_in(&OUTPUTS, &home).unwrap(), None, "once");
+    // The store keeps them: no manifest of the design folder names them, and gc leaves them.
+    assert!(gc(&home).is_empty());
+    assert!(manifest.entries.values().all(|e| store.has(&e.hash)));
+    // A project's own `outputs/` is the project's: left as it is.
+    let repo = project();
+    write(&repo.join("outputs/chart.png"), b"chart");
+    commit_all(&repo, "chart", &[]);
+    assert_eq!(migrate_in(&OUTPUTS, &repo).unwrap(), None);
+    assert!(tracked(&repo, "main").contains(&"outputs/chart.png".to_owned()));
+}
+
+#[test]
+fn a_tasks_hand_in_lands_in_the_squads_folder_without_its_pictures_in_history() {
+    let home = squad_folder();
+    migrate_in(&OUTPUTS, &home).unwrap();
+    let equipe = scratch("worktrees");
+    let s = worktree::create_after(&home, &equipe, "t2-abc-1", "designer", &[], &worktree::home_patterns(&[2])).unwrap();
+    assert!(!s.path.join("outputs/T-1 brief").exists(), "sparse: other tickets' folders are left out");
+    write(&s.path.join("outputs/T-2 gallery/hero.png"), b"hero");
+    write(&s.path.join("outputs/T-2 gallery/README.md"), b"# Gallery");
+    s.commit_all("gallery").unwrap().unwrap();
+    let files = tracked(&home, &s.branch);
+    assert!(files.contains(&"outputs/T-2 gallery/README.md".to_owned()) && !files.contains(&"outputs/T-2 gallery/hero.png".to_owned()), "{files:?}");
+    assert!(files.contains(&"outputs/T-1 brief/notes.md".to_owned()), "what it left out stays as main has it");
+    assert_eq!(changed(&s.path, &s.base), ["outputs/T-2 gallery/hero.png"], "what its hand-in shows");
+    // A member forces one in anyway: taken out of its commit before it lands.
+    write(&s.path.join("outputs/T-2 gallery/extra.webp"), b"extra");
+    commit_all(&s.path, "extra", &["outputs/T-2 gallery/extra.webp"]);
+    let blob = git(&s.path, &["rev-parse", "HEAD:outputs/T-2 gallery/extra.webp"]).unwrap();
+    worktree::merge_into_main(&home, &s.branch, "merge").unwrap();
+    assert!(!git(&home, &["rev-list", "--objects", "main"]).unwrap().contains(blob.as_str()), "it never reached the folder's history");
+    assert_eq!(std::fs::read(home.join("outputs/T-2 gallery/hero.png")).unwrap(), b"hero", "in the folder all the same");
+    assert_eq!(std::fs::read(home.join("outputs/T-2 gallery/extra.webp")).unwrap(), b"extra");
+    assert!(home.join("outputs/T-1 brief/board.png").is_file(), "earlier hand-ins untouched");
+    let report = take_report(&home, &s.branch).expect("its member hears");
+    assert_eq!((report.handed_in_kept_out, report.kept_out), (1, 0));
+    assert!(report.line(2).contains("outputs/") && report.line(2).contains("never `git add` them"), "{}", report.line(2));
+    let kept = file_at(&home, "main", "outputs/T-2 gallery/hero.png").expect("read back from the store");
+    assert_eq!(std::fs::read(kept).unwrap(), b"hero");
+}

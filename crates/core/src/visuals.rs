@@ -504,6 +504,15 @@ fn read_kept(path: &Path, kept: &Kept, max: Option<u32>) -> Result<ImageRead, St
             Err(Blob::Failed(why)) => failed = Some(why),
         }
     }
+    // Not in git: a picture equipe keeps out of it (a design capture, a
+    // squad folder's hand-in), from its store as that commit's manifest lists it.
+    let rel = kept.rel.to_string_lossy();
+    if let Some(file) = revs.iter().find_map(|rev| crate::design::captures::file_at(&kept.repo, rev, &rel))
+        && std::fs::metadata(&file).is_ok_and(|m| m.len() <= FILE_MAX)
+        && let Ok(bytes) = std::fs::read(&file)
+    {
+        return picture(path, path, bytes).and_then(|(bytes, mime)| sized(path, bytes, mime, max));
+    }
     match failed {
         Some(why) => Err(refused(path, &format!("couldn't be read from git: {why}"))),
         None => Err(refused(path, rpc::IMAGE_NOT_ON_BRANCH)),

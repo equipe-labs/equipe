@@ -58,6 +58,12 @@ pub fn ensure(home: &Path, squad: &str, language: Option<&str>) -> Result<bool, 
     if !ignore.exists() {
         std::fs::write(&ignore, ".DS_Store\n*.tmp\n").map_err(|err| err.to_string())?;
     }
+    // What tasks hand over as pictures, videos and other generated files stays
+    // out of the folder's history from the start (`design::captures::OUTPUTS`).
+    let outputs = dir.join(crate::design::captures::OUTPUTS.ignore_path);
+    if !outputs.exists() {
+        std::fs::write(&outputs, crate::design::captures::OUTPUTS.with_block("")).map_err(|err| err.to_string())?;
+    }
     git(&dir, &["init", "-q", "-b", "main"])?;
     // Its own name, so it works without the person's git setup and its history never carries theirs.
     git(&dir, &["config", "user.name", "equipe"])?;
@@ -69,10 +75,16 @@ pub fn ensure(home: &Path, squad: &str, language: Option<&str>) -> Result<bool, 
 }
 
 /// No signing and no hooks, in the home's own settings too: tickets' worktrees of
-/// it commit and merge with plain git, which reads them.
+/// it commit and merge with plain git, which reads them. Nor git's automatic
+/// gc and maintenance, which any commit starts whatever room is left on the
+/// disk — one that ran out of room left gigabytes of unfinished packs in a
+/// squad's folder: equipe repacks it itself while there is room
+/// (`disk::repack_if_room`).
 fn quiet(dir: &Path) -> Result<(), String> {
     exclude_recordings(dir);
     git(dir, &["config", "commit.gpgsign", "false"])?;
+    git(dir, &["config", "gc.auto", "0"])?;
+    git(dir, &["config", "maintenance.auto", "false"])?;
     git(dir, &["config", "core.hooksPath", "/dev/null"]).map(|_| ())
 }
 
@@ -412,12 +424,14 @@ fn one_line(text: &str) -> String {
     if line.chars().count() > 80 { format!("{}…", line.chars().take(79).collect::<String>()) } else { line.to_owned() }
 }
 
+/// What every git command equipe runs in a squad's folder is given: no
+/// signing, no hooks, no automatic gc or maintenance ([`quiet`] says why).
+pub(crate) const QUIET: [&str; 8] = ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "gc.auto=0", "-c", "maintenance.auto=false"];
+
 /// git in the home, independent of the person's own git setup: no signing, no hooks.
 pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let mut command = crate::worktree::git_command(dir);
-    command
-        .args(["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=false", "-c", "user.name=equipe", "-c", "user.email=equipe@localhost"])
-        .args(args);
+    command.args(QUIET).args(["-c", "core.quotePath=false", "-c", "user.name=equipe", "-c", "user.email=equipe@localhost"]).args(args);
     let out = crate::worktree::output_within(command, crate::worktree::GIT_TIMEOUT)?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -463,6 +477,13 @@ mod tests {
         assert_eq!(git(&dir, &["branch", "--show-current"]).unwrap().trim(), "main");
         assert_eq!(git(&dir, &["log", "-1", "--format=%an"]).unwrap().trim(), "equipe");
         assert!(changes(&dir, 10).unwrap().is_empty(), "making the folder isn't a change to show");
+        // Git's own gc never starts by itself there: equipe repacks while there is room.
+        assert_eq!(git(&dir, &["config", "gc.auto"]).unwrap().trim(), "0");
+        assert_eq!(git(&dir, &["config", "maintenance.auto"]).unwrap().trim(), "false");
+        // Hand-in pictures stay out of its history from the start.
+        let ignore = std::fs::read_to_string(dir.join("outputs/.gitignore")).unwrap();
+        assert!(ignore.contains("*.[pP][nN][gG]") && ignore.contains("*.[mM][pP]4"), "{ignore}");
+        assert!(git(&dir, &["ls-files", "outputs/.gitignore"]).unwrap().contains("outputs/.gitignore"));
         assert_eq!(squad_of(&home, &dir.join("notes")).as_deref(), Some("acme"));
         assert_eq!(squad_of(&home, &home.join("squads/acme/members")), None);
     }

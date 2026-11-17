@@ -68,6 +68,15 @@ const GATE: &str = include_str!("../assets/gate.js");
 /// written into the browser host.
 pub const KEEP_SESSIONS: &str = include_str!("../assets/keep-sessions.js");
 
+/// Each profile's Chrome started once, again after a failed start, and
+/// again while its folder is still another Chrome's: written into the browser host.
+const PROFILES: &str = include_str!("../assets/profiles.js");
+
+/// The browser host's script as it is written to disk, its parts in it.
+fn host_script() -> String {
+    HOST.replace("__DRIVING__", DRIVING).replace("__GATE__", GATE).replace("__KEEP_SESSIONS__", KEEP_SESSIONS).replace("__PROFILES__", PROFILES)
+}
+
 /// The script that hands a member's sign-ins back, with the state file's path
 /// written in. Written next to the state when it changed.
 const KEEP_SIGN_INS: &str = include_str!("../assets/keep-sign-ins.ts");
@@ -398,6 +407,10 @@ pub enum HostEvent {
         default: Option<String>,
     },
     DialogClosed { page: u64 },
+    /// A member's lane couldn't open (its profile's Chrome wouldn't start,
+    /// or the profile was closed for the person's own window): nothing
+    /// answers on its port.
+    LaneFailed { lane: String },
     /// A profile's automated browser closed at the daemon's asking
     /// (`suspend`, for the person's own window; `""` the main profile).
     Suspended {
@@ -706,7 +719,7 @@ impl Host {
     pub fn start(npx: &Path, home: &Path, hub: &std::sync::Arc<Hub>, events: tokio::sync::mpsc::UnboundedSender<HostEvent>) -> std::io::Result<SharedHost> {
         let state = ensure_state(home);
         let script = home.join("browser").join("browser-host.cjs");
-        let text = HOST.replace("__DRIVING__", DRIVING).replace("__GATE__", GATE).replace("__KEEP_SESSIONS__", KEEP_SESSIONS);
+        let text = host_script();
         if std::fs::read_to_string(&script).ok().as_deref() != Some(text.as_str()) {
             std::fs::write(&script, text)?;
         }
@@ -1725,6 +1738,52 @@ mod tests {
         assert!(ops.iter().all(|o| o["page"] == 7));
     }
 
+    /// A profile's Chrome the host couldn't start — its folder still held by
+    /// the person's own Chrome window, closing — is tried again, and a start
+    /// that failed is forgotten, so the next lane starts it afresh
+    /// (`assets/profiles.js`), run in Node as the browser host runs it.
+    #[test]
+    fn a_profile_chrome_that_failed_to_start_is_started_again_and_a_busy_folder_waited_for() {
+        let Some(node) = std::env::var_os("PATH").and_then(|path| std::env::split_paths(&path).map(|d| d.join("node")).find(|p| p.is_file())) else {
+            return; // No Node here: the smoke test covers it where there is.
+        };
+        let script = format!(
+            r#"{PROFILES}
+(async () => {{
+  const out = {{}};
+  out.busy = [profileBusy(new Error('browserType.launchPersistentContext: Opening in existing browser session.')), profileBusy(new Error('Failed to create a ProcessSingleton for your profile directory')), profileBusy(new Error("Executable doesn't exist"))];
+  // Held twice, then free: started on the third try.
+  let tries = 0;
+  out.waited = await startWhenFree(async () => {{ tries++; if (tries < 3) throw new Error('the profile is already in use by another instance of Chromium'); return 'chrome'; }}, 5, 1);
+  out.tries = tries;
+  // Any other failure: at once, no retry.
+  let other = 0;
+  out.other = await startWhenFree(async () => {{ other++; throw new Error('no Chrome installed'); }}, 5, 1).catch((e) => e.message);
+  out.otherTries = other;
+  // A start that failed is forgotten: the next request starts again, and keeps what came up.
+  const profiles = new Map();
+  let starts = 0;
+  const start = () => {{ starts++; return starts === 1 ? Promise.reject(new Error('busy')) : Promise.resolve('chrome-' + starts); }};
+  out.first = await startOnce(profiles, '', start).catch((e) => e.message);
+  await new Promise((r) => setTimeout(r, 5));
+  out.forgotten = !profiles.has('');
+  out.second = await startOnce(profiles, '', start);
+  out.third = await startOnce(profiles, '', start);
+  out.starts = starts;
+  process.stdout.write(JSON.stringify(out));
+}})();"#
+        );
+        let out = std::process::Command::new(&node).arg("-e").arg(script).output().expect("node runs");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let got: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(got["busy"], json!([true, true, false]));
+        assert_eq!((got["waited"].as_str(), got["tries"].as_u64()), (Some("chrome"), Some(3)));
+        assert_eq!((got["other"].as_str(), got["otherTries"].as_u64()), (Some("no Chrome installed"), Some(1)));
+        assert_eq!(got["first"], "busy");
+        assert_eq!(got["forgotten"], true, "a failed start isn't kept");
+        assert_eq!((got["second"].as_str(), got["third"].as_str(), got["starts"].as_u64()), (Some("chrome-2"), Some("chrome-2"), Some(2)), "started again once, then kept");
+    }
+
     /// The gate a member's browser tools pass while the person has its
     /// browser (`assets/gate.js`), run in Node as the browser host runs it.
     #[test]
@@ -1904,7 +1963,8 @@ mod tests {
         assert_eq!(kept["profile"]["exit_type"], "Crashed");
         let _ = std::fs::remove_dir_all(&dir);
         // The host as written: Node reads it whole.
-        let host = HOST.replace("__DRIVING__", DRIVING).replace("__GATE__", GATE).replace("__KEEP_SESSIONS__", KEEP_SESSIONS);
+        let host = host_script();
+        assert!(!host.contains("__PROFILES__") && host.contains("startOnce(profiles, name,"), "every part written in");
         assert!(host.contains("keepSessions(profile, fs, path)") && host.contains("--hide-crash-restore-bubble"));
         assert!(host.contains("--profile-directory=${pinnedProfile(profile, fs, path)}"), "the host's Chrome opens the pinned profile");
         let parsed = std::process::Command::new(&node).arg("-e").arg(format!("new Function({})", serde_json::to_string(&format!("return async () => {{ {host} }}")).unwrap())).output().expect("node runs");

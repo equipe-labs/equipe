@@ -111,6 +111,25 @@ the next sweep tries again.
 Captures from another machine (origin's main merged in) whose bytes this machine doesn't have
 are logged; the files stay missing until a sync brings them or the map is shot again.
 
+## A squad's folder: what its tasks hand over
+
+The same mechanism keeps a squad's own folder (`~/.equipe/squads/<squad>/home`) small. What its
+tasks hand over under `outputs/` as pictures, videos, sound, archives and PDFs (by extension, any
+case: see `OUTPUT_EXTS` in `crates/core/src/design/captures.rs`) is kept out of the folder's git
+the way design captures are: `outputs/.gitignore` carries equipe's block, `outputs/.captures.json`
+lists each file (path inside `outputs/`, hash, size, time, ticket), and the bytes go into the same
+store under the folder's `.git/equipe/captures`. A ticket's sparse worktree gives back only what it
+holds; files left out of it stay as main has them. The guard takes them out of a task's commits
+before it lands, the migration untracks what an older folder tracked (one commit, every file kept),
+and the landing puts them in the folder. A project's own `outputs/` is never touched.
+
+A squad's folder also never runs git's own automatic gc or maintenance (`gc.auto=0`,
+`maintenance.auto=false` in its config, and on every git command equipe runs there): a commit
+started one whatever room was left, and a repack that ran out of room left gigabytes of
+unfinished packs. equipe repacks the folder itself in its hourly sweep — loose objects past 6,700
+or packs past 50 — only while the disk is fine and twice what the repack writes is free
+(`docs/DISK.md`).
+
 ## Shrinking history that already grew
 
 The migration stops the growth; it doesn't give back what history holds. That takes rewriting

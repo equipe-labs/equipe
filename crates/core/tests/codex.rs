@@ -236,6 +236,60 @@ async fn codex_asks_the_person_and_an_always_becomes_the_squads_rule() {
     assert!(instructions.contains("read the matching skill's `SKILL.md` at its path") && !instructions.contains("say whether it can be tested"), "{instructions}");
 }
 
+/// A stand-in for `npx`: listens on the port it was given, as Playwright's
+/// MCP server would.
+fn fake_npx() -> PathBuf {
+    let bin = scratch("npx").join("npx");
+    write_script(
+        &bin,
+        r#"#!/bin/sh
+port=""
+while [ $# -gt 0 ]; do [ "$1" = "--port" ] && port="$2"; shift; done
+exec python3 -c 'import socket,sys,time
+s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(); time.sleep(600)' "$port"
+"#,
+    );
+    bin
+}
+
+/// A member on Codex is given the browser a member on Claude Code is — in a
+/// fresh thread and in the thread it carries on — with its charter saying
+/// so. One on Codex once handed a sign-in back saying its session had no
+/// browser tools at all.
+#[tokio::test]
+async fn a_codex_member_gets_its_browser_in_a_fresh_thread_and_in_the_one_it_carries_on() {
+    let (codex, log) = fake_codex("");
+    let cwd = scratch("site");
+    let home = scratch("home");
+    squads::create(&home, "acme", &cwd).unwrap();
+    let mut config = config(&codex, &home);
+    config.equipe_binary = Some("/opt/equipe".into());
+    config.npx = Some(fake_npx());
+    let (handle, mut events) = runtime::start(config);
+    add(&handle, &mut events, 1, on_codex(&cwd, "frontend")).await;
+    for text in ["look at the site", "and once more"] {
+        handle.send(Command::Submit { session: 1, text: text.into(), about: None });
+        until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    }
+    let starts = params_of(&log, "thread/start");
+    let started = starts.iter().find(|p| p["config"]["mcp_servers"].get("equipe").is_some()).unwrap_or_else(|| panic!("the member's thread: {starts:#?}"));
+    let servers = &started["config"]["mcp_servers"];
+    let browser = &servers["browser"];
+    let url = browser["url"].as_str().unwrap_or_else(|| panic!("no browser for a member on Codex: {servers}"));
+    assert!(url.starts_with("http://localhost:") && url.ends_with("/mcp"), "{url}");
+    assert_eq!(browser["default_tools_approval_mode"], "approve", "in auto it browses without asking, as on Claude Code");
+    assert!(servers["equipe"]["command"] == "/opt/equipe", "beside the board's tools: {servers}");
+    let instructions = started["developerInstructions"].as_str().unwrap();
+    assert!(instructions.contains("You have a real browser (the `browser` tools)"), "its charter says it has one");
+    // The next turn carries the thread on (or starts one afresh) with the same browser.
+    let opened: Vec<Value> = sent(&log).into_iter().filter(|m| m["method"] == "thread/start" || m["method"] == "thread/resume").map(|m| m["params"].clone()).filter(|p| p["config"]["mcp_servers"].get("equipe").is_some()).collect();
+    assert!(opened.len() >= 2, "a thread for each turn: {opened:#?}");
+    for params in &opened {
+        assert_eq!(params["config"]["mcp_servers"]["browser"]["url"], url, "the same browser in every thread it works in: {params}");
+    }
+    handle.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_codex_member_runs_the_squads_number_of_subagents_once_the_person_sets_one() {
     let (codex, log) = fake_codex("");

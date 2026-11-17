@@ -354,6 +354,7 @@
   "news.merged_local": "T-{id} · {title}을(를) {branch}에 병합했어요. 이 프로젝트엔 원격 저장소가 없어 푸시는 건너뛰었어요.",
   "news.captures_kept_out": "T-{id}: 디자인 이미지 {count}개({size})를 git에서 뺐어요. 파일은 디스크와 equipe 저장소에 그대로 있어요.",
   "news.captures_heavy": "T-{id}: 커밋 {commit}이(가) git에 이미지 {size}를 추가해요. 큰 이미지는 저장소 밖에 두는 게 좋아요.",
+  "news.handed_in_kept_out": "T-{id}: 넘겨받은 이미지·영상·파일 {count}개({size})를 스쿼드 폴더 기록에서 뺐어요. 파일은 폴더와 equipe 저장소에 그대로 있어요.",
   "news.merged_pushed": "T-{id} · {title}을(를) {branch}에 병합하고 푸시했어요.",
   "news.person_created": "T-{id}을(를) 보드에 올리고 {name}에게 맡겼어요 · {title}.",
   "news.person_created_unowned": "T-{id}을(를) 보드에 올렸어요. 담당은 PM이 정해요 · {title}.",
