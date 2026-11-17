@@ -450,6 +450,12 @@ impl Runtime {
         }
     }
 
+    /// Whether `squad`'s members could carry on on Claude now: the person is
+    /// signed in to it, its plan isn't out of its limit, and nothing waits for it.
+    pub(super) fn claude_open(&self, squad: &str) -> bool {
+        self.reach().ready.contains(&Engine::Claude) && self.engine_out(squad, Engine::Claude).is_none() && !self.engines.held(squad, Engine::Claude)
+    }
+
     /// What each engine can take on: signed in, and what Codex members can do.
     fn reach(&self) -> Reach {
         let mut ready = Vec::new();

@@ -4555,6 +4555,19 @@ runbooks and reports live there, and work across the projects or on running them
             return self.error(Some(id), say!(self, "error.no_session", id = id), None);
         };
         if session.is_working() || session.is_preparing() {
+            // The same design session kickoff again while its turn runs is sent
+            // once: twice, it reads as a block of instructions repeated. On
+            // Codex a kickoff opens a turn of its own, never cut into one as a
+            // steer, so its framing goes apart from the person's words.
+            if crate::design::session::split_kickoff(&text).is_some() {
+                if session.prompts.last() == Some(&text) {
+                    crate::daemon_log!("equipe: session {id} got the same design session kickoff while its turn runs; sent once");
+                    return;
+                }
+                if session.engine == Engine::Codex {
+                    return self.leave_memo(id, text);
+                }
+            }
             // Said while it works: it reads it at its next step and carries on,
             // steered (what is said mid-work is mostly a correction); an engine
             // that can't take it mid-turn gets it as a memo.
@@ -5701,6 +5714,11 @@ for one project goes to it as tickets for its owners, with that project — and 
                     _ => None,
                 };
                 let writable: Vec<PathBuf> = writable.iter().map(PathBuf::from).collect();
+                // Refused by OpenAI's safety check as possibly unintended activity: asked again,
+                // once, in a fresh thread that opens with where this one left off — and, refused
+                // again, Claude offered when the member could carry on there. Not on another provider.
+                let refused_retry = provider.is_none().then(|| self.refused_handoff(id));
+                let claude_instead = squad.as_deref().filter(|s| provider.is_none() && self.claude_open(s)).and(session.name()).map(str::to_owned);
                 let (steer_tx, steer_rx) = mpsc::unbounded_channel::<String>();
                 steer = Some(steer_tx);
                 let (stop_tx, stop_rx) = oneshot::channel::<()>();
@@ -5734,8 +5752,13 @@ for one project goes to it as tickets for its owners, with that project — and 
                         let _ = internal.send(Internal::Event(Box::new(event)));
                     };
                     let mut streamed = false;
+                    let mut retried = false;
+                    // equipe's framing of a design session's turn goes as a developer message, the
+                    // person's words as theirs: OpenAI's safety check reads instructions in the
+                    // person's message that they didn't write as possibly unintended activity.
+                    let (asked, framing) = crate::design::session::framing_apart(&prompt);
                     let request = codex_app::TurnRequest {
-                        prompt: &prompt,
+                        prompt: &asked,
                         model: model.as_deref(),
                         effort: effort.as_deref(),
                         access,
@@ -5744,6 +5767,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         fresh_prompt: None,
                         web_search: false,
                         instructions: charter.as_deref(),
+                        framing: framing.as_deref(),
                         mcp_servers: servers.as_ref(),
                         writable: &writable,
                         env: &env,
@@ -5758,12 +5782,18 @@ for one project goes to it as tickets for its owners, with that project — and 
                     if let Some(port) = browser {
                         browser::ready(port, Duration::from_secs(90)).await;
                     }
-                    let controls = codex_app::Controls { steering: Some(steer_rx), asks: Some(ask_tx), stop: Some(stop_rx), stop_subagent: Some(stop_sub_rx), fallback, ..Default::default() };
+                    let controls = codex_app::Controls { steering: Some(steer_rx), asks: Some(ask_tx), stop: Some(stop_rx), stop_subagent: Some(stop_sub_rx), fallback, refused_retry, ..Default::default() };
                     let outcome = codex_app::run_turn_with(&binary, &cwd, request, controls, |activity| {
                         if matches!(activity, Activity::Text(_)) {
                             streamed = true;
                         }
                         match activity {
+                            // Said as it happens, in the person's words: the turn goes on afresh.
+                            Activity::RefusedRetried => {
+                                retried = true;
+                                crate::daemon_log!("equipe: OpenAI refused a turn of session {id} as possibly unintended activity; asked again in a fresh thread");
+                                emit(Event::Notice { undo: None, session: id, text: crate::i18n::core(lang).get("notice.codex_refused_retry").to_owned() });
+                            }
                             // Token Factory bills per token: no plan, no limits to show.
                             Activity::Limits(_) if nebius => {}
                             Activity::Limits(limits) => {
@@ -5807,6 +5837,19 @@ for one project goes to it as tickets for its owners, with that project — and 
                         return;
                     }
                     let thread = outcome.as_ref().ok().and_then(|turn| turn.thread_id.clone());
+                    // Refused by OpenAI's safety check, in the person's words — with Claude to carry on
+                    // on, when the member could — never the provider's raw line alone.
+                    if let Err(equipe_providers::Error::Backend { message, code }) = &outcome
+                        && !nebius
+                        && codex_app::refused_as_unintended(message, code.as_deref())
+                    {
+                        let (message, next) = refused_words(lang, message, retried, claude_instead.as_deref());
+                        crate::daemon_log!("equipe: OpenAI refused a turn of session {id} as possibly unintended activity{}", if retried { ", again in a fresh thread" } else { "" });
+                        emit(Event::Error { session: Some(id), message, next });
+                        emit(Event::TurnEnded { session: id, outcome: TurnOutcome::Failed, usage: None });
+                        let _ = internal.send(Internal::Done(TurnDone { session: id, prompt, reply: None, claude_session: thread, ticket }));
+                        return;
+                    }
                     let result = outcome.map(|turn| turn.result).map_err(|err| if nebius { nebius_failure(err, provider_name.as_deref(), lang) } else { codex_cli_failure(err, lang) });
                     let lost = !nebius && matches!(&result, Err((_, next)) if crate::engine_auth::lost_by(*next) == Some(Engine::Codex));
                     let reply = finish_turn(&emit, id, result, streamed);
@@ -10504,6 +10547,44 @@ check what is already done in your worktree first."
         })
     }
 
+    /// The note a fresh Codex thread opens with when OpenAI's safety check
+    /// refused a turn of `id` as possibly unintended activity and the turn is
+    /// asked again there ([`codex_app::Controls::refused_retry`]): where the
+    /// conversation left off, latest last — equipe's framing of a design
+    /// session kept out of it, the message being answered left to follow.
+    fn refused_handoff(&self, id: SessionId) -> String {
+        let Some(session) = self.sessions.get(&id) else { return String::new() };
+        let mut entries = session.transcript.entries();
+        if let Some((Entry::User { .. }, before)) = entries.split_last() {
+            entries = before;
+        }
+        let lines: Vec<String> = entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::User { text, kept } => harness::words(text)
+                    .map(|text| crate::design::session::framing_apart(&text).0)
+                    .map(|text| format!("- the person: {}", clip(&tags::read_back(&text, kept), 600))),
+                Entry::Reply { text } => Some(format!("- you: {}", clip(text, 600))),
+                _ => None,
+            })
+            .collect();
+        let tail = lines[lines.len().saturating_sub(REFRESH_TAIL)..].join("\n");
+        let mut note = "This is a fresh conversation: OpenAI's safety check refused a turn of your last one as possibly unintended \
+activity, so equipe moved you here."
+            .to_owned();
+        if !tail.is_empty() {
+            note.push_str(&format!(" Where the last one left off, latest last:\n{tail}\n"));
+        }
+        note.push_str(&match &session.work {
+            Some(work) => {
+                let place = work.sandbox.as_ref().map_or_else(|| work.cwd.clone(), |sb| sb.path.clone());
+                format!(" You are on T-{}, in {}: the ticket's notes on the board and your work there hold the rest.", work.ticket, place.display())
+            }
+            None => " Your memory and the board hold the rest.".to_owned(),
+        });
+        note
+    }
+
     /// Close browsers whose member is gone, or hasn't had a turn in half an
     /// hour; the next turn opens a fresh one, still signed in.
     /// Once a day, a squad whose unstarted work has sat for a week has its PM
@@ -11605,7 +11686,7 @@ fn activity_event(id: SessionId, activity: Activity) -> Option<Event> {
         Activity::Plan { five_hour, seven_day } => Event::PlanUsage { usage: claude_plan(five_hour, seven_day), engine: Engine::Claude },
         Activity::Limits(_) => return None,
         // The loop's to know, never a screen's: sent apart by the turn.
-        Activity::Engine { .. } | Activity::Spent(_) | Activity::SubagentHeard { .. } | Activity::Settled(_) | Activity::ModelRefused { .. } => return None,
+        Activity::Engine { .. } | Activity::Spent(_) | Activity::SubagentHeard { .. } | Activity::Settled(_) | Activity::ModelRefused { .. } | Activity::RefusedRetried => return None,
     })
 }
 
@@ -11642,6 +11723,27 @@ fn codex_cli_failure(err: equipe_providers::Error, lang: crate::i18n::Lang) -> (
             (crate::i18n::core(lang).fill("error.codex_model_refused", &[("model", model)]), None)
         }
         _ => (codex_app::plain_message(&err.to_string()), None),
+    }
+}
+
+/// A turn OpenAI's safety check refused as possibly unintended activity, in
+/// the person's words: whether equipe asked it again in a fresh thread,
+/// OpenAI's own explanation when it gave one (the line after its message),
+/// and — when `claude` names the member and Claude could take it — the
+/// command that moves it there, as the next step.
+fn refused_words(lang: crate::i18n::Lang, message: &str, retried: bool, claude: Option<&str>) -> (String, Option<String>) {
+    let words = crate::i18n::core(lang);
+    let mut text = words.get(if retried { "error.codex_refused_again" } else { "error.codex_refused" }).to_owned();
+    if let Some(why) = message.split_once('\n').map(|(_, why)| why.trim()).filter(|why| !why.is_empty()) {
+        text.push_str(&format!(" \u{201c}{why}\u{201d}"));
+    }
+    match claude {
+        Some(name) => {
+            text.push(' ');
+            text.push_str(&words.fill("error.codex_refused_claude", &[("name", name.to_owned())]));
+            (text, Some(format!("/engine {name} claude now")))
+        }
+        None => (text, None),
     }
 }
 

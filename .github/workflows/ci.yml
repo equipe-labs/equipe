@@ -64,6 +64,8 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # The desktop app pulls in GPUI and its platform toolchain; the CLI is
       # what ships, so CI covers everything else.
+      # Temporary, for the PR's numbers: the image-loading measurement (removed before merge).
+      - run: cargo test -p equipe-core --test image_loading --locked -- --ignored --nocapture
       - run: cargo test --workspace --exclude equipe-desktop --locked
       - run: cargo clippy --workspace --exclude equipe-desktop --all-targets --locked -- -D warnings
 

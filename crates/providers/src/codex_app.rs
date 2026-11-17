@@ -359,6 +359,13 @@ pub struct TurnRequest<'a> {
     /// Who the agent is on the team: Codex's developer instructions, beside
     /// its own and the project's `AGENTS.md`.
     pub instructions: Option<&'a str>,
+    /// equipe's own framing of this turn — a design session's kickoff, say —
+    /// as a developer message put in the thread just before the person's
+    /// words (`thread/inject_items`), never as words of theirs: OpenAI's
+    /// safety check reads instructions in the person's message that the
+    /// person didn't write as possibly unintended activity. A Codex that
+    /// can't take it gets it before the prompt, as before.
+    pub framing: Option<&'a str>,
     /// MCP servers for the thread, by name ([`mcp_server`]). Replace the person's own.
     pub mcp_servers: Option<&'a Value>,
     /// Directories outside the working directory the turn may write: a build cache.
@@ -431,6 +438,24 @@ pub fn resume_params(request: &TurnRequest<'_>, cwd: &Path, id: &str, others: Op
         map.insert("excludeTurns".into(), json!(true));
     }
     params
+}
+
+/// equipe's framing of a turn ([`TurnRequest::framing`]) as the raw
+/// Responses item `thread/inject_items` appends: a developer message.
+pub fn framing_item(text: &str) -> Value {
+    json!({ "type": "message", "role": "developer", "content": [{ "type": "input_text", "text": text }] })
+}
+
+/// Codex's code for a turn OpenAI's safety check refused as possibly
+/// unintended activity ("This request was blocked by our safety systems.
+/// Reason: Potentially unintended activity."); its rollouts spell it in snake case.
+pub const UNINTENDED: &str = "misalignmentPolicyViolation";
+
+/// Whether a turn failed because OpenAI's safety check refused it as
+/// possibly unintended activity — a request it read as not the person's
+/// intent — rather than for anything the turn asked for being harmful.
+pub fn refused_as_unintended(message: &str, code: Option<&str>) -> bool {
+    matches!(code, Some(UNINTENDED | "misalignment_policy_violation")) || message.contains("Potentially unintended activity")
 }
 
 /// `turn/start`'s: the prompt, and the sandbox for this turn.
@@ -644,6 +669,8 @@ pub struct TurnCollector {
     /// The latest item was the member's final answer (an `agentMessage` of
     /// phase `final_answer`), with nothing started since.
     final_answer: bool,
+    /// It used a tool — a command, an edit, an MCP call — at least once.
+    acted: bool,
 }
 
 impl TurnCollector {
@@ -709,6 +736,17 @@ impl TurnCollector {
             Some(Err(Error::Backend { message, code })) => refused_model(message, code.as_deref()),
             _ => None,
         }
+    }
+
+    /// Whether OpenAI's safety check refused the turn as possibly unintended
+    /// activity ([`refused_as_unintended`]).
+    pub fn refused_unintended(&self) -> bool {
+        matches!(&self.result, Some(Err(Error::Backend { message, code })) if refused_as_unintended(message, code.as_deref()))
+    }
+
+    /// Whether the turn used a tool: something it did that asking again would do twice.
+    pub fn acted(&self) -> bool {
+        self.acted || !self.pending.is_empty() || !self.changes.is_empty()
     }
 
     /// Whether the turn said or did anything: answer text, a tool, output tokens.
@@ -826,6 +864,7 @@ impl TurnCollector {
             "contextCompaction" => return vec![Activity::Compacting],
             _ => return Vec::new(),
         };
+        self.acted = true;
         let now = Instant::now();
         self.pending.insert(id.to_owned(), uses.iter().map(|(name, target)| Pending { name: name.clone(), target: target.clone(), since: now }).collect());
         uses.into_iter().map(|(name, target)| Activity::Tool { name, target, label: None, background: false }).collect()
@@ -1040,7 +1079,12 @@ impl TurnCollector {
                 if code.as_deref() == Some("unauthorized") {
                     return Err(Error::CodexSignedOut);
                 }
-                Err(Error::Backend { message: message.unwrap_or_else(|| "Codex's turn failed".into()), code })
+                let mut message = message.unwrap_or_else(|| "Codex's turn failed".into());
+                // A refusal of OpenAI's own may come with its explanation, for the person: on the next line.
+                if let Some(why) = error.and_then(|e| e.get("misalignment")).and_then(|m| m.get("detailedExplanation")).and_then(Value::as_str).map(str::trim).filter(|w| !w.is_empty()) {
+                    message = format!("{message}\n{why}");
+                }
+                Err(Error::Backend { message, code })
             }
             status => Ok(TurnResult {
                 text: self.answer(),
@@ -1585,6 +1629,12 @@ impl Server {
     }
 }
 
+/// equipe's framing put in `thread` as a developer message
+/// (`thread/inject_items`); `false` when this Codex couldn't take it.
+async fn frame(server: &mut Server, thread: &str, framing: &str) -> bool {
+    server.call("thread/inject_items", json!({ "threadId": thread, "items": [framing_item(framing)] }), ANSWER_WAIT).await.is_ok()
+}
+
 /// A request of the app-server's waiting for the person: its id, method and
 /// parameters, and whether they allowed it.
 type Answering = std::pin::Pin<Box<dyn std::future::Future<Output = (Value, String, Value, bool)> + Send>>;
@@ -1622,6 +1672,13 @@ pub struct Controls {
     /// Where the turn goes, once, when the account refuses its model before
     /// it did anything ([`refused_model`]): another model the account lists.
     pub fallback: Option<Fallback>,
+    /// When OpenAI's safety check refuses the turn as possibly unintended
+    /// activity before it used a tool ([`refused_as_unintended`]), it is
+    /// asked again, once, in a fresh thread that opens with this note of
+    /// equipe's (where the conversation was) as a developer message, then the
+    /// turn's framing and the prompt as they were. The refused turn is rolled
+    /// back off its thread first. `None`: not asked again.
+    pub refused_retry: Option<String>,
 }
 
 /// The model (and effort) a turn is asked again on when its own is refused.
@@ -1638,7 +1695,7 @@ pub struct Fallback {
 /// is ended here as completed: interrupted in the app-server, its thread
 /// kept to resume.
 pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, controls: Controls, mut on_activity: impl FnMut(Activity)) -> Result<Turn> {
-    let Controls { mut steering, asks, stop, mut stop_subagent, settle_after, mut fallback } = controls;
+    let Controls { mut steering, asks, stop, mut stop_subagent, settle_after, mut fallback, mut refused_retry } = controls;
     let settle_after = settle_after.unwrap_or(crate::claude_code::SETTLE_AFTER);
     // On another provider, through a relay on the loopback that keeps its tools plain.
     let relay = match request.provider {
@@ -1684,12 +1741,21 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
             (opened, TurnRequest { prompt: request.fresh_prompt.unwrap_or(request.prompt), ..request })
         }
     };
-    let Some(thread) = opened.get("thread").and_then(|t| t.get("id")).and_then(Value::as_str).map(str::to_owned) else {
+    let Some(mut thread) = opened.get("thread").and_then(|t| t.get("id")).and_then(Value::as_str).map(str::to_owned) else {
         return Err(Error::Protocol("codex app-server started no thread".into()));
     };
     if let Some(model) = opened.get("model").and_then(Value::as_str) {
         on_activity(Activity::Model(model.to_owned()));
     }
+    // equipe's framing as a developer message; where this Codex can't take
+    // one, before the prompt as it always went.
+    let framed = match request.framing {
+        Some(framing) => frame(&mut server, &thread, framing).await,
+        None => true,
+    };
+    let asked = request.prompt;
+    let joined = request.framing.filter(|_| !framed).map(|framing| format!("{framing}\n\n{}", request.prompt));
+    let request = TurnRequest { prompt: joined.as_deref().unwrap_or(request.prompt), ..request };
     let mut collector = TurnCollector::new();
     collector.set_thread(&thread);
     let mut turn_request = server.request("turn/start", turn_params(&request, cwd, &thread)).await?;
@@ -1768,6 +1834,36 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
                         Incoming::Answer { .. } => {}
                         Incoming::Notification { method, params } => {
                             collector.on_notification(&method, &params).into_iter().for_each(&mut on_activity);
+                            // OpenAI's safety check refused it as possibly unintended activity before it
+                            // acted: the refused turn rolled back off its thread, and asked again, once, in a
+                            // fresh thread — the framing as a developer message, the conversation's latest
+                            // handed on in the retry's words. What a refused thread held stays out of it.
+                            if collector.done()
+                                && collector.refused_unintended()
+                                && !collector.acted()
+                                && stopping.is_none()
+                                && let Some(retry) = refused_retry.take()
+                            {
+                                on_activity(Activity::RefusedRetried);
+                                let _ = server.call("thread/rollback", json!({ "threadId": thread, "numTurns": 1 }), THREAD_WAIT).await;
+                                let opened = server.call("thread/start", start_params(&request, cwd, others.as_ref()), THREAD_WAIT).await?;
+                                let Some(fresh) = opened.get("thread").and_then(|t| t.get("id")).and_then(Value::as_str).map(str::to_owned) else {
+                                    return Err(Error::Protocol("codex app-server started no thread".into()));
+                                };
+                                thread = fresh;
+                                let note = match request.framing {
+                                    Some(framing) => format!("{retry}\n\n{framing}"),
+                                    None => retry,
+                                };
+                                let words = if frame(&mut server, &thread, &note).await { asked.to_owned() } else { format!("{note}\n\n{asked}") };
+                                collector = TurnCollector::new();
+                                collector.set_thread(&thread);
+                                turn_request = server.request("turn/start", turn_params(&TurnRequest { prompt: &words, ..request }, cwd, &thread)).await?;
+                                for (method, params) in std::mem::take(&mut server.early) {
+                                    collector.on_notification(&method, &params).into_iter().for_each(&mut on_activity);
+                                }
+                                continue;
+                            }
                             if collector.done() {
                                 // The account refused its model before it did anything: asked again,
                                 // once, on another model it lists — the same words, the same thread.

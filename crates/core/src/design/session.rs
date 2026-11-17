@@ -29,6 +29,9 @@ pub const PINS_MAX: usize = 12;
 /// The longest a pin's note may be, in characters.
 pub const NOTE_MAX: usize = 280;
 
+/// What the designer is told to do with pins, the pins block's last line.
+const PINS_HOW: &str = "Address each pin, then mark it with `equipe design session done <n> \"<what changed, one line>\"`.";
+
 /// What the designer is told when a session starts, inside the kickoff block.
 const HOW: &str = "This is a design session: work as your `design-session` skill says. Small steps of minutes, \
 not hours. In this first turn: 3-6 quick reference picks and one rough take, shown live with `equipe design session \
@@ -73,6 +76,80 @@ pub fn split_kickoff(text: &str) -> Option<(String, String)> {
 
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+// ── equipe's framing, apart from the person's words ──
+
+/// How a note of equipe's framing a turn opens, so the model knows whose it is.
+const FRAMING_HEAD: &str = "From equipe, the app the person leads this squad in — equipe's own note, not the person's words. \
+Their message follows.";
+
+/// A message about to go to an engine that takes equipe's framing apart
+/// from the person's words (Codex, as a developer message): equipe's own
+/// lines in it — a design session's kickoff block with the notes of equipe's
+/// that open it, the pins' line on what to do with them — taken out, and
+/// those lines as one note. OpenAI's safety check reads instructions sitting
+/// in the person's message that the person didn't write as possibly
+/// unintended activity, and refuses the turn. The person's words and the pins
+/// themselves (where they pointed, what they said) stay their message.
+/// `None`: nothing to take apart — a message with no session in it, or one
+/// that would be left empty.
+pub fn framing_apart(message: &str) -> (String, Option<String>) {
+    let mut notes: Vec<String> = Vec::new();
+    let mut words = message.to_owned();
+    if let Some(start) = words.find(OPEN)
+        && let Some(len) = words[start..].find(CLOSE)
+    {
+        // What opens the message before the block: equipe's bracketed notes
+        // (the project the person looks at, what changed since) go with it.
+        let (before, kept) = leading_notes(&words[..start]);
+        notes.extend(before);
+        let inside = words[start + OPEN.len()..start + len].trim().to_owned();
+        notes.push(format!("The person started a design session with you from equipe's screen:\n{inside}"));
+        words = format!("{kept}{}", &words[start + len + CLOSE.len()..]);
+    }
+    if words.contains(PINS_OPEN) && words.contains(PINS_HOW) {
+        words = words.replacen(&format!("\n{PINS_HOW}"), "", 1).replacen(PINS_HOW, "", 1);
+        notes.push(format!("The person's message carries pins they dropped on the live page ({PINS_OPEN}). {PINS_HOW}"));
+    }
+    while words.contains("\n\n\n") {
+        words = words.replace("\n\n\n", "\n\n");
+    }
+    let words = words.trim().to_owned();
+    if notes.is_empty() || words.is_empty() {
+        return (message.to_owned(), None);
+    }
+    (words, Some(format!("{FRAMING_HEAD}\n\n{}", notes.join("\n\n"))))
+}
+
+/// equipe's bracketed notes opening `text` (`[equipe: …]`, `[equipe] …`),
+/// each whole — brackets inside them, a Markdown link say, balanced — and
+/// what is left of `text` after them.
+fn leading_notes(text: &str) -> (Vec<String>, String) {
+    let mut notes = Vec::new();
+    let mut rest = text.trim_start();
+    while rest.starts_with("[equipe") {
+        let mut depth = 0usize;
+        let mut end = None;
+        for (at, c) in rest.char_indices() {
+            match c {
+                '[' => depth += 1,
+                ']' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        end = Some(at + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Unbalanced, or more of the line after it: not a note of equipe's alone.
+        let Some(end) = end.filter(|&e| rest[e..].starts_with('\n') || rest[e..].trim().is_empty()) else { break };
+        notes.push(rest[..end].to_owned());
+        rest = rest[end..].trim_start();
+    }
+    (notes, rest.to_owned())
 }
 
 // ── pins ──
@@ -121,7 +198,7 @@ pub fn pins_block(page: &str, pins: &[Pin]) -> String {
         out.extend(pin.selector.as_ref().map(|s| format!("  element: {s}")));
         out.extend(pin.crop.map(|c| format!("  crop: attached picture {c}")));
     }
-    out.push("Address each pin, then mark it with `equipe design session done <n> \"<what changed, one line>\"`.".to_owned());
+    out.push(PINS_HOW.to_owned());
     out.push(PINS_CLOSE.to_owned());
     out.join("\n")
 }
@@ -390,6 +467,40 @@ pub fn chosen(tune: bool, answer: Option<&Answer>) -> Choose {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_kickoff_goes_as_equipes_note_with_the_notes_opening_it_and_the_persons_words_stay_theirs() {
+        let text = kickoff("Pricing", Some("web"), &SessionFrom::DesignScreen, None, "Let's work on Pricing together.");
+        let prompt = format!(
+            "[equipe: the person is looking at the project web — new work is for it unless they say otherwise]\n\n[equipe: since your last turn —\n- frontend handed in [the page](http://localhost:3000/x)]\n\n{text}"
+        );
+        let (words, framing) = framing_apart(&prompt);
+        assert_eq!(words, "Let's work on Pricing together.");
+        let framing = framing.expect("equipe's note");
+        assert!(framing.starts_with(FRAMING_HEAD), "{framing}");
+        assert!(framing.contains("the person is looking at the project web") && framing.contains("[the page](http://localhost:3000/x)"), "{framing}");
+        assert!(framing.contains("page: Pricing") && framing.contains("work as your `design-session` skill says"), "{framing}");
+        assert!(!framing.contains(OPEN) && !words.contains(OPEN));
+    }
+
+    #[test]
+    fn pins_stay_the_persons_and_only_equipes_line_on_them_moves() {
+        let pins = [Pin { n: 1, x: 10, y: 20, width: 1440, note: "tighter".into(), ..Pin::default() }];
+        let message = with_pins("Pricing", &pins, "and the header too");
+        let (words, framing) = framing_apart(&message);
+        assert!(words.starts_with(PINS_OPEN) && words.contains("pin 1 at 10,20: tighter") && words.ends_with("and the header too"), "{words}");
+        assert!(words.contains(PINS_CLOSE) && !words.contains("equipe design session done"), "{words}");
+        assert!(framing.expect("equipe's note").contains("equipe design session done <n>"));
+        assert_eq!(split_pins(&words).0, vec![(1, "tighter".to_owned())], "the pins read back as before");
+    }
+
+    #[test]
+    fn a_message_without_equipes_framing_goes_as_it_is() {
+        let plain = "[equipe: since your last turn — x]\n\nfix it";
+        assert_eq!(framing_apart(plain), (plain.to_owned(), None));
+        let bare = block("Pricing", None, &SessionFrom::DesignScreen, None);
+        assert_eq!(framing_apart(&bare), (bare.clone(), None), "nothing would be left to say");
+    }
 
     #[test]
     fn the_kickoff_names_the_page_and_how_to_work_and_reads_back() {

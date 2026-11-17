@@ -324,9 +324,12 @@ fn browser_back_refusal(back: &mut HashMap<(String, String), u64>, key: (String,
     if now.saturating_sub(at) > BROWSER_BACK_WINDOW {
         return Ok(());
     }
-    Err("The person just handed your browser back after doing their part, so look at the page yourself now (take a snapshot, \
-read the URL) rather than asking them what they saw, whether it worked or what is on the screen. Nothing has been sent to \
-them. If, having looked, a decision truly is theirs to make, ask again - about the decision, not about what the page shows."
+    // Said as the call's own result — why nothing went out, what answers it
+    // instead — never as an order out of nowhere.
+    Err("Not sent: the person handed your browser back moments ago, after doing their part, so the page itself shows what \
+they did — look at the page yourself (a snapshot, its URL) rather than asking them what they saw, whether it worked or what \
+is on the screen. Nothing has been sent to them. If, having looked, a decision truly is theirs to make, ask again - about \
+the decision, not about what the page shows."
         .into())
 }
 
