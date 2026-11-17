@@ -161,6 +161,22 @@ const SETTLE_EVERY: Duration = Duration::from_secs(10 * 60);
 /// before it is declined.
 const APPROVAL_WAIT: Duration = Duration::from_secs(30 * 60);
 
+/// How long Codex lets a call to one of equipe's own servers run: past the
+/// longest such a call may wait on the person ([`APPROVAL_WAIT`]) — a yes
+/// asked with `ask_person`, a sign-in, a message the desktop would send — so
+/// the turn waits for their answer, as Claude Code's does, instead of giving
+/// up on the call after Codex's default few minutes and ending its turn with
+/// the card still open in front of them.
+pub fn person_call_timeout_secs() -> u64 {
+    APPROVAL_WAIT.as_secs() + 60
+}
+
+/// How long Codex lets a call to equipe's board server run: past any wait on
+/// the person, and past `helper_result`'s longest wait for a member with helpers.
+pub fn board_call_timeout_secs() -> u64 {
+    person_call_timeout_secs().max(crate::helpers::tool_timeout_secs())
+}
+
 /// How long a stopped Codex turn has to wind down before it is cut.
 const STOP_GRACE: Duration = Duration::from_secs(8);
 
@@ -774,6 +790,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         design_reviews: HashMap::new(),
         retros: HashMap::new(),
         approvals_asked: HashMap::new(),
+        approvals_turn: HashMap::new(),
         closed_seen: std::collections::HashSet::new(),
         lane_tmp_tidied: std::time::Instant::now(),
         tidied_at: None,
@@ -1436,6 +1453,11 @@ struct Runtime {
     /// When each permission waiting for the person was asked, by its id: how
     /// long it waited goes to the retro once answered.
     approvals_asked: HashMap<u64, u64>,
+    /// The turn each request waiting for the person was asked in, by its id:
+    /// the session and when that turn began. An answer that comes after that
+    /// turn ended reaches nobody, and goes to the member as a turn of its own
+    /// ([`Runtime::late_reply`]).
+    approvals_turn: HashMap<u64, (SessionId, u64)>,
     /// Tickets seen closed (done or cancelled) since the daemon started, by
     /// squad: a ticket closing is noticed once, however it closed.
     closed_seen: std::collections::HashSet<(String, TicketId)>,
@@ -2109,6 +2131,10 @@ impl Runtime {
         // A permission put to the person: from now it waits on them.
         if let Event::ApprovalRequested { approval, .. } = &event {
             self.approvals_asked.insert(approval.id, now_secs());
+            // Asked from a turn at work: its answer is that turn's to read.
+            if let Some(began) = self.sessions.get(&approval.session).filter(|s| s.is_working()).and_then(|s| s.turn_began) {
+                self.approvals_turn.insert(approval.id, (approval.session, began));
+            }
         }
         // A ticket closing, however it closed (the person's word, the PM's, a
         // designer's verdict, a member leaving): its lane's temporary folder goes.
@@ -5144,6 +5170,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             session.watch.begin(&prompt);
             if let Some(work) = session.work.as_mut() {
                 work.end.nudged = false;
+                work.end.stopped = false;
                 work.end.with_person = None;
             }
         }
@@ -5589,6 +5616,9 @@ for one project goes to it as tickets for its owners, with that project — and 
                         if helped {
                             helping::offer(&mut servers[MCP_SERVER]);
                         }
+                        // A call that waits on the person (`ask_person`, `sign_in`)
+                        // holds the turn until they answer, as Claude Code's does.
+                        servers[MCP_SERVER]["tool_timeout_sec"] = json!(board_call_timeout_secs());
                         if let Some(port) = browser {
                             servers[browser::SERVER] = codex_app::mcp_http_server(&format!("http://localhost:{port}/mcp"), browses_freely);
                         }
@@ -5596,16 +5626,20 @@ for one project goes to it as tickets for its owners, with that project — and 
                             servers[browser::server_name(Some(&profile.name))] = codex_app::mcp_http_server(&format!("http://localhost:{port}/mcp"), browses_freely);
                         }
                         if desktop {
-                            servers[DESKTOP_SERVER] = codex_app::mcp_server(binary, &args(Some(DESKTOP_SERVER)), matches!(mode, Mode::Auto | Mode::Full));
+                            let mut server = codex_app::mcp_server(binary, &args(Some(DESKTOP_SERVER)), matches!(mode, Mode::Auto | Mode::Full));
+                            // What may send in the person's name waits for their yes.
+                            server["tool_timeout_sec"] = json!(person_call_timeout_secs());
+                            servers[DESKTOP_SERVER] = server;
                         }
                         if let Some(design) = &design {
                             servers[DESIGN_SERVER] = codex_app::mcp_server(design, &["mcp".to_owned()], matches!(mode, Mode::Auto | Mode::Full));
                         }
                         // Only the ticket's own device: approved in every mode it is offered in.
-                        // Booting one takes a minute or two, past Codex's default wait.
+                        // Booting one takes a minute or two, and installing its tools
+                        // waits for the person's yes: past Codex's default wait.
                         if phone {
                             let mut server = codex_app::mcp_server(binary, &args(Some(crate::phone::SERVER)), true);
-                            server["tool_timeout_sec"] = json!(600);
+                            server["tool_timeout_sec"] = json!(person_call_timeout_secs());
                             servers[crate::phone::SERVER] = server;
                         }
                         // The squad's outside servers: equipe's proxy (the fallback: by address, Codex finding its own sign-in).
@@ -6033,9 +6067,11 @@ for one project goes to it as tickets for its owners, with that project — and 
             turn.abort();
         }
         self.publish(Event::TurnEnded { session: id, outcome: TurnOutcome::Interrupted, usage: None });
-        // Nobody is waiting for those answers any more.
+        // Nobody is waiting for those answers any more — nor is anyone to be
+        // told of them later: the turn that asked was stopped.
         let asked: Vec<u64> = self.pending.iter().filter(|(_, p)| p.approval.session == id).map(|(&a, _)| a).collect();
         for approval in asked {
+            self.approvals_turn.remove(&approval);
             self.answer(approval, Decision::Deny, "The turn was stopped.");
         }
         true
@@ -6938,7 +6974,11 @@ for one project goes to it as tickets for its owners, with that project — and 
     /// without a hand-in or a wait, and that nothing renewed before its lease
     /// ran out, is stalled. A turn still running is never stalled, however
     /// long it takes. The stalled ticket's member lets go of it and is free
-    /// for other work.
+    /// for other work. One a member with the board's tools left that way —
+    /// not stopped by the person, not waiting on them — comes back once by
+    /// itself when its member is free and its engine has room
+    /// ([`Self::may_resume_by_itself`]); stalled so again, it waits for the
+    /// person.
     async fn recover_execution_leases(&mut self, at: u64) {
         let squads: Vec<String> = self.journals.keys().cloned().collect();
         for squad in squads {
@@ -6957,20 +6997,27 @@ for one project goes to it as tickets for its owners, with that project — and 
                 continue;
             }
             for ticket in stalled {
+                let run = self.sessions.values().filter(|s| s.squad.as_deref() == Some(squad.as_str())).find(|s| s.work.as_ref().is_some_and(|w| w.ticket == ticket));
                 // One that waited on the person past its grace says what for.
-                let waited = self
-                    .sessions
-                    .values()
-                    .filter(|s| s.squad.as_deref() == Some(squad.as_str()))
-                    .filter_map(|s| s.work.as_ref())
-                    .find(|w| w.ticket == ticket)
-                    .and_then(|w| w.end.with_person.as_ref().map(|p| p.what.clone()));
+                let waited = run.and_then(|s| s.work.as_ref()).and_then(|w| w.end.with_person.as_ref().map(|p| p.what.clone()));
+                // One whose turn just ended with nothing holding it — not the
+                // person's stop, not a wait on them — may come back once by itself.
+                let again = run
+                    .filter(|s| waited.is_none() && has_tools(s) && self.config.equipe_binary.is_some())
+                    .filter(|s| s.work.as_ref().is_none_or(|w| !w.end.stopped))
+                    .and_then(|s| Some((s.name()?.to_owned(), s.engine)));
                 if let Some(what) = waited
                     && let Some(journal) = self.journal(&squad)
                 {
                     let _ = journal.set_waited_on_person(ticket, &what);
                 }
-                self.stalled(&squad, ticket, true);
+                let again = again.filter(|(name, engine)| self.may_resume_by_itself(&squad, ticket, name, *engine));
+                self.stalled(&squad, ticket, again.is_none());
+                if let Some((name, _)) = again
+                    && !self.resume_by_itself(&squad, ticket, &name)
+                {
+                    self.tell_stalled(&squad, ticket);
+                }
             }
             Box::pin(self.dispatch(&squad)).await;
         }
@@ -7011,31 +7058,84 @@ for one project goes to it as tickets for its owners, with that project — and 
         let reason = ticket.execution.as_ref().and_then(|e| e.reason.clone()).unwrap_or_default();
         let _ = journal.ticket_event(ticket_id, "equipe", "stalled", &reason);
         let Some(ticket) = journal.ticket(ticket_id).ok().flatten() else { return };
-        let (title, who) = (ticket.title.clone(), ticket.assignee.clone().unwrap_or_default());
-        let waited = ticket.execution.as_ref().and_then(|e| e.waited_for.clone());
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
         if tell {
-            let (line, shown) = match waited {
-                Some(what) => (
-                    format!(
-                        "T-{ticket_id}'s run stopped: {who} waited on the person for {} minutes ({what}) and they haven't come \
+            self.tell_stalled(squad, ticket_id);
+        }
+    }
+
+    /// The PM and the person hear that `ticket_id`'s run stalled, and what it
+    /// waits for: the person's resume, requeue or reassign on its card.
+    fn tell_stalled(&mut self, squad: &str, ticket_id: TicketId) {
+        let Some(ticket) = self.journal(squad).and_then(|j| j.ticket(ticket_id).ok().flatten()) else { return };
+        let (title, who) = (ticket.title.clone(), ticket.assignee.clone().unwrap_or_default());
+        let waited = ticket.execution.as_ref().and_then(|e| e.waited_for.clone());
+        let (line, shown) = match waited {
+            Some(what) => (
+                format!(
+                    "T-{ticket_id}'s run stopped: {who} waited on the person for {} minutes ({what}) and they haven't come \
 back to it. It stays in progress with its branch and worktree as they are, in the person's Needs-you with what it waited \
 for: they do it and resume it on its card — you can't, and don't open a new ticket for it.",
-                        turn_end::WITH_PERSON_GRACE / 60
-                    ),
-                    say!(self, "news.stalled_on_person", id = ticket_id, name = who, what = what, title = title),
+                    turn_end::WITH_PERSON_GRACE / 60
                 ),
-                None => (
-                    format!(
-                        "T-{ticket_id}'s run stopped: {who}'s turn ended without a hand-in or a wait, and nothing ran it since. It \
+                say!(self, "news.stalled_on_person", id = ticket_id, name = who, what = what, title = title),
+            ),
+            None => (
+                format!(
+                    "T-{ticket_id}'s run stopped: {who}'s turn ended without a hand-in or a wait, and nothing ran it since. It \
 stays in progress with its branch and worktree as they are. The person resumes, requeues or reassigns it on its card — you \
 can't, and don't open a new ticket for it."
-                    ),
-                    say!(self, "news.stalled", id = ticket_id, name = who, title = title),
                 ),
-            };
-            self.brief_pm(squad, line, Some(shown));
+                say!(self, "news.stalled", id = ticket_id, name = who, title = title),
+            ),
+        };
+        self.brief_pm(squad, line, Some(shown));
+    }
+
+    /// Whether `ticket`'s run, stalled as its lease ran out with nothing
+    /// holding it, comes back once by itself: its member `name` is on the
+    /// squad and free to take work — not resting, not moving engines — its
+    /// `engine` has room and isn't held, the squad's starts aren't paused, and
+    /// equipe hasn't brought this very ticket back already since its last run
+    /// began otherwise.
+    fn may_resume_by_itself(&self, squad: &str, ticket: TicketId, name: &str, engine: Engine) -> bool {
+        let Some(journal) = self.journals.get(squad) else { return false };
+        self.member_id(squad, name).is_some()
+            && !journal.is_resting(name)
+            && !self.engines.moving(squad, name)
+            && !self.engines.held(squad, engine)
+            && self.engine_out(squad, engine).is_none()
+            && !self.turn_ends.paused(squad)
+            && journal.resumed_by_itself_last(ticket).is_ok_and(|again| !again)
+    }
+
+    /// Bring stalled `ticket` back once, on its own, to `name`: a fresh run on
+    /// the same ticket, branch and worktree, as the person's resume does; the
+    /// PM and the person told, and the log. Whether it was.
+    fn resume_by_itself(&mut self, squad: &str, ticket: TicketId, name: &str) -> bool {
+        let (title, changed) = {
+            let Some(journal) = self.journal(squad) else { return false };
+            let Some(found) = journal.ticket(ticket).ok().flatten() else { return false };
+            let generation = found.execution.as_ref().map_or(0, |e| e.generation);
+            let operation = format!("{}{ticket}-{generation}", journal::AUTO_RESUME_OPERATION);
+            if !matches!(journal.reserve_requeue(ticket, &operation, Some(name), now_secs()), Ok(Requeued::Reserved)) {
+                return false;
+            }
+            let _ = journal.ticket_event(ticket, "equipe", "resumed", &format!("by itself, once, to {name}, on the same branch and worktree: its run stopped without a hand-in"));
+            (found.title, journal.ticket(ticket).ok().flatten())
+        };
+        if let Some(changed) = changed {
+            self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: changed });
         }
+        crate::daemon_log!("equipe: {squad}: T-{ticket}'s run stalled (lease expired) with {name} free: brought back once by itself");
+        let line = format!(
+            "T-{ticket}'s run stopped: {name}'s turn ended without a hand-in or a wait, and nothing ran it since. equipe brought it \
+back once by itself — a fresh run for {name} on the same ticket, branch and worktree, nothing reset. If it stops so again, it \
+waits for the person."
+        );
+        let shown = say!(self, "news.stalled_resumed", id = ticket, to = name, title = title);
+        self.brief_pm(squad, line, Some(shown));
+        true
     }
 
     /// A ticket that can't start (its project isn't a repository, say) goes back
@@ -8394,6 +8494,7 @@ there, end your turn, and carry on when they say they're done."
             return;
         };
         let Pending { squad, approval, input, reply } = pending;
+        let reply = self.late_reply(approval_id, &approval, decision, reply);
         // How long it waited on the person, for the week's retro.
         if let Some(asked) = self.approvals_asked.remove(&approval_id) {
             let outcome = match decision {
@@ -8480,6 +8581,41 @@ there, end your turn, and carry on when they say they're done."
         };
         self.audit(&squad, approval.ticket, "you", verb, &approval.action);
         self.publish(Event::ApprovalResolved { squad, approval: approval_id, decision });
+    }
+
+    /// Where the answer to request `id` goes. Asked by `approval.session`
+    /// during a turn that has ended since — its engine stopped waiting for the
+    /// call (Codex gives a call up after its timeout) and the turn went on to
+    /// its end — it would reach nobody, and a run on a ticket would sit with
+    /// nothing to hold it until its lease ran out. So it goes to the member as
+    /// a turn of its own (or after the one running now), with what it asked;
+    /// otherwise to `reply`, the call still waiting for it.
+    fn late_reply(&mut self, id: u64, approval: &Approval, decision: Decision, reply: oneshot::Sender<ToolResult>) -> oneshot::Sender<ToolResult> {
+        let Some((asker, began)) = self.approvals_turn.remove(&id) else { return reply };
+        let Some(s) = self.sessions.get(&asker) else { return reply };
+        if s.member.is_none() || (s.is_working() && s.turn_began == Some(began)) {
+            return reply;
+        }
+        let on_ticket = s.work.is_some();
+        let who = format!("{}{}", s.squad.as_deref().map(|q| format!("{q}: ")).unwrap_or_default(), s.name().unwrap_or("agent"));
+        let at = s.work.as_ref().map(|w| format!(" on T-{}", w.ticket)).unwrap_or_default();
+        crate::daemon_log!("equipe: {who}'s request{at} was answered after the turn that asked had ended: it goes to it as a turn of its own");
+        let action = clip(approval.action.lines().next().unwrap_or_default(), 300);
+        // A question the member put, or a sign-in: its answer is in words already.
+        let in_words = approval.tool == CONFIRM || approval.tool == SIGN_IN_TOOL;
+        let (tx, rx) = oneshot::channel::<ToolResult>();
+        let internal = self.internal.clone();
+        tokio::spawn(async move {
+            let Ok(answer) = rx.await else { return };
+            let said = match decision {
+                _ if in_words && !answer.text.trim().is_empty() => answer.text,
+                Decision::Allow | Decision::Always => "The person allowed it.".to_owned(),
+                Decision::Deny => "The person declined it.".to_owned(),
+            };
+            let prompt = late_answer_prompt(&action, &said, on_ticket);
+            let _ = internal.send(Internal::Wake { session: asker, prompt });
+        });
+        tx
     }
 
     // ── logins (`vault`) ──
@@ -10656,7 +10792,14 @@ lesson in your memory before you start, so the next ticket begins with it.\n"
         }
     }
     if recovered {
-        out.push_str("The last run on this ticket stopped without a hand-in, and the person brought it back: this is a fresh session on the same ticket.");
+        // Brought back by equipe on its own, once, or by the person.
+        let by_itself = ticket.execution.as_ref().is_some_and(|e| e.operation.starts_with(journal::AUTO_RESUME_OPERATION));
+        out.push_str(if by_itself {
+            "The last run on this ticket stopped without a hand-in, and equipe brought it back once by itself: this is a fresh \
+session on the same ticket."
+        } else {
+            "The last run on this ticket stopped without a hand-in, and the person brought it back: this is a fresh session on the same ticket."
+        });
         if sandbox.is_some() {
             out.push_str(
                 " Same branch and worktree, nothing reset, committed or cleaned — the commit and the uncommitted and untracked files \
@@ -11177,6 +11320,24 @@ fn finish_turn(
             None
         }
     }
+}
+
+/// What a member is told when the person answered what it asked (`action`)
+/// only after the turn that asked had ended: their answer (`said`), and — on a
+/// ticket — to carry on and end the turn in one of the ways to finish.
+fn late_answer_prompt(action: &str, said: &str, on_ticket: bool) -> String {
+    let mut prompt = format!(
+        "[equipe] Your last turn ended before the person answered what you asked them (\u{201c}{action}\u{201d}): the call \
+stopped waiting for them. They have answered now: {said}\n"
+    );
+    prompt.push_str(if on_ticket {
+        "Carry on from where you left off in light of their answer — look at where things stand first, and don't redo what \
+is done. Then end the turn in one of the ways to finish: `submit_for_review` when it's done, `block_on_person` when only \
+the person can do what's left, or `hand_back`."
+    } else {
+        "Carry on from where you left off in light of their answer."
+    });
+    prompt
 }
 
 /// Whether a session's engine runs an agent with tools: Claude Code, or the

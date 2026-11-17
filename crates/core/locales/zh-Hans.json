@@ -700,6 +700,7 @@
   "disk.kind.ticket_temp": "已结束工单的临时文件夹",
   "disk.kind.lane_temp": "工作通道的临时文件夹",
   "news.stalled": "T-{id} 的运行未提交就停止了；分支和工作目录保持原样。请在卡片上选择继续、重新排队或改派 · {title}。",
+  "news.stalled_resumed": "T-{id} 的运行未提交就停止了，equipe 已自动重新开始一次：{to} 在新会话中继续，分支和工作目录不变 · {title}。",
   "news.stalled_on_person": "T-{id} 的运行已停止：{name} 在等你处理（{what}），但一直没人回来。处理后请在卡片上继续 · {title}。",
   "news.recovery_resume": "T-{id} 由 {to} 在新会话中继续，分支和工作目录不变 · {title}。",
   "news.recovery_requeue": "T-{id} 已重新排队，交给下一位空闲的 {to}，分支和工作目录不变 · {title}。",

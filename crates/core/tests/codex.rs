@@ -307,3 +307,108 @@ async fn a_signed_out_codex_cli_says_how_to_sign_in() {
     assert!(!message.contains("codex login"), "no command for the person to run: {message}");
     assert_eq!(next.as_deref(), Some("equipe login codex"), "the hint screens know a lost sign-in by");
 }
+
+/// What each turn the stand-in started was asked, in order.
+fn prompts(log: &Path) -> Vec<String> {
+    params_of(log, "turn/start").iter().map(|p| p["input"].as_array().into_iter().flatten().filter_map(|i| i["text"].as_str()).collect()).collect()
+}
+
+/// Wait until a turn the stand-in started was asked `wanted`; that prompt.
+async fn asked(log: &Path, wanted: &str) -> String {
+    for _ in 0..400 {
+        if let Some(p) = prompts(log).into_iter().rev().find(|p| p.contains(wanted)) {
+            return p;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("no turn was asked {wanted:?}: {:#?}", prompts(log));
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+}
+
+/// A Codex member's turn on a ticket that ends — completed — with no hand-in,
+/// as seen on a squad moved to Codex: a yes it asked of the person with
+/// `ask_person` outlived Codex's wait for the call, and the turn went on to
+/// its end with the card still open. Its run is held for the person, never
+/// stalled; their answer, when it comes, carries it on as a turn of its own;
+/// and a turn that then ends without a hand-in is reminded how to finish, as
+/// on Claude Code. Codex itself is told to wait for such calls as long as the
+/// card stays open.
+#[tokio::test]
+async fn a_codex_turn_that_ends_without_a_hand_in_is_held_for_the_persons_answer_then_carried_on_never_stalled() {
+    use equipe_core::protocol::rpc::{RunKey, ToolCall};
+    use equipe_core::protocol::{ExecutionState, TicketStatus};
+    let (codex, log) = fake_codex("");
+    let cwd = repo();
+    let home = scratch("home");
+    squads::create(&home, "acme", &cwd).unwrap();
+    let mut config = config(&codex, &home);
+    config.equipe_binary = Some("/opt/equipe".into());
+    config.persist = true;
+    let (handle, mut events) = runtime::start(config);
+    add(&handle, &mut events, 1, on_codex(&cwd, "pm")).await;
+    add(&handle, &mut events, 2, on_codex(&cwd, "backend")).await;
+    let call = |member: &str, run: Option<RunKey>, name: &str, arguments: Value| ToolCall { run, squad: "acme".into(), member: member.into(), name: name.into(), arguments };
+    let made = handle.tool(call("pm", None, "create_ticket", serde_json::json!({ "title": "Wire the export slowly", "body": "Do it.", "owner": "backend" }))).await;
+    assert!(!made.is_error, "{made:?}");
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
+    let run = started.iter().find_map(|e| if let Event::WorkStarted { session, of: Some(2), .. } = e { Some(*session) } else { None }).unwrap();
+    asked(&log, "You're on T-1").await;
+    let ticket = |handle: &Handle| {
+        let handle = handle.clone();
+        async move { handle.snapshot("acme").await.tickets.into_iter().find(|t| t.id == 1).expect("on the board") }
+    };
+
+    // Codex waits for a call to the board past any card the person may hold open.
+    let member_start = params_of(&log, "thread/start").into_iter().find(|p| p["config"]["mcp_servers"]["equipe"]["args"].as_array().is_some_and(|a| a.iter().any(|x| x == "backend"))).expect("the run's thread");
+    let board = &member_start["config"]["mcp_servers"]["equipe"];
+    assert_eq!(board["tool_timeout_sec"], runtime::board_call_timeout_secs(), "{board}");
+    assert!(runtime::board_call_timeout_secs() > 30 * 60, "past the half hour a card waits for the person");
+
+    // Mid-turn, it asks the person's yes — and the call is given up before
+    // they answer, as Codex gives a call up after its timeout.
+    let key = RunKey { session: run, ticket: 1, generation: 1 };
+    let gave_up = tokio::time::timeout(
+        Duration::from_millis(300),
+        handle.tool(call("backend", Some(key), "ask_person", serde_json::json!({ "action": "Send the weekly report to the client", "why": "It goes out in your name" }))),
+    )
+    .await;
+    assert!(gave_up.is_err(), "the call waits on the person: {gave_up:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let approval = seen.iter().find_map(|e| if let Event::ApprovalRequested { approval, .. } = e { Some(approval.clone()) } else { None }).unwrap();
+    assert_eq!((approval.session, approval.ticket), (run, Some(1)));
+
+    // Its turn ends, completed, without a hand-in: held for the person's answer, not reminded.
+    let ended = until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == run)).await;
+    assert!(matches!(ended.last(), Some(Event::TurnEnded { outcome: TurnOutcome::Completed, .. })), "{ended:#?}");
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(!prompts(&log).iter().any(|p| p.contains("ended without ending the work")), "{:#?}", prompts(&log));
+    // However late the check, a run whose card waits on the person is not stalled.
+    handle.check_leases_at(now() + 1_000).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(ticket(&handle).await.execution.map(|e| e.state), Some(ExecutionState::Active));
+
+    // The person says no: the answer reaches the run as a turn of its own.
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None, said: None });
+    let late = asked(&log, "They have answered now").await;
+    for wanted in ["Send the weekly report to the client", "The person said no", "submit_for_review", "block_on_person", "hand_back"] {
+        assert!(late.contains(wanted), "{wanted} in: {late}");
+    }
+    // That turn ends without a hand-in too: reminded how to finish, as on Claude Code.
+    let nudge = asked(&log, "ended without ending the work").await;
+    assert!(nudge.contains("submit_for_review"), "{nudge}");
+    // Ended so again: to the PM — never stalled on the way.
+    for _ in 0..200 {
+        if ticket(&handle).await.status == TicketStatus::Proposed {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let back = ticket(&handle).await;
+    assert_eq!(back.status, TicketStatus::Proposed, "{back:#?}");
+    assert!(back.handed_back(), "{back:#?}");
+    assert_ne!(back.execution.map(|e| e.state), Some(ExecutionState::Stalled));
+    handle.shutdown().await;
+}
