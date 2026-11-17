@@ -163,6 +163,8 @@ impl Run<'_> {
     /// landing is the caller's. Minutes: off the loop.
     pub fn run(&self) -> Outcome {
         debug_assert!(!crate::runtime::on_core_loop(), "checks run off the core loop");
+        // What equipe wrote in main's checkout goes on main first: what is checked is what lands.
+        worktree::commit_own_writes(self.repo);
         let merge = match worktree::prepare_merge(self.repo, self.branch, self.message) {
             Ok(Prepared::Nothing { main }) => return Outcome::Nothing { main },
             Ok(Prepared::Merge(merge)) => merge,

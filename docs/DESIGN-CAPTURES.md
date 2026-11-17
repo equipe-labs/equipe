@@ -111,6 +111,68 @@ the next sweep tries again.
 Captures from another machine (origin's main merged in) whose bytes this machine doesn't have
 are logged; the files stay missing until a sync brings them or the map is shot again.
 
+## Design registries: merged entry by entry
+
+A few JSON files under a design folder are registries every design ticket adds to:
+`flows/flows.json` (the UI map, kept on one line), `references/board.json`,
+`directions/log.json` and `captures.json`. Merged as text, two tickets that each add an entry
+conflict on almost every landing — the one-line map always. equipe merges them as JSON instead
+(`crates/core/src/design/registry.rs`):
+
+- An array whose entries each carry an `id` (else a `path`, else a `name`; every entry, each
+  once) is merged entry by entry: both sides' additions kept (ours in its order, theirs' after
+  the entry before them), an entry one side changed taken from it, one side's removal kept unless
+  the other changed that entry. Objects merge key by key, keeping their order. Other arrays keep
+  both sides' additions at their end. Only a value both sides changed differently is a conflict,
+  named by its place (`flows[id=erp].screens[id=list].title`).
+- The result keeps the file's style: one line stays one line, an indented file keeps its indent,
+  and a side whose text is the result is kept byte for byte. `captures.json` merges as its
+  manifest does (above).
+- **equipe's landing** (`prepare_merge`, `merge_conflicts` — the PM's `accept_work`, the checks
+  gate, the person's merge, origin's main merged in before a push) merges a registry `git
+  merge-tree` reports conflicting as JSON, and tells of a conflict only when one is left.
+- **git itself**: equipe adds a merge driver to the repository's config and names the registries
+  in its `info/attributes` — both local to the machine, shared by every worktree, nothing
+  committed:
+
+  ```
+  [merge "equipe-registry"]
+      driver = '/path/to/equipe' design merge-registry %O %A %B %P || git merge-file -q --marker-size=%L -L ours -L base -L theirs %A %O %B
+  # info/attributes, in equipe's block:
+  **/design/flows/flows.json merge=equipe-registry
+  ```
+
+  So a member's `git merge main` in its worktree merges them the same way. Where a real conflict
+  is left, or equipe isn't there, git's own text merge runs and marks it as usual.
+
+## Files equipe writes on main
+
+Most design work is a ticket's, committed in its worktree. A few files equipe writes where a
+project's design folder is — its main checkout — when the person acts outside any ticket: the
+style profile and taste notes (`design/taste.md`), a design decision and its picture
+(`design/decisions/`), a reference kept from a conversation (`design/references/<pattern>/notes.md`),
+a critique or a style profile written by `equipe design critique` / `equipe design session profile`
+run there. Left uncommitted, they made the next landing's fast-forward of that checkout refuse
+("couldn't move without touching its changes"), and accepted work stayed off main.
+
+- Each is committed on main as soon as it is written: one commit of equipe's, made apart from the
+  checkout, which then fast-forwards (the files are staged there first as they are on disk, so the
+  fast-forward finds nothing of its own to keep). A file the person staged otherwise isn't taken.
+  In a ticket's worktree nothing is done — its member commits its work — and a squad's folder is
+  saved its own way.
+- Before every landing, such files still uncommitted in the checkout main is checked out in —
+  changed or new, never staged, deleted or conflicted ones — are committed the same way first
+  (`equipe: commit the design notes equipe wrote`). Nothing else there is touched: the person's own
+  changes still refuse the fast-forward, and nothing merges.
+- The taste tuner's signals are the person's own on this machine: a project's are kept outside the
+  working tree, in `<git common dir>/equipe/taste/design/signals.jsonl`, never committed. One an
+  older equipe left at `design/tuner/signals.jsonl` is moved there before the next landing.
+- A merge that fails for another reason than a conflict leaves the ticket accepted but not on main
+  (`merged: false`, `off_main: failed`, "accepted, not on main" on the board). The PM is told at
+  once that it was not merged, and equipe tries the merge again every five minutes, six times
+  (after a restart too, for a failure in the last three days); the PM hears when it lands or when
+  equipe stops trying.
+
 ## A squad's folder: what its tasks hand over
 
 The same mechanism keeps a squad's own folder (`~/.equipe/squads/<squad>/home`) small. What its

@@ -9,7 +9,8 @@
 //!   designer proposes needs. Beside the learned record (`design taste`),
 //!   which stays as it was: the evidence a note is drawn from.
 //! - A project's notes: `design/taste.md` in its repository, versioned with
-//!   its design, in the same line format.
+//!   its design, in the same line format — committed on main as soon as
+//!   equipe writes them in its main checkout (`design::own`).
 //! - Decisions: `design/decisions/`, a file each and its picture beside it —
 //!   the squad's in its folder (saved there), a project's in its repository.
 //!
@@ -192,10 +193,11 @@ pub fn records_of(signals: &[TasteSignal], today: &str) -> (Vec<tuner::Record>, 
 }
 
 /// What the person did that tells their taste, kept: its records added to the
-/// design folder's `tuner/signals.jsonl` (the squad's own with `project`
-/// none), and the profile at the top of its `taste.md` worked out again —
-/// its leans from every signal, its examples from the reactions — the rest
-/// of the file as it was.
+/// design folder's signals (`tuner::signals_file`: a project's outside its
+/// working tree; the squad's own with `project` none), and the profile at
+/// the top of its `taste.md` worked out again — its leans from every
+/// signal, its examples from the reactions — the rest of the file as it was,
+/// committed on main when it is a project's main checkout.
 pub fn signals(home: &Path, squad: &str, project: Option<&str>, signals: &[TasteSignal], today: &str) -> Result<(), Refused> {
     let (records, examples) = records_of(signals, today);
     learn(home, squad, project, &records, &examples, today)
@@ -231,6 +233,9 @@ pub fn learn(home: &Path, squad: &str, project: Option<&str>, records: &[tuner::
         let folder = crate::squad_home::path(home, squad);
         let rel = folder::DIR.to_owned();
         let _ = crate::squad_home::save_in(&folder, crate::squad_home::PERSON, "the person's style profile, worked out again", &[&rel]);
+    } else {
+        // A project's main checkout must not be left with it uncommitted: main couldn't move.
+        crate::design::own::land_soon(&dir, vec![path], "equipe: the person's style profile, worked out again".to_owned());
     }
     Ok(())
 }
@@ -293,7 +298,15 @@ pub fn change(home: &Path, squad: &str, project: Option<&str>, change: &TasteCha
     writable(&path)?;
     let before = if path.exists() { text_in(&dir, NOTES_FILE).ok_or_else(|| Refused::Failed(format!("{} couldn't be read", path.display())))? } else { TEMPLATE.to_owned() };
     let now = notes::change(&notes::parse(&before), change, today)?;
-    std::fs::write(&path, notes::write(&before, &now)).map_err(|e| Refused::Failed(e.to_string()))
+    std::fs::write(&path, notes::write(&before, &now)).map_err(|e| Refused::Failed(e.to_string()))?;
+    crate::design::own::land_soon(&dir, vec![path], "equipe: the person's taste notes".to_owned());
+    Ok(())
+}
+
+/// `text` on one line, as a commit's subject holds it.
+fn one_line(text: &str) -> String {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() > 60 { format!("{}…", line.chars().take(60).collect::<String>()) } else { line }
 }
 
 /// A file name for a decision: its date and question, made unique in `dir`.
@@ -355,6 +368,10 @@ pub fn record(home: &Path, squad: &str, project: Option<&str>, decision: &Decisi
         let folder = crate::squad_home::path(home, squad);
         let rel = format!("{}/{DECISIONS_DIR}", folder::DIR);
         crate::squad_home::save_in(&folder, by, &format!("recorded a design decision: {}", d.question.trim()), &[&rel])?;
+    } else {
+        let mut files = vec![path.clone()];
+        files.extend(d.picture.as_ref().map(|p| dir.join(p)));
+        crate::design::own::land_soon(&dir, files, format!("equipe: record a design decision: {}", one_line(&d.question)));
     }
     Ok(path)
 }

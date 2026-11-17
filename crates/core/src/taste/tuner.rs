@@ -18,7 +18,9 @@
 //!   differ on; a lean is the votes' balance, its confidence how many there
 //!   were and how much they agree.
 //!
-//! Pure but for reading and writing those two files.
+//! Pure but for reading and writing those two files. A project's signals
+//! are the person's own on this machine, kept outside its working tree
+//! ([`signals_file`]).
 
 use std::path::Path;
 
@@ -319,27 +321,85 @@ pub fn tuned(records: &[Record]) -> Vec<(String, String)> {
     records.iter().filter_map(|r| if let Record::Pick { a, b, .. } = r { Some((a.clone(), b.clone())) } else { None }).collect()
 }
 
-/// The signals kept in the design folder `dir`, oldest first.
-pub fn read_signals(dir: &Path) -> Vec<Record> {
-    let Some(bytes) = folder::inside(dir, SIGNALS_FILE, 8 << 20) else { return Vec::new() };
-    String::from_utf8_lossy(&bytes).lines().filter_map(|l| serde_json::from_str(l).ok()).take(SIGNALS_MAX).collect()
+/// Where the design folder `dir`'s signals are kept. A project's are the
+/// person's own on this machine: outside the working tree, in its
+/// repository's git folder (`<git common dir>/equipe/taste/<the design
+/// folder's path>/signals.jsonl`), shared by its main checkout and every
+/// worktree, never committed. The squad's folder's — saved with it — and a
+/// folder in no repository keep them in the folder, `tuner/signals.jsonl`.
+pub fn signals_file(dir: &Path) -> std::path::PathBuf {
+    let in_tree = dir.join(SIGNALS_FILE);
+    let Some((top, common)) = crate::worktree::git_dirs(dir) else { return in_tree };
+    let main = if common.file_name().is_some_and(|n| n == ".git") { common.parent().map(Path::to_path_buf).unwrap_or_else(|| top.clone()) } else { top.clone() };
+    if crate::worktree::is_squad_home(&main) || crate::worktree::is_squad_home(&top) {
+        return in_tree;
+    }
+    let rel = dir.strip_prefix(&top).ok().filter(|r| !r.as_os_str().is_empty()).map(Path::to_path_buf).unwrap_or_else(|| folder::DIR.into());
+    if rel.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+        return in_tree;
+    }
+    common.join("equipe").join("taste").join(rel).join("signals.jsonl")
 }
 
-/// Add `records` to the design folder `dir`'s signals.
+/// The signals kept for the design folder `dir`, oldest first: where they
+/// are kept ([`signals_file`]), after any an older equipe left in the folder.
+pub fn read_signals(dir: &Path) -> Vec<Record> {
+    let mut text = folder::inside(dir, SIGNALS_FILE, 8 << 20).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+    let kept = signals_file(dir);
+    if kept != dir.join(SIGNALS_FILE)
+        && std::fs::symlink_metadata(&kept).is_ok_and(|m| m.is_file() && m.len() <= 8 << 20)
+        && let Ok(bytes) = std::fs::read(&kept)
+    {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&String::from_utf8_lossy(&bytes));
+    }
+    text.lines().filter_map(|l| serde_json::from_str(l).ok()).take(SIGNALS_MAX).collect()
+}
+
+/// Add `records` to the design folder `dir`'s signals ([`signals_file`]).
 pub fn append(dir: &Path, records: &[Record]) -> Result<(), String> {
-    use std::io::Write as _;
     if records.is_empty() {
         return Ok(());
     }
-    let path = dir.join(SIGNALS_FILE);
-    if std::fs::symlink_metadata(&path).is_ok_and(|m| !m.is_file()) {
+    let mut lines = String::new();
+    for r in records {
+        lines.push_str(&serde_json::to_string(r).map_err(|e| e.to_string())?);
+        lines.push('\n');
+    }
+    append_lines(&signals_file(dir), &lines)
+}
+
+fn append_lines(path: &Path, lines: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    if std::fs::symlink_metadata(path).is_ok_and(|m| !m.is_file()) {
         return Err(format!("{} isn't a plain file", path.display()));
     }
-    std::fs::create_dir_all(dir.join("tuner")).map_err(|e| e.to_string())?;
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path).map_err(|e| e.to_string())?;
-    for r in records {
-        let line = serde_json::to_string(r).map_err(|e| e.to_string())?;
-        writeln!(file, "{line}").map_err(|e| e.to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| e.to_string())?;
+    file.write_all(lines.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// Signals an older equipe kept in the design folder `dir` of a project
+/// moved to where they are kept now ([`signals_file`]); the folder's file,
+/// and its `tuner/` folder when that is empty, go.
+pub fn move_out_of_tree(dir: &Path) -> Result<(), String> {
+    let in_tree = dir.join(SIGNALS_FILE);
+    let kept = signals_file(dir);
+    if kept == in_tree || !std::fs::symlink_metadata(&in_tree).is_ok_and(|m| m.is_file()) {
+        return Ok(());
+    }
+    let mut lines = std::fs::read_to_string(&in_tree).map_err(|e| format!("{}: {e}", in_tree.display()))?;
+    if !lines.is_empty() && !lines.ends_with('\n') {
+        lines.push('\n');
+    }
+    append_lines(&kept, &lines)?;
+    std::fs::remove_file(&in_tree).map_err(|e| format!("{}: {e}", in_tree.display()))?;
+    if let Some(tuner) = in_tree.parent() {
+        let _ = std::fs::remove_dir(tuner);
     }
     Ok(())
 }

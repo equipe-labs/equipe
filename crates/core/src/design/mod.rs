@@ -54,6 +54,11 @@
 //! - `captures`: the pictures and videos the design tools make, kept out of
 //!   git — listed in `captures.json`, their bytes in equipe's store, on disk
 //!   where they always were (docs/DESIGN-CAPTURES.md).
+//! - `registry`: the design folder's JSON registries (the UI map, the
+//!   reference board, the directions' log, the captures' manifest) merged
+//!   entry by entry, for equipe's landing and as git's merge driver.
+//! - `own`: what equipe writes into a project's main checkout outside any
+//!   ticket (taste notes, decisions, critiques), committed on main at once.
 //! - `session`: design sessions — the kickoff, the person's pins, the lines
 //!   `equipe design session` prints, and the PM's proposals, once per ticket.
 
@@ -69,6 +74,8 @@ pub mod qa_stats;
 pub mod refgallery;
 pub mod results;
 pub mod refs;
+pub mod registry;
+pub mod own;
 pub mod kit;
 pub mod lint;
 pub mod contrast;

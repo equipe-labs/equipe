@@ -524,6 +524,9 @@ fn nothing_accepts_or_merges_but_the_persons_commands() {
             "runtime.rs: Command::Reopen { squad, ticket, note } => self.reopen(&squad, ticket, note).await,",
             "runtime.rs: Command::ConfirmAccept { squad, id, tickets, said } => self.confirm_accept(&squad, id, tickets, said).await,",
             "runtime.rs: self.end_work(id, WorkEnd::Accepted);",
+            // A merge one of the above asked for, failed for another reason than a
+            // conflict (`off_main: failed`), tried again a few times — never a new one.
+            "runtime.rs: self.merge(&squad, ticket, push);",
             "runtime.rs: None => self.close_ticket(squad, found, TicketStatus::Done),",
             "tickets.rs: board::Move::Accept => self.accept(squad, id, crate::telemetry::Accepter::Person).await,",
             "tickets.rs: board::Move::SendBack => self.reopen(squad, id, String::new()).await,",

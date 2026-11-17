@@ -111,6 +111,8 @@ pub fn session_command(action: SessionAction) -> Result<(), String> {
             std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
             std::fs::write(&path, profile::write(&before, &p)).map_err(|e| format!("{}: {e}", path.display()))?;
             println!("Style profile written at the top of {}.", path.display());
+            // In the project's main checkout it is committed on main at once: never left to block a merge.
+            crate::design::keep_on_main(&dir, &[path], "equipe: the style profile, from a design session");
             Ok(())
         }
     }

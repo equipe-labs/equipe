@@ -85,6 +85,18 @@ pub enum DesignAction {
         #[arg(long, default_value = "diff.png")]
         out: PathBuf,
     },
+    /// Merge a design registry (flows.json, board.json, log.json, captures.json) as JSON, entry by entry: git's merge driver for them, which equipe sets up
+    #[command(hide = true)]
+    MergeRegistry {
+        /// The common ancestor's version (%O)
+        base: PathBuf,
+        /// Ours (%A): the merged result is written here
+        ours: PathBuf,
+        /// Theirs (%B)
+        theirs: PathBuf,
+        /// The file's path in the repository (%P)
+        path: String,
+    },
     /// Have a fresh reviewer — the other engine when it's available — critique pictures: the whole first, then each region; kept in design/critiques/
     Critique {
         /// The pictures: mockups, shots of what was built
@@ -338,6 +350,7 @@ pub async fn command(action: DesignAction) -> Result<(), String> {
             run_script("render.mjs", &args.iter().map(String::as_str).collect::<Vec<_>>()).await
         }
         DesignAction::Diff { spec, built, out } => run_script("diff.mjs", &[&spec, &built, "--out", out.to_string_lossy().as_ref()]).await,
+        DesignAction::MergeRegistry { base, ours, theirs, path } => equipe_core::design::registry::run_driver(&base, &ours, &theirs, &path),
         DesignAction::Critique { pictures, references, before, goal, brief, engine } => critique_command(critique::Ask { pictures, references, before, brief: None, goal }, brief, engine).await,
         DesignAction::Audit { url, pages, out, locale } => {
             let out = out.unwrap_or_else(|| PathBuf::from(equipe_core::design::DIR).join("audit"));
@@ -1235,7 +1248,20 @@ async fn critique_command(mut ask: critique::Ask, brief: Option<PathBuf>, engine
     println!("{}\n", reviewer::said(&by));
     println!("{}", answer.trim_end());
     println!("\nkept {}", kept.display());
+    // Run in the project's main checkout, it is committed on main at once: never left to block a merge.
+    keep_on_main(&design, std::slice::from_ref(&kept), "equipe: keep a design critique");
     Ok(())
+}
+
+/// What a design command wrote in `dir`, committed on main when `dir` is
+/// in the project's main checkout (`equipe_core::design::own`); in a
+/// ticket's worktree it is left for the member to commit with the work.
+pub(crate) fn keep_on_main(dir: &Path, files: &[PathBuf], message: &str) {
+    match equipe_core::design::own::land(dir, files, message) {
+        Ok(equipe_core::design::own::Landed::Committed(files)) => println!("committed on main: {}", files.join(", ")),
+        Ok(_) => {}
+        Err(err) => eprintln!("! left uncommitted for now (equipe commits it before the next merge): {err}"),
+    }
 }
 
 /// One critique by `engine`: its answer.

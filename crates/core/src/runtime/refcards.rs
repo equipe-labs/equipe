@@ -228,6 +228,9 @@ and keep it among the project's references. Now say in a line or two what to loo
                 if added && project.is_none() {
                     let folder = squad_home::path(&self.config.home, &squad);
                     let _ = squad_home::save_in(&folder, squad_home::PERSON, "a reference kept from the conversation", &[&rel]);
+                } else if added {
+                    // A project's main checkout is never left with it uncommitted: main couldn't move.
+                    crate::design::own::land_soon(&dir, vec![path.clone()], format!("equipe: keep a reference: {}", card.title.split_whitespace().collect::<Vec<_>>().join(" ")));
                 }
                 let text = if added { say!(self, "notice.reference_kept", title = card.title, path = rel) } else { say!(self, "notice.reference_known", title = card.title, path = rel) };
                 match session.filter(|s| self.sessions.contains_key(s)) {
