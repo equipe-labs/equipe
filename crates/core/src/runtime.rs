@@ -6912,8 +6912,14 @@ for one project goes to it as tickets for its owners, with that project — and 
         }
         // Brand work, and only it, takes the designer's full reference pass.
         let designer = self.sessions.get(&id).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role == design_qa::DESIGNER);
-        if designer && crate::design::brand::is_branding(&ticket.title, &ticket.body) {
+        let branding = crate::design::brand::is_branding(&ticket.title, &ticket.body);
+        if designer && branding {
             prompt.push_str(&crate::design::brand::note(board_tools));
+        }
+        // A project that inherits a brand: its system is the brand's, changed only on a brand ticket.
+        let member = self.sessions.get(&id).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role != crate::roles::PM);
+        if member && let Some(note) = crate::design::inherit::prompt_note(&self.config.home.join(crate::design::inherit::DIR), &sandbox.as_ref().map_or_else(|| project.clone(), |s| within(s, &project)).join(crate::design::DIR), branding) {
+            prompt.push_str(&note);
         }
         if let Some(plan) = &ticket.plan {
             let repo = ticket.project.as_deref().filter(|_| !Path::new(plan).is_absolute());

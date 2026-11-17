@@ -1697,6 +1697,15 @@ impl Journal {
         self.set_meta("notify", &serde_json::to_string(settings).unwrap_or_default())
     }
 
+    /// The brands this squad uses (`design::inherit`), by slug, in the order linked.
+    pub fn brands(&self) -> Vec<String> {
+        self.meta("brands").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+    }
+
+    pub fn set_brands(&self, brands: &[String]) -> Result<()> {
+        self.set_meta("brands", &serde_json::to_string(brands).unwrap_or_default())
+    }
+
     /// When the person last did something in the squad — made it, wrote to a
     /// member — in unix seconds; the board's own times count besides.
     /// `None`: not since this was kept.

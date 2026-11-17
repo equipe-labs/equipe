@@ -254,6 +254,80 @@ fn group_kind(path: &[String]) -> Option<&'static str> {
     })
 }
 
+/// Token files laid one over the next, path by path, the later winning:
+/// groups merge, a token (or a bare value) is replaced whole where a later
+/// layer has it, and what only one layer has is kept — in the order first
+/// written. Pretty JSON back; `Err((layer, problem))` names the layer that
+/// isn't an object of groups.
+pub fn layer(layers: &[&str]) -> Result<String, (usize, Problem)> {
+    let mut merged: Vec<(String, Node)> = Vec::new();
+    for (i, text) in layers.iter().enumerate() {
+        match serde_json::from_str::<Node>(text.trim_start_matches('\u{feff}')) {
+            Ok(Node::Obj(entries)) => lay(&mut merged, entries),
+            Ok(_) => return Err((i, Problem::NotGroups)),
+            Err(e) => return Err((i, Problem::NotJson { line: e.line(), column: e.column() })),
+        }
+    }
+    let mut out = String::new();
+    write(&Node::Obj(merged), 0, &mut out);
+    out.push('\n');
+    Ok(out)
+}
+
+fn is_token(node: &Node) -> bool {
+    !matches!(node, Node::Obj(_)) || node.get("$value").is_some() || node.get("value").is_some()
+}
+
+fn lay(base: &mut Vec<(String, Node)>, over: Vec<(String, Node)>) {
+    for (key, value) in over {
+        match base.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, Node::Obj(have))) if !key.starts_with('$') && !is_token(&value) && !is_token(&Node::Obj(have.clone())) => {
+                if let Node::Obj(entries) = value {
+                    lay(have, entries);
+                }
+            }
+            Some((_, have)) => *have = value,
+            None => base.push((key, value)),
+        }
+    }
+}
+
+fn write(node: &Node, depth: usize, out: &mut String) {
+    let pad = |d: usize| "  ".repeat(d);
+    match node {
+        Node::Null => out.push_str("null"),
+        Node::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Node::Num(n) => out.push_str(&n.to_string()),
+        Node::Str(s) => out.push_str(&serde_json::to_string(s).unwrap_or_default()),
+        Node::Arr(items) if items.is_empty() => out.push_str("[]"),
+        Node::Arr(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                out.push_str(if i == 0 { "\n" } else { ",\n" });
+                out.push_str(&pad(depth + 1));
+                write(item, depth + 1, out);
+            }
+            out.push('\n');
+            out.push_str(&pad(depth));
+            out.push(']');
+        }
+        Node::Obj(entries) if entries.is_empty() => out.push_str("{}"),
+        Node::Obj(entries) => {
+            out.push('{');
+            for (i, (k, v)) in entries.iter().enumerate() {
+                out.push_str(if i == 0 { "\n" } else { ",\n" });
+                out.push_str(&pad(depth + 1));
+                out.push_str(&serde_json::to_string(k).unwrap_or_default());
+                out.push_str(": ");
+                write(v, depth + 1, out);
+            }
+            out.push('\n');
+            out.push_str(&pad(depth));
+            out.push('}');
+        }
+    }
+}
+
 /// Read `tokens.json`'s text.
 pub fn parse(text: &str) -> Parsed {
     let root: Node = match serde_json::from_str(text.trim_start_matches('\u{feff}')) {
@@ -561,6 +635,22 @@ mod tests {
         let parsed = parse(&format!("{{ \"n\": {{ \"$type\": \"number\", {} }} }}", many.join(",")));
         assert_eq!(parsed.tokens.len(), MAX_TOKENS);
         assert_eq!(parsed.problems, [Problem::TooMany]);
+    }
+
+    #[test]
+    fn layers_merge_by_path_and_the_later_token_wins_whole() {
+        let base = r##"{ "color": { "$type": "color", "bg": { "$value": "#fff", "$extensions": { "mode": { "dark": "#000" } } }, "accent": { "$value": "#1D4ED8" } }, "space": { "2": { "$value": "8px" } } }"##;
+        let over = r##"{ "color": { "accent": { "$value": "#B91C1C" }, "link": { "$value": "{color.accent}" } } }"##;
+        let parsed = parse(&layer(&[base, over]).unwrap());
+        assert_eq!(parsed.problems, []);
+        let names: Vec<&str> = parsed.tokens.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["color.bg", "color.accent", "color.link", "space.2"], "first-written order, new ones after");
+        assert_eq!(token(&parsed, "color.accent").value, json!("#B91C1C"));
+        assert_eq!(token(&parsed, "color.link").value, json!("#B91C1C"));
+        assert_eq!(token(&parsed, "color.bg").value_in(Some("dark")), &json!("#000"), "untouched tokens keep their modes");
+        assert_eq!(token(&parsed, "color.accent").kind, "color", "the group's $type still applies");
+        assert!(matches!(layer(&[base, "[1]"]), Err((1, Problem::NotGroups))));
+        assert!(matches!(layer(&["{ nope"]), Err((0, Problem::NotJson { .. }))));
     }
 
     #[test]
