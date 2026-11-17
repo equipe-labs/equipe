@@ -76,6 +76,7 @@ mod room;
 mod engines;
 mod design;
 mod design_session;
+mod refcards;
 mod briefs;
 mod plans;
 mod accept;
@@ -1189,6 +1190,8 @@ enum Internal {
     Wake { session: SessionId, prompt: String },
     /// Hand ready work out in every squad again (the disk has room once more).
     Dispatch,
+    /// A `show_references` call's pictures, fetched and kept off the loop ([`refcards::Shown`]).
+    References(Box<refcards::Shown>),
     /// A task on a folder's worktrees ended off the loop: a run's workspace
     /// made (or why not), or a worktree made too late removed (`None`).
     Workspace { folder: PathBuf, prepared: Option<Box<workspace::Prepared>> },
@@ -1648,6 +1651,7 @@ impl Wake {
             Wake::Internal(Internal::Wake { .. }) => Borrowed("work waits for a conversation"),
             Wake::Internal(Internal::DiskTrimmed(..)) => Borrowed("a trim of the build caches"),
             Wake::Internal(Internal::Dispatch) => Borrowed("handing out work again"),
+            Wake::Internal(Internal::References(_)) => Borrowed("reference pictures fetched"),
             Wake::Internal(Internal::Workspace { .. }) => Borrowed("a run's workspace made"),
             Wake::Internal(Internal::SignInLost { .. }) => Borrowed("a turn stopped by a lost sign-in"),
             Wake::Internal(Internal::AuthChecked(..)) => Borrowed("why an engine can't sign in"),
@@ -1920,6 +1924,7 @@ impl Runtime {
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
                 Internal::DiskTrimmed(freed, lines) => self.on_disk_trimmed(freed, lines),
                 Internal::TurnEndsDue => self.turn_ends_due(now_secs()),
+                Internal::References(shown) => self.references_shown(*shown),
                 Internal::Dispatch => {
                     // The disk has room again: a squad held by failing engines tries at once.
                     self.try_breakers_now();
@@ -3006,6 +3011,8 @@ impl Runtime {
             Command::RestoreDesign { squad, project, commit } => self.restore_design_asked(squad, project, commit),
             Command::Taste { squad, project, change } => self.taste_changed(squad, project, change),
             Command::TasteSignals { squad, project, signals } => self.taste_signals(squad, project, signals),
+            Command::KeepReference { squad, session, project, card } => self.keep_reference(squad, session, project, card),
+            Command::TryReference { squad, project, card } => self.try_reference(squad, project, card),
             Command::StartDesignSession { squad, project, page, from } => self.start_design_session(squad, project, page, from).await,
         }
     }
@@ -5246,6 +5253,12 @@ for one project goes to it as tickets for its owners, with that project — and 
         // Told of its outside servers only when it has some: nobody else's charter changes.
         let charter = charter.map(|text| match crate::squad_mcp::charter_note(&outside.iter().map(|(server, _)| server).collect::<Vec<_>>()) {
             Some(note) => format!("{text}\n\n{note}"),
+            None => text,
+        });
+        // The PM's design-library search, to show references with: what it is for.
+        let member_role = session.member.as_ref().map(|m| m.role.clone()).unwrap_or_default();
+        let charter = charter.map(|text| match crate::squad_mcp::reference_note(&outside.iter().map(|(server, _)| server).collect::<Vec<_>>(), &member_role) {
+            Some(note) => format!("{text} {note}"),
             None => text,
         });
         watchdog::mark("turn start: engine");
@@ -7827,6 +7840,9 @@ It starts when {owner} is free."
         }
         if call.name == crate::helpers::HELPER_RESULT {
             return self.helper_result(call, reply);
+        }
+        if call.name == crate::references::TOOL {
+            return self.show_references(call, reply);
         }
         if call.name == board::SHOW_BROWSER {
             self.with_person(&call);

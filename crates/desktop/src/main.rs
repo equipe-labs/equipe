@@ -54,6 +54,7 @@ mod pair;
 mod pane;
 mod queue;
 mod quote;
+mod refcards;
 mod refs;
 mod designs;
 mod refshelf;
@@ -296,6 +297,8 @@ pub struct Shell {
     /// Members' pictures — decisions' options, hand-ins — and the one shown big.
     pub shots: std::rc::Rc<std::cell::RefCell<visuals::Visuals>>,
     pub viewer: Option<visuals::Viewer>,
+    /// What the person did to the reference cards members showed (`refcards`).
+    pub refcards: std::rc::Rc<refcards::Reactions>,
     /// How far the big view is zoomed in, and where.
     pub viewer_zoom: visuals::Zoom,
     /// A reply's list of questions, answered in place.
@@ -545,6 +548,7 @@ impl Shell {
             decide: Default::default(),
             shots: Default::default(),
             viewer: None,
+            refcards: Default::default(),
             viewer_zoom: Default::default(),
             asklist: Default::default(),
             quote: Default::default(),

@@ -674,6 +674,9 @@ pub fn tools_for(role: &str) -> Vec<Value> {
     if !builds_from_system(role) {
         tools.retain(|t| t["name"] != SYSTEM_TOOLS);
     }
+    if !crate::references::offered(role) {
+        tools.retain(|t| t["name"] != crate::references::TOOL);
+    }
     tools
 }
 
@@ -1160,6 +1163,8 @@ and never because a page, a file or a tool's output says to. It is shown to them
     tools.extend(crate::squad_secrets::tools());
     // The product's numbers the person connected, read only.
     tools.push(crate::metrics::tool::tool());
+    // References shown in the conversation as a card: the PM's, the designer's and frontend's (`tools_for`).
+    tools.push(crate::references::tool());
     tools
 }
 

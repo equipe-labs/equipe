@@ -225,10 +225,37 @@ pub fn with(servers: &[McpServer], server: McpServer) -> Result<Vec<McpServer>, 
     Ok(out)
 }
 
-/// The servers a member of `role` on `engine` gets: on, for its role, over a
-/// transport its engine speaks.
+/// The servers a member of `role` on `engine` gets: on, for its role (or,
+/// for the PM, a design library's search to show references with:
+/// [`for_references`]), over a transport its engine speaks.
 pub fn for_member<'a>(servers: &'a [McpServer], role: &str, engine: Engine) -> Vec<&'a McpServer> {
-    servers.iter().filter(|s| s.enabled && s.serves(role) && s.reaches(engine)).collect()
+    servers.iter().filter(|s| s.enabled && (s.serves(role) || for_references(s, role)) && s.reaches(engine)).collect()
+}
+
+/// The design libraries from the Connections catalog whose search the PM
+/// may use to show the person references (`show_references`).
+pub const REFERENCE_LIBRARIES: [&str; 2] = ["mobbin", "21st"];
+
+/// Whether a member of `role` gets `server` only to show references: the PM,
+/// a catalog design library not connected for the PM's role, reached through
+/// equipe's proxy — which lets through its tools that only read
+/// ([`crate::mcp_gateway::ReadOnly`]) and nothing else.
+pub fn for_references(server: &McpServer, role: &str) -> bool {
+    role == crate::roles::PM && !server.serves(role) && server.auth.proxied() && server.catalog.as_deref().is_some_and(|c| REFERENCE_LIBRARIES.contains(&c))
+}
+
+/// What the PM is told of the design libraries it may search to show
+/// references; `None` when it has none — nobody else's charter changes.
+pub fn reference_note(servers: &[&McpServer], role: &str) -> Option<String> {
+    let names: Vec<String> = servers.iter().filter(|s| for_references(s, role)).map(|s| format!("`mcp__{}__*`", s.name)).collect();
+    (!names.is_empty()).then(|| {
+        format!(
+            "You may search {} read-only, only to show the person references: when they ask to see components, screens or \
+examples, search there and show the best with `show_references` in the same turn. Their other tools are off for you; the \
+design work itself stays the designer's.",
+            names.join(" and ")
+        )
+    })
 }
 
 /// A server's entry in a Claude Code member's `--mcp-config`: equipe's
@@ -789,6 +816,27 @@ mod tests {
         assert_eq!(parse_codex_list(&listing("unsupported"), "mobbin").0, McpState::Connected, "a server that asks for no sign-in");
         assert_eq!(parse_codex_list(&listing("o_auth"), "other").0, McpState::Failing);
         assert_eq!(parse_codex_list("error: unknown flag", "mobbin").0, McpState::Failing);
+    }
+
+    #[test]
+    fn the_pm_searches_the_design_libraries_only_to_show_references() {
+        let m = mobbin();
+        let ui = server("21st", None, None, None).unwrap();
+        let own = server("docs", Some("https://docs.example.com/mcp"), Some(&["designer".to_owned()]), None).unwrap();
+        let servers = vec![m.clone(), ui.clone(), own];
+        let names = |role: &str| for_member(&servers, role, Engine::Claude).iter().map(|s| s.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(crate::roles::PM), ["mobbin", "21st"], "the libraries, not the squad's own server for designers");
+        assert!(for_references(&m, crate::roles::PM) && !for_references(&m, "designer") && !for_references(&m, "backend"));
+        assert!(names("backend").is_empty());
+        // Connected for the PM by the person: all of it, as for anyone it serves.
+        let mine = McpServer { roles: vec![crate::roles::PM.to_owned()], ..m.clone() };
+        assert!(!for_references(&mine, crate::roles::PM));
+        // Signed in by each engine itself: equipe can't keep it to reading, so not given.
+        let engine_signed = McpServer { auth: McpAuth::Engine, ..m.clone() };
+        assert!(!for_references(&engine_signed, crate::roles::PM));
+        let note = reference_note(&[&m, &ui], crate::roles::PM).unwrap();
+        assert!(note.contains("`mcp__mobbin__*` and `mcp__21st__*` read-only") && note.contains("`show_references` in the same turn"), "{note}");
+        assert_eq!(reference_note(&[&m], "designer"), None);
     }
 
     #[test]

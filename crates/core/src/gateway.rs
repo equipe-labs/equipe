@@ -438,12 +438,49 @@ async fn serve_client(
                     continue;
                 };
                 // Checked first: a server this member doesn't get is refused here.
-                if let Err(why) = core.mcp_upstream(&open, None).await {
-                    let _ = out_tx.send(Message::failure(id, -32000, why));
-                    continue;
-                }
+                let read_only = match core.mcp_upstream(&open, None).await {
+                    Ok(up) => up.read_only,
+                    Err(why) => {
+                        let _ = out_tx.send(Message::failure(id, -32000, why));
+                        continue;
+                    }
+                };
                 let (to_server, from_client) = mpsc::unbounded_channel::<serde_json::Value>();
                 let (to_client, mut from_server) = mpsc::unbounded_channel::<serde_json::Value>();
+                // Given only to search (the PM's design library): what doesn't read
+                // is left out of its listing and refused here, before the server.
+                let filter = read_only.then(|| std::sync::Arc::new(std::sync::Mutex::new(crate::mcp_gateway::ReadOnly::default())));
+                let (from_client, to_client) = match &filter {
+                    None => (from_client, to_client),
+                    Some(filter) => {
+                        // engine → filter → server: what doesn't read is answered here.
+                        let (checked_tx, checked_rx) = mpsc::unbounded_channel::<serde_json::Value>();
+                        let (outgoing, answers) = (filter.clone(), to_client.clone());
+                        let mut asked = from_client;
+                        tokio::spawn(async move {
+                            while let Some(message) = asked.recv().await {
+                                let verdict = outgoing.lock().map(|mut f| f.outgoing(message)).unwrap_or(Err(serde_json::Value::Null));
+                                match verdict {
+                                    Ok(message) => drop(checked_tx.send(message)),
+                                    Err(serde_json::Value::Null) => {}
+                                    Err(answer) => drop(answers.send(answer)),
+                                }
+                            }
+                        });
+                        // server → filter → engine: a listing keeps only the tools that read.
+                        let (said_tx, mut said_rx) = mpsc::unbounded_channel::<serde_json::Value>();
+                        let (incoming, shown) = (filter.clone(), to_client);
+                        tokio::spawn(async move {
+                            while let Some(message) = said_rx.recv().await {
+                                let Ok(message) = incoming.lock().map(|mut f| f.incoming(message)) else { continue };
+                                if shown.send(message).is_err() {
+                                    break;
+                                }
+                            }
+                        });
+                        (checked_rx, said_tx)
+                    }
+                };
                 proxy = Some(to_server);
                 let ask: crate::mcp_gateway::Ask = {
                     let (core, open) = (core.clone(), open.clone());

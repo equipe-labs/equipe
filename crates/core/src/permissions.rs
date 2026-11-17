@@ -172,6 +172,11 @@ pub fn person_only(command: &Command) -> bool {
         C::StartSideChat { .. } | C::SideChatSubmit { .. } | C::CloseSideChat { .. } => true,
         // A call is the person's own voice: what it routes is sent as theirs.
         C::CallStart { .. } | C::CallUtterance { .. } | C::CallEnd { .. } => true,
+        // A reference kept among a project's: written into its repository on
+        // the person's click, never on a member's word.
+        C::KeepReference { .. } => true,
+        // A reference tried live opens a tab of the person's own: theirs to open.
+        C::TryReference { .. } => true,
 
         // Not the person's alone. Session plumbing and the person's own
         // messages; screen, conversation and panel state; reads and lists;
