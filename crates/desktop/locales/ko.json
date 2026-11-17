@@ -2729,6 +2729,8 @@
   "visuals.why_too_big": "너무 커서 보여 드릴 수 없어요",
   "visuals.why_unreadable": "읽을 수 없는 파일이에요",
   "visuals.load_failed": "불러오지 못했어요",
+  "visuals.not_found": "사진을 찾을 수 없어요: {name}",
+  "visuals.loading_named": "{name} 불러오는 중…",
   "visuals.zoom_fit": "맞춤",
   "visuals.zoom_in": "확대",
   "visuals.zoom_out": "축소",

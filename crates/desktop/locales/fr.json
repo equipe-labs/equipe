@@ -2800,6 +2800,8 @@
   "visuals.why_too_big": "Trop volumineux pour être affiché",
   "visuals.why_unreadable": "Impossible de le lire",
   "visuals.load_failed": "Chargement impossible",
+  "visuals.not_found": "Image introuvable : {name}",
+  "visuals.loading_named": "Chargement de {name}…",
   "visuals.zoom_fit": "Ajuster",
   "visuals.zoom_in": "Agrandir",
   "visuals.zoom_out": "Réduire",
