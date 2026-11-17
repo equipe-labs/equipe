@@ -312,6 +312,20 @@ fn the_store_forgets_what_no_manifest_names_once_old() {
     assert!(!store.has(&hash) && store.has(&named), "what main names stays");
 }
 
+#[test]
+fn an_object_is_dated_when_it_came_into_the_store_not_by_its_file() {
+    let repo = project();
+    let store = Store::of(&repo).unwrap();
+    let old_file = repo.join(".git/old-file");
+    std::fs::write(&old_file, b"made long ago").unwrap();
+    let old = SystemTime::now() - std::time::Duration::from_secs(UNNAMED_KEPT + 86_400);
+    std::fs::File::options().write(true).open(&old_file).unwrap().set_modified(old).unwrap();
+    let (hash, _) = blob_id(&old_file, Kind::Sha1).unwrap();
+    store.put_file(&old_file, &hash).unwrap();
+    assert!(gc(&repo).is_empty(), "kept a while from when it was stored");
+    assert!(store.has(&hash));
+}
+
 // ── a squad's folder: what its tasks hand over ──
 
 /// A squad's own folder (`…/squads/acme/home`) the way an older equipe kept
