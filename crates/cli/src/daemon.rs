@@ -87,17 +87,15 @@ fn raise_soft_limit(wanted: u64) -> (u64, u64) {
         return (0, 0);
     }
     let before: u64 = limit.rlim_cur;
-    let mut cap: u64 = limit.rlim_max;
+    let cap: u64 = limit.rlim_max;
     #[cfg(target_os = "macos")]
-    {
+    let cap = {
         let mut per_proc: libc::c_int = 0;
         let mut size = std::mem::size_of::<libc::c_int>();
         let name = c"kern.maxfilesperproc";
         // SAFETY: sysctlbyname writes at most `size` bytes into `per_proc`.
-        if unsafe { libc::sysctlbyname(name.as_ptr(), (&mut per_proc as *mut libc::c_int).cast(), &mut size, std::ptr::null_mut(), 0) } == 0 && per_proc > 0 {
-            cap = cap.min(per_proc as u64);
-        }
-    }
+        if unsafe { libc::sysctlbyname(name.as_ptr(), (&mut per_proc as *mut libc::c_int).cast(), &mut size, std::ptr::null_mut(), 0) } == 0 && per_proc > 0 { cap.min(per_proc as u64) } else { cap }
+    };
     let target = wanted.min(cap);
     if target <= before {
         return (before, before);
