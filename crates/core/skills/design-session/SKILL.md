@@ -35,8 +35,8 @@ built in the real code. So a session works on a prototype they can use, not on p
 - **The first turn is quick.** Read the style profile at the top of the project's `design/taste.md` and its notes,
   show the references, then make one rough take — rough is right here. Show it live and ask one question. Minutes, not
   an hour.
-- **Short replies, fast rounds.** Each later turn applies what the person said to the prototype within a couple of
-  minutes, shows it again, and answers in a few lines. One or two changes per round, not the whole page.
+- **Short replies, fast rounds.** Each later turn changes one or two things the person asked for, not the whole page.
+  It applies them to the prototype within a couple of minutes, shows it again, and answers in a few lines.
 - **No heavy checks in a round.** No width × theme × text-size matrix, no axe or contrast runs, no screenshot sets, no
   design QA, no QA tickets, and no new ticket per feedback item: those make every round take ten minutes. A glance at
   the one width the person looks at is enough.
@@ -50,7 +50,7 @@ built in the real code. So a session works on a prototype they can use, not on p
   width given) with their note, the element there (`element:` its selector, `text:` its words, `box:` where it sits)
   and its crop attached. Address each, then mark it: `equipe design session done <n> "<what changed, one line>"` —
   their screen ticks the pin.
-- **Never grade your own work** and never call a take good — ask the person.
+- **Grading.** Never grade your own work and never call a take good — ask the person.
 - **Model.** Rounds run on a fast model; when the person asks to polish, the stronger model takes over for the chosen
   take.
 

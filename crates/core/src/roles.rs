@@ -2266,13 +2266,16 @@ invent one."), "{id}: true numbers");
         let session = skill("designer", &c, "design-session");
         for part in [
             "rounds of minutes",
-            "3–6 references",
+            "3–5 references",
+            "`show_references`",
+            "No heavy checks in a round",
+            "--variant A",
+            "\"Use this\"",
             "one rough take",
             "something visible and one focused question",
             "Never go quiet",
             "`equipe design session show",
             "only `design/` is yours to change",
-            "goes once to `equipe design critique",
             "Never grade your own work",
             "Taste calls are the person's",
             "`equipe design session done <n>",
