@@ -33,8 +33,11 @@ jobs:
           toolchain: stable
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Codex pinned: a release can reach npm before its platform packages do
+      # (0.169.1 shipped without @openai/codex-win32-x64 for a while), which
+      # breaks this job for reasons outside this repository. Bump on purpose.
       - name: Install real Windows engine CLIs
-        run: npm install --global @anthropic-ai/claude-code @openai/codex
+        run: npm install --global @anthropic-ai/claude-code @openai/codex@0.169.0
       - name: Detect fake launchers and the real CLIs
         env:
           EQUIPE_TEST_REAL_WINDOWS_CLIS: "1"
