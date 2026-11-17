@@ -317,7 +317,7 @@ impl Chrome {
             for _ in 0..OPEN_POLLS {
                 self.os.pause(OPEN_POLL_MS);
                 let taken = self.taken();
-                if let Some(new) = self.chrome_windows(member).into_iter().filter(|(id, _)| !before.contains(id) && !taken.contains(id)).last() {
+                if let Some(new) = self.chrome_windows(member).into_iter().rfind(|(id, _)| !before.contains(id) && !taken.contains(id)) {
                     found = Some(new);
                     break;
                 }
