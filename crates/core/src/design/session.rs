@@ -159,6 +159,12 @@ pub fn preempt(steered: bool, command_running: bool) -> Preempt {
     }
 }
 
+/// The kind of the ticket record that marks an implementation ticket "Use
+/// this" opened from a live prototype the person picked; its text is the
+/// prototype's address. Design QA of such a ticket gets no designer turn
+/// unless its precheck fails (`crate::design_qa::gate_prototype`).
+pub const APPROVED_PROTOTYPE: &str = "approved prototype";
+
 /// The variant the person picked with "Use this", as the implementation
 /// ticket takes it for its spec.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

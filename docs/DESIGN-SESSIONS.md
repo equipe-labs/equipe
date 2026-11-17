@@ -82,8 +82,13 @@ project, variant, prototype address and change log, and says the full checks run
 another. The designer is told the rounds are over (`design::session::picked_line`) and its turns stop being prototype
 rounds. Every screen hears `Event::DesignVariantUsed`; the composer says which ticket was opened.
 
-Only that ticket runs the full design pass: every state, light and dark, the widths, larger text, accessibility and
-design QA.
+Only that ticket runs the full design pass: every state, light and dark, the widths, larger text and accessibility.
+Its **design QA gets no designer turn**: the ticket carries an `approved prototype` record, and its design QA's
+precheck alone decides (`design_qa::gate_prototype`, whatever the squad's gate mode). Built screens that rendered at the
+checked widths with no new S1/S2 finding pass straight on to review, with the precheck's pictures on the ticket and
+"See the result" pointing at them and at the prototype. Only a precheck that failed, saw too little, or found S1/S2
+problems hands it to the designer, with the report. (The precheck checks the built screens; a pixel comparison with
+the prototype itself is not done yet.)
 
 ## Members changing their own work from the conversation
 

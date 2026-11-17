@@ -41,6 +41,12 @@ impl Runtime {
         self.design_sessions.insert(designer, session::Active::new(&squad, project.as_deref(), &page, now_secs()));
     }
 
+    /// The prototype the person picked for `ticket` with "Use this", when it was built from one.
+    pub(super) fn approved_prototype(&mut self, squad: &str, ticket: TicketId) -> Option<String> {
+        let entries = self.journal(squad)?.ticket_entries(ticket).ok()?;
+        entries.into_iter().rev().find(|e| e.kind == session::APPROVED_PROTOTYPE).map(|e| e.text)
+    }
+
     /// The person ended the session on its screen.
     pub(super) fn end_design_session(&mut self, squad: &str, designer: SessionId) {
         if self.design_sessions.get(&designer).is_some_and(|a| a.squad == squad) {
@@ -137,6 +143,10 @@ impl Runtime {
             }
         };
         crate::daemon_log!("equipe: {squad}: the person picked {} of the design session on {page}: T-{ticket}", picked.variant.as_deref().map_or("the prototype".to_owned(), |v| format!("variant {v}")));
+        // Its design QA: the precheck alone, against what they picked (`design_qa::gate_prototype`).
+        if let Some(journal) = self.journal(squad) {
+            let _ = journal.ticket_event(ticket, "equipe", session::APPROVED_PROTOTYPE, picked.url.as_deref().unwrap_or(&page));
+        }
         if let Some(session) = self.sessions.get_mut(&designer) {
             session.briefing.push(session::picked_line(&picked, ticket, updated));
         }
