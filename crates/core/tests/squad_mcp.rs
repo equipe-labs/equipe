@@ -80,8 +80,10 @@ if [ "$1" = "mcp" ]; then
   esac
   exit 0
 fi
-n=$(ls '{calls}' | wc -l | tr -d ' ')
-for a in "$@"; do printf '%s\n<<arg>>\n' "$a"; done > '{calls}/call-'$(printf %03d $n)-$$
+n=0
+while ! mkdir '{calls}/.n-'$n 2>/dev/null; do n=$((n+1)); done
+for a in "$@"; do printf '%s\n<<arg>>\n' "$a"; done > '{calls}/.call-'$$
+mv '{calls}/.call-'$$ '{calls}/call-'$(printf %03d $n)-$$
 cat <<EOF
 {{"type":"system","subtype":"init","model":"claude-test","session_id":"sess-1"}}
 {{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{{"input_tokens":3,"output_tokens":1}}}}
@@ -97,7 +99,8 @@ EOF
 }
 
 fn calls(dir: &Path) -> Vec<Vec<String>> {
-    let mut files: Vec<_> = std::fs::read_dir(dir.join("calls")).unwrap().flatten().map(|e| e.path()).collect();
+    // Only whole calls: each is written aside and moved into place once complete.
+    let mut files: Vec<_> = std::fs::read_dir(dir.join("calls")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("call-")).map(|e| e.path()).collect();
     files.sort();
     files.iter().map(|f| std::fs::read_to_string(f).unwrap().split("\n<<arg>>\n").filter(|a| !a.is_empty()).map(str::to_owned).collect()).collect()
 }

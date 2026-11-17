@@ -70,16 +70,26 @@ EOF"#
 /// file per call, in order.
 fn recording_claude(turn: &str) -> (PathBuf, PathBuf) {
     let calls = scratch("calls");
-    let record = format!(
-        "n=$(ls '{dir}' | wc -l | tr -d ' ')\nfor a in \"$@\"; do printf '%s\\n<<arg>>\\n' \"$a\"; done > '{dir}/call-'$(printf %03d $n)-$$\n{turn}",
-        dir = calls.display()
-    );
+    let record = format!("{}{turn}", RECORD_CALL.replace("{dir}", &calls.display().to_string()));
     (fake_claude(true, &record), calls)
 }
 
+/// Shell that writes down a call's arguments in `{dir}`, as [`calls`] reads them.
+/// Each call takes its number by making a directory of it, which only one call can
+/// do, so two that start at once never share one; and its file is written aside and
+/// moved into place whole, so a test never reads a call half written down.
+const RECORD_CALL: &str = "n=0\nwhile ! mkdir '{dir}/.n-'$n 2>/dev/null; do n=$((n+1)); done\n\
+for a in \"$@\"; do printf '%s\\n<<arg>>\\n' \"$a\"; done > '{dir}/.call-'$$\n\
+mv '{dir}/.call-'$$ '{dir}/call-'$(printf %03d $n)-$$\n";
+
 /// Each recorded turn's arguments, oldest first.
 fn calls(dir: &Path) -> Vec<Vec<String>> {
-    let mut files: Vec<_> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.path()).collect();
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("call-"))
+        .map(|e| e.path())
+        .collect();
     files.sort();
     files
         .iter()
@@ -90,13 +100,18 @@ fn calls(dir: &Path) -> Vec<Vec<String>> {
         .collect()
 }
 
+/// How many times a test looks again, 50 ms apart, for something a turn does a
+/// moment after the event that asks for it: thirty seconds, for a busy CI runner.
+const LOOKS: usize = 600;
+
 /// The latest turn's arguments once its prompt is what `wanted` looks for: a
 /// turn starts a moment after the event that asks for it — longer on a busy
-/// machine. After ten seconds, the latest anyway, for the test to show.
+/// machine. After thirty seconds, the latest anyway, for the test to show.
 async fn latest_call(dir: &Path, wanted: impl Fn(&str) -> bool) -> Vec<String> {
-    for _ in 0..200 {
-        // Two turns that start at once can number their calls alike, and then
-        // sort by process id: the latest two are looked at.
+    for _ in 0..LOOKS {
+        // Two turns that start at once number their calls in the order they
+        // started, and the later may be written down first: the latest two are
+        // looked at.
         if let Some(call) = calls(dir).into_iter().rev().take(2).find(|call| arg(call, "-p").is_some_and(&wanted)) {
             return call;
         }
@@ -108,7 +123,7 @@ async fn latest_call(dir: &Path, wanted: impl Fn(&str) -> bool) -> Vec<String> {
 /// The newest of all the calls so far that `wanted`, waited for: for a call
 /// that other turns, running beside it, may have followed with several more.
 async fn any_call(dir: &Path, wanted: impl Fn(&str) -> bool) -> Vec<String> {
-    for _ in 0..200 {
+    for _ in 0..LOOKS {
         if let Some(call) = calls(dir).into_iter().rev().find(|call| arg(call, "-p").is_some_and(&wanted)) {
             return call;
         }
@@ -5558,13 +5573,29 @@ fn screenshot_turn() -> String {
 
 /// Wait until `file` exists.
 async fn exists(file: &Path) {
-    for _ in 0..200 {
+    for _ in 0..LOOKS {
         if file.exists() {
             return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     panic!("{} never appeared", file.display());
+}
+
+/// Wait until the designer's turn on the design QA that `started` (its events, up to
+/// its `WorkStarted`) has taken its pictures: the turn takes them a moment after it
+/// starts, and a verdict that names them finds them only then.
+async fn designer_pictures(started: &[Event]) {
+    let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    // `screenshot_turn` writes shot.png, then built-390.png: once the last is whole, both are.
+    let last = ws.path.join("built-390.png");
+    for _ in 0..LOOKS {
+        if std::fs::metadata(&last).is_ok_and(|m| m.len() > 0) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("{} never appeared", last.display());
 }
 
 /// A squad of a PM, a frontend and a designer, with T-1 handed in by the
@@ -5596,6 +5627,7 @@ async fn screens_in_design_qa(recorded: &Path, handle: &Handle, events: &mut Unb
 
     // In review, held for design QA: a task for the designer, who takes it.
     let qa = until(events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
+    designer_pictures(&qa).await;
     let changed = ticket_changed(&qa);
     let held = changed.iter().rev().find(|t| t.id == 1).unwrap().clone();
     assert_eq!((held.status, held.design_qa), (TicketStatus::Review, Some(2)));
@@ -5808,7 +5840,8 @@ async fn in_shadow_the_designer_gets_the_precheck_report_and_what_the_gate_would
     use equipe_core::design_qa::GateMode;
     let (handle, mut events, recorded, home) = hand_in_with_precheck(GateMode::Shadow, precheck_report(false, serde_json::json!([]))).await;
     // Nothing changed and clean: the gate would pass it — in shadow the designer still checks, with the report.
-    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
+    let qa = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
+    designer_pictures(&qa).await;
     let call = latest_call(&recorded, |p| p.contains("This is design QA of T-1")).await;
     let prompt = arg(&call, "-p").unwrap();
     assert!(prompt.contains("equipe's precheck already rendered") && prompt.contains("The gate would pass this without a designer turn"), "{prompt}");
@@ -5887,7 +5920,8 @@ async fn in_risk_batch_a_definite_failure_is_refused_to_its_engineer_and_a_waive
     assert!(matches!(qa.last(), Some(Event::WorkStarted { of: Some(3), .. })), "{qa:#?}");
     let run = Journal::for_squad(&home, "acme").unwrap().design_qa_run(3).unwrap();
     assert_eq!((run.route.as_deref(), run.risk.as_deref(), run.lite), (Some("per_ticket"), Some("waived"), true));
-    let call = latest_call(&recorded, |p| p.contains("You're on T-3")).await;
+    // T-1's turns, sent back, run beside it and may have made more calls since.
+    let call = any_call(&recorded, |p| p.contains("You're on T-3")).await;
     let prompt = arg(&call, "-p").unwrap();
     assert!(prompt.contains("decorative badge") && prompt.contains("The precheck's report") && prompt.contains("Finish with design_qa"), "{prompt}");
     assert!(!prompt.contains("worktree of your own") && !prompt.contains("start the preview"), "no checkout to be told about: {prompt}");
@@ -6528,7 +6562,8 @@ async fn one_side_chat_a_conversation_and_the_conversation_closing_takes_it() {
 /// `ticket` for a ticket's turn and `desk` for any other.
 fn temp_seen(dir: &Path) -> Vec<(String, String, String, String)> {
     let mut seen = Vec::new();
-    for file in std::fs::read_dir(dir).unwrap().flatten() {
+    // A turn writes its file aside and moves it in whole: one half written is never read.
+    for file in std::fs::read_dir(dir).unwrap().flatten().filter(|f| !f.file_name().to_string_lossy().starts_with('.')) {
         let text = std::fs::read_to_string(file.path()).unwrap();
         let mut lines = text.lines();
         let kind = lines.next().unwrap_or_default().to_owned();
@@ -6543,7 +6578,7 @@ async fn a_lane_works_in_a_temporary_folder_of_its_own_that_goes_with_its_ticket
     let repo = repo();
     let envs = scratch("envs");
     let turn = format!(
-        "case \"$*\" in *\"You're on T-\"*) k=ticket;; *) k=desk;; esac\n{{ echo $k; env | grep -E '^(TMPDIR|TMP|TEMP)='; }} > '{}'/$$\n{}",
+        "case \"$*\" in *\"You're on T-\"*) k=ticket;; *) k=desk;; esac\n{{ echo $k; env | grep -E '^(TMPDIR|TMP|TEMP)='; }} > '{0}'/.$$\nmv '{0}'/.$$ '{0}'/$$\n{1}",
         envs.display(),
         working_turn("HERO.md")
     );
@@ -6567,6 +6602,13 @@ async fn a_lane_works_in_a_temporary_folder_of_its_own_that_goes_with_its_ticket
     let lane = home.join("tmp").join("acme").join("t1");
     let lane_str = lane.to_string_lossy().into_owned();
     let ticket_env = ("ticket".to_owned(), lane_str.clone(), lane_str.clone(), lane_str.clone());
+    // The turn writes down what it saw a moment after its call is recorded.
+    for _ in 0..LOOKS {
+        if temp_seen(&envs).iter().any(|seen| seen.0 == "ticket") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     assert!(temp_seen(&envs).contains(&ticket_env), "{:?}", temp_seen(&envs));
     assert!(lane.is_dir(), "made before the turn");
     let settings = settings_of(&call);
