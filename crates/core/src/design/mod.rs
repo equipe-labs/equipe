@@ -17,6 +17,8 @@
 //!   brief and the system, whose verdict a hand-in waits on.
 //! - `directions`: the directions proposed and chosen, so the next differs.
 //! - `brand`: which tickets are brand work, and what a designer starting one is told.
+//! - `inherit`: machine-level brands a project inherits its system from,
+//!   with the project's overrides laid over them (`docs/BRANDS.md`).
 //! - `refs`: a brief's reference board — pages from the galleries a designer
 //!   studies, each with what to learn from it, never another's brand.
 //! - `palette`: candidate palettes on a real layout, light and dark, with
@@ -60,6 +62,7 @@ pub mod captures;
 pub mod check;
 pub mod component;
 pub mod fonts;
+pub mod inherit;
 pub mod palette;
 pub mod precheck;
 pub mod qa_stats;

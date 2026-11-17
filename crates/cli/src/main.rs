@@ -14,6 +14,7 @@ mod clip;
 mod context;
 mod daemon;
 mod design;
+mod design_brand;
 mod design_lint;
 mod design_qa;
 mod design_session;

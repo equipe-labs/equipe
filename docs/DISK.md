@@ -58,6 +58,9 @@ Asked for (`disk_scan`, `equipe disk`), within a 20-second budget — never the 
   squad, so the folder is exact: when the ticket is accepted, merged or cancelled, what stands
   in it is stopped and it is removed, whatever other squads have open. The daily tidy removes
   a squad's folders of tickets no longer open, and desk folders untouched for 24 hours.
+  A full git checkout in a desk folder that is a copy or a clone of one of the squad's
+  projects (same origin remote, or same root commit) is named once in the daemon log: members
+  are told to use `git worktree add --detach` there instead, which shares the repository.
 - **Build output in the squads' projects**, other tools' worktrees there included
   (`.claude/worktrees/*`, `.codex/worktrees/*`): the person's, so reported with a command.
 - **The Mac's caches**, reported only, with the command that clears each: Xcode DerivedData,

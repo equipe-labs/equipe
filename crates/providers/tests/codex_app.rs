@@ -300,7 +300,8 @@ async fn signed_out_or_missing_says_how_to_fix_it() {
     let cwd = scratch("cwd");
     let result = codex_app::run_turn(&signed_out, &cwd, TurnRequest { prompt: "hi", ..Default::default() }, None, None, None, |_| {}).await;
     assert!(matches!(result, Err(Error::CodexSignedOut)));
-    assert!(Error::CodexSignedOut.to_string().contains("equipe login codex"));
+    assert!(Error::CodexSignedOut.to_string().contains("isn't signed in"));
+    assert!(!Error::CodexSignedOut.to_string().contains("Run `"), "no command for the person to run");
     let missing = codex_app::run_turn("/nonexistent/codex", &cwd, TurnRequest { prompt: "hi", ..Default::default() }, None, None, None, |_| {}).await;
     assert!(matches!(missing, Err(Error::Login(m)) if m.contains("not installed")));
 }
@@ -313,4 +314,54 @@ async fn the_plans_usage_and_the_models_are_read_without_a_turn() {
     assert_eq!(limits.window(SEVEN_DAYS).map(|w| w.used_percent), Some(5.0));
     assert_eq!(limits.plan_type.as_deref(), Some("pro"));
     assert_eq!(codex_app::list_models(&fake(), &cwd).await.unwrap(), ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"]);
+}
+
+/// A turn on a model the account refuses (`model_not_found`), with or without a model to fall back on.
+async fn refused(fallback: Option<codex_app::Fallback>) -> (Vec<Activity>, equipe_providers::Result<codex_app::Turn>, Vec<Value>) {
+    let cwd = scratch("cwd");
+    let log = scratch("log").join("sent.jsonl");
+    let env = [("FAKE_CODEX_LOG".to_owned(), log.to_string_lossy().into_owned())];
+    let request = TurnRequest { prompt: "refuse", model: Some("gpt-6.1-sol"), effort: Some("high"), access: Access::ReadOnly, env: &env, ..Default::default() };
+    let controls = codex_app::Controls { fallback, ..Default::default() };
+    let mut activities = Vec::new();
+    let result = tokio::time::timeout(Duration::from_secs(20), codex_app::run_turn_with(&fake(), &cwd, request, controls, |a| activities.push(a))).await.expect("the turn ends");
+    (activities, result, sent(&log))
+}
+
+#[tokio::test]
+async fn a_refused_model_is_asked_again_once_on_the_fallback_on_the_same_thread() {
+    let fallback = codex_app::Fallback { model: "gpt-6-astra".into(), effort: Some("medium".into()) };
+    let (activities, result, log) = refused(Some(fallback)).await;
+    let turn = result.expect("the fallback answers");
+    assert!(turn.result.text.contains("Answered on gpt-6-astra"), "{:?}", turn.result);
+    assert!(activities.iter().any(|a| matches!(a, Activity::ModelRefused { model, instead } if model == "gpt-6.1-sol" && instead == "gpt-6-astra")), "{activities:?}");
+    let starts: Vec<&Value> = log.iter().filter(|m| m["method"] == "turn/start").collect();
+    assert_eq!(starts.len(), 2, "asked again once");
+    assert_eq!((starts[1]["params"]["model"].as_str(), starts[1]["params"]["effort"].as_str()), (Some("gpt-6-astra"), Some("medium")));
+    assert_eq!(starts[0]["params"]["threadId"], starts[1]["params"]["threadId"], "the same thread");
+}
+
+#[tokio::test]
+async fn a_refused_model_with_nothing_to_fall_back_on_fails_in_words_not_json() {
+    let (activities, result, _) = refused(None).await;
+    assert!(!activities.iter().any(|a| matches!(a, Activity::ModelRefused { .. })));
+    let Err(Error::Backend { message, code }) = result else { panic!("{result:?}") };
+    assert_eq!(codex_app::refused_model(&message, code.as_deref()).as_deref(), Some("gpt-6.1-sol"));
+    let words = codex_app::plain_message(&message);
+    assert_eq!(words, "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.");
+}
+
+#[tokio::test]
+async fn codex_signs_in_with_its_own_sign_in_and_hands_back_the_page() {
+    use codex_app::{LoginEnd, LoginPage};
+    let cwd = scratch("cwd");
+    let wait = Duration::from_secs(10);
+    let mut seen = None;
+    assert_eq!(codex_app::login(&fake(), &cwd, false, wait, |p| seen = Some(p)).await, LoginEnd::SignedIn);
+    assert!(matches!(&seen, Some(LoginPage::Browser { url }) if url.starts_with("https://auth.openai.com/oauth/authorize")), "{seen:?}");
+    let mut seen = None;
+    assert_eq!(codex_app::login(&fake(), &cwd, true, wait, |p| seen = Some(p)).await, LoginEnd::SignedIn);
+    assert_eq!(seen, Some(LoginPage::DeviceCode { url: "https://auth.openai.com/codex/device".into(), code: "ABCD-EFGH2".into() }));
+    assert!(matches!(codex_app::login(&wrapped("FAKE_CODEX_LOGIN=fail"), &cwd, false, wait, |_| {}).await, LoginEnd::Failed(why) if why.contains("not completed")));
+    assert_eq!(codex_app::login(&wrapped("FAKE_CODEX_LOGIN=old"), &cwd, false, wait, |_| {}).await, LoginEnd::Unsupported, "an older Codex: its command line signs in");
 }

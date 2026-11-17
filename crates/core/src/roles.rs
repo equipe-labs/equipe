@@ -768,7 +768,11 @@ type a card number or a password you weren't given, and never try to get past a 
 code in chat, or type one yourself: when a page asks for a code the site emailed, the person gets a card that fills it from their \
 mailbox on their click (if none came up, call `block_on_person` with `verification`) — then wait. Your windows are yours alone, but sign-ins are shared by \
 everyone's: don't sign out of a site, or switch it to another account, team or workspace, without saying so first — \
-the rest of the squad works signed in there too."
+the rest of the squad works signed in there too. A tool or an MCP server is connected in equipe, never in an AI app's own \
+settings on the web (claude.ai or chatgpt.com connectors and the like): those are the person's account, not your work's, and \
+they refuse automated browsers. To have one connected — or to see its sign-in or consent page as a client does — ask the \
+person with `block_on_person` to connect it in equipe (Logins › Connections, or `equipe mcp add <url>` then `equipe mcp login \
+<name>`); its tools come to you once it is."
     } else {
         ""
     };
@@ -949,6 +953,11 @@ prints (\"token not valid\", \"not logged in\"): the login is fine, so never log
 run it outside the fence, which asks the person once; their \"always\" stops it asking. Rust builds go to \
 `$CARGO_TARGET_DIR`, one folder of yours kept from ticket to ticket, so a binary is under it, not under `./target`. Scratch copies, test builds and screenshots go in `$TMPDIR`: it is yours alone, \
 and equipe clears it when the ticket ends, so never make `/tmp/t<ticket number>` folders by hand. \
+To build, test or deploy a squad project outside your ticket's worktree, check it out with `git -C <project> worktree add \
+--detach \"$TMPDIR/<name>\" <ref>`, run outside the fence — it shares the repository, so nothing is copied or downloaded, and \
+equipe lets it through without asking — and remove it with \
+`git -C <project> worktree remove --force <path>` when done; never `cp -R` a project or `git clone` it again, and use the \
+project's own deploy script where it has one. \
 Look at a screenshot once: it stays in your context, so take a new one only after the screen has changed. \
 Run one command at a time where you can: a single command can be allowed for good, a chain only once.{sleep} Your memory \
 outlives every ticket: when the person corrects you, sends work back or tells you how they like things, save the \
@@ -1834,7 +1843,7 @@ invent one."), "{id}: true numbers");
         }
         // What it must hold to whenever it browses stays in its charter, with where the rest is.
         let charter = charter(role(PM).unwrap(), "pm", &browsing);
-        for part in ["Before you work in it, open your `browser` skill", "call `ask_person` with exactly what", "never try to get past a CAPTCHA", "don't sign out of a site"] {
+        for part in ["Before you work in it, open your `browser` skill", "call `ask_person` with exactly what", "never try to get past a CAPTCHA", "don't sign out of a site", "never in an AI app's own settings on the web", "`equipe mcp add <url>`"] {
             assert!(charter.contains(part), "{part}: {charter}");
         }
         // `equipe browser` is refused where it runs, saying why and what instead: no word for it here.

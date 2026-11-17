@@ -331,8 +331,14 @@ const SIZE_WORDS: [&str; 5] = ["font", "text", "type", "typography", "fontsize"]
 
 impl System {
     pub fn read(dir: &Path) -> System {
+        Self::read_in(dir, &super::inherit::root())
+    }
+
+    /// [`System::read`], a brand the folder links read from `brands`: the
+    /// resolved system is what a screen is held to.
+    pub fn read_in(dir: &Path, brands: &Path) -> System {
         let mut system = System { dir: dir.to_path_buf(), ..System::default() };
-        let Ok(text) = std::fs::read_to_string(dir.join(super::folder::TOKENS)) else { return system };
+        let Some(text) = super::inherit::tokens_text_in(brands, dir) else { return system };
         system.found = true;
         let parsed = tokens::parse(&text);
         system.absorb(&parsed.tokens, true);
