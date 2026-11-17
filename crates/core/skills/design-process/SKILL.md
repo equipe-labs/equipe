@@ -154,6 +154,16 @@ Give each design option its `images` and its `aspects` (what of it can go into a
 person's language): they answer in one click. On a mix (one option with an aspect of another), make the mixed option
 and ask again with it beside the two it came from; on another round, bring a genuinely different round that takes
 their why into account.
+
+A choice about how something behaves — interaction, motion, states (hover, pressed, focus, disabled, loading), input
+behaviour, responsiveness — can't be judged from pictures: the card MUST give every option a live prototype in `try`,
+which the person hovers, presses, tabs through and types in, right in the card and all options side by side. Either
+save each as a small self-contained HTML page under `design/prototypes/<choice>/<option>/index.html` (its own CSS and
+JS beside it, the project's tokens, real copy, nothing fetched from the internet — equipe serves it) or point at the
+page your dev server serves here (`http://localhost:<port>/…`, kept running while they decide). Same size, same
+content, same starting state in every option: only what the choice is about differs. Name the change note's area as
+`interaction`, `motion`, `states`, `input` or `responsive`, and keep a still in `images` as each option's thumbnail.
+Show the critic the prototypes too (its screenshots of each state). Pictures alone are for still visuals only.
 {{/if}}
 
 ## Pictures stay out of git

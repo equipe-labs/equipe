@@ -129,7 +129,9 @@ const RUBRIC_DETAILS: &str = "Then the details: hierarchy and density; alignment
 the product's language — a family with its script, its line breaking, right to left where it reads so, no orphans — \
 numbers in tabular figures); colour roles and contrast (text under WCAG AA \
 is a blocker); brand fidelity against the brief; states and real copy (placeholder text, missing empty or error \
-states); the stock looks (cream page with a serif, Inter with an indigo gradient, three equal cards, emoji as icons).\n\
+states); the stock looks (cream page with a serif, Inter with an indigo gradient, three equal cards, emoji as icons). \
+Where the choice is about behaviour — hover, pressed, focus, loading, motion, input, responsiveness — and it comes as \
+stills only, that is a blocker: each option goes to the person as a live prototype they can try.\n\
 \n\
 When a round before is given: is the revision better as a whole? A fix that loses the whole is worse than the flaw \
 it fixed — say so plainly.\n\

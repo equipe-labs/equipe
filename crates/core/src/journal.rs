@@ -144,12 +144,7 @@ pub fn naming(db: &Path, path: &str) -> Option<Naming> {
     use rusqlite::OpenFlags;
     let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
     conn.busy_timeout(std::time::Duration::from_secs(5)).ok()?;
-    let questions: Vec<equipe_protocol::decide::QuestionSet> = conn
-        .query_row("SELECT value FROM meta WHERE key = 'questions'", [], |r| r.get::<_, String>(0))
-        .optional()
-        .ok()?
-        .and_then(|v| serde_json::from_str(&v).ok())
-        .unwrap_or_default();
+    let questions = questions_in(&conn)?;
     let decision = questions.iter().any(|set| set.images().any(|p| p == path));
     // Narrowed by SQLite, then read exactly: a path inside another's text doesn't count.
     let tickets = if path.is_empty() {
@@ -168,6 +163,20 @@ pub fn naming(db: &Path, path: &str) -> Option<Naming> {
         .and_then(|mut stmt| stmt.query_map([], |r| r.get::<_, String>(0)).map(|rows| rows.filter_map(|p| p.ok().map(PathBuf::from)).collect()))
         .unwrap_or_default();
     Some(Naming { decision, tickets, projects })
+}
+
+/// The waiting decisions a connection's journal keeps; `None` when it can't be read.
+fn questions_in(conn: &Connection) -> Option<Vec<equipe_protocol::decide::QuestionSet>> {
+    Some(conn.query_row("SELECT value FROM meta WHERE key = 'questions'", [], |r| r.get::<_, String>(0)).optional().ok()?.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default())
+}
+
+/// The squad's waiting decisions, read from its journal at `db` without
+/// opening it for writing. `None` when the journal can't be read.
+pub fn waiting_questions_at(db: &Path) -> Option<Vec<equipe_protocol::decide::QuestionSet>> {
+    use rusqlite::OpenFlags;
+    let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
+    conn.busy_timeout(std::time::Duration::from_secs(5)).ok()?;
+    questions_in(&conn)
 }
 
 /// [`Journal::said_with_paths`], on any connection to a journal.

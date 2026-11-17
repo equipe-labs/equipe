@@ -1881,6 +1881,12 @@ fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, run: impl Fn
         }))
 }
 
+/// Whether the conversation on screen is where the squad's own problems are
+/// said: the PM's (or none picked).
+pub fn squad_talk(shell: &Shell) -> bool {
+    shell.model.selected_member().is_none_or(|m| m.role == "pm")
+}
+
 /// The composer: the card (attachments, the box, the bar). What waits for a
 /// member at work shows in the conversation, as the person's own bubbles.
 pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<> {
@@ -1892,7 +1898,10 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .flex_none()
         .pb_3()
         // Lined up with the text in the card: its padding and border.
-        .children(composer.problem.clone().map(|problem| problem_notice(p, problem, cx)))
+        // The squad's own problems (a merge that failed, a ticket already
+        // cancelled) belong to the PM's conversation and the board, never
+        // stacked in a member's: they wait there.
+        .children(composer.problem.clone().filter(|_| squad_talk(shell)).map(|problem| problem_notice(p, problem, cx)))
         .children(composer.flash.clone().map(|flash| motion::fade(div().px(px(INSET + 1.)).pb_2().text_size(px(SMALL)).text_color(p.text2).child(flash.clone()), ElementId::Name(format!("flash-{}", crate::render::hash_of(&flash)).into()), motion::BASE)))
         .child(card(shell, cx))
 }

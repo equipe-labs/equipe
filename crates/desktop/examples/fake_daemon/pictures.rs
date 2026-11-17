@@ -37,7 +37,12 @@ use image::{Rgba, RgbaImage};
 
 /// Whether the logo decision (or the brand directions) and the brand hand-in are on.
 pub fn on() -> bool {
-    std::env::var("FAKE_DECIDE").is_ok_and(|v| v == "logo" || v == "brand" || v == "board" || v == "directions")
+    std::env::var("FAKE_DECIDE").is_ok_and(|v| v == "logo" || v == "brand" || v == "board" || v == "directions" || v == "states")
+}
+
+/// Whether the primary button's states are asked, each option a live prototype.
+fn states() -> bool {
+    std::env::var("FAKE_DECIDE").is_ok_and(|v| v == "states")
 }
 
 /// Whether the redesign's three directions are asked.
@@ -472,6 +477,9 @@ pub fn question_set(now: u64) -> QuestionSet {
     if directions() {
         return directions_set(now);
     }
+    if states() {
+        return states_set(now);
+    }
     if brand() {
         let direction =|label: &str, description: &str, image: &str| Choice { aspects: aspects(&["Type", "Colour", "Shape"]), ..option(label, description, image) };
         return QuestionSet {
@@ -524,6 +532,48 @@ pub fn question_set(now: u64) -> QuestionSet {
             },
         ],
         asked_at: now.saturating_sub(300),
+        review: false,
+        retro: None,
+    }
+}
+
+/// `FAKE_DECIDE=states`: the primary button's rest, hover and pressed looks —
+/// three options, each a live prototype (a saved HTML page, as a designer
+/// keeps under `design/prototypes/`) and a still as its thumbnail.
+fn states_set(now: u64) -> QuestionSet {
+    let change = |area: &str, before: &str, after: &str, why: &str| Change { area: area.into(), before: before.into(), after: after.into(), why: why.into() };
+    let prototype = |name: &str, hover: &str, press: &str| {
+        let folder = dir().join("prototypes").join(name);
+        let _ = std::fs::create_dir_all(&folder);
+        let page = format!("<!doctype html><style>body{{font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0}}button{{font:inherit;padding:10px 20px;border:0;border-radius:8px;background:#2F6BFF;color:#fff}}button:hover{{background:{hover}}}button:active{{{press}}}</style><button>Save to ERP</button>");
+        let _ = std::fs::write(folder.join("index.html"), page);
+        folder.join("index.html").to_string_lossy().into_owned()
+    };
+    let option = |label: &str, description: &str, image: &str, try_it: String, changes: Vec<Change>| Choice {
+        label: label.into(),
+        description: description.into(),
+        images: vec![at(image)],
+        try_it,
+        changes,
+        unchanged: "Size, copy and position".into(),
+        ..Choice::default()
+    };
+    QuestionSet {
+        id: 9003,
+        session: 4,
+        member: "designer".into(),
+        ticket: Some(152),
+        questions: vec![Question {
+            question: "How should the primary button look on hover and press? Try each one".into(),
+            header: "States".into(),
+            options: vec![
+                option("Now", "Hover and press look the same as rest", "brand-calm.png", prototype("now", "#2F6BFF", ""), vec![change("states", "", "No change on hover or press", "The baseline")]),
+                Choice { recommended: true, ..option("B · Colour and press shape", "Darker on hover, darker and 1px lower on press", "brand-bold.png", prototype("b", "#2558D6", "background:#1D47AD;transform:translateY(1px)"), vec![change("states", "Flat", "Darker on hover, sinks on press", "A press reads as a press (ui-controls)")]) },
+                option("A · Colour only", "Darker on hover and press", "brand-warm.png", prototype("a", "#2558D6", "background:#1D47AD"), vec![change("states", "Flat", "Darker on hover and press", "Hover is seen; press less so")]),
+            ],
+            ..Question::default()
+        }],
+        asked_at: now.saturating_sub(60),
         review: false,
         retro: None,
     }

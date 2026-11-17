@@ -167,6 +167,19 @@ below it), by name, each passing the same checks, at most 12 (`max` fewer), `tot
 such a recorded line names, inside the same roots. Errors as for `read_image`. A daemon older
 than this answers `-32601`; a screen then shows no strip.
 
+**A decision's live prototypes.** An option may carry `"try"`: a live prototype the person
+tries (hovers, presses, types in) rather than only looks at — a loopback address the member
+serves on the daemon's machine (`http://localhost:<port>/…`), or the full path of an HTML page
+the member saved (a file, or a folder's `index.html`), checked when the decision was asked.
+For a path, `prototype_url` `{ "squad", "path" }` (`id` set; a squad the screen follows)
+answers `{ "url" }`: where the daemon serves it, `http://127.0.0.1:<port>/<token>/…` — its
+folder's own files only (HTML, CSS, JS, pictures, fonts; never a hidden file), with a CSP that
+keeps it from fetching anything elsewhere — only for a path a waiting decision of that squad
+names as `try`. A screen shows either address as it shows any live preview: in a web view of
+its own, forwarded over its SSH link when the daemon is on another Mac. A phone has no such
+view and answers nothing for it; a daemon older than this answers `-32601`, and the screen
+shows the option's pictures alone.
+
 ### The project's numbers
 
 The board's card (T-314) reads what the daemon keeps of the services the person connected on the

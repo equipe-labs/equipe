@@ -188,6 +188,16 @@ impl Uploader {
         }
     }
 
+    /// Where a decision option's saved prototype is served on the daemon's
+    /// machine: a loopback address for the live preview. Blocks: call it off the UI thread.
+    pub fn prototype_url(&self, squad: &str, path: &str) -> Result<String, String> {
+        let door = self.0.lock().unwrap().clone().ok_or(t!("daemon.not_connected"))?;
+        match door.prototype_url(squad, path).recv_timeout(Duration::from_secs(20)) {
+            Ok(answer) => answer.and_then(|v| serde_json::from_value::<equipe_core::protocol::rpc::PrototypeServed>(v).map(|s| s.url).map_err(|_| t!("failure.answer_unreadable").into())),
+            Err(_) => Err(t!("daemon.upload_no_answer").into()),
+        }
+    }
+
     /// The pictures in a folder a reply names, from the daemon — only one
     /// `squad`'s conversation names. Blocks: call it off the UI thread.
     pub fn list_images(&self, squad: &str, folder: &str) -> Result<equipe_core::protocol::rpc::ImageList, String> {

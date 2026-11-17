@@ -569,11 +569,12 @@ pub fn reacts(q: &Question) -> bool {
     q.is_visual() && !q.multi_select && q.options.len() > 1
 }
 
-/// Whether a question's options are drawn one under another, each with its
-/// picture big at its own shape: a choice in pictures that isn't a board's
-/// families (those stay a grid of covers, and open the board).
-pub fn shows_heroes(q: &Question) -> bool {
-    q.is_visual() && !q.board && q.options.iter().all(|o| o.tiles.is_empty())
+/// Whether what goes with the box for the person's own words — "Why not?",
+/// Attach and what is attached — shows under it: once the box was focused,
+/// while it holds words or the keys are on it, and whenever something is
+/// attached or a reason picked. Folded otherwise: the card stays one screen.
+pub fn box_unfolded(focused_once: bool, typing: bool, keys_on_box: bool, attached: bool, reasons: bool) -> bool {
+    focused_once || typing || keys_on_box || attached || reasons
 }
 
 /// An option's live preview as the card opens it: an https page of a real
@@ -648,6 +649,16 @@ pub fn decided(message: &str) -> Option<Decided> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn why_not_and_attach_stay_folded_until_the_box_is_used() {
+        assert!(!box_unfolded(false, false, false, false, false), "a fresh card: folded");
+        assert!(box_unfolded(true, false, false, false, false), "focused once: unfolded");
+        assert!(box_unfolded(false, true, false, false, false), "words in it");
+        assert!(box_unfolded(false, false, true, false, false), "the keys on it (Tab)");
+        assert!(box_unfolded(false, false, false, true, false), "something attached is never hidden");
+        assert!(box_unfolded(false, false, false, false, true), "a reason picked is never hidden");
+    }
     use equipe_core::protocol::decide::Choice;
 
     fn set() -> QuestionSet {
