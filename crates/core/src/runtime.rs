@@ -805,6 +805,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         approvals_turn: HashMap::new(),
         closed_seen: std::collections::HashSet::new(),
         lane_tmp_tidied: std::time::Instant::now(),
+        tmp_copies_told: HashSet::new(),
+        tmp_budget_told: HashSet::new(),
         tidied_at: None,
         signals_running: std::collections::HashSet::new(),
         accepts: HashMap::new(),
@@ -1193,6 +1195,8 @@ enum Internal {
     DiskCleaned(Box<crate::disk::DiskCleaned>, Option<crate::disk::DiskStatus>, std::time::Instant, Option<oneshot::Sender<crate::disk::DiskCleaned>>),
     /// What a trim of the build caches gave back when the disk ran short, one line each.
     DiskTrimmed(u64, Vec<String>),
+    /// What a look at the lanes' temporary folders found: copies of a project, folders past their budget.
+    LaneTmpLooked(Box<crate::disk::LaneTmpLook>),
     /// A project the person added, or why it wasn't.
     ProjectAdded { squad: String, result: Result<PathBuf, String> },
     /// A squad deleted off the loop, or why it wasn't.
@@ -1477,6 +1481,10 @@ struct Runtime {
     closed_seen: std::collections::HashSet<(String, TicketId)>,
     /// When lanes' temporary folders were last tidied.
     lane_tmp_tidied: std::time::Instant,
+    /// Copies of a project in lanes' temporary folders already told to their
+    /// members, and tickets whose folder was told past its budget: once each a daemon run.
+    tmp_copies_told: HashSet<PathBuf>,
+    tmp_budget_told: HashSet<(String, TicketId)>,
     /// When conversations were last tidied ([`tidy`]); `None`: not yet.
     tidied_at: Option<std::time::Instant>,
     /// Signals whose command runs now, by squad and key (`signals`).
@@ -1713,6 +1721,7 @@ impl Wake {
             Wake::Internal(Internal::DeskSaved { .. }) => Borrowed("a desk turn's changes saved"),
             Wake::Internal(Internal::Wake { .. }) => Borrowed("work waits for a conversation"),
             Wake::Internal(Internal::DiskTrimmed(..)) => Borrowed("a trim of the build caches"),
+            Wake::Internal(Internal::LaneTmpLooked(..)) => Borrowed("a look at the lanes' temporary folders"),
             Wake::Internal(Internal::Dispatch) => Borrowed("handing out work again"),
             Wake::Internal(Internal::References(_)) => Borrowed("reference pictures fetched"),
             Wake::Internal(Internal::Workspace { .. }) => Borrowed("a run's workspace made"),
@@ -1991,6 +2000,7 @@ impl Runtime {
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
                 Internal::DiskTrimmed(freed, lines) => self.on_disk_trimmed(freed, lines),
+                Internal::LaneTmpLooked(look) => self.lane_tmp_looked(*look),
                 Internal::TurnEndsDue => self.turn_ends_due(now_secs()),
                 Internal::References(shown) => self.references_shown(*shown),
                 Internal::Dispatch => {
@@ -2136,7 +2146,9 @@ impl Runtime {
         if self.settled_at.is_none_or(|at| at.elapsed() >= SETTLE_EVERY) {
             self.settle_all_merged();
         }
-        if self.config.persist && self.lane_tmp_tidied.elapsed() >= LANE_TMP_TIDY_EVERY {
+        // Short of room, a copy of a project left in a temporary folder goes sooner.
+        let every = if self.disk.status.level.is_warning() { LANE_TMP_TIDY_EVERY_SHORT } else { LANE_TMP_TIDY_EVERY };
+        if self.config.persist && self.lane_tmp_tidied.elapsed() >= every {
             self.tidy_lane_tmp();
         }
         self.look_at_disk();
@@ -8352,7 +8364,16 @@ there, end your turn, and carry on when they say they're done."
         // temporary folder: it writes only the project's `.git/worktrees/` and that
         // folder, which the fence can't open without opening the project, so it runs
         // outside it, exactly as given back (hooks off), without asking.
-        if auto && tool == "Bash" && let Some(command) = self.project_checkout(id, &call.squad, &input) {
+        // A Codex member asks the same through Codex's own approval (its escalation
+        // out of the sandbox): its engine runs its own command once allowed, so
+        // it passes where no hook can run on it ([`permissions::codex_project_checkout`]).
+        let codex = self.sessions.get(&id).is_some_and(|s| s.engine == Engine::Codex);
+        if auto && tool == "Bash" && codex && self.codex_project_checkout(id, &call.squad, &input) {
+            self.audit(&call.squad, ticket, "equipe", "allowed", &action);
+            let _ = reply.send(verdict(Decision::Allow, &input, ""));
+            return;
+        }
+        if auto && tool == "Bash" && !codex && let Some(command) = self.project_checkout(id, &call.squad, &input) {
             let mut input = input.clone();
             input["command"] = json!(command);
             input["dangerouslyDisableSandbox"] = json!(true);
@@ -8391,6 +8412,16 @@ there, end your turn, and carry on when they say they're done."
         let command = input.get("command").and_then(Value::as_str)?;
         let tmp = journal::lane_tmp_dir(&self.config.home, squad, session.work.as_ref().map(|w| w.ticket), session.name()?);
         permissions::project_checkout(command, &self.projects_cached(squad), &tmp)
+    }
+
+    /// Whether a Codex member's shell call is such a checkout, one its engine
+    /// may run as asked ([`permissions::codex_project_checkout`]).
+    fn codex_project_checkout(&self, id: SessionId, squad: &str, input: &Value) -> bool {
+        let Some(session) = self.sessions.get(&id) else { return false };
+        let (Some(command), Some(name)) = (input.get("command").and_then(Value::as_str), session.name()) else { return false };
+        let tmp = journal::lane_tmp_dir(&self.config.home, squad, session.work.as_ref().map(|w| w.ticket), name);
+        let configs = permissions::git_configs(std::env::var_os("HOME").map(PathBuf::from).as_deref());
+        permissions::codex_project_checkout(command, &self.projects_cached(squad), &tmp, &configs)
     }
 
     /// What equipe refuses a member whatever its mode or the person's rules:
@@ -10554,23 +10585,110 @@ check what is already done in your worktree first."
             .collect();
         let keep: Vec<u32> = self.commands.engine_pids();
         let squads: Vec<String> = self.journals.keys().cloned().collect();
-        let by_squad: Vec<(String, Vec<PathBuf>)> = squads.iter().map(|s| (s.clone(), self.projects(s))).collect();
-        let mut repos: Vec<PathBuf> = by_squad.iter().flat_map(|(_, p)| p.iter().cloned()).collect();
+        let looked: Vec<crate::disk::LaneSquad> = squads
+            .iter()
+            .map(|s| crate::disk::LaneSquad {
+                squad: s.clone(),
+                projects: self.projects(s),
+                open: open.iter().find(|(o, _)| o == s).map(|(_, t)| t.clone()).unwrap_or_default(),
+            })
+            .collect();
+        let mut repos: Vec<PathBuf> = looked.iter().flat_map(|s| s.projects.iter().cloned()).collect();
         repos.sort();
         repos.dedup();
+        let internal = self.internal.clone();
         std::thread::spawn(move || {
             for line in crate::disk::tidy_lane_tmp(&home, &open, &keep) {
                 crate::daemon_log!("equipe: {line}");
             }
-            // A desk's full copy of a project (a deploy's `cp -R` or clone):
-            // named once, so it shows why a worktree would have done.
-            for line in crate::disk::warn_desk_clones(&home, &by_squad) {
+            // A copy of a project in a ticket's or a desk's temporary folder (a
+            // `cp -R`, a clone): its member is told to use a worktree, and while
+            // the disk is low an untouched one goes. A folder past its budget is told.
+            let look = crate::disk::look_at_lane_tmp(&home, &looked, &keep);
+            for line in &look.log {
                 crate::daemon_log!("equipe: {line}");
             }
+            let _ = internal.send(Internal::LaneTmpLooked(Box::new(look)));
             for line in crate::disk::clear_git_garbage(&repos) {
                 crate::daemon_log!("equipe: {line}");
             }
         });
+    }
+
+    /// What a look at the lanes' temporary folders found, told: a copy of a
+    /// project to the member whose folder it is in (the ticket's owner, or
+    /// the desk's member), once; a ticket's folder past its budget to its
+    /// owner and the PM, once. Logged.
+    fn lane_tmp_looked(&mut self, look: crate::disk::LaneTmpLook) {
+        use crate::disk::LaneTmp;
+        for copy in look.copies {
+            if !self.tmp_copies_told.insert(copy.path.clone()) && !copy.removed {
+                continue;
+            }
+            let (path, project) = (copy.path.display().to_string(), copy.project.display().to_string());
+            let (line, shown) = if copy.removed {
+                (
+                    format!("equipe removed {path}, a copy of {project} in your temporary folder that stood untouched while the disk was low. A copy is gigabytes; to build, test or deploy the project outside your worktree, check it out with `git -C {project} worktree add --detach \"$TMPDIR/<name>\" <ref>` (run outside the fence), and remove it with `git -C {project} worktree remove --force <path>` when done — never `cp -R` or clone it."),
+                    say!(self, "news.tmp_copy_removed", path = path),
+                )
+            } else {
+                (
+                    format!("{path} in your temporary folder is a copy of {project}: gigabytes the disk can't spare. Switch to a worktree, which shares the repository — `git -C {project} worktree add --detach \"$TMPDIR/<name>\" <ref>` (run outside the fence) — remove the copy, and never `cp -R` or clone a project again. While the disk is low, a copy left untouched for half an hour is removed."),
+                    say!(self, "news.tmp_copy", path = path),
+                )
+            };
+            let removed = if copy.removed { ", removed" } else { "" };
+            crate::daemon_log!("equipe: {path} is a copy of {project} in {}'s temporary folder{removed}", copy.squad);
+            self.brief_lane(&copy.squad, &copy.lane, &line, &shown);
+        }
+        for over in look.over_budget {
+            if !self.tmp_budget_told.insert((over.squad.clone(), over.ticket)) {
+                continue;
+            }
+            let (ticket, size, budget) = (over.ticket, crate::disk::size(over.bytes), crate::disk::size(crate::disk::TICKET_TMP_BUDGET));
+            let dir = journal::lane_tmp_dir(&self.config.home, &over.squad, Some(ticket), "");
+            crate::daemon_log!("equipe: T-{ticket}'s temporary folder in {} holds {size}, past its {budget}", over.squad);
+            let line = format!(
+                "T-{ticket}'s temporary folder ({}) holds {size}, past the {budget} a ticket's should: remove what it no longer needs — checkouts with `git -C <project> worktree remove --force <path>`, builds and installs it can make again — and keep at most one checkout of a project per ticket.",
+                dir.display()
+            );
+            let shown = say!(self, "news.tmp_over_budget", id = ticket, size = size);
+            if !self.brief_lane(&over.squad, &LaneTmp::Ticket(ticket), &line, &shown) {
+                self.brief_pm(&over.squad, line, Some(shown));
+            }
+        }
+    }
+
+    /// Tell whoever a lane's temporary folder is: the member working its
+    /// ticket now, else the ticket's owner; a desk's member. A line in its
+    /// conversation and words with its next message, as [`Self::brief_member`]
+    /// tells. Whether the one told was the PM.
+    fn brief_lane(&mut self, squad: &str, lane: &crate::disk::LaneTmp, line: &str, shown: &str) -> bool {
+        use crate::disk::LaneTmp;
+        let (working, named) = match lane {
+            LaneTmp::Ticket(id) => (self.worker_on(squad, *id), self.tickets(squad).into_iter().find(|t| t.id == *id).and_then(|t| t.owner.or(t.assignee))),
+            LaneTmp::Desk(name) => (None, Some(name.clone())),
+        };
+        match working.or_else(|| named.as_deref().and_then(|name| self.member_id(squad, name))) {
+            Some(id) if self.pm_of(squad) == Some(id) => {
+                self.brief_pm(squad, line.to_owned(), Some(shown.to_owned()));
+                true
+            }
+            Some(id) => {
+                if let Some(session) = self.sessions.get_mut(&id) {
+                    session.briefing.push(line.to_owned());
+                }
+                self.save_waiting(id);
+                self.publish(Event::Notice { undo: None, session: id, text: shown.to_owned() });
+                false
+            }
+            None => {
+                if let Some(name) = named {
+                    self.brief_member(squad, &name, line, shown);
+                }
+                false
+            }
+        }
     }
 
     /// Prune conversations past the retention window in every journal.
@@ -10997,6 +11115,8 @@ fn clip(text: &str, max: usize) -> String {
 
 /// How often lanes' temporary folders of tickets that are not open are tidied.
 const LANE_TMP_TIDY_EVERY: Duration = Duration::from_secs(60 * 60);
+/// … and while the disk is short of room.
+const LANE_TMP_TIDY_EVERY_SHORT: Duration = Duration::from_secs(10 * 60);
 
 /// The most a note made of a command's output keeps.
 const OUTPUT_NOTE_MAX: usize = 4096;

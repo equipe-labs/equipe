@@ -1476,87 +1476,273 @@ fn tidy_desk(home: &Path, desk: &Path, keep: &[u32], idle: Duration) -> Vec<Stri
     done
 }
 
-/// Full checkouts already warned about, so each is named once a daemon run.
-static DESK_CLONES_WARNED: std::sync::Mutex<std::collections::BTreeSet<PathBuf>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
+/// A lane's temporary folder a ticket's lane works in past this, all told,
+/// is told to its member and the PM, once.
+pub const TICKET_TMP_BUDGET: u64 = 4 * GB;
+/// While the disk is low, a copy of a project untouched this long goes, even
+/// in an open ticket's temporary folder.
+const COPY_IDLE_LOW: Duration = Duration::from_secs(30 * 60);
+/// How many entries a look for a copy's newest change walks before it takes
+/// the copy for touched now (and leaves it).
+const COPY_LOOK_ENTRIES: usize = 300_000;
 
-/// A full git checkout (its own `.git` directory, not a worktree's `.git`
-/// file) in a member's desk folder that is a copy or a clone of one of its
-/// squad's projects — same origin, or the same root commit: a warning naming
-/// it, the first time it is seen. A copy of a big repository is gigabytes
-/// where a worktree costs next to nothing. Nothing is removed here: the idle
-/// rules of [`tidy_lane_tmp`] still decide that. `projects` is, for each
-/// squad, its projects.
-pub fn warn_desk_clones(home: &Path, projects: &[(String, Vec<PathBuf>)]) -> Vec<String> {
-    off_the_loop("disk::warn_desk_clones");
-    let mut warned = DESK_CLONES_WARNED.lock().unwrap_or_else(|e| e.into_inner());
-    desk_clones(home, projects, &mut warned)
+/// Whose temporary folder something is in: a ticket's lanes', or a member's desk.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LaneTmp {
+    Ticket(TicketId),
+    Desk(String),
 }
 
-fn desk_clones(home: &Path, projects: &[(String, Vec<PathBuf>)], seen: &mut std::collections::BTreeSet<PathBuf>) -> Vec<String> {
-    let mut done = Vec::new();
-    for (squad, repos) in projects {
-        if repos.is_empty() {
-            continue;
-        }
-        let mut roots: Vec<Option<Vec<String>>> = vec![None; repos.len()];
-        let desks = std::fs::read_dir(home.join("tmp").join(squad)).into_iter().flatten().flatten();
-        let mut desks: Vec<PathBuf> = desks.filter(|e| e.file_type().is_ok_and(|t| t.is_dir()) && lane_tmp_ticket(&e.file_name().to_string_lossy()).is_none()).map(|e| e.path()).collect();
-        desks.sort();
-        for desk in desks {
-            for checkout in full_checkouts(&desk) {
-                if !seen.insert(checkout.clone()) {
-                    continue;
+/// A copy of a squad project in a lane's temporary folder: a clone or a
+/// `cp -R` (its own `.git` directory), a copy without its `.git`, or a copy
+/// of a worktree — where `git worktree add --detach` would share the
+/// repository instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectCopy {
+    pub squad: String,
+    pub lane: LaneTmp,
+    pub path: PathBuf,
+    pub project: PathBuf,
+    /// Removed now: the disk is low and it stood untouched.
+    pub removed: bool,
+}
+
+/// An open ticket's temporary folder past [`TICKET_TMP_BUDGET`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TmpOverBudget {
+    pub squad: String,
+    pub ticket: TicketId,
+    pub bytes: u64,
+}
+
+/// One squad, as [`look_at_lane_tmp`] takes it: its projects and its open tickets.
+#[derive(Debug, Clone, Default)]
+pub struct LaneSquad {
+    pub squad: String,
+    pub projects: Vec<PathBuf>,
+    pub open: Vec<TicketId>,
+}
+
+/// What a look at the lanes' temporary folders found, and what it did (`log`).
+#[derive(Debug, Default)]
+pub struct LaneTmpLook {
+    pub copies: Vec<ProjectCopy>,
+    pub over_budget: Vec<TmpOverBudget>,
+    pub log: Vec<String>,
+}
+
+/// Look in the temporary folders of open tickets and members' desks for
+/// copies of a squad's projects, and at how much each open ticket's holds.
+/// While the disk is low, a copy untouched for [`COPY_IDLE_LOW`] goes — what
+/// stands in it stopped first ([`clear_lane_tmp`]), never `keep`'s — even in
+/// an open ticket's folder; a worktree checked out there never does, nor
+/// anything touched lately. Off the loop.
+pub fn look_at_lane_tmp(home: &Path, squads: &[LaneSquad], keep: &[u32]) -> LaneTmpLook {
+    off_the_loop("disk::look_at_lane_tmp");
+    let low = volume(home).is_some_and(|(_, free, total)| level_at(free, total, 100) >= DiskLevel::Low);
+    look_at_lane_tmp_with(home, squads, keep, low.then_some(COPY_IDLE_LOW), TICKET_TMP_BUDGET)
+}
+
+/// [`look_at_lane_tmp`] with how long a copy must stand untouched to go
+/// (`None`: none goes, the disk has room) and the budget given.
+fn look_at_lane_tmp_with(home: &Path, squads: &[LaneSquad], keep: &[u32], remove_idle: Option<Duration>, budget: u64) -> LaneTmpLook {
+    let mut look = LaneTmpLook::default();
+    let mut sizer = Sizer::new(SCAN_BUDGET);
+    for squad in squads {
+        let signatures: Vec<Signature> = squad.projects.iter().map(|p| Signature::of(p.as_path())).collect();
+        let mut lanes: Vec<(LaneTmp, PathBuf)> = std::fs::read_dir(home.join("tmp").join(&squad.squad))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let lane = match lane_tmp_ticket(&name) {
+                    Some(id) if squad.open.contains(&id) => LaneTmp::Ticket(id),
+                    Some(_) => return None,
+                    None => LaneTmp::Desk(name),
+                };
+                Some((lane, e.path()))
+            })
+            .collect();
+        lanes.sort();
+        for (lane, dir) in lanes {
+            for (path, project) in project_copies(&dir, &squad.projects, &signatures) {
+                let mut removed = false;
+                if let Some(idle) = remove_idle
+                    && untouched_for(&path, idle)
+                {
+                    look.log.extend(clear_lane_tmp(home, &path, keep));
+                    removed = std::fs::symlink_metadata(&path).is_err();
                 }
-                let origin = origin_url(&checkout.join(".git"));
-                let mut copy_of = repos.iter().find(|repo| {
-                    origin.as_deref().is_some_and(|url| {
-                        origin_url(&repo.join(".git")).is_some_and(|theirs| same_remote(url, &theirs)) || same_remote(url, &repo.to_string_lossy())
-                    })
-                });
-                if copy_of.is_none() {
-                    let mine = root_commits(&checkout);
-                    for (i, repo) in repos.iter().enumerate() {
-                        let theirs = roots[i].get_or_insert_with(|| root_commits(repo));
-                        if mine.iter().any(|c| theirs.contains(c)) {
-                            copy_of = Some(repo);
-                            break;
-                        }
-                    }
-                }
-                if let Some(repo) = copy_of {
-                    done.push(format!(
-                        "warning: {} is a full copy of {} in a desk's temporary folder — `git -C {} worktree add --detach <path> <ref>` shares the repository instead",
-                        checkout.display(),
-                        repo.display(),
-                        repo.display()
-                    ));
+                look.copies.push(ProjectCopy { squad: squad.squad.clone(), lane: lane.clone(), path, project, removed });
+            }
+            if let LaneTmp::Ticket(ticket) = lane {
+                let bytes = sizer.size(&dir);
+                if bytes > budget {
+                    look.over_budget.push(TmpOverBudget { squad: squad.squad.clone(), ticket, bytes });
                 }
             }
         }
     }
-    done
+    look
 }
 
-/// Directories in `desk`, or one level below, with a `.git` directory of
-/// their own — not followed through links, nor searched inside.
-fn full_checkouts(desk: &Path) -> Vec<PathBuf> {
+/// What a project looks like at its top, to know a copy of it without a `.git`.
+struct Signature {
+    /// Its top-level names, build output and `.git` left out.
+    names: Vec<String>,
+    /// Its `package.json`'s `name`, if it has one.
+    package: Option<String>,
+}
+
+impl Signature {
+    fn of(dir: &Path) -> Self {
+        Self { names: top_names(dir), package: package_name(dir) }
+    }
+
+    /// Whether `dir` is a copy of the project this is: the same `package.json`
+    /// name, or four in five of its top-level names (of four at least).
+    fn matches(&self, dir: &Path) -> bool {
+        if self.package.is_some() && package_name(dir) == self.package {
+            return true;
+        }
+        if self.names.len() < 4 {
+            return false;
+        }
+        let theirs = top_names(dir);
+        let shared = self.names.iter().filter(|n| theirs.contains(n)).count();
+        shared * 5 >= self.names.len() * 4
+    }
+}
+
+fn top_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n != ".git" && n != ".DS_Store" && !BUILD_DIRS.contains(&n.as_str()))
+        .collect();
+    names.sort();
+    names
+}
+
+fn package_name(dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join("package.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value.get("name")?.as_str().map(str::trim).filter(|n| !n.is_empty()).map(str::to_owned)
+}
+
+/// The copies of `projects` in a lane's temporary folder `dir`, at its top or
+/// one level below, each with the project it copies: a full checkout (its own
+/// `.git` directory) of the same origin or root commit; a worktree's `.git`
+/// file carried along by a copy (the worktree it names is elsewhere); or a
+/// folder without `.git` shaped like a project ([`Signature`]). A worktree
+/// checked out there is never one, nor searched inside; links aren't followed.
+fn project_copies(dir: &Path, projects: &[PathBuf], signatures: &[Signature]) -> Vec<(PathBuf, PathBuf)> {
     let mut found = Vec::new();
-    let mut stack = vec![(desk.to_owned(), 0)];
-    while let Some((dir, depth)) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+    let mut roots: Vec<Option<Vec<String>>> = vec![None; projects.len()];
+    let mut stack = vec![(dir.to_owned(), 0)];
+    while let Some((at, depth)) = stack.pop() {
+        for entry in std::fs::read_dir(&at).into_iter().flatten().flatten() {
             if !entry.file_type().is_ok_and(|t| t.is_dir()) {
                 continue;
             }
             let path = entry.path();
-            if std::fs::symlink_metadata(path.join(".git")).is_ok_and(|m| m.is_dir()) {
-                found.push(path);
-            } else if depth < 1 {
-                stack.push((path, depth + 1));
+            let git = std::fs::symlink_metadata(path.join(".git")).ok();
+            let copy_of = match &git {
+                Some(meta) if meta.is_dir() => clone_of(&path, projects, &mut roots),
+                Some(_) => worktree_copy_of(&path, projects),
+                None => projects.iter().zip(signatures).find(|(_, sig)| sig.matches(&path)).map(|(p, _)| p.clone()),
+            };
+            match copy_of {
+                Some(project) => found.push((path, project)),
+                None if git.is_none() && depth < 1 => stack.push((path, depth + 1)),
+                None => {}
             }
         }
     }
     found.sort();
     found
+}
+
+/// The project a full checkout at `checkout` is a clone or copy of: the same
+/// origin however written, the project's path as its origin, or a root
+/// commit in common.
+fn clone_of(checkout: &Path, projects: &[PathBuf], roots: &mut [Option<Vec<String>>]) -> Option<PathBuf> {
+    let origin = origin_url(&checkout.join(".git"));
+    let by_origin = projects.iter().find(|repo| {
+        origin.as_deref().is_some_and(|url| origin_url(&repo.join(".git")).is_some_and(|theirs| same_remote(url, &theirs)) || same_remote(url, &repo.to_string_lossy()))
+    });
+    if let Some(repo) = by_origin {
+        return Some(repo.clone());
+    }
+    let mine = root_commits(checkout);
+    if mine.is_empty() {
+        return None;
+    }
+    for (i, repo) in projects.iter().enumerate() {
+        let theirs = roots[i].get_or_insert_with(|| root_commits(repo));
+        if mine.iter().any(|c| theirs.contains(c)) {
+            return Some(repo.clone());
+        }
+    }
+    None
+}
+
+/// A folder whose `.git` file points into one of `projects`' worktrees, but
+/// a worktree that isn't this folder: a copy of a worktree, the project it is
+/// of. A worktree checked out here, or one of anything else, is `None`.
+fn worktree_copy_of(dir: &Path, projects: &[PathBuf]) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(dir.join(".git")).ok()?;
+    let gitdir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
+    let project = projects.iter().find(|p| {
+        let worktrees = p.join(".git").join("worktrees");
+        gitdir.starts_with(&worktrees) || worktrees.canonicalize().ok().zip(gitdir.canonicalize().ok()).is_some_and(|(w, g)| g.starts_with(w))
+    })?;
+    // Its back link gone, it is no one's worktree any more: left alone, not taken for a copy.
+    let back = PathBuf::from(std::fs::read_to_string(gitdir.join("gitdir")).ok()?.trim());
+    let here = dir.join(".git");
+    let same = back == here || back.canonicalize().ok().zip(here.canonicalize().ok()).is_some_and(|(a, b)| a == b);
+    (!same).then(|| project.clone())
+}
+
+/// Nothing under `path` written or created for `long`, by its files' change
+/// times as well as their modification times — `rsync -a` and `cp -p` keep
+/// the original's modification time, never its change time. A tree too big
+/// to look through is taken as touched now.
+fn untouched_for(path: &Path, long: Duration) -> bool {
+    fn changed(meta: &std::fs::Metadata) -> Option<std::time::SystemTime> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            let ctime = std::time::UNIX_EPOCH + Duration::new(meta.ctime().max(0) as u64, meta.ctime_nsec().clamp(0, 999_999_999) as u32);
+            meta.modified().ok().max(Some(ctime))
+        }
+        #[cfg(not(unix))]
+        {
+            meta.modified().ok()
+        }
+    }
+    let Ok(meta) = std::fs::symlink_metadata(path) else { return false };
+    let mut newest = changed(&meta);
+    let mut budget = COPY_LOOK_ENTRIES;
+    let mut stack = vec![path.to_owned()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            budget = budget.saturating_sub(1);
+            if budget == 0 {
+                return false;
+            }
+            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else { continue };
+            newest = newest.max(changed(&meta));
+            if meta.is_dir() {
+                stack.push(entry.path());
+            }
+        }
+    }
+    newest.and_then(|at| at.elapsed().ok()).is_some_and(|ago| ago >= long)
 }
 
 /// The `origin` remote's URL in a repository's `.git` directory, read from
@@ -2601,38 +2787,109 @@ mod tests {
         assert!(!desk.join("two-hours").exists() && desk.join("half-an-hour").join("blob").exists(), "low: an hour untouched goes, the rest stays");
     }
 
+    /// The squad `acme` with the tree's repository, its open tickets `open`.
+    fn acme(tree: &Tree, open: &[TicketId]) -> Vec<LaneSquad> {
+        vec![LaneSquad { squad: "acme".into(), projects: vec![tree.repo.clone()], open: open.to_vec() }]
+    }
+
     #[test]
-    fn a_desks_full_copy_of_a_project_is_named_once_and_a_worktree_or_another_repo_is_not() {
+    fn copies_of_a_project_are_found_in_open_tickets_and_desks_and_a_worktree_or_another_repo_is_not() {
         let tree = Tree::new();
         git(&tree.repo, &["remote", "add", "origin", "https://github.com/acme/site.git"]);
-        let desk = tree.home.join("tmp").join("acme").join("pm");
-        std::fs::create_dir_all(desk.join("deploy-1")).unwrap();
+        std::fs::write(tree.repo.join("package.json"), r#"{ "name": "acme-site", "private": true }"#).unwrap();
+        for name in ["app", "lib", "public"] {
+            std::fs::create_dir_all(tree.repo.join(name)).unwrap();
+            std::fs::write(tree.repo.join(name).join("index.ts"), "export {}\n").unwrap();
+        }
+        git(&tree.repo, &["add", "-A"]);
+        git(&tree.repo, &["commit", "-q", "-m", "app"]);
+        let lane = |name: &str| tree.home.join("tmp").join("acme").join(name);
+        let (desk, t5, t6) = (lane("pm"), lane("t5"), lane("t6"));
         let clone = |to: &Path| git(&tree.home, &["clone", "-q", "--no-hardlinks", &tree.repo.to_string_lossy(), &to.to_string_lossy()]);
-        // A clone from the network, by another spelling of the same remote.
+        // A desk's clone from the network, by another spelling of the same remote.
         clone(&desk.join("net"));
         git(&desk.join("net"), &["remote", "set-url", "origin", "git@github.com:Acme/site"]);
-        // A local clone: its origin is the project's path.
+        // A local clone one level down, and a copy whose origin is gone: the same root commit.
+        std::fs::create_dir_all(desk.join("deploy-1")).unwrap();
         clone(&desk.join("deploy-1").join("site"));
-        // A copy whose origin is gone: the same root commit.
         clone(&desk.join("bare-copy"));
         git(&desk.join("bare-copy"), &["remote", "remove", "origin"]);
-        // Not copies: another repository, a worktree, a ticket's own folder.
+        // In an open ticket's folder: a copy without its `.git` (by its package
+        // name), one by its top-level files alone, and a worktree copied whole.
+        std::fs::create_dir_all(&t5).unwrap();
+        clone(&t5.join("no-git"));
+        std::fs::remove_dir_all(t5.join("no-git").join(".git")).unwrap();
+        clone(&t5.join("by-files"));
+        std::fs::remove_dir_all(t5.join("by-files").join(".git")).unwrap();
+        std::fs::remove_file(t5.join("by-files").join("package.json")).unwrap();
+        git(&tree.repo, &["worktree", "add", "-q", "--detach", &t5.join("preview").to_string_lossy(), "main"]);
+        let cp = std::process::Command::new("cp").arg("-R").arg(t5.join("preview")).arg(t5.join("preview-copy")).status().unwrap();
+        assert!(cp.success());
+        // Not copies: another repository, a worktree checked out here, a stray folder.
         std::fs::create_dir_all(desk.join("other")).unwrap();
         git(&desk.join("other"), &["init", "-q"]);
         git(&desk.join("other"), &["remote", "add", "origin", "https://github.com/acme/other.git"]);
         git(&tree.repo, &["worktree", "add", "-q", "--detach", &desk.join("wt").to_string_lossy(), "main"]);
-        clone(&tree.home.join("tmp").join("acme").join("t5").join("site"));
-        let projects = vec![("acme".to_owned(), vec![tree.repo.clone()])];
-        let mut seen = std::collections::BTreeSet::new();
-        let done = desk_clones(&tree.home, &projects, &mut seen);
-        let named = |name: &str| done.iter().filter(|l| l.contains(&format!("{} is a full copy", desk.join(name).display()))).count();
-        assert_eq!(done.len(), 3, "{done:?}");
-        for name in ["net", "deploy-1/site", "bare-copy"] {
-            assert_eq!(named(name), 1, "{name}: {done:?}");
-        }
-        assert!(done.iter().all(|l| l.starts_with("warning: ") && l.contains("worktree add --detach")), "{done:?}");
-        assert!(desk_clones(&tree.home, &projects, &mut seen).is_empty(), "named the first time only");
-        assert!(desk.join("net").join(".git").is_dir(), "nothing removed");
+        fill(&t5.join("screenshots"), 100);
+        // A ticket no longer open is tidy's, not this look's.
+        clone(&t6.join("site"));
+        let look = look_at_lane_tmp_with(&tree.home, &acme(&tree, &[5]), &[], None, TICKET_TMP_BUDGET);
+        let found: Vec<(LaneTmp, PathBuf)> = look.copies.iter().map(|c| (c.lane.clone(), c.path.clone())).collect();
+        let desk_lane = LaneTmp::Desk("pm".into());
+        assert_eq!(
+            found,
+            [
+                (LaneTmp::Ticket(5), t5.join("by-files")),
+                (LaneTmp::Ticket(5), t5.join("no-git")),
+                (LaneTmp::Ticket(5), t5.join("preview-copy")),
+                (desk_lane.clone(), desk.join("bare-copy")),
+                (desk_lane.clone(), desk.join("deploy-1").join("site")),
+                (desk_lane, desk.join("net")),
+            ],
+            "{look:?}"
+        );
+        assert!(look.copies.iter().all(|c| c.project == tree.repo && !c.removed && c.squad == "acme"));
+        assert!(look.log.is_empty() && look.over_budget.is_empty(), "the disk has room: nothing removed");
+        assert!(desk.join("net").join(".git").is_dir() && t5.join("no-git").exists());
+    }
+
+    #[test]
+    fn while_the_disk_is_low_an_untouched_copy_goes_even_in_an_open_ticket_and_the_worktree_and_what_was_touched_stay() {
+        let tree = Tree::new();
+        let t5 = tree.home.join("tmp").join("acme").join("t5");
+        let clone = |to: &Path| git(&tree.home, &["clone", "-q", "--no-hardlinks", &tree.repo.to_string_lossy(), &to.to_string_lossy()]);
+        clone(&t5.join("old-copy"));
+        clone(&t5.join("fresh-copy"));
+        git(&tree.repo, &["worktree", "add", "-q", "--detach", &t5.join("preview").to_string_lossy(), "main"]);
+        // An old modification time is no age: `rsync -a` keeps the original's.
+        aged(&t5.join("fresh-copy"), 48);
+        std::thread::sleep(Duration::from_millis(1500));
+        std::fs::write(t5.join("fresh-copy").join("edited.txt"), "now").unwrap();
+        let idle = Some(Duration::from_secs(1));
+        let look = look_at_lane_tmp_with(&tree.home, &acme(&tree, &[5]), &[], idle, TICKET_TMP_BUDGET);
+        let removed: Vec<&Path> = look.copies.iter().filter(|c| c.removed).map(|c| c.path.as_path()).collect();
+        assert_eq!(removed, [t5.join("old-copy").as_path()], "{look:?}");
+        assert!(look.log.iter().any(|l| l.starts_with("removed ")), "{:?}", look.log);
+        assert!(!t5.join("old-copy").exists() && t5.join("fresh-copy").join("edited.txt").exists());
+        assert!(t5.join("preview").join(".git").is_file(), "a worktree checked out there is never a copy");
+        // With room on the disk, nothing goes however old.
+        let look = look_at_lane_tmp_with(&tree.home, &acme(&tree, &[5]), &[], None, TICKET_TMP_BUDGET);
+        assert!(look.copies.iter().all(|c| !c.removed) && t5.join("fresh-copy").exists());
+    }
+
+    #[test]
+    fn an_open_tickets_temporary_folder_past_its_budget_is_found_and_a_desk_or_a_closed_tickets_is_not() {
+        let tree = Tree::new();
+        let lane = |name: &str| tree.home.join("tmp").join("acme").join(name);
+        fill(&lane("t5"), 3 * MB as usize);
+        fill(&lane("t7"), 100);
+        fill(&lane("t6"), 3 * MB as usize);
+        fill(&lane("backend"), 3 * MB as usize);
+        let look = look_at_lane_tmp_with(&tree.home, &acme(&tree, &[5, 7]), &[], None, 2 * MB);
+        assert_eq!(look.over_budget.len(), 1, "{:?}", look.over_budget);
+        let over = &look.over_budget[0];
+        assert_eq!((over.squad.as_str(), over.ticket), ("acme", 5));
+        assert!(over.bytes >= 3 * MB, "{}", over.bytes);
     }
 
     #[test]
