@@ -1165,6 +1165,8 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
     if live.is_some() {
         shell.wake_at(std::time::Instant::now() + std::time::Duration::from_secs(1), cx);
     }
+    // Room under the last row for the live line, so it never sits on the words.
+    let tail = TAIL_ROOM + if live.is_some() { 26. } else { 0. };
     let pulse = match live {
         Some(line) => Some(status_row(shell, line, cx).into_any_element()),
         None => (replying && following).then(|| pulse_pill(p, doing).into_any_element()),
@@ -1209,7 +1211,7 @@ fn conversation(shell: &Shell, who: Who, cx: &mut Context<Shell>) -> impl IntoEl
             .with_row_style(StyleRefinement::default().pb(px(8.)).pl(px(side)).pr(px(side)))
             // Room under the last line, so it never sits on the composer's
             // edge; read back, the rows fade out there under the jump pill.
-            .with_list_style(StyleRefinement::default().pt(px(8.)).pb(px(TAIL_ROOM)))
+            .with_list_style(StyleRefinement::default().pt(px(8.)).pb(px(tail)))
             .with_bottom_fade(p.bg)
             .aria_label(t!("chat.a11y_conversation", name = log_name))
     )
@@ -2944,7 +2946,7 @@ fn status_row(shell: &Shell, line: crate::status_line::Line, cx: &mut Context<Sh
         v_flex()
             .w_full()
             .max_w(px(COLUMN - 32.))
-            .px(px(16. + TEXT_INSET))
+            .px(px(TEXT_INSET))
             .gap_1()
             .children(detail.map(|d| {
                 div()
