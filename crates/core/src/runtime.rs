@@ -8536,6 +8536,10 @@ there, end your turn, and carry on when they say they're done."
         // A hand-in, a wait, a hand-back: the turn only winds down now.
         if let Some(id) = caller {
             self.tell_work_over(id);
+            // Handed in with its turn already over: taken now, not at a turn end that won't come.
+            if result.is_ok() {
+                self.take_late_hand_in(id).await;
+            }
         }
         // Whatever changed, the rules look again.
         self.dispatch(&squad).await;
