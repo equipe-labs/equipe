@@ -9,6 +9,7 @@
 use equipe_core::protocol::design::PickReason;
 use equipe_core::protocol::references::{RefCard, RefKind};
 use equipe_core::t;
+use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
