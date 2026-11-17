@@ -188,6 +188,11 @@ says they are, and no bigger than the daemon's limits; an SVG that runs a
 script or loads another file isn't. A logo named `…-on-dark` or `…-dark` is
 shown only on dark, `…-light` only on light, any other on both.
 
+The pictures and videos the design tools make — the UI map's, design QA's, checks', mockups',
+directions', references' — are never committed: `design/captures.json` lists them, their bytes
+are in equipe's store and each checkout has them on disk at the same paths
+([DESIGN-CAPTURES.md](DESIGN-CAPTURES.md)).
+
 ## The screen
 
 - **Overview**: the logos on the system's own light and dark backgrounds, the lead

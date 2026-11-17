@@ -32,3 +32,6 @@ in your worktree, and Read it; check each width you design for with `browser_res
 The browser doesn't open `file://` pages or a server you start on this Mac: for those, `equipe design render <file or
 http://localhost:<port>/…>` draws them to PNG, at each width, light and dark.
 {{/if}}
+
+What these tools write under `design/` (renders, shots, sheets) stays on disk and out of git: never `git add` it —
+equipe lists it in `design/captures.json` when it commits your work.

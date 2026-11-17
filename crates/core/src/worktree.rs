@@ -45,10 +45,15 @@ pub(crate) fn git_command(dir: &Path) -> Command {
 
 /// What `command` printed, once it ends — or an error once `timeout` passes,
 /// the command and whatever it started killed. Its standard input is empty.
-pub(crate) fn output_within(mut command: Command, timeout: Duration) -> Result<Output> {
+pub(crate) fn output_within(command: Command, timeout: Duration) -> Result<Output> {
+    output_with_input(command, timeout, None)
+}
+
+/// [`output_within`], its standard input read from `input` when there is one.
+fn output_with_input(mut command: Command, timeout: Duration, input: Option<std::fs::File>) -> Result<Output> {
     let program = command.get_program().to_string_lossy().into_owned();
     // A group of its own, so a timeout stops what it started too (a push's ssh).
-    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.stdin(input.map_or_else(Stdio::null, Stdio::from)).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
@@ -79,8 +84,35 @@ fn off_the_loop(what: &str) {
 }
 
 /// Run git in `dir` and return trimmed stdout, or stderr as the error.
-fn git(dir: &Path, args: &[&str]) -> Result<String> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String> {
     git_within(dir, args, GIT_TIMEOUT)
+}
+
+/// Run git in `dir` and return its stdout as it is — on the scratch index
+/// `index` when given, its standard input read from the file `input`.
+pub(crate) fn git_bytes(dir: &Path, args: &[&str], index: Option<&Path>, input: Option<&Path>) -> Result<Vec<u8>> {
+    let mut command = git_command(dir);
+    command.args(args);
+    if let Some(index) = index {
+        command.env("GIT_INDEX_FILE", index);
+    }
+    let input = input.map(|p| std::fs::File::open(p).map_err(|e| format!("{}: {e}", p.display()))).transpose()?;
+    let out = output_with_input(command, GIT_TIMEOUT, input)?;
+    if out.status.success() {
+        Ok(out.stdout)
+    } else {
+        Err(format!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()))
+    }
+}
+
+/// Run git in `dir` with its stdout written to the file `to` — a blob too
+/// big to hold in memory.
+pub(crate) fn git_to_file(dir: &Path, args: &[&str], to: &Path) -> Result<()> {
+    let file = std::fs::File::create(to).map_err(|e| format!("{}: {e}", to.display()))?;
+    let mut command = git_command(dir);
+    command.args(args).stdin(Stdio::null()).stdout(file).stderr(Stdio::piped());
+    let out = command.output().map_err(|e| format!("couldn't run git: {e}"))?;
+    if out.status.success() { Ok(()) } else { Err(format!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim())) }
 }
 
 fn git_within(dir: &Path, args: &[&str], timeout: Duration) -> Result<String> {
@@ -192,7 +224,9 @@ pub struct Sandbox {
 /// Cut a new branch from `HEAD` — `equipe/<label>-<id>` — and check it out in a
 /// worktree under `home`.
 pub fn create(repo: &Path, home: &Path, id: &str, label: &str) -> Result<Sandbox> {
-    create_sparse(repo, home, id, label, &[])
+    let sandbox = create_sparse(repo, home, id, label, &[])?;
+    crate::design::captures::after_checkout(repo, &sandbox.path);
+    Ok(sandbox)
 }
 
 /// [`create`], checking out only what `only` — sparse-checkout patterns, see
@@ -223,6 +257,8 @@ pub fn resume(repo: &Path, home: &Path, id: &str, branch: &str, base: &str, only
     std::fs::create_dir_all(path.parent().expect("worktree path has a parent"))
         .map_err(|err| format!("couldn't create {}: {err}", path.display()))?;
     add_worktree(repo, &path, &[&path.to_string_lossy(), branch], only)?;
+    // Its pictures were never committed: back from equipe's store.
+    crate::design::captures::after_checkout(repo, &path);
     Ok(Sandbox { repo: repo.to_owned(), path, branch: branch.to_owned(), base: base.to_owned() })
 }
 
@@ -290,7 +326,7 @@ fn add_worktree(repo: &Path, path: &Path, args: &[&str], only: &[String]) -> Res
 
 /// The admin folder git keeps for worktree `path` (`<repo>/.git/worktrees/<name>`),
 /// read from its `.git` file; `None` when `path` isn't a linked worktree.
-fn admin_dir(path: &Path) -> Option<PathBuf> {
+pub(crate) fn admin_dir(path: &Path) -> Option<PathBuf> {
     let link = std::fs::read_to_string(path.join(".git")).ok()?;
     let dir = PathBuf::from(link.trim().strip_prefix("gitdir:")?.trim());
     Some(if dir.is_relative() { path.join(dir) } else { dir })
@@ -317,7 +353,10 @@ pub fn create_after(repo: &Path, home: &Path, id: &str, label: &str, after: &[(S
             continue;
         }
         let message = format!("equipe: start from {what} ({branch})");
-        if let Err(err) = with_identity(&sandbox.path, &["merge", "-q", "--no-ff", "--no-edit", "-m", &message, branch]) {
+        if let Err(err) = with_identity(&sandbox.path, &["merge", "-q", "--no-ff", "--no-edit", "-m", &message, branch])
+            // Two manifests of design captures merge entry by entry, never as a conflict.
+            && !crate::design::captures::settle_merge(&sandbox.path).unwrap_or(false)
+        {
             let files = git(&sandbox.path, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
             let _ = git(&sandbox.path, &["merge", "--abort"]);
             let _ = sandbox.discard();
@@ -329,6 +368,8 @@ pub fn create_after(repo: &Path, home: &Path, id: &str, label: &str, after: &[(S
         }
     }
     sandbox.base = git(&sandbox.path, &["rev-parse", "HEAD"])?;
+    // Its pictures were never committed: from equipe's store.
+    crate::design::captures::after_checkout(repo, &sandbox.path);
     Ok(sandbox)
 }
 
@@ -703,7 +744,11 @@ pub fn merge_conflicts(repo: &Path, branch: &str) -> Result<Vec<String>> {
         Some(1) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let files: Vec<String> = stdout.lines().skip(1).take_while(|l| !l.is_empty()).map(str::to_owned).collect();
-            if files.is_empty() { Err(format!("git merge-tree found a conflict between {branch} and {main} but named no file")) } else { Ok(files) }
+            if files.is_empty() {
+                return Err(format!("git merge-tree found a conflict between {branch} and {main} but named no file"));
+            }
+            // Design captures and their manifest: settled when it merges (`prepare_merge`).
+            Ok(files.into_iter().filter(|f| !crate::design::captures::settles_itself(f)).collect())
         }
         _ => Err(format!("git merge-tree failed: {}", String::from_utf8_lossy(&out.stderr).trim())),
     }
@@ -750,6 +795,9 @@ pub enum Prepared {
 /// for checks to run on and [`land`] to put on main. A conflict is an error
 /// naming its files.
 pub fn prepare_merge(repo: &Path, branch: &str, message: &str) -> Result<Prepared> {
+    // Design captures never reach main's history: the branch's own commits
+    // that added any are rewritten without them first.
+    crate::design::captures::guard(repo, branch)?;
     let main = main_branch(repo)?;
     if is_ancestor(repo, branch, &main) || adds_nothing(repo, branch, &main) {
         return Ok(Prepared::Nothing { main });
@@ -761,12 +809,15 @@ pub fn prepare_merge(repo: &Path, branch: &str, message: &str) -> Result<Prepare
     let out = output_within(command, GIT_TIMEOUT)?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut lines = stdout.lines();
-    let tree = lines.next().unwrap_or("").trim().to_owned();
+    let mut tree = lines.next().unwrap_or("").trim().to_owned();
     match out.status.code() {
         Some(0) => {}
         Some(1) => {
             let files: Vec<&str> = lines.take_while(|l| !l.is_empty()).collect();
-            return Err(format!("{branch} conflicts with {main} in {} — nothing was merged", files.join(", ")));
+            match crate::design::captures::settle_tree(repo, &tree, &tip, &head, &files) {
+                Some(settled) => tree = settled,
+                None => return Err(format!("{branch} conflicts with {main} in {} — nothing was merged", files.join(", "))),
+            }
         }
         _ => return Err(format!("git merge-tree failed: {}", String::from_utf8_lossy(&out.stderr).trim())),
     }
@@ -786,6 +837,12 @@ pub fn land(repo: &Path, merge: &MergeCommit) -> Result<String> {
         return Err(format!("{MAIN_MOVED} — nothing was merged"));
     }
     move_main(repo, &merge.main, &merge.tip, &merge.commit, "merged")?;
+    // The design captures it brings, put in the main checkout from equipe's store.
+    match crate::design::captures::publish(repo, &merge.main, &merge.tip, &merge.commit) {
+        Ok(p) if p.missing > 0 => crate::daemon_log!("equipe: {} design captures {} names aren't on this machine", p.missing, crate::design::captures::MANIFEST_PATH),
+        Ok(_) => {}
+        Err(err) => crate::daemon_log!("equipe: the design captures merged into {} weren't put in place: {err}", repo.display()),
+    }
     Ok(merge.main.clone())
 }
 
@@ -810,11 +867,8 @@ pub fn add_detached(repo: &Path, path: &Path, commit: &str) -> Result<()> {
 /// Move `main` from `tip` to `commit`, which has it as a parent: where a
 /// checkout has it checked out, by a fast-forward there that keeps its
 /// uncommitted changes (or refuses, and nothing moves) — else the ref alone.
-fn move_main(repo: &Path, main: &str, tip: &str, commit: &str, done: &str) -> Result<()> {
-    let checked_out = git(repo, &["worktree", "list", "--porcelain"])?
-        .split("\n\n")
-        .find(|entry| entry.lines().any(|l| l == format!("branch refs/heads/{main}")))
-        .and_then(|entry| entry.lines().find_map(|l| l.strip_prefix("worktree ")).map(PathBuf::from));
+pub(crate) fn move_main(repo: &Path, main: &str, tip: &str, commit: &str, done: &str) -> Result<()> {
+    let checked_out = checked_out_at(repo, main);
     match checked_out {
         Some(path) => git(&path, &["merge", "-q", "--ff-only", commit]).map_err(|err| {
             format!("{main} is checked out in {} and couldn't move without touching its changes — nothing was {done} ({err})", path.display())
@@ -822,6 +876,15 @@ fn move_main(repo: &Path, main: &str, tip: &str, commit: &str, done: &str) -> Re
         None => git(repo, &["update-ref", &format!("refs/heads/{main}"), commit, tip])?,
     };
     Ok(())
+}
+
+/// The checkout of `repo` that has `branch` checked out, if one does.
+pub(crate) fn checked_out_at(repo: &Path, branch: &str) -> Option<PathBuf> {
+    git(repo, &["worktree", "list", "--porcelain"])
+        .ok()?
+        .split("\n\n")
+        .find(|entry| entry.lines().any(|l| l == format!("branch refs/heads/{branch}")))
+        .and_then(|entry| entry.lines().find_map(|l| l.strip_prefix("worktree ")).map(PathBuf::from))
 }
 
 /// Commit one file — `rel` from the top of `repo`, holding `bytes` — onto
@@ -931,7 +994,7 @@ pub fn has_origin(repo: &Path) -> bool {
 
 /// Run a git command that makes a commit, as the user — or as equipe when no
 /// identity is configured on this machine.
-fn with_identity(dir: &Path, args: &[&str]) -> Result<String> {
+pub(crate) fn with_identity(dir: &Path, args: &[&str]) -> Result<String> {
     git(dir, args).or_else(|_| {
         // A failed merge must not be retried over its own leftovers. Only ever
         // in a worktree of equipe's: `dir` is one whenever `args` merge.
@@ -950,6 +1013,10 @@ const FALLBACK_IDENTITY: [&str; 4] = ["-c", "user.name=equipe", "-c", "user.emai
 impl Sandbox {
     /// Commit everything the agent changed. `Ok(None)` when it changed nothing.
     pub fn commit_all(&self, message: &str) -> Result<Option<String>> {
+        // Design captures stay out of git; their manifest goes in.
+        if let Err(err) = crate::design::captures::prepare_commit(&self.path, &self.branch) {
+            crate::daemon_log!("equipe: design captures in {}: {err}", self.path.display());
+        }
         // In a sparse worktree (a squad home's), a file written where the
         // checkout leaves things out is refused without `--sparse`; files left
         // out are never taken as deleted either way.
