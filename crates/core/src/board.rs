@@ -725,6 +725,12 @@ path in your worktree or the squad's folder (relative to where you work, or abso
 });
 
 /// The kind a new ticket gets when none is given: `code` when it has a project, `task` when not.
+/// Whether a need put to the person is a question — it ends on a question
+/// mark, in any script — rather than something for them to do.
+pub fn is_question(need: &str) -> bool {
+    need.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '*' | '_' | '`' | ')' | '\u{ff09}')).ends_with(['?', '\u{ff1f}', '\u{061f}'])
+}
+
 pub fn default_kind(project: Option<&Path>) -> TicketKind {
     if project.is_some() { TicketKind::Code } else { TicketKind::Task }
 }
@@ -898,6 +904,11 @@ again with `waive_findings` saying why they aren't real.",
                     "waive_findings": { "type": "string", "description": "Only after equipe's precheck sent this hand-in back: why each of its S1/S2 findings isn't a real problem for the person. A designer then judges them before the person reviews." },
                     "changes": CHANGES_SCHEMA.clone(),
                     "unchanged": { "type": "string", "description": "A designer's hand-in that changes a screen, with `changes`: what it leaves as it was — features, content, data, copy unless asked." },
+                    "failing_on_main": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Checks or tests that fail on main itself just the same (you ran them on main and they failed there too): each by its command or test name. They don't hold your hand-in back: equipe records them as pre-existing on main and keeps one top-priority ticket to fix main. Never wait on, or depend on, a fix for them.",
+                    },
                 },
                 "required": ["summary"],
             },
@@ -905,7 +916,9 @@ again with `waive_findings` saying why they aren't real.",
         json!({
             "name": BLOCK_ON_PERSON,
             "description": "Put the ticket you are on down when you can't go on without something only the person \
-can do — a token or secret to issue, an account or a setting to change. The ticket waits for them with what you \
+can do — a token or secret to issue, an account or a setting to change. Never for a question or a choice: a choice goes \
+to ask_decision with your `recommended` option and you carry on with it; a question only they can answer is an \
+ask_decision question without options. The ticket waits for them with what you \
 list as their checklist; you are free for other work meanwhile, and get it back, in the same worktree, once they \
 have done it. Your changes so far are kept. Then end your turn. The person reads the ticket in their list by `ask` \
 alone, so it says what they must do — not what you do. Never list macOS privacy-permission steps \
@@ -1136,8 +1149,10 @@ language, so never write \"Recommended\" into a label; they can also pick severa
 out, and they answer in their own words — for what only they know (a phone number, an email, a name, a date). They \
 may skip any. It doesn't wait, and needs no ticket: the person answers when they can, and their answers come to you \
 as their next message (\"Answers to your question: 1) … → …\"). Then end your turn, or carry on with work that \
-doesn't depend on it. When the ticket you are on can't go on without the answer, or they must do something only \
-they can, that is block_on_person; never for a yes before acting in their name (ask_person) or for permissions. A \
+doesn't depend on it. A choice with your `recommended` option never puts your ticket down: under the squad's autonomy \
+policy it is decide-and-tell — carry on with your recommendation; it is taken unless the person picks otherwise, and \
+they can still change it. When they must do something only they can, that is block_on_person; never for a yes \
+before acting in their name (ask_person) or for permissions. A \
 visual choice — a logo, colours, a layout, a screen, an icon, an illustration — is never asked in words alone: \
 render or mock up each option first (PNG, JPG, WebP, GIF or SVG, in your worktree or the squad's folder), then ask, \
 giving each option its `images`; the person sees them side by side and picks from the pictures. Give a design \
@@ -1210,7 +1225,7 @@ and answers with the family plus the tiles they liked.",
                                 "maxItems": crate::visuals::PER_QUESTION,
                                 "description": "Pictures of the question as a whole — what is there now, say — shown above its options.",
                             },
-                            "kind": { "type": "string", "enum": ["design", "internal", "product"], "description": "What it is about: design (a choice between options you made — layouts, directions, looks), internal (the squad's own process: how to file or title a ticket, a duplicate, a follow-up — invisible in the product), or product (scope, behaviour, cost, anything else). Under the squad's autonomy policy, internal questions may be yours to settle, and a design choice may be taken on your recommended option if the person doesn't answer in time." },
+                            "kind": { "type": "string", "enum": ["design", "internal", "product"], "description": "What it is about: design (a choice between options you made — layouts, directions, looks), internal (the squad's own process: how to file or title a ticket, a duplicate, a follow-up — invisible in the product), or product (scope, behaviour, cost, anything else). Under the squad's autonomy policy, internal questions may be yours to settle, and a design or product choice with your recommended option is decide-and-tell: you carry on with it, and it is taken unless the person picks otherwise." },
                             "lesson": { "type": "string", "description": "Only in the weekly retro: the lesson behind this change, one line in the person's language. equipe keeps it in the squad's memory when the person takes any option but the last; otherwise it is let go." },
                         },
                         "required": ["question"],
@@ -1756,6 +1771,15 @@ pub fn arg_id(args: &Value, key: &str) -> Option<TicketId> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_need_that_ends_on_a_question_mark_is_a_question_in_any_script() {
+        assert!(is_question("Keep the icon, or widen the text?"));
+        assert!(is_question("どちらにしますか？"));
+        assert!(is_question("**Which domain?**"));
+        assert!(!is_question("Share the 3 sheets with the service account."));
+        assert!(!is_question("Issue a token at [the console](https://example.com/?x=1)"));
+    }
     use super::*;
     use crate::roles::Subagents;
     use equipe_protocol::Engine;

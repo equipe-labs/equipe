@@ -38,9 +38,14 @@
 //! `CARGO_TARGET_DIR`, as it does for members).
 //!
 //! When a command fails, it runs once more on main alone: main failing it too
-//! means main is broken already, which isn't the branch's fault — the work
-//! stays in review and the PM hears so, rather than every member being sent
-//! back for main's failure.
+//! means main is broken already, which isn't the branch's fault. Such a
+//! failure is *pre-existing on main* ([`PreExisting`]): it doesn't hold the
+//! work back — the rest of the commands still run on the merge, and the work
+//! lands when everything else passes — and the runtime makes sure one
+//! top-priority "main is red" ticket exists to fix it, rather than every
+//! member being sent back, or every ticket waiting, for main's failure. Where
+//! the output names failing tests (cargo, pytest, go, jest/vitest), a test
+//! that fails on the merge but not on main is the branch's after all.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -123,9 +128,10 @@ pub enum Outcome {
     /// The branch is in main already, or would change nothing there: nothing
     /// to check, nothing to land.
     Nothing { main: String },
-    /// Every command passed on the merge, and main is still where the merge
-    /// was worked out: [`worktree::land`] it.
-    Passed { merge: MergeCommit, ran: Vec<String> },
+    /// Every command passed on the merge — or failed on main alone just the
+    /// same (`pre_existing`) — and main is still where the merge was worked
+    /// out: [`worktree::land`] it.
+    Passed { merge: MergeCommit, ran: Vec<String>, pre_existing: Vec<PreExisting> },
     /// The project declares no checks (on main as it stands): the merge to
     /// land, unchecked.
     Undeclared { merge: MergeCommit },
@@ -133,14 +139,20 @@ pub enum Outcome {
     Failed { command: String, code: Option<i32>, tail: String },
     /// A command was still running when the time for all of them ran out.
     TimedOut { command: String, after: Duration, tail: String },
-    /// A command failed on the merge and on main alone too: main is broken
-    /// already, not by this branch.
-    MainFails { command: String, tail: String },
     /// Main or the branch moved on while the checks ran: what passed isn't
     /// what would land.
     Moved,
     /// The checks couldn't be run, or the file couldn't be read: nothing lands.
     Error(String),
+}
+
+/// A check that failed on the merge and failed on main alone just the same:
+/// main is broken already, not by the branch, so it doesn't hold the branch back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreExisting {
+    pub command: String,
+    /// The last part of what it printed on main.
+    pub tail: String,
 }
 
 /// What runs a branch's checks.
@@ -176,29 +188,39 @@ impl Run<'_> {
             Ok(None) => return Outcome::Undeclared { merge },
             Err(err) => return Outcome::Error(err),
         };
-        let deadline = Instant::now() + checks.timeout;
-        let ended = match self.on(&merge.commit, "merge", |dir| run_all(dir, &checks.commands, self.env, deadline, checks.timeout)) {
-            Ok(ended) => ended,
-            Err(err) => return Outcome::Error(err),
-        };
-        match ended {
-            Ended::Passed => {}
-            Ended::TimedOut { command, tail } => return Outcome::TimedOut { command, after: checks.timeout, tail },
-            Ended::Failed { command, code, tail } => {
-                // Main alone, the same command, as long again at most.
-                let alone = Instant::now() + checks.timeout;
-                let main_fails = self.on(&merge.tip, "main", |dir| run_all(dir, std::slice::from_ref(&command), self.env, alone, checks.timeout));
-                return match main_fails {
-                    Ok(Ended::Failed { tail: main_tail, .. }) => Outcome::MainFails { command, tail: main_tail },
-                    _ => Outcome::Failed { command, code, tail },
-                };
+        let mut deadline = Instant::now() + checks.timeout;
+        let mut pre_existing: Vec<PreExisting> = Vec::new();
+        let ended = self.on(&merge.commit, "merge", |dir| {
+            for command in &checks.commands {
+                match run_all(dir, std::slice::from_ref(command), self.env, deadline, checks.timeout) {
+                    Ended::Passed => {}
+                    timed_out @ Ended::TimedOut { .. } => return timed_out,
+                    Ended::Failed { command, code, tail } => {
+                        // Main alone, the same command, as long again at most; the merge's own time doesn't run meanwhile.
+                        let began = Instant::now();
+                        let alone = began + checks.timeout;
+                        let on_main = self.on(&merge.tip, "main", |main| run_all(main, std::slice::from_ref(&command), self.env, alone, checks.timeout));
+                        deadline += began.elapsed();
+                        match on_main {
+                            Ok(Ended::Failed { tail: main_tail, .. }) if !new_failures(&tail, &main_tail) => pre_existing.push(PreExisting { command, tail: main_tail }),
+                            _ => return Ended::Failed { command, code, tail },
+                        }
+                    }
+                }
             }
+            Ended::Passed
+        });
+        match ended {
+            Ok(Ended::Passed) => {}
+            Ok(Ended::TimedOut { command, tail }) => return Outcome::TimedOut { command, after: checks.timeout, tail },
+            Ok(Ended::Failed { command, code, tail }) => return Outcome::Failed { command, code, tail },
+            Err(err) => return Outcome::Error(err),
         }
         // What passed must be what lands: neither main nor the branch moved meanwhile.
         if !worktree::main_is_at(self.repo, &merge) || !worktree::branch_is_at(self.repo, self.branch, &merge) {
             return Outcome::Moved;
         }
-        Outcome::Passed { merge, ran: checks.commands }
+        Outcome::Passed { merge, ran: checks.commands, pre_existing }
     }
 
     /// `work` in a temporary worktree at `commit`, removed afterwards whatever happens.
@@ -332,6 +354,54 @@ fn tail(log: &Path) -> String {
     kept.trim().to_owned()
 }
 
+/// Whether a command's output on the merge (`merged`) names a failing test
+/// that its output on main alone (`main`) doesn't: then the branch broke
+/// something of its own, even though main fails the same command. When
+/// either names none that can be read, it can't be told, and the failure is
+/// taken to be main's.
+pub fn new_failures(merged: &str, main: &str) -> bool {
+    let (on_merge, on_main) = (failing_tests(merged), failing_tests(main));
+    !on_merge.is_empty() && !on_main.is_empty() && on_merge.iter().any(|t| !on_main.contains(t))
+}
+
+/// The tests a test runner's output says failed, as far as the common ones
+/// print them: cargo (`test a::b ... FAILED`, its `failures:` list), pytest
+/// (`FAILED path::test`), go (`--- FAIL: TestX`), jest and vitest (`FAIL path`, `✕ name`).
+pub fn failing_tests(output: &str) -> std::collections::BTreeSet<String> {
+    let mut found = std::collections::BTreeSet::new();
+    let mut in_list = false;
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed == "failures:" {
+            in_list = true;
+            continue;
+        }
+        if in_list {
+            // cargo's list: indented names, one per line, until a blank line or the result.
+            if line.starts_with("    ") && !trimmed.is_empty() && !trimmed.contains(' ') {
+                found.insert(trimmed.to_owned());
+                continue;
+            }
+            if !trimmed.is_empty() && !trimmed.starts_with("----") {
+                in_list = false;
+            }
+        }
+        if let Some(rest) = trimmed.strip_prefix("test ").and_then(|r| r.strip_suffix(" ... FAILED")) {
+            found.insert(rest.trim().to_owned());
+        } else if let Some(rest) = trimmed.strip_prefix("FAILED ") {
+            found.insert(rest.split(" - ").next().unwrap_or(rest).trim().to_owned());
+        } else if let Some(rest) = trimmed.strip_prefix("--- FAIL: ") {
+            found.insert(rest.split_whitespace().next().unwrap_or(rest).to_owned());
+        } else if let Some(rest) = trimmed.strip_prefix("FAIL ") {
+            found.insert(rest.split_whitespace().next().unwrap_or(rest).to_owned());
+        } else if let Some(rest) = trimmed.strip_prefix("\u{2715} ").or_else(|| trimmed.strip_prefix("\u{d7} ")) {
+            found.insert(rest.trim_end_matches(|c: char| c.is_ascii_digit() || matches!(c, ' ' | '(' | ')' | 'm' | 's')).trim().to_owned());
+        }
+    }
+    found.retain(|t| !t.is_empty());
+    found
+}
+
 /// Folders a run left behind under `scratch` — the daemon stopped mid-run —
 /// removed: nothing runs checks before the daemon has started. What went.
 pub fn sweep(scratch: &Path) -> Vec<String> {
@@ -435,8 +505,9 @@ mod tests {
         // The command sees the merged tree: the branch's file and main's later one together.
         let repo = repo("pass", Some(r#"{ "commands": ["test -f work.txt && test -f later.txt", "test \"$EQUIPE_CHECKS\" = 1"] }"#));
         let before = git(&repo, &["rev-parse", "main"]);
-        let Outcome::Passed { merge, ran } = run(&repo) else { panic!("expected a pass") };
+        let Outcome::Passed { merge, ran, pre_existing } = run(&repo) else { panic!("expected a pass") };
         assert_eq!(ran.len(), 2);
+        assert!(pre_existing.is_empty());
         assert_eq!((merge.tip.as_str(), merge.main.as_str()), (before.as_str(), "main"));
         assert_eq!(git(&repo, &["rev-parse", "main"]), before, "nothing landed yet");
         // The very commit checked is the one that lands.
@@ -459,11 +530,50 @@ mod tests {
     }
 
     #[test]
-    fn main_failing_the_same_command_alone_is_main_broken_not_the_branch() {
-        let repo = repo("broken-main", Some(r#"{ "commands": ["echo main is red; false"] }"#));
+    fn main_failing_the_same_command_alone_is_pre_existing_and_the_rest_still_decides() {
+        // Main fails the first command on its own: not the branch's doing; the second still runs on the merge and passes.
+        let repo = repo("broken-main", Some(r#"{ "commands": ["echo main is red; false", "test -f work.txt"] }"#));
         let outcome = run(&repo);
-        assert!(matches!(&outcome, Outcome::MainFails { command, tail } if command == "echo main is red; false" && tail.contains("main is red")), "{outcome:?}");
+        let Outcome::Passed { ran, pre_existing, .. } = &outcome else { panic!("expected a pass with main's failure set aside: {outcome:?}") };
+        assert_eq!(ran.len(), 2);
+        assert_eq!(pre_existing.len(), 1);
+        assert_eq!(pre_existing[0].command, "echo main is red; false");
+        assert!(pre_existing[0].tail.contains("main is red"), "{pre_existing:?}");
         assert_eq!(failed_reason(&outcome), None, "nobody is sent back for it");
+        // A later command the branch itself breaks still sends it back.
+        let both = repo_two("broken-main-and-branch", r#"{ "commands": ["false", "test ! -f work.txt"] }"#);
+        assert!(matches!(run(&both), Outcome::Failed { command, .. } if command == "test ! -f work.txt"));
+    }
+
+    fn repo_two(name: &str, checks: &str) -> PathBuf {
+        repo(name, Some(checks))
+    }
+
+    #[test]
+    fn a_test_failing_on_the_merge_but_not_on_main_is_the_branchs_even_when_main_fails_the_command() {
+        // The same command fails on both, but the merge breaks a test main passes.
+        let script = r#"{ "commands": ["if [ -f work.txt ]; then printf 'test erp::latency ... FAILED\ntest mcp::draft ... FAILED\n'; else printf 'test erp::latency ... FAILED\n'; fi; false"] }"#;
+        let broken = repo("new-failure", Some(script));
+        assert!(matches!(run(&broken), Outcome::Failed { tail, .. } if tail.contains("mcp::draft")));
+        // Only main's own failing test: pre-existing.
+        let script = r#"{ "commands": ["printf 'test erp::latency ... FAILED\n'; false"] }"#;
+        let same = repo("same-failure", Some(script));
+        assert!(matches!(run(&same), Outcome::Passed { pre_existing, .. } if pre_existing.len() == 1));
+    }
+
+    #[test]
+    fn failing_tests_are_read_from_the_common_runners_output() {
+        let cargo = "running 3 tests\ntest a::ok ... ok\ntest erp::latency ... FAILED\n\nfailures:\n\n---- erp::latency stdout ----\npanicked\n\nfailures:\n    erp::latency\n    erp::other\n\ntest result: FAILED. 1 passed; 2 failed";
+        let found = failing_tests(cargo);
+        assert!(found.contains("erp::latency") && found.contains("erp::other"), "{found:?}");
+        assert!(!found.iter().any(|t| t.contains("stdout") || t.contains("result")), "{found:?}");
+        assert!(failing_tests("FAILED tests/test_erp.py::test_latency - AssertionError: slow").contains("tests/test_erp.py::test_latency"));
+        assert!(failing_tests("--- FAIL: TestLatency (0.20s)").contains("TestLatency"));
+        assert!(failing_tests(" FAIL  src/erp.test.ts > latency").contains("src/erp.test.ts"));
+        assert!(failing_tests("error[E0425]: cannot find value").is_empty(), "a build error names no test");
+        assert!(new_failures("test b ... FAILED", "test a ... FAILED"));
+        assert!(!new_failures("test a ... FAILED", "test a ... FAILED\ntest c ... FAILED"));
+        assert!(!new_failures("compile error", "test a ... FAILED"), "can't be told: main's");
     }
 
     #[test]

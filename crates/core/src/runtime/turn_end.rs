@@ -1265,6 +1265,7 @@ kept; it goes on by itself — on the other engine if {name} moves there, or onc
                 let done: Vec<String> = tickets.iter().map(|t| format!("T-{t}")).collect();
                 return Err(format!("{} {} done already — nothing to wait for: carry on.", done.join(", "), if done.len() == 1 { "is" } else { "are" }));
             }
+            self.no_wait_on_main_red(squad, &open)?;
             if let Some(cycle) = board::dependency_loop(&board, on, &open) {
                 let path: Vec<String> = cycle.iter().map(|t| format!("T-{t}")).collect();
                 return Err(format!("That would wait in a loop: {}. Hand it back as `cannot` and say why instead.", path.join(" → ")));

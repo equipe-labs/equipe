@@ -337,6 +337,13 @@ pub enum Held {
 /// Who lands `ticket`, ready (handed in, its design check passed), with
 /// `changed` the files its branch changed.
 pub fn landing(self_land: bool, pm_accepts: bool, ticket: &Ticket, changed: &[String], pms_own: bool) -> Landing {
+    landing_with(self_land, pm_accepts, ticket, changed, &std::collections::BTreeMap::new(), pms_own)
+}
+
+/// [`landing`], with `sql` the contents of the SQL migrations its branch
+/// changed, by path: one that only adds lands like code
+/// ([`crate::person_gate::weigh_change`]).
+pub fn landing_with(self_land: bool, pm_accepts: bool, ticket: &Ticket, changed: &[String], sql: &std::collections::BTreeMap<String, String>, pms_own: bool) -> Landing {
     if !pm_accepts {
         return Landing::Pm(Held::PersonAccepts);
     }
@@ -346,7 +353,7 @@ pub fn landing(self_land: bool, pm_accepts: bool, ticket: &Ticket, changed: &[St
     if !self_land {
         return Landing::Pm(Held::Off);
     }
-    match crate::person_gate::weigh(ticket, changed) {
+    match crate::person_gate::weigh_change(ticket, changed, sql) {
         Some(why) => Landing::Pm(Held::Gated(why)),
         None => Landing::Member,
     }
@@ -363,6 +370,10 @@ to add: a follow-up ticket for its member. Nothing to do if they're fine — don
         lines.join("\n")
     )
 }
+
+/// How the digest marks work that carried an additive schema migration: it
+/// landed like code, and the PM hears so here.
+pub const ADDITIVE_MIGRATION: &str = "with an additive schema migration (new tables, indexes or columns; nothing dropped or rewritten)";
 
 /// The board tool the PM reverts work a member landed with.
 pub const REVERT_LANDED: &str = "revert_landed";
@@ -555,6 +566,11 @@ mod tests {
         assert_eq!(landing(true, false, &t, &[], false), Landing::Pm(Held::PersonAccepts));
         assert_eq!(landing(true, true, &t, &[], true), Landing::Pm(Held::PmsOwn));
         assert_eq!(landing(true, true, &t, &["db/migrations/0042_roles.sql".into()], false), Landing::Pm(Held::Gated(crate::person_gate::Why::Data)));
+        // Read from its SQL: a migration that only adds lands like code; one that drops waits.
+        let sql = |text: &str| std::collections::BTreeMap::from([("db/migrations/0042_roles.sql".to_owned(), text.to_owned())]);
+        let migration: Vec<String> = vec!["db/migrations/0042_roles.sql".into(), "src/db/roles.ts".into()];
+        assert_eq!(landing_with(true, true, &t, &migration, &sql("CREATE TABLE roles (id int);"), false), Landing::Member);
+        assert_eq!(landing_with(true, true, &t, &migration, &sql("DROP TABLE roles;"), false), Landing::Pm(Held::Gated(crate::person_gate::Why::Data)));
         assert_eq!(landing(true, true, &t, &["src/auth/session.ts".into()], false), Landing::Pm(Held::Gated(crate::person_gate::Why::Security)));
         let deploy = Ticket { label: Some(TicketLabel::Deploy), ..t.clone() };
         assert_eq!(landing(true, true, &deploy, &[], false), Landing::Pm(Held::Gated(crate::person_gate::Why::Irreversible)));

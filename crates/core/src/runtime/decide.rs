@@ -124,6 +124,12 @@ impl Runtime {
         let mut due = None;
         match outcome {
             PolicyOutcome::Ask => {}
+            PolicyOutcome::Unmarked => {
+                // Once: asked again as it is, it goes to the person.
+                if self.unmarked_asked.insert((squad.to_owned(), member.to_owned(), set.questions[0].question.clone())) {
+                    return Err(super::autonomy::UNMARKED.into());
+                }
+            }
             PolicyOutcome::Yours => return Err(super::autonomy::YOURS.into()),
             PolicyOutcome::Now(kind, answers) => {
                 let message = self.record_pick(squad, &set, &answers, kind);
@@ -166,8 +172,9 @@ with a short line, or carry on with work that doesn't depend on the answer."
             self.keep_due(squad, set_id, kind, at);
             let minutes = at.saturating_sub(now_secs()).div_ceil(60);
             asked.push_str(&format!(
-                " Under the squad's autonomy policy, if they haven't answered in {minutes} min your recommended option is taken \
-and comes to you as the answer — so carry on as if it were chosen, and change course if their answer differs."
+                " Under the squad's autonomy policy this is decide-and-tell: carry on now as if your recommended option were \
+chosen — your ticket doesn't wait for it, so don't put it down or end your turn over it. If they haven't answered in {minutes} \
+min it is taken and comes to you as the answer; if they pick otherwise, change course then."
             ));
         }
         Ok(match nudge {
@@ -207,7 +214,9 @@ and comes to you as the answer — so carry on as if it were chosen, and change 
     /// turn after asking.
     pub(super) fn asked_of_person(&mut self, squad: &str, ticket: TicketId) -> Vec<String> {
         let mut needs: Vec<String> = Vec::new();
-        for set in self.question_sets(squad).iter().filter(|s| s.ticket == Some(ticket)) {
+        // A choice under decide-and-tell doesn't hold its ticket: its member carries on with its recommendation.
+        let due: Vec<u64> = self.autonomy_store(squad).due.iter().map(|d| d.set).collect();
+        for set in self.question_sets(squad).iter().filter(|s| s.ticket == Some(ticket) && !due.contains(&s.id)) {
             needs.extend(set.questions.iter().map(|q| one_line(&q.question)));
         }
         needs.extend(self.secret_asks(squad).iter().filter(|a| a.ticket == Some(ticket)).map(|a| one_line(&a.why)));

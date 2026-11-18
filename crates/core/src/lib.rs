@@ -53,6 +53,7 @@ pub mod journal;
 pub mod keychain;
 pub mod lanes;
 pub mod lead_time;
+pub mod migrations;
 pub mod flow;
 pub mod machine_load;
 pub mod live_preview;

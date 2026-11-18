@@ -411,14 +411,17 @@ async fn failing_checks_send_it_back_with_the_output_and_leave_main_untouched() 
 
 #[cfg(unix)]
 #[tokio::test]
-async fn main_failing_its_own_checks_keeps_the_work_in_review_rather_than_blaming_it() {
+async fn main_failing_its_own_checks_doesnt_hold_the_work_and_one_ticket_fixes_main() {
     let (handle, mut events, repo) = handed_in_checked(r#"{ "commands": ["false"] }"#).await;
-    let main_before = git(&repo, &["rev-parse", "main"]);
     tool(&handle, "pm", "accept_work", json!({ "tickets": [1], "checked": "Fine." })).await;
-    let seen = until(&mut events, |e| matches!(e, Event::Error { message, .. } if message.contains("Main fails the project's own checks"))).await;
-    assert!(!seen.iter().any(|e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status != TicketStatus::Review)), "{seen:#?}");
-    assert_eq!(status(&handle, 1).await, TicketStatus::Review);
-    assert_eq!(git(&repo, &["rev-parse", "main"]), main_before);
+    // Not T-1's fault: it lands, the failure recorded as pre-existing on main.
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
+    assert_eq!(status(&handle, 1).await, TicketStatus::Done);
+    assert!(on_main(&repo, "HERO.md"));
+    let board = handle.snapshot("acme").await.tickets;
+    let red: Vec<_> = board.iter().filter(|t| t.title == "Main is red: false").collect();
+    assert_eq!(red.len(), 1, "{board:#?}");
+    assert_eq!(red[0].priority, equipe_core::protocol::Priority::Urgent);
     handle.shutdown().await;
 }
 
@@ -688,5 +691,138 @@ async fn the_baton_moves_a_ticket_to_the_next_role_on_the_same_branch_with_no_ne
         assert_eq!(t.branch.as_deref(), Some(branch.as_str()), "the same branch");
     }
     assert_eq!(handle.snapshot("acme").await.tickets.len(), 1, "no new ticket");
+    handle.shutdown().await;
+}
+
+// ── finished work lands now: a red main, additive migrations, the PM's say ──
+
+/// A squad of a PM, a frontend and a backend on a repository whose main
+/// declares `checks` (if any), members landing their own work.
+async fn landing_squad_with(checks: Option<&str>) -> (Handle, UnboundedReceiver<Event>, PathBuf) {
+    let repo = repo();
+    if let Some(checks) = checks {
+        std::fs::create_dir_all(repo.join(".equipe")).unwrap();
+        std::fs::write(repo.join(".equipe/checks.json"), checks).unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "declare the checks"]);
+    }
+    let home = scratch("home");
+    squads::create(&home, "acme", &repo).unwrap();
+    let (handle, mut events) = runtime::start(config(&claude(), &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    add(&handle, &mut events, 3, member(&repo, "backend")).await;
+    (handle, events, repo)
+}
+
+/// The id of the ticket titled `title`.
+async fn ticket_titled(handle: &Handle, title: &str) -> u32 {
+    handle.snapshot("acme").await.tickets.iter().find(|t| t.title == title).map(|t| t.id).expect("on the board")
+}
+
+/// Where `branch` is checked out.
+fn worktree_of(repo: &Path, branch: &str) -> PathBuf {
+    let list = git(repo, &["worktree", "list", "--porcelain"]);
+    let mut path = None;
+    for line in list.lines() {
+        if let Some(p) = line.strip_prefix("worktree ") {
+            path = Some(PathBuf::from(p));
+        }
+        if line == format!("branch refs/heads/{branch}") {
+            return path.expect("a worktree before its branch");
+        }
+    }
+    panic!("{branch} isn't checked out: {list}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_check_main_fails_on_its_own_never_holds_finished_work_and_one_ticket_fixes_main() {
+    let (handle, mut events, repo) = landing_squad_with(Some(r#"{ "commands": ["echo main is red; false"] }"#)).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Hero done.", "changes_screens": false })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    // No PM turn, no person: its member lands it though main fails the check on its own.
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
+    assert!(on_main(&repo, "HERO.md"));
+    let red_title = "Main is red: echo main is red; false";
+    let red = ticket_titled(&handle, red_title).await;
+    let board = handle.snapshot("acme").await.tickets;
+    let t = board.iter().find(|t| t.id == red).unwrap();
+    assert_eq!((t.priority, t.owner.as_deref()), (equipe_core::protocol::Priority::Urgent, Some("frontend")), "top priority, with the member that met it");
+
+    // Nothing waits on it: a dependency on it is refused.
+    let chained = tool(&handle, "pm", "create_ticket", json!({ "title": "MCP draft formatting", "body": "-", "owner": "backend", "depends_on": [red] })).await;
+    assert!(chained.is_error && chained.text.contains("nothing waits on it"), "{chained:?}");
+
+    // A member that finds it failing on main too hands in anyway: the same ticket, not a second.
+    tool(&handle, "pm", "create_ticket", json!({ "title": "MCP draft formatting", "body": "-", "owner": "backend" })).await;
+    let mcp = ticket_titled(&handle, "MCP draft formatting").await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket, .. } if *ticket == mcp)).await;
+    run_idle(&handle, mcp).await;
+    let handed = tool_on(&handle, "backend", mcp, "submit_for_review", json!({ "summary": "Formatting done.", "changes_screens": false, "failing_on_main": ["echo main is red; false"] })).await;
+    assert!(!handed.is_error && handed.text.contains("pre-existing on main") && handed.text.contains(&format!("T-{red}")), "{handed:?}");
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == mcp && ticket.status == TicketStatus::Done)).await;
+    let reds = handle.snapshot("acme").await.tickets.iter().filter(|t| t.title == red_title).count();
+    assert_eq!(reds, 1, "exactly one ticket fixes main");
+    handle.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_additive_migration_lands_like_code_and_a_destructive_one_waits_for_a_yes() {
+    let (handle, mut events, repo) = landing_squad_with(None).await;
+    // Additive: new table and a nullable column.
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Usage timing", "body": "-", "owner": "backend" })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let branch = started.iter().rev().find_map(|e| if let Event::TicketChanged { ticket, .. } = e { ticket.branch.clone().filter(|_| ticket.id == 1) } else { None }).expect("its branch");
+    run_idle(&handle, 1).await;
+    let tree = worktree_of(&repo, &branch);
+    std::fs::create_dir_all(tree.join("db/migrations")).unwrap();
+    std::fs::write(tree.join("db/migrations/225_usage_event_timing.sql"), "CREATE TABLE usage_event_timing (id bigserial PRIMARY KEY, took_ms int);\nALTER TABLE usage_events ADD COLUMN started_at timestamptz;\n").unwrap();
+    // Asking the person to approve it isn't needed: it lands like code.
+    let asked = tool_on(&handle, "backend", 1, "ask_person", json!({ "action": "Apply db/migrations/225_usage_event_timing.sql to production", "why": "new timing table", "summary": { "changes": "A new table" }, "kind": "production_data" })).await;
+    assert!(!asked.is_error && asked.text.starts_with("Not asked") && asked.text.contains("land like code"), "{asked:?}");
+    assert!(handle.snapshot("acme").await.approvals.is_empty(), "no card for the person");
+    let handed = tool_on(&handle, "backend", 1, "submit_for_review", json!({ "summary": "Timing table added.", "changes_screens": false })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
+    assert!(on_main(&repo, "db/migrations/225_usage_event_timing.sql"), "landed by its member");
+
+    // Destructive: it waits for a yes, in review.
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Usage cleanup", "body": "-", "owner": "backend" })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
+    let branch = started.iter().rev().find_map(|e| if let Event::TicketChanged { ticket, .. } = e { ticket.branch.clone().filter(|_| ticket.id == 2) } else { None }).expect("its branch");
+    run_idle(&handle, 2).await;
+    let tree = worktree_of(&repo, &branch);
+    std::fs::create_dir_all(tree.join("db/migrations")).unwrap();
+    std::fs::write(tree.join("db/migrations/226_drop_old_usage.sql"), "DROP TABLE old_usage;\n").unwrap();
+    let asked = tool_on(&handle, "backend", 2, "ask_person", json!({ "action": "Apply db/migrations/226_drop_old_usage.sql to production", "why": "cleanup", "summary": { "changes": "Drops a table" }, "kind": "production_data" })).await;
+    assert!(!asked.text.starts_with("Not asked"), "a drop is the person's: {asked:?}");
+    let handed = tool_on(&handle, "backend", 2, "submit_for_review", json!({ "summary": "Old table dropped.", "changes_screens": false })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.status == TicketStatus::Review)).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(status(&handle, 2).await, TicketStatus::Review, "the gate holds it");
+    assert!(!on_main(&repo, "db/migrations/226_drop_old_usage.sql"));
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_pms_card_never_holds_work_its_member_lands() {
+    let (handle, mut events, repo) = landing_squad_with(None).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Hero done.", "changes_screens": false })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Review)).await;
+    // The PM, briefed of the hand-in, tries to put it to the person: no card, it lands by its member.
+    let said = tool(&handle, "pm", "propose_accept", json!({ "verdict": "accept", "tickets": [1], "why": "visible" })).await;
+    assert!(handle.snapshot("acme").await.accepts.is_empty(), "no card for work that lands itself: {said:?}");
+    assert!(said.text.contains("landed by its member") || status(&handle, 1).await == TicketStatus::Done, "{said:?}");
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
+    assert!(handle.snapshot("acme").await.accepts.is_empty(), "no card left behind");
+    assert!(on_main(&repo, "HERO.md"));
     handle.shutdown().await;
 }

@@ -3,8 +3,11 @@
 //! branch merged with main is worked out, the checks run on exactly that
 //! merge off the loop, and only a pass accepts the ticket and lands that
 //! commit on main. A failure sends the work back to its member with the
-//! failing command's output; main is never touched. One run at a time per
-//! repository: each lands on the main the next one is worked out on.
+//! failing command's output; main is never touched. A check main fails on
+//! its own doesn't hold the work back: it lands, the failure recorded as
+//! pre-existing on main, and one "main is red" ticket fixes main
+//! (`runtime::main_red`). One run at a time per repository: each lands on
+//! the main the next one is worked out on.
 
 use super::*;
 use crate::checks::{self, Outcome};
@@ -104,7 +107,24 @@ impl Runtime {
         };
         match outcome {
             Outcome::Nothing { .. } => self.accept_checked(&gate, None, None).await,
-            Outcome::Passed { merge, ran } => self.accept_checked(&gate, Some(merge), Some(ran)).await,
+            Outcome::Passed { merge, ran, pre_existing } => {
+                // Main's own failures: recorded, one ticket to fix main, and the work lands all the same.
+                let owner = t.assignee.clone().or_else(|| t.owner.clone());
+                for failing in &pre_existing {
+                    note(self, "pre-existing on main", &failing.command);
+                    let red = self.ensure_main_red(&squad, t.project.as_deref(), &failing.command, &failing.tail, ticket, owner.as_deref());
+                    let red_title = red.and_then(|r| self.find_ticket(&squad, r)).map(|r| r.title).unwrap_or_default();
+                    let shown = say!(self, "notice.checks_pre_existing", id = ticket, command = failing.command, title = red_title);
+                    let line = format!(
+                        "equipe ran the project's checks on T-{ticket} merged with main: `{}` failed, and fails on main alone too, so it is main's, not T-{ticket}'s. T-{ticket} lands all the same (recorded as pre-existing on main); {} fixes main. Don't hold other work for it.",
+                        failing.command,
+                        red.map(|r| format!("T-{r}")).unwrap_or_else(|| "a fix ticket".into())
+                    );
+                    self.brief_pm(&squad, line, Some(shown));
+                }
+                let passed: Vec<String> = ran.into_iter().filter(|c| !pre_existing.iter().any(|p| &p.command == c)).collect();
+                self.accept_checked(&gate, Some(merge), Some(passed)).await
+            }
             // Its checks went from main meanwhile: merged as any project without them.
             Outcome::Undeclared { merge } => self.accept_checked(&gate, Some(merge), None).await,
             Outcome::Failed { ref command, .. } | Outcome::TimedOut { ref command, .. } => {
@@ -125,17 +145,6 @@ with the output and what to do; main is untouched. Nothing to do about it but ca
                         self.brief_pm(&squad, line, None);
                     }
                 }
-            }
-            Outcome::MainFails { command, tail } => {
-                note(self, "not merged", &format!("main fails `{command}` without it"));
-                let message = say!(self, "error.checks_main_fails", id = ticket, command = command);
-                self.squad_error(&squad, message);
-                let line = format!(
-                    "equipe ran the project's checks on T-{ticket} merged with main before merging it: `{command}` failed — and fails on main \
-alone too, so main is broken already, not by T-{ticket}. T-{ticket} stays in review, not merged. Main's output ended:\n```\n{tail}\n```\n\
-Get main fixed first (put it on the board), then accept T-{ticket} again."
-                );
-                self.brief_pm(&squad, line, None);
             }
             Outcome::Moved if gate.tries + 1 < TRIES => self.queue_gate(Gate { tries: gate.tries + 1, ..gate }),
             Outcome::Moved => {

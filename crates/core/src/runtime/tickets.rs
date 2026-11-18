@@ -62,6 +62,7 @@ impl Runtime {
         if depends_on.contains(&ticket) {
             return Err(say!(self, "error.waits_on_itself", id = ticket));
         }
+        self.no_wait_on_main_red(squad, depends_on)?;
         if let Some(path) = board::dependency_loop(&tickets, ticket, depends_on) {
             let path: Vec<String> = path.iter().map(|id| format!("T-{id}")).collect();
             return Err(say!(self, "error.dependency_loop", path = path.join(" → ")));

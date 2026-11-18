@@ -143,8 +143,9 @@ pub fn plain_of(args: &Value) -> Option<Plain> {
 
 /// What a question set is, for the policy: a floor kind its words name, the
 /// squad's own process when the member said so of every question, a design
-/// choice when it is one (its options pictured or tried, or a designer's), or
-/// anything else — asked.
+/// choice when it is one (its options pictured or tried, or a designer's) or
+/// a product choice with the member's recommendation (decided and told the
+/// same way), or anything else — asked.
 pub fn set_kind(set: &QuestionSet, role: &str, declared: &[Option<Kind>]) -> Kind {
     let words: Vec<String> = set.questions.iter().flat_map(|q| std::iter::once(q.question.clone()).chain(q.options.iter().map(|c| format!("{} {}", c.label, c.description)))).collect();
     if let Some(floor) = Kind::floor_named(&words.join("\n"), None) {
@@ -156,6 +157,13 @@ pub fn set_kind(set: &QuestionSet, role: &str, declared: &[Option<Kind>]) -> Kin
     }
     let designed = |q: &Question| q.is_visual() || q.tryable() || declared.contains(&Some(Kind::Design));
     if said(Kind::Design) || role == "designer" || set.questions.iter().all(designed) {
+        return Kind::Design;
+    }
+    // A product choice the member can recommend an answer to — nothing on the
+    // floor in it, nothing it says touches live data — is reversible: decided
+    // and told like a design choice, the person free to change it after.
+    let recommends = |q: &Question| q.options.len() >= 2 && !q.board && q.options.iter().any(|c| c.shown().1);
+    if !declared.contains(&Some(Kind::ProductionData)) && !set.questions.is_empty() && set.questions.iter().all(recommends) {
         return Kind::Design;
     }
     Kind::Other
@@ -386,9 +394,12 @@ mod tests {
         let pictured: Vec<Choice> = plain.iter().map(|c| Choice { images: vec!["/a.png".into()], ..c.clone() }).collect();
         assert_eq!(set_kind(&set(vec![q(pictured)]), "frontend", &[]), Kind::Design, "pictured options");
         assert_eq!(set_kind(&set(vec![q(plain.clone())]), "designer", &[]), Kind::Design, "a designer's");
-        assert_eq!(set_kind(&set(vec![q(plain.clone())]), "frontend", &[]), Kind::Other, "a product question");
+        assert_eq!(set_kind(&set(vec![q(plain.clone())]), "frontend", &[]), Kind::Design, "a product choice with a recommendation: decide-and-tell");
+        let unrecommended: Vec<Choice> = plain.iter().map(|c| Choice { recommended: false, ..c.clone() }).collect();
+        assert_eq!(set_kind(&set(vec![q(unrecommended)]), "frontend", &[]), Kind::Other, "a product question without one: asked");
+        assert_eq!(set_kind(&set(vec![q(plain.clone())]), "backend", &[Some(Kind::ProductionData)]), Kind::Other, "live data: asked");
         assert_eq!(set_kind(&set(vec![q(plain.clone())]), "frontend", &[Some(Kind::Internal)]), Kind::Internal);
-        assert_eq!(set_kind(&set(vec![q(plain.clone()), q(plain.clone())]), "frontend", &[Some(Kind::Internal)]), Kind::Other, "every question must be");
+        assert_eq!(set_kind(&set(vec![q(plain.clone()), q(plain.clone())]), "frontend", &[Some(Kind::Internal)]), Kind::Design, "not every question is internal: recommended choices, decided and told");
         let legal = Question { question: "Is the licence of this icon set OK for us?".into(), ..q(plain) };
         assert_eq!(set_kind(&set(vec![legal]), "designer", &[]), Kind::Legal, "the floor wins");
     }

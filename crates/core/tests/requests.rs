@@ -418,6 +418,8 @@ async fn small_handed_in_work_is_the_pms_to_decide_and_weighty_work_goes_up_with
     let (handle, mut events) = runtime::start(config(&claude, &home));
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
     add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    // The PM's gate is what this looks at: members don't land their own here (that never reaches a card at all).
+    handle.send(Command::SetSelfLand { squad: "acme".into(), on: false });
     tool(&handle, "pm", "create_ticket", json!({ "title": "Tighten the hero spacing", "body": "-", "owner": "frontend" })).await;
     until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
     let handed = tool_on(&handle, "frontend", 1, "submit_for_review", json!({ "summary": "The hero sits closer to the menu, so the page reads at a glance. Tests pass.", "changes_screens": false })).await;

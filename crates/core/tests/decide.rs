@@ -458,3 +458,36 @@ async fn a_decision_kept_twice_from_before_waits_once_after_a_restart() {
     assert_eq!(handle.snapshot("acme").await.questions, [decide::QuestionSet { id: set.id, ..twice }], "once, as last asked");
     handle.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_choice_the_member_can_recommend_is_decide_and_tell_and_never_parks_a_ticket() {
+    let (claude, _recorded) = recording_claude();
+    let (home, project) = squad_home();
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&project, "pm")).await;
+    add(&handle, &mut events, 2, member(&project, "frontend")).await;
+    add(&handle, &mut events, 3, member(&project, "designer")).await;
+    let choice = |recommended: bool| {
+        json!({ "questions": [{ "question": "Keep the icon in the card, or widen the text column?", "options": [
+            { "label": "Widen the text", "recommended": recommended }, { "label": "Keep the icon" },
+        ] }] })
+    };
+
+    // A product choice with the member's recommendation: decided and told — it carries on now.
+    let said = tool(&handle, "frontend", "ask_decision", choice(true)).await;
+    assert!(!said.is_error && said.text.contains("decide-and-tell") && said.text.contains("doesn't wait"), "{said:?}");
+    let set = asked(&until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await);
+    assert!(handle.snapshot("acme").await.autonomy.is_some_and(|a| a.due.iter().any(|d| d.set == set.id)), "taken on its recommendation after the window");
+
+    // The designer's choice with no recommendation marked: sent back once to mark one…
+    let unmarked = tool(&handle, "designer", "ask_decision", choice(false)).await;
+    assert!(unmarked.is_error && unmarked.text.contains("`recommended`"), "{unmarked:?}");
+    // …and asked again as it is, it goes to the person.
+    let again = tool(&handle, "designer", "ask_decision", choice(false)).await;
+    assert!(!again.is_error, "{again:?}");
+
+    // A question doesn't put a ticket down through block_on_person.
+    let blocked = tool(&handle, "designer", "block_on_person", json!({ "ask": "Pick a layout", "effort_minutes": 1, "needs": ["Keep the icon, or widen the text?"] })).await;
+    assert!(blocked.is_error && blocked.text.contains("ask_decision"), "{blocked:?}");
+    handle.shutdown().await;
+}

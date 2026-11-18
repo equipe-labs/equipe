@@ -332,7 +332,7 @@ async fn a_member_withdraws_its_own_card_when_the_persons_words_settle_it() {
     let (handle, mut events) = runtime::start(config(&claude, &home));
     add(&handle, &mut events, 1, member(&project, "pm")).await;
     add(&handle, &mut events, 2, member(&project, "designer")).await;
-    let asked = tool(&handle, "designer", "ask_decision", json!({ "questions": [{ "question": "Which left menu?", "options": [{ "label": "Rail" }, { "label": "Drawer" }] }] })).await;
+    let asked = tool(&handle, "designer", "ask_decision", json!({ "questions": [{ "question": "Which left menu?", "options": [{ "label": "Rail", "recommended": true }, { "label": "Drawer" }] }] })).await;
     assert!(!asked.is_error, "{asked:?}");
     let seen = until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await;
     let set = proposal(&seen).unwrap();

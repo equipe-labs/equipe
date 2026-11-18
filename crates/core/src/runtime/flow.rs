@@ -150,16 +150,32 @@ with your note — no new ticket, no wait for the PM.{back_line} End your turn n
     /// check, or its design check passed. Where the PM accepts work, its
     /// member lands it now when nothing in it needs a person; otherwise the
     /// PM is woken with `prompt`, as before.
-    pub(super) fn work_ready(&mut self, squad: &str, ticket: TicketId, prompt: String) {
-        let Some(found) = self.find_ticket(squad, ticket) else { return };
+    /// Who lands `found`, ready, by the squad's settings and what its branch
+    /// changed (`crate::flow::landing_with`); with whether the PM accepts and
+    /// whether it is the PM's own. `None` when the squad isn't open.
+    fn landing_of(&mut self, squad: &str, found: &Ticket) -> Option<(rules::Landing, bool, bool)> {
         // The squad's autonomy policy keeping every merge for the person: no member lands its own.
         let merges_ask = self.autonomy_state(squad).policy.merge == equipe_protocol::autonomy::Level::Ask;
-        let Some(journal) = self.journals.get(squad) else { return };
+        let journal = self.journals.get(squad)?;
         let (self_land, pm_accepts) = (journal.self_land() && !merges_ask, journal.pm_accepts());
         let pm_name = self.pm_of(squad).and_then(|pm| self.sessions.get(&pm)).and_then(|s| s.name().map(str::to_owned)).unwrap_or_default();
-        let pms_own = crate::accept::own_code(&found, &pm_name).is_some();
-        let changed = self.handed_in_files.get(&(squad.to_owned(), ticket)).cloned().unwrap_or_default();
-        match rules::landing(self_land, pm_accepts, &found, &changed, pms_own) {
+        let pms_own = crate::accept::own_code(found, &pm_name).is_some();
+        let changed = self.handed_in_files.get(&(squad.to_owned(), found.id)).cloned().unwrap_or_default();
+        let sql = self.handed_in_sql.get(&(squad.to_owned(), found.id)).cloned().unwrap_or_default();
+        Some((rules::landing_with(self_land, pm_accepts, found, &changed, &sql, pms_own), pm_accepts, pms_own))
+    }
+
+    /// Whether `ticket`, handed in, is its member's to land — nothing in it
+    /// needs a person — so the PM puts nothing about it to anyone.
+    pub(super) fn lands_itself(&mut self, squad: &str, ticket: TicketId) -> bool {
+        let Some(found) = self.find_ticket(squad, ticket) else { return false };
+        found.status == TicketStatus::Review && found.ready_for_review() && matches!(self.landing_of(squad, &found), Some((rules::Landing::Member, _, _)))
+    }
+
+    pub(super) fn work_ready(&mut self, squad: &str, ticket: TicketId, prompt: String) {
+        let Some(found) = self.find_ticket(squad, ticket) else { return };
+        let Some((landing, pm_accepts, pms_own)) = self.landing_of(squad, &found) else { return };
+        match landing {
             rules::Landing::Member => {
                 crate::daemon_log!("equipe: {squad}: T-{ticket} is ready and needs no person: its member lands it");
                 let _ = self.internal.send(Internal::SelfLand { squad: squad.to_owned(), ticket });
@@ -219,9 +235,17 @@ the project's checks on that merge where it declares them, the design precheck w
         if landed.len() < DIGEST_AT && now - first < DIGEST_AFTER {
             return;
         }
+        // An additive schema migration lands like code, and is told here.
+        let migrated = |t: TicketId| self.handed_in_sql.get(&(squad.to_owned(), t)).is_some_and(|sql| !sql.is_empty() && sql.values().all(|text| crate::migrations::classify(text).is_additive()));
         let lines: Vec<(TicketId, String, String, String)> = landed
             .iter()
-            .filter_map(|(t, _, by)| journal.ticket(*t).ok().flatten().map(|found| (*t, found.title.clone(), by.clone(), crate::person_gate::what_changes(&found))))
+            .filter_map(|(t, _, by)| {
+                journal.ticket(*t).ok().flatten().map(|found| {
+                    let what = crate::person_gate::what_changes(&found);
+                    let what = if migrated(*t) { [what.as_str(), rules::ADDITIVE_MIGRATION].into_iter().filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" · ") } else { what };
+                    (*t, found.title.clone(), by.clone(), what)
+                })
+            })
             .collect();
         let _ = journal.set_landed_digest_at(now);
         let Some(pm) = self.pm_of(squad) else { return };
