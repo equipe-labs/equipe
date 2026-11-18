@@ -38,6 +38,8 @@ use crate::{Screen, Shell};
 mod switching;
 #[path = "settings_signals.rs"]
 mod signals;
+#[path = "settings_autonomy.rs"]
+pub(crate) mod autonomy;
 
 /// The page's column, at most this wide.
 const PAGE: f32 = 720.;
@@ -1085,12 +1087,15 @@ fn permissions(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
     let sign_in = Line::new(t!("settings.shared_sign_in"), t!("settings.shared_sign_in_desc"))
         .words("browser login account")
         .control(ui::button(p, "to-browser", Kind::Ghost, t!("settings.cat_browser")).icon(Icon::ArrowRight).on_click(cx.listener(|this, _, _, cx| this.settings_go(Category::Browser, cx))));
-    vec![
-        Section::new(t!("settings.section_mode"), first).foot(t!("settings.mode_foot")),
+    let autonomy = autonomy::sections(shell, cx);
+    let mut out = vec![Section::new(t!("settings.section_mode"), first).foot(t!("settings.mode_foot"))];
+    out.extend(autonomy);
+    out.extend([
         Section::new(t!("settings.words_section"), words_rows(shell, cx)).foot(t!("settings.words_foot")),
         Section::new(t!("settings.section_rules"), rules).foot(t!("settings.rules_foot")),
         Section::new(t!("settings.section_never"), vec![blocked, sign_in]),
-    ]
+    ]);
+    out
 }
 
 /// Deciding in words: "All by words" — asked about before it is on, with

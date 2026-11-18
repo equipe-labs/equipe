@@ -203,6 +203,7 @@ impl Runtime {
             action,
             reason: (!reason.is_empty()).then_some(reason),
             preview: None,
+            ask: None,
         };
         let input = rules::card_input(&change);
         self.pending.insert(approval_id, Pending { squad: call.squad.clone(), approval: approval.clone(), input, reply });

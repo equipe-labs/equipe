@@ -58,6 +58,17 @@ impl Runtime {
             out.push(format!("- {name}: engine {:?}, model {}{ran}, effort {effort}, mode {own}{rests}.", s.engine, s.model.as_deref().unwrap_or("default")));
         }
         out.push(format!("You accept the team's handed-in work yourself (pm_accepts): {}.", on(pm_accepts)));
+        let autonomy = self.autonomy_state(squad);
+        let p = &autonomy.policy;
+        out.push(format!(
+            "Autonomy (autonomy): design choices {}, merges {}, internal questions {}, production data {}; decide-and-tell waits {} min. Sign-ins, money, deletion, sending outside, security and legal always ask. Standing allowances live: {}.",
+            p.design.code(),
+            p.merge.code(),
+            p.internal.code(),
+            p.production_data.code(),
+            p.window_minutes,
+            autonomy.allowances.iter().filter(|a| a.live(now_secs())).map(|a| a.scope.words.clone()).collect::<Vec<_>>().join("; ").chars().take(600).collect::<String>()
+        ));
         out.push(format!(
             "Notifications escalate what stays a bottleneck (notify, keys {}): {}",
             crate::escalation::KEYS.join(", "),
@@ -164,6 +175,9 @@ impl Runtime {
                 let current = self.subagents_at_once(Some(&squad)).unwrap_or(crate::protocol::CODEX_SUBAGENTS_AT_ONCE);
                 at_once > current
             }
+            // Letting members do more without the person is the person's; a shorter window, too.
+            Change::Autonomy { kind, level } => self.autonomy_state(&squad).policy.widens(kind, level),
+            Change::AutonomyWindow(minutes) => minutes < self.autonomy_state(&squad).policy.window_minutes,
             _ => change.needs_yes(now),
         };
         if !needs_yes {
@@ -177,7 +191,7 @@ impl Runtime {
         let approval_id = self.next_approval;
         self.next_approval += 1;
         let tool = if matches!(change, Change::Engine { .. }) { controls::ENGINE_TOOL } else { controls::SETTING_TOOL };
-        let approval = Approval { id: approval_id, session: id, member: call.member.clone(), ticket: None, tool: tool.to_owned(), action, reason: why, preview: None };
+        let approval = Approval { id: approval_id, session: id, member: call.member.clone(), ticket: None, tool: tool.to_owned(), action, reason: why, preview: None, ask: None };
         let input = serde_json::to_value(&command).unwrap_or_default();
         self.pending.insert(approval_id, Pending { squad: squad.clone(), approval: approval.clone(), input, reply });
         self.publish(Event::ApprovalRequested { squad, approval });
@@ -258,6 +272,8 @@ impl Runtime {
             Change::Disallow(rule) => Command::Disallow { squad: squad_name, rule },
             Change::Merge { ticket, push } => Command::Merge { squad: squad_name, ticket, push },
             Change::KeepOnBranch(ticket) => Command::KeepOnBranch { squad: squad_name, ticket },
+            Change::Autonomy { kind, level } => Command::SetAutonomy { squad: squad_name, kind, level },
+            Change::AutonomyWindow(minutes) => Command::SetAutonomyWindow { squad: squad_name, minutes },
             Change::Notify { key, value } => {
                 let mut settings = self.notify_settings(squad);
                 crate::escalation::apply(&mut settings, &key, &value, crate::i18n::core(self.config.lang))?;
@@ -451,6 +467,8 @@ impl Runtime {
             Change::Mode { member: None, mode: Some(m) } => say!(self, "control.mode_squad", mode = mode(*m)),
             Change::Mode { member: Some(name), mode: Some(m) } => say!(self, "control.mode_member", member = name, mode = mode(*m)),
             Change::Mode { member, mode: None } => say!(self, "control.mode_default", member = member.as_deref().unwrap_or_default()),
+            Change::Autonomy { kind, level } => say!(self, "control.autonomy", kind = self.kind_words(*kind), level = self.level_words(*level)),
+            Change::AutonomyWindow(minutes) => say!(self, "control.autonomy_window", minutes = minutes),
             Change::PmAccepts(true) => say!(self, "control.pm_accepts_on"),
             Change::PmAccepts(false) => say!(self, "control.pm_accepts_off"),
             Change::IdleWake(0) => say!(self, "control.idle_wake_off"),

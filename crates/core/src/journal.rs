@@ -1071,6 +1071,17 @@ impl Journal {
         self.set_meta("questions", &serde_json::to_string(sets).unwrap_or_default())
     }
 
+    /// The squad's autonomy policy, standing allowances, their uses and the
+    /// choices members took on their own (`crate::autonomy`). A squad from
+    /// before it reads as the defaults.
+    pub fn autonomy(&self) -> crate::autonomy::Store {
+        self.meta("autonomy").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    pub fn set_autonomy(&self, store: &crate::autonomy::Store) -> Result<()> {
+        self.set_meta("autonomy", &serde_json::to_string(store).unwrap_or_default())
+    }
+
     /// The PM's conversation threads: the project its desk conversation is
     /// about now (`None`: the whole squad), and each other thread's
     /// conversation id, put aside — keyed by project, `""` for the squad's.

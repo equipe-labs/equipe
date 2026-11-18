@@ -600,7 +600,7 @@ mod tests {
     use super::*;
 
     fn approval(tool: &str, action: &str) -> Approval {
-        Approval { id: 1, session: 4, member: "backend".into(), ticket: Some(52), tool: tool.into(), action: action.into(), reason: None, preview: None }
+        Approval { id: 1, session: 4, member: "backend".into(), ticket: Some(52), tool: tool.into(), action: action.into(), reason: None, preview: None, ask: None }
     }
 
     fn ask(tool: &str, action: &str) -> Alert {

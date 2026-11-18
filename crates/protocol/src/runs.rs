@@ -290,7 +290,7 @@ mod tests {
     fn a_runs_request_names_its_member() {
         let mut view = legacy();
         view.snapshot(Snapshot { sessions: vec![session(2, "frontend", None, None), session(20, "frontend", run(2, 7), Some(7))], ..Default::default() });
-        let approval = crate::Approval { id: 1, session: 20, member: "frontend".into(), ticket: Some(7), tool: "Bash".into(), action: "ls".into(), reason: None, preview: None };
+        let approval = crate::Approval { id: 1, session: 20, member: "frontend".into(), ticket: Some(7), tool: "Bash".into(), action: "ls".into(), reason: None, preview: None, ask: None };
         let out = view.event(Event::ApprovalRequested { squad: "acme".into(), approval });
         assert!(matches!(&out[..], [Event::ApprovalRequested { approval, .. }] if approval.session == 2));
     }
