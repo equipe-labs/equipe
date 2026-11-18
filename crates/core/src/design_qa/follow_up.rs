@@ -171,6 +171,10 @@ pub enum Why {
     Depth,
     /// [`POLISH_CAP`] polish follow-ups are open already.
     Cap,
+    /// The meta-work budget (`crate::flow`): polish is never a ticket to run
+    /// of its own — in scope it is an item of the change's checklist, out of
+    /// it a backlog note for the person.
+    Budget,
 }
 
 /// What becomes of a ticket a designer files from a ticket.
@@ -312,6 +316,7 @@ mod tests {
             design_qa: None, landing: false,
             plan: None,
             model: None,
+            flow: None,
             created_by: "designer".into(),
             note: None,
             asks: vec![],

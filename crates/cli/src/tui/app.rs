@@ -4078,6 +4078,7 @@ mod tests {
             merged: None,
             off_main: None,
             design_qa: None, landing: false, plan: None, model: None,
+            flow: None,
             kind: equipe_core::protocol::TicketKind::Code,
             created_by: "pm".into(),
             note: None,

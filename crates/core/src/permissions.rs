@@ -94,6 +94,8 @@ pub fn person_only(command: &Command) -> bool {
         | C::AllowKind { .. }
         | C::RevokeAllowance { .. }
         | C::ReopenAutoPick { .. }
+        | C::SetSelfLand { .. }
+        | C::RevertLanded { .. }
         | C::SetEngineSwitching { .. }
         | C::SetSubagentsAtOnce { .. }
         | C::SetParallel { .. }
@@ -891,6 +893,8 @@ mod tests {
             Command::SetModel { session: 1, model: "gpt-6.1-sol".into() },
             Command::SetMode { squad: "a".into(), member: None, mode: None },
             Command::SetPmAccepts { squad: "a".into(), on: true },
+            Command::SetSelfLand { squad: "a".into(), on: true },
+            Command::RevertLanded { squad: "a".into(), ticket: 1 },
             Command::SetResting { squad: "a".into(), member: "qa".into(), resting: true, stop: false },
             Command::WatchTicket { squad: "a".into(), ticket: 3, watch: true },
             Command::Disallow { squad: "a".into(), rule: "Bash(rm:*)".into() },

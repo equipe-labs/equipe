@@ -241,6 +241,9 @@ pub(super) enum Reason {
     Cannot,
     /// equipe's: its turns kept ending with no end to the work.
     NoEnd,
+    /// `pass_baton`: another member (`suggest`) carries it on, on the same
+    /// ticket, branch and worktree (`runtime::flow`).
+    Baton,
 }
 
 impl Reason {
@@ -263,6 +266,7 @@ impl Reason {
             Reason::NotMyRole => "not its role's work",
             Reason::Cannot => "can't be done as asked",
             Reason::NoEnd => "its turns kept ending without a hand-in",
+            Reason::Baton => "passed on",
         }
     }
 }
@@ -548,7 +552,9 @@ impl Runtime {
     pub(super) async fn take_late_hand_in(&mut self, id: SessionId) {
         let Some(s) = self.sessions.get(&id) else { return };
         // A turn still on its way (or its end not yet handled) takes it itself.
-        if s.turn.is_some() || s.last_turn.is_none() || !s.work.as_ref().is_some_and(|w| w.handed_in.is_some()) {
+        // A baton passed late is taken the same way: the next holder shouldn't wait for a turn end.
+        let over = s.work.as_ref().is_some_and(|w| w.handed_in.is_some() || w.end.handed_back.as_ref().is_some_and(|h| h.reason == Reason::Baton));
+        if s.turn.is_some() || s.last_turn.is_none() || !over {
             return;
         }
         Box::pin(self.after_turn(id)).await;
@@ -1136,6 +1142,16 @@ on its branch. End your turn now with a short line."
     pub(super) fn handed_back(&mut self, squad: &str, ticket: &mut Ticket, name: &str, hand: &HandBack) -> (&'static str, String, &'static str) {
         let named = hand.tickets.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
         let id = ticket.id;
+        // The baton: the next member carries it on where it is, with the note — no PM step.
+        if hand.reason == Reason::Baton {
+            let to = hand.suggest.clone().unwrap_or_default();
+            ticket.status = TicketStatus::Todo;
+            ticket.assignee = None;
+            ticket.owner = Some(to.clone());
+            ticket.note = Some(crate::flow::baton_note(name, &hand.note));
+            let line = format!("{name} passed T-{id} to {to} on the same ticket and branch: {}", hand.note);
+            return (crate::lead_time::BATON, line, "news.baton");
+        }
         self.count_ending(squad, if hand.reason == Reason::NoEnd { turn_ending::TO_PM } else { turn_ending::HANDED_BACK }, Some(id), name);
         if hand.reason == Reason::WaitingOn {
             for t in &hand.tickets {
@@ -1169,7 +1185,7 @@ one with `propose_team_change` if nobody on the team fits.",
 only they can unblock it.",
             Reason::NoEnd => "Look at its record and branch: put it back (`update_ticket`, status todo — the same owner or another) \
 with what to do next in `body`, cancel it, or ask the person.",
-            Reason::WaitingOn => "",
+            Reason::WaitingOn | Reason::Baton => "",
         };
         let line = format!("{name} handed T-{id} back — {why}. It is a proposal again, its branch kept. {next}");
         let news = match hand.reason {

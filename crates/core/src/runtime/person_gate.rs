@@ -73,9 +73,9 @@ can't be taken back — then give `why`."
             .requests()
             .decided_by_pm(since)
             .into_iter()
-            .filter_map(|(ticket, at, accepted)| {
+            .filter_map(|(ticket, at, accepted, landed_by)| {
                 let t = journal.ticket(ticket).ok().flatten()?;
-                Some(Decided { ticket, title: t.title.clone(), what: rules::what_changes(&t), accepted, at })
+                Some(Decided { ticket, title: t.title.clone(), what: rules::what_changes(&t), accepted, at, landed_by })
             })
             .collect()
     }

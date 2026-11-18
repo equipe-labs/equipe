@@ -44,7 +44,11 @@ impl Runtime {
         let journal = self.journal(squad).ok_or("The board can't be opened.")?;
         let of_parent = journal.follow_up(parent);
         let lineage = rules::lineage(parent, of_parent.as_ref(), finding);
-        let place = rules::place(&lineage, severity, journal.open_polish());
+        // Polish is no ticket to run (`crate::flow`): the backlog keeps it for the person.
+        let place = match rules::place(&lineage, severity, journal.open_polish()) {
+            Place::Polish => Place::Backlog(rules::Why::Budget),
+            place => place,
+        };
         if place == Place::NeedsSeverity {
             let context = if context.is_empty() { format!("T-{on} is itself a follow-up (of T-{})", of_parent.map_or(parent, |p| p.parent)) } else { context };
             return Err(format!(
@@ -121,6 +125,7 @@ for the person. Then create it again."
                 let because = match why {
                     Why::Depth => format!("polish found while working a follow-up of T-{root}"),
                     Why::Cap => format!("{} polish follow-ups are open already", rules::POLISH_CAP),
+                    Why::Budget => "S3/S4 polish is never a ticket of its own: in scope, add it to the change's checklist".to_owned(),
                 };
                 let line = format!("{member} kept S3/S4 polish of T-{root} in the design backlog T-{made} ({because}): an idea nothing starts — put it to the person when its time comes.");
                 let shown = say!(self, "news.design_backlog", name = member, id = root, backlog = made);

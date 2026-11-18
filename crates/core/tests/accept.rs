@@ -197,6 +197,8 @@ async fn handed_in() -> (Handle, UnboundedReceiver<Event>, PathBuf) {
     let (handle, mut events) = runtime::start(config(&claude(), &home));
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
     add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    // The PM's acceptance is what these look at: members don't land their own here.
+    handle.send(Command::SetSelfLand { squad: "acme".into(), on: false });
     tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
     tool(&handle, "pm", "create_ticket", json!({ "title": "Pricing", "body": "-", "owner": "frontend", "depends_on": [1] })).await;
     until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
@@ -350,6 +352,8 @@ async fn handed_in_checked(checks: &str) -> (Handle, UnboundedReceiver<Event>, P
     let (handle, mut events) = runtime::start(config(&claude(), &home));
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
     add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    // The PM's acceptance is what these look at: members don't land their own here.
+    handle.send(Command::SetSelfLand { squad: "acme".into(), on: false });
     tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
     until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
     let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Hero done, tests pass.", "changes_screens": false })).await;
@@ -588,4 +592,85 @@ fn nothing_accepts_or_merges_but_the_persons_commands() {
             assert!(!name.contains("merge") && !name.contains("confirm") && (!name.contains("accept") || name == "propose_accept" || (is_pm && name == "accept_work")), "{name}");
         }
     }
+}
+
+// ── members land their own work (`flow`) ──
+
+/// A squad of a PM, a designer and a frontend on one repository, members
+/// landing their own work (the default).
+async fn landing_squad() -> (Handle, UnboundedReceiver<Event>, PathBuf) {
+    let repo = repo();
+    let home = scratch("home");
+    squads::create(&home, "acme", &repo).unwrap();
+    let (handle, mut events) = runtime::start(config(&claude(), &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    add(&handle, &mut events, 3, member(&repo, "designer")).await;
+    (handle, events, repo)
+}
+
+#[tokio::test]
+async fn work_that_needs_no_one_lands_by_its_member_and_what_a_person_must_see_waits_for_the_pm() {
+    let (handle, mut events, repo) = landing_squad().await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Hero done.", "changes_screens": false })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    // Nobody accepts it: its member lands it, the gates passing, and it is on main.
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
+    assert_eq!(git(&repo, &["show", "main:HERO.md"]), "made by the squad", "on main");
+    assert_eq!(status(&handle, 1).await, TicketStatus::Done);
+    // The person's digest says who landed it.
+    let mut decided = Vec::new();
+    for _ in 0..100 {
+        decided = handle.snapshot("acme").await.decided;
+        if !decided.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let _ = decided;
+
+    // Money is the person's to see: it waits in review for the PM.
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Payment checkout page", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
+    run_idle(&handle, 2).await;
+    let handed = tool_on(&handle, "frontend", 2, "submit_for_review", json!({ "summary": "Checkout done.", "changes_screens": false })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.status == TicketStatus::Review)).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(status(&handle, 2).await, TicketStatus::Review, "the gate holds it for the PM");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_baton_moves_a_ticket_to_the_next_role_on_the_same_branch_with_no_new_ticket() {
+    let (handle, mut events, _repo) = landing_squad().await;
+    let made = tool(
+        &handle,
+        "pm",
+        "create_ticket",
+        json!({ "title": "New input box", "body": "-", "owner": "designer", "steps": [{ "text": "Prototype", "who": "designer" }, { "text": "Build", "who": "frontend" }] }),
+    )
+    .await;
+    assert!(!made.is_error && made.text.contains("1. [ ] Prototype — designer"), "{made:?}");
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let branch = started.iter().rev().find_map(|e| if let Event::TicketChanged { ticket, .. } = e { ticket.branch.clone() } else { None });
+    // Meta work and the next part go on the ticket, not new tickets.
+    let check = tool(&handle, "designer", "create_ticket", json!({ "title": "Verify the input box", "body": "-", "label": "check" })).await;
+    assert!(check.is_error && check.text.contains("check_steps"), "{check:?}");
+    let ticked = tool(&handle, "designer", "check_steps", json!({ "done": [1], "add": [{ "text": "Empty state" }] })).await;
+    assert!(!ticked.is_error && ticked.text.contains("1 of 3 done"), "{ticked:?}");
+    let passed = tool(&handle, "designer", "pass_baton", json!({ "to": "frontend", "note": "Prototype is in design/." })).await;
+    assert!(!passed.is_error && passed.text.contains("goes to frontend"), "{passed:?}");
+    // The frontend picks it up: the same ticket, its branch kept, from the designer.
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, session, .. } if *session != 3)).await;
+    let t = handle.snapshot("acme").await.tickets.into_iter().find(|t| t.id == 1).unwrap();
+    assert_eq!((t.status, t.assignee.as_deref()), (TicketStatus::InProgress, Some("frontend")));
+    assert_eq!(t.flow.as_ref().and_then(|f| f.from.as_deref()), Some("designer"));
+    if let Some(branch) = branch {
+        assert_eq!(t.branch.as_deref(), Some(branch.as_str()), "the same branch");
+    }
+    assert_eq!(handle.snapshot("acme").await.tickets.len(), 1, "no new ticket");
+    handle.shutdown().await;
 }

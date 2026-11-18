@@ -439,6 +439,9 @@ pub struct Context<'a> {
     pub browser: bool,
     /// The PM accepts the team's handed-in work itself (the squad's setting).
     pub pm_accepts: bool,
+    /// Members land their own work once its gates pass and nothing in it
+    /// needs a person, where the PM accepts (`crate::flow`, the squad's setting).
+    pub self_land: bool,
     /// The other browser profiles it has a browser in (`browser_<name>`), each another person's accounts.
     pub profiles: &'a [crate::browser::BrowserProfile],
     /// Whether the member works the Mac's desktop apps (`mcp__desktop__…`).
@@ -595,6 +598,29 @@ own words: hand it in with `submit_for_review` and the PM takes it from there. W
 — approve something, give a password, sign in — goes in front of them as a card (`ask_person`, `ask_decision`, \
 `block_on_person`, `show_my_browser`), never only asked in words and waited on.";
 
+/// How a request moves through the squad (`crate::flow`): one ticket, its
+/// driver, its checklist, the baton — and no tickets for meta work.
+const FLOW: &str = "When the person asks for something, the ticket that answers them carries their request to production, and \
+whoever puts it on the board for them drives it there. Its spec, its build and its checks are items of its checklist, done on that \
+one ticket and branch — never tickets of their own: `check_steps` adds and ticks them. When your items are done and another \
+role's are next (designer to frontend), pass the baton with `pass_baton`: they carry on in the same worktree, with your note, \
+with no new ticket and no wait for the PM; pass it with `back` to pull a teammate in for one step. A check, a verification or \
+polish of work under way goes into that work's checklist; what you find outside its scope goes into a `comment` or the design \
+backlog — only an S1/S2 finding is a ticket of its own.";
+
+/// …where members land their own work: the member's word…
+const SELF_LAND_YOURS: &str = "Work that needs no one's yes lands itself: once you hand it in and its gates pass — a clean merge \
+with main, the project's checks on that merge, the design precheck where screens changed — equipe merges it for you and the PM \
+looks at it afterwards. Work that touches production data, permissions or security, money, legal matters, a big visible change \
+or what can't be taken back still waits for the PM, who puts it to the person when it needs them.";
+
+/// …and the PM's.
+const SELF_LAND_PM: &str = "Your members land their own work once its gates pass and nothing in it needs a person; you get a \
+digest of what landed and look after the fact: `revert_landed` (with why) for what is wrong, a follow-up ticket for its member \
+for what is missing — no reply about each one that is fine. You accept with `accept_work` only what the gate holds back — \
+production data, permissions or security, money, legal matters, a big visible change, what can't be taken back — and put to the \
+person what needs them.";
+
 /// The common finish line for engineers, whichever product they build.
 const ENGINEER_HAND_IN: &str = "On a screen-changing `code` ticket, before you hand it in, run the changed screens \
 yourself and take fresh screenshots across the same scope as design QA: every relevant language and supported width, \
@@ -727,6 +753,13 @@ accepts it.",
     let tools = if ctx.pm_accepts && ctx.board_tools { tools.replace(PERSON_ACCEPTS, PM_ACCEPTS).replace(PERSON_ACCEPTS_YOURS, PM_ACCEPTS_YOURS) } else { tools.to_owned() };
     // A PM whose engine runs no subagents splits its own big work into tickets.
     let tools = if ctx.subagents.is_none() { tools.replace(SPLITS_TOO, SPLITS_INTO_TICKETS) } else { tools };
+    // One ticket per request, its checklist and baton; and, where members land their own work, who lands what.
+    let tools = match (ctx.board_tools, ctx.pm_accepts && ctx.self_land, role.id == PM) {
+        (true, true, true) => format!("{tools} {FLOW} {SELF_LAND_PM}"),
+        (true, true, false) => format!("{tools} {FLOW} {SELF_LAND_YOURS}"),
+        (true, false, _) => format!("{tools} {FLOW}"),
+        (false, _, _) => tools,
+    };
     // The person sees when work will be done, and when what ships is live.
     let tools = if ctx.board_tools {
         format!(
@@ -1319,7 +1352,7 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, desktop: false, design: false, phone: false, home: None, memory: None, facts: 0, edits: false, skills: Delivery::Plugin(SKILLS_AT), guard: false, subagents: Some(CLAUDE_20), helpers: false }
+        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, self_land: true, desktop: false, design: false, phone: false, home: None, memory: None, facts: 0, edits: false, skills: Delivery::Plugin(SKILLS_AT), guard: false, subagents: Some(CLAUDE_20), helpers: false }
     }
 
     /// A Claude Code member at Claude Code's own cap: what every charter said before the squad set it.
@@ -1488,6 +1521,7 @@ mod tests {
                 screen_language: Some("Korean"),
                 browser: true,
                 pm_accepts: true,
+                self_land: true,
                 profiles: &profiles,
                 desktop: true,
                 design: r.id == "designer",

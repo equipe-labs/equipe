@@ -206,8 +206,9 @@ async fn what_the_person_asks_for_is_one_request_its_tickets_follow_and_its_news
     assert!(!linked.is_error && linked.text.contains("R-1"), "{linked:?}");
     until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 4, .. })).await;
 
-    // While building it the frontend files a follow-up: it joins by its lineage.
-    let follow = tool_on(&handle, "frontend", 4, "create_ticket", json!({ "title": "Check the composer on phones", "body": "-", "owner": "qa", "kind": "task" })).await;
+    // While building it the frontend files work of its own (saying why it isn't the next item of
+    // its ticket's checklist): it joins by its lineage.
+    let follow = tool_on(&handle, "frontend", 4, "create_ticket", json!({ "title": "Check the composer on phones", "body": "-", "owner": "qa", "kind": "task", "separate_why": "A check on real phones, nothing on this branch" })).await;
     assert!(follow.text.contains("R-1"), "{follow:?}");
     let r = requests(&handle).await.remove(0);
     assert!(r.tickets.iter().any(|t| t.ticket == 5 && t.parent == Some(4) && t.link == Link::Made), "{:?}", r.tickets);

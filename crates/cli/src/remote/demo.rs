@@ -121,6 +121,7 @@ fn ticket(id: TicketId, title: &str, status: TicketStatus, who: Option<&str>, no
         merged: (status == TicketStatus::Done).then_some(true),
         off_main: None,
         design_qa: None, landing: false, plan: None, model: None,
+        flow: None,
         created_by: "pm".into(),
         note: note.map(str::to_owned),
         asks: vec![],

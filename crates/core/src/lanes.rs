@@ -135,7 +135,25 @@ pub fn assign(tickets: &[Ticket], members: &[Member<'_>], single_project: bool, 
 /// [`assign`] with some engines' reserves held ([`crate::pacing`]): on those,
 /// only the PM's work and urgent or high tickets start.
 pub fn assign_guarded(tickets: &[Ticket], members: &[Member<'_>], single_project: bool, first: &[TicketId], room: &HashMap<Engine, usize>, guarded: &HashSet<Engine>) -> Vec<(TicketId, String)> {
+    assign_fitted(tickets, members, single_project, first, room, guarded, &Fit::default())
+}
+
+/// What else decides whether a member's next lane starts (`crate::flow`).
+#[derive(Debug, Clone, Default)]
+pub struct Fit {
+    /// The places each member's running tickets name, by member: two lanes
+    /// of one member never work on overlapping places.
+    pub busy: HashMap<String, Vec<Vec<String>>>,
+    /// The queue is long ([`crate::flow::prefer_finishing`]): a member with a
+    /// lane at work starts only work already under way (a branch of its
+    /// own — a baton passed, work sent back) until it finishes.
+    pub finishing: bool,
+}
+
+/// [`assign_guarded`], with what [`Fit`] says too.
+pub fn assign_fitted(tickets: &[Ticket], members: &[Member<'_>], single_project: bool, first: &[TicketId], room: &HashMap<Engine, usize>, guarded: &HashSet<Engine>, fit: &Fit) -> Vec<(TicketId, String)> {
     let finished = |id: &TicketId| tickets.iter().any(|t| t.id == *id && t.status.is_closed());
+    let mut busy: Vec<Vec<Vec<String>>> = members.iter().map(|m| fit.busy.get(m.name).cloned().unwrap_or_default()).collect();
     let mut held: Vec<usize> = members.iter().map(|m| m.runs + m.waiting).collect();
     let mut runs: Vec<usize> = members.iter().map(|m| m.runs).collect();
     let mut room = room.clone();
@@ -148,11 +166,15 @@ pub fn assign_guarded(tickets: &[Ticket], members: &[Member<'_>], single_project
         // A member that has left hands its tickets to its role.
         let owner = if members.iter().any(|m| m.role == owner || m.name == owner) { owner } else { board::role_of(owner) };
         let by_role = members.iter().any(|m| m.role == owner);
+        let places = crate::flow::paths(&format!("{} {}", ticket.title, ticket.body));
         let free = |at: &usize| {
             let m = &members[*at];
             // Under a held reserve only the PM and urgent work start.
             let admitted = !guarded.contains(&m.engine) || m.pm || crate::pacing::admitted(ticket.priority);
-            m.takes_new && runs[*at] < m.limit && room.get(&m.engine).copied().unwrap_or(0) > 0 && admitted
+            // Never two lanes of one member on the same places; a long queue finishes first.
+            let apart = !busy[*at].iter().any(|other| crate::flow::overlaps(other, &places));
+            let finishing = fit.finishing && runs[*at] > 0 && ticket.branch.is_none();
+            m.takes_new && runs[*at] < m.limit && room.get(&m.engine).copied().unwrap_or(0) > 0 && admitted && apart && !finishing
         };
         let pick = (0..members.len())
             .filter(|at| if by_role { members[*at].role == owner } else { members[*at].name == owner })
@@ -161,6 +183,7 @@ pub fn assign_guarded(tickets: &[Ticket], members: &[Member<'_>], single_project
         if let Some(at) = pick {
             held[at] += 1;
             runs[at] += 1;
+            busy[at].push(places);
             if let Some(left) = room.get_mut(&members[at].engine) {
                 *left = left.saturating_sub(1);
             }
@@ -198,6 +221,33 @@ pub fn waiting_on_person(tickets: &[Ticket], name: &str) -> usize {
 mod tests {
     use super::*;
     use equipe_protocol::disk::DiskLevel;
+
+    #[test]
+    fn a_member_s_lanes_never_share_places_and_a_long_queue_finishes_first() {
+        let mut a = ticket(1, "frontend");
+        a.title = "Restyle src/app/composer.tsx".into();
+        let mut b = ticket(2, "frontend");
+        b.title = "Fix src/app/composer.tsx focus".into();
+        let mut c = ticket(3, "frontend");
+        c.title = "Change src/app/menu.tsx".into();
+        let team = [member("frontend", "frontend", 1, 0)];
+        let room = HashMap::from([(Engine::Claude, 10)]);
+        let out = assign_fitted(&[a.clone(), b.clone(), c.clone()], &team, true, &[], &room, &HashSet::new(), &Fit::default());
+        assert_eq!(out.iter().map(|(t, _)| *t).collect::<Vec<_>>(), vec![1, 3], "T-2 touches T-1's file: it waits");
+        // Already running a lane on the composer: T-1 and T-2 wait, the menu starts.
+        let running = Fit { busy: HashMap::from([("frontend".to_owned(), vec![vec!["src/app/composer.tsx".to_owned()]])]), finishing: false };
+        let team = [member("frontend", "frontend", 1, 1)];
+        let out = assign_fitted(&[a.clone(), b.clone(), c.clone()], &team, true, &[], &room, &HashSet::new(), &running);
+        assert_eq!(out.iter().map(|(t, _)| *t).collect::<Vec<_>>(), vec![3]);
+        // A long queue: a member with a lane at work takes only work under way.
+        let mut resumed = c.clone();
+        resumed.branch = Some("equipe/frontend-3".into());
+        let finishing = Fit { finishing: true, ..Fit::default() };
+        let out = assign_fitted(&[a.clone(), resumed], &team, true, &[], &room, &HashSet::new(), &finishing);
+        assert_eq!(out.iter().map(|(t, _)| *t).collect::<Vec<_>>(), vec![3]);
+        let idle = [member("frontend", "frontend", 1, 0)];
+        assert_eq!(assign_fitted(&[a], &idle, true, &[], &room, &HashSet::new(), &finishing).len(), 1, "an idle member starts new work");
+    }
     use equipe_protocol::{PlanWindow, TicketKind};
 
     fn ticket(id: TicketId, owner: &str) -> Ticket {
@@ -219,6 +269,7 @@ mod tests {
             design_qa: None, landing: false,
             plan: None,
             model: None,
+            flow: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],

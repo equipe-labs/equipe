@@ -470,6 +470,59 @@ pub struct Ticket {
     /// member's own model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<tiers::TicketModel>,
+    /// How the ticket carries a request through to production
+    /// ([`TicketFlow`]): who drives it, its checklist, who the baton goes
+    /// back to. Left out — and absent from an older daemon — on a ticket
+    /// with none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow: Option<Box<TicketFlow>>,
+}
+
+/// One item of a ticket's checklist: a spec, the build, a check — done on
+/// the same ticket and branch rather than as tickets of their own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TicketStep {
+    pub text: String,
+    /// The role or member that does it; `None`: whoever holds the ticket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub who: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub done: bool,
+    /// Who ticked it off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+}
+
+/// A ticket that drives a person's request to production: one member drives
+/// it (`driver`), whoever holds it now is its assignee (or, between hands,
+/// its owner), and the work moves between hands on the same ticket and
+/// branch — the baton — instead of through new tickets.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TicketFlow {
+    /// The member that took the request on and sees it through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<TicketStep>,
+    /// Who the baton goes back to when the holder is done: a helper pulled
+    /// in for a step returns it here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub back_to: Option<String>,
+    /// A UI change built as one slice: the designer's prototype and the
+    /// build on one branch, checked against the prototype by equipe's
+    /// precheck rather than a design QA ticket.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub slice: bool,
+    /// The member holding the baton before the one now, as it was passed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+}
+
+impl TicketFlow {
+    /// Its steps ticked off, of all.
+    pub fn progress(&self) -> (usize, usize) {
+        (self.steps.iter().filter(|s| s.done).count(), self.steps.len())
+    }
 }
 
 /// A durable run of a ticket. A newer generation supersedes late messages
@@ -1651,6 +1704,13 @@ pub enum Command {
     /// Open a choice a member took on its recommendation (decide-and-tell)
     /// again, for the person to choose themselves.
     ReopenAutoPick { squad: SquadName, set: u64 },
+    /// Whether the squad's members land their own work once its gates pass
+    /// and nothing in it needs a person (on, the default, where the PM
+    /// accepts the team's work), the PM looking after the fact.
+    SetSelfLand { squad: SquadName, on: bool },
+    /// Undo work a member landed itself, from the digest: its revert goes to
+    /// the front of its member's queue as a ticket.
+    RevertLanded { squad: SquadName, ticket: TicketId },
     /// How many subagents each member of the squad runs at once, where its
     /// engine has them: given to the engine and said in its charter. `None`:
     /// each engine's own ([`engine_subagents_at_once`]), nothing given to it.
@@ -4333,6 +4393,7 @@ mod tests {
             merged: None,
             off_main: None,
             design_qa: None, landing: false, plan: None, model: None,
+            flow: None,
             kind: TicketKind::Code,
             created_by: "pm".into(),
             note: None,

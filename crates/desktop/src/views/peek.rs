@@ -324,6 +324,8 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
     let md = |key: &'static str, text: &str| super::chat::markdown(p, (key, t.id as u64), text, crate::theme::UI, crate::theme::UI_PROSE_LINE, p.text2, &handle).into_any_element();
     // What the person left open when they last answered it: a quiet line.
     out.extend(super::yourturn::remaining(p, t));
+    // A ticket carrying the person's request: who holds the baton, its checklist.
+    out.extend(flow_block(p, t));
     // A decision its member waits on about it, answered right here: first —
     // after a hand-in's pictures and note, which come first in a review.
     let review = matches!(t.status, TicketStatus::Review | TicketStatus::Done);
@@ -448,6 +450,39 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
         out.push(activity(shell, t.id, 3));
     }
     out
+}
+
+/// Who drives a request's ticket, who holds its baton now and from whom,
+/// and its checklist, ticked where done (`equipe_core::flow`).
+fn flow_block(p: Palette, t: &Ticket) -> Option<AnyElement> {
+    let flow = t.flow.as_deref().filter(|f| f.driver.is_some() || !f.steps.is_empty())?;
+    let holder = t.assignee.as_deref().or(t.owner.as_deref()).unwrap_or("—");
+    let mut said: Vec<String> = vec![t!("peek.baton", who = holder)];
+    if let Some(from) = flow.from.as_deref().filter(|f| *f != holder) {
+        said.push(t!("peek.baton_from", who = from));
+    }
+    if let Some(driver) = flow.driver.as_deref().filter(|d| *d != holder) {
+        said.push(t!("peek.driver", who = driver));
+    }
+    let (done, all) = flow.progress();
+    let head = if all > 0 { format!("{} · {done}/{all}", t!("peek.flow")) } else { t!("peek.flow").to_owned() };
+    let steps: Vec<AnyElement> = flow
+        .steps
+        .iter()
+        .map(|s| {
+            let who = s.who.as_deref().map(|w| format!(" — {w}")).unwrap_or_default();
+            h_flex()
+                .gap_2()
+                .items_start()
+                .text_size(px(13.))
+                .line_height(px(20.))
+                .text_color(if s.done { p.muted } else { p.text2 })
+                .child(div().flex_none().text_color(if s.done { p.accent } else { p.muted }).child(if s.done { "✓" } else { "□" }))
+                .child(div().flex_1().min_w_0().child(format!("{}{who}", s.text)))
+                .into_any_element()
+        })
+        .collect();
+    Some(v_flex().gap_1().child(kicker(p, head)).child(div().text_size(px(12.)).text_color(p.text2).child(said.join(" · "))).children(steps).into_any_element())
 }
 
 /// Its run, when it needs a word: stalled — why, and what each way back keeps
