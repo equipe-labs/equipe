@@ -99,7 +99,9 @@ impl Queue {
         if decision == Decision::Always && standing(approval).is_some() {
             return self.allow_kind(squad, id, equipe_core::protocol::autonomy::DEFAULT_DAYS);
         }
-        if decision == Decision::Always && always_rule(approval).is_none() {
+        // A kept login's "always" is no permission rule: the daemon keeps it
+        // allowed for the squad (`vault`), so the card's button must answer.
+        if decision == Decision::Always && always_rule(approval).is_none() && approval.tool != SIGN_IN {
             return None;
         }
         let id = approval.id;
@@ -682,6 +684,14 @@ mod tests {
         let mut q = queue(vec![approval(1, 2, equipe_core::controls::ENGINE_TOOL, &action)]);
         assert_eq!(q.answer("acme", Decision::Always), None, "no rule to keep");
         assert!(q.answer("acme", Decision::Allow).is_some());
+    }
+
+    #[test]
+    fn always_answers_a_kept_login_sign_in_though_it_makes_no_rule() {
+        let mut q = Queue::default();
+        q.push(approval(1, 2, super::SIGN_IN, "accounts.example.com · someone@example.com"));
+        assert!(Card::of(q.get(1).unwrap()).always.is_some(), "the card offers it");
+        assert!(matches!(q.answer("acme", Decision::Always), Some(Command::Decide { decision: Decision::Always, .. })), "and the button answers");
     }
 
     #[test]
