@@ -71,6 +71,7 @@ pub fn reads(command: &Command) -> bool {
     match command {
         // Answered with what is there, to this screen or every screen.
         C::TicketHistory { .. }
+        | C::TicketNote { .. }
         // What a member was handed when it moved to the other engine, and what came before.
         | C::HandOver { .. }
         | C::Logins
@@ -587,6 +588,7 @@ mod tests {
             Command::MoveTicket { squad: s(), ticket: 1, status: None, before: None },
             Command::CommentTicket { squad: s(), ticket: 1, text: "x".into() },
             Command::TicketHistory { squad: s(), ticket: 1 },
+            Command::TicketNote { squad: s(), ticket: 1 },
             Command::HandOver { squad: s(), session: 1 },
             Command::SetMode { squad: s(), member: None, mode: Some(Mode::default()) },
             Command::Decide { squad: s(), approval: 1, decision: Decision::Allow, words: None, said: None },

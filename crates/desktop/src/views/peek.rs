@@ -340,8 +340,9 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
                     out.push(v_flex().gap_2().child(kicker(p, t!("peek.your_part"))).child(super::yourturn::card(&card, draw, cx)).into_any_element());
                 }
                 None => {
-                    if let Some(note) = t.note.as_deref().filter(|n| !n.trim().is_empty()) {
+                    if let Some(note) = shown_note(model, t) {
                         out.push(md("peek-note", note));
+                        out.extend(full_note(shell, t, cx));
                     }
                 }
             }
@@ -371,8 +372,8 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
             let key = crate::render::hash_of(("hand-in-gallery", t.id, wide, place == Place::Side));
             let guess = if wide { 700. } else { shell.board.peek_width - 2. * pad(shell.board.peek_width) };
             out.extend(super::visuals::gallery(shell, key, t.id, &t.images, guess, cx));
-            if let Some(note) = t.note.as_deref().filter(|n| !n.trim().is_empty()) {
-                out.push(v_flex().gap_1().child(kicker(p, t!("peek.hand_in"))).child(md("peek-note", note)).into_any_element());
+            if let Some(note) = shown_note(model, t) {
+                out.push(v_flex().gap_1().child(kicker(p, t!("peek.hand_in"))).child(md("peek-note", note)).children(full_note(shell, t, cx)).into_any_element());
             }
             if let Some(review) = model.reviews.get(&t.id) {
                 out.push(code_review(p, review));
@@ -431,8 +432,9 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
                     out.push(h_flex().gap_2().items_center().text_size(px(13.)).text_color(p.text2).when(model.is_live(t), |d| d.child(icons::live_dot(p, shell.pulse(cx)))).child(live.join(" · ")).into_any_element());
                 }
             }
-            if let Some(note) = t.note.as_deref().filter(|n| !n.trim().is_empty() && t.status.is_closed()) {
+            if let Some(note) = shown_note(model, t).filter(|_| t.status.is_closed()) {
                 out.push(md("peek-note", note));
+                out.extend(full_note(shell, t, cx));
             }
             if !t.body.trim().is_empty() && !wide {
                 out.push(md("peek-body", &t.body));
@@ -450,6 +452,34 @@ fn body(shell: &Shell, t: &Ticket, wide: bool, place: Place, cx: &mut Context<Sh
         out.push(activity(shell, t.id, 3));
     }
     out
+}
+
+/// A ticket's note as the panel shows it: the whole one once fetched, else
+/// what the board carries — for a closed ticket's long note, its start.
+fn shown_note<'a>(model: &'a crate::state::Model, t: &'a Ticket) -> Option<&'a str> {
+    model.full_notes.get(&t.id).map(|(note, _)| note.as_str()).or(t.note.as_deref()).filter(|n| !n.trim().is_empty())
+}
+
+/// Under a note that is only its start ([`Ticket::note_full`]): the button
+/// that fetches the whole — or, fetched, a word that even that ends early.
+fn full_note(shell: &Shell, t: &Ticket, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let p = shell.palette;
+    t.note_full?;
+    match shell.model.full_notes.get(&t.id) {
+        Some((_, false)) => None,
+        Some((_, true)) => Some(div().text_size(px(12.)).text_color(p.muted).child(t!("peek.full_note_cut")).into_any_element()),
+        None => {
+            let (squad, ticket) = (shell.model.squad.clone(), t.id);
+            Some(
+                h_flex()
+                    .child(btn(p, "peek-full-note", t!("peek.full_note"), None, false, true).h(px(24.)).on_click(cx.listener(move |this, _, _, cx| {
+                        this.send_command(equipe_core::protocol::Command::TicketNote { squad: squad.clone(), ticket });
+                        cx.notify();
+                    })))
+                    .into_any_element(),
+            )
+        }
+    }
 }
 
 /// Who drives a request's ticket, who holds its baton now and from whom,

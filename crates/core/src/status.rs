@@ -539,7 +539,7 @@ mod tests {
             priority: Priority::Normal,
             rank: 0,
             updated_at: Some(NOW - 10 * MINUTE),
-            design_qa: None, landing: false,
+            design_qa: None, landing: false, note_full: None,
             plan: None,
             model: None,
             flow: None,

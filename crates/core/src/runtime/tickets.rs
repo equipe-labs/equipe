@@ -179,7 +179,7 @@ impl Runtime {
             execution: None,
             merged: None,
             off_main: None,
-            design_qa: None, landing: false, plan: None, model: None,
+            design_qa: None, landing: false, note_full: None, plan: None, model: None,
             flow: None,
             created_by: "you".into(),
             note: None,
@@ -588,9 +588,31 @@ impl Runtime {
         if let Some(ticket) = self.journal(squad).and_then(|j| j.ticket(id).ok().flatten()) {
             self.publish_in(Some(squad), Event::TicketChanged { squad: squad.to_owned(), ticket });
         }
+        // Each line as it reads on a screen: a line that carried a whole file listing keeps its start.
+        for e in &mut entries {
+            if let Some(short) = equipe_protocol::note_summary(&e.text, HISTORY_LINE_MAX) {
+                e.text = short;
+            }
+        }
         self.publish_in(Some(squad), Event::TicketHistory { squad: squad.to_owned(), ticket: id, entries });
     }
+
+    /// A ticket's whole note, to the screens following its squad: what a
+    /// screen asks for when the board carries only its start.
+    pub(super) fn send_full_note(&mut self, squad: &str, id: TicketId) {
+        let Some(note) = self.journal(squad).and_then(|j| j.full_note(id).ok().flatten()) else {
+            return;
+        };
+        let (note, cut) = match note.char_indices().nth(crate::journal::NOTE_SENT_MAX) {
+            Some((at, _)) => (note[..at].to_owned(), true),
+            None => (note, false),
+        };
+        self.publish_in(Some(squad), Event::TicketNote { squad: squad.to_owned(), ticket: id, note, cut });
+    }
 }
+
+/// The longest line of a ticket's record a screen is sent, in characters.
+const HISTORY_LINE_MAX: usize = 4_000;
 
 /// Who does a ticket: the member on it, else its owner.
 fn board_who(t: &Ticket) -> Option<String> {

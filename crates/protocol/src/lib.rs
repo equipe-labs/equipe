@@ -426,6 +426,12 @@ pub struct Ticket {
     pub created_by: String,
     /// The latest word on it: a hand-in summary, why it was reopened.
     pub note: Option<String>,
+    /// Set when `note` is only the start of a longer note, and how long the
+    /// whole one is, in bytes: a closed ticket's long note is kept apart in
+    /// the squad's journal and fetched on demand ([`Command::TicketNote`]).
+    /// Left out — and absent from an older daemon — when `note` is whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_full: Option<u64>,
     /// While it waits for the person: what it asks of them, one item each
     /// ([`Ticket::asks`] reads an older daemon's note when this is empty).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -700,6 +706,37 @@ impl Ticket {
 
 /// The gap between two tickets' ranks when they are spread out again.
 pub const RANK_STEP: i64 = 1024;
+
+/// How much of a closed ticket's note the board carries: its start, enough
+/// to say what was done. The whole note is fetched on demand.
+pub const CLOSED_NOTE_SHOWN: usize = 1_500;
+
+/// The start of `note` in at most `max` characters, cut after a whole line
+/// where one fits (else mid-line), ending in `…`; `None` when it fits whole.
+pub fn note_summary(note: &str, max: usize) -> Option<String> {
+    if note.len() <= max || note.chars().count() <= max {
+        return None;
+    }
+    let end = note.char_indices().nth(max).map_or(note.len(), |(at, _)| at);
+    let cut = match note[..end].rfind('\n') {
+        Some(line) if line >= end / 3 => line,
+        _ => end,
+    };
+    Some(format!("{}\n…", note[..cut].trim_end()))
+}
+
+impl Ticket {
+    /// Its note cut to its start ([`note_summary`]) when longer than `max`
+    /// characters, [`Ticket::note_full`] saying how long the whole is: what
+    /// goes to a screen for a ticket whose note it rarely reads in full.
+    pub fn shorten_note(&mut self, max: usize) {
+        let Some(note) = self.note.as_deref() else { return };
+        if let Some(short) = note_summary(note, max) {
+            self.note_full = Some(self.note_full.unwrap_or(0).max(note.len() as u64));
+            self.note = Some(short);
+        }
+    }
+}
 
 impl Ticket {
     /// Where it sorts among the tickets of its status: its rank, else its
@@ -1091,6 +1128,9 @@ pub enum Command {
     CommentTicket { squad: SquadName, ticket: TicketId, text: String },
     /// A ticket's record, oldest first: answered by [`Event::TicketHistory`].
     TicketHistory { squad: SquadName, ticket: TicketId },
+    /// A ticket's whole note, where the board carries only its start
+    /// ([`Ticket::note_full`]): answered by [`Event::TicketNote`].
+    TicketNote { squad: SquadName, ticket: TicketId },
     /// Set how much members may do on their own: the squad's default, or one
     /// member's (`member`); `mode: None` puts a member back on the squad's default.
     SetMode { squad: SquadName, member: Option<String>, mode: Option<Mode> },
@@ -2843,6 +2883,15 @@ pub enum Event {
     CodeReviewed { squad: SquadName, review: review::CodeReview },
     /// A ticket's record, oldest first ([`Command::TicketHistory`]).
     TicketHistory { squad: SquadName, ticket: TicketId, entries: Vec<TicketEntry> },
+    /// A ticket's whole note ([`Command::TicketNote`]); `cut` when even that
+    /// was too long to send and ends early.
+    TicketNote {
+        squad: SquadName,
+        ticket: TicketId,
+        note: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        cut: bool,
+    },
     /// The squad's default mode, or one member's, changed. `mode: None`: the
     /// member follows the squad again.
     ModeChanged { squad: SquadName, member: Option<String>, mode: Option<Mode> },
@@ -3615,6 +3664,7 @@ impl Event {
             | Event::RequestNews { squad, .. }
             | Event::CodeReviewed { squad, .. }
             | Event::TicketHistory { squad, .. }
+            | Event::TicketNote { squad, .. }
             | Event::ModeChanged { squad, .. }
             | Event::ApprovalRequested { squad, .. }
             | Event::ApprovalResolved { squad, .. }
@@ -3736,6 +3786,7 @@ impl Event {
             | Event::RequestNews { .. }
             | Event::CodeReviewed { .. }
             | Event::TicketHistory { .. }
+            | Event::TicketNote { .. }
             | Event::ModeChanged { .. }
             | Event::ApprovalRequested { .. }
             | Event::ApprovalResolved { .. }
@@ -4377,6 +4428,31 @@ mod tests {
         assert_eq!(stopped.summary(None).as_deref(), Some("screen taken back · /desktop resume"));
     }
 
+    #[test]
+    fn a_long_note_goes_as_its_start_cut_after_a_line_and_says_how_long_the_whole_is() {
+        assert_eq!(note_summary("short", 10), None);
+        let note = format!("Built it.\n{}", "- a line of the listing\n".repeat(100));
+        let short = note_summary(&note, 60).unwrap();
+        assert_eq!(short, "Built it.\n- a line of the listing\n- a line of the listing\n…");
+        // One long line: cut inside it, on a character boundary.
+        let line = "ö".repeat(100);
+        assert_eq!(note_summary(&line, 10).unwrap(), format!("{}\n…", "ö".repeat(10)));
+        let mut t = ticket(1);
+        t.note = Some(note.clone());
+        t.shorten_note(60);
+        assert_eq!((t.note.as_deref(), t.note_full), (Some(short.as_str()), Some(note.len() as u64)));
+        // Shortened again, it still says the whole's length; a short note is left as it is.
+        t.shorten_note(20);
+        assert_eq!(t.note_full, Some(note.len() as u64));
+        let mut kept = ticket(2);
+        kept.note = Some("Done.".into());
+        kept.shorten_note(60);
+        assert_eq!((kept.note.as_deref(), kept.note_full), (Some("Done."), None));
+        // On the wire only when set.
+        assert!(serde_json::to_value(&kept).unwrap().get("note_full").is_none());
+        assert_eq!(serde_json::from_value::<Ticket>(serde_json::to_value(&t).unwrap()).unwrap(), t);
+    }
+
     fn ticket(id: TicketId) -> Ticket {
         Ticket {
             id,
@@ -4392,7 +4468,7 @@ mod tests {
             execution: None,
             merged: None,
             off_main: None,
-            design_qa: None, landing: false, plan: None, model: None,
+            design_qa: None, landing: false, note_full: None, plan: None, model: None,
             flow: None,
             kind: TicketKind::Code,
             created_by: "pm".into(),

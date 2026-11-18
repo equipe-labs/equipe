@@ -866,7 +866,7 @@ fn ticket(status: TicketStatus) -> Ticket {
         execution: None,
         merged: None,
         off_main: None,
-        design_qa: None, landing: false, plan: None, model: None,
+        design_qa: None, landing: false, note_full: None, plan: None, model: None,
         flow: None,
         created_by: "pm".into(),
         note: None,

@@ -205,6 +205,7 @@ pub fn person_only(command: &Command) -> bool {
         | C::Interrupt { .. }
         | C::Close { .. }
         | C::TicketHistory { .. }
+        | C::TicketNote { .. }
         // What a member was handed when it moved to the other engine: a read.
         | C::HandOver { .. }
         | C::Refresh { .. }

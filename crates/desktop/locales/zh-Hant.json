@@ -1977,6 +1977,8 @@
   "peek.eta": "預計 {at} 完成",
   "peek.files_changed": "變更的檔案 {n}",
   "peek.hand_in": "提交說明",
+  "peek.full_note": "顯示完整說明",
+  "peek.full_note_cut": "說明太長，這裡只顯示前半部分。",
   "peek.keep_on_branch": "留在分支上",
   "peek.last_words": "最新對話",
   "peek.memo_and_go": "加上備註並繼續",

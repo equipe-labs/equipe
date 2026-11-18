@@ -2024,6 +2024,7 @@ impl App {
                 | Event::RequestNews { .. }
                 | Event::CodeReviewed { .. }
                 | Event::TicketHistory { .. }
+                | Event::TicketNote { .. }
                 | Event::ModeChanged { .. }
                 | Event::ApprovalRequested { .. }
                 | Event::ApprovalResolved { .. }

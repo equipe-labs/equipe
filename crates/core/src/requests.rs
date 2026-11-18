@@ -687,7 +687,7 @@ mod tests {
             rank: 0,
             updated_at: Some(1_000),
             design_qa: None,
-            landing: false,
+            landing: false, note_full: None,
             plan: None,
             model: None,
             flow: None,

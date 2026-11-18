@@ -30,7 +30,7 @@ pub(crate) fn light_copy(ticket: &Ticket) -> Ticket {
     }
     let Ticket {
         id, title, body: _, status, kind, label, owner, assignee, project, depends_on, branch, worktree, execution, merged, off_main, created_by, note: _, asks: _,
-        remaining: _, images: _, priority, rank, updated_at, design_qa, plan, model, landing, flow: _,
+        remaining: _, images: _, priority, rank, updated_at, design_qa, plan, model, landing, flow: _, note_full: _,
     } = ticket;
     Ticket {
         id: *id,
@@ -61,6 +61,7 @@ pub(crate) fn light_copy(ticket: &Ticket) -> Ticket {
         model: model.clone(),
         landing: *landing,
         flow: None,
+        note_full: None,
     }
 }
 
@@ -253,8 +254,11 @@ fn in_address(text: &str, at: usize) -> bool {
     word.contains("://") || word.starts_with("www.")
 }
 
-/// The longest note a board line carries: a hand-in's summary can run to pages.
-const NOTE_MAX: usize = 2_000;
+/// The longest note a board line carries: the start of it, enough to tell
+/// what it says. The whole is a `board` call with `ticket` away
+/// ([`render_ticket`]): a board of fifty tickets with pages of notes each
+/// filled a member's conversation, re-read at every step after.
+const NOTE_MAX: usize = 300;
 
 /// One open ticket as the board lists it: its line, and its note under it.
 fn ticket_lines(t: &Ticket) -> String {
@@ -291,8 +295,60 @@ fn ticket_lines(t: &Ticket) -> String {
     }
     out.push('\n');
     if let Some(note) = &t.note {
-        let note = if note.chars().count() > NOTE_MAX { format!("{}… (cut)", note.chars().take(NOTE_MAX).collect::<String>()) } else { note.clone() };
+        let whole = t.note_full.map_or_else(|| note.chars().count(), |n| n as usize);
+        let note = if note.chars().count() > NOTE_MAX || t.note_full.is_some() {
+            let start: String = note.chars().take(NOTE_MAX).collect();
+            format!("{}… ({whole} characters: `board` with `ticket: {}` shows it all)", start.split_whitespace().collect::<Vec<_>>().join(" "), t.id)
+        } else {
+            note.clone()
+        };
         out.push_str(&format!("    note: {note}\n"));
+    }
+    out
+}
+
+/// The most of a ticket's note one look at it shows, in characters; the
+/// rest is a call with `from` away.
+pub const TICKET_NOTE_PAGE: usize = 12_000;
+
+/// The most of a ticket's body one look at it shows, in characters.
+const TICKET_BODY_MAX: usize = 6_000;
+
+/// How many of a ticket's latest record lines a look at it shows, and how much of each.
+const TICKET_RECORD_LINES: usize = 12;
+const TICKET_RECORD_LINE_MAX: usize = 300;
+
+/// One ticket as the `board` tool shows it with `ticket` — open or closed:
+/// its line, its body, its whole note (`note`, read from where it is kept)
+/// from character `from` on, a page at a time, and its latest record lines
+/// (`record`: by, what, text — oldest first).
+pub fn render_ticket(t: &Ticket, note: Option<&str>, record: &[(String, String, String)], from: usize) -> String {
+    let cut = |text: &str, max: usize| if text.chars().count() > max { format!("{}…", text.chars().take(max).collect::<String>()) } else { text.to_owned() };
+    let mut out = ticket_lines(&Ticket { note: None, ..t.clone() });
+    if !t.body.trim().is_empty() {
+        out.push_str(&format!("\nbody:\n{}\n", cut(t.body.trim(), TICKET_BODY_MAX)));
+    }
+    if let Some(note) = note.filter(|n| !n.trim().is_empty()) {
+        let total = note.chars().count();
+        let from = from.min(total);
+        let page: String = note.chars().skip(from).take(TICKET_NOTE_PAGE).collect();
+        let to = from + page.chars().count();
+        if from == 0 && to == total {
+            out.push_str(&format!("\nnote:\n{}\n", page.trim_end()));
+        } else {
+            out.push_str(&format!("\nnote (characters {from}–{to} of {total}):\n{}\n", page.trim_end()));
+            if to < total {
+                out.push_str(&format!("[{} more characters of the note — call `board` with `ticket: {}, from: {to}` to read on.]\n", total - to, t.id));
+            }
+        }
+    }
+    let lines: Vec<&(String, String, String)> = record.iter().rev().take(TICKET_RECORD_LINES).collect();
+    if !lines.is_empty() {
+        out.push_str(&format!("\nrecord (latest {} of {}):\n", lines.len(), record.len()));
+        for (by, what, text) in lines.into_iter().rev() {
+            let text = cut(&text.split_whitespace().collect::<Vec<_>>().join(" "), TICKET_RECORD_LINE_MAX);
+            out.push_str(&format!("- {by} · {what}{}\n", if text.is_empty() { String::new() } else { format!(": {text}") }));
+        }
     }
     out
 }
@@ -773,8 +829,14 @@ It waits on the board as a proposal until the PM or the person accepts it."
     let mut tools = vec![
         json!({
             "name": BOARD,
-            "description": "See the squad's board: every open ticket with its status, owner, project and dependencies.",
-            "inputSchema": { "type": "object", "properties": {} },
+            "description": "See the squad's board: every open ticket with its status, owner, project and dependencies, and the start of its note. With `ticket`, one ticket in full — open or closed: its body, its whole note and its latest record.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ticket": { "type": "integer", "description": "One ticket to see in full." },
+                    "from": { "type": "integer", "description": "With `ticket`: where in its note to read on from, in characters, as the last page said." },
+                },
+            },
         }),
         json!({
             "name": CREATE_TICKET,
@@ -1798,6 +1860,35 @@ mod tests {
     }
 
     #[test]
+    fn the_board_lists_the_start_of_each_note_and_one_ticket_shows_it_all_a_page_at_a_time() {
+        let mut long = ticket(7, "frontend");
+        long.status = TicketStatus::Review;
+        long.body = "do it".into();
+        long.note = Some(format!("Built the page.\n{}", "- a finding\n".repeat(2_000)));
+        let mut short = ticket(8, "frontend");
+        short.note = Some("Reopened: the header overlaps".into());
+        let board = render(&[long.clone(), short.clone()]);
+        let line = board.lines().find(|l| l.starts_with("    note: Built")).unwrap();
+        assert!(line.chars().count() < NOTE_MAX + 100 && line.contains("`board` with `ticket: 7`"), "{line}");
+        assert!(board.contains("    note: Reopened: the header overlaps\n"), "a short note whole: {board}");
+        // A note kept apart says so too, though its start is short.
+        let apart = Ticket { note: Some("Built the page.".into()), note_full: Some(90_000), ..short.clone() };
+        assert!(render(&[apart]).contains("90000 characters"));
+
+        let whole = long.note.clone().unwrap();
+        let record = vec![("pm".to_owned(), "comment".to_owned(), "x".repeat(1_000)), ("frontend".to_owned(), "handed in".to_owned(), "Built the page.".to_owned())];
+        let first = render_ticket(&long, Some(&whole), &record, 0);
+        assert!(first.starts_with("T-7 [review]") && first.contains("body:\ndo it"), "{first}");
+        assert!(first.contains(&format!("note (characters 0–{TICKET_NOTE_PAGE} of {})", whole.chars().count())), "{first}");
+        assert!(first.contains(&format!("`board` with `ticket: 7, from: {TICKET_NOTE_PAGE}`")));
+        assert!(first.contains("record (latest 2 of 2):\n- pm · comment: xxx") && first.contains("- frontend · handed in: Built the page."), "{first}");
+        assert!(first.lines().all(|l| l.chars().count() <= TICKET_RECORD_LINE_MAX + 40), "record lines are cut");
+        let last = render_ticket(&long, Some(&whole), &[], TICKET_NOTE_PAGE * 2);
+        assert!(!last.contains("from: ") && last.contains(&format!("of {})", whole.chars().count())), "{last}");
+        assert!(render_ticket(&short, short.note.as_deref(), &[], 0).contains("note:\nReopened: the header overlaps"));
+    }
+
+    #[test]
     fn a_long_estimate_with_nobody_sharing_it_is_told_to_split_it_across_subagents() {
         // Long, alone, on an engine with subagents: split it and run the parts at once.
         let claude = Some(Subagents { engine: Engine::Claude, at_once: 20 });
@@ -1912,7 +2003,7 @@ mod tests {
             execution: None,
             merged: None,
             off_main: None,
-            design_qa: None, landing: false, plan: None, model: None,
+            design_qa: None, landing: false, note_full: None, plan: None, model: None,
             flow: None,
             created_by: "pm".into(),
             note: None,

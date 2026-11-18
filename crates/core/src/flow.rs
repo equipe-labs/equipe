@@ -445,7 +445,7 @@ mod tests {
             execution: None,
             merged: None,
             off_main: None,
-            landing: false,
+            landing: false, note_full: None,
             created_by: "designer".into(),
             note: None,
             asks: vec![],
