@@ -3220,6 +3220,7 @@ mod tests {
             action: action.into(),
             reason: None,
             preview: None,
+            ask: None,
         }
     }
 

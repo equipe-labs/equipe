@@ -152,8 +152,10 @@ with your note — no new ticket, no wait for the PM.{back_line} End your turn n
     /// PM is woken with `prompt`, as before.
     pub(super) fn work_ready(&mut self, squad: &str, ticket: TicketId, prompt: String) {
         let Some(found) = self.find_ticket(squad, ticket) else { return };
+        // The squad's autonomy policy keeping every merge for the person: no member lands its own.
+        let merges_ask = self.autonomy_state(squad).policy.merge == equipe_protocol::autonomy::Level::Ask;
         let Some(journal) = self.journals.get(squad) else { return };
-        let (self_land, pm_accepts) = (journal.self_land(), journal.pm_accepts());
+        let (self_land, pm_accepts) = (journal.self_land() && !merges_ask, journal.pm_accepts());
         let pm_name = self.pm_of(squad).and_then(|pm| self.sessions.get(&pm)).and_then(|s| s.name().map(str::to_owned)).unwrap_or_default();
         let pms_own = crate::accept::own_code(&found, &pm_name).is_some();
         let changed = self.handed_in_files.get(&(squad.to_owned(), ticket)).cloned().unwrap_or_default();

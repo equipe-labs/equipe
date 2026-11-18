@@ -86,6 +86,14 @@ pub fn person_only(command: &Command) -> bool {
         // the Mac's screen. A member must never turn any of these up on itself.
         C::SetMode { .. }
         | C::SetPmAccepts { .. }
+        // The squad's autonomy policy and its standing allowances: what
+        // members do without asking is the person's to set, grant and take
+        // back, and a choice a member took is theirs to open again.
+        | C::SetAutonomy { .. }
+        | C::SetAutonomyWindow { .. }
+        | C::AllowKind { .. }
+        | C::RevokeAllowance { .. }
+        | C::ReopenAutoPick { .. }
         | C::SetSelfLand { .. }
         | C::RevertLanded { .. }
         | C::SetEngineSwitching { .. }

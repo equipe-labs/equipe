@@ -42,7 +42,12 @@ impl Runtime {
         let weighed: Vec<(&Ticket, Option<Why>)> = board.iter().map(|t| (t, rules::weigh(t, &[]).or(said))).collect();
         // The PM never accepts its own work: that always goes to the person.
         let own = board.iter().any(|t| t.assignee.as_deref() == Some(member) || (t.assignee.is_none() && t.owner.as_deref() == Some(member)));
-        let pm_decides = !own && self.journals.get(squad).is_some_and(Journal::pm_accepts);
+        // The squad's autonomy policy is the one source: merges the PM's to
+        // accept ("just do" there is `pm_accepts`), and a weighty reason the
+        // PM's only where the person set its kind to "just do" — never the floor.
+        let policy = self.autonomy_policy(squad);
+        let pm_decides = !own && policy.level(crate::protocol::autonomy::Kind::Merge) != crate::protocol::autonomy::Level::Ask;
+        let weighed: Vec<(&Ticket, Option<Why>)> = weighed.into_iter().map(|(t, why)| (t, why.filter(|w| !w.pm_may(&policy)))).collect();
         if pm_decides && weighed.iter().all(|(_, why)| why.is_none()) {
             let list = board.iter().map(|t| format!("T-{} {}", t.id, rules::named(t))).collect::<Vec<_>>().join("; ");
             return Ok(Gate::Pm(format!(

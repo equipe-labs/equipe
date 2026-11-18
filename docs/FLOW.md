@@ -62,7 +62,8 @@ by its own member, through the PM's own acceptance path: a look for
 conflicts with main, the project's checks on the merge (`.equipe/checks`),
 the landing queue. A conflict or a failed check sends it back as before.
 
-It doesn't when the importance gate holds it (`person_gate::weigh`): an
+It doesn't when the squad's autonomy policy keeps merges for the person
+(`merge: ask`, docs/AUTONOMY.md), or when the importance gate holds it (`person_gate::weigh`): an
 action in the world, a deploy, production data, permissions or security,
 money, legal matters, more than a dozen screen files changed — or the PM's
 own code. Those wake the PM as before, which puts to the person what needs
@@ -125,6 +126,7 @@ A read-only copy of a production squad's journal, 48 hours to 2026-11-18
 | request → first merge | 1h23m | 7h10m |
 | request → production | 1h55m | 17h33m |
 | ticket made → first assigned | 23m | 4h23m |
+| ticket made → merged | 2h55m | 9h58m |
 | tickets per request | 2 | 12 |
 | hand-offs per request | 0 | 4 |
 

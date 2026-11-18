@@ -1478,7 +1478,7 @@ pub(crate) mod tests {
         let c = core.config.clone().unwrap();
         let movers: Vec<Mover> = ["designer", "mobile", "mobile-2"].iter().map(|n| Mover { name: (*n).into(), from: Engine::Claude, working: false, on_ticket: true, now: false }).collect();
         let action = move_words(equipe_core::i18n::Lang::En, &movers, Engine::Codex, None, None);
-        let approval = Approval { id: 12, session: 1, member: "pm".into(), ticket: None, tool: ENGINE_TOOL.into(), action: action.clone(), reason: None, preview: None };
+        let approval = Approval { id: 12, session: 1, member: "pm".into(), ticket: None, tool: ENGINE_TOOL.into(), action: action.clone(), reason: None, preview: None, ask: None };
         core.on_relay(&json!({ "type": "presence", "device": phone.id, "online": false }), now);
         let out = core.on_squad_event("acme", &Event::ApprovalRequested { squad: "acme".into(), approval });
         let Action::Relay(push) = &out[0] else { panic!() };
@@ -1499,7 +1499,7 @@ pub(crate) mod tests {
     fn a_device_away_gets_a_push_that_names_who_not_what() {
         let (mut core, phone, now) = core_with_phone();
         let c = core.config.clone().unwrap();
-        let approval = Approval { id: 9, session: 2, member: "backend".into(), ticket: Some(4), tool: "Bash".into(), action: "rm -rf build".into(), reason: None, preview: None };
+        let approval = Approval { id: 9, session: 2, member: "backend".into(), ticket: Some(4), tool: "Bash".into(), action: "rm -rf build".into(), reason: None, preview: None, ask: None };
         let event = Event::ApprovalRequested { squad: "acme".into(), approval };
         // Connected, it hears it over the socket instead.
         assert!(core.on_squad_event("acme", &event).is_empty());
@@ -1774,7 +1774,7 @@ pub(crate) mod tests {
             ids.push(core.config.as_ref().unwrap().devices.last().unwrap().id.clone());
         }
         assert_eq!(core.config.as_ref().unwrap().devices.len(), DEMO_DEVICES);
-        let approval = Approval { id: 1, session: 2, member: "frontend".into(), ticket: Some(3), tool: "Bash".into(), action: "npm run build".into(), reason: None, preview: None };
+        let approval = Approval { id: 1, session: 2, member: "frontend".into(), ticket: Some(3), tool: "Bash".into(), action: "npm run build".into(), reason: None, preview: None, ask: None };
         let out = core.on_own_event(&ids[5], "demo", &Event::ApprovalRequested { squad: "demo".into(), approval });
         assert_eq!(out.len(), 1);
         assert!(matches!(&out[0], Action::Relay(f) if f["type"] == "push" && f["device"] == ids[5].as_str()));

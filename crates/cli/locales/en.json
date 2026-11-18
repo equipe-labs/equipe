@@ -1599,5 +1599,21 @@
   "open.bad_link": "“{text}” isn't an equipe link. One looks like equipe://open/<squad>/ticket/T-12 or https://equipe.im/o/#<squad>/ticket/T-12",
   "open.no_app": "No app opened {link}. Install the equipe desktop app (equipe.app), start it once, and try again.",
   "open.opening": "Opening {link} in equipe",
-  "open.unsupported": "equipe open works on macOS and Linux for now. The link is {link}"
+  "open.unsupported": "equipe open works on macOS and Linux for now. The link is {link}",
+  "autonomy.usage": "equipe squad autonomy [show | set <kind> <ask|decide_and_tell|just_do> | window <minutes> | revoke <id>] — kinds: design, merge, internal, production_data",
+  "autonomy.floor": "{kind} always asks you — no policy changes that.",
+  "autonomy.title": "How far {squad}'s members go without you:",
+  "autonomy.window": "Decide-and-tell waits {minutes} min for your answer (0: at once).",
+  "autonomy.always_asks": "Always asks you: {kinds}.",
+  "autonomy.allowances": "Standing allowances:",
+  "autonomy.none": "none",
+  "autonomy.revoked": "revoked",
+  "autonomy.expired": "expired",
+  "autonomy.days_left": "{days} days left",
+  "autonomy.used": "used {uses}×",
+  "autonomy.latest_uses": "Latest uses:",
+  "autonomy.picks": "Choices members took on their own:",
+  "autonomy.no_allowance": "No live standing allowance #{id}.",
+  "autonomy.done": "Done.",
+  "autonomy.no_answer": "The daemon didn't answer. Is it up to date? Run equipe update."
 }

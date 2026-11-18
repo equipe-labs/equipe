@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod accept;
 pub mod asks;
+pub mod autonomy;
 pub mod briefs;
 pub mod by_words;
 pub mod call;
@@ -926,6 +927,11 @@ pub struct Approval {
     /// desktop app: a file on this Mac, deleted once answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
+    /// What the squad's autonomy policy makes of it: its kind, its plain
+    /// words, what "Allow for this kind" would grant. Left out by a daemon
+    /// that predates the policy, and for requests it doesn't read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<autonomy::Ask>,
 }
 
 /// The person's answer to an [`Approval`].
@@ -1683,6 +1689,21 @@ pub enum Command {
     /// itself (`on`, the default), putting to them only what needs them — or
     /// keeps every acceptance for themselves.
     SetPmAccepts { squad: SquadName, on: bool },
+    /// The squad's autonomy policy: how far members go on their own with one
+    /// kind of thing ([`autonomy::Policy::set`]; the floor always asks).
+    /// Answered by [`Event::AutonomyChanged`].
+    SetAutonomy { squad: SquadName, kind: autonomy::Kind, level: autonomy::Level },
+    /// How long a decide-and-tell choice waits for the person, in minutes
+    /// (0: at once). Answered by [`Event::AutonomyChanged`].
+    SetAutonomyWindow { squad: SquadName, minutes: u32 },
+    /// "Allow for this kind": allow request `approval` and grant the
+    /// standing allowance its card offered, for `days`. The person's own tap.
+    AllowKind { squad: SquadName, approval: u64, days: u32 },
+    /// Take a standing allowance back: requests in its scope ask again.
+    RevokeAllowance { squad: SquadName, id: u64 },
+    /// Open a choice a member took on its recommendation (decide-and-tell)
+    /// again, for the person to choose themselves.
+    ReopenAutoPick { squad: SquadName, set: u64 },
     /// Whether the squad's members land their own work once its gates pass
     /// and nothing in it needs a person (on, the default, where the PM
     /// accepts the team's work), the PM looking after the fact.
@@ -3321,6 +3342,9 @@ pub enum Event {
     EngineSwitchingChanged { squad: SquadName, mode: engines::Switching },
     /// Whether the PM accepts the team's work now ([`Command::SetPmAccepts`]).
     PmAcceptsChanged { squad: SquadName, on: bool },
+    /// The squad's autonomy now: its policy, standing allowances, their
+    /// latest uses and the choices members took on their own.
+    AutonomyChanged { squad: SquadName, state: autonomy::State },
     /// What new members of each role start with now ([`Command::SetRoleModel`]).
     RoleModelsChanged { squad: SquadName, defaults: Vec<RoleModel> },
     /// The squad's projects now ([`Command::AddProject`]): their folders.
@@ -3612,6 +3636,7 @@ impl Event {
             | Event::MemberMoved { squad, .. }
             | Event::HandOver { squad, .. }
             | Event::PmAcceptsChanged { squad, .. }
+            | Event::AutonomyChanged { squad, .. }
             | Event::RoleModelsChanged { squad, .. }
             | Event::SecretAsked { squad, .. }
             | Event::SecretClosed { squad, .. }
@@ -3732,6 +3757,7 @@ impl Event {
             | Event::MemberMoved { .. }
             | Event::HandOver { .. }
             | Event::PmAcceptsChanged { .. }
+            | Event::AutonomyChanged { .. }
             | Event::RoleModelsChanged { .. }
             | Event::SecretAsked { .. }
             | Event::SecretClosed { .. }
@@ -4272,6 +4298,10 @@ pub struct Snapshot {
     /// The squad's "always allow" rules, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed: Vec<String>,
+    /// The squad's autonomy policy, standing allowances and automatic picks.
+    /// `None` from a daemon that predates them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autonomy: Option<autonomy::State>,
     /// Every member's browser opens on screen ([`Command::ShowBrowser`] for
     /// everyone), rather than hidden.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -4535,6 +4565,7 @@ mod tests {
                 action: "npm publish".into(),
                 reason: None,
                 preview: None,
+                ask: None,
             },
         };
         assert_eq!(event.squad(), Some("acme"));
@@ -4894,6 +4925,7 @@ mod tests {
                 visuals: Vec::new(),
             }],
             allowed: vec!["Bash(npm install:*)".into()],
+            autonomy: Some(autonomy::State::default()),
             browsers_shown: true,
             disk: None,
         };

@@ -297,6 +297,7 @@ fn asks() -> &'static std::sync::Mutex<Vec<Approval>> {
             action: action.into(),
             reason: reason.map(Into::into),
             preview: None,
+            ask: None,
         };
         let on = std::env::var("FAKE_ASKS").map_or(true, |v| v != "0") && !crowd::on();
         // `FAKE_ASKS=engine`: the PM asks to move three members to Codex, on

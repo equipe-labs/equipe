@@ -1576,5 +1576,21 @@
   "open.bad_link": "「{text}」はequipeのリンクではありません。リンクは equipe://open/<スクワッド>/ticket/T-12 または https://equipe.im/o/#<スクワッド>/ticket/T-12 の形です",
   "open.no_app": "{link} を開くアプリがありません。equipe のデスクトップアプリ(equipe.app)をインストールし、一度起動してから、もう一度お試しください。",
   "open.opening": "equipe で {link} を開いています",
-  "open.unsupported": "equipe open は今のところ macOS と Linux で使えます。リンクは {link} です"
+  "open.unsupported": "equipe open は今のところ macOS と Linux で使えます。リンクは {link} です",
+  "autonomy.usage": "equipe squad autonomy [show | set <種類> <ask|decide_and_tell|just_do> | window <分> | revoke <番号>] — 種類: design, merge, internal, production_data",
+  "autonomy.floor": "{kind}は必ずあなたに確認します。ポリシーでは変えられません。",
+  "autonomy.title": "{squad}のメンバーがあなたなしで進める範囲:",
+  "autonomy.window": "「決めてから知らせる」は回答を{minutes}分待ちます（0: すぐ）。",
+  "autonomy.always_asks": "必ず確認します: {kinds}。",
+  "autonomy.allowances": "事前の許可:",
+  "autonomy.none": "なし",
+  "autonomy.revoked": "取り消し済み",
+  "autonomy.expired": "期限切れ",
+  "autonomy.days_left": "残り{days}日",
+  "autonomy.used": "{uses}回使用",
+  "autonomy.latest_uses": "最近の使用:",
+  "autonomy.picks": "メンバーが自分で決めた選択:",
+  "autonomy.no_allowance": "有効な許可 #{id} はありません。",
+  "autonomy.done": "変更しました。",
+  "autonomy.no_answer": "デーモンが応答しませんでした。最新ですか? equipe update を実行してください。"
 }

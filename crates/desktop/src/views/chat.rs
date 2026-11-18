@@ -733,6 +733,8 @@ fn dock(shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElement> {
         super::login_offers::docked(shell, cx),
         super::cli_signin::docked(shell, cx),
         super::verify::docked(shell, cx),
+        // Choices members took on their own (decide-and-tell): one line each, with "Change".
+        super::settings::autonomy::docked(shell, cx),
     ]
     .into_iter()
     .enumerate()
@@ -854,6 +856,7 @@ fn dock_kind_words(kind: usize) -> &'static str {
         6 => t!("chat.dock_routine"),
         7 => t!("chat.dock_engine"),
         8 | 9 => t!("chat.dock_signin"),
+        11 => t!("chat.dock_picked"),
         _ => t!("chat.dock_check"),
     }
 }
