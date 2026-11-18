@@ -229,3 +229,158 @@ async fn reactions_in_a_session_are_kept_in_the_projects_style_profile() {
     assert!(equipe_core::taste::tuner::signals_file(&project.join("design")).is_file());
     handle.shutdown().await;
 }
+
+/// A stand-in `claude` that answers "ok" and writes down each turn's message,
+/// one line a turn, in the file it returns.
+fn recording_claude() -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = scratch("rec");
+    let log = dir.join("turns.log");
+    let bin = dir.join("claude");
+    let script = format!(
+        "#!/bin/sh\nif [ \"$1\" = \"auth\" ]; then echo '{{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}}'; exit 0; fi\n\
+IFS= read -r line; printf '%s\\n' \"$line\" >> '{}'\n\
+cat <<EOF\n{{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-test\",\"session_id\":\"sess-1\"}}\n\
+{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\",\"usage\":{{\"input_tokens\":3,\"output_tokens\":1}}}}\nEOF\n",
+        log.display()
+    );
+    std::fs::write(&bin, script).unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (bin, log)
+}
+
+fn turns(log: &Path) -> Vec<String> {
+    std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_owned).collect()
+}
+
+/// Say `text` to the designer (2) and wait for its turn to end.
+async fn say_to_designer(handle: &Handle, events: &mut UnboundedReceiver<Event>, text: &str) {
+    handle.send(Command::Submit { session: 2, text: text.into(), about: None });
+    until(events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+}
+
+#[tokio::test]
+async fn a_sessions_turns_are_quick_prototype_rounds_until_it_ends() {
+    let (claude, log) = recording_claude();
+    let (home, project) = squad_home();
+    let (handle, mut events) = runtime::start(config(&claude, &home));
+    add(&handle, &mut events, 1, member(&project, "pm")).await;
+    add(&handle, &mut events, 2, member(&project, "designer")).await;
+    handle.send(Command::StartDesignSession { squad: "acme".into(), project: Some("site".into()), page: "Pricing".into(), from: SessionFrom::DesignScreen });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+    let kickoff = turns(&log).pop().unwrap();
+    assert!(kickoff.contains("prototype mode") && kickoff.contains("21st.dev, Mobbin") && kickoff.contains("show_references"), "{kickoff}");
+
+    say_to_designer(&handle, &mut events, "airier, please").await;
+    let round = turns(&log).pop().unwrap();
+    for rule in ["design session on", "prototype round", "no axe", "no design QA", "no new ticket per feedback item", "CHANGELOG.md"] {
+        assert!(round.contains(rule), "{rule}: {round}");
+    }
+
+    handle.send(Command::EndDesignSession { squad: "acme".into(), designer: 2 });
+    say_to_designer(&handle, &mut events, "thanks").await;
+    let after = turns(&log).pop().unwrap();
+    assert!(!after.contains("prototype round"), "ended: ticket work again — {after}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn use_this_opens_the_implementation_ticket_with_the_prototype_as_spec_then_updates_it() {
+    let (claude, log) = recording_claude();
+    let (home, project) = squad_home();
+    let (handle, mut events) = runtime::start(config(&claude, &home));
+    add(&handle, &mut events, 1, member(&project, "pm")).await;
+    add(&handle, &mut events, 2, member(&project, "designer")).await;
+    handle.send(Command::StartDesignSession { squad: "acme".into(), project: Some("site".into()), page: "Pricing".into(), from: SessionFrom::DesignScreen });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 2, .. })).await;
+
+    let pick = |variant: &str| Command::UseDesignVariant {
+        squad: "acme".into(),
+        designer: 2,
+        project: Some("site".into()),
+        page: "Pricing".into(),
+        variant: Some(variant.into()),
+        url: Some(format!("http://localhost:5173/proto/{}", variant.to_lowercase())),
+    };
+    handle.send(pick("b"));
+    let seen = until(&mut events, |e| matches!(e, Event::DesignVariantUsed { .. })).await;
+    let Some(Event::DesignVariantUsed { ticket, variant, updated: false, .. }) = seen.last().cloned() else { panic!("{seen:#?}") };
+    assert_eq!(variant.as_deref(), Some("B"));
+    let made = seen.iter().rev().find_map(|e| if let Event::TicketChanged { ticket: t, .. } = e { (t.id == ticket).then(|| t.clone()) } else { None }).expect("the ticket");
+    assert!(made.title.contains("Pricing") && made.title.contains('B'), "{}", made.title);
+    assert!(made.body.contains("- Variant: B") && made.body.contains("- Prototype: http://localhost:5173/proto/b") && made.body.contains("full design checks run on this ticket"), "{}", made.body);
+
+    // Picked again before it started: the same ticket, updated.
+    handle.send(pick("A"));
+    let seen = until(&mut events, |e| matches!(e, Event::DesignVariantUsed { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::DesignVariantUsed { ticket: t, updated: true, .. }) if *t == ticket), "{seen:#?}");
+    let edited = seen.iter().rev().find_map(|e| if let Event::TicketChanged { ticket: t, .. } = e { (t.id == ticket).then(|| t.clone()) } else { None }).expect("updated");
+    assert!(edited.body.contains("- Variant: A"), "{}", edited.body);
+
+    // The designer hears of it with its next message, and its rounds are over.
+    say_to_designer(&handle, &mut events, "go").await;
+    let told = turns(&log).pop().unwrap();
+    assert!(told.contains("variant A of the prototype") && told.contains(&format!("full checks run on T-{ticket}")), "{told}");
+    assert!(!told.contains("prototype round"), "{told}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_member_withdraws_its_own_card_when_the_persons_words_settle_it() {
+    let (claude, log) = recording_claude();
+    let (home, project) = squad_home();
+    let (handle, mut events) = runtime::start(config(&claude, &home));
+    add(&handle, &mut events, 1, member(&project, "pm")).await;
+    add(&handle, &mut events, 2, member(&project, "designer")).await;
+    let asked = tool(&handle, "designer", "ask_decision", json!({ "questions": [{ "question": "Which left menu?", "options": [{ "label": "Rail" }, { "label": "Drawer" }] }] })).await;
+    assert!(!asked.is_error, "{asked:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await;
+    let set = proposal(&seen).unwrap();
+
+    // The person's message carries the open card, and says to withdraw rather than steer them.
+    say_to_designer(&handle, &mut events, "show me references first").await;
+    let said = turns(&log).pop().unwrap();
+    assert!(said.contains(&format!("#{}", set.id)) && said.contains("Which left menu?") && said.contains("withdraw_decision"), "{said}");
+
+    let done = tool(&handle, "designer", "withdraw_decision", json!({ "id": set.id, "why": "references first" })).await;
+    assert!(!done.is_error && done.text.contains("Withdrawn"), "{done:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { session: 2, .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::QuestionsClosed { id, answers: None, .. } if *id == set.id)), "{seen:#?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { session: 2, text, .. } if text.contains("withdrew its card") && text.contains("Which left menu?"))), "{seen:#?}");
+    let again = tool(&handle, "designer", "withdraw_decision", json!({})).await;
+    assert!(again.is_error, "nothing left: {again:?}");
+    // Someone else's card is not its to take back.
+    tool(&handle, "pm", "ask_decision", json!({ "questions": [{ "question": "Ship Friday?", "options": [{ "label": "Yes" }, { "label": "No" }] }] })).await;
+    until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await;
+    let theirs = tool(&handle, "designer", "withdraw_decision", json!({})).await;
+    assert!(theirs.is_error, "{theirs:?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_member_revises_its_own_ticket_that_hasnt_started_and_says_so() {
+    let claude = claude();
+    let (home, project) = squad_home();
+    let (handle, mut events) = runtime::start(config(&claude, &home));
+    add(&handle, &mut events, 1, member(&project, "pm")).await;
+    add(&handle, &mut events, 2, member(&project, "designer")).await;
+    // The PM's own ticket first, and the designer's waiting on it: not started.
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Billing page", "body": "-", "owner": "pm", "kind": "task" })).await;
+    let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket: t, .. } if t.title == "Billing page")).await;
+    let Some(Event::TicketChanged { ticket: other, .. }) = seen.last().cloned() else { panic!() };
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Left menu options", "body": "Three options on a card.", "owner": "designer", "kind": "task", "depends_on": [other.id] })).await;
+    let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket: t, .. } if t.title == "Left menu options")).await;
+    let Some(Event::TicketChanged { ticket, .. }) = seen.last().cloned() else { panic!() };
+    let revised = tool(&handle, "designer", "revise_ticket", json!({ "id": ticket.id, "body": "References first, then a live prototype.", "why": "the person asked for references first" })).await;
+    assert!(!revised.is_error && revised.text.contains("body"), "{revised:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { session: 2, .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::TicketChanged { ticket: t, .. } if t.id == ticket.id && t.body == "References first, then a live prototype.")), "{seen:#?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { session: 2, text, .. } if text.contains(&format!("updated T-{}", ticket.id)))), "{seen:#?}");
+    // Not its own: refused.
+    let refused = tool(&handle, "designer", "revise_ticket", json!({ "id": other.id, "status": "cancelled" })).await;
+    assert!(refused.is_error && refused.text.contains("isn't yours"), "{refused:?}");
+    // Its own, dropped.
+    let dropped = tool(&handle, "designer", "revise_ticket", json!({ "id": ticket.id, "status": "cancelled" })).await;
+    assert!(!dropped.is_error, "{dropped:?}");
+    handle.shutdown().await;
+}

@@ -275,6 +275,10 @@
   "news.cannot_start": "✗ T-{id}을(를) {name}이(가) 시작하지 못했어요: {reason}",
   "news.changes_declined": "{tickets} 반려하지 않았어요 — 검토 대기로 그대로 둬요",
   "news.commented": "T-{id}에 댓글을 남겼어요: {text}",
+  "news.card_withdrawn": "{name}이(가) 카드를 거뒀어요: {question}",
+  "news.card_withdrawn_on": "{name}이(가) T-{id} 카드를 거뒀어요: {question}",
+  "news.member_revised": "{name}이(가) T-{id}을(를) 고쳤어요 · {title}",
+  "news.member_dropped": "{name}이(가) T-{id}을(를) 접었어요 · {title}",
   "news.decision.one": "{name}이(가) 결정을 부탁해요 · {question}",
   "news.decision.other": "{name}이(가) {count}가지 결정을 부탁해요 · {question}",
   "news.desk_saved": "✎ {name}이(가) 스쿼드 폴더에서 {what} · /home undo로 되돌릴 수 있어요",
@@ -824,5 +828,8 @@
   "design_session.go_ahead": "디자이너가 알아서 진행",
   "design_session.kickoff": "{page}을(를) 짧은 라운드로 같이 만들어 봐요.",
   "design_session.no_designer": "아직 디자인 세션을 할 디자이너가 팀에 없어요. PM에게 디자이너를 데려와 달라고 하세요.",
-  "design_session.no_page": "디자인 세션에서 다룰 페이지나 화면 이름을 알려 주세요."
+  "design_session.no_page": "디자인 세션에서 다룰 페이지나 화면 이름을 알려 주세요.",
+  "design_session.use_title": "고른 프로토타입으로 {page} 구현",
+  "design_session.use_title_variant": "프로토타입 {variant}로 {page} 구현",
+  "design_session.use_intro": "디자인 세션에서 \"이걸로 할게요\"로 고른 프로토타입이에요. 제품에 그대로 구현해 주세요."
 }

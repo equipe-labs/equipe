@@ -160,6 +160,8 @@ pub struct PreviewUi {
     tunnel: Option<crate::tunnel::Tunnel>,
     /// The pins last put on the page: put again when they change, or a page loads.
     said: Option<String>,
+    /// Where the view's events go: a snapshot's crop comes back there too.
+    events: Option<tokio::sync::mpsc::UnboundedSender<WebEvent>>,
     _events: Option<Task<()>>,
     _watch: Option<Task<()>>,
 }
@@ -224,6 +226,7 @@ impl Shell {
             std::thread::spawn(move || tunnel.close());
         }
         self.preview.view = None;
+        self.preview.events = None;
         self.preview.said = None;
         self.preview.shows = None;
         self.preview._events = None;
@@ -251,6 +254,13 @@ impl Shell {
         match step {
             Step::Nothing | Step::Unlink { .. } => {}
             Step::Load(url) => {
+                // A design session's variants asked side by side: that page, once the forward is up.
+                if self.session.side_by_side && self.preview.open.as_ref().is_some_and(|o| o.design) {
+                    self.preview.shows = Some(url);
+                    self.preview_show_variants(true);
+                    cx.notify();
+                    return;
+                }
                 if let Some(view) = self.preview.view.as_ref() {
                     view.load(&url);
                 }
@@ -356,14 +366,43 @@ impl Shell {
                 self.preview.said = None;
                 self.preview_sync_page();
             }
-            WebEvent::Pin { x, y, width, selector } => {
+            WebEvent::Pin { x, y, width, selector, element } => {
                 self.preview.pinning = false;
                 if self.preview.open.as_ref().is_some_and(|o| o.design) {
-                    self.design_session_pin_at(x, y, width, selector, window, cx);
+                    self.design_session_pin_at(x, y, width, selector, element.as_ref(), window, cx);
+                    // Its crop: the web view's own drawing of the spot, offscreen — never the screen.
+                    if let (Some(rect), Some(view), Some(to)) = (element.as_ref().and_then(crate::preview_view::crop_rect), self.preview.view.as_ref(), self.preview.events.clone()) {
+                        view.snapshot(rect, to);
+                    }
                 }
             }
+            WebEvent::Crop(bytes) => self.design_session_pin_crop(bytes, cx),
         }
         cx.notify();
+    }
+
+    /// The design session's variants side by side in the view (`on`), at
+    /// the width picked — each one reached here through the preview's own
+    /// forward, so only those served at the same port as the page it opened
+    /// at — or back to the page it opened at.
+    pub fn preview_show_variants(&mut self, on: bool) {
+        let Some(open) = self.preview.open.as_ref() else { return };
+        let Some(local) = open.preview.port else { return };
+        let page = if on {
+            let remote = open.preview.target.port;
+            let here = |url: &str| rules::loopback(url).ok().filter(|t| t.port == remote).map(|t| t.at(local));
+            let width = self.preview.width.css().unwrap_or(1440.) as u32;
+            match crate::design_session::side_by_side_page(&self.session.shown.variants, here, width) {
+                Some(page) => page,
+                None => return,
+            }
+        } else {
+            open.preview.target.at(local)
+        };
+        if let Some(view) = self.preview.view.as_ref() {
+            view.load(&page);
+        }
+        self.preview.shows = Some(page);
     }
 
     /// The page's pins and pin mode, as the pane has them.
@@ -534,6 +573,7 @@ impl Shell {
             && let (Some(url), Some((at, page_zoom))) = (self.preview.shows.clone(), placed)
         {
             let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+            self.preview.events = Some(events.clone());
             match PreviewWebView::open(window, &url, at, events) {
                 Ok(mut view) => {
                     view.zoom(page_zoom);
@@ -649,6 +689,7 @@ fn bar(shell: &Shell, open: &Open, window: &Window, cx: &mut Context<Shell>) -> 
         )
         .child(h_flex().flex_none().h(px(26.)).p(px(2.)).gap(px(2.)).rounded(px(R_MD)).bg(p.wash).children(Width::ALL.map(|w| segment(w, cx))))
         .child(ui::icon_button(p, "preview-dark", if dark { Icon::Sparkles } else { Icon::Lightbulb }, if dark { t!("preview.light") } else { t!("preview.dark") }, None).on_click(cx.listener(|this, _, _, cx| this.preview_toggle_dark(cx))))
+        .when(design, |b| b.children(super::design_session::variant_chips(shell, cx)))
         .when(design, |b| {
             let pinning = shell.preview.pinning;
             b.child(
@@ -658,6 +699,7 @@ fn bar(shell: &Shell, open: &Open, window: &Window, cx: &mut Context<Shell>) -> 
                     .on_click(cx.listener(move |this, _, _, cx| this.preview_pin_mode(!pinning, cx))),
             )
         })
+        .when(design, |b| b.children(super::design_session::use_this(shell, "preview-use", cx)))
         .child(ui::icon_button(p, "preview-outside", Icon::External, t!("preview.open_outside"), None).on_click(cx.listener(|this, _, _, cx| this.preview_outside(cx))))
         .child(ui::icon_button(p, "preview-full", Icon::Expand, if full { t!("preview.exit_full") } else { t!("preview.full") }, Some("⌘⇧F")).selected(full).on_click(cx.listener(|this, _, window, cx| this.preview_toggle_full(window, cx))))
         .child(ui::icon_button(p, "preview-fullscreen", Icon::AppWindow, t!("preview.fullscreen"), None).selected(shell.preview.fullscreen).on_click(cx.listener(|this, _, window, cx| this.preview_fullscreen(window, cx))))
