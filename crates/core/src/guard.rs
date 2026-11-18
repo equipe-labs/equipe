@@ -27,6 +27,11 @@
 //!   instead — where the member works, and a design session's
 //!   `design/sessions/` there ([`scan_refused`]).
 //!
+//! - `npm ci` where `node_modules` is installed already for the very same
+//!   `package-lock.json` (equipe clones it into a new worktree from the
+//!   project's checkout): it would delete it and download everything again,
+//!   minutes of load on a shared Mac for nothing ([`npm_ci_refused`]).
+//!
 //! After a command ran (`PostToolUse`), one answer more: a shell `screencapture`
 //! or `osascript` UI script that macOS refused for want of a permission is
 //! answered with a pointer to equipe's desktop tools, which hold the
@@ -128,7 +133,10 @@ pub fn refusal(tool: &str, input: &Value, cwd: &Path, work: &Path, read_only: &[
             }
             // Where each command runs: a `cd` moves the rest of the chain.
             let mut here = cwd.to_path_buf();
+            // `node_modules` removed earlier in the line, on purpose: a reinstall is what is meant.
+            let mut cleared = false;
             for c in &commands {
+                cleared |= c.words.first().is_some_and(|w| w == "rm") && c.words.iter().skip(1).any(|w| w.trim_end_matches('/').ends_with("node_modules"));
                 if let [cd, dir] = c.words.as_slice()
                     && cd == "cd"
                     && let Some(dir) = resolve(dir, &here, home.as_deref())
@@ -138,6 +146,12 @@ pub fn refusal(tool: &str, input: &Value, cwd: &Path, work: &Path, read_only: &[
                 }
                 if let Some((program, root)) = whole_disk_scan(&c.words, &here, home.as_deref()) {
                     return Some(scan_refused(&program, &root, work));
+                }
+                if !cleared
+                    && let Some(dir) = npm_ci_in(&c.words, &here, home.as_deref())
+                    && installed_for_its_lockfile(&dir)
+                {
+                    return Some(npm_ci_refused(&dir));
                 }
                 if let Some(why) = writes(c).iter().find_map(|target| shut(target, &here)) {
                     return Some(why);
@@ -162,6 +176,38 @@ full speed and slows every member and the person's screen. Search where the file
 (`{program} {work} …`). A design session's prototypes are in its folder under `{work}/design/sessions/` \
 (`ls -t {work}/design/sessions/` lists the latest first). For anything else, ask the PM or the person where it is; \
 on macOS, `mdfind -name <file>` asks Spotlight's index and answers at once."
+    )
+}
+
+/// Where `npm ci` would install, when `words` is one: the folder it runs
+/// in, or its `--prefix`.
+fn npm_ci_in(words: &[String], cwd: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let words = unwrapped(words.to_vec());
+    let (program, args) = words.split_first()?;
+    if program.rsplit('/').next() != Some("npm") || !args.iter().any(|a| matches!(a.as_str(), "ci" | "clean-install" | "install-clean" | "isntall-clean")) {
+        return None;
+    }
+    let prefix = args.iter().position(|a| a == "--prefix" || a == "-C").and_then(|i| args.get(i + 1)).cloned().or_else(|| args.iter().find_map(|a| a.strip_prefix("--prefix=").map(str::to_owned)));
+    match prefix {
+        Some(p) => resolve(&p, cwd, home),
+        None => Some(cwd.to_path_buf()),
+    }
+}
+
+/// Whether `dir`'s `node_modules` is installed for exactly its
+/// `package-lock.json` ([`crate::worktree::npm_installed_for_lockfile`]).
+fn installed_for_its_lockfile(dir: &Path) -> bool {
+    crate::worktree::npm_installed_for_lockfile(dir) == Some(true)
+}
+
+/// What a member is told when `npm ci` would reinstall what is installed.
+fn npm_ci_refused(dir: &Path) -> String {
+    format!(
+        "Blocked: node_modules in {} is installed already for this exact package-lock.json (equipe cloned it from the \
+project's checkout). `npm ci` would delete it and download everything again — minutes of load on a Mac the whole squad \
+shares. Use it as it is. To add or change a dependency, `npm install <package>`; if node_modules is really broken, say \
+so and remove it first (`rm -rf node_modules && npm ci`).",
+        dir.display()
     )
 }
 
@@ -747,6 +793,31 @@ mod tests {
 
     fn in_background(command: &str) -> Option<String> {
         refusal("Bash", &json!({ "command": command, "run_in_background": true }), Path::new(WORK), Path::new(WORK), &[PathBuf::from(PROJECT)])
+    }
+
+    #[test]
+    fn npm_ci_over_node_modules_installed_for_the_same_lockfile_is_refused() {
+        let dir = std::env::temp_dir().join(format!("equipe-guard-npm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+        let lock = r#"{"name":"site","lockfileVersion":3,"packages":{"":{"name":"site"},"node_modules/react":{"version":"19.0.0"}}}"#;
+        let installed = r#"{"name":"site","lockfileVersion":3,"packages":{"node_modules/react":{"version":"19.0.0"}}}"#;
+        std::fs::write(dir.join("package-lock.json"), lock).unwrap();
+        std::fs::write(dir.join("node_modules/.package-lock.json"), installed).unwrap();
+        let ci = |command: &str| refusal("Bash", &json!({ "command": command }), &dir, &dir, &[]);
+        for command in ["npm ci", "npm ci --no-audit", "cd . && npm ci", "env CI=1 npm clean-install"] {
+            let why = ci(command).unwrap_or_else(|| panic!("{command} let through"));
+            assert!(why.starts_with("Blocked: node_modules in") && why.contains("npm install <package>"), "{why}");
+        }
+        assert!(refusal("Bash", &json!({ "command": format!("npm ci --prefix {}", dir.display()) }), Path::new("/"), Path::new("/w"), &[]).is_some(), "by its prefix");
+        // Installing a package, and what isn't installed for this lockfile, go through.
+        assert_eq!(ci("npm install zod"), None);
+        assert_eq!(ci("rm -rf node_modules && npm ci"), None, "removed first on purpose: what the refusal says to do");
+        std::fs::write(dir.join("node_modules/.package-lock.json"), r#"{"packages":{"node_modules/react":{"version":"18.3.1"}}}"#).unwrap();
+        assert_eq!(ci("npm ci"), None, "another lockfile's install");
+        std::fs::remove_file(dir.join("node_modules/.package-lock.json")).unwrap();
+        assert_eq!(ci("npm ci"), None, "nothing installed");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

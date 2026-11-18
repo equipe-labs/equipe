@@ -16,8 +16,10 @@
 /// What the machine looks like now.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Reading {
-    /// The load average over the last minute.
+    /// The load average over the last minute…
     pub load: f64,
+    /// …and over the last five: against it, whether the load rises or falls.
+    pub load5: f64,
     /// Logical cores.
     pub cores: usize,
     /// How much memory is left to use, in percent (macOS's memory pressure
@@ -25,10 +27,12 @@ pub struct Reading {
     pub memory_left: Option<u8>,
 }
 
-/// Overloaded past this many runnable threads per core…
-pub const LOAD_PER_CORE: f64 = 1.5;
-/// …and calm again under this many (lower, so it doesn't flip each minute).
-pub const CALM_PER_CORE: f64 = 1.1;
+/// Overloaded past this many runnable threads per core while the load still
+/// rises: a Mac shared with a CI runner and a dozen browsers lives at 4-5x
+/// its cores, and a line at 1.5x never let new work start there…
+pub const LOAD_PER_CORE: f64 = 2.5;
+/// …and calm again once the load falls, or is under this many.
+pub const CALM_PER_CORE: f64 = 2.0;
 /// Memory this low (percent left) is overloaded whatever the load…
 pub const MEMORY_CRITICAL: u8 = 5;
 /// …and has room again above this.
@@ -45,17 +49,20 @@ pub enum Why {
 }
 
 impl Reading {
-    /// Why this reading is over the line, if it is.
+    /// Why this reading is over the line, if it is: memory nearly gone, or
+    /// a load past [`LOAD_PER_CORE`] that is still rising.
     pub fn over(&self) -> Option<Why> {
         if self.memory_left.is_some_and(|m| m <= MEMORY_CRITICAL) {
             return Some(Why::Memory);
         }
-        (self.load > LOAD_PER_CORE * self.cores.max(1) as f64).then_some(Why::Load)
+        (self.load > LOAD_PER_CORE * self.cores.max(1) as f64 && self.load >= self.load5).then_some(Why::Load)
     }
 
-    /// Whether this reading is calm enough to carry on.
+    /// Whether this reading is calm enough to carry on: memory to spare, and
+    /// a load that falls or is under [`CALM_PER_CORE`].
     pub fn calm(&self) -> bool {
-        self.load < CALM_PER_CORE * self.cores.max(1) as f64 && self.memory_left.is_none_or(|m| m > MEMORY_ROOM)
+        let falling = self.load < self.load5;
+        (falling || self.load < CALM_PER_CORE * self.cores.max(1) as f64) && self.memory_left.is_none_or(|m| m > MEMORY_ROOM)
     }
 
     /// The load, rounded, for people: "60".
@@ -113,19 +120,20 @@ impl Watch {
 /// The machine now; `None` where it can't be read.
 pub fn read() -> Option<Reading> {
     let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-    Some(Reading { load: load_average()?, cores, memory_left: memory_left() })
+    let (load, load5) = load_average()?;
+    Some(Reading { load, load5, cores, memory_left: memory_left() })
 }
 
 #[cfg(unix)]
-fn load_average() -> Option<f64> {
+fn load_average() -> Option<(f64, f64)> {
     let mut loads = [0f64; 3];
     // SAFETY: `loads` has room for the three values asked for.
     let n = unsafe { libc::getloadavg(loads.as_mut_ptr(), 3) };
-    (n >= 1).then_some(loads[0])
+    (n >= 2).then_some((loads[0], loads[1]))
 }
 
 #[cfg(not(unix))]
-fn load_average() -> Option<f64> {
+fn load_average() -> Option<(f64, f64)> {
     None
 }
 
@@ -164,43 +172,45 @@ fn memory_left_of(meminfo: &str) -> Option<u8> {
 mod tests {
     use super::*;
 
-    fn reading(load: f64, memory_left: Option<u8>) -> Reading {
-        Reading { load, cores: 15, memory_left }
+    /// A reading on 15 cores: the load now, and five minutes' average.
+    fn reading(load: f64, load5: f64, memory_left: Option<u8>) -> Reading {
+        Reading { load, load5, cores: 15, memory_left }
     }
 
     #[test]
-    fn overloaded_only_once_it_stays_over_and_calm_only_once_it_stays_under() {
+    fn overloaded_only_while_the_load_stays_high_and_rising_and_calm_once_it_falls() {
         let mut watch = Watch::default();
-        // A moment's spike holds nothing back.
-        assert_eq!(watch.observe(reading(60.0, Some(40))), None);
-        assert_eq!(watch.observe(reading(12.0, Some(40))), None);
+        // A Mac that lives at 4x its cores, steady or falling: work goes on.
+        for (now, five) in [(60.0, 62.0), (58.0, 61.0), (55.0, 60.0)] {
+            assert_eq!(watch.observe(reading(now, five, Some(40))), None);
+        }
         assert!(!watch.overloaded());
-        // Load 60 on 15 cores, twice in a row: new work waits.
-        assert_eq!(watch.observe(reading(60.0, Some(40))), None);
-        assert_eq!(watch.observe(reading(63.0, Some(40))), Some(Change::Overloaded(reading(63.0, Some(40)), Why::Load)));
+        // Past 2.5x and rising, twice in a row: new work waits.
+        assert_eq!(watch.observe(reading(70.0, 60.0, Some(40))), None);
+        assert_eq!(watch.observe(reading(77.0, 65.0, Some(40))), Some(Change::Overloaded(reading(77.0, 65.0, Some(40)), Why::Load)));
         assert!(watch.overloaded());
-        // Between the lines: still overloaded, not flipping each minute.
-        assert_eq!(watch.observe(reading(20.0, Some(40))), None);
-        assert_eq!(watch.observe(reading(20.0, Some(40))), None);
-        assert!(watch.overloaded());
-        // Calm twice in a row: what waited starts.
-        assert_eq!(watch.observe(reading(10.0, Some(40))), None);
-        assert_eq!(watch.observe(reading(9.0, Some(40))), Some(Change::Calm(reading(9.0, Some(40)))));
+        // Still high and rising: held.
+        assert_eq!(watch.observe(reading(78.0, 70.0, Some(40))), None);
+        // Falling twice in a row, though still high: what waited starts.
+        assert_eq!(watch.observe(reading(72.0, 74.0, Some(40))), None);
+        assert_eq!(watch.observe(reading(68.0, 72.0, Some(40))), Some(Change::Calm(reading(68.0, 72.0, Some(40)))));
         assert!(!watch.overloaded());
+        // The old line (1.5x) holds nothing back any more.
+        assert_eq!(reading(30.0, 25.0, Some(40)).over(), None);
     }
 
     #[test]
     fn memory_nearly_gone_is_overloaded_whatever_the_load() {
         let mut watch = Watch::default();
-        watch.observe(reading(3.0, Some(4)));
-        assert_eq!(watch.observe(reading(3.0, Some(3))), Some(Change::Overloaded(reading(3.0, Some(3)), Why::Memory)));
+        watch.observe(reading(3.0, 3.0, Some(4)));
+        assert_eq!(watch.observe(reading(3.0, 3.0, Some(3))), Some(Change::Overloaded(reading(3.0, 3.0, Some(3)), Why::Memory)));
         // Calm load but memory still short: it waits on.
-        watch.observe(reading(3.0, Some(8)));
-        assert_eq!(watch.observe(reading(3.0, Some(8))), None);
-        watch.observe(reading(3.0, Some(30)));
-        assert!(matches!(watch.observe(reading(3.0, Some(30))), Some(Change::Calm(_))));
+        watch.observe(reading(3.0, 3.0, Some(8)));
+        assert_eq!(watch.observe(reading(3.0, 3.0, Some(8))), None);
+        watch.observe(reading(3.0, 3.0, Some(30)));
+        assert!(matches!(watch.observe(reading(3.0, 3.0, Some(30))), Some(Change::Calm(_))));
         // Unknown memory never holds anything.
-        assert_eq!(reading(3.0, None).over(), None);
+        assert_eq!(reading(3.0, 3.0, None).over(), None);
     }
 
     #[test]
@@ -214,7 +224,7 @@ mod tests {
     fn this_machine_can_be_read() {
         if cfg!(unix) {
             let now = read().expect("a load average on unix");
-            assert!(now.cores >= 1 && now.load >= 0.0);
+            assert!(now.cores >= 1 && now.load >= 0.0 && now.load5 >= 0.0);
         }
     }
 }

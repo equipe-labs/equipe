@@ -212,9 +212,73 @@ fn the_engine_moved_to_needs_thirty_points_more_room() {
         let d = run(&[claude(86, 30), codex(*five, *week)], &team(Engine::Claude));
         assert_eq!(d.batch.as_ref().is_some_and(|b| b.why == Why::Shift), *moves, "{what}: {d:?}");
     }
-    // A drain at 96 (4 left): Codex at 66 has 34 — enough; at 67, no.
-    assert_eq!(run(&[claude(96, 30), codex(66, 0)], &team(Engine::Claude)).batch.map(|b| b.why), Some(Why::Drain));
-    assert_ne!(run(&[claude(96, 30), codex(67, 0)], &team(Engine::Claude)).batch.map(|b| b.why), Some(Why::Drain));
+    // A drain at 93 (7 left): Codex at 63 has 37 — enough; at 64, no.
+    assert_eq!(run(&[claude(10, 93), codex(63, 0)], &team(Engine::Claude)).batch.map(|b| b.why), Some(Why::Drain));
+    assert_ne!(run(&[claude(10, 93), codex(64, 0)], &team(Engine::Claude)).batch.map(|b| b.why), Some(Why::Drain));
+}
+
+#[test]
+fn a_plan_out_or_nearly_out_goes_to_any_room_on_the_other_engine_at_the_turns_end() {
+    // Claude's week out for 6 days, Codex's at 77: 23 points of room beat six days of waiting.
+    let out = read_at(Engine::Claude, NOW, Some((40, 3 * H)), Some((100, 6 * D)));
+    let d = run(&[out, codex(10, 77)], &team(Engine::Claude));
+    let batch = d.batch.expect("handed over");
+    assert_eq!((batch.why, batch.engine), (Why::Exhausted, Engine::Claude));
+    assert_eq!(moved_of(&batch).len(), team(Engine::Claude).len());
+    assert!(batch.moves.iter().all(|m| m.now && m.to == Engine::Codex), "at the end of each turn, mid-ticket or not");
+    assert_eq!(d.hold, vec![Hold { engine: Engine::Claude, until: NOW + 6 * D }]);
+    // Moved here half an hour ago: out is out, no cooldown keeps it waiting.
+    let recent = Mate { switched: vec![NOW - 30 * M], ..mate("backend", Engine::Claude) };
+    assert_eq!(moved(&run(&[out, codex(10, 77)], std::slice::from_ref(&recent))), ["backend"]);
+    // Nowhere with room: nothing moves, nothing goes lighter — the work waits for the reset, told when.
+    for full in [codex(96, 40), codex(10, 100)] {
+        let d = run(&[out, full], &team(Engine::Claude));
+        assert!(d.batch.is_none(), "{d:?}");
+        assert!(d.hold.contains(&Hold { engine: Engine::Claude, until: NOW + 6 * D }));
+        assert!(d.notices.iter().any(|n| n.engine == Engine::Claude && n.level == Level::Exhausted && n.resets_at == NOW + 6 * D));
+    }
+    // Not signed in to Codex: nobody goes there.
+    let only = Reach { ready: vec![Engine::Claude], ..reach() };
+    assert!(decide_at(&[out, codex(10, 77)], &team(Engine::Claude), &only, Switching::Auto, NOW, &mut Memory::default()).batch.is_none());
+    // Off keeps waiting as before; Suggest asks the same moves on a card (the runtime's call).
+    assert!(decide_at(&[out, codex(10, 77)], &team(Engine::Claude), &reach(), Switching::Off, NOW, &mut Memory::default()).batch.is_none());
+    let asked = decide_at(&[out, codex(10, 77)], &team(Engine::Claude), &reach(), Switching::Suggest, NOW, &mut Memory::default());
+    assert_eq!(asked.batch.map(|b| b.why), Some(Why::Exhausted));
+    // Five hours at 97 with hours to go: the next turn would hit it — moved at the turn's end, before it does.
+    let nearly = read_at(Engine::Claude, NOW, Some((97, 3 * H)), Some((60, 3 * D)));
+    let batch = run(&[nearly, codex(10, 77)], &team(Engine::Claude)).batch.expect("drained");
+    assert_eq!(batch.why, Why::Drain);
+    assert!(batch.moves.iter().all(|m| m.now));
+    // At 94 the usual 30 points still decide.
+    let high = read_at(Engine::Claude, NOW, Some((94, 3 * H)), Some((60, 3 * D)));
+    assert!(run(&[high, codex(10, 77)], &team(Engine::Claude)).batch.is_none());
+}
+
+#[test]
+fn members_handed_over_off_a_plan_that_ran_out_come_back_once_it_started_over() {
+    let away: Vec<Mate> = ["backend", "designer"].iter().map(|n| Mate { engine: Engine::Codex, home: Engine::Claude, home_model: Some("claude-opus-5-5".into()), switched: vec![NOW - 30 * M], ..mate(n, Engine::Codex) }).collect();
+    let mut memory = Memory::default();
+    // Still out: they stay.
+    let out = read_at(Engine::Claude, NOW, None, Some((100, 2 * H)));
+    assert!(decide_at(&[out, codex(10, 77)], &away, &reach(), Switching::Auto, NOW, &mut memory).batch.is_none());
+    // The week started over: back home ten minutes later, between tickets (never mid-turn), on Sonnet's floor rather than Opus.
+    let fresh = |at| read_at(Engine::Claude, at, Some((2, 5 * H)), Some((1, 7 * D)));
+    let later = NOW + 4 * H;
+    decide_at(&[fresh(later), codex(10, 78)], &away, &reach(), Switching::Auto, later, &mut memory);
+    let d = decide_at(&[fresh(later + 11 * M), codex(10, 78)], &away, &reach(), Switching::Auto, later + 11 * M, &mut memory);
+    let batch = d.batch.expect("back");
+    assert_eq!(batch.why, Why::Return);
+    assert!(batch.moves.iter().all(|m| m.to == Engine::Claude && !m.now));
+}
+
+#[test]
+fn a_models_own_limit_has_a_lighter_model_of_the_same_engine_to_carry_on_on() {
+    assert_eq!(lighter_model(Engine::Claude, Some("claude-opus-5-5")), Some("sonnet"));
+    assert_eq!(lighter_model(Engine::Claude, Some("opus")), Some("sonnet"));
+    assert_eq!(lighter_model(Engine::Claude, Some("sonnet")), None);
+    assert_eq!(lighter_model(Engine::Claude, None), None, "the engine's own default: nothing known to step from");
+    assert_eq!(lighter_model(Engine::Codex, Some("gpt-6-astra")), Some("gpt-6.1-sol"));
+    assert_eq!(lighter_model(Engine::Codex, Some("gpt-6.1-sol")), None);
 }
 
 #[test]

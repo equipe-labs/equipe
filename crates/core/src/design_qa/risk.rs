@@ -7,13 +7,14 @@
 //!
 //! - a new S1/S2 finding the engineer didn't waive: the hand-in is
 //!   **refused** back to the engineer at once (no designer turn);
-//! - a change that really needs a designer now — new screens or states on
-//!   the UI map, findings the engineer waived, a design look the person asked
-//!   for, or what the precheck couldn't see: a designer looks at it now (**per
-//!   ticket**), in a light session when the report shows enough;
+//! - a change that really needs a designer before it lands — new screens or
+//!   states on the UI map, findings the engineer waived, a design look the
+//!   person asked for: a designer looks at it now (**per ticket**), in a light
+//!   session when the report shows enough;
 //! - the other risks — many screens at once, a designer's spec across more
 //!   than one screen, a re-check after a designer's send-back, many UI files
-//!   off the map — are recorded and go into the daily review; they send the
+//!   off the map, what the precheck couldn't see — are recorded and go into
+//!   the daily review, after the change lands; they send the
 //!   change to a designer of its own only while audits keep the routing
 //!   tightened ([`Settings::tight`]);
 //! - everything else goes on without a designer turn and is collected into
@@ -186,7 +187,18 @@ impl Risk {
     /// Whether this risk alone gets the change a designer turn of its own
     /// while the routing is relaxed: the rest wait for the daily review.
     pub fn needs_designer_now(self) -> bool {
-        matches!(self, Risk::Waived | Risk::NewScreens | Risk::Unverified | Risk::Asked)
+        matches!(self, Risk::Waived | Risk::NewScreens | Risk::Asked)
+    }
+
+    pub const ALL: [Risk; 9] = [Risk::Waived, Risk::NewScreens, Risk::Broad, Risk::Spec, Risk::Recheck, Risk::Tight, Risk::Unverified, Risk::UnmappedLarge, Risk::Asked];
+
+    pub fn parse(code: &str) -> Option<Risk> {
+        Risk::ALL.into_iter().find(|r| r.code() == code.trim())
+    }
+
+    /// Whether a run's recorded risks (comma-separated codes) hold its change for a designer now.
+    pub fn codes_need_designer_now(codes: &str) -> bool {
+        codes.split(',').filter_map(Risk::parse).any(Risk::needs_designer_now)
     }
 
     pub fn said(self) -> &'static str {
@@ -246,8 +258,10 @@ impl RouteCall {
 /// Where a hand-in with changed screens goes in `risk_batch`.
 pub fn route(ask: &RouteAsk<'_>) -> RouteCall {
     let call = |route, risks: Vec<Risk>, lite| RouteCall { route, risks, lite };
+    // What the precheck couldn't see lands and is looked at in the daily review — a designer now only while tightened.
+    let unseen = if ask.tight { Route::PerTicket } else { Route::Batch };
     let Some(r) = ask.report else {
-        return if ask.follow_up { call(Route::Batch, Vec::new(), false) } else { call(Route::PerTicket, vec![Risk::Unverified], false) };
+        return if ask.follow_up { call(Route::Batch, Vec::new(), false) } else { call(unseen, vec![Risk::Unverified], false) };
     };
     let blockers = r.new_blockers();
     if !blockers.is_empty() && !ask.waived {
@@ -263,11 +277,11 @@ pub fn route(ask: &RouteAsk<'_>) -> RouteCall {
         if r.touched.is_empty() && r.unmapped.is_empty() && r.errors.is_empty() {
             return call(if ask.spec || ask.recheck { Route::PerTicket } else { Route::Batch }, [ask.spec.then_some(Risk::Spec), ask.recheck.then_some(Risk::Recheck)].into_iter().flatten().collect(), false);
         }
-        return call(Route::PerTicket, vec![Risk::Unverified], false);
+        return call(unseen, vec![Risk::Unverified], false);
     }
     // Half or more of the pictures failed: too little seen to let it through.
     if r.failed() * 2 >= r.shots.len() {
-        return call(Route::PerTicket, vec![Risk::Unverified], false);
+        return call(unseen, vec![Risk::Unverified], false);
     }
     let mut risks = Vec::new();
     if !blockers.is_empty() {
@@ -609,8 +623,10 @@ mod tests {
     }
 
     #[test]
-    fn what_the_precheck_could_not_see_goes_to_a_designer_with_the_worktree() {
-        assert_eq!(route(&RouteAsk::default()), RouteCall { route: Route::PerTicket, risks: vec![Risk::Unverified], lite: false });
+    fn what_the_precheck_could_not_see_lands_and_waits_for_the_daily_review_unless_tightened() {
+        assert_eq!(route(&RouteAsk::default()), RouteCall { route: Route::Batch, risks: vec![Risk::Unverified], lite: false }, "never a hold before landing");
+        assert_eq!(route(&RouteAsk { tight: true, ..RouteAsk::default() }), RouteCall { route: Route::PerTicket, risks: vec![Risk::Unverified], lite: false });
+        assert!(Risk::codes_need_designer_now("broad,new_screens") && !Risk::codes_need_designer_now("unverified,broad") && !Risk::codes_need_designer_now(""));
         let failed = Shot { error: Some("timed out".into()), ..shot("settings/main/error", false, true) };
         let half = report(vec![shot("settings/main/default", false, true), failed], vec![]);
         assert_eq!(routed(&half, |_| {}).risks, [Risk::Unverified]);

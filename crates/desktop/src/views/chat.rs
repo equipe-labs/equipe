@@ -2887,6 +2887,7 @@ fn live_facts(shell: &Shell, working: bool) -> Option<crate::status_line::Line> 
         steers: queue.iter().filter(|i| i.kind == crate::queue::Kind::Steer).count(),
         memos: queue.iter().filter(|i| i.kind != crate::queue::Kind::Steer).count(),
         tokens: convo.turn_tokens,
+        waiting: convo.waiting.clone(),
     };
     crate::status_line::line(&facts)
 }
@@ -2908,6 +2909,7 @@ fn status_row(shell: &Shell, line: crate::status_line::Line, cx: &mut Context<Sh
         Doing::Summarizing => (t!("status.summarizing").to_owned(), None),
         Doing::SignIn { engine } => (t!("status.sign_in").to_owned(), Some(engine.clone())),
         Doing::Approval => (t!("status.approval").to_owned(), None),
+        Doing::Waiting { what } => (what.clone(), None),
     };
     let mut meta = vec![clock(line.elapsed)];
     if line.steps > 0 {

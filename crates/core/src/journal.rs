@@ -2501,15 +2501,15 @@ impl Journal {
     /// until a designer is needed ([`Journal::rekey_design_qa_run`]). A run
     /// kept for it before is started over, but stays in the review or audit
     /// that already covers it.
-    pub fn start_held_design_qa_run(&self, checked: TicketId, round: u32, gate: &str) -> Result<()> {
+    pub fn start_held_design_qa_run(&self, checked: TicketId, round: u32, gate: &str, precheck: &str) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO design_qa_runs (qa, checked, round, gate, precheck, created_at) VALUES (?1, ?1, ?2, ?3, 'running', ?4)
-             ON CONFLICT(qa) DO UPDATE SET round = ?2, gate = ?3, precheck = 'running', created_at = ?4, decision = NULL, judgment = NULL,
+            "INSERT INTO design_qa_runs (qa, checked, round, gate, precheck, created_at) VALUES (?1, ?1, ?2, ?3, ?5, ?4)
+             ON CONFLICT(qa) DO UPDATE SET round = ?2, gate = ?3, precheck = ?5, created_at = ?4, decision = NULL, judgment = NULL,
                acted = 0, report = NULL, head = NULL, base = NULL, precheck_secs = NULL, verdict = NULL, verdict_by = NULL, finished_at = NULL,
                route = NULL, risk = NULL, lite = 0, waived = NULL, tries = 0",
-            params![checked, round, gate, now()],
+            params![checked, round, gate, now(), precheck],
         )?;
-        let _ = self.ticket_event(checked, "equipe", DESIGN_QA_ROUND, &format!("round {round}: its screens are prechecked first"));
+        let _ = self.ticket_event(checked, "equipe", DESIGN_QA_ROUND, &format!("design QA round {round}, held on the change itself"));
         Ok(())
     }
 
@@ -3479,7 +3479,7 @@ mod tests {
     fn a_change_held_for_its_precheck_keeps_its_run_on_itself_until_a_designer_is_needed() {
         let j = Journal::for_squad(&temp_home(), "acme").unwrap();
         assert_eq!(j.design_qa_rounds(5).unwrap(), 0);
-        j.start_held_design_qa_run(5, 1, "on").unwrap();
+        j.start_held_design_qa_run(5, 1, "on", "running").unwrap();
         assert_eq!(j.design_qa_rounds(5).unwrap(), 1, "a held round counts");
         let run = j.design_qa_run(5).unwrap();
         assert_eq!((run.qa, run.checked, run.round, run.precheck.as_str()), (5, 5, 1, "running"));
@@ -3492,7 +3492,7 @@ mod tests {
         assert_eq!(j.design_qa_skipped_since(0), 1);
         j.start_design_qa_batch(&DesignQaBatch { ticket: 20, kind: "review".into(), ..DesignQaBatch::default() }, &[5]).unwrap();
         // Handed in again while that review is open: started over, still in the review.
-        j.start_held_design_qa_run(5, 2, "on").unwrap();
+        j.start_held_design_qa_run(5, 2, "on", "running").unwrap();
         let again = j.design_qa_run(5).unwrap();
         assert_eq!((again.round, again.verdict, again.batch, j.design_qa_precheck_tries(5)), (2, None, Some(20), 0));
         // A designer is needed now: the run moves to its design QA ticket.

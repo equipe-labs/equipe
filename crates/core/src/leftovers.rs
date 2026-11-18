@@ -190,9 +190,343 @@ fn signal(pid: u32, kill: bool) {
 #[cfg(not(unix))]
 fn signal(_pid: u32, _kill: bool) {}
 
+// ── orphans: what members started, left behind by the shell that started it ──
+
+/// In every member command's environment: whose run started it —
+/// `<squad>:<session>:<ticket or ->` ([`run_tag`]). A process keeps it when
+/// the shell that started it is gone and it is handed to the system
+/// (parent 1), so what a lane left running is still known as the lane's.
+pub const RUN_ENV: &str = "EQUIPE_RUN";
+
+/// [`RUN_ENV`]'s value for a run.
+pub fn run_tag(squad: &str, session: u64, ticket: Option<u64>) -> String {
+    format!("{squad}:{session}:{}", ticket.map_or_else(|| "-".to_owned(), |t| t.to_string()))
+}
+
+/// A run's tag read back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tag {
+    pub squad: String,
+    pub session: u64,
+    pub ticket: Option<u64>,
+}
+
+impl Tag {
+    pub fn parse(value: &str) -> Option<Tag> {
+        let (rest, ticket) = value.rsplit_once(':')?;
+        let (squad, session) = rest.rsplit_once(':')?;
+        (!squad.is_empty()).then_some(())?;
+        Some(Tag { squad: squad.to_owned(), session: session.parse().ok()?, ticket: if ticket == "-" { None } else { Some(ticket.parse().ok()?) } })
+    }
+}
+
+/// A process of this user handed to the system (its parent gone) that a
+/// member's command started: it has [`crate::guard::MEMBER_ENV`] — or, where
+/// its environment can't be read, it may stand in a ticket's folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Orphan {
+    pub pid: u32,
+    pub cwd: Option<PathBuf>,
+    /// Its run, when it was started by an equipe that tags them.
+    pub tag: Option<Tag>,
+    /// Its command line, shortened, for the log.
+    pub command: String,
+}
+
+/// What the daemon knows to judge an orphan by.
+pub struct Judge<'a> {
+    /// Where ticket `ticket` of squad `squad` stands; `None`: not known.
+    pub status: &'a dyn Fn(&str, u64) -> Option<equipe_protocol::TicketStatus>,
+    /// The squad and ticket a folder belongs to: a ticket's worktree, or its
+    /// temporary folder.
+    pub place: &'a dyn Fn(&Path) -> Option<(String, u64)>,
+}
+
+/// Why `orphan` goes, or `None` to leave it: its ticket — by its tag, or by
+/// the ticket folder it stands in — is closed, or out of work and not in
+/// review (put back, waiting on the person: a dev server left from its run).
+/// One in progress or in review stays (QA or the person may be looking at
+/// what it serves); one whose ticket isn't known, too.
+pub fn verdict(orphan: &Orphan, judge: &Judge) -> Option<String> {
+    use equipe_protocol::TicketStatus;
+    let (squad, ticket) = match &orphan.tag {
+        Some(tag) => (tag.squad.clone(), tag.ticket?),
+        None => (judge.place)(orphan.cwd.as_deref()?)?,
+    };
+    match (judge.status)(&squad, ticket)? {
+        status if status.is_closed() => Some(format!("T-{ticket} of {squad} is closed")),
+        TicketStatus::InProgress | TicketStatus::Review => None,
+        status => {
+            let word = format!("{status:?}").to_lowercase();
+            Some(format!("T-{ticket} of {squad} is no longer being worked on ({word})"))
+        }
+    }
+}
+
+/// The most dev servers members leave running for one project at once:
+/// past it, the oldest go.
+pub const DEV_SERVERS_PER_PROJECT: usize = 3;
+
+/// Whether `command` runs a dev server or a watcher.
+fn dev_server(command: &str) -> bool {
+    ["next-server", "next dev", "vite", "webpack serve", "webpack-dev-server", "astro dev", "nuxt dev", "react-scripts start", "storybook dev", "start-storybook", "tsc --watch", "tsc -w", "nodemon"]
+        .iter()
+        .any(|m| command.contains(m))
+}
+
+/// Of `orphans` (those staying), the dev servers past
+/// [`DEV_SERVERS_PER_PROJECT`] for one project — a worktree's project under
+/// `<home>/worktrees/` — the oldest first; why each goes.
+pub fn over_the_cap(orphans: &[Orphan], home: &Path) -> Vec<(Orphan, String)> {
+    let root = home.join("worktrees");
+    let root = root.canonicalize().unwrap_or(root);
+    let mut by_project: std::collections::BTreeMap<String, Vec<&Orphan>> = std::collections::BTreeMap::new();
+    for o in orphans.iter().filter(|o| dev_server(&o.command)) {
+        let Some(project) = o.cwd.as_deref().and_then(|c| c.strip_prefix(&root).ok()).and_then(|r| r.components().next()).map(|c| c.as_os_str().to_string_lossy().into_owned()) else { continue };
+        by_project.entry(project).or_default().push(o);
+    }
+    let mut out = Vec::new();
+    for (project, mut servers) in by_project {
+        // The newest stay: a later process has a higher number, near enough.
+        servers.sort_by_key(|o| std::cmp::Reverse(o.pid));
+        out.extend(servers.into_iter().skip(DEV_SERVERS_PER_PROJECT).map(|o| (o.clone(), format!("more than {DEV_SERVERS_PER_PROJECT} dev servers left running for {project}"))));
+    }
+    out
+}
+
+/// This user's processes handed to the system that members' commands started.
+pub fn orphans() -> Vec<Orphan> {
+    let me = std::process::id();
+    running()
+        .into_iter()
+        .filter(|s| s.pid != me && parent(s.pid) == Some(1))
+        .filter_map(|s| {
+            let (env, command) = environment(s.pid).unwrap_or_default();
+            let var = |name: &str| env.iter().find_map(|e| e.strip_prefix(name).and_then(|v| v.strip_prefix('=')).map(str::to_owned));
+            // Where its environment can be read, only a member's. Recent macOS
+            // shows another process's environment rarely: then where it stands
+            // decides alone (`verdict`: a ticket's folder of equipe's own).
+            if !env.is_empty() && var(crate::guard::MEMBER_ENV).is_none_or(|m| m.is_empty()) {
+                return None;
+            }
+            Some(Orphan { pid: s.pid, cwd: s.cwd, tag: var(RUN_ENV).and_then(|t| Tag::parse(&t)), command })
+        })
+        .collect()
+}
+
+/// Stop `pids`, politely then for good after a few seconds. What was stopped.
+pub fn reap(orphans: &[(Orphan, String)]) -> Vec<String> {
+    for (o, _) in orphans {
+        signal(o.pid, false);
+    }
+    std::thread::sleep(Duration::from_secs(4));
+    let still: Vec<u32> = running().iter().map(|s| s.pid).collect();
+    for (o, _) in orphans {
+        // Still the same process (handed to the system, a member's): for good.
+        if still.contains(&o.pid) && parent(o.pid) == Some(1) {
+            signal(o.pid, true);
+        }
+    }
+    orphans.iter().map(|(o, why)| format!("stopped process {} left running by a member ({why}): {}", o.pid, o.command)).collect()
+}
+
+/// `pid`'s parent.
+#[cfg(target_os = "macos")]
+fn parent(pid: u32) -> Option<u32> {
+    // SAFETY: a libproc call with a buffer of the size passed.
+    unsafe {
+        let mut bsd: libc::proc_bsdinfo = std::mem::zeroed();
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        (libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTBSDINFO, 0, (&mut bsd as *mut libc::proc_bsdinfo).cast(), size) == size).then_some(bsd.pbi_ppid)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn parent(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn parent(_pid: u32) -> Option<u32> {
+    None
+}
+
+/// `pid`'s environment, and its command line shortened.
+#[cfg(target_os = "macos")]
+fn environment(pid: u32) -> Option<(Vec<String>, String)> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let mut size: libc::size_t = 0;
+    // SAFETY: sysctl asked for its size first, then into a buffer of that size.
+    let buf = unsafe {
+        if libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0) != 0 || size < 4 {
+            return None;
+        }
+        let mut buf = vec![0u8; size];
+        if libc::sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr().cast(), &mut size, std::ptr::null_mut(), 0) != 0 {
+            return None;
+        }
+        buf.truncate(size);
+        buf
+    };
+    procargs(&buf)
+}
+
+/// `KERN_PROCARGS2`'s layout: the argument count, the program's path, NULs,
+/// the arguments, then the environment, each NUL-ended.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn procargs(buf: &[u8]) -> Option<(Vec<String>, String)> {
+    let argc = i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?).max(0) as usize;
+    let mut parts = buf[4..].split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).into_owned());
+    let _program = parts.next()?;
+    let args: Vec<String> = parts.by_ref().take(argc).collect();
+    Some((parts.collect(), shortened(&args.join(" "))))
+}
+
+#[cfg(target_os = "linux")]
+fn environment(pid: u32) -> Option<(Vec<String>, String)> {
+    let env = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    let cmd = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    let split = |b: &[u8]| b.split(|c| *c == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).into_owned()).collect::<Vec<_>>();
+    Some((split(&env), shortened(&split(&cmd).join(" "))))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn environment(_pid: u32) -> Option<(Vec<String>, String)> {
+    None
+}
+
+fn shortened(command: &str) -> String {
+    let mut s: String = command.chars().take(120).collect();
+    if command.chars().count() > 120 {
+        s.push('…');
+    }
+    s
+}
+
+/// The squad and ticket an equipe folder belongs to, by its shape:
+/// `<home>/tmp/<squad>/t<ticket>/…`, or a worktree
+/// `<home>/worktrees/<project>/t<ticket>-…/…` of a project only `squads`
+/// (each with its projects' folder names) has.
+pub fn ticket_place(path: &Path, home: &Path, squads: &[(String, Vec<String>)]) -> Option<(String, u64)> {
+    let ticket_of = |part: &str| -> Option<u64> {
+        let digits: String = part.strip_prefix('t')?.chars().take_while(char::is_ascii_digit).collect();
+        let rest = &part[1 + digits.len()..];
+        (rest.is_empty() || rest.starts_with('-')).then_some(())?;
+        digits.parse().ok()
+    };
+    let parts = |root: PathBuf| -> Option<Vec<String>> {
+        let root = root.canonicalize().unwrap_or(root);
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        Some(path.strip_prefix(&root).ok()?.components().take(2).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect())
+    };
+    if let Some([squad, folder]) = parts(home.join("tmp")).as_deref() {
+        return Some((squad.clone(), ticket_of(folder)?));
+    }
+    let [project, folder] = parts(home.join("worktrees"))?.try_into().ok()?;
+    let mut owners = squads.iter().filter(|(_, projects)| projects.contains(&project));
+    let (squad, _) = owners.next()?;
+    // A project two squads share: whose ticket it is can't be told.
+    owners.next().is_none().then_some(())?;
+    Some((squad.clone(), ticket_of(&folder)?))
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_runs_tag_is_read_back() {
+        assert_eq!(Tag::parse(&run_tag("acme", 42, Some(3311))), Some(Tag { squad: "acme".into(), session: 42, ticket: Some(3311) }));
+        assert_eq!(Tag::parse(&run_tag("my:squad", 7, None)), Some(Tag { squad: "my:squad".into(), session: 7, ticket: None }));
+        assert_eq!(Tag::parse("nonsense"), None);
+    }
+
+    #[test]
+    fn an_orphan_goes_only_when_its_ticket_is_closed() {
+        let home = Path::new("/h/.equipe");
+        let squads = vec![("atinum".to_owned(), vec!["atinum-website".to_owned()]), ("other".to_owned(), vec!["shared".to_owned()]), ("third".to_owned(), vec!["shared".to_owned()])];
+        let place = |p: &Path| ticket_place(p, home, &squads);
+        assert_eq!(place(Path::new("/h/.equipe/worktrees/atinum-website/t3311-6af0c1-1/design/directions/x")), Some(("atinum".into(), 3311)));
+        assert_eq!(place(Path::new("/h/.equipe/tmp/atinum/t3443")), Some(("atinum".into(), 3443)));
+        assert_eq!(place(Path::new("/h/.equipe/worktrees/shared/t9-a-1")), None, "two squads share it: unknown");
+        assert_eq!(place(Path::new("/h/.equipe/worktrees/atinum-website/tools")), None);
+        assert_eq!(place(Path::new("/Users/me/Projects/site")), None);
+        use equipe_protocol::TicketStatus;
+        let status = |squad: &str, t: u64| match (squad, t) {
+            ("atinum", 3311) => Some(TicketStatus::Done),
+            ("atinum", 3312) => Some(TicketStatus::Todo),
+            ("atinum", 3313) => Some(TicketStatus::Review),
+            ("atinum", 3800) => Some(TicketStatus::InProgress),
+            _ => None,
+        };
+        let judge = Judge { status: &status, place: &place };
+        let legacy = Orphan { pid: 13700, cwd: Some("/h/.equipe/worktrees/atinum-website/t3311-6af0c1-1/design".into()), tag: None, command: "node -e …chromium.launch…".into() };
+        assert_eq!(verdict(&legacy, &judge).as_deref(), Some("T-3311 of atinum is closed"));
+        let open = Orphan { cwd: Some("/h/.equipe/worktrees/atinum-website/t3800-6af0c1-1".into()), ..legacy.clone() };
+        assert_eq!(verdict(&open, &judge), None, "its ticket in progress: a server the run uses");
+        let at = |t: u64| Orphan { cwd: Some(format!("/h/.equipe/worktrees/atinum-website/t{t}-6af0c1-1").into()), ..legacy.clone() };
+        assert_eq!(verdict(&at(3312), &judge).as_deref(), Some("T-3312 of atinum is no longer being worked on (todo)"), "put back: its server goes");
+        assert_eq!(verdict(&at(3313), &judge), None, "in review: QA or the person may be looking");
+        assert_eq!(verdict(&at(4000), &judge), None, "a ticket not known: never");
+        let tagged = Orphan { cwd: Some("/anywhere".into()), tag: Some(Tag { squad: "atinum".into(), session: 9, ticket: Some(3311) }), ..legacy.clone() };
+        assert!(verdict(&tagged, &judge).is_some(), "by its tag, wherever it stands");
+        let desk = Orphan { tag: Some(Tag { squad: "atinum".into(), session: 9, ticket: None }), ..tagged.clone() };
+        assert_eq!(verdict(&desk, &judge), None, "no ticket: never");
+        assert_eq!(verdict(&Orphan { cwd: None, ..legacy }, &judge), None, "nowhere known: never");
+    }
+
+    #[test]
+    fn dev_servers_past_the_cap_for_one_project_go_the_oldest_first() {
+        let home = Path::new("/h/.equipe");
+        let server = |pid: u32, project: &str, command: &str| Orphan { pid, cwd: Some(format!("/h/.equipe/worktrees/{project}/t{pid}-a-1").into()), tag: None, command: command.into() };
+        let orphans = vec![
+            server(10, "site", "node .../next/dist/server/next-server"),
+            server(20, "site", "next-server (v15)"),
+            server(30, "site", "node node_modules/.bin/vite"),
+            server(40, "site", "next-server (v15)"),
+            server(50, "site", "node scripts/mock-anthropic.mjs"),
+            server(60, "erp", "next-server (v15)"),
+        ];
+        let going = over_the_cap(&orphans, home);
+        assert_eq!(going.iter().map(|(o, _)| o.pid).collect::<Vec<_>>(), [10], "site's three newest stay; a mock isn't a dev server; erp has one");
+        assert!(going[0].1.contains("more than 3 dev servers left running for site"));
+    }
+
+    #[test]
+    fn procargs_give_the_environment_after_the_arguments() {
+        let mut buf = 2i32.to_ne_bytes().to_vec();
+        buf.extend_from_slice(b"/usr/bin/node\0\0\0node\0-e\0EQUIPE_MEMBER=designer\0EQUIPE_RUN=acme:4:12\0");
+        let (env, command) = procargs(&buf).unwrap();
+        assert_eq!(env, ["EQUIPE_MEMBER=designer", "EQUIPE_RUN=acme:4:12"]);
+        assert_eq!(command, "node -e");
+    }
+
+    #[test]
+    fn a_member_process_left_behind_is_found_with_its_tag() {
+        // A child that outlives its shell: started through `sh -c '… &'`, so the system takes it over.
+        let out = Command::new("sh")
+            .args(["-c", "sleep 30 >/dev/null 2>&1 & echo $!"])
+            .env(crate::guard::MEMBER_ENV, "designer")
+            .env(RUN_ENV, run_tag("acme", 5, Some(77)))
+            .stdout(Stdio::piped())
+            .output()
+            .unwrap();
+        let pid: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        // Taken over by the system itself — not by a reaper of a container's own.
+        let adopted = parent(pid) == Some(1);
+        let found = orphans().into_iter().find(|o| o.pid == pid);
+        signal(pid, true);
+        if adopted {
+            let found = found.expect("found as an orphan");
+            // Its tag where the system shows another process's environment (Linux; not recent macOS).
+            if let Some(tag) = found.tag {
+                assert_eq!(tag, Tag { squad: "acme".into(), session: 5, ticket: Some(77) });
+            }
+            assert!(found.command.starts_with("sleep 30"), "{}", found.command);
+        }
+    }
     use std::process::{Command, Stdio};
 
     fn scratch(name: &str) -> PathBuf {

@@ -27,8 +27,8 @@ A squad runs design QA in one of two modes (`equipe design qa-config --mode risk
 | Route | When |
 |---|---|
 | **refused** | the report has new S1/S2 findings (content lost, AA failures, sideways scroll, text over text) and the engineer didn't waive them. The hand-in goes straight back with the findings, no designer turn and no model escalation; the engineer fixes them, or hands in again with `waive_findings` and a reason. |
-| **per ticket** | a designer is really needed now: findings the engineer **waived**; **new screens or states** (rendered states the map had no picture of at the base); a design look **the person asked for** (they filed the ticket themselves, labelled `design` or `check`); or the precheck **couldn't see it** (no report, nothing or half the pictures rendered — after its retries, see below). |
-| **batch** | everything else, including the other risks — **6 or more changed screens**; a designer's **spec attached** to a change of more than one screen (its plan is a design file, or its body names a mockup under `design/` or a written spec in a `specs/`, `mockups/`, `screens/` or `redesign/` folder there — not the map, design QA's reports, the checks or the system's own `guidelines.md` / `tokens.json`); a **re-check** after a designer's send-back; 10+ unmapped UI files — which are recorded on the run for the review. On to the person's (or PM's) review now, and into the next daily design review. While audits keep the routing **tightened**, any risk sends the change to a designer now, as before. |
+| **per ticket** | a designer is really needed before it lands: findings the engineer **waived**; **new screens or states** (rendered states the map had no picture of at the base); or a design look **the person asked for** (they filed the ticket themselves, labelled `design` or `check`). |
+| **batch** | everything else, including the other risks — the precheck **couldn't see it** (no report, nothing or half the pictures rendered, or no precheck could run); **6 or more changed screens**; a designer's **spec attached** to a change of more than one screen (its plan is a design file, or its body names a mockup under `design/` or a written spec in a `specs/`, `mockups/`, `screens/` or `redesign/` folder there — not the map, design QA's reports, the checks or the system's own `guidelines.md` / `tokens.json`); a **re-check** after a designer's send-back; 10+ unmapped UI files — which are recorded on the run for the review. On to the person's (or PM's) review now, and into the next daily design review. While audits keep the routing **tightened**, any risk sends the change to a designer now, as before. |
 
 In `risk_batch` no design QA ticket is made at hand-in: the change **holds itself** while its screens are prechecked
 (its `design_qa` names its own id, so it isn't ready for review yet), the precheck's result is recorded on the change,
@@ -36,11 +36,19 @@ and only a **per ticket** route makes a design QA ticket — its run and report 
 one; each is counted (`design_qa_runs.route = batch`, and a daemon log line with the last seven days' count) so the
 quality of skipping can be weighed later.
 
+Design QA is never a gate before landing for a batched change: once its precheck routes it to the batch, it is ready
+at once (`work_ready` — its member lands it where the squad lets members land), and the daily review looks at it after
+it landed. A precheck waits at most 10 minutes for an overloaded machine to calm down before it runs anyway. Open
+per-change design QA tickets an older daemon made under risk-based routing, not yet started and not for new screens,
+waived findings or the person's ask, are closed into the daily review before the next dispatch, their change on to landing.
+
 A designer never starts a design QA turn while its precheck runs — the journal holds it off the board, so a daemon
 restart doesn't release it; the minute tick starts a precheck a restart cut short again. A precheck that couldn't
 render (no report, or nothing / half rendered) because the **machine was overloaded** while it ran — or that hit its
-time limit — runs again later, after 5, then 10 minutes and once the machine is calm; only after 3 such tries does a
-designer look, **narrowed** to the main width (light) and the states the change touched.
+time limit — runs again later, after 5, then 10 minutes and once the machine is calm, where a designer would get it
+(`per_ticket` mode, or tightened routing); only after 3 such tries does a designer look, **narrowed** to the main width
+(light) and the states the change touched. Under relaxed risk-based routing it isn't retried: the change lands and the
+daily review sees it.
 
 Design QA turns have a **budget**: about 30 tool calls or 15 minutes (a daily review or audit: 60 calls or 30 minutes).
 Past it, the designer is told — once, mid-turn — to finish with what it has. The brief names the precheck's pictures of

@@ -5807,6 +5807,11 @@ async fn designer_pictures(started: &[Event]) {
 /// A squad of a PM, a frontend and a designer, with T-1 handed in by the
 /// frontend as changing screens: it waits in review on design QA T-2, which
 /// the designer has picked up.
+/// The squad's design QA run per ticket: every screen change gets a designer's turn, precheck or not.
+fn per_ticket_design_qa(home: &Path) {
+    Journal::for_squad(home, "acme").unwrap().set_design_qa_mode(equipe_core::design_qa::Mode::PerTicket).unwrap();
+}
+
 async fn screens_in_design_qa(recorded: &Path, handle: &Handle, events: &mut UnboundedReceiver<Event>, site: &Path) -> Ticket {
     add(handle, events, 1, member(site, "pm")).await;
     add(handle, events, 2, member(site, "frontend")).await;
@@ -5872,6 +5877,7 @@ async fn a_design_qa_ticket_closed_by_the_designers_verdict_clears_its_lane_tmp_
     let site = repo();
     let (claude, recorded) = recording_claude(&screenshot_turn());
     let home = squad_home(&[&site]);
+    per_ticket_design_qa(&home);
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     screens_in_design_qa(&recorded, &handle, &mut events, &site).await;
     let lane = home.join("tmp").join("acme").join("t2");
@@ -5902,6 +5908,7 @@ async fn changed_screens_pass_design_qa_before_the_person_reviews_them() {
     let site = repo();
     let (claude, recorded) = recording_claude(&screenshot_turn());
     let home = squad_home(&[&site]);
+    per_ticket_design_qa(&home);
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     screens_in_design_qa(&recorded, &handle, &mut events, &site).await;
 
@@ -5939,6 +5946,7 @@ async fn screens_that_need_changes_go_back_to_their_engineer() {
     let site = repo();
     let (claude, recorded) = recording_claude(&screenshot_turn());
     let home = squad_home(&[&site]);
+    per_ticket_design_qa(&home);
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     let held = screens_in_design_qa(&recorded, &handle, &mut events, &site).await;
 
@@ -5962,6 +5970,7 @@ async fn the_person_taking_a_ticket_over_drops_its_design_qa() {
     let site = repo();
     let (claude, recorded) = recording_claude(&screenshot_turn());
     let home = squad_home(&[&site]);
+    per_ticket_design_qa(&home);
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     screens_in_design_qa(&recorded, &handle, &mut events, &site).await;
 
@@ -6322,6 +6331,81 @@ async fn a_design_qa_whose_precheck_a_restart_cut_short_waits_for_it_and_never_s
     let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
     assert!(!started.is_empty());
     assert_eq!(Journal::for_squad(&home, "acme").unwrap().design_qa_run(2).unwrap().precheck, "done");
+    handle.shutdown().await;
+}
+
+/// As an older daemon left it: T-1 in review, held by an open per-change
+/// design QA ticket T-2 made under risk-based routing for `risk`.
+fn held_by_an_open_design_qa(home: &Path, site: &Path, risk: &str) {
+    let journal = Journal::for_squad(home, "acme").unwrap();
+    let ticket = |title: &str, status, kind, owner: &str| Ticket {
+        id: 0,
+        title: title.into(),
+        body: "-".into(),
+        status,
+        owner: Some(owner.into()),
+        assignee: None,
+        project: Some(site.to_owned()),
+        depends_on: Vec::new(),
+        branch: None,
+        worktree: None,
+        execution: None,
+        merged: None,
+        off_main: None,
+        design_qa: None, landing: false,
+        plan: None,
+        model: None,
+        flow: None,
+        kind,
+        created_by: "pm".into(),
+        note: None,
+        asks: vec![],
+        label: None, remaining: Vec::new(),
+        images: Vec::new(),
+        updated_at: None,
+        priority: Default::default(),
+        rank: 0,
+    };
+    let checked = journal.create_ticket(&ticket("Settings screen", TicketStatus::Review, equipe_core::protocol::TicketKind::Code, "frontend")).unwrap();
+    let qa = journal.create_ticket(&ticket("Design QA of T-1", TicketStatus::Todo, equipe_core::protocol::TicketKind::Task, "designer")).unwrap();
+    let mut held = journal.ticket(checked).unwrap().unwrap();
+    held.design_qa = Some(qa);
+    journal.save_ticket(&held).unwrap();
+    journal.start_design_qa_run(qa, checked, 1, "on", "done").unwrap();
+    journal.set_design_qa_mode_of(qa, "risk_batch", None).unwrap();
+    journal.set_design_qa_route(qa, "per_ticket", risk, true).unwrap();
+}
+
+#[tokio::test]
+async fn an_open_per_change_design_qa_no_longer_holds_its_change_after_an_upgrade() {
+    let site = repo();
+    let (claude, _recorded) = recording_claude(&answering("looking"));
+    let home = squad_home(&[&site]);
+    held_by_an_open_design_qa(&home, &site, "broad");
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 3, member(&site, "designer")).await;
+    let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.design_qa.is_none())).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })), "no designer turn on it");
+    let journal = Journal::for_squad(&home, "acme").unwrap();
+    assert_eq!(journal.ticket(2).unwrap().unwrap().status, TicketStatus::Done);
+    let run = journal.design_qa_run(2).unwrap();
+    assert_eq!((run.route.as_deref(), run.verdict.as_deref(), run.batch), (Some("batch"), Some("batched"), None), "into the daily review");
+    assert_eq!(journal.design_qa_waiting_for_batch().len(), 1);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_open_design_qa_for_new_screens_still_holds_its_change() {
+    let site = repo();
+    let (claude, _recorded) = recording_claude(&answering("looking"));
+    let home = squad_home(&[&site]);
+    held_by_an_open_design_qa(&home, &site, "new_screens");
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 3, member(&site, "designer")).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().ticket(1).unwrap().unwrap().design_qa, Some(2), "held for a designer before it lands");
     handle.shutdown().await;
 }
 
@@ -7566,6 +7650,7 @@ async fn a_designers_findings_keep_their_lineage_go_together_and_stop_at_the_bac
     let site = repo();
     let (claude, recorded) = recording_claude(&screenshot_turn());
     let home = squad_home(&[&site]);
+    per_ticket_design_qa(&home);
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     screens_in_design_qa(&recorded, &handle, &mut events, &site).await;
     let journal = Journal::for_squad(&home, "acme").unwrap();
@@ -7634,10 +7719,10 @@ async fn a_polish_follow_up_is_shown_where_its_findings_are_and_gets_no_designer
     let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Review)).await;
     let held = ticket_changed(&seen).into_iter().rev().find(|t| t.id == 1).unwrap();
     assert_eq!(held.design_qa, None, "not held for a designer");
-    let qa = journal.ticket(2).unwrap().unwrap();
-    assert_eq!(qa.status, TicketStatus::Done, "{qa:?}");
-    let run = journal.design_qa_run(2).unwrap();
-    assert_eq!((run.route.as_deref(), run.verdict.as_deref()), (Some("batch"), Some("batched")));
+    assert!(journal.ticket(2).unwrap().is_none(), "no design QA ticket made for it");
+    let run = journal.design_qa_run(1).unwrap();
+    assert_eq!((run.checked, run.route.as_deref(), run.verdict.as_deref()), (1, Some("batch"), Some("batched")));
+    assert_eq!(journal.design_qa_waiting_for_batch().len(), 1, "into the daily review");
     assert!(within(&mut events, 1_500).await.iter().all(|e| !matches!(e, Event::WorkStarted { ticket: 2, .. })), "the designer never takes it");
     handle.shutdown().await;
 }

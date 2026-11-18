@@ -125,6 +125,9 @@ pub struct Convo {
     pub rendered: Vec<Rendered>,
     /// Its conversation being summarized, or just was.
     pub compact: Option<Compact>,
+    /// What holds its turn from starting, as the daemon says it — its
+    /// workspace being made, behind others, on an overloaded machine.
+    pub waiting: Option<String>,
     /// Those that handed back (or stopped with a turn), the latest
     /// [`SUBS_FINISHED`], oldest first: still there to look into.
     pub finished: Vec<Sub>,
@@ -180,6 +183,7 @@ impl Convo {
             subagents: Vec::new(),
             rendered: Vec::new(),
             compact: None,
+            waiting: None,
             finished: Vec::new(),
             desk: base.clone(),
             base,
@@ -337,7 +341,9 @@ impl Convo {
                 self.transcript.push_local(Entry::Note { undo: None, text: COMPACTED.to_string() });
             }
             Event::CompactFailed { .. } => self.compact = Some(Compact::Failed),
+            Event::SessionWaiting { why, .. } => self.waiting = why.clone(),
             Event::TurnEnded { outcome, .. } => {
+                self.waiting = None;
                 // Whatever didn't hand back stopped with the turn.
                 for mut sub in std::mem::take(&mut self.subagents) {
                     sub.end(false, true, None, now);
