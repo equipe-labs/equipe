@@ -294,13 +294,17 @@ with a short line, or carry on with work that doesn't depend on the answer.";
     /// equipe: what they chose and said, not what a member recalls of it.
     pub(super) fn learn_taste(&mut self, squad: &str, entry: &str) {
         let folder = crate::squad_home::path(&self.config.home, squad);
-        let before = crate::squad_memory::facts(&folder).into_iter().find(|f| f.name == crate::taste::NAME).map(|f| f.body);
-        let body = crate::taste::with(before.as_deref(), entry);
-        let fact = crate::squad_memory::Remember { name: crate::taste::NAME, description: crate::taste::DESCRIPTION, kind: "decision", body: &body, confirmed: true };
         let language = self.journals.get(squad).and_then(Journal::language);
-        if let Err(why) = crate::squad_memory::remember(&folder, "equipe", &fact, &crate::squad_memory::date(now_secs()), language.as_deref()) {
-            crate::daemon_log!("equipe: {squad}'s design taste wasn't kept: {why}");
-        }
+        let (squad, entry) = (squad.to_owned(), entry.to_owned());
+        // Saved in the folder off the loop, in line with its other saves and landings.
+        crate::squad_home::in_order(&folder.clone(), move || {
+            let before = crate::squad_memory::facts(&folder).into_iter().find(|f| f.name == crate::taste::NAME).map(|f| f.body);
+            let body = crate::taste::with(before.as_deref(), &entry);
+            let fact = crate::squad_memory::Remember { name: crate::taste::NAME, description: crate::taste::DESCRIPTION, kind: "decision", body: &body, confirmed: true };
+            if let Err(why) = crate::squad_memory::remember(&folder, "equipe", &fact, &crate::squad_memory::date(now_secs()), language.as_deref()) {
+                crate::daemon_log!("equipe: {squad}'s design taste wasn't kept: {why}");
+            }
+        });
     }
 
     /// Closed without an answer: the member goes on without one.

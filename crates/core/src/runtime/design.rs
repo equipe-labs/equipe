@@ -176,8 +176,19 @@ impl Runtime {
             return;
         }
         let language = self.journals.get(&squad).and_then(Journal::language);
-        let today = squad_memory::date(now_secs());
-        match crate::taste::store::change(&self.config.home, &squad, project.as_deref(), &change, &today, language.as_deref()) {
+        let (home, internal) = (self.config.home.clone(), self.internal.clone());
+        // Saved off the loop, in line with the folder's other saves and landings.
+        tokio::task::spawn_blocking(move || {
+            let today = squad_memory::date(now_secs());
+            let result = crate::taste::store::change(&home, &squad, project.as_deref(), &change, &today, language.as_deref());
+            let _ = internal.send(Internal::TasteSaved { squad, project, result });
+        });
+    }
+
+    /// A note of the person's taste saved off the loop ([`Runtime::taste_changed`]),
+    /// or why not: the screens told.
+    pub(super) fn taste_saved(&mut self, squad: String, project: Option<String>, result: Result<(), crate::taste::store::Refused>) {
+        match result {
             Ok(()) => self.look_at_design(&squad, true),
             Err(crate::taste::store::Refused::Invalid(why)) => {
                 let message = crate::i18n::core(self.config.lang).fill(why.key(), &[("max", equipe_protocol::design::NOTE_MAX.to_string())]);
@@ -199,18 +210,15 @@ impl Runtime {
     /// the screens following the squad see it at once. For a pick made on a
     /// visual question: `decision.why` in the person's words when they gave
     /// any, `decision.date` empty for today. What the disk refused is logged.
-    pub(super) fn record_decision(&mut self, squad: &str, project: Option<&str>, decision: &Decision, picture: Option<&Path>, by: &str) -> Option<PathBuf> {
-        match crate::taste::record(&self.config.home, squad, project, decision, picture, by) {
-            Ok(path) => {
-                if self.design_watch.contains_key(squad) {
-                    self.look_at_design(squad, true);
-                }
-                Some(path)
+    /// Kept off the loop, in line with the folder's other saves and landings.
+    pub(super) fn record_decision(&mut self, squad: &str, project: Option<&str>, decision: &Decision, picture: Option<&Path>, by: &str) {
+        let (home, internal) = (self.config.home.clone(), self.internal.clone());
+        let (squad, project, decision, picture, by) = (squad.to_owned(), project.map(str::to_owned), decision.clone(), picture.map(Path::to_path_buf), by.to_owned());
+        tokio::task::spawn_blocking(move || match crate::taste::record(&home, &squad, project.as_deref(), &decision, picture.as_deref(), &by) {
+            Ok(_) => {
+                let _ = internal.send(Internal::DecisionKept(squad));
             }
-            Err(why) => {
-                crate::daemon_log!("equipe: {squad}'s design decision wasn't kept: {why}");
-                None
-            }
-        }
+            Err(why) => crate::daemon_log!("equipe: {squad}'s design decision wasn't kept: {why}"),
+        });
     }
 }
