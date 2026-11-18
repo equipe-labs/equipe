@@ -217,7 +217,14 @@ mod tests {
             title: "Sign in to AWS".into(),
             since: Some(1_760_000_000),
             impact: Impact { score: 55, blocks: 5, priority: Some(Priority::Urgent), holds_deploy: true, idle_members: 1, reason: "blocks 5".into() },
+            asks: vec!["Sign in to the AWS console".into()],
+            request: Some(HeldRequest { id: 3, title: "Deploy the ERP".into() }),
         };
+        let back: Waiting = serde_json::from_str(&serde_json::to_string(&waiting).unwrap()).unwrap();
+        assert_eq!(back, waiting);
+        // From an older daemon: no asks, no request.
+        let older: Waiting = serde_json::from_value(json!({ "kind": "ticket", "title": "Sign in", "impact": {} })).unwrap();
+        assert!(older.asks.is_empty() && older.request.is_none());
         let back: Waiting = serde_json::from_str(&serde_json::to_string(&waiting).unwrap()).unwrap();
         assert_eq!(back, waiting);
         let old: Impact = serde_json::from_value(json!({})).unwrap();
