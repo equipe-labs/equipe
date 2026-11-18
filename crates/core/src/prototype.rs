@@ -72,6 +72,16 @@ pub enum Policy {
 }
 
 impl Policy {
+    /// A session's page names its own server's address as it asks for a
+    /// file, so one named from the root is found ([`Server::from_root`]);
+    /// nothing goes anywhere else.
+    fn referrer(self) -> &'static str {
+        match self {
+            Policy::Prototype => "no-referrer",
+            Policy::Session => "same-origin",
+        }
+    }
+
     fn csp(self) -> &'static str {
         match self {
             Policy::Prototype => CSP,
@@ -267,22 +277,63 @@ impl Server {
         (real.starts_with(&folder) && std::fs::metadata(&real).is_ok_and(|m| m.is_file() && m.len() <= FILE_MAX)).then_some((real, kind, policy))
     }
 
+    /// Where a design session's page's address from the root (`/tokens.css`,
+    /// `/assets/logo.svg`) is served: found from the page that asked
+    /// (`referer`, one of this server's session pages), in its design folder
+    /// and then the project around it (`design::page_check::root_absolute`).
+    /// The address under the token to send the browser on to, else `None`.
+    fn from_root(&self, path: &str, referer: Option<&str>) -> Option<String> {
+        let path = path.split(['?', '#']).next()?;
+        if path.starts_with(&format!("/{}/", self.token)) {
+            return None;
+        }
+        let asking = referer?.split_once("://")?.1;
+        let asking = &asking[asking.find('/')?..];
+        let key = asking.strip_prefix('/')?.strip_prefix(self.token.as_str())?.strip_prefix('/')?.split('/').next()?;
+        let (folder, policy) = self.folders.lock().ok()?.get(key)?.clone();
+        if policy != Policy::Session {
+            return None;
+        }
+        let scope = crate::design::page_check::Scope::of_served(&folder);
+        let found = std::fs::canonicalize(crate::design::page_check::root_absolute(&decode(path)?, &scope)?).ok()?;
+        if let Ok(rel) = found.strip_prefix(&folder) {
+            return Some(self.address(key, &rel.to_string_lossy()));
+        }
+        // In the project around the design folder: served as a session's folder of its own.
+        let project = scope.project.and_then(|p| std::fs::canonicalize(p).ok()).filter(|p| found.starts_with(p))?;
+        self.serve(&found, &project, Policy::Session).ok()
+    }
+
     async fn answer(self, mut socket: tokio::net::TcpStream) {
         let mut buf = vec![0u8; 8192];
         let Ok(Ok(n)) = tokio::time::timeout(Duration::from_secs(10), socket.read(&mut buf)).await else { return };
         let head = String::from_utf8_lossy(&buf[..n]);
         let mut words = head.lines().next().unwrap_or_default().split(' ');
-        let found = match (words.next(), words.next()) {
+        let referer = head.lines().skip(1).find_map(|l| l.split_once(':').filter(|(k, _)| k.trim().eq_ignore_ascii_case("referer")).map(|(_, v)| v.trim().to_owned()));
+        let (method, path) = (words.next(), words.next());
+        let found = match (method, path) {
             (Some("GET" | "HEAD"), Some(path)) => self.file_at(path),
             _ => None,
         };
+        // An address from the root, asked by a session's page: on to where it is.
+        if found.is_none()
+            && let (Some("GET" | "HEAD"), Some(path)) = (method, path)
+            && let Some(to) = self.from_root(path, referer.as_deref())
+        {
+            let at = to.strip_prefix(&format!("http://127.0.0.1:{}", self.port)).unwrap_or(&to).to_owned();
+            let reply = format!("HTTP/1.1 307 Temporary Redirect\r\nlocation: {at}\r\ncache-control: no-store\r\nconnection: close\r\ncontent-length: 0\r\n\r\n");
+            let _ = socket.write_all(reply.as_bytes()).await;
+            let _ = socket.shutdown().await;
+            return;
+        }
         let (status, kind, body, policy) = match found.and_then(|(path, kind, policy)| std::fs::read(path).ok().map(|b| (kind, b, policy))) {
             Some((kind, body, policy)) => ("200 OK", kind, body, policy),
             None => ("404 Not Found", "text/plain; charset=utf-8", b"Not here.".to_vec(), Policy::Prototype),
         };
         let reply = format!(
-            "HTTP/1.1 {status}\r\ncontent-type: {kind}\r\ncontent-security-policy: {}\r\ncache-control: no-store\r\nx-content-type-options: nosniff\r\nreferrer-policy: no-referrer\r\nconnection: close\r\ncontent-length: {}\r\n\r\n",
+            "HTTP/1.1 {status}\r\ncontent-type: {kind}\r\ncontent-security-policy: {}\r\ncache-control: no-store\r\nx-content-type-options: nosniff\r\nreferrer-policy: {}\r\nconnection: close\r\ncontent-length: {}\r\n\r\n",
             policy.csp(),
+            policy.referrer(),
             body.len()
         );
         let _ = socket.write_all(reply.as_bytes()).await;
@@ -393,6 +444,52 @@ mod tests {
         .unwrap();
         assert!(reply.starts_with("HTTP/1.1 200") && reply.contains("connect-src 'self'") && reply.ends_with("<button>Save</button>"), "{reply}");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_session_pages_address_from_the_root_is_found_in_its_design_folder_then_its_project() {
+        let project = dir("from-root");
+        let design = project.join("design");
+        std::fs::create_dir_all(design.join("sessions/pricing")).unwrap();
+        std::fs::create_dir_all(design.join("assets")).unwrap();
+        std::fs::create_dir_all(project.join("public")).unwrap();
+        std::fs::write(design.join("tokens.css"), ":root{}").unwrap();
+        std::fs::write(design.join("assets/logo.svg"), "<svg/>").unwrap();
+        std::fs::write(project.join("public/og.png"), "png").unwrap();
+        std::fs::write(design.join("sessions/pricing/a.html"), "<link rel=stylesheet href=/tokens.css>").unwrap();
+        let server = Server::start().unwrap();
+        let page = server.put_session(&design.join("sessions/pricing/a.html"), &design).unwrap();
+        let base = page.trim_end_matches("sessions/pricing/a.html").to_owned();
+        let from = Some(page.as_str());
+        assert_eq!(server.from_root("/tokens.css", from), Some(format!("{base}tokens.css")), "the design folder first");
+        assert_eq!(server.from_root("/design/assets/logo.svg?v=1", from), Some(format!("{base}assets/logo.svg")), "named with its design folder");
+        let og = server.from_root("/public/og.png", from).expect("then the project");
+        assert!(og.ends_with("/public/og.png") && !og.starts_with(&base), "{og}");
+        assert_eq!(server.file_of(&og), Some(project.join("public/og.png")));
+        assert_eq!(server.from_root("/nowhere.css", from), None);
+        assert_eq!(server.from_root("/tokens.css", None), None, "only for a page that asked");
+        assert_eq!(server.from_root("/tokens.css", Some("http://127.0.0.1:1/wrong/x/a.html")), None, "only this server's pages");
+        // A decision's prototype gets none of it.
+        std::fs::write(project.join("proto.html"), "x").unwrap();
+        let proto = server.put(&project.join("proto.html")).unwrap();
+        assert_eq!(server.from_root("/public/og.png", Some(&proto)), None);
+        // Over the wire: sent on, and the session's page says where it is from.
+        let port = server.port;
+        let asked = page.clone();
+        let reply = tokio::task::spawn_blocking(move || {
+            use std::io::{Read as _, Write as _};
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            write!(s, "GET /tokens.css HTTP/1.1\r\nHost: x\r\nReferer: {asked}\r\n\r\n").unwrap();
+            let mut out = String::new();
+            s.read_to_string(&mut out).unwrap();
+            out
+        })
+        .await
+        .unwrap();
+        assert!(reply.starts_with("HTTP/1.1 307") && reply.contains(&format!("location: {}tokens.css", base.trim_start_matches(&format!("http://127.0.0.1:{port}")))), "{reply}");
+        assert_eq!(Policy::Session.referrer(), "same-origin");
+        assert_eq!(Policy::Prototype.referrer(), "no-referrer");
+        std::fs::remove_dir_all(project).unwrap();
     }
 
     #[tokio::test]

@@ -5,9 +5,11 @@
 //! designer's conversation — the page live beside it, a pin ticked — so it
 //! needs no connection to the daemon, and works the same on any engine.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use clap::Subcommand;
+use equipe_core::design::page_check::{self, Scope, Seen};
 use equipe_core::design::session::{self, Marker};
 use equipe_core::taste::{profile, tuner};
 
@@ -20,6 +22,9 @@ pub enum SessionAction {
         /// One of the prototype's variants (A, B or C): the person's screen puts the variants side by side
         #[arg(long)]
         variant: Option<String>,
+        /// Send it without opening and photographing it first
+        #[arg(long)]
+        no_check: bool,
     },
     /// Mark a pin the person dropped as addressed, with what changed in one line
     Done {
@@ -89,16 +94,77 @@ fn shown_line(marker: &Marker) -> String {
     }
 }
 
+/// How long the look at a page may take, Chrome's start included.
+const LOOK_WAIT: Duration = Duration::from_secs(90);
+
+/// A page looked at before it is sent: a saved page's files checked where
+/// the page server serves them from (`page_check::missing_assets`), then the
+/// page opened at the address the person's screen gets — the same page
+/// server, here in this command — and photographed (`pagecheck.mjs`). `Err`
+/// says what is broken, with the picture; `Ok` the picture, or `None` when
+/// it couldn't be looked at (no Node or Chrome here): it goes unchecked.
+async fn look_before_sending(url: &str) -> Result<Option<PathBuf>, String> {
+    let (address, page) = match session::file_path(url) {
+        Some(page) => {
+            let scope = Scope::of_page(&page);
+            let missing = page_check::missing_assets(&page, &scope);
+            if !missing.is_empty() {
+                return Err(page_check::not_sent(&page, &missing.iter().map(page_check::Missing::words).collect::<Vec<_>>(), None));
+            }
+            let Some(server) = equipe_core::prototype::Server::now() else { return Ok(None) };
+            (server.put_session(&page, &scope.served)?, Some(page))
+        }
+        None => (url.to_owned(), None),
+    };
+    let picture = picture_path(page.as_deref().unwrap_or(Path::new("page")));
+    if let Some(dir) = picture.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let output = match crate::design::run_script_output("pagecheck.mjs", &[&address, "--out", &picture.to_string_lossy()], LOOK_WAIT).await {
+        Ok(output) => output,
+        Err(why) => {
+            eprintln!("Couldn't look at the page before sending it ({why}); sent unchecked.");
+            return Ok(None);
+        }
+    };
+    let Some(seen) = Seen::read(&output) else { return Ok(None) };
+    let problems = seen.problems();
+    let shot = picture.is_file().then_some(picture.as_path());
+    if !problems.is_empty() {
+        return Err(page_check::not_sent(page.as_deref().unwrap_or(Path::new(url)), &problems, shot));
+    }
+    Ok(shot.map(Path::to_path_buf))
+}
+
+/// Where the picture of a page looked at goes: out of every repository, one per page.
+fn picture_path(page: &Path) -> PathBuf {
+    let stem = page.file_stem().map_or_else(|| "page".into(), |s| s.to_string_lossy().into_owned());
+    let millis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    std::env::temp_dir().join("equipe-shown").join(format!("{stem}-{millis}.png"))
+}
+
 fn design_dir(dir: Option<PathBuf>) -> PathBuf {
     dir.unwrap_or_else(|| PathBuf::from("design"))
 }
 
-pub fn session_command(action: SessionAction) -> Result<(), String> {
+pub async fn session_command(action: SessionAction) -> Result<(), String> {
     match action {
-        SessionAction::Show { target, variant } => {
+        SessionAction::Show { target, variant, no_check } => {
             let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
             let marker = with_variant(session::target(&target, &cwd)?, variant.as_deref())?;
+            let url = match &marker {
+                Marker::Show(url) | Marker::Variant { url, .. } => Some(url.clone()),
+                _ => None,
+            };
+            // Looked at first, as the person's screen will open it: a broken page isn't sent.
+            let picture = match url {
+                Some(url) if !no_check => look_before_sending(&url).await?,
+                _ => None,
+            };
             println!("{}", shown_line(&marker));
+            if let Some(picture) = picture {
+                println!("What the person sees: {} (open it to look).", picture.display());
+            }
             println!("{}", marker.line());
             Ok(())
         }
@@ -159,5 +225,32 @@ pub fn tuner_command(action: TunerAction) -> Result<(), String> {
             }
             Err(format!("{} problem(s) in {}", problems.len(), file.display()))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_page_naming_files_the_screen_wont_get_is_not_sent_and_says_which() {
+        let root = std::env::temp_dir().join(format!("equipe-show-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let session = root.join("design/sessions/pricing");
+        std::fs::create_dir_all(&session).unwrap();
+        let page = std::fs::canonicalize(&session).unwrap().join("index-a.html");
+        std::fs::write(&page, r#"<link rel="stylesheet" href="../../src/tokens.css"><img src="/assets/logo/mark.svg">"#).unwrap();
+        let url = format!("file://{}", page.display());
+        let said = look_before_sending(&url).await.unwrap_err();
+        assert!(said.starts_with("Not sent:"), "{said}");
+        assert!(said.contains("`../../src/tokens.css`") && said.contains("`/assets/logo/mark.svg`"), "{said}");
+        assert!(said.contains("show it again"), "{said}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_pictures_place_is_out_of_the_repository_and_named_after_its_page() {
+        let at = picture_path(Path::new("/w/design/sessions/pricing/index-a.html"));
+        assert!(at.starts_with(std::env::temp_dir()) && at.file_name().unwrap().to_string_lossy().starts_with("index-a-"), "{}", at.display());
     }
 }
