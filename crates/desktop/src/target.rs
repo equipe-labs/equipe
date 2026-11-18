@@ -219,6 +219,9 @@ pub struct Remembered {
     pub notify_later: bool,
     /// The update notices told already (`found <v>`, `ready <v>`): each once.
     pub update_told: Vec<String>,
+    /// The version of the app last run here: a newer one says once what the
+    /// update brought (`live.rs`).
+    pub ran: Option<String>,
     /// The PM's conversation shows whole whatever project is in focus — as it
     /// did before it followed the project (settings ▸ General).
     pub whole_conversation: bool,
@@ -309,6 +312,8 @@ pub struct Pings {
     pub replies: bool,
     /// Accepted work landing on main.
     pub merged: bool,
+    /// The person's work going live in a project (`protocol::deploys`).
+    pub live: bool,
     /// A new version of the app, downloaded.
     pub update: bool,
     pub sound: bool,
@@ -318,7 +323,7 @@ pub struct Pings {
 
 impl Default for Pings {
     fn default() -> Self {
-        let mut pings = Self { approvals: false, reviews: false, waiting: false, failed: false, replies: false, merged: false, update: false, sound: false, badge: false };
+        let mut pings = Self { approvals: false, reviews: false, waiting: false, failed: false, replies: false, merged: false, live: false, update: false, sound: false, badge: false };
         for ping in Ping::ALL {
             pings.set(ping, ping.default_on());
         }
@@ -335,13 +340,14 @@ pub enum Ping {
     Failed,
     Replies,
     Merged,
+    Live,
     Update,
     Sound,
     Badge,
 }
 
 impl Ping {
-    pub const ALL: [Ping; 9] = [Ping::Approvals, Ping::Reviews, Ping::Waiting, Ping::Failed, Ping::Replies, Ping::Merged, Ping::Update, Ping::Sound, Ping::Badge];
+    pub const ALL: [Ping; 10] = [Ping::Approvals, Ping::Reviews, Ping::Waiting, Ping::Failed, Ping::Replies, Ping::Merged, Ping::Live, Ping::Update, Ping::Sound, Ping::Badge];
 
     pub fn code(self) -> &'static str {
         match self {
@@ -351,6 +357,7 @@ impl Ping {
             Ping::Failed => "failed",
             Ping::Replies => "replies",
             Ping::Merged => "merged",
+            Ping::Live => "live",
             Ping::Update => "update",
             Ping::Sound => "sound",
             Ping::Badge => "badge",
@@ -372,6 +379,7 @@ impl Pings {
             Ping::Failed => self.failed,
             Ping::Replies => self.replies,
             Ping::Merged => self.merged,
+            Ping::Live => self.live,
             Ping::Update => self.update,
             Ping::Sound => self.sound,
             Ping::Badge => self.badge,
@@ -386,6 +394,7 @@ impl Pings {
             Ping::Failed => self.failed = on,
             Ping::Replies => self.replies = on,
             Ping::Merged => self.merged = on,
+            Ping::Live => self.live = on,
             Ping::Update => self.update = on,
             Ping::Sound => self.sound = on,
             Ping::Badge => self.badge = on,
@@ -513,6 +522,8 @@ impl Remembered {
                 out.notify_later = true;
             } else if let Some(rest) = line.strip_prefix("update-told ") {
                 out.update_told.push(rest.trim().to_owned());
+            } else if let Some(rest) = line.strip_prefix("ran ") {
+                out.ran = Some(rest.trim().to_owned()).filter(|v| !v.is_empty());
             } else if let Some(rest) = line.strip_prefix("board-split ") {
                 out.board_split = rest.trim().parse::<f32>().ok().filter(|h| h.is_finite() && *h > 0.);
             } else if let Some(rest) = line.strip_prefix("browser-width ") {
@@ -657,6 +668,9 @@ impl Remembered {
         }
         for told in &self.update_told {
             text.push_str(&format!("update-told {told}\n"));
+        }
+        if let Some(ran) = &self.ran {
+            text.push_str(&format!("ran {ran}\n"));
         }
         for (project, way) in &self.merge_ways {
             text.push_str(&format!("merge {project} {way}\n"));
@@ -964,19 +978,21 @@ mod tests {
         assert_eq!((loaded.merge_way("app"), loaded.merge_way("site")), (None, Some("merge")), "back to asking each time");
 
         // The kinds that are off by default are written when on, and the rest when off.
-        let mut prefs = Remembered { notify_later: true, update_told: vec!["ready 0.49.0".into()], ..Remembered::default() };
+        let mut prefs = Remembered { notify_later: true, update_told: vec!["ready 0.49.0".into()], ran: Some("0.48.0".into()), ..Remembered::default() };
         prefs.pings.set(Ping::Merged, true);
         prefs.pings.set(Ping::Badge, false);
         prefs.pings.set(Ping::Replies, false);
         prefs.save(&dir);
         let text = std::fs::read_to_string(Remembered::path(&dir)).unwrap();
-        assert_eq!(text, "quiet replies\nping merged\nquiet badge\nnotify later\nupdate-told ready 0.49.0\n");
+        assert_eq!(text, "quiet replies\nping merged\nquiet badge\nnotify later\nupdate-told ready 0.49.0\nran 0.48.0\n");
         let loaded = Remembered::load(&dir);
         assert_eq!(loaded.pings, prefs.pings);
         assert!(loaded.notify_later && loaded.pings.update && loaded.pings.sound);
         assert_eq!(loaded.update_told, ["ready 0.49.0"]);
+        assert_eq!(loaded.ran.as_deref(), Some("0.48.0"), "the version last run, for what an update brought");
         let old = Remembered::parse("quiet sound\n");
         assert!(!old.pings.sound && !old.pings.merged && old.pings.replies && old.pings.badge, "an older file reads with the new kinds as by default");
+        assert!(old.pings.live, "what went live is told unless the person turns it off");
 
         Remembered::default().save(&dir);
         assert_eq!(std::fs::read_to_string(Remembered::path(&dir)).unwrap(), "", "defaults take no lines");

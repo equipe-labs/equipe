@@ -121,11 +121,10 @@ pub enum Looked {
     Live { from: String, live: Live, merges: Vec<Merge> },
 }
 
-/// A request of the person's a ticket belongs to (`requests`, when the
-/// squad's journal keeps them).
+/// The person's request a ticket serves (see `crate::requests`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestOf {
-    pub id: u64,
+    pub id: crate::protocol::requests::RequestId,
     pub title: String,
     pub session: Option<SessionId>,
 }

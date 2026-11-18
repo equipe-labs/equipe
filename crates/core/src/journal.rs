@@ -1788,29 +1788,13 @@ impl Journal {
         self.set_meta("deploy_watch", &serde_json::to_string(watch).unwrap_or_else(|_| "{}".into()))
     }
 
-    /// The person's requests `tickets` belong to, where the journal keeps
-    /// requests (`requests` and `request_tickets`); nothing where it doesn't.
+    /// The person's requests `tickets` serve, by ticket.
     pub fn requests_of(&self, tickets: &[TicketId]) -> std::collections::HashMap<TicketId, crate::deploys::RequestOf> {
+        let store = self.requests();
         let mut out = std::collections::HashMap::new();
-        let kept: bool = self
-            .conn
-            .query_row("SELECT COUNT(*) = 2 FROM sqlite_master WHERE type = 'table' AND name IN ('requests', 'request_tickets')", [], |r| r.get(0))
-            .unwrap_or(false);
-        if !kept || tickets.is_empty() {
-            return out;
-        }
-        let Ok(mut stmt) = self.conn.prepare("SELECT r.id, r.title, r.session FROM request_tickets t JOIN requests r ON r.id = t.request WHERE t.ticket = ?1") else {
-            return out;
-        };
         for &ticket in tickets {
-            let found = stmt
-                .query_row([ticket as i64], |r| Ok(crate::deploys::RequestOf { id: r.get::<_, i64>(0)? as u64, title: r.get(1)?, session: r.get::<_, Option<i64>>(2)?.map(|s| s as SessionId) }))
-                .optional()
-                .ok()
-                .flatten();
-            if let Some(request) = found {
-                out.insert(ticket, request);
-            }
+            let Some(row) = store.of_ticket(ticket).and_then(|id| store.get(id)) else { continue };
+            out.insert(ticket, crate::deploys::RequestOf { id: row.id, title: row.title, session: row.session });
         }
         out
     }

@@ -1,7 +1,8 @@
 //! A project's page, where its name in the sidebar leads: its conversations
 //! with the PM (whose turn it is), its work (what waits on the person first)
 //! and its briefs and plans (what was thought through before it was built),
-//! in three tabs, with a new conversation about it one press away — or office
+//! and what went live in it (each deploy, and what it brought), in four tabs,
+//! with a new conversation about it one press away — or office
 //! hours with the PM, where nothing has been thought through yet. Nothing
 //! here filters the rest of the window: the page is the project's.
 
@@ -119,11 +120,13 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .border_color(p.hair)
         .child(tab_button("project-tab-talks", ProjectTab::Talks, t!("project.tab_talks").into(), talks_count, false, cx))
         .child(tab_button("project-tab-work", ProjectTab::Work, t!("project.tab_work").into(), if needs > 0 { needs } else { work_count }, needs > 0, cx))
-        .child(tab_button("project-tab-docs", ProjectTab::Docs, t!("project.tab_docs").into(), docs.len(), false, cx));
+        .child(tab_button("project-tab-docs", ProjectTab::Docs, t!("project.tab_docs").into(), docs.len(), false, cx))
+        .child(tab_button("project-tab-live", ProjectTab::Live, t!("project.tab_live").into(), 0, false, cx));
     let body = match tab {
         ProjectTab::Talks => talks(shell, &name, &yours, &answering, &project_put_away(model, &name), cx),
         ProjectTab::Work => work_list(shell, &work, cx),
         ProjectTab::Docs => docs_list(shell, &name, &docs, cx),
+        ProjectTab::Live => live_list(shell, path.map(|p| crate::live::of_project(&model.deploys, p)).unwrap_or_default(), cx),
     };
     page(shell, header, v_flex().w_full().gap_4().child(tabs).child(body).into_any_element())
 }
@@ -342,6 +345,80 @@ fn docs_list(shell: &Shell, project: &str, docs: &[&ProjectDoc], cx: &mut Contex
         .child(div().pt_2().text_size(px(12.)).text_color(p.muted).child(t!("project.docs_private")))
         .children(in_repo_note(shell, project))
         .into_any_element()
+}
+
+/// What went live here, the newest first: each deploy — where, how long ago,
+/// the commits it brought — with what the person can see now, one line each
+/// (under the request it answers), and how many internal changes came along.
+fn live_list(shell: &Shell, deploys: Vec<&equipe_core::protocol::deploys::Deploy>, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    if deploys.is_empty() {
+        return empty(shell, t!("project.live_empty_title").into(), t!("project.live_empty").into(), None, cx);
+    }
+    let now = shell.model.unix;
+    let rows = deploys.into_iter().map(|d| {
+        let ago = crate::activity::ago(now.saturating_sub(d.at.max(d.last_at)));
+        let place = match (d.source.is_live(), d.host()) {
+            (true, Some(host)) => t!("project.live_on", host = host),
+            (true, None) => t!("project.live_live").to_owned(),
+            (false, _) => t!("project.live_main").to_owned(),
+        };
+        let commits = match &d.from {
+            Some(from) => format!("{}…{}", short(from), short(&d.to)),
+            None => short(&d.to).to_owned(),
+        };
+        let url = d.url.clone().filter(|_| d.source.is_live());
+        let mut lines: Vec<AnyElement> = Vec::new();
+        let mut request: Option<u64> = None;
+        for item in &d.items {
+            // One request's lines under its name, in the person's words.
+            if item.request.is_some() && item.request != request {
+                if let Some(title) = &item.request_title {
+                    lines.push(div().pt_1().text_size(px(12.)).text_color(p.muted).truncate().child(t!("project.live_request", title = title.as_str())).into_any_element());
+                }
+            }
+            request = item.request;
+            let tickets = item.tickets.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(" ");
+            lines.push(
+                h_flex()
+                    .gap_2()
+                    .items_baseline()
+                    .child(div().flex_1().min_w_0().text_size(px(13.)).line_height(px(20.)).text_color(p.text).child(format!("· {}", item.title)))
+                    .when(!tickets.is_empty(), |r| r.child(div().flex_none().text_size(px(SMALL)).text_color(p.muted).child(tickets)))
+                    .into_any_element(),
+            );
+        }
+        if d.items.is_empty() {
+            lines.push(div().text_size(px(13.)).text_color(p.muted).child(t!("project.live_only_internal")).into_any_element());
+        }
+        let id = d.id;
+        v_flex()
+            .w_full()
+            .py_3()
+            .gap_1()
+            .border_b_1()
+            .border_color(p.hair)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(super::board::dot(if d.source.is_live() { p.good() } else { p.muted }, 6.))
+                    .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(place))
+                    .child(div().text_size(px(SMALL)).text_color(p.muted).child(format!("· {ago} · {commits}")))
+                    .child(div().flex_1())
+                    .children(url.map(|url| {
+                        ui::button(p, SharedString::from(format!("live-open-{id}")), ui::Kind::Ghost, t!("project.live_open")).icon(Icon::External).on_click(move |_, _, cx| cx.open_url(&url))
+                    })),
+            )
+            .children(lines)
+            .when(d.internal > 0 && !d.items.is_empty(), |c| c.child(div().text_size(px(12.)).text_color(p.muted).child(t!("live.internal", count = d.internal))))
+    });
+    v_flex().w_full().pt_1().children(rows).into_any_element()
+}
+
+/// A commit's short name.
+fn short(sha: &str) -> &str {
+    &sha[..sha.len().min(7)]
 }
 
 /// A brief or plan: what it is, its title, its date and how it stands — opened beside the page.

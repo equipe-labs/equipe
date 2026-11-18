@@ -4694,6 +4694,7 @@ mod tests {
             requests: Vec::new(),
             stops: Vec::new(),
             decided: Vec::new(),
+            deploys: Vec::new(),
             resting: vec!["qa".into()],
             put_away: vec![PutAway { session: 51, project: Some("web".into()), title: Some("the pricing page".into()), at: 1_760_000_000, auto: false }],
             words: None,

@@ -456,6 +456,47 @@ back to the proposals with the reason, as before. A worktree that comes after it
 run ended (cancelled, its member gone) starts nothing and is removed; the ticket
 starts again only once that job is back. The daemon logs how long each took.
 
+## What went live
+
+Merged is not the end for the person: they want to know when their work
+reaches the people who use the project. Each minute the daemon looks at every
+project off its loop (`runtime/deploys.rs`; the rules, tested alone, are in
+`crates/core/src/deploys.rs`):
+
+- **How a project goes live.** For a GitHub project with commits on main that
+  aren't live yet (asked at most every two minutes), `gh api` says whether it
+  reports production deployments (Vercel does for every push) or has a deploy
+  workflow (an active one whose file or name starts with `deploy`). It is
+  live once a production deployment, or that workflow's run, succeeded for a
+  commit on main. A
+  project with neither, without GitHub, or whose `gh` fails, counts its
+  commits landing on main, which is as far as equipe can see. Watching starts
+  where main is the first time; earlier history is never news, and a rewritten
+  main starts watching again quietly.
+- **What it brought.** equipe's merge commits name their tickets
+  (`equipe: merge T-12 …`), so a deploy's note is one line per ticket the
+  person can see, in the ticket's own title. No model writes it. Lines for one
+  of the person's requests ([REQUESTS.md](./REQUESTS.md)) go together.
+  Checks, chores, tasks and actions, `refactor:`/`test:`/`docs:` titles, and
+  changes to only tests, docs, CI, design specs, tooling or lockfiles are
+  counted as "+N internal changes", not listed.
+- **Told once, together.** Deploys of one project within ten minutes are one
+  note, told once three minutes pass with nothing new, or when the ten minutes
+  are up: a line in the PM's conversation, a line in each conversation the
+  work was asked in (with only that work), and `Event::Deployed`, which the
+  app turns into a notification (Settings › Notifications › "Work goes live",
+  on by default; a project with no deploy is told under "Work is merged into
+  main"). A deploy of only internal work is listed, never told.
+
+Screens get the last 60 deploys in the snapshot (`deploys`) and in
+`Event::DeploysChanged`. The desktop app shows a project's latest live deploy
+for a day under its name in the sidebar, and every deploy on its page's
+"What's live" tab (`crates/desktop/src/live.rs`, `views/project.rs`).
+
+equipe's own updates say what they bring the same way, from each pull
+request's `## For users` section ([RELEASING.md](./RELEASING.md), "Release
+notes").
+
 ## Terminal
 
 The command line is a product surface, styled per [BRAND.md](./BRAND.md):
