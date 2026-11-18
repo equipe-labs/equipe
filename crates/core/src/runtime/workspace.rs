@@ -113,6 +113,11 @@ pub(super) struct Workspaces {
     busy: HashSet<(String, TicketId)>,
     running: HashSet<PathBuf>,
     queued: HashMap<PathBuf, VecDeque<Task>>,
+    /// The run each folder's task under way is for.
+    making: HashMap<PathBuf, SessionId>,
+    /// What each run waiting on its workspace was last told to wait on
+    /// ([`Runtime::tell_waiting`]).
+    told: HashMap<SessionId, String>,
 }
 
 impl Workspaces {
@@ -120,6 +125,33 @@ impl Workspaces {
     /// still out): it isn't started again until that is back.
     pub(super) fn busy(&self, squad: &str, ticket: TicketId) -> bool {
         self.busy.contains(&(squad.to_owned(), ticket))
+    }
+
+    /// Where run `run`'s workspace stands: its folder, and how many tasks
+    /// are ahead of it there (0: it is being made). `None`: no job for it.
+    pub(super) fn place_of(&self, run: SessionId) -> Option<(PathBuf, usize)> {
+        if let Some((folder, _)) = self.making.iter().find(|(_, r)| **r == run) {
+            return Some((folder.clone(), 0));
+        }
+        self.queued.iter().find_map(|(folder, tasks)| {
+            let at = tasks.iter().position(|t| matches!(t, Task::Prepare(job) if job.start.run == run))?;
+            Some((folder.clone(), at + usize::from(self.running.contains(folder))))
+        })
+    }
+
+    /// Run `run`'s workspace first in its folder's line: the person is
+    /// waiting on it (they wrote to it, or carried it on).
+    pub(super) fn hurry(&mut self, run: SessionId) -> bool {
+        for tasks in self.queued.values_mut() {
+            if let Some(at) = tasks.iter().position(|t| matches!(t, Task::Prepare(job) if job.start.run == run))
+                && at > 0
+                && let Some(task) = tasks.remove(at)
+            {
+                tasks.push_front(task);
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -148,6 +180,15 @@ fn prepare(job: Job) -> Prepared {
         },
     };
     let made = made.filter(|_| matches!(sandbox, Ok(Some(_))));
+    // Its dependencies cloned from a checkout that has them installed, before
+    // its first turn: a member that found no `node_modules` ran `npm ci`, and
+    // a dozen installs at once overloaded the Mac.
+    if let (Ok(Some(sandbox)), Some(_)) = (&sandbox, made) {
+        let notes = worktree::seed_dependencies(&sandbox.path);
+        if !notes.is_empty() {
+            crate::daemon_log!("equipe: dependencies for {}: {}", sandbox.path.display(), notes.join("; "));
+        }
+    }
     let main = plan_repo.and_then(|repo| worktree::main_branch(&repo).ok());
     Prepared { start, sandbox, made, main }
 }
@@ -156,9 +197,70 @@ impl Runtime {
     /// Make `job`'s workspace off the loop, after what its folder has under way.
     pub(super) fn prepare_workspace(&mut self, job: Job) {
         self.workspaces.busy.insert((job.start.squad.clone(), job.start.ticket));
+        // A worktree that is there already (or none at all) takes no git:
+        // ready at once, never queued behind other tickets' `git worktree add`.
+        if matches!(job.checkout, None | Some(Checkout::Kept { .. })) {
+            let internal = self.internal.clone();
+            tokio::task::spawn_blocking(move || {
+                let prepared = prepare(job);
+                // No folder: nothing of a folder's line to move on.
+                let _ = internal.send(Internal::Workspace { folder: PathBuf::new(), prepared: Some(Box::new(prepared)) });
+            });
+            return;
+        }
         let folder = job.workplace.clone();
         self.workspaces.queued.entry(folder.clone()).or_default().push_back(Task::Prepare(Box::new(job)));
         self.next_workspace_task(&folder);
+        self.tell_waiting(false);
+    }
+
+    /// The person wrote to (or carried on) run `id` while its workspace waits
+    /// in line: it goes first.
+    pub(super) fn hurry_workspace(&mut self, id: SessionId) {
+        if self.workspaces.hurry(id) {
+            crate::daemon_log!("equipe: session {id}'s workspace goes first: the person is waiting on it");
+            self.tell_waiting(false);
+        }
+    }
+
+    /// What run `id` waits on before its turn starts, in the person's words:
+    /// its workspace being made, behind how many others, and the machine
+    /// overloaded. `None` when it waits on nothing.
+    pub(super) fn waiting_line(&self, id: SessionId) -> Option<String> {
+        let (folder, ahead) = self.workspaces.place_of(id)?;
+        let mut line = if ahead == 0 {
+            say!(self, "status.workspace_making")
+        } else {
+            say!(self, "status.workspace_behind", count = ahead, project = board::project_name(&folder))
+        };
+        if let Some(r) = self.machine.watch.last.filter(|_| self.overloaded()) {
+            line.push_str(" — ");
+            line.push_str(&say!(self, "status.machine_overloaded", machine = crate::screens::machine_name(), load = r.load_shown(), cores = r.cores));
+        }
+        Some(line)
+    }
+
+    /// Each run waiting on its workspace told what it waits on, when that
+    /// changed (`all`: told again, for screens that attached since); a run
+    /// no longer waiting told it waits on nothing.
+    pub(super) fn tell_waiting(&mut self, all: bool) {
+        let waiting: Vec<SessionId> = self.sessions.iter().filter(|(_, s)| s.is_preparing()).map(|(&id, _)| id).collect();
+        let mut events = Vec::new();
+        for id in waiting {
+            let Some(line) = self.waiting_line(id) else { continue };
+            if all || self.workspaces.told.get(&id) != Some(&line) {
+                self.workspaces.told.insert(id, line.clone());
+                events.push(Event::SessionWaiting { session: id, why: Some(line) });
+            }
+        }
+        let gone: Vec<SessionId> = self.workspaces.told.keys().copied().filter(|id| self.waiting_line(*id).is_none()).collect();
+        for id in gone {
+            self.workspaces.told.remove(&id);
+            events.push(Event::SessionWaiting { session: id, why: None });
+        }
+        for event in events {
+            self.publish(event);
+        }
     }
 
     /// Start `folder`'s next task, unless one is under way.
@@ -171,6 +273,9 @@ impl Runtime {
             return;
         };
         self.workspaces.running.insert(folder.to_owned());
+        if let Task::Prepare(job) = &task {
+            self.workspaces.making.insert(folder.to_owned(), job.start.run);
+        }
         let (internal, folder) = (self.internal.clone(), folder.to_owned());
         tokio::task::spawn_blocking(move || {
             let prepared = match task {
@@ -199,11 +304,17 @@ impl Runtime {
     /// A task on `folder`'s worktrees ended: the run it prepared starts, and
     /// the folder's next task goes.
     pub(super) async fn workspace_done(&mut self, folder: PathBuf, prepared: Option<Box<Prepared>>) {
-        self.workspaces.running.remove(&folder);
+        if !folder.as_os_str().is_empty() {
+            self.workspaces.running.remove(&folder);
+            self.workspaces.making.remove(&folder);
+        }
         if let Some(prepared) = prepared {
             Box::pin(self.workspace_ready(&folder, *prepared)).await;
         }
-        self.next_workspace_task(&folder);
+        if !folder.as_os_str().is_empty() {
+            self.next_workspace_task(&folder);
+        }
+        self.tell_waiting(false);
     }
 
     /// A run's workspace is ready, or couldn't be made. Only the run that
@@ -245,10 +356,6 @@ impl Runtime {
                     (Some(_), None) => "its worktree as it was",
                 };
                 crate::daemon_log!("equipe: {squad}: T-{}'s workspace for {} ready in {took:.1}s ({what})", start.ticket, start.name);
-                // Its dependencies cloned from a checkout that has them installed, off the loop.
-                if let (Some(sandbox), Some(_)) = (&sandbox, made) {
-                    worktree::seed_in_background(sandbox.path.clone());
-                }
                 self.start_run(start, sandbox, main);
             }
             Err(reason) => {

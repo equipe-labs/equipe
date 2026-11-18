@@ -34,6 +34,8 @@ pub enum Doing {
     SignIn { engine: String },
     /// Waiting on the person's approval.
     Approval,
+    /// Its turn held from starting, and on what, as the daemon says it.
+    Waiting { what: String },
 }
 
 /// What the screen knows of a conversation now.
@@ -61,6 +63,8 @@ pub struct Facts<'a> {
     pub memos: usize,
     /// What the turn has written so far, in tokens.
     pub tokens: Option<u64>,
+    /// What holds its turn from starting, as the daemon says it.
+    pub waiting: Option<String>,
 }
 
 /// The line, as drawn.
@@ -119,6 +123,8 @@ pub fn line(facts: &Facts) -> Option<Line> {
         Doing::Summarizing
     } else if !facts.working {
         return None;
+    } else if let Some(what) = facts.waiting.as_ref().filter(|_| running(facts.blocks).is_none()) {
+        Doing::Waiting { what: what.clone() }
     } else if let Some(step) = running(facts.blocks) {
         elapsed = facts.step_for.unwrap_or(turn);
         let detail = step.full.clone().or_else(|| step.path.clone()).filter(|d| !d.trim().is_empty() && *d != step.text());
@@ -158,6 +164,14 @@ pub fn tokens(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_turn_held_from_starting_says_on_what_instead_of_thinking() {
+        let blocks: Vec<Block> = Vec::new();
+        let held = Facts { working: true, waiting: Some("Making its workspace — 3 ahead of it in site — mini is overloaded (load 77 on 15 cores)".into()), blocks: &blocks, ..Facts::default() };
+        assert_eq!(line(&held).unwrap().doing, Doing::Waiting { what: "Making its workspace — 3 ahead of it in site — mini is overloaded (load 77 on 15 cores)".into() });
+        assert_eq!(line(&Facts { waiting: None, ..held.clone() }).unwrap().doing, Doing::Reading, "nothing holds it: as before");
+    }
 
     fn step(verb: &str, target: &str, status: Status) -> ToolLine {
         let mut l = ToolLine::new(verb, vec![target.into()], false);

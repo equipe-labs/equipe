@@ -3147,6 +3147,14 @@ pub enum Event {
     /// When the member expects its work done, and what it ships live — as it
     /// said, or nothing any more (`None`).
     Estimated { session: SessionId, estimate: Option<Estimate> },
+    /// What holds a conversation's turn from starting — its workspace still
+    /// being made, behind others, on a machine that may be overloaded — in
+    /// the person's words; `None` once nothing does. Older screens skip it.
+    SessionWaiting {
+        session: SessionId,
+        #[serde(default)]
+        why: Option<String>,
+    },
     TurnEnded {
         session: SessionId,
         outcome: TurnOutcome,
@@ -3651,6 +3659,7 @@ impl Event {
             | Event::Steered { session, .. }
             | Event::CommandWatch { session, .. }
             | Event::Estimated { session, .. }
+            | Event::SessionWaiting { session, .. }
             | Event::SubagentStarted { session, .. }
             | Event::Compacting { session, .. }
             | Event::Compacted { session, .. }
