@@ -31,6 +31,24 @@ impl Runtime {
         self.publish(Event::AcceptProposed { squad: squad.to_owned(), proposal });
     }
 
+    /// Whether `ticket` was accepted already and only its landing is left —
+    /// tried and failed, or met a conflict its member has since been told to
+    /// merge main into. Landing it again is no new acceptance: nothing about
+    /// it is put to the person, and the PM needs no say from them.
+    pub(super) fn relandable(&mut self, squad: &str, ticket: TicketId) -> bool {
+        self.journal(squad).and_then(|j| j.ticket(ticket).ok().flatten()).is_some_and(|t| {
+            t.not_on_main() && matches!(t.off_main, Some(equipe_protocol::OffMain::Failed { .. } | equipe_protocol::OffMain::Conflict { .. }))
+        })
+    }
+
+    /// Land an accepted ticket again ([`Runtime::relandable`]), in line with
+    /// its repository's other landings: a fresh try, as the retries make.
+    pub(super) fn land_again(&mut self, squad: &str, ticket: TicketId, push: bool) {
+        crate::daemon_log!("equipe: {squad}: T-{ticket} is accepted already; landing it again");
+        self.merge_retries.remove(&(squad.to_owned(), ticket));
+        self.merge(squad, ticket, push);
+    }
+
     /// `propose_accept`: checked against the board and what already waits,
     /// kept, and shown; the PM told the person confirms on a card.
     pub(super) fn propose_accept(&mut self, squad: &str, member: &str, id: SessionId, args: &Value) -> Result<String, String> {
@@ -43,28 +61,68 @@ them, and note what they said on the ticket with `comment`, for the PM."
         let tickets = self.tickets(squad);
         let open = self.accepts.get(squad).cloned().unwrap_or_default();
         let declined = self.declined_lately(squad);
-        match rules::check(args, &tickets, &open, &declined, now_secs())? {
-            Outcome::Already { tickets, dropped } => Ok(rules::already_reply(&tickets, &dropped)),
+        // Accepted already, only its landing left: landed again now, never put
+        // to the person a second time — whatever verdict the PM proposed.
+        let changes = board::arg_str(args, "verdict").is_some_and(|v| matches!(v.to_lowercase().as_str(), "changes" | "reject" | "reopen" | "request_changes"));
+        let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
+        let named: Vec<TicketId> = if all { tickets.iter().filter(|t| t.waits_to_merge()).map(|t| t.id).collect() } else { board::arg_ids(args, "tickets").unwrap_or_default() };
+        let landing: Vec<TicketId> = if changes { Vec::new() } else { named.iter().copied().filter(|t| self.relandable(squad, *t)).collect() };
+        for ticket in &landing {
+            self.land_again(squad, *ticket, false);
+        }
+        let landing_line = (!landing.is_empty()).then(|| {
+            let one = landing.len() == 1;
+            format!(
+                "{} {} accepted already: equipe is landing {} on main again now — nothing to put to the person, and you hear how it went.",
+                crate::by_words::list(&landing),
+                if one { "is" } else { "are" },
+                if one { "it" } else { "them" }
+            )
+        });
+        // What is landing now isn't waiting on anyone: left out of the rest.
+        let mut tickets = tickets;
+        for t in &mut tickets {
+            t.landing = self.landing(squad, t);
+        }
+        let mut args = args.clone();
+        if !landing.is_empty() && !all {
+            let rest: Vec<TicketId> = named.iter().copied().filter(|t| !landing.contains(t)).collect();
+            if rest.is_empty() {
+                return Ok(landing_line.unwrap_or_default());
+            }
+            args["tickets"] = serde_json::json!(rest);
+        }
+        let args = &args;
+        let checked = rules::check(args, &tickets, &open, &declined, now_secs());
+        let checked = match (checked, &landing_line) {
+            (Err(_), Some(line)) if all => return Ok(line.clone()),
+            (checked, _) => checked?,
+        };
+        let reply = match checked {
+            Outcome::Already { tickets, dropped } => rules::already_reply(&tickets, &dropped),
             // The person's own words already do it: being done, or read back to them.
-            Outcome::Propose(checked) if self.words_cover(squad, &checked.tickets) => Ok(format!(
+            Outcome::Propose(checked) if self.words_cover(squad, &checked.tickets) => format!(
                 "The person's own words already do this ({}): equipe is doing it, or reading it back to them to confirm. Put nothing to them; carry on.",
                 crate::by_words::list(&checked.tickets)
-            )),
-            Outcome::Propose(checked) => {
-                // Small work is the PM's to decide; only what is weighty goes up, with why (`person_gate`).
-                let why = match self.gate_card(squad, member, &checked.tickets, args)? {
-                    super::person_gate::Gate::Pm(reply) => return Ok(reply),
-                    super::person_gate::Gate::Card(why) => why,
-                };
-                let reply = rules::proposed_reply(&checked, &tickets);
-                let mut proposal = checked.into_proposal(equipe_protocol::new_session_id(), member, id, now_secs());
-                if !why.is_empty() {
-                    proposal.summary = [proposal.summary.trim(), why.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
+            ),
+            // Small work is the PM's to decide; only what is weighty goes up, with why (`person_gate`).
+            Outcome::Propose(checked) => match self.gate_card(squad, member, &checked.tickets, args)? {
+                super::person_gate::Gate::Pm(reply) => reply,
+                super::person_gate::Gate::Card(why) => {
+                    let reply = rules::proposed_reply(&checked, &tickets);
+                    let mut proposal = checked.into_proposal(equipe_protocol::new_session_id(), member, id, now_secs());
+                    if !why.is_empty() {
+                        proposal.summary = [proposal.summary.trim(), why.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
+                    }
+                    self.put_up(squad, proposal);
+                    reply
                 }
-                self.put_up(squad, proposal);
-                Ok(reply)
-            }
-        }
+            },
+        };
+        Ok(match landing_line {
+            Some(line) => format!("{line} {reply}"),
+            None => reply,
+        })
     }
 
     /// `accept_work`: the PM accepts handed-in work itself — and merges it into
@@ -78,7 +136,7 @@ them, and note what they said on the ticket with `comment`, for the PM."
     /// [`Runtime::accept_worked`] takes it from there, in the order the tickets
     /// were named. The PM's call is answered then, with what really happened.
     pub(super) async fn accept_work(&mut self, squad: &str, member: &str, id: SessionId, args: &Value, reply: oneshot::Sender<ToolResult>) {
-        let (checked, push, plan) = match self.accept_plan(squad, member, id, args) {
+        let (checked, push, plan, landing) = match self.accept_plan(squad, member, id, args) {
             Ok(planned) => planned,
             Err(text) => {
                 self.dispatch(squad).await;
@@ -86,7 +144,7 @@ them, and note what they said on the ticket with `comment`, for the PM."
                 return;
             }
         };
-        let mut worked = AcceptWorked { squad: squad.to_owned(), member: member.to_owned(), session: id, checked, push, named: Vec::new(), reply };
+        let mut worked = AcceptWorked { squad: squad.to_owned(), member: member.to_owned(), session: id, checked, push, named: Vec::new(), landing, reply };
         // Nothing for git to do: answered at once.
         if !plan.iter().any(|p| matches!(p, Plan::Look(_))) {
             worked.named = plan.into_iter().map(|p| match p {
@@ -116,16 +174,9 @@ them, and note what they said on the ticket with `comment`, for the PM."
     /// it checked, whether main is pushed, and each ticket named, in order —
     /// left out and why, or to be looked at off the loop. The tickets to look
     /// at are under way from here on (`accepting`).
-    fn accept_plan(&mut self, squad: &str, member: &str, id: SessionId, args: &Value) -> Result<(String, bool, Vec<Plan>), String> {
+    fn accept_plan(&mut self, squad: &str, member: &str, id: SessionId, args: &Value) -> Result<(String, bool, Vec<Plan>, Vec<TicketId>), String> {
         if !self.sessions.get(&id).is_some_and(Session::is_pm) {
             return Err("Only the PM accepts the team's work. Hand yours in with submit_for_review.".into());
-        }
-        if !self.journal(squad).is_some_and(|j| j.pm_accepts()) {
-            return Err("In this squad the person accepts work themselves: put it to them with propose_accept.".into());
-        }
-        let checked = board::arg_str(args, "checked").map(str::trim).unwrap_or_default().to_owned();
-        if checked.is_empty() {
-            return Err("Say in `checked` what you checked and found — it is kept on the ticket for the person.".into());
         }
         let push = args.get("push").and_then(Value::as_bool).unwrap_or(false);
         let mut named: Vec<TicketId> = args.get("tickets").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64()).map(|v| v as TicketId).collect()).unwrap_or_default();
@@ -133,6 +184,21 @@ them, and note what they said on the ticket with `comment`, for the PM."
         named.retain(|t| seen.insert(*t));
         if named.is_empty() {
             return Err("Name the handed-in tickets you accept in `tickets`.".into());
+        }
+        // Accepted already, only its landing left (it failed, or met a conflict
+        // since merged in): landed again now — no new acceptance, so neither
+        // the person's say nor `checked` is needed.
+        let landing: Vec<TicketId> = named.iter().copied().filter(|t| !self.merging.contains(&(squad.to_owned(), *t)) && self.relandable(squad, *t)).collect();
+        named.retain(|t| !landing.contains(t));
+        if !named.is_empty() && !self.journal(squad).is_some_and(|j| j.pm_accepts()) {
+            return Err("In this squad the person accepts work themselves: put it to them with propose_accept.".into());
+        }
+        let checked = board::arg_str(args, "checked").map(str::trim).unwrap_or_default().to_owned();
+        if !named.is_empty() && checked.is_empty() {
+            return Err("Say in `checked` what you checked and found — it is kept on the ticket for the person.".into());
+        }
+        for ticket in &landing {
+            self.land_again(squad, *ticket, push);
         }
         watchdog::mark("accept_work: the board looked at");
         let mut plan = Vec::new();
@@ -175,14 +241,14 @@ them, and note what they said on the ticket with `comment`, for the PM."
             self.accepting.insert((squad.to_owned(), ticket));
             plan.push(Plan::Look(Look { ticket: Box::new(t), code, close }));
         }
-        Ok((checked, push, plan))
+        Ok((checked, push, plan, landing))
     }
 
     /// The git side of `accept_work` is through: each ticket, in the order
     /// named, is sent back for a conflict, put to its project's checks, or
     /// accepted and merged — then the PM hears what happened.
     pub(super) async fn accept_worked(&mut self, worked: AcceptWorked) {
-        let AcceptWorked { squad, member, session: id, checked, push, named, reply } = worked;
+        let AcceptWorked { squad, member, session: id, checked, push, named, landing, reply } = worked;
         let (squad, member) = (squad.as_str(), member.as_str());
         let (mut accepted, mut left) = (Vec::new(), Vec::new());
         // What a designer made, to put in front of the person with the acceptance.
@@ -273,7 +339,9 @@ main; no rebase needed), resolve each conflict keeping what both sides meant, ru
             self.publish(Event::Notice { undo: None, session: id, text });
         }
         let ids = list(&accepted);
-        let mut text = if accepted.is_empty() && checking.is_empty() {
+        let mut text = if accepted.is_empty() && checking.is_empty() && !landing.is_empty() {
+            String::new()
+        } else if accepted.is_empty() && checking.is_empty() {
             "Nothing accepted.".to_owned()
         } else if accepted.is_empty() {
             String::new()
@@ -291,6 +359,13 @@ main; no rebase needed), resolve each conflict keeping what both sides meant, ru
 it only if they pass; if they fail it goes back to its member with the output, and main stays as it is. You hear how it went; \
 carry on meanwhile.",
                 list(&checking)
+            ));
+        }
+        if !landing.is_empty() {
+            text.push_str(&format!(
+                " {} {} accepted already: landing on main again now — nothing to put to the person; you hear how it went.",
+                list(&landing),
+                if landing.len() == 1 { "was" } else { "were" }
             ));
         }
         let mut text = text.trim_start().to_owned();
@@ -525,6 +600,8 @@ pub(super) struct AcceptWorked {
     checked: String,
     push: bool,
     named: Vec<Named>,
+    /// Accepted already: landing on main again, nothing more to accept.
+    landing: Vec<TicketId>,
     reply: oneshot::Sender<ToolResult>,
 }
 

@@ -1720,7 +1720,10 @@ fn card(shell: &Shell, id: TicketId, status: TicketStatus, next: Option<TicketId
                         .child(h_flex().gap(px(5.)).items_center().min_w_0().child(crate::theme::project_mark(p, 11.)).child(div().truncate().child(project.unwrap_or_else(|| t!("board.squad_folder").into()))))
                         .when_some(blocked, |h, dep| h.child(super::ticket_card::hover_link(div().id(("card-blocked", id as u64)).px(px(5.)).rounded(px(4.)).bg(p.wash).text_color(p.orange).child(format!("⛔ T-{dep}")), dep, super::ticket_card::Side::Below)))
                         .when(unblocks > 0 && !t.status.is_closed(), |h| h.child(div().px(px(5.)).rounded(px(4.)).bg(p.wash).child(format!("→ {unblocks}"))))
-                        .when(t.not_on_main(), |h| h.child(div().px(px(5.)).rounded(px(4.)).bg(p.wash).text_color(p.accent).child(t!("state.chip_not_on_main")))),
+                        .when(t.not_on_main(), |h| {
+                            let chip = if t.landing_now() { t!("state.chip_landing") } else { t!("state.chip_not_on_main") };
+                            h.child(div().px(px(5.)).rounded(px(4.)).bg(p.wash).text_color(p.accent).child(chip))
+                        }),
                 ),
         )
         .into_any_element()
