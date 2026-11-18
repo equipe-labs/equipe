@@ -38,7 +38,7 @@ pub(crate) fn light_copy(ticket: &Ticket) -> Ticket {
         body: String::new(),
         status: *status,
         kind: *kind,
-        label: label.clone(),
+        label: *label,
         owner: owner.clone(),
         assignee: assignee.clone(),
         project: project.clone(),

@@ -41,7 +41,7 @@ enum Input {
     /// An event of any squad, for pushes.
     Squad(String, Event),
     /// A squad followed for pushes, with its board as the daemon's hello had it.
-    Following(String, Box<equipe_core::protocol::rpc::Hello>),
+    Following(Box<equipe_core::protocol::rpc::Hello>),
     /// A member's picture a device asked for, read (`read_image`).
     ImageRead(String, String, u64, Result<equipe_core::protocol::rpc::ImageRead, String>),
     /// A folder's pictures a device asked for, listed (`list_images`).
@@ -151,7 +151,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                         followed.insert(squad, tokio::spawn(async move {
                             match follow_patiently(&socket, &version, &name).await {
                                 Ok((client, hello)) => {
-                                    let _ = tx.send(Input::Following(name.clone(), Box::new(hello)));
+                                    let _ = tx.send(Input::Following(Box::new(hello)));
                                     let (_, mut events) = client.split();
                                     while let Some(event) = events.recv().await {
                                         if tx.send(Input::Squad(name.clone(), event)).is_err() {
@@ -259,7 +259,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                 actions.extend(core.opened(&device, &squad, &id, hello));
             }
             Some(Input::Squad(squad, event)) => actions.extend(core.on_squad_event(&squad, &event)),
-            Some(Input::Following(_, hello)) => core.attach(&hello.snapshot),
+            Some(Input::Following(hello)) => core.attach(&hello.snapshot),
             Some(Input::ImageRead(device, squad, id, read)) => actions.extend(core.image_read(&device, &squad, id, read)),
             Some(Input::ImagesListed(device, squad, id, listed)) => actions.extend(core.images_listed(&device, &squad, id, listed)),
             Some(Input::MetricsSummarized(device, squad, id, summary)) => actions.extend(core.metrics_summarized(&device, &squad, id, summary)),

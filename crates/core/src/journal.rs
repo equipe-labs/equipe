@@ -882,17 +882,19 @@ impl Journal {
         // temporary, so nothing is written to the squad's file. Without them
         // the board is read afresh every time, as before.
         // Which tickets those changes touched, too: only they are read again.
+        // No key and no conflict clause on it: a trigger fired by an upsert
+        // (`ON CONFLICT … DO UPDATE`) takes on its conflict handling.
         let mut counted = String::from(
             "CREATE TEMP TABLE IF NOT EXISTS board_writes (n INTEGER NOT NULL);
              INSERT INTO board_writes SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM board_writes);
-             CREATE TEMP TABLE IF NOT EXISTS board_touched (id INTEGER PRIMARY KEY);",
+             CREATE TEMP TABLE IF NOT EXISTS board_touched (id INTEGER NOT NULL);",
         );
         for (table, id) in [("tickets", "id"), ("ticket_executions", "ticket")] {
             for change in ["INSERT", "UPDATE", "DELETE"] {
                 let touched = match change {
-                    "INSERT" => format!("INSERT OR IGNORE INTO board_touched VALUES (NEW.{id});"),
-                    "UPDATE" => format!("INSERT OR IGNORE INTO board_touched VALUES (NEW.{id}); INSERT OR IGNORE INTO board_touched VALUES (OLD.{id});"),
-                    _ => format!("INSERT OR IGNORE INTO board_touched VALUES (OLD.{id});"),
+                    "INSERT" => format!("INSERT INTO board_touched VALUES (NEW.{id});"),
+                    "UPDATE" => format!("INSERT INTO board_touched VALUES (NEW.{id}); INSERT INTO board_touched SELECT OLD.{id} WHERE OLD.{id} <> NEW.{id};"),
+                    _ => format!("INSERT INTO board_touched VALUES (OLD.{id});"),
                 };
                 counted.push_str(&format!(
                     "CREATE TEMP TRIGGER IF NOT EXISTS board_{table}_{name} AFTER {change} ON main.{table} BEGIN UPDATE board_writes SET n = n + 1; {touched} END;",
@@ -2575,7 +2577,7 @@ impl Journal {
     /// when last read (closed or gone since).
     fn refresh_board(&self, board: &mut Board, elsewhere: bool) -> Result<()> {
         let touched: Vec<TicketId> = {
-            let mut stmt = self.conn.prepare_cached("SELECT id FROM temp.board_touched")?;
+            let mut stmt = self.conn.prepare_cached("SELECT DISTINCT id FROM temp.board_touched")?;
             stmt.query_map([], |r| r.get(0))?.collect::<Result<_>>()?
         };
         self.conn.execute("DELETE FROM temp.board_touched", [])?;
