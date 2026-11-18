@@ -23,6 +23,7 @@ pub fn kind_label(kind: Kind) -> &'static str {
         Kind::Merge => t!("autonomy.kind_merge"),
         Kind::Internal => t!("autonomy.kind_internal"),
         Kind::ProductionData => t!("autonomy.kind_production_data"),
+        Kind::Deploy => t!("autonomy.kind_deploy"),
         Kind::SignIn => t!("autonomy.kind_sign_in"),
         Kind::Money => t!("autonomy.kind_money"),
         Kind::Deletion => t!("autonomy.kind_deletion"),
@@ -39,6 +40,7 @@ fn kind_desc(kind: Kind) -> &'static str {
         Kind::Design => t!("autonomy.desc_design"),
         Kind::Merge => t!("autonomy.desc_merge"),
         Kind::Internal => t!("autonomy.desc_internal"),
+        Kind::Deploy => t!("autonomy.desc_deploy"),
         _ => t!("autonomy.desc_production_data"),
     }
 }

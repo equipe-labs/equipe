@@ -182,3 +182,52 @@ main like a CI workflow:
 
 The gate applies to the PM's own acceptance (`accept_work`). Work the person accepts and
 merges themselves, from the board or a card, is merged as they say.
+
+## Going live
+
+Pushed to main is not live. A project that deploys from a push (a Vercel or Netlify Git
+integration, a deploy workflow) is watched for that deploy: equipe asks GitHub for its
+production deployments or the deploy workflow's runs, and says "live" only once one of
+them succeeded for the commit. A project that deploys only when someone runs a command
+declares that command, and equipe runs it after work lands.
+
+Declare it in `.equipe/deploy.json` at the top of the repository, committed to main:
+
+```json
+{ "command": "npm run deploy:prod", "from": "main" }
+```
+
+| Key | Meaning |
+| --- | --- |
+| `command` | Required. Run through the shell (`sh -c`; `cmd /C` on Windows) in the project's main checkout, the folder where landings merge, with no input and `EQUIPE_DEPLOY=1` set. |
+| `from` | The branch it deploys from. equipe lands work on the main branch, so naming another one stops it. Default: the main branch. |
+| `timeoutMinutes` | How long it may run: 20 when left out, at most 60. |
+| `quietSeconds` | How long after a landing equipe waits for more before deploying: 120 when left out, at most 900. |
+
+- **When it runs.** After each landing that pushed main: a member landing its own work,
+  the PM's acceptance with a push, or the person's merge with a push. Landings close
+  together are deployed once: equipe waits until none came for `quietSeconds`, and at most
+  ten minutes after the first. One run at a time per project, off the daemon's loop; a
+  landing during a run is deployed by the next one.
+- **Only on a clean checkout of what origin has.** The main checkout must be on the main
+  branch, with no uncommitted or untracked files, at the commit origin's main points to.
+  Otherwise nothing runs, and the PM and the person are told why.
+- **Success** is a deploy like any other: "Live now in …" with what it brought, in the
+  sidebar's list of what went live, in the PM's conversation and in each conversation
+  whose work it carried. The daemon log names the command and the deployed commit.
+- **Failure or timeout** tells the PM the reason and the last lines it printed, and the
+  person that it isn't live yet. equipe tries again after the next landing; the PM can try
+  again at once with `set_deploy` (`deploy_now: true`). The command's full output of the
+  last run is in `~/.equipe/deploys/<squad>-<project>.log`.
+- **The file is read from main as it stands.** A file that can't be read (bad JSON, an
+  unknown key, no command) deploys nothing, and the PM hears what is wrong.
+- **No file?** When a project has none but its own files show an obvious deploy command
+  (a `deploy:prod` or `deploy` script in `package.json`, a `deploy` target in its
+  `Makefile`) and GitHub can't confirm a deploy from a push, the PM is asked once to
+  confirm it with `set_deploy` (`project`, `command`). A confirmed command works like the
+  file (which wins over it); `command: ""` stops it. equipe never runs a command nobody
+  declared or confirmed.
+- **The person decides whether deploys wait for them.** Running a declared deploy after
+  a landing is "Production deploys after a landing" in the autonomy policy: just do by
+  default; set to ask, the PM is told the work is on main, not live, and asks the person
+  before `set_deploy` with `deploy_now: true` ([AUTONOMY.md](AUTONOMY.md)).

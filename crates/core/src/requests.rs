@@ -965,7 +965,7 @@ mod tests {
         let line = line(&s, words, &|at| format!("@{at}"));
         assert_eq!(
             line,
-            "Spec the Tinumi composer — live in main since @1100 · Left menu, three options — frontend is on it · 2 things wait for you (Check the new composer on r…, Decide if the layout needs…)"
+            "Spec the Tinumi composer — on main since @1100 · Left menu, three options — frontend is on it · 2 things wait for you (Check the new composer on r…, Decide if the layout needs…)"
         );
     }
 
