@@ -245,6 +245,11 @@ pub fn reads(command: &Command) -> bool {
         | C::SignOut { .. }
         | C::SetEngineSwitching { .. }
         | C::SetPmAccepts { .. }
+        | C::SetAutonomy { .. }
+        | C::SetAutonomyWindow { .. }
+        | C::AllowKind { .. }
+        | C::RevokeAllowance { .. }
+        | C::ReopenAutoPick { .. }
         | C::SetSubagentsAtOnce { .. }
         | C::SetParallel { .. }
         | C::SetModelChoice { .. }
@@ -712,6 +717,11 @@ mod tests {
             Command::SignOut { engine: Engine::Codex },
             Command::SetEngineSwitching { squad: s(), mode: engines::Switching::default() },
             Command::SetPmAccepts { squad: s(), on: false },
+            Command::SetAutonomy { squad: s(), kind: equipe_core::protocol::autonomy::Kind::Design, level: equipe_core::protocol::autonomy::Level::Ask },
+            Command::SetAutonomyWindow { squad: s(), minutes: 30 },
+            Command::AllowKind { squad: s(), approval: 1, days: 7 },
+            Command::RevokeAllowance { squad: s(), id: 1 },
+            Command::ReopenAutoPick { squad: s(), set: 1 },
             Command::SetSubagentsAtOnce { squad: s(), at_once: Some(4) },
             Command::SetParallel { squad: s(), parallel: equipe_core::protocol::lanes::Parallel::max(6, 16) },
             Command::SetModelChoice { squad: s(), choice: equipe_core::protocol::tiers::ModelChoice::Off },

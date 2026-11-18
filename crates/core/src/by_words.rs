@@ -682,7 +682,7 @@ mod tests {
     }
 
     fn approval(id: u64, member: &str, tool: &str, action: &str) -> Approval {
-        Approval { id, session: 1, member: member.into(), ticket: Some(3), tool: tool.into(), action: action.into(), reason: Some("to see the tests".into()), preview: None }
+        Approval { id, session: 1, member: member.into(), ticket: Some(3), tool: tool.into(), action: action.into(), reason: Some("to see the tests".into()), preview: None, ask: None }
     }
 
     fn routine(id: u32, title: &str) -> Routine {

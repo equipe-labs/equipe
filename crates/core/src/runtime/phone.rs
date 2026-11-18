@@ -133,6 +133,7 @@ impl Runtime {
             action: say!(self, "phone.install_action", version = phone::axe::VERSION, size = phone::axe::SIZE_MB, folder = folder.display()),
             reason: Some(say!(self, "phone.install_why", name = call.member)),
             preview: None,
+            ask: None,
         };
         self.pending.insert(approval_id, Pending { squad: call.squad.clone(), approval: approval.clone(), input: Value::Null, reply });
         self.publish(Event::ApprovalRequested { squad: call.squad, approval });

@@ -81,6 +81,11 @@ pub enum Change {
     /// An outside MCP server for the squad's members (`crate::squad_mcp`):
     /// connected (`url` left out for a catalog service), removed, or turned on or off.
     McpServer { action: McpAction, name: String, url: Option<String>, roles: Option<Vec<String>>, transport: Option<String> },
+    /// How far members go on their own with a kind of thing (the squad's
+    /// autonomy policy, [`crate::protocol::autonomy`]); never the floor.
+    Autonomy { kind: crate::protocol::autonomy::Kind, level: crate::protocol::autonomy::Level },
+    /// How long a decide-and-tell choice waits for the person, in minutes.
+    AutonomyWindow(u32),
 }
 
 /// What `change_setting`'s `mcp_server` does.
@@ -269,6 +274,20 @@ impl Change {
                 }
                 change
             }
+            "autonomy" => {
+                use crate::protocol::autonomy::{Kind, Level};
+                let kind = s("kind").ok_or("Which kind? Give `kind`: design, merge, internal or production_data.")?;
+                if matches!(kind.as_str(), "window" | "window_minutes") {
+                    let minutes: u32 = value()?.parse().map_err(|_| "`value` is a number of minutes (0: at once).")?;
+                    return Ok(Change::AutonomyWindow(minutes.min(24 * 60)));
+                }
+                let kind = Kind::parse(&kind).ok_or_else(|| format!("A kind is design, merge, internal or production_data (or window), not {kind:?}."))?;
+                let level = Level::parse(&value()?).ok_or("A level is ask, decide_and_tell or just_do.")?;
+                if !Kind::SET.contains(&kind) && level != Level::Ask {
+                    return Err(format!("{} always asks the person: sign-ins and credentials, money, permanent deletion, sending or publishing outside, security settings and legal matters are never decided without them, and no policy changes that. Nothing changed.", kind.code()));
+                }
+                Change::Autonomy { kind, level }
+            }
             other => return Err(format!("There is no setting {other:?}; `settings` lists what can change.")),
         })
     }
@@ -396,14 +415,14 @@ fable is the premium family and costs several times Opus, so use it only when th
 \"use Fable for T-2562\" — and always say so on the card; it is put to the person, and it ends when the ticket closes), design_reviewer (who reviews the designer's work: auto — the other engine when \
 it is signed in with room, else the member's own in a fresh session — | same | other), remove_project (project), \
 hq (project, or none), run_routine (id), delete_routine (id), signal (project, name, value on | off), disallow (value: \
-the rule as `settings` lists it), merge (ticket, push), keep_on_branch (ticket), resting (member, value on | off: a resting \
+the rule as `settings` lists it), merge (ticket, push), keep_on_branch (ticket), autonomy (kind design | merge | internal | production_data, value ask | decide_and_tell | just_do; or kind window, value minutes: how far members go without the person — one that lets them do more is put to the person on a card; sign-ins, money, deletion, sending outside, security and legal always ask and can't be changed), resting (member, value on | off: a resting \
 member takes no new work — the board hands it nothing — and finishes what it holds; woken, it takes work again), notify (key and value: how the squad's notifications escalate what stays a bottleneck without waking the person — on | off; only blocking | urgent; quiet on | off; quiet_from and quiet_to as HH:MM in the person's own time (default 23:00–08:00); levels as three waits like 2h,8h,24h; max_per_hour 1 through 60; phone on | off for paired phones and Telegram; remind_deploy as a wait like 2h, or off, to tell again about what holds a deploy up — narrowing or widening, it happens at once; confirm it in one line), mcp_server (value add | remove | on | off, name, and for add url — left out for a catalog service such as mobbin — and roles, left out for the catalog's or everyone: an outside MCP server for the squad's members; add and on wait for the person's card, and they sign in to it once on that card). Never set another engine's model \
 through `model`: moving a member to it is `engine`. Adding a project is `add_project`; adding a routine, \
 `propose_routine`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "subagents_at_once", "model", "effort", "engine", "engine_switching", "parallel", "speed", "model_choice", "ticket_model", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch", "resting", "notify", "mcp_server"] },
+                    "setting": { "type": "string", "enum": ["autonomy", "mode", "pm_accepts", "idle_wake_hours", "subagents_at_once", "model", "effort", "engine", "engine_switching", "parallel", "speed", "model_choice", "ticket_model", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch", "resting", "notify", "mcp_server"] },
                     "value": { "type": "string", "description": "The new value, as the setting takes it." },
                     "member": { "type": "string", "description": "The member, for mode (left out: the squad's), model, effort, engine and resting." },
                     "members": { "type": "array", "items": { "type": "string" }, "description": "engine: the members to move, on one card." },
@@ -414,6 +433,7 @@ through `model`: moving a member to it is `engine`. Adding a project is `add_pro
                     "name": { "type": "string", "description": "The signal's name, or the outside MCP server's (mcp_server)." },
                     "url": { "type": "string", "description": "mcp_server add: the server's https address (left out for a catalog service)." },
                     "roles": { "type": "array", "items": { "type": "string" }, "description": "mcp_server add: the roles whose members get it (left out: the catalog's, else everyone)." },
+                    "kind": { "type": "string", "description": "autonomy: design, merge, internal or production_data — or window, with value in minutes." },
                     "key": { "type": "string", "description": "notify: which notification setting (on, only, quiet, quiet_from, quiet_to, levels, max_per_hour, phone, remind_deploy)." },
                     "id": { "type": "integer", "description": "The routine's id." },
                     "ticket": { "type": "integer", "description": "The ticket's number, for merge, keep_on_branch and ticket_model." },

@@ -8,6 +8,7 @@
 //! plain line on what changes for people ([`what_changes`]), never by number
 //! alone. Pure rules, tested here; `runtime::person_gate` applies them.
 
+use equipe_protocol::autonomy::{Kind, Level, Policy};
 use equipe_protocol::title::TicketLabel;
 use equipe_protocol::{Ticket, TicketKind};
 
@@ -31,6 +32,29 @@ pub enum Why {
 }
 
 impl Why {
+    /// Its kind in the squad's autonomy policy (`protocol::autonomy`), the
+    /// one source of what may go without the person: outward, irreversible,
+    /// security, money and legal are on its floor; production data follows
+    /// the policy; a big visible change has no kind there and always asks.
+    pub fn kind(self) -> Option<Kind> {
+        match self {
+            Why::Outward => Some(Kind::Outside),
+            Why::Irreversible => Some(Kind::Deletion),
+            Why::Data => Some(Kind::ProductionData),
+            Why::Security => Some(Kind::Security),
+            Why::Money => Some(Kind::Money),
+            Why::Legal => Some(Kind::Legal),
+            Why::Visible => None,
+        }
+    }
+
+    /// Whether the squad's policy lets the PM settle work weighty for this
+    /// reason on its own: only a kind off the floor the person set to "just
+    /// do". Decide-and-tell has no window on an accept card, so it asks.
+    pub fn pm_may(self, policy: &Policy) -> bool {
+        self.kind().is_some_and(|k| !k.is_floor() && policy.level(k) == Level::JustDo)
+    }
+
     /// Its locale key (`gate.why.*`).
     pub fn key(self) -> &'static str {
         match self {
@@ -174,6 +198,21 @@ mod tests {
         assert_eq!(weigh(&ticket("Rotate the password policy", ""), &[]), Some(Why::Security), "an English title says it too");
         assert_eq!(weigh(&tweak, &paths(&["design/tokens.json", "src/components/AuthorCard.tsx", "src/components/Notice.tsx"])), None, "design tokens, an author, a notice: none of it weighty");
         assert_eq!(tweak.status, TicketStatus::Review);
+    }
+
+    #[test]
+    fn the_autonomy_policy_decides_what_weighty_work_the_pm_may_settle_and_never_the_floor() {
+        let mut policy = Policy::default();
+        let all = [Why::Outward, Why::Irreversible, Why::Data, Why::Security, Why::Money, Why::Legal, Why::Visible];
+        assert!(all.iter().all(|w| !w.pm_may(&policy)), "by default every weighty reason asks");
+        policy.set(Kind::ProductionData, Level::Tell).unwrap();
+        assert!(!Why::Data.pm_may(&policy), "decide-and-tell has no window on an accept card");
+        policy.set(Kind::ProductionData, Level::JustDo).unwrap();
+        assert!(Why::Data.pm_may(&policy));
+        for why in all.into_iter().filter(|w| *w != Why::Data) {
+            assert!(!why.pm_may(&policy), "{why:?} stays the person's");
+            assert!(why.kind().is_none_or(Kind::is_floor), "{why:?} is on the floor or has no kind");
+        }
     }
 
     #[test]

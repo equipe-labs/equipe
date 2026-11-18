@@ -110,6 +110,7 @@ mod tickets;
 mod compact;
 mod hygiene;
 mod controls;
+mod autonomy;
 mod review;
 mod retro;
 mod watch;
@@ -154,6 +155,13 @@ pub const DESKTOP_SERVER: &str = "desktop";
 pub const DESIGN_SERVER: &str = "design";
 /// The tool name a member's own question shows under, among approvals.
 pub(crate) const CONFIRM: &str = "Confirm";
+
+/// What a member is told when its own request (`ask_person`) has waited
+/// on the person's card for a few minutes: it doesn't wait there any longer.
+pub(crate) const STILL_ASKED: &str = "The person hasn't answered yet; your request stays on their card. Don't do it yet. \
+Carry on now with other work that doesn't depend on it; their answer comes to you as a message (\"[equipe] The person \
+answered your request …\"). If nothing else is left on this ticket, end your turn: it waits on them and comes back to \
+you with their answer.";
 /// An approval to sign a member in with a kept login (`vault`).
 pub(crate) const SIGN_IN_TOOL: &str = "Sign in";
 
@@ -1226,6 +1234,10 @@ enum Internal {
     ConversationTitle(ConversationTitleDone),
     /// Nobody answered a request for permission in time.
     ApprovalTimedOut(u64),
+    /// The person answered a request its member didn't wait for: what they said goes to it.
+    LaterAnswered { squad: String, approval: Box<Approval>, said: String },
+    /// A member's own request has waited its few minutes: the member is let go.
+    ReleaseAsk(u64),
     /// A decision in words: its undo or cancel window, or its read-back's wait, is over.
     WordsDue(u64),
     /// What the person said yes to on a card, done as their screen would ask.
@@ -1794,6 +1806,8 @@ impl Wake {
             Wake::Internal(Internal::Done(_)) => Borrowed("a turn's end"),
             Wake::Internal(Internal::ConversationTitle(_)) => Borrowed("a conversation's title"),
             Wake::Internal(Internal::ApprovalTimedOut(_)) => Borrowed("an approval timing out"),
+            Wake::Internal(Internal::LaterAnswered { .. }) => Borrowed("an answer to a request its member didn't wait for"),
+            Wake::Internal(Internal::ReleaseAsk(_)) => Borrowed("a member let go from waiting on a request"),
             Wake::Internal(Internal::WordsDue(_)) => Borrowed("a decision in words coming due"),
             Wake::Internal(Internal::Apply(_)) => Borrowed("a change the person said yes to"),
             Wake::Internal(Internal::Ask(..)) => Borrowed("codex asking for approval"),
@@ -2077,6 +2091,8 @@ impl Runtime {
                 Internal::Done(done) => self.on_turn_done(done).await,
                 Internal::ConversationTitle(done) => self.on_conversation_title(done),
                 Internal::ApprovalTimedOut(id) => self.answer(id, Decision::Deny, "Nobody answered in time."),
+                Internal::LaterAnswered { squad, approval, said } => self.later_answered(&squad, *approval, said).await,
+                Internal::ReleaseAsk(id) => self.release_ask(id),
                 Internal::WordsDue(id) => self.words_due(id).await,
                 Internal::Apply(command) => Box::pin(self.handle(*command)).await,
                 Internal::Ask(call, reply) => self.ask_permission(call, reply),
@@ -2251,6 +2267,11 @@ impl Runtime {
         if !overloaded {
             pulse.step("minute tick: routines");
             self.run_due_routines().await;
+        }
+        // A decision whose window passed is taken on time, whatever the load.
+        pulse.step("minute tick: decide-and-tell");
+        self.autonomy_due(now_secs()).await;
+        if !overloaded {
             pulse.step("minute tick: design reviews");
             self.design_qa_tick(now_secs()).await;
         }
@@ -3247,8 +3268,14 @@ impl Runtime {
                 if let Some(journal) = self.journal(&squad) {
                     let _ = journal.set_pm_accepts(on);
                 }
-                self.publish(Event::PmAcceptsChanged { squad, on });
+                self.publish(Event::PmAcceptsChanged { squad: squad.clone(), on });
+                self.publish_autonomy(&squad);
             }
+            Command::SetAutonomy { squad, kind, level } => self.set_autonomy(&squad, kind, level),
+            Command::SetAutonomyWindow { squad, minutes } => self.set_autonomy_window(&squad, minutes),
+            Command::AllowKind { squad, approval, days } => self.allow_kind(&squad, approval, days),
+            Command::RevokeAllowance { squad, id } => self.revoke_allowance(&squad, id),
+            Command::ReopenAutoPick { squad, set } => self.reopen_auto_pick(&squad, set),
             // Each member's next turn runs it and is told it.
             Command::SetSubagentsAtOnce { squad, at_once } => {
                 let at_once = at_once.map(crate::protocol::subagents_at_once);
@@ -8862,6 +8889,14 @@ there, end your turn, and carry on when they say they're done."
             let _ = reply.send(verdict(Decision::Allow, &input, ""));
             return;
         }
+        // A standing allowance the person granted for this kind of command
+        // ("Allow for this kind"): allowed, and its use logged.
+        let kind = crate::autonomy::engine_kind(&tool, &action);
+        let mut ask = crate::protocol::autonomy::Ask { kind, plain: None, standing: None, later: false, op: None };
+        if kind == crate::protocol::autonomy::Kind::Other && self.allowed_standing(&call.squad, id, &call.member, ticket, &ask, (&tool, &action)).is_some() {
+            let _ = reply.send(verdict(Decision::Allow, &input, ""));
+            return;
+        }
         // In auto, a member on a ticket works inside the fence on its own: a shell
         // command that stays in the sandbox and reaches nowhere outward is allowed —
         // the operating system still holds it in.
@@ -8904,7 +8939,13 @@ there, end your turn, and carry on when they say they're done."
         }
         let approval_id = self.next_approval;
         self.next_approval += 1;
-        let approval = Approval { id: approval_id, session: id, member: call.member.clone(), ticket, tool, action, reason, preview: None };
+        // What "Allow for this kind" would grant: the rule "always" would keep, for a while.
+        ask.standing = (kind == crate::protocol::autonomy::Kind::Other).then(|| permissions::rule_for(&tool, &action)).flatten().map(|rule| crate::protocol::autonomy::Scope {
+            words: say!(self, "autonomy.scope_rule", rule = crate::autonomy::rule_label(&rule)),
+            rule: Some(rule),
+            ..Default::default()
+        });
+        let approval = Approval { id: approval_id, session: id, member: call.member.clone(), ticket, tool, action, reason, preview: None, ask: Some(ask) };
         self.pending.insert(
             approval_id,
             Pending { squad: call.squad.clone(), approval: approval.clone(), input, reply },
@@ -8985,6 +9026,25 @@ there, end your turn, and carry on when they say they're done."
             return;
         };
         let ticket = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
+        // What the squad's autonomy policy makes of it: its kind (the floor
+        // read in its words whatever it says it is), its plain words, and the
+        // standing allowance its card may offer.
+        let system = text("system");
+        let standing = crate::autonomy::offered_scope(&call.arguments, Some(system.as_str()).filter(|s| !s.is_empty()));
+        let own_deletes = standing.as_ref().is_some_and(|s| s.ops.contains(&crate::protocol::autonomy::Op::Delete) && s.undo_days > 0);
+        let declared = crate::protocol::autonomy::Kind::parse(&text("kind"));
+        let kind = crate::autonomy::person_kind(declared, &action, own_deletes);
+        let ask = crate::protocol::autonomy::Ask {
+            kind,
+            plain: crate::autonomy::plain_of(&call.arguments),
+            standing: standing.filter(|_| kind.allowable()),
+            later: false,
+            op: autonomy::op_of(&call.arguments),
+        };
+        if let Some(text) = self.allowed_standing(&call.squad, id, &call.member, ticket, &ask, (CONFIRM, &action)) {
+            let _ = reply.send(ToolResult::ok(text));
+            return;
+        }
         let approval_id = self.next_approval;
         self.next_approval += 1;
         let approval = Approval {
@@ -8996,12 +9056,18 @@ there, end your turn, and carry on when they say they're done."
             action,
             reason: (!why.is_empty()).then_some(why),
             preview: None,
+            ask: Some(ask),
         };
+        // The member waits a few minutes for a quick answer — most come
+        // within them — then is let go to work on what doesn't depend on it,
+        // the card staying up and the answer reaching it as a message.
         self.pending.insert(approval_id, Pending { squad: call.squad.clone(), approval: approval.clone(), input: json!({}), reply });
         self.publish(Event::ApprovalRequested { squad: call.squad.clone(), approval });
         let internal = self.internal.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(APPROVAL_WAIT).await;
+            tokio::time::sleep(autonomy::HOLD).await;
+            let _ = internal.send(Internal::ReleaseAsk(approval_id));
+            tokio::time::sleep(autonomy::LATER_WAIT.saturating_sub(autonomy::HOLD)).await;
             let _ = internal.send(Internal::ApprovalTimedOut(approval_id));
         });
     }
@@ -9055,6 +9121,7 @@ there, end your turn, and carry on when they say they're done."
             action,
             reason: Some(said),
             preview,
+            ask: None,
         };
         self.pending.insert(approval_id, Pending { squad: check.squad.clone(), approval: approval.clone(), input: check.input, reply });
         self.publish(Event::ApprovalRequested { squad: check.squad, approval });
@@ -9078,7 +9145,9 @@ there, end your turn, and carry on when they say they're done."
             return;
         };
         let Pending { squad, approval, input, reply } = pending;
-        let reply = self.late_reply(approval_id, &approval, decision, reply);
+        // A request its member didn't wait for: the answer goes to it as a message, below.
+        let later = approval.ask.as_ref().is_some_and(|a| a.later);
+        let reply = if later { reply } else { self.late_reply(approval_id, &approval, decision, reply) };
         // How long it waited on the person, for the week's retro.
         if let Some(asked) = self.approvals_asked.remove(&approval_id) {
             let outcome = match decision {
@@ -9126,7 +9195,7 @@ there, end your turn, and carry on when they say they're done."
         }
         // A signal the PM proposed: kept on a yes, and the PM told so.
         let signal = if approval.tool == CONFIRM { self.signal_answered(&squad, &input, decision != Decision::Deny) } else { None };
-        let _ = reply.send(if let Some(text) = signal {
+        let result = if let Some(text) = signal {
             ToolResult { text, is_error: false, image: None }
         } else if approval.tool == crate::phone::INSTALL {
             // The phone tool waits on this: AXe is installed only on a yes.
@@ -9148,7 +9217,12 @@ there, end your turn, and carry on when they say they're done."
             ToolResult { text, is_error: false, image: None }
         } else {
             verdict(decision, &input, why)
-        });
+        };
+        if later {
+            let _ = self.internal.send(Internal::LaterAnswered { squad: squad.clone(), approval: Box::new(approval.clone()), said: result.text.clone() });
+        } else {
+            let _ = reply.send(result);
+        }
         let line = match (decision, &rule, words) {
             (Decision::Deny, _, Some(w)) => say!(self, "notice.declined_said", words = w, action = approval.action),
             (_, _, Some(w)) => say!(self, "notice.allowed_said", words = w, action = approval.action),
@@ -9289,6 +9363,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
             action: format!("{} · {}", login.site, login.username),
             reason: (!why.is_empty()).then_some(why),
             preview: None,
+            ask: None,
         };
         // Let through already, in this squad or every squad: no card, straight to the form.
         if vault::allows(&login, &call.squad) {
@@ -10679,6 +10754,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
         let scale = self.journals.get(squad).map(Journal::scale);
         let suggestions_off = self.journals.get(squad).is_some_and(Journal::suggestions_off);
         let allowed = self.journals.get(squad).and_then(|j| j.allowed().ok()).unwrap_or_default();
+        let autonomy = self.journals.contains_key(squad).then(|| self.autonomy_state(squad));
         let browsers_shown = self.journals.get(squad).is_some_and(Journal::browsers_all_shown);
         let questions = self.question_sets(squad).clone();
         let team_changes = self.team_changes(squad).clone();
@@ -10741,6 +10817,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
             hand_overs,
             desktop: self.desktop.state(),
             allowed,
+            autonomy,
             browsers_shown,
             disk: self.disk_for_snapshot(),
             words: Some(self.words_live(squad)),
