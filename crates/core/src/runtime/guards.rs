@@ -279,6 +279,13 @@ If one of them is going round in circles, stop it or narrow it.",
     /// Every signed-in engine's week nearly out: told once per level, with
     /// what still has room and the low-priority work to put off.
     fn headroom_check(&mut self, squad: &str, now: u64) {
+        // No plan read near its week's end: nothing to look at, and no need to ask which engines are signed in.
+        let first = spend::HEADROOM_LEVELS[0];
+        let near = self.plans.iter().any(|p| spend::Room { engine: p.engine, week: p.usage.seven_day }.used(now as i64).is_some_and(|u| u >= first));
+        if !near {
+            self.guards.headroom.remove(squad);
+            return;
+        }
         let rooms: Vec<spend::Room> = self
             .reach()
             .ready
