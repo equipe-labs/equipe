@@ -4865,5 +4865,15 @@
   "autonomy.allowances_foot": "Cada uso queda registrado y se avisa en una línea. Si revocas uno, ese tipo vuelve a preguntar.",
   "autonomy.picks": "Decisiones que tomaron los miembros",
   "autonomy.dock_line": "{name} eligió «{picked}»{why}",
-  "autonomy.dock_title": "No hubo respuesta a tiempo, así que los miembros tomaron su recomendación ({n}). Cambia lo que elegirías distinto."
+  "autonomy.dock_title": "No hubo respuesta a tiempo, así que los miembros tomaron su recomendación ({n}). Cambia lo que elegirías distinto.",
+  "progress.growth": "Crecimiento",
+  "growth.status_open": "espera tu respuesta",
+  "growth.status_later": "más tarde",
+  "growth.status_declined": "rechazada",
+  "growth.status_accepted": "aceptada · T-{ticket}",
+  "growth.status_measuring": "en producción · midiendo",
+  "growth.status_worked": "funcionó {pct}",
+  "growth.status_no_change": "sin cambios {pct}",
+  "growth.status_worse": "peor {pct}",
+  "growth.status_dropped": "descartada"
 }

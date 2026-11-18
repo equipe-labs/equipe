@@ -47,6 +47,7 @@ pub mod engine_bind;
 pub mod engines;
 pub mod eta;
 pub mod gateway;
+pub mod growth;
 pub mod i18n;
 pub mod escalation;
 pub mod importance;

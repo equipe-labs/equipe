@@ -1618,5 +1618,10 @@
   "autonomy.no_answer": "Der Daemon hat nicht geantwortet. Ist er aktuell? Führe equipe update aus.",
   "metrics_query.no_daemon": "Auf diesem Rechner antwortet kein Daemon: starte ihn mit `equipe daemon start` und frag dann noch einmal.",
   "metrics_query.rows": "{rows} Zeilen von {connection} in {ms} ms",
-  "metrics_query.truncated": "Es gab mehr Zeilen: nur die ersten {limit} werden gezeigt. Frag mit --limit (bis {most}) nach mehr oder fasse in der Abfrage zusammen."
+  "metrics_query.truncated": "Es gab mehr Zeilen: nur die ersten {limit} werden gezeigt. Frag mit --limit (bis {most}) nach mehr oder fasse in der Abfrage zusammen.",
+  "growth.started": "Ein Wachstumslauf für {squad} hat begonnen: equipe liest die Zahlen, dann schlägt der PM Karten vor.",
+  "growth.not_started": "Kein Wachstumslauf gestartet: {why}",
+  "growth.none": "Für {squad} gibt es noch keine Wachstumskarten.",
+  "growth.summary": "{squad} · letzter Lauf {when} · {spent} von {cap} Tokens in den letzten 7 Tagen",
+  "growth.never": "nie"
 }

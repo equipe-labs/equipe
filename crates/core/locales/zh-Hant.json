@@ -939,5 +939,21 @@
   "autonomy.level.decide_and_tell": "決定後告訴我",
   "autonomy.level.just_do": "直接做",
   "control.autonomy": "{kind}：{level}",
-  "control.autonomy_window": "「決定後告訴我」的選擇等你 {minutes} 分鐘"
+  "control.autonomy_window": "「決定後告訴我」的選擇等你 {minutes} 分鐘",
+  "growth.question": "{title}\n{change}\n\n依據的數字：\n{evidence}\n\n預期效果：{metric} 上 {expected}。規模 {size} · 風險 {risk}。",
+  "growth.header": "成長 G-{id}",
+  "growth.accept": "接受",
+  "growth.later": "以後再說",
+  "growth.no": "不要",
+  "growth.risk_low": "低",
+  "growth.risk_medium": "中",
+  "growth.risk_high": "高",
+  "news.growth_run": "成長檢查：讀取了 {count} 個數字，PM 會把它們整理成卡片給你。",
+  "news.growth_nothing": "成長檢查：沒有可用的數字（{why}）。",
+  "news.growth_budget": "成長檢查：本週的 token 預算已用完，沒有交給 PM。",
+  "news.growth_live": "G-{id}「{title}」已隨 T-{ticket} 上線：7 天和 14 天後再測一次。",
+  "news.growth_worked": "G-{id}「{title}」，上線 {days} 天：有效果 — 之前 {before} → {after}（{pct}）。",
+  "news.growth_no_change": "G-{id}「{title}」，上線 {days} 天：沒有變化 — 之前 {before} → {after}（{pct}）。",
+  "news.growth_worse": "G-{id}「{title}」，上線 {days} 天：變差了 — 之前 {before} → {after}（{pct}）。",
+  "news.growth_unmeasured": "G-{id}「{title}」，上線 {days} 天：沒能再次測量。"
 }

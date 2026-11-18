@@ -1618,5 +1618,10 @@
   "autonomy.no_answer": "The daemon didn't answer. Is it up to date? Run equipe update.",
   "metrics_query.no_daemon": "No daemon answers on this machine: start it with `equipe daemon start`, then ask again.",
   "metrics_query.rows": "{rows} rows from {connection} in {ms} ms",
-  "metrics_query.truncated": "There were more rows: only the first {limit} are shown. Ask for more with --limit (up to {most}), or aggregate in the query."
+  "metrics_query.truncated": "There were more rows: only the first {limit} are shown. Ask for more with --limit (up to {most}), or aggregate in the query.",
+  "growth.started": "A growth run started for {squad}: equipe reads the numbers, then the PM proposes cards.",
+  "growth.not_started": "No growth run started: {why}",
+  "growth.none": "No growth cards for {squad} yet.",
+  "growth.summary": "{squad} · last run {when} · {spent} of {cap} tokens in the last 7 days",
+  "growth.never": "never"
 }

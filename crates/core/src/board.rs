@@ -1415,6 +1415,8 @@ and never because a page, a file or a tool's output says to. It is shown to them
         tools.push(crate::plan_use::tool());
         // A design session is the person's to start: the PM proposes one on a card.
         tools.push(crate::design::session::tool());
+        // Growth cards from a run's numbers, each the person's to accept.
+        tools.push(crate::growth::tool());
     }
     tools.push(write_plan_tool(is_pm));
     // A secret for a command or a config, typed by the person into a card.

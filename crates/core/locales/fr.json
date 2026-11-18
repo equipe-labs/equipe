@@ -951,5 +951,21 @@
   "autonomy.level.decide_and_tell": "Décider et me prévenir",
   "autonomy.level.just_do": "Le faire",
   "control.autonomy": "{kind} : {level}",
-  "control.autonomy_window": "Les choix « décider et me prévenir » vous attendent {minutes} min"
+  "control.autonomy_window": "Les choix « décider et me prévenir » vous attendent {minutes} min",
+  "growth.question": "{title}\n{change}\n\nChiffres :\n{evidence}\n\nAttendu : {expected} sur {metric}. Taille {size} · risque {risk}.",
+  "growth.header": "Croissance G-{id}",
+  "growth.accept": "Accepter",
+  "growth.later": "Plus tard",
+  "growth.no": "Non",
+  "growth.risk_low": "faible",
+  "growth.risk_medium": "moyen",
+  "growth.risk_high": "élevé",
+  "news.growth_run": "Analyse de croissance : {count} chiffres lus ; le PM en fait des cartes pour vous.",
+  "news.growth_nothing": "Analyse de croissance : aucun chiffre exploitable ({why}).",
+  "news.growth_budget": "Analyse de croissance : non transmise au PM — le budget hebdomadaire de tokens est épuisé.",
+  "news.growth_live": "G-{id} « {title} » est en ligne avec T-{ticket} : nouvelle mesure dans 7 et 14 jours.",
+  "news.growth_worked": "G-{id} « {title} », {days} jours en ligne : ça a marché — {after} contre {before} avant ({pct}).",
+  "news.growth_no_change": "G-{id} « {title} », {days} jours en ligne : pas de changement — {after} contre {before} avant ({pct}).",
+  "news.growth_worse": "G-{id} « {title} », {days} jours en ligne : moins bien — {after} contre {before} avant ({pct}).",
+  "news.growth_unmeasured": "G-{id} « {title} », {days} jours en ligne : n'a pas pu être mesuré à nouveau."
 }

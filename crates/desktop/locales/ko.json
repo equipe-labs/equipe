@@ -4739,5 +4739,15 @@
   "autonomy.allowances_foot": "사용할 때마다 기록되고 한 줄로 알려 드려요. 취소하면 그 종류는 다시 물어봐요.",
   "autonomy.picks": "멤버가 스스로 정한 선택",
   "autonomy.dock_line": "{name}이(가) «{picked}»을(를) 골랐어요{why}",
-  "autonomy.dock_title": "정한 시간 안에 답이 없어 멤버가 추천안으로 정했어요({n}). 다르게 고르고 싶으면 바꿔 주세요."
+  "autonomy.dock_title": "정한 시간 안에 답이 없어 멤버가 추천안으로 정했어요({n}). 다르게 고르고 싶으면 바꿔 주세요.",
+  "progress.growth": "성장",
+  "growth.status_open": "답변 대기",
+  "growth.status_later": "나중에",
+  "growth.status_declined": "거절함",
+  "growth.status_accepted": "수락 · T-{ticket}",
+  "growth.status_measuring": "반영됨 · 측정 중",
+  "growth.status_worked": "효과 있음 {pct}",
+  "growth.status_no_change": "변화 없음 {pct}",
+  "growth.status_worse": "나빠짐 {pct}",
+  "growth.status_dropped": "중단됨"
 }

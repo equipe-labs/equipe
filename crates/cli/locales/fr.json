@@ -1618,5 +1618,10 @@
   "autonomy.no_answer": "Le démon n'a pas répondu. Est-il à jour ? Lancez equipe update.",
   "metrics_query.no_daemon": "Aucun démon ne répond sur cette machine : lancez-le avec `equipe daemon start`, puis redemandez.",
   "metrics_query.rows": "{rows} lignes de {connection} en {ms} ms",
-  "metrics_query.truncated": "Il y avait plus de lignes : seules les {limit} premières sont affichées. Demandez-en plus avec --limit (jusqu'à {most}) ou agrégez dans la requête."
+  "metrics_query.truncated": "Il y avait plus de lignes : seules les {limit} premières sont affichées. Demandez-en plus avec --limit (jusqu'à {most}) ou agrégez dans la requête.",
+  "growth.started": "Une analyse de croissance a démarré pour {squad} : equipe lit les chiffres, puis le PM propose des cartes.",
+  "growth.not_started": "Aucune analyse de croissance démarrée : {why}",
+  "growth.none": "Pas encore de cartes de croissance pour {squad}.",
+  "growth.summary": "{squad} · dernière analyse {when} · {spent} sur {cap} tokens ces 7 derniers jours",
+  "growth.never": "jamais"
 }

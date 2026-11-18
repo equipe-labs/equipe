@@ -22,6 +22,7 @@ pub mod decide;
 pub mod deeplink;
 pub mod deploys;
 pub mod disk;
+pub mod growth;
 pub mod metrics;
 pub mod plan_use;
 pub mod engines;

@@ -939,5 +939,21 @@
   "autonomy.level.decide_and_tell": "决定后告诉我",
   "autonomy.level.just_do": "直接做",
   "control.autonomy": "{kind}：{level}",
-  "control.autonomy_window": "「决定后告诉我」的选择等你 {minutes} 分钟"
+  "control.autonomy_window": "「决定后告诉我」的选择等你 {minutes} 分钟",
+  "growth.question": "{title}\n{change}\n\n依据的数字：\n{evidence}\n\n预期效果：{metric} 上 {expected}。规模 {size} · 风险 {risk}。",
+  "growth.header": "增长 G-{id}",
+  "growth.accept": "接受",
+  "growth.later": "以后再说",
+  "growth.no": "不要",
+  "growth.risk_low": "低",
+  "growth.risk_medium": "中",
+  "growth.risk_high": "高",
+  "news.growth_run": "增长检查：读取了 {count} 个数字，PM 会把它们整理成卡片给你。",
+  "news.growth_nothing": "增长检查：没有可用的数字（{why}）。",
+  "news.growth_budget": "增长检查：本周的 token 预算已用完，没有交给 PM。",
+  "news.growth_live": "G-{id}“{title}”已随 T-{ticket} 上线：7 天和 14 天后再测一次。",
+  "news.growth_worked": "G-{id}“{title}”，上线 {days} 天：有效果 — 之前 {before} → {after}（{pct}）。",
+  "news.growth_no_change": "G-{id}“{title}”，上线 {days} 天：没有变化 — 之前 {before} → {after}（{pct}）。",
+  "news.growth_worse": "G-{id}“{title}”，上线 {days} 天：变差了 — 之前 {before} → {after}（{pct}）。",
+  "news.growth_unmeasured": "G-{id}“{title}”，上线 {days} 天：没能再次测量。"
 }

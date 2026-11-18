@@ -4738,5 +4738,15 @@
   "autonomy.allowances_foot": "每次使用都会记录并用一行告诉你。撤销后，这类请求会重新询问。",
   "autonomy.picks": "成员自行做出的选择",
   "autonomy.dock_line": "{name} 选了「{picked}」{why}",
-  "autonomy.dock_title": "你没有及时回答，成员采用了推荐方案（{n}）。想选别的就更改。"
+  "autonomy.dock_title": "你没有及时回答，成员采用了推荐方案（{n}）。想选别的就更改。",
+  "progress.growth": "增长",
+  "growth.status_open": "等你回答",
+  "growth.status_later": "以后再说",
+  "growth.status_declined": "已拒绝",
+  "growth.status_accepted": "已接受 · T-{ticket}",
+  "growth.status_measuring": "已上线 · 测量中",
+  "growth.status_worked": "有效 {pct}",
+  "growth.status_no_change": "无变化 {pct}",
+  "growth.status_worse": "变差 {pct}",
+  "growth.status_dropped": "已放弃"
 }

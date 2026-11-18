@@ -4865,5 +4865,15 @@
   "autonomy.allowances_foot": "Chaque utilisation est consignée et signalée en une ligne. Révoquez-en une et ce type est de nouveau demandé.",
   "autonomy.picks": "Choix faits par les membres",
   "autonomy.dock_line": "{name} a choisi « {picked} »{why}",
-  "autonomy.dock_title": "Pas de réponse à temps : les membres ont pris leur recommandation ({n}). Changez ce que vous choisiriez autrement."
+  "autonomy.dock_title": "Pas de réponse à temps : les membres ont pris leur recommandation ({n}). Changez ce que vous choisiriez autrement.",
+  "progress.growth": "Croissance",
+  "growth.status_open": "attend votre réponse",
+  "growth.status_later": "plus tard",
+  "growth.status_declined": "refusée",
+  "growth.status_accepted": "acceptée · T-{ticket}",
+  "growth.status_measuring": "en ligne · mesure en cours",
+  "growth.status_worked": "a marché {pct}",
+  "growth.status_no_change": "pas de changement {pct}",
+  "growth.status_worse": "moins bien {pct}",
+  "growth.status_dropped": "abandonnée"
 }

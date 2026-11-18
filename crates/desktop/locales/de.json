@@ -4865,5 +4865,15 @@
   "autonomy.allowances_foot": "Jede Nutzung wird protokolliert und in einer Zeile gemeldet. Widerrufst du eine, fragt diese Art wieder.",
   "autonomy.picks": "Entscheidungen, die Mitglieder selbst trafen",
   "autonomy.dock_line": "{name} hat «{picked}» gewählt{why}",
-  "autonomy.dock_title": "Keine Antwort rechtzeitig, also haben Mitglieder ihre Empfehlung genommen ({n}). Ändere, was du anders wählen würdest."
+  "autonomy.dock_title": "Keine Antwort rechtzeitig, also haben Mitglieder ihre Empfehlung genommen ({n}). Ändere, was du anders wählen würdest.",
+  "progress.growth": "Wachstum",
+  "growth.status_open": "wartet auf dich",
+  "growth.status_later": "später",
+  "growth.status_declined": "abgelehnt",
+  "growth.status_accepted": "angenommen · T-{ticket}",
+  "growth.status_measuring": "live · wird gemessen",
+  "growth.status_worked": "hat gewirkt {pct}",
+  "growth.status_no_change": "keine Veränderung {pct}",
+  "growth.status_worse": "schlechter {pct}",
+  "growth.status_dropped": "verworfen"
 }

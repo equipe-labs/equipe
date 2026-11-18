@@ -4865,5 +4865,15 @@
   "autonomy.allowances_foot": "Each use is logged and told in one line. Revoke one and its kind asks again.",
   "autonomy.picks": "Choices members took on their own",
   "autonomy.dock_line": "{name} picked «{picked}»{why}",
-  "autonomy.dock_title": "No answer in time, so members took their recommendation ({n}). Change any you'd pick differently."
+  "autonomy.dock_title": "No answer in time, so members took their recommendation ({n}). Change any you'd pick differently.",
+  "progress.growth": "Growth",
+  "growth.status_open": "waiting on you",
+  "growth.status_later": "later",
+  "growth.status_declined": "declined",
+  "growth.status_accepted": "accepted · T-{ticket}",
+  "growth.status_measuring": "live · measuring",
+  "growth.status_worked": "worked {pct}",
+  "growth.status_no_change": "no change {pct}",
+  "growth.status_worse": "worse {pct}",
+  "growth.status_dropped": "dropped"
 }
