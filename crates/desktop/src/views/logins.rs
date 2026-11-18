@@ -902,7 +902,7 @@ impl Shell {
         self.send_command(Command::Logins);
         self.send_command(Command::LoginInsights { days: self.logins_ui.days });
         self.send_command(Command::Autopilot);
-        self.keys_open();
+        self.keys_open(cx);
         self.show(Screen::Logins, cx);
         cx.notify();
     }
