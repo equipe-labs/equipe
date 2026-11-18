@@ -20,6 +20,49 @@ pub struct Candidate<'a> {
     pub free: bool,
 }
 
+/// A copy of `ticket` light enough to take of every ticket on a big board:
+/// a closed ticket without its note and body, by far most of a board's bytes,
+/// which nothing deciding what starts next reads (its status, title and
+/// links are what count). An open ticket is copied whole.
+pub(crate) fn light_copy(ticket: &Ticket) -> Ticket {
+    if !ticket.status.is_closed() {
+        return ticket.clone();
+    }
+    let Ticket {
+        id, title, body: _, status, kind, label, owner, assignee, project, depends_on, branch, worktree, execution, merged, off_main, created_by, note: _, asks: _,
+        remaining: _, images: _, priority, rank, updated_at, design_qa, plan, model, landing,
+    } = ticket;
+    Ticket {
+        id: *id,
+        title: title.clone(),
+        body: String::new(),
+        status: *status,
+        kind: *kind,
+        label: *label,
+        owner: owner.clone(),
+        assignee: assignee.clone(),
+        project: project.clone(),
+        depends_on: depends_on.clone(),
+        branch: branch.clone(),
+        worktree: worktree.clone(),
+        execution: execution.clone(),
+        merged: *merged,
+        off_main: off_main.clone(),
+        created_by: created_by.clone(),
+        note: None,
+        asks: Vec::new(),
+        remaining: Vec::new(),
+        images: Vec::new(),
+        priority: *priority,
+        rank: *rank,
+        updated_at: *updated_at,
+        design_qa: *design_qa,
+        plan: plan.clone(),
+        model: model.clone(),
+        landing: *landing,
+    }
+}
+
 /// Whether a ticket knows where its work happens: a `code` ticket needs its
 /// project (or the squad's only one); a `task` or `action` works in the squad
 /// home, whatever the squad's projects.

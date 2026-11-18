@@ -113,6 +113,9 @@ impl Backoff {
 const STEP_TIMEOUT: Duration = Duration::from_secs(5);
 /// Over SSH the first line may wait for a person typing a password.
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(300);
+/// The hello's snapshot may take this long: a daemon on a busy Mac answers
+/// late, but answers — and calling it down would only ask again.
+const HELLO_TIMEOUT: Duration = Duration::from_secs(90);
 /// How often the clock is looked at, to notice the Mac slept.
 const TICK: Duration = Duration::from_secs(2);
 /// How long a knock on the far door waits: as long as `ssh` does (`ConnectTimeout`).
@@ -528,6 +531,7 @@ async fn attach(target: &Target, side: Option<&SshSide>, updates: &UnboundedSend
         bridged,
         first: if bridged { SIGN_IN_TIMEOUT } else { STEP_TIMEOUT },
         step: STEP_TIMEOUT,
+        hello: HELLO_TIMEOUT,
     };
     match (&target.endpoint, side) {
         (Endpoint::Local { socket }, _) => {

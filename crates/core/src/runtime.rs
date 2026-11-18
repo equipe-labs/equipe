@@ -73,6 +73,7 @@ macro_rules! say {
 mod decide;
 mod glance;
 mod room;
+mod machine;
 mod engines;
 mod design;
 mod design_session;
@@ -880,6 +881,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         gates: HashMap::new(),
         prechecks: HashMap::new(),
         disk: Default::default(),
+        machine: Default::default(),
         plan_use: Default::default(),
         commands: Default::default(),
         words: Default::default(),
@@ -1630,6 +1632,8 @@ struct Runtime {
     prechecks: HashMap<(String, TicketId), std::time::Instant>,
     /// The disk's room, as last looked at or as a write said (`room.rs`).
     disk: room::DiskWatch,
+    /// How busy the machine is, and whether new work waits for it (`machine.rs`).
+    machine: machine::MachineWatch,
     /// Where the plans went, as followed (`plan_use.rs`).
     plan_use: plan_use::PlanUseWatch,
     /// Members' commands under way, as watched running (`watch.rs`).
@@ -2269,6 +2273,10 @@ impl Runtime {
     /// to the watchdog as it starts.
     async fn minute(&mut self, pulse: &watchdog::Pulse) {
         self.keep_awake();
+        // First: whether equipe's own new work waits below.
+        pulse.step("minute tick: machine load");
+        self.look_at_load();
+        let overloaded = self.overloaded();
         pulse.step("minute tick: login autopilot");
         self.autopilot_minute();
         pulse.step("minute tick: leases");
@@ -2295,17 +2303,26 @@ impl Runtime {
         self.let_side_chats_go();
         pulse.step("minute tick: stale tickets");
         self.tidy_check();
-        pulse.step("minute tick: routines");
-        self.run_due_routines().await;
+        // New turns of equipe's own wait while the machine is overloaded:
+        // they stay due, and go on a minute tick once it calms down.
+        if !overloaded {
+            pulse.step("minute tick: routines");
+            self.run_due_routines().await;
+        }
+        // A decision whose window passed is taken on time, whatever the load.
         pulse.step("minute tick: decide-and-tell");
         self.autonomy_due(now_secs()).await;
-        pulse.step("minute tick: design reviews");
-        self.design_qa_tick(now_secs()).await;
+        if !overloaded {
+            pulse.step("minute tick: design reviews");
+            self.design_qa_tick(now_secs()).await;
+        }
         self.usage_digest_tick(now_secs());
-        pulse.step("minute tick: idle boards");
-        self.wake_idle_pms().await;
-        pulse.step("minute tick: signals");
-        self.run_due_signals();
+        if !overloaded {
+            pulse.step("minute tick: idle boards");
+            self.wake_idle_pms().await;
+            pulse.step("minute tick: signals");
+            self.run_due_signals();
+        }
         pulse.step("minute tick: deploys");
         self.deploys_tick();
         pulse.step("minute tick: engines");
@@ -2322,7 +2339,8 @@ impl Runtime {
         self.retry_merges();
         // Short of room, a copy of a project left in a temporary folder goes sooner.
         let every = if self.disk.status.level.is_warning() { LANE_TMP_TIDY_EVERY_SHORT } else { LANE_TMP_TIDY_EVERY };
-        if self.config.persist && self.lane_tmp_tidied.elapsed() >= every {
+        // Its repacks are heavy: not on an overloaded machine, unless the disk is short.
+        if self.config.persist && self.lane_tmp_tidied.elapsed() >= every && (!overloaded || self.disk.status.level.is_warning()) {
             self.tidy_lane_tmp();
         }
         self.look_at_disk();
@@ -4165,8 +4183,11 @@ runbooks and reports live there, and work across the projects or on running them
         self.journals.get(squad).and_then(|j| j.projects().ok()).unwrap_or_default()
     }
 
-    fn tickets(&mut self, squad: &str) -> Vec<Ticket> {
-        self.journal(squad).and_then(|j| j.tickets().ok()).unwrap_or_default()
+    /// The squad's board, shared: kept in memory and brought up to date
+    /// ticket by ticket ([`Journal::board`]), so asking is cheap however big
+    /// the board grew. `.to_vec()` for a copy to change.
+    fn tickets(&mut self, squad: &str) -> std::sync::Arc<Vec<Ticket>> {
+        self.journal(squad).and_then(|j| j.board().ok()).unwrap_or_default()
     }
 
     /// The member of `squad` called `name`.
@@ -5607,7 +5628,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         // A designer on brand work gets its reference tools too (`board::design_tools_tool`).
         let on_ticket = self.sessions.get(&id).filter(|s| s.member.as_ref().is_some_and(|m| m.role == design_qa::DESIGNER)).and_then(|s| s.work.as_ref().map(|w| w.ticket));
         let branding = match (on_ticket, squad.clone()) {
-            (Some(on), Some(sq)) => self.tickets(&sq).into_iter().find(|t| t.id == on).is_some_and(|t| crate::design::brand::is_branding(&t.title, &t.body)),
+            (Some(on), Some(sq)) => self.tickets(&sq).iter().find(|t| t.id == on).is_some_and(|t| crate::design::brand::is_branding(&t.title, &t.body)),
             _ => false,
         };
         // The outside MCP servers the squad connected for this member's role,
@@ -6941,9 +6962,20 @@ for one project goes to it as tickets for its owners, with that project — and 
         if self.turn_ends.paused(squad) {
             return;
         }
+        // The machine is overloaded: nothing new starts until it calms down
+        // (`machine.rs`), which dispatches again.
+        if self.overloaded() {
+            return;
+        }
         watchdog::mark("dispatch: board");
-        let mut tickets = self.tickets(squad);
-        tickets.retain(|ticket| !self.held_for_room(ticket.kind) && !self.workspaces.busy(squad, ticket.id) && !self.prechecking(squad, ticket.id));
+        // Closed tickets light: what starts next reads only their status and links.
+        let board = self.tickets(squad);
+        let mut tickets: Vec<Ticket> = board
+            .iter()
+            .filter(|ticket| !self.held_for_room(ticket.kind) && !self.workspaces.busy(squad, ticket.id) && !self.prechecking(squad, ticket.id))
+            .map(board::light_copy)
+            .collect();
+        drop(board);
         // Runs on tickets cancelled meanwhile stop; tickets that look obsolete wait for the PM.
         self.stop_obsolete_runs(squad);
         self.hold_obsolete(squad, &mut tickets, first);
@@ -7122,7 +7154,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             return;
         };
         let mut saved = journal.ticket_work(ticket_id).unwrap_or_default();
-        let after = work_before(&journal.tickets().unwrap_or_default(), &ticket);
+        let after = work_before(&journal.board().unwrap_or_default(), &ticket);
         let fresh = ticket.branch.is_none() || saved.base.is_none();
         let kind = ticket.kind;
         // A task or action is worked in the squad home; what it is about, if anything, is only read.
@@ -8481,7 +8513,7 @@ equipe tries the merge again on its own every few minutes; you hear if it still 
             self.merge_retries_seeded = true;
             let squads: Vec<String> = self.journals.keys().cloned().collect();
             for squad in squads {
-                for t in self.tickets(&squad) {
+                for t in self.tickets(&squad).iter() {
                     if t.not_on_main() && matches!(t.off_main, Some(OffMain::Failed { .. })) && t.updated_at.is_some_and(|at| now_secs().saturating_sub(at) < MERGE_RETRY_WITHIN) {
                         self.merge_retries.entry((squad.clone(), t.id)).or_insert(MergeRetry { push: false, failed: 1, next: now, running: false });
                     }
@@ -8526,7 +8558,7 @@ equipe tries the merge again on its own every few minutes; you hear if it still 
         type OnBranch = (String, TicketId, String);
         let mut asked: Vec<(PathBuf, Vec<OnBranch>)> = Vec::new();
         for squad in squads {
-            for t in self.tickets(&squad).into_iter().filter(|t| t.not_on_main() && !t.kind.in_home()) {
+            for t in self.tickets(&squad).iter().filter(|t| t.not_on_main() && !t.kind.in_home()) {
                 let (Some(project), Some(branch)) = (t.project.clone(), t.branch.clone()) else { continue };
                 match asked.iter_mut().find(|(p, _)| *p == project) {
                     Some((_, tickets)) => tickets.push((squad.clone(), t.id, branch)),
@@ -10795,14 +10827,15 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
     fn snapshot(&mut self, squad: &str) -> Snapshot {
         watchdog::mark("snapshot: board");
         let projects = self.projects(squad);
-        let mut tickets = self.tickets(squad);
+        let board = self.tickets(squad);
+        // Open tickets, and the latest closed ones: only those copied.
+        let recent_closed: Vec<TicketId> =
+            board.iter().rev().filter(|t| t.status.is_closed()).map(|t| t.id).take(CLOSED_TICKETS_SHOWN).collect();
+        let mut tickets: Vec<Ticket> = board.iter().filter(|t| !t.status.is_closed() || recent_closed.contains(&t.id)).cloned().collect();
+        drop(board);
         for t in &mut tickets {
             t.landing = self.landing(squad, t);
         }
-        // Open tickets, and the latest closed ones.
-        let recent_closed: Vec<TicketId> =
-            tickets.iter().rev().filter(|t| t.status.is_closed()).map(|t| t.id).take(CLOSED_TICKETS_SHOWN).collect();
-        tickets.retain(|t| !t.status.is_closed() || recent_closed.contains(&t.id));
         watchdog::mark("snapshot: members");
         let marks = self.journals.get(squad).and_then(|j| j.conversation_marks().ok()).unwrap_or_default();
         let pins = self.journals.get(squad).and_then(|j| j.conversation_pins().ok()).unwrap_or_default();
@@ -11426,7 +11459,7 @@ activity, so equipe moved you here."
         let open: Vec<(String, Vec<TicketId>)> = self
             .journals
             .iter()
-            .filter_map(|(squad, j)| Some((squad.clone(), j.tickets().ok()?.into_iter().filter(|t| !t.status.is_closed()).map(|t| t.id).collect())))
+            .filter_map(|(squad, j)| Some((squad.clone(), j.board().ok()?.iter().filter(|t| !t.status.is_closed()).map(|t| t.id).collect())))
             .collect();
         let keep: Vec<u32> = self.commands.engine_pids();
         let squads: Vec<String> = self.journals.keys().cloned().collect();
@@ -11575,7 +11608,7 @@ activity, so equipe moved you here."
     fn brief_lane(&mut self, squad: &str, lane: &crate::disk::LaneTmp, line: &str, shown: &str) -> bool {
         use crate::disk::LaneTmp;
         let (working, named) = match lane {
-            LaneTmp::Ticket(id) => (self.worker_on(squad, *id), self.tickets(squad).into_iter().find(|t| t.id == *id).and_then(|t| t.owner.or(t.assignee))),
+            LaneTmp::Ticket(id) => (self.worker_on(squad, *id), self.tickets(squad).iter().find(|t| t.id == *id).and_then(|t| t.owner.clone().or_else(|| t.assignee.clone()))),
             LaneTmp::Desk(name) => (None, Some(name.clone())),
         };
         match working.or_else(|| named.as_deref().and_then(|name| self.member_id(squad, name))) {

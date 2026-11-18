@@ -34,7 +34,9 @@ The kickoff puts the designer in **prototype mode**:
 While a session is on, each of the person's messages to the designer opens with equipe's round note
 (`design::session::ROUND_RULES`): reply in a few lines, apply the feedback to the prototype within a couple of minutes
 and show it again, add a change-log line — and **no heavy checks in a round**: no width × theme × text-size matrix, no
-axe or contrast runs, no design QA, no new ticket per feedback item.
+axe or contrast runs, no design QA, no new ticket per feedback item. The note also says where the session's
+files are (`design::session::WHERE_FILES`: `design/sessions/` where the designer works, `ls -t` for the latest), so a
+designer never searches the disk for its own prototype. The guard refuses whole-disk searches anyway (docs/LOAD.md).
 
 **The person's messages come first** (`Runtime::person_first`, `design::session::preempt`). A message said while the
 designer's turn runs is taken in as a steer and read at its next step; if a command is running (a build, a capture

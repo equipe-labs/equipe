@@ -40,6 +40,8 @@ enum Input {
     Opened(String, String, Value, Result<(Commands, Box<equipe_core::protocol::rpc::Hello>), String>),
     /// An event of any squad, for pushes.
     Squad(String, Event),
+    /// A squad followed for pushes, with its board as the daemon's hello had it.
+    Following(Box<equipe_core::protocol::rpc::Hello>),
     /// A member's picture a device asked for, read (`read_image`).
     ImageRead(String, String, u64, Result<equipe_core::protocol::rpc::ImageRead, String>),
     /// A folder's pictures a device asked for, listed (`list_images`).
@@ -48,6 +50,22 @@ enum Input {
     MetricsSummarized(String, String, u64, Result<equipe_core::protocol::metrics::Summary, String>),
     /// The answer to a device's request, made off the loop (an `upload`'s).
     Answer(String, equipe_core::protocol::rpc::Message),
+}
+
+/// How long the daemon may take to answer a hello for pushes: its snapshot
+/// takes seconds on a busy Mac, and an answer late is still an answer.
+const FOLLOW_HELLO_WAIT: Duration = Duration::from_secs(90);
+
+/// A squad followed for pushes, its hello given [`FOLLOW_HELLO_WAIT`].
+async fn follow_patiently(socket: &Path, version: &str, squad: &str) -> std::io::Result<(Client, equipe_core::protocol::rpc::Hello)> {
+    within(FOLLOW_HELLO_WAIT, Client::connect(socket, version, squad)).await
+}
+
+/// `attempt`, or a "didn't answer in N s" error past `wait`.
+async fn within<T>(wait: Duration, attempt: impl std::future::Future<Output = std::io::Result<T>>) -> std::io::Result<T> {
+    tokio::time::timeout(wait, attempt)
+        .await
+        .unwrap_or_else(|_| Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("the daemon didn't answer in {}s", wait.as_secs()))))
 }
 
 /// A member's picture for a phone: no bigger than `visuals::PHONE_SIDE`,
@@ -126,25 +144,24 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                         if followed.get(&squad).is_some_and(|h| !h.is_finished()) {
                             continue;
                         }
-                        // A daemon slow to answer holds up the phones' link no longer than this.
-                        let connected = tokio::time::timeout(Duration::from_secs(20), Client::connect(&socket, &version, &squad)).await;
-                        let connected = connected.unwrap_or_else(|_| Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "the daemon didn't answer")));
-                        match connected {
-                            Ok((client, hello)) => {
-                                core.attach(&hello.snapshot);
-                                let (_, mut events) = client.split();
-                                let tx = input_tx.clone();
-                                let name = squad.clone();
-                                followed.insert(squad, tokio::spawn(async move {
+                        // Off this loop: a daemon slow to answer (a busy Mac)
+                        // holds up nothing here, and is given time; one that
+                        // didn't answer is asked again on a later tick.
+                        let (tx, socket, version, name) = (input_tx.clone(), socket.clone(), version.clone(), squad.clone());
+                        followed.insert(squad, tokio::spawn(async move {
+                            match follow_patiently(&socket, &version, &name).await {
+                                Ok((client, hello)) => {
+                                    let _ = tx.send(Input::Following(Box::new(hello)));
+                                    let (_, mut events) = client.split();
                                     while let Some(event) = events.recv().await {
                                         if tx.send(Input::Squad(name.clone(), event)).is_err() {
                                             break;
                                         }
                                     }
-                                }));
+                                }
+                                Err(err) => equipe_core::daemon_log!("remote: following {name}: {err}"),
                             }
-                            Err(err) => equipe_core::daemon_log!("remote: following {squad}: {err}"),
-                        }
+                        }));
                     }
                 }
             }
@@ -242,6 +259,7 @@ pub async fn serve_forever(home: PathBuf, socket: PathBuf, version: String) {
                 actions.extend(core.opened(&device, &squad, &id, hello));
             }
             Some(Input::Squad(squad, event)) => actions.extend(core.on_squad_event(&squad, &event)),
+            Some(Input::Following(hello)) => core.attach(&hello.snapshot),
             Some(Input::ImageRead(device, squad, id, read)) => actions.extend(core.image_read(&device, &squad, id, read)),
             Some(Input::ImagesListed(device, squad, id, listed)) => actions.extend(core.images_listed(&device, &squad, id, listed)),
             Some(Input::MetricsSummarized(device, squad, id, summary)) => actions.extend(core.metrics_summarized(&device, &squad, id, summary)),
@@ -661,6 +679,20 @@ async fn serve_local(stream: UnixStream, input: UnboundedSender<Input>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_hello_late_is_waited_for_and_one_that_never_comes_says_how_long() {
+        let late = async {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            Ok::<_, std::io::Error>("hello")
+        };
+        assert_eq!(within(Duration::from_secs(5), late).await.unwrap(), "hello");
+        let never = std::future::pending::<std::io::Result<()>>();
+        let err = within(Duration::from_millis(50), never).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(err.to_string().starts_with("the daemon didn't answer in"), "{err}");
+        assert!(FOLLOW_HELLO_WAIT >= Duration::from_secs(60), "a busy Mac's snapshot takes seconds");
+    }
 
     #[test]
     fn a_drawn_diagram_reaches_a_phone_in_one_frame() {

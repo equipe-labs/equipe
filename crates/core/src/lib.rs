@@ -52,6 +52,7 @@ pub mod importance;
 pub mod journal;
 pub mod keychain;
 pub mod lanes;
+pub mod machine_load;
 pub mod live_preview;
 pub mod pacing;
 pub mod logins;

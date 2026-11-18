@@ -164,9 +164,9 @@ impl Runtime {
     /// tickets done with — but one an open ticket names — deleted. Off the loop.
     /// (Its simulators go with `disk::clear_simulators`.)
     pub(super) fn clear_finished_phones(&mut self, squad: &str, id: TicketId) {
-        let tickets: Vec<(TicketId, bool, String)> = self.tickets(squad).into_iter().map(|t| (t.id, !t.status.is_closed(), format!("{}\n{}", t.title, t.body))).collect();
+        let tickets: Vec<(TicketId, bool, String)> = self.tickets(squad).iter().map(|t| (t.id, !t.status.is_closed(), format!("{}\n{}", t.title, t.body))).collect();
         let shared = self.journals.keys().filter(|s| s.as_str() != squad).cloned().collect::<Vec<_>>().iter().any(|other| {
-            self.journal(other).and_then(|j| j.tickets().ok()).is_some_and(|ts| ts.iter().any(|t| t.id == id && !t.status.is_closed()))
+            self.journal(other).and_then(|j| j.board().ok()).is_some_and(|ts| ts.iter().any(|t| t.id == id && !t.status.is_closed()))
         });
         let (owner, home) = (squad.to_owned(), squad_home::path(&self.config.home, squad));
         tokio::task::spawn_blocking(move || {

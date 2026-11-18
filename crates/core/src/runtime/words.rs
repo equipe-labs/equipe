@@ -47,7 +47,7 @@ const TAKEN_KEPT: usize = 512;
 
 /// What waits on the person, owned for a moment to read the words against.
 struct Owned {
-    tickets: Vec<Ticket>,
+    tickets: std::sync::Arc<Vec<Ticket>>,
     approvals: Vec<Approval>,
     accepts: Vec<equipe_protocol::accept::AcceptProposal>,
     routines: Vec<Routine>,

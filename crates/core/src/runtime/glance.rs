@@ -68,7 +68,7 @@ impl Runtime {
     pub(super) fn retitle_open_tickets(&mut self, squad: &str, member: &str, args: &Value) -> Result<String, String> {
         let lang = self.squad_language(squad);
         let (script, language) = lang.map_or(("", ""), |l| (crate::i18n::core(l).get("title.script"), l.english_name()));
-        let open: Vec<Ticket> = self.tickets(squad).into_iter().filter(|t| !t.status.is_closed()).collect();
+        let open: Vec<Ticket> = self.tickets(squad).iter().filter(|t| !t.status.is_closed()).cloned().collect();
         let Some(given) = args.get("titles").and_then(Value::as_array) else {
             let broken: Vec<String> = open
                 .iter()
