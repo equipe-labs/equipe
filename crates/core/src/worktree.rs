@@ -1513,10 +1513,31 @@ impl Sandbox {
         git(&self.repo, &["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", &format!("{}..{}", self.base, self.branch)])
     }
 
-    /// The files the branch changed since where it started, by path.
+    /// The files the branch changed since where it started, by path. Once
+    /// main has been merged or rebased in, what main's own commits brought in
+    /// is not the branch's: a file counts only when it also differs from
+    /// where the branch meets main (and `origin`'s main) now — else every
+    /// member who merged main in would carry main's migrations, auth and
+    /// infra files into what decides who lands its work.
     pub fn changed_files(&self) -> Result<Vec<String>> {
-        let out = git(&self.repo, &["-c", "core.quotePath=false", "diff", "--name-only", &format!("{}..{}", self.base, self.branch)])?;
-        Ok(out.lines().filter(|l| !l.is_empty() && !l.ends_with(".gitkeep")).map(str::to_owned).collect())
+        let diff = |from: &str| -> Result<Vec<String>> {
+            let out = git(&self.repo, &["-c", "core.quotePath=false", "diff", "--name-only", &format!("{from}..{}", self.branch)])?;
+            Ok(out.lines().filter(|l| !l.is_empty() && !l.ends_with(".gitkeep")).map(str::to_owned).collect())
+        };
+        let mut files = diff(&self.base)?;
+        if let Ok(main) = main_branch(&self.repo) {
+            let starts = [main.clone(), format!("origin/{main}")]
+                .iter()
+                .filter_map(|target| git(&self.repo, &["merge-base", &self.branch, target]).ok())
+                .filter(|start| *start != self.base)
+                .collect::<Vec<_>>();
+            for start in starts {
+                if let Ok(since) = diff(&start) {
+                    files.retain(|f| since.contains(f));
+                }
+            }
+        }
+        Ok(files)
     }
 
     /// The files the worktree differs in from where the branch started —
@@ -1836,6 +1857,34 @@ mod tests {
         let done = trim_builds(&home, &[member("backend")], u64::MAX, 100);
         assert!(!member("frontend").exists() && member("backend").exists(), "a build under way is never taken: {done:?}");
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn main_merged_or_rebased_in_is_not_counted_among_the_branchs_changed_files() {
+        let repo = repo();
+        let home = scratch("changed");
+        let commit = |dir: &Path, file: &str, message: &str| {
+            let path = dir.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, format!("{message}\n")).unwrap();
+            git(dir, &["add", "-A"]).unwrap();
+            git(dir, &["commit", "-qm", message]).unwrap();
+        };
+        let s = create(&repo, &home, "t1", "frontend").unwrap();
+        commit(&s.path, "app/menu.css", "menu");
+        // main lands a migration and an auth change; the branch merges it in.
+        commit(&repo, "db/migrations/001.sql", "main migration");
+        git(&s.path, &["merge", "-q", "--no-edit", "main"]).unwrap();
+        assert_eq!(s.changed_files().unwrap(), vec!["app/menu.css".to_owned()], "main's files aren't the branch's");
+        // main moves on again, and the branch is rebased onto it.
+        commit(&repo, "src/auth/session.ts", "main auth");
+        git(&s.path, &["rebase", "-q", "main"]).unwrap();
+        assert_eq!(s.changed_files().unwrap(), vec!["app/menu.css".to_owned()]);
+        // A file the branch itself changes still counts, even one main touched too.
+        commit(&s.path, "db/migrations/001.sql", "branch edit");
+        assert_eq!(s.changed_files().unwrap(), ["app/menu.css", "db/migrations/001.sql"].map(str::to_owned));
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]
