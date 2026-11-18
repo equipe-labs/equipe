@@ -135,6 +135,8 @@ struct SquadEngines {
     /// Cards offering a lighter model to a member whose model reached its own
     /// limit mid-ticket ([`Runtime::offer_lighter`]): their id, and the member.
     lighter_cards: Vec<(u64, String)>,
+    /// Members the person kept on their model when offered a lighter one: not asked again until then.
+    lighter_declined: Vec<(String, i64)>,
 }
 
 struct Due {
@@ -852,6 +854,10 @@ impl Runtime {
     pub(super) fn dismiss_engine_proposal(&mut self, squad: &str, id: u64) {
         let Some(proposal) = self.engines_of(squad).proposals.iter().find(|p| p.id == id).cloned() else { return };
         let lighter = self.engines_of(squad).lighter_cards.iter().any(|(p, _)| *p == id);
+        if lighter && !proposal.applied {
+            let declined = proposal.moves.iter().map(|m| (m.member.clone(), proposal.resets_at));
+            self.engines_of(squad).lighter_declined.extend(declined);
+        }
         if !proposal.applied {
             // A lighter model for one member's model limit says nothing of the plans.
             if let Some(engine) = proposal.engine.filter(|_| !lighter) {
@@ -962,7 +968,10 @@ impl Runtime {
     /// on the engine's `lighter` model, one tap, until `until`. The run waits
     /// meanwhile, as any limit does.
     pub(super) fn offer_lighter(&mut self, squad: &str, name: &str, engine: Engine, (model, lighter): (&str, &str), ticket: TicketId, until: i64) {
-        if self.engines_of(squad).lighter_cards.iter().any(|(_, n)| n == name) {
+        let now = unix_now();
+        let mine = self.engines_of(squad);
+        mine.lighter_declined.retain(|(_, until)| *until > now);
+        if mine.lighter_cards.iter().any(|(_, n)| n == name) || mine.lighter_declined.iter().any(|(n, _)| n == name) {
             return;
         }
         let role = self.mates(squad).into_iter().find(|m| m.name == name).map(|m| m.role).unwrap_or_default();
