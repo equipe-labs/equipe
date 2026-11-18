@@ -3,7 +3,10 @@
 //! ([`status`]), the line that says so ([`line`]), when that is news worth a
 //! word in its conversation ([`news`]), what a member is told of them at the
 //! start of its turn ([`context`]), and whether a message asks after one
-//! ([`asked_after`]) — and where requests are kept ([`Store`]).
+//! ([`asked_after`]); which tickets cover one ([`covering`]) and when one is
+//! left uncovered ([`standing`]); what a member is asked when it doesn't say
+//! which request a ticket serves ([`which_request`]) — and where requests are
+//! kept ([`Store`]).
 //!
 //! The runtime's side — recording a request, attaching tickets by their
 //! lineage, telling the conversation — is `runtime::requests`.
@@ -11,6 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use equipe_protocol::requests::{Link, Milestone, Part, Phase, Request, RequestId, RequestTicket, Status, Step, Wait};
+use equipe_protocol::title::TicketLabel;
 use equipe_protocol::{ExecutionState, SessionId, Ticket, TicketId, TicketKind, TicketStatus};
 use rusqlite::{Connection, OptionalExtension as _, params};
 
@@ -33,6 +37,28 @@ pub const ASKED_WITHIN: u64 = 20 * 60;
 /// A finished request stays listed this long.
 pub const LISTED_DONE: u64 = 24 * 60 * 60;
 
+/// A request no work ticket serves this long after it was asked is
+/// uncovered: put to the PM, and shown so to the person (unix seconds).
+pub const COVER_WAIT: u64 = 10 * 60;
+
+/// [`COVER_WAIT`] — or, where `EQUIPE_REQUEST_COVER_WAIT` says, that many
+/// seconds (tests).
+pub fn cover_wait() -> u64 {
+    std::env::var("EQUIPE_REQUEST_COVER_WAIT").ok().and_then(|v| v.parse().ok()).unwrap_or(COVER_WAIT)
+}
+
+/// `request` as a member gives it when a ticket serves none of the person's
+/// requests (`request: 0`).
+pub const NO_REQUEST: RequestId = 0;
+
+/// A request's words, at most this long, where a member tells it apart
+/// from another asked about the same time.
+const WORDS_CHARS: usize = 90;
+
+/// A first line shorter than this ("Hi", "Also:") doesn't name a request by
+/// itself: the lines after it join it.
+const SAYS_LITTLE: usize = 16;
+
 /// At most this many characters of the person's words name a request.
 const TITLE_CHARS: usize = 60;
 
@@ -45,10 +71,26 @@ const PARTS_SHOWN: usize = 4;
 const WAITS_SHOWN: usize = 3;
 
 /// What the person said, as a request's name: its first line that says
-/// something, cut short.
+/// something — joined by the next ones while it is too short to say much
+/// alone — cut short.
 pub fn title_of(words: &str) -> String {
-    let line = words.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
-    cut(line, TITLE_CHARS)
+    let mut line = String::new();
+    for l in words.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(l);
+        if line.chars().count() >= SAYS_LITTLE {
+            break;
+        }
+    }
+    cut(&line, TITLE_CHARS)
+}
+
+/// The person's words in one line, cut short: what tells two requests
+/// asked minutes apart from each other.
+pub fn words_line(words: &str) -> String {
+    cut(&words.split_whitespace().collect::<Vec<_>>().join(" "), WORDS_CHARS)
 }
 
 /// `text`, at most `max` characters, `…` where it was cut.
@@ -86,6 +128,39 @@ pub fn part_of(links: &[RequestTicket], ticket: TicketId) -> TicketId {
         }
     }
     at
+}
+
+/// Whether `ticket` — or a ticket of the request it came of — joined it as
+/// equipe's own check.
+fn through_check(links: &[RequestTicket], ticket: TicketId) -> bool {
+    let mut at = ticket;
+    // A loop of parents is cut where it closes.
+    for _ in 0..=links.len() {
+        let Some(link) = links.iter().find(|l| l.ticket == at) else { return false };
+        if link.link == Link::Check {
+            return true;
+        }
+        match link.parent {
+            Some(parent) if parent != ticket => at = parent,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// The tickets of a request that cover it: work that serves it. Not
+/// equipe's own checks — a `check` link or anything that came of one, a
+/// design QA ticket — nor a meta ticket (labelled check). A ticket missing
+/// from `tickets` covers nothing. A dropped one still does: its dropping
+/// is told to the person as such.
+pub fn covering(links: &[RequestTicket], tickets: &[Ticket]) -> Vec<TicketId> {
+    links
+        .iter()
+        .filter(|l| !through_check(links, l.ticket))
+        .filter_map(|l| tickets.iter().find(|t| t.id == l.ticket))
+        .filter(|t| t.label != Some(TicketLabel::Check) && !tickets.iter().any(|o| o.design_qa == Some(t.id)))
+        .map(|t| t.id)
+        .collect()
 }
 
 /// Where a request stands: each part — a ticket it asked for and what came
@@ -129,8 +204,19 @@ pub fn status(links: &[RequestTicket], tickets: &[Ticket], asking: &[TicketId]) 
         let (phase, who, since) = phase(&mine, asking);
         parts.push(Part { ticket: head.id, title: head.title.clone(), phase, who, since });
     }
-    let done = !parts.is_empty() && waits.is_empty() && parts.iter().all(|p| p.phase.is_finished());
-    Status { parts, waits, steps, done }
+    let covered = !covering(links, tickets).is_empty();
+    let done = covered && !parts.is_empty() && waits.is_empty() && parts.iter().all(|p| p.phase.is_finished());
+    Status { parts, waits, steps, done, ..Status::default() }
+}
+
+/// Where the request kept as `row` stands at `now`: [`status`], and — still
+/// open, with no ticket covering it [`cover_wait`] after it was asked —
+/// uncovered; closed by a member, why.
+pub fn standing(row: &Row, tickets: &[Ticket], asking: &[TicketId], now: u64) -> Status {
+    let mut status = status(&row.tickets, tickets, asking);
+    status.uncovered = row.closed_at.is_none() && covering(&row.tickets, tickets).is_empty() && now >= row.asked_at.saturating_add(cover_wait());
+    status.closed_why = row.closed_why.clone();
+    status
 }
 
 /// How far a part's tickets got: the open ones that don't wait on the
@@ -180,11 +266,18 @@ pub fn clock(unix: u64, now: u64) -> String {
     if today { format!("{:02}:{:02}", tm.hour, tm.minute) } else { format!("{:02}-{:02} {:02}:{:02}", tm.month, tm.day, tm.hour, tm.minute) }
 }
 
-/// Where a request stands, in one line in `words`' language: each part and
-/// how far it got, then what waits on the person — or that it is all done.
+/// Where a request stands, in one line in `words`' language: why a member
+/// closed it, or that no ticket serves it yet; each part and how far it
+/// got, then what waits on the person — or that it is all done.
 /// `clock` says a time.
 pub fn line(status: &Status, words: &Catalog, clock: &dyn Fn(u64) -> String) -> String {
     let mut out: Vec<String> = Vec::new();
+    if let Some(why) = &status.closed_why {
+        out.push(words.fill("request.closed", &[("why", cut(why, WORDS_CHARS))]));
+    }
+    if status.uncovered {
+        out.push(words.get("request.uncovered").to_owned());
+    }
     for part in status.parts.iter().take(PARTS_SHOWN) {
         let title = cut(&part.title, PART_CHARS);
         let time = part.since.map(clock).unwrap_or_default();
@@ -316,28 +409,71 @@ pub fn news(told: &Told, links: &[RequestTicket], tickets: &[Ticket], asking: &[
 
 // ── what a member is told ──
 
-/// What a member is told of the person's open requests in the conversation
-/// its turn is in, at the turn's start (English, as every word to a model):
-/// so "how is X going?" is answered at once, and right. `None` without any.
-pub fn context(requests: &[Request], now: u64) -> Option<String> {
-    let open: Vec<&Request> = requests.iter().filter(|r| r.closed_at.is_none()).collect();
-    if open.is_empty() {
-        return None;
+/// One request as a member reads it, in one line: its number, its name in
+/// the person's words, the tickets that serve it, when it was asked — and,
+/// `with_line`, where it stands.
+fn member_line(r: &Request, now: u64, with_line: bool) -> String {
+    let tickets: Vec<String> = r.tickets.iter().filter(|l| l.link != Link::Check).map(|l| format!("T-{}", l.ticket)).collect();
+    let tickets = if tickets.is_empty() { "no ticket yet".to_owned() } else { tickets.join(", ") };
+    let head = format!("R-{} “{}” ({tickets}) · asked {}", r.id, r.title, clock(r.asked_at, now));
+    if !with_line {
+        return head;
     }
     let words = crate::i18n::core(crate::i18n::Lang::En);
-    let lines: Vec<String> = open
-        .iter()
-        .map(|r| {
-            let tickets: Vec<String> = r.tickets.iter().filter(|l| l.link != Link::Check).map(|l| format!("T-{}", l.ticket)).collect();
-            format!("- R-{} “{}” ({}): {}", r.id, r.title, tickets.join(", "), line(&r.status, words, &|at| clock(at, now)))
-        })
-        .collect();
-    Some(format!(
-        "[equipe: what the person asked for in this conversation, and where each stands now (from the board):\n{}\n\
+    format!("{head}: {}", line(&r.status, words, &|at| clock(at, now)))
+}
+
+/// What a member is told of the person's open requests in the conversation
+/// its turn is in, at the turn's start (English, as every word to a model):
+/// so "how is X going?" is answered at once, and right, and each gets a
+/// ticket that serves it. `elsewhere`: the PM's — requests asked of other
+/// members that no ticket covers yet. `None` without any.
+pub fn context(requests: &[Request], elsewhere: &[Request], now: u64) -> Option<String> {
+    let open: Vec<&Request> = requests.iter().filter(|r| r.closed_at.is_none()).collect();
+    let away: Vec<&Request> = elsewhere.iter().filter(|r| r.closed_at.is_none() && !open.iter().any(|o| o.id == r.id)).collect();
+    if open.is_empty() && away.is_empty() {
+        return None;
+    }
+    let mut text = String::from("[equipe: ");
+    if !open.is_empty() {
+        let lines: Vec<String> = open.iter().map(|r| format!("- {}", member_line(r, now, true))).collect();
+        text.push_str(&format!(
+            "what the person asked for in this conversation, and where each stands now (from the board):\n{}\n\
 When they ask how one is going, answer from this at once — never \"at the next step\" — and name what waits on them. \
-A ticket you put on the board for one of these that equipe wouldn't link by itself: give its R-number as `request`.]",
-        lines.join("\n")
-    ))
+Each needs a ticket that serves it: give its R-number as `request` on `create_ticket` (with more than one open here, equipe \
+asks which; 0 when a ticket serves none). One that asks for no work — thanks, a question you answered, an answer to yours — \
+close with `close_request`, saying why in a few words: the person sees them. equipe closes a request itself only once the \
+tickets serving it are done.",
+            lines.join("\n")
+        ));
+    }
+    if !away.is_empty() {
+        let lines: Vec<String> = away.iter().map(|r| format!("- {} — asked of {}", member_line(r, now, false), r.member.as_deref().unwrap_or("the squad"))).collect();
+        if !open.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(&format!(
+            "the person's requests no ticket serves yet, asked of other members — see each gets one (`create_ticket` with its \
+`request`), or is closed with why (`close_request`):\n{}",
+            lines.join("\n")
+        ));
+    }
+    text.push(']');
+    Some(text)
+}
+
+/// What a member is told when it puts a ticket on the board without saying
+/// which of the person's open requests it serves, and more than one could
+/// be it: each in one line (English, for the member).
+pub fn which_request(open: &[Request], now: u64) -> String {
+    let lines: Vec<String> = open.iter().map(|r| format!("- {}", member_line(r, now, false))).collect();
+    format!(
+        "Which of the person's requests does this ticket serve? More than one is open here:\n{}\nGive its number as `request` \
+(e.g. {} for R-{}) — or 0 when it serves none of them — and create it again.",
+        lines.join("\n"),
+        open.first().map_or(1, |r| r.id),
+        open.first().map_or(1, |r| r.id)
+    )
 }
 
 // ── a message asking after a request ──
@@ -370,7 +506,7 @@ fn shares_term(text: &str, target: &str) -> bool {
 }
 
 /// The ticket numbers `text` names (`T-12`).
-fn ticket_numbers(text: &str) -> Vec<TicketId> {
+pub(crate) fn ticket_numbers(text: &str) -> Vec<TicketId> {
     let chars: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
     for i in 0..chars.len() {
@@ -476,10 +612,25 @@ pub struct Row {
     /// News waits to be told from then on.
     pub due_at: Option<u64>,
     pub closed_at: Option<u64>,
+    /// Closed by a member with its work not done: why.
+    pub closed_why: Option<String>,
+    /// Recorded from the person's words in a conversation (not a ticket they
+    /// put on the board): a ticket made there in answer may serve it.
+    pub said: bool,
+    /// When the PM was told no ticket covers it.
+    pub surfaced_at: Option<u64>,
     pub tickets: Vec<RequestTicket>,
 }
 
 impl Row {
+    /// Whether a screen lists it: once a ticket is with it, or it was put
+    /// to the PM as uncovered. Words no work came of, closed with a reason
+    /// before then — thanks, a question answered — are told in their
+    /// conversation, not listed.
+    pub fn shown(&self) -> bool {
+        !self.tickets.is_empty() || self.surfaced_at.is_some()
+    }
+
     /// As a screen gets it, with where it stands.
     pub fn view(&self, status: Status) -> Request {
         Request {
@@ -517,32 +668,99 @@ pub fn create_table(conn: &Connection) -> rusqlite::Result<()> {
            at INTEGER NOT NULL
          );
          CREATE INDEX IF NOT EXISTS request_tickets_request ON request_tickets(request);",
-    )
+    )?;
+    // Kept since a journal made before them: added, once.
+    for column in ["closed_why TEXT", "said INTEGER NOT NULL DEFAULT 0", "surfaced_at INTEGER"] {
+        let _ = conn.execute(&format!("ALTER TABLE requests ADD COLUMN {column}"), []);
+    }
+    Ok(())
 }
 
 /// The squad's requests in its journal.
 pub struct Store<'a>(pub(crate) &'a Connection);
 
 impl Store<'_> {
-    /// Keep a new request; its number.
-    pub fn create(&self, title: &str, words: &str, session: Option<SessionId>, member: Option<&str>, asked_at: u64) -> rusqlite::Result<RequestId> {
+    /// Keep a new request; its number. `said`: from the person's words in a
+    /// conversation.
+    pub fn create(&self, title: &str, words: &str, session: Option<SessionId>, member: Option<&str>, asked_at: u64, said: bool) -> rusqlite::Result<RequestId> {
         let words: String = words.chars().take(4000).collect();
         self.0.execute(
-            "INSERT INTO requests (title, words, session, member, asked_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![title, words, session.map(|s| s as i64), member, asked_at as i64],
+            "INSERT INTO requests (title, words, session, member, asked_at, said) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![title, words, session.map(|s| s as i64), member, asked_at as i64, said],
         )?;
         Ok(self.0.last_insert_rowid() as RequestId)
     }
 
-    /// `ticket` serves `request` now (a ticket serves one at most), and the
-    /// request is open again if it was closed.
+    /// `ticket` serves `request` now (a ticket serves one at most): what
+    /// came of it — made while working it, its follow-ups, its checks —
+    /// moves with it from the request it served before. The request is open
+    /// again if it was closed, unless all that joined is one of equipe's checks.
     pub fn link(&self, request: RequestId, ticket: TicketId, parent: Option<TicketId>, link: Link, at: u64) -> rusqlite::Result<()> {
+        let was = self.of_ticket(ticket);
         self.0.execute(
             "INSERT OR REPLACE INTO request_tickets (ticket, request, parent, link, at) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![ticket, request as i64, parent, link.code(), at as i64],
         )?;
-        self.0.execute("UPDATE requests SET closed_at = NULL WHERE id = ?1", [request as i64])?;
+        if was.is_some_and(|w| w != request) {
+            for child in self.descendants(ticket) {
+                self.0.execute("UPDATE request_tickets SET request = ?2 WHERE ticket = ?1", params![child, request as i64])?;
+            }
+        }
+        if link != Link::Check {
+            self.reopen(request)?;
+        }
         Ok(())
+    }
+
+    /// `ticket` serves no request now, nor does what came of it.
+    pub fn unlink(&self, ticket: TicketId) -> rusqlite::Result<()> {
+        for t in std::iter::once(ticket).chain(self.descendants(ticket)) {
+            self.0.execute("DELETE FROM request_tickets WHERE ticket = ?1", [t])?;
+        }
+        Ok(())
+    }
+
+    /// The tickets that came of `ticket` — by their `parent`, all the way down.
+    fn descendants(&self, ticket: TicketId) -> Vec<TicketId> {
+        let Ok(mut stmt) = self.0.prepare_cached("SELECT ticket FROM request_tickets WHERE parent = ?1") else { return Vec::new() };
+        let mut out: Vec<TicketId> = Vec::new();
+        let mut next = vec![ticket];
+        while let Some(at) = next.pop() {
+            let children: Vec<TicketId> = stmt.query_map([at], |r| r.get(0)).and_then(|rows| rows.collect()).unwrap_or_default();
+            for child in children {
+                if child != ticket && !out.contains(&child) {
+                    out.push(child);
+                    next.push(child);
+                }
+            }
+        }
+        out
+    }
+
+    /// A closed request open again: its "all done" is to be told anew when
+    /// it is, and the reason it was closed no longer holds.
+    fn reopen(&self, request: RequestId) -> rusqlite::Result<()> {
+        let Some(row) = self.get(request).filter(|r| r.closed_at.is_some()) else { return Ok(()) };
+        let told = Told { all_done: false, ..row.told };
+        self.0.execute("UPDATE requests SET closed_at = NULL, closed_why = NULL, told = ?2 WHERE id = ?1", params![request as i64, told.code()])?;
+        Ok(())
+    }
+
+    /// Closed by a member at `at`, its work not done: `why`, as the person is told.
+    pub fn close(&self, request: RequestId, why: &str, at: u64) -> rusqlite::Result<()> {
+        self.0.execute("UPDATE requests SET closed_at = ?2, closed_why = ?3, due_at = NULL WHERE id = ?1", params![request as i64, at as i64, why])?;
+        Ok(())
+    }
+
+    /// The PM was told at `at` that no ticket covers it.
+    pub fn surfaced(&self, request: RequestId, at: u64) -> rusqlite::Result<()> {
+        self.0.execute("UPDATE requests SET surfaced_at = ?2 WHERE id = ?1", params![request as i64, at as i64])?;
+        Ok(())
+    }
+
+    /// Those still open, the oldest first.
+    pub fn open(&self) -> Vec<Row> {
+        self.rows("WHERE closed_at IS NULL ORDER BY asked_at, id", ())
     }
 
     /// The open tickets the person's open requests are waiting for — what they
@@ -582,7 +800,7 @@ impl Store<'_> {
     }
 
     fn rows(&self, filter: &str, args: impl rusqlite::Params) -> Vec<Row> {
-        let Ok(mut stmt) = self.0.prepare(&format!("SELECT id, title, words, session, member, asked_at, told, due_at, closed_at FROM requests {filter}")) else {
+        let Ok(mut stmt) = self.0.prepare(&format!("SELECT id, title, words, session, member, asked_at, told, due_at, closed_at, closed_why, said, surfaced_at FROM requests {filter}")) else {
             return Vec::new();
         };
         let rows: Vec<Row> = stmt
@@ -597,6 +815,9 @@ impl Store<'_> {
                     told: Told::parse(&r.get::<_, String>(6)?),
                     due_at: r.get::<_, Option<i64>>(7)?.map(|s| s.max(0) as u64),
                     closed_at: r.get::<_, Option<i64>>(8)?.map(|s| s.max(0) as u64),
+                    closed_why: r.get(9)?,
+                    said: r.get(10)?,
+                    surfaced_at: r.get::<_, Option<i64>>(11)?.map(|s| s.max(0) as u64),
                     tickets: Vec::new(),
                 })
             })
@@ -861,16 +1082,20 @@ mod tests {
             told: Told::default(),
             due_at: None,
             closed_at: None,
+            closed_why: None,
+            said: true,
+            surfaced_at: None,
             tickets: links.clone(),
         };
         let open = row.view(status(&links, &tickets, &[]));
         let closed = Request { id: 8, closed_at: Some(5), ..open.clone() };
-        let text = context(&[open, closed], 2_000).unwrap();
-        assert!(text.contains("R-7 “새 입력창이랑 왼쪽 메뉴” (T-3565, T-3567, T-3613, T-3614, T-3616, T-3619, T-3591)"), "{text}");
+        let text = context(&[open, closed], &[], 2_000).unwrap();
+        assert!(text.contains("R-7 “새 입력창이랑 왼쪽 메뉴” (T-3565, T-3567, T-3613, T-3614, T-3616, T-3619, T-3591) · asked "), "{text}");
         assert!(text.contains("2 things wait for you"), "{text}");
+        assert!(text.contains("`close_request`"), "words that ask for no work are closed, with why: {text}");
         assert!(!text.contains("R-8"), "a finished one isn't");
         assert!(!text.contains("T-3639"), "nor equipe's checks");
-        assert_eq!(context(&[], 0), None);
+        assert_eq!(context(&[], &[], 0), None);
     }
 
     #[test]
@@ -886,6 +1111,9 @@ mod tests {
             told: Told::default(),
             due_at: None,
             closed_at: None,
+            closed_why: None,
+            said: true,
+            surfaced_at: None,
             tickets: links.clone(),
         };
         let composer = base.view(status(&links, &tickets, &[]));
@@ -919,12 +1147,174 @@ mod tests {
         assert_eq!(overlap(proto, "No paths at all"), None);
     }
 
+    fn row(id: RequestId, asked_at: u64, tickets: Vec<RequestTicket>) -> Row {
+        Row {
+            id,
+            title: format!("Request {id}"),
+            words: format!("Request {id}, please"),
+            session: Some(1),
+            member: Some("pm".into()),
+            asked_at,
+            told: Told::default(),
+            due_at: None,
+            closed_at: None,
+            closed_why: None,
+            said: true,
+            surfaced_at: None,
+            tickets,
+        }
+    }
+
+    #[test]
+    fn only_work_covers_a_request_never_equipes_checks_nor_meta_tickets() {
+        let mut qa = ticket(10, "Design QA: T-1 sidebar toggle", TicketStatus::Done);
+        qa.kind = TicketKind::Task;
+        let mut work = ticket(1, "Sidebar toggle", TicketStatus::InProgress);
+        work.design_qa = Some(10);
+        let mut meta = ticket(3, "Verify the toggle on staging", TicketStatus::Todo);
+        meta.label = Some(TicketLabel::Check);
+        let under_check = ticket(11, "Fix the toggle radius", TicketStatus::Todo);
+        let all = [work.clone(), qa.clone(), meta.clone(), under_check.clone()];
+        // A request whose only link is a check — what was left of a ticket moved elsewhere.
+        let only_check = vec![link(10, Some(1), Link::Check)];
+        assert!(covering(&only_check, &all).is_empty());
+        let s = status(&only_check, &all, &[]);
+        assert!(!s.done, "a done check doesn't finish a request: {s:?}");
+        // Made while working the check: came of a check, covers nothing.
+        let from_check = vec![link(1, None, Link::Asked), link(10, Some(1), Link::Check), link(11, Some(10), Link::Made)];
+        assert_eq!(covering(&from_check, &all), [1]);
+        // A meta ticket, and a design QA joined any other way, cover nothing either.
+        assert!(covering(&[link(3, None, Link::Asked), link(10, None, Link::Linked)], &all).is_empty());
+        // A ticket not on the board covers nothing.
+        assert!(covering(&[link(99, None, Link::Asked)], &all).is_empty());
+    }
+
+    #[test]
+    fn a_request_closes_on_its_own_work_only() {
+        // The incident: the dark theme's tickets landed; the MCP-usage request had none of its own.
+        let dark = merged(ticket(3766, "Apply the dark theme", TicketStatus::Done), 2_000);
+        let mut qa = ticket(3767, "Design QA: T-3766 dark theme", TicketStatus::Done);
+        qa.kind = TicketKind::Task;
+        let tickets = [dark.clone(), qa];
+        let mcp = vec![link(3767, Some(3766), Link::Check)];
+        let s = status(&mcp, &tickets, &[]);
+        assert!(!s.done && s.parts.is_empty(), "{s:?}");
+        assert_eq!(news(&Told::default(), &mcp, &tickets, &[], &s), None, "nothing to tell, nothing to close");
+        // Its own work, done: all done.
+        let own = vec![link(3766, None, Link::Asked), link(3767, Some(3766), Link::Check)];
+        let s = status(&own, &tickets, &[]);
+        assert!(s.done, "{s:?}");
+        assert_eq!(news(&Told::default(), &own, &tickets, &[], &s).map(|(m, _)| m), Some(Milestone::AllDone));
+    }
+
+    #[test]
+    fn a_request_no_work_covers_is_uncovered_after_a_while_and_says_so() {
+        let words = core(Lang::En);
+        let clock = |at: u64| format!("@{at}");
+        let bare = row(3, 1_000, vec![]);
+        assert!(!standing(&bare, &[], &[], 1_000 + COVER_WAIT - 1).uncovered, "a few minutes to put it on the board");
+        let s = standing(&bare, &[], &[], 1_000 + COVER_WAIT);
+        assert!(s.uncovered && !s.done, "{s:?}");
+        assert_eq!(line(&s, words, &clock), "no ticket serves it yet — the PM is told");
+        // Only a check with it: still uncovered.
+        let mut qa = ticket(10, "Design QA: T-1 sidebar toggle", TicketStatus::InProgress);
+        qa.kind = TicketKind::Task;
+        let checked = row(3, 1_000, vec![link(10, Some(1), Link::Check)]);
+        assert!(standing(&checked, std::slice::from_ref(&qa), &[], 1_000 + COVER_WAIT).uncovered);
+        // Work with it: covered, whenever.
+        let worked = row(3, 1_000, vec![link(1, None, Link::Asked)]);
+        let t = ticket(1, "Fix the login error", TicketStatus::Todo);
+        let s = standing(&worked, std::slice::from_ref(&t), &[], 1_000 + 10 * COVER_WAIT);
+        assert!(!s.uncovered, "{s:?}");
+        // Closed by the PM with why: not uncovered, and the person reads why.
+        let closed = Row { closed_at: Some(2_000), closed_why: Some("answered in chat".into()), ..bare };
+        let s = standing(&closed, &[], &[], 1_000 + 10 * COVER_WAIT);
+        assert!(!s.uncovered && !s.done, "{s:?}");
+        assert_eq!(line(&s, words, &clock), "closed: answered in chat");
+    }
+
+    #[test]
+    fn a_member_is_asked_which_request_each_in_one_line_and_the_pm_sees_the_uncovered() {
+        let login = Request { title: "Login and logout show an error".into(), ..row(3, 1_000, vec![]).view(Status::default()) };
+        let dark = Request { id: 4, title: "Dark mode, a black terminal style".into(), tickets: vec![link(3766, None, Link::Asked)], ..login.clone() };
+        let text = which_request(&[login.clone(), dark.clone()], 2_000);
+        let lines: Vec<&str> = text.lines().filter(|l| l.starts_with("- ")).collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert!(lines[0].starts_with("- R-3 “Login and logout show an error” (no ticket yet) · asked "), "{text}");
+        assert!(lines[1].starts_with("- R-4 “Dark mode, a black terminal style” (T-3766) · asked "), "{text}");
+        assert!(text.contains("`request`") && text.contains("0 when it serves none"), "{text}");
+        // The PM's turn: those asked of others that nothing covers, apart.
+        let away = Request { id: 5, member: Some("designer".into()), title: "Admin page of MCP calls".into(), session: Some(2), ..login.clone() };
+        let text = context(&[dark], &[away], 2_000).unwrap();
+        assert!(text.contains("R-4 “Dark mode") && text.contains("R-5 “Admin page of MCP calls” (no ticket yet) · asked ") && text.contains("asked of designer"), "{text}");
+        assert!(context(&[], &[login], 2_000).unwrap().contains("no ticket serves yet"), "the PM alone");
+    }
+
+    #[test]
+    fn what_came_of_a_ticket_follows_it_and_a_reopened_request_closes_again() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_table(&conn).unwrap();
+        let store = Store(&conn);
+        let login = store.create("Login error", "Login error", Some(1), Some("pm"), 100, true).unwrap();
+        let sidebar = store.create("Sidebar toggle", "Sidebar toggle", Some(1), Some("pm"), 101, true).unwrap();
+        // The sidebar's ticket put with the wrong request, its build and its design QA after it.
+        store.link(login, 3763, None, Link::Asked, 102).unwrap();
+        store.link(login, 3770, Some(3763), Link::Made, 103).unwrap();
+        store.link(login, 3780, Some(3763), Link::Check, 104).unwrap();
+        store.link(login, 3790, Some(3770), Link::Made, 105).unwrap();
+        // Moved where it belongs: all that came of it goes with it, nothing is left behind.
+        store.link(sidebar, 3763, None, Link::Linked, 106).unwrap();
+        let of = |request| {
+            let mut ids: Vec<TicketId> = store.get(request).unwrap().tickets.iter().map(|l| l.ticket).collect();
+            ids.sort_unstable();
+            ids
+        };
+        assert!(of(login).is_empty(), "{:?}", of(login));
+        assert_eq!(of(sidebar), [3763, 3770, 3780, 3790]);
+        // Put with none: it and what came of it serve none.
+        store.unlink(3770).unwrap();
+        assert_eq!(of(sidebar), [3763, 3780]);
+        // All done and closed; a check joining after doesn't open it again — new work does,
+        // and its "all done" is told anew when that is done.
+        store.told(sidebar, &Told::parse("3763:d,*"), Some(200)).unwrap();
+        store.link(sidebar, 3800, Some(3763), Link::Check, 201).unwrap();
+        assert_eq!(store.get(sidebar).unwrap().closed_at, Some(200));
+        store.link(sidebar, 3801, None, Link::Linked, 202).unwrap();
+        let row = store.get(sidebar).unwrap();
+        assert_eq!((row.closed_at, row.told.all_done), (None, false), "{row:?}");
+        // Closed by the PM with why; surfaced to it once.
+        store.close(login, "fixed by T-3700 already", 300).unwrap();
+        let row = store.get(login).unwrap();
+        assert_eq!((row.closed_at, row.closed_why.as_deref(), row.said), (Some(300), Some("fixed by T-3700 already"), true));
+        assert!(!row.shown(), "words no work came of aren't listed");
+        store.surfaced(sidebar, 400).unwrap();
+        assert_eq!(store.get(sidebar).unwrap().surfaced_at, Some(400));
+        assert_eq!(store.open().iter().map(|r| r.id).collect::<Vec<_>>(), [sidebar]);
+    }
+
+    #[test]
+    fn a_journal_from_before_gets_the_new_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE requests (id INTEGER PRIMARY KEY, title TEXT NOT NULL, words TEXT NOT NULL, session INTEGER, member TEXT,
+               asked_at INTEGER NOT NULL, told TEXT NOT NULL DEFAULT '', due_at INTEGER, closed_at INTEGER);
+             INSERT INTO requests (title, words, asked_at) VALUES ('Old', 'Old one', 5);",
+        )
+        .unwrap();
+        create_table(&conn).unwrap();
+        create_table(&conn).unwrap();
+        let row = Store(&conn).get(1).unwrap();
+        assert_eq!((row.title.as_str(), row.said, row.closed_why, row.surfaced_at), ("Old", false, None, None));
+    }
+
     #[test]
     fn a_title_is_the_first_line_that_says_something_cut_short() {
         assert_eq!(title_of("\n  Make the input box new\nand the left menu"), "Make the input box new");
         let long = "x".repeat(100);
         assert_eq!(title_of(&long).chars().count(), TITLE_CHARS);
         assert!(title_of(&long).ends_with('…'));
+        assert_eq!(title_of("Hi!\nThe login page errors when I log out\n[image]"), "Hi! The login page errors when I log out");
+        assert_eq!(words_line("Hi!\nThe login page   errors\n[image]"), "Hi! The login page errors [image]");
     }
 
     #[test]
@@ -932,7 +1322,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         create_table(&conn).unwrap();
         let store = Store(&conn);
-        let id = store.create("Input box", "Input box, please", Some(9), Some("designer"), 100).unwrap();
+        let id = store.create("Input box", "Input box, please", Some(9), Some("designer"), 100, true).unwrap();
         store.link(id, 5, None, Link::Asked, 101).unwrap();
         store.link(id, 6, Some(5), Link::Made, 102).unwrap();
         assert_eq!(store.of_ticket(6), Some(id));

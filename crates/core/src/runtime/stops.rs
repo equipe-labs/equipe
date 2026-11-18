@@ -185,7 +185,7 @@ impl Runtime {
         let words = board::arg_str(args, "words").map(str::trim).filter(|w| !w.is_empty()).ok_or("Give `words`: what the person said to stop, in their words.")?;
         let terms = board::arg_strs(args, "terms");
         let paths = board::arg_strs(args, "paths");
-        let request = self.request_arg(&call.squad, args)?;
+        let request = self.request_arg(&call.squad, args)?.filter(|r| *r != crate::requests::NO_REQUEST);
         let ticket = board::arg_id(args, "ticket");
         if let Some(t) = ticket
             && self.find_ticket(&call.squad, t).is_none()

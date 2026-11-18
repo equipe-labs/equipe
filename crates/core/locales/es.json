@@ -845,6 +845,8 @@
   "request.waits.other": "{count} cosas te esperan ({list})",
   "request.all_done": "todo listo",
   "request.nothing_yet": "aún nada en el tablero",
+  "request.uncovered": "aún no hay ningún ticket para ella — el PM está avisado",
+  "request.closed": "cerrada: {why}",
   "request.news": "Tu solicitud «{title}»: {line}",
   "request.answer": "Respuesta de equipe según el tablero, mientras {name} trabaja — «{title}»: {line}",
   "waiting.headline.one": "Esperando por ti ({count}): {list}",

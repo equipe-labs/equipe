@@ -513,6 +513,9 @@ pub const WAITED_ON: &str = "Resumed after waiting on ";
 /// A member takes a dependency off its own ticket not yet started, saying
 /// why its work doesn't touch the other's — or, when it can't, asks the PM.
 pub const UNBLOCK: &str = "unblock";
+/// The PM — or the member it was asked of — closes one of the person's
+/// requests that asks for no work, or no longer, saying why.
+pub const CLOSE_REQUEST: &str = "close_request";
 /// A member asks the person's yes before something done in their name.
 pub const ASK_PERSON: &str = "ask_person";
 /// A member puts a decision to the person: questions with options to pick.
@@ -799,7 +802,7 @@ It waits on the board as a proposal until the PM or the person accepts it."
                     "plan": { "type": "string", "description": "The plan it is cut from: its path, as `write_plan` gave it, or its slug. The ticket links to it, and is listed in its `tickets`." },
                     "tests": { "type": "array", "items": { "type": "string" }, "description": "With `plan`: the test plan's cases this ticket must pass (`TP-1`, `TP-3`). They are copied into its body, word for word, for its owner and QA." },
                     "idea": { "type": "boolean", "description": "The person's idea, kept for later rather than done now: it waits on the board as an idea, which nothing starts and nothing asks about, until the PM puts it to them when its time comes. Use it whenever they float something for someday — 'later', 'an idea', 'not now but' — and keep their own words in the body, with what led to it." },
-                    "request": { "type": "integer", "description": "The person's request it serves (3 for R-3), when equipe wouldn't link it by itself. Left out, a ticket made in answer to the person, or while working on a request's ticket, joins that request." },
+                    "request": { "type": "integer", "description": "The person's request it serves (3 for R-3); 0 when it serves none of them. Left out, a ticket made while working on a request's ticket joins that request, and one made in answer to the person joins their one open request — with more than one open, equipe asks which." },
                     "depends_why": { "type": "string", "description": "Why it must wait on what `depends_on` names, when that isn't plain: a ticket of the person's request waits on work outside it only with a reason." },
                     "steps": STEPS_SCHEMA.clone(),
                     "separate_why": { "type": "string", "description": "Made while you hold a ticket of the person's request: why this is work of its own rather than the next item of that ticket's checklist (another repository, nothing on its branch). Without it, the next part of a request goes on the same ticket by `pass_baton`." },
@@ -845,6 +848,20 @@ or has started, this asks the PM to unblock it, at its next turn. Don't wait sil
                     "why": { "type": "string", "description": "Why its work doesn't need them: what each touches, and that it overlaps nothing." },
                 },
                 "required": ["id", "why"],
+            },
+        }),
+        json!({
+            "name": CLOSE_REQUEST,
+            "description": "Close one of the person's requests that asks for no work — thanks, a question you answered, an answer to \
+yours — or no longer does, saying why in a few words: the person sees it. A request whose work is on the board closes by \
+itself once that work is done; never close one to look done.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "request": { "type": "integer", "description": "Its number (3 for R-3)." },
+                    "why": { "type": "string", "description": "Why, in a few words in the person's language: \"answered in chat\", \"same as R-4\"." },
+                },
+                "required": ["request", "why"],
             },
         }),
         json!({
@@ -1316,7 +1333,7 @@ they say it isn't for now.",
                     "depends_on": { "type": "array", "items": { "type": "integer" } },
                     "status": { "type": "string", "enum": ["todo", "cancelled", "proposed", "idea"] },
                     "why": { "type": "string", "description": "With status proposed, for an idea: why now, in one or two lines in the person's language — what in the business or on the board makes it timely. Shown on its card." },
-                    "request": { "type": "integer", "description": "Put it with the person's request R-n (give n), at any status: its progress is then told with that request's." },
+                    "request": { "type": "integer", "description": "Put it with the person's request R-n (give n), at any status: its progress is then told with that request's, and what came of it moves with it. 0: with none." },
                     "depends_why": { "type": "string", "description": "Why it must wait on what `depends_on` adds, when that isn't plain: a ticket of the person's request waits on work outside it only with a reason." },
                     "steps": STEPS_SCHEMA.clone(),
                 },
