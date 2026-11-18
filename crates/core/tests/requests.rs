@@ -1,6 +1,6 @@
 //! The person's requests, driven the way a screen and an engine drive them:
-//! what they ask a member for becomes one request when the member puts the
-//! first ticket on the board; tickets made while working on it join it; a
+//! what they ask a member for becomes one request, and the tickets the
+//! member puts on the board in answer serve it; tickets made while working on it join it; a
 //! screen sees where it stands; a milestone is told once in the conversation
 //! it was asked in; the member's next turn there starts with where it stands;
 //! and asking after it while the member is busy is answered from the board.
@@ -250,7 +250,7 @@ async fn what_the_person_asks_for_is_one_request_its_tickets_follow_and_its_news
     // (What was steered into the turn stopped comes first, as a memo; the next turn, either way.)
     let mut last = None;
     for _ in 0..100 {
-        last = prompts(&calls).into_iter().rfind(|p| p.contains("what the person asked for in this conversation"));
+        last = prompts(&calls).into_iter().rfind(|p| p.contains("what the person asked for in this conversation") && p.contains("(T-2"));
         if last.is_some() {
             break;
         }

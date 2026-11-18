@@ -845,6 +845,8 @@
   "request.waits.other": "{count} choses vous attendent ({list})",
   "request.all_done": "tout est terminé",
   "request.nothing_yet": "rien au tableau pour l’instant",
+  "request.uncovered": "aucun ticket ne la prend encore en charge — le PM est prévenu",
+  "request.closed": "fermée : {why}",
   "request.news": "Votre demande « {title} » : {line}",
   "request.answer": "Réponse d’equipe d’après le tableau, pendant que {name} travaille — « {title} » : {line}",
   "gate.why.outward": "agit dans le monde",

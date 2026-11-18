@@ -838,6 +838,8 @@
   "request.waits.other": "확인이 필요한 것 {count}개 ({list})",
   "request.all_done": "모두 완료",
   "request.nothing_yet": "아직 보드에 없어요",
+  "request.uncovered": "아직 이 요청을 맡은 티켓이 없어요 — PM에게 알렸어요",
+  "request.closed": "닫힘: {why}",
   "request.news": "요청하신 “{title}”: {line}",
   "request.answer": "equipe 답변 ({name}이(가) 작업 중이라 보드 기준) — “{title}”: {line}",
   "gate.why.outward": "바깥에 실제로 실행돼요",
