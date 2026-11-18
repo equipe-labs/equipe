@@ -73,7 +73,7 @@ pub enum Policy {
 
 impl Policy {
     /// A session's page names its own server's address as it asks for a
-    /// file, so one named from the root is found ([`Server::from_root`]);
+    /// file, so one named from the root is found ([`Server::root_address`]);
     /// nothing goes anywhere else.
     fn referrer(self) -> &'static str {
         match self {
@@ -282,7 +282,7 @@ impl Server {
     /// (`referer`, one of this server's session pages), in its design folder
     /// and then the project around it (`design::page_check::root_absolute`).
     /// The address under the token to send the browser on to, else `None`.
-    fn from_root(&self, path: &str, referer: Option<&str>) -> Option<String> {
+    fn root_address(&self, path: &str, referer: Option<&str>) -> Option<String> {
         let path = path.split(['?', '#']).next()?;
         if path.starts_with(&format!("/{}/", self.token)) {
             return None;
@@ -305,8 +305,18 @@ impl Server {
     }
 
     async fn answer(self, mut socket: tokio::net::TcpStream) {
+        // The whole head, however it arrives: the `Referer` a session's page sends may come in a later packet.
         let mut buf = vec![0u8; 8192];
-        let Ok(Ok(n)) = tokio::time::timeout(Duration::from_secs(10), socket.read(&mut buf)).await else { return };
+        let mut n = 0;
+        while n < buf.len() && !buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+            match tokio::time::timeout(Duration::from_secs(10), socket.read(&mut buf[n..])).await {
+                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                Ok(Ok(more)) => n += more,
+            }
+        }
+        if n == 0 {
+            return;
+        }
         let head = String::from_utf8_lossy(&buf[..n]);
         let mut words = head.lines().next().unwrap_or_default().split(' ');
         let referer = head.lines().skip(1).find_map(|l| l.split_once(':').filter(|(k, _)| k.trim().eq_ignore_ascii_case("referer")).map(|(_, v)| v.trim().to_owned()));
@@ -318,7 +328,7 @@ impl Server {
         // An address from the root, asked by a session's page: on to where it is.
         if found.is_none()
             && let (Some("GET" | "HEAD"), Some(path)) = (method, path)
-            && let Some(to) = self.from_root(path, referer.as_deref())
+            && let Some(to) = self.root_address(path, referer.as_deref())
         {
             let at = to.strip_prefix(&format!("http://127.0.0.1:{}", self.port)).unwrap_or(&to).to_owned();
             let reply = format!("HTTP/1.1 307 Temporary Redirect\r\nlocation: {at}\r\ncache-control: no-store\r\nconnection: close\r\ncontent-length: 0\r\n\r\n");
@@ -461,25 +471,25 @@ mod tests {
         let page = server.put_session(&design.join("sessions/pricing/a.html"), &design).unwrap();
         let base = page.trim_end_matches("sessions/pricing/a.html").to_owned();
         let from = Some(page.as_str());
-        assert_eq!(server.from_root("/tokens.css", from), Some(format!("{base}tokens.css")), "the design folder first");
-        assert_eq!(server.from_root("/design/assets/logo.svg?v=1", from), Some(format!("{base}assets/logo.svg")), "named with its design folder");
-        let og = server.from_root("/public/og.png", from).expect("then the project");
+        assert_eq!(server.root_address("/tokens.css", from), Some(format!("{base}tokens.css")), "the design folder first");
+        assert_eq!(server.root_address("/design/assets/logo.svg?v=1", from), Some(format!("{base}assets/logo.svg")), "named with its design folder");
+        let og = server.root_address("/public/og.png", from).expect("then the project");
         assert!(og.ends_with("/public/og.png") && !og.starts_with(&base), "{og}");
         assert_eq!(server.file_of(&og), Some(project.join("public/og.png")));
-        assert_eq!(server.from_root("/nowhere.css", from), None);
-        assert_eq!(server.from_root("/tokens.css", None), None, "only for a page that asked");
-        assert_eq!(server.from_root("/tokens.css", Some("http://127.0.0.1:1/wrong/x/a.html")), None, "only this server's pages");
+        assert_eq!(server.root_address("/nowhere.css", from), None);
+        assert_eq!(server.root_address("/tokens.css", None), None, "only for a page that asked");
+        assert_eq!(server.root_address("/tokens.css", Some("http://127.0.0.1:1/wrong/x/a.html")), None, "only this server's pages");
         // A decision's prototype gets none of it.
         std::fs::write(project.join("proto.html"), "x").unwrap();
         let proto = server.put(&project.join("proto.html")).unwrap();
-        assert_eq!(server.from_root("/public/og.png", Some(&proto)), None);
+        assert_eq!(server.root_address("/public/og.png", Some(&proto)), None);
         // Over the wire: sent on, and the session's page says where it is from.
         let port = server.port;
         let asked = page.clone();
         let reply = tokio::task::spawn_blocking(move || {
             use std::io::{Read as _, Write as _};
             let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            write!(s, "GET /tokens.css HTTP/1.1\r\nHost: x\r\nReferer: {asked}\r\n\r\n").unwrap();
+            s.write_all(format!("GET /tokens.css HTTP/1.1\r\nHost: x\r\nReferer: {asked}\r\n\r\n").as_bytes()).unwrap();
             let mut out = String::new();
             s.read_to_string(&mut out).unwrap();
             out
