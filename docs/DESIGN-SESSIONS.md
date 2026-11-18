@@ -54,6 +54,11 @@ With two or more variants, the bar shows a letter for each and **Side by side**:
 variant at its address through the preview's own forward, scaled to its column
 (`design_session::side_by_side_page`). Variants are compared live, not as screenshots.
 
+Before a page goes out, `show` checks it. Every file it names has to be inside its design folder (or, for an
+address from the root, in the project). The page also has to open, styled and not blank, in headless Chrome. If
+any of that fails, the designer gets "Not sent:" with the list and a screenshot, and nothing reaches the person.
+If it passes, the designer gets the screenshot of what the person sees (docs/REMOTE.md).
+
 ## 4. Point and comment
 
 **Drop a pin** in the preview's bar, click an element, and type what should change. The pin goes with the next

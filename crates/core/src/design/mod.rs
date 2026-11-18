@@ -76,6 +76,7 @@ pub mod results;
 pub mod refs;
 pub mod registry;
 pub mod own;
+pub mod page_check;
 pub mod kit;
 pub mod lint;
 pub mod contrast;
