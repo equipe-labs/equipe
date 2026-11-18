@@ -887,6 +887,7 @@
   "secrets.replace.no": "古い値のまま",
   "secrets.replace.no_desc": "新しい値は破棄されます。",
   "importance.deploy_words": "デプロイ|リリース|ロールアウト|本番反映|本番適用|公開作業|ローンチ|出荷",
+  "requests.small_talk": "ありがとう|ありがとうございます|どうも|了解|了解です|りょうかい|おけ|オッケー|はい|いいね|笑",
   "importance.hold_words": "保留|凍結|止め|停止|待機|待って|待つ|ホールド",
   "design_session.header": "デザインセッション",
   "design_session.question": "まず {screen} について短いデザインセッションをしませんか？",

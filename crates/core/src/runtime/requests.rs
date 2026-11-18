@@ -37,8 +37,9 @@ pub(super) type Serving = Option<(RequestId, Option<TicketId>, Link)>;
 impl Runtime {
     /// The person said `text` in conversation `session` (a member's, or a
     /// lane of it). Words asking after a request of theirs there aren't a new
-    /// one; anything else they ask there is, from now on — so two things
-    /// asked minutes apart are two requests, each a ticket must serve.
+    /// one, nor is an acknowledgement or chit-chat ([`rules::small_talk`]);
+    /// anything else they ask there is, from now on — so two things asked
+    /// minutes apart are two requests, each a ticket must serve.
     pub(super) fn person_said(&mut self, session: SessionId, text: &str) {
         let Some(squad) = self.sessions.get(&session).filter(|s| s.member.is_some()).and_then(|s| s.squad.clone()) else { return };
         if text.trim().is_empty() {
@@ -46,7 +47,8 @@ impl Runtime {
         }
         let now = now_secs();
         let asks_after = !rules::asked_after(text, &self.requests_in(&squad, session)).is_empty();
-        if !asks_after {
+        // "ok", "thanks!", an emoji: heard, but nothing to put on the board — no request for the PM to close.
+        if !asks_after && !rules::small_talk(text) {
             self.record_request(&squad, session, text, now);
         }
         let said = self.person_said.entry(session).or_insert_with(|| Said { text: String::new(), at: now, last: (String::new(), now) });

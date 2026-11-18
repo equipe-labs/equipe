@@ -5,6 +5,7 @@
 
 use equipe_core::protocol::Ticket;
 use equipe_core::protocol::title;
+use equipe_core::t;
 
 /// The longest a title is drawn in a list before it is cut at a word; the
 /// row's own width cuts it anyway on a narrow screen. Titles written to the
@@ -26,6 +27,33 @@ pub fn heading(ticket: &Ticket) -> Heading {
         Some(ask) => Heading { main: ask, below: Some(title::cut(&ticket.title, LIST_CHARS)) },
         None => Heading { main: title::cut(&ticket.title, LIST_CHARS), below: None },
     }
+}
+
+/// At most this many of a waiting ticket's asks are named under it; the
+/// rest are counted.
+pub const ASKS_SHOWN: usize = 3;
+
+/// What Needs you says under a ticket, in the person's language: while it
+/// waits on them, each open item of its checklist in plain words; how long
+/// it has waited (`waited`, already in words); the request of theirs it
+/// holds up — then what the heading put below. `None` with nothing to say.
+pub fn needs_below(ticket: &Ticket, heading_below: Option<&str>, waited: Option<&str>, request: Option<(u64, &str)>) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if ticket.status == equipe_core::protocol::TicketStatus::Waiting {
+        let asks = ticket.asks();
+        parts.extend(asks.iter().take(ASKS_SHOWN).map(|a| format!("☐ {}", title::cut(a.lines().next().unwrap_or_default(), 40))));
+        if asks.len() > ASKS_SHOWN {
+            parts.push(format!("+{}", asks.len() - ASKS_SHOWN));
+        }
+    }
+    if let Some(waited) = waited.filter(|w| !w.is_empty()) {
+        parts.push(t!("needs.waited", span = waited).to_string());
+    }
+    if let Some((id, name)) = request {
+        parts.push(t!("needs.holds_request", id = id, title = title::cut(name, 40)).to_string());
+    }
+    parts.extend(heading_below.map(str::to_owned));
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 /// The word on a ticket's chip, in the person's language.
@@ -50,6 +78,20 @@ mod tests {
         assert_eq!(heading(&t), Heading { main: "구글시트 3개를 서비스 계정에 공유 · 1분".into(), below: Some("Sync the exit-plan sheets every night".into()) });
         t.status = TicketStatus::InProgress;
         assert_eq!(heading(&t), Heading { main: "Sync the exit-plan sheets every night".into(), below: None }, "only while it waits");
+    }
+
+    #[test]
+    fn needs_you_says_what_a_wait_asks_how_long_and_which_request_it_holds_up() {
+        let mut t = ticket("Infra: AWS console access");
+        t.note = Some(waiting_note_headed(&["Sign in to AWS in the browser card".to_owned(), "Say which region".to_owned()], None, Some("Sign in to AWS")));
+        let below = needs_below(&t, Some("Infra: AWS console access"), Some("5h"), Some((3, "Deploy the ERP"))).unwrap();
+        assert_eq!(below, "☐ Sign in to AWS in the browser card · ☐ Say which region · waiting 5h · holds up R-3 “Deploy the ERP” · Infra: AWS console access");
+        t.asks = (1..=5).map(|i| format!("Step {i}")).collect();
+        assert!(needs_below(&t, None, None, None).unwrap().ends_with("☐ Step 3 · +2"));
+        // Not waiting on them: no checklist, just what else there is to say.
+        t.status = TicketStatus::Review;
+        assert_eq!(needs_below(&t, None, Some("2h"), None).as_deref(), Some("waiting 2h"));
+        assert_eq!(needs_below(&t, None, None, None), None);
     }
 
     #[test]

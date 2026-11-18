@@ -896,6 +896,7 @@
   "secrets.replace.no": "Conservar la anterior",
   "secrets.replace.no_desc": "El valor nuevo se descarta.",
   "importance.deploy_words": "despliegue|desplegar|lanzamiento|publicación|publicacion|puesta en producción|puesta en produccion|salida a producción|salida a produccion",
+  "requests.small_talk": "gracias|muchas gracias|ok|vale|perfecto|genial|bien|sí|si|listo|de acuerdo|claro",
   "importance.hold_words": "retener|retén|congel|detener|detén|espera|bloque|pausa|suspend",
   "design_session.header": "Sesión de diseño",
   "design_session.question": "¿Primero una sesión de diseño corta sobre {screen}?",

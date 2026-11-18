@@ -2967,6 +2967,8 @@
   "settings.auto_put_away_desc": "Se guardan las conversaciones sin actividad durante 3 días. No se borra nada; puedes recuperar cualquiera cuando quieras. Las fijadas se quedan.",
   "sidebar.work_working": "{n} en curso",
   "sidebar.work_needs_you": "{n} te necesitan",
+  "needs.waited": "esperando {span}",
+  "needs.holds_request": "frena R-{id} «{title}»",
   "header.squad_wide": "Todo el equipo",
   "menu.palette": "Paleta de comandos…",
   "menu.toggle_board": "Cambiar tablero / conversación",

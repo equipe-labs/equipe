@@ -132,7 +132,11 @@ first, then the longest waiting.
 - **The person** reads it in one line in the PM's conversation — "Waiting on
   you (9): Sign in to AWS (5h) · Delete the test ERP draft (3h) · …" — when
   something new joins it, at most every half hour (`TELL_EVERY`); the Status
-  screen lists it too, with the same details.
+  screen lists it too, with the same details. On the desktop, Needs you holds
+  every project's and the PM desk's whatever project is in focus, each waiting
+  ticket with its open checklist items, how long it has waited and the request
+  it holds up; its count shows on the squad's row in the sidebar's foot, a
+  click from the list.
 - **The PM** finds all of it (up to eight, then a count) at the start of its
   turns, whether or not it holds other work up. Anything waiting three hours
   or more (`STALE_AFTER`) is marked stale, and is handed to the PM once so it

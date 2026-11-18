@@ -887,6 +887,7 @@
   "secrets.replace.no": "保留旧值",
   "secrets.replace.no_desc": "新值将被丢弃。",
   "importance.deploy_words": "部署|发布|上线|发版|投产|灰度",
+  "requests.small_talk": "谢谢|多谢|好的|好|收到|明白|嗯|可以|哈",
   "importance.hold_words": "暂缓|冻结|暂停|等待|先别|阻止|搁置",
   "design_session.header": "设计会话",
   "design_session.question": "先就 {screen} 做一次简短的设计会话吗？",

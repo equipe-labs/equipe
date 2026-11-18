@@ -896,6 +896,7 @@
   "secrets.replace.no": "Den alten behalten",
   "secrets.replace.no_desc": "Der neue Wert wird verworfen.",
   "importance.deploy_words": "bereitstellung|deployment|veröffentlich|auslieferung|produktivsetzung|inbetriebnahme|go-live|rollout|markteinführung",
+  "requests.small_talk": "danke|danke schön|dankeschön|ok|okay|super|gut|alles klar|passt|ja|cool|prima|top",
   "importance.hold_words": "halt|zurückhalt|einfrier|stopp|pausier|warte|blockier|anhalt",
   "design_session.header": "Design-Session",
   "design_session.question": "Zuerst eine kurze Design-Session zu {screen}?",
