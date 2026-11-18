@@ -117,6 +117,25 @@ request is declined after a day. Everything still waiting sits in the one queue
 the importance gate sorts by impact; a request its member no longer waits on
 doesn't count as an idle member there.
 
+## Waiting on you: one list, never out of sight
+
+Everything that waits on the person is gathered into one list
+(`importance::waiting_list`): tickets put down for them with their checklist's
+open items, runs to bring back, cards to accept, questions, permissions,
+sign-ins and secrets. Each says in plain words what to do (a waiting ticket's
+one-line ask, not the member's title), how long it has waited, what it holds
+up, and which of the person's requests it holds up. The most blocking comes
+first, then the longest waiting.
+
+- **The person** reads it in one line in the PM's conversation — "Waiting on
+  you (9): Sign in to AWS (5h) · Delete the test ERP draft (3h) · …" — when
+  something new joins it, at most every half hour (`TELL_EVERY`); the Status
+  screen lists it too, with the same details.
+- **The PM** finds all of it (up to eight, then a count) at the start of its
+  turns, whether or not it holds other work up. Anything waiting three hours
+  or more (`STALE_AFTER`) is marked stale, and is handed to the PM once so it
+  brings it up with the person in plain words — or finds a way around it.
+
 ## Decide and tell, step by step
 
 1. A member asks a design choice with a recommended option.

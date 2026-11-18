@@ -99,6 +99,8 @@ pub struct Facts {
     /// What waits on the person besides tickets: requests, questions, cards,
     /// secrets — with the tickets they are about, for [`importance`].
     pub asks: Vec<importance::Ask>,
+    /// The person's request each ticket serves, for what a waiting thing holds up.
+    pub held: HashMap<TicketId, equipe_protocol::importance::HeldRequest>,
     /// Members of this squad waiting on clicks or typing because the daemon's
     /// Mac is locked (`Desktop::locked_waiting`): only the person can unlock it.
     pub mac_locked: u32,
@@ -193,6 +195,7 @@ pub fn compute(facts: &Facts, rows: &Rows, now: u64) -> SquadStatus {
     let outlook = speed::outlook(&analysis, &facts.lanes, &facts.engines, &facts.parallel, now);
 
     let mut waiting = importance::waiting_list(&facts.tickets, &facts.asks, facts.pm_accepts);
+    importance::hold_requests(&mut waiting, |t| facts.held.get(&t).cloned());
     let waiting_more = waiting.len().saturating_sub(WAITING_SHOWN) as u32;
     waiting.truncate(WAITING_SHOWN);
 

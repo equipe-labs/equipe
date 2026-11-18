@@ -847,6 +847,8 @@
   "request.nothing_yet": "rien au tableau pour l’instant",
   "request.news": "Votre demande « {title} » : {line}",
   "request.answer": "Réponse d’equipe d’après le tableau, pendant que {name} travaille — « {title} » : {line}",
+  "waiting.headline.one": "En attente de vous ({count}) : {list}",
+  "waiting.headline.other": "En attente de vous ({count}) : {list}",
   "gate.why.outward": "agit dans le monde",
   "gate.why.irreversible": "irréversible",
   "gate.why.data": "données de production",

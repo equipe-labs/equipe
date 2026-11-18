@@ -840,6 +840,8 @@
   "request.nothing_yet": "看板上還沒有",
   "request.news": "你的請求「{title}」：{line}",
   "request.answer": "equipe 回答（{name} 正忙，依據看板）— 「{title}」：{line}",
+  "waiting.headline.one": "等你處理（{count}）：{list}",
+  "waiting.headline.other": "等你處理（{count}）：{list}",
   "gate.why.outward": "會在外部實際執行",
   "gate.why.irreversible": "無法復原",
   "gate.why.data": "正式環境資料",

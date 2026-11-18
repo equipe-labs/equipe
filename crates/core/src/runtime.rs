@@ -901,6 +901,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         status_cache: Default::default(),
         status_told: HashMap::new(),
         escalation: HashMap::new(),
+        waiting_told: HashMap::new(),
         installs: std::collections::HashSet::new(),
         codex_binary: crate::engines::codex_binary(),
         engines: Default::default(),
@@ -1685,6 +1686,8 @@ struct Runtime {
     status_told: HashMap<String, std::time::Instant>,
     /// Each squad's escalation of what stays a bottleneck ([`crate::escalation`]).
     escalation: HashMap<String, crate::escalation::Planner>,
+    /// What the person and the PM were told waits on the person, per squad (`runtime/status.rs`).
+    waiting_told: HashMap<String, status::WaitingTold>,
     /// Both engines' plans, and members moving between them (`engines`).
     engines: engines::Engines,
     /// Pacing to the plans' budgets, per squad and engine ([`pacing`]).

@@ -840,6 +840,8 @@
   "request.nothing_yet": "看板上还没有",
   "request.news": "你的请求“{title}”：{line}",
   "request.answer": "equipe 回答（{name} 正忙，依据看板）— “{title}”：{line}",
+  "waiting.headline.one": "等你处理（{count}）：{list}",
+  "waiting.headline.other": "等你处理（{count}）：{list}",
   "gate.why.outward": "会在外部实际执行",
   "gate.why.irreversible": "无法撤销",
   "gate.why.data": "生产数据",

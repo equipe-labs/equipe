@@ -85,6 +85,21 @@ pub struct Waiting {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<u64>,
     pub impact: Impact,
+    /// What it asks of the person, item by item, while a ticket waits for
+    /// them (its checklist's open items). Left out by an older daemon.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asks: Vec<String>,
+    /// The person's request it holds up, when its ticket serves one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<HeldRequest>,
+}
+
+/// One of the person's requests, as a waiting thing names what it holds up.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldRequest {
+    pub id: u64,
+    /// In the person's words, cut short.
+    pub title: String,
 }
 
 /// Which waiting things may escalate at all.

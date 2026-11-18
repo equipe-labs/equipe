@@ -847,6 +847,8 @@
   "request.nothing_yet": "noch nichts auf dem Board",
   "request.news": "Deine Anfrage „{title}“: {line}",
   "request.answer": "equipe-Antwort vom Board, während {name} arbeitet — „{title}“: {line}",
+  "waiting.headline.one": "Wartet auf dich ({count}): {list}",
+  "waiting.headline.other": "Wartet auf dich ({count}): {list}",
   "gate.why.outward": "wirkt nach außen",
   "gate.why.irreversible": "nicht rückgängig zu machen",
   "gate.why.data": "Produktionsdaten",
