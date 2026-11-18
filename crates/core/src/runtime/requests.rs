@@ -356,6 +356,7 @@ impl Runtime {
         if deps.is_empty() {
             return Ok(String::new());
         }
+        self.no_wait_on_main_red(squad, deps)?;
         let why = board::arg_str(args, "depends_why").map(str::trim).filter(|w| !w.is_empty());
         let Some(journal) = self.journals.get(squad) else { return Ok(String::new()) };
         let serves = match ticket {

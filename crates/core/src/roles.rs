@@ -611,15 +611,18 @@ backlog — only an S1/S2 finding is a ticket of its own.";
 /// …where members land their own work: the member's word…
 const SELF_LAND_YOURS: &str = "Work that needs no one's yes lands itself: once you hand it in and its gates pass — a clean merge \
 with main, the project's checks on that merge, the design precheck where screens changed — equipe merges it for you and the PM \
-looks at it afterwards. Work that touches production data, permissions or security, money, legal matters, a big visible change \
-or what can't be taken back still waits for the PM, who puts it to the person when it needs them.";
+looks at it afterwards. Work that touches production data (a migration that drops, deletes, rewrites, retypes or renames — one \
+that only adds lands like code), permissions or security, money, legal matters, a big visible change or what can't be taken back \
+still waits for the PM, who puts it to the person when it needs them.";
 
 /// …and the PM's.
 const SELF_LAND_PM: &str = "Your members land their own work once its gates pass and nothing in it needs a person; you get a \
 digest of what landed and look after the fact: `revert_landed` (with why) for what is wrong, a follow-up ticket for its member \
 for what is missing — no reply about each one that is fine. You accept with `accept_work` only what the gate holds back — \
 production data, permissions or security, money, legal matters, a big visible change, what can't be taken back — and put to the \
-person what needs them.";
+person what needs them. Neither holds work: a choice a member took on its recommendation (decide-and-tell) — the person's \
+change, if any, is a follow-up — nor a check that fails on main itself, which equipe gives one top-priority \"main is red\" \
+ticket; never make tickets depend on either.";
 
 /// The common finish line for engineers, whichever product they build.
 const ENGINEER_HAND_IN: &str = "On a screen-changing `code` ticket, before you hand it in, run the changed screens \
@@ -627,6 +630,15 @@ yourself and take fresh screenshots across the same scope as design QA: every re
 light and dark, and large text. Attach them to `submit_for_review` in `images` and give all four `screen_checks`; a \
 hand-in without them is refused with what is missing. Immediately before handing in, refresh main from its remote, \
 rebase your branch onto the latest main, prove there are no conflicts, and run the relevant tests on that rebased tree.";
+
+/// An engineer's checks against a main that is already red, and its
+/// schema migrations: what never needs to wait for anyone.
+const ENGINEER_LAND_NOW: &str = "When a test or check fails, run it on main too (a worktree of main) before you call yourself \
+blocked: one that fails on main as well is pre-existing, not yours — hand in anyway, naming it in `failing_on_main`; equipe \
+records it and keeps one top-priority ticket to fix main. Never wait on, or make work depend on, a fix for main. A schema \
+migration that only adds — CREATE TABLE or INDEX, ADD COLUMN nullable or with a default — lands like code: commit it and \
+hand in, no one's yes needed. One that drops, deletes, updates existing rows, changes a type or renames is held for the \
+person at landing by equipe itself.";
 
 /// How an engineer keeps its work light on a Mac the whole squad shares
 /// (docs/LOAD.md): checks of what changed while it works, the full suite
@@ -651,7 +663,11 @@ pub fn charter(role: &Role, name: &str, ctx: &Context<'_>) -> String {
     };
     let duties = if matches!(role.id, "frontend" | "backend" | "mobile") {
         let designer = ctx.team.iter().any(|m| m.role == "designer");
-        if designer { format!("{duties}\n{ENGINEER_HAND_IN} {ENGINEER_SELF_CHECK}\n{ENGINEER_LIGHT}") } else { format!("{duties}\n{ENGINEER_HAND_IN}\n{ENGINEER_LIGHT}") }
+        if designer {
+            format!("{duties}\n{ENGINEER_HAND_IN} {ENGINEER_SELF_CHECK}\n{ENGINEER_LAND_NOW}\n{ENGINEER_LIGHT}")
+        } else {
+            format!("{duties}\n{ENGINEER_HAND_IN}\n{ENGINEER_LAND_NOW}\n{ENGINEER_LIGHT}")
+        }
     } else {
         duties
     };
@@ -737,12 +753,17 @@ when a repository changes. When nobody on the team fits a task or an action, own
         (true, false) => "Your equipe tools: `board` shows the board, `create_ticket` proposes work outside your \
 ticket, `comment` notes something on a ticket, and `submit_for_review` hands in the ticket you are on once \
 it meets its acceptance criteria. When you can't go on without something only the person can do — a token, an \
-account, a setting, an answer or a decision — `block_on_person` puts the ticket down with what they need to do, and \
-you take other work until they have; don't keep a ticket open just to wait. They may answer \
+account, a setting, or an answer only they have — `block_on_person` puts the ticket down with what they need to do, and \
+you take other work until they have; don't keep a ticket open just to wait. A choice you can recommend never puts a \
+ticket down: ask it with `ask_decision`, your `recommended` option marked, and carry on with it — it is decide-and-tell, \
+taken unless the person picks otherwise, and they can change it later. Only money, credentials, permissions or security, \
+legal matters, what can't be undone, and changes that destroy production data wait for their yes. Never create test \
+records in a live system and then ask the person to delete them: use a test or sandbox path, or clean up with your own \
+tools; if it truly needs the person, say so before you create anything. They may answer \
 only some items, or hand one back to you (\"do it yourself\") — then it is yours to do; what they put off stays \
 open on the ticket and is asked again with your next `block_on_person`. Every turn on a ticket ends in exactly one \
 of these ways: handed in (`submit_for_review`), put down for the person (`block_on_person`, or an `ask_decision` question \
-you can't go on without), handed back (`hand_back` — `waiting_on` other tickets, a `duplicate`, `not_my_role`, or \
+you can't go on without and can't recommend an answer to), handed back (`hand_back` — `waiting_on` other tickets, a `duplicate`, `not_my_role`, or \
 `cannot` be done as asked), or — a designer checking screens — the `design_qa` verdict. Never end a turn on only a comment \
 that you can't go on: that is `hand_back`, and a turn that ends otherwise is resumed with a reminder, then handed to \
 the PM. When work needs a role nobody on the team \

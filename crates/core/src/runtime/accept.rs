@@ -79,18 +79,38 @@ them, and note what they said on the ticket with `comment`, for the PM."
                 if one { "it" } else { "them" }
             )
         });
+        // Work its member lands itself — nothing in it needs a person — is never put to anyone (`runtime::flow`).
+        let own_landing: Vec<TicketId> = if changes { Vec::new() } else { named.iter().copied().filter(|t| !landing.contains(t) && self.lands_itself(squad, *t)).collect() };
+        let landing_line = match (landing_line, own_landing.is_empty()) {
+            (line, true) => line,
+            (line, false) => {
+                let own = format!(
+                    "{} {} landed by {} member: nothing in it needs a person and its gates run by themselves — nothing to put to the person. \
+If its landing stopped (you were told so), `accept_work` lands it.",
+                    crate::by_words::list(&own_landing),
+                    if own_landing.len() == 1 { "is" } else { "are" },
+                    if own_landing.len() == 1 { "its" } else { "their" }
+                );
+                Some(match line {
+                    Some(line) => format!("{line} {own}"),
+                    None => own,
+                })
+            }
+        };
+        let landing: Vec<TicketId> = landing.into_iter().chain(own_landing).collect();
         // What is landing now isn't waiting on anyone: left out of the rest.
         let mut tickets = tickets.to_vec();
         for t in &mut tickets {
             t.landing = self.landing(squad, t);
         }
         let mut args = args.clone();
-        if !landing.is_empty() && !all {
+        if !landing.is_empty() {
             let rest: Vec<TicketId> = named.iter().copied().filter(|t| !landing.contains(t)).collect();
             if rest.is_empty() {
                 return Ok(landing_line.unwrap_or_default());
             }
             args["tickets"] = serde_json::json!(rest);
+            args["all"] = serde_json::json!(false);
         }
         let args = &args;
         let checked = rules::check(args, &tickets, &open, &declined, now_secs());

@@ -85,6 +85,7 @@ mod briefs;
 mod plans;
 mod accept;
 mod gate;
+mod main_red;
 pub(crate) use gate::checks_scratch;
 mod secrets;
 mod cli_signin;
@@ -831,6 +832,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         asked_in: HashMap::new(),
         asked_by: HashMap::new(),
         browser_back: HashMap::new(),
+        unmarked_asked: HashSet::new(),
         held: HashMap::new(),
         checking: HashMap::new(),
         let_go: std::collections::HashSet::new(),
@@ -878,6 +880,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         merge_retries_seeded: false,
         accepting: std::collections::HashSet::new(),
         handed_in_files: HashMap::new(),
+        handed_in_sql: HashMap::new(),
         closing: HashMap::new(),
         closing_git: HashSet::new(),
         gates: HashMap::new(),
@@ -1508,6 +1511,10 @@ struct Runtime {
     /// member looks at the page itself rather than asking what they saw
     /// ([`Runtime::ask_decision`]).
     browser_back: HashMap<(String, String), u64>,
+    /// Choices a member asked without a recommended option and was sent back
+    /// once to mark one (squad, member, first question): asked again as they
+    /// are, they go to the person.
+    unmarked_asked: HashSet<(String, String, String)>,
     /// Lanes in the person's hands, and what their member asked them for.
     held: HashMap<String, Option<String>>,
     /// Lanes put in the person's hands by equipe itself, for a page that
@@ -1625,6 +1632,9 @@ struct Runtime {
     /// The files each ticket's branch changed when it was last handed in, by
     /// squad and ticket: what decides whether its member may land it (`runtime::flow`).
     handed_in_files: HashMap<(String, TicketId), Vec<String>>,
+    /// The contents of the SQL migrations each handed-in branch changed, by
+    /// path, read from its worktree at hand-in (`crate::person_gate::read_sql`).
+    handed_in_sql: HashMap<(String, TicketId), std::collections::BTreeMap<String, String>>,
     /// A ticket's closing git work, done off the loop already, by squad and
     /// ticket: [`Runtime::close_ticket`] takes it instead of doing it again.
     closing: HashMap<(String, TicketId), Closed>,
@@ -7848,6 +7858,9 @@ todo); or drop it if it's no longer wanted.]"
                     let mut changed = sandbox.changed_files().unwrap_or_default();
                     // What the branch changed decides whether its member may land it (`runtime::flow`).
                     self.handed_in_files.insert((squad.clone(), ticket.id), changed.clone());
+                    // …and what its SQL migrations do, read where it was made: one that only adds lands like code.
+                    let sql = crate::person_gate::read_sql(&sandbox.path, &changed);
+                    self.handed_in_sql.insert((squad.clone(), ticket.id), sql);
                     changed.extend(crate::design::captures::changed(&sandbox.path, &sandbox.base));
                     crate::visuals::hand_in(&work.shown, &changed, &sandbox.path, &roots)
                 }
@@ -9301,6 +9314,25 @@ there, end your turn, and carry on when they say they're done."
             let _ = reply.send(ToolResult::ok(text));
             return;
         }
+        // A schema migration that only adds lands like code: nobody's yes is needed for it (`crate::migrations`).
+        if matches!(kind, crate::protocol::autonomy::Kind::ProductionData | crate::protocol::autonomy::Kind::Other)
+            && let Some(root) = self.sessions.get(&id).and_then(|s| s.work.as_ref()).and_then(|w| w.sandbox.as_ref()).map(|s| s.path.clone())
+            && let Some(files) = crate::person_gate::additive_migrations_named(&root, &action)
+        {
+            if let Some(journal) = self.journal(&call.squad)
+                && let Some(ticket) = ticket
+            {
+                let _ = journal.ticket_event(ticket, "equipe", "additive migration", &files.join(", "));
+            }
+            let _ = reply.send(ToolResult::ok(format!(
+                "Not asked: {} only add to the database (new tables, indexes, or columns existing rows can take — nothing dropped, \
+deleted, rewritten, retyped or renamed), so they land like code: no one's yes is needed. Commit them with your work and hand it in; \
+the PM hears of them in the digest of landed work. A migration that drops, deletes, updates existing rows, changes a type or \
+renames still needs the person — equipe holds that one at landing by itself.",
+                files.join(", ")
+            )));
+            return;
+        }
         let approval_id = self.next_approval;
         self.next_approval += 1;
         let approval = Approval {
@@ -10735,30 +10767,39 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     Some(gap) => format!("{summary}\n\nNot cleared before hand-in — for the person to see (the design checks couldn't be cleared by going round again):\n{}", gap.iter().map(|g| format!("- {g}")).collect::<Vec<_>>().join("\n")),
                     None => summary,
                 };
+                // Checks that fail on main just the same: pre-existing, not this change's — noted for whoever reads it.
+                let failing_on_main = board::arg_strs(&args, "failing_on_main");
+                let summary = if failing_on_main.iter().any(|f| !f.trim().is_empty()) {
+                    format!("{summary}\n\nPre-existing on main (fails there too, not this change's): {}", failing_on_main.iter().map(|f| f.trim()).filter(|f| !f.is_empty()).collect::<Vec<_>>().join("; "))
+                } else {
+                    summary
+                };
                 work.handed_in = Some(summary);
                 work.shown = shown;
                 work.waiting = None;
                 work.screens = screens;
                 // Findings of its self-check it says aren't real: a designer judges them.
                 work.waive = board::arg_str(&args, "waive_findings").map(str::trim).filter(|w| !w.is_empty()).map(str::to_owned);
+                let red_note = self.handed_in_failing_on_main(&squad, ticket, &member, &failing_on_main);
+                let Some(work) = self.sessions.get_mut(&id).and_then(|s| s.work.as_mut()) else { return Err("You're not on a ticket — there is nothing to hand in.".into()) };
                 if let Some(gap) = &gap {
                     let n = gap.len();
                     let line = move |name: &str| format!("{name} handed in T-{ticket} with {n} design check(s) it couldn't clear, marked in its hand-in for the person: look at why before they review it.");
                     let shown = format!("T-{ticket}: handed in with {n} design check(s) not cleared, marked for the person.");
                     self.tell_the_pm(id, line, Some(&shown));
                     return Ok(format!(
-                        "Handed in T-{ticket}, with the {n} check(s) it couldn't clear marked for the person; the PM is told. Your changes are committed when this turn ends. End your turn now with a short summary."
+                        "Handed in T-{ticket}, with the {n} check(s) it couldn't clear marked for the person; the PM is told. Your changes are committed when this turn ends.{red_note} End your turn now with a short summary."
                     ));
                 }
                 Ok(if screens {
                     format!(
                         "Handed in T-{}. Your changes are committed when this turn ends; the squad's designer checks \
-the screens, then the person reviews them. End your turn now with a short summary.",
+the screens, then the person reviews them.{red_note} End your turn now with a short summary.",
                         work.ticket
                     )
                 } else {
                     format!(
-                        "Handed in T-{}. Your changes are committed when this turn ends and the person reviews them. \
+                        "Handed in T-{}. Your changes are committed when this turn ends and the person reviews them.{red_note} \
 End your turn now with a short summary.",
                         work.ticket
                     )
@@ -10774,6 +10815,15 @@ End your turn now with a short summary.",
                     board::arg_strs(&args, "permission").iter().filter_map(|p| crate::protocol::asks::Permission::parse(p)).collect();
                 if asked.is_empty() && permissions.is_empty() {
                     return Err("List what the person has to do, one thing per item.".into());
+                }
+                // A question or a choice doesn't put a ticket down by itself: it goes through ask_decision and the squad's autonomy policy.
+                if let Some(question) = asked.iter().find(|a| board::is_question(a)) {
+                    return Err(format!(
+                        "\"{}\" is a question, not something only the person can do. Ask it with `ask_decision`: a choice with your \
+`recommended` option marked — decide-and-tell, so you carry on with it and your ticket doesn't wait — or, for what only they \
+know, a question without options. `block_on_person` is for what only they can do: a token to issue, an account or a setting to change.",
+                        clip(question, 120)
+                    ));
                 }
                 // Steps asking the person to change macOS privacy permissions: refused when
                 // equipe's desktop tools already hold them, else one card with one button.

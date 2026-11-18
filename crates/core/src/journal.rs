@@ -2044,6 +2044,17 @@ impl Journal {
         self.set_meta("landed_digest_at", &at.to_string())
     }
 
+    /// The "main is red" tickets equipe opened, by the failing check they
+    /// fix (its project and command): one per check, never a second while
+    /// the first is open (`runtime::main_red`).
+    pub fn main_red(&self) -> std::collections::BTreeMap<String, TicketId> {
+        self.meta("main_red").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    pub fn set_main_red(&self, red: &std::collections::BTreeMap<String, TicketId>) -> Result<()> {
+        self.set_meta("main_red", &serde_json::to_string(red).unwrap_or_else(|_| "{}".into()))
+    }
+
     /// Work its members landed themselves since `since`: each ticket once,
     /// with when and by whom, oldest first.
     pub fn landed_since(&self, since: i64) -> Result<Vec<(TicketId, i64, String)>> {

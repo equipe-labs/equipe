@@ -25,10 +25,10 @@ Each kind of thing gets one of three levels:
 
 | Kind | Default | Notes |
 | --- | --- | --- |
-| Design choices between options a member made | Decide and tell (30 min) | The member's `recommended` option is taken when the window passes. Low-priority tickets don't wait. A choice without a recommended option, a taste board, or one whose words name the floor is always asked. |
+| Design and product choices between options a member made | Decide and tell (30 min) | A designer's choice, a pictured or tried one, or any choice whose every question has the member's `recommended` option (and says nothing of live data). The member carries on with its recommendation at once — its ticket is never put down for the choice — and the option is taken when the window passes unless the person picks otherwise. Low-priority tickets don't wait. A design choice between options with no recommendation is sent back once to mark one (a product choice without one is asked); a taste board, an open question, or one whose words name the floor is always asked. `block_on_person` refuses a need that is a question (it ends on a question mark) and points to `ask_decision`. |
 | Merging reviewed work | Just do | The same switch as "the PM accepts the team's work" (`pm_accepts`). The importance gate (`person_gate`) reads this policy: small work is the PM's to accept; work weighty for a reason on the floor (outward, irreversible, security, money, legal) or a big visible change always goes to the person on a card, and work touching production data does unless the person set "writing to live data" to just-do (`Why::pm_may`). |
 | Internal and process questions | Just do | `ask_decision` refuses a set whose every question the member marked `kind: internal` and tells it to decide and note its choice on the ticket. |
-| Writing to live data | Ask | Open to standing allowances (below). Set to decide-and-tell or just-do, it goes ahead with a one-line note. |
+| Writing to live data | Ask | Open to standing allowances (below). Set to decide-and-tell or just-do, it goes ahead with a one-line note. A schema migration that only adds (CREATE TABLE/INDEX, ADD COLUMN nullable or with a default — read from its SQL by `crate::migrations`) isn't a live-data write to ask about: it lands like code, and the PM's digest of landed work says so; an `ask_person` that names only such files is answered "not asked". One that drops, deletes, updates existing rows, changes a type or renames still needs the person. |
 
 ### The floor
 

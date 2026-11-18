@@ -162,9 +162,16 @@ main like a CI workflow:
   (pushed if the PM was asked to push). If main moved meanwhile, the checks run again on
   the new main (up to three times).
 - **Fail or time out:** the ticket goes back to its member, on the same branch, with the
-  failing command and the last lines of its output. Main is untouched. If the same command
-  also fails on main alone, main is broken already: the work stays in review, nothing is
-  merged, and the PM and the person hear that main needs fixing first.
+  failing command and the last lines of its output. Main is untouched.
+- **Fails on main too:** if the same command also fails on main alone, main is broken
+  already and it isn't the branch's fault: the failure is recorded on the ticket as
+  *pre-existing on main*, the remaining commands still run on the merge, and the work lands
+  when they pass. Where the output names failing tests (cargo, pytest, go, jest/vitest), a
+  test that fails on the merge but not on main still sends the work back. equipe keeps
+  exactly one top-priority "Main is red: <command>" ticket per failing check, and refuses
+  `depends_on` (or a `waiting_on` hand-back) on it: nothing waits for main to be fixed.
+  A member that finds a check failing on main before handing in names it in
+  `submit_for_review`'s `failing_on_main`, with the same effect.
 - **The file is read from main as it stands**, never from the branch being checked, so a
   branch can't weaken the checks it is held to. A file that can't be read (bad JSON, an
   unknown key, no commands) holds the merge back rather than guessing.

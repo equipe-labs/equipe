@@ -8,9 +8,13 @@
 //! plain line on what changes for people ([`what_changes`]), never by number
 //! alone. Pure rules, tested here; `runtime::person_gate` applies them.
 
+use std::collections::BTreeMap;
+
 use equipe_protocol::autonomy::{Kind, Level, Policy};
 use equipe_protocol::title::TicketLabel;
 use equipe_protocol::{Ticket, TicketKind};
+
+use crate::migrations;
 
 /// Why something needs the person, the weightiest first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -107,6 +111,30 @@ fn sign_in(text: &str) -> Option<Why> {
 /// (acting in the world, a deploy), the files its branch changed, and its
 /// title's words. `None`: small, the PM's to decide.
 pub fn weigh(ticket: &Ticket, changed: &[String]) -> Option<Why> {
+    weigh_change(ticket, changed, &BTreeMap::new())
+}
+
+/// Files that go with a schema migration: the schema it describes
+/// (`schema.prisma`, `schema.rb`, `db/schema.ts`), a migrations folder's
+/// lock or journal, the database code using it. Not a migration in another
+/// language (`db/migrate/…rb`, `migrations/…py`), which can't be read, nor seeds.
+fn goes_with_migration(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    let code_migration = lower.contains("migrat") && lower.rsplit_once('.').is_some_and(|(_, kind)| MIGRATION_CODE.contains(&kind));
+    !code_migration && !lower.contains("seed") && ["migrat", "schema", "db/", "database", "supabase/"].iter().any(|s| lower.contains(s))
+}
+
+/// Kinds of file a migration written as code comes in.
+const MIGRATION_CODE: &[&str] = &["rb", "py", "js", "ts", "mjs", "cjs", "go", "java", "kt", "php", "ex", "exs", "cs", "rs", "scala"];
+
+/// [`weigh`], with `sql` the contents of the SQL migrations its branch
+/// changed, by path. When every SQL migration it runs forward only adds
+/// (`crate::migrations`) — new tables, indexes, columns existing rows can
+/// take — production data is no reason to hold it: neither those files, the
+/// files that go with them, nor its title's words say so. A migration whose
+/// contents aren't given, or that drops, deletes, updates, retypes or
+/// renames, weighs as before. Down migrations aren't run forward.
+pub fn weigh_change(ticket: &Ticket, changed: &[String], sql: &BTreeMap<String, String>) -> Option<Why> {
     let mut found: Vec<Why> = Vec::new();
     if ticket.kind == TicketKind::Action {
         found.push(Why::Outward);
@@ -116,13 +144,102 @@ pub fn weigh(ticket: &Ticket, changed: &[String]) -> Option<Why> {
     }
     // Docs and notes only: never weighty, whatever they mention.
     let docs = |p: &str| p.ends_with(".md") || p.ends_with(".txt") || p.starts_with("docs/") || p.contains("/docs/") || p.starts_with("design/");
-    found.extend(changed.iter().filter(|p| !docs(p)).filter_map(|p| sign_in(p)));
-    found.extend(sign_in(&ticket.title));
+    let forward: Vec<&String> = changed.iter().filter(|p| !docs(p) && migrations::is_sql(p)).collect();
+    let additive = !forward.is_empty() && forward.iter().all(|p| sql.get(p.as_str()).is_some_and(|text| migrations::classify(text).is_additive()));
+    for path in changed.iter().filter(|p| !docs(p)) {
+        // A rollback isn't run when it lands; an additive migration lands like code.
+        if (path.to_ascii_lowercase().ends_with(".sql") && migrations::is_down(path)) || (additive && migrations::is_sql(path)) {
+            continue;
+        }
+        match sign_in(path) {
+            Some(Why::Data) if additive && goes_with_migration(path) => {}
+            sign => found.extend(sign),
+        }
+    }
+    found.extend(sign_in(&ticket.title).filter(|why| !(additive && *why == Why::Data)));
     let screens = changed.iter().filter(|p| p.rsplit_once('.').is_some_and(|(_, kind)| SCREEN_KINDS.contains(&kind.to_ascii_lowercase().as_str()))).count();
     if screens > VISIBLE_FILES {
         found.push(Why::Visible);
     }
     found.into_iter().min()
+}
+
+/// The largest migration file read.
+const MOST_SQL: u64 = 512 * 1024;
+
+/// The contents of the SQL migrations among `changed`, read from the
+/// worktree at `root`, by path: a file gone (deleted) or too big to read
+/// is left out, and so weighs as before.
+pub fn read_sql(root: &std::path::Path, changed: &[String]) -> BTreeMap<String, String> {
+    changed
+        .iter()
+        .filter(|p| migrations::is_sql(p))
+        .filter_map(|p| {
+            let path = root.join(p);
+            let size = std::fs::metadata(&path).ok()?.len();
+            (size <= MOST_SQL).then(|| std::fs::read_to_string(&path).ok()).flatten().map(|text| (p.clone(), text))
+        })
+        .collect()
+}
+
+/// The SQL migration files `words` (a member's request) names, found in
+/// the worktree at `root` — by their path, or by file name under it — when
+/// it names at least one and every one only adds (`crate::migrations`).
+/// `None` when it names none, one can't be found or read, or one doesn't only add.
+pub fn additive_migrations_named(root: &std::path::Path, words: &str) -> Option<Vec<String>> {
+    let named: Vec<String> = words
+        .split(|c: char| c.is_whitespace() || matches!(c, '`' | '"' | '\'' | ',' | ';' | '(' | ')' | '[' | ']' | '“' | '”' | '「' | '」' | '、' | '，'))
+        .map(|t| t.trim_end_matches(['.', ':', '!', '?']).trim_start_matches("./"))
+        .filter(|t| t.to_ascii_lowercase().ends_with(".sql"))
+        .map(str::to_owned)
+        .collect();
+    if named.is_empty() {
+        return None;
+    }
+    let mut found = Vec::new();
+    for name in &named {
+        let path = Some(root.join(name)).filter(|p| p.is_file()).or_else(|| find_file(root, name.rsplit('/').next().unwrap_or(name)))?;
+        if std::fs::metadata(&path).ok()?.len() > MOST_SQL || migrations::is_down(name) {
+            return None;
+        }
+        let text = std::fs::read_to_string(&path).ok()?;
+        if !migrations::classify(&text).is_additive() {
+            return None;
+        }
+        if !found.contains(name) {
+            found.push(name.clone());
+        }
+    }
+    Some(found)
+}
+
+/// A file called `name` under `root`, looked for a few levels down past
+/// what is never a project's own (`.git`, `node_modules`, build folders).
+fn find_file(root: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    const SKIP: &[&str] = &[".git", "node_modules", "target", "dist", "build", ".next", "vendor", ".venv", "venv"];
+    let mut dirs = vec![(root.to_path_buf(), 0usize)];
+    let mut looked = 0usize;
+    while let Some((dir, depth)) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            looked += 1;
+            if looked > 20_000 {
+                return None;
+            }
+            let path = entry.path();
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_dir() {
+                if depth < 6 && !SKIP.contains(&file_name.as_ref()) {
+                    dirs.push((path, depth + 1));
+                }
+            } else if file_name == name {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 /// What changes for people, in a plain line: the first sentence of its
@@ -198,6 +315,49 @@ mod tests {
         assert_eq!(weigh(&ticket("Rotate the password policy", ""), &[]), Some(Why::Security), "an English title says it too");
         assert_eq!(weigh(&tweak, &paths(&["design/tokens.json", "src/components/AuthorCard.tsx", "src/components/Notice.tsx"])), None, "design tokens, an author, a notice: none of it weighty");
         assert_eq!(tweak.status, TicketStatus::Review);
+    }
+
+    #[test]
+    fn an_additive_migration_lands_like_code_and_a_destructive_one_needs_the_person() {
+        let t = ticket("Add usage event timing migration", "");
+        let files = paths(&["db/migrations/225_usage_event_timing.sql", "db/migrations/226_usage_event_index.sql", "src/db/usage.ts", "prisma/schema.prisma"]);
+        let sql = |a: &str, b: &str| BTreeMap::from([(files[0].clone(), a.to_owned()), (files[1].clone(), b.to_owned())]);
+        let additive = sql("CREATE TABLE usage_event_timing (id bigserial PRIMARY KEY, took_ms int);", "CREATE INDEX usage_events_at ON usage_events (at); ALTER TABLE usage_events ADD COLUMN source text DEFAULT 'web';");
+        assert_eq!(weigh_change(&t, &files, &additive), None, "new tables, an index, a defaulted column: the title's 'migration' doesn't hold it either");
+        assert_eq!(weigh_change(&t, &files, &sql("CREATE TABLE a (id int);", "ALTER TABLE usage_events DROP COLUMN note;")), Some(Why::Data), "one destructive file is enough");
+        assert_eq!(weigh_change(&t, &files, &sql("UPDATE usage_events SET source = 'web';", "CREATE INDEX i ON t (a);")), Some(Why::Data));
+        assert_eq!(weigh_change(&t, &files, &BTreeMap::from([(files[0].clone(), "CREATE TABLE a (id int);".to_owned())])), Some(Why::Data), "a migration whose SQL wasn't read weighs as before");
+        assert_eq!(weigh(&t, &files), Some(Why::Data), "no contents: as before");
+        // Other reasons still hold it: an additive migration doesn't excuse a change to sign-in code.
+        let mut with_auth = files.clone();
+        with_auth.push("src/lib/auth/session.ts".into());
+        assert_eq!(weigh_change(&t, &with_auth, &additive), Some(Why::Security));
+        // A migration in code can't be read: it still asks.
+        let mut with_rails = files.clone();
+        with_rails.push("db/migrate/20261118_add_timing.rb".into());
+        assert_eq!(weigh_change(&t, &with_rails, &additive), Some(Why::Data));
+        // A rollback beside it isn't run when it lands.
+        let mut with_down = files.clone();
+        with_down.push("db/migrations/225_usage_event_timing.down.sql".into());
+        assert_eq!(weigh_change(&t, &with_down, &additive), None);
+    }
+
+    #[test]
+    fn a_request_naming_only_additive_migrations_needs_no_one() {
+        let root = std::env::temp_dir().join(format!("equipe-person-gate-sql-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("db/migrations")).unwrap();
+        std::fs::write(root.join("db/migrations/225_usage_event_timing.sql"), "CREATE TABLE usage_event_timing (id bigserial PRIMARY KEY);").unwrap();
+        std::fs::write(root.join("db/migrations/226_usage_event_source.sql"), "ALTER TABLE usage_events ADD COLUMN source text;").unwrap();
+        std::fs::write(root.join("db/migrations/227_drop_old.sql"), "DROP TABLE old_usage;").unwrap();
+        let named = additive_migrations_named(&root, "Apply `225_usage_event_timing.sql` and db/migrations/226_usage_event_source.sql to production.");
+        assert_eq!(named, Some(vec!["225_usage_event_timing.sql".to_owned(), "db/migrations/226_usage_event_source.sql".to_owned()]));
+        assert_eq!(additive_migrations_named(&root, "Apply 225_usage_event_timing.sql and 227_drop_old.sql"), None, "one drops");
+        assert_eq!(additive_migrations_named(&root, "Apply 999_missing.sql"), None, "not found");
+        assert_eq!(additive_migrations_named(&root, "Create a test draft in the ERP"), None, "names no migration");
+        let read = read_sql(&root, &paths(&["db/migrations/225_usage_event_timing.sql", "src/app.ts", "db/migrations/gone.sql"]));
+        assert_eq!(read.keys().cloned().collect::<Vec<_>>(), vec!["db/migrations/225_usage_event_timing.sql".to_owned()]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

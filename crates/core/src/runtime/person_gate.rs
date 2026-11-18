@@ -39,7 +39,23 @@ impl Runtime {
     pub(super) fn gate_card(&mut self, squad: &str, member: &str, tickets: &[TicketId], args: &Value) -> Result<Gate, String> {
         let said = why_arg(args)?;
         let board: Vec<Ticket> = tickets.iter().filter_map(|t| self.find_ticket(squad, *t)).collect();
-        let weighed: Vec<(&Ticket, Option<Why>)> = board.iter().map(|t| (t, rules::weigh(t, &[]).or(said))).collect();
+        // Production data is no reason for a card when the only data it touches is an additive migration (`crate::migrations`).
+        let additive = |t: &Ticket| {
+            let key = (squad.to_owned(), t.id);
+            match (self.handed_in_files.get(&key), self.handed_in_sql.get(&key)) {
+                (Some(files), Some(sql)) if !sql.is_empty() => rules::weigh_change(t, files, sql) != Some(Why::Data),
+                _ => false,
+            }
+        };
+        let weighed: Vec<(&Ticket, Option<Why>)> = board
+            .iter()
+            .map(|t| {
+                let skip_data = additive(t);
+                let kept = |w: &Why| !(skip_data && *w == Why::Data);
+                let why = rules::weigh(t, &[]).filter(kept).or(said.filter(kept));
+                (t, why)
+            })
+            .collect();
         // The PM never accepts its own work: that always goes to the person.
         let own = board.iter().any(|t| t.assignee.as_deref() == Some(member) || (t.assignee.is_none() && t.owner.as_deref() == Some(member)));
         // The squad's autonomy policy is the one source: merges the PM's to

@@ -7567,7 +7567,11 @@ async fn a_decision_the_person_cant_perceive_is_turned_back_to_the_member() {
         "options": ["Usage rules", "How to use"],
     }] })).await;
     assert!(notes.is_error && notes.text.contains("docs/gallery.md"), "{notes:?}");
-    let real = tool(&handle, "designer", "ask_decision", serde_json::json!({ "questions": [{ "question": "Which direction?", "options": ["Calm", "Bold"] }] })).await;
-    assert!(!real.is_error, "{real:?}");
+    let real = serde_json::json!({ "questions": [{ "question": "Which direction?", "options": ["Calm", "Bold"] }] });
+    // A real design choice: decided and told, so its recommendation is asked for first — once.
+    let unmarked = tool(&handle, "designer", "ask_decision", real.clone()).await;
+    assert!(unmarked.is_error && unmarked.text.contains("`recommended`"), "{unmarked:?}");
+    let again = tool(&handle, "designer", "ask_decision", real).await;
+    assert!(!again.is_error, "{again:?}");
     handle.shutdown().await;
 }

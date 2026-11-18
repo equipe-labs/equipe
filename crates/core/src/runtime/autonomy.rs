@@ -167,7 +167,9 @@ impl Runtime {
         if kind == Kind::Internal && level == Level::JustDo {
             return PolicyOutcome::Yours;
         }
-        let Some(answers) = recommended else { return PolicyOutcome::Ask };
+        // A choice between options with no recommendation marked: the member is asked for one first.
+        let choices = set.questions.iter().all(|q| q.options.len() >= 2 && !q.board);
+        let Some(answers) = recommended else { return if kind == Kind::Design && choices { PolicyOutcome::Unmarked } else { PolicyOutcome::Ask } };
         let due = au::due_at(set.asked_at, &store.policy, low_impact || level == Level::JustDo);
         if due <= set.asked_at { PolicyOutcome::Now(kind, answers) } else { PolicyOutcome::Later(kind, due) }
     }
@@ -336,7 +338,16 @@ pub(super) enum PolicyOutcome {
     /// Put to the person, and taken on its recommendation at this time
     /// unless they answer first.
     Later(Kind, u64),
+    /// A design or product choice without a recommended option: the member
+    /// marks the one it would take, so it can carry on with it.
+    Unmarked,
 }
+
+/// Why a choice comes back to its member to mark a recommendation.
+pub(super) const UNMARKED: &str = "Not sent yet: this is a design or product choice, and under the squad's autonomy policy \
+you decide and tell — so mark the option you would take with `recommended` and ask again. Then carry on with it: it is taken \
+unless the person picks otherwise, and they can change it later. (Asked again exactly as it is, it goes to the person as a plain \
+question.)";
 
 /// Why an internal question isn't sent under just-do: the call's own result.
 pub(super) const YOURS: &str = "Not sent: under the squad's autonomy policy, questions about the squad's own process \
