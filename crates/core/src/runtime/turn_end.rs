@@ -484,12 +484,6 @@ impl Runtime {
             return false;
         }
         let (ticket, engine) = (work.ticket, s.engine);
-        // Cost too much already: no more turns on it; the PM decides (`guards`).
-        // A turn its engine failed or cut short did no work to repeat: it counts toward the budget only.
-        let worked = ending.outcome != TurnOutcome::Failed && !ending.limit;
-        if self.budget_stop(id, &squad, &name, ticket, worked) {
-            return true;
-        }
         let failed = ending.outcome == TurnOutcome::Failed;
         // An engine out of its limit fails every turn: that is the limit, not a
         // failure to retry — unless the failure is its sign-in.
@@ -523,6 +517,11 @@ impl Runtime {
         }
         let nudged = s.work.as_ref().is_some_and(|w| w.end.nudged);
         let last = s.work.as_ref().and_then(|w| w.end.last_comment.clone()).or_else(|| ending.last_words()).unwrap_or_else(|| "(it said nothing)".to_owned());
+        // equipe would carry it on by itself from here: not when it cost too
+        // much already — no more turns on it, and the PM decides (`guards`).
+        if self.budget_stop(id, &squad, &name, ticket) {
+            return true;
+        }
         self.count_ending(&squad, if ending.silent { turn_ending::WENT_SILENT } else { turn_ending::NO_END }, Some(ticket), &name);
         if !nudged {
             self.nudge(id, &squad, &name, ticket, ending.silent);

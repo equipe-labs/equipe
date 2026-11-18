@@ -32,11 +32,12 @@ pub(super) struct Guards {
 }
 
 impl Runtime {
-    /// After a turn of run `id` on `ticket` that left its work not done:
-    /// kept for the repeat count when it `worked` (its engine neither failed
-    /// nor ran out); then, when the ticket cost too much, it stops here,
-    /// before another turn, and goes to the PM. Whether it did.
-    pub(super) fn budget_stop(&mut self, id: SessionId, squad: &str, name: &str, ticket: TicketId, worked: bool) -> bool {
+    /// After a turn of run `id` on `ticket` that ended with its work not
+    /// done, where equipe would carry it on by itself (the member has the
+    /// board's tools, nothing waits on the person, the person said nothing
+    /// meanwhile): kept for the repeat count, then — when the ticket cost too
+    /// much — it stops here, before another turn, and goes to the PM. Whether it did.
+    pub(super) fn budget_stop(&mut self, id: SessionId, squad: &str, name: &str, ticket: TicketId) -> bool {
         let Some(s) = self.sessions.get(&id) else { return false };
         // Where its branch is: read from git's files, no git run.
         let tip = s
@@ -44,18 +45,11 @@ impl Runtime {
             .as_ref()
             .and_then(|w| w.sandbox.as_ref())
             .and_then(|sb| worktree::git_dirs(&sb.repo).and_then(|(_, common)| health::branch_tip(&common, &sb.branch)));
-        // A run that waits on the person goes on when they answer: theirs to stop.
-        let waits = self.run_waits_on_person(id, s, now_secs());
         let key = (squad.to_owned(), ticket);
-        if worked {
-            let turns = self.guards.turns.entry(key.clone()).or_default();
-            turns.push((name.to_owned(), tip));
-            if turns.len() > TURNS_KEPT {
-                turns.remove(0);
-            }
-        }
-        if waits {
-            return false;
+        let turns = self.guards.turns.entry(key.clone()).or_default();
+        turns.push((name.to_owned(), tip));
+        if turns.len() > TURNS_KEPT {
+            turns.remove(0);
         }
         let Some(card) = self.spend_trip(squad, ticket, name) else { return false };
         crate::daemon_log!("equipe: {squad}: T-{ticket} stopped before another turn: {}", card.why());
