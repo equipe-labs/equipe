@@ -2035,6 +2035,8 @@
   "peek.eta": "terminé vers {at}",
   "peek.files_changed": "Fichiers modifiés {n}",
   "peek.hand_in": "Note de remise",
+  "peek.full_note": "Afficher la note entière",
+  "peek.full_note_cut": "La note est longue ; seule sa première partie est affichée.",
   "peek.keep_on_branch": "Laisser sur la branche",
   "peek.last_words": "Derniers mots",
   "peek.memo_and_go": "Ajouter une note et continuer",

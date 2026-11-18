@@ -77,16 +77,40 @@ fn report(squad: Option<String>, since_text: &str, compare: Option<&str>, json: 
         }
         None => None,
     };
+    let board = equipe_core::journal::board_size_at(&db);
     if json {
         let changes = before.as_ref().map(|b| usage::compare(b, &report));
-        println!("{}", serde_json::to_string_pretty(&json!({ "squad": squad, "report": report, "before": before, "changes": changes })).unwrap_or_default());
+        let board = board.map(|b| {
+            json!({
+                "tickets": b.tickets, "closed": b.closed, "note_bytes": b.note_bytes, "archived": b.archived,
+                "archived_bytes": b.archived_bytes, "archived_stored": b.archived_stored, "to_archive": b.to_archive, "file_bytes": b.file_bytes,
+            })
+        });
+        println!("{}", serde_json::to_string_pretty(&json!({ "squad": squad, "report": report, "before": before, "changes": changes, "board": board })).unwrap_or_default());
     } else {
         println!("{}", text(&squad, since_text, &report));
         if let Some(before) = &before {
             println!("\n{}", compare_text(before, &report));
         }
+        if let Some(board) = board {
+            println!("\n{}", board_text(&board));
+        }
     }
     Ok(())
+}
+
+/// How big the squad's board is: its tickets, the notes it carries, and
+/// the long notes kept apart from it.
+pub(crate) fn board_text(b: &equipe_core::journal::BoardSize) -> String {
+    let mb = |bytes: u64| format!("{:.1} MB", bytes as f64 / 1_048_576.0);
+    let mut out = vec![t!("usage.board", tickets = b.tickets, closed = b.closed, notes = mb(b.note_bytes), file = mb(b.file_bytes))];
+    if b.archived > 0 {
+        out.push(t!("usage.board_archived", count = b.archived, whole = mb(b.archived_bytes), stored = mb(b.archived_stored)));
+    }
+    if b.to_archive > 0 {
+        out.push(t!("usage.board_to_archive", count = b.to_archive));
+    }
+    out.join("\n")
 }
 
 /// A number as `compare` names it: a time as a span, a share with its %, the rest to a decimal.

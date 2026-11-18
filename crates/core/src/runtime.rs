@@ -744,6 +744,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     // A window of the person's own an earlier run left open ends.
     if config.persist {
         Runtime::recover_windows(&config_home);
+        keep_long_notes_apart(&config_home);
     }
     let mac = std::mem::replace(&mut config.mac, Box::new(desktop::ThisMac));
     // Git's merge driver for the design registries runs this program.
@@ -2450,6 +2451,8 @@ impl Runtime {
         if let Event::TicketChanged { squad, ticket } = &mut event {
             ticket.asks = Vec::new();
             ticket.asks = ticket.asks();
+            // A closed ticket's long note goes as its start: the whole is a click away.
+            screen_note(ticket);
             // On its way to main: the screens say so rather than "not in main".
             ticket.landing = self.landing(squad, ticket);
             // It changed now: the screens know when it finished.
@@ -2917,6 +2920,7 @@ impl Runtime {
             Command::MoveTicket { squad, ticket, status, before } => self.person_moves(&squad, ticket, status, before).await,
             Command::CommentTicket { squad, ticket, text } => self.person_comments(&squad, ticket, text).await,
             Command::TicketHistory { squad, ticket } => self.send_history(&squad, ticket),
+            Command::TicketNote { squad, ticket } => self.send_full_note(&squad, ticket),
             Command::SetMode { squad, member, mode } => self.set_mode(&squad, member, mode),
             Command::ShowBrowser { squad, member, show } => self.show_browser(&squad, member, show),
             Command::Desktop { open } => {
@@ -8186,8 +8190,13 @@ with what else waits.]"
         let files = sandbox.and_then(|s| s.changed_files().ok()).unwrap_or_default();
         if !files.is_empty() {
             out.push_str("\n\nIn the squad's folder:");
-            for file in &files {
+            // A worktree whose base fell far behind lists the whole folder as
+            // changed — a hundred thousand lines once: the first few say enough.
+            for file in files.iter().take(HAND_IN_FILES_LISTED) {
                 out.push_str(&format!("\n- {file}"));
+            }
+            if files.len() > HAND_IN_FILES_LISTED {
+                out.push_str(&format!("\n- … and {} more files", files.len() - HAND_IN_FILES_LISTED));
             }
         }
         // A task's findings say where they came from: the links its files cite
@@ -8196,7 +8205,8 @@ with what else waits.]"
             && !files.is_empty()
             && let Some(sandbox) = sandbox
         {
-            let cited = squad_home::cited_sources(&sandbox.path, &files);
+            // The first few hundred: a listing of the whole folder isn't read through on the loop.
+            let cited = squad_home::cited_sources(&sandbox.path, &files[..files.len().min(HAND_IN_FILES_READ)]);
             let new: Vec<&String> = cited.iter().filter(|link| !summary.contains(link.as_str())).collect();
             if !new.is_empty() {
                 out.push_str("\n\nSources its files cite:");
@@ -10367,6 +10377,17 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
         let names: Vec<String> = projects.iter().map(|p| board::project_name(p)).collect();
         let no_project = |arg: &str| format!("No project called {arg}. The squad's projects: {}.", names.join(", "));
         match name.as_str() {
+            board::BOARD if args.get("ticket").is_some() => {
+                // One ticket in full: its whole note, wherever it is kept, a page at a time.
+                let id = board::arg_id(&args, "ticket").ok_or("`ticket` takes a ticket's number, like 12.")?;
+                let ticket = self.tickets(&squad).iter().find(|t| t.id == id).cloned().ok_or_else(|| format!("There is no T-{id}."))?;
+                let journal = self.journal(&squad);
+                let note = journal.and_then(|j| j.full_note(id).ok().flatten()).or_else(|| ticket.note.clone());
+                let mut record = journal.and_then(|j| j.ticket_history(id).ok()).unwrap_or_default();
+                record.retain(|(_, what, _)| what != crate::retro::ESTIMATED);
+                let from = args.get("from").and_then(Value::as_u64).unwrap_or(0) as usize;
+                Ok(board::render_ticket(&ticket, note.as_deref(), &record, from))
+            }
             board::BOARD => {
                 // A long board comes in pages (`status`, `after`), one answer at most `tool_cap`'s ceiling.
                 let paged = self.journal(&squad).is_none_or(Journal::context_tool_caps);
@@ -10489,7 +10510,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     execution: None,
                     merged: None,
                     off_main: None,
-                    design_qa: None, landing: false,
+                    design_qa: None, landing: false, note_full: None,
                     // Read and checked off the loop before it gets here (`cut_from_plan`).
                     plan: board::arg_str(&args, "plan").map(str::to_owned),
                     model: None,
@@ -10938,6 +10959,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
         drop(board);
         for t in &mut tickets {
             t.landing = self.landing(squad, t);
+            screen_note(t);
         }
         watchdog::mark("snapshot: members");
         let marks = self.journals.get(squad).and_then(|j| j.conversation_marks().ok()).unwrap_or_default();
@@ -11779,6 +11801,31 @@ activity, so equipe moved you here."
 /// the briefs and plans equipe used to commit into them.
 const DOCS_KEPT: &str = ".docs-kept";
 
+/// How many of the files a task leaves in the squad's folder its hand-in lists.
+const HAND_IN_FILES_LISTED: usize = 40;
+
+/// How many of them are read for the links they cite.
+const HAND_IN_FILES_READ: usize = 300;
+
+/// How often closed tickets' long notes are looked for and kept apart.
+const NOTES_KEPT_APART_EVERY: Duration = Duration::from_secs(3600);
+
+/// In the background, from the daemon's start and then hourly: every squad's
+/// long notes due kept apart from its board (`journal::archive_all_notes`),
+/// a few at a time on its own connection — a board from before goes on
+/// shrinking while the daemon serves, never waiting on it.
+fn keep_long_notes_apart(home: &Path) {
+    let home = home.to_owned();
+    let _ = std::thread::Builder::new().name("equipe-notes".into()).spawn(move || {
+        loop {
+            for (squad, notes, bytes) in journal::archive_all_notes(&home, Duration::from_millis(200)) {
+                crate::daemon_log!("equipe: {squad}: {notes} long ticket notes kept apart from the board ({} KB off it)", bytes / 1024);
+            }
+            std::thread::sleep(NOTES_KEPT_APART_EVERY);
+        }
+    });
+}
+
 /// Once per squad, off the loop: the briefs and plans equipe once committed
 /// into its `projects`' repositories copied into its folder `home`, where
 /// they are kept now, so the PM's history stays. The repositories are only
@@ -12255,6 +12302,15 @@ fn merged_state(ticket: &Ticket) -> Option<bool> {
     }
     let project = ticket.project.as_deref()?;
     project.ancestors().any(|dir| dir.join(".git").exists()).then_some(false)
+}
+
+/// What a screen gets of a ticket's note: a closed ticket's, its start
+/// ([`equipe_protocol::CLOSED_NOTE_SHOWN`]) — the whole is asked for on demand
+/// ([`Command::TicketNote`]); an open ticket's whole, up to the longest a
+/// note is kept on the board.
+fn screen_note(ticket: &mut Ticket) {
+    let max = if ticket.status.is_closed() { equipe_protocol::CLOSED_NOTE_SHOWN } else { journal::NOTE_WRITE_CAP };
+    ticket.shorten_note(max);
 }
 
 /// The finished work a ticket builds on — what it depends on, and what that

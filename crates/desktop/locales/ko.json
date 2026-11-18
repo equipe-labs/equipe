@@ -1977,6 +1977,8 @@
   "peek.eta": "{at} 완료 예정",
   "peek.files_changed": "바뀐 파일 {n}",
   "peek.hand_in": "제출 메모",
+  "peek.full_note": "메모 전체 보기",
+  "peek.full_note_cut": "메모가 길어 앞부분만 보여 줘요.",
   "peek.keep_on_branch": "브랜치에 그대로 두기",
   "peek.last_words": "최근 대화",
   "peek.memo_and_go": "메모 쓰고 이어서",

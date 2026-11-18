@@ -577,6 +577,10 @@ pub struct Model {
     browser_tabs: HashMap<String, LaneTabs>,
     /// Tickets' records, as the daemon last sent them (a ticket page asks).
     pub histories: HashMap<TicketId, Vec<TicketEntry>>,
+    /// Tickets' whole notes, where the board carries only their start
+    /// ([`Ticket::note_full`]), as the daemon sent them on the person's ask;
+    /// `true`: even that ended early.
+    pub full_notes: HashMap<TicketId, (String, bool)>,
     /// Tickets the daemon was asked about and answered that it has none of
     /// (a card's number that is not on the board): only these read "Not found".
     pub absent: HashSet<TicketId>,
@@ -738,6 +742,7 @@ impl Model {
             browser_asked: HashMap::new(),
             browser_tabs: HashMap::new(),
             histories: HashMap::new(),
+            full_notes: HashMap::new(),
             absent: HashSet::new(),
             reviews: HashMap::new(),
             board_rev: 0,
@@ -1783,6 +1788,10 @@ impl Model {
                     self.board_rev += 1;
                 }
             }
+            Event::TicketNote { squad, ticket, note, cut } if squad == self.squad => {
+                self.full_notes.insert(ticket, (note, cut));
+                self.board_rev += 1;
+            }
             Event::CodeReviewed { squad, review } if squad == self.squad => {
                 self.reviews.insert(review.ticket, review);
                 self.board_rev += 1;
@@ -2118,6 +2127,10 @@ impl Model {
 
     fn on_ticket(&mut self, ticket: &Ticket) {
         self.absent.remove(&ticket.id);
+        // A new note: the whole one fetched before was of the last.
+        if self.tickets.iter().any(|t| t.id == ticket.id && t.note != ticket.note) {
+            self.full_notes.remove(&ticket.id);
+        }
         let was = self.tickets.iter().find(|t| t.id == ticket.id).map(|t| t.status);
         // Past its design QA: ready for the person now, as if just handed in.
         let qa_passed = ticket.ready_for_review() && self.tickets.iter().any(|t| t.id == ticket.id && t.in_design_qa());

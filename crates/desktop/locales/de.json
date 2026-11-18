@@ -2035,6 +2035,8 @@
   "peek.eta": "fertig bis {at}",
   "peek.files_changed": "Geänderte Dateien {n}",
   "peek.hand_in": "Abgabenotiz",
+  "peek.full_note": "Ganze Notiz zeigen",
+  "peek.full_note_cut": "Die Notiz ist lang; hier steht ihr erster Teil.",
   "peek.keep_on_branch": "Auf Branch lassen",
   "peek.last_words": "Letzte Worte",
   "peek.memo_and_go": "Notiz hinzufügen und weiter",

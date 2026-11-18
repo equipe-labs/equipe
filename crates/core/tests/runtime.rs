@@ -1435,7 +1435,7 @@ async fn work_not_on_main_says_why_can_be_kept_on_its_branch_and_settles_when_no
                     execution: None,
                     merged: None,
                     off_main: None,
-                    design_qa: None, landing: false, plan: None, model: None,
+                    design_qa: None, landing: false, note_full: None, plan: None, model: None,
                     flow: None,
                     kind: equipe_core::protocol::TicketKind::Code,
                     created_by: "pm".into(),
@@ -1524,7 +1524,7 @@ async fn dependencies_that_conflict_hold_the_ticket_and_say_why() {
                     execution: None,
                     merged: Some(false),
                     off_main: None,
-                    design_qa: None, landing: false, plan: None, model: None,
+                    design_qa: None, landing: false, note_full: None, plan: None, model: None,
                     flow: None,
                     kind: equipe_core::protocol::TicketKind::Code,
                     created_by: "pm".into(),
@@ -6326,7 +6326,7 @@ fn ticket_in(home: &Path, squad: &str, project: &Path, worktree: &Path) {
             execution: None,
             merged: None,
             off_main: None,
-            design_qa: None, landing: false,
+            design_qa: None, landing: false, note_full: None,
             plan: None,
             model: None,
             flow: None,
@@ -7075,6 +7075,48 @@ async fn a_long_board_comes_in_pages_each_within_the_cap() {
     handle.shutdown().await;
 }
 
+#[tokio::test]
+async fn a_closed_tickets_long_note_reaches_screens_as_its_start_and_whole_on_demand() {
+    let repo = repo();
+    let home = squad_home(&[&repo]);
+    let (claude, _recorded) = recording_claude(&answering("ok"));
+    // A hand-in that listed a whole folder, and one merely long.
+    let listing = format!("Built the settings page.\n\nIn the squad's folder:{}", (0..3_000).map(|i| format!("\n- outputs/shot-{i:05}.png")).collect::<String>());
+    let long = format!("Checked every screen.\n{}", "- a finding worth reading in full\n".repeat(150));
+    {
+        let journal = Journal::for_squad(&home, "acme").unwrap();
+        for note in [&listing, &long] {
+            journal.create_ticket(&Ticket { status: TicketStatus::Done, note: Some(note.clone()), ..old_ticket("Settings page") }).unwrap();
+        }
+    }
+    let (handle, mut events) = runtime::start(with_tools(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    let snapshot = handle.snapshot("acme").await;
+    for (id, whole) in [(1, &listing), (2, &long)] {
+        let t = snapshot.tickets.iter().find(|t| t.id == id).unwrap();
+        let shown = t.note.as_deref().unwrap();
+        assert!(shown.chars().count() <= equipe_core::protocol::CLOSED_NOTE_SHOWN + 2, "T-{id}: {} characters", shown.chars().count());
+        assert!(whole.starts_with(shown.trim_end_matches('…').trim_end()), "T-{id}: its start");
+        assert_eq!(t.note_full, Some(whole.len() as u64), "T-{id}");
+    }
+    // The whole, on the person's ask.
+    handle.send(Command::TicketNote { squad: "acme".into(), ticket: 1 });
+    let seen = until(&mut events, |e| matches!(e, Event::TicketNote { .. })).await;
+    let Some(Event::TicketNote { ticket: 1, note, cut: false, .. }) = seen.last() else { panic!("{seen:#?}") };
+    assert_eq!(note, &listing);
+    // A member reads it a page at a time through the board.
+    let first = tool(&handle, "pm", "board", serde_json::json!({ "ticket": 1 })).await;
+    assert!(!first.is_error && first.text.starts_with("T-1 [done] Settings page"), "{}", first.text);
+    assert!(first.text.contains("call `board` with `ticket: 1, from: "), "{}", first.text);
+    let from: usize = first.text.rsplit("from: ").next().unwrap().split('`').next().unwrap().parse().unwrap();
+    let next = tool(&handle, "pm", "board", serde_json::json!({ "ticket": 1, "from": from })).await;
+    assert!(next.text.contains(&format!("characters {from}–")), "{}", next.text);
+    let whole = tool(&handle, "pm", "board", serde_json::json!({ "ticket": 2 })).await;
+    assert!(whole.text.contains("a finding worth reading in full") && !whole.text.contains("from: "), "a note that fits shows whole: {}", whole.text);
+    assert!(tool(&handle, "pm", "board", serde_json::json!({ "ticket": 99 })).await.is_error);
+    handle.shutdown().await;
+}
+
 /// Put `title` on the board for `owner` as a code ticket of the PM's.
 async fn put_on_board(handle: &Handle, title: &str, owner: &str, depends_on: &[u32]) -> String {
     let made = tool(handle, "pm", "create_ticket", serde_json::json!({ "title": title, "body": "-", "owner": owner, "depends_on": depends_on })).await;
@@ -7449,7 +7491,7 @@ fn old_ticket(title: &str) -> Ticket {
         execution: None,
         merged: None,
         off_main: None,
-        design_qa: None, landing: false,
+        design_qa: None, landing: false, note_full: None,
         plan: None,
         model: None,
         flow: None,

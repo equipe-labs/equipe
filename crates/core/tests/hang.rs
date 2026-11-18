@@ -101,7 +101,7 @@ fn ticket(home: &Path, repo: &Path, status: TicketStatus, branch: &str) {
             execution: None,
             merged: None,
             off_main: None,
-            design_qa: None, landing: false, plan: None, model: None,
+            design_qa: None, landing: false, note_full: None, plan: None, model: None,
             flow: None,
             kind: TicketKind::Code,
             created_by: "pm".into(),

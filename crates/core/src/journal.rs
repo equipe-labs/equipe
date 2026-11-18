@@ -19,6 +19,9 @@ use equipe_protocol::{
 };
 use rusqlite::{Connection, OptionalExtension as _, params};
 
+mod notes;
+pub use notes::{ARCHIVE_AFTER, ARCHIVE_OVER, BoardSize, NOTE_SENT_MAX, NOTE_WRITE_CAP, archive_all as archive_all_notes, board_size_at};
+
 pub use rusqlite::Error;
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -472,6 +475,9 @@ pub struct TurnRan {
 /// How long turns and waits are kept for the retros: a quarter.
 const KEPT_FOR_RETROS: i64 = 92 * 24 * 60 * 60;
 
+/// The longest line a ticket's record keeps, in characters.
+const EVENT_TEXT_MAX: usize = 16 * 1024;
+
 fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -867,6 +873,8 @@ impl Journal {
         )?;
         // Why the person was asked to sign in, and sign-ins finished (`crate::logins`).
         crate::logins::create_table(&conn)?;
+        // Long notes kept apart from the board, compressed (`notes`).
+        notes::create(&conn)?;
         // The person's requests and the tickets serving each (`crate::requests`).
         crate::requests::create_table(&conn)?;
         // The kinds of work the person stopped (`crate::stops`).
@@ -1946,10 +1954,11 @@ impl Journal {
     pub fn create_ticket(&self, t: &Ticket) -> Result<TicketId> {
         let id: i64 = self.conn.query_row("SELECT COALESCE(MAX(id), 0) + 1 FROM tickets", [], |r| r.get(0))?;
         let at = now();
+        let (note, note_full) = self.note_to_store(id as TicketId, t.note.as_deref())?;
         self.conn.execute(
             "INSERT INTO tickets (id, title, body, status, owner, assignee, project, depends_on, branch, created_by,
-                                  note, created_at, updated_at, kind, priority, rank, plan, label)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14, ?15, ?16, ?17)",
+                                  note, created_at, updated_at, kind, priority, rank, plan, label, note_full)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 id,
                 t.title,
@@ -1961,13 +1970,14 @@ impl Journal {
                 ids_str(&t.depends_on),
                 t.branch,
                 t.created_by,
-                t.note,
+                note,
                 at,
                 t.kind.label(),
                 t.priority.label(),
                 t.rank,
                 t.plan,
                 t.label.map(|l| l.key()),
+                note_full,
             ],
         )?;
         Ok(id as TicketId)
@@ -1975,10 +1985,12 @@ impl Journal {
 
     /// Write a ticket's fields back.
     pub fn save_ticket(&self, t: &Ticket) -> Result<()> {
+        let (note, note_full) = self.note_to_store(t.id, t.note.as_deref())?;
         self.conn.execute(
             "UPDATE tickets SET title = ?1, body = ?2, status = ?3, owner = ?4, assignee = ?5, project = ?6,
                                 depends_on = ?7, branch = ?8, note = ?9, updated_at = ?10, merged = ?12, kind = ?13,
-                                off_main = ?14, priority = ?15, rank = ?16, remaining = ?17, images = ?18, design_qa = ?19, plan = ?20, label = ?21
+                                off_main = ?14, priority = ?15, rank = ?16, remaining = ?17, images = ?18, design_qa = ?19, plan = ?20, label = ?21,
+                                note_full = ?22
              WHERE id = ?11",
             params![
                 t.title,
@@ -1989,7 +2001,7 @@ impl Journal {
                 t.project.as_ref().map(|p| p.to_string_lossy().into_owned()),
                 ids_str(&t.depends_on),
                 t.branch,
-                t.note,
+                note,
                 now(),
                 t.id,
                 t.merged,
@@ -2002,6 +2014,7 @@ impl Journal {
                 t.design_qa,
                 t.plan,
                 t.label.map(|l| l.key()),
+                note_full,
             ],
         )?;
         Ok(())
@@ -2666,7 +2679,7 @@ impl Journal {
             "SELECT t.id, t.title, t.body, t.status, t.owner, t.assignee, t.project, t.depends_on, t.branch, t.created_by, t.note, t.worktree, t.merged, t.kind, t.off_main, t.updated_at,
                     t.priority, t.rank, t.remaining, t.images, t.design_qa, t.plan, t.model,
                     e.state, e.session, e.operation, e.generation, e.heartbeat_at, e.lease_expires_at, e.reason, e.head, e.dirty, e.pause, t.label,
-                    e.waited_for, t.flow
+                    e.waited_for, t.flow, t.note_full
              FROM tickets t LEFT JOIN ticket_executions e ON e.ticket = t.id {filter} ORDER BY t.id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -2700,6 +2713,7 @@ impl Journal {
                 // Unreadable (a newer daemon's, or damaged): its member's own model, as before.
                 model: r.get::<_, Option<String>>(22)?.and_then(|m| serde_json::from_str(&m).ok()),
                 flow: r.get::<_, Option<String>>(35)?.and_then(|f| serde_json::from_str(&f).ok()),
+                note_full: r.get::<_, Option<i64>>(36)?.map(|n| n.max(0) as u64),
             };
             // A waiting ticket's asks are kept in its note; they travel as a list.
             t.asks = t.asks();
@@ -2747,6 +2761,10 @@ impl Journal {
 
     /// Add to a ticket's record — kept forever, a few hundred bytes a line.
     pub fn ticket_event(&self, id: TicketId, by: &str, kind: &str, text: &str) -> Result<()> {
+        // A line of the record says what happened; one that carried a whole
+        // file listing (megabytes) keeps its start.
+        let short = equipe_protocol::note_summary(text, EVENT_TEXT_MAX);
+        let text = short.as_deref().unwrap_or(text);
         self.conn.execute(
             "INSERT INTO ticket_events (ticket, seq, at, by, kind, text)
              VALUES (?1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM ticket_events WHERE ticket = ?1), ?2, ?3, ?4, ?5)",
@@ -3802,7 +3820,7 @@ mod tests {
             execution: None,
             merged: None,
             off_main: None,
-            design_qa: None, landing: false, plan: None, model: None,
+            design_qa: None, landing: false, note_full: None, plan: None, model: None,
             flow: None,
             created_by: "pm".into(),
             note: None,

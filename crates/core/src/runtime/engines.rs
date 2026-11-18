@@ -1782,7 +1782,7 @@ mod tests {
             execution: None,
             merged: None,
             off_main: None,
-            design_qa: None, landing: false,
+            design_qa: None, landing: false, note_full: None,
             plan: Some("docs/plans/login.md".into()),
             model: None,
             flow: None,

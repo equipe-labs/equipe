@@ -2035,6 +2035,8 @@
   "peek.eta": "done by {at}",
   "peek.files_changed": "Files changed {n}",
   "peek.hand_in": "Hand-in note",
+  "peek.full_note": "Show full note",
+  "peek.full_note_cut": "The note is long; this shows its first part.",
   "peek.keep_on_branch": "Keep on branch",
   "peek.last_words": "Latest words",
   "peek.memo_and_go": "Add a note and carry on",

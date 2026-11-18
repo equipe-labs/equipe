@@ -651,7 +651,7 @@ mod tests {
             execution: None,
             merged: None,
             off_main: None,
-            design_qa: None, landing: false,
+            design_qa: None, landing: false, note_full: None,
             created_by: "pm".into(),
             note: None,
             plan: None,

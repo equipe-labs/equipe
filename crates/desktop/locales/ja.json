@@ -1977,6 +1977,8 @@
   "peek.eta": "{at}完了予定",
   "peek.files_changed": "変更ファイル {n}",
   "peek.hand_in": "提出メモ",
+  "peek.full_note": "メモ全体を表示",
+  "peek.full_note_cut": "メモが長いため、最初の部分だけを表示しています。",
   "peek.keep_on_branch": "ブランチに残す",
   "peek.last_words": "最新の発言",
   "peek.memo_and_go": "メモを添えて続行",
