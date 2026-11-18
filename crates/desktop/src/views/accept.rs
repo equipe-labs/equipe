@@ -149,7 +149,7 @@ pub fn peek(shell: &Shell, id: u64, cx: &mut Context<Shell>) -> AnyElement {
 pub fn row_text(shell: &Shell, id: u64) -> Option<(String, String, Rgba)> {
     let card = shell.model.accepts.get(id)?;
     let (name, color) = who(shell, card);
-    Some((rules::title(card), name, color))
+    Some((rules::title(card, &shell.model.tickets), name, color))
 }
 
 /// The mark the Inbox shows a card to confirm with.
@@ -188,6 +188,8 @@ fn ticket_row(shell: &Shell, card: &AcceptProposal, ticket: TicketId, several: b
     let kept = shell.model.accepts.keeps(id, ticket);
     let found = shell.model.tickets.iter().find(|t| t.id == ticket);
     let title = found.map(|t| t.title.clone()).unwrap_or_default();
+    // What changes for people, in a plain line under its title (`person_gate`).
+    let changes = found.map(equipe_core::person_gate::what_changes).filter(|w| !w.is_empty());
     let size = found.and_then(|t| shell.board.stat(t)).map(|s| {
         h_flex()
             .flex_none()
@@ -218,14 +220,21 @@ fn ticket_row(shell: &Shell, card: &AcceptProposal, ticket: TicketId, several: b
     let row = h_flex()
         .id(SharedString::from(format!("accept-row-{}-{id}-{ticket}", place == Place::Peek)))
         .w_full()
-        .h(px(30.))
+        .min_h(px(30.))
+        .py_1()
         .px_2()
         .gap_2p5()
         .items_center()
         .rounded(px(6.))
         .children(check)
         .child(number)
-        .child(div().flex_1().min_w_0().truncate().text_size(px(13.)).text_color(if kept { p.text } else { p.muted }).when(!kept, |d| d.line_through()).child(title))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .child(div().truncate().text_size(px(13.)).text_color(if kept { p.text } else { p.muted }).when(!kept, |d| d.line_through()).child(title))
+                .children(changes.map(|w| div().truncate().text_size(px(12.)).text_color(p.muted).child(w))),
+        )
         .children(size);
     if several {
         tip(
@@ -259,7 +268,7 @@ fn card(shell: &Shell, id: u64, place: Place, cx: &mut Context<Shell>) -> Option
         .font_weight(FontWeight::SEMIBOLD)
         .child(icon(Icon::Check, 13., p.accent))
         .child(div().text_color(p.accent).child(t!("accept.title")));
-    let title = div().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(rules::title(&card));
+    let title = div().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(rules::title(&card, &model.tickets));
     let summary = (!card.summary.trim().is_empty()).then(|| div().text_size(px(13.)).line_height(px(19.)).text_color(p.text2).child(card.summary.clone()));
     let rows: Vec<AnyElement> = card.tickets.iter().map(|t| ticket_row(shell, &card, *t, several, place, cx)).collect();
     let list = v_flex().w_full().p_1().gap_0p5().rounded(px(R_MD)).bg(p.wash).border_1().border_color(p.hair).children(rows);

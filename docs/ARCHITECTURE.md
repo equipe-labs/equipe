@@ -290,12 +290,13 @@ model says.
 | Tool | Who | Does |
 |---|---|---|
 | `board` | everyone | the open tickets as text |
-| `create_ticket` | everyone | the PM's are `todo`; anyone else's are proposals. The title is held to the title rule (below) and may carry a `label` |
+| `create_ticket` | everyone | the PM's are `todo`; anyone else's are proposals. The title is held to the title rule (below) and may carry a `label`; `request` puts it with one of the person's requests. A ticket of a kind the person stopped is turned away |
 | `update_ticket` | the PM | change a `proposed`/`todo`/`waiting` ticket; accept or drop a proposal; resume a waiting one. A new title is held to the rule; the old one is kept in the ticket's history |
 | `retitle_open_tickets` | the PM | without `titles`, lists the open tickets whose title breaks the rule; with them, applies the titles the PM wrote (equipe writes none itself) |
 | `comment` | everyone | add to a ticket's record |
 | `submit_for_review` | the member on a ticket | hand it in; on a `code` ticket in a squad with a designer, `changes_screens` (and screenshots in `images`) says whether it goes to design QA |
 | `design_qa` | a designer on a design QA ticket | `pass` (on to the person's review) or `changes` (back to its engineer), with findings |
+| `stop_work` | anyone the person just told to stop a kind of work | cancels its open tickets and turns new ones of it away until the person lifts the stop ([REQUESTS.md](./REQUESTS.md)) |
 | `block_on_person` | the member on a ticket | put it down until the person does their part; `ask` (one line, what they must do) and `effort_minutes` are required: lists show them, with the ticket's title smaller below, in place of the title |
 
 **The title rule** (`equipe_protocol::title`, checked by the daemon when a ticket is
@@ -893,6 +894,12 @@ But the person can talk to anyone, the way a CEO can walk over to any desk — T
 
 Approvals never pass through the PM: equipe asks the person directly, because no
 agent's word — the PM's included — can authorize a merge or a deploy.
+
+**What the person asked for is followed for them.** The tickets that come of
+one ask — whoever files them — are kept together as a request: one status
+line, news when something lands or needs them (once each, batched), and every
+member's turn starting with where it stands. They can stop a kind of work for
+good. See [REQUESTS.md](./REQUESTS.md).
 
 ### Heartbeat
 

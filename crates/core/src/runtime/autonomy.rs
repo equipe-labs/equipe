@@ -27,6 +27,12 @@ impl Runtime {
         self.journal(squad).map(Journal::autonomy).unwrap_or_default()
     }
 
+    /// The squad's policy as it stands, its merge level read from `pm_accepts`.
+    pub(super) fn autonomy_policy(&mut self, squad: &str) -> au::Policy {
+        let pm_accepts = self.journals.get(squad).is_some_and(Journal::pm_accepts);
+        self.autonomy_store(squad).state(pm_accepts).policy
+    }
+
     /// Keep `store` (what has run its course let go) and tell every screen.
     pub(super) fn save_autonomy(&mut self, squad: &str, mut store: Store) {
         store.tidy(now_secs());

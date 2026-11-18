@@ -1044,6 +1044,79 @@ fn fake_model(t: &Ticket) -> Option<equipe_core::protocol::tiers::TicketModel> {
     })
 }
 
+/// The owner's morning, as requests: the composer — its spec live, its build
+/// on main, a phone check and a legal question waiting on the person, two
+/// design QAs — and the left menu, its build under way; the Claude mark in
+/// review; and yesterday's footer, all done.
+fn fake_requests() -> Vec<equipe_core::protocol::requests::Request> {
+    use equipe_core::protocol::requests::{Link, Request, RequestTicket};
+    let now = unix();
+    let at = |t: &mut Ticket, ago: u64| t.updated_at = Some(now - ago);
+    let mut spec = ticket(3565, "done", "web", "designer", "Spec the Tinumi composer", "", &[], None, None);
+    spec.merged = Some(true);
+    at(&mut spec, 3 * 3600);
+    let mut build = ticket(3613, "done", "web", "frontend", "Apply the composer to Tinumi chat", "", &[3565], None, None);
+    build.merged = Some(true);
+    at(&mut build, 40 * 60);
+    let licence = ticket(3614, "done", "web", "designer", "Confirm the composer source licence", "", &[], None, None);
+    let phones = ticket(3616, "waiting", "web", "qa", "Check the new composer on real phones", "", &[3613], None, None);
+    let legal = ticket(3619, "waiting", "web", "pm", "Decide if the layout needs legal review", "", &[], None, None);
+    let qa1 = ticket(3639, "done", "web", "designer", "Design QA: Apply the composer to Tinumi chat", "", &[], None, None);
+    let menu = ticket(3567, "done", "web", "designer", "Left menu, three options", "", &[], None, None);
+    let side = ticket(3591, "in_progress", "web", "frontend", "Make the left menu a sidebar", "", &[3567], None, None);
+    let mark = ticket(3654, "review", "web", "frontend", "Put the Claude mark back in the picker", "", &[], None, None);
+    let tickets = vec![spec, build, licence, phones, legal, qa1, menu, side, mark];
+    let link = |ticket, parent, link| RequestTicket { ticket, parent, link };
+    let made = |id, title: &str, member: &str, ago: u64, links: Vec<RequestTicket>| {
+        let status = equipe_core::requests::status(&links, &tickets, &[]);
+        let done = status.done;
+        Request { id, title: title.into(), session: Some(if member == "pm" { 1 } else { 4 }), member: Some(member.into()), asked_at: now - ago, tickets: links, status, closed_at: done.then_some(now - 3600) }
+    };
+    let mut footer = ticket(3540, "done", "web", "frontend", "Fix the footer links", "", &[], None, None);
+    footer.merged = Some(true);
+    at(&mut footer, 20 * 3600);
+    let footer = {
+        let links = vec![link(3540, None, Link::Asked)];
+        let status = equipe_core::requests::status(&links, std::slice::from_ref(&footer), &[]);
+        Request { id: 11, title: "Fix the footer links".into(), session: Some(1), member: Some("pm".into()), asked_at: now - 22 * 3600, tickets: links, status, closed_at: Some(now - 19 * 3600) }
+    };
+    vec![
+        made(
+            12,
+            "A new input box, a new left menu, and the Claude icon in the picker",
+            "designer",
+            4 * 3600,
+            vec![
+                link(3565, None, Link::Asked),
+                link(3567, None, Link::Asked),
+                link(3613, Some(3565), Link::Made),
+                link(3614, Some(3565), Link::Made),
+                link(3616, Some(3565), Link::Made),
+                link(3619, Some(3565), Link::Made),
+                link(3639, Some(3613), Link::Check),
+                link(3591, Some(3567), Link::Made),
+            ],
+        ),
+        made(13, "Put the Claude mark back", "pm", 2 * 3600, vec![link(3654, None, Link::Asked)]),
+        footer,
+    ]
+}
+
+fn fake_stops() -> Vec<equipe_core::protocol::requests::Stop> {
+    vec![equipe_core::protocol::requests::Stop {
+        id: 1,
+        words: "gallery polish".into(),
+        terms: vec!["component gallery".into()],
+        paths: vec![],
+        request: None,
+        tickets: vec![3480],
+        by: "you".into(),
+        since: unix() - 5 * 3600,
+        cancelled: vec![3481, 3482],
+        refused: 6,
+    }]
+}
+
 fn unix() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
@@ -1815,6 +1888,9 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             parallel: switching::parallel(),
                             model_choice: switching::model_choice(),
                             pm_accepts: true,
+                            // `FAKE_REQUESTS=1`: the person's requests, and a kind of work they stopped.
+                            requests: if std::env::var_os("FAKE_REQUESTS").is_some() { fake_requests() } else { Vec::new() },
+                            stops: if std::env::var_os("FAKE_REQUESTS").is_some() { fake_stops() } else { Vec::new() },
                             role_models: switching::role_models(),
                             // `FAKE_SECRET=1`: backend waits for the NAS login, typed into a card.
                             secret_asks: if std::env::var("FAKE_SECRET").is_ok_and(|v| v == "store") {

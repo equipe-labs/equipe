@@ -516,7 +516,11 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(h_flex().flex_none().gap_1().text_color(p.accent).child(crate::icons::icon(crate::icons::Icon::Flag, 12., p.accent)).child(t!("approvals.waiting_on_you_mark")))
                     .child(h_flex().min_w_0().flex_shrink(1.).overflow_hidden().gap_1().items_center().text_color(p.member(hue)).child(div().flex_none().child(crate::theme::avatar(p, role, &approval.member, 15.))).child(div().min_w_0().truncate().child(approval.member.clone())))
-                    .children(approval.ticket.map(|t| div().flex_none().text_color(p.muted).child(format!("T-{t}"))))
+                    // The ticket by its title too, never its number alone.
+                    .children(approval.ticket.map(|t| {
+                        let title = shell.model.tickets.iter().find(|x| x.id == t).map(|x| format!(" · {}", x.title)).unwrap_or_default();
+                        div().min_w_0().truncate().text_color(p.muted).child(format!("T-{t}{title}"))
+                    }))
                     .child(div().flex_1())
                     .when(queue_line && waiting > 1, |h| h.child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(t!("approvals.queue", waiting = waiting)))),
             )

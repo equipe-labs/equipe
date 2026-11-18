@@ -1303,7 +1303,8 @@ async fn the_pm_changes_code_only_on_a_ticket_of_its_own_in_its_worktree_and_nev
 
     // A one-line fix it does itself is a code ticket it owns: its own worktree and branch.
     let made = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "README typo", "body": "teh → the", "owner": "pm" })).await;
-    assert_eq!(made.text, "Created T-1.");
+    // (It serves the person's request, made by these words: said after.)
+    assert!(made.text.starts_with("Created T-1. It serves the person's request R-1"), "{made:?}");
     let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
     let Some(Event::WorkStarted { of: Some(1), workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
     assert!(ws.branch.starts_with("equipe/pm-t1-"), "{}", ws.branch);
@@ -3698,7 +3699,7 @@ async fn a_squad_of_only_a_pm_researches_tax_deadlines_into_its_folder_and_memor
         "title": "세금 마감 조사", "body": "올해 챙길 세금 마감을 출처와 함께 정리", "owner": "pm",
     }))
     .await;
-    assert_eq!(made.text, "Created T-1 (task).");
+    assert!(made.text.starts_with("Created T-1 (task). It serves the person's request R-1"), "{made:?}");
     until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(1), ticket: 1, .. })).await;
     let brief = arg(&latest_call(&recorded, |p| p.contains("give each fact its source")).await, "-p").unwrap().to_owned();
     assert!(brief.contains("give each fact its source") && brief.contains("unconfirmed"), "{brief}");

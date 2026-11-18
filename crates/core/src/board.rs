@@ -466,6 +466,9 @@ pub const HAND_BACK: &str = "hand_back";
 /// How a ticket handed back to wait on others says so in its note, for its
 /// member when it comes back: the tickets, then the member's note.
 pub const WAITED_ON: &str = "Resumed after waiting on ";
+/// A member takes a dependency off its own ticket not yet started, saying
+/// why its work doesn't touch the other's — or, when it can't, asks the PM.
+pub const UNBLOCK: &str = "unblock";
 /// A member asks the person's yes before something done in their name.
 pub const ASK_PERSON: &str = "ask_person";
 /// A member puts a decision to the person: questions with options to pick.
@@ -729,8 +732,42 @@ It waits on the board as a proposal until the PM or the person accepts it."
                     "plan": { "type": "string", "description": "The plan it is cut from: its path, as `write_plan` gave it, or its slug. The ticket links to it, and is listed in its `tickets`." },
                     "tests": { "type": "array", "items": { "type": "string" }, "description": "With `plan`: the test plan's cases this ticket must pass (`TP-1`, `TP-3`). They are copied into its body, word for word, for its owner and QA." },
                     "idea": { "type": "boolean", "description": "The person's idea, kept for later rather than done now: it waits on the board as an idea, which nothing starts and nothing asks about, until the PM puts it to them when its time comes. Use it whenever they float something for someday — 'later', 'an idea', 'not now but' — and keep their own words in the body, with what led to it." },
+                    "request": { "type": "integer", "description": "The person's request it serves (3 for R-3), when equipe wouldn't link it by itself. Left out, a ticket made in answer to the person, or while working on a request's ticket, joins that request." },
+                    "depends_why": { "type": "string", "description": "Why it must wait on what `depends_on` names, when that isn't plain: a ticket of the person's request waits on work outside it only with a reason." },
                 },
                 "required": ["title", "body"],
+            },
+        }),
+        json!({
+            "name": UNBLOCK,
+            "description": "Your ticket waits on another (depends_on) though its work doesn't touch that one's — files, screens, areas: \
+take the dependency off your own ticket, not started yet, saying why (the PM is told), and it starts. When it isn't yours \
+or has started, this asks the PM to unblock it, at its next turn. Don't wait silently on a dependency that holds nothing.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "The ticket that waits." },
+                    "on": { "type": "array", "items": { "type": "integer" }, "description": "The tickets it needn't wait on; left out, all it waits on." },
+                    "why": { "type": "string", "description": "Why its work doesn't need them: what each touches, and that it overlaps nothing." },
+                },
+                "required": ["id", "why"],
+            },
+        }),
+        json!({
+            "name": crate::stops::STOP_WORK,
+            "description": "Only when the person tells you to stop a kind of work (\"stop polishing the gallery\", \"no more of these\"): \
+equipe cancels the open tickets of it and turns away new ones — yours, anyone's, design follow-ups — until the person lifts \
+the stop. Say what it covers: `terms` its tickets' titles have, `paths`, a `ticket` of its chain or its `request`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "words": { "type": "string", "description": "What the person said to stop, in their words." },
+                    "terms": { "type": "array", "items": { "type": "string" }, "description": "Each a word or words a title of that work has (all of them): \"component gallery\"." },
+                    "paths": { "type": "array", "items": { "type": "string" }, "description": "Files or folders that work is in." },
+                    "ticket": { "type": "integer", "description": "A ticket of it: its chain is cancelled." },
+                    "request": { "type": "integer", "description": "The person's request it is (3 for R-3): all of it is cancelled." },
+                },
+                "required": ["words"],
             },
         }),
         json!({
@@ -1176,6 +1213,8 @@ they say it isn't for now.",
                     "depends_on": { "type": "array", "items": { "type": "integer" } },
                     "status": { "type": "string", "enum": ["todo", "cancelled", "proposed", "idea"] },
                     "why": { "type": "string", "description": "With status proposed, for an idea: why now, in one or two lines in the person's language — what in the business or on the board makes it timely. Shown on its card." },
+                    "request": { "type": "integer", "description": "Put it with the person's request R-n (give n), at any status: its progress is then told with that request's." },
+                    "depends_why": { "type": "string", "description": "Why it must wait on what `depends_on` adds, when that isn't plain: a ticket of the person's request waits on work outside it only with a reason." },
                 },
                 "required": ["id"],
             },
