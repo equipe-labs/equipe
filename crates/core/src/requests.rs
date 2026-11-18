@@ -11,7 +11,7 @@
 //! The runtime's side — recording a request, attaching tickets by their
 //! lineage, telling the conversation — is `runtime::requests`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use equipe_protocol::requests::{Link, Milestone, Part, Phase, Request, RequestId, RequestTicket, Status, Step, Wait};
 use equipe_protocol::title::TicketLabel;
@@ -116,6 +116,31 @@ fn live(t: &Ticket) -> bool {
     t.status == TicketStatus::Done && t.kind == TicketKind::Code && t.merged == Some(true)
 }
 
+/// Whether work on main is live: pushed is not live where a project goes
+/// live by a deploy (its own go-live command, a production deployment, a
+/// deploy workflow — `crate::go_live`, `crate::deploys`). Built by the
+/// runtime from what it saw go live; the default knows of no deploy, so
+/// work on main is live.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Shipped {
+    /// The tickets a deploy equipe saw succeed carried.
+    pub live: HashSet<TicketId>,
+    /// The projects (by path) whose work is live only once a deploy says so,
+    /// and, while it can't, why (`deploy_failed`…).
+    pub by_deploy: HashMap<String, Option<String>>,
+}
+
+impl Shipped {
+    /// Work of `t` merged into main but not live yet: `Some(why)`. `None`
+    /// when it is live, or isn't on main.
+    pub fn not_live(&self, t: &Ticket) -> Option<Option<String>> {
+        if !live(t) || self.live.contains(&t.id) {
+            return None;
+        }
+        self.by_deploy.get(t.project.as_deref()?.to_string_lossy().as_ref()).cloned()
+    }
+}
+
 /// The request's ticket each of `links` belongs under: its first ticket
 /// whose parent isn't in the request (or that has none) — the part it is in.
 pub fn part_of(links: &[RequestTicket], ticket: TicketId) -> TicketId {
@@ -169,6 +194,11 @@ pub fn covering(links: &[RequestTicket], tickets: &[Ticket]) -> Vec<TicketId> {
 /// missing is left out); `asking`, the tickets with a question open to the
 /// person. equipe's own checks show in the timeline only.
 pub fn status(links: &[RequestTicket], tickets: &[Ticket], asking: &[TicketId]) -> Status {
+    shipped_status(links, tickets, asking, &Shipped::default())
+}
+
+/// [`status`], work on main live only as `shipped` says.
+pub fn shipped_status(links: &[RequestTicket], tickets: &[Ticket], asking: &[TicketId], shipped: &Shipped) -> Status {
     let find = |id: TicketId| tickets.iter().find(|t| t.id == id);
     let mut steps = Vec::new();
     for link in links {
@@ -181,7 +211,7 @@ pub fn status(links: &[RequestTicket], tickets: &[Ticket], asking: &[TicketId]) 
             parent: link.parent,
             who: who(t),
             at: t.updated_at,
-            merged: live(t),
+            merged: live(t) && shipped.not_live(t).is_none(),
         });
     }
     let counted: Vec<(&RequestTicket, &Ticket)> = links.iter().filter(|l| l.link != Link::Check).filter_map(|l| find(l.ticket).map(|t| (l, t))).collect();
@@ -201,8 +231,8 @@ pub fn status(links: &[RequestTicket], tickets: &[Ticket], asking: &[TicketId]) 
     for root in roots {
         let mine: Vec<&Ticket> = counted.iter().filter(|(l, _)| part_of(links, l.ticket) == root).map(|(_, t)| *t).collect();
         let Some(head) = find(root).or(mine.first().copied()) else { continue };
-        let (phase, who, since) = phase(&mine, asking);
-        parts.push(Part { ticket: head.id, title: head.title.clone(), phase, who, since });
+        let (phase, who, since, not_live) = phase(&mine, asking, shipped);
+        parts.push(Part { ticket: head.id, title: head.title.clone(), phase, who, since, not_live });
     }
     let covered = !covering(links, tickets).is_empty();
     let done = covered && !parts.is_empty() && waits.is_empty() && parts.iter().all(|p| p.phase.is_finished());
@@ -212,8 +242,8 @@ pub fn status(links: &[RequestTicket], tickets: &[Ticket], asking: &[TicketId]) 
 /// Where the request kept as `row` stands at `now`: [`status`], and — still
 /// open, with no ticket covering it [`cover_wait`] after it was asked —
 /// uncovered; closed by a member, why.
-pub fn standing(row: &Row, tickets: &[Ticket], asking: &[TicketId], now: u64) -> Status {
-    let mut status = status(&row.tickets, tickets, asking);
+pub fn standing(row: &Row, tickets: &[Ticket], asking: &[TicketId], shipped: &Shipped, now: u64) -> Status {
+    let mut status = shipped_status(&row.tickets, tickets, asking, shipped);
     status.uncovered = row.closed_at.is_none() && covering(&row.tickets, tickets).is_empty() && now >= row.asked_at.saturating_add(cover_wait());
     status.closed_why = row.closed_why.clone();
     status
@@ -221,8 +251,22 @@ pub fn standing(row: &Row, tickets: &[Ticket], asking: &[TicketId], now: u64) ->
 
 /// How far a part's tickets got: the open ones that don't wait on the
 /// person say it — stopped, worked on, in review, next — and once none is
-/// open, what was done says it: live, accepted, done.
-fn phase(tickets: &[&Ticket], asking: &[TicketId]) -> (Phase, Option<String>, Option<u64>) {
+/// open, what was done says it: live, on main and not live yet (and why),
+/// accepted, done.
+fn phase(tickets: &[&Ticket], asking: &[TicketId], shipped: &Shipped) -> (Phase, Option<String>, Option<u64>, Option<String>) {
+    let (phase, who, since) = how_far(tickets, asking);
+    if phase != Phase::Live {
+        return (phase, who, since, None);
+    }
+    // Live only once every piece of its merged work is.
+    let waiting: Vec<Option<String>> = tickets.iter().filter_map(|t| shipped.not_live(t)).collect();
+    if waiting.is_empty() {
+        return (phase, who, since, None);
+    }
+    (Phase::OnMain, who, since, waiting.into_iter().flatten().next())
+}
+
+fn how_far(tickets: &[&Ticket], asking: &[TicketId]) -> (Phase, Option<String>, Option<u64>) {
     let kept: Vec<&&Ticket> = tickets.iter().filter(|t| t.status != TicketStatus::Cancelled).collect();
     if kept.is_empty() {
         return (Phase::Cancelled, None, tickets.iter().filter_map(|t| t.updated_at).max());
@@ -289,12 +333,16 @@ pub fn line(status: &Status, words: &Catalog, clock: &dyn Fn(u64) -> String) -> 
             Phase::Blocked => "request.phase.blocked",
             Phase::Waiting => "request.phase.waiting",
             Phase::Accepted => "request.phase.accepted",
+            Phase::OnMain if part.not_live.is_some() => "request.phase.not_live",
+            Phase::OnMain if time.is_empty() => "request.phase.on_main_now",
+            Phase::OnMain => "request.phase.on_main",
             Phase::Live if time.is_empty() => "request.phase.live_now",
             Phase::Live => "request.phase.live",
             Phase::Done => "request.phase.done",
             Phase::Cancelled => "request.phase.cancelled",
         };
-        out.push(words.fill(key, &[("title", title), ("who", part.who.clone().unwrap_or_default()), ("time", time)]));
+        let why = part.not_live.as_deref().map(|code| words.get(&format!("request.why.{code}")).to_owned()).unwrap_or_default();
+        out.push(words.fill(key, &[("title", title), ("who", part.who.clone().unwrap_or_default()), ("time", time), ("why", why)]));
     }
     if status.parts.len() > PARTS_SHOWN {
         out.push(words.fill("request.more", &[("count", (status.parts.len() - PARTS_SHOWN).to_string())]));
@@ -351,23 +399,31 @@ impl Told {
 }
 
 /// What a ticket's state says that is worth telling the person: `w` it
-/// waits on them, `b` its run stopped, `l` its work is on main, `d` done.
-/// Being worked on, in review, sent back and handed in again: no news.
-pub fn mark(t: &Ticket, asking: bool) -> Option<char> {
+/// waits on them, `b` its run stopped, `l` its work is live, `m` on main
+/// and not live yet, `x` on main and its deploy failed, `d` done. Being
+/// worked on, in review, sent back and handed in again: no news.
+pub fn mark(t: &Ticket, asking: bool, shipped: &Shipped) -> Option<char> {
     match t.status {
         TicketStatus::Waiting => Some('w'),
         _ if asking && !t.status.is_closed() => Some('w'),
         _ if stalled(t) => Some('b'),
-        TicketStatus::Done if live(t) => Some('l'),
+        TicketStatus::Done if live(t) => match shipped.not_live(t) {
+            None => Some('l'),
+            Some(None) => Some('m'),
+            Some(Some(_)) => Some('x'),
+        },
         TicketStatus::Done => Some('d'),
         _ => None,
     }
 }
 
-/// The marks a mark implies were passed on the way: live work was done.
+/// The marks a mark implies were passed on the way: live work was on main,
+/// and done.
 fn with_passed(mark: char) -> &'static [char] {
     match mark {
-        'l' => &['l', 'd'],
+        'l' => &['l', 'm', 'd'],
+        'x' => &['x', 'm', 'd'],
+        'm' => &['m', 'd'],
         'd' => &['d'],
         'w' => &['w'],
         'b' => &['b'],
@@ -378,12 +434,12 @@ fn with_passed(mark: char) -> &'static [char] {
 /// Whether a request has news since `told`: its milestone — the most
 /// telling of what is new — and what is told once it is said. Each mark of
 /// each ticket is told once; equipe's own checks never are; "all done" once.
-pub fn news(told: &Told, links: &[RequestTicket], tickets: &[Ticket], asking: &[TicketId], status: &Status) -> Option<(Milestone, Told)> {
+pub fn news(told: &Told, links: &[RequestTicket], tickets: &[Ticket], asking: &[TicketId], shipped: &Shipped, status: &Status) -> Option<(Milestone, Told)> {
     let mut next = told.clone();
     let mut new: Vec<char> = Vec::new();
     for link in links.iter().filter(|l| l.link != Link::Check) {
         let Some(t) = tickets.iter().find(|t| t.id == link.ticket) else { continue };
-        let Some(m) = mark(t, asking.contains(&t.id)) else { continue };
+        let Some(m) = mark(t, asking.contains(&t.id), shipped) else { continue };
         let seen = next.marks.entry(t.id).or_default();
         if !seen.contains(&m) {
             new.push(m);
@@ -397,8 +453,12 @@ pub fn news(told: &Told, links: &[RequestTicket], tickets: &[Ticket], asking: &[
         Some(Milestone::NeedsYou)
     } else if new.contains(&'b') {
         Some(Milestone::Blocked)
+    } else if new.contains(&'x') {
+        Some(Milestone::NotLive)
     } else if new.contains(&'l') {
         Some(Milestone::Live)
+    } else if new.contains(&'m') {
+        Some(Milestone::OnMain)
     } else if new.contains(&'d') {
         Some(Milestone::Done)
     } else {
@@ -965,7 +1025,7 @@ mod tests {
         let line = line(&s, words, &|at| format!("@{at}"));
         assert_eq!(
             line,
-            "Spec the Tinumi composer — on main since @1100 · Left menu, three options — frontend is on it · 2 things wait for you (Check the new composer on r…, Decide if the layout needs…)"
+            "Spec the Tinumi composer — live since @1100 · Left menu, three options — frontend is on it · 2 things wait for you (Check the new composer on r…, Decide if the layout needs…)"
         );
     }
 
@@ -1024,14 +1084,14 @@ mod tests {
         let s = status(&links, std::slice::from_ref(&t), &[1]);
         assert_eq!(s.waits.len(), 1);
         assert_eq!(s.parts[0].phase, Phase::Waiting);
-        assert_eq!(mark(&t, true), Some('w'));
+        assert_eq!(mark(&t, true, &Shipped::default()), Some('w'));
     }
 
     #[test]
     fn each_milestone_is_news_once_and_a_retry_is_none() {
         let links = vec![link(1, None, Link::Asked), link(2, Some(1), Link::Made), link(3, Some(2), Link::Check)];
         let mut tickets = vec![ticket(1, "Spec", TicketStatus::InProgress), ticket(2, "Build", TicketStatus::Todo), ticket(3, "Design QA", TicketStatus::Todo)];
-        let check = |told: &Told, tickets: &[Ticket]| news(told, &links, tickets, &[], &status(&links, tickets, &[]));
+        let check = |told: &Told, tickets: &[Ticket]| news(told, &links, tickets, &[], &Shipped::default(), &status(&links, tickets, &[]));
         let told = Told::default();
         assert_eq!(check(&told, &tickets), None, "work under way is no news");
         tickets[0].status = TicketStatus::Done;
@@ -1060,13 +1120,46 @@ mod tests {
     }
 
     #[test]
+    fn work_on_main_closes_a_request_only_once_its_deploy_went_live() {
+        let links = vec![link(1, None, Link::Asked)];
+        let mut t = merged(ticket(1, "Hero banner", TicketStatus::Done), 50);
+        t.project = Some("/c/site".into());
+        let tickets = vec![t];
+        let words = core(Lang::En);
+        // The project goes live by a deploy nobody has seen succeed yet: on main, not live, open.
+        let mut shipped = Shipped { by_deploy: HashMap::from([("/c/site".to_owned(), None)]), ..Shipped::default() };
+        let s = shipped_status(&links, &tickets, &[], &shipped);
+        assert_eq!((s.parts[0].phase, s.parts[0].not_live.as_deref(), s.done), (Phase::OnMain, None, false));
+        assert!(!s.steps[0].merged, "not shown as landed live");
+        assert_eq!(line(&s, words, &|at| format!("@{at}")), "Hero banner — on main since @50, not live yet");
+        let (m, told) = news(&Told::default(), &links, &tickets, &[], &shipped, &s).unwrap();
+        assert_eq!((m, told.code()), (Milestone::OnMain, "1:dm".to_owned()));
+        // Its deploy failed: still open, and why — told once.
+        shipped.by_deploy.insert("/c/site".into(), Some("deploy_failed".into()));
+        let s = shipped_status(&links, &tickets, &[], &shipped);
+        assert_eq!((s.parts[0].phase, s.parts[0].not_live.as_deref(), s.done), (Phase::OnMain, Some("deploy_failed"), false));
+        assert_eq!(line(&s, words, &|_| String::new()), "Hero banner — on main, not live: its deploy failed");
+        let (m, told) = news(&told, &links, &tickets, &[], &shipped, &s).unwrap();
+        assert_eq!(m, Milestone::NotLive);
+        assert_eq!(news(&told, &links, &tickets, &[], &shipped, &s), None, "the same failure isn't told twice");
+        // A deploy carried it: live, and the request is all done.
+        shipped.live.insert(1);
+        let s = shipped_status(&links, &tickets, &[], &shipped);
+        assert_eq!((s.parts[0].phase, s.done), (Phase::Live, true));
+        assert_eq!(news(&told, &links, &tickets, &[], &shipped, &s).map(|(m, _)| m), Some(Milestone::AllDone));
+        // A project that doesn't deploy: on main is live, as before.
+        let s = shipped_status(&links, &tickets, &[], &Shipped::default());
+        assert_eq!((s.parts[0].phase, s.done), (Phase::Live, true));
+    }
+
+    #[test]
     fn what_moved_together_is_one_milestone_the_most_telling() {
         let links = vec![link(1, None, Link::Asked), link(2, None, Link::Asked), link(3, None, Link::Asked)];
         let tickets = vec![merged(ticket(1, "A", TicketStatus::Done), 5), ticket(2, "B", TicketStatus::Waiting), ticket(3, "C", TicketStatus::InProgress)];
         let s = status(&links, &tickets, &[]);
-        let (m, told) = news(&Told::default(), &links, &tickets, &[], &s).unwrap();
+        let (m, told) = news(&Told::default(), &links, &tickets, &[], &Shipped::default(), &s).unwrap();
         assert_eq!(m, Milestone::NeedsYou);
-        assert_eq!(told.code(), "1:dl,2:w");
+        assert_eq!(told.code(), "1:dlm,2:w");
     }
 
     #[test]
@@ -1199,12 +1292,12 @@ mod tests {
         let mcp = vec![link(3767, Some(3766), Link::Check)];
         let s = status(&mcp, &tickets, &[]);
         assert!(!s.done && s.parts.is_empty(), "{s:?}");
-        assert_eq!(news(&Told::default(), &mcp, &tickets, &[], &s), None, "nothing to tell, nothing to close");
+        assert_eq!(news(&Told::default(), &mcp, &tickets, &[], &Shipped::default(), &s), None, "nothing to tell, nothing to close");
         // Its own work, done: all done.
         let own = vec![link(3766, None, Link::Asked), link(3767, Some(3766), Link::Check)];
         let s = status(&own, &tickets, &[]);
         assert!(s.done, "{s:?}");
-        assert_eq!(news(&Told::default(), &own, &tickets, &[], &s).map(|(m, _)| m), Some(Milestone::AllDone));
+        assert_eq!(news(&Told::default(), &own, &tickets, &[], &Shipped::default(), &s).map(|(m, _)| m), Some(Milestone::AllDone));
     }
 
     #[test]
@@ -1212,23 +1305,23 @@ mod tests {
         let words = core(Lang::En);
         let clock = |at: u64| format!("@{at}");
         let bare = row(3, 1_000, vec![]);
-        assert!(!standing(&bare, &[], &[], 1_000 + COVER_WAIT - 1).uncovered, "a few minutes to put it on the board");
-        let s = standing(&bare, &[], &[], 1_000 + COVER_WAIT);
+        assert!(!standing(&bare, &[], &[], &Shipped::default(), 1_000 + COVER_WAIT - 1).uncovered, "a few minutes to put it on the board");
+        let s = standing(&bare, &[], &[], &Shipped::default(), 1_000 + COVER_WAIT);
         assert!(s.uncovered && !s.done, "{s:?}");
         assert_eq!(line(&s, words, &clock), "no ticket serves it yet — the PM is told");
         // Only a check with it: still uncovered.
         let mut qa = ticket(10, "Design QA: T-1 sidebar toggle", TicketStatus::InProgress);
         qa.kind = TicketKind::Task;
         let checked = row(3, 1_000, vec![link(10, Some(1), Link::Check)]);
-        assert!(standing(&checked, std::slice::from_ref(&qa), &[], 1_000 + COVER_WAIT).uncovered);
+        assert!(standing(&checked, std::slice::from_ref(&qa), &[], &Shipped::default(), 1_000 + COVER_WAIT).uncovered);
         // Work with it: covered, whenever.
         let worked = row(3, 1_000, vec![link(1, None, Link::Asked)]);
         let t = ticket(1, "Fix the login error", TicketStatus::Todo);
-        let s = standing(&worked, std::slice::from_ref(&t), &[], 1_000 + 10 * COVER_WAIT);
+        let s = standing(&worked, std::slice::from_ref(&t), &[], &Shipped::default(), 1_000 + 10 * COVER_WAIT);
         assert!(!s.uncovered, "{s:?}");
         // Closed by the PM with why: not uncovered, and the person reads why.
         let closed = Row { closed_at: Some(2_000), closed_why: Some("answered in chat".into()), ..bare };
-        let s = standing(&closed, &[], &[], 1_000 + 10 * COVER_WAIT);
+        let s = standing(&closed, &[], &[], &Shipped::default(), 1_000 + 10 * COVER_WAIT);
         assert!(!s.uncovered && !s.done, "{s:?}");
         assert_eq!(line(&s, words, &clock), "closed: answered in chat");
     }

@@ -79,7 +79,12 @@ pub enum Phase {
     Waiting,
     /// Accepted, but its work isn't on the main branch yet.
     Accepted,
-    /// Its work is on the main branch.
+    /// Its work is on the main branch, and the project goes live by a deploy
+    /// equipe hasn't seen succeed for it yet ([`Part::not_live`] says why
+    /// when one failed). Not finished: pushed is not live.
+    OnMain,
+    /// Its work is live: a deploy equipe saw succeed carried it — or, for a
+    /// project that doesn't deploy, it is on the main branch.
     Live,
     /// Done (work that isn't code).
     Done,
@@ -105,6 +110,11 @@ pub struct Part {
     /// When it got where it is (unix seconds), when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<u64>,
+    /// On main and not live, why, as a code (`deploy_failed`,
+    /// `deploy_blocked`, `deploy_invalid`, `deploy_waits`); `None` while a
+    /// deploy is simply on its way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_live: Option<String>,
 }
 
 /// A ticket of the request that waits on the person: put down for them, or
@@ -192,8 +202,12 @@ pub enum Milestone {
     NeedsYou,
     /// A run of it stopped; only the person brings it back.
     Blocked,
-    /// Work of it reached the main branch.
+    /// Work of it is live.
     Live,
+    /// Work of it reached the main branch, not live yet.
+    OnMain,
+    /// Its deploy failed or couldn't run: on main, not live, and why.
+    NotLive,
     /// A ticket of it was done (a spec, a check, accepted work).
     Done,
     /// Work of it was handed in for review.
@@ -207,6 +221,8 @@ impl Milestone {
             Milestone::NeedsYou => "needs_you",
             Milestone::Blocked => "blocked",
             Milestone::Live => "live",
+            Milestone::OnMain => "on_main",
+            Milestone::NotLive => "not_live",
             Milestone::Done => "done",
             Milestone::HandedIn => "handed_in",
         }
