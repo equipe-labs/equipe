@@ -145,9 +145,25 @@ pub fn list(ids: &[TicketId]) -> String {
     ids.iter().map(|id| format!("T-{id}")).collect::<Vec<_>>().join(", ")
 }
 
-/// The card's question: "Accept T-1, T-3?".
-pub fn title(card: &AcceptProposal) -> String {
-    let tickets = list(&card.tickets);
+/// The tickets as a card names them, by title — never by number alone: the
+/// person reads what the work is ("“Sign-in screen”, “Pricing table”"); a
+/// ticket the board doesn't hold, by its number.
+pub fn named(ids: &[TicketId], board: &[Ticket]) -> String {
+    ids.iter()
+        .map(|id| match board.iter().find(|t| t.id == *id) {
+            Some(t) if !t.title.trim().is_empty() => {
+                let title: String = t.title.chars().take(40).collect();
+                format!("“{}{}”", title.trim_end(), if t.title.chars().count() > 40 { "…" } else { "" })
+            }
+            _ => format!("T-{id}"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The card's question: "Accept “Sign-in screen”, “Pricing table”?".
+pub fn title(card: &AcceptProposal, board: &[Ticket]) -> String {
+    let tickets = named(&card.tickets, board);
     match card.verdict {
         Verdict::Accept => t!("accept.ask", tickets = tickets),
         Verdict::Merge => t!("accept.ask_merge", tickets = tickets),
@@ -298,9 +314,12 @@ mod tests {
     #[test]
     fn the_card_says_what_it_asks_what_starts_after_and_how_code_lands() {
         let both = card(7, &[1, 3]);
-        assert_eq!(title(&both), "T-1, T-3 수락할까요?");
-        assert_eq!(title(&AcceptProposal { verdict: Verdict::Merge, ..both.clone() }), "T-1, T-3 수락하고 머지할까요?");
-        assert_eq!(title(&AcceptProposal { verdict: Verdict::Changes, ..both.clone() }), "T-1, T-3 반려할까요?");
+        let mut named_board = board();
+        named_board[0].title = "로그인 화면".into();
+        named_board[2].title = "가격표".into();
+        assert_eq!(title(&both, &named_board), "“로그인 화면”, “가격표” 수락할까요?", "by title, never by number alone");
+        assert_eq!(title(&AcceptProposal { verdict: Verdict::Merge, ..both.clone() }, &named_board), "“로그인 화면”, “가격표” 수락하고 머지할까요?");
+        assert_eq!(title(&AcceptProposal { verdict: Verdict::Changes, ..both.clone() }, &[]), "T-1, T-3 반려할까요?", "a ticket the board lacks, by number");
         assert_eq!(yes_label(&both, 2), "모두 수락하기");
         assert_eq!(yes_label(&both, 1), "1개 수락하기");
         assert_eq!(yes_label(&card(7, &[1]), 1), "수락하기");

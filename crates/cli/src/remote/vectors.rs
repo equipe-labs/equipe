@@ -902,6 +902,9 @@ fn snapshot() -> Snapshot {
         projects: vec!["/Users/you/projects/site".into(), "/Users/you/projects/api".into()],
         hq: None,
         routines: Vec::new(),
+        requests: Vec::new(),
+        stops: Vec::new(),
+        decided: Vec::new(),
         sessions: vec![
             SessionInfo {
                 session: 1001,

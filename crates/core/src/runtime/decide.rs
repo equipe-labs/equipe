@@ -26,11 +26,15 @@ impl Runtime {
     pub(super) fn question_sets(&mut self, squad: &str) -> &mut Vec<QuestionSet> {
         if !self.questions.contains_key(squad) {
             let kept = self.journal(squad).map(Journal::questions).unwrap_or_default();
+            // Cards about work already settled aren't asked again (`settled`).
+            let read = kept.len();
+            let kept = self.without_settled(squad, kept);
+            let swept = kept.len() != read;
             let count = kept.len();
             let once = decide::collapse(kept);
             let collapsed = once.len() != count;
             self.questions.insert(squad.to_owned(), once);
-            if collapsed {
+            if collapsed || swept {
                 self.save_questions(squad);
             }
         }
@@ -39,6 +43,11 @@ impl Runtime {
 
     pub(super) fn save_questions(&mut self, squad: &str) {
         let sets = self.questions.get(squad).cloned().unwrap_or_default();
+        // Pictures saved in a worktree or a temp folder outlast it while the person decides.
+        let images: Vec<String> = sets.iter().flat_map(|s| s.images().map(str::to_owned)).collect();
+        if !images.is_empty() {
+            visuals::keep::decision(&self.config.home, squad, &images);
+        }
         if let Some(journal) = self.journal(squad) {
             let _ = journal.set_questions(&sets);
         }

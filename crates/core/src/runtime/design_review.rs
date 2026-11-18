@@ -424,7 +424,11 @@ what it should be) and `polish` (S3/S4). Then end your turn.",
                     item.blockers.iter().map(|b| format!("- {b}")).collect::<Vec<_>>().join("\n")
                 );
                 let fix = equipe_ticket(say!(self, "ticket.design_fix_title", id = item.ticket, title = title), body, TicketKind::Code, owner.clone(), checked.and_then(|t| t.project.clone()), TicketStatus::Todo, crate::protocol::Priority::High, &designer);
-                if let Some(journal) = self.journal(squad)
+                // Work the person stopped gets no fix filed for it (`stops`).
+                let lineage: Vec<TicketId> = TicketId::try_from(item.ticket).into_iter().collect();
+                let stopped = self.stop_for(squad, &format!("{} {title}", fix.title), &fix.body, &lineage, None).is_some();
+                if !stopped
+                    && let Some(journal) = self.journal(squad)
                     && let Ok(fid) = journal.create_ticket(&fix)
                 {
                     let _ = journal.ticket_event(fid, &designer, "created", &format!("design fix of T-{} from T-{on}", item.ticket));
@@ -448,7 +452,21 @@ what it should be) and `polish` (S3/S4). Then end your turn.",
                 }
             }
         }
-        // S3/S4 go together into one polish ticket, for the PM to schedule.
+        // S3/S4 go together into one polish ticket, for the PM to schedule —
+        // without what is of work the person stopped (`stops`).
+        let stops = self.stops_in_force(squad);
+        if !stops.is_empty() {
+            let of = |line: &str| -> bool {
+                let about: Option<TicketId> = line.strip_prefix("- T-").and_then(|r| r.split(':').next()).and_then(|n| n.parse().ok());
+                let title = about.and_then(|a| tickets.iter().find(|t| t.id == a)).map(|t| t.title.clone()).unwrap_or_default();
+                crate::stops::stopping(&stops, &format!("{title} {line}"), line, &about.into_iter().collect::<Vec<_>>(), None).is_some()
+            };
+            let before = polish_lines.len();
+            polish_lines.retain(|l| !of(l));
+            if polish_lines.len() < before {
+                crate::daemon_log!("equipe: {squad}: {} polish line(s) of T-{on} left out: work the person stopped", before - polish_lines.len());
+            }
+        }
         if !polish_lines.is_empty() {
             let polish = equipe_ticket(
                 say!(self, "ticket.design_polish_title", review = on),

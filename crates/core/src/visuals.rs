@@ -18,11 +18,14 @@
 //! rules; a picture a line embeds by name may be in one of the squad's
 //! projects or a temp folder too, where a quick chart or render lands. A ticket whose worktree went (accepted, its merge still to come)
 //! still shows its hand-in: the pictures are read from its branch, or from
-//! main once merged, by the paths the ticket recorded and no others.
+//! main once merged, by the paths the ticket recorded and no others. One its
+//! branch never had (saved in the worktree, never committed) is read from
+//! the copy kept when it was handed in (`keep`).
 
 pub mod cache;
 pub mod card;
 pub mod diagram;
+pub mod keep;
 pub mod markdown;
 mod theme;
 pub mod thumbs;
@@ -659,8 +662,8 @@ pub fn serve_with(home: &Path, ask: &ReadImage, cap: Option<u32>, scratch: &[Pat
 /// took a minute and more, so a card's pictures, each waiting for its own
 /// look in turn, never came before the screen gave up on them. Read against
 /// the squad's folder, its design QA folder, its projects and the worktrees,
-/// as [`check`] has it. Gone from disk: a ticket's from git as its hand-in
-/// recorded it ([`kept_of`]); else — its worktree gone with its work landed
+/// as [`check`] has it. Gone from disk: the copy kept when it was named
+/// ([`keep`]); a ticket's from git as its hand-in recorded it ([`kept_of`]); else — its worktree gone with its work landed
 /// — the checkout it was merged into, main in git, or equipe's capture store
 /// by the hash its manifest lists (`crate::design::captures`); else "no such
 /// file", plainly. `None` when nothing so named names it (or it is saved
@@ -685,6 +688,10 @@ fn named_picture(home: &Path, ask: &ReadImage, max: Option<u32>) -> Option<Resul
             Err(why) if rpc::ImageWhy::of(&why) == rpc::ImageWhy::Outside => None,
             read => Some(read),
         };
+    }
+    // Saved in a worktree or a temp folder, gone with it: the copy kept when it was named.
+    if let Some(copy) = keep::copy_of(home, &ask.squad, &naming.tickets, naming.decision, &ask.path) {
+        return Some(read_cached(home, &copy, &[keep::dir(home, &ask.squad)], max));
     }
     // A ticket's, its worktree gone: where git has it, as its hand-in recorded it.
     let journal = (!naming.tickets.is_empty()).then(|| crate::journal::Journal::open(&db).ok()).flatten();
@@ -1543,6 +1550,34 @@ mod tests {
         assert_eq!(serve(&home, &ask(&recorded[0]), None).unwrap().width, Some(60), "main's");
         let missing = serve(&home, &ask(&recorded[3]), None).unwrap_err();
         assert_eq!(rpc::ImageWhy::of(&missing), rpc::ImageWhy::Missing, "{missing}");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_picture_never_committed_is_still_given_once_its_worktree_is_gone() {
+        let home = dir("handin-kept");
+        let (project, images) = accepted_unmerged(&home);
+        // Saved beside the work, never committed: in the worktree alone.
+        let worktree = crate::worktree::worktrees_of(&project, &home).join("t4-6ad33ac5");
+        git(&project, &["worktree", "add", "-q", &worktree.to_string_lossy(), "equipe/frontend-t4-6ad33ac5"]);
+        std::fs::create_dir_all(worktree.join("handin-shots")).unwrap();
+        png(&worktree.join("handin-shots/c-390-menus.png"), 39, 84, false);
+        let shot = worktree.canonicalize().unwrap().join("handin-shots/c-390-menus.png").to_string_lossy().into_owned();
+        let never_kept = shot.replace("c-390-menus", "c-390-footer");
+        png(Path::new(&never_kept), 10, 10, false);
+        let recorded = vec![images[0].clone(), shot.clone(), never_kept.clone()];
+        // Handed in: kept. The other one is as a hand-in from before equipe kept them.
+        assert_eq!(keep::ticket(&home, "acme", 1, std::slice::from_ref(&shot)), 1);
+        git(&project, &["worktree", "remove", "--force", &worktree.to_string_lossy()]);
+        git(&project, &["merge", "-q", "--no-ff", "-m", "T-4", "equipe/frontend-t4-6ad33ac5"]);
+        git(&project, &["branch", "-q", "-D", "equipe/frontend-t4-6ad33ac5"]);
+        save_ticket(&home, &project, &recorded, Some(true), None);
+        let ask = |path: &str| ReadImage { squad: "acme".into(), path: path.into(), max: None };
+        assert_eq!(serve(&home, &ask(&recorded[0]), None).unwrap().width, Some(60), "the merged checkout's");
+        let read = serve(&home, &ask(&shot), None).unwrap();
+        assert_eq!((read.width, read.height), (Some(39), Some(84)), "the copy kept at its hand-in");
+        let gone = serve(&home, &ask(&never_kept), None).unwrap_err();
+        assert_eq!(rpc::ImageWhy::of(&gone), rpc::ImageWhy::Missing, "{gone}");
         std::fs::remove_dir_all(home).unwrap();
     }
 

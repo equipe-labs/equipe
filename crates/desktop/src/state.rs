@@ -391,6 +391,13 @@ pub struct Model {
     pub hq: Option<PathBuf>,
     /// The squad's routines (`protocol::routines`), as the daemon has them.
     pub routines: Vec<equipe_core::protocol::routines::Routine>,
+    /// The person's requests under way, and those finished lately, as the
+    /// daemon works out where each stands (`crate::requests`).
+    pub requests: Vec<equipe_core::protocol::requests::Request>,
+    /// The kinds of work the person stopped, in force.
+    pub stops: Vec<equipe_core::protocol::requests::Stop>,
+    /// What the PM decided for the person in the last day without a card.
+    pub decided: Vec<equipe_core::protocol::requests::Decided>,
     /// The logins members sign in with, as the daemon keeps them (no passwords).
     pub logins: Vec<equipe_core::protocol::vault::Login>,
     /// Login autopilot as a whole (Settings › Accounts).
@@ -642,6 +649,9 @@ impl Model {
             project_order: Vec::new(),
             hq: None,
             routines: Vec::new(),
+            requests: Vec::new(),
+            stops: Vec::new(),
+            decided: Vec::new(),
             logins: Vec::new(),
             autopilot: Default::default(),
             login_insights: None,
@@ -1382,6 +1392,9 @@ impl Model {
         self.team.load(snapshot.team_changes.clone());
         self.routine_asks.load(snapshot.routine_proposals.clone());
         self.accepts.load(snapshot.accepts.clone());
+        self.requests = snapshot.requests.clone();
+        self.stops = snapshot.stops.clone();
+        self.decided = snapshot.decided.clone();
         self.words.load(snapshot.words.clone(), snapshot.words_all);
         // An older daemon: the banner over the conversation says so, with its button.
         self.daemon_version = version;
@@ -1576,6 +1589,25 @@ impl Model {
             // What stays a bottleneck, told once by the daemon: every screen of the squad shows it.
             Event::Escalated { squad, notice } if *squad == self.squad => {
                 self.alerts.push(Alert::Escalated { notice: notice.clone() });
+            }
+            Event::RequestChanged { squad, request } if *squad == self.squad => {
+                match self.requests.iter_mut().find(|r| r.id == request.id) {
+                    Some(kept) => *kept = request.clone(),
+                    None => self.requests.push(request.clone()),
+                }
+                self.revision += 1;
+            }
+            Event::StopsChanged { squad, stops } if *squad == self.squad => {
+                self.stops = stops.clone();
+                self.revision += 1;
+            }
+            Event::DecidedChanged { squad, decided } if *squad == self.squad => {
+                self.decided = decided.clone();
+                self.revision += 1;
+            }
+            // A request's milestone, told once by the daemon in its conversation: a notice too.
+            Event::RequestNews { squad, request, title, session, member, line, .. } if *squad == self.squad => {
+                self.alerts.push(Alert::Request { request: *request, title: title.clone(), session: *session, member: member.clone(), line: line.clone() });
             }
             Event::RestingChanged { squad, resting } if *squad == self.squad => {
                 self.resting = resting.clone();

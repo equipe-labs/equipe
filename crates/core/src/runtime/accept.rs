@@ -105,12 +105,19 @@ them, and note what they said on the ticket with `comment`, for the PM."
                 "The person's own words already do this ({}): equipe is doing it, or reading it back to them to confirm. Put nothing to them; carry on.",
                 crate::by_words::list(&checked.tickets)
             ),
-            Outcome::Propose(checked) => {
-                let reply = rules::proposed_reply(&checked, &tickets);
-                let proposal = checked.into_proposal(equipe_protocol::new_session_id(), member, id, now_secs());
-                self.put_up(squad, proposal);
-                reply
-            }
+            // Small work is the PM's to decide; only what is weighty goes up, with why (`person_gate`).
+            Outcome::Propose(checked) => match self.gate_card(squad, member, &checked.tickets, args)? {
+                super::person_gate::Gate::Pm(reply) => reply,
+                super::person_gate::Gate::Card(why) => {
+                    let reply = rules::proposed_reply(&checked, &tickets);
+                    let mut proposal = checked.into_proposal(equipe_protocol::new_session_id(), member, id, now_secs());
+                    if !why.is_empty() {
+                        proposal.summary = [proposal.summary.trim(), why.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
+                    }
+                    self.put_up(squad, proposal);
+                    reply
+                }
+            },
         };
         Ok(match landing_line {
             Some(line) => format!("{line} {reply}"),

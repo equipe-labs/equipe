@@ -218,7 +218,7 @@ async fn the_pm_puts_it_on_a_card_and_only_the_persons_confirmation_accepts_and_
     assert!(odd.is_error && odd.text.contains("there is no T-99"), "{odd:?}");
 
     // "전부 수락, 머지까지": the card goes up, T-2 (not handed in) left out, said why.
-    let said = tool(&handle, "pm", "propose_accept", json!({ "verdict": "merge", "tickets": [1, 2, 1], "summary": "Hero" })).await;
+    let said = tool(&handle, "pm", "propose_accept", json!({ "verdict": "merge", "tickets": [1, 2, 1], "summary": "Hero", "why": "visible" })).await;
     assert!(!said.is_error && said.text.starts_with("Proposed — the person confirms on a card: accepting and merging T-1. Confirmed, T-2 can start."), "{said:?}");
     assert!(said.text.contains("Left out: T-2 is todo, not handed in yet.") && said.text.contains("Don't explain buttons"), "{said:?}");
     let card = proposed(&until(&mut events, |e| matches!(e, Event::AcceptProposed { .. })).await);
@@ -323,7 +323,7 @@ async fn the_persons_words_raise_the_card_a_no_keeps_it_as_it_is_and_the_board_s
     // Sending back needs the person's words; then accepted on the board instead, the card is moot.
     let bare = tool(&handle, "pm", "propose_accept", json!({ "verdict": "changes", "tickets": [1] })).await;
     assert!(bare.is_error && bare.text.contains("`note`"), "{bare:?}");
-    tool(&handle, "pm", "propose_accept", json!({ "verdict": "changes", "tickets": [1], "note": "Bigger button" })).await;
+    tool(&handle, "pm", "propose_accept", json!({ "verdict": "changes", "tickets": [1], "note": "Bigger button", "why": "visible" })).await;
     let back = proposed(&until(&mut events, |e| matches!(e, Event::AcceptProposed { .. })).await);
     handle.send(Command::Accept { squad: "acme".into(), ticket: 1 });
     let seen = until(&mut events, |e| matches!(e, Event::AcceptClosed { .. })).await;
