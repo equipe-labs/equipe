@@ -1600,7 +1600,7 @@
   "open.no_app": "Ninguna app abrió {link}. Instala la app de escritorio de equipe (equipe.app), ábrela una vez e inténtalo de nuevo.",
   "open.opening": "Abriendo {link} en equipe",
   "open.unsupported": "equipe open funciona por ahora en macOS y Linux. El enlace es {link}",
-  "autonomy.usage": "equipe squad autonomy [show | set <tipo> <ask|decide_and_tell|just_do> | window <minutos> | revoke <n.º>] — tipos: design, merge, internal, production_data",
+  "autonomy.usage": "equipe squad autonomy [show | set <tipo> <ask|decide_and_tell|just_do> | window <minutos> | revoke <n.º>] — tipos: design, merge, internal, production_data, deploy",
   "autonomy.floor": "{kind} siempre te lo pregunta: ninguna política lo cambia.",
   "autonomy.title": "Hasta dónde llegan los miembros de {squad} sin ti:",
   "autonomy.window": "«Decidir y avisarme» espera tu respuesta {minutes} min (0: enseguida).",

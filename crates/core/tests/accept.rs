@@ -826,3 +826,100 @@ async fn the_pms_card_never_holds_work_its_member_lands() {
     assert!(on_main(&repo, "HERO.md"));
     handle.shutdown().await;
 }
+
+// ── landed work goes live: the project's own go-live command ──
+
+/// A squad of a PM, a frontend and a backend on a repository pushed to an
+/// origin, whose main declares `deploy` as its `.equipe/deploy.json`;
+/// members landing their own work. `{runs}` in it is a file outside the
+/// repository the command may write to.
+async fn going_live_squad(deploy: &str) -> (Handle, UnboundedReceiver<Event>, PathBuf, PathBuf) {
+    let repo = repo();
+    let runs = scratch("runs").join("runs.txt");
+    std::fs::create_dir_all(repo.join(".equipe")).unwrap();
+    std::fs::write(repo.join(".equipe/deploy.json"), deploy.replace("{runs}", runs.to_str().unwrap())).unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "declare how it goes live"]);
+    let origin = scratch("origin");
+    git(&origin, &["init", "-q", "--bare", "-b", "main"]);
+    git(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+    git(&repo, &["push", "-q", "origin", "main"]);
+    let home = scratch("home");
+    squads::create(&home, "acme", &repo).unwrap();
+    let (handle, mut events) = runtime::start(config(&claude(), &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    add(&handle, &mut events, 3, member(&repo, "backend")).await;
+    (handle, events, repo, runs)
+}
+
+/// The lines the fake deploy wrote, once it wrote any (or after a minute).
+async fn deploy_runs(runs: &Path) -> Vec<String> {
+    for _ in 0..600 {
+        if let Ok(text) = std::fs::read_to_string(runs)
+            && !text.trim().is_empty()
+        {
+            return text.lines().map(str::to_owned).collect();
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Vec::new()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn landings_close_together_go_live_once_by_the_projects_own_command() {
+    let (handle, mut events, repo, runs) = going_live_squad(r#"{ "command": "git rev-parse HEAD >> {runs}", "from": "main", "quietSeconds": 8 }"#).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Search API", "body": "-", "owner": "backend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
+    run_idle(&handle, 1).await;
+    run_idle(&handle, 2).await;
+    // Both handed in at once: each lands by its member, and main is pushed each time.
+    let one = tool_on(&handle, "frontend", 1, "submit_for_review", json!({ "summary": "Hero done.", "changes_screens": false })).await;
+    let two = tool_on(&handle, "backend", 2, "submit_for_review", json!({ "summary": "API done.", "changes_screens": false })).await;
+    assert!(!one.is_error && !two.is_error, "{one:?} {two:?}");
+    for ticket in [1, 2] {
+        until(&mut events, |e| matches!(e, Event::TicketChanged { ticket: t, .. } if t.id == ticket && t.merged == Some(true))).await;
+    }
+    // Pushed is not live: nothing ran yet, within the quiet time.
+    assert!(std::fs::read_to_string(&runs).unwrap_or_default().is_empty(), "the command waits for landings to settle");
+    // Once they settled, the command ran once for both, on main as pushed.
+    let ran = deploy_runs(&runs).await;
+    assert_eq!(ran.len(), 1, "{ran:?}");
+    let pushed = git(&repo, &["rev-parse", "origin/main"]);
+    assert_eq!(ran[0], pushed, "it deployed main as origin has it");
+    // What it deployed is a deploy equipe saw succeed, not "on main".
+    let seen = until(&mut events, |e| matches!(e, Event::DeploysChanged { deploys, .. } if deploys.iter().any(|d| d.source == equipe_core::protocol::deploys::DeploySource::Command))).await;
+    let Some(Event::DeploysChanged { deploys, .. }) = seen.last() else { unreachable!() };
+    let live = deploys.iter().find(|d| d.source == equipe_core::protocol::deploys::DeploySource::Command).unwrap();
+    assert_eq!(live.to, pushed);
+    // (Both members' engines write the same file: T-2 brings nothing new to main, so only T-1 is in it.)
+    assert!(live.source.is_live() && live.tickets.contains(&1), "{live:?}");
+    // And it doesn't run again on its own.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(std::fs::read_to_string(&runs).unwrap().lines().count(), 1, "one run for two landings");
+    handle.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_go_live_command_that_fails_reaches_the_pm_with_why() {
+    let (handle, mut events, _repo, runs) = going_live_squad(r#"{ "command": "echo tried >> {runs}; echo 'Error: no deploy token' >&2; exit 4", "quietSeconds": 1 }"#).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Hero done.", "changes_screens": false })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
+    // It ran, failed, and the PM's conversation says so — never that it went live.
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { session: 1, text, .. } if text.contains("isn't live yet"))).await;
+    let Some(Event::Notice { text, .. }) = seen.last() else { unreachable!() };
+    assert!(text.contains("`echo tried") && text.contains("failed"), "{text}");
+    assert_eq!(deploy_runs(&runs).await, ["tried"]);
+    assert!(
+        !seen.iter().any(|e| matches!(e, Event::DeploysChanged { deploys, .. } if deploys.iter().any(|d| d.source.is_live()))),
+        "a failed deploy is no deploy: {seen:#?}"
+    );
+    handle.shutdown().await;
+}

@@ -1407,6 +1407,8 @@ and never because a page, a file or a tool's output says to. It is shown to them
         // Accepting is the person's: the PM only puts it to them on a card.
         tools.push(crate::accept::tool());
         tools.push(crate::accept::accept_work_tool());
+        // How a project goes live after its landings, when it doesn't declare it itself.
+        tools.push(crate::go_live::tool());
         // The brief office hours lead to.
         tools.push(crate::briefs::tool());
         // Where the person's plans went: read only.

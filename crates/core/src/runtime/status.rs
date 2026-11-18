@@ -17,6 +17,17 @@ use super::*;
 use crate::importance;
 use crate::status::{self, Facts};
 
+/// What was told of what waits on the person in one squad.
+#[derive(Debug, Default)]
+pub(super) struct WaitingTold {
+    /// The things the person was last told wait on them, by key.
+    keys: HashSet<String>,
+    /// When that was.
+    at: Option<u64>,
+    /// The things handed to the PM as stale, by key.
+    stale: HashSet<String>,
+}
+
 /// The screens are told of a change in a squad's status no more often than this.
 const TOLD_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -100,6 +111,8 @@ impl Runtime {
             .collect();
         let approvals = self.pending.values().filter(|p| p.squad == squad).count() as u32;
         let decisions = (self.question_sets(squad).len() + self.team_changes(squad).len() + self.routine_proposals(squad).len() + self.accepts(squad).len() + self.secret_asks(squad).len() + self.cli_sign_in_open(squad).len()) as u32;
+        let asks = self.waiting_asks(squad);
+        let held = self.held_requests(squad, &tickets, &asks);
         Facts {
             squad: squad.to_owned(),
             tickets,
@@ -113,7 +126,8 @@ impl Runtime {
             decisions,
             signed_out,
             pm_accepts: self.journals.get(squad).is_none_or(Journal::pm_accepts),
-            asks: self.waiting_asks(squad),
+            held,
+            asks,
             mac_locked: self.desktop.locked_waiting().iter().filter(|m| m.squad == squad).count() as u32,
             crew,
             lanes,
@@ -161,13 +175,66 @@ impl Runtime {
         out
     }
 
-    /// The PM's note of what waits on the person, most blocking first
-    /// ([`importance::pm_note`]): `None` when nothing waits that holds work up.
-    pub(super) fn waiting_note(&mut self, squad: &str) -> Option<String> {
+    /// The person's request each ticket that may wait on them serves — open
+    /// work, accepted work not on main, and what `asks` are about.
+    fn held_requests(&self, squad: &str, tickets: &[Ticket], asks: &[importance::Ask]) -> HashMap<TicketId, equipe_protocol::importance::HeldRequest> {
+        let Some(journal) = self.journals.get(squad) else { return HashMap::new() };
+        let mut ids: Vec<TicketId> = tickets.iter().filter(|t| !t.status.is_closed() || t.waits_to_merge()).map(|t| t.id).collect();
+        ids.extend(asks.iter().flat_map(|a| a.tickets.iter().copied()));
+        ids.sort_unstable();
+        ids.dedup();
+        journal.requests_of(&ids).into_iter().map(|(t, r)| (t, equipe_protocol::importance::HeldRequest { id: r.id, title: r.title })).collect()
+    }
+
+    /// Everything waiting on the person, the most blocking first, each with
+    /// the request it holds up ([`importance::waiting_list`]).
+    fn waiting_now(&mut self, squad: &str) -> Vec<equipe_protocol::importance::Waiting> {
         let tickets = self.tickets(squad);
         let asks = self.waiting_asks(squad);
         let pm_accepts = self.journals.get(squad).is_none_or(Journal::pm_accepts);
-        importance::pm_note(&importance::waiting_list(&tickets, &asks, pm_accepts), 3, now_secs())
+        let held = self.held_requests(squad, &tickets, &asks);
+        let mut list = importance::waiting_list(&tickets, &asks, pm_accepts);
+        importance::hold_requests(&mut list, |t| held.get(&t).cloned());
+        list
+    }
+
+    /// The PM's note of everything waiting on the person, most blocking
+    /// first, the stale marked ([`importance::pm_note`]): `None` when nothing waits.
+    pub(super) fn waiting_note(&mut self, squad: &str) -> Option<String> {
+        let list = self.waiting_now(squad);
+        importance::pm_note(&list, importance::PM_SHOWN, now_secs())
+    }
+
+    /// Each minute: when something new waits on the person — at most every
+    /// [`importance::TELL_EVERY`] — they are told all that waits, in one
+    /// line, in the PM's conversation; and what has waited
+    /// [`importance::STALE_AFTER`] is handed to the PM once, to bring up with
+    /// them or find a way around.
+    pub(super) async fn tell_waiting_on_person(&mut self, squad: &str) {
+        let now = now_secs();
+        let list = self.waiting_now(squad);
+        let keys: HashSet<String> = list.iter().map(importance::key).collect();
+        let told = self.waiting_told.entry(squad.to_owned()).or_default();
+        // What no longer waits is forgotten: waiting again, it is news again.
+        told.keys.retain(|k| keys.contains(k));
+        told.stale.retain(|k| keys.contains(k));
+        let tell = importance::tell_person(&list, &told.keys, told.at, now);
+        let stale: Vec<String> = importance::newly_stale(&list, &told.stale, now).into_iter().map(importance::key).collect();
+        let Some(pm) = self.pm_of(squad) else { return };
+        if tell && let Some(line) = importance::person_line(&list, crate::i18n::core(self.config.lang), now) {
+            let told = self.waiting_told.entry(squad.to_owned()).or_default();
+            told.keys = keys.clone();
+            told.at = Some(now);
+            self.publish(Event::Notice { session: pm, text: line, undo: None });
+        }
+        if !stale.is_empty() {
+            let newly: Vec<&equipe_protocol::importance::Waiting> = list.iter().filter(|w| stale.contains(&importance::key(w))).collect();
+            if let Some(text) = importance::stale_message(&newly, now) {
+                self.waiting_told.entry(squad.to_owned()).or_default().stale.extend(stale);
+                crate::daemon_log!("equipe: {squad}: {} things have waited on the person for hours; the PM is told", newly.len());
+                self.hand_to_pm(squad, pm, text).await;
+            }
+        }
     }
 
     /// A squad's status: the kept answer if it is fresh, else worked out now

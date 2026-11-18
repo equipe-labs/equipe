@@ -281,12 +281,12 @@ impl Change {
             }
             "autonomy" => {
                 use crate::protocol::autonomy::{Kind, Level};
-                let kind = s("kind").ok_or("Which kind? Give `kind`: design, merge, internal or production_data.")?;
+                let kind = s("kind").ok_or("Which kind? Give `kind`: design, merge, internal, production_data or deploy.")?;
                 if matches!(kind.as_str(), "window" | "window_minutes") {
                     let minutes: u32 = value()?.parse().map_err(|_| "`value` is a number of minutes (0: at once).")?;
                     return Ok(Change::AutonomyWindow(minutes.min(24 * 60)));
                 }
-                let kind = Kind::parse(&kind).ok_or_else(|| format!("A kind is design, merge, internal or production_data (or window), not {kind:?}."))?;
+                let kind = Kind::parse(&kind).ok_or_else(|| format!("A kind is design, merge, internal, production_data or deploy (or window), not {kind:?}."))?;
                 let level = Level::parse(&value()?).ok_or("A level is ask, decide_and_tell or just_do.")?;
                 if !Kind::SET.contains(&kind) && level != Level::Ask {
                     return Err(format!("{} always asks the person: sign-ins and credentials, money, permanent deletion, sending or publishing outside, security settings and legal matters are never decided without them, and no policy changes that. Nothing changed.", kind.code()));
@@ -438,7 +438,7 @@ through `model`: moving a member to it is `engine`. Adding a project is `add_pro
                     "name": { "type": "string", "description": "The signal's name, or the outside MCP server's (mcp_server)." },
                     "url": { "type": "string", "description": "mcp_server add: the server's https address (left out for a catalog service)." },
                     "roles": { "type": "array", "items": { "type": "string" }, "description": "mcp_server add: the roles whose members get it (left out: the catalog's, else everyone)." },
-                    "kind": { "type": "string", "description": "autonomy: design, merge, internal or production_data — or window, with value in minutes." },
+                    "kind": { "type": "string", "description": "autonomy: design, merge, internal, production_data or deploy — or window, with value in minutes." },
                     "key": { "type": "string", "description": "notify: which notification setting (on, only, quiet, quiet_from, quiet_to, levels, max_per_hour, phone, remind_deploy)." },
                     "id": { "type": "integer", "description": "The routine's id." },
                     "ticket": { "type": "integer", "description": "The ticket's number, for merge, keep_on_branch and ticket_model." },

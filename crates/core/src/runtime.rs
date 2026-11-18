@@ -108,6 +108,7 @@ mod team;
 mod heartbeat;
 mod signals;
 mod deploys;
+mod go_live;
 mod tickets;
 mod compact;
 mod hygiene;
@@ -871,6 +872,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         tidied_at: None,
         signals_running: std::collections::HashSet::new(),
         deploys_looking: HashSet::new(),
+        go_live: HashMap::new(),
         accepts: HashMap::new(),
         accepts_declined: HashMap::new(),
         merged_cache: Some(worktree::MergedCache::default()),
@@ -901,6 +903,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         status_cache: Default::default(),
         status_told: HashMap::new(),
         escalation: HashMap::new(),
+        waiting_told: HashMap::new(),
         installs: std::collections::HashSet::new(),
         codex_binary: crate::engines::codex_binary(),
         engines: Default::default(),
@@ -1341,6 +1344,13 @@ enum Internal {
     /// A squad's projects were looked at off the loop for what went live:
     /// each project's watch now, and what the look found.
     DeploysLooked { squad: String, looks: Vec<(PathBuf, crate::deploys::Watch, crate::deploys::Looked)> },
+    /// What a project goes live with, read off the loop after a landing
+    /// pushed main (`go_live`); whether GitHub confirmed a deploy channel.
+    GoLiveRead { squad: String, project: PathBuf, found: crate::go_live::Found, channel_known: bool },
+    /// A project's landings may be due to go live now (`go_live`).
+    GoLiveDue { squad: String, project: PathBuf },
+    /// One go at deploying a project ended, off the loop (`go_live`).
+    GoLiveRan { squad: String, project: PathBuf, tickets: Vec<TicketId>, outcome: crate::go_live::Outcome },
     /// Where the engines stand, as just looked at off the loop.
     Engines(Vec<equipe_protocol::EngineStatus>),
     /// A sign-in (the one numbered so) ended.
@@ -1612,6 +1622,9 @@ struct Runtime {
     signals_running: std::collections::HashSet<(String, String)>,
     /// Squads whose projects are being looked at for what went live (`deploys`).
     deploys_looking: HashSet<String>,
+    /// How each squad's projects go live after their landings, by project
+    /// path (`go_live`): read from the journal when first needed.
+    go_live: HashMap<String, std::collections::BTreeMap<String, crate::go_live::Lane>>,
     /// Decisions in the person's words waiting on them (`words`).
     words: words::Words,
     /// Handed-in work put to the person to confirm, by squad (`accept`).
@@ -1685,6 +1698,8 @@ struct Runtime {
     status_told: HashMap<String, std::time::Instant>,
     /// Each squad's escalation of what stays a bottleneck ([`crate::escalation`]).
     escalation: HashMap<String, crate::escalation::Planner>,
+    /// What the person and the PM were told waits on the person, per squad (`runtime/status.rs`).
+    waiting_told: HashMap<String, status::WaitingTold>,
     /// Both engines' plans, and members moving between them (`engines`).
     engines: engines::Engines,
     /// Pacing to the plans' budgets, per squad and engine ([`pacing`]).
@@ -1890,6 +1905,9 @@ impl Wake {
             Wake::Internal(Internal::AuthRecheck(_)) => Borrowed("an engine's sign-in looked at again"),
             Wake::Internal(Internal::SignalRead { .. }) => Borrowed("a signal's reading"),
             Wake::Internal(Internal::DeploysLooked { .. }) => Borrowed("a look at what went live"),
+            Wake::Internal(Internal::GoLiveRead { .. }) => Borrowed("how a project goes live"),
+            Wake::Internal(Internal::GoLiveDue { .. }) => Borrowed("a project's deploy coming due"),
+            Wake::Internal(Internal::GoLiveRan { .. }) => Borrowed("a project's deploy's end"),
             Wake::Request(Some(Request::Disk(_))) => Borrowed("a look at the disk"),
             Wake::Request(Some(Request::DiskClean(..))) => Borrowed("a clean of the disk"),
             Wake::Internal(Internal::Engines(_)) => Borrowed("where the engines stand"),
@@ -2193,6 +2211,9 @@ impl Runtime {
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
                 Internal::DeploysLooked { squad, looks } => self.deploys_looked(&squad, looks),
+                Internal::GoLiveRead { squad, project, found, channel_known } => self.go_live_read(&squad, project, found, channel_known),
+                Internal::GoLiveDue { squad, project } => self.go_live_due(&squad, project),
+                Internal::GoLiveRan { squad, project, tickets, outcome } => self.go_live_ran(&squad, project, tickets, outcome),
                 Internal::DiskTrimmed(freed, lines) => self.on_disk_trimmed(freed, lines),
                 Internal::LaneTmpLooked(look) => self.lane_tmp_looked(*look),
                 Internal::TurnEndsDue => self.turn_ends_due(now_secs()),
@@ -2357,6 +2378,7 @@ impl Runtime {
         }
         pulse.step("minute tick: deploys");
         self.deploys_tick();
+        self.go_live_tick();
         pulse.step("minute tick: engines");
         self.engines_tick().await;
         pulse.step("minute tick: calls");
@@ -3942,6 +3964,7 @@ impl Runtime {
         self.design_watch.remove(squad);
         self.signals_running.retain(|(q, _)| q != squad);
         self.deploys_looking.remove(squad);
+        self.go_live.remove(squad);
         // Its checks waiting in line: none will run. One running ends on its own.
         for queue in self.gates.values_mut() {
             let mut at = 0;
@@ -8556,10 +8579,12 @@ with what else waits.]"
         };
         let mut line = format!("You merged T-{ticket} · {} into {main}", found.title);
         let mut news = "news.merged";
+        let mut went_out = false;
         match pushed {
             Some(Ok(())) => {
                 line.push_str(" and pushed it");
                 news = "news.merged_pushed";
+                went_out = true;
             }
             // A project kept on this machine only: merged is all there is to do.
             Some(Err(err)) if err == worktree::NO_ORIGIN => {
@@ -8582,6 +8607,7 @@ with what else waits.]"
             None => {}
         }
         let shown = self.said(news, &[("id", ticket.to_string()), ("title", found.title.clone()), ("branch", main.clone())]);
+        let project = found.project.as_deref().map(PathBuf::from);
         found.merged = Some(true);
         found.off_main = None;
         if let Some(journal) = self.journal(squad) {
@@ -8593,6 +8619,10 @@ with what else waits.]"
         // Work it was built on came along with it.
         self.settle_all_merged();
         self.brief_pm(squad, format!("{line}."), Some(shown));
+        // Pushed is on main, not live: the project's go-live command, if it has one, runs next.
+        if went_out && let Some(project) = project {
+            self.go_live_landed(squad, project, Some(ticket));
+        }
     }
 
     /// A merge failed for another reason than a conflict: the ticket is
@@ -10971,6 +11001,8 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
                 crate::metrics::tool::answer(&self.config.home, &squad, &args, today)
             }
             crate::accept::PROPOSE_ACCEPT => self.propose_accept(&squad, &member, id, &args),
+            crate::go_live::SET_DEPLOY if is_pm => self.set_deploy(&squad, id, &args),
+            crate::go_live::SET_DEPLOY => Err("Only the PM says how a project goes live; tell the PM.".into()),
             board::ESTIMATE => {
                 let minutes = |key: &str| args.get(key).and_then(Value::as_f64).map(|m| m.max(0.0));
                 let (done, live) = (minutes("done_in_minutes"), minutes("live_in_minutes"));
