@@ -613,6 +613,8 @@ mod tests {
             title: "AWS sign-in".into(),
             since: Some(NOON - 3 * HOUR),
             impact: blocking(5, false),
+            asks: Vec::new(),
+            request: None,
         }];
         let items = items_of(&list, NOON);
         assert_eq!((items[0].key.as_str(), items[0].waited, items[0].ticket), ("t7", 3 * HOUR, Some(7)));

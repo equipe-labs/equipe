@@ -1,8 +1,9 @@
 //! What went live, as screens show it: each time a project's main branch
-//! reaches its users — a production deployment (Vercel posts them to GitHub),
-//! a deploy workflow that succeeded, or, for a project with neither, its
-//! commits landing on main — with the person's work in it said in plain
-//! words. The daemon finds them and writes the notes (`equipe_core::deploys`);
+//! reaches its users — the project's own go-live command that equipe ran
+//! after a landing, a production deployment (Vercel posts them to GitHub), a
+//! deploy workflow that succeeded, or, for a project with none of them, its
+//! commits landing on main (which is not live) — with the person's work in it
+//! said in plain words. The daemon finds them and writes the notes (`equipe_core::deploys`);
 //! a screen only draws them.
 
 use std::path::PathBuf;
@@ -20,8 +21,11 @@ pub enum DeploySource {
     Deployment,
     /// The project's deploy workflow (GitHub Actions) succeeded for it.
     Workflow,
+    /// The project's own go-live command (`.equipe/deploy.json`, or one the
+    /// PM confirmed) ran after a landing and succeeded for it.
+    Command,
     /// No deploy signal: its commits landed on the main branch, which is as
-    /// far as equipe can see.
+    /// far as equipe can see. On main is not live.
     #[default]
     Main,
 }

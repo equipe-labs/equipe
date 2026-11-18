@@ -450,6 +450,8 @@ mod tests {
                 title: "AWS admin sign-in".into(),
                 since: None,
                 impact: crate::importance::Impact { score: 55, blocks: 5, ..Default::default() },
+                asks: vec!["Sign in to the AWS console".into()],
+                request: Some(crate::importance::HeldRequest { id: 4, title: "Deploy the ERP".into() }),
             }],
             waiting_more: 2,
             ..status.clone()

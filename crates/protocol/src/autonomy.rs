@@ -41,6 +41,9 @@ pub enum Kind {
     Internal,
     /// Writing to a live system's data: records, migrations, live tests.
     ProductionData,
+    /// Running a project's declared production deploy once its work landed
+    /// on main (`.equipe/deploy.json`).
+    Deploy,
     /// Signing in, accounts and credentials: keys, tokens, passwords, sign-ups.
     SignIn,
     /// Money: payments, plans, billing, budgets.
@@ -59,7 +62,7 @@ pub enum Kind {
 
 impl Kind {
     /// The kinds the person sets a level for.
-    pub const SET: [Kind; 4] = [Kind::Design, Kind::Merge, Kind::Internal, Kind::ProductionData];
+    pub const SET: [Kind; 5] = [Kind::Design, Kind::Merge, Kind::Internal, Kind::ProductionData, Kind::Deploy];
     /// The kinds that always ask, in every squad, whatever its policy.
     pub const FLOOR: [Kind; 6] = [Kind::SignIn, Kind::Money, Kind::Deletion, Kind::Outside, Kind::Security, Kind::Legal];
 
@@ -81,6 +84,7 @@ impl Kind {
             Kind::Merge => "merge",
             Kind::Internal => "internal",
             Kind::ProductionData => "production_data",
+            Kind::Deploy => "deploy",
             Kind::SignIn => "sign_in",
             Kind::Money => "money",
             Kind::Deletion => "deletion",
@@ -104,6 +108,7 @@ impl Kind {
             "merge" | "merges" | "accept" => Kind::Merge,
             "internal" | "process" => Kind::Internal,
             "production_data" | "production" | "prod" | "data" | "live_data" => Kind::ProductionData,
+            "deploy" | "deploys" | "go_live" | "production_deploy" => Kind::Deploy,
             "sign_in" | "signin" | "login" | "credentials" | "account" | "accounts" => Kind::SignIn,
             "money" | "payment" | "payments" | "billing" => Kind::Money,
             "deletion" | "delete" | "permanent_deletion" => Kind::Deletion,
@@ -201,9 +206,9 @@ fn window() -> u32 {
 }
 
 /// A squad's autonomy policy. Every squad starts on [`Policy::default`]:
-/// design choices decided and told, merges of reviewed work and internal
-/// questions just done, production data asked (see docs/AUTONOMY.md for the
-/// data behind these).
+/// design choices decided and told, merges of reviewed work, internal
+/// questions and a project's declared deploy after a landing just done,
+/// production data asked (see docs/AUTONOMY.md for the data behind these).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Policy {
     #[serde(default = "tell")]
@@ -214,6 +219,10 @@ pub struct Policy {
     pub internal: Level,
     #[serde(default)]
     pub production_data: Level,
+    /// A project's declared go-live command after its work landed: just done
+    /// unless the person keeps deploys for themselves.
+    #[serde(default = "just_do")]
+    pub deploy: Level,
     /// Minutes a decide-and-tell choice waits for the person before the
     /// member takes its recommendation; a low-impact one doesn't wait.
     #[serde(default = "window")]
@@ -222,7 +231,7 @@ pub struct Policy {
 
 impl Default for Policy {
     fn default() -> Self {
-        Self { design: Level::Tell, merge: Level::JustDo, internal: Level::JustDo, production_data: Level::Ask, window_minutes: WINDOW_MINUTES }
+        Self { design: Level::Tell, merge: Level::JustDo, internal: Level::JustDo, production_data: Level::Ask, deploy: Level::JustDo, window_minutes: WINDOW_MINUTES }
     }
 }
 
@@ -249,6 +258,7 @@ impl Policy {
             Kind::Merge => self.merge,
             Kind::Internal => self.internal,
             Kind::ProductionData => self.production_data,
+            Kind::Deploy => self.deploy,
             _ => Level::Ask,
         }
     }
@@ -261,6 +271,7 @@ impl Policy {
             Kind::Merge => &mut self.merge,
             Kind::Internal => &mut self.internal,
             Kind::ProductionData => &mut self.production_data,
+            Kind::Deploy => &mut self.deploy,
             _ if level == Level::Ask => return Ok(()),
             _ => return Err(Refused::Floor(kind)),
         };
@@ -545,6 +556,7 @@ mod tests {
         assert_eq!(p.level(Kind::Merge), Level::JustDo);
         assert_eq!(p.level(Kind::Internal), Level::JustDo);
         assert_eq!(p.level(Kind::ProductionData), Level::Ask);
+        assert_eq!(p.level(Kind::Deploy), Level::JustDo, "a declared deploy after a landing ships at once");
         assert_eq!(p.window_minutes, 30);
         // An older squad's file with nothing in it reads as the defaults.
         assert_eq!(serde_json::from_str::<Policy>("{}").unwrap(), p);
@@ -585,6 +597,7 @@ mod tests {
         }
         assert_eq!(Kind::parse("production"), Some(Kind::ProductionData));
         assert_eq!(Kind::parse("sign-in"), Some(Kind::SignIn));
+        assert_eq!(Kind::parse("go live"), Some(Kind::Deploy));
         assert_eq!(Kind::parse("whatever"), None);
     }
 
@@ -660,7 +673,7 @@ mod tests {
     fn the_state_travels_as_json_and_an_empty_one_is_the_defaults() {
         let state = State::default();
         let json = serde_json::to_value(&state).unwrap();
-        assert_eq!(json, serde_json::json!({ "policy": { "design": "decide_and_tell", "merge": "just_do", "internal": "just_do", "production_data": "ask", "window_minutes": 30 } }));
+        assert_eq!(json, serde_json::json!({ "policy": { "design": "decide_and_tell", "merge": "just_do", "internal": "just_do", "production_data": "ask", "deploy": "just_do", "window_minutes": 30 } }));
         assert_eq!(serde_json::from_value::<State>(json).unwrap(), state);
     }
 }
