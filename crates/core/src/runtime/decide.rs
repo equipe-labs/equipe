@@ -43,6 +43,11 @@ impl Runtime {
 
     pub(super) fn save_questions(&mut self, squad: &str) {
         let sets = self.questions.get(squad).cloned().unwrap_or_default();
+        // Pictures saved in a worktree or a temp folder outlast it while the person decides.
+        let images: Vec<String> = sets.iter().flat_map(|s| s.images().map(str::to_owned)).collect();
+        if !images.is_empty() {
+            visuals::keep::decision(&self.config.home, squad, &images);
+        }
         if let Some(journal) = self.journal(squad) {
             let _ = journal.set_questions(&sets);
         }

@@ -7458,6 +7458,14 @@ todo); or drop it if it's no longer wanted.]"
         self.close_run(id);
     }
 
+    /// A ticket's pictures saved in a worktree or a temp folder, copied where
+    /// they outlast it (`crate::visuals::keep`).
+    fn keep_pictures(&self, squad: &str, ticket: &Ticket) {
+        if !ticket.images.is_empty() {
+            crate::visuals::keep::ticket(&self.config.home, squad, ticket.id, &ticket.images);
+        }
+    }
+
     fn put_down(&mut self, id: SessionId, how: WorkEnd) {
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
@@ -7477,6 +7485,8 @@ todo); or drop it if it's no longer wanted.]"
         let mut kept_worktree = None;
         // A task or action accepted goes into the squad's folder now; `Err` when the folder changed under it.
         let mut landed: Option<Result<(), String>> = None;
+        // What it showed so far, kept before its worktree may go below.
+        self.keep_pictures(&squad, &ticket);
         if let Some(sandbox) = &work.sandbox {
             let body = summary.clone().unwrap_or_else(|| ticket.body.clone());
             let message =
@@ -7632,6 +7642,10 @@ todo); or drop it if it's no longer wanted.]"
             }
         };
         let by = by.to_owned();
+        // Its pictures saved in its worktree or a temp folder outlast them:
+        // the worktree goes once the work lands, and they were never committed.
+        watchdog::mark("work's end: keep pictures");
+        self.keep_pictures(&squad, &ticket);
         if let Some(journal) = self.journal(&squad) {
             let _ = journal.save_ticket(&ticket);
             let mut saved = journal.ticket_work(ticket.id).unwrap_or_default();
@@ -11099,8 +11113,34 @@ activity, so equipe moved you here."
         // Each squad's design QA pictures (`<squad>/design-qa`), with the tickets they may still serve.
         let design_qa: Vec<(PathBuf, Vec<TicketId>)> =
             open.iter().map(|(squad, tickets)| (crate::journal::squad_dir(&home, squad).join("design-qa"), tickets.clone())).collect();
+        // Each squad's pictures kept past their worktrees (`visuals::keep`): those
+        // of the tickets that keep them and of the waiting decisions, kept now
+        // where they weren't yet (a hand-in from before equipe kept them).
+        let days = crate::visuals::keep::days();
+        let now = now_secs();
+        // By squad: its tickets' pictures, by ticket, and its waiting decisions'.
+        type Pictures = (String, Vec<(TicketId, Vec<String>)>, Vec<String>);
+        let pictures: Vec<Pictures> = self
+            .journals
+            .iter()
+            .map(|(squad, j)| {
+                let tickets = j.tickets().unwrap_or_default().into_iter().filter(|t| crate::visuals::keep::stays(t.status.is_closed(), t.updated_at, now, days)).map(|t| (t.id, t.images)).collect();
+                let waiting = j.questions().iter().flat_map(|q| q.images().map(str::to_owned).collect::<Vec<_>>()).collect();
+                (squad.clone(), tickets, waiting)
+            })
+            .collect();
         let internal = self.internal.clone();
         std::thread::spawn(move || {
+            for (squad, tickets, waiting) in &pictures {
+                let kept: usize = tickets.iter().map(|(id, images)| crate::visuals::keep::ticket(&home, squad, *id, images)).sum::<usize>() + crate::visuals::keep::decision(&home, squad, waiting);
+                if kept > 0 {
+                    crate::daemon_log!("equipe: {squad}: kept {kept} pictures saved in worktrees or temp folders");
+                }
+                let ids: Vec<TicketId> = tickets.iter().map(|(id, _)| *id).collect();
+                for line in crate::visuals::keep::sweep(&home, squad, &ids, waiting, days) {
+                    crate::daemon_log!("equipe: {line}");
+                }
+            }
             for line in crate::disk::tidy_lane_tmp(&home, &open, &keep) {
                 crate::daemon_log!("equipe: {line}");
             }
