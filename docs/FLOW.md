@@ -96,9 +96,11 @@ daily design review's polish goes into one backlog note the same way.
 ## Lanes fit the machine
 
 A member still runs several tickets at once in lanes; no members are added
-for a queue. Its lane cap now also follows the machine: the 1-minute load
+for a queue. Its lane cap now also follows the machine, as the daemon's
+minute look at it reads it (docs/LOAD.md, which holds new work back
+altogether once the machine is overloaded): short of that, the 1-minute load
 over its cores at 1.0 takes a lane away, at 1.5 halves the cap, at 2.0 leaves
-one. Two lanes of one member never work on places that overlap (the paths
+one, and less than a tenth of memory free leaves one. Two lanes of one member never work on places that overlap (the paths
 their tickets name). When the ready queue is longer than twice what the
 squad runs at once, a member with a lane at work takes only work already
 under way — a baton passed, work sent back — so the queue finishes before it

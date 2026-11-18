@@ -373,6 +373,8 @@ pub const REVERT_LANDED: &str = "revert_landed";
 /// policy's `base`, eased off while the machine is loaded — the 1-minute
 /// load over its cores at 1.0 takes one away, at 1.5 halves it, at 2.0
 /// leaves one — and one while less than a tenth of its memory is free.
+/// Read from the daemon's minute look at the machine (`crate::machine_load`),
+/// which past its line holds new work back altogether.
 pub fn machine_cap(base: usize, load1: Option<f64>, cpus: usize, free_memory: Option<f64>) -> usize {
     let base = base.max(1);
     if free_memory.is_some_and(|f| f < 0.10) {
@@ -417,25 +419,6 @@ pub fn overlaps(a: &[String], b: &[String]) -> bool {
 /// way for it — a baton passed, work sent back — that comes first.
 pub fn prefer_finishing(ready: usize, capacity: usize, running: usize) -> bool {
     running > 0 && ready > capacity.saturating_mul(2)
-}
-
-/// The machine's 1-minute load average, when the system says.
-pub fn load_average() -> Option<f64> {
-    #[cfg(unix)]
-    {
-        let mut loads = [0f64; 3];
-        // SAFETY: getloadavg writes at most `nelem` doubles into the buffer it is given.
-        let n = unsafe { libc::getloadavg(loads.as_mut_ptr(), 3) };
-        if n >= 1 {
-            return Some(loads[0]);
-        }
-    }
-    None
-}
-
-/// The machine's logical cores.
-pub fn cpus() -> usize {
-    std::thread::available_parallelism().map(std::num::NonZeroUsize::get).unwrap_or(1)
 }
 
 #[cfg(test)]
@@ -590,8 +573,6 @@ mod tests {
         assert_eq!(machine_cap(3, None, 8, Some(0.05)), 1);
         assert_eq!(machine_cap(0, None, 8, None), 1);
         assert_eq!(machine_cap(6, None, 0, None), 6);
-        assert!(load_average().is_none_or(|l| l >= 0.0));
-        assert!(cpus() >= 1);
     }
 
     #[test]

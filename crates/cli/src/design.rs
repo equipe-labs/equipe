@@ -357,7 +357,7 @@ pub async fn command(action: DesignAction) -> Result<(), String> {
             run_script("audit.mjs", &[&url, "--pages", &pages.to_string(), "--out", out.to_string_lossy().as_ref(), "--locale", &audit_locale(locale)]).await
         }
         DesignAction::Flows { action } => flows_command(action).await,
-        DesignAction::Session { action } => crate::design_session::session_command(action),
+        DesignAction::Session { action } => crate::design_session::session_command(action).await,
         DesignAction::Tuner { action } => crate::design_session::tuner_command(action),
         DesignAction::Lint(args) => crate::design_lint::lint(args).await,
         DesignAction::SecondLook(args) => crate::design_lint::second_look(args).await,
@@ -1401,6 +1401,7 @@ pub(crate) async fn ensure_kit() -> Result<PathBuf, String> {
         ("refs.mjs", include_str!("../assets/design/refs.mjs")),
         ("matrix.mjs", include_str!("../assets/design/matrix.mjs")),
         ("precheck.mjs", include_str!("../assets/design/precheck.mjs")),
+        ("pagecheck.mjs", include_str!("../assets/design/pagecheck.mjs")),
     ] {
         std::fs::write(dir.join(name), body).map_err(|e| e.to_string())?;
     }
@@ -1411,6 +1412,16 @@ pub(crate) async fn ensure_kit() -> Result<PathBuf, String> {
 /// person's — a language tag Chrome sends as `Accept-Language`.
 fn audit_locale(asked: Option<String>) -> String {
     asked.unwrap_or_else(|| crate::i18n::lang().code().to_owned())
+}
+
+/// [`run_script`], its output read back, within `wait`.
+pub(crate) async fn run_script_output(name: &str, args: &[&str], wait: Duration) -> Result<String, String> {
+    let dir = ensure_kit().await?;
+    let (node, _) = node_tools()?;
+    let run = tokio::process::Command::new(&node).arg(dir.join(name)).args(args).stdin(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true).output();
+    let output = tokio::time::timeout(wait, run).await.map_err(|_| format!("{name} took longer than {}s", wait.as_secs()))?.map_err(|e| format!("node: {e}"))?;
+    let out = String::from_utf8_lossy(&output.stdout).into_owned();
+    if output.status.success() { Ok(out) } else { Err(format!("{name} stopped ({})", output.status)) }
 }
 
 pub(crate) async fn run_script(name: &str, args: &[&str]) -> Result<(), String> {

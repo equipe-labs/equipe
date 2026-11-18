@@ -268,7 +268,7 @@ take in what they found, put the scope to the person on one `ask_decision` card,
         let (member, plan_ref) = (call.member.clone(), slice.plan.clone());
         let result = self.run_tool(call);
         self.dispatch(&squad).await;
-        let made = result.is_ok().then(|| self.tickets(&squad).into_iter().filter(|t| t.plan.as_deref() == Some(plan_ref.as_str()) && t.created_by == member).map(|t| t.id).max()).flatten();
+        let made = result.is_ok().then(|| self.tickets(&squad).iter().filter(|t| t.plan.as_deref() == Some(plan_ref.as_str()) && t.created_by == member).map(|t| t.id).max()).flatten();
         let _ = reply.send(match result {
             Ok(text) => ToolResult { text: format!("{text} It links to the plan and carries its cases; the plan lists it."), is_error: false, image: None },
             Err(text) => ToolResult { text, is_error: true, image: None },

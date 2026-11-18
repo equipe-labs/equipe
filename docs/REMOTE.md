@@ -72,6 +72,37 @@ daemon — inside an engine's sandbox a member's commands don't reach its
 socket — so this is read from what the command printed, as the screen reads
 it.
 
+**Looked at before it is sent** (`crates/core/src/design/page_check.rs`,
+`crates/cli/assets/design/pagecheck.mjs`). Before `show` prints its line, it
+checks the page the way the person's screen will open it. If the page isn't
+right, `show` prints "Not sent:" with a list of what's wrong, and nothing goes
+to the person:
+
+1. **Every local file the page names must be reachable.** That covers
+   `<link href>`, `src` and `srcset`, SVG `<use href>`, and inline styles. It
+   also covers the `@import` and `url()` in those stylesheets, followed in
+   turn. Each file must exist where the page server serves it from: the
+   page's design folder (so `../../src/tokens.css`, a sibling session's
+   `../2026-11-17-…/mascot.css` and `../../assets/logo/*.svg` are all fine).
+   An address from the root (`/tokens.css`, `/design/x.css`, `/assets/…`) is
+   looked up in the design folder first, then in the project around it. The
+   page server resolves it the same way: a session page sends its address as
+   `Referer` (`referrer-policy: same-origin`), and the root address gets a
+   307 redirect to where the file is, under the token.
+2. **The page must open and look right.** `show` serves the page on that
+   same page server, inside the command itself, and opens it in the Mac's own
+   headless Chrome at 1280×800. It then takes a screenshot. It reports any
+   request that failed, stylesheets that applied no rules, body text in the
+   browser's default font, a page with no text or pictures, and pictures
+   drawn far larger than the window (an SVG with no size whose CSS didn't
+   load).
+
+When the page looks right, `show` prints the screenshot's path ("What the
+person sees: …") so the designer can open it. When Chrome or Node isn't
+there, the page goes out unchecked, and `show` says so. `--no-check` skips the
+look entirely. A `http://localhost` page gets the second check (opened and
+photographed) only.
+
 When the person picks a served variant with "Use this", the implementation
 ticket gets the page's file back, not the server's address, which ends with
 the daemon.

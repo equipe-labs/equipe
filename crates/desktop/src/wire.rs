@@ -38,6 +38,9 @@ pub struct Opts {
     pub first: Duration,
     /// How long each later step may take.
     pub step: Duration,
+    /// How long the daemon may take to answer `hello` with its snapshot: on
+    /// a busy Mac that is seconds, and a daemon slow to answer is not down.
+    pub hello: Duration,
 }
 
 /// What the handshake learned.
@@ -257,7 +260,7 @@ where
         eprintln!("equipe readonly: sent request {} for {}", rpc::HELLO, hello.params.as_ref().and_then(|p| p.get("squad")).and_then(|s| s.as_str()).unwrap_or_default());
     }
     send(&mut writer, &hello).await?;
-    let hello = response(&mut lines, HELLO_ID, opts.step, "hello").await?.result_as::<Hello>().ok_or_else(|| Failure::Other(t!("failure.hello_refused").into()))?;
+    let hello = response(&mut lines, HELLO_ID, opts.hello, "hello").await?.result_as::<Hello>().ok_or_else(|| Failure::Other(t!("failure.hello_refused").into()))?;
     // What this screen shows the app in, told as it attaches (`screen_look.rs`);
     // the real view tells none. A daemon older than it lets it pass.
     if let Some(look) = crate::screen_look::shown() {
@@ -376,11 +379,35 @@ mod tests {
             }
             said
         });
-        let opts = Opts { version: "t".into(), prefer: None, bridged: false, first: Duration::from_secs(2), step: Duration::from_secs(2) };
+        let opts = Opts { version: "t".into(), prefer: None, bridged: false, first: Duration::from_secs(2), step: Duration::from_secs(2), hello: Duration::from_secs(2) };
         let Ok((_greeting, _wire)) = connect(reader, writer, &opts).await else { panic!("not attached") };
         let said = tokio::time::timeout(Duration::from_secs(5), daemon).await.unwrap().unwrap();
         assert_eq!(said.len(), 1, "told right after hello");
         assert!(!said[0].machine.is_empty() && !said[0].lang.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_daemon_slow_to_answer_hello_is_waited_for_not_called_down() {
+        let (ours, theirs) = tokio::io::duplex(1 << 16);
+        let (reader, writer) = tokio::io::split(ours);
+        tokio::spawn(async move {
+            let (r, mut w) = tokio::io::split(theirs);
+            let mut lines = BufReader::new(r).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let message = Message::from_line(&line).unwrap();
+                match (message.method.as_deref(), message.id) {
+                    (Some(rpc::SQUADS), Some(id)) => w.write_all(Message::response(id, squads(&["acme"], None)).to_line().as_bytes()).await.unwrap(),
+                    // A busy Mac: the snapshot takes longer than any other step may.
+                    (Some(rpc::HELLO), Some(id)) => {
+                        tokio::time::sleep(Duration::from_millis(400)).await;
+                        w.write_all(Message::response(id, Hello { version: "d".into(), snapshot: Default::default() }).to_line().as_bytes()).await.unwrap();
+                    }
+                    _ => {}
+                }
+            }
+        });
+        let opts = Opts { version: "t".into(), prefer: None, bridged: false, first: Duration::from_millis(100), step: Duration::from_millis(100), hello: Duration::from_secs(5) };
+        assert!(connect(reader, writer, &opts).await.is_ok(), "attached once the hello came");
     }
 
     #[tokio::test]
@@ -394,13 +421,13 @@ mod tests {
             w.write_all(Message::response(request.id.unwrap(), squads(&[], None)).to_line().as_bytes()).await.unwrap();
             let _ = lines.next_line().await;
         });
-        let opts = Opts { version: "t".into(), prefer: None, bridged: false, first: Duration::from_secs(2), step: Duration::from_secs(2) };
+        let opts = Opts { version: "t".into(), prefer: None, bridged: false, first: Duration::from_secs(2), step: Duration::from_secs(2), hello: Duration::from_secs(2) };
         assert!(matches!(connect(reader, writer, &opts).await, Err(Stop::Failed(Failure::NoSquads))));
     }
 
     #[tokio::test]
     async fn a_bridge_that_hangs_up_is_eof_and_a_silent_one_times_out() {
-        let opts = Opts { version: "t".into(), prefer: None, bridged: true, first: Duration::from_millis(100), step: Duration::from_millis(100) };
+        let opts = Opts { version: "t".into(), prefer: None, bridged: true, first: Duration::from_millis(100), step: Duration::from_millis(100), hello: Duration::from_millis(100) };
         let (ours, theirs) = tokio::io::duplex(64);
         drop(theirs);
         let (r, w) = tokio::io::split(ours);

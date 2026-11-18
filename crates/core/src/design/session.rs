@@ -36,7 +36,7 @@ const PINS_HOW: &str = "Address each pin, then mark it with `equipe design sessi
 const HOW: &str = "This is a design session in prototype mode: work as your `design-session` skill says. Small steps \
 of minutes, not hours. First, before any direction: pull 3-5 references for this page from the design MCPs you have \
 connected (21st.dev, Mobbin; else the web) and put them on screen with `show_references`. Then build a runnable \
-prototype in the session's folder and show it live with `equipe design session show` (variants side by side with \
+prototype in the session's folder (`design/sessions/<date>-<page>/` where you work) and show it live with `equipe design session show` (variants side by side with \
 `--variant A|B|C`). End every turn with something visible and one focused question; never go quiet on a long build.";
 
 /// What every later turn of a session opens with while it is on (the
@@ -48,6 +48,11 @@ the session's CHANGELOG.md. No heavy checks in a round: no width x theme x text-
 no design QA, no new ticket per feedback item. Asked for new directions: references first (design MCPs, \
 `show_references`). The full checks run once the person picks a variant with \"Use this\": equipe opens the \
 implementation ticket then.";
+
+/// Where a session's prototype files are, told each round: a designer that
+/// lost track once searched the whole disk for its own prototype.
+pub const WHERE_FILES: &str = "The session's files (prototypes, variants, CHANGELOG.md) are in its folder under \
+`design/sessions/` where you work: `ls -t design/sessions/` lists the latest first. Never search the disk for them.";
 
 fn from_words(from: &SessionFrom) -> String {
     match from {
@@ -129,9 +134,10 @@ impl Active {
         self.on(now) && !self.picked
     }
 
-    /// The note the designer's next turn opens with.
+    /// The note the designer's next turn opens with: the rules, the page,
+    /// and where its files are — so it never searches the disk for them.
     pub fn note(&self) -> String {
-        format!("{ROUND_RULES} (page: {})", one_line(&self.page))
+        format!("{ROUND_RULES} (page: {}) {WHERE_FILES}", one_line(&self.page))
     }
 }
 
@@ -718,11 +724,13 @@ mod tests {
         for rule in ["prototype round", "within a couple of minutes", "no width x theme x text-size matrix", "no axe", "no design QA", "no new ticket per feedback item", "CHANGELOG.md", "show_references", "Use this"] {
             assert!(note.contains(rule), "{rule}: {note}");
         }
-        assert!(note.ends_with("(page: Pricing page)"));
+        assert!(note.contains("(page: Pricing page)"));
+        // Where its files are, each round: never a search of the disk.
+        assert!(note.ends_with(WHERE_FILES) && note.contains("ls -t design/sessions/") && note.contains("Never search the disk"), "{note}");
         assert!(active.on(100 + IDLE_ENDS_SECS - 1) && !active.on(100 + IDLE_ENDS_SECS));
         assert!(active.rounds(100) && !Active { picked: true, ..active.clone() }.rounds(100), "a pick ends the rounds");
         let kickoff = block("Pricing", None, &SessionFrom::DesignScreen, None);
-        assert!(kickoff.contains("21st.dev, Mobbin") && kickoff.contains("show_references") && kickoff.contains("--variant A|B|C"), "{kickoff}");
+        assert!(kickoff.contains("21st.dev, Mobbin") && kickoff.contains("show_references") && kickoff.contains("--variant A|B|C") && kickoff.contains("design/sessions/<date>-<page>/"), "{kickoff}");
     }
 
     #[test]

@@ -106,10 +106,26 @@ pub struct Stats {
 pub struct Journal {
     conn: Connection,
     path: PathBuf,
-    /// The board as last read whole, and the [`BoardVersion`] it was read at:
-    /// [`Self::tickets`] reads it again only once a ticket or a run changed.
-    board: std::cell::RefCell<Option<(BoardVersion, Vec<Ticket>)>>,
+    /// The board as last read, and the [`BoardVersion`] it was read at:
+    /// [`Self::board`] reads again only the tickets that changed since.
+    board: std::cell::RefCell<Option<Board>>,
 }
+
+/// The board kept in memory ([`Journal::board`]): shared, so handing it out
+/// costs nothing however big it is.
+struct Board {
+    version: BoardVersion,
+    tickets: std::sync::Arc<Vec<Ticket>>,
+    /// When it was last read whole: another connection's change to a closed
+    /// ticket is seen by then at the latest ([`BOARD_FULL_READ_EVERY`]).
+    read_whole_at: std::time::Instant,
+}
+
+/// How often the board is read whole again after another connection wrote
+/// to it. In between, another connection's writes are followed through the
+/// open tickets and new ones: closed tickets carry most of a board's bytes
+/// (their notes), and almost never change.
+const BOARD_FULL_READ_EVERY: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// Where a squad's board stands: the changes this connection made to its
 /// tickets and their runs (counted by temporary triggers), and SQLite's
@@ -502,6 +518,19 @@ fn waited_for(reason: Option<&str>, what: Option<String>) -> Option<String> {
     what.filter(|_| reason == Some(equipe_protocol::stall_reason::WAITED_ON_PERSON))
 }
 
+/// `fresh`, read again for the tickets `asked`, put into `board` (by id,
+/// oldest first): each replaced or added, and an asked one not read gone.
+fn merge_board(board: &mut Vec<Ticket>, asked: &[TicketId], fresh: Vec<Ticket>) {
+    let read: std::collections::HashSet<TicketId> = fresh.iter().map(|t| t.id).collect();
+    board.retain(|t| read.contains(&t.id) || !asked.contains(&t.id));
+    for ticket in fresh {
+        match board.binary_search_by_key(&ticket.id, |t| t.id) {
+            Ok(at) => board[at] = ticket,
+            Err(at) => board.insert(at, ticket),
+        }
+    }
+}
+
 fn status_from(s: &str) -> TicketStatus {
     match s {
         "proposed" => TicketStatus::Proposed,
@@ -854,14 +883,23 @@ impl Journal {
         // This connection's changes to the board, counted (`BoardVersion`):
         // temporary, so nothing is written to the squad's file. Without them
         // the board is read afresh every time, as before.
+        // Which tickets those changes touched, too: only they are read again.
+        // No key and no conflict clause on it: a trigger fired by an upsert
+        // (`ON CONFLICT … DO UPDATE`) takes on its conflict handling.
         let mut counted = String::from(
             "CREATE TEMP TABLE IF NOT EXISTS board_writes (n INTEGER NOT NULL);
-             INSERT INTO board_writes SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM board_writes);",
+             INSERT INTO board_writes SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM board_writes);
+             CREATE TEMP TABLE IF NOT EXISTS board_touched (id INTEGER NOT NULL);",
         );
-        for table in ["tickets", "ticket_executions"] {
+        for (table, id) in [("tickets", "id"), ("ticket_executions", "ticket")] {
             for change in ["INSERT", "UPDATE", "DELETE"] {
+                let touched = match change {
+                    "INSERT" => format!("INSERT INTO board_touched VALUES (NEW.{id});"),
+                    "UPDATE" => format!("INSERT INTO board_touched VALUES (NEW.{id}); INSERT INTO board_touched SELECT OLD.{id} WHERE OLD.{id} <> NEW.{id};"),
+                    _ => format!("INSERT INTO board_touched VALUES (OLD.{id});"),
+                };
                 counted.push_str(&format!(
-                    "CREATE TEMP TRIGGER IF NOT EXISTS board_{table}_{name} AFTER {change} ON main.{table} BEGIN UPDATE board_writes SET n = n + 1; END;",
+                    "CREATE TEMP TRIGGER IF NOT EXISTS board_{table}_{name} AFTER {change} ON main.{table} BEGIN UPDATE board_writes SET n = n + 1; {touched} END;",
                     name = change.to_ascii_lowercase()
                 ));
             }
@@ -2549,23 +2587,70 @@ impl Journal {
         self.set_meta("tidied_at", &now().to_string())
     }
 
-    /// Every ticket, oldest first. Read whole once, then given again from
-    /// memory until a ticket or a run changes ([`BoardVersion`]): a big
-    /// board is megabytes, and the daemon's loop asks for it many times a
-    /// minute — on a busy disk each read took seconds.
+    /// Every ticket, oldest first: a copy of [`Self::board`], for a caller
+    /// that changes it. One that only reads takes [`Self::board`].
     pub fn tickets(&self) -> Result<Vec<Ticket>> {
-        let version = self.board_version();
-        if let (Some(version), Some((at, board))) = (version, self.board.borrow().as_ref())
-            && *at == version
-        {
-            return Ok(board.clone());
+        Ok(self.board()?.as_ref().clone())
+    }
+
+    /// Every ticket, oldest first, shared. Read whole once, then kept in
+    /// memory and brought up to date ticket by ticket: a change this
+    /// connection made reads again only the tickets it touched; another
+    /// connection's, the open tickets and new ones (a closed ticket's change
+    /// from elsewhere waits for the next whole read, [`BOARD_FULL_READ_EVERY`]).
+    /// A big board is tens of megabytes, mostly closed tickets' notes, and the
+    /// daemon's loop asks for it many times a minute: on a busy Mac, reading
+    /// it whole each time took seconds and kept the screens waiting.
+    pub fn board(&self) -> Result<std::sync::Arc<Vec<Ticket>>> {
+        let Some(version) = self.board_version() else {
+            return Ok(std::sync::Arc::new(self.query_tickets("", [])?));
+        };
+        let mut kept = self.board.borrow_mut();
+        if let Some(board) = kept.as_mut() {
+            if board.version == version {
+                return Ok(board.tickets.clone());
+            }
+            let elsewhere = board.version.others != version.others;
+            if (!elsewhere || board.read_whole_at.elapsed() < BOARD_FULL_READ_EVERY) && self.refresh_board(board, elsewhere).is_ok() {
+                board.version = version;
+                return Ok(board.tickets.clone());
+            }
         }
-        let board = self.query_tickets("", [])?;
-        // What the read itself might have moved is looked at again: kept only when nothing did.
-        if let Some(version) = version.filter(|v| self.board_version() == Some(*v)) {
-            *self.board.borrow_mut() = Some((version, board.clone()));
-        }
-        Ok(board)
+        let _ = self.conn.execute("DELETE FROM temp.board_touched", []);
+        let tickets = std::sync::Arc::new(self.query_tickets("", [])?);
+        *kept = Some(Board { version, tickets: tickets.clone(), read_whole_at: std::time::Instant::now() });
+        Ok(tickets)
+    }
+
+    /// The tickets that may have changed since `board` was read, read again
+    /// into it: those this connection touched, and — when another connection
+    /// wrote (`elsewhere`) — every open ticket, any new one, and those open
+    /// when last read (closed or gone since).
+    fn refresh_board(&self, board: &mut Board, elsewhere: bool) -> Result<()> {
+        let touched: Vec<TicketId> = {
+            let mut stmt = self.conn.prepare_cached("SELECT DISTINCT id FROM temp.board_touched")?;
+            stmt.query_map([], |r| r.get(0))?.collect::<Result<_>>()?
+        };
+        self.conn.execute("DELETE FROM temp.board_touched", [])?;
+        let mut asked: Vec<TicketId> = touched;
+        let fresh = if elsewhere {
+            let newest = board.tickets.last().map_or(0, |t| t.id);
+            asked.extend(board.tickets.iter().filter(|t| !t.status.is_closed()).map(|t| t.id));
+            asked.sort_unstable();
+            asked.dedup();
+            let listed = asked.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
+            // `status` and `id` only: a column after a long note would read the note too.
+            let fresh = self.query_tickets(&format!("WHERE t.status NOT IN ('done', 'cancelled') OR t.id > ?1 OR t.id IN ({listed})"), params![newest])?;
+            asked.extend(fresh.iter().map(|t| t.id));
+            fresh
+        } else if asked.is_empty() {
+            Vec::new()
+        } else {
+            let listed = asked.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
+            self.query_tickets(&format!("WHERE t.id IN ({listed})"), [])?
+        };
+        merge_board(std::sync::Arc::make_mut(&mut board.tickets), &asked, fresh);
+        Ok(())
     }
 
     /// Where the board stands now; `None` when it can't be told (no triggers).
@@ -3785,6 +3870,55 @@ mod tests {
         let board = j.tickets().unwrap();
         assert_eq!(board.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(), ["Checkout, again", "Search"]);
         assert_eq!(board, other.tickets().unwrap(), "both see one board");
+    }
+
+    #[test]
+    fn the_board_kept_in_memory_reads_again_only_what_changed() {
+        let home = temp_home();
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        let ids: Vec<TicketId> = (0..5).map(|n| j.create_ticket(&ticket(&format!("T{n}"))).unwrap()).collect();
+        let mut done = j.ticket(ids[0]).unwrap().unwrap();
+        done.status = TicketStatus::Done;
+        done.note = Some("long".into());
+        j.save_ticket(&done).unwrap();
+        let first = j.board().unwrap();
+        // Unchanged: the very same board, not a copy.
+        assert!(std::sync::Arc::ptr_eq(&first, &j.board().unwrap()));
+        drop(first);
+        // A closed ticket changed through this connection: read again at once.
+        done.note = Some("longer".into());
+        j.save_ticket(&done).unwrap();
+        assert_eq!(j.board().unwrap()[0].note.as_deref(), Some("longer"));
+        // Another connection's: open tickets and new ones are followed at once…
+        let other = Journal::for_squad(&home, "acme").unwrap();
+        let mut closing = other.ticket(ids[2]).unwrap().unwrap();
+        closing.status = TicketStatus::Cancelled;
+        other.save_ticket(&closing).unwrap();
+        other.create_ticket(&Ticket { status: TicketStatus::Done, ..ticket("Closed at once") }).unwrap();
+        done.note = Some("from elsewhere".into());
+        other.save_ticket(&done).unwrap();
+        let board = j.board().unwrap();
+        assert_eq!(board.len(), 6);
+        assert_eq!(board[2].status, TicketStatus::Cancelled);
+        assert_eq!(board[5].title, "Closed at once");
+        // …a closed one's by the next whole read.
+        assert_eq!(board[0].note.as_deref(), Some("longer"));
+        drop(board);
+        if let Some(kept) = j.board.borrow_mut().as_mut() {
+            kept.read_whole_at = std::time::Instant::now().checked_sub(BOARD_FULL_READ_EVERY).unwrap_or(kept.read_whole_at);
+        }
+        let mut moved = other.ticket(ids[1]).unwrap().unwrap();
+        moved.title = "T1, again".into();
+        other.save_ticket(&moved).unwrap();
+        assert_eq!(*j.board().unwrap(), other.tickets().unwrap(), "both see one board");
+    }
+
+    #[test]
+    fn a_board_merge_replaces_adds_and_drops_by_id() {
+        let t = |id: TicketId, title: &str| Ticket { id, ..ticket(title) };
+        let mut board = vec![t(1, "a"), t(3, "c"), t(5, "e")];
+        merge_board(&mut board, &[2, 3, 5], vec![t(2, "b"), t(3, "C")]);
+        assert_eq!(board.iter().map(|t| (t.id, t.title.as_str())).collect::<Vec<_>>(), [(1, "a"), (2, "b"), (3, "C")]);
     }
 
     #[test]

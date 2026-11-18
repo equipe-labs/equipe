@@ -104,7 +104,7 @@ impl Runtime {
 
     /// The ticket design QA ticket `qa` checks, while it waits on it.
     pub(super) fn checked_by(&mut self, squad: &str, qa: TicketId) -> Option<Ticket> {
-        self.tickets(squad).into_iter().find(|t| t.design_qa == Some(qa))
+        self.tickets(squad).iter().find(|t| t.design_qa == Some(qa)).cloned()
     }
 
     /// What a designer's own hand-in needs (`design::lint::record::hand_in`):
@@ -320,9 +320,11 @@ screen_checks value; missing: {}. Then hand in again.",
         let (Some(bin), Some(worktree), Some(project)) = (self.config.equipe_binary.clone(), checked.worktree.clone(), checked.project.clone()) else { return };
         let dir = precheck_dir(&self.config.home, squad, qa);
         self.prechecks.insert((squad.to_owned(), qa), std::time::Instant::now());
-        let (internal, squad, id) = (self.internal.clone(), squad.to_owned(), checked.id);
+        let (internal, squad, id, busy) = (self.internal.clone(), squad.to_owned(), checked.id, self.machine.busy.clone());
         crate::daemon_log!("equipe: {squad}: prechecking T-{id}'s screens for design QA T-{qa}");
         tokio::spawn(async move {
+            // Its browsers wait for an overloaded machine to calm down; the QA ticket stays held meanwhile.
+            super::machine::wait_for_calm(&busy).await;
             let started = std::time::Instant::now();
             let result = run_precheck(&bin, &worktree, &project, &dir, id).await;
             let _ = internal.send(Internal::Prechecked { squad, qa, result, secs: started.elapsed().as_secs() });

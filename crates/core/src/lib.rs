@@ -54,6 +54,7 @@ pub mod keychain;
 pub mod lanes;
 pub mod lead_time;
 pub mod flow;
+pub mod machine_load;
 pub mod live_preview;
 pub mod pacing;
 pub mod logins;
