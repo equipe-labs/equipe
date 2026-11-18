@@ -2285,6 +2285,11 @@ impl Runtime {
         // First: whether equipe's own new work waits below.
         pulse.step("minute tick: machine load");
         self.look_at_load();
+        // What each run waiting on its workspace waits on, told again for screens attached since.
+        self.tell_waiting(true);
+        // What members left running for tickets now closed, the shell that started it gone.
+        self.reap_orphans();
+        self.keep_out_of_spotlight();
         let overloaded = self.overloaded();
         pulse.step("minute tick: login autopilot");
         self.autopilot_minute();
@@ -4849,6 +4854,10 @@ runbooks and reports live there, and work across the projects or on running them
     }
 
     async fn submit(&mut self, id: SessionId, text: String) {
+        // The person waits on a run whose workspace is still in line: it goes first.
+        if self.sessions.get(&id).is_some_and(|s| s.is_preparing()) {
+            self.hurry_workspace(id);
+        }
         let Some(session) = self.sessions.get_mut(&id) else {
             return self.error(Some(id), say!(self, "error.no_session", id = id), None);
         };
@@ -5893,6 +5902,10 @@ for one project goes to it as tickets for its owners, with that project — and 
         // A member's commands know they are a member's: `equipe browser` refuses there.
         if let Some(m) = &session.member {
             env.push((guard::MEMBER_ENV.to_owned(), m.name.to_string()));
+            // And whose run they are, which outlives the shell that started them (`leftovers::orphans`).
+            if let Some(squad) = squad.as_deref() {
+                env.push((crate::leftovers::RUN_ENV.to_owned(), crate::leftovers::run_tag(squad, id, ticket.map(u64::from))));
+            }
             // And on which engine, for what they run outside its sandbox (`equipe design second-look`).
             env.push((crate::design::critique::MEMBER_ENGINE_ENV.to_owned(), crate::design::critique::member_engine_value(session.engine).to_owned()));
             // And who reviews its design work this turn, and why (`equipe design critique`, `second-look`).
@@ -6987,11 +7000,6 @@ for one project goes to it as tickets for its owners, with that project — and 
         if self.turn_ends.paused(squad) {
             return;
         }
-        // The machine is overloaded: nothing new starts until it calms down
-        // (`machine.rs`), which dispatches again.
-        if self.overloaded() {
-            return;
-        }
         watchdog::mark("dispatch: board");
         // Closed tickets light: what starts next reads only their status and links.
         let board = self.tickets(squad);
@@ -7113,6 +7121,16 @@ for one project goes to it as tickets for its owners, with that project — and 
                 self.tell_held(squad, engine, &ids);
             }
         }
+        // The machine overloaded (`machine.rs`): what the person asked for
+        // still starts, and each member idle meanwhile one ticket; the rest
+        // waits for it to calm down, which dispatches again.
+        let assigned = if self.overloaded() {
+            let person: HashSet<TicketId> = tickets.iter().filter(|t| t.created_by == "you").map(|t| t.id).chain(requested.iter().copied()).collect();
+            let idle: HashSet<&str> = members.iter().filter(|m| m.runs == 0).map(|m| m.name.as_str()).collect();
+            machine::paced(assigned, &person, &idle)
+        } else {
+            assigned
+        };
         watchdog::mark("dispatch: work begun");
         for (ticket, name) in assigned {
             if let Some(id) = self.member_id(squad, &name) {

@@ -628,6 +628,11 @@ light and dark, and large text. Attach them to `submit_for_review` in `images` a
 hand-in without them is refused with what is missing. Immediately before handing in, refresh main from its remote, \
 rebase your branch onto the latest main, prove there are no conflicts, and run the relevant tests on that rebased tree.";
 
+/// How an engineer keeps its work light on a Mac the whole squad shares
+/// (docs/LOAD.md): checks of what changed while it works, the full suite
+/// once before handing in, its servers stopped, its dependencies as given.
+const ENGINEER_LIGHT: &str = "The machine is shared by the whole squad, so keep your checks light while you work: only what you changed — `tsc --incremental` (keep its .tsbuildinfo), your test runner's related or changed mode (`vitest related <files>`, `jest --findRelatedTests <files>`, `cargo test -p <crate>`) — and the full suite once, right before you hand in. Stop the dev servers and watchers you start once you're done with them; one per project is enough. node_modules arrives installed for the project's lockfile: run `npm ci` only when package-lock.json changed.";
+
 /// …and, with a designer on the squad, the self-check that follows the hand-in.
 const ENGINEER_SELF_CHECK: &str = "With a designer on the squad, equipe's design precheck then checks the changed screens on \
 your worktree; a new S1/S2 finding — content cut off, a WCAG AA failure, sideways scroll, text over text — sends the \
@@ -646,7 +651,7 @@ pub fn charter(role: &Role, name: &str, ctx: &Context<'_>) -> String {
     };
     let duties = if matches!(role.id, "frontend" | "backend" | "mobile") {
         let designer = ctx.team.iter().any(|m| m.role == "designer");
-        if designer { format!("{duties}\n{ENGINEER_HAND_IN} {ENGINEER_SELF_CHECK}") } else { format!("{duties}\n{ENGINEER_HAND_IN}") }
+        if designer { format!("{duties}\n{ENGINEER_HAND_IN} {ENGINEER_SELF_CHECK}\n{ENGINEER_LIGHT}") } else { format!("{duties}\n{ENGINEER_HAND_IN}\n{ENGINEER_LIGHT}") }
     } else {
         duties
     };
