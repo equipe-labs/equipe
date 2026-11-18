@@ -894,6 +894,7 @@
   "secrets.replace.no": "예전 값 유지",
   "secrets.replace.no_desc": "새 값은 버려요.",
   "importance.deploy_words": "배포|릴리스|릴리즈|롤아웃|출시|론칭|런칭|상용 반영|운영 반영|프로덕션 반영",
+  "requests.small_talk": "고마워|고마워요|고맙습니다|감사|감사요|감사합니다|감사해요|땡큐|오케이|오키|옙|넵|네|넹|응|웅|좋아|좋아요|좋네|좋네요|굿|알겠어|알겠어요|알겠습니다|알았어|ㅇㅋ|ㅇㅇ|ㄱㅅ|ㄳ|ㅋ|ㅎ|ㅠ",
   "importance.hold_words": "보류|동결|멈춰|멈추|중단|대기|기다|막아|막고|홀드",
   "design_session.header": "디자인 세션",
   "design_session.question": "{screen}부터 짧은 디자인 세션을 해볼까요?",

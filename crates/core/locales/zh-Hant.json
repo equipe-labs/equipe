@@ -894,6 +894,7 @@
   "secrets.replace.no": "保留舊值",
   "secrets.replace.no_desc": "新值將被捨棄。",
   "importance.deploy_words": "部署|發佈|發布|上線|發版|投產|灰度",
+  "requests.small_talk": "謝謝|多謝|好的|好|收到|明白|嗯|可以|哈",
   "importance.hold_words": "暫緩|凍結|暫停|等待|先別|阻止|擱置",
   "design_session.header": "設計會話",
   "design_session.question": "先就 {screen} 做一次簡短的設計會話嗎？",

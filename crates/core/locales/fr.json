@@ -903,6 +903,7 @@
   "secrets.replace.no": "Garder l'ancienne",
   "secrets.replace.no_desc": "La nouvelle valeur est abandonnée.",
   "importance.deploy_words": "déploiement|deploiement|déployer|mise en production|mise en prod|mise en ligne|publication|livraison en production|lancement|mise en service",
+  "requests.small_talk": "merci|merci beaucoup|ok|d'accord|parfait|super|cool|oui|top|génial|nickel",
   "importance.hold_words": "suspend|geler|gel|bloque|attend|pause|retenir|retiens|stoppe",
   "design_session.header": "Session de design",
   "design_session.question": "D'abord une courte session de design sur {screen} ?",

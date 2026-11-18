@@ -602,6 +602,86 @@ pub fn asked_after<'a>(text: &str, requests: &'a [Request]) -> Vec<&'a Request> 
         .collect()
 }
 
+// ── words that ask for nothing ──
+
+/// A message longer than this is always heard as asking for something.
+const SMALL_TALK_CHARS: usize = 16;
+
+/// Whether `text` is an acknowledgement or chit-chat that asks for nothing
+/// — "ok", "thanks!", an emoji — so it opens no request: no question mark,
+/// short, and either no letter or digit at all, or only words of
+/// `requests.small_talk` (every language's, in the locale files).
+pub fn small_talk(text: &str) -> bool {
+    small_talk_in(text, crate::i18n::every("requests.small_talk"))
+}
+
+fn small_talk_in(text: &str, words: &[&str]) -> bool {
+    let text = text.trim();
+    if text.is_empty() {
+        return true;
+    }
+    if text.contains(['?', '？']) || text.chars().count() > SMALL_TALK_CHARS {
+        return false;
+    }
+    if !text.chars().any(char::is_alphanumeric) {
+        return true;
+    }
+    let mut list: Vec<String> = words.iter().map(|w| w.trim().to_lowercase()).filter(|w| !w.is_empty()).collect();
+    list.sort_by_key(|w| std::cmp::Reverse(w.chars().count()));
+    let lower: String = text.to_lowercase().chars().map(|c| if c.is_alphanumeric() || c == '\'' { c } else { ' ' }).collect();
+    let mut rest = format!(" {} ", lower.split_whitespace().collect::<Vec<_>>().join(" "));
+    // Phrases first ("thank you", "alles klar"), the longest first.
+    for phrase in list.iter().filter(|w| w.contains(' ')) {
+        let spaced = format!(" {phrase} ");
+        while rest.contains(&spaced) {
+            rest = rest.replacen(&spaced, " ", 1);
+        }
+    }
+    let single: Vec<&str> = list.iter().filter(|w| !w.contains(' ')).map(String::as_str).collect();
+    rest.split_whitespace().all(|token| said_little(token, &single))
+}
+
+/// `token` with each run of one character kept once ("hahaha" stays, "okkk" is "ok").
+fn squeezed(token: &str) -> String {
+    let mut out = String::new();
+    for c in token.chars() {
+        if !out.ends_with(c) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Whether one word of a message is one of `words`, its repeated letters
+/// aside — or, in a script written without spaces, several of them run
+/// together ("好的哈哈").
+fn said_little(token: &str, words: &[&str]) -> bool {
+    let candidates = [token.to_owned(), squeezed(token)];
+    if candidates.iter().any(|t| words.contains(&t.as_str())) {
+        return true;
+    }
+    !token.is_ascii() && candidates.iter().any(|t| runs_together(t, words))
+}
+
+/// Whether `text` is nothing but `words` run together.
+fn runs_together(text: &str, words: &[&str]) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let mut reach = vec![false; chars.len() + 1];
+    reach[0] = true;
+    for start in 0..chars.len() {
+        if !reach[start] {
+            continue;
+        }
+        for word in words {
+            let w: Vec<char> = word.chars().collect();
+            if !w.is_empty() && chars[start..].starts_with(&w) {
+                reach[start + w.len()] = true;
+            }
+        }
+    }
+    reach[chars.len()]
+}
+
 // ── what a request's ticket may wait on ──
 
 /// The places a ticket's words name — `design/directions/`, `src/app/x.tsx`
@@ -1398,6 +1478,18 @@ mod tests {
         create_table(&conn).unwrap();
         let row = Store(&conn).get(1).unwrap();
         assert_eq!((row.title.as_str(), row.said, row.closed_why, row.surfaced_at), ("Old", false, None, None));
+    }
+
+    #[test]
+    fn an_acknowledgement_in_any_language_asks_for_nothing_and_a_request_does() {
+        for said in ["ok", "OK!", "thanks", "Thank you!", "ok thanks 🙏", "👍", "🙏🙏", "...", "고마워", "고마워요!", "ㅇㅋ", "ㅋㅋㅋ", "좋아요ㅎㅎ", "넵", "ありがとう", "了解です", "谢谢", "好的", "收到", "謝謝", "danke", "alles klar", "merci", "d'accord", "gracias", "vale"] {
+            assert!(small_talk(said), "{said:?} asks for nothing");
+        }
+        for said in ["fix the login", "ok, deploy it", "thanks, now add dark mode", "고마워 근데 로그인 에러", "ok?", "고마워?", "재발방지 ㄱㄱ", "로그인 에러", "dark mode", "wok", "ありがとう、次は", "好的，部署吧", "merci, et le bouton", "gracias pero falla el login", "a b c d e f g h i j"] {
+            assert!(!small_talk(said), "{said:?} is heard");
+        }
+        assert!(small_talk("   "));
+        assert!(!small_talk("thanks thanks thanks"), "longer than a word of thanks is heard all the same");
     }
 
     #[test]

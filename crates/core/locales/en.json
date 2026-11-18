@@ -903,6 +903,7 @@
   "secrets.replace.no": "Keep the old one",
   "secrets.replace.no_desc": "The new value is dropped.",
   "importance.deploy_words": "deploy|release|rollout|roll out|publish|launch|ship|go live|go-live|cutover",
+  "requests.small_talk": "ok|okay|k|kk|thanks|thank you|thx|ty|cool|nice|great|got it|sounds good|sure|yes|yep|yeah|perfect|awesome|lol|haha|good|alright|np|noted",
   "importance.hold_words": "hold|freeze|block|pause|wait|halt",
   "design_session.header": "Design session",
   "design_session.question": "A short design session on {screen} first?",

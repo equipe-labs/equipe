@@ -23,7 +23,10 @@ runtime's side is `crates/core/src/runtime/requests.rs`; the wire types are
   news told in the PM's conversation.
 - A message that only asks after a request ("how's the input box going?"), or
   that names a ticket already on the board ("T-12: …", "merge T-3"), is not a
-  new one.
+  new one — nor is an acknowledgement or chit-chat: no question mark, at most
+  16 characters, and nothing but emoji or the words of `requests.small_talk`
+  (every language's, in the locale files: "ok", "thanks!", "merci", "了解です",
+  "alles klar"). It opens nothing the PM would have to close.
 
 ## Which request a ticket serves
 

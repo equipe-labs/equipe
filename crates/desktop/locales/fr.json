@@ -2967,6 +2967,8 @@
   "settings.auto_put_away_desc": "Les conversations laissées de côté pendant 3 jours sont rangées. Rien n’est supprimé ; tu peux en rouvrir une à tout moment. Les conversations épinglées restent.",
   "sidebar.work_working": "{n} en cours",
   "sidebar.work_needs_you": "{n} vous attendent",
+  "needs.waited": "en attente depuis {span}",
+  "needs.holds_request": "bloque R-{id} « {title} »",
   "header.squad_wide": "Toute l’équipe",
   "menu.palette": "Palette de commandes…",
   "menu.toggle_board": "Basculer tableau / conversation",
