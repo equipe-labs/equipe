@@ -240,6 +240,7 @@ impl Scene {
             action: action.into(),
             reason: Some(reason.into()),
             preview: None,
+            ask: None,
         };
         Event::ApprovalRequested { squad: SQUAD.into(), approval }
     }

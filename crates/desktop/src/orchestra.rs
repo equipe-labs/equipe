@@ -758,7 +758,7 @@ mod tests {
             vec![member(1, "pm", Presence::Ready, None), member(2, "frontend", Presence::Ready, Some(55)), member(3, "backend", Presence::Working, Some(70))],
             vec![waiting, ticket(42, "review", Some("frontend"), &[]), ticket(70, "in_progress", Some("backend"), &[]), ticket(52, "proposed", Some("frontend"), &[])],
         );
-        m.approvals.push(Approval { id: 7, session: 3, member: "backend".into(), ticket: Some(70), tool: "Bash".into(), action: "rm -rf build".into(), reason: None, preview: None });
+        m.approvals.push(Approval { id: 7, session: 3, member: "backend".into(), ticket: Some(70), tool: "Bash".into(), action: "rm -rf build".into(), reason: None, preview: None, ask: None });
         m.asked.push(serde_json::from_value::<QuestionSet>(serde_json::json!({"id": 9, "session": 1, "member": "pm", "questions": [], "asked_at": 0})).unwrap());
         let o = overview(&m, Instant::now());
         assert_eq!(o.for_you, ForYou { permissions: 1, decisions: 1, turns: 1, reviews: 1, other: 1 });

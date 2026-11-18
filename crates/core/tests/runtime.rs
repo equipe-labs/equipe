@@ -2719,6 +2719,109 @@ async fn a_member_asks_the_person_before_doing_something_on_their_behalf() {
 }
 
 #[tokio::test]
+async fn a_standing_allowance_lets_marked_test_writes_through_and_never_the_floor() {
+    use equipe_core::protocol::autonomy::{Kind, Level};
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&repo])));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "qa")).await;
+    let ask = |action: &str| {
+        let handle = handle.clone();
+        let arguments = serde_json::json!({
+            "action": action,
+            "why": "T-20 checks the seal register end to end",
+            "kind": "production_data",
+            "system": "ERP",
+            "op": "create",
+            "summary": { "changes": "One unsubmitted test record in the ERP", "who_sees": "Only ERP admins", "undo": "Deleted by qa within 7 days" },
+            "standing": { "words": "Test records titled [test] in the ERP: create, and delete the ones you made within 7 days", "marker": "[test]", "ops": ["create", "delete"], "undo_days": 7 },
+        });
+        tokio::spawn(async move { tool(&handle, "qa", "ask_person", arguments).await })
+    };
+    // The first one asks, its plain words and the scope it offers on the card.
+    let waiting = ask("Create one unsubmitted seal-register record titled '[test] link check — to be deleted' in the ERP");
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    let card = approval.ask.clone().expect("the policy read it");
+    assert_eq!(card.kind, Kind::ProductionData);
+    assert_eq!(card.plain.as_ref().map(|p| p.who_sees.as_str()), Some("Only ERP admins"));
+    assert_eq!(card.standing.as_ref().and_then(|s| s.marker.as_deref()), Some("[test]"));
+    handle.send(Command::AllowKind { squad: "acme".into(), approval: approval.id, days: 7 });
+    let answer = waiting.await.unwrap();
+    assert!(answer.text.contains("yes"), "{}", answer.text);
+    let changed = until(&mut events, |e| matches!(e, Event::AutonomyChanged { state, .. } if !state.allowances.is_empty())).await;
+    let Some(Event::AutonomyChanged { state, .. }) = changed.last() else { unreachable!() };
+    assert_eq!(state.allowances[0].uses, 1, "the first request is its first use");
+
+    // The next marked write goes ahead without a card, told in one line.
+    let answer = ask("Create a second seal-register record titled '[test] link check 2' in the ERP").await.unwrap();
+    assert!(!answer.is_error && answer.text.contains("go ahead"), "{}", answer.text);
+    until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("[test] link check 2"))).await;
+
+    // One that also sends outside is on the floor: asked, with nothing standing offered.
+    let waiting = ask("Create a '[test] link check 3' record in the ERP and email the approvers about it");
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    assert_eq!(approval.ask.as_ref().map(|a| a.kind), Some(Kind::Outside));
+    assert!(approval.ask.as_ref().is_some_and(|a| a.standing.is_none()));
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None, said: None });
+    assert!(waiting.await.unwrap().text.contains("no"));
+
+    // Revoked, the same kind asks again.
+    handle.send(Command::RevokeAllowance { squad: "acme".into(), id: state.allowances[0].id });
+    until(&mut events, |e| matches!(e, Event::AutonomyChanged { state, .. } if state.allowances.iter().all(|a| a.revoked_at.is_some()))).await;
+    let waiting = ask("Create a seal-register record titled '[test] link check 4' in the ERP");
+    let asked = until(&mut events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Allow, words: None, said: None });
+    waiting.await.unwrap();
+
+    // No command lowers the floor.
+    handle.send(Command::SetAutonomy { squad: "acme".into(), kind: Kind::Money, level: Level::JustDo });
+    handle.send(Command::SetAutonomy { squad: "acme".into(), kind: Kind::Design, level: Level::JustDo });
+    let changed = until(&mut events, |e| matches!(e, Event::AutonomyChanged { state, .. } if state.policy.design == Level::JustDo)).await;
+    let Some(Event::AutonomyChanged { state, .. }) = changed.last() else { unreachable!() };
+    assert_eq!(state.policy.level(Kind::Money), Level::Ask);
+}
+
+#[tokio::test]
+async fn a_design_choice_is_taken_on_its_recommendation_told_and_can_be_changed() {
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&repo])));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "designer")).await;
+    // At once: no window to wait out in a test.
+    handle.send(Command::SetAutonomyWindow { squad: "acme".into(), minutes: 0 });
+    until(&mut events, |e| matches!(e, Event::AutonomyChanged { state, .. } if state.policy.window_minutes == 0)).await;
+    let choice = serde_json::json!({ "questions": [{ "question": "Which header layout?", "options": [
+        { "label": "Centered", "description": "Quieter" },
+        { "label": "Left-aligned", "description": "Scans faster", "recommended": true },
+    ] }] });
+    let answer = tool(&handle, "designer", "ask_decision", choice).await;
+    assert!(!answer.is_error && answer.text.contains("Left-aligned"), "{}", answer.text);
+    let changed = until(&mut events, |e| matches!(e, Event::AutonomyChanged { state, .. } if !state.picks.is_empty())).await;
+    let Some(Event::AutonomyChanged { state, .. }) = changed.last() else { unreachable!() };
+    let pick = state.picks[0].clone();
+    assert_eq!((pick.picked.as_str(), pick.why.as_str()), ("Left-aligned", "Scans faster"));
+    until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("Left-aligned"))).await;
+
+    // Changed: the same question is the person's again.
+    handle.send(Command::ReopenAutoPick { squad: "acme".into(), set: pick.set });
+    let asked = until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await;
+    let Some(Event::QuestionsAsked { questions, .. }) = asked.last() else { unreachable!() };
+    assert_eq!(questions.id, pick.set);
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: questions.id, answers: vec![equipe_core::protocol::decide::Answer::pick(0)], about: None });
+    until(&mut events, |e| matches!(e, Event::QuestionsClosed { id, answers: Some(_), .. } if *id == pick.set)).await;
+
+    // A question about the squad's own process is the member's to settle.
+    let internal = serde_json::json!({ "questions": [{ "question": "Should the follow-up's title be in English?", "kind": "internal", "options": [{ "label": "Yes", "recommended": true }, { "label": "No" }] }] });
+    let refused = tool(&handle, "designer", "ask_decision", internal).await;
+    assert!(refused.is_error && refused.text.contains("yours to settle"), "{}", refused.text);
+}
+
+#[tokio::test]
 async fn in_auto_a_member_on_a_ticket_is_fenced_in_and_asks_for_the_rest() {
     let repo = repo();
     let (claude, recorded) = recording_claude(&answering("ok"));

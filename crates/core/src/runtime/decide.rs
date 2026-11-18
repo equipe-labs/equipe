@@ -13,6 +13,8 @@
 use equipe_protocol::decide::{self, Answer, QuestionSet, Reaction};
 
 use super::*;
+use super::autonomy::PolicyOutcome;
+use crate::protocol::autonomy::Kind;
 use crate::visuals;
 
 /// How long after the person hands a browser back its member's first question
@@ -103,6 +105,26 @@ impl Runtime {
         let review = self.review_asked(id, now_secs());
         let retro = self.retro_asked(id, now_secs(), args, questions.len());
         let set = QuestionSet { id: equipe_protocol::new_session_id(), session, member: member.to_owned(), ticket, questions, asked_at: now_secs(), review, retro };
+        // The squad's autonomy policy: the member's own call, its
+        // recommendation taken now, or taken after the window unless the
+        // person answers first.
+        let declared: Vec<Option<Kind>> = args.get("questions").and_then(Value::as_array).map(|qs| qs.iter().map(|q| q.get("kind").and_then(Value::as_str).and_then(Kind::parse)).collect()).unwrap_or_default();
+        let role = self.sessions.get(&id).and_then(|s| s.member.as_ref()).map(|m| m.role.clone()).unwrap_or_default();
+        let low_impact = ticket.and_then(|t| self.find_ticket(squad, t)).is_some_and(|t| t.priority == equipe_protocol::Priority::Low);
+        let outcome = if is_pm { PolicyOutcome::Ask } else { self.decide_under_policy(squad, &set, &role, &declared, low_impact) };
+        let mut due = None;
+        match outcome {
+            PolicyOutcome::Ask => {}
+            PolicyOutcome::Yours => return Err(super::autonomy::YOURS.into()),
+            PolicyOutcome::Now(kind, answers) => {
+                let message = self.record_pick(squad, &set, &answers, kind);
+                return Ok(format!(
+                    "Not sent: under the squad's autonomy policy this choice is yours, and your recommendation is taken:\n{message}\n\
+Go on with it. The person was told in one line and may change it; if they do, their pick comes to you as a message."
+                ));
+            }
+            PolicyOutcome::Later(kind, at) => due = Some((kind, at)),
+        }
         let (count, first) = (set.questions.len(), set.questions[0].question.clone());
         // The same decision asked again replaces its card — every screen's —
         // rather than adding a second one.
@@ -116,6 +138,7 @@ impl Runtime {
             let asked: Vec<&str> = set.questions.iter().map(|q| q.question.as_str()).collect();
             let _ = journal.ticket_event(ticket, member, "asked", &asked.join("\n"));
         }
+        let set_id = set.id;
         self.publish(Event::QuestionsAsked { squad: squad.to_owned(), questions: set });
         if !is_pm {
             let line = format!("{member} put a decision to the person: {first}");
@@ -126,12 +149,21 @@ impl Runtime {
             };
             self.brief_pm(squad, line, Some(shown));
         }
-        let asked = "Asked. The person sees your questions with their options and answers when they can; the answers will \
+        let mut asked = "Asked. The person sees your questions with their options and answers when they can; the answers will \
 arrive as their next message (\"Answers to your question: 1) … → …\"). Don't wait for them in this turn: end it now \
-with a short line, or carry on with work that doesn't depend on the answer.";
+with a short line, or carry on with work that doesn't depend on the answer."
+            .to_owned();
+        if let Some((kind, at)) = due {
+            self.keep_due(squad, set_id, kind, at);
+            let minutes = at.saturating_sub(now_secs()).div_ceil(60);
+            asked.push_str(&format!(
+                " Under the squad's autonomy policy, if they haven't answered in {minutes} min your recommended option is taken \
+and comes to you as the answer — so carry on as if it were chosen, and change course if their answer differs."
+            ));
+        }
         Ok(match nudge {
             Some(nudge) => format!("{asked}\n\n{nudge}"),
-            None => asked.into(),
+            None => asked,
         })
     }
 
@@ -171,6 +203,8 @@ with a short line, or carry on with work that doesn't depend on the answer.";
         }
         needs.extend(self.secret_asks(squad).iter().filter(|a| a.ticket == Some(ticket)).map(|a| one_line(&a.why)));
         needs.extend(self.cli_sign_in_waits(squad, ticket));
+        // Requests its member put to the person and didn't wait for.
+        needs.extend(self.pending.values().filter(|p| p.squad == squad && p.approval.ticket == Some(ticket) && p.approval.ask.as_ref().is_some_and(|a| a.later)).map(|p| one_line(&p.approval.action)));
         needs.retain(|n| !n.is_empty());
         needs
     }
@@ -222,7 +256,7 @@ with a short line, or carry on with work that doesn't depend on the answer.";
     }
 
     /// Take set `id` out of what waits, if it still does.
-    fn take_questions(&mut self, squad: &str, id: u64) -> Option<QuestionSet> {
+    pub(super) fn take_questions(&mut self, squad: &str, id: u64) -> Option<QuestionSet> {
         let sets = self.question_sets(squad);
         let at = sets.iter().position(|s| s.id == id)?;
         let set = sets.remove(at);
@@ -246,7 +280,10 @@ with a short line, or carry on with work that doesn't depend on the answer.";
     pub(super) async fn answer_questions(&mut self, squad: &str, id: u64, answers: Vec<Answer>) {
         let Some(set) = self.take_questions(squad, id) else { return };
         let answers = fit(&set, answers);
+        self.forget_due(squad, id);
         let message = decide::answer_message(&set, &answers);
+        // A choice a member took on its own, opened again: kept or changed, it says which.
+        let message = self.reopened_message(squad, &set, &answers, &message).unwrap_or(message);
         // A designer's question answered: the person's taste, kept for every design after.
         let designer = self.sessions.get(&set.session).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role == "designer");
         if let Some(entry) = designer.then(|| crate::taste::decided(&set, &answers, &crate::squad_memory::date(now_secs()))).flatten() {
@@ -297,6 +334,7 @@ with a short line, or carry on with work that doesn't depend on the answer.";
     /// Closed without an answer: the member goes on without one.
     pub(super) async fn dismiss_questions(&mut self, squad: &str, id: u64) {
         let Some(set) = self.take_questions(squad, id) else { return };
+        self.forget_due(squad, id);
         self.decision_settled(squad, &set, None);
         self.secret_card_settled(squad, &set, None);
         self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id, answers: None });

@@ -243,6 +243,11 @@ pub fn reads(command: &Command) -> bool {
         | C::SignOut { .. }
         | C::SetEngineSwitching { .. }
         | C::SetPmAccepts { .. }
+        | C::SetAutonomy { .. }
+        | C::SetAutonomyWindow { .. }
+        | C::AllowKind { .. }
+        | C::RevokeAllowance { .. }
+        | C::ReopenAutoPick { .. }
         | C::SetSubagentsAtOnce { .. }
         | C::SetParallel { .. }
         | C::SetModelChoice { .. }

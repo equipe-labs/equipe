@@ -131,7 +131,10 @@ impl Runtime {
         // A request holds its member's turn: a lane parked on it.
         for p in self.pending.values().filter(|p| p.squad == squad) {
             let a = &p.approval;
-            out.push(importance::Ask { kind: WaitKind::Permission, label: line(&format!("{}: {} {}", a.member, a.tool, a.action)), tickets: a.ticket.into_iter().collect(), holding: Vec::new(), since: 0, idle_members: 1 });
+            // One its member didn't wait for holds nobody idle; it waits since it was asked.
+            let later = a.ask.as_ref().is_some_and(|k| k.later);
+            let since = if later { self.approvals_asked.get(&a.id).copied().unwrap_or(0) } else { 0 };
+            out.push(importance::Ask { kind: WaitKind::Permission, label: line(&format!("{}: {} {}", a.member, a.tool, a.action)), tickets: a.ticket.into_iter().collect(), holding: Vec::new(), since, idle_members: u32::from(!later) });
         }
         // Questions don't hold the member up: they go on without the answer.
         for set in self.question_sets(squad).iter() {

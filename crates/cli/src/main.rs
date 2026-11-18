@@ -28,6 +28,7 @@ mod lang;
 mod launchd;
 mod logins;
 mod notify;
+mod autonomy;
 mod usage;
 mod mcp_servers;
 mod onboard;
@@ -165,7 +166,7 @@ enum Command {
         #[arg(long)]
         squad: Option<String>,
     },
-    /// Start a squad, change the folders one works on, or delete one: `new <name> [folder]`, `add <folder>`, `remove <project>`, `delete <name>`
+    /// Start a squad, change the folders one works on, delete one, or set how far its members go without you: `new <name> [folder]`, `add <folder>`, `remove <project>`, `delete <name>`, `autonomy [set <kind> <level> | window <min> | revoke <id>]`
     Squad {
         words: Vec<String>,
         /// The squad to change (default: the one this folder belongs to, else your first)
@@ -770,6 +771,24 @@ async fn run(cli: Cli) -> ExitCode {
             },
             _ => Err(Failure::new(t!("squad.delete_usage"))),
         },
+        // `autonomy …`: how far the squad's members go without you.
+        Command::Squad { words, squad, .. } if words.first().is_some_and(|w| w == "autonomy") => {
+            let home = equipe_providers::credentials::equipe_home();
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let rest: Vec<&str> = words.iter().skip(1).map(String::as_str).collect();
+            match home::squad_for(&home, &cwd, squad) {
+                None => Err(Failure::new(t!("design.qa.no_squad"))),
+                Some(current) => match autonomy::command(&home, &daemon::socket(), &current, &rest).await {
+                    Ok(lines) => {
+                        for line in lines {
+                            println!("  {line}");
+                        }
+                        Ok(())
+                    }
+                    Err(why) => Err(Failure::new(why)),
+                },
+            }
+        }
         Command::Squad { words, squad, dry_run, .. } => {
             let home = equipe_providers::credentials::equipe_home();
             let cwd = std::env::current_dir().unwrap_or_default();
@@ -1996,6 +2015,7 @@ impl App {
                 | Event::BrowserSignIn { .. }
                 | Event::BrowserProfiles { .. }
                 | Event::PmAcceptsChanged { .. }
+                | Event::AutonomyChanged { .. }
                 | Event::SubagentsAtOnceChanged { .. }
                 | Event::ParallelChanged { .. }
                 | Event::PacingChanged { .. }

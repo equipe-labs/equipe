@@ -95,6 +95,10 @@ impl Queue {
     /// Answer one request, picked by its id — with what the person wrote, if anything.
     pub fn answer_id(&mut self, squad: &str, id: u64, decision: Decision, words: Option<String>) -> Option<Command> {
         let approval = self.get(id)?;
+        // Where the daemon offers a standing allowance, "always" is "Allow for this kind", for a while.
+        if decision == Decision::Always && standing(approval).is_some() {
+            return self.allow_kind(squad, id, equipe_core::protocol::autonomy::DEFAULT_DAYS);
+        }
         if decision == Decision::Always && always_rule(approval).is_none() {
             return None;
         }
@@ -103,6 +107,28 @@ impl Queue {
         let words = words.map(|w| w.trim().to_owned()).filter(|w| !w.is_empty());
         Some(Command::Decide { squad: squad.to_owned(), approval: id, decision, words, said: None })
     }
+}
+
+impl Queue {
+    /// "Allow for this kind" on request `id`, for `days`: only where its card offers one.
+    pub fn allow_kind(&mut self, squad: &str, id: u64, days: u32) -> Option<Command> {
+        let approval = self.get(id)?;
+        standing(approval)?;
+        self.answered.push(id);
+        Some(Command::AllowKind { squad: squad.to_owned(), approval: id, days })
+    }
+}
+
+/// What "Allow for this kind" would grant, in plain words, where the daemon offers it.
+pub fn standing(approval: &Approval) -> Option<&str> {
+    approval.ask.as_ref().filter(|a| !a.kind.is_floor()).and_then(|a| a.standing.as_ref()).map(|s| s.words.as_str())
+}
+
+/// The next expiry the card offers after `days`: 1 → 7 → 30 → 1.
+pub fn next_days(days: u32) -> u32 {
+    let all = equipe_core::protocol::autonomy::EXPIRY_DAYS;
+    let at = all.iter().position(|d| *d == days).map_or(0, |n| (n + 1) % all.len());
+    all[at]
 }
 
 /// The answer a key gives, as everywhere a need is answered: Y or A allows
@@ -122,6 +148,10 @@ pub fn decision_for(key: &str, shift: bool) -> Option<Decision> {
 pub struct Words {
     pub fields: HashMap<u64, Entity<TextareaState>>,
     subscriptions: HashMap<u64, Subscription>,
+    /// Requests whose technical detail the person opened under their plain words.
+    pub details: std::collections::HashSet<u64>,
+    /// The expiry picked for "Allow for this kind", by request; the default otherwise.
+    pub days: HashMap<u64, u32>,
 }
 
 impl Words {
@@ -208,6 +238,12 @@ pub struct Card {
     pub always: Option<String>,
     pub is_send: bool,
     pub is_sign_in: bool,
+    /// The member's plain words, shown first: what changes, who sees it, how it's undone.
+    pub plain: Option<equipe_core::protocol::autonomy::Plain>,
+    /// What "Allow for this kind" would grant, where offered.
+    pub standing: Option<String>,
+    /// On the floor: asked every time, whatever the squad's policy.
+    pub floor: bool,
 }
 
 impl Card {
@@ -226,6 +262,9 @@ impl Card {
             always: if approval.tool == SIGN_IN { Some(approval.member.clone()) } else { always_rule(approval).map(|r| always_label(&r)) },
             is_send: approval.tool == equipe_core::desktop_gate::SEND,
             is_sign_in: approval.tool == SIGN_IN,
+            plain: approval.ask.as_ref().and_then(|a| a.plain.clone()).filter(|p| !p.is_empty()),
+            standing: standing(approval).map(str::to_owned),
+            floor: approval.ask.as_ref().is_some_and(|a| a.kind.is_floor()),
         }
     }
 }
@@ -244,7 +283,10 @@ impl Shell {
     pub fn decide_on(&mut self, id: u64, decision: Decision, cx: &mut Context<Self>) {
         let squad = self.model.squad.clone();
         let words = self.approval_words.fields.get(&id).map(|f| f.read(cx).value().to_string());
-        if let Some(command) = self.model.approvals.answer_id(&squad, id, decision, words) {
+        let days = self.approval_words.days.get(&id).copied().unwrap_or(equipe_core::protocol::autonomy::DEFAULT_DAYS);
+        let standing = self.model.approvals.get(id).and_then(standing).is_some();
+        let command = if decision == Decision::Always && standing { self.model.approvals.allow_kind(&squad, id, days) } else { self.model.approvals.answer_id(&squad, id, decision, words) };
+        if let Some(command) = command {
             self.approval_words.take(id, cx);
             self.send_command(command);
             cx.notify();
@@ -415,6 +457,46 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
     });
     let opened = words_box.is_some();
     let open_words = handle.clone();
+    // The member's plain words first; the technical detail folds under them until opened.
+    let plain = card.plain.clone();
+    let folded = plain.is_some() && !shell.approval_words.details.contains(&id);
+    let days = shell.approval_words.days.get(&id).copied().unwrap_or(equipe_core::protocol::autonomy::DEFAULT_DAYS);
+    let toggle_details = handle.clone();
+    let cycle_days = handle.clone();
+    let plain_rows = plain.map(|plain| {
+        let row = |label: &'static str, text: String| {
+            h_flex().gap_2().items_start().child(div().flex_none().w(px(92.)).text_size(px(12.)).text_color(p.muted).child(label)).child(div().flex_1().min_w_0().text_size(px(14.)).text_color(p.text).child(text))
+        };
+        v_flex()
+            .gap_1()
+            .px_3()
+            .py_2()
+            .rounded(px(R_MD))
+            .bg(p.bg)
+            .border_1()
+            .border_color(p.hair)
+            .child(row(t!("approvals.plain_changes"), plain.changes))
+            .when(!plain.who_sees.trim().is_empty(), |c| c.child(row(t!("approvals.plain_who_sees"), plain.who_sees)))
+            .when(!plain.undo.trim().is_empty(), |c| c.child(row(t!("approvals.plain_undo"), plain.undo)))
+            .child(
+                div()
+                    .id(("approval-details", id))
+                    .text_size(px(12.))
+                    .text_color(p.accent)
+                    .cursor_pointer()
+                    .child(if folded { t!("approvals.show_details") } else { t!("approvals.hide_details") })
+                    .on_click(move |_, _, cx| {
+                        toggle_details
+                            .update(cx, |shell, cx| {
+                                if !shell.approval_words.details.remove(&id) {
+                                    shell.approval_words.details.insert(id);
+                                }
+                                cx.notify();
+                            })
+                            .ok();
+                    }),
+            )
+    });
     // To a screen reader: who asks what, then what it would run.
     let asked = format!("{}: {}", approval.member, t!("approvals.allow_question", what = card.noun));
     let detail = card.lines.iter().cloned().chain(approval.reason.clone()).collect::<Vec<_>>().join("\n");
@@ -439,7 +521,8 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
                     .when(queue_line && waiting > 1, |h| h.child(div().font_weight(FontWeight::NORMAL).text_color(p.muted).child(t!("approvals.queue", waiting = waiting)))),
             )
             .child(div().text_size(px(15.)).text_color(p.text).child(t!("approvals.allow_question", what = card.noun)))
-            .child(
+            .children(plain_rows)
+            .when(!folded, |c| c.child(
                 v_flex()
                     .px_3()
                     .py_2()
@@ -453,9 +536,9 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
                     .line_height(px(20.))
                     .children(card.lines.iter().map(|l| div().child(l.clone())))
                     .when(card.more > 0, |c| c.child(div().text_color(p.muted).child(t!("approvals.more_lines", n = card.more)))),
-            )
-            .when(!card.writes.is_empty(), |c| c.child(div().text_size(px(SMALL)).text_color(p.muted).child(t!("approvals.writes", files = card.writes.join(", ")))))
-            .children(approval.reason.clone().map(|r| div().text_size(px(SMALL)).text_color(p.muted).child(r)))
+            ))
+            .when(!card.writes.is_empty() && !folded, |c| c.child(div().text_size(px(SMALL)).text_color(p.muted).child(t!("approvals.writes", files = card.writes.join(", ")))))
+            .children(approval.reason.clone().filter(|_| !folded).map(|r| div().text_size(px(SMALL)).text_color(p.muted).child(r)))
             .children(preview.map(|path| {
                 h_flex().gap_3().items_center().text_size(px(SMALL)).text_color(p.muted).child(div().min_w_0().child(t!("approvals.screen", path = path))).child(button(
                     p,
@@ -478,7 +561,20 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
                     .gap_2()
                     .items_center()
                     .child(button(p, ("allow", id), allow_label, allow_key, true, act(Decision::Allow)))
-                    .when(card.always.is_some() && !typed, |h| h.child(button(p, ("always", id), t!("approvals.always"), "⇧A", false, act(Decision::Always))))
+                    .when(card.always.is_some() && card.standing.is_none() && !typed, |h| h.child(button(p, ("always", id), t!("approvals.always"), "⇧A", false, act(Decision::Always))))
+                    // "Allow for this kind", for as long as the chip beside it says (1, 7 or 30 days; a tap changes it).
+                    .when(card.standing.is_some() && !typed, |h| {
+                        h.child(button(p, ("allow-kind", id), t!("approvals.allow_kind"), "⇧A", false, act(Decision::Always))).child(
+                            ui::button(p, ("allow-kind-days", id), ui::Kind::Ghost, t!("approvals.for_days", days = days)).on_click(move |_, _, cx| {
+                                cycle_days
+                                    .update(cx, |shell, cx| {
+                                        shell.approval_words.days.insert(id, next_days(days));
+                                        cx.notify();
+                                    })
+                                    .ok();
+                            }),
+                        )
+                    })
                     .child(button(p, ("deny", id), deny_label, deny_key, false, act(Decision::Deny)))
                     .when(!opened, |h| {
                         h.child(button(p, ("words", id), t!("approvals.reply"), "R", false, move |window, cx| {
@@ -487,6 +583,8 @@ pub fn card(shell: &Shell, id: u64, queue_line: bool, cx: &mut Context<Shell>) -
                     })
                     .child(div().flex_1())
                     .when(!typed, |h| h.child(div().text_size(px(12.)).text_color(p.muted).child(match &card.always {
+                        _ if card.floor => t!("approvals.floor_asks").to_owned(),
+                        _ if card.standing.is_some() => t!("approvals.standing_scope", scope = card.standing.clone().unwrap_or_default()),
                         Some(member) if card.is_sign_in => t!("approvals.sign_in_always", member = member),
                         Some(label) => t!("approvals.always_rule", label = label),
                         None if card.is_send => t!("approvals.send_always_asks").to_owned(),
@@ -510,13 +608,36 @@ mod tests {
     use equipe_core::protocol::{Approval, Command, Decision, SessionId};
 
     fn approval(id: u64, session: SessionId, tool: &str, action: &str) -> Approval {
-        Approval { id, session, member: "m".into(), ticket: Some(9), tool: tool.into(), action: action.into(), reason: None, preview: None }
+        Approval { id, session, member: "m".into(), ticket: Some(9), tool: tool.into(), action: action.into(), reason: None, preview: None, ask: None }
     }
 
     fn queue(items: Vec<Approval>) -> Queue {
         let mut q = Queue::default();
         q.load(items);
         q
+    }
+
+    #[test]
+    fn a_standing_scope_turns_always_into_allow_for_this_kind_and_plain_words_lead_the_card() {
+        use equipe_core::protocol::autonomy::{Ask, Kind, Plain, Scope};
+        let scope = Scope { words: "Test records titled [test] in the ERP".into(), system: Some("ERP".into()), marker: Some("[test]".into()), ops: vec![], ..Scope::default() };
+        let plain = Plain { changes: "One test record in the ERP".into(), who_sees: "Only admins".into(), undo: "Deleted within 7 days".into() };
+        let ask = |kind| Ask { kind, plain: Some(plain.clone()), standing: Some(scope.clone()), later: false, op: None };
+        let offered = Approval { ask: Some(ask(Kind::ProductionData)), ..approval(1, 2, "Confirm", "Create one unsubmitted seal-register record …") };
+        let card = Card::of(&offered);
+        assert_eq!(card.standing.as_deref(), Some("Test records titled [test] in the ERP"));
+        assert_eq!(card.plain.as_ref().map(|p| p.who_sees.as_str()), Some("Only admins"));
+        assert!(!card.floor);
+        let mut q = queue(vec![offered]);
+        assert_eq!(q.answer("acme", Decision::Always), Some(Command::AllowKind { squad: "acme".into(), approval: 1, days: 7 }), "⇧A: for the default week");
+        // On the floor nothing is offered, whatever the request carries.
+        let floor = Approval { ask: Some(ask(Kind::Money)), ..approval(2, 2, "Confirm", "Pay $49") };
+        let card = Card::of(&floor);
+        assert!(card.floor && card.standing.is_none());
+        let mut q = queue(vec![floor]);
+        assert_eq!(q.allow_kind("acme", 2, 30), None);
+        assert_eq!(q.answer("acme", Decision::Always), None, "no rule, no scope");
+        assert_eq!((super::next_days(1), super::next_days(7), super::next_days(30)), (7, 30, 1));
     }
 
     #[test]

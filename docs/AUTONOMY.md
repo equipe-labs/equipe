@@ -1,0 +1,168 @@
+# Autonomy policy
+
+A squad should keep building with as little of the person's time as possible,
+and never without them on what is theirs. The autonomy policy is how the person
+says, once, which is which. It is a layer other parts of equipe plug into: the
+importance gate, the daily digest and "stop this kind of work" rules read what
+it decides; it does not replace them.
+
+Code: `crates/protocol/src/autonomy.rs` (types, levels, the floor, pure rules),
+`crates/core/src/autonomy.rs` (matching, classification, the squad's store),
+`crates/core/src/runtime/autonomy.rs` (the daemon at work),
+`crates/desktop/src/views/settings_autonomy.rs` (Settings › Permissions ›
+Autonomy and the "Picked for you" card), `crates/cli/src/autonomy.rs`
+(`equipe squad autonomy`).
+
+## Levels
+
+Each kind of thing gets one of three levels:
+
+| Level | What happens |
+| --- | --- |
+| **Ask** | The person decides first. |
+| **Decide and tell** | The member goes ahead after a short window; the person gets a one-line note and can change it. |
+| **Just do** | The member decides; it is logged. |
+
+| Kind | Default | Notes |
+| --- | --- | --- |
+| Design choices between options a member made | Decide and tell (30 min) | The member's `recommended` option is taken when the window passes. Low-priority tickets don't wait. A choice without a recommended option, a taste board, or one whose words name the floor is always asked. |
+| Merging reviewed work | Just do | The same switch as "the PM accepts the team's work" (`pm_accepts`): the PM still puts to the person what needs them (`accept_work`'s rules). |
+| Internal and process questions | Just do | `ask_decision` refuses a set whose every question the member marked `kind: internal` and tells it to decide and note its choice on the ticket. |
+| Writing to live data | Ask | Open to standing allowances (below). Set to decide-and-tell or just-do, it goes ahead with a one-line note. |
+
+### The floor
+
+These always ask, whatever the policy, whatever a member says a request is:
+**sign-ins and credentials, payments and money, permanent deletion, sending or
+publishing outside, security settings, legal matters**. `Policy::set` refuses
+anything but "ask" for them; a standing allowance can't be granted for them
+(`Kind::allowable`) and never matches one (`autonomy::covering`).
+
+A request is put on the floor by what it is, not by what it claims:
+
+- an engine's permission prompt by its tool and command — outward commands
+  (`git push`, `gh`, `vercel`…), credential paths, deleting commands
+  (`autonomy::engine_kind`);
+- a member's own request (`ask_person`) by the floor kind it declares, and by
+  the words of its `action` in every language equipe speaks
+  (`match.floor.*` in `crates/protocol/locales`, `Kind::floor_named`). A request
+  that says "production data" but asks to email someone is "outside".
+- a question set by the words of its questions and options.
+
+Word matching errs towards asking: a false hit costs one card.
+
+### Who sets it
+
+Only the person, by their own action: the Settings screen, the command line
+(`equipe squad autonomy`, which goes through the daemon as their own command,
+so a member's shell can't send it), or a tap on a card. Every command here is
+person-only (`permissions::person_only`). The PM may *propose* a change with
+`change_setting` (`setting: autonomy`): one that only narrows is done at once,
+one that widens is put to the person on an approval card. A member's or the
+PM's words never count as the person's approval.
+
+```
+equipe squad autonomy                          # show
+equipe squad autonomy set design just_do
+equipe squad autonomy set production_data decide_and_tell
+equipe squad autonomy window 60                # minutes; 0: at once
+equipe squad autonomy revoke 3                 # a standing allowance
+```
+
+## Standing allowances
+
+A request's card offers **Allow for this kind** next to Allow Once, with the
+scope spelled out in plain words and an expiry (1, 7 or 30 days; 7 by default,
+90 at most). It appears only where something sound can be generalised:
+
+- an engine prompt: the rule "always allow" would keep (`Bash(npm test:*)`),
+  now with an expiry and a log;
+- a member's write to live data that offers a `standing` scope: a system
+  (`ERP`), a marker every such record carries in its title (`[test]`, at least
+  three characters), the ops, and optionally how many days the member may
+  delete what it made. For example: *test records titled `[test]` in the ERP
+  may be created, and deleted by the member that made them within 7 days.*
+
+A later request is allowed at once when a live allowance of its kind covers
+it: on its system, carrying its marker, doing one of its ops, naming nothing on
+the floor. A delete is covered only for the same member, within the days, after
+it created something under that allowance — cleaning up its own test records is
+not "permanent deletion" of the person's data; any other delete is. Each use is
+logged (the allowance's use count, the squad's use log, the ticket's history)
+and a member's own request posts a one-line note in its conversation. The
+person can list and revoke allowances in Settings or on the command line.
+
+The store lives in the squad's journal (`meta.autonomy`): the policy, the
+allowances, the latest 500 uses, the automatic picks of the last week, and the
+choices waiting for their window.
+
+## Plain words first
+
+`ask_person` takes a `summary` — what will change, who sees it, how it is
+undone — in the person's language, and a `kind`. The card leads with those
+three lines; the member's technical text (and its reason) folds under "Show
+the details".
+
+## Batching: nobody idles on one ask
+
+`ask_person` no longer holds the member's turn for up to 30 minutes (26 of the
+112 permission requests in the data below timed out that way, the member idle
+the whole time and then told "declined"). The member waits three minutes for a
+quick answer — a yes took four minutes on average, often under one — and is
+then let go: the card stays up, the member carries on with work that doesn't
+depend on it, and the answer comes as a message. If the member ends its turn
+with nothing else to do, its ticket waits on the person (the request is listed
+among what it waits on) and goes back to it with the answer. An unanswered
+request is declined after a day. Everything still waiting sits in the one queue
+the importance gate sorts by impact; a request its member no longer waits on
+doesn't count as an idle member there.
+
+## Decide and tell, step by step
+
+1. A member asks a design choice with a recommended option.
+2. Within the window the person may answer as ever; the card says nothing has
+   been decided yet.
+3. When the window passes (checked every minute; survives a restart, since the
+   due time is kept in the journal) the recommendation is taken: the card
+   closes, the member gets the answers ("taken under the squad's policy… they
+   may still change it"), the ticket's history and the week's waits record it
+   (`outcome: auto-picked`), the PM is briefed, and the person gets a one-line
+   note in the member's conversation and a **Picked for you** card over the
+   composer: *designer picked «B» (why) · Change · OK*.
+4. **Change** opens the same question again for the person. Their answer goes
+   to the member as "the person changed the choice you took on your own…" (or
+   "kept it"). Picks can be changed for a week.
+
+An automatic pick is never recorded as the person's taste; only their own
+answer is.
+
+## Why these defaults
+
+From one production squad's 14 days (3–18 Nov 2026), read from its journal's
+`waits` table: 387 asks, about 28 a day on active days, 89 at the peak.
+
+| Kind of ask | Count | Outcome |
+| --- | --- | --- |
+| Decisions (`ask_decision`) | 275 | 252 answered, avg. wait 3.7 h; 23 closed unanswered |
+| — of which design choices between options | ~101 (+ many more among scope questions) | 99 answered |
+| — internal/process (ticket titles rejected, duplicates, which follow-up first) | ~27 | all answered, all trivial |
+| Permission requests | 112 | 69 allowed, 17 declined, **26 timed out after 30 min** |
+| — live data writes and live tests (ERP test records, migrations, deploys) | ~40 | mixed; often the same kind of test record again |
+| — sending/publishing outside (Slack DMs, public issues) | ~19 | mixed |
+| — deletion, credentials, money, security | ~31 | mostly allowed, but the person's to decide |
+| — merges ("Merge T-… into main and push") | 9 | all allowed |
+
+So: design choices are the largest single kind and the person almost always
+takes one of the offered options, but waits hours — decide-and-tell with a
+30-minute window keeps the designer moving while leaving the person the last
+word. Merges were always allowed: just do. Internal questions were all
+trivial: just do. Live data is mixed and consequential: ask, with standing
+allowances for the repetitive part (test records). The floor kinds stay asked.
+
+## Testing
+
+`cargo test -p equipe-protocol autonomy` (levels, floor, words, recommended
+answers, due times), `cargo test -p equipe-core --lib autonomy` (allowance
+matching, expiry, revoke, deletes of one's own, engine and request kinds,
+question kinds, the store), `cargo test -p equipe autonomy` (the command line),
+`cargo test -p equipe-desktop autonomy approvals` (the card and the dock).

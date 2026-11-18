@@ -644,7 +644,7 @@ fn frame_vectors() -> Value {
 // ─── messages.json: what the daemon says, screen by screen ───────────────
 
 fn approval() -> Approval {
-    Approval { id: 17, session: 4242, member: "backend".into(), ticket: Some(38), tool: "Bash".into(), action: "git push origin main".into(), reason: Some("배포 브랜치에 올립니다".into()), preview: None }
+    Approval { id: 17, session: 4242, member: "backend".into(), ticket: Some(38), tool: "Bash".into(), action: "git push origin main".into(), reason: Some("배포 브랜치에 올립니다".into()), preview: None, ask: None }
 }
 
 /// The reference's two questions, from the member on T-38.
@@ -1011,6 +1011,7 @@ fn snapshot() -> Snapshot {
         suggestions_off: false,
         desktop: Default::default(),
         allowed: vec![],
+        autonomy: None,
         browsers_shown: false,
         disk: Some(disk_status()),
         reviews: vec![code_review()],
