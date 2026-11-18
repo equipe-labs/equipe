@@ -1816,6 +1816,26 @@ pub enum Command {
         page: String,
         from: design_session::SessionFrom,
     },
+    /// The person ended the design session with `designer` (its screen's
+    /// End): its turns stop opening with the prototype round's rules.
+    EndDesignSession { squad: SquadName, designer: SessionId },
+    /// "Use this" on a design session's prototype: the variant the person
+    /// picked (`A`…, `None`: the one page shown) at `url` becomes the spec of
+    /// the implementation ticket equipe opens for it — or updates, when this
+    /// session opened one that hasn't started — and the designer is told the
+    /// session's rounds on the page are over. The full checks run on that
+    /// ticket. Told with [`Event::DesignVariantUsed`].
+    UseDesignVariant {
+        squad: SquadName,
+        designer: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        page: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        variant: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
     /// The person opened (`open`) or closed a live preview of `url` — a
     /// loopback page of the daemon's machine, shown in a web view of their
     /// own screen — that `session`'s member serves: while it is open, that
@@ -3336,6 +3356,18 @@ pub enum Event {
         page: String,
         from: design_session::SessionFrom,
     },
+    /// The implementation ticket for a design session's picked prototype
+    /// ([`Command::UseDesignVariant`]): `ticket`, opened or (`updated`)
+    /// changed, and the variant it builds.
+    DesignVariantUsed {
+        squad: SquadName,
+        designer: SessionId,
+        ticket: TicketId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        variant: Option<String>,
+        #[serde(default)]
+        updated: bool,
+    },
     /// The person chose to tune their taste first (on the PM's proposal of
     /// a design session): screens open the taste tuner for `project`.
     OpenTasteTuner {
@@ -3489,6 +3521,7 @@ impl Event {
             | Event::PutAwayChanged { squad, .. }
             | Event::Design { squad, .. }
             | Event::DesignSessionStarted { squad, .. }
+            | Event::DesignVariantUsed { squad, .. }
             | Event::OpenTasteTuner { squad, .. }
             | Event::ProjectDocs { squad, .. }
             | Event::DocsFound { squad, .. }
@@ -3614,6 +3647,7 @@ impl Event {
             | Event::BrowserProfiles { .. }
             | Event::Design { .. }
             | Event::DesignSessionStarted { .. }
+            | Event::DesignVariantUsed { .. }
             | Event::OpenTasteTuner { .. }
             | Event::ProjectDocs { .. }
             | Event::DocsFound { .. }
@@ -4427,6 +4461,8 @@ mod tests {
             },
             Command::TryReference { squad: "acme".into(), project: None, card: references::RefCard { title: "Button".into(), link: "https://ui.shadcn.com/docs/components/button".into(), ..Default::default() } },
             Command::LivePreview { squad: "acme".into(), session: Some(3), url: "http://localhost:4899/".into(), open: true },
+            Command::EndDesignSession { squad: "acme".into(), designer: 4 },
+            Command::UseDesignVariant { squad: "acme".into(), designer: 4, project: Some("web".into()), page: "Pricing".into(), variant: Some("B".into()), url: Some("http://localhost:5173/b".into()) },
         ];
         for command in commands {
             let json = serde_json::to_string(&command).unwrap();
@@ -4439,6 +4475,7 @@ mod tests {
         let events = [
             Event::DesignSessionStarted { squad: "acme".into(), designer: 4, project: Some("web".into()), page: "Pricing".into(), from: SessionFrom::Pm { ticket: Some(9) } },
             Event::OpenTasteTuner { squad: "acme".into(), project: None },
+            Event::DesignVariantUsed { squad: "acme".into(), designer: 4, ticket: 12, variant: Some("B".into()), updated: false },
         ];
         for event in events {
             let json = serde_json::to_string(&event).unwrap();
