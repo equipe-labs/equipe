@@ -770,8 +770,8 @@ mod tests {
         ] {
             let why = bash(command).unwrap_or_else(|| panic!("{command} let through"));
             assert!(why.starts_with("Blocked: `"), "{command}: {why}");
-            for part in [&format!("where you work, {WORK}"), &format!("{WORK}/design/sessions/"), "ls -t"] {
-                assert!(why.contains(part.as_str()), "{command}: {part}: {why}");
+            for part in [format!("where you work, {WORK}"), format!("{WORK}/design/sessions/"), "ls -t".to_owned()] {
+                assert!(why.contains(&part), "{command}: {part}: {why}");
             }
         }
         assert!(bash("find / -name x").unwrap().contains("`find /`"), "it names the search");

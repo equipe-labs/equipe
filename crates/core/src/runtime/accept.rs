@@ -80,7 +80,7 @@ them, and note what they said on the ticket with `comment`, for the PM."
             )
         });
         // What is landing now isn't waiting on anyone: left out of the rest.
-        let mut tickets = tickets;
+        let mut tickets = tickets.to_vec();
         for t in &mut tickets {
             t.landing = self.landing(squad, t);
         }

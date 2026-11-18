@@ -699,7 +699,7 @@ mod tests {
         assert_eq!(carried.notes, [Note::Out { engine: Engine::Codex, back_at: Some(NOW + DAY) }], "but the status line says it");
         std::sync::Arc::make_mut(&mut only.tickets).push(paused(40, PauseWhy::EngineLimit, Engine::Codex, Some(NOW + DAY)));
         assert_eq!(status(&only, &quiet_rows()).mood, Mood::Slowed, "a run waiting on it is a row to see, not a stop");
-        only.tickets.pop();
+        std::sync::Arc::make_mut(&mut only.tickets).pop();
         only.engines[0].out_until = Some(NOW + HOUR);
         assert_eq!(status(&only, &quiet_rows()).mood, Mood::Stopped);
     }
@@ -792,7 +792,7 @@ mod tests {
         let none = status(&facts, &Rows::default());
         assert_eq!(none.blocked.iter().find(|b| b.cause == Cause::Quiet).map(|b| b.count), Some(1), "ticket 3, changed 5h ago; 4 changed 10 minutes ago");
         // A stalled run is quiet at once, whatever the clock says.
-        facts.tickets = vec![stalled(9)];
+        facts.tickets = vec![stalled(9)].into();
         facts.working.clear();
         let s = status(&facts, &Rows::default());
         assert_eq!(s.blocked.iter().find(|b| b.cause == Cause::Quiet).map(|b| b.tickets.clone()), Some(vec![9]));
@@ -840,7 +840,7 @@ mod tests {
     fn plenty_waiting_on_tickets_or_the_person_while_runs_go_is_not_slowed_and_the_flow_says_why() {
         let mut facts = healthy();
         one_member(&mut facts, 1, 6, 16);
-        facts.tickets = vec![ticket(1, TicketStatus::InProgress), ticket(2, TicketStatus::Waiting), ticket(3, TicketStatus::Todo)];
+        facts.tickets = vec![ticket(1, TicketStatus::InProgress), ticket(2, TicketStatus::Waiting), ticket(3, TicketStatus::Todo)].into();
         std::sync::Arc::make_mut(&mut facts.tickets)[2].depends_on = vec![2];
         std::sync::Arc::make_mut(&mut facts.tickets).push(ticket(4, TicketStatus::Todo));
         std::sync::Arc::make_mut(&mut facts.tickets)[3].depends_on = vec![1];
@@ -936,7 +936,7 @@ mod tests {
         assert_eq!(list.tickets.iter().map(|t| t.ticket).collect::<Vec<_>>(), [5, 2]);
         assert_eq!(list.pins, [5, 2, 99]);
         // A long list is cut.
-        facts.tickets = (1..=12).map(|id| ticket(id, TicketStatus::Todo)).collect();
+        facts.tickets = (1..=12).map(|id| ticket(id, TicketStatus::Todo)).collect::<Vec<_>>().into();
         let rows = Rows { watched: (1..=12).collect(), ..quiet_rows() };
         let list = status(&facts, &rows).watched;
         assert_eq!((list.tickets.len(), list.more), (WATCHED_SHOWN, 4));
