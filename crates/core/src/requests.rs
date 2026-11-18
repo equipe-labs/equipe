@@ -558,6 +558,11 @@ impl Store<'_> {
         stmt.query_map([], |r| r.get(0)).and_then(|rows| rows.collect()).unwrap_or_default()
     }
 
+    /// How `ticket` joined the request it serves, if it serves one.
+    pub fn link_of(&self, ticket: TicketId) -> Option<Link> {
+        self.0.query_row("SELECT link FROM request_tickets WHERE ticket = ?1", [ticket], |r| r.get::<_, String>(0)).optional().ok().flatten().and_then(|l| Link::parse(&l))
+    }
+
     /// The request `ticket` serves, if any.
     pub fn of_ticket(&self, ticket: TicketId) -> Option<RequestId> {
         self.0.query_row("SELECT request FROM request_tickets WHERE ticket = ?1", [ticket], |r| r.get::<_, i64>(0)).optional().ok().flatten().map(|n| n as RequestId)
@@ -621,18 +626,23 @@ impl Store<'_> {
     }
 
     /// The tickets the PM accepted (`true`) or sent back (`false`) since
-    /// `since`, the latest first: each once, at its latest.
-    pub fn decided_by_pm(&self, since: u64) -> Vec<(TicketId, u64, bool)> {
+    /// `since` — or their own member landed, its gates passed (accepted,
+    /// with who) — the latest first: each once, at its latest.
+    pub fn decided_by_pm(&self, since: u64) -> Vec<(TicketId, u64, bool, Option<String>)> {
         let Ok(mut stmt) = self.0.prepare(
-            "SELECT ticket, MAX(at), kind FROM ticket_events
-             WHERE at >= ?1 AND (kind = 'accepted by the PM' OR (kind = 'sent back' AND by != 'equipe' AND by != 'you'))
+            "SELECT ticket, MAX(at), kind, by FROM ticket_events
+             WHERE at >= ?1 AND (kind = 'accepted by the PM' OR kind = ?2 OR (kind = 'sent back' AND by != 'equipe' AND by != 'you'))
              GROUP BY ticket ORDER BY MAX(at) DESC LIMIT 50",
         ) else {
             return Vec::new();
         };
-        stmt.query_map([since as i64], |r| Ok((r.get::<_, TicketId>(0)?, r.get::<_, i64>(1)?.max(0) as u64, r.get::<_, String>(2)? == "accepted by the PM")))
-            .and_then(|rows| rows.collect())
-            .unwrap_or_default()
+        stmt.query_map(params![since as i64, crate::lead_time::SELF_LANDED], |r| {
+            let kind: String = r.get(2)?;
+            let landed = (kind == crate::lead_time::SELF_LANDED).then(|| r.get::<_, String>(3)).transpose()?;
+            Ok((r.get::<_, TicketId>(0)?, r.get::<_, i64>(1)?.max(0) as u64, kind != "sent back", landed))
+        })
+        .and_then(|rows| rows.collect())
+        .unwrap_or_default()
     }
 
     /// What was told, and that nothing waits to be; `closed`: when it was
@@ -679,6 +689,7 @@ mod tests {
             design_qa: None,
             plan: None,
             model: None,
+            flow: None,
         }
     }
 

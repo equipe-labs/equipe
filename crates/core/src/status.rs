@@ -542,6 +542,7 @@ mod tests {
             design_qa: None,
             plan: None,
             model: None,
+            flow: None,
         }
     }
 

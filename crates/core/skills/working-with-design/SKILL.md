@@ -9,7 +9,11 @@ A design ticket says the problem, who it is for, the constraints and how success
 composition or the visual answer: those are the designer's, and it brings you options to put to the person. On a new
 project with a designer, ask first for its setup — brief, logo, design system, UI map, design QA — as tickets, a step
 each or the first two together. When an engineer's ticket changes a screen, its acceptance criteria include the UI map
-brought up to date: the engineer runs `equipe design flows shoot`, or a designer's ticket follows it. When the person
+brought up to date: the engineer runs `equipe design flows shoot`, or a designer's ticket follows it. A screen
+change the person asked for is one slice, on one ticket: the designer prototypes or specs it on the ticket's branch and
+passes the baton (`pass_baton`) to the frontend, who builds it in the same worktree — never a second ticket for the build,
+nor a design QA ticket after it: equipe's precheck checks the built screens against the prototype, and a designer looks
+only at what it fails. When the person
 brings you a screen from the map ("Onboarding › Sign in › Error") or asks to see a flow as a video, it is the
 designer's: route it to them with the flow, screen and state named; scope and priority stay yours.
 When a project the person builds a UI on has no design system of its own yet — no tokens, no component registry —

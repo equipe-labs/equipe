@@ -255,6 +255,7 @@ screen_checks value; missing: {}. Then hand in again.",
             merged: None,
             off_main: None,
             design_qa: None, plan: None, model: None,
+            flow: None,
             created_by: "equipe".to_owned(),
             note: None,
             asks: Vec::new(),
@@ -341,8 +342,12 @@ screen_checks value; missing: {}. Then hand in again.",
                 None
             }
         };
-        // Built from a live prototype the person picked: the precheck alone decides, whatever the squad's gate.
-        let prototype = self.checked_by(squad, qa).and_then(|c| self.approved_prototype(squad, c.id));
+        // Built from a live prototype the person picked — or one UI slice, its prototype
+        // and build on one branch (`crate::flow`): the precheck alone decides, whatever the squad's gate.
+        let checked_now = self.checked_by(squad, qa);
+        let slice = checked_now.as_ref().is_some_and(|c| c.flow.as_ref().is_some_and(|f| f.slice));
+        let picked = checked_now.and_then(|c| self.approved_prototype(squad, c.id));
+        let prototype = picked.clone().or_else(|| slice.then(String::new));
         let call = if prototype.is_some() { crate::design_qa::gate_prototype(report.as_ref()) } else { crate::design_qa::gate(report.as_ref()) };
         let Some(journal) = self.journal(squad) else { return };
         let mut run = journal.design_qa_run(qa).unwrap_or(journal::DesignQaRun { qa, ..Default::default() });
@@ -428,7 +433,7 @@ truncation with the whole text available), hand in again with `waive_findings` s
                 // Built from the picked prototype: the person sees the result at once.
                 (None, _, Some(r)) if prototype.is_some() => {
                     let shots: Vec<&str> = r.shots.iter().filter_map(|s| s.picture.as_deref()).take(3).collect();
-                    let see = prototype.as_deref().map(|p| format!("\nThe prototype it was built from: {p}")).unwrap_or_default();
+                    let see = picked.as_deref().map(|p| format!("\nThe prototype it was built from: {p}")).unwrap_or_default();
                     (GateEnd::Passed, format!("{headline}\nSee the result: {}{see}\n{report_line}", shots.join(", ")))
                 }
                 (None, _, _) => (GateEnd::Passed, format!("{headline}\n{report_line}")),
@@ -500,21 +505,15 @@ truncation with the whole text available), hand in again with `waive_findings` s
             ),
         };
         self.brief_pm(squad, line, Some(shown));
-        // Where the PM accepts, work ready for review is its to act on now.
-        if verdict.passed
-            && checked.ready_for_review()
-            && self.journal(squad).is_some_and(|j| j.pm_accepts())
-            && let Some(pm) = self.pm_of(squad)
-        {
-            let pm_name = self.sessions.get(&pm).and_then(|s| s.name().map(str::to_owned)).unwrap_or_default();
-            if crate::accept::own_code(&checked, &pm_name).is_none() {
-                let how = if how == GateEnd::Batched { "is low risk by equipe's precheck (its screens go into the daily design review)" } else { "passed design QA by equipe's precheck" };
-                let prompt = format!(
-                    "[equipe: T-{} {how} and is ready for you. Check it and accept it with `accept_work`, send it back with `comment` and `review: changes`, or put it to the person with `propose_accept`.]",
-                    checked.id
-                );
-                let _ = self.internal.send(Internal::Wake { session: pm, prompt });
-            }
+        // Where the PM accepts, work ready for review lands now: by its member
+        // when nothing in it needs a person (`runtime::flow`), else the PM acts on it.
+        if verdict.passed && checked.ready_for_review() && self.journal(squad).is_some_and(|j| j.pm_accepts()) {
+            let how = if how == GateEnd::Batched { "is low risk by equipe's precheck (its screens go into the daily design review)" } else { "passed design QA by equipe's precheck" };
+            let prompt = format!(
+                "[equipe: T-{} {how} and is ready for you. Check it and accept it with `accept_work`, send it back with `comment` and `review: changes`, or put it to the person with `propose_accept`.]",
+                checked.id
+            );
+            self.work_ready(squad, checked.id, prompt);
         }
     }
 
@@ -838,6 +837,7 @@ mod tests {
             design_qa: Some(9),
             plan: None,
             model: None,
+            flow: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],

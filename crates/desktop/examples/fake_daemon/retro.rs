@@ -59,6 +59,7 @@ fn ticket(id: u32, title: &str, status: TicketStatus, who: &str, project: &str) 
         note: None,
         plan: None,
         model: None,
+        flow: None,
         asks: vec![],
         label: None, remaining: vec![],
         images: Vec::new(),

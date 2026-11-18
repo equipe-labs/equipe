@@ -33,6 +33,9 @@ pub enum Change {
     Mode { member: Option<String>, mode: Option<Mode> },
     /// The PM accepts and merges handed-in work itself.
     PmAccepts(bool),
+    /// Members land their own work once its gates pass and nothing in it
+    /// needs a person; the PM looks after the fact (`crate::flow`).
+    SelfLand(bool),
     /// Hours the board may lie empty before the PM is woken; 0 off.
     IdleWake(u32),
     /// How many subagents each member may run at once.
@@ -109,6 +112,7 @@ impl Change {
         match self {
             Change::Mode { mode, .. } => mode.is_none_or(|m| reach(m) > reach(now)),
             Change::PmAccepts(on) => *on,
+            Change::SelfLand(on) => *on,
             Change::EngineSwitching(mode) => *mode == Switching::Auto,
             // Max spends the plan faster than it would on its own: the person's.
             Change::Parallel { mode, .. } => *mode == ParallelMode::Max,
@@ -158,6 +162,7 @@ impl Change {
                 Change::Mode { member: s("member"), mode }
             }
             "pm_accepts" => Change::PmAccepts(on(&value()?)?),
+            "self_land" => Change::SelfLand(on(&value()?)?),
             "idle_wake_hours" => Change::IdleWake(value()?.parse().map_err(|_| "`value` is a number of hours; 0 turns it off.")?),
             "subagents_at_once" => {
                 let value = value()?;
@@ -381,7 +386,7 @@ raising how many subagents members run at once, \
 you accepting the team's work, engine switching on auto, parallel work on max, model choice on quality, a signal on again, a merge, a move to another engine, \
 resting a member or waking one — is put to the person as an approval card saying exactly what changes; it happens only if they tap yes, and this call waits for \
 their answer. Never ask them to tell you yes instead. Settings: mode (value read_only | ask | auto | full, or default \
-with member), pm_accepts (on | off), idle_wake_hours (a number, 0 off), subagents_at_once (value 1 through 50), model (member, value: a model of the engine \
+with member), pm_accepts (on | off), self_land (on | off: members land their own work once its gates pass), idle_wake_hours (a number, 0 off), subagents_at_once (value 1 through 50), model (member, value: a model of the engine \
 the member runs on), effort (member, value, or default), engine (members — every one in one call — value claude | \
 codex, optionally model and effort there, and when: next_ticket — the default: one on a ticket finishes it where it is and \
 moves before its next — or now: at the end of each one's current turn, a ticket in progress handed over, same branch, and \
@@ -403,7 +408,7 @@ through `model`: moving a member to it is `engine`. Adding a project is `add_pro
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "idle_wake_hours", "subagents_at_once", "model", "effort", "engine", "engine_switching", "parallel", "speed", "model_choice", "ticket_model", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch", "resting", "notify", "mcp_server"] },
+                    "setting": { "type": "string", "enum": ["mode", "pm_accepts", "self_land", "idle_wake_hours", "subagents_at_once", "model", "effort", "engine", "engine_switching", "parallel", "speed", "model_choice", "ticket_model", "design_reviewer", "remove_project", "hq", "run_routine", "delete_routine", "signal", "disallow", "merge", "keep_on_branch", "resting", "notify", "mcp_server"] },
                     "value": { "type": "string", "description": "The new value, as the setting takes it." },
                     "member": { "type": "string", "description": "The member, for mode (left out: the squad's), model, effort, engine and resting." },
                     "members": { "type": "array", "items": { "type": "string" }, "description": "engine: the members to move, on one card." },
@@ -446,6 +451,8 @@ mod tests {
         assert!(change(json!({ "setting": "mode", "value": "default", "member": "qa" })).needs_yes(Mode::ReadOnly), "the default may be wider");
         assert!(change(json!({ "setting": "pm_accepts", "value": "on" })).needs_yes(Mode::Auto));
         assert!(!change(json!({ "setting": "pm_accepts", "value": "off" })).needs_yes(Mode::Auto));
+        assert!(change(json!({ "setting": "self_land", "value": "on" })).needs_yes(Mode::Auto));
+        assert!(!change(json!({ "setting": "self_land", "value": "off" })).needs_yes(Mode::Auto));
         assert!(change(json!({ "setting": "merge", "ticket": 12 })).needs_yes(Mode::Auto));
         assert!(change(json!({ "setting": "signal", "project": "site", "name": "posthog", "value": "on" })).needs_yes(Mode::Auto));
         assert!(!change(json!({ "setting": "signal", "project": "site", "name": "posthog", "value": "off" })).needs_yes(Mode::Auto));

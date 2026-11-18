@@ -32,6 +32,8 @@ pub(super) struct Gate {
     pub branch: String,
     /// Runs so far that main moved on under.
     pub tries: u32,
+    /// Its own member lands it (`runtime::flow`), not the PM.
+    pub self_land: bool,
 }
 
 impl Runtime {
@@ -66,7 +68,8 @@ impl Runtime {
         if let Some(debug) = self.journals.get(&gate.squad).map(Journal::build_debug).and_then(|d| d.cargo_value()) {
             env.push(("CARGO_PROFILE_DEV_DEBUG".to_owned(), debug.to_owned()));
         }
-        let message = format!("equipe: merge T-{} {}\n\nAccepted by the PM; merged from {}.", gate.ticket, gate.title, gate.branch);
+        let accepted = if gate.self_land { format!("Landed by {}, its gates passed", gate.by) } else { "Accepted by the PM".to_owned() };
+        let message = format!("equipe: merge T-{} {}\n\n{accepted}; merged from {}.", gate.ticket, gate.title, gate.branch);
         let internal = self.internal.clone();
         tokio::task::spawn_blocking(move || {
             let _ = std::fs::create_dir_all(&builds);
@@ -154,7 +157,8 @@ Get main fixed first (put it on the board), then accept T-{ticket} again."
     async fn accept_checked(&mut self, gate: &Gate, merge: Option<worktree::MergeCommit>, ran: Option<Vec<String>>) {
         let (squad, ticket) = (gate.squad.as_str(), gate.ticket);
         if let Some(journal) = self.journal(squad) {
-            let _ = journal.ticket_event(ticket, &gate.by, "accepted by the PM", &gate.checked);
+            let kind = if gate.self_land { crate::lead_time::SELF_LANDED } else { "accepted by the PM" };
+            let _ = journal.ticket_event(ticket, &gate.by, kind, &gate.checked);
             if let Some(ran) = &ran {
                 let _ = journal.ticket_event(ticket, "equipe", "checks passed", &ran.join("; "));
             }
@@ -167,6 +171,7 @@ Get main fixed first (put it on the board), then accept T-{ticket} again."
         }
         let ids = format!("T-{ticket}");
         let text = match (&ran, checked_merge) {
+            _ if gate.self_land => say!(self, "notice.self_landed", ids = ids),
             (Some(_), _) => say!(self, "notice.pm_accepted_checked", ids = ids, checked = gate.checked),
             (None, true) => say!(self, "notice.pm_accepted_unchecked", ids = ids, checked = gate.checked, file = checks::FILE),
             (None, false) => say!(self, "notice.pm_accepted", ids = ids, checked = gate.checked),

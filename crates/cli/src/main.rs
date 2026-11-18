@@ -22,6 +22,7 @@ mod design_taste;
 mod design_system;
 mod desktop;
 mod disk;
+mod flow;
 mod home;
 mod i18n;
 mod lang;
@@ -386,6 +387,8 @@ enum Command {
     },
     /// Where the squad's tokens went and what looks wasted: by day, member and kind, with waste signals
     Usage(usage::UsageArgs),
+    /// How long requests take: request → first work → first merge → production, tickets and hand-offs per request, meta-ticket share, queue wait
+    Flow(flow::FlowArgs),
     /// How notifications escalate what stays a bottleneck, and quiet hours: `show`, or `set <key> <value>`
     Notify(notify::NotifyArgs),
     /// What an AWS CLI profile's credential_process runs (login autopilot sets it up)
@@ -640,6 +643,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Logins { action } => logins::command(action).map_err(Failure::new),
         Command::Secrets { action } => secrets::command(action).map_err(Failure::new),
         Command::Usage(args) => usage::command(args).map_err(Failure::new),
+        Command::Flow(args) => flow::command(args).map_err(Failure::new),
         Command::Notify(args) => notify::command(args).map_err(Failure::new),
         Command::Credential { kind, name } => logins::credential(&kind, &name).map_err(Failure::new),
         Command::CallSim { squad, no_llm } => call_sim::run(squad, no_llm).await.map_err(Failure::new),

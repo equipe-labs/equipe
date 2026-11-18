@@ -732,6 +732,8 @@ impl Journal {
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN model TEXT", []);
         // What sort of work it is, in a word (`protocol::title::TicketLabel`).
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN label TEXT", []);
+        // How it carries a request: its driver, checklist, baton (JSON, `protocol::TicketFlow`).
+        let _ = conn.execute("ALTER TABLE tickets ADD COLUMN flow TEXT", []);
         // The effort a member's turn ran at; `NULL`: the engine's own, or a turn from before.
         let _ = conn.execute("ALTER TABLE turns ADD COLUMN effort TEXT", []);
         // How turns on tickets ended when they didn't end as they should: no
@@ -1936,6 +1938,44 @@ impl Journal {
         Ok(())
     }
 
+    /// Set how a ticket carries a request ([`Ticket::flow`]): its driver,
+    /// checklist and baton. Kept apart from [`Journal::save_ticket`], as the
+    /// model is, so a copy of the ticket read before never writes it away.
+    pub fn set_ticket_flow(&self, id: TicketId, flow: Option<&equipe_protocol::TicketFlow>) -> Result<()> {
+        let text = flow.and_then(|f| serde_json::to_string(f).ok());
+        self.conn.execute("UPDATE tickets SET flow = ?1 WHERE id = ?2", params![text, id])?;
+        Ok(())
+    }
+
+    /// Whether members land their own work once its gates pass, where the
+    /// PM accepts the team's work (`crate::flow`): on unless the squad turned it off.
+    pub fn self_land(&self) -> bool {
+        self.meta(crate::flow::SELF_LAND).as_deref() != Some("off")
+    }
+
+    pub fn set_self_land(&self, on: bool) -> Result<()> {
+        self.set_meta(crate::flow::SELF_LAND, if on { "on" } else { "off" })
+    }
+
+    /// When the PM was last given its digest of work members landed.
+    pub fn landed_digest_at(&self) -> i64 {
+        self.meta("landed_digest_at").and_then(|v| v.parse().ok()).unwrap_or(0)
+    }
+
+    pub fn set_landed_digest_at(&self, at: i64) -> Result<()> {
+        self.set_meta("landed_digest_at", &at.to_string())
+    }
+
+    /// Work its members landed themselves since `since`: each ticket once,
+    /// with when and by whom, oldest first.
+    pub fn landed_since(&self, since: i64) -> Result<Vec<(TicketId, i64, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT ticket, MAX(at), by FROM ticket_events WHERE kind = ?1 AND at > ?2 GROUP BY ticket ORDER BY MAX(at)",
+        )?;
+        let rows = stmt.query_map(params![crate::lead_time::SELF_LANDED, since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect()
+    }
+
     /// A ticket's model as kept; `None` for a ticket with none, or one that isn't there.
     fn ticket_model(&self, id: TicketId) -> Option<equipe_protocol::tiers::TicketModel> {
         let text: Option<String> = self.conn.query_row("SELECT model FROM tickets WHERE id = ?1", [id], |r| r.get(0)).optional().ok().flatten().flatten();
@@ -2501,7 +2541,7 @@ impl Journal {
             "SELECT t.id, t.title, t.body, t.status, t.owner, t.assignee, t.project, t.depends_on, t.branch, t.created_by, t.note, t.worktree, t.merged, t.kind, t.off_main, t.updated_at,
                     t.priority, t.rank, t.remaining, t.images, t.design_qa, t.plan, t.model,
                     e.state, e.session, e.operation, e.generation, e.heartbeat_at, e.lease_expires_at, e.reason, e.head, e.dirty, e.pause, t.label,
-                    e.waited_for
+                    e.waited_for, t.flow
              FROM tickets t LEFT JOIN ticket_executions e ON e.ticket = t.id {filter} ORDER BY t.id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -2533,6 +2573,7 @@ impl Journal {
                 plan: r.get(21)?,
                 // Unreadable (a newer daemon's, or damaged): its member's own model, as before.
                 model: r.get::<_, Option<String>>(22)?.and_then(|m| serde_json::from_str(&m).ok()),
+                flow: r.get::<_, Option<String>>(35)?.and_then(|f| serde_json::from_str(&f).ok()),
             };
             // A waiting ticket's asks are kept in its note; they travel as a list.
             t.asks = t.asks();
@@ -3607,6 +3648,7 @@ mod tests {
             merged: None,
             off_main: None,
             design_qa: None, plan: None, model: None,
+            flow: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],

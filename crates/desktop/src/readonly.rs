@@ -245,6 +245,8 @@ pub fn reads(command: &Command) -> bool {
         | C::SignOut { .. }
         | C::SetEngineSwitching { .. }
         | C::SetPmAccepts { .. }
+        | C::SetSelfLand { .. }
+        | C::RevertLanded { .. }
         | C::SetSubagentsAtOnce { .. }
         | C::SetParallel { .. }
         | C::SetModelChoice { .. }
@@ -712,6 +714,8 @@ mod tests {
             Command::SignOut { engine: Engine::Codex },
             Command::SetEngineSwitching { squad: s(), mode: engines::Switching::default() },
             Command::SetPmAccepts { squad: s(), on: false },
+            Command::SetSelfLand { squad: s(), on: false },
+            Command::RevertLanded { squad: s(), ticket: 1 },
             Command::SetSubagentsAtOnce { squad: s(), at_once: Some(4) },
             Command::SetParallel { squad: s(), parallel: equipe_core::protocol::lanes::Parallel::max(6, 16) },
             Command::SetModelChoice { squad: s(), choice: equipe_core::protocol::tiers::ModelChoice::Off },

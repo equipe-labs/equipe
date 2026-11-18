@@ -945,6 +945,7 @@ mod tests {
             design_qa: None,
             plan: None,
             model: None,
+            flow: None,
             created_by: "equipe".into(),
             note: None,
             asks: vec![],

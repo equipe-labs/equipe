@@ -96,6 +96,7 @@ mod design_qa;
 mod design_review;
 mod follow_ups;
 mod requests;
+mod flow;
 mod stops;
 mod settled;
 mod person_gate;
@@ -850,6 +851,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         merge_retries: HashMap::new(),
         merge_retries_seeded: false,
         accepting: std::collections::HashSet::new(),
+        handed_in_files: HashMap::new(),
         closing: HashMap::new(),
         gates: HashMap::new(),
         prechecks: HashMap::new(),
@@ -1227,6 +1229,8 @@ enum Internal {
     Checked(Box<gate::Gate>, crate::checks::Outcome),
     /// The git side of the PM's `accept_work`, worked out off the loop.
     Accepting(Box<accept::AcceptWorked>),
+    /// Work ready that needs no person: its member lands it (`runtime::flow`).
+    SelfLand { squad: String, ticket: TicketId },
     /// The free space on equipe's disk, as a look begun then found it.
     Disk(Option<crate::disk::DiskStatus>, std::time::Instant),
     /// A pass over the engines' transcripts ended: the burns going on now.
@@ -1563,6 +1567,9 @@ struct Runtime {
     /// Tickets the PM's `accept_work` is working out off the loop, by squad
     /// and ticket: asked again meanwhile, they are said to be under way.
     accepting: std::collections::HashSet<(String, TicketId)>,
+    /// The files each ticket's branch changed when it was last handed in, by
+    /// squad and ticket: what decides whether its member may land it (`runtime::flow`).
+    handed_in_files: HashMap<(String, TicketId), Vec<String>>,
     /// A ticket's closing git work, done off the loop already, by squad and
     /// ticket: [`Runtime::close_ticket`] takes it instead of doing it again.
     closing: HashMap<(String, TicketId), Closed>,
@@ -1771,6 +1778,7 @@ impl Wake {
             Wake::Internal(Internal::Merged { .. }) => Borrowed("a merge's end"),
             Wake::Internal(Internal::Checked(..)) => Borrowed("a project's checks ending"),
             Wake::Internal(Internal::Accepting(..)) => Borrowed("the PM's acceptance, worked out"),
+            Wake::Internal(Internal::SelfLand { .. }) => Borrowed("a member landing its own work"),
             Wake::Internal(Internal::Disk(..)) => Borrowed("the disk's free space"),
             Wake::Internal(Internal::DiskReport(..)) => Borrowed("what uses the disk"),
             Wake::Internal(Internal::PlanUsePassed(..)) => Borrowed("where the plans went"),
@@ -2051,6 +2059,7 @@ impl Runtime {
                 Internal::Merged { squad, ticket, result, kept, push } => self.on_merged(&squad, ticket, result, kept, push),
                 Internal::Checked(gate, outcome) => Box::pin(self.on_checked(*gate, outcome)).await,
                 Internal::Accepting(worked) => Box::pin(self.accept_worked(*worked)).await,
+                Internal::SelfLand { squad, ticket } => Box::pin(self.self_land(&squad, ticket)).await,
                 Internal::Disk(status, asked) => self.on_disk(status, asked),
                 Internal::DiskReport(report, asked) => self.on_disk_report(*report, asked),
                 Internal::PlanUsePassed(burns, loads) => self.on_plan_use_passed(burns, loads),
@@ -3190,6 +3199,19 @@ impl Runtime {
                     let _ = journal.set_pm_accepts(on);
                 }
                 self.publish(Event::PmAcceptsChanged { squad, on });
+            }
+            Command::SetSelfLand { squad, on } => {
+                if let Some(journal) = self.journal(&squad) {
+                    let _ = journal.set_self_land(on);
+                }
+            }
+            Command::RevertLanded { squad, ticket } => {
+                let why = say!(self, "flow.revert_by_person");
+                match self.revert_landed(&squad, "you", &json!({ "id": ticket, "why": why })) {
+                    Ok(line) => self.brief_pm(&squad, format!("The person asked from the digest to undo T-{ticket}. {line}"), None),
+                    Err(why) => self.squad_error(&squad, why),
+                }
+                self.dispatch(&squad).await;
             }
             // Each member's next turn runs it and is told it.
             Command::SetSubagentsAtOnce { squad, at_once } => {
@@ -5605,6 +5627,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 browser: browser.is_some(),
                 profiles: &profile_browsers.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(),
                 pm_accepts: squad.as_deref().and_then(|s| self.journals.get(s)).is_none_or(Journal::pm_accepts),
+                self_land: squad.as_deref().and_then(|s| self.journals.get(s)).is_none_or(Journal::self_land),
                 desktop,
                 design: design.is_some(),
                 phone,
@@ -6839,6 +6862,17 @@ for one project goes to it as tickets for its owners, with that project — and 
         }
         let mut members: Vec<Seat> = Vec::new();
         let mut at_work: HashMap<Engine, usize> = HashMap::new();
+        // How loaded the machine is: a member's lanes ease off with it (`flow::machine_cap`).
+        let (load, cpus) = (crate::flow::load_average(), crate::flow::cpus());
+        // The places each member's running tickets name: its next lane never overlaps them.
+        let mut fit = crate::lanes::Fit::default();
+        for s in self.sessions.values().filter(|s| s.squad.as_deref() == Some(squad)) {
+            let (Some(of), Some(work)) = (s.run_of, s.work.as_ref()) else { continue };
+            let Some(name) = self.sessions.get(&of).and_then(|m| m.name()) else { continue };
+            if let Some(t) = tickets.iter().find(|t| t.id == work.ticket) {
+                fit.busy.entry(name.to_owned()).or_default().push(crate::flow::paths(&format!("{} {}", t.title, t.body)));
+            }
+        }
         for (&id, s) in &self.sessions {
             if s.squad.as_deref() != Some(squad) {
                 continue;
@@ -6862,7 +6896,7 @@ for one project goes to it as tickets for its owners, with that project — and 
             // One brought in for a rush, or rested, only finishes what it
             // holds; what it owns by name waits for it rather than going to its role.
             let takes_new = !moving && !helpers.contains(&id) && !resting.contains(&m.name);
-            let limit = crate::lanes::member_limit(used(s.engine), disk, &parallel);
+            let limit = crate::flow::machine_cap(crate::lanes::member_limit(used(s.engine), disk, &parallel), load, cpus, None);
             members.push(Seat { name: m.name.clone(), role: m.role.clone(), joined: s.joined, engine: s.engine, runs, limit, takes_new, held });
         }
         let room: HashMap<Engine, usize> = [Engine::Claude, Engine::Codex]
@@ -6885,11 +6919,17 @@ for one project goes to it as tickets for its owners, with that project — and 
         let candidates: Vec<crate::lanes::Member> = members.iter().map(|m| lane(m, &tickets, false)).collect();
         // With a reserve held, the little room goes to the most urgent tickets first.
         let urgent = if paced { crate::pacing::urgent_first(&tickets) } else { Vec::new() };
-        // What the person asked for goes before the squad's own follow-ups and checks (`requests`).
+        // What the person asked for goes before the squad's own follow-ups and checks (`requests`) —
+        // and a baton passed, work already under way, before both (`flow`).
         let requested = self.journals.get(squad).map(|j| j.requests().serving()).unwrap_or_default();
-        let merged: Vec<TicketId> = [urgent.as_slice(), first, requested.as_slice()].concat();
-        let first: &[TicketId] = if urgent.is_empty() && requested.is_empty() { first } else { &merged };
-        let assigned = crate::lanes::assign_guarded(&tickets, &candidates, single_project, first, &room, &guarded);
+        let batons: Vec<TicketId> = tickets.iter().filter(|t| t.status == TicketStatus::Todo && t.note.as_deref().is_some_and(|n| n.starts_with(crate::flow::BATON_FROM))).map(|t| t.id).collect();
+        let merged: Vec<TicketId> = [urgent.as_slice(), batons.as_slice(), first, requested.as_slice()].concat();
+        let first: &[TicketId] = if urgent.is_empty() && requested.is_empty() && batons.is_empty() { first } else { &merged };
+        // A queue longer than twice what the squad runs at once finishes before it starts.
+        let capacity: usize = members.iter().filter(|m| m.takes_new && !m.held).map(|m| m.limit).sum();
+        let ready = tickets.iter().filter(|t| t.status == TicketStatus::Todo && t.owner.is_some()).count();
+        fit.finishing = crate::flow::prefer_finishing(ready, capacity, 1);
+        let assigned = crate::lanes::assign_fitted(&tickets, &candidates, single_project, first, &room, &guarded, &fit);
         // What a hold keeps from starting: what members would take but for it.
         if members.iter().any(|m| m.held) {
             let unheld: Vec<crate::lanes::Member> = members.iter().map(|m| lane(m, &tickets, true)).collect();
@@ -7065,7 +7105,7 @@ for one project goes to it as tickets for its owners, with that project — and 
         let reopened = ticket
             .note
             .as_ref()
-            .filter(|n| n.starts_with("Reopened") || n.starts_with("Resumed") || n.starts_with("Design QA by "))
+            .filter(|n| n.starts_with("Reopened") || n.starts_with("Resumed") || n.starts_with("Design QA by ") || n.starts_with(crate::flow::BATON_FROM))
             .cloned();
         if let Some(journal) = self.journal(&squad) {
             let _ = journal.save_ticket(&ticket);
@@ -7537,6 +7577,8 @@ todo); or drop it if it's no longer wanted.]"
                     watchdog::mark("work's end: hand-in pictures");
                     // The design captures it made are on disk, never committed: its manifest names them.
                     let mut changed = sandbox.changed_files().unwrap_or_default();
+                    // What the branch changed decides whether its member may land it (`runtime::flow`).
+                    self.handed_in_files.insert((squad.clone(), ticket.id), changed.clone());
                     changed.extend(crate::design::captures::changed(&sandbox.path, &sandbox.base));
                     crate::visuals::hand_in(&work.shown, &changed, &sandbox.path, &roots)
                 }
@@ -7642,6 +7684,8 @@ todo); or drop it if it's no longer wanted.]"
             }
         };
         let by = by.to_owned();
+        // Passed on by the baton: who has it now, for its record; the next member starts a conversation of its own.
+        let baton_to = handed_back.as_ref().filter(|(r, _)| *r == turn_end::Reason::Baton).map(|_| ticket.owner.clone().unwrap_or_default());
         // Its pictures saved in its worktree or a temp folder outlast them:
         // the worktree goes once the work lands, and they were never committed.
         watchdog::mark("work's end: keep pictures");
@@ -7650,8 +7694,15 @@ todo); or drop it if it's no longer wanted.]"
             let _ = journal.save_ticket(&ticket);
             let mut saved = journal.ticket_work(ticket.id).unwrap_or_default();
             saved.worktree = kept_worktree;
+            if baton_to.is_some() {
+                saved.engine_session = None;
+            }
             let _ = journal.set_ticket_work(ticket.id, &saved);
-            let _ = journal.ticket_event(ticket.id, &by, event, summary.as_deref().unwrap_or(""));
+            let text = match &baton_to {
+                Some(to) => format!("{to} · {}", summary.as_deref().unwrap_or("")),
+                None => summary.clone().unwrap_or_default(),
+            };
+            let _ = journal.ticket_event(ticket.id, &by, event, &text);
             if work.execution_generation > 0 {
                 let state = if how == WorkEnd::Waiting { ExecutionState::Waiting } else { ExecutionState::Stopped };
                 let reason = match how {
@@ -7709,19 +7760,18 @@ todo); or drop it if it's no longer wanted.]"
             self.brief_pm(&squad, briefing, Some(shown));
             // Where the PM accepts, work ready for review is its to act on now —
             // a note it would read only when next spoken to leaves it waiting.
-            if let Some(ready) = ready_for_pm
-                && let Some(pm) = self.pm_of(&squad)
-            {
+            // Its member lands it when nothing in it needs a person (`runtime::flow`); otherwise the PM is woken.
+            if let Some(ready) = ready_for_pm {
                 let prompt = format!(
                     "[equipe: T-{ready} is handed in and ready for you. Check it and accept it with `accept_work` (with \
 `push` when the person asked for it to go live), send it back with `comment` and `review: changes`, or — if it needs the \
 person — put it to them with `propose_accept`. A branch only behind main is no reason to send it back. Then carry on \
 with what else waits.]"
                 );
-                let _ = self.internal.send(Internal::Wake { session: pm, prompt });
+                self.work_ready(&squad, ready, prompt);
             }
-            // A ticket handed back to the PM is its to settle now, not when next spoken to.
-            if let Some((_, line)) = handed_back.filter(|(r, _)| *r != turn_end::Reason::WaitingOn)
+            // A ticket handed back to the PM is its to settle now, not when next spoken to; a baton isn't the PM's.
+            if let Some((_, line)) = handed_back.filter(|(r, _)| !matches!(r, turn_end::Reason::WaitingOn | turn_end::Reason::Baton))
                 && let Some(pm) = self.pm_of(&squad)
             {
                 let prompt = format!("[equipe: {line} Settle it now, then carry on with what else waits.]");
@@ -9991,6 +10041,37 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                         return Err(crate::stops::refusal(&stop));
                     }
                 }
+                // Its checklist, when given; and no tickets for meta work, or for the next part
+                // of a request that goes on the same ticket by the baton (`flow`).
+                let steps = crate::flow::steps_arg(&args, "steps")?;
+                if !idea {
+                    let working = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
+                    let serves = working.and_then(|w| self.journal(&squad).and_then(|j| j.requests().of_ticket(w)));
+                    let role = self.sessions.get(&id).and_then(|s| s.member.as_ref()).map(|m| m.role.clone()).unwrap_or_default();
+                    let open: Vec<TicketId> = tickets.iter().filter(|t| !t.status.is_closed() && !matches!(t.status, TicketStatus::Idea)).map(|t| t.id).collect();
+                    let asked = crate::flow::Asked {
+                        title,
+                        body,
+                        label,
+                        severity: board::arg_str(&args, "severity").map(str::trim),
+                        depends_on: &depends_on,
+                        separate_why: board::arg_str(&args, "separate_why"),
+                        idea,
+                    };
+                    let maker = crate::flow::Maker {
+                        role: &role,
+                        pm: is_pm,
+                        working,
+                        working_serves_request: serves.is_some(),
+                        same_request: serves.is_some() && named_request.is_none_or(|r| Some(r) == serves),
+                    };
+                    // A designer's finding from design QA or a review is placed by its own rules (`follow_ups`).
+                    let finding = role == crate::flow::DESIGNER && board::arg_str(&args, "severity").is_some();
+                    if !finding && let Some(why) = crate::flow::meta_refusal(&asked, &maker, &open) {
+                        crate::daemon_log!("equipe: {squad}: {member}'s ticket “{title}” turned away: meta work or the next part of a request");
+                        return Err(why);
+                    }
+                }
                 // A request's ticket isn't chained behind other work without a reason (`requests`).
                 let depends_note = if idea { String::new() } else { self.check_depends(&squad, id, None, named_request, title, body, &depends_on, &args)? };
                 // Where the PM runs the work, a member's proposal is simply done:
@@ -10025,6 +10106,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     // Read and checked off the loop before it gets here (`cut_from_plan`).
                     plan: board::arg_str(&args, "plan").map(str::to_owned),
                     model: None,
+                    flow: None,
                     created_by: member.clone(),
                     note: None,
                     asks: vec![],
@@ -10045,9 +10127,12 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 }
                 let by = if is_pm { crate::telemetry::Maker::Pm } else { crate::telemetry::Maker::Member };
                 self.tell(&squad, crate::telemetry::Happened::TicketCreated { kind, by });
-                self.publish(Event::TicketChanged { squad: squad.clone(), ticket: Ticket { id: new_id, ..ticket } });
+                let made = Ticket { id: new_id, ..ticket };
+                self.publish(Event::TicketChanged { squad: squad.clone(), ticket: made.clone() });
                 // The person's request it serves: theirs to follow without asking.
                 let serves = if idea { None } else { self.ticket_made(&squad, id, new_id, named_request) };
+                // The ticket answering the person drives their request: its driver and checklist (`flow`).
+                let flowing = if idea { None } else { self.start_flow(&squad, id, &made, steps) };
                 let mut reply = format!("Created T-{new_id}.");
                 if kind.in_home() {
                     reply = format!("Created T-{new_id} ({}).", kind.label());
@@ -10085,6 +10170,9 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 if let Some(serves) = serves {
                     reply.push_str(&serves);
                 }
+                if let Some(flowing) = flowing {
+                    reply.push_str(&flowing);
+                }
                 reply.push_str(&depends_note);
                 Ok(reply)
             }
@@ -10093,6 +10181,15 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     return Err("Only the PM changes tickets; propose a new one, or comment.".into());
                 }
                 let ticket_id = board::arg_id(&args, "id").ok_or("Which ticket? Give its id.")?;
+                // Its checklist grows at any status still open (`flow`).
+                let steps = crate::flow::steps_arg(&args, "steps")?;
+                if !steps.is_empty() {
+                    let said = self.change_steps(&squad, ticket_id, &[], steps, &member)?;
+                    let other = args.as_object().is_some_and(|o| o.keys().any(|k| k != "id" && k != "steps"));
+                    if !other {
+                        return Ok(said);
+                    }
+                }
                 // Put with one of the person's requests: whatever its status.
                 if let Some(request) = self.request_arg(&squad, &args)? {
                     self.link_to_request(&squad, ticket_id, request)?;
@@ -10205,6 +10302,10 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 Ok(format!("Noted on T-{ticket_id}."))
             }
             board::HAND_BACK => self.hand_back_tool(&squad, id, &args),
+            crate::flow::PASS_BATON => self.pass_baton(&squad, id, &args),
+            crate::flow::CHECK_STEPS => self.check_steps(&squad, id, &args),
+            crate::flow::REVERT_LANDED if is_pm => self.revert_landed(&squad, &member, &args),
+            crate::flow::REVERT_LANDED => Err("Only the PM reverts landed work; tell the PM what is wrong.".into()),
             board::SUBMIT_FOR_REVIEW => {
                 let summary = board::arg_str(&args, "summary").ok_or("Summarize what you did.")?.to_owned();
                 // Its pictures, found where it works; one that isn't there is said, to fix.
@@ -11487,7 +11588,11 @@ Keep a short log of what you did, step by step, and hand it in as your summary."
         }
     }
     out.push('\n');
-    if let Some(note) = reopened.and_then(|n| n.strip_prefix("Resumed: ")) {
+    if let Some(note) = reopened.filter(|n| n.starts_with(crate::flow::BATON_FROM)) {
+        // Passed on by the baton: the next holder carries on where it is.
+        let holder = ticket.assignee.as_deref().or(ticket.owner.as_deref()).unwrap_or_default();
+        out.push_str(&crate::flow::picked_up(note, ticket.flow.as_deref(), holder));
+    } else if let Some(note) = reopened.and_then(|n| n.strip_prefix("Resumed: ")) {
         out.push_str(&format!(
             "You put this ticket down to wait for the person; it is back. {note}\nCarry on from where you left off — \
 check what is already done in your worktree first.\n"
@@ -11517,8 +11622,14 @@ then hand in again.\n"
 lesson in your memory before you start, so the next ticket begins with it.\n"
         ));
     }
-    if reopened.is_some() {
+    if reopened.is_some_and(|n| !n.starts_with(crate::flow::BATON_FROM)) {
         out.push_str("This latest reopen state supersedes any older message saying the work was complete or handed in.\n");
+    }
+    // A ticket carrying the person's request: its driver, checklist and baton (`flow`).
+    if let Some(flow) = ticket.flow.as_deref().filter(|f| board_tools && (f.driver.is_some() || !f.steps.is_empty())) {
+        let holder = ticket.assignee.as_deref().or(ticket.owner.as_deref()).unwrap_or_default();
+        out.push_str(&crate::flow::brief(flow, holder, ticket.id));
+        out.push('\n');
     }
     if !ticket.remaining.is_empty() {
         out.push_str("The latest unresolved blockers take priority:\n");

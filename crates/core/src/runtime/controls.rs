@@ -35,6 +35,7 @@ impl Runtime {
             journal.subagents_at_once(),
         );
         let reviewer = journal.design_reviewer();
+        let self_land = journal.self_land();
         let parallel = journal.parallel();
         let model_choice = journal.model_choice();
         let (routines, signals, allowed) = (journal.routines(), journal.signals(), journal.allowed().unwrap_or_default());
@@ -58,6 +59,7 @@ impl Runtime {
             out.push(format!("- {name}: engine {:?}, model {}{ran}, effort {effort}, mode {own}{rests}.", s.engine, s.model.as_deref().unwrap_or("default")));
         }
         out.push(format!("You accept the team's handed-in work yourself (pm_accepts): {}.", on(pm_accepts)));
+        out.push(format!("Members land their own work once its gates pass and nothing in it needs a person (self_land): {}.", on(self_land)));
         out.push(format!(
             "Notifications escalate what stays a bottleneck (notify, keys {}): {}",
             crate::escalation::KEYS.join(", "),
@@ -228,6 +230,7 @@ impl Runtime {
                 Command::SetMode { squad: squad_name, member, mode }
             }
             Change::PmAccepts(on) => Command::SetPmAccepts { squad: squad_name, on },
+            Change::SelfLand(on) => Command::SetSelfLand { squad: squad_name, on },
             Change::IdleWake(hours) => Command::SetIdleWake { squad: squad_name, hours },
             Change::SubagentsAtOnce(at_once) => Command::SetSubagentsAtOnce { squad: squad_name, at_once: Some(at_once) },
             Change::Model { member, model } => Command::SetModel { session: session(&member)?, model },
@@ -451,6 +454,8 @@ impl Runtime {
             Change::Mode { member, mode: None } => say!(self, "control.mode_default", member = member.as_deref().unwrap_or_default()),
             Change::PmAccepts(true) => say!(self, "control.pm_accepts_on"),
             Change::PmAccepts(false) => say!(self, "control.pm_accepts_off"),
+            Change::SelfLand(true) => say!(self, "control.self_land_on"),
+            Change::SelfLand(false) => say!(self, "control.self_land_off"),
             Change::IdleWake(0) => say!(self, "control.idle_wake_off"),
             Change::IdleWake(hours) => say!(self, "control.idle_wake", hours = hours),
             Change::SubagentsAtOnce(at_once) => say!(self, "control.subagents_at_once", at_once = at_once),
