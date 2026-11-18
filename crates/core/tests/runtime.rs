@@ -3461,6 +3461,64 @@ async fn a_task_with_no_project_runs_in_the_squads_folder_and_goes_in_when_accep
 }
 
 #[tokio::test]
+async fn the_daemon_answers_while_a_task_accepted_at_its_turns_end_waits_to_land_in_the_squads_folder() {
+    let (site, app) = (named("site"), named("app"));
+    // Its member is still at it when the person accepts: the turn is stopped and the work lands.
+    let turn = format!(
+        "case \"$*\" in *\"You're on T-\"*) mkdir -p outputs; echo 'found it' > outputs/report.md; sleep 30;; esac\n{}",
+        answering("working on it")
+    );
+    let claude = fake_claude(true, &turn);
+    let home = squad_home(&[&site, &app]);
+    let folder = squads_home(&home);
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "data")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Research", "body": "Who else does this?", "owner": "data" })).await;
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
+    for _ in 0..200 {
+        if ws.path.join("outputs/report.md").exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Another landing holds the squad's folder — as one did in production, for minutes.
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (taken, holding) = std::sync::mpsc::channel::<()>();
+    let held_folder = folder.clone();
+    let holder = std::thread::spawn(move || {
+        equipe_core::worktree::one_landing_at_a_time(&held_folder, || {
+            let _ = taken.send(());
+            let _ = held.recv();
+        });
+    });
+    holding.recv().unwrap();
+    handle.send(Command::Accept { squad: "acme".into(), ticket: 1 });
+
+    // The loop answers all the while: a look at the board comes back at once,
+    // and the work waits its turn rather than holding everyone up.
+    for _ in 0..3 {
+        let board = tokio::time::timeout(Duration::from_secs(5), tool(&handle, "pm", "board", serde_json::json!({}))).await;
+        let board = board.expect("the daemon answers while a landing in the squad's folder waits");
+        assert!(board.text.contains("T-1"), "{}", board.text);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    assert!(!folder.join("outputs/report.md").exists(), "not in before the other landing is through");
+
+    // The other landing through: in the folder, done, its worktree gone.
+    release.send(()).unwrap();
+    holder.join().unwrap();
+    let done = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Done)).await;
+    let ticket = ticket_changed(&done).pop().unwrap();
+    assert_eq!((ticket.branch.as_deref(), ticket.worktree.as_deref()), (None, None));
+    assert_eq!(std::fs::read_to_string(folder.join("outputs/report.md")).unwrap().trim(), "found it");
+    assert!(!ws.path.exists());
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_task_whose_folder_changed_under_it_goes_back_to_its_member_instead_of_closing() {
     let (site, app) = (named("site"), named("app"));
     let claude = fake_claude(true, &writing_turn("notes/plan.md", "the squads plan"));

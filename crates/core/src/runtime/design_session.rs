@@ -171,19 +171,18 @@ impl Runtime {
         if !crate::squads::valid_name(&squad) {
             return;
         }
-        let today = squad_memory::date(now_secs());
-        match crate::taste::store::signals(&self.config.home, &squad, project.as_deref(), &signals, &today) {
-            Ok(()) => self.look_at_design(&squad, true),
-            Err(crate::taste::store::Refused::NoProject) => {
-                let message = say!(self, "taste.no_project", name = project.unwrap_or_default());
-                self.squad_error(&squad, message);
+        let (home, internal) = (self.config.home.clone(), self.internal.clone());
+        // Kept off the loop, in line with the folder's other saves and landings.
+        tokio::task::spawn_blocking(move || {
+            let today = squad_memory::date(now_secs());
+            match crate::taste::store::signals(&home, &squad, project.as_deref(), &signals, &today) {
+                // Signals that don't hold are dropped quietly.
+                Err(crate::taste::store::Refused::Invalid(_)) => {}
+                result => {
+                    let _ = internal.send(Internal::TasteSaved { squad, project, result });
+                }
             }
-            Err(crate::taste::store::Refused::Failed(why)) => {
-                let message = say!(self, "taste.not_saved", why = why);
-                self.squad_error(&squad, message);
-            }
-            Err(crate::taste::store::Refused::Invalid(_)) => {}
-        }
+        });
     }
 
     /// Signals equipe saw itself (a designer's options chosen and passed
@@ -192,10 +191,14 @@ impl Runtime {
         if records.is_empty() {
             return;
         }
-        let today = squad_memory::date(now_secs());
-        if let Err(why) = crate::taste::store::learn(&self.config.home, squad, project, records, &[], &today) {
-            crate::daemon_log!("equipe: {squad}: taste signals weren't kept: {why:?}");
-        }
+        let (home, squad, project, records) = (self.config.home.clone(), squad.to_owned(), project.map(str::to_owned), records.to_vec());
+        // Kept off the loop, in line with the folder's other saves and landings.
+        tokio::task::spawn_blocking(move || {
+            let today = squad_memory::date(now_secs());
+            if let Err(why) = crate::taste::store::learn(&home, &squad, project.as_deref(), &records, &[], &today) {
+                crate::daemon_log!("equipe: {squad}: taste signals weren't kept: {why:?}");
+            }
+        });
     }
 
     /// Where the PM's proposals are kept: the squad's own data folder.

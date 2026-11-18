@@ -213,7 +213,16 @@ async fn low_risk_words_act_after_their_undo_window_and_undo_takes_it_back() {
     handle.send(say("T-1 수락", false));
     let seen = until(&mut events, |e| matches!(e, Event::WordsClosed { .. })).await;
     assert!(matches!(seen.last(), Some(Event::WordsClosed { outcome: Outcome::Done, .. })), "{seen:#?}");
-    assert_eq!(status(&handle, 1).await, TicketStatus::Done);
+    // A task's work lands in the squad's folder off the daemon's loop: done a moment later.
+    let mut done = status(&handle, 1).await;
+    for _ in 0..100 {
+        if done == TicketStatus::Done {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        done = status(&handle, 1).await;
+    }
+    assert_eq!(done, TicketStatus::Done);
     let kept = log(&handle, &mut events).await;
     assert_eq!(kept.iter().map(|e| e.outcome).collect::<Vec<_>>(), [Outcome::Done, Outcome::Undone], "newest first");
     assert_eq!((kept[0].said.as_str(), kept[0].via, kept[0].tickets.as_slice(), kept[0].all_by_words), ("T-1 수락", Via::Typed, &[1][..], false));
