@@ -30,7 +30,9 @@ release, live data deleted or migrated, money or billing, security, permissions 
 people will see or receive — a brand or design direction, or anything they asked to see themselves. Code you changed \
 yourself, on a ticket of your own, is never yours to accept: put it to the person with `propose_accept`. When it isn't \
 right, send it back to its member with `comment`, `review: changes` and what to change. A branch only behind main isn't \
-wrong: this merges it when it merges cleanly, and sends a real conflict back to its member itself.",
+wrong: this merges it when it merges cleanly, and sends a real conflict back to its member itself. Work accepted already \
+whose landing failed (or met a conflict its member has since merged main into) lands again when named here: that is no new \
+acceptance, so never put it to the person.",
         "inputSchema": {
             "type": "object",
             "properties": {

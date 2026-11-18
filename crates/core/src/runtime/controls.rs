@@ -156,6 +156,8 @@ impl Runtime {
         let now = self.mode_now(&squad, &change);
         let action = self.describe_change(&squad, &change);
         let needs_yes = match change {
+            // Accepted already, only its landing left: no new yes to ask for.
+            Change::Merge { ticket, .. } if self.relandable(&squad, ticket) => false,
             Change::SubagentsAtOnce(at_once) => {
                 // With no squad override, an increase for either engine widens
                 // its parallel work. Codex has the smaller built-in default.

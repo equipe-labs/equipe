@@ -163,6 +163,9 @@ const SETTLE_EVERY: Duration = Duration::from_secs(10 * 60);
 /// and how many times before the PM is told to see to it.
 const MERGE_RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
 const MERGE_TRIES: u32 = 6;
+/// Past [`MERGE_TRIES`], still tried this often: once what is in the way is
+/// cleared, accepted work lands on its own — nobody accepts it again.
+const MERGE_RETRY_SLOW: Duration = Duration::from_secs(30 * 60);
 /// A done ticket whose merge failed this lately is tried again after a restart.
 const MERGE_RETRY_WITHIN: u64 = 3 * 86_400;
 
@@ -8009,7 +8012,7 @@ with what else waits.]"
                     Some(owner) => {
                         let branch = found.branch.clone().unwrap_or_else(|| "its branch".into());
                         let line = format!(
-                            "T-{ticket} couldn't be merged into main: {err}. In the ticket's worktree, merge main into {branch}, resolve the conflict keeping what both sides meant, run the tests and commit. Then say it's ready: the person merges it again from the board."
+                            "T-{ticket} couldn't be merged into main: {err}. In the ticket's worktree, merge main into {branch}, resolve the conflict keeping what both sides meant, run the tests and commit. Then tell the PM it's ready: it is accepted already, and lands again with `accept_work` — nobody accepts it twice."
                         );
                         let shown = say!(self, "news.merge_conflict_owner", id = ticket);
                         self.brief_member(squad, &owner, &line, &shown);
@@ -8071,17 +8074,22 @@ with what else waits.]"
         let failed = before.map_or(1, |b| b.failed + 1);
         let ticket = t.id;
         if failed > MERGE_TRIES {
-            crate::daemon_log!("equipe: {squad}: T-{ticket} still isn't merged after {MERGE_TRIES} tries: {err}");
-            self.brief_pm(
-                squad,
-                format!(
-                    "T-{ticket} · {} is accepted but still not on main: equipe tried to merge it {MERGE_TRIES} times and stopped ({err}). It stays \
-\"accepted, not on main\" on the board. Find out what is in the way — usually uncommitted changes in the project's main checkout — and \
-tell the person; once it is cleared, the person merges it from the board.",
-                    t.title
-                ),
-                None,
-            );
+            // Said once; tried again every half hour from here, so it lands once cleared.
+            if failed == MERGE_TRIES + 1 {
+                crate::daemon_log!("equipe: {squad}: T-{ticket} still isn't merged after {MERGE_TRIES} tries: {err}");
+                self.brief_pm(
+                    squad,
+                    format!(
+                        "T-{ticket} · {} is accepted but still not on main after {MERGE_TRIES} tries ({err}). It stays \"accepted, not on main\" \
+on the board. Find out what is in the way — usually uncommitted changes in the project's main checkout — and get it cleared. It is accepted \
+already: equipe keeps trying on its own and lands it once it can, or land it at once with `accept_work` — never put it to the person again.",
+                        t.title
+                    ),
+                    None,
+                );
+            }
+            let next = std::time::Instant::now() + MERGE_RETRY_SLOW;
+            self.merge_retries.insert((squad.to_owned(), ticket), MergeRetry { push, failed, next, running: false });
             return;
         }
         if failed == 1 {

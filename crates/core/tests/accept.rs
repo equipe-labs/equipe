@@ -443,6 +443,29 @@ async fn with_no_checks_declared_it_merges_as_before_and_says_none_ran() {
     handle.shutdown().await;
 }
 
+#[tokio::test]
+async fn accepted_work_whose_landing_failed_lands_again_without_asking_the_person_twice() {
+    let (handle, mut events, repo) = handed_in().await;
+    // A file left in main's checkout stands in the way of the landing.
+    std::fs::write(repo.join("HERO.md"), "leftover\n").unwrap();
+    let ok = tool(&handle, "pm", "accept_work", json!({ "tickets": [1], "checked": "Read the diff." })).await;
+    assert!(!ok.is_error && ok.text.starts_with("Accepted T-1"), "{ok:?}");
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.off_main.is_some())).await;
+    assert!(!on_main(&repo, "HERO.md"));
+    // Cleared; the person now keeps acceptance for themselves — and still isn't asked:
+    // T-1 was accepted already, and landing it again is no new acceptance.
+    std::fs::remove_file(repo.join("HERO.md")).unwrap();
+    handle.send(Command::SetPmAccepts { squad: "acme".into(), on: false });
+    until(&mut events, |e| matches!(e, Event::PmAcceptsChanged { on: false, .. })).await;
+    let again = tool(&handle, "pm", "propose_accept", json!({ "verdict": "merge", "tickets": [1], "summary": "Hero" })).await;
+    assert!(!again.is_error && again.text.contains("accepted already") && again.text.contains("nothing to put to the person"), "{again:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::AcceptProposed { .. } | Event::ApprovalRequested { .. })), "no card: {seen:#?}");
+    assert!(handle.snapshot("acme").await.accepts.is_empty());
+    assert_eq!(git(&repo, &["show", "main:HERO.md"]), "made by the squad", "on main");
+    handle.shutdown().await;
+}
+
 // ── the git side of the PM's acceptance, off the daemon's loop ──
 
 #[tokio::test]
@@ -525,6 +548,8 @@ fn nothing_accepts_or_merges_but_the_persons_commands() {
     let mut expected = vec![
             // The PM's `accept_work`, only while the person lets the PM accept (`SetPmAccepts`).
             "accept.rs: Box::pin(self.accept(squad, ticket, crate::telemetry::Accepter::Pm)).await;",
+            "accept.rs: self.merge(squad, ticket, push);",
+            // Work accepted already, its landing failed: landed again (`land_again`) — never a new acceptance.
             "accept.rs: self.merge(squad, ticket, push);",
             // Its closing git work (a worktree released), read before it is accepted and done off the loop.
             "accept.rs: self.close_git(squad, &t, &saved, TicketStatus::Done)",
