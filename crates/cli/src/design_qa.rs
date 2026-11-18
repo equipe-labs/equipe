@@ -25,9 +25,14 @@ pub struct PrecheckArgs {
     /// What to compare with, a branch or commit: the map's pictures are read where it meets HEAD (default: the main branch)
     #[arg(long)]
     pub base: Option<String>,
-    /// Where the report and its pictures go
-    #[arg(long, default_value = "precheck")]
-    pub out: PathBuf,
+    /// Where the report and its pictures go, every picture kept (default: a folder of the system's
+    /// temporary folder, only the pictures of failed conditions and each changed screen's after at its
+    /// main width kept)
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+    /// With --out: keep only the pictures of failed conditions and each changed screen's after at its main width
+    #[arg(long)]
+    pub evidence_only: bool,
     /// A preview already serving this worktree's code, `http://localhost:<port>` (else the map's `precheck.preview` is started)
     #[arg(long)]
     pub url: Option<String>,
@@ -472,15 +477,44 @@ async fn shoot_by_command(s: &flows::Shot, root: &Path, path: &Path, width: u32,
 }
 
 pub async fn precheck_command(a: PrecheckArgs) -> Result<(), String> {
-    let report = run(&Run { worktree: a.worktree, base: a.base, out: a.out.clone(), url: a.url, ticket: a.ticket, budget: Duration::from_secs(a.budget_secs), states: a.states }).await?;
+    // A member's own run keeps its matrix out of the worktree, and only the evidence of it.
+    let evidence_only = a.evidence_only || a.out.is_none();
+    let out = a.out.clone().unwrap_or_else(|| default_out(a.ticket));
+    let mut report = run(&Run { worktree: a.worktree.clone(), base: a.base, out: out.clone(), url: a.url, ticket: a.ticket, budget: Duration::from_secs(a.budget_secs), states: a.states }).await?;
+    if evidence_only {
+        let out = std::path::absolute(&out).unwrap_or_else(|_| out.clone());
+        precheck::keep_evidence(&mut report, &out, main_width(&a.worktree));
+        keep(report.clone(), &out)?;
+    }
     if a.json {
         println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
         return Ok(());
     }
     let call = design_qa::gate(Some(&report));
     println!("{}", t!("design.precheck.decision", decision = decision_word(call.decision), why = call.reasons.join(" ")));
-    println!("{}", t!("design.precheck.wrote", path = a.out.join(precheck::REPORT_MD).display()));
+    println!("{}", t!("design.precheck.wrote", path = out.join(precheck::REPORT_MD).display()));
+    if evidence_only {
+        let dropped = report.shots.iter().filter(|s| s.dropped).count();
+        println!("{}", t!("design.precheck.evidence", dropped = dropped, results = out.join(precheck::RESULTS_JSON).display()));
+    }
     Ok(())
+}
+
+/// Where a precheck goes without `--out`: the system's temporary folder (a
+/// member's own `$TMPDIR`), never the worktree it checks.
+fn default_out(ticket: Option<u64>) -> PathBuf {
+    let name = ticket.map_or_else(|| format!("run-{}", now()), |t| format!("T-{t}"));
+    std::env::temp_dir().join("equipe-precheck").join(name)
+}
+
+/// The width the UI map in `worktree` keeps each changed state's after at.
+fn main_width(worktree: &Path) -> u32 {
+    let map = equipe_core::worktree::repo_root(worktree)
+        .ok()
+        .and_then(|root| std::fs::read_to_string(root.join(equipe_core::design::DIR).join(flows::DIR).join(flows::FILE)).ok())
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .unwrap_or(Value::Null);
+    precheck::Config::of(&map).main_width()
 }
 
 fn decision_word(d: Decision) -> &'static str {
@@ -949,7 +983,12 @@ mod tests {
     fn the_design_qa_commands_take_their_flags() {
         let parsed = Cli::try_parse_from(["x", "precheck", "--worktree", "/w", "--base", "main", "--out", "/o", "--ticket", "4"]).unwrap();
         let crate::design::DesignAction::Precheck(p) = parsed.action else { panic!("precheck") };
-        assert_eq!((p.worktree, p.base.as_deref(), p.out, p.ticket, p.budget_secs), (PathBuf::from("/w"), Some("main"), PathBuf::from("/o"), Some(4), 900));
+        assert_eq!((p.worktree, p.base.as_deref(), p.out, p.ticket, p.budget_secs, p.evidence_only), (PathBuf::from("/w"), Some("main"), Some(PathBuf::from("/o")), Some(4), 900, false));
+        // A member's own run: out of the worktree, only the evidence kept.
+        let parsed = Cli::try_parse_from(["x", "precheck", "--worktree", "."]).unwrap();
+        let crate::design::DesignAction::Precheck(p) = parsed.action else { panic!("precheck") };
+        assert_eq!(p.out, None);
+        assert!(default_out(Some(7)).starts_with(std::env::temp_dir()) && default_out(Some(7)).ends_with("equipe-precheck/T-7"));
         let parsed = Cli::try_parse_from(["x", "qa-replay", "--tickets", "2077,2065", "--dry-run"]).unwrap();
         let crate::design::DesignAction::QaReplay(r) = parsed.action else { panic!("qa-replay") };
         assert_eq!((r.tickets, r.dry_run, r.designer_model.as_str(), r.last), (vec![2077, 2065], true, "sonnet", 20));

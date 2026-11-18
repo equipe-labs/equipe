@@ -1303,6 +1303,7 @@
   "design.precheck.rendering": "Rendering {states} states at {conditions} conditions ({pictures} pictures)…",
   "design.precheck.decision": "Gate: {decision} — {why}",
   "design.precheck.wrote": "Report: {path}",
+  "design.precheck.evidence": "Kept only the pictures of failed conditions and each changed screen's after at its main width; {dropped} passing pictures went. Every condition's result: {results}",
   "design.qa.decision.auto_pass": "pass without a designer",
   "design.qa.decision.send_back": "send back to the engineer",
   "design.qa.decision.designer": "a designer looks",

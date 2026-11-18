@@ -143,7 +143,9 @@ the second look asked for and you changed.
 ## Follow-ups, and how much to check again
 
 A fix of a finding is checked again where the finding is: the widths, states and text sizes it names, and the width
-either side — not the whole width × theme × text range again. The whole range is for a new screen or component, a
+either side — not the whole width × theme × text range again. Whatever range you check, keep only the evidence: the
+before and after of each changed screen at its main width, and a picture of each condition that failed; what passed
+is a line in your hand-in, its pictures rendered in `$TMPDIR` and deleted. The whole range is for a new screen or component, a
 redesign, and an S1/S2 fix. Polish the critic or the second look leaves after its rounds goes in your hand-in, not on
 tickets. File a follow-up, with its severity, only for what this ticket can't take — another screen, an engineer's
 code: findings about the same work go into one ticket, and polish found while you work a follow-up goes to the design

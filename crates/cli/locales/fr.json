@@ -1303,6 +1303,7 @@
   "design.precheck.rendering": "Rendu de {states} états dans {conditions} conditions ({pictures} images)…",
   "design.precheck.decision": "Barrière : {decision} — {why}",
   "design.precheck.wrote": "Rapport : {path}",
+  "design.precheck.evidence": "Seules les images des conditions en échec et l'après de chaque écran modifié à sa largeur principale ont été gardées ; {dropped} images réussies supprimées. Résultat de chaque condition : {results}",
   "design.qa.decision.auto_pass": "valider sans designer",
   "design.qa.decision.send_back": "renvoyer à l’ingénieur",
   "design.qa.decision.designer": "un designer regarde",

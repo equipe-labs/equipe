@@ -1280,6 +1280,7 @@
   "design.precheck.rendering": "{states} 個の状態を {conditions} 条件で描画します（画像 {pictures} 枚）…",
   "design.precheck.decision": "ゲート: {decision} — {why}",
   "design.precheck.wrote": "レポート: {path}",
+  "design.precheck.evidence": "失敗した条件の画像と、変わった画面ごとのメイン幅の変更後画像だけを残しました。合格した画像 {dropped} 枚は削除しました。条件ごとの結果: {results}",
   "design.qa.decision.auto_pass": "デザイナーなしで合格",
   "design.qa.decision.send_back": "エンジニアに差し戻し",
   "design.qa.decision.designer": "デザイナーが確認",

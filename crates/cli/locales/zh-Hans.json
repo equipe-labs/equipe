@@ -1280,6 +1280,7 @@
   "design.precheck.rendering": "正在以 {conditions} 种条件渲染 {states} 个状态（{pictures} 张图片）…",
   "design.precheck.decision": "关卡：{decision} — {why}",
   "design.precheck.wrote": "报告：{path}",
+  "design.precheck.evidence": "只保留了失败条件的图片和每个改动屏幕在主宽度下的改后图片；已删除 {dropped} 张通过的图片。各条件结果：{results}",
   "design.qa.decision.auto_pass": "无需设计师即通过",
   "design.qa.decision.send_back": "退回给工程师",
   "design.qa.decision.designer": "由设计师查看",

@@ -1303,6 +1303,7 @@
   "design.precheck.rendering": "{states} Zustände werden in {conditions} Bedingungen gerendert ({pictures} Bilder)…",
   "design.precheck.decision": "Schranke: {decision} — {why}",
   "design.precheck.wrote": "Bericht: {path}",
+  "design.precheck.evidence": "Nur die Bilder fehlgeschlagener Bedingungen und das Nachher jedes geänderten Bildschirms in seiner Hauptbreite behalten; {dropped} bestandene Bilder entfernt. Ergebnis jeder Bedingung: {results}",
   "design.qa.decision.auto_pass": "ohne Designer abnehmen",
   "design.qa.decision.send_back": "an die Entwicklung zurückgeben",
   "design.qa.decision.designer": "ein Designer schaut",

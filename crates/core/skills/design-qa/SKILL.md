@@ -82,6 +82,15 @@ per change: an S1/S2 in `blockers` becomes a fix ticket for its engineer; S3/S4 
 An **audit** ticket holds a random sample of those changes, on the top tier: audit each as its own design QA would —
 every S1/S2 you find there is counted as a miss of the routing, and enough misses send more changes to you one by one.
 
-Renders and screenshots you make under `design/` (`qa/`, `checks/` and the rest) are never committed: leave them on
+## What you keep
+
+Check every condition, keep only the evidence. Under `design/qa/` keep, for each changed screen, its after at its main
+width beside the map's before, and a picture of each condition a check failed on — what the fix needs — with the
+report, which says in a line per width, theme and text size what passed. Render the rest of the matrix into `$TMPDIR`
+and delete it: a passing picture and a probe's dump are never kept, in `design/`, `outputs/` or a hand-in. The
+precheck already works this way when you run it yourself (`equipe design precheck --worktree .`): its pictures of what
+passed go, and its `results.json` keeps every condition's result.
+
+Renders and screenshots you keep under `design/` (`qa/`, `checks/` and the rest) are never committed: leave them on
 disk and never `git add` them — equipe keeps them out of git and lists them in `design/captures.json`. Commit the
 report itself.
