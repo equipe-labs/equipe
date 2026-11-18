@@ -259,6 +259,9 @@ pub struct Asked {
     pub profile: Option<String>,
     pub extra: Vec<String>,
     pub why: String,
+    /// The permission the machine's own credentials lack, when the member says
+    /// one (`crate::machine_creds::guard`).
+    pub why_not_machine: Option<String>,
 }
 
 pub fn check(args: &Value) -> Result<Asked, String> {
@@ -271,7 +274,8 @@ pub fn check(args: &Value) -> Result<Asked, String> {
     let profile = args.get("profile").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty()).map(str::to_owned);
     let extra: Vec<String> = args.get("args").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
     plan(kind, profile.as_deref(), &extra)?;
-    Ok(Asked { kind, profile, extra, why: why.to_owned() })
+    let why_not_machine = args.get("why_not_machine").and_then(Value::as_str).map(str::trim).filter(|w| !w.is_empty()).map(str::to_owned);
+    Ok(Asked { kind, profile, extra, why: why.to_owned(), why_not_machine })
 }
 
 /// The tool, as an MCP tool definition.
@@ -284,7 +288,10 @@ that opens the sign-in page on the screen they are looking at, the code to confi
 gives back), and its progress. You never see a code, a password or a token. When they have signed in you are told as whom \
 (the tool's own whoami, e.g. the AWS ARN) and carry on; if the link expires they get a new one from the card. Use this \
 instead of asking the person to run `aws login`, `gh auth login`, `gcloud auth login` or `az login` in a terminal, and \
-only when no machine credential exists (a GitHub App token, an access key already set up, an environment variable). Never ask for \
+only when no machine credential exists (a GitHub App token, an access key already set up, an environment variable). It is \
+refused while a credential for that tool already works here without the person (your briefing lists them: an AWS profile \
+with `credential_process` or a role, an unexpired SSO sign-in, `gh` signed in): use it, and only if it lacks a permission \
+you need, call again with `why_not_machine` naming that permission. Never ask for \
 a password in chat. tool: aws (`aws login --remote`, the console sign-in; needs `profile` when the profile isn't the default), aws_sso \
 (`aws sso login --use-device-code`, for an SSO profile), gh (`gh auth login --web`), gcloud (`gcloud auth login --no-launch-browser`; \
 `profile` names the gcloud configuration), az (`az login --use-device-code`). Other tools have no flow equipe runs: use \
@@ -294,7 +301,8 @@ a password in chat. tool: aws (`aws login --remote`, the console sign-in; needs 
             "properties": {
                 "tool": { "type": "string", "enum": ["aws", "aws_sso", "gh", "gcloud", "az"], "description": "Which tool to sign in." },
                 "why": { "type": "string", "description": "What it is for, in a line in the person's language: \"deploy the staging stack\"." },
-                "profile": { "type": "string", "description": "The AWS profile to sign in (`atinum`), or the gcloud configuration. Leave out for the default, and for gh and az." },
+                "profile": { "type": "string", "description": "The AWS profile to sign in (`my-console`), or the gcloud configuration. Leave out for the default, and for gh and az." },
+                "why_not_machine": { "type": "string", "description": "Only when this machine already has a working credential for the tool: the exact permission it lacks and the error you got with it (\"iam:CreateRole AccessDenied with every listed profile\"). Without it, the call is refused while one works." },
                 "args": { "type": "array", "items": { "type": "string" }, "description": "Rare extra flags, one per item. Only these: aws `--region`; aws_sso `--region`, `--sso-session`; gcloud `--project`, `--update-adc`, `--force`; az `--tenant`, `--allow-no-subscriptions`; gh none. A flag's value is the next item (`--region`, `us-east-1`). Never tokens, passwords or keys." },
             },
             "required": ["tool", "why"],

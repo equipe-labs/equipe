@@ -646,6 +646,7 @@ person at landing by equipe itself.";
 const ENGINEER_LIGHT: &str = "The machine is shared by the whole squad, so keep your checks light while you work: only what you changed — `tsc --incremental` (keep its .tsbuildinfo), your test runner's related or changed mode (`vitest related <files>`, `jest --findRelatedTests <files>`, `cargo test -p <crate>`) — and the full suite once, right before you hand in. Stop the dev servers and watchers you start once you're done with them; one per project is enough. node_modules arrives installed for the project's lockfile: run `npm ci` only when package-lock.json changed.";
 
 /// …and, with a designer on the squad, the self-check that follows the hand-in.
+const ENGINEER_MACHINE_CREDS: &str = "Use the credentials your briefing lists as already on this machine before anything else — `AWS_PROFILE=<name>` with a non-interactive profile, a read one for read-only checks — and never ask the person to sign in for a read-only check one of them can do; only when each lacks a permission you need, name that permission. Never ask the person to sign in on a per-deploy preview address (`<project>-<hash>-<team>.vercel.app`, `deploy-preview-<n>--<site>.netlify.app`): that sign-in dies with the next deploy. Verify on localhost with the project's test sign-in, or on the stable production address once your change has landed.";
 const ENGINEER_SELF_CHECK: &str = "With a designer on the squad, equipe's design precheck then checks the changed screens on \
 your worktree; a new S1/S2 finding — content cut off, a WCAG AA failure, sideways scroll, text over text — sends the \
 hand-in back to you with the findings: fix each, or hand in again with `waive_findings` saying why one isn't a real \
@@ -664,9 +665,9 @@ pub fn charter(role: &Role, name: &str, ctx: &Context<'_>) -> String {
     let duties = if matches!(role.id, "frontend" | "backend" | "mobile") {
         let designer = ctx.team.iter().any(|m| m.role == "designer");
         if designer {
-            format!("{duties}\n{ENGINEER_HAND_IN} {ENGINEER_SELF_CHECK}\n{ENGINEER_LAND_NOW}\n{ENGINEER_LIGHT}")
+            format!("{duties}\n{ENGINEER_HAND_IN} {ENGINEER_SELF_CHECK}\n{ENGINEER_LAND_NOW}\n{ENGINEER_LIGHT}\n{ENGINEER_MACHINE_CREDS}")
         } else {
-            format!("{duties}\n{ENGINEER_HAND_IN}\n{ENGINEER_LAND_NOW}\n{ENGINEER_LIGHT}")
+            format!("{duties}\n{ENGINEER_HAND_IN}\n{ENGINEER_LAND_NOW}\n{ENGINEER_LIGHT}\n{ENGINEER_MACHINE_CREDS}")
         }
     } else {
         duties

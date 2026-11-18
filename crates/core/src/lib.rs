@@ -56,6 +56,8 @@ pub mod lead_time;
 pub mod migrations;
 pub mod flow;
 pub mod machine_load;
+pub mod machine_creds;
+pub mod preview_hosts;
 pub mod live_preview;
 pub mod pacing;
 pub mod logins;
