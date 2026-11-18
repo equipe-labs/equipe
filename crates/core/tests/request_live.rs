@@ -55,19 +55,6 @@ cat <<EOF\n{{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-test\",
     (bin, calls)
 }
 
-/// Each recorded turn's prompt, oldest first.
-fn prompts(dir: &Path) -> Vec<String> {
-    let mut files: Vec<_> = std::fs::read_dir(dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("call-")).map(|e| e.path()).collect();
-    files.sort();
-    files
-        .iter()
-        .filter_map(|f| {
-            let args: Vec<String> = std::fs::read_to_string(f).unwrap().split("\n<<arg>>\n").map(str::to_owned).collect();
-            args.iter().position(|a| a == "-p").and_then(|i| args.get(i + 1).cloned())
-        })
-        .collect()
-}
-
 fn git(dir: &Path, args: &[&str]) {
     let out = Process::new("git").arg("-C").arg(dir).args(args).output().unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
