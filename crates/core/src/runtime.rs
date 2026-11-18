@@ -1343,7 +1343,7 @@ enum Internal {
     SignalRead { squad: String, key: String, reading: crate::signals::Reading },
     /// A squad's projects were looked at off the loop for what went live:
     /// each project's watch now, and what the look found.
-    DeploysLooked { squad: String, looks: Vec<(PathBuf, crate::deploys::Watch, crate::deploys::Looked)> },
+    DeploysLooked { squad: String, looks: Vec<(PathBuf, crate::deploys::Watch, crate::deploys::Looked)>, declared: Vec<(String, bool)> },
     /// What a project goes live with, read off the loop after a landing
     /// pushed main (`go_live`); whether GitHub confirmed a deploy channel.
     GoLiveRead { squad: String, project: PathBuf, found: crate::go_live::Found, channel_known: bool },
@@ -2210,7 +2210,7 @@ impl Runtime {
                 Internal::SignIns { squad, record, turn } => self.sign_ins_read(&squad, record.map(|r| *r), turn),
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
-                Internal::DeploysLooked { squad, looks } => self.deploys_looked(&squad, looks),
+                Internal::DeploysLooked { squad, looks, declared } => self.deploys_looked(&squad, looks, declared),
                 Internal::GoLiveRead { squad, project, found, channel_known } => self.go_live_read(&squad, project, found, channel_known),
                 Internal::GoLiveDue { squad, project } => self.go_live_due(&squad, project),
                 Internal::GoLiveRan { squad, project, tickets, outcome } => self.go_live_ran(&squad, project, tickets, outcome),

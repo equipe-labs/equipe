@@ -154,6 +154,7 @@ impl Runtime {
         let Some(journal) = self.journals.get(squad) else { return Vec::new() };
         let member = self.member_session(id);
         let asking = self.asking(squad);
+        let shipped = self.shipped(squad);
         journal
             .requests()
             .open()
@@ -161,7 +162,7 @@ impl Runtime {
             .filter(|row| row.said && row.session.is_some_and(|s| self.member_session(s) == member))
             .filter_map(|row| {
                 let tickets = self.row_tickets(squad, &row);
-                let status = rules::standing(&row, &tickets, &asking, now);
+                let status = rules::standing(&row, &tickets, &asking, &shipped, now);
                 let recent = now.saturating_sub(row.asked_at) <= rules::ASKED_WITHIN;
                 let uncovered = rules::covering(&row.tickets, &tickets).is_empty();
                 (!status.done && (recent || uncovered)).then(|| (row.view(status), recent))
@@ -264,7 +265,7 @@ impl Runtime {
     /// `row` as a screen gets it, with where it stands now.
     fn request_view(&self, squad: &str, row: &Row) -> Request {
         let tickets = self.row_tickets(squad, row);
-        row.view(rules::standing(row, &tickets, &self.asking(squad), now_secs()))
+        row.view(rules::standing(row, &tickets, &self.asking(squad), &self.shipped(squad), now_secs()))
     }
 
     /// Request `request` moved: the screens are told where it stands, once
@@ -274,8 +275,9 @@ impl Runtime {
         let Some(row) = self.journals.get(squad).and_then(|j| j.requests().get(request)) else { return };
         let tickets = self.row_tickets(squad, &row);
         let asking = self.asking(squad);
-        let status = rules::standing(&row, &tickets, &asking, now_secs());
-        if rules::news(&row.told, &row.tickets, &tickets, &asking, &status).is_some()
+        let shipped = self.shipped(squad);
+        let status = rules::standing(&row, &tickets, &asking, &shipped, now_secs());
+        if rules::news(&row.told, &row.tickets, &tickets, &asking, &shipped, &status).is_some()
             && let Some(journal) = self.journals.get(squad)
         {
             let _ = journal.requests().set_due(request, now_secs() + rules::settle());
@@ -345,8 +347,9 @@ impl Runtime {
         for row in due {
             let tickets = self.row_tickets(squad, &row);
             let asking = self.asking(squad);
-            let status = rules::standing(&row, &tickets, &asking, now);
-            let Some((milestone, told)) = rules::news(&row.told, &row.tickets, &tickets, &asking, &status) else {
+            let shipped = self.shipped(squad);
+            let status = rules::standing(&row, &tickets, &asking, &shipped, now);
+            let Some((milestone, told)) = rules::news(&row.told, &row.tickets, &tickets, &asking, &shipped, &status) else {
                 // What moved settled back: nothing to tell.
                 if let Some(journal) = self.journals.get(squad) {
                     let _ = journal.requests().told(row.id, &row.told, None);
@@ -396,7 +399,7 @@ impl Runtime {
         let mut lines = Vec::new();
         for row in rows.into_iter().filter(|r| r.surfaced_at.is_none()) {
             let tickets = self.row_tickets(squad, &row);
-            let status = rules::standing(&row, &tickets, &asking, now);
+            let status = rules::standing(&row, &tickets, &asking, &self.shipped(squad), now);
             if !status.uncovered {
                 continue;
             }
@@ -463,7 +466,7 @@ it stays open, shown to the person as not on the board.",
         journal.requests().close(request, &why, now).map_err(|e| e.to_string())?;
         let row = journal.requests().get(request).ok_or("The request can't be read back.")?;
         let tickets = self.row_tickets(&squad, &row);
-        let status = rules::standing(&row, &tickets, &self.asking(&squad), now);
+        let status = rules::standing(&row, &tickets, &self.asking(&squad), &self.shipped(&squad), now);
         let line = rules::line(&status, crate::i18n::core(self.config.lang), &|at| rules::clock(at, now));
         crate::daemon_log!("equipe: {squad}: {member} closed request R-{request}: {why}");
         let to = row.session.filter(|s| self.sessions.contains_key(s)).or_else(|| row.member.as_deref().and_then(|m| self.member_id(&squad, m)));

@@ -46,10 +46,14 @@ impl Runtime {
             let internal = self.internal.clone();
             tokio::task::spawn_blocking(move || {
                 let mut looks = Vec::new();
+                let mut declared = Vec::new();
                 for path in projects {
                     let Ok(repo) = worktree::repo_root(&path) else { continue };
                     let before = watch.get(&key_of(&path)).cloned().unwrap_or_default();
-                    let by_command = confirmed.contains(&key_of(&path)) || crate::go_live::declared_on_main(&repo).is_ok_and(|go| go.is_some());
+                    // A deploy file that can't be read still says the project goes live by one.
+                    let file = !matches!(crate::go_live::declared_on_main(&repo), Ok(None));
+                    declared.push((key_of(&path), file));
+                    let by_command = confirmed.contains(&key_of(&path)) || file;
                     // Pushed isn't live for them: never noted as "on main" news, once watching started.
                     if by_command && before.live.is_some() {
                         continue;
@@ -59,7 +63,7 @@ impl Runtime {
                         looks.push((path, after, looked));
                     }
                 }
-                let _ = internal.send(Internal::DeploysLooked { squad, looks });
+                let _ = internal.send(Internal::DeploysLooked { squad, looks, declared });
             });
         }
     }
@@ -67,8 +71,20 @@ impl Runtime {
     /// A look is back: each project's watch kept, and what went live noted —
     /// folded into a deploy of the same project close before, if one waits
     /// to be told.
-    pub(super) fn deploys_looked(&mut self, squad: &str, looks: Vec<(PathBuf, Watch, Looked)>) {
+    pub(super) fn deploys_looked(&mut self, squad: &str, looks: Vec<(PathBuf, Watch, Looked)>, declared: Vec<(String, bool)>) {
         self.deploys_looking.remove(squad);
+        // Whether each project declares a deploy file, as just read: its work is live only by a deploy then.
+        let mut changed = false;
+        for (key, file) in declared {
+            if self.lanes(squad).get(&key).is_some_and(|l| l.declared == file) || (!file && !self.lanes(squad).contains_key(&key)) {
+                continue;
+            }
+            self.lanes(squad).entry(key).or_default().declared = file;
+            changed = true;
+        }
+        if changed {
+            self.keep_lanes(squad);
+        }
         self.note_looks(squad, looks);
     }
 
@@ -83,6 +99,7 @@ impl Runtime {
         let mut watch = journal.deploy_watch();
         let mut deploys = journal.deploys();
         let mut found = false;
+        let mut carried: Vec<TicketId> = Vec::new();
         for (path, after, looked) in looks {
             watch.insert(key_of(&path), after);
             let Looked::Live { from, live, merges } = looked else { continue };
@@ -116,6 +133,9 @@ impl Runtime {
                 tickets: all,
                 told: false,
             };
+            if deploy.source.is_live() {
+                carried.extend(deploy.tickets.iter().copied());
+            }
             rules::fold(&mut deploys, deploy);
             found = true;
         }
@@ -131,6 +151,8 @@ impl Runtime {
         }
         self.publish_deploys(squad);
         self.tell_deploys(squad, now_secs());
+        // The requests its work serves are live now.
+        self.requests_of_moved(squad, &carried);
     }
 
     /// News of deploys that settled, told once: a line in the PM's
