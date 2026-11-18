@@ -1280,6 +1280,7 @@
   "design.precheck.rendering": "正在以 {conditions} 種條件繪製 {states} 個狀態（{pictures} 張圖片）…",
   "design.precheck.decision": "關卡：{decision} — {why}",
   "design.precheck.wrote": "報告：{path}",
+  "design.precheck.evidence": "只保留了失敗條件的圖片和每個改動畫面在主寬度下的改後圖片；已刪除 {dropped} 張通過的圖片。各條件結果：{results}",
   "design.qa.decision.auto_pass": "無需設計師即通過",
   "design.qa.decision.send_back": "退回給工程師",
   "design.qa.decision.designer": "由設計師查看",

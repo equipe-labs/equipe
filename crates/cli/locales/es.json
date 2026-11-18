@@ -1303,6 +1303,7 @@
   "design.precheck.rendering": "Renderizando {states} estados en {conditions} condiciones ({pictures} imágenes)…",
   "design.precheck.decision": "Barrera: {decision} — {why}",
   "design.precheck.wrote": "Informe: {path}",
+  "design.precheck.evidence": "Solo se han guardado las imágenes de las condiciones fallidas y el después de cada pantalla cambiada en su ancho principal; se han borrado {dropped} imágenes que pasaron. Resultado de cada condición: {results}",
   "design.qa.decision.auto_pass": "aprobar sin diseñador",
   "design.qa.decision.send_back": "devolver al ingeniero",
   "design.qa.decision.designer": "lo mira un diseñador",

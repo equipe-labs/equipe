@@ -1280,6 +1280,7 @@
   "design.precheck.rendering": "상태 {states}개를 조건 {conditions}가지로 그려요(사진 {pictures}장)…",
   "design.precheck.decision": "게이트: {decision} — {why}",
   "design.precheck.wrote": "보고서: {path}",
+  "design.precheck.evidence": "실패한 조건의 그림과 바뀐 화면마다 대표 너비의 변경 후 그림만 남겼어요. 통과한 그림 {dropped}장은 지웠어요. 조건별 결과: {results}",
   "design.qa.decision.auto_pass": "디자이너 없이 통과",
   "design.qa.decision.send_back": "엔지니어에게 돌려보내기",
   "design.qa.decision.designer": "디자이너가 봐요",

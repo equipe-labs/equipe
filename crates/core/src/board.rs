@@ -754,8 +754,10 @@ sends it back to its member with this text as what to change; `note` only notes 
 Your changes are committed to the ticket's branch and the person reviews them. Then end your turn. When the work is \
 visual — a logo, a screen, a mockup, an illustration, colours, a layout — name its pictures in `images` (renders or \
 screenshots you saved in your worktree), so the person sees them above your summary; images your branch changes \
-are shown too. On a code ticket, say whether it changes what users see (`changes_screens`). When it does, attach \
-fresh screenshots and confirm their coverage in `screen_checks`; a squad's designer checks those screens before the \
+are shown too. On a code ticket, say whether it changes what users see (`changes_screens`). When it does, check the \
+changed screens across every language, width, light and dark, and large text, confirm that range in `screen_checks`, \
+and attach only the evidence: each changed screen's before and after at its main width, and each condition a check \
+failed on; a squad's designer checks those screens before the \
 person reviews when it has one. equipe's precheck then checks the changed screens: a new S1/S2 finding (content cut off, \
 an AA failure, sideways scroll, text over text) sends the hand-in back to you with the findings — fix them, or hand in \
 again with `waive_findings` saying why they aren't real.",
@@ -764,11 +766,11 @@ again with `waive_findings` saying why they aren't real.",
                 "properties": {
                     "summary": { "type": "string", "description": "What you did and how to check it, in a few lines — in the person's language." },
                     "images": IMAGES_SCHEMA.clone(),
-                    "changes_screens": { "type": "boolean", "description": "Code tickets: true when users see a change — a screen, page, layout, style, visible copy, an icon; then give fresh screenshots of each changed screen in `images` and all four `screen_checks`. False for changes nobody sees." },
+                    "changes_screens": { "type": "boolean", "description": "Code tickets: true when users see a change — a screen, page, layout, style, visible copy, an icon; then give fresh screenshots of each changed screen (before and after at its main width, and any condition a check failed on) in `images` and all four `screen_checks`. False for changes nobody sees." },
                     "screen_checks": {
                         "type": "array",
                         "items": { "type": "string", "enum": ["languages", "widths", "light_dark", "large_text"] },
-                        "description": "Screen-changing code tickets: confirm that the attached screenshots cover every relevant language, supported width, light and dark appearance, and large text by giving all four values: languages, widths, light_dark, large_text."
+                        "description": "Screen-changing code tickets: confirm that you checked the changed screens in every relevant language, supported width, light and dark appearance, and large text by giving all four values: languages, widths, light_dark, large_text. What passed is said in your summary, not attached."
                     },
                     "waive_findings": { "type": "string", "description": "Only after equipe's precheck sent this hand-in back: why each of its S1/S2 findings isn't a real problem for the person. A designer then judges them before the person reviews." },
                     "changes": CHANGES_SCHEMA.clone(),
@@ -2226,7 +2228,7 @@ mod tests {
             assert_eq!(hand_in["inputSchema"]["properties"]["images"]["type"], "array");
             assert_eq!(hand_in["inputSchema"]["properties"]["screen_checks"]["items"]["enum"].as_array().unwrap().len(), 4);
             let doc = hand_in["description"].as_str().unwrap();
-            assert!(doc.contains("`images`") && doc.contains("visual") && doc.contains("`screen_checks`"), "{doc}");
+            assert!(doc.contains("`images`") && doc.contains("visual") && doc.contains("`screen_checks`") && doc.contains("attach only the evidence"), "{doc}");
         }
     }
 

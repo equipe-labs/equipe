@@ -597,9 +597,13 @@ own words: hand it in with `submit_for_review` and the PM takes it from there. W
 
 /// The common finish line for engineers, whichever product they build.
 const ENGINEER_HAND_IN: &str = "On a screen-changing `code` ticket, before you hand it in, run the changed screens \
-yourself and take fresh screenshots across the same scope as design QA: every relevant language and supported width, \
-light and dark, and large text. Attach them to `submit_for_review` in `images` and give all four `screen_checks`; a \
-hand-in without them is refused with what is missing. Immediately before handing in, refresh main from its remote, \
+yourself and check them across the same scope as design QA: every relevant language and supported width, light and \
+dark, and large text (`equipe design precheck --worktree .` checks that range for you, in your temporary folder). \
+Keep only the evidence: in `submit_for_review`'s `images`, fresh screenshots of each changed screen — its before \
+and after at its main width — and of each condition a check failed on, after your fix; say in your summary what \
+passed where (width, theme, text size). Pictures and probe output of what passed stay in `$TMPDIR` and are deleted, \
+never saved in the worktree or `outputs/`. Give all four `screen_checks` to confirm the range you checked; a hand-in \
+without them is refused with what is missing. Immediately before handing in, refresh main from its remote, \
 rebase your branch onto the latest main, prove there are no conflicts, and run the relevant tests on that rebased tree.";
 
 /// …and, with a designer on the squad, the self-check that follows the hand-in.
@@ -1992,6 +1996,9 @@ invent one."), "{id}: true numbers");
             let text = charter(role(engineer).unwrap(), engineer, &ctx(&team, &[], true));
             for part in [
                 "fresh screenshots",
+                "before and after at its main width",
+                "each condition a check failed on",
+                "never saved in the worktree or `outputs/`",
                 "every relevant language and supported width",
                 "light and dark",
                 "large text",

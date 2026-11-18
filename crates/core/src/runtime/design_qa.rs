@@ -225,8 +225,9 @@ your worktree, name them in images, and hand in again."
                 let light = self.follow_up_of(squad, ticket).is_some_and(|f| f.light_check());
                 if !missing.is_empty() && !light {
                     return Err(format!(
-                        "Screens changed: the hand-in screenshots must cover the same range as design QA. Add every \
-screen_checks value; missing: {}. Then hand in again.",
+                        "Screens changed: check the changed screens across the same range as design QA and confirm \
+it with every screen_checks value; missing: {}. Attach only each changed screen's before and after at its main width and \
+any condition that failed. Then hand in again.",
                         missing.join(", ")
                     ));
                 }

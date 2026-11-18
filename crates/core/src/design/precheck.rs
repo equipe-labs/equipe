@@ -50,6 +50,9 @@ use serde_json::Value;
 /// The report's files, in the ticket's design QA folder.
 pub const REPORT_JSON: &str = "report.json";
 pub const REPORT_MD: &str = "report.md";
+/// Beside them: pass, fail or not rendered, per state and condition — the
+/// small machine-readable summary that stays when the pictures go ([`keep_evidence`]).
+pub const RESULTS_JSON: &str = "results.json";
 /// What a report on disk is written as.
 pub const SCHEMA: u32 = 1;
 /// The widths rendered unless the map says others.
@@ -175,6 +178,9 @@ pub struct Config {
     pub widths: Vec<u32>,
     pub max_states: Option<usize>,
     pub unmapped_large: Option<usize>,
+    /// The width whose before and after of each changed state are kept
+    /// when the other pictures go ([`keep_evidence`]).
+    pub main_width: Option<u32>,
 }
 
 impl Config {
@@ -185,6 +191,11 @@ impl Config {
 
     pub fn widths(&self) -> Vec<u32> {
         if self.widths.is_empty() { WIDTHS.to_vec() } else { self.widths.clone() }
+    }
+
+    /// The map's `mainWidth`, else the widest it renders.
+    pub fn main_width(&self) -> u32 {
+        self.main_width.unwrap_or_else(|| self.widths().into_iter().max().unwrap_or(WIDTHS[WIDTHS.len() - 1]))
     }
 
     pub fn max_states(&self) -> usize {
@@ -706,6 +717,9 @@ pub struct Shot {
     /// The map's picture on the branch isn't what the branch draws.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub map_outdated: bool,
+    /// It passed and its picture wasn't kept ([`keep_evidence`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dropped: bool,
 }
 
 impl Shot {
@@ -869,6 +883,12 @@ impl Report {
         facts.push(format!("- Changed states (pixels against the base): {}", if changed.is_empty() { "none".to_owned() } else { changed.join(", ") }));
         let taken = self.shots.len() - self.failed();
         facts.push(format!("- Pictures: {taken} taken across {} conditions, {} failed", self.conditions.len(), self.failed()));
+        let dropped = self.shots.iter().filter(|s| s.dropped).count();
+        if dropped > 0 {
+            facts.push(format!(
+                "- Kept: the pictures of conditions a finding shows in and each changed state's after at its main width; {dropped} passing pictures weren't kept ({RESULTS_JSON} has every condition's result)"
+            ));
+        }
         let causes = self.failure_causes(3);
         if !causes.is_empty() {
             facts.push(format!("- Why pictures failed: {}", causes.iter().map(|(why, n)| format!("{why} (x{n})")).collect::<Vec<_>>().join("; ")));
@@ -1149,7 +1169,7 @@ pub fn assemble(input: Input, out: &Path) -> Report {
         let Some(condition) = Condition::parse(&t.condition) else { continue };
         let at = (t.key.clone(), t.condition.clone());
         let baseline = input.baselines.get(&at);
-        let mut shot = Shot { key: t.key.clone(), condition: t.condition.clone(), picture: t.path.clone(), baseline: baseline.map(|b| b.to_string_lossy().into_owned()), diff: None, error: t.error.clone(), map_outdated: false };
+        let mut shot = Shot { key: t.key.clone(), condition: t.condition.clone(), picture: t.path.clone(), baseline: baseline.map(|b| b.to_string_lossy().into_owned()), diff: None, error: t.error.clone(), map_outdated: false, dropped: false };
         if let (None, Some(picture)) = (&t.error, &t.path) {
             if let Some(base) = baseline {
                 match pixel_diff(base, Path::new(picture), Some(&crops.join(format!("change-{n}.png")))) {
@@ -1269,6 +1289,68 @@ pub fn prune(dir: &Path, days: u64) {
     }
 }
 
+impl Report {
+    /// Each state's result in each condition: `fail` where a finding this
+    /// change brought shows, `error` where it wasn't rendered, else `pass`.
+    pub fn results(&self) -> BTreeMap<String, BTreeMap<String, &'static str>> {
+        let mut out: BTreeMap<String, BTreeMap<String, &'static str>> = BTreeMap::new();
+        for shot in &self.shots {
+            let failed = self.findings.iter().any(|f| f.new && f.key == shot.key && f.conditions.contains(&shot.condition));
+            let result = if shot.error.is_some() { "error" } else if failed { "fail" } else { "pass" };
+            out.entry(shot.key.clone()).or_default().insert(shot.condition.clone(), result);
+        }
+        out
+    }
+}
+
+/// Keep of a precheck in `out` only what a person or a reviewer needs: the
+/// pictures of each condition a finding this change brought shows in, the
+/// after picture of each changed state at `main_width` (light where it has
+/// one; its before is the map's own picture, `baseline`), and the crops of
+/// those findings. Every other picture under `out` — the passing matrix of
+/// widths, themes and text sizes — goes, its shot marked `dropped`; what
+/// each condition came to stays in [`Report::results`]. How many went.
+pub fn keep_evidence(report: &mut Report, out: &Path, main_width: u32) -> usize {
+    let failed: BTreeSet<(String, String)> = report.findings.iter().filter(|f| f.new).flat_map(|f| f.conditions.iter().map(|c| (f.key.clone(), c.clone()))).collect();
+    // The after of each changed state at the main width: light first, else the first scheme that changed.
+    let mut pair: BTreeMap<String, usize> = BTreeMap::new();
+    for (n, shot) in report.shots.iter().enumerate() {
+        let Some(c) = Condition::parse(&shot.condition) else { continue };
+        if c.width != main_width || c.variant != Variant::Normal || !shot.changed() || shot.picture.is_none() {
+            continue;
+        }
+        let better = pair.get(&shot.key).is_none_or(|&had| report.shots[had].condition.split('.').nth(1) != Some(SCHEMES[0]) && c.scheme == SCHEMES[0]);
+        if better {
+            pair.insert(shot.key.clone(), n);
+        }
+    }
+    let kept: BTreeSet<usize> = pair.into_values().collect();
+    let mut went = 0;
+    let mut remove = |path: &mut Option<String>| {
+        if let Some(p) = path.take() {
+            if Path::new(&p).starts_with(out) && std::fs::remove_file(&p).is_ok() {
+                went += 1;
+            } else if !Path::new(&p).starts_with(out) {
+                *path = Some(p);
+            }
+        }
+    };
+    for (n, shot) in report.shots.iter_mut().enumerate() {
+        if kept.contains(&n) || failed.contains(&(shot.key.clone(), shot.condition.clone())) || shot.error.is_some() {
+            continue;
+        }
+        remove(&mut shot.picture);
+        if let Some(diff) = shot.diff.as_mut() {
+            remove(&mut diff.crop);
+        }
+        shot.dropped = true;
+    }
+    for finding in report.findings.iter_mut().filter(|f| !f.new) {
+        remove(&mut finding.crop);
+    }
+    went
+}
+
 /// A report kept on disk, read back.
 pub fn read(dir: &Path) -> Option<Report> {
     let text = std::fs::read_to_string(dir.join(REPORT_JSON)).ok()?;
@@ -1279,6 +1361,7 @@ pub fn read(dir: &Path) -> Option<Report> {
 pub fn write(dir: &Path, report: &Report, summary: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     std::fs::write(dir.join(REPORT_JSON), serde_json::to_string_pretty(report).unwrap_or_default())?;
+    std::fs::write(dir.join(RESULTS_JSON), serde_json::to_string_pretty(&report.results()).unwrap_or_default())?;
     std::fs::write(dir.join(REPORT_MD), summary)
 }
 
@@ -1590,6 +1673,60 @@ mod tests {
         write(&dir, &report, &md).unwrap();
         let back = read(&dir).unwrap();
         assert_eq!((back.changed(), back.findings.len(), back.ticket), (report.changed(), report.findings.len(), Some(7)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_members_run_keeps_only_the_evidence_and_every_conditions_result() {
+        let dir = temp("evidence").canonicalize().unwrap();
+        let shots_dir = dir.join("shots");
+        std::fs::create_dir_all(&shots_dir).unwrap();
+        let outside = temp("evidence-base").join("base.png");
+        std::fs::write(&outside, b"the map's own").unwrap();
+        let mut shots = Vec::new();
+        for width in [390, 768, 1280] {
+            for scheme in SCHEMES {
+                for variant in Variant::ALL {
+                    let condition = Condition::new(width, scheme, variant).code();
+                    let picture = shots_dir.join(format!("login.{condition}.png"));
+                    std::fs::write(&picture, b"png").unwrap();
+                    let changed = variant == Variant::Normal;
+                    shots.push(Shot {
+                        key: "auth/login/default".into(),
+                        condition,
+                        picture: Some(picture.to_string_lossy().into_owned()),
+                        baseline: Some(outside.to_string_lossy().into_owned()),
+                        diff: Some(Diff { changed, share: if changed { 0.1 } else { 0. }, ..Diff::default() }),
+                        ..Shot::default()
+                    });
+                }
+            }
+        }
+        let failed = Finding::bare("clipped-text", Severity::Blocker, "auth/login/default", "390.dark.text-200", true);
+        let before = Finding { crop: Some(dir.join("crops/finding-0.png").to_string_lossy().into_owned()), ..Finding::bare("color-contrast", Severity::Blocker, "auth/login/default", "768.light.normal", false) };
+        std::fs::create_dir_all(dir.join("crops")).unwrap();
+        std::fs::write(dir.join("crops/finding-0.png"), b"crop").unwrap();
+        let mut report = Report { shots, findings: vec![failed, before], ..Report::default() };
+        let went = keep_evidence(&mut report, &dir, Config::default().main_width());
+        let kept: Vec<&str> = report.shots.iter().filter(|s| !s.dropped).map(|s| s.condition.as_str()).collect();
+        assert_eq!(kept, ["390.dark.text-200", "1280.light.normal"], "the failed condition, and the after at the main width");
+        assert_eq!(went, 16 + 1, "the passing matrix, and the crop of a finding that isn't this change's");
+        assert!(report.shots.iter().filter(|s| s.dropped).all(|s| s.picture.is_none()));
+        let left: Vec<String> = std::fs::read_dir(&shots_dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(left.len(), 2, "{left:?}");
+        assert!(outside.is_file(), "the map's own picture is never touched");
+        // Every condition's result stays, small and machine-readable.
+        let results = report.results();
+        assert_eq!(results["auth/login/default"].len(), 18);
+        assert_eq!(results["auth/login/default"]["390.dark.text-200"], "fail");
+        assert_eq!(results["auth/login/default"]["768.light.normal"], "pass", "a finding there before isn't this change's");
+        write(&dir, &report, &report.summary("Gate")).unwrap();
+        let back: BTreeMap<String, BTreeMap<String, String>> = serde_json::from_str(&std::fs::read_to_string(dir.join(RESULTS_JSON)).unwrap()).unwrap();
+        assert_eq!(back["auth/login/default"]["1280.light.normal"], "pass");
+        assert!(report.summary("Gate").contains("16 passing pictures weren't kept"), "{}", report.summary("Gate"));
+        // A map may name its main width.
+        assert_eq!(Config::of(&json!({ "precheck": { "mainWidth": 390 } })).main_width(), 390);
+        assert_eq!(Config::of(&json!({ "precheck": { "widths": [360, 1440] } })).main_width(), 1440);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

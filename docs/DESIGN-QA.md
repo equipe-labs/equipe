@@ -32,6 +32,25 @@ A squad runs design QA in one of two modes (`equipe design qa-config --mode risk
 
 The engineer can run the self-check itself before handing in: `equipe design precheck --worktree .`.
 
+### Check every condition, keep only the evidence
+
+A hand-in proves its range by being checked, not by carrying it: every relevant language, width, light and dark, and
+large text are still checked (`screen_checks` confirms it), but what is kept and attached is what someone acts on —
+
+- the before and after of each changed screen at its main width (the map's `precheck.mainWidth`, else the widest),
+  for the person and the reviewer;
+- a picture of each condition a check failed on — the evidence the fix needs;
+- a small machine-readable result of every condition: `results.json`, `{ "flow/screen/state": { "390.dark.text-200":
+  "pass" | "fail" | "error" } }`, beside the report (a condition fails where a finding this change brought shows).
+
+Passing matrix pictures and probe dumps are rendered into the member's temporary folder and deleted: never in the
+worktree, `outputs/` or a hand-in. `equipe design precheck` run without `--out` works that way — its report goes to
+`$TMPDIR/equipe-precheck/T-<n>`, its passing pictures go once it has judged them, and each dropped shot is marked
+`dropped` in `report.json` (`--evidence-only` does the same with `--out`). The daemon's own precheck keeps every picture
+in `~/.equipe/squads/<squad>/design-qa/T-<n>` — outside git, read by `qa_pictures` and the daily review, swept three
+days after its ticket closes. The members' charters, `submit_for_review`, and the `design-qa` and `design-process`
+skills say the same; a fix is checked again only where its finding was (PR #32).
+
 ### The light session
 
 A per-ticket design QA whose report shows enough (and every daily review and audit) runs as a **light session**: its
@@ -171,7 +190,8 @@ or their pictures change.
 - `modes` — extra modes a state's `command` is run in, beside `light` and `dark`. A command is also given the
   preview's origin as `{origin}` / `EQUIPE_SHOT_ORIGIN`.
 
-Run it by hand on any worktree: `equipe design precheck --worktree . --base main --out /tmp/precheck`.
+Run it by hand on any worktree: `equipe design precheck --worktree . --base main --out /tmp/precheck` (every
+picture kept; without `--out`, only the evidence).
 
 ## The gate
 
