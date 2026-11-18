@@ -50,6 +50,38 @@ with a warning, and that update is a full download. So don't delete the
 per-architecture builds has no earlier ones, so its updates are full
 downloads, and deltas start with the release after it.
 
+## Release notes
+
+Every release says what it brings people, in their words. The publish job runs
+`equipe release-notes` (`crates/core/src/release_notes.rs`) over the pull
+requests merged since the previous release:
+
+- A pull request's lines are the bullets (or paragraphs) under a
+  `## For users` heading in its description. Write them as the person using
+  equipe would notice the change: "The sidebar shows what went live in each
+  project", not "Add DeploysChanged event". An empty section, or `None`,
+  means nothing for users.
+- With no such heading, its title is the line, without a conventional prefix
+  (`feat:`, `fix(desktop):`).
+- Internal work gives none: titles starting `ci:`, `test:`, `chore:`, `docs:`,
+  `refactor:`, `build:` or `style:`, and pull requests labelled `internal`,
+  `skip-changelog`, `no-release-notes` or `dependencies`.
+
+The lines head the GitHub release ("What's new"), with GitHub's list of pull
+requests after them. They also go into `release-notes.json`, a release asset
+beside the appcasts holding the last 40 releases' notes, newest first. The
+app reads it from `releases/latest/download/` to show what a downloaded
+update brings above "Restart to Update", and, once after the restart, what
+the update brought ("Updated to …"). If the notes can't be made, the release
+still goes out, with GitHub's notes and a warning.
+
+To see a release's notes before tagging it:
+
+```sh
+gh pr view 44 --json number,title,body,labels | jq -s . > /tmp/prs.json
+equipe release-notes --version X.Y.Z --prs /tmp/prs.json --out /tmp/notes
+```
+
 ## Fast release
 
 For an urgent command-line fix, put `[fast]` in the release commit's message:

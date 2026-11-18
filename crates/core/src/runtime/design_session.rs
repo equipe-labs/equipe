@@ -114,6 +114,10 @@ impl Runtime {
         picked.page = page.clone();
         picked.variant = picked.variant.as_deref().and_then(session::variant_label);
         picked.url = picked.url.filter(|u| session::is_page_address(u));
+        // A page the daemon served for the person's screen goes in the spec as its file, which outlives the server.
+        if let Some(file) = picked.url.as_deref().and_then(|u| crate::prototype::Server::now()?.file_of(u)) {
+            picked.url = Some(format!("file://{}", file.to_string_lossy().replace(' ', "%20")));
+        }
         let title = match &picked.variant {
             Some(variant) => say!(self, "design_session.use_title_variant", page = page.clone(), variant = variant.clone()),
             None => say!(self, "design_session.use_title", page = page.clone()),

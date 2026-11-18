@@ -251,6 +251,11 @@ pub fn follow(url: &str, modifiers: Modifiers, scope: u64, window: &mut Window, 
         Link::File { path, .. } if !modifiers.platform && !modifiers.alt && crate::doc::is_doc(&path.to_string_lossy()) => {
             with_shell(cx, |shell, cx| shell.open_doc(path, cx));
         }
+        // From another machine the file is the daemon's, not this Mac's: fetched
+        // over the window's own SSH link into a private temp file, then opened.
+        Link::File { path, .. } if cx.try_global::<ShellRef>().and_then(|s| s.0.upgrade()).is_some_and(|s| s.read(cx).endpoint.is_remote()) => {
+            with_shell(cx, |shell, _| shell.open_file(&path.to_string_lossy()));
+        }
         Link::File { path, .. } => {
             let how = if modifiers.platform {
                 Open::Edit

@@ -447,7 +447,8 @@ fn spawn_detached() -> io::Result<()> {
 /// Attach to the daemon (starting it if needed) and follow `squad`.
 pub async fn attach(squad: &str) -> io::Result<(Client, Hello)> {
     ensure_running().await?;
-    Client::connect_in(&socket(), &build_id(), squad, Some(crate::i18n::lang())).await
+    // A terminal over SSH is a screen on another machine: nothing of this one's is the person's to open.
+    Client::connect_from(&socket(), &build_id(), squad, Some(crate::i18n::lang()), over_ssh()).await
 }
 
 /// How long `equipe daemon status` waits for the daemon to answer.

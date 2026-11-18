@@ -5,7 +5,7 @@
 //! `EQUIPE_SCRIPT="wait:1500;say:hello;wait:800;shot:/tmp/a.png"` — steps split on `;`:
 //! `wait:<ms>` · `shot:<png>` · `say:<text>` (type it in the box and send) ·
 //! `memo:<text>` (send it as a memo, as Tab does) · `type:<text>` (type, don't send) · `key:<y|a|n|o>` (answer a request) · `esc` (stop the member) · `up`/`down`
-//! (history; ↑ on an empty box reaches the bubbles waiting) · `pwithdraw` (take the last waiting bubble back) · `pnow` (send what waits now) · `project:<name|all>` · `shead:<project>` / `sfold:<project>` (a sidebar header's name, its chevron; empty: the shared folder) · `select:<member>` · `board` · `chat` · `status` (the Status screen) ·
+//! (history; ↑ on an empty box reaches the bubbles waiting) · `pwithdraw` (take the last waiting bubble back) · `pnow` (send what waits now) · `project:<name|all>` · `shead:<project>` / `sfold:<project>` (a sidebar header's name, its chevron; empty: the shared folder) · `ptab:<talks|work|docs|live>` (a project page's tab) · `whatsnew:<ready|updated>` (the app's notes over Restart to Update, or after it, on a sample) · `select:<member>` · `board` · `chat` · `status` (the Status screen) ·
 //! `menu:<inbox|working|all|view0…>` (a sidebar item) · `cmenu:<attach|recent|to|model|effort|mode|context>` (a composer menu) · `bkey:<key>` (a work
 //! screen's key; `shift-a`, `cmd-a`, `alt-v` with modifiers) · `pick:<n>` (a
 //! ticket; `ppick:<n>`, peeking) · `find:<words>` · `note:<text>` (in the open words box) · `submit`
@@ -335,13 +335,42 @@ pub fn run(mut handle: AnyWindowHandle, mut shell: Entity<Shell>, cx: &mut App) 
                     let click = if verb == "shead" { crate::board::HeadClick::Name } else { crate::board::HeadClick::Chevron };
                     shell.side_head_click(click, (!arg.is_empty()).then(|| arg.clone()), window, cx);
                 }),
-                // A project page's tab (`ptab:work`, `ptab:docs`, `ptab:talks`).
+                // A project page's tab (`ptab:work`, `ptab:docs`, `ptab:live`, `ptab:talks`).
                 "ptab" => shell.update(cx, |shell, cx| {
                     shell.board.project_tab = match arg.as_str() {
                         "work" => crate::board::ProjectTab::Work,
                         "docs" => crate::board::ProjectTab::Docs,
+                        "live" => crate::board::ProjectTab::Live,
                         _ => crate::board::ProjectTab::Talks,
                     };
+                    cx.notify();
+                }),
+                // The app's release notes, on a sample: what an update waiting
+                // brings (`whatsnew:ready`), or what the last one brought (`whatsnew:updated`).
+                "whatsnew" => shell.update(cx, |shell, cx| {
+                    use equipe_core::release_notes::{Feed, Release};
+                    let ours = env!("CARGO_PKG_VERSION");
+                    let next = |bump: u64| {
+                        let mut parts: Vec<u64> = ours.split('.').map(|p| p.parse().unwrap_or(0)).collect();
+                        if let Some(last) = parts.last_mut() {
+                            *last += bump;
+                        }
+                        parts.iter().map(u64::to_string).collect::<Vec<_>>().join(".")
+                    };
+                    let release = |version: String, notes: &[&str]| Release { version, date: String::new(), notes: notes.iter().map(|n| n.to_string()).collect() };
+                    let feed = Feed {
+                        releases: vec![
+                            release(next(2), &["The sidebar shows what went live in each project", "Restart to Update says what the update brings"]),
+                            release(next(1), &["Requests group their tickets in one line", "Faster merges on big projects"]),
+                            release(ours.to_owned(), &["A project's page has a What's live tab"]),
+                        ],
+                    };
+                    if arg == "updated" {
+                        shell.updated_card = crate::live::updated(&feed, Some("0.0.1"), ours);
+                    } else {
+                        shell.update = crate::relaunch::Update::Ready(next(2));
+                    }
+                    shell.release_feed = Some(feed);
                     cx.notify();
                 }),
                 "select" => shell.update(cx, |shell, cx| {

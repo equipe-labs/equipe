@@ -78,6 +78,7 @@ mod design;
 mod design_session;
 mod revise;
 mod live_preview;
+mod shown;
 mod refcards;
 mod briefs;
 mod plans;
@@ -103,6 +104,7 @@ mod usage_digest;
 mod team;
 mod heartbeat;
 mod signals;
+mod deploys;
 mod tickets;
 mod compact;
 mod hygiene;
@@ -363,9 +365,17 @@ pub struct Handle {
     requests: UnboundedSender<Request>,
     /// What the loop is on, for an answer when it doesn't answer.
     pulse: std::sync::Arc<watchdog::Pulse>,
+    /// The screens following each squad, and where they are ([`crate::screens`]).
+    screens: std::sync::Arc<crate::screens::Screens>,
 }
 
 impl Handle {
+    /// The screens following each squad: a screen takes a seat as it says
+    /// hello, and leaves with its connection.
+    pub fn screens(&self) -> &std::sync::Arc<crate::screens::Screens> {
+        &self.screens
+    }
+
     pub fn send(&self, command: Command) {
         let _ = self.requests.send(Request::Command(command));
     }
@@ -743,8 +753,11 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     let logins = vault.logins.clone();
     let (never_offer, can_keep_logins) = (vault.never_offer.clone(), vault.can_keep());
     let telemetry = if config.persist { crate::telemetry::Telemetry::start(&config.home, &config.client_version) } else { crate::telemetry::Telemetry::off() };
+    let screens = std::sync::Arc::new(crate::screens::Screens::default());
     let mut runtime = Runtime {
         telemetry,
+        screens: screens.clone(),
+        remote_told: HashMap::new(),
         vault: std::sync::Arc::new(std::sync::Mutex::new(vault)),
         logins,
         never_offer,
@@ -844,6 +857,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         tmp_budget_told: HashSet::new(),
         tidied_at: None,
         signals_running: std::collections::HashSet::new(),
+        deploys_looking: HashSet::new(),
         accepts: HashMap::new(),
         accepts_declined: HashMap::new(),
         merged_cache: Some(worktree::MergedCache::default()),
@@ -905,7 +919,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     let pulse = watchdog::Pulse::new();
     watchdog::watch(&pulse);
     tokio::spawn(CORE_LOOP.scope((), watchdog::scoped(pulse.clone(), run(runtime, req_rx, internal_rx, host_rx, pulse.clone()))));
-    let handle = Handle { requests: req_tx, pulse };
+    let handle = Handle { requests: req_tx, pulse, screens };
     // Memos for a turn the restart ended go in first, as if just sent.
     for (session, text) in memos {
         handle.send(Command::Submit { session, text, about: None });
@@ -1302,6 +1316,9 @@ enum Internal {
     AuthRecheck(Engine),
     /// A signal's command ran off the loop: its reading.
     SignalRead { squad: String, key: String, reading: crate::signals::Reading },
+    /// A squad's projects were looked at off the loop for what went live:
+    /// each project's watch now, and what the look found.
+    DeploysLooked { squad: String, looks: Vec<(PathBuf, crate::deploys::Watch, crate::deploys::Looked)> },
     /// Where the engines stand, as just looked at off the loop.
     Engines(Vec<equipe_protocol::EngineStatus>),
     /// A sign-in (the one numbered so) ended.
@@ -1413,6 +1430,12 @@ struct Runtime {
     /// Anonymous usage events, after the person's yes (docs/TELEMETRY.md):
     /// the daemon's only, never a terminal's own runtime.
     telemetry: crate::telemetry::Telemetry,
+    /// The screens following each squad, and where they are: the person's
+    /// screen on this Mac or another ([`crate::screens`]).
+    screens: std::sync::Arc<crate::screens::Screens>,
+    /// Where each member's conversation was last told the person looks from
+    /// (`true`: another machine), so it hears again only when that changes.
+    remote_told: HashMap<SessionId, bool>,
     /// Every attached screen, with the squad it follows (`None`: everything).
     /// Closed ones drop out on the next event.
     subscribers: Vec<(Option<String>, UnboundedSender<Event>)>,
@@ -1557,6 +1580,8 @@ struct Runtime {
     tidied_at: Option<std::time::Instant>,
     /// Signals whose command runs now, by squad and key (`signals`).
     signals_running: std::collections::HashSet<(String, String)>,
+    /// Squads whose projects are being looked at for what went live (`deploys`).
+    deploys_looking: HashSet<String>,
     /// Decisions in the person's words waiting on them (`words`).
     words: words::Words,
     /// Handed-in work put to the person to confirm, by squad (`accept`).
@@ -1823,6 +1848,7 @@ impl Wake {
             Wake::Internal(Internal::TurnEndsDue) => Borrowed("a paused run's time"),
             Wake::Internal(Internal::AuthRecheck(_)) => Borrowed("an engine's sign-in looked at again"),
             Wake::Internal(Internal::SignalRead { .. }) => Borrowed("a signal's reading"),
+            Wake::Internal(Internal::DeploysLooked { .. }) => Borrowed("a look at what went live"),
             Wake::Request(Some(Request::Disk(_))) => Borrowed("a look at the disk"),
             Wake::Request(Some(Request::DiskClean(..))) => Borrowed("a clean of the disk"),
             Wake::Internal(Internal::Engines(_)) => Borrowed("where the engines stand"),
@@ -2045,9 +2071,18 @@ impl Runtime {
                         event => {
                             // A build that failed for want of room says so plainly.
                             let no_room = room::says_no_room(&event).then(|| event.session()).flatten();
+                            // A page a member showed the person: served for their screen, before
+                            // the screen reads it; the member hears at once if nobody can see it.
+                            let shown = match &event {
+                                Event::ToolResult { session, outcome, .. } => self.member_showed(*session, outcome).map(|note| (*session, note)),
+                                _ => None,
+                            };
                             self.publish(event);
                             if let Some(id) = no_room {
                                 self.member_out_of_room(id);
+                            }
+                            if let Some((id, note)) = shown {
+                                self.set_going(id, format!("[equipe: {note}]")).await;
                             }
                         }
                     }
@@ -2113,6 +2148,7 @@ impl Runtime {
                 Internal::SignIns { squad, record, turn } => self.sign_ins_read(&squad, record.map(|r| *r), turn),
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
+                Internal::DeploysLooked { squad, looks } => self.deploys_looked(&squad, looks),
                 Internal::DiskTrimmed(freed, lines) => self.on_disk_trimmed(freed, lines),
                 Internal::LaneTmpLooked(look) => self.lane_tmp_looked(*look),
                 Internal::TurnEndsDue => self.turn_ends_due(now_secs()),
@@ -2252,6 +2288,8 @@ impl Runtime {
         self.wake_idle_pms().await;
         pulse.step("minute tick: signals");
         self.run_due_signals();
+        pulse.step("minute tick: deploys");
+        self.deploys_tick();
         pulse.step("minute tick: engines");
         self.engines_tick().await;
         pulse.step("minute tick: calls");
@@ -3811,6 +3849,7 @@ impl Runtime {
         self.accepts_declined.remove(squad);
         self.design_watch.remove(squad);
         self.signals_running.retain(|(q, _)| q != squad);
+        self.deploys_looking.remove(squad);
         // Its checks waiting in line: none will run. One running ends on its own.
         for queue in self.gates.values_mut() {
             let mut at = 0;
@@ -4315,13 +4354,22 @@ runbooks and reports live there, and work across the projects or on running them
     /// It is about the project of the ticket it names (none named: the whole
     /// squad); a turn under way about another goes on about its own after it.
     fn show_news(&mut self, pm: SessionId, text: String) {
+        self.show_news_about(pm, text, None);
+    }
+
+    /// [`Runtime::show_news`], about `project` when it is given — else the
+    /// project of the ticket the news names.
+    fn show_news_about(&mut self, pm: SessionId, text: String, project: Option<String>) {
         // Not into a conversation the person opened: those are theirs.
         let at = self.sessions.iter().find(|(_, s)| !s.kept && s.lane.as_ref().is_some_and(|(of, _)| *of == pm)).map_or(pm, |(&lane, _)| lane);
         let desk = self.sessions.get(&at).filter(|s| s.work.is_none()).map(|s| (scope::current(s.transcript.entries()).flatten(), s.is_working(), s.squad.clone()));
         let Some((now, working, Some(squad))) = desk else {
             return self.publish(Event::Notice { undo: None, session: at, text });
         };
-        let about = self.news_project(&squad, &text);
+        let about = match project {
+            Some(project) => Some(project),
+            None => self.news_project(&squad, &text),
+        };
         if about == now {
             return self.publish(Event::Notice { undo: None, session: at, text });
         }
@@ -5459,6 +5507,12 @@ for one project goes to it as tickets for its owners, with that project — and 
         let brief = self.engines.brief_for(id).or_else(|| member.and_then(|m| self.engines.brief_for(m)));
         let prompt = match brief {
             Some(brief) => format!("{brief}\n\n{prompt}"),
+            None => prompt,
+        };
+        // Where the person looks from, when that changed since it was last told:
+        // from another machine, nothing of this Mac's is theirs to open.
+        let prompt = match self.screens_note(id) {
+            Some(note) => format!("[equipe: {note}]\n\n{prompt}"),
             None => prompt,
         };
         // The squad's memory as its files say now — the person's edits in Finder
@@ -8784,10 +8838,17 @@ It starts when {owner} is free."
             if self.window_mode() {
                 match self.begin_window_handoff(&call, url.as_deref(), &why).await {
                     Ok(view) => {
+                        // A window on this Mac while the person is on another: said where, and how to reach it.
+                        let far = (!view).then(|| self.on_this_screen(&call.squad)).flatten();
                         if let Some(id) = self.caller_id(&call) {
                             let text = if view { say!(self, "notice.browser_view", name = call.member, why = why) } else { self.window_notice(&call.member, &why) };
+                            let text = match &far {
+                                Some((_, person)) => format!("{text}\n{person}"),
+                                None => text,
+                            };
                             self.publish(Event::Notice { undo: None, session: id, text });
                         }
+                        let far = far.map(|(member, _)| member).unwrap_or_default();
                         let _ = reply.send(ToolResult {
                             text: if view {
                                 "A sign-in view is opening on the person's screen at that page: an ordinary web view, not your browser — they sign in there \
@@ -8799,7 +8860,8 @@ a real browser of theirs, not yours: your browser tools are off until they press
 isn't yours to look at. Say in one line what they should do there, then end your turn. When they're done you get a message and \
 carry on by yourself — don't ask them to tell you."
                             }
-                            .into(),
+                            .to_owned()
+                                + &far,
                             is_error: false,
                             image: None,
                         });
@@ -8830,14 +8892,21 @@ and hand it back you get a message and carry on by yourself — don't ask them t
                 self.show_url.insert((call.squad.clone(), call.member.clone()), url);
             }
             self.show_browser(&call.squad, Some(call.member.clone()), true);
+            // On this Mac's screen while the person is on another: said where, and how to reach it.
+            let far = self.on_this_screen(&call.squad);
             if let Some(id) = self.caller_id(&call) {
                 let text = say!(self, "notice.browser_on_screen", name = call.member, why = why);
+                let text = match &far {
+                    Some((_, person)) => format!("{text}\n{person}"),
+                    None => text,
+                };
                 self.publish(Event::Notice { undo: None, session: id, text });
             }
             let _ = reply.send(ToolResult {
                 text: "Your browser comes up on the person's screen when this turn ends, at that page. Tell them what to do \
 there, end your turn, and carry on when they say they're done."
-                    .into(),
+                    .to_owned()
+                    + &far.map(|(member, _)| member).unwrap_or_default(),
                 is_error: false,
                 image: None,
             });
@@ -10664,6 +10733,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
         tickets.retain(|t| !t.status.is_closed() || recent_closed.contains(&t.id));
         watchdog::mark("snapshot: members");
         let marks = self.journals.get(squad).and_then(|j| j.conversation_marks().ok()).unwrap_or_default();
+        let pins = self.journals.get(squad).and_then(|j| j.conversation_pins().ok()).unwrap_or_default();
         let mut sessions: Vec<SessionInfo> = self
             .sessions
             .iter()
@@ -10693,7 +10763,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
                     queued_in: s.memo_threads.clone(),
                     steering: s.steering.clone(),
                     steering_in: s.steer_threads.clone(),
-                    lane: s.lane.clone().map(|(of, project)| equipe_protocol::Lane { of, project, kept: s.kept, active: marks.get(&id).map_or(0, |m| m.0), pinned: marks.get(&id).is_some_and(|m| m.1) }),
+                    lane: s.lane.clone().map(|(of, project)| equipe_protocol::Lane { of, project, kept: s.kept, active: marks.get(&id).map_or(0, |m| m.0), pinned: marks.get(&id).is_some_and(|m| m.1), pinned_at: pins.get(&id).copied().unwrap_or(0) }),
                     run: s.run_of.zip(s.work.as_ref()).map(|(of, w)| equipe_protocol::RunOf { of, ticket: w.ticket, generation: w.execution_generation }),
                     estimate: s.estimate.clone().filter(|e| !e.is_empty()),
                     work: s.work.as_ref().map(|w| WorkInfo {
@@ -10744,6 +10814,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
         let idle_wake_hours = self.journals.get(squad).map(Journal::idle_wake_hours);
         let subagents_at_once = self.subagents_at_once(Some(squad));
         let signals = self.signal_views(squad);
+        let deploys = self.deploy_views(squad);
         // Nemotron's reviews of the tickets shown.
         let shown: Vec<TicketId> = tickets.iter().map(|t| t.id).collect();
         let reviews = self.journals.get(squad).and_then(|j| j.reviews(&shown).ok()).unwrap_or_default();
@@ -10752,6 +10823,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
         let hand_overs = self.hand_overs(squad);
         Snapshot {
             signals,
+            deploys,
             reviews,
             put_away,
             routines,
